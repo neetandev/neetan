@@ -8,8 +8,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+common = { workspace = true }
 
 [dev-dependencies]
-common = { workspace = true }
 cpu = { workspace = true }
 machine = { workspace = true }

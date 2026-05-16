@@ -24,7 +24,7 @@ use sdl3::{
     video::Window,
 };
 
-use crate::{PC98_FRAMEBUFFER_BYTES, PC98_NATIVE_HEIGHT, PC98_NATIVE_WIDTH, Result};
+use crate::{Result, native_target_bytes, native_target_size};
 
 /// Resources owned by an active `SdlGpuBackend` session, created in `on_resume`.
 pub(crate) struct DeviceResources {
@@ -38,7 +38,11 @@ pub(crate) struct DeviceResources {
 }
 
 /// Builds a [`DeviceResources`] bundle: device + samplers + native target + transfer buffer.
-pub(crate) fn create(window: &Window, vsync_enabled: bool) -> Result<DeviceResources> {
+pub(crate) fn create(
+    window: &Window,
+    vsync_enabled: bool,
+    ga_enabled: bool,
+) -> Result<DeviceResources> {
     let device = create_device().context("SDL_CreateGPUDeviceWithProperties failed")?;
 
     device
@@ -69,9 +73,10 @@ pub(crate) fn create(window: &Window, vsync_enabled: bool) -> Result<DeviceResou
     let linear_sampler = create_sampler(&device, SDL_GPU_FILTER_LINEAR)
         .context("Failed to create linear sampler")?;
 
-    let native_target = create_native_target(&device).context("Failed to create native target")?;
-    let transfer_buffer =
-        create_transfer_buffer(&device).context("Failed to create framebuffer transfer buffer")?;
+    let native_target =
+        create_native_target(&device, ga_enabled).context("Failed to create native target")?;
+    let transfer_buffer = create_transfer_buffer(&device, ga_enabled)
+        .context("Failed to create framebuffer transfer buffer")?;
 
     Ok(DeviceResources {
         swapchain_format,
@@ -217,15 +222,16 @@ fn create_sampler(device: &GpuDevice, filter: SDL_GPUFilter) -> Result<GpuSample
         .map_err(Into::into)
 }
 
-fn create_native_target(device: &GpuDevice) -> Result<GpuTexture> {
+fn create_native_target(device: &GpuDevice, ga_enabled: bool) -> Result<GpuTexture> {
+    let (width, height) = native_target_size(ga_enabled);
     let info = SDL_GPUTextureCreateInfo {
         r#type: SDL_GPU_TEXTURETYPE_2D,
         format: SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB,
         usage: sdl3::gpu::SDL_GPUTextureUsageFlags(
             SDL_GPU_TEXTUREUSAGE_SAMPLER.0 | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET.0,
         ),
-        width: PC98_NATIVE_WIDTH,
-        height: PC98_NATIVE_HEIGHT,
+        width,
+        height,
         layer_count_or_depth: 1,
         num_levels: 1,
         sample_count: SDL_GPU_SAMPLECOUNT_1,
@@ -237,10 +243,10 @@ fn create_native_target(device: &GpuDevice) -> Result<GpuTexture> {
         .map_err(Into::into)
 }
 
-fn create_transfer_buffer(device: &GpuDevice) -> Result<GpuTransferBuffer> {
+fn create_transfer_buffer(device: &GpuDevice, ga_enabled: bool) -> Result<GpuTransferBuffer> {
     let info = SDL_GPUTransferBufferCreateInfo {
         usage: SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-        size: PC98_FRAMEBUFFER_BYTES as u32,
+        size: native_target_bytes(ga_enabled) as u32,
         ..Default::default()
     };
     device

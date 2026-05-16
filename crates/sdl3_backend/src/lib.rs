@@ -18,19 +18,40 @@ pub const PC98_NATIVE_WIDTH: u32 = 640;
 pub const PC98_NATIVE_HEIGHT: u32 = 480;
 /// Size in bytes of the native framebuffer.
 pub const PC98_FRAMEBUFFER_BYTES: u64 = (PC98_NATIVE_WIDTH * PC98_NATIVE_HEIGHT * 4) as u64;
+/// Maximum GA rendering target width in pixels.
+pub const GA_MAX_WIDTH: u32 = 1600;
+/// Maximum GA rendering target height in pixels.
+pub const GA_MAX_HEIGHT: u32 = 1024;
 
 /// Backend result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// The instructions to render a frame.
 pub struct RenderInstructions<'a> {
-    /// 640*480*4 bytes of packed `R, G, B, A` sRGB pixels (little-endian per pixel)
-    /// uploaded to the native-resolution sampled image.
+    /// Packed `R, G, B, A` sRGB pixels. The slice may be larger than
+    /// `width * height * 4`; only the top-left `width * height` region is read.
     pub framebuffer: &'a [u8],
-    /// Active vertical display height (400, or up to 480 in PEGC 480-line mode).
-    pub native_height: u32,
+    /// Active output width in pixels.
+    pub width: u32,
+    /// Active output height in pixels.
+    pub height: u32,
     /// Whether the CRT upscale effect is enabled.
     pub crt: bool,
+}
+
+/// Returns the backing texture dimensions for a backend configuration.
+pub fn native_target_size(ga_enabled: bool) -> (u32, u32) {
+    if ga_enabled {
+        (GA_MAX_WIDTH, GA_MAX_HEIGHT)
+    } else {
+        (PC98_NATIVE_WIDTH, PC98_NATIVE_HEIGHT)
+    }
+}
+
+/// Returns the backing texture byte length for a backend configuration.
+pub fn native_target_bytes(ga_enabled: bool) -> u64 {
+    let (width, height) = native_target_size(ga_enabled);
+    u64::from(width) * u64::from(height) * 4
 }
 
 /// A backend-neutral interface for the graphics engine.
@@ -74,26 +95,25 @@ pub enum DisplayAspectMode {
 }
 
 impl DisplayAspectMode {
-    /// Returns the display aspect ratio (width / height) for this mode.
-    pub fn display_aspect_ratio(self) -> f64 {
+    /// Source-size vector passed to the present shader for aspect-ratio fitting.
+    ///
+    /// For 4:3 mode the display aspect is fixed (the height is derived from
+    /// the width times 3/4), so any content shape is stretched to 4:3. For 1:1
+    /// (square-pixel) mode the display aspect tracks the live content
+    /// dimensions.
+    pub fn source_size(self, width: u32, height: u32) -> [f32; 2] {
+        let width = width.max(1) as f32;
+        let height = height.max(1) as f32;
         match self {
-            Self::Aspect4By3 => 4.0 / 3.0,
-            Self::Aspect1By1 => 640.0 / 400.0,
+            Self::Aspect4By3 => [width, width * 3.0 / 4.0],
+            Self::Aspect1By1 => [width, height],
         }
     }
 
-    /// Source-size vector passed to the present shader for aspect-ratio fitting.
-    ///
-    /// For 4:3 mode the display aspect is fixed regardless of content_height
-    /// (any line count is stretched to 4:3). For 1:1 (square-pixel) mode the
-    /// display aspect tracks the active line count, so the source vector uses
-    /// the live content_height.
-    pub fn source_size(self, content_height: u32) -> [f32; 2] {
-        let content_height = content_height.max(1) as f32;
-        match self {
-            Self::Aspect4By3 => [PC98_NATIVE_WIDTH as f32, PC98_NATIVE_HEIGHT as f32],
-            Self::Aspect1By1 => [PC98_NATIVE_WIDTH as f32, content_height],
-        }
+    /// Returns the displayed aspect ratio for the given content dimensions.
+    pub fn display_aspect_ratio(self, width: u32, height: u32) -> f64 {
+        let source = self.source_size(width, height);
+        f64::from(source[0]) / f64::from(source[1])
     }
 }
 
@@ -115,5 +135,48 @@ pub fn compute_color_target_extent(
         let width = surface_width;
         let height = (surface_width as f64 / aspect_ratio).round() as u32;
         (width, height)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn four_by_three_aspect_stretches_to_4_3() {
+        assert_eq!(
+            DisplayAspectMode::Aspect4By3.source_size(640, 400),
+            [640.0, 480.0]
+        );
+        assert_eq!(
+            DisplayAspectMode::Aspect4By3.source_size(1280, 1024),
+            [1280.0, 960.0]
+        );
+        assert_eq!(
+            DisplayAspectMode::Aspect4By3.source_size(1600, 1024),
+            [1600.0, 1200.0]
+        );
+    }
+
+    #[test]
+    fn one_to_one_aspect_uses_active_dimensions() {
+        assert_eq!(
+            DisplayAspectMode::Aspect1By1.source_size(1024, 768),
+            [1024.0, 768.0]
+        );
+        assert_eq!(
+            DisplayAspectMode::Aspect1By1.source_size(1280, 1024),
+            [1280.0, 1024.0]
+        );
+        assert_eq!(
+            DisplayAspectMode::Aspect1By1.source_size(1600, 1024),
+            [1600.0, 1024.0]
+        );
+    }
+
+    #[test]
+    fn display_aspect_ratio_uses_corrected_source_size() {
+        let ratio = DisplayAspectMode::Aspect4By3.display_aspect_ratio(1600, 1024);
+        assert_eq!(ratio, 4.0 / 3.0);
     }
 }

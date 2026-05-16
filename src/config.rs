@@ -49,6 +49,7 @@ Options:
       --backend <BACKEND>       Rendering backend: modern or legacy (default: modern)
       --window-mode <MODE>      Window mode: windowed or fullscreen
       --force-gdc-clock <2.5|5> Force GDC clock to 2.5 or 5 MHz (default: auto)
+      --graphicboard <TYPE>     Graphics accelerator board: none, ga1280a
       --bios-rom <PATH>         Path to BIOS ROM file
       --font-rom <PATH>         Path to font ROM file
       --soundboard <TYPE>       Sound board type: none, 14, 26k, 86, 86+26k, sb16, sb16+26k
@@ -555,6 +556,10 @@ fn parse_args_from(
                 let val = value(&flag)?;
                 config.force_gdc_clock = Some(val.parse::<ForceGdcClock>().map_err(StringError)?);
             }
+            "--graphicboard" => {
+                let val = value(&flag)?;
+                config.graphicboard = val.parse::<GraphicboardType>().map_err(StringError)?;
+            }
             "--printer" => config.printer = Some(PathBuf::from(value(&flag)?)),
             "--mt32-roms" => config.mt32_roms = Some(PathBuf::from(value(&flag)?)),
             "--sc55-roms" => config.sc55_roms = Some(PathBuf::from(value(&flag)?)),
@@ -623,6 +628,7 @@ pub struct EmulatorConfig {
     pub soundboard: SoundboardType,
     pub adpcm_ram: bool,
     pub force_gdc_clock: Option<ForceGdcClock>,
+    pub graphicboard: GraphicboardType,
     pub printer: Option<PathBuf>,
     pub mt32_roms: Option<PathBuf>,
     pub sc55_roms: Option<PathBuf>,
@@ -655,6 +661,7 @@ impl Default for EmulatorConfig {
             soundboard: SoundboardType::Sb86And26k,
             adpcm_ram: true,
             force_gdc_clock: None,
+            graphicboard: GraphicboardType::None,
             printer: None,
             mt32_roms: None,
             sc55_roms: None,
@@ -752,6 +759,10 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
             "force-gdc-clock" => match val.parse::<ForceGdcClock>() {
                 Ok(mode) => config.force_gdc_clock = Some(mode),
                 Err(_) => warn!("Invalid force-gdc-clock in config: {val}, expected 2.5 or 5"),
+            },
+            "graphicboard" => match val.parse::<GraphicboardType>() {
+                Ok(gb) => config.graphicboard = gb,
+                Err(_) => warn!("Unknown graphicboard type in config: {val}"),
             },
             "printer" => config.printer = Some(PathBuf::from(val)),
             "mt32-roms" => config.mt32_roms = Some(PathBuf::from(val)),
@@ -880,6 +891,38 @@ impl std::str::FromStr for SoundboardType {
             "sb16+26k" => Ok(Self::Sb16And26k),
             _ => Err(format!(
                 "unknown soundboard type '{s}', expected none, 14, 26k, 86, 86+26k, sb16 or sb16+26k"
+            )),
+        }
+    }
+}
+
+/// Graphics accelerator board type.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum GraphicboardType {
+    /// No graphics accelerator board installed.
+    None,
+    /// I-O DATA GA-1280A
+    Ga1280a,
+}
+
+impl std::fmt::Display for GraphicboardType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => f.write_str("none"),
+            Self::Ga1280a => f.write_str("ga1280a"),
+        }
+    }
+}
+
+impl std::str::FromStr for GraphicboardType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "ga1280a" => Ok(Self::Ga1280a),
+            _ => Err(format!(
+                "unknown graphicboard type '{s}', expected none or ga1280a"
             )),
         }
     }

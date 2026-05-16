@@ -205,10 +205,12 @@ pub(super) unsafe fn combine_cells_digital_mono_avx2(
 ) {
     debug_assert_eq!(row_buf.len(), ROW_BYTES);
 
+    // With text disabled the monochrome path is pure graphics and can use
+    // channel shuffle tables. With text enabled, graphics-on pixels borrow
+    // the current cell text color, so it is cheaper to build a blend mask.
     unsafe {
-        // With text disabled the monochrome path is pure graphics and can use
-        // channel shuffle tables. With text enabled, graphics-on pixels borrow
-        // the current cell text color, so it is cheaper to build a blend mask.
+        // SAFETY: callers already validated that AVX2 is available before
+        // entering this AVX2-dispatched function.
         if palette.text_enabled {
             combine_cells_digital_mono_text_avx2(row_buf, scratch, palette);
         } else {

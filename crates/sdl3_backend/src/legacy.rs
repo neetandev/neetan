@@ -12,8 +12,8 @@ use sdl3::{
 };
 
 use crate::{
-    DisplayAspectMode, GraphicsEngine, PC98_NATIVE_HEIGHT, PC98_NATIVE_WIDTH, RenderInstructions,
-    Result, Scaling, compute_color_target_extent,
+    DisplayAspectMode, GraphicsEngine, RenderInstructions, Result, Scaling,
+    compute_color_target_extent, native_target_size,
 };
 
 /// Renderer state that exists only between `on_resume` and `on_destroy_surface`.
@@ -25,6 +25,7 @@ struct SdlState {
 /// SDL 2D rendering backend.
 pub struct LegacySdlBackend {
     aspect_mode: DisplayAspectMode,
+    ga_enabled: bool,
     state: Option<SdlState>,
     scaling: Scaling,
     /// `SDL_SCALEMODE_PIXELART` was introduced in SDL 3.4.
@@ -33,7 +34,7 @@ pub struct LegacySdlBackend {
 
 impl LegacySdlBackend {
     /// Creates a new SDL graphics engine. The renderer itself is created in `on_resume`.
-    pub fn new(aspect_mode: DisplayAspectMode) -> Self {
+    pub fn new(aspect_mode: DisplayAspectMode, ga_enabled: bool) -> Self {
         let (major, minor, patch) = sdl_version();
         let pixelart_supported = (major, minor) >= (3, 4);
         if !pixelart_supported {
@@ -44,6 +45,7 @@ impl LegacySdlBackend {
 
         Self {
             aspect_mode,
+            ga_enabled,
             state: None,
             scaling: Scaling::Pixelart,
             pixelart_supported,
@@ -78,8 +80,9 @@ impl GraphicsEngine for LegacySdlBackend {
             .set_vsync(vsync_enabled)
             .context("SDL_SetRenderVSync failed")?;
 
+        let (target_width, target_height) = native_target_size(self.ga_enabled);
         let texture = renderer
-            .create_streaming_texture(PixelFormat::Rgba32, PC98_NATIVE_WIDTH, PC98_NATIVE_HEIGHT)
+            .create_streaming_texture(PixelFormat::Rgba32, target_width, target_height)
             .context("SDL_CreateTexture failed")?;
         texture
             .set_scale_mode(self.sdl_scale_mode(self.scaling))
@@ -121,28 +124,41 @@ impl GraphicsEngine for LegacySdlBackend {
             .context("SDL_RenderClear failed")?;
 
         if let Some(instructions) = render_instructions {
-            let expected_bytes = (PC98_NATIVE_WIDTH * PC98_NATIVE_HEIGHT * 4) as usize;
-            if instructions.framebuffer.len() != expected_bytes {
+            let width = instructions.width.max(1);
+            let height = instructions.height.max(1);
+            let (max_width, max_height) = native_target_size(self.ga_enabled);
+            if width > max_width || height > max_height {
+                panic!("Frame {width}x{height} exceeds backend target {max_width}x{max_height}");
+            }
+            let aspect_ratio = self.aspect_mode.display_aspect_ratio(width, height);
+
+            let expected_bytes = (width * height * 4) as usize;
+            if instructions.framebuffer.len() < expected_bytes {
                 return Ok(());
             }
 
+            let update_rect = Rect {
+                x: 0,
+                y: 0,
+                w: width as i32,
+                h: height as i32,
+            };
             state
                 .texture
-                .update(None, instructions.framebuffer, PC98_NATIVE_WIDTH * 4)
+                .update(
+                    Some(update_rect),
+                    &instructions.framebuffer[..expected_bytes],
+                    width * 4,
+                )
                 .context("SDL_UpdateTexture failed")?;
 
-            let native_height = instructions.native_height.min(PC98_NATIVE_HEIGHT);
             let src = Rect {
                 x: 0,
                 y: 0,
-                w: PC98_NATIVE_WIDTH as i32,
-                h: native_height as i32,
+                w: width as i32,
+                h: height as i32,
             };
-            let dst = fitted_destination_rect(
-                output_width,
-                output_height,
-                self.aspect_mode.display_aspect_ratio(),
-            );
+            let dst = fitted_destination_rect(output_width, output_height, aspect_ratio);
 
             state
                 .renderer

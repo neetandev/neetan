@@ -105,7 +105,7 @@ fn renders_text_cell_color_and_writes_ppm() {
     renderer.render(&inputs);
 
     let fb = renderer.framebuffer();
-    assert_eq!(fb.len(), SoftwareRenderer::FRAMEBUFFER_BYTES);
+    assert!(fb.len() >= SoftwareRenderer::FRAMEBUFFER_BYTES);
     assert_eq!(pixel_at(fb, 0, 0), [0xFF, 0x00, 0x00, 0xFF]);
     assert_eq!(pixel_at(fb, 1, 0), [0x00, 0x00, 0x00, 0xFF]);
     assert_eq!(pixel_at(fb, 0, 401), [0x00, 0x00, 0x00, 0xFF]);
@@ -114,7 +114,13 @@ fn renders_text_cell_color_and_writes_ppm() {
         "neetan-software-renderer-{}.ppm",
         std::process::id()
     ));
-    SoftwareRenderer::write_ppm(&path, fb).unwrap();
+    SoftwareRenderer::write_ppm(
+        &path,
+        fb,
+        SoftwareRenderer::WIDTH as u32,
+        SoftwareRenderer::HEIGHT as u32,
+    )
+    .unwrap();
 
     let ppm = fs::read(&path).unwrap();
     let header = b"P6\n640 480\n255\n";

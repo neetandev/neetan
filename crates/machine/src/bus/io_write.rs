@@ -1,5 +1,6 @@
 use common::{EventKind, MachineModel, debug, warn};
 use device::{
+    ga1280a::is_ga1280a_port,
     grcg,
     i8253_pit::{PIT_FLAG_I, WriteResult},
     sasi::{SasiAction, SasiPhase},
@@ -19,6 +20,13 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.pending_wait_cycles += IO_WAIT_CYCLES;
         self.tracer.set_cycle(self.current_cycle);
         self.tracer.trace_io_write(port, value);
+        if is_ga1280a_port(port) {
+            self.pending_wait_cycles += self.cbus_wait_cycles();
+            if let Some(ga) = self.ga1280a.as_mut() {
+                ga.try_handle_io_write_byte(port, value);
+            }
+            return;
+        }
         match port {
             // PIC
             0x00 | 0x08 => self.pic.write_port0(((port >> 3) & 1) as usize, value),

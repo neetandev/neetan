@@ -278,7 +278,8 @@ pub(super) fn compose(
     scratch: &mut ComposeScratch,
     has_simd: bool,
 ) {
-    debug_assert_eq!(framebuffer.len(), SoftwareRenderer::FRAMEBUFFER_BYTES);
+    assert!(framebuffer.len() >= SoftwareRenderer::FRAMEBUFFER_BYTES);
+    let framebuffer = &mut framebuffer[..SoftwareRenderer::FRAMEBUFFER_BYTES];
 
     let max_y = compute_max_y(inputs);
 

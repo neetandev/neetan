@@ -468,7 +468,7 @@ mod tests {
 }
 
 /// Number of [`EventKind`] variants.
-const EVENT_KIND_COUNT: usize = 21;
+const EVENT_KIND_COUNT: usize = 23;
 
 /// Trait representing the system bus of an emulated machine.
 ///
@@ -1130,10 +1130,9 @@ pub trait Machine {
     /// as packed `R, G, B, A` bytes (little-endian per pixel).
     fn display_framebuffer(&self) -> &[u8];
 
-    /// Returns the active vertical display height (400, or up to 480 in
-    /// PEGC 480-line mode) for the framebuffer returned by
-    /// [`display_framebuffer`](Self::display_framebuffer).
-    fn display_native_height(&self) -> u32;
+    /// Returns the `(width, height)` of the valid region in the framebuffer
+    /// returned by [`display_framebuffer`](Self::display_framebuffer).
+    fn display_dimensions(&self) -> (u32, u32);
 
     /// Injects a PC-98 keyboard scan code.
     fn push_keyboard_scancode(&mut self, code: u8);
@@ -1254,6 +1253,10 @@ pub enum EventKind {
     MpuTimer,
     /// PC-9801-14 Music Generator board 8253 counter #2 terminal count.
     MusicGen14Timer,
+    /// I-O DATA GA-1280A vertical blanking begins.
+    GaVsync,
+    /// I-O DATA GA-1280A active display period begins.
+    GaDisplayStart,
 }
 
 impl EventKind {
@@ -1279,6 +1282,8 @@ impl EventKind {
         EventKind::Sb16DspDma,
         EventKind::MpuTimer,
         EventKind::MusicGen14Timer,
+        EventKind::GaVsync,
+        EventKind::GaDisplayStart,
     ];
 
     const fn from_index(index: usize) -> Self {

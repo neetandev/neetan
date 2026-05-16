@@ -26,6 +26,7 @@ use device::{
     fdd320_ppi::Fdd320Ppi,
     fdd640k_hle::Fdd640kHle,
     floppy::FloppyImage,
+    ga1280a::{Ga1280a, Ga1280aRenderSnapshot, Ga1280aState, is_ga1280a_port},
     grcg::Grcg,
     i8237_dma::I8237Dma,
     i8251_keyboard::I8251Keyboard,
@@ -49,7 +50,8 @@ use device::{
     upd52611_crtc::Upd52611Crtc,
 };
 use software_renderer::{
-    GdcGraphicsInput, GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer,
+    Ga1280aCursorRenderInputs, Ga1280aRenderInputs, Ga1280aRenderMode, GdcGraphicsInput,
+    GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer, compose_ga1280a,
 };
 
 use crate::{NoTracing, Tracing, config::ClockConfig, memory::Pc9801Memory};
@@ -331,6 +333,7 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     soundboard_26k: Option<Soundboard26k>,
     soundboard_86: Option<Soundboard86>,
     sound_blaster_16: Option<SoundBlaster16>,
+    ga1280a: Option<Ga1280a>,
     beeper: Beeper,
     rtc: Upd4990aRtc,
     /// Returns the current host local time as 6-byte BCD:
@@ -374,11 +377,12 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     /// continues until the machine loop checks, so we snapshot the state.
     warm_reset_context: Option<(u16, u16, u16, u16)>,
     /// CPU-side software renderer that produces the composed framebuffer
-    /// uploaded by the graphics engine.
+    /// uploaded by the graphics engine..
     software_renderer: Box<SoftwareRenderer>,
-    /// Active vertical display height (400, or up to 480 in PEGC 480-line mode)
-    /// from the most recent [`render_display_frame`] call.
-    last_native_height: u32,
+    /// Active output width in pixels from the most recent composed frame.
+    display_width: u32,
+    /// Active output height in pixels from the most recent composed frame.
+    display_height: u32,
     /// DMA access control register (port 0x0439). Bit 2: mask DMA above 1MB.
     dma_access_ctrl: u8,
     /// VRAM/EMS bank register (write-only via port 0x043F).
@@ -837,6 +841,70 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.update_plane_e_mapping();
     }
 
+    /// Installs an I-O DATA GA-1280A graphic board.
+    pub fn install_ga1280a(&mut self) {
+        let ga1280a = Ga1280a::new();
+        let first_vsync_cycle =
+            self.current_cycle + ga1280a.display_period_cycles(self.clocks.cpu_clock_hz);
+        self.ga1280a = Some(ga1280a);
+        self.scheduler
+            .schedule(EventKind::GaVsync, first_vsync_cycle);
+        self.update_next_event_cycle();
+    }
+
+    /// Composes and snapshots the GA-1280A framebuffer synchronously.
+    pub fn ga1280a_present_now(&mut self) {
+        if let Some(ga) = self.ga1280a.as_mut() {
+            ga.on_vsync_start();
+        }
+        self.render_ga1280a_frame();
+    }
+
+    fn render_ga1280a_frame(&mut self) {
+        let Some(ga) = self.ga1280a.as_ref() else {
+            return;
+        };
+        let snapshot = ga.render_snapshot();
+        let inputs = Self::ga1280a_render_inputs(snapshot);
+        let (width, height) =
+            compose_ga1280a(self.software_renderer.framebuffer_mut(), &inputs, true);
+        self.display_width = width;
+        self.display_height = height;
+    }
+
+    fn ga1280a_render_inputs(snapshot: Ga1280aRenderSnapshot<'_>) -> Ga1280aRenderInputs<'_> {
+        let mode = match snapshot.plane_mode {
+            device::ga1280a::Ga1280aPlaneMode::Indexed8 => Ga1280aRenderMode::Indexed8,
+            device::ga1280a::Ga1280aPlaneMode::DirectColor16 => Ga1280aRenderMode::DirectColor16,
+            device::ga1280a::Ga1280aPlaneMode::FullColor24 => Ga1280aRenderMode::FullColor24,
+        };
+        Ga1280aRenderInputs {
+            mode,
+            width: snapshot.width,
+            height: snapshot.height,
+            pixel_map_width: snapshot.pixel_map_width,
+            pixel_map_height: snapshot.pixel_map_height,
+            stride_bytes: snapshot.stride_bytes,
+            display_offset_pixels: snapshot.display_offset_pixels,
+            palette: snapshot.palette,
+            visible_mask: snapshot.visible_mask,
+            vram: snapshot.vram,
+            cursor: Ga1280aCursorRenderInputs {
+                visible: snapshot.cursor.visible,
+                x: snapshot.cursor.x,
+                y: snapshot.cursor.y,
+                colors: snapshot.cursor.colors,
+                xor_pattern: snapshot.cursor.xor_pattern,
+                and_pattern: snapshot.cursor.and_pattern,
+            },
+        }
+    }
+
+    /// Returns the installed I-O DATA GA-1280A state, if any.
+    pub fn ga1280a_state(&self) -> Option<&Ga1280aState> {
+        self.ga1280a.as_ref().map(|ga| &ga.state)
+    }
+
     /// Installs the PC-9801-26K sound board (YM2203 OPN).
     ///
     /// When `alternate_timers` is `true`, the board uses `FmTimer2A`/`FmTimer2B`
@@ -858,11 +926,6 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.soundboard_14 = Some(Soundboard14::new(self.clocks.cpu_clock_hz, sample_rate));
     }
 
-    /// Returns `true` if the PC-9801-14 sound board is installed.
-    pub fn has_soundboard_14(&self) -> bool {
-        self.soundboard_14.is_some()
-    }
-
     /// Installs the PC-9801-86 sound board (YM2608 OPNA + PCM86).
     ///
     /// `rhythm_rom` is the optional 8 KB `ym2608.rom` ADPCM-A rhythm ROM.
@@ -879,11 +942,6 @@ impl<T: Tracing> Pc9801Bus<T> {
             self.machine_model,
         ));
         self.resolve_dual_soundboard_irq_conflict();
-    }
-
-    /// Returns `true` if the PC-9801-86 sound board is installed.
-    pub fn has_soundboard_86(&self) -> bool {
-        self.soundboard_86.is_some()
     }
 
     /// Installs a Creative Sound Blaster 16 (CT2720) sound board.
@@ -1031,6 +1089,11 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             return self.memory.read_byte(physical);
         }
+        if let Some(ga) = self.ga1280a.as_ref()
+            && let Some(value) = ga.window_read_byte(address)
+        {
+            return value;
+        }
         match address {
             0xA4000..=0xA4FFF if self.grcg.state.chip >= 2 => {
                 let window = self
@@ -1143,6 +1206,12 @@ impl<T: Tracing> Pc9801Bus<T> {
             return;
         }
 
+        if let Some(ga) = self.ga1280a.as_mut()
+            && ga.window_write_byte(address, value)
+        {
+            return;
+        }
+
         match address {
             0xA4000..=0xA4FFF if self.grcg.state.chip >= 2 => {
                 let window = self
@@ -1217,15 +1286,25 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
     }
 
-    /// Returns the composed 640x480 framebuffer rendered at the last VSYNC.
+    /// Returns the composed RGBA framebuffer rendered at the last VSYNC.
+    ///
+    /// The returned slice covers the full backing buffer; only the top-left
+    /// `display_dimensions()` region holds valid pixels for the latest frame.
     pub fn display_framebuffer(&self) -> &[u8] {
         self.software_renderer.framebuffer()
     }
 
-    /// Returns the active vertical display height (400, or up to 480 in
-    /// PEGC 480-line mode) corresponding to the current framebuffer.
-    pub fn display_native_height(&self) -> u32 {
-        self.last_native_height
+    /// Returns the `(width, height)` of the valid region in
+    /// [`display_framebuffer`](Self::display_framebuffer).
+    pub fn display_dimensions(&self) -> (u32, u32) {
+        (self.display_width, self.display_height)
+    }
+
+    /// Returns whether the GA-1280A board is currently driving the monitor.
+    pub fn ga1280a_is_driving_monitor(&self) -> bool {
+        self.ga1280a
+            .as_ref()
+            .is_some_and(|ga| ga.is_driving_monitor())
     }
 
     /// Composes the current display state into the renderer's internal
@@ -1437,7 +1516,8 @@ impl<T: Tracing> Pc9801Bus<T> {
             graphics,
         };
 
-        self.last_native_height = SoftwareRenderer::native_height(&inputs);
+        self.display_width = SoftwareRenderer::WIDTH as u32;
+        self.display_height = SoftwareRenderer::native_height(&inputs);
 
         self.software_renderer.render(&inputs);
     }
@@ -1568,6 +1648,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             soundboard_26k: self.soundboard_26k.as_ref().map(|sb| sb.save_state()),
             soundboard_86: self.soundboard_86.as_ref().map(|sb| sb.save_state()),
             sound_blaster_16: self.sound_blaster_16.as_ref().map(|sb| sb.save_state()),
+            ga1280a: self.ga1280a.as_ref().map(|ga| ga.state.clone()),
             beeper: self.beeper.state.clone(),
             mouse_ppi: self.mouse_ppi.state.clone(),
             mouse_timer_setting: self.mouse_timer_setting,
@@ -1645,6 +1726,8 @@ impl<T: Tracing> Pc9801Bus<T> {
                 state.current_cycle,
             );
         }
+        self.ga1280a = state.ga1280a.clone().map(Ga1280a::from_state);
+        self.render_ga1280a_frame();
         self.beeper.state = state.beeper.clone();
         self.mouse_ppi.state = state.mouse_ppi.clone();
         self.mouse_ppi.set_cpu_clock(self.clocks.cpu_clock_hz);
@@ -1967,7 +2050,11 @@ impl<T: Tracing> Pc9801Bus<T> {
                     }
                 }
                 EventKind::GdcVsync => {
-                    self.render_display_frame();
+                    // GA-1280A and GDC/PEGC share one framebuffer; only the
+                    // side that drives the monitor may compose into it.
+                    if !self.ga1280a_is_driving_monitor() {
+                        self.render_display_frame();
+                    }
                     self.tram_wait = 1;
                     self.vram_wait = 1;
                     self.grcg_wait = 1;
@@ -2082,6 +2169,27 @@ impl<T: Tracing> Pc9801Bus<T> {
                         self.process_soundboard_14_actions();
                     }
                 }
+                EventKind::GaVsync => {
+                    if let Some(ga) = self.ga1280a.as_mut() {
+                        ga.on_vsync_start();
+                        let blanking = ga.blanking_period_cycles(self.clocks.cpu_clock_hz);
+                        self.scheduler
+                            .schedule(EventKind::GaDisplayStart, self.current_cycle + blanking);
+                    }
+                    // GA-1280A and GDC/PEGC share one framebuffer; only the
+                    // side that drives the monitor may compose into it.
+                    if self.ga1280a_is_driving_monitor() {
+                        self.render_ga1280a_frame();
+                    }
+                }
+                EventKind::GaDisplayStart => {
+                    if let Some(ga) = self.ga1280a.as_mut() {
+                        ga.on_display_start();
+                        let display = ga.display_period_cycles(self.clocks.cpu_clock_hz);
+                        self.scheduler
+                            .schedule(EventKind::GaVsync, self.current_cycle + display);
+                    }
+                }
             }
         }
         self.update_next_event_cycle();
@@ -2113,6 +2221,12 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             return value;
         }
         let address = self.a20_mask(address);
+        if let Some(ga) = self.ga1280a.as_mut()
+            && let Some(value) = ga.flat_aperture_read_byte(address)
+        {
+            self.tracer.trace_mem_read(address, value);
+            return value;
+        }
         if address >= 0x100000 {
             let offset = (address - 0x100000) as usize;
             if offset < self.memory.extended_ram.len() {
@@ -2138,6 +2252,12 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             self.tracer.trace_mem_read(address, value);
             return value;
         }
+        if let Some(ga) = self.ga1280a.as_mut()
+            && let Some(value) = ga.mapped_register_read_byte(address)
+        {
+            self.tracer.trace_mem_read(address, value);
+            return value;
+        }
         if !ems_b_bank
             && ((0xA8000..=0xBFFFF).contains(&address) || (0xE0000..=0xE7FFF).contains(&address))
         {
@@ -2157,6 +2277,12 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             return;
         }
         let address = self.a20_mask(address);
+        if let Some(ga) = self.ga1280a.as_mut()
+            && ga.flat_aperture_write_byte(address, value)
+        {
+            self.tracer.trace_mem_write(address, value);
+            return;
+        }
         if address >= 0x100000 {
             let offset = (address - 0x100000) as usize;
             if offset < self.memory.extended_ram.len() {
@@ -2182,6 +2308,12 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             self.tracer.trace_mem_write(address, value);
             return;
         }
+        if let Some(ga) = self.ga1280a.as_mut()
+            && ga.mapped_register_write_byte(address, value)
+        {
+            self.tracer.trace_mem_write(address, value);
+            return;
+        }
         if !ems_b_bank
             && ((0xA8000..=0xBFFFF).contains(&address) || (0xE0000..=0xE7FFF).contains(&address))
         {
@@ -2202,6 +2334,12 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             return value;
         }
         let address = self.a20_mask(address);
+        if let Some(ga) = self.ga1280a.as_mut()
+            && let Some(value) = ga.flat_aperture_read_word(address)
+        {
+            self.tracer.trace_mem_read_word(address, value);
+            return value;
+        }
         if self.machine_model.has_pegc()
             && ((0xF00000..=0xF7FFFE).contains(&address)
                 || (0xFFF00000..=0xFFF7FFFE).contains(&address))
@@ -2276,6 +2414,12 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             self.tracer.trace_mem_read_word(address, value);
             return value;
         }
+        if let Some(ga) = self.ga1280a.as_mut()
+            && let Some(value) = ga.mapped_register_read_word(address)
+        {
+            self.tracer.trace_mem_read_word(address, value);
+            return value;
+        }
         if in_grcg_range {
             self.pending_wait_cycles += self.vram_wait;
         } else if (0xA0000..=0xA3FFF).contains(&address)
@@ -2299,6 +2443,12 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             return;
         }
         let address = self.a20_mask(address);
+        if let Some(ga) = self.ga1280a.as_mut()
+            && ga.flat_aperture_write_word(address, value)
+        {
+            self.tracer.trace_mem_write_word(address, value);
+            return;
+        }
         if self.machine_model.has_pegc()
             && ((0xF00000..=0xF7FFFE).contains(&address)
                 || (0xFFF00000..=0xFFF7FFFE).contains(&address))
@@ -2372,6 +2522,12 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             self.tracer.trace_mem_write_word(address, value);
             return;
         }
+        if let Some(ga) = self.ga1280a.as_mut()
+            && ga.mapped_register_write_word(address, value)
+        {
+            self.tracer.trace_mem_write_word(address, value);
+            return;
+        }
         if in_grcg_range {
             self.pending_wait_cycles += self.vram_wait;
         } else if (0xA0000..=0xA3FFF).contains(&address)
@@ -2393,6 +2549,14 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 | ((self.memory.state.ram[a + 3] as u32) << 24);
         }
         let address_masked = self.a20_mask(address);
+        if let Some(ga) = self.ga1280a.as_mut()
+            && let Some(value) = ga.flat_aperture_read_dword(address_masked)
+        {
+            self.tracer.trace_mem_read_word(address, value as u16);
+            self.tracer
+                .trace_mem_read_word(address.wrapping_add(2), (value >> 16) as u16);
+            return value;
+        }
         let pegc_active = self.pegc.is_256_color_active();
         let has_pegc = self.machine_model.has_pegc();
 
@@ -2463,6 +2627,14 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             return;
         }
         let address_masked = self.a20_mask(address);
+        if let Some(ga) = self.ga1280a.as_mut()
+            && ga.flat_aperture_write_dword(address_masked, value)
+        {
+            self.tracer.trace_mem_write_word(address, value as u16);
+            self.tracer
+                .trace_mem_write_word(address.wrapping_add(2), (value >> 16) as u16);
+            return;
+        }
         let pegc_active = self.pegc.is_256_color_active();
         let has_pegc = self.machine_model.has_pegc();
 
@@ -2527,6 +2699,19 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
     }
 
     fn io_read_word(&mut self, port: u16) -> u16 {
+        // I-O DATA GA-1280A: word-only when the GA has an atomic
+        // word handler. When it does not, fall through to the byte-split path
+        // so the byte handlers compose the result.
+        if is_ga1280a_port(port)
+            && let Some(value) = self
+                .ga1280a
+                .as_mut()
+                .and_then(|ga| ga.try_handle_io_read_word(port))
+        {
+            self.pending_wait_cycles += IO_WAIT_CYCLES + self.cbus_wait_cycles();
+            return value;
+        }
+
         match port {
             // IDE 16-bit data register.
             0x0640 if self.machine_model.has_ide() => {
@@ -2544,6 +2729,18 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
     }
 
     fn io_write_word(&mut self, port: u16, value: u16) {
+        // I-O DATA GA-1280A: word-only when the GA has an atomic
+        // word handler. When it does not, fall through to the byte-split path.
+        if is_ga1280a_port(port)
+            && self
+                .ga1280a
+                .as_mut()
+                .is_some_and(|ga| ga.try_handle_io_write_word(port, value))
+        {
+            self.pending_wait_cycles += IO_WAIT_CYCLES + self.cbus_wait_cycles();
+            return;
+        }
+
         match port {
             // IDE 16-bit data register.
             0x0640 if self.machine_model.has_ide() => {
@@ -2639,6 +2836,72 @@ mod tests {
 
     use super::{NoTracing, Pc9801Bus};
 
+    const GAINIT_WINDOW_BASE: u32 = 0xC0000;
+    const GAINIT_WINDOW_BLOCK_SIZE: u32 = 0x1000;
+    const GAINIT_WINDOW_BLOCK_COUNT: usize = 32;
+
+    fn gainit_window_block_occupied(
+        block_index: usize,
+        read_word: &mut impl FnMut(u32) -> u16,
+    ) -> bool {
+        let base = GAINIT_WINDOW_BASE + block_index as u32 * GAINIT_WINDOW_BLOCK_SIZE;
+        for offset in (0..GAINIT_WINDOW_BLOCK_SIZE).step_by(2) {
+            let address = base + offset;
+            if read_word(address) != 0xFFFF {
+                let mut stable = true;
+                for _ in 0..31 {
+                    if read_word(address) == 0xFFFF {
+                        stable = false;
+                        break;
+                    }
+                }
+                if stable {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn gainit_choose_window_segment(
+        required_blocks: usize,
+        mut read_word: impl FnMut(u32) -> u16,
+    ) -> Option<u16> {
+        assert!((1..=GAINIT_WINDOW_BLOCK_COUNT).contains(&required_blocks));
+        let last_candidate = GAINIT_WINDOW_BLOCK_COUNT - required_blocks;
+        let mut candidate_block = 0;
+
+        while candidate_block <= last_candidate {
+            let mut occupied = false;
+            for block in candidate_block..candidate_block + required_blocks {
+                if gainit_window_block_occupied(block, &mut read_word) {
+                    occupied = true;
+                    break;
+                }
+            }
+            if !occupied {
+                return Some(0xC000 + candidate_block as u16 * 0x0100);
+            }
+            candidate_block += 4;
+        }
+
+        None
+    }
+
+    fn gainit_choose_window_from_occupancy(
+        occupied_blocks: &[bool; GAINIT_WINDOW_BLOCK_COUNT],
+        required_blocks: usize,
+    ) -> Option<u16> {
+        gainit_choose_window_segment(required_blocks, |address| {
+            let block = ((address - GAINIT_WINDOW_BASE) / GAINIT_WINDOW_BLOCK_SIZE) as usize;
+            if occupied_blocks[block] {
+                0x0000
+            } else {
+                0xFFFF
+            }
+        })
+    }
+
     fn compose_halfwidth_font_address(
         video_mode: u8,
         attr_byte: u8,
@@ -2663,6 +2926,82 @@ mod tests {
             }
             font_base
         }
+    }
+
+    #[test]
+    fn gainit_window_probe_selects_c000_on_clean_bus() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+
+        assert_eq!(
+            gainit_choose_window_segment(4, |address| bus.read_word(address)),
+            Some(0xC000),
+            "A clean expansion-ROM gap should let default GAINIT choose C000h"
+        );
+    }
+
+    #[test]
+    fn gainit_window_probe_skips_occupied_16k_candidate() {
+        let mut occupied_blocks = [false; GAINIT_WINDOW_BLOCK_COUNT];
+        occupied_blocks[..4].fill(true);
+
+        assert_eq!(
+            gainit_choose_window_from_occupancy(&occupied_blocks, 4),
+            Some(0xC400),
+            "GAINIT must skip the first 16 KB slot when any block in it is busy"
+        );
+    }
+
+    #[test]
+    fn gainit_window_probe_requires_contiguous_blocks_for_large_windows() {
+        let mut occupied_blocks = [false; GAINIT_WINDOW_BLOCK_COUNT];
+        occupied_blocks[8] = true;
+
+        assert_eq!(
+            gainit_choose_window_from_occupancy(&occupied_blocks, 16),
+            Some(0xCC00),
+            "Larger windows need one uninterrupted run of free 4 KB blocks"
+        );
+    }
+
+    #[test]
+    fn gainit_window_probe_returns_none_when_all_blocks_are_occupied() {
+        let occupied_blocks = [true; GAINIT_WINDOW_BLOCK_COUNT];
+
+        assert_eq!(
+            gainit_choose_window_from_occupancy(&occupied_blocks, 4),
+            None,
+            "If no candidate range is free, GAINIT should fail instead of guessing"
+        );
+    }
+
+    #[test]
+    fn gainit_window_probe_treats_ems_page_frame_as_occupied() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+        bus.memory.enable_ems_page_frame();
+
+        assert_eq!(
+            gainit_choose_window_segment(4, |address| bus.read_word(address)),
+            Some(0xD000),
+            "EMS page-frame RAM must block C000h-CFFFFh from being reused by GA."
+        );
+    }
+
+    #[test]
+    fn gainit_window_probe_treats_umb_region_as_occupied_for_128k_window() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
+
+        assert_eq!(
+            gainit_choose_window_segment(32, |address| bus.read_word(address)),
+            Some(0xC000)
+        );
+
+        bus.memory.enable_umb_region();
+
+        assert_eq!(
+            gainit_choose_window_segment(32, |address| bus.read_word(address)),
+            None,
+            "A 128 KB GA window cannot fit once UMB occupies D0000h-DFFFFh"
+        );
     }
 
     #[test]

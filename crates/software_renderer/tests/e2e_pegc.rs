@@ -32,10 +32,9 @@ fn run_mode(mode: u8) -> (Vec<u8>, u32) {
     );
 
     let framebuffer = machine.bus.display_framebuffer().to_vec();
-    let height = machine.bus.display_native_height();
-    assert_eq!(
-        framebuffer.len(),
-        (FB_WIDTH * FB_HEIGHT_MAX * 4) as usize,
+    let (_, height) = machine.bus.display_dimensions();
+    assert!(
+        framebuffer.len() >= (FB_WIDTH * FB_HEIGHT_MAX * 4) as usize,
         "unexpected framebuffer length for mode {mode}",
     );
     (framebuffer, height)

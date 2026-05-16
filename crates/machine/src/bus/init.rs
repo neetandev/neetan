@@ -206,6 +206,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             soundboard_26k: None,
             soundboard_86: None,
             sound_blaster_16: None,
+            ga1280a: None,
             beeper: Beeper::new(machine_model.beeper_kind(), clocks.pit_clock_hz),
             rtc: Upd4990aRtc::new(),
             host_local_time_fn: default_local_time,
@@ -232,7 +233,8 @@ impl<T: Tracing> Pc9801Bus<T> {
             // `load_font_rom` (or first VSYNC after CG-RAM dirties) will
             // refresh the renderer's copy.
             software_renderer: Box::new(SoftwareRenderer::new(&[])),
-            last_native_height: 400,
+            display_width: SoftwareRenderer::WIDTH as u32,
+            display_height: 400,
             dma_access_ctrl: match machine_model {
                 MachineModel::PC9801F | MachineModel::PC9801VM | MachineModel::PC9801VX => {
                     DMA_ACCESS_CTRL_20BIT

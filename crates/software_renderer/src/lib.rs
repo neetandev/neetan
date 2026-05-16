@@ -10,7 +10,12 @@ use std::{
 };
 
 mod compose;
+mod ga1280a;
 mod text_normalizer;
+
+pub use ga1280a::{
+    Ga1280aCursorRenderInputs, Ga1280aRenderInputs, Ga1280aRenderMode, compose as compose_ga1280a,
+};
 
 /// Total byte size of the PC-98 text VRAM image (16 KiB).
 ///
@@ -23,6 +28,17 @@ pub const TEXT_VRAM_BYTES: usize = 0x4000;
 const TEXT_CELL_COUNT: usize = 4096;
 
 const FONT_ROM_BUFFER_SIZE: usize = 0x83000;
+
+/// Maximum framebuffer width supported by the renderer, in pixels. Covers the
+/// GA-1280A maximum visible width.
+pub const MAX_FRAMEBUFFER_WIDTH: usize = 1600;
+/// Maximum framebuffer height supported by the renderer, in pixels. Covers the
+/// GA-1280A maximum visible height.
+pub const MAX_FRAMEBUFFER_HEIGHT: usize = 1024;
+/// Maximum framebuffer pixel count supported by the renderer.
+pub const MAX_FRAMEBUFFER_PIXELS: usize = MAX_FRAMEBUFFER_WIDTH * MAX_FRAMEBUFFER_HEIGHT;
+/// Maximum framebuffer byte size supported by the renderer.
+pub const MAX_FRAMEBUFFER_BYTES: usize = MAX_FRAMEBUFFER_PIXELS * 4;
 
 /// CPU-side renderer for the PC-98 display compose pass.
 pub struct SoftwareRenderer {
@@ -151,18 +167,18 @@ impl SoftwareRenderer {
     pub const WIDTH: usize = 640;
     /// Native compose-pass output height in pixels.
     pub const HEIGHT: usize = 480;
-    /// Number of pixels in the framebuffer.
+    /// Number of pixels covered by the active PC-98 GDC/PEGC display area.
     pub const PIXEL_COUNT: usize = Self::WIDTH * Self::HEIGHT;
     /// Bytes per pixel (`R, G, B, A`).
     pub const PIXEL_BYTES: usize = 4;
-    /// Total framebuffer byte size.
+    /// Byte size covered by the active PC-98 GDC/PEGC display area.
     pub const FRAMEBUFFER_BYTES: usize = Self::PIXEL_COUNT * Self::PIXEL_BYTES;
 
     /// Creates a new renderer with a copy of the supplied font ROM data.
     pub fn new(font_rom_data: &[u8]) -> Self {
         let mut font_rom = vec![0u8; FONT_ROM_BUFFER_SIZE].into_boxed_slice();
         copy_font_rom(&mut font_rom, font_rom_data);
-        let framebuffer = vec![0u8; Self::FRAMEBUFFER_BYTES].into_boxed_slice();
+        let framebuffer = vec![0u8; MAX_FRAMEBUFFER_BYTES].into_boxed_slice();
         let text_cells: Box<[u32; TEXT_CELL_COUNT]> = vec![0u32; TEXT_CELL_COUNT]
             .into_boxed_slice()
             .try_into()
@@ -216,8 +232,17 @@ impl SoftwareRenderer {
     }
 
     /// Returns the internal framebuffer as packed `R, G, B, A` bytes (little-endian per pixel).
+    ///
+    /// The buffer is sized to `MAX_FRAMEBUFFER_BYTES`. Callers that have just
+    /// rendered into a subregion should slice it to `width * height * 4`.
     pub fn framebuffer(&self) -> &[u8] {
         &self.state.framebuffer
+    }
+
+    /// Mutable access to the internal framebuffer, for compositors that write
+    /// into it directly (such as [`compose_ga1280a`]).
+    pub fn framebuffer_mut(&mut self) -> &mut [u8] {
+        &mut self.state.framebuffer
     }
 
     /// Computes the active display height (400, or up to 480 for PEGC 480-line mode).
@@ -233,20 +258,27 @@ impl SoftwareRenderer {
         }
     }
 
-    /// Writes a 640x480 framebuffer to a binary PPM (P6) file.
-    pub fn write_ppm(path: impl AsRef<Path>, framebuffer: &[u8]) -> io::Result<()> {
-        if framebuffer.len() != Self::FRAMEBUFFER_BYTES {
+    /// Writes the top-left `width * height` region of a packed RGBA framebuffer
+    /// to a binary PPM (P6) file.
+    pub fn write_ppm(
+        path: impl AsRef<Path>,
+        framebuffer: &[u8],
+        width: u32,
+        height: u32,
+    ) -> io::Result<()> {
+        let required = (width as usize) * (height as usize) * Self::PIXEL_BYTES;
+        if framebuffer.len() < required {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "software renderer PPM output requires exactly 640x480 RGBA bytes",
+                "software renderer PPM output framebuffer is smaller than the requested region",
             ));
         }
 
         let file = File::create(path)?;
         let mut writer = BufWriter::new(file);
-        writer.write_all(b"P6\n640 480\n255\n")?;
+        writeln!(writer, "P6\n{} {}\n255", width, height)?;
 
-        for chunk in framebuffer.chunks_exact(Self::PIXEL_BYTES) {
+        for chunk in framebuffer[..required].chunks_exact(Self::PIXEL_BYTES) {
             writer.write_all(&chunk[0..3])?;
         }
 
@@ -254,7 +286,7 @@ impl SoftwareRenderer {
     }
 }
 
-fn detect_simd() -> bool {
+pub(crate) fn detect_simd() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
         is_x86_feature_detected!("avx2")

@@ -250,17 +250,18 @@ fn select_graphics_backend(
     config: &EmulatorConfig,
     window: &mut Window,
 ) -> Result<(Box<dyn GraphicsEngine>, Backend)> {
+    let ga_enabled = config.graphicboard != config::GraphicboardType::None;
     match config.backend {
         Backend::Legacy => {
             info!("Using legacy backend");
-            let mut engine = LegacySdlBackend::new(aspect_mode);
+            let mut engine = LegacySdlBackend::new(aspect_mode, ga_enabled);
             engine
                 .on_resume(window, true)
                 .context("Failed to initialize legacy SDL backend")?;
             Ok((Box::new(engine), Backend::Legacy))
         }
         Backend::Modern => {
-            let modern_result = ModernSdlGpuBackend::new(aspect_mode)
+            let modern_result = ModernSdlGpuBackend::new(aspect_mode, ga_enabled)
                 .and_then(|mut engine| engine.on_resume(window, true).map(|()| engine));
 
             match modern_result {
@@ -270,7 +271,7 @@ fn select_graphics_backend(
                 }
                 Err(error) => {
                     warn!("Modern backend unavailable, falling back to legacy backend: {error:#}");
-                    let mut legacy = LegacySdlBackend::new(aspect_mode);
+                    let mut legacy = LegacySdlBackend::new(aspect_mode, ga_enabled);
                     legacy
                         .on_resume(window, true)
                         .context("Failed to initialize legacy backend after fallback")?;
@@ -851,30 +852,31 @@ impl Application {
     }
 
     fn render_frame(&mut self, window: &Window) -> Result<()> {
-        let (framebuffer, native_height) = if let Some(ref mut selector) = self.image_selector {
+        let render_instructions = if let Some(ref mut selector) = self.image_selector {
             let (entries, loaded_index) = match selector.media_type() {
                 MediaType::Floppy(0) => (&self.fdd1_entries, self.fdd1_index),
                 MediaType::Floppy(_) => (&self.fdd2_entries, self.fdd2_index),
                 MediaType::CdRom => (&self.cdrom_entries, self.cdrom_index),
             };
             selector.ensure_render(entries, loaded_index);
-            (selector.framebuffer(), 400u32)
+            RenderInstructions {
+                framebuffer: selector.framebuffer(),
+                width: 640,
+                height: 400,
+                crt: self.crt_enabled,
+            }
         } else {
-            (
-                self.machine.display_framebuffer(),
-                self.machine.display_native_height(),
-            )
+            let (width, height) = self.machine.display_dimensions();
+            RenderInstructions {
+                framebuffer: self.machine.display_framebuffer(),
+                width,
+                height,
+                crt: self.crt_enabled,
+            }
         };
 
         self.graphics_engine
-            .render_frame(
-                window,
-                Some(&RenderInstructions {
-                    framebuffer,
-                    native_height,
-                    crt: self.crt_enabled,
-                }),
-            )
+            .render_frame(window, Some(&render_instructions))
             .context("Graphics engine failed to render frame")?;
 
         Ok(())
@@ -1004,6 +1006,14 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
             const BUILTIN_FONT_ROM: &[u8] = include_bytes!("../utils/font/font.rom");
             info!("Using built-in font ROM ({} bytes)", BUILTIN_FONT_ROM.len());
             bus.load_font_rom(BUILTIN_FONT_ROM);
+        }
+    }
+
+    match config.graphicboard {
+        config::GraphicboardType::None => {}
+        config::GraphicboardType::Ga1280a => {
+            bus.install_ga1280a();
+            info!("Installed I-O DATA GA-1280A graphics accelerator");
         }
     }
 

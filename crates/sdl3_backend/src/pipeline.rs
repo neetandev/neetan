@@ -28,27 +28,30 @@ pub(crate) enum ScaleMode {
 pub(crate) struct PresentUniforms {
     output_size: [f32; 2],
     source_size: [f32; 2],
-    content_height: f32,
+    source_used_size: [f32; 2],
+    source_max_size: [f32; 2],
     scale_mode: u32,
     is_srgb_swapchain: u32,
-    padding: u32,
+    padding: [u32; 2],
 }
 
 impl PresentUniforms {
     pub(crate) fn new(
         output_size: (u32, u32),
         source_size: [f32; 2],
-        content_height: u32,
+        source_used_size: [f32; 2],
+        source_max_size: [f32; 2],
         scale_mode: ScaleMode,
         is_srgb_swapchain: bool,
     ) -> Self {
         Self {
             output_size: [output_size.0 as f32, output_size.1 as f32],
             source_size,
-            content_height: content_height as f32,
+            source_used_size,
+            source_max_size,
             scale_mode: scale_mode as u32,
             is_srgb_swapchain: u32::from(is_srgb_swapchain),
-            padding: 0,
+            padding: [0; 2],
         }
     }
 
