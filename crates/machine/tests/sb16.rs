@@ -14,6 +14,11 @@ const SB16_DSP_READ: u16 = 0x2AD2; // base + 0x2A00
 const SB16_DSP_WRITE: u16 = 0x2CD2; // base + 0x2C00
 const SB16_MIXER_ADDR: u16 = 0x24D2; // base + 0x2400
 const SB16_MIXER_DATA: u16 = 0x25D2; // base + 0x2500
+const SB16_OPL3_BANK0_STATUS: u16 = 0x20D2; // base + 0x2000
+const SB16_OPL3_BANK1_STATUS: u16 = 0x22D2; // base + 0x2200
+const SB16_OPL3_BANK1_DATA: u16 = 0x23D2; // base + 0x2300 (write-only)
+const SB16_OPL3_BANK0_PROBE_PARTNER: u16 = 0x21D1; // misaligned probe partner of bank-0 data
+const SB16_OPL3_BANK1_PROBE_PARTNER: u16 = 0x23D1; // misaligned probe partner of bank-1 data
 
 // DMA channel 3 I/O ports (PC-98)
 const DMA_CH3_ADDR: u16 = 0x0D;
@@ -987,4 +992,37 @@ fn sb16_16bit_recording_dma_writes_silence_to_ram() {
         zero_count, byte_count,
         "Expected all {byte_count} bytes to be 0x00 (16-bit signed silence), got {zero_count}"
     );
+}
+
+#[test]
+fn sb16_opl3_bank1_status_read_mirrors_bank0() {
+    let mut bus = setup_sb16_bus();
+    let bank0 = bus.io_read_byte(SB16_OPL3_BANK0_STATUS);
+    let bank1 = bus.io_read_byte(SB16_OPL3_BANK1_STATUS);
+    assert_eq!(bank0, bank1);
+}
+
+#[test]
+fn sb16_opl3_bank1_data_read_returns_open_bus() {
+    let mut bus = setup_sb16_bus();
+    assert_eq!(bus.io_read_byte(SB16_OPL3_BANK1_DATA), 0xFF);
+}
+
+#[test]
+fn sb16_opl3_bank1_status_read_without_sb16_returns_open_bus() {
+    let mut bus =
+        Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, OUTPUT_SAMPLE_RATE);
+    assert_eq!(bus.io_read_byte(SB16_OPL3_BANK1_STATUS), 0xFF);
+}
+
+#[test]
+fn sb16_opl3_bank0_misaligned_word_probe_reads_open_bus() {
+    let mut bus = setup_sb16_bus();
+    assert_eq!(bus.io_read_word(SB16_OPL3_BANK0_PROBE_PARTNER), 0xFFFF);
+}
+
+#[test]
+fn sb16_opl3_bank1_misaligned_word_probe_reads_open_bus() {
+    let mut bus = setup_sb16_bus();
+    assert_eq!(bus.io_read_word(SB16_OPL3_BANK1_PROBE_PARTNER), 0xFFFF);
 }

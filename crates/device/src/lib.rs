@@ -16,6 +16,7 @@ pub mod egc;
 pub mod fdd320_ppi;
 pub mod fdd640k_hle;
 pub mod floppy;
+pub mod ga1280a;
 pub mod grcg;
 pub mod i8237_dma;
 pub mod i8251_keyboard;

@@ -13,17 +13,26 @@ use sdl3::{
 
 use crate::{
     DisplayAspectMode, Error, GraphicsEngine, PC98_NATIVE_HEIGHT, PC98_NATIVE_WIDTH,
-    RenderInstructions, Result, Scaling, compute_color_target_extent,
+    RenderInstructions, Result, Scaling,
     device::{DeviceResources, create as create_device_resources},
-    pipeline,
+    native_target_size, pipeline,
     pipeline::{PresentUniforms, ScaleMode},
 };
 
 /// SDL3 GPU API rendering backend.
 pub struct ModernSdlGpuBackend {
     aspect_mode: DisplayAspectMode,
+    ga_enabled: bool,
     scaling: Scaling,
     state: Option<RenderState>,
+}
+
+struct FrameSource<'a> {
+    framebuffer: &'a [u8],
+    width: u32,
+    height: u32,
+    source_size: [f32; 2],
+    crt: bool,
 }
 
 /// Resources owned only between `on_resume` and `on_destroy_surface`.
@@ -52,7 +61,7 @@ impl ModernSdlGpuBackend {
     ///
     /// Fails if the linked SDL3 library is older than 3.2.0, since the GPU
     /// API was only introduced with 3.2.0.
-    pub fn new(aspect_mode: DisplayAspectMode) -> Result<Self> {
+    pub fn new(aspect_mode: DisplayAspectMode, ga_enabled: bool) -> Result<Self> {
         let (major, minor, patch) = sdl_version();
         if (major, minor) < (3, 2) {
             return Err(Error::Message(common::StringError(format!(
@@ -62,6 +71,7 @@ impl ModernSdlGpuBackend {
 
         Ok(Self {
             aspect_mode,
+            ga_enabled,
             scaling: Scaling::Pixelart,
             state: None,
         })
@@ -85,7 +95,7 @@ impl GraphicsEngine for ModernSdlGpuBackend {
             return Ok(());
         }
 
-        let resources = create_device_resources(window, vsync_enabled)?;
+        let resources = create_device_resources(window, vsync_enabled, self.ga_enabled)?;
         let pipeline = pipeline::build(&resources.device, resources.swapchain_format)?;
         let swapchain_is_srgb =
             resources.swapchain_composition == SDL_GPUSwapchainComposition::SDR_LINEAR;
@@ -113,6 +123,9 @@ impl GraphicsEngine for ModernSdlGpuBackend {
         window: &Window,
         render_instructions: Option<&RenderInstructions>,
     ) -> Result<()> {
+        let frame_source = render_instructions
+            .map(|instructions| self.frame_source(instructions))
+            .transpose()?;
         let state = self
             .state
             .as_mut()
@@ -149,23 +162,28 @@ impl GraphicsEngine for ModernSdlGpuBackend {
             return Ok(());
         }
 
-        let native_height = render_instructions
-            .map(|instr| instr.native_height.min(PC98_NATIVE_HEIGHT))
-            .unwrap_or(PC98_NATIVE_HEIGHT);
-        let crt_enabled = render_instructions.map(|instr| instr.crt).unwrap_or(false);
+        let source_size = frame_source.as_ref().map_or(
+            self.aspect_mode
+                .source_size(PC98_NATIVE_WIDTH, PC98_NATIVE_HEIGHT),
+            |source| source.source_size,
+        );
+        let source_used_size = frame_source.as_ref().map_or(
+            [PC98_NATIVE_WIDTH as f32, PC98_NATIVE_HEIGHT as f32],
+            |source| [source.width as f32, source.height as f32],
+        );
+        let crt_enabled = frame_source.as_ref().is_some_and(|source| source.crt);
 
-        if let Some(instructions) = render_instructions {
-            upload_framebuffer(state, &mut command_buffer, instructions)?;
+        if let Some(source) = frame_source.as_ref() {
+            upload_framebuffer(state, &mut command_buffer, source)?;
         }
 
-        let aspect_ratio = self.aspect_mode.display_aspect_ratio();
-        let (fitted_width, fitted_height) =
-            compute_color_target_extent(output_width, output_height, aspect_ratio);
+        let (max_width, max_height) = native_target_size(self.ga_enabled);
         let scale_mode = scale_mode_for(self.scaling, crt_enabled);
         let uniforms = PresentUniforms::new(
             (output_width, output_height),
-            [fitted_width as f32, fitted_height as f32],
-            native_height,
+            source_size,
+            source_used_size,
+            [max_width as f32, max_height as f32],
             scale_mode,
             state.swapchain_is_srgb,
         );
@@ -199,7 +217,6 @@ impl GraphicsEngine for ModernSdlGpuBackend {
             ];
             render_pass.bind_fragment_samplers(0, &bindings);
             render_pass.draw_primitives(3, 1, 0, 0);
-            // render_pass Drop calls SDL_EndGPURenderPass here.
         }
 
         command_buffer
@@ -214,13 +231,34 @@ impl GraphicsEngine for ModernSdlGpuBackend {
     }
 }
 
+impl ModernSdlGpuBackend {
+    fn frame_source<'a>(&self, instructions: &'a RenderInstructions) -> Result<FrameSource<'a>> {
+        let width = instructions.width.max(1);
+        let height = instructions.height.max(1);
+        let (max_width, max_height) = native_target_size(self.ga_enabled);
+        if width > max_width || height > max_height {
+            return Err(Error::Message(common::StringError(format!(
+                "Frame {width}x{height} exceeds backend target {max_width}x{max_height}"
+            ))));
+        }
+        let source_size = self.aspect_mode.source_size(width, height);
+        Ok(FrameSource {
+            framebuffer: instructions.framebuffer,
+            width,
+            height,
+            source_size,
+            crt: instructions.crt,
+        })
+    }
+}
+
 fn upload_framebuffer(
     state: &RenderState,
     command_buffer: &mut sdl3::gpu::GpuCommandBuffer,
-    instructions: &RenderInstructions,
+    source_frame: &FrameSource,
 ) -> Result<()> {
-    let expected_bytes = (PC98_NATIVE_WIDTH * PC98_NATIVE_HEIGHT * 4) as usize;
-    assert_eq!(instructions.framebuffer.len(), expected_bytes);
+    let expected_bytes = (source_frame.width * source_frame.height * 4) as usize;
+    assert!(source_frame.framebuffer.len() >= expected_bytes);
 
     // Map the staging buffer, copy framebuffer bytes, unmap.
     let ptr = state
@@ -229,10 +267,10 @@ fn upload_framebuffer(
         .map_transfer_buffer(&state.resources.transfer_buffer, true)
         .context("SDL_MapGPUTransferBuffer failed")?;
     // Safety: ptr points to at least expected_bytes of writable memory inside
-    // a transfer buffer of size PC98_FRAMEBUFFER_BYTES; framebuffer slice is
-    // exactly expected_bytes long.
+    // a transfer buffer sized for the largest configured target; framebuffer
+    // slice covers at least expected_bytes from its start.
     unsafe {
-        std::ptr::copy_nonoverlapping(instructions.framebuffer.as_ptr(), ptr, expected_bytes);
+        std::ptr::copy_nonoverlapping(source_frame.framebuffer.as_ptr(), ptr, expected_bytes);
     }
     state
         .resources
@@ -242,8 +280,8 @@ fn upload_framebuffer(
     let source = TextureTransferInfo {
         transfer_buffer: &state.resources.transfer_buffer,
         offset: 0,
-        pixels_per_row: PC98_NATIVE_WIDTH,
-        rows_per_layer: PC98_NATIVE_HEIGHT,
+        pixels_per_row: source_frame.width,
+        rows_per_layer: source_frame.height,
     };
     let destination = TextureRegion {
         texture: &state.resources.native_target,
@@ -252,8 +290,8 @@ fn upload_framebuffer(
         x: 0,
         y: 0,
         z: 0,
-        w: PC98_NATIVE_WIDTH,
-        h: PC98_NATIVE_HEIGHT,
+        w: source_frame.width,
+        h: source_frame.height,
         d: 1,
     };
 

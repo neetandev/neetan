@@ -64,6 +64,7 @@ neetan <COMMAND>
 | `--bios-rom <PATH>`          | Path to BIOS ROM file                                                               | HLE BIOS   |
 | `--font-rom <PATH>`          | Path to font ROM file                                                               | Built-in   |
 | `--soundboard <TYPE>`        | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`                | `86+26k`   |
+| `--graphicboard <TYPE>`      | Graphics accelerator board: `none`, `ga1280a`                                       | `none`     |
 | `--midi <DEVICE>`            | MIDI device: `none`, `mt32`, `sc55`                                                 | `none`     |
 | `--mt32-roms <PATH>`         | Path to MT-32 ROM directory (requires `mt32` feature)                               | -          |
 | `--sc55-roms <PATH>`         | Path to SC-55 ROM directory (requires `sc55` feature)                               | -          |
@@ -263,6 +264,22 @@ cargo build --release --no-default-features --features sc55       # SC-55 only
 
 When built without a feature, the corresponding `--midi` option is still accepted but the
 emulator will print a warning and continue without audio for that module.
+
+### Graphic acceleration board
+
+neetan can emulate the I-O DATA GA-1280A graphics accelerator board, the
+high-end variant to the GA-1024A. All GA-1024A software is compatible with the
+GA-1280A.
+
+The board is primarily useful for Windows 3.1, where it unlocks higher
+resolutions than the stock EGC/PEGC video paths (up to 1600x1024 pixel).
+
+Enable it on the CLI with `--graphicboard ga1280a`, or in a configuration file
+with `graphicboard = ga1280a`. The default is `none`.
+
+Official I-O DATA drivers for MS-DOS, Windows 3.1, and Windows 95 are still
+available from the manufacturer:
+<https://www.iodata.jp/lib/software/g/106.htm#MS-DOS>
 
 ### MT-32 ROM files
 

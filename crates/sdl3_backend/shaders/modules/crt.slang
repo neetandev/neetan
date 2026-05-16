@@ -9,7 +9,6 @@ module crt;
 //   - Per-channel brightness-adaptive scanlines.
 //   - Luminance-adaptive dot-triad black-matrix phosphor mask.
 
-static const float2 NATIVE_TEXTURE_SIZE = float2(640.0, 480.0);
 static const float PI = 3.14159265359;
 
 // Horizontal Lanczos2 sharpness: 0.0 = pure sinc interpolation, 1.0 = hard pixel edges.
@@ -60,8 +59,8 @@ func phosphor_saturate(color: float3, knee: float) -> float3 {
 }
 
 [ForceInline]
-func source_domain_to_backing_uv(uv: float2, source_size: float2) -> float2 {
-    return uv * (source_size / NATIVE_TEXTURE_SIZE);
+func source_domain_to_backing_uv(uv: float2, source_size: float2, backing_size: float2) -> float2 {
+    return uv * (source_size / backing_size);
 }
 
 [ForceInline]
@@ -69,7 +68,8 @@ func fetch(
     source: Sampler2D,
     pos: float2,
     offset: float2,
-    source_size: float2
+    source_size: float2,
+    backing_size: float2
 ) -> float3 {
     let source_pixel = floor(pos * source_size + offset);
     if (any(source_pixel < float2(0.0)) || any(source_pixel >= source_size)) {
@@ -77,7 +77,7 @@ func fetch(
     }
 
     let sample_uv = (source_pixel + float2(0.5)) / source_size;
-    let backing_uv = source_domain_to_backing_uv(sample_uv, source_size);
+    let backing_uv = source_domain_to_backing_uv(sample_uv, source_size, backing_size);
     return source.SampleLevel(backing_uv, 0.0).xyz;
 }
 
@@ -105,7 +105,8 @@ func horizontal_lanczos(
     source: Sampler2D,
     pos: float2,
     offset: float,
-    source_size: float2
+    source_size: float2,
+    backing_size: float2
 ) -> float3 {
     // Shift to texel-centered coordinates so the base texel is always to the
     // left of the sample point, giving a stable fractional distance in [0, 1).
@@ -113,10 +114,10 @@ func horizontal_lanczos(
     let shift = (f < 0.5) ? -1.0 : 0.0;
     let d = f - 0.5 - shift;
 
-    let s0 = fetch(source, pos, float2(shift - 1.0, offset), source_size);
-    let s1 = fetch(source, pos, float2(shift, offset), source_size);
-    let s2 = fetch(source, pos, float2(shift + 1.0, offset), source_size);
-    let s3 = fetch(source, pos, float2(shift + 2.0, offset), source_size);
+    let s0 = fetch(source, pos, float2(shift - 1.0, offset), source_size, backing_size);
+    let s1 = fetch(source, pos, float2(shift, offset), source_size, backing_size);
+    let s2 = fetch(source, pos, float2(shift + 1.0, offset), source_size, backing_size);
+    let s3 = fetch(source, pos, float2(shift + 2.0, offset), source_size, backing_size);
 
     let curve_d = curve_distance(d, HORIZONTAL_SHARPNESS);
 
@@ -142,11 +143,12 @@ func horizontal_3tap(
     source: Sampler2D,
     pos: float2,
     offset: float,
-    source_size: float2
+    source_size: float2,
+    backing_size: float2
 ) -> float3 {
-    let s0 = fetch(source, pos, float2(-1.0, offset), source_size);
-    let s1 = fetch(source, pos, float2( 0.0, offset), source_size);
-    let s2 = fetch(source, pos, float2( 1.0, offset), source_size);
+    let s0 = fetch(source, pos, float2(-1.0, offset), source_size, backing_size);
+    let s1 = fetch(source, pos, float2( 0.0, offset), source_size, backing_size);
+    let s2 = fetch(source, pos, float2( 1.0, offset), source_size, backing_size);
 
     let dst = distance_to_nearest_texel(pos, source_size).x;
 
@@ -176,11 +178,12 @@ func scan_weight(pos: float2, offset: float, color: float3, source_size: float2)
 func tri(
     source: Sampler2D,
     pos: float2,
-    source_size: float2
+    source_size: float2,
+    backing_size: float2
 ) -> float3 {
-    let raw_a = horizontal_3tap(source, pos, -1.0, source_size);
-    let raw_b = horizontal_lanczos(source, pos, 0.0, source_size);
-    let raw_c = horizontal_3tap(source, pos, 1.0, source_size);
+    let raw_a = horizontal_3tap(source, pos, -1.0, source_size, backing_size);
+    let raw_b = horizontal_lanczos(source, pos, 0.0, source_size, backing_size);
+    let raw_c = horizontal_3tap(source, pos, 1.0, source_size, backing_size);
 
     // Luminance-dependent bright boost applied before scanlines: dark pixels
     // get more boost because scanlines remove proportionally more of their energy.
@@ -264,10 +267,11 @@ public func sample_crt_pixel(
     source: Sampler2D,
     region_uv: float2,
     source_size: float2,
-    output_size: float2
+    output_size: float2,
+    backing_size: float2
 ) -> float3 {
     // Per-channel beam blur + brightness-adaptive scanlines.
-    var color = tri(source, region_uv, source_size);
+    var color = tri(source, region_uv, source_size, backing_size);
 
     // Luminance-adaptive dot-triad black-matrix mask in output pixel space.
     // Scale triad width by the output-to-source ratio so the number of triads

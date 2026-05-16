@@ -1,4 +1,5 @@
 use common::{EventKind, debug, warn};
+use device::ga1280a::is_ga1280a_port;
 
 use crate::{
     Pc9801Bus, Tracing,
@@ -28,7 +29,26 @@ impl<T: Tracing> Pc9801Bus<T> {
     pub(super) fn io_read_byte_impl(&mut self, port: u16) -> u8 {
         self.pending_wait_cycles += IO_WAIT_CYCLES;
         self.tracer.set_cycle(self.current_cycle);
+        if is_ga1280a_port(port) {
+            self.pending_wait_cycles += self.cbus_wait_cycles();
+            let value = self
+                .ga1280a
+                .as_mut()
+                .and_then(|ga| ga.try_handle_io_read_byte(port))
+                .unwrap_or(0xFF);
+            self.tracer.trace_io_read(port, value);
+            return value;
+        }
         let value = match port {
+            // GAINIT probes the seven alternative GA SW1 base addresses
+            // (xxD0/D4/DC/E0/E4/E8/EC + 1) at selector 0x1D to detect a board
+            // at a non-factory port. Our GA is hard-wired to the factory base
+            // (xxD8h), so these probes must read back as open bus.
+            0x1DD1 | 0x1DD5 | 0x1DDD | 0x1DE1 | 0x1DE5 | 0x1DE9 | 0x1DED => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                0xFF
+            }
+
             // PIC
             0x00 | 0x08 => self.pic.read_port0(((port >> 3) & 1) as usize),
             0x02 | 0x0A => self.pic.read_port2(((port >> 3) & 1) as usize),
@@ -743,6 +763,32 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             // Sound Blaster 16 OPL3 data ports (base+0x2100, base+0x2900) - write-only.
             0x21D2 | 0x29D2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                0xFF
+            }
+            // Sound Blaster 16 OPL3 bank-1 address write / status read (base+0x2200).
+            // YMF262 has a single status register accessible from either bank, so
+            // mirror the bank-0 status read.
+            0x22D2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref mut sb16) = self.sound_blaster_16 {
+                    let v = sb16.read_opl3_status(self.current_cycle);
+                    self.process_soundboard_sb16_actions();
+                    v
+                } else {
+                    0xFF
+                }
+            }
+            // Sound Blaster 16 OPL3 bank-1 data write (base+0x2300) - write-only.
+            0x23D2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                0xFF
+            }
+            // Misaligned IN AX, DX issued by SimCity 2000's OPL3 probe at the
+            // low byte adjacent to the bank-0 / bank-1 data write ports; the
+            // high byte hits 0x21D2 / 0x23D2 above. Return open bus without
+            // warning.
+            0x21D1 | 0x23D1 => {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
                 0xFF
             }

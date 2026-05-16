@@ -270,8 +270,8 @@ impl<T: Tracing> common::Machine for Machine<cpu::VX0, T> {
         self.bus.display_framebuffer()
     }
 
-    fn display_native_height(&self) -> u32 {
-        self.bus.display_native_height()
+    fn display_dimensions(&self) -> (u32, u32) {
+        self.bus.display_dimensions()
     }
 
     fn push_keyboard_scancode(&mut self, code: u8) {
@@ -348,8 +348,8 @@ impl<T: Tracing> common::Machine for Machine<cpu::I286, T> {
         self.bus.display_framebuffer()
     }
 
-    fn display_native_height(&self) -> u32 {
-        self.bus.display_native_height()
+    fn display_dimensions(&self) -> (u32, u32) {
+        self.bus.display_dimensions()
     }
 
     fn push_keyboard_scancode(&mut self, code: u8) {
@@ -426,8 +426,8 @@ impl<const CPU_MODEL: u8, T: Tracing> common::Machine for Machine<cpu::I386<CPU_
         self.bus.display_framebuffer()
     }
 
-    fn display_native_height(&self) -> u32 {
-        self.bus.display_native_height()
+    fn display_dimensions(&self) -> (u32, u32) {
+        self.bus.display_dimensions()
     }
 
     fn push_keyboard_scancode(&mut self, code: u8) {
@@ -504,8 +504,8 @@ impl<T: Tracing> common::Machine for Machine<cpu::I8086, T> {
         self.bus.display_framebuffer()
     }
 
-    fn display_native_height(&self) -> u32 {
-        self.bus.display_native_height()
+    fn display_dimensions(&self) -> (u32, u32) {
+        self.bus.display_dimensions()
     }
 
     fn push_keyboard_scancode(&mut self, code: u8) {

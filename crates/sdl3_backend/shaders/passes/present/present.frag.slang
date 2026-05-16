@@ -8,14 +8,12 @@ import transform;
 struct PresentUniforms {
     float2 output_size;
     float2 source_size;
-    float content_height;
+    float2 source_used_size;
+    float2 source_max_size;
     uint scale_mode;
     uint is_srgb_swapchain;
-    uint padding;
+    uint2 padding;
 }
-
-static const float2 NATIVE_TEXTURE_SIZE = float2(640.0, 480.0);
-static const float2 NATIVE_TEXTURE_SIZE_INV = float2(1.0 / 640.0, 1.0 / 480.0);
 
 static const uint SCALE_MODE_NEAREST = 0;
 static const uint SCALE_MODE_BILINEAR = 1;
@@ -33,7 +31,9 @@ static const uint SCALE_MODE_CRT = 3;
 float4 fs_main(FullscreenVertex input) : SV_Target {
     let output_size = max(uniforms.output_size, float2(1.0, 1.0));
     let source_size = max(uniforms.source_size, float2(1.0, 1.0));
-    let content_height = max(uniforms.content_height, 1.0);
+    let source_used_size = max(uniforms.source_used_size, float2(1.0, 1.0));
+    let source_max_size = max(uniforms.source_max_size, float2(1.0, 1.0));
+    let source_max_size_inv = 1.0 / source_max_size;
 
     // Aspect-correct letterbox/pillarbox inside output_size.
     let source_aspect = source_size.x / source_size.y;
@@ -58,9 +58,9 @@ float4 fs_main(FullscreenVertex input) : SV_Target {
     // Region UV is [0, 1] over the visible letterbox area.
     let region_uv = local_pixel / rect_size;
 
-    // Texture UV maps the region into the top `content_height` rows of the
-    // 640x480 native target (the rest of the texture is unused / stale).
-    let tex_uv = float2(region_uv.x, region_uv.y * (content_height / NATIVE_TEXTURE_SIZE.y));
+    // Texture UV maps the visible source into the top-left area of the
+    // backing texture. Unused rows/columns may contain stale pixels.
+    let tex_uv = region_uv * (source_used_size / source_max_size);
 
     var rgb: float3;
 
@@ -72,15 +72,14 @@ float4 fs_main(FullscreenVertex input) : SV_Target {
         rgb = native_linear.SampleLevel(tex_uv, 0.0).xyz;
         break;
     case SCALE_MODE_PIXELART: {
-        let pixelart_uv = compute_pixelart_uv(tex_uv, NATIVE_TEXTURE_SIZE, NATIVE_TEXTURE_SIZE_INV);
+        let pixelart_uv = compute_pixelart_uv(tex_uv, source_max_size, source_max_size_inv);
         rgb = native_linear.SampleLevel(pixelart_uv, 0.0).xyz;
         break;
     }
     case SCALE_MODE_CRT: {
         // CRT module wants region UV (already 0..1 over the displayed area)
         // plus the source pixel dims and the actual displayed (letterbox) size.
-        let crt_source_size = float2(NATIVE_TEXTURE_SIZE.x, content_height);
-        rgb = sample_crt_pixel(native_linear, region_uv, crt_source_size, rect_size);
+        rgb = sample_crt_pixel(native_linear, region_uv, source_used_size, rect_size, source_max_size);
         break;
     }
     default:
