@@ -185,6 +185,44 @@ impl Pegc {
         self.state.mode_register = 0;
     }
 
+    fn reset_transfer_state_from_length(&mut self) {
+        self.state.remain = u32::from(self.state.block_length) + 1;
+        self.state.last_data_length = 0;
+    }
+
+    fn source_buffer_length(&self) -> usize {
+        self.state
+            .last_data_length
+            .clamp(0, self.state.last_vram_data.len() as i32) as usize
+    }
+
+    fn append_source_buffer(&mut self, index: usize, value: u8) {
+        let write_index = self.source_buffer_length() + index;
+        if write_index < self.state.last_vram_data.len() {
+            self.state.last_vram_data[write_index] = value;
+        }
+    }
+
+    fn finish_source_buffer_append(&mut self, pixels: u32) {
+        let length = self
+            .source_buffer_length()
+            .saturating_add(pixels as usize)
+            .min(self.state.last_vram_data.len());
+        self.state.last_data_length = length as i32;
+    }
+
+    fn consume_source_buffer(&mut self, pixels: usize) {
+        let length = self.source_buffer_length();
+        let consumed = pixels.min(length);
+        if consumed == 0 {
+            return;
+        }
+
+        self.state.last_vram_data.copy_within(consumed..length, 0);
+        self.state.last_vram_data[length - consumed..length].fill(0);
+        self.state.last_data_length = (length - consumed) as i32;
+    }
+
     /// Writes the 256-color palette index register (port 0xA8 in PEGC mode).
     pub fn write_palette_index(&mut self, value: u8) {
         self.state.palette_index = value;
@@ -335,6 +373,10 @@ impl Pegc {
             REG_PALETTE1 => self.state.palette_color_1 = value,
             REG_PALETTE2 => self.state.palette_color_2 = value,
             _ => {}
+        }
+
+        if offset < REG_PATTERN {
+            self.reset_transfer_state_from_length();
         }
     }
 
@@ -606,7 +648,6 @@ impl Pegc {
         };
 
         let mut result: u32 = 0;
-        self.state.last_data_length = 0;
 
         if !source_from_cpu {
             for i in 0u32..pixels {
@@ -622,7 +663,7 @@ impl Pegc {
                     result |= 1u32 << i;
                 }
 
-                self.state.last_vram_data[i as usize] = data;
+                self.append_source_buffer(i as usize, data);
 
                 if pattern_update {
                     for plane in 0..8u32 {
@@ -631,10 +672,7 @@ impl Pegc {
                     }
                 }
             }
-        }
-
-        if self.state.last_data_length < 32 {
-            self.state.last_data_length = (self.state.last_data_length + pixels as i32).min(32);
+            self.finish_source_buffer_append(pixels);
         }
 
         result
@@ -689,6 +727,8 @@ impl Pegc {
         }
         base_address &= PEGC_VRAM_SIZE as u32 - 1;
 
+        let source_buffer_length = self.source_buffer_length();
+
         for i in 0..data_length {
             let pixel_address = if shift_direction_decrement {
                 base_address.wrapping_sub(i as u32) & (PEGC_VRAM_SIZE as u32 - 1)
@@ -704,8 +744,14 @@ impl Pegc {
                     } else {
                         0x00
                     }
-                } else {
+                } else if (i as usize) < source_buffer_length {
                     self.state.last_vram_data[i as usize]
+                } else {
+                    self.state.remain -= 1;
+                    if self.state.remain == 0 {
+                        break;
+                    }
+                    continue;
                 };
 
                 let destination = vram[pixel_address as usize];
@@ -733,10 +779,10 @@ impl Pegc {
             }
         }
 
-        if self.state.last_data_length > pixels_signed {
-            self.state.last_data_length -= pixels_signed;
-        } else {
+        if source_from_cpu {
             self.state.last_data_length = 0;
+        } else {
+            self.consume_source_buffer(pixels as usize);
         }
     }
 
@@ -1189,15 +1235,15 @@ mod tests {
     }
 
     #[test]
-    fn mmio_register_write_does_not_reset_block_transfer() {
+    fn mmio_control_write_resets_block_transfer() {
         let mut pegc = Pegc::new();
         pegc.state.block_length = 99;
         pegc.state.remain = 42;
         pegc.state.last_data_length = 16;
 
         pegc.mmio_write_byte(MMIO2_BASE + REG_PLANE_ACCESS, 0xFF);
-        assert_eq!(pegc.state.remain, 42);
-        assert_eq!(pegc.state.last_data_length, 16);
+        assert_eq!(pegc.state.remain, 100);
+        assert_eq!(pegc.state.last_data_length, 0);
     }
 
     #[test]
@@ -1259,6 +1305,60 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn plane_mode_shifted_vram_source_write_consumes_full_words() {
+        let mut pegc = Pegc::new();
+        pegc.state.mode_register = 1;
+        pegc.state.plane_access_mask = 0x00;
+        pegc.state.rop_register = 0x10F0;
+        pegc.state.write_mask = 0xFFFF;
+        pegc.state.block_length = 31;
+        pegc.state.remain = 32;
+        pegc.state.shift_read = 0;
+        pegc.state.shift_write = 5;
+
+        let mut vram = vec![0u8; PEGC_VRAM_SIZE];
+        let source_offset = 0x1000u32;
+        let source_pixel_base = source_offset * 8;
+        for i in 0..48u32 {
+            vram[(source_pixel_base + i) as usize] = (i + 1) as u8;
+        }
+
+        pegc.plane_read_word(source_offset, &vram);
+        pegc.plane_read_word(source_offset + 2, &vram);
+        pegc.plane_read_word(source_offset + 4, &vram);
+
+        let destination_offset = 0x2000u32;
+        let destination_pixel_base = destination_offset * 8;
+        pegc.plane_write_word(destination_offset, 0, &mut vram);
+        pegc.plane_write_word(destination_offset + 2, 0, &mut vram);
+        pegc.plane_write_word(destination_offset + 4, 0, &mut vram);
+
+        for i in 0..11u32 {
+            assert_eq!(
+                vram[(destination_pixel_base + 5 + i) as usize],
+                (i + 1) as u8,
+                "first shifted write copied source pixel {i} incorrectly"
+            );
+        }
+        for i in 0..16u32 {
+            assert_eq!(
+                vram[(destination_pixel_base + 16 + i) as usize],
+                (17 + i) as u8,
+                "second shifted write did not advance by a full source word"
+            );
+        }
+        for i in 0..5u32 {
+            assert_eq!(
+                vram[(destination_pixel_base + 32 + i) as usize],
+                (33 + i) as u8,
+                "final shifted write did not continue from the next source word"
+            );
+        }
+        assert_eq!(vram[(destination_pixel_base + 37) as usize], 0x00);
+        assert_eq!(pegc.state.remain, 0);
     }
 
     #[test]
