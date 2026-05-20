@@ -20,7 +20,7 @@ use device::{
     sdip::Sdip,
     upd765a_fdc::FloppyController,
     upd4990a_rtc::Upd4990aRtc,
-    upd7220_gdc::{Gdc, GdcScrollPartition},
+    upd7220_gdc::{DISPLAY_MODE_GRAPHICS, Gdc, GdcScrollPartition},
     upd52611_crtc::Upd52611Crtc,
 };
 use software_renderer::SoftwareRenderer;
@@ -747,7 +747,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
         match self.machine_model {
             MachineModel::PC9801F | MachineModel::PC9801VM => {
-                self.gdc_slave.state.display_mode = 2;
+                self.gdc_slave.state.display_mode = DISPLAY_MODE_GRAPHICS;
             }
             MachineModel::PC9801VX
             | MachineModel::PC9801RA

@@ -1,3 +1,5 @@
+use device::upd7220_gdc::{DISPLAY_MODE_GRAPHICS, DISPLAY_MODE_MIXED};
+
 use super::read_ram_u16;
 
 macro_rules! check {
@@ -104,7 +106,7 @@ fn post_bios_state_vm() {
     check!(
         f,
         state.gdc_master.display_mode,
-        0,
+        DISPLAY_MODE_MIXED,
         "Master GDC display mode"
     );
     check!(
@@ -199,7 +201,12 @@ fn post_bios_state_vm() {
     check_true!(f, state.gdc_slave.is_slave, "Slave GDC is slave");
     check!(f, state.gdc_slave.pitch, 40, "Slave GDC pitch");
     check!(f, state.gdc_slave.mask, 0, "Slave GDC mask");
-    check!(f, state.gdc_slave.display_mode, 2, "Slave GDC display mode");
+    check!(
+        f,
+        state.gdc_slave.display_mode,
+        DISPLAY_MODE_GRAPHICS,
+        "Slave GDC display mode"
+    );
     check_true!(
         f,
         state.gdc_slave.draw_on_retrace,

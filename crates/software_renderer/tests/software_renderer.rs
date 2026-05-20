@@ -33,6 +33,7 @@ fn base_inputs<'a>(
 
         gdc_graphics_pitch: 0,
         gdc_graphics_scroll: [0; 4],
+        gdc_graphics_display_mode_is_graphics: false,
         gdc_graphics_al: 0,
         crt_31khz_enabled: false,
 

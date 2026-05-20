@@ -142,7 +142,7 @@ impl Gdc {
 
         // P1: mode byte.
         let mode = p[0];
-        self.display_mode = (mode & 0x02) | (mode & 0x20);
+        self.display_mode = mode & super::DISPLAY_MODE_MASK;
         self.interlace_mode = (mode & 0x01) | (mode & 0x08);
         self.draw_on_retrace = mode & 0x10 != 0;
 
