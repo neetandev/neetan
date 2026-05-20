@@ -32,6 +32,17 @@ const STATUS_HBLANK: u8 = 0x40;
 /// Status register bit 7: light pen detect (always 1 on PC-98 slave GDC).
 const STATUS_LIGHT_PEN: u8 = 0x80;
 
+/// SYNC P1 display mode bits 1 and 5: mixed display.
+pub const DISPLAY_MODE_MIXED: u8 = 0x00;
+
+/// SYNC P1 display mode bits 1 and 5: graphics display.
+pub const DISPLAY_MODE_GRAPHICS: u8 = 0x02;
+
+/// SYNC P1 display mode bits 1 and 5: character display.
+pub const DISPLAY_MODE_CHARACTER: u8 = 0x20;
+
+const DISPLAY_MODE_MASK: u8 = DISPLAY_MODE_GRAPHICS | DISPLAY_MODE_CHARACTER;
+
 /// Dot clock for 400-line mode (24.83 kHz horizontal): 21.0526 MHz.
 pub const DOT_CLOCK_400LINE: u32 = 21_052_600;
 
@@ -293,7 +304,7 @@ impl Gdc {
                 drawing_dm: 0,
                 drawing_gd: false,
                 bitmap_mod: 0,
-                display_mode: 0,
+                display_mode: DISPLAY_MODE_MIXED,
                 interlace_mode: 0,
                 draw_on_retrace: true,
                 aw: 80,
@@ -365,7 +376,7 @@ impl Gdc {
                 drawing_dm: 0,
                 drawing_gd: false,
                 bitmap_mod: 0,
-                display_mode: 0,
+                display_mode: DISPLAY_MODE_MIXED,
                 interlace_mode: 0,
                 draw_on_retrace: false,
                 aw: 0,
@@ -521,7 +532,11 @@ impl Gdc {
         }
 
         let total_chars = u64::from(self.hs + self.hbp + self.aw + self.hfp);
-        let horiz_mult: u64 = if self.display_mode == 0x02 { 16 } else { 8 };
+        let horiz_mult: u64 = if self.display_mode == DISPLAY_MODE_GRAPHICS {
+            16
+        } else {
+            8
+        };
         let cpu = u64::from(self.cpu_clock_hz);
         let dot = u64::from(self.dot_clock_hz);
         let line_period = cpu * total_chars * horiz_mult / dot;
@@ -625,7 +640,7 @@ impl Gdc {
 
     /// Returns effective pitch, halved if mixed mode with GD set.
     fn get_effective_pitch(&self) -> u16 {
-        if self.display_mode == 0 && self.drawing_gd {
+        if self.display_mode == DISPLAY_MODE_MIXED && self.drawing_gd {
             self.pitch >> 1
         } else {
             self.pitch
@@ -634,7 +649,7 @@ impl Gdc {
 
     /// Returns the pattern data for a given drawing cycle.
     fn get_pattern(&self, cycle: u16) -> u16 {
-        if self.display_mode == 0 && !self.drawing_gd {
+        if self.display_mode == DISPLAY_MODE_MIXED && !self.drawing_gd {
             // Text/mixed mode without GD: return full 16-bit pattern.
             self.pattern
         } else {
@@ -829,7 +844,11 @@ impl Gdc {
         // vsync_period = frame_time_s * cpu_clock
         let cpu = u64::from(self.cpu_clock_hz);
         let dot = u64::from(self.dot_clock_hz);
-        let horiz_mult: u64 = if self.display_mode == 0x02 { 16 } else { 8 };
+        let horiz_mult: u64 = if self.display_mode == DISPLAY_MODE_GRAPHICS {
+            16
+        } else {
+            8
+        };
         self.vsync_period = cpu * total_chars * total_lines * horiz_mult / dot;
 
         if total_lines == 0 || self.vsync_period == 0 {

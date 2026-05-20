@@ -640,6 +640,10 @@ fn invalid_image_source_path_does_not_truncate_for_image_to_image() {
     assert_eq!(std::fs::read(&dest_image).unwrap(), before);
 }
 
+// Windows strips trailing dots from file names at the OS level, so `FILE` and
+// `FILE.` cannot coexist in the host directory; the collision scenario can
+// only be constructed on case-sensitive Unix-like filesystems.
+#[cfg(unix)]
 #[test]
 fn host_name_collisions_are_rejected_before_writing() {
     let dir = unique_tempdir("collisions");

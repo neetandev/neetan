@@ -45,7 +45,7 @@ use device::{
     soundboard_86::{Soundboard86, Soundboard86Action},
     upd765a_fdc::FloppyController,
     upd4990a_rtc::Upd4990aRtc,
-    upd7220_gdc::Gdc,
+    upd7220_gdc::{DISPLAY_MODE_GRAPHICS, Gdc},
     upd52611_crtc::Upd52611Crtc,
 };
 use software_renderer::{
@@ -1386,6 +1386,8 @@ impl<T: Tracing> Pc9801Bus<T> {
             cursor_bottom,
             gdc_graphics_pitch,
             gdc_graphics_scroll,
+            gdc_graphics_display_mode_is_graphics: self.gdc_slave.state.display_mode
+                == DISPLAY_MODE_GRAPHICS,
             gdc_graphics_al,
             crt_31khz_enabled: self.display_control.is_crt_31khz_enabled(),
             palette_rgba,

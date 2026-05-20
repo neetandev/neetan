@@ -83,6 +83,8 @@ pub struct RenderInputs<'a> {
     pub gdc_graphics_pitch: u32,
     /// Four packed graphics scroll descriptors.
     pub gdc_graphics_scroll: [u32; 4],
+    /// Whether the graphics GDC SYNC P1 display mode is graphics.
+    pub gdc_graphics_display_mode_is_graphics: bool,
     /// Graphics GDC active display lines (AL from SYNC command).
     pub gdc_graphics_al: u32,
     /// CRT horizontal-scan-frequency flag (port 09A8h).

@@ -1,4 +1,5 @@
 use common::{Bus, Cpu};
+use device::upd7220_gdc::DISPLAY_MODE_GRAPHICS;
 
 use super::{
     KB_COUNT, KB_HEAD, KB_TAIL, TEST_CODE, boot_inject_run_f, boot_inject_run_pc9821as,
@@ -4398,7 +4399,7 @@ fn draw_mode_set_sync_mode_byte_f() {
         state.gdc_slave.param_buffer[0], 0x02,
         "AH=4Ah CH=0x02 should write 0x02 as SYNC P1 mode byte"
     );
-    assert_eq!(state.gdc_slave.display_mode, 0x02);
+    assert_eq!(state.gdc_slave.display_mode, DISPLAY_MODE_GRAPHICS);
 }
 
 #[test]
@@ -4412,7 +4413,7 @@ fn draw_mode_set_sync_mode_byte_vm() {
         state.gdc_slave.param_buffer[0], 0x02,
         "AH=4Ah CH=0x02 should write 0x02 as SYNC P1 mode byte"
     );
-    assert_eq!(state.gdc_slave.display_mode, 0x02);
+    assert_eq!(state.gdc_slave.display_mode, DISPLAY_MODE_GRAPHICS);
 }
 
 #[test]
@@ -4421,7 +4422,7 @@ fn draw_mode_set_sync_mode_byte_vx() {
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
     let state = machine.save_state();
     assert_eq!(state.gdc_slave.param_buffer[0], 0x02);
-    assert_eq!(state.gdc_slave.display_mode, 0x02);
+    assert_eq!(state.gdc_slave.display_mode, DISPLAY_MODE_GRAPHICS);
 }
 
 #[test]
@@ -4430,7 +4431,7 @@ fn draw_mode_set_sync_mode_byte_ra() {
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
     let state = machine.save_state();
     assert_eq!(state.gdc_slave.param_buffer[0], 0x02);
-    assert_eq!(state.gdc_slave.display_mode, 0x02);
+    assert_eq!(state.gdc_slave.display_mode, DISPLAY_MODE_GRAPHICS);
 }
 
 #[test]

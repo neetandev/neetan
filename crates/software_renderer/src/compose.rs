@@ -558,8 +558,12 @@ fn compose_pegc(
         0
     };
     let mut text_scroll_iter = ScrollLineIter::new(inputs.gdc_scroll_start_line);
-    let mut pegc_scanline_iter =
-        PegcScanlineBaseIter::new(inputs.gdc_graphics_scroll, graphics_pitch, page_base);
+    let mut pegc_scanline_iter = PegcScanlineBaseIter::new(
+        inputs.gdc_graphics_scroll,
+        graphics_pitch,
+        page_base,
+        inputs.gdc_graphics_display_mode_is_graphics,
+    );
 
     for y in 0..max_y {
         // Text overlay rules are shared with digital modes; only the graphics
@@ -765,29 +769,35 @@ impl GraphicsByteBaseIter {
     }
 }
 
-/// PEGC scanline address iterator. PEGC is byte-per-pixel, so the old shader
-/// formula `(start * 2 + scanline * pitch * 2) * 8 + x` is split into a
-/// per-scanline base here and an `+ x` in `load_pegc_indices`.
+/// PEGC scanline address iterator. PEGC is byte-per-pixel, so the GDC word
+/// address is expanded to pixels here and `load_pegc_indices` adds X.
 struct PegcScanlineBaseIter {
     scroll_iter: ScrollLineIter,
     pitch: u32,
     page_base: u32,
+    graphics_display_mode: bool,
 }
 
 impl PegcScanlineBaseIter {
-    fn new(scrolls: [u32; 4], pitch: u32, page_base: u32) -> Self {
+    fn new(scrolls: [u32; 4], pitch: u32, page_base: u32, graphics_display_mode: bool) -> Self {
         Self {
             scroll_iter: ScrollLineIter::new(scrolls),
             pitch,
             page_base,
+            graphics_display_mode,
         }
     }
 
     fn next(&mut self) -> u32 {
         let (start_address, scanline) = self.scroll_iter.next();
+        let line_pitch = if self.graphics_display_mode {
+            self.pitch
+        } else {
+            self.pitch.wrapping_mul(2)
+        };
         let inner = start_address
             .wrapping_mul(2)
-            .wrapping_add(scanline.wrapping_mul(self.pitch).wrapping_mul(2))
+            .wrapping_add(scanline.wrapping_mul(line_pitch))
             .wrapping_mul(8);
         self.page_base.wrapping_add(inner)
     }
