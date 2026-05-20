@@ -93,6 +93,8 @@ pub struct PegcState {
     pub last_data_length: i32,
     /// Remaining block transfer count for plane mode.
     pub remain: u32,
+    /// Skips the padding write after a shifted CPU-source block completes.
+    pub skip_next_shifted_cpu_write: bool,
     /// 256-color palette: 256 entries of [green, red, blue], 8-bit components.
     pub palette_256: Box<[[u8; 3]; 256]>,
     /// Currently selected palette index (port 0xA8 in PEGC mode).
@@ -135,6 +137,7 @@ impl Pegc {
                 last_vram_data: [0u8; 64],
                 last_data_length: 0,
                 remain: 0,
+                skip_next_shifted_cpu_write: false,
                 palette_256: Box::new([[0u8; 3]; 256]),
                 palette_index: 0,
             },
@@ -188,6 +191,7 @@ impl Pegc {
     fn reset_transfer_state_from_length(&mut self) {
         self.state.remain = u32::from(self.state.block_length) + 1;
         self.state.last_data_length = 0;
+        self.state.skip_next_shifted_cpu_write = false;
     }
 
     fn source_buffer_length(&self) -> usize {
@@ -709,6 +713,12 @@ impl Pegc {
         if self.state.remain == 0 {
             self.state.remain = block_length + 1;
             self.state.last_data_length = 0;
+            if self.state.skip_next_shifted_cpu_write {
+                self.state.skip_next_shifted_cpu_write = false;
+                return;
+            }
+        } else {
+            self.state.skip_next_shifted_cpu_write = false;
         }
 
         let pixels_signed = pixels as i32;
@@ -777,6 +787,10 @@ impl Pegc {
             if self.state.remain == 0 {
                 break;
             }
+        }
+
+        if self.state.remain == 0 && !extended_shift_mode && dest_shift != 0 {
+            self.state.skip_next_shifted_cpu_write = true;
         }
 
         if source_from_cpu {
@@ -1359,6 +1373,50 @@ mod tests {
         }
         assert_eq!(vram[(destination_pixel_base + 37) as usize], 0x00);
         assert_eq!(pegc.state.remain, 0);
+    }
+
+    #[test]
+    fn plane_mode_shifted_cpu_source_aligned_block_skips_padding_word() {
+        let mut pegc = Pegc::new();
+        pegc.state.mode_register = 1;
+        pegc.state.plane_access_mask = 0x00;
+        pegc.state.rop_register = 0x0100;
+        pegc.state.write_mask = 0xFFFF;
+        pegc.state.block_length = 31;
+        pegc.state.remain = 32;
+        pegc.state.shift_write = 5;
+
+        let mut vram = vec![0x77u8; PEGC_VRAM_SIZE];
+        let destination_offset = 0x2000u32;
+        let destination_pixel_base = destination_offset * 8;
+
+        pegc.plane_write_word(destination_offset, 0xFFFF, &mut vram);
+        pegc.plane_write_word(destination_offset + 2, 0xFFFF, &mut vram);
+        pegc.plane_write_word(destination_offset + 4, 0x0000, &mut vram);
+
+        for i in 0..5u32 {
+            assert_eq!(
+                vram[(destination_pixel_base + i) as usize],
+                0x77,
+                "pixel {i} before the destination shift should be untouched"
+            );
+        }
+        for i in 5..37u32 {
+            assert_eq!(
+                vram[(destination_pixel_base + i) as usize],
+                0xFF,
+                "shifted block pixel {i} should come from the first two source words"
+            );
+        }
+        for i in 37..53u32 {
+            assert_eq!(
+                vram[(destination_pixel_base + i) as usize],
+                0x77,
+                "the padding word should not start a new shifted block at pixel {i}"
+            );
+        }
+        assert_eq!(pegc.state.remain, 32);
+        assert!(!pegc.state.skip_next_shifted_cpu_write);
     }
 
     #[test]
