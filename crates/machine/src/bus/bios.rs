@@ -318,6 +318,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 #[cfg(test)]
 mod tests {
     use common::{Bus, Cpu, CpuMode, CpuType, MachineModel, NoTracing, SegmentRegister};
+    use device::floppy::FloppyImage;
 
     use super::{
         PAGE_ACCESSED, PAGE_DIRTY, hle_page_translate_read, hle_page_translate_write,
@@ -550,6 +551,12 @@ mod tests {
         u16::from(bus.read_byte(address)) | (u16::from(bus.read_byte(address + 1)) << 8)
     }
 
+    fn test_hdm_floppy(first_sector_byte: u8) -> FloppyImage {
+        let mut data = vec![0u8; 1_261_568];
+        data[0] = first_sector_byte;
+        FloppyImage::from_hdm_bytes(&data).unwrap()
+    }
+
     #[test]
     fn hle_translate_read_sets_accessed_bits() {
         let mut memory = test_memory();
@@ -647,6 +654,29 @@ mod tests {
         assert_eq!(cpu.sp(), 0x0004);
         assert_eq!(read_bus_word(&mut bus, 0x0002_0000), 0xAAAA);
         assert_eq!(read_bus_word(&mut bus, 0x0002_0002), 0xBBBB);
+    }
+
+    #[test]
+    fn int1bh_fdd_read_uses_paged_protected_mode_buffer() {
+        let mut bus = test_bus();
+        setup_hle_page_tables(&mut bus);
+        bus.insert_floppy(0, test_hdm_floppy(0xA5), None);
+
+        let mut cpu = TestCpu::default();
+        cpu.set_ax(0x0690);
+        cpu.set_bx(0);
+        cpu.set_cx(0x0300);
+        cpu.set_dx(0x0001);
+        cpu.set_bp(0);
+        cpu.set_es(0x2222);
+        cpu.set_segment_base_for_test(SegmentRegister::ES, 0x0002_0000);
+
+        bus.hle_int1bh(&mut cpu);
+
+        assert_eq!(cpu.ah(), 0x00);
+        assert_eq!(bus.read_byte(0x0003_0000), 0xA5);
+        assert_eq!(bus.read_byte(0x0002_0000), 0x00);
+        assert_eq!(bus.read_byte(0x0002_2220), 0x00);
     }
 
     #[test]

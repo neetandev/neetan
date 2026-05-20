@@ -117,9 +117,9 @@ impl<T: Tracing> Pc9801Bus<T> {
                 let r = cpu.dl();
                 let n_val = cpu.ch();
                 let sector_size = 128usize << n_val;
-                let buf_seg = cpu.es();
                 let buf_off = cpu.bp();
-                let buf_addr = (u32::from(buf_seg) << 4).wrapping_add(u32::from(buf_off));
+                let buf_addr =
+                    self.hle_linear_address(cpu, SegmentRegister::ES, u32::from(buf_off));
                 let transfer_bytes = cpu.bx() as usize;
                 let size = if transfer_bytes > 0 {
                     transfer_bytes
@@ -156,7 +156,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 let mut h = h;
                 let mut hd = (h ^ (cpu.al() >> 2)) & 1;
                 // Segment wrap check.
-                if (buf_addr & 0xFFFF) > ((buf_addr + size as u32 - 1) & 0xFFFF) {
+                if Self::fdd_buffer_segment_wraps(buf_off, size) {
                     self.tracer.trace_int1bh_fdd_write(
                         drive,
                         c,
@@ -242,9 +242,9 @@ impl<T: Tracing> Pc9801Bus<T> {
                 let r = cpu.dl();
                 let n_val = cpu.ch();
                 let sector_size = 128usize << n_val;
-                let buf_seg = cpu.es();
                 let buf_off = cpu.bp();
-                let buf_addr = (u32::from(buf_seg) << 4).wrapping_add(u32::from(buf_off));
+                let buf_addr =
+                    self.hle_linear_address(cpu, SegmentRegister::ES, u32::from(buf_off));
                 let transfer_bytes = cpu.bx() as usize;
                 let size = if transfer_bytes > 0 {
                     transfer_bytes
@@ -252,7 +252,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     sector_size
                 };
                 // Segment wrap check.
-                if (buf_addr & 0xFFFF) > ((buf_addr + size as u32 - 1) & 0xFFFF) {
+                if Self::fdd_buffer_segment_wraps(buf_off, size) {
                     return if is_diagnostic { 0x00 } else { 0x20 };
                 }
                 if ah & 0x10 != 0 {
@@ -265,13 +265,14 @@ impl<T: Tracing> Pc9801Bus<T> {
                 let mut offset = 0u32;
                 let mut current_r = r;
                 for _ in 0..sector_count {
-                    if let Some(data) =
-                        self.floppy
-                            .read_sector_data(drive, track_index, c, h, current_r, n_val)
+                    if let Some(data) = self
+                        .floppy
+                        .read_sector_data(drive, track_index, c, h, current_r, n_val)
+                        .map(<[u8]>::to_vec)
                     {
                         if !is_diagnostic {
                             for (j, &byte) in data.iter().enumerate() {
-                                self.memory.write_byte(buf_addr + offset + j as u32, byte);
+                                self.write_mem_byte(buf_addr + offset + j as u32, byte);
                             }
                         }
                         offset += data.len() as u32;
@@ -281,13 +282,14 @@ impl<T: Tracing> Pc9801Bus<T> {
                         h = 1;
                         track_index = (self.fdd_seek_cylinder[drive] as usize) * 2 + 1;
                         current_r = 1;
-                        if let Some(data) =
-                            self.floppy
-                                .read_sector_data(drive, track_index, c, h, current_r, n_val)
+                        if let Some(data) = self
+                            .floppy
+                            .read_sector_data(drive, track_index, c, h, current_r, n_val)
+                            .map(<[u8]>::to_vec)
                         {
                             if !is_diagnostic {
                                 for (j, &byte) in data.iter().enumerate() {
-                                    self.memory.write_byte(buf_addr + offset + j as u32, byte);
+                                    self.write_mem_byte(buf_addr + offset + j as u32, byte);
                                 }
                             }
                             offset += data.len() as u32;
@@ -379,9 +381,9 @@ impl<T: Tracing> Pc9801Bus<T> {
                 let hd = (h ^ (cpu.al() >> 2)) & 1;
                 let n_val = cpu.ch();
                 let fill_byte = cpu.dl();
-                let buf_seg = cpu.es();
                 let buf_off = cpu.bp();
-                let buf_addr = (u32::from(buf_seg) << 4).wrapping_add(u32::from(buf_off));
+                let buf_addr =
+                    self.hle_linear_address(cpu, SegmentRegister::ES, u32::from(buf_off));
                 let buf_size = cpu.bx() as usize;
                 let sector_count = buf_size / 4;
                 let track_index = (self.fdd_seek_cylinder[drive] as usize) * 2 + hd as usize;
@@ -405,6 +407,15 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             _ => 0x40,
         }
+    }
+
+    fn fdd_buffer_segment_wraps(buffer_offset: u16, size: usize) -> bool {
+        if size == 0 {
+            return false;
+        }
+        let start = u32::from(buffer_offset);
+        let end = start.wrapping_add(size as u32 - 1);
+        (start & 0xFFFF) > (end & 0xFFFF)
     }
 
     fn int1bh_hdd(&mut self, cpu: &mut impl Cpu, function: u8) {
