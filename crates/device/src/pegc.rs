@@ -97,8 +97,16 @@ pub struct PegcState {
     pub skip_next_shifted_padding_write: bool,
     /// Pixel address used by the shifted decrement padding write.
     pub shifted_padding_base_address: u32,
+    /// Source offset expected for a shifted padding read.
+    pub shifted_padding_source_offset: u32,
+    /// Destination offset expected for a shifted padding write.
+    pub shifted_padding_destination_offset: u32,
     /// Number of pixels written by the shifted decrement padding write.
     pub shifted_padding_pixels: u32,
+    /// Last VRAM source read offset in plane mode.
+    pub last_plane_read_offset: u32,
+    /// Whether an increment shifted VRAM-source leading padding write was skipped.
+    pub leading_shifted_padding_write_skipped: bool,
     /// 256-color palette: 256 entries of [green, red, blue], 8-bit components.
     pub palette_256: Box<[[u8; 3]; 256]>,
     /// Currently selected palette index (port 0xA8 in PEGC mode).
@@ -143,7 +151,11 @@ impl Pegc {
                 remain: 0,
                 skip_next_shifted_padding_write: false,
                 shifted_padding_base_address: 0,
+                shifted_padding_source_offset: 0,
+                shifted_padding_destination_offset: 0,
                 shifted_padding_pixels: 0,
+                last_plane_read_offset: 0,
+                leading_shifted_padding_write_skipped: false,
                 palette_256: Box::new([[0u8; 3]; 256]),
                 palette_index: 0,
             },
@@ -197,8 +209,15 @@ impl Pegc {
     fn reset_transfer_state_from_length(&mut self) {
         self.state.remain = u32::from(self.state.block_length) + 1;
         self.state.last_data_length = 0;
+        self.state.leading_shifted_padding_write_skipped = false;
+        self.clear_shifted_padding_state();
+    }
+
+    fn clear_shifted_padding_state(&mut self) {
         self.state.skip_next_shifted_padding_write = false;
         self.state.shifted_padding_base_address = 0;
+        self.state.shifted_padding_source_offset = 0;
+        self.state.shifted_padding_destination_offset = 0;
         self.state.shifted_padding_pixels = 0;
     }
 
@@ -666,24 +685,45 @@ impl Pegc {
         let plane_mask = self.state.plane_access_mask;
         let palette1 = self.state.palette_color_1;
 
-        let base_address = offset.wrapping_mul(8).wrapping_add(source_shift);
-        let base_address = if self.state.remain != block_length + 1 {
-            if shift_direction_decrement {
-                if dest_shift == 0 {
-                    base_address
+        let decrement_shifted_vram_source =
+            !source_from_cpu && shift_direction_decrement && source_shift != 0;
+        if self.state.remain == 0
+            && self.state.skip_next_shifted_padding_write
+            && !source_from_cpu
+            && offset != self.state.shifted_padding_source_offset
+        {
+            self.clear_shifted_padding_state();
+            self.state.last_vram_data.fill(0);
+            self.state.last_data_length = 0;
+            self.state.leading_shifted_padding_write_skipped = false;
+        }
+
+        let block_start = (self.state.remain == block_length + 1
+            && !self.state.leading_shifted_padding_write_skipped)
+            || (self.state.remain == 0 && !self.state.skip_next_shifted_padding_write);
+        let base_address = if decrement_shifted_vram_source {
+            offset.wrapping_mul(8).wrapping_add(pixels - source_shift)
+        } else {
+            let base_address = offset.wrapping_mul(8).wrapping_add(source_shift);
+            if !block_start {
+                if shift_direction_decrement {
+                    if dest_shift == 0 {
+                        base_address
+                    } else {
+                        base_address.wrapping_add(pixels - dest_shift)
+                    }
                 } else {
-                    base_address.wrapping_add(pixels - dest_shift)
+                    base_address.wrapping_sub(dest_shift)
                 }
             } else {
-                base_address.wrapping_sub(dest_shift)
+                base_address
             }
-        } else {
-            base_address
         };
 
         let mut result: u32 = 0;
 
         if !source_from_cpu {
+            self.state.last_plane_read_offset = offset;
             for i in 0u32..pixels {
                 let pixel_address = if shift_direction_decrement {
                     base_address.wrapping_sub(i + 1) & (PEGC_VRAM_SIZE as u32 - 1)
@@ -725,12 +765,6 @@ impl Pegc {
     /// Same semantics as `plane_write_word` but processes 32 pixels per call.
     /// Shift register bit 4 is valid and the write mask is applied to each word.
     pub fn plane_write_dword(&mut self, offset: u32, value: u32, vram: &mut [u8]) {
-        if self.state.block_length < 16 {
-            self.plane_write_impl(offset, value & 0xFFFF, vram, 16);
-            self.plane_write_impl(offset + 2, value >> 16, vram, 16);
-            return;
-        }
-
         self.plane_write_impl(offset, value, vram, 32);
     }
 
@@ -746,6 +780,12 @@ impl Pegc {
         let block_length = u32::from(self.state.block_length);
         let source_shift = u32::from(self.state.shift_read);
         let dest_shift = u32::from(self.state.shift_write);
+        let decrement_shifted_vram_source =
+            !source_from_cpu && shift_direction_decrement && source_shift != 0;
+        let increment_shifted_vram_source =
+            !source_from_cpu && !shift_direction_decrement && source_shift != 0;
+        let same_shift_decrement_vram_source =
+            decrement_shifted_vram_source && source_shift == dest_shift;
 
         if self.state.remain == 0 {
             self.state.remain = block_length + 1;
@@ -753,72 +793,102 @@ impl Pegc {
                 self.state.last_data_length = 0;
             }
             if self.state.skip_next_shifted_padding_write {
-                self.state.skip_next_shifted_padding_write = false;
-                let padding_pixels = self
-                    .state
-                    .shifted_padding_pixels
-                    .min(self.source_buffer_length() as u32);
-                if padding_pixels != 0 {
-                    let base_address = if shift_direction_decrement {
-                        self.state.shifted_padding_base_address
-                    } else {
-                        offset.wrapping_mul(8)
-                    } & (PEGC_VRAM_SIZE as u32 - 1);
-                    for i in 0..padding_pixels {
-                        let pixel_address = if shift_direction_decrement {
-                            base_address.wrapping_sub(i + 1) & (PEGC_VRAM_SIZE as u32 - 1)
+                if offset != self.state.shifted_padding_destination_offset {
+                    self.clear_shifted_padding_state();
+                } else {
+                    self.state.skip_next_shifted_padding_write = false;
+                    let padding_pixels = self
+                        .state
+                        .shifted_padding_pixels
+                        .min(self.source_buffer_length() as u32);
+                    if padding_pixels != 0 {
+                        let base_address = if shift_direction_decrement {
+                            self.state.shifted_padding_base_address
                         } else {
-                            base_address.wrapping_add(i) & (PEGC_VRAM_SIZE as u32 - 1)
-                        };
-                        let source = self.state.last_vram_data[i as usize];
-                        let destination = vram[pixel_address as usize];
+                            offset.wrapping_mul(8)
+                        } & (PEGC_VRAM_SIZE as u32 - 1);
+                        for i in 0..padding_pixels {
+                            let pixel_address = if shift_direction_decrement {
+                                base_address.wrapping_sub(i + 1) & (PEGC_VRAM_SIZE as u32 - 1)
+                            } else {
+                                base_address.wrapping_add(i) & (PEGC_VRAM_SIZE as u32 - 1)
+                            };
+                            let source = self.state.last_vram_data[i as usize];
+                            let destination = vram[pixel_address as usize];
 
-                        if rop_enabled {
-                            let (pattern1, pattern2) = self.get_pattern_colors(rop_method, i);
-                            let result = apply_rop(
-                                rop_code,
-                                source,
-                                destination,
-                                pattern1,
-                                pattern2,
-                                plane_mask,
-                            );
-                            vram[pixel_address as usize] = (destination & plane_mask) | result;
-                        } else {
-                            vram[pixel_address as usize] =
-                                apply_source_copy(source, destination, plane_mask);
+                            if rop_enabled {
+                                let (pattern1, pattern2) = self.get_pattern_colors(rop_method, i);
+                                let result = apply_rop(
+                                    rop_code,
+                                    source,
+                                    destination,
+                                    pattern1,
+                                    pattern2,
+                                    plane_mask,
+                                );
+                                vram[pixel_address as usize] = (destination & plane_mask) | result;
+                            } else {
+                                vram[pixel_address as usize] =
+                                    apply_source_copy(source, destination, plane_mask);
+                            }
+                        }
+                        if !shift_direction_decrement {
+                            self.state.remain = self.state.remain.saturating_sub(padding_pixels);
                         }
                     }
-                    if !shift_direction_decrement {
-                        self.state.remain = self.state.remain.saturating_sub(padding_pixels);
-                    }
+                    self.clear_shifted_padding_state();
+                    self.state.last_data_length = 0;
+                    return;
                 }
-                self.state.shifted_padding_base_address = 0;
-                self.state.shifted_padding_pixels = 0;
-                self.state.last_data_length = 0;
-                return;
             }
         } else {
-            self.state.skip_next_shifted_padding_write = false;
+            self.clear_shifted_padding_state();
         }
 
         let pixels_signed = pixels as i32;
         let extended_shift_mode = !source_from_cpu || ((block_length + 1) & (pixels - 1)) != 0;
 
         let block_start = self.state.remain == block_length + 1;
+        let source_byte_in_row = self.state.last_plane_read_offset & 0x7F;
+        let destination_byte_in_row = offset & 0x7F;
+        let same_scanline = (self.state.last_plane_read_offset & !0x7F) == (offset & !0x7F);
+        if block_start
+            && increment_shifted_vram_source
+            && source_shift > dest_shift
+            && same_scanline
+            && source_byte_in_row > destination_byte_in_row
+            && !self.state.leading_shifted_padding_write_skipped
+        {
+            self.state.leading_shifted_padding_write_skipped = true;
+            return;
+        }
+
         let mut base_address = offset.wrapping_mul(8);
         let mut data_length: i32 = pixels_signed;
         let mut shifted_bit_offset = 0;
 
         if extended_shift_mode {
             if shift_direction_decrement {
-                if block_start {
-                    if dest_shift != 0 {
-                        base_address = base_address.wrapping_add(dest_shift);
-                        data_length = dest_shift as i32;
+                if decrement_shifted_vram_source && dest_shift != 0 {
+                    if block_start {
+                        if same_shift_decrement_vram_source {
+                            base_address = base_address.wrapping_add(pixels - dest_shift);
+                        } else {
+                            base_address = base_address.wrapping_sub(dest_shift);
+                        }
+                        data_length -= dest_shift as i32;
+                    } else if same_shift_decrement_vram_source {
+                        base_address = base_address.wrapping_add(pixels);
                     }
-                } else if dest_shift != 0 {
-                    base_address = base_address.wrapping_add(pixels);
+                } else {
+                    if block_start {
+                        if dest_shift != 0 {
+                            base_address = base_address.wrapping_add(dest_shift);
+                            data_length = dest_shift as i32;
+                        }
+                    } else if dest_shift != 0 {
+                        base_address = base_address.wrapping_add(pixels);
+                    }
                 }
             } else if block_start {
                 base_address = base_address.wrapping_add(dest_shift);
@@ -928,11 +998,22 @@ impl Pegc {
         }
 
         if self.state.remain == 0
+            && !same_shift_decrement_vram_source
             && ((!extended_shift_mode && dest_shift != 0)
                 || (!source_from_cpu && source_shift != 0))
         {
             self.state.skip_next_shifted_padding_write = true;
             self.state.shifted_padding_base_address = 0;
+            self.state.shifted_padding_source_offset = if shift_direction_decrement {
+                self.state.last_plane_read_offset.wrapping_sub(pixels / 8)
+            } else {
+                self.state.last_plane_read_offset.wrapping_add(pixels / 8)
+            };
+            self.state.shifted_padding_destination_offset = if shift_direction_decrement {
+                offset.wrapping_sub(pixels / 8)
+            } else {
+                offset.wrapping_add(pixels / 8)
+            };
             self.state.shifted_padding_pixels = 0;
             if !source_from_cpu
                 && shift_direction_decrement
@@ -958,9 +1039,22 @@ impl Pegc {
             if self.state.remain == 0 {
                 self.state.last_vram_data.fill(0);
                 self.state.last_data_length = 0;
+                self.state.leading_shifted_padding_write_skipped = false;
             }
         } else {
-            self.consume_source_buffer(pixels as usize);
+            let consume_pixels = if decrement_shifted_vram_source {
+                processed_pixels
+            } else {
+                pixels as usize
+            };
+            self.consume_source_buffer(consume_pixels);
+            if self.state.remain == 0 && same_shift_decrement_vram_source {
+                self.state.last_vram_data.fill(0);
+                self.state.last_data_length = 0;
+            }
+            if self.state.remain == 0 {
+                self.state.leading_shifted_padding_write_skipped = false;
+            }
         }
     }
 
@@ -1588,32 +1682,64 @@ mod tests {
         assert_eq!(vram[11], 0x77);
     }
 
-    #[test]
-    fn plane_mode_decrement_shifted_vram_source_overlaps_toward_higher_pixels() {
+    fn decrement_vram_source_copy(block_length: u16, shift_read: u8, shift_write: u8) -> Pegc {
         let mut pegc = Pegc::new();
         pegc.state.mode_register = 1;
         pegc.state.plane_access_mask = 0x00;
         pegc.state.rop_register = 0x12F0;
         pegc.state.write_mask = 0xFFFF;
-        pegc.state.block_length = 25;
-        pegc.state.remain = 26;
-        pegc.state.shift_read = 4;
-        pegc.state.shift_write = 5;
+        pegc.state.block_length = block_length;
+        pegc.state.remain = u32::from(block_length) + 1;
+        pegc.state.shift_read = shift_read;
+        pegc.state.shift_write = shift_write;
+        pegc
+    }
+
+    fn decrement_source_high_pixel(offset: u32, shift_read: u8) -> u32 {
+        offset * 8 + 16 - u32::from(shift_read) - 1
+    }
+
+    fn decrement_destination_high_pixel(offset: u32, shift_write: u8, same_shift: bool) -> u32 {
+        if same_shift {
+            offset * 8 + 16 - u32::from(shift_write) - 1
+        } else {
+            offset * 8 - u32::from(shift_write) - 1
+        }
+    }
+
+    fn run_decrement_word_copy(
+        pegc: &mut Pegc,
+        mut source_offset: u32,
+        mut destination_offset: u32,
+        vram: &mut [u8],
+    ) {
+        loop {
+            pegc.plane_read_word(source_offset, vram);
+            pegc.plane_write_word(destination_offset, 0, vram);
+            if pegc.state.remain == 0 {
+                break;
+            }
+            source_offset -= 2;
+            destination_offset -= 2;
+        }
+    }
+
+    #[test]
+    fn plane_mode_asymmetric_decrement_vram_source_keeps_tail_across_words() {
+        let mut pegc = decrement_vram_source_copy(25, 4, 5);
 
         let mut vram = vec![0u8; PEGC_VRAM_SIZE];
-        let source_high_pixel = 0x1000u32 * 8 + 3;
-        let destination_high_pixel = 0x2000u32 * 8 + 4;
+        let source_offset = 0x1000u32;
+        let destination_offset = 0x2000u32;
+        let source_high_pixel = decrement_source_high_pixel(source_offset, pegc.state.shift_read);
+        let destination_high_pixel =
+            decrement_destination_high_pixel(destination_offset, pegc.state.shift_write, false);
 
         for index in 0..26u32 {
             vram[(source_high_pixel - index) as usize] = (index + 1) as u8;
         }
 
-        pegc.plane_read_word(0x1000, &vram);
-        pegc.plane_write_word(0x2000, 0, &mut vram);
-        pegc.plane_read_word(0x0FFE, &vram);
-        pegc.plane_write_word(0x1FFE, 0, &mut vram);
-        pegc.plane_read_word(0x0FFC, &vram);
-        pegc.plane_write_word(0x1FFC, 0, &mut vram);
+        run_decrement_word_copy(&mut pegc, source_offset, destination_offset, &mut vram);
 
         for index in 0..26u32 {
             assert_eq!(
@@ -1626,41 +1752,182 @@ mod tests {
     }
 
     #[test]
-    fn plane_mode_decrement_shifted_vram_source_padding_fills_previous_byte() {
+    fn plane_mode_asymmetric_decrement_vram_source_copies_right_edge_span() {
+        let mut pegc = decrement_vram_source_copy(425, 12, 3);
+
+        let mut vram = vec![0xEEu8; PEGC_VRAM_SIZE];
+        let source_start = 74usize;
+        let destination_start = 99usize;
+        let width = 426usize;
+        for i in 0..width {
+            vram[source_start + i] = (i as u8).wrapping_mul(13).wrapping_add(1);
+        }
+        let original = vram.clone();
+
+        let mut source_offset = 62u32;
+        let mut destination_offset = 66u32;
+        while pegc.state.remain != 0 {
+            pegc.plane_read_word(source_offset, &vram);
+            pegc.plane_write_word(destination_offset, 0, &mut vram);
+            source_offset = source_offset.wrapping_sub(2);
+            destination_offset = destination_offset.wrapping_sub(2);
+        }
+
+        for i in 0..width {
+            assert_eq!(
+                vram[destination_start + i],
+                original[source_start + i],
+                "right-edge copy pixel {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn plane_mode_same_shift_decrement_vram_source_copies_overlapping_rows() {
+        let mut pegc = decrement_vram_source_copy(425, 3, 3);
+
+        let mut vram = vec![0xEEu8; PEGC_VRAM_SIZE];
+        let plane_pitch_pixels = 1024usize;
+        let source_start = 99usize;
+        let destination_start = 99usize;
+        let width = 426usize;
+        let height = 153usize;
+        let right_edge_x = source_start + width - 1;
+        let first_word_x = right_edge_x + 1 - (16 - pegc.state.shift_read as usize);
+
+        for row_index in 0..height {
+            let source_row = 94usize + row_index;
+            let source_base = source_row * plane_pitch_pixels + source_start;
+            for pixel_index in 0..width {
+                vram[source_base + pixel_index] = (pixel_index as u8)
+                    .wrapping_mul(17)
+                    .wrapping_add(row_index as u8)
+                    .wrapping_add(3);
+            }
+        }
+        let original = vram.clone();
+
+        for row_index in (0..height).rev() {
+            let source_row = 94usize + row_index;
+            let destination_row = 119usize + row_index;
+            let mut source_offset = ((source_row * plane_pitch_pixels + first_word_x) / 8) as u32;
+            let mut destination_offset =
+                ((destination_row * plane_pitch_pixels + first_word_x) / 8) as u32;
+            loop {
+                pegc.plane_read_word(source_offset, &vram);
+                pegc.plane_write_word(destination_offset, 0, &mut vram);
+                if pegc.state.remain == 0 {
+                    break;
+                }
+                source_offset = source_offset.wrapping_sub(2);
+                destination_offset = destination_offset.wrapping_sub(2);
+            }
+        }
+
+        for row_index in 0..height {
+            let source_row = 94usize + row_index;
+            let destination_row = 119usize + row_index;
+            let source_base = source_row * plane_pitch_pixels + source_start;
+            let destination_base = destination_row * plane_pitch_pixels + destination_start;
+            for pixel_index in 0..width {
+                assert_eq!(
+                    vram[destination_base + pixel_index],
+                    original[source_base + pixel_index],
+                    "same-shift decrement row {row_index} pixel {pixel_index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn plane_mode_increment_shifted_vram_source_copies_left_edge_trace() {
         let mut pegc = Pegc::new();
         pegc.state.mode_register = 1;
         pegc.state.plane_access_mask = 0x00;
-        pegc.state.rop_register = 0x12F0;
+        pegc.state.rop_register = 0x10F0;
         pegc.state.write_mask = 0xFFFF;
-        pegc.state.block_length = 25;
-        pegc.state.remain = 26;
-        pegc.state.shift_read = 1;
-        pegc.state.shift_write = 12;
+        pegc.state.block_length = 425;
+        pegc.state.remain = 426;
+        pegc.state.shift_read = 12;
+        pegc.state.shift_write = 10;
+
+        let mut vram = vec![0xEEu8; PEGC_VRAM_SIZE];
+        let plane_pitch_pixels = 1024usize;
+        let source_start = 124usize;
+        let destination_start = 74usize;
+        let width = 426usize;
+        let height = 153usize;
+        let first_source_word_x = source_start - pegc.state.shift_read as usize;
+        let first_destination_word_x = destination_start - pegc.state.shift_write as usize - 16;
+
+        for row_index in 0..height {
+            let source_row = 144usize + row_index;
+            let source_base = source_row * plane_pitch_pixels + source_start;
+            for pixel_index in 0..width {
+                vram[source_base + pixel_index] = (pixel_index as u8)
+                    .wrapping_mul(19)
+                    .wrapping_add(row_index as u8)
+                    .wrapping_add(7);
+            }
+        }
+        let original = vram.clone();
+
+        for row_index in 0..height {
+            let source_row = 144usize + row_index;
+            let destination_row = 144usize + row_index;
+            let mut source_offset =
+                ((source_row * plane_pitch_pixels + first_source_word_x) / 8) as u32;
+            let mut destination_offset =
+                ((destination_row * plane_pitch_pixels + first_destination_word_x) / 8) as u32;
+            loop {
+                pegc.plane_read_word(source_offset, &vram);
+                pegc.plane_write_word(destination_offset, 0, &mut vram);
+                if pegc.state.remain == 0 {
+                    break;
+                }
+                source_offset += 2;
+                destination_offset += 2;
+            }
+        }
+
+        for row_index in 0..height {
+            let source_row = 144usize + row_index;
+            let destination_row = 144usize + row_index;
+            let source_base = source_row * plane_pitch_pixels + source_start;
+            let destination_base = destination_row * plane_pitch_pixels + destination_start;
+            for pixel_index in 48..destination_start {
+                assert_eq!(
+                    vram[destination_row * plane_pitch_pixels + pixel_index],
+                    original[destination_row * plane_pitch_pixels + pixel_index],
+                    "increment shifted copy row {row_index} touched pixel {pixel_index} before destination"
+                );
+            }
+            for pixel_index in 0..width {
+                assert_eq!(
+                    vram[destination_base + pixel_index],
+                    original[source_base + pixel_index],
+                    "increment shifted copy row {row_index} pixel {pixel_index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn plane_mode_same_shift_decrement_vram_source_discards_tail_at_block_end() {
+        let mut pegc = decrement_vram_source_copy(25, 3, 3);
 
         let mut vram = vec![0u8; PEGC_VRAM_SIZE];
         let source_offset = 0x1004u32;
         let destination_offset = 0x2004u32;
-        let destination_high_pixel = destination_offset * 8 + 11;
+        let source_high_pixel = decrement_source_high_pixel(source_offset, pegc.state.shift_read);
+        let destination_high_pixel =
+            decrement_destination_high_pixel(destination_offset, pegc.state.shift_write, true);
 
-        for offset in [0x1004u32, 0x1002, 0x1000] {
-            let source_base = offset * 8;
-            for i in 0..16u32 {
-                vram[(source_base - i) as usize] = 0xA0;
-            }
-        }
-        let padding_source_base = 0x1000u32 * 8;
-        for i in 0..16u32 {
-            vram[(padding_source_base + 4 - i) as usize] = 0x5A;
+        for index in 0..26u32 {
+            vram[(source_high_pixel - index) as usize] = 0xA0;
         }
 
-        pegc.plane_read_word(source_offset, &vram);
-        pegc.plane_write_word(destination_offset, 0, &mut vram);
-        pegc.plane_read_word(source_offset - 2, &vram);
-        pegc.plane_write_word(destination_offset - 2, 0, &mut vram);
-        assert_eq!(pegc.state.remain, 0);
-
-        pegc.plane_read_word(source_offset - 4, &vram);
-        pegc.plane_write_word(destination_offset - 4, 0, &mut vram);
+        run_decrement_word_copy(&mut pegc, source_offset, destination_offset, &mut vram);
 
         for index in 0..26u32 {
             assert_eq!(
@@ -1672,12 +1939,34 @@ mod tests {
         for index in 0..8u32 {
             assert_eq!(
                 vram[(destination_high_pixel - 26 - index) as usize],
-                0x5A,
-                "padding decrement pixel {index}"
+                0x00,
+                "pixel {index} after the decrement block should be untouched"
             );
         }
-        assert_eq!(pegc.state.remain, 26);
+        assert_eq!(pegc.state.remain, 0);
         assert_eq!(pegc.state.last_data_length, 0);
+        assert!(!pegc.state.skip_next_shifted_padding_write);
+
+        let next_source_offset = 0x3004u32;
+        let next_destination_offset = 0x4004u32;
+        let next_source_high_pixel =
+            decrement_source_high_pixel(next_source_offset, pegc.state.shift_read);
+        let next_destination_high_pixel =
+            decrement_destination_high_pixel(next_destination_offset, pegc.state.shift_write, true);
+        for index in 0..26u32 {
+            vram[(next_source_high_pixel - index) as usize] = 0x5A;
+        }
+
+        pegc.plane_read_word(next_source_offset, &vram);
+        pegc.plane_write_word(next_destination_offset, 0, &mut vram);
+
+        for index in 0..4u32 {
+            assert_eq!(
+                vram[(next_destination_high_pixel - index) as usize],
+                0x5A,
+                "next decrement block pixel {index}"
+            );
+        }
     }
 
     #[test]
@@ -1908,6 +2197,81 @@ mod tests {
     }
 
     #[test]
+    fn plane_dword_small_block_does_not_restart_upper_word() {
+        let mut pegc = Pegc::new();
+        pegc.state.mode_register = 1;
+        pegc.state.plane_access_mask = 0x00;
+        pegc.state.rop_register = 0x0100;
+        pegc.state.write_mask = 0xFFFF_FFFF;
+        pegc.state.block_length = 2;
+        pegc.state.remain = 3;
+
+        let mut vram = vec![0x77u8; PEGC_VRAM_SIZE];
+        pegc.plane_write_dword(0, 0xFFFF_FFFF, &mut vram);
+
+        for (i, byte) in vram.iter().enumerate().take(3) {
+            assert_eq!(*byte, 0xFF, "pixel {i} within the small block");
+        }
+        for (i, byte) in vram.iter().enumerate().take(32).skip(3) {
+            assert_eq!(*byte, 0x77, "pixel {i} outside the small block");
+        }
+        assert_eq!(pegc.state.remain, 0);
+    }
+
+    #[test]
+    fn plane_dword_shifted_pattern_xor_small_block_writes_only_shifted_pixels() {
+        let mut pegc = Pegc::new();
+        pegc.state.mode_register = 1;
+        pegc.state.plane_access_mask = 0x00;
+        pegc.state.rop_register = 0x9166;
+        pegc.state.write_mask = 0xFFFF_FFFF;
+        pegc.state.block_length = 2;
+        pegc.state.remain = 3;
+        pegc.state.shift_write = 10;
+        for pixel in 10..13u32 {
+            pegc.mmio_write_byte(MMIO2_BASE + REG_PATTERN + pixel * 4, 0xFF);
+        }
+
+        let mut vram = vec![0x55u8; PEGC_VRAM_SIZE];
+        pegc.plane_write_dword(0, 0, &mut vram);
+
+        for (i, byte) in vram.iter().enumerate().take(10) {
+            assert_eq!(*byte, 0x55, "pixel {i} before the shifted block");
+        }
+        for (i, byte) in vram.iter().enumerate().take(13).skip(10) {
+            assert_eq!(*byte, 0xAA, "pixel {i} toggled by the XOR pattern");
+        }
+        for (i, byte) in vram.iter().enumerate().take(32).skip(13) {
+            assert_eq!(*byte, 0x55, "pixel {i} outside the shifted block");
+        }
+        assert_eq!(pegc.state.remain, 0);
+    }
+
+    #[test]
+    fn plane_dword_shifted_pattern_xor_small_block_is_self_erasing() {
+        let mut pegc = Pegc::new();
+        pegc.state.mode_register = 1;
+        pegc.state.plane_access_mask = 0x00;
+        pegc.state.rop_register = 0x9166;
+        pegc.state.write_mask = 0xFFFF_FFFF;
+        pegc.state.block_length = 2;
+        pegc.state.remain = 3;
+        pegc.state.shift_write = 10;
+        for pixel in 10..13u32 {
+            pegc.mmio_write_byte(MMIO2_BASE + REG_PATTERN + pixel * 4, 0xFF);
+        }
+
+        let mut vram = vec![0x55u8; PEGC_VRAM_SIZE];
+        pegc.plane_write_dword(0, 0, &mut vram);
+        pegc.state.remain = 3;
+        pegc.plane_write_dword(0, 0, &mut vram);
+
+        for (i, byte) in vram.iter().enumerate().take(32) {
+            assert_eq!(*byte, 0x55, "pixel {i} after the second XOR");
+        }
+    }
+
+    #[test]
     fn plane_mode_word_write_simple_no_rop() {
         let mut pegc = Pegc::new();
         pegc.state.mode_register = 1;
@@ -2122,7 +2486,7 @@ mod tests {
     }
 
     #[test]
-    fn plane_dword_word_sized_block_writes_both_words() {
+    fn plane_dword_word_sized_block_writes_one_configured_block() {
         let mut pegc = Pegc::new();
         pegc.state.mode_register = 1;
         pegc.state.plane_access_mask = 0x00;
@@ -2133,13 +2497,17 @@ mod tests {
         let mut vram = vec![0u8; PEGC_VRAM_SIZE];
         pegc.plane_write_dword(0, 0xFFFF_FFFF, &mut vram);
 
-        for (i, byte) in vram.iter().enumerate().take(32) {
+        for (i, byte) in vram.iter().enumerate().take(16) {
             assert_eq!(*byte, 0xFF, "pixel {i} should be written");
         }
+        for (i, byte) in vram.iter().enumerate().take(32).skip(16) {
+            assert_eq!(*byte, 0x00, "pixel {i} should be outside the block");
+        }
+        assert_eq!(pegc.state.remain, 0);
     }
 
     #[test]
-    fn plane_dword_word_sized_block_consumes_vram_source_by_word() {
+    fn plane_dword_word_sized_block_consumes_one_vram_source_block() {
         let mut pegc = Pegc::new();
         pegc.state.mode_register = 1;
         pegc.state.plane_access_mask = 0x00;
@@ -2158,8 +2526,9 @@ mod tests {
             assert_eq!(*byte, 0x11, "pixel {i} should use the first source word");
         }
         for (i, byte) in vram.iter().enumerate().skip(80).take(16) {
-            assert_eq!(*byte, 0x22, "pixel {i} should use the second source word");
+            assert_eq!(*byte, 0x00, "pixel {i} should be outside the block");
         }
+        assert_eq!(pegc.state.remain, 0);
     }
 
     #[test]

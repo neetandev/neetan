@@ -315,7 +315,7 @@ fn pegc_plane_dword_write_bus_dispatch() {
 }
 
 #[test]
-fn pegc_plane_dword_vram_source_word_block_copies_both_word_lanes() {
+fn pegc_plane_dword_vram_source_word_block_copies_one_configured_block() {
     let mut bus = create_pegc_bus();
     enable_pegc_packed_pixel(&mut bus);
     bus.write_word(0xE0100, 0x0001);
@@ -345,16 +345,19 @@ fn pegc_plane_dword_vram_source_word_block_copies_both_word_lanes() {
     let _ = bus.read_dword(source_address);
     bus.write_dword(destination_address, 0);
 
-    for pixel in 0..32u32 {
-        let expected = if pixel < 16 {
-            0x20 + pixel as u8
-        } else {
-            0x60 + (pixel - 16) as u8
-        };
+    for pixel in 0..16u32 {
+        let expected = 0x20 + pixel as u8;
         let actual = bus.read_byte(PEGC_LINEAR_FB_LOW + destination_pixel_base + pixel);
         assert_eq!(
             actual, expected,
-            "pixel {pixel} should be copied by the 32-bit word-block ROP"
+            "pixel {pixel} should be copied by the word-sized dword ROP"
+        );
+    }
+    for pixel in 16..32u32 {
+        let actual = bus.read_byte(PEGC_LINEAR_FB_LOW + destination_pixel_base + pixel);
+        assert_eq!(
+            actual, 0xE7,
+            "pixel {pixel} should be outside the word-sized dword ROP"
         );
     }
 }
