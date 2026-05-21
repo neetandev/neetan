@@ -693,8 +693,14 @@ impl Pegc {
     /// Writes a dword to PEGC VRAM in plane mode with ROP operations.
     ///
     /// Same semantics as `plane_write_word` but processes 32 pixels per call.
-    /// Shift register bit 4 is valid and the write mask covers all 32 pixels.
+    /// Shift register bit 4 is valid and the write mask is applied to each word.
     pub fn plane_write_dword(&mut self, offset: u32, value: u32, vram: &mut [u8]) {
+        if self.state.block_length < 16 {
+            self.plane_write_impl(offset, value & 0xFFFF, vram, 16);
+            self.plane_write_impl(offset + 2, value >> 16, vram, 16);
+            return;
+        }
+
         self.plane_write_impl(offset, value, vram, 32);
     }
 
@@ -712,7 +718,9 @@ impl Pegc {
 
         if self.state.remain == 0 {
             self.state.remain = block_length + 1;
-            self.state.last_data_length = 0;
+            if source_from_cpu {
+                self.state.last_data_length = 0;
+            }
             if self.state.skip_next_shifted_cpu_write {
                 self.state.skip_next_shifted_cpu_write = false;
                 return;
@@ -745,15 +753,12 @@ impl Pegc {
             } else {
                 base_address.wrapping_add(i as u32) & (PEGC_VRAM_SIZE as u32 - 1)
             };
-            let pixel_mask_bit = pixel_mask_position(i as u32);
+            let source_bit = source_bit_position(i as u32);
+            let pixel_mask_bit = write_mask_position(i as u32);
 
             if pixel_mask & pixel_mask_bit != 0 {
                 let source = if source_from_cpu {
-                    if value & pixel_mask_bit != 0 {
-                        0xFF
-                    } else {
-                        0x00
-                    }
+                    if value & source_bit != 0 { 0xFF } else { 0x00 }
                 } else if (i as usize) < source_buffer_length {
                     self.state.last_vram_data[i as usize]
                 } else {
@@ -824,14 +829,21 @@ impl Pegc {
     }
 }
 
-/// Computes the pixel mask bit position for a given pixel index within a 16-pixel group.
+/// Computes the CPU source bit position for a given pixel index.
 ///
-/// The bit layout maps pixel index to bit position within the 32-bit mask:
-/// pixels 0-7 map to bits 7-0 (reversed), pixels 8-15 map to bits 15-8 (reversed).
-fn pixel_mask_position(pixel_index: u32) -> u32 {
+/// The bit layout maps pixels 0-7 to bits 7-0, pixels 8-15 to bits 15-8,
+/// and repeats that byte order across bits 16-31 for dword CPU writes.
+fn source_bit_position(pixel_index: u32) -> u32 {
     let byte_group = (pixel_index / 8) * 8;
     let bit_within_byte = 7 - (pixel_index & 7);
     1 << (byte_group + bit_within_byte)
+}
+
+/// Computes the write-mask bit for a pixel index.
+///
+/// PEGC applies the 16-pixel write mask to each word lane of a dword write.
+fn write_mask_position(pixel_index: u32) -> u32 {
+    source_bit_position(pixel_index & 0x0F)
 }
 
 /// Applies the 8-bit ROP truth table to source, destination, and pattern values.
@@ -1436,7 +1448,7 @@ mod tests {
         pegc.plane_write_word(0, 0xFF00, &mut vram);
 
         for i in 0..8 {
-            let expected_source: u8 = if 0xFF00u16 & pixel_mask_position(i) as u16 != 0 {
+            let expected_source: u8 = if 0xFF00u16 & source_bit_position(i) as u16 != 0 {
                 0xFF
             } else {
                 0x00
@@ -1549,17 +1561,29 @@ mod tests {
     }
 
     #[test]
-    fn pixel_mask_position_layout() {
-        assert_eq!(pixel_mask_position(0), 0x80);
-        assert_eq!(pixel_mask_position(1), 0x40);
-        assert_eq!(pixel_mask_position(7), 0x01);
-        assert_eq!(pixel_mask_position(8), 0x8000);
-        assert_eq!(pixel_mask_position(15), 0x0100);
-        // The same formula maps pixels 16..31 to bits 16..31 of the mask.
-        assert_eq!(pixel_mask_position(16), 0x0080_0000);
-        assert_eq!(pixel_mask_position(23), 0x0001_0000);
-        assert_eq!(pixel_mask_position(24), 0x8000_0000);
-        assert_eq!(pixel_mask_position(31), 0x0100_0000);
+    fn source_bit_position_layout() {
+        assert_eq!(source_bit_position(0), 0x80);
+        assert_eq!(source_bit_position(1), 0x40);
+        assert_eq!(source_bit_position(7), 0x01);
+        assert_eq!(source_bit_position(8), 0x8000);
+        assert_eq!(source_bit_position(15), 0x0100);
+        assert_eq!(source_bit_position(16), 0x0080_0000);
+        assert_eq!(source_bit_position(23), 0x0001_0000);
+        assert_eq!(source_bit_position(24), 0x8000_0000);
+        assert_eq!(source_bit_position(31), 0x0100_0000);
+    }
+
+    #[test]
+    fn write_mask_position_repeats_for_dword_lanes() {
+        assert_eq!(write_mask_position(0), 0x80);
+        assert_eq!(write_mask_position(1), 0x40);
+        assert_eq!(write_mask_position(7), 0x01);
+        assert_eq!(write_mask_position(8), 0x8000);
+        assert_eq!(write_mask_position(15), 0x0100);
+        assert_eq!(write_mask_position(16), 0x80);
+        assert_eq!(write_mask_position(23), 0x01);
+        assert_eq!(write_mask_position(24), 0x8000);
+        assert_eq!(write_mask_position(31), 0x0100);
     }
 
     #[test]
@@ -1581,6 +1605,84 @@ mod tests {
         for (i, byte) in vram.iter().enumerate().take(32) {
             let expected = if i % 2 == 0 { 0xFF } else { 0x00 };
             assert_eq!(*byte, expected, "pixel {i}: expected {expected:#04X}");
+        }
+    }
+
+    #[test]
+    fn plane_dword_write_mask_repeats_for_second_word() {
+        let mut pegc = Pegc::new();
+        pegc.state.mode_register = 1;
+        pegc.state.plane_access_mask = 0x00;
+        pegc.state.rop_register = 0x0100; // source = CPU data
+        pegc.state.write_mask = 0x0000_FFFF;
+        pegc.state.block_length = 0x0FFF;
+
+        let mut vram = vec![0u8; PEGC_VRAM_SIZE];
+        pegc.plane_write_dword(0, 0xFFFF_FFFF, &mut vram);
+
+        for (i, byte) in vram.iter().enumerate().take(32) {
+            assert_eq!(*byte, 0xFF, "pixel {i} should be written");
+        }
+    }
+
+    #[test]
+    fn plane_dword_cpu_source_uses_upper_value_bits() {
+        let mut pegc = Pegc::new();
+        pegc.state.mode_register = 1;
+        pegc.state.plane_access_mask = 0x00;
+        pegc.state.rop_register = 0x0100; // source = CPU data
+        pegc.state.write_mask = 0x0000_FFFF;
+        pegc.state.block_length = 0x0FFF;
+
+        let mut vram = vec![0xAA; PEGC_VRAM_SIZE];
+        pegc.plane_write_dword(0, 0xFFFF_0000, &mut vram);
+
+        for (i, byte) in vram.iter().enumerate().take(16) {
+            assert_eq!(*byte, 0x00, "pixel {i} should use low source bits");
+        }
+        for (i, byte) in vram.iter().enumerate().take(32).skip(16) {
+            assert_eq!(*byte, 0xFF, "pixel {i} should use upper source bits");
+        }
+    }
+
+    #[test]
+    fn plane_dword_word_sized_block_writes_both_words() {
+        let mut pegc = Pegc::new();
+        pegc.state.mode_register = 1;
+        pegc.state.plane_access_mask = 0x00;
+        pegc.state.rop_register = 0x0100; // source = CPU data
+        pegc.state.write_mask = 0x0000_FFFF;
+        pegc.state.block_length = 0x000F;
+
+        let mut vram = vec![0u8; PEGC_VRAM_SIZE];
+        pegc.plane_write_dword(0, 0xFFFF_FFFF, &mut vram);
+
+        for (i, byte) in vram.iter().enumerate().take(32) {
+            assert_eq!(*byte, 0xFF, "pixel {i} should be written");
+        }
+    }
+
+    #[test]
+    fn plane_dword_word_sized_block_consumes_vram_source_by_word() {
+        let mut pegc = Pegc::new();
+        pegc.state.mode_register = 1;
+        pegc.state.plane_access_mask = 0x00;
+        pegc.state.rop_register = 0x0000; // source = preceding VRAM read
+        pegc.state.write_mask = 0x0000_FFFF;
+        pegc.state.block_length = 0x000F;
+
+        let mut vram = vec![0u8; PEGC_VRAM_SIZE];
+        vram[..16].fill(0x11);
+        vram[16..32].fill(0x22);
+
+        pegc.plane_read_dword(0, &vram);
+        pegc.plane_write_dword(8, 0, &mut vram);
+
+        for (i, byte) in vram.iter().enumerate().skip(64).take(16) {
+            assert_eq!(*byte, 0x11, "pixel {i} should use the first source word");
+        }
+        for (i, byte) in vram.iter().enumerate().skip(80).take(16) {
+            assert_eq!(*byte, 0x22, "pixel {i} should use the second source word");
         }
     }
 

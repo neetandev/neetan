@@ -314,6 +314,51 @@ fn pegc_plane_dword_write_bus_dispatch() {
     }
 }
 
+#[test]
+fn pegc_plane_dword_vram_source_word_block_copies_both_word_lanes() {
+    let mut bus = create_pegc_bus();
+    enable_pegc_packed_pixel(&mut bus);
+    bus.write_word(0xE0100, 0x0001);
+    bus.write_byte(0xE0102, 0x01);
+    bus.io_write_byte(0xF2, 0);
+
+    bus.write_word(0xE0108, 0x10F0);
+    bus.write_word(0xE010C, 0xFFFF);
+    bus.write_word(0xE010E, 0x0000);
+    bus.write_word(0xE0110, 0x000F);
+
+    let source_address = 0xB7000;
+    let destination_address = 0xA9000;
+    let source_pixel_base = (source_address - PEGC_VRAM_A) * 8;
+    let destination_pixel_base = (destination_address - PEGC_VRAM_A) * 8;
+
+    for pixel in 0..32u32 {
+        let value = if pixel < 16 {
+            0x20 + pixel as u8
+        } else {
+            0x60 + (pixel - 16) as u8
+        };
+        bus.write_byte(PEGC_LINEAR_FB_LOW + source_pixel_base + pixel, value);
+        bus.write_byte(PEGC_LINEAR_FB_LOW + destination_pixel_base + pixel, 0xE7);
+    }
+
+    let _ = bus.read_dword(source_address);
+    bus.write_dword(destination_address, 0);
+
+    for pixel in 0..32u32 {
+        let expected = if pixel < 16 {
+            0x20 + pixel as u8
+        } else {
+            0x60 + (pixel - 16) as u8
+        };
+        let actual = bus.read_byte(PEGC_LINEAR_FB_LOW + destination_pixel_base + pixel);
+        assert_eq!(
+            actual, expected,
+            "pixel {pixel} should be copied by the 32-bit word-block ROP"
+        );
+    }
+}
+
 /// Verifies that the renderer reads PEGC packed-pixel VRAM with a 640-byte
 /// scanline stride when the GDC is in 2.5 MHz mode.
 #[test]
