@@ -1,5 +1,22 @@
 use crate::harness::*;
 
+#[test]
+fn dir_lists_standard_2hd_floppy_without_bpb() {
+    let floppy = create_test_floppy_without_bpb();
+    let mut machine = boot_hle_with_floppy_image(floppy);
+
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"DIR\r");
+    run_until_prompt(&mut machine);
+
+    assert!(
+        find_row_containing(&machine.bus, "TESTFILE").is_some(),
+        "DIR should list files from a standard 2HD FAT12 floppy without a BPB"
+    );
+}
+
 fn row_containing(machine: &machine::Pc9801Ra, needle: &str) -> usize {
     find_row_containing(&machine.bus, needle)
         .unwrap_or_else(|| panic!("expected to find row containing {needle:?}"))

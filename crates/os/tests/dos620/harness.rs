@@ -640,6 +640,20 @@ pub fn create_test_floppy() -> device::floppy::FloppyImage {
     build_test_floppy_image("TEST", &standard_test_files())
 }
 
+pub fn create_test_floppy_without_bpb() -> device::floppy::FloppyImage {
+    let mut floppy = create_test_floppy();
+    let boot_sector = floppy
+        .find_sector_on_track_index_mut(0, 0, 0, 1, 3)
+        .expect("test floppy has boot sector");
+    let boot_code = [
+        0x33, 0xC0, 0x8E, 0xC0, 0x8E, 0xD8, 0x8E, 0xD0, 0xBC, 0x8E, 0x02, 0x26, 0xA0, 0x84, 0x05,
+        0xBD, 0x00, 0x06, 0xBB, 0x00, 0x14, 0xB9, 0x00, 0x03, 0xBA, 0x04, 0x01, 0xB4, 0x76, 0xCD,
+        0x1B, 0xBD,
+    ];
+    boot_sector.data[..boot_code.len()].copy_from_slice(&boot_code);
+    floppy
+}
+
 /// Creates a test floppy with custom program data at cluster 4.
 /// `fcb_name` is the 11-byte FCB name (e.g. `b"TEST    COM"` or `b"TEST    EXE"`).
 pub fn create_test_floppy_with_program(
