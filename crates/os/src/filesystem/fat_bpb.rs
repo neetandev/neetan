@@ -9,6 +9,7 @@ pub(crate) struct Bpb {
     pub num_fats: u8,
     pub root_entry_count: u16,
     pub total_sectors_16: u16,
+    pub media_descriptor: u8,
     pub sectors_per_fat: u16,
     pub total_sectors_32: u32,
 }
@@ -34,6 +35,7 @@ impl Bpb {
         let num_fats = sector[16];
         let root_entry_count = u16::from_le_bytes([sector[17], sector[18]]);
         let total_sectors_16 = u16::from_le_bytes([sector[19], sector[20]]);
+        let media_descriptor = sector[21];
         let sectors_per_fat = u16::from_le_bytes([sector[22], sector[23]]);
         let total_sectors_32 = u32::from_le_bytes([sector[32], sector[33], sector[34], sector[35]]);
 
@@ -44,9 +46,55 @@ impl Bpb {
             num_fats,
             root_entry_count,
             total_sectors_16,
+            media_descriptor,
             sectors_per_fat,
             total_sectors_32,
         })
+    }
+
+    pub fn pc98_2hd_floppy() -> Self {
+        Self {
+            bytes_per_sector: 1024,
+            sectors_per_cluster: 1,
+            reserved_sectors: 1,
+            num_fats: 2,
+            root_entry_count: 192,
+            total_sectors_16: 1232,
+            media_descriptor: 0xFE,
+            sectors_per_fat: 2,
+            total_sectors_32: 0,
+        }
+    }
+
+    pub fn is_supported_with_physical_sector_size(&self, physical_sector_size: u16) -> bool {
+        if physical_sector_size == 0
+            || self.bytes_per_sector < physical_sector_size
+            || !self.bytes_per_sector.is_multiple_of(physical_sector_size)
+        {
+            return false;
+        }
+
+        self.reserved_sectors != 0
+            && self.num_fats != 0
+            && self.root_entry_count != 0
+            && self.sectors_per_fat != 0
+            && self.total_sectors() != 0
+            && self.first_data_sector() < self.total_sectors()
+    }
+
+    pub fn has_valid_initial_fat_entries(&self, fat_data: &[u8]) -> bool {
+        if self.is_fat16() {
+            fat_data.len() >= 4
+                && fat_data[0] == self.media_descriptor
+                && fat_data[1] == 0xFF
+                && fat_data[2] == 0xFF
+                && fat_data[3] == 0xFF
+        } else {
+            fat_data.len() >= 3
+                && fat_data[0] == self.media_descriptor
+                && fat_data[1] == 0xFF
+                && fat_data[2] == 0xFF
+        }
     }
 
     /// Total sectors on the volume.

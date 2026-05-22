@@ -32,7 +32,12 @@ impl FatVolume {
         let boot_sector = disk
             .read_sectors(drive_da, partition_offset, boot_phys_count)
             .map_err(|_| 0x001Fu16)?;
-        let bpb = Bpb::parse(&boot_sector).ok_or(0x001Fu16)?;
+        let bpb = match Bpb::parse(&boot_sector)
+            .filter(|bpb| bpb.is_supported_with_physical_sector_size(physical_sector_size))
+        {
+            Some(bpb) => bpb,
+            None => Self::fallback_bpb(drive_da, partition_offset, physical_sector_size, disk)?,
+        };
 
         let sector_ratio = bpb.bytes_per_sector as u32 / physical_sector_size as u32;
 
@@ -59,6 +64,33 @@ impl FatVolume {
             fat_dirty: false,
             sector_ratio,
         })
+    }
+
+    fn fallback_bpb(
+        drive_da: u8,
+        partition_offset: u32,
+        physical_sector_size: u16,
+        disk: &mut dyn DiskIo,
+    ) -> Result<Bpb, u16> {
+        if partition_offset != 0 || drive_da & 0xF0 != 0x90 || physical_sector_size != 1024 {
+            return Err(0x001F);
+        }
+
+        let (cylinders, heads, sectors_per_track) =
+            disk.drive_geometry(drive_da).ok_or(0x001Fu16)?;
+        if cylinders != 77 || heads != 2 || sectors_per_track != 8 {
+            return Err(0x001F);
+        }
+
+        let bpb = Bpb::pc98_2hd_floppy();
+        let fat_data = disk
+            .read_sectors(drive_da, bpb.reserved_sectors as u32, 1)
+            .map_err(|_| 0x001Fu16)?;
+        if !bpb.has_valid_initial_fat_entries(&fat_data) {
+            return Err(0x001F);
+        }
+
+        Ok(bpb)
     }
 
     /// Reads a FAT entry for the given cluster number.
