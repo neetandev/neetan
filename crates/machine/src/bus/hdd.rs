@@ -6,6 +6,180 @@ use crate::{
 };
 
 impl<T: Tracing> Pc9801Bus<T> {
+    fn hle_hdd_write_byte(&mut self, linear_address: u32, value: u8) {
+        let physical_address = bios::hle_page_translate_write(
+            self.hle_cr0,
+            self.hle_cr3,
+            linear_address,
+            &mut self.memory,
+        );
+        self.write_byte_with_access_page(physical_address, value);
+    }
+
+    fn hle_hdd_read_byte(&mut self, linear_address: u32) -> u8 {
+        let physical_address = bios::hle_page_translate_read(
+            self.hle_cr0,
+            self.hle_cr3,
+            linear_address,
+            &mut self.memory,
+        );
+        self.read_byte_with_access_page(physical_address)
+    }
+
+    fn hle_hdd_read_to_memory(
+        &mut self,
+        xfer_size: u32,
+        sector_pos: u32,
+        buf_addr: u32,
+        sector_size: u16,
+        mut read_sector: impl FnMut(&Self, u32, &mut [u8]) -> bool,
+    ) -> u8 {
+        let mut remaining = xfer_size;
+        let mut pos = sector_pos;
+        let mut addr = buf_addr;
+        let sector_size = u32::from(sector_size);
+        let mut sector_buffer = vec![0u8; sector_size as usize];
+
+        while remaining > 0 {
+            let read_size = remaining.min(sector_size) as usize;
+            let sector_data = &mut sector_buffer[..read_size];
+            if !read_sector(self, pos, sector_data) {
+                return 0xD0;
+            }
+
+            for &byte in sector_data.iter() {
+                self.hle_hdd_write_byte(addr, byte);
+                addr += 1;
+            }
+
+            remaining -= read_size as u32;
+            pos += 1;
+        }
+
+        0x00
+    }
+
+    fn hle_hdd_write_from_memory(
+        &mut self,
+        xfer_size: u32,
+        sector_pos: u32,
+        buf_addr: u32,
+        sector_size: u16,
+        mut write_sector: impl FnMut(&mut Self, u32, &[u8]) -> bool,
+    ) -> u8 {
+        let mut remaining = xfer_size;
+        let mut pos = sector_pos;
+        let mut addr = buf_addr;
+        let sector_size = usize::from(sector_size);
+
+        while remaining > 0 {
+            let write_size = (remaining as usize).min(sector_size);
+            let mut buffer = vec![0u8; sector_size];
+
+            for byte in buffer.iter_mut().take(write_size) {
+                *byte = self.hle_hdd_read_byte(addr);
+                addr += 1;
+            }
+
+            if !write_sector(self, pos, &buffer) {
+                return 0x70;
+            }
+
+            remaining -= write_size as u32;
+            pos += 1;
+        }
+
+        0x00
+    }
+
+    pub(super) fn hle_sasi_read_to_memory(
+        &mut self,
+        drive_idx: usize,
+        xfer_size: u32,
+        sector_pos: u32,
+        buf_addr: u32,
+    ) -> u8 {
+        let Some(sector_size) = self.sasi.sector_size_for_drive(drive_idx) else {
+            return 0x60;
+        };
+        self.hle_hdd_read_to_memory(
+            xfer_size,
+            sector_pos,
+            buf_addr,
+            sector_size,
+            |bus, pos, buffer| {
+                let Some(sector_data) = bus.sasi.read_sector(drive_idx, pos) else {
+                    return false;
+                };
+                buffer.copy_from_slice(&sector_data[..buffer.len()]);
+                true
+            },
+        )
+    }
+
+    pub(super) fn hle_sasi_write_from_memory(
+        &mut self,
+        drive_idx: usize,
+        xfer_size: u32,
+        sector_pos: u32,
+        buf_addr: u32,
+    ) -> u8 {
+        let Some(sector_size) = self.sasi.sector_size_for_drive(drive_idx) else {
+            return 0x60;
+        };
+        self.hle_hdd_write_from_memory(
+            xfer_size,
+            sector_pos,
+            buf_addr,
+            sector_size,
+            |bus, pos, data| bus.sasi.write_sector_raw(drive_idx, pos, data),
+        )
+    }
+
+    pub(super) fn hle_ide_read_to_memory(
+        &mut self,
+        drive_idx: usize,
+        xfer_size: u32,
+        sector_pos: u32,
+        buf_addr: u32,
+    ) -> u8 {
+        let Some(sector_size) = self.ide.sector_size_for_drive(drive_idx) else {
+            return 0x60;
+        };
+        self.hle_hdd_read_to_memory(
+            xfer_size,
+            sector_pos,
+            buf_addr,
+            sector_size,
+            |bus, pos, buffer| {
+                let Some(sector_data) = bus.ide.read_sector(drive_idx, pos) else {
+                    return false;
+                };
+                buffer.copy_from_slice(&sector_data[..buffer.len()]);
+                true
+            },
+        )
+    }
+
+    pub(super) fn hle_ide_write_from_memory(
+        &mut self,
+        drive_idx: usize,
+        xfer_size: u32,
+        sector_pos: u32,
+        buf_addr: u32,
+    ) -> u8 {
+        let Some(sector_size) = self.ide.sector_size_for_drive(drive_idx) else {
+            return 0x60;
+        };
+        self.hle_hdd_write_from_memory(
+            xfer_size,
+            sector_pos,
+            buf_addr,
+            sector_size,
+            |bus, pos, data| bus.ide.write_sector_raw(drive_idx, pos, data),
+        )
+    }
+
     pub(super) fn handle_sasi_execution(&mut self) {
         let raise_irq = self.sasi.complete_operation();
         if raise_irq {
@@ -141,13 +315,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     .map(|g| device::sasi::sector_position(drive_select, cx, dx, &g))
                     .unwrap_or(0);
                 let addr = device::sasi::buffer_address(es, bp);
-                let cr0 = self.hle_cr0;
-                let cr3 = self.hle_cr3;
-                let memory = &mut self.memory;
-                self.sasi.execute_write(drive_idx, xfer, pos, addr, |a| {
-                    let phys = bios::hle_page_translate_read(cr0, cr3, a, memory);
-                    memory.read_byte(phys)
-                })
+                self.hle_sasi_write_from_memory(drive_idx, xfer, pos, addr)
             }
             0x06 => {
                 let xfer = device::sasi::transfer_size(bx);
@@ -156,14 +324,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     .map(|g| device::sasi::sector_position(drive_select, cx, dx, &g))
                     .unwrap_or(0);
                 let addr = device::sasi::buffer_address(es, bp);
-                let cr0 = self.hle_cr0;
-                let cr3 = self.hle_cr3;
-                let memory = &mut self.memory;
-                self.sasi
-                    .execute_read(drive_idx, xfer, pos, addr, |a, byte| {
-                        let phys = bios::hle_page_translate_write(cr0, cr3, a, memory);
-                        memory.write_byte(phys, byte);
-                    })
+                self.hle_sasi_read_to_memory(drive_idx, xfer, pos, addr)
             }
             0x07 | 0x0F => 0x00, // Retract: no-op
             0x0D => {
@@ -308,13 +469,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     .map(|g| device::ide::sector_position(drive_select, cx, dx, &g))
                     .unwrap_or(0);
                 let addr = device::ide::buffer_address(es, bp);
-                let cr0 = self.hle_cr0;
-                let cr3 = self.hle_cr3;
-                let memory = &mut self.memory;
-                self.ide.execute_write(drive_idx, xfer, pos, addr, |a| {
-                    let phys = bios::hle_page_translate_read(cr0, cr3, a, memory);
-                    memory.read_byte(phys)
-                })
+                self.hle_ide_write_from_memory(drive_idx, xfer, pos, addr)
             }
             0x06 => {
                 let xfer = device::ide::transfer_size(bx);
@@ -323,14 +478,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     .map(|g| device::ide::sector_position(drive_select, cx, dx, &g))
                     .unwrap_or(0);
                 let addr = device::ide::buffer_address(es, bp);
-                let cr0 = self.hle_cr0;
-                let cr3 = self.hle_cr3;
-                let memory = &mut self.memory;
-                self.ide
-                    .execute_read(drive_idx, xfer, pos, addr, |a, byte| {
-                        let phys = bios::hle_page_translate_write(cr0, cr3, a, memory);
-                        memory.write_byte(phys, byte);
-                    })
+                self.hle_ide_read_to_memory(drive_idx, xfer, pos, addr)
             }
             0x07 | 0x0F => 0x00, // Retract: no-op
             0x0D => {

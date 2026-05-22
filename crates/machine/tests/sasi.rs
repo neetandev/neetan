@@ -415,6 +415,32 @@ fn sasi_hle_read_copies_sector_to_memory() {
 }
 
 #[test]
+fn sasi_hle_read_uses_vram_access_page() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+    bus.insert_hdd(0, make_test_drive(), None);
+
+    bus.io_write_byte(0xA6, 0x00);
+    bus.write_byte(0xA8001, 0xAA);
+    bus.io_write_byte(0xA6, 0x01);
+    bus.write_byte(0xA8001, 0xAA);
+
+    // AH=0x06 (read), AL=0x80 (drive 0, CHS mode), BX=256 (1 sector).
+    // CHS(0, 0, 5) = LBA 5. ES:BP = A800:0000 targets graphics VRAM.
+    let frame = SasiTestFrame::new(&mut bus, 0x0680, 0x0100, 0x0000, 0x0005, 0x0000, 0xA800);
+
+    bus.execute_sasi_hle(frame.ss_base, frame.sp);
+
+    assert_eq!(bus.graphics_vram()[1], 0xAA, "page 0 must be untouched");
+    assert_eq!(
+        bus.graphics_vram()[0x18000 + 1],
+        0x05,
+        "sector data should land on access page 1"
+    );
+    assert_eq!(frame.result_ah(&mut bus), 0x00, "read should succeed");
+    assert!(!frame.result_cf(&mut bus), "CF should be clear on success");
+}
+
+#[test]
 fn sasi_hle_write_modifies_drive_image() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
