@@ -820,7 +820,10 @@ impl Gdc {
     pub fn set_sync_mode_byte(&mut self, mode: u8) {
         self.param_buffer[0] = mode;
         self.param_index = self.param_index.max(8);
-        self.parse_sync_params();
+        self.display_mode = mode & DISPLAY_MODE_MASK;
+        self.interlace_mode = (mode & 0x01) | (mode & 0x08);
+        self.draw_on_retrace = mode & 0x10 != 0;
+        self.recompute_timing();
     }
 
     /// Recomputes display timing from current SYNC parameters and dot clock.
