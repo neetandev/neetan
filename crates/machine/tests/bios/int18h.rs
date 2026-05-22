@@ -4434,6 +4434,41 @@ fn draw_mode_set_sync_mode_byte_ra() {
     assert_eq!(state.gdc_slave.display_mode, DISPLAY_MODE_GRAPHICS);
 }
 
+fn assert_draw_mode_preserves_slave_sync(state: &machine::MachineState) {
+    assert_eq!(state.gdc_slave.pitch, 40);
+    assert_eq!(state.gdc_slave.aw, 40);
+    assert_eq!(state.gdc_slave.al, 400);
+    assert_ne!(state.gdc_slave.display_period, 0);
+}
+
+#[test]
+fn draw_mode_set_preserves_slave_sync_f() {
+    let code = make_int18h_call_ch(0x4A, 0x02);
+    let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
+    assert_draw_mode_preserves_slave_sync(&machine.save_state());
+}
+
+#[test]
+fn draw_mode_set_preserves_slave_sync_vm() {
+    let code = make_int18h_call_ch(0x4A, 0x02);
+    let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
+    assert_draw_mode_preserves_slave_sync(&machine.save_state());
+}
+
+#[test]
+fn draw_mode_set_preserves_slave_sync_vx() {
+    let code = make_int18h_call_ch(0x4A, 0x02);
+    let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
+    assert_draw_mode_preserves_slave_sync(&machine.save_state());
+}
+
+#[test]
+fn draw_mode_set_preserves_slave_sync_ra() {
+    let code = make_int18h_call_ch(0x4A, 0x02);
+    let machine = boot_inject_run_ra(&[], &code, 2_000_000);
+    assert_draw_mode_preserves_slave_sync(&machine.save_state());
+}
+
 #[test]
 fn draw_mode_set_sync_draw_on_retrace_f() {
     // CH=0x12 has bit 4 set -> draw_on_retrace should be true.
