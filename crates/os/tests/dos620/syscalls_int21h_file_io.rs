@@ -1,3 +1,4 @@
+use common::Bus;
 use os::tables;
 
 use crate::harness;
@@ -343,6 +344,59 @@ fn read_from_file() {
         &read_back,
         &harness::TEST_COMMAND_COM[..2],
         "Read data should match first 2 bytes of COMMAND.COM"
+    );
+
+    close_file(&mut machine, handle);
+}
+
+#[test]
+fn read_from_file_uses_vram_access_page() {
+    let mut machine = harness::boot_hle_with_floppy();
+
+    machine.bus.io_write_byte(0xA6, 0x00);
+    machine.bus.write_byte(0xA8000, 0xAA);
+    machine.bus.io_write_byte(0xA6, 0x01);
+    machine.bus.write_byte(0xA8000, 0xAA);
+
+    let handle = open_file(&mut machine, b"A:\\TESTFILE.TXT\0");
+    let handle_lo = (handle & 0xFF) as u8;
+    let handle_hi = (handle >> 8) as u8;
+
+    #[rustfmt::skip]
+    let code: Vec<u8> = vec![
+        0xBB, handle_lo, handle_hi,         // MOV BX, handle
+        0x1E,                               // PUSH DS
+        0xB8, 0x00, 0xA8,                   // MOV AX, A800h
+        0x8E, 0xD8,                         // MOV DS, AX
+        0xB9, 0x02, 0x00,                   // MOV CX, 0002h
+        0x31, 0xD2,                         // XOR DX, DX
+        0xB4, 0x3F,                         // MOV AH, 3Fh
+        0xCD, 0x21,                         // INT 21h
+        0x9C,                               // PUSHF
+        0x50,                               // PUSH AX
+        0x0E,                               // PUSH CS
+        0x1F,                               // POP DS
+        0x58,                               // POP AX
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, &code, harness::INJECT_BUDGET_DISK_IO);
+
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(flags & 0x0001, 0, "read should succeed");
+    assert_eq!(harness::result_word(&machine.bus, 0), 2);
+    assert_eq!(
+        machine.bus.graphics_vram()[0],
+        0xAA,
+        "page 0 must be untouched"
+    );
+    assert_eq!(
+        machine.bus.graphics_vram()[0x18000],
+        harness::TEST_FILE_CONTENT[0],
+        "file data should land on graphics access page 1"
     );
 
     close_file(&mut machine, handle);

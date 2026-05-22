@@ -147,55 +147,87 @@ impl<C: Cpu> CpuAccess for OsCpuAccess<'_, C> {
     }
 }
 
-pub(super) struct OsMemoryAccess<'a>(pub &'a mut Pc9801Memory);
+pub(super) struct OsMemoryAccess<'a> {
+    memory: &'a mut Pc9801Memory,
+    access_page: usize,
+    b_bank_ems: bool,
+    vram_ems_bank: u8,
+}
+
+impl<'a> OsMemoryAccess<'a> {
+    pub(super) fn new(
+        memory: &'a mut Pc9801Memory,
+        access_page: usize,
+        b_bank_ems: bool,
+        vram_ems_bank: u8,
+    ) -> Self {
+        Self {
+            memory,
+            access_page,
+            b_bank_ems,
+            vram_ems_bank,
+        }
+    }
+}
 
 impl MemoryAccess for OsMemoryAccess<'_> {
     fn read_byte(&self, address: u32) -> u8 {
-        self.0.read_byte(address)
+        self.memory.read_byte_with_access_page(
+            address,
+            self.access_page,
+            self.b_bank_ems,
+            self.vram_ems_bank,
+        )
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
-        self.0.write_byte(address, value);
+        self.memory.write_byte_with_access_page(
+            address,
+            self.access_page,
+            self.b_bank_ems,
+            self.vram_ems_bank,
+            value,
+        );
     }
 
     fn read_word(&self, address: u32) -> u16 {
-        let lo = self.0.read_byte(address) as u16;
-        let hi = self.0.read_byte(address + 1) as u16;
+        let lo = self.read_byte(address) as u16;
+        let hi = self.read_byte(address + 1) as u16;
         lo | (hi << 8)
     }
 
     fn write_word(&mut self, address: u32, value: u16) {
-        self.0.write_byte(address, value as u8);
-        self.0.write_byte(address + 1, (value >> 8) as u8);
+        self.write_byte(address, value as u8);
+        self.write_byte(address + 1, (value >> 8) as u8);
     }
 
     fn read_block(&self, address: u32, buf: &mut [u8]) {
         for (i, byte) in buf.iter_mut().enumerate() {
-            *byte = self.0.read_byte(address + i as u32);
+            *byte = self.read_byte(address + i as u32);
         }
     }
 
     fn write_block(&mut self, address: u32, data: &[u8]) {
         for (i, &byte) in data.iter().enumerate() {
-            self.0.write_byte(address + i as u32, byte);
+            self.write_byte(address + i as u32, byte);
         }
     }
 
     fn extended_memory_size(&self) -> u32 {
-        self.0.extended_memory_size()
+        self.memory.extended_memory_size()
     }
 
     fn enable_ems_page_frame(&mut self) {
-        self.0.enable_ems_page_frame();
+        self.memory.enable_ems_page_frame();
     }
 
     fn map_ems_page_frame_slot(&mut self, physical_page: u8, backing_linear_addr: Option<u32>) {
-        self.0
+        self.memory
             .map_ems_page_frame_slot(physical_page, backing_linear_addr);
     }
 
     fn enable_umb_region(&mut self) {
-        self.0.enable_umb_region();
+        self.memory.enable_umb_region();
     }
 }
 
