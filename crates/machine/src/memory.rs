@@ -747,6 +747,62 @@ impl Pc9801Memory {
         }
     }
 
+    pub(crate) fn read_byte_with_access_page(
+        &self,
+        address: u32,
+        access_page: usize,
+        b_bank_ems: bool,
+        vram_ems_bank: u8,
+    ) -> u8 {
+        let address = address & self.address_mask;
+        match address {
+            GRAPHICS_VRAM_START..=GRAPHICS_VRAM_END => {
+                if (0xB0000..=0xBFFFF).contains(&address) && b_bank_ems && vram_ems_bank & 0x02 != 0
+                {
+                    self.read_byte(EXTENDED_RAM_START + (address - 0xB0000))
+                } else {
+                    let page_base = access_page * GRAPHICS_VRAM_PAGE_SIZE;
+                    self.graphics_vram[page_base + (address - GRAPHICS_VRAM_START) as usize]
+                }
+            }
+            E_PLANE_VRAM_START..=E_PLANE_VRAM_END if self.e_plane_enabled => {
+                let page_base = access_page * E_PLANE_VRAM_PAGE_SIZE;
+                self.e_plane_vram[page_base + (address - E_PLANE_VRAM_START) as usize]
+            }
+            E_PLANE_VRAM_START..=E_PLANE_VRAM_END => 0xFF,
+            _ => self.read_byte(address),
+        }
+    }
+
+    pub(crate) fn write_byte_with_access_page(
+        &mut self,
+        address: u32,
+        access_page: usize,
+        b_bank_ems: bool,
+        vram_ems_bank: u8,
+        value: u8,
+    ) {
+        let address = address & self.address_mask;
+        match address {
+            GRAPHICS_VRAM_START..=GRAPHICS_VRAM_END => {
+                if (0xB0000..=0xBFFFF).contains(&address) && b_bank_ems && vram_ems_bank & 0x02 != 0
+                {
+                    self.write_byte(EXTENDED_RAM_START + (address - 0xB0000), value);
+                } else {
+                    let page_base = access_page * GRAPHICS_VRAM_PAGE_SIZE;
+                    self.graphics_vram[page_base + (address - GRAPHICS_VRAM_START) as usize] =
+                        value;
+                }
+            }
+            E_PLANE_VRAM_START..=E_PLANE_VRAM_END if self.e_plane_enabled => {
+                let page_base = access_page * E_PLANE_VRAM_PAGE_SIZE;
+                self.e_plane_vram[page_base + (address - E_PLANE_VRAM_START) as usize] = value;
+            }
+            E_PLANE_VRAM_START..=E_PLANE_VRAM_END => {}
+            _ => self.write_byte(address, value),
+        }
+    }
+
     /// Loads a V98-format font ROM (0x46800 bytes) into the internal font buffer.
     ///
     /// Converts from V98 file layout to the interleaved fontrom format used by

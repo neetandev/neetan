@@ -239,7 +239,13 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         {
             let mut cpu_access = OsCpuAccess(cpu);
-            let mut mem_access = OsMemoryAccess(&mut self.memory);
+            let access_page = self.access_page_index();
+            let mut mem_access = OsMemoryAccess::new(
+                &mut self.memory,
+                access_page,
+                self.b_bank_ems,
+                self.vram_ems_bank,
+            );
             let mut disk_io = OsDiskIo {
                 floppy: &mut self.floppy,
                 sasi: &mut self.sasi,

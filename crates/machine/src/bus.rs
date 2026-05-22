@@ -548,8 +548,16 @@ impl<T: Tracing> Pc9801Bus<T> {
         if install_fdd640k_hle {
             self.fdd640k_hle.install_rom();
         }
+        let access_page = self.access_page_index();
+        let b_bank_ems = self.b_bank_ems;
+        let vram_ems_bank = self.vram_ems_bank;
         if let Some(os) = self.os.as_mut() {
-            let memory = os_adapter::OsMemoryAccess(&mut self.memory);
+            let memory = os_adapter::OsMemoryAccess::new(
+                &mut self.memory,
+                access_page,
+                b_bank_ems,
+                vram_ems_bank,
+            );
             os.invalidate_drive_caches(&memory, 0x90 | drive as u8);
         }
     }
@@ -567,8 +575,16 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Ejects the floppy disk from the specified drive, flushing if dirty.
     pub fn eject_floppy(&mut self, drive: usize) {
         self.floppy.eject_drive(drive);
+        let access_page = self.access_page_index();
+        let b_bank_ems = self.b_bank_ems;
+        let vram_ems_bank = self.vram_ems_bank;
         if let Some(os) = self.os.as_mut() {
-            let memory = os_adapter::OsMemoryAccess(&mut self.memory);
+            let memory = os_adapter::OsMemoryAccess::new(
+                &mut self.memory,
+                access_page,
+                b_bank_ems,
+                vram_ems_bank,
+            );
             os.invalidate_drive_caches(&memory, 0x90 | drive as u8);
         }
     }
@@ -603,8 +619,16 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
             }
         }
+        let access_page = self.access_page_index();
+        let b_bank_ems = self.b_bank_ems;
+        let vram_ems_bank = self.vram_ems_bank;
         if let Some(os) = self.os.as_mut() {
-            let memory = os_adapter::OsMemoryAccess(&mut self.memory);
+            let memory = os_adapter::OsMemoryAccess::new(
+                &mut self.memory,
+                access_page,
+                b_bank_ems,
+                vram_ems_bank,
+            );
             os.invalidate_drive_caches(&memory, 0x80 | drive as u8);
         }
     }
@@ -950,8 +974,14 @@ impl<T: Tracing> Pc9801Bus<T> {
 
     /// Returns a host-formatted overview of current HLE DOS memory usage.
     pub fn debug_memory_overview_lines(&mut self) -> Option<Vec<String>> {
+        let access_page = self.access_page_index();
         let os = self.os.as_ref()?;
-        let memory = os_adapter::OsMemoryAccess(&mut self.memory);
+        let memory = os_adapter::OsMemoryAccess::new(
+            &mut self.memory,
+            access_page,
+            self.b_bank_ems,
+            self.vram_ems_bank,
+        );
         Some(os.debug_memory_overview_lines(&memory))
     }
 
@@ -1021,8 +1051,12 @@ impl<T: Tracing> Pc9801Bus<T> {
                     }
                     return 0;
                 }
-                let page_base = self.access_page_index() * GRAPHICS_PAGE_SIZE_BYTES;
-                self.memory.state.graphics_vram[page_base + (address - 0xA8000) as usize]
+                self.memory.read_byte_with_access_page(
+                    address,
+                    self.access_page_index(),
+                    self.b_bank_ems,
+                    self.vram_ems_bank,
+                )
             }
             0xB0000..=0xBFFFF => {
                 if self.pegc.is_256_color_active() && address <= 0xB7FFF {
@@ -1032,12 +1066,12 @@ impl<T: Tracing> Pc9801Bus<T> {
                     }
                     return 0;
                 }
-                if self.b_bank_ems && self.vram_ems_bank & 0x02 != 0 {
-                    self.memory.read_byte(0x100000 + (address - 0xB0000))
-                } else {
-                    let page_base = self.access_page_index() * GRAPHICS_PAGE_SIZE_BYTES;
-                    self.memory.state.graphics_vram[page_base + (address - 0xA8000) as usize]
-                }
+                self.memory.read_byte_with_access_page(
+                    address,
+                    self.access_page_index(),
+                    self.b_bank_ems,
+                    self.vram_ems_bank,
+                )
             }
             // 640KB FDD HLE ROM overlay (PC-9801-09-compatible expansion ROM area).
             0xD6000..=0xD6FFF => {
@@ -1067,12 +1101,12 @@ impl<T: Tracing> Pc9801Bus<T> {
                 if self.pegc.is_256_color_active() {
                     return self.pegc.mmio_read_byte(address - 0xE0000);
                 }
-                if self.memory.state.e_plane_enabled {
-                    let page_base = self.access_page_index() * E_PLANE_PAGE_SIZE_BYTES;
-                    self.memory.state.e_plane_vram[page_base + (address - 0xE0000) as usize]
-                } else {
-                    0xFF
-                }
+                self.memory.read_byte_with_access_page(
+                    address,
+                    self.access_page_index(),
+                    self.b_bank_ems,
+                    self.vram_ems_bank,
+                )
             }
             _ => {
                 if self.machine_model.has_pegc() {
@@ -1128,8 +1162,13 @@ impl<T: Tracing> Pc9801Bus<T> {
                     }
                     return;
                 }
-                let page_base = self.access_page_index() * GRAPHICS_PAGE_SIZE_BYTES;
-                self.memory.state.graphics_vram[page_base + (address - 0xA8000) as usize] = value;
+                self.memory.write_byte_with_access_page(
+                    address,
+                    self.access_page_index(),
+                    self.b_bank_ems,
+                    self.vram_ems_bank,
+                    value,
+                );
             }
             0xB0000..=0xBFFFF => {
                 if self.pegc.is_256_color_active() && address <= 0xB7FFF {
@@ -1140,25 +1179,26 @@ impl<T: Tracing> Pc9801Bus<T> {
                     }
                     return;
                 }
-                if self.b_bank_ems && self.vram_ems_bank & 0x02 != 0 {
-                    self.memory
-                        .write_byte(0x100000 + (address - 0xB0000), value);
-                } else {
-                    let page_base = self.access_page_index() * GRAPHICS_PAGE_SIZE_BYTES;
-                    self.memory.state.graphics_vram[page_base + (address - 0xA8000) as usize] =
-                        value;
-                }
+                self.memory.write_byte_with_access_page(
+                    address,
+                    self.access_page_index(),
+                    self.b_bank_ems,
+                    self.vram_ems_bank,
+                    value,
+                );
             }
             0xE0000..=0xE7FFF => {
                 if self.pegc.is_256_color_active() {
                     self.pegc.mmio_write_byte(address - 0xE0000, value);
                     return;
                 }
-                if self.memory.state.e_plane_enabled {
-                    let page_base = self.access_page_index() * E_PLANE_PAGE_SIZE_BYTES;
-                    self.memory.state.e_plane_vram[page_base + (address - 0xE0000) as usize] =
-                        value;
-                }
+                self.memory.write_byte_with_access_page(
+                    address,
+                    self.access_page_index(),
+                    self.b_bank_ems,
+                    self.vram_ems_bank,
+                    value,
+                );
             }
             _ => {
                 if self.machine_model.has_pegc() {
