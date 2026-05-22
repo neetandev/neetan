@@ -475,13 +475,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     .map(|g| device::sasi::sector_position(drive_select, cx, dx, &g))
                     .unwrap_or(0);
                 let addr = self.hle_linear_address(cpu, SegmentRegister::ES, u32::from(bp));
-                let cr0 = self.hle_cr0;
-                let cr3 = self.hle_cr3;
-                let memory = &mut self.memory;
-                self.sasi.execute_write(drive_idx, xfer, pos, addr, |a| {
-                    let phys = super::hle_page_translate_read(cr0, cr3, a, memory);
-                    memory.read_byte(phys)
-                })
+                self.hle_sasi_write_from_memory(drive_idx, xfer, pos, addr)
             }
             0x06 => {
                 let xfer = device::sasi::transfer_size(bx);
@@ -490,14 +484,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     .map(|g| device::sasi::sector_position(drive_select, cx, dx, &g))
                     .unwrap_or(0);
                 let addr = self.hle_linear_address(cpu, SegmentRegister::ES, u32::from(bp));
-                let cr0 = self.hle_cr0;
-                let cr3 = self.hle_cr3;
-                let memory = &mut self.memory;
-                self.sasi
-                    .execute_read(drive_idx, xfer, pos, addr, |a, byte| {
-                        let phys = super::hle_page_translate_write(cr0, cr3, a, memory);
-                        memory.write_byte(phys, byte);
-                    })
+                self.hle_sasi_read_to_memory(drive_idx, xfer, pos, addr)
             }
             0x07 | 0x0F => 0x00,
             0x0D => {
@@ -591,13 +578,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                         .map(|g| device::ide::sector_position(drive_select, cx, dx, &g))
                         .unwrap_or(0);
                     let addr = self.hle_linear_address(cpu, SegmentRegister::ES, u32::from(bp));
-                    let cr0 = self.hle_cr0;
-                    let cr3 = self.hle_cr3;
-                    let memory = &mut self.memory;
-                    self.ide.execute_write(drive_idx, xfer, pos, addr, |a| {
-                        let phys = super::hle_page_translate_read(cr0, cr3, a, memory);
-                        memory.read_byte(phys)
-                    })
+                    self.hle_ide_write_from_memory(drive_idx, xfer, pos, addr)
                 }
                 0x06 => {
                     let xfer = device::ide::transfer_size(bx);
@@ -606,14 +587,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                         .map(|g| device::ide::sector_position(drive_select, cx, dx, &g))
                         .unwrap_or(0);
                     let addr = self.hle_linear_address(cpu, SegmentRegister::ES, u32::from(bp));
-                    let cr0 = self.hle_cr0;
-                    let cr3 = self.hle_cr3;
-                    let memory = &mut self.memory;
-                    self.ide
-                        .execute_read(drive_idx, xfer, pos, addr, |a, byte| {
-                            let phys = super::hle_page_translate_write(cr0, cr3, a, memory);
-                            memory.write_byte(phys, byte);
-                        })
+                    self.hle_ide_read_to_memory(drive_idx, xfer, pos, addr)
                 }
                 0x07 | 0x0F => 0x00,
                 0x0D => {

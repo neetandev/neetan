@@ -206,6 +206,11 @@ impl SasiController {
             .map(|data| data.to_vec())
     }
 
+    /// Reads a single sector by LBA as a borrowed slice.
+    pub fn read_sector(&self, drive: usize, lba: u32) -> Option<&[u8]> {
+        self.drives.get(drive)?.as_ref()?.read_sector(lba)
+    }
+
     /// Writes a single sector by LBA.
     pub fn write_sector_raw(&mut self, drive: usize, lba: u32, data: &[u8]) -> bool {
         match self.drives.get_mut(drive).and_then(Option::as_mut) {
