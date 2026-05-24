@@ -262,15 +262,14 @@ impl<T: Tracing> Pc9801Bus<T> {
         // Enable GDC hardware cursor for HLE OS.
         self.gdc_master.state.cursor_display = true;
 
-        // Redirect IRET to COMMAND.COM's entry point (PSP:0100h).
-        // The stub at PSP:0100h sets up its own stack inside COMMAND.COM's
-        // MCB allocation before entering the shell loop, so child program
-        // allocations cannot overwrite the parent's IRET frame.
-        let psp_segment = neetan_os.command_com_psp();
+        // Redirect IRET to the OS boot entry. This is normally COMMAND.COM at
+        // PSP:0100h, but CONFIG.SYS native drivers may install an init
+        // trampoline that transfers to COMMAND.COM after driver INIT completes.
+        let entry = neetan_os.boot_entry_point();
         self.os = Some(neetan_os);
         let iret_base = iret_stack_base(cpu);
-        self.write_mem_word(iret_base, 0x0100); // IP = entry point
-        self.write_mem_word(iret_base + 2, psp_segment); // CS = PSP segment
-        self.write_mem_word(iret_base + 4, 0x0202); // FLAGS (IF set)
+        self.write_mem_word(iret_base, entry.offset);
+        self.write_mem_word(iret_base + 2, entry.segment);
+        self.write_mem_word(iret_base + 4, entry.flags);
     }
 }
