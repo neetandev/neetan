@@ -1,7 +1,10 @@
 //! CD-ROM disc image abstraction.
 //!
-//! Supports CUE/BIN disc images. The CUE sheet describes the disc layout
-//! (tracks, indices, sector sizes) while the BIN file contains raw sector data.
+//! Supports CUE/BIN and CloneCD (CCD/IMG/SUB) disc images. CUE sheets and
+//! CCD control files describe the disc layout (tracks, indices, sector sizes)
+//! while the BIN/IMG file contains raw sector data. The optional SUB file
+//! that accompanies a CCD image carries 96 bytes of raw P-W interleaved
+//! subchannel data per sector.
 //!
 //! Sector sizes:
 //! - 2048 bytes: cooked data (user data only, typical for MODE1/2048)
@@ -25,6 +28,12 @@ const FRAMES_PER_SECOND: u32 = 75;
 
 /// Number of seconds per minute.
 const SECONDS_PER_MINUTE: u32 = 60;
+
+/// Bytes of raw P-W interleaved subchannel data per sector.
+const SUBCHANNEL_BYTES_PER_SECTOR: usize = 96;
+
+/// Bit mask selecting the Q channel within an interleaved subchannel byte.
+const SUBCHANNEL_Q_BIT: u8 = 0x40;
 
 /// Track type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +78,9 @@ pub struct CdImage {
     tracks: Vec<Track>,
     data: Vec<u8>,
     total_sectors: u32,
+    /// Raw 96-byte/sector P-W interleaved subchannel data, when available.
+    /// Indexed by absolute LBA; layout matches a CloneCD .sub file.
+    subchannel: Option<Vec<u8>>,
 }
 
 /// Errors that can occur when parsing or reading CD-ROM images.
@@ -90,7 +102,7 @@ pub enum CdError {
 impl fmt::Display for CdError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CdError::ParseError(msg) => write!(f, "CUE parse error: {msg}"),
+            CdError::ParseError(msg) => write!(f, "parse error: {msg}"),
             CdError::UnsupportedFormat(msg) => write!(f, "unsupported format: {msg}"),
             CdError::DataSizeMismatch { expected, actual } => {
                 write!(
@@ -267,6 +279,131 @@ fn parse_cue_sheet(cue_content: &str) -> Result<CueSheet, CdError> {
     Ok(CueSheet { file_names, tracks })
 }
 
+/// Intermediate track data during CCD parsing, before MODE/INDEX validation.
+struct CcdTrack {
+    number: u8,
+    mode: Option<u8>,
+    index00_lba: Option<u32>,
+    index01_lba: Option<u32>,
+}
+
+fn parse_ccd_sheet(content: &str) -> Result<CueSheet, CdError> {
+    let mut ccd_tracks: Vec<CcdTrack> = Vec::new();
+    let mut in_track_section = false;
+
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(inner) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            let header_parts: Vec<&str> = inner.split_whitespace().collect();
+            if header_parts
+                .first()
+                .is_some_and(|name| name.eq_ignore_ascii_case("TRACK"))
+            {
+                if header_parts.len() < 2 {
+                    return Err(CdError::ParseError(
+                        "[TRACK] section missing track number".into(),
+                    ));
+                }
+                let number = header_parts[1].parse::<u8>().map_err(|_| {
+                    CdError::ParseError(format!("invalid CCD track number: {}", header_parts[1]))
+                })?;
+                ccd_tracks.push(CcdTrack {
+                    number,
+                    mode: None,
+                    index00_lba: None,
+                    index01_lba: None,
+                });
+                in_track_section = true;
+            } else {
+                in_track_section = false;
+            }
+            continue;
+        }
+
+        if !in_track_section {
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        let track = ccd_tracks
+            .last_mut()
+            .expect("in_track_section implies a track is being built");
+
+        if key.eq_ignore_ascii_case("MODE") {
+            let mode = value
+                .parse::<u8>()
+                .map_err(|_| CdError::ParseError(format!("invalid CCD MODE value: {value}")))?;
+            track.mode = Some(mode);
+        } else if let Some(index_number) = parse_index_key(key) {
+            let frame = value
+                .parse::<u32>()
+                .map_err(|_| CdError::ParseError(format!("invalid CCD INDEX value: {value}")))?;
+            match index_number {
+                0 => track.index00_lba = Some(frame),
+                1 => track.index01_lba = Some(frame),
+                _ => {}
+            }
+        }
+    }
+
+    if ccd_tracks.is_empty() {
+        return Err(CdError::ParseError("no tracks found in CCD sheet".into()));
+    }
+
+    let mut tracks = Vec::with_capacity(ccd_tracks.len());
+    for ct in ccd_tracks {
+        let mode = ct
+            .mode
+            .ok_or_else(|| CdError::ParseError(format!("track {} missing MODE", ct.number)))?;
+        let index01_lba = ct
+            .index01_lba
+            .ok_or_else(|| CdError::ParseError(format!("track {} missing INDEX 1", ct.number)))?;
+        let (track_type, sector_size, sector_layout) = match mode {
+            0 => (TrackType::Audio, SECTOR_SIZE_RAW, SectorLayout::Audio),
+            1 => (TrackType::Data, SECTOR_SIZE_RAW, SectorLayout::RawMode1),
+            2 => (TrackType::Data, SECTOR_SIZE_RAW, SectorLayout::RawMode2),
+            other => {
+                return Err(CdError::UnsupportedFormat(format!(
+                    "unsupported CCD track MODE: {other}"
+                )));
+            }
+        };
+        tracks.push(CueTrack {
+            number: ct.number,
+            track_type,
+            sector_size,
+            sector_layout,
+            file_index: 0,
+            index00_lba: ct.index00_lba,
+            index01_lba: Some(index01_lba),
+            pregap_sectors: 0,
+        });
+    }
+
+    Ok(CueSheet {
+        file_names: vec!["image.img".to_string()],
+        tracks,
+    })
+}
+
+/// Parses an "INDEX N" key from a CCD `[TRACK]` section, returning the index number.
+fn parse_index_key(key: &str) -> Option<u32> {
+    let prefix = key.get(..5)?;
+    if !prefix.eq_ignore_ascii_case("INDEX") {
+        return None;
+    }
+    let rest = key.get(5..)?.trim();
+    rest.parse::<u32>().ok()
+}
+
 /// Extracts the BIN filename from a CUE sheet's FILE directive.
 ///
 /// Parses the first `FILE "name" BINARY` line and returns the filename.
@@ -294,9 +431,39 @@ impl CdImage {
     /// Parses a CUE sheet and loads the associated BIN files into a `CdImage`.
     pub fn from_cue_files(cue_content: &str, bin_files: Vec<Vec<u8>>) -> Result<Self, CdError> {
         let cue_sheet = parse_cue_sheet(cue_content)?;
+        Self::build_from_sheet(cue_sheet, bin_files)
+    }
+
+    /// Parses a CloneCD control file (.ccd) plus the raw image (.img) and the
+    /// optional interleaved subchannel data (.sub) into a `CdImage`.
+    ///
+    /// `ccd_content` is the textual contents of the .ccd control file, `img_data`
+    /// is the .img file (contiguous raw 2352-byte sectors), and `sub_data` is
+    /// the optional .sub file (96 bytes per sector, P-W interleaved).
+    pub fn from_ccd(
+        ccd_content: &str,
+        img_data: Vec<u8>,
+        sub_data: Option<Vec<u8>>,
+    ) -> Result<Self, CdError> {
+        let cue_sheet = parse_ccd_sheet(ccd_content)?;
+        let mut image = Self::build_from_sheet(cue_sheet, vec![img_data])?;
+        if let Some(sub) = sub_data {
+            let expected = u64::from(image.total_sectors) * SUBCHANNEL_BYTES_PER_SECTOR as u64;
+            if sub.len() as u64 != expected {
+                return Err(CdError::DataSizeMismatch {
+                    expected,
+                    actual: sub.len() as u64,
+                });
+            }
+            image.subchannel = Some(sub);
+        }
+        Ok(image)
+    }
+
+    fn build_from_sheet(cue_sheet: CueSheet, bin_files: Vec<Vec<u8>>) -> Result<Self, CdError> {
         if cue_sheet.file_names.len() != bin_files.len() {
             return Err(CdError::ParseError(format!(
-                "cue references {} files, but {} were provided",
+                "sheet references {} files, but {} were provided",
                 cue_sheet.file_names.len(),
                 bin_files.len()
             )));
@@ -360,7 +527,40 @@ impl CdImage {
             tracks,
             data,
             total_sectors: next_disc_lba,
+            subchannel: None,
         })
+    }
+
+    /// Returns `true` if interleaved subchannel data is attached to this image.
+    pub fn has_subchannel(&self) -> bool {
+        self.subchannel.is_some()
+    }
+
+    /// Deinterleaves the 12-byte Sub-Q at the given absolute LBA.
+    ///
+    /// Returns `None` when no subchannel data is attached or the LBA is past
+    /// the end of the disc. The 12 bytes are returned in canonical Sub-Q
+    /// order (ADR/Control, TNO, POINT, M:S:F relative, zero, A-M:S:F
+    /// absolute, CRC-16). The interleaved layout stores bit 6 of each raw
+    /// byte as one Q-channel bit, MSB first.
+    pub fn read_subchannel_q(&self, lba: u32) -> Option<[u8; 12]> {
+        let sub = self.subchannel.as_ref()?;
+        if lba >= self.total_sectors {
+            return None;
+        }
+        let offset = lba as usize * SUBCHANNEL_BYTES_PER_SECTOR;
+        let sector = sub.get(offset..offset + SUBCHANNEL_BYTES_PER_SECTOR)?;
+        let mut q = [0u8; 12];
+        for (byte_index, q_byte) in q.iter_mut().enumerate() {
+            let mut value = 0u8;
+            for bit in 0..8 {
+                if sector[byte_index * 8 + bit] & SUBCHANNEL_Q_BIT != 0 {
+                    value |= 0x80 >> bit;
+                }
+            }
+            *q_byte = value;
+        }
+        Some(q)
     }
 
     /// Returns the number of tracks.
@@ -839,5 +1039,196 @@ FILE "test.bin" BINARY
         assert_eq!(buf[0], 0x01);
         assert_eq!(&buf[1..6], b"CD001");
         assert_eq!(buf[6], 0x01);
+    }
+
+    fn make_raw_mode2_sector(user_byte: u8) -> Vec<u8> {
+        let mut sector = vec![0u8; 2352];
+        sector[0] = 0x00;
+        for b in &mut sector[1..11] {
+            *b = 0xFF;
+        }
+        sector[11] = 0x00;
+        sector[12] = 0x00;
+        sector[13] = 0x02;
+        sector[14] = 0x00;
+        sector[15] = 0x02;
+        for b in &mut sector[24..24 + 2048] {
+            *b = user_byte;
+        }
+        sector
+    }
+
+    #[test]
+    fn ccd_single_data_track() {
+        let ccd = "[CloneCD]\nVersion=3\n\
+            [Disc]\nTocEntries=3\nSessions=1\n\
+            [TRACK 1]\nMODE=1\nINDEX 1=0\n";
+        let img: Vec<u8> = (0..10).flat_map(|_| make_raw_data_sector(0xAA)).collect();
+        let image = CdImage::from_ccd(ccd, img, None).unwrap();
+        assert_eq!(image.track_count(), 1);
+        assert_eq!(image.total_sectors(), 10);
+        let track = image.track(1).unwrap();
+        assert_eq!(track.track_type, TrackType::Data);
+        assert_eq!(track.sector_size, 2352);
+        assert_eq!(track.start_lba, 0);
+
+        let mut buf = [0u8; 2048];
+        assert_eq!(image.read_sector(0, &mut buf).unwrap(), 2048);
+        assert!(buf.iter().all(|&byte| byte == 0xAA));
+    }
+
+    #[test]
+    fn ccd_multi_track_data_and_audio() {
+        // Track 1: 300 raw Mode 1 sectors, INDEX 1 at LBA 0.
+        // Track 2: AUDIO, INDEX 0 at LBA 300 (pregap), INDEX 1 at LBA 450.
+        // Track 2 spans LBA 450..650 (200 sectors).
+        let ccd = "[CloneCD]\nVersion=3\n\
+            [Disc]\nTocEntries=4\nSessions=1\n\
+            [TRACK 1]\nMODE=1\nINDEX 1=0\n\
+            [TRACK 2]\nMODE=0\nINDEX 0=300\nINDEX 1=450\n";
+
+        let mut img = Vec::new();
+        for _ in 0..300 {
+            img.extend_from_slice(&make_raw_data_sector(0x11));
+        }
+        for _ in 0..150 {
+            img.extend_from_slice(&[0u8; 2352]);
+        }
+        for _ in 0..200 {
+            img.extend_from_slice(&[0xAAu8; 2352]);
+        }
+
+        let image = CdImage::from_ccd(ccd, img, None).unwrap();
+        assert_eq!(image.track_count(), 2);
+        assert_eq!(image.total_sectors(), 650);
+
+        let t1 = image.track(1).unwrap();
+        assert_eq!(t1.track_type, TrackType::Data);
+        assert_eq!(t1.start_lba, 0);
+        assert_eq!(t1.sector_count, 300);
+
+        let t2 = image.track(2).unwrap();
+        assert_eq!(t2.track_type, TrackType::Audio);
+        assert_eq!(t2.pregap_lba, 300);
+        assert_eq!(t2.start_lba, 450);
+        assert_eq!(t2.sector_count, 200);
+
+        let mut raw = [0u8; 2352];
+        assert_eq!(image.read_sector_raw(450, &mut raw).unwrap(), 2352);
+        assert!(raw.iter().all(|&byte| byte == 0xAA));
+    }
+
+    #[test]
+    fn ccd_mode2_track_uses_mode2_offset() {
+        let ccd = "[TRACK 1]\nMODE=2\nINDEX 1=0\n";
+        let img = make_raw_mode2_sector(0x77);
+        let image = CdImage::from_ccd(ccd, img, None).unwrap();
+        let mut buf = [0u8; 2048];
+        assert_eq!(image.read_sector(0, &mut buf).unwrap(), 2048);
+        assert!(buf.iter().all(|&byte| byte == 0x77));
+    }
+
+    #[test]
+    fn ccd_missing_index1_errors() {
+        let ccd = "[TRACK 1]\nMODE=1\nINDEX 0=0\n";
+        assert!(CdImage::from_ccd(ccd, vec![0u8; 2352], None).is_err());
+    }
+
+    #[test]
+    fn ccd_missing_mode_errors() {
+        let ccd = "[TRACK 1]\nINDEX 1=0\n";
+        assert!(CdImage::from_ccd(ccd, vec![0u8; 2352], None).is_err());
+    }
+
+    #[test]
+    fn ccd_unknown_mode_errors() {
+        let ccd = "[TRACK 1]\nMODE=99\nINDEX 1=0\n";
+        assert!(CdImage::from_ccd(ccd, vec![0u8; 2352], None).is_err());
+    }
+
+    #[test]
+    fn ccd_no_tracks_errors() {
+        let ccd = "[CloneCD]\nVersion=3\n[Disc]\nTocEntries=0\n";
+        assert!(CdImage::from_ccd(ccd, vec![], None).is_err());
+    }
+
+    #[test]
+    fn ccd_skips_unrelated_sections() {
+        let ccd = "[CloneCD]\nVersion=3\n\
+            [Disc]\nTocEntries=3\nSessions=1\nDataTracksScrambled=0\n\
+            CATALOG=0000000000000\n\
+            [Session 1]\nPreGapMode=2\nPreGapSubC=0\n\
+            [Entry 0]\nSession=1\nPoint=0xa0\nADR=0x01\nControl=0x04\n\
+            TrackNo=0\nAMin=0\nASec=0\nAFrame=0\nALBA=-150\nZero=0\n\
+            PMin=1\nPSec=0\nPFrame=0\nPLBA=4350\n\
+            [Entry 1]\nSession=1\nPoint=0xa1\nADR=0x01\nControl=0x04\n\
+            [Entry 2]\nSession=1\nPoint=0xa2\nADR=0x01\nControl=0x04\n\
+            [TRACK 1]\nMODE=1\nINDEX 1=0\nISRC=JPXXX1234567\nFLAGS=DCP\n";
+        let img: Vec<u8> = (0..5).flat_map(|_| make_raw_data_sector(0xDD)).collect();
+        let image = CdImage::from_ccd(ccd, img, None).unwrap();
+        assert_eq!(image.track_count(), 1);
+        assert_eq!(image.total_sectors(), 5);
+    }
+
+    #[test]
+    fn ccd_with_sub_validates_size() {
+        let ccd = "[TRACK 1]\nMODE=1\nINDEX 1=0\n";
+        let img: Vec<u8> = (0..4).flat_map(|_| make_raw_data_sector(0x01)).collect();
+        let total_sectors = 4u32;
+
+        let mismatched_sub = vec![0u8; (total_sectors as usize - 1) * 96];
+        let error = CdImage::from_ccd(ccd, img.clone(), Some(mismatched_sub)).unwrap_err();
+        assert!(matches!(error, CdError::DataSizeMismatch { .. }));
+
+        let matched_sub = vec![0u8; total_sectors as usize * 96];
+        let image = CdImage::from_ccd(ccd, img, Some(matched_sub)).unwrap();
+        assert!(image.has_subchannel());
+    }
+
+    fn interleave_subq(q: &[u8; 12]) -> [u8; 96] {
+        let mut out = [0u8; 96];
+        for (byte_index, byte) in q.iter().enumerate() {
+            for bit in 0..8 {
+                if byte & (0x80 >> bit) != 0 {
+                    out[byte_index * 8 + bit] |= SUBCHANNEL_Q_BIT;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn read_subchannel_q_deinterleaves() {
+        let ccd = "[TRACK 1]\nMODE=1\nINDEX 1=0\n";
+        let img: Vec<u8> = (0..2).flat_map(|_| make_raw_data_sector(0x00)).collect();
+        let expected_q = [
+            0x41u8, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0xAB, 0xCD,
+        ];
+        let mut sub = Vec::new();
+        sub.extend_from_slice(&interleave_subq(&expected_q));
+        sub.extend_from_slice(&[0u8; 96]); // Second sector: all zeros.
+        let image = CdImage::from_ccd(ccd, img, Some(sub)).unwrap();
+        assert_eq!(image.read_subchannel_q(0).unwrap(), expected_q);
+        assert_eq!(image.read_subchannel_q(1).unwrap(), [0u8; 12]);
+    }
+
+    #[test]
+    fn read_subchannel_q_out_of_range() {
+        let ccd = "[TRACK 1]\nMODE=1\nINDEX 1=0\n";
+        let img: Vec<u8> = (0..2).flat_map(|_| make_raw_data_sector(0x00)).collect();
+        let sub = vec![0u8; 2 * 96];
+        let image = CdImage::from_ccd(ccd, img, Some(sub)).unwrap();
+        assert!(image.read_subchannel_q(2).is_none());
+    }
+
+    #[test]
+    fn read_subchannel_q_returns_none_without_data() {
+        let cue = r#"FILE "test.bin" BINARY
+  TRACK 01 MODE1/2048
+    INDEX 01 00:00:00
+"#;
+        let image = CdImage::from_cue(cue, vec![0u8; 2048 * 5]).unwrap();
+        assert!(!image.has_subchannel());
+        assert!(image.read_subchannel_q(0).is_none());
     }
 }

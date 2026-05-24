@@ -544,8 +544,9 @@ impl AtapiState {
 
             let (current_lba, _, _) = cd_audio.current_position();
 
-            // Fill ADR/CTL and track from disc info.
-            if let Some(cdrom) = cdrom {
+            if let Some(sub_q) = cdrom.and_then(|cdrom| cdrom.read_subchannel_q(current_lba)) {
+                decode_subq_into_response(&sub_q, &mut self.data_buffer, msf, self.bcd_msf_mode);
+            } else if let Some(cdrom) = cdrom {
                 let track = cdrom.track_for_lba(current_lba).or_else(|| cdrom.track(1));
                 let adr_ctl = track.map_or(0x14, |t| match t.track_type {
                     crate::cdrom::TrackType::Data => 0x14,
@@ -553,6 +554,7 @@ impl AtapiState {
                 });
                 self.data_buffer[5] = adr_ctl;
                 self.data_buffer[6] = track.map_or(1, |t| t.number);
+                self.data_buffer[7] = 0x01;
                 let track_relative_lba =
                     track.map_or(0, |t| current_lba.saturating_sub(t.start_lba));
                 store_address(
@@ -569,11 +571,11 @@ impl AtapiState {
                 );
             } else {
                 self.data_buffer[5] = 0x14;
-                self.data_buffer[6] = 1;
+                self.data_buffer[6] = 0x01;
+                self.data_buffer[7] = 0x01;
                 store_address(&mut self.data_buffer[8..12], 0, msf, self.bcd_msf_mode);
                 store_address(&mut self.data_buffer[12..16], 0, msf, self.bcd_msf_mode);
             }
-            self.data_buffer[7] = 0x01; // Index.
 
             let size = 16.min(allocation_length as usize);
             return self.cmd_complete_with_data(size);
@@ -1385,6 +1387,65 @@ fn medium_type(cdrom: Option<&CdImage>) -> u8 {
 /// Writes a 4-byte address field as either MSF or LBA.
 /// For MSF: adds the standard 150-frame (2-second) lead-in offset per Red Book.
 /// When `bcd` is true, MSF values are BCD-encoded (NEC CD-ROM quirk).
+///
+/// Writes the bytes 5..16 of a `READ SUBCHANNEL` format-0x01 response from
+/// the 12-byte raw Sub-Q recovered from disc.
+///
+/// Sub-Q byte 0 stores Control in the high nibble and ADR in the low nibble
+/// (Red Book); the MMC response byte 5 uses the opposite nibble order. The
+/// MSF fields in Sub-Q are BCD; the absolute MSF includes the standard
+/// 150-sector lead-in, the relative MSF does not.
+fn decode_subq_into_response(sub_q: &[u8; 12], buffer: &mut [u8], msf: bool, bcd: bool) {
+    buffer[5] = ((sub_q[0] & 0x0F) << 4) | ((sub_q[0] & 0xF0) >> 4);
+    buffer[6] = bcd_to_hex(sub_q[1]);
+    buffer[7] = bcd_to_hex(sub_q[2]);
+
+    write_subq_address(
+        &mut buffer[8..12],
+        bcd_to_hex(sub_q[7]),
+        bcd_to_hex(sub_q[8]),
+        bcd_to_hex(sub_q[9]),
+        true,
+        msf,
+        bcd,
+    );
+    write_subq_address(
+        &mut buffer[12..16],
+        bcd_to_hex(sub_q[3]),
+        bcd_to_hex(sub_q[4]),
+        bcd_to_hex(sub_q[5]),
+        false,
+        msf,
+        bcd,
+    );
+}
+
+fn write_subq_address(buf: &mut [u8], m: u8, s: u8, f: u8, absolute: bool, msf: bool, bcd: bool) {
+    if msf {
+        buf[0] = 0;
+        if bcd {
+            buf[1] = hex_to_bcd(m);
+            buf[2] = hex_to_bcd(s);
+            buf[3] = hex_to_bcd(f);
+        } else {
+            buf[1] = m;
+            buf[2] = s;
+            buf[3] = f;
+        }
+    } else {
+        let frames = u32::from(m) * 60 * 75 + u32::from(s) * 75 + u32::from(f);
+        let lba = if absolute {
+            frames.saturating_sub(150)
+        } else {
+            frames
+        };
+        buf[0] = (lba >> 24) as u8;
+        buf[1] = (lba >> 16) as u8;
+        buf[2] = (lba >> 8) as u8;
+        buf[3] = lba as u8;
+    }
+}
+
 fn store_address(buf: &mut [u8], lba: u32, msf: bool, bcd: bool) {
     if msf {
         let (m, s, f) = lba_to_msf(lba + 150);
@@ -2008,6 +2069,69 @@ mod tests {
         assert!(has_data);
         assert!(!is_error);
         assert_eq!(state.data_buffer[1], 0x15); // No audio status.
+    }
+
+    fn interleave_subq(q: &[u8; 12]) -> [u8; 96] {
+        let mut out = [0u8; 96];
+        for (byte_index, byte) in q.iter().enumerate() {
+            for bit in 0..8 {
+                if byte & (0x80 >> bit) != 0 {
+                    out[byte_index * 8 + bit] |= 0x40;
+                }
+            }
+        }
+        out
+    }
+
+    fn make_raw_data_sector_atapi(byte: u8) -> Vec<u8> {
+        let mut sector = vec![0u8; 2352];
+        sector[0] = 0x00;
+        for value in &mut sector[1..11] {
+            *value = 0xFF;
+        }
+        sector[11] = 0x00;
+        sector[15] = 0x01;
+        for value in &mut sector[16..16 + 2048] {
+            *value = byte;
+        }
+        sector
+    }
+
+    #[test]
+    fn read_sub_channel_uses_disc_subq_when_present() {
+        let ccd = "[TRACK 1]\nMODE=1\nINDEX 1=0\n";
+        let img: Vec<u8> = (0..2)
+            .flat_map(|_| make_raw_data_sector_atapi(0x00))
+            .collect();
+        // Sub-Q for LBA 0: Control=4 (data), ADR=1, track 1, index 1,
+        // relative MSF 00:00:00 (BCD), absolute MSF 00:02:00 (BCD).
+        let sub_q = [
+            0x41u8, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0xAB, 0xCD,
+        ];
+        let mut sub_data = Vec::new();
+        sub_data.extend_from_slice(&interleave_subq(&sub_q));
+        sub_data.extend_from_slice(&[0u8; 96]);
+
+        let cdrom = CdImage::from_ccd(ccd, img, Some(sub_data)).unwrap();
+
+        let mut state = AtapiState::new();
+        state.media_loaded = true;
+        // packet[1] bit 1 = MSF, packet[2] bit 6 = Sub-Q, packet[3] = format 0x01.
+        state.packet = [0x42, 0x02, 0x40, 0x01, 0, 0, 0, 0, 16, 0, 0, 0];
+
+        let cd_audio = CdAudioPlayer::new(44100);
+        let (has_data, is_error) = state.cmd_read_sub_channel(Some(&cdrom), &cd_audio);
+        assert!(has_data);
+        assert!(!is_error);
+
+        // ADR/Control: nibble-swap of Sub-Q byte 0.
+        assert_eq!(state.data_buffer[5], 0x14);
+        assert_eq!(state.data_buffer[6], 1); // Track.
+        assert_eq!(state.data_buffer[7], 1); // Index.
+        // Absolute MSF.
+        assert_eq!(&state.data_buffer[8..12], &[0u8, 0, 2, 0]);
+        // Relative MSF.
+        assert_eq!(&state.data_buffer[12..16], &[0u8, 0, 0, 0]);
     }
 
     #[test]

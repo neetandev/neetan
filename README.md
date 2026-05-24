@@ -53,7 +53,7 @@ neetan <COMMAND>
 | `--fdd2 <PATH>`              | Floppy disk image for drive 2 (repeatable)                                          | -          |
 | `--hdd1 <PATH>`              | Hard disk image for hard disk drive 1                                               | -          |
 | `--hdd2 <PATH>`              | Hard disk image for hard disk drive 2                                               | -          |
-| `--cdrom <PATH>`             | CD-ROM disc image CUE file (repeatable, PC-9821 only)                               | -          |
+| `--cdrom <PATH>`             | CD-ROM disc image .cue or .ccd file (repeatable, PC-9821 only)                      | -          |
 | `--audio-volume <FLOAT>`     | Audio volume 0.0–1.0                                                                | `1.0`      |
 | `--aspect-mode <MODE>`       | Display aspect mode: `4:3` or `1:1`                                                 | `4:3`      |
 | `--crt <on\|off>`            | Enable the CRT effect. Not avialable when using the legacy backend.                 | `on`       |
@@ -204,9 +204,10 @@ Only D88 images preserve modifications written by the emulated software. HDM and
 
 ### Supported CD-ROM disc image formats
 
-| Format  | Extensions | Description                                     |
-|---------|------------|-------------------------------------------------|
-| CUE/BIN | `.cue`     | CUE sheet referencing a raw BIN image (PC-9821) |
+| Format  | Extensions | Description                                                                                       |
+|---------|------------|---------------------------------------------------------------------------------------------------|
+| CUE/BIN | `.cue`     | CUE sheet referencing a raw BIN image (PC-9821)                                                   |
+| CloneCD | `.ccd`     | CloneCD control file with sibling `.img` (raw 2352-byte sectors) and optional `.sub` subchannel data (PC-9821) |
 
 ## Multiple disk images
 
