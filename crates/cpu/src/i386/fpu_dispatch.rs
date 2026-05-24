@@ -407,7 +407,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             match reg {
                 0 => self.fpu_faddp_sti_st0(i),
                 1 => self.fpu_fmulp_sti_st0(i),
-                2 => {
+                2 => self.clk(Self::timing(2, 2)), // reserved
+                3 => {
                     if modrm == 0xD9 {
                         self.fpu_fcompp();
                     } else {

@@ -1102,6 +1102,17 @@ fn fcom_basic() {
 }
 
 #[test]
+fn fcompp_pops_both_operands() {
+    let r = run_x87(&[0xDE, 0xD9], &[Fp80::ONE, Fp80::ZERO]);
+    assert!(!r.c3());
+    assert!(!r.c2());
+    assert!(!r.c0());
+    assert_eq!(r.tag(0), 0b11);
+    assert_eq!(r.tag(1), 0b11);
+    assert!(r.no_exceptions());
+}
+
+#[test]
 fn fcom_edge_cases() {
     // QNaN -> Unordered + IE (ordered comparison raises IE on ANY NaN)
     let r = run_x87(&[0xD8, 0xD1], &[POSITIVE_QNAN, Fp80::ONE]);
