@@ -163,6 +163,7 @@ pub(crate) struct LoadedNativeDriver {
     pub segment: u16,
     pub request_segment: u16,
     pub request_offset: u16,
+    pub request_high: bool,
 }
 
 fn from_bcd(value: u8) -> u8 {
