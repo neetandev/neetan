@@ -41,7 +41,7 @@ Options:
       --fdd2 <PATH>             Floppy disk image for drive 2 (repeatable)
       --hdd1 <PATH>             Hard disk image for drive 1 (SASI or IDE)
       --hdd2 <PATH>             Hard disk image for drive 2 (SASI or IDE)
-      --cdrom <PATH>            CD-ROM disc image CUE file (repeatable, PC-9821 only)
+      --cdrom <PATH>            CD-ROM disc image .cue or .ccd file (repeatable, PC-9821 only)
       --audio-volume <FLOAT>    Audio volume 0.0-1.0
       --aspect-mode <MODE>      Display aspect mode: 4:3 or 1:1
       --crt <on|off>            Enable CRT effect (default: on; modern backend only)

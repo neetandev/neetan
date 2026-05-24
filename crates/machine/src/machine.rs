@@ -229,6 +229,22 @@ fn insert_cdrom_impl<T: Tracing>(
     bus: &mut Pc9801Bus<T>,
     path: &std::path::Path,
 ) -> Result<String, String> {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase());
+
+    if extension.as_deref() == Some("ccd") {
+        insert_cdrom_ccd(bus, path)
+    } else {
+        insert_cdrom_cue(bus, path)
+    }
+}
+
+fn insert_cdrom_cue<T: Tracing>(
+    bus: &mut Pc9801Bus<T>,
+    path: &std::path::Path,
+) -> Result<String, String> {
     let cue_content = std::fs::read_to_string(path)
         .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
     let bin_filenames = device::cdrom::extract_bin_filenames(&cue_content)
@@ -248,6 +264,41 @@ fn insert_cdrom_impl<T: Tracing>(
     let description = format!(
         "{} ({} tracks, {} sectors)",
         bin_filenames[0], track_count, total_sectors
+    );
+    bus.insert_cdrom(image);
+    Ok(description)
+}
+
+fn insert_cdrom_ccd<T: Tracing>(
+    bus: &mut Pc9801Bus<T>,
+    path: &std::path::Path,
+) -> Result<String, String> {
+    let ccd_content = std::fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+    let img_path = path.with_extension("img");
+    let img_data = std::fs::read(&img_path)
+        .map_err(|error| format!("Failed to read {}: {error}", img_path.display()))?;
+    let sub_path = path.with_extension("sub");
+    let sub_data = match std::fs::read(&sub_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!("Failed to read {}: {error}", sub_path.display()));
+        }
+    };
+    let has_sub = sub_data.is_some();
+    let image = device::cdrom::CdImage::from_ccd(&ccd_content, img_data, sub_data)
+        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
+    let img_name = img_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("image.img");
+    let description = format!(
+        "{} ({} tracks, {} sectors, {})",
+        img_name,
+        image.track_count(),
+        image.total_sectors(),
+        if has_sub { "CCD+SUB" } else { "CCD" }
     );
     bus.insert_cdrom(image);
     Ok(description)
