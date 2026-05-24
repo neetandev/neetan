@@ -1,4 +1,29 @@
 //! Whitelisted native CONFIG.SYS device driver loading.
+//!
+//! The HLE DOS implementation does not execute arbitrary CONFIG.SYS device
+//! drivers. Some games still depend on small resident drivers for behavior that
+//! the HLE OS does not emulate directly, so this module provides a narrow native
+//! loading path for known driver binaries.
+//!
+//! Loading starts from the parsed CONFIG.SYS device lines. Each referenced file
+//! is opened through the normal boot drive file system, read into memory, and
+//! matched against `WHITELIST`. A matched image is copied into an allocated DOS
+//! memory block, preferably in UMB when the HLE memory manager has UMBs enabled.
+//! If high memory is unavailable, the loader falls back to conventional memory.
+//!
+//! Driver initialization is performed by a generated real-mode trampoline. The
+//! trampoline builds one DOS init request packet and command tail per driver,
+//! calls the driver's strategy and interrupt entry points, then traps back into
+//! the HLE OS through `INIT_COMPLETE_VECTOR`. Completion reads the request
+//! packet status and end address, installs the resulting device descriptor in
+//! the HLE device chain, frees the temporary trampoline block, and rewrites the
+//! trap return so COMMAND.COM continues booting normally.
+//!
+//! Whitelisting is intentionally byte-exact. A native driver is accepted only
+//! when its CONFIG.SYS basename, file size, BLAKE3 digest, device header name,
+//! device attributes, and known strategy/interrupt offsets match a
+//! `NativeDriverSpec`. This keeps the feature scoped to binaries we have
+//! audited and verified with the HLE OS.
 
 use common::warn;
 
@@ -70,13 +95,21 @@ struct NativeDriverImage {
     data: Vec<u8>,
 }
 
+#[derive(Clone, Copy)]
+struct NativeAllocation {
+    segment: u16,
+    high: bool,
+}
+
 struct LoadedDriverInit {
     spec: NativeDriverSpec,
     source_path: Vec<u8>,
     raw_line: Vec<u8>,
     segment: u16,
+    loaded_high: bool,
     request_segment: u16,
     request_offset: u16,
+    request_high: bool,
     line_tail_offset: u16,
 }
 
@@ -99,36 +132,25 @@ impl NeetanOs {
         let mut loaded = Vec::with_capacity(images.len());
         for image in images {
             let paragraphs = image.data.len().div_ceil(16) as u16;
-            let segment = match memory::allocate(
-                memory,
-                tables::FIRST_MCB_SEGMENT,
-                paragraphs,
-                tables::MCB_OWNER_DOS,
-                0,
-            ) {
-                Ok(segment) => segment,
-                Err((error, largest)) => {
-                    warn!(
-                        "CONFIG.SYS native driver {} skipped: allocation failed error={} largest={} paragraphs",
-                        display_bytes(&image.source_path),
-                        error,
-                        largest
-                    );
-                    continue;
-                }
+            let Some(allocation) =
+                self.allocate_native_driver_image(memory, &image.source_path, paragraphs)
+            else {
+                continue;
             };
 
-            let base = (segment as u32) << 4;
+            let base = (allocation.segment as u32) << 4;
             memory.write_block(base, &image.data);
-            write_mcb_name(memory, segment - 1, image.spec.mcb_name);
+            write_mcb_name(memory, allocation.segment - 1, image.spec.mcb_name);
 
             loaded.push(LoadedDriverInit {
                 spec: image.spec,
                 source_path: image.source_path,
                 raw_line: image.raw_line,
-                segment,
+                segment: allocation.segment,
+                loaded_high: allocation.high,
                 request_segment: 0,
                 request_offset: 0,
+                request_high: false,
                 line_tail_offset: 0,
             });
         }
@@ -137,27 +159,22 @@ impl NeetanOs {
             return;
         }
 
-        let trampoline_segment = match memory::allocate(
+        let Some(trampoline_allocation) = self.allocate_native_block_high_first(
             memory,
-            tables::FIRST_MCB_SEGMENT,
             TRAMPOLINE_PARAGRAPHS,
-            tables::MCB_OWNER_DOS,
-            0,
-        ) {
-            Ok(segment) => segment,
-            Err((error, largest)) => {
-                warn!(
-                    "CONFIG.SYS native driver init skipped: trampoline allocation failed error={} largest={} paragraphs",
-                    error, largest
-                );
-                return;
-            }
+            b"CONFIG.SYS native driver init",
+            "trampoline",
+        ) else {
+            self.free_loaded_driver_blocks(memory, &loaded);
+            return;
         };
+        let trampoline_segment = trampoline_allocation.segment;
         write_mcb_name(memory, trampoline_segment - 1, b"DRVINIT\0");
 
         for (index, driver) in loaded.iter_mut().enumerate() {
             driver.request_segment = trampoline_segment;
             driver.request_offset = REQUEST_BASE_OFFSET + index as u16 * REQUEST_STRIDE;
+            driver.request_high = trampoline_allocation.high;
             driver.line_tail_offset = LINE_TAIL_BASE_OFFSET + index as u16 * LINE_TAIL_STRIDE;
             write_line_tail(
                 memory,
@@ -181,6 +198,8 @@ impl NeetanOs {
                 trampoline.len(),
                 REQUEST_BASE_OFFSET
             );
+            let _ = self.free_native_allocation(memory, trampoline_allocation);
+            self.free_loaded_driver_blocks(memory, &loaded);
             return;
         }
         memory.write_block((trampoline_segment as u32) << 4, &trampoline);
@@ -193,6 +212,7 @@ impl NeetanOs {
                 segment: driver.segment,
                 request_segment: driver.request_segment,
                 request_offset: driver.request_offset,
+                request_high: driver.request_high,
             })
             .collect();
         self.boot_entry_point = BootEntryPoint {
@@ -207,6 +227,14 @@ impl NeetanOs {
         cpu: &dyn crate::CpuAccess,
         memory: &mut dyn MemoryAccess,
     ) {
+        let trampoline_allocation =
+            self.pending_native_drivers
+                .first()
+                .map(|driver| NativeAllocation {
+                    segment: driver.request_segment,
+                    high: driver.request_high,
+                });
+
         for driver in &self.pending_native_drivers {
             let request_addr =
                 ((driver.request_segment as u32) << 4) + driver.request_offset as u32;
@@ -240,7 +268,130 @@ impl NeetanOs {
         memory.write_word(iret_base, entry.offset);
         memory.write_word(iret_base + 2, entry.segment);
         memory.write_word(iret_base + 4, entry.flags);
+
+        if let Some(allocation) = trampoline_allocation
+            && let Err(error) = self.free_native_allocation(memory, allocation)
+        {
+            warn!("CONFIG.SYS native driver trampoline free failed error={error}");
+        }
+
         self.boot_entry_point = entry;
+    }
+
+    fn allocate_native_driver_image(
+        &self,
+        memory: &mut dyn MemoryAccess,
+        display_name: &[u8],
+        image_paragraphs: u16,
+    ) -> Option<NativeAllocation> {
+        self.allocate_native_block_high_first(memory, image_paragraphs, display_name, "image")
+    }
+
+    fn allocate_native_block_high_first(
+        &self,
+        memory: &mut dyn MemoryAccess,
+        paragraphs: u16,
+        display_name: &[u8],
+        block_name: &str,
+    ) -> Option<NativeAllocation> {
+        if let Some(mm) = self
+            .state
+            .memory_manager
+            .as_ref()
+            .filter(|mm| mm.is_umb_enabled())
+        {
+            match mm.umb_allocate(paragraphs, memory) {
+                Ok((segment, _actual_size)) => {
+                    return Some(NativeAllocation {
+                        segment,
+                        high: true,
+                    });
+                }
+                Err((error, largest)) => {
+                    warn!(
+                        "CONFIG.SYS native driver {} {block_name} high allocation failed error={} largest={} paragraphs; falling back to conventional memory",
+                        display_bytes(display_name),
+                        error,
+                        largest
+                    );
+                }
+            }
+        }
+
+        self.allocate_conventional_native_block(memory, paragraphs, display_name, block_name)
+            .map(|segment| NativeAllocation {
+                segment,
+                high: false,
+            })
+    }
+
+    fn allocate_conventional_native_block(
+        &self,
+        memory: &mut dyn MemoryAccess,
+        paragraphs: u16,
+        display_name: &[u8],
+        block_name: &str,
+    ) -> Option<u16> {
+        match memory::allocate(
+            memory,
+            tables::FIRST_MCB_SEGMENT,
+            paragraphs,
+            tables::MCB_OWNER_DOS,
+            0,
+        ) {
+            Ok(segment) => Some(segment),
+            Err((error, largest)) => {
+                warn!(
+                    "CONFIG.SYS native driver {} {block_name} allocation failed error={} largest={} paragraphs",
+                    display_bytes(display_name),
+                    error,
+                    largest
+                );
+                None
+            }
+        }
+    }
+
+    fn free_native_allocation(
+        &self,
+        memory: &mut dyn MemoryAccess,
+        allocation: NativeAllocation,
+    ) -> Result<(), u8> {
+        if allocation.high {
+            if let Some(mm) = self
+                .state
+                .memory_manager
+                .as_ref()
+                .filter(|mm| mm.is_umb_enabled())
+            {
+                mm.umb_free(allocation.segment, memory)
+            } else {
+                memory::free(memory, tables::UMB_FIRST_MCB_SEGMENT, allocation.segment)
+            }
+        } else {
+            memory::free(memory, tables::FIRST_MCB_SEGMENT, allocation.segment)
+        }
+    }
+
+    fn free_loaded_driver_blocks(
+        &self,
+        memory: &mut dyn MemoryAccess,
+        loaded: &[LoadedDriverInit],
+    ) {
+        for driver in loaded {
+            if let Err(error) = self.free_native_allocation(
+                memory,
+                NativeAllocation {
+                    segment: driver.segment,
+                    high: driver.loaded_high,
+                },
+            ) {
+                warn!(
+                    "CONFIG.SYS native driver {} image free failed error={error}",
+                    display_bytes(&driver.source_path)
+                );
+            }
+        }
     }
 
     fn collect_native_driver_images(
@@ -573,8 +724,42 @@ mod tests {
     use super::*;
     use crate::{
         MemoryAccess,
+        memory::memory_manager::MemoryManager,
         test_support::{MockCpu, MockMemory},
     };
+
+    fn mock_memory_with_conventional_chain(free_paragraphs: u16) -> MockMemory {
+        let mut memory = MockMemory::with_extended_memory(0x100000, 4 * 1024 * 1024);
+        memory::write_mcb(
+            &mut memory,
+            tables::FIRST_MCB_SEGMENT,
+            0x5A,
+            tables::MCB_OWNER_FREE,
+            free_paragraphs,
+            b"FREE    ",
+        );
+        memory
+    }
+
+    fn os_with_umb(memory: &mut dyn MemoryAccess) -> NeetanOs {
+        let mut os = NeetanOs::new();
+        os.state.memory_manager = Some(MemoryManager::new(
+            4 * 1024 * 1024,
+            true,
+            true,
+            false,
+            memory,
+        ));
+        os
+    }
+
+    fn mcb_addr(segment: u16) -> u32 {
+        (segment as u32) << 4
+    }
+
+    fn mcb_owner(memory: &dyn MemoryAccess, segment: u16) -> u16 {
+        memory.read_word(mcb_addr(segment) + tables::MCB_OFF_OWNER)
+    }
 
     #[test]
     fn boot_root_path_defaults_to_boot_drive_root() {
@@ -656,10 +841,54 @@ mod tests {
             source_path: b"A:\\TESTDRV.SYS".to_vec(),
             raw_line: b"A:\\TESTDRV.SYS /D:foo".to_vec(),
             segment: 0x3456,
+            loaded_high: false,
             request_segment: 0x9000,
             request_offset: 0x0200,
+            request_high: false,
             line_tail_offset: LINE_TAIL_BASE_OFFSET,
         }
+    }
+
+    #[test]
+    fn native_driver_image_loads_high_first_for_any_whitelisted_driver() {
+        let mut memory = mock_memory_with_conventional_chain(0x1000);
+        let os = os_with_umb(&mut memory);
+
+        let allocation = os
+            .allocate_native_driver_image(&mut memory, b"A:\\GENERIC.SYS", 0x20)
+            .expect("driver image should allocate");
+
+        assert!(allocation.high);
+        assert_eq!(allocation.segment, tables::UMB_FIRST_MCB_SEGMENT + 1);
+    }
+
+    #[test]
+    fn native_driver_image_falls_back_to_conventional_without_umb() {
+        let mut memory = mock_memory_with_conventional_chain(0x1000);
+        let os = NeetanOs::new();
+
+        let allocation = os
+            .allocate_native_driver_image(&mut memory, b"A:\\GENERIC.SYS", 0x20)
+            .expect("driver image should allocate");
+
+        assert!(!allocation.high);
+        assert_eq!(allocation.segment, tables::FIRST_MCB_SEGMENT + 1);
+    }
+
+    #[test]
+    fn native_driver_high_first_does_not_change_dos_umb_policy() {
+        let mut memory = mock_memory_with_conventional_chain(0x1000);
+        let mut os = os_with_umb(&mut memory);
+        os.state.allocation_strategy = 0x42;
+        os.state.umb_link = true;
+
+        let allocation = os
+            .allocate_native_driver_image(&mut memory, b"A:\\GENERIC.SYS", 0x20)
+            .expect("driver image should allocate");
+
+        assert!(allocation.high);
+        assert_eq!(os.state.allocation_strategy, 0x42);
+        assert!(os.state.umb_link);
     }
 
     #[test]
@@ -733,6 +962,7 @@ mod tests {
             segment: 0x3456,
             request_segment: 0x9000,
             request_offset: 0x0200,
+            request_high: false,
         });
 
         let cpu = MockCpu {
@@ -751,6 +981,52 @@ mod tests {
         assert_eq!(memory.read_word(iret_addr), 0x0100);
         assert_eq!(memory.read_word(iret_addr + 2), 0x2345);
         assert_eq!(memory.read_word(iret_addr + 4), 0x0202);
+        assert!(os.pending_native_drivers.is_empty());
+    }
+
+    #[test]
+    fn complete_native_driver_init_frees_high_trampoline() {
+        let mut memory = mock_memory_with_conventional_chain(0x1000);
+        let mut os = os_with_umb(&mut memory);
+        os.root_command_com_psp = 0x2345;
+
+        let trampoline = os
+            .allocate_native_block_high_first(
+                &mut memory,
+                TRAMPOLINE_PARAGRAPHS,
+                b"A:\\TESTDRV.SYS",
+                "trampoline",
+            )
+            .expect("trampoline should allocate");
+        assert!(trampoline.high);
+        assert_eq!(
+            mcb_owner(&memory, trampoline.segment - 1),
+            tables::MCB_OWNER_DOS
+        );
+
+        os.pending_native_drivers.push(LoadedNativeDriver {
+            display_name: b"A:\\TESTDRV.SYS".to_vec(),
+            segment: 0x3456,
+            request_segment: trampoline.segment,
+            request_offset: 0x0200,
+            request_high: true,
+        });
+
+        let cpu = MockCpu {
+            ss: 0x8000,
+            sp: 0x0100,
+            ..MockCpu::default()
+        };
+        let request_addr = ((trampoline.segment as u32) << 4) + 0x0200;
+        memory.write_word(request_addr + 3, 0x0100);
+        memory.write_word(request_addr + 0x10, 0x3456);
+
+        os.complete_native_driver_init(&cpu, &mut memory);
+
+        assert_eq!(
+            mcb_owner(&memory, trampoline.segment - 1),
+            tables::MCB_OWNER_FREE
+        );
         assert!(os.pending_native_drivers.is_empty());
     }
 }
