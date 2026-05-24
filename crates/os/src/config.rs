@@ -72,7 +72,22 @@ impl ShellConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeviceDirective {
+    Device,
+    DeviceHigh,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ConfigDeviceLine {
+    pub directive: DeviceDirective,
+    pub raw_value: Vec<u8>,
+    pub path: Vec<u8>,
+    pub arguments: Vec<u8>,
+}
+
 /// Parsed CONFIG.SYS directives with defaults matching MS-DOS 6.20.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ConfigSys {
     /// Maximum number of open file handles (FILES=).
     pub files: u16,
@@ -88,6 +103,8 @@ pub(crate) struct ConfigSys {
     pub shell: Option<ShellConfig>,
     /// MSCDEX device name extracted from DEVICE=NECCD.SYS /D:name.
     pub cdrom_device_name: Option<Vec<u8>>,
+    /// Ordered DEVICE= and DEVICEHIGH= lines from CONFIG.SYS.
+    pub devices: Vec<ConfigDeviceLine>,
 }
 
 impl Default for ConfigSys {
@@ -100,6 +117,7 @@ impl Default for ConfigSys {
             ctrl_break: false,
             shell: None,
             cdrom_device_name: None,
+            devices: Vec::new(),
         }
     }
 }
@@ -173,7 +191,12 @@ pub(crate) fn parse_config_sys(data: &[u8]) -> ConfigSys {
                 config.shell = ShellConfig::parse(value_trimmed);
             }
             b"DEVICE" | b"DEVICEHIGH" => {
-                parse_device_line(value_trimmed, &mut config);
+                let directive = if directive == b"DEVICEHIGH" {
+                    DeviceDirective::DeviceHigh
+                } else {
+                    DeviceDirective::Device
+                };
+                parse_device_line(directive, value_trimmed, &mut config);
             }
             _ => {
                 // Unrecognized directive: silently ignored
@@ -185,9 +208,20 @@ pub(crate) fn parse_config_sys(data: &[u8]) -> ConfigSys {
 }
 
 /// Parses a DEVICE= value for NECCD.SYS / NECCDD.SYS driver recognition.
-fn parse_device_line(value: &[u8], config: &mut ConfigSys) {
+fn parse_device_line(directive: DeviceDirective, value: &[u8], config: &mut ConfigSys) {
     // Extract the filename (first token, may include path)
     let (path_token, rest) = split_first_token(value);
+    if path_token.is_empty() {
+        return;
+    }
+
+    config.devices.push(ConfigDeviceLine {
+        directive,
+        raw_value: value.to_vec(),
+        path: path_token.to_vec(),
+        arguments: rest.to_vec(),
+    });
+
     let upper_path: Vec<u8> = path_token.iter().map(|b| b.to_ascii_uppercase()).collect();
 
     // Check if filename ends with NECCD.SYS or NECCDD.SYS
@@ -219,7 +253,6 @@ fn parse_device_line(value: &[u8], config: &mut ConfigSys) {
         i += 1;
     }
 
-    // NECCD.SYS without /D: parameter: activate with empty device name
     config.cdrom_device_name = Some(b"MSCD001".to_vec());
 }
 
@@ -285,6 +318,7 @@ mod tests {
         assert!(!config.ctrl_break);
         assert!(config.shell.is_none());
         assert!(config.cdrom_device_name.is_none());
+        assert!(config.devices.is_empty());
     }
 
     #[test]
@@ -369,6 +403,10 @@ mod tests {
     fn parse_device_neccd() {
         let config = parse_config_sys(b"DEVICE=A:\\NECCD.SYS /D:CD001\n");
         assert_eq!(config.cdrom_device_name.as_deref(), Some(b"CD001".as_ref()));
+        assert_eq!(config.devices.len(), 1);
+        assert_eq!(config.devices[0].directive, DeviceDirective::Device);
+        assert_eq!(config.devices[0].path, b"A:\\NECCD.SYS");
+        assert_eq!(config.devices[0].arguments, b"/D:CD001");
     }
 
     #[test]
@@ -393,12 +431,30 @@ mod tests {
     fn parse_devicehigh() {
         let config = parse_config_sys(b"DEVICEHIGH=A:\\NECCD.SYS /D:CD002\n");
         assert_eq!(config.cdrom_device_name.as_deref(), Some(b"CD002".as_ref()));
+        assert_eq!(config.devices.len(), 1);
+        assert_eq!(config.devices[0].directive, DeviceDirective::DeviceHigh);
     }
 
     #[test]
-    fn unknown_device_ignored() {
+    fn unknown_device_preserved() {
         let config = parse_config_sys(b"DEVICE=MOUSE.SYS\n");
         assert!(config.cdrom_device_name.is_none());
+        assert_eq!(config.devices.len(), 1);
+        assert_eq!(config.devices[0].path, b"MOUSE.SYS");
+    }
+
+    #[test]
+    fn device_lines_preserve_order() {
+        let config =
+            parse_config_sys(b"DEVICE=FIRST.SYS /A\nDEVICEHIGH=C:\\DOS\\SECOND.SYS /B /C\n");
+        assert_eq!(config.devices.len(), 2);
+        assert_eq!(config.devices[0].directive, DeviceDirective::Device);
+        assert_eq!(config.devices[0].raw_value, b"FIRST.SYS /A");
+        assert_eq!(config.devices[0].path, b"FIRST.SYS");
+        assert_eq!(config.devices[0].arguments, b"/A");
+        assert_eq!(config.devices[1].directive, DeviceDirective::DeviceHigh);
+        assert_eq!(config.devices[1].path, b"C:\\DOS\\SECOND.SYS");
+        assert_eq!(config.devices[1].arguments, b"/B /C");
     }
 
     #[test]

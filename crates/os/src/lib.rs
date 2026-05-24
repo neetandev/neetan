@@ -19,6 +19,7 @@ pub mod filesystem;
 mod interrupt;
 mod ioctl;
 mod memory;
+mod native_driver;
 mod process;
 mod shell;
 mod state;
@@ -138,6 +139,30 @@ pub(crate) struct BufferedInputState {
     pub buffer_addr: u32,
     pub max_chars: u8,
     pub current_pos: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BootEntryPoint {
+    pub segment: u16,
+    pub offset: u16,
+    pub flags: u16,
+}
+
+impl BootEntryPoint {
+    fn command_com(psp_segment: u16) -> Self {
+        Self {
+            segment: psp_segment,
+            offset: 0x0100,
+            flags: 0x0202,
+        }
+    }
+}
+
+pub(crate) struct LoadedNativeDriver {
+    pub display_name: Vec<u8>,
+    pub segment: u16,
+    pub request_segment: u16,
+    pub request_offset: u16,
 }
 
 fn from_bcd(value: u8) -> u8 {
@@ -315,6 +340,10 @@ pub struct NeetanOs {
     pub(crate) console: console::Console,
     /// Root COMMAND.COM PSP segment.
     pub(crate) root_command_com_psp: u16,
+    /// First guest entry after HLE bootstrap finishes.
+    pub(crate) boot_entry_point: BootEntryPoint,
+    /// Native CONFIG.SYS drivers whose INIT trampoline has not completed yet.
+    pub(crate) pending_native_drivers: Vec<LoadedNativeDriver>,
     /// Active shell sessions keyed by PSP segment.
     pub(crate) shells: BTreeMap<u16, shell::Shell>,
 }
@@ -391,6 +420,8 @@ impl NeetanOs {
             },
             console: console::Console::default(),
             root_command_com_psp: 0,
+            boot_entry_point: BootEntryPoint::command_com(0),
+            pending_native_drivers: Vec::new(),
             shells: BTreeMap::new(),
         }
     }
@@ -398,6 +429,11 @@ impl NeetanOs {
     /// Returns the COMMAND.COM PSP segment.
     pub fn command_com_psp(&self) -> u16 {
         self.root_command_com_psp
+    }
+
+    /// Returns the first guest entry point after the HLE bootstrap IRET.
+    pub fn boot_entry_point(&self) -> BootEntryPoint {
+        self.boot_entry_point
     }
 
     /// Sets the host local time provider for the OS.
@@ -480,9 +516,10 @@ impl NeetanOs {
             );
         }
 
-        // Parse CONFIG.SYS if present on any mounted drive.
+        // Parse CONFIG.SYS if present on the boot drive root.
         let cfg = self.try_parse_config_sys(memory, device, &drives);
         self.apply_config(&cfg, memory);
+        self.write_device_chain(memory);
         tracer.trace_os_boot(OsBootStage::ConfigApplied, cpu, memory);
 
         // Set up CD-ROM drive Q: if the machine has a CD-ROM.
@@ -515,6 +552,8 @@ impl NeetanOs {
             self.state.memory_manager = Some(mm);
         }
         tracer.trace_os_boot(OsBootStage::MemoryManagerReady, cpu, memory);
+
+        self.install_native_config_drivers(&cfg, memory, device);
 
         // Load AUTOEXEC.BAT if present on any mounted drive.
         let autoexec_lines = self.try_load_autoexec_bat(memory, device, &drives);
@@ -619,39 +658,43 @@ impl NeetanOs {
         memory.write_byte(dev_stub_addr + 5, 0xCB);
     }
 
-    /// Searches mounted drives for CONFIG.SYS and parses it.
+    /// Searches the boot drive root for CONFIG.SYS and parses it.
     fn try_parse_config_sys(
         &mut self,
         memory: &dyn MemoryAccess,
         disk: &mut dyn DiskIo,
         drives: &[DriveInfo],
     ) -> config::ConfigSys {
-        for drive in drives {
-            if drive.is_virtual {
-                continue;
-            }
-            if self
-                .state
-                .ensure_volume_mounted(drive.drive_index, memory, disk)
-                .is_err()
-            {
-                continue;
-            }
-            let vol = match self.state.fat_volumes[drive.drive_index as usize].as_ref() {
-                Some(v) => v,
-                None => continue,
-            };
-            let fcb_name = filesystem::fat_dir::name_to_fcb(b"CONFIG.SYS");
-            let entry = match filesystem::fat_dir::find_entry(vol, 0, &fcb_name, disk) {
-                Ok(Some(e)) => e,
-                _ => continue,
-            };
-            if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY != 0 {
-                continue;
-            }
-            if let Ok(data) = process::read_file_data(vol, &entry, disk) {
-                return config::parse_config_sys(&data);
-            }
+        let Some(boot_drive_index) = self.state.boot_drive.checked_sub(1) else {
+            return config::ConfigSys::default();
+        };
+        if !drives
+            .iter()
+            .any(|drive| !drive.is_virtual && drive.drive_index == boot_drive_index)
+        {
+            return config::ConfigSys::default();
+        }
+        if self
+            .state
+            .ensure_volume_mounted(boot_drive_index, memory, disk)
+            .is_err()
+        {
+            return config::ConfigSys::default();
+        }
+        let vol = match self.state.fat_volumes[boot_drive_index as usize].as_ref() {
+            Some(v) => v,
+            None => return config::ConfigSys::default(),
+        };
+        let fcb_name = filesystem::fat_dir::name_to_fcb(b"CONFIG.SYS");
+        let entry = match filesystem::fat_dir::find_entry(vol, 0, &fcb_name, disk) {
+            Ok(Some(e)) => e,
+            _ => return config::ConfigSys::default(),
+        };
+        if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY != 0 {
+            return config::ConfigSys::default();
+        }
+        if let Ok(data) = process::read_file_data(vol, &entry, disk) {
+            return config::parse_config_sys(&data);
         }
         config::ConfigSys::default()
     }
@@ -969,6 +1012,10 @@ impl NeetanOs {
                 true
             }
             0x33 => false,
+            native_driver::INIT_COMPLETE_VECTOR => {
+                self.complete_native_driver_init(cpu, memory);
+                true
+            }
             0x67 => {
                 tracer.trace_int67h(cpu, memory);
                 self.int67h(cpu, memory);
@@ -1582,6 +1629,8 @@ impl NeetanOs {
         self.state.dta_segment = self.state.current_psp;
         self.state.dta_offset = 0x0080;
         self.state.dbcs_table_addr = tables::DBCS_TABLE_ADDR;
+        self.root_command_com_psp = self.state.current_psp;
+        self.boot_entry_point = BootEntryPoint::command_com(self.state.current_psp);
 
         // Push root COMMAND.COM context (zeroed return addresses; terminating
         // the root process is an error).
