@@ -335,7 +335,7 @@ impl NeetanOs {
                 .unwrap_or(self.state.current_drive);
             let (handle, sft_index) = self.state.allocate_handle(memory)?;
             self.write_sft_for_file(memory, sft_index, &created, drive_index, 0x0002);
-            Ok(handle as u16)
+            Ok(handle)
         })();
 
         match result {
@@ -373,7 +373,7 @@ impl NeetanOs {
                     tables::DEV_EMS_OFFSET,
                     open_mode as u16,
                 );
-                return Ok(handle as u16);
+                return Ok(handle);
             }
             if is_xms_probe {
                 let (handle, sft_index) = self.state.allocate_handle(memory)?;
@@ -384,7 +384,7 @@ impl NeetanOs {
                     tables::DEV_XMS_OFFSET,
                     open_mode as u16,
                 );
-                return Ok(handle as u16);
+                return Ok(handle);
             }
 
             let read_path =
@@ -404,7 +404,7 @@ impl NeetanOs {
                     .ok_or(0x0002u16)?;
                 let (handle, sft_index) = self.state.allocate_handle(memory)?;
                 self.write_sft_for_virtual_file(memory, sft_index, ventry, open_mode as u16);
-                return Ok(handle as u16);
+                return Ok(handle);
             }
 
             let (handle, sft_index) = self.state.allocate_handle(memory)?;
@@ -437,7 +437,7 @@ impl NeetanOs {
                     self.state.open_iso_files[sft_index as usize] = Some(entry.clone());
                 }
             }
-            Ok(handle as u16)
+            Ok(handle)
         })();
 
         match result {
@@ -828,24 +828,14 @@ impl NeetanOs {
             let sft_index = self.state.handle_to_sft_index(handle, memory)?;
             let sft_addr = self.state.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
 
-            // Find a free JFT slot
-            let psp_base = (self.state.current_psp as u32) << 4;
-            let mut new_handle = None;
-            for h in 0..20u16 {
-                let jft_entry = memory.read_byte(psp_base + tables::PSP_OFF_JFT + h as u32);
-                if jft_entry == 0xFF {
-                    new_handle = Some(h);
-                    break;
-                }
-            }
-            let new_h = new_handle.ok_or(0x0004u16)?;
+            let new_handle = self.state.find_free_jft_handle(memory)?;
 
             // Point new handle to same SFT entry
-            memory.write_byte(psp_base + tables::PSP_OFF_JFT + new_h as u32, sft_index);
+            self.state.write_jft_entry(new_handle, sft_index, memory)?;
             let ref_count = memory.read_word(sft_addr + tables::SFT_ENT_REF_COUNT);
             memory.write_word(sft_addr + tables::SFT_ENT_REF_COUNT, ref_count + 1);
 
-            Ok(new_h)
+            Ok(new_handle)
         })();
 
         match result {

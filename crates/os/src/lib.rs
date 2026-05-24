@@ -1801,6 +1801,63 @@ impl NeetanOs {
 }
 
 impl OsState {
+    pub(crate) fn handle_table_info_for_psp(
+        mem: &dyn MemoryAccess,
+        psp_segment: u16,
+    ) -> (u32, u16) {
+        let psp_base = (psp_segment as u32) << 4;
+        let size = mem.read_word(psp_base + tables::PSP_OFF_HANDLE_SIZE);
+        let offset = mem.read_word(psp_base + tables::PSP_OFF_HANDLE_PTR);
+        let segment = mem.read_word(psp_base + tables::PSP_OFF_HANDLE_PTR + 2);
+
+        if size == 0 || segment == 0 {
+            (psp_base + tables::PSP_OFF_JFT, 20)
+        } else {
+            (((segment as u32) << 4) + offset as u32, size)
+        }
+    }
+
+    pub(crate) fn handle_table_info(&self, mem: &dyn MemoryAccess) -> (u32, u16) {
+        Self::handle_table_info_for_psp(mem, self.current_psp)
+    }
+
+    fn jft_entry_addr(&self, handle: u16, mem: &dyn MemoryAccess) -> Result<u32, u16> {
+        let (table_addr, table_size) = self.handle_table_info(mem);
+        if handle >= table_size || handle > u8::MAX as u16 {
+            return Err(0x0006);
+        }
+        Ok(table_addr + handle as u32)
+    }
+
+    pub(crate) fn read_jft_entry(&self, handle: u16, mem: &dyn MemoryAccess) -> Result<u8, u16> {
+        let entry_addr = self.jft_entry_addr(handle, mem)?;
+        Ok(mem.read_byte(entry_addr))
+    }
+
+    pub(crate) fn write_jft_entry(
+        &self,
+        handle: u16,
+        sft_index: u8,
+        mem: &mut dyn MemoryAccess,
+    ) -> Result<(), u16> {
+        let entry_addr = self.jft_entry_addr(handle, mem)?;
+        mem.write_byte(entry_addr, sft_index);
+        Ok(())
+    }
+
+    pub(crate) fn find_free_jft_handle(&self, mem: &dyn MemoryAccess) -> Result<u16, u16> {
+        let (table_addr, table_size) = self.handle_table_info(mem);
+        let search_limit = table_size.min(u8::MAX as u16 + 1);
+
+        for handle in 0..search_limit {
+            if mem.read_byte(table_addr + handle as u32) == 0xFF {
+                return Ok(handle);
+            }
+        }
+
+        Err(0x0004)
+    }
+
     /// Returns the SFT entry base address for a given SFT index (0-based).
     pub(crate) fn sft_entry_addr(&self, sft_index: u8) -> Option<u32> {
         use tables::*;
@@ -1821,11 +1878,7 @@ impl OsState {
         handle: u16,
         mem: &dyn MemoryAccess,
     ) -> Result<u8, u16> {
-        let psp_base = (self.current_psp as u32) << 4;
-        if handle >= 20 {
-            return Err(0x0006); // invalid handle
-        }
-        let jft_entry = mem.read_byte(psp_base + tables::PSP_OFF_JFT + handle as u32);
+        let jft_entry = self.read_jft_entry(handle, mem)?;
         if jft_entry == 0xFF {
             return Err(0x0006);
         }
@@ -1833,23 +1886,12 @@ impl OsState {
     }
 
     /// Allocates a free JFT slot and a free SFT entry. Returns (handle, sft_index).
-    pub(crate) fn allocate_handle(&self, mem: &mut dyn MemoryAccess) -> Result<(u8, u8), u16> {
-        let psp_base = (self.current_psp as u32) << 4;
-
-        // Find free JFT slot
-        let mut free_handle = None;
-        for h in 0..20u8 {
-            let jft_entry = mem.read_byte(psp_base + tables::PSP_OFF_JFT + h as u32);
-            if jft_entry == 0xFF {
-                free_handle = Some(h);
-                break;
-            }
-        }
-        let handle = free_handle.ok_or(0x0004u16)?; // too many open files
+    pub(crate) fn allocate_handle(&self, mem: &mut dyn MemoryAccess) -> Result<(u16, u8), u16> {
+        let handle = self.find_free_jft_handle(mem)?;
 
         // Find free SFT entry (skip first 5 device entries)
         let mut free_sft = None;
-        let total_count = tables::SFT_INITIAL_COUNT + self.sft2_count;
+        let total_count = (tables::SFT_INITIAL_COUNT + self.sft2_count).min(0x00FF);
         for idx in tables::SFT_INITIAL_COUNT..total_count {
             if let Some(addr) = self.sft_entry_addr(idx as u8) {
                 let ref_count = mem.read_word(addr + tables::SFT_ENT_REF_COUNT);
@@ -1862,22 +1904,20 @@ impl OsState {
         let sft_index = free_sft.ok_or(0x0004u16)?;
 
         // Link handle to SFT entry
-        mem.write_byte(psp_base + tables::PSP_OFF_JFT + handle as u32, sft_index);
+        self.write_jft_entry(handle, sft_index, mem)?;
 
         Ok((handle, sft_index))
     }
 
     /// Frees a handle: sets JFT entry to 0xFF, decrements SFT ref_count.
     pub(crate) fn free_handle(&self, handle: u16, mem: &mut dyn MemoryAccess) {
-        let psp_base = (self.current_psp as u32) << 4;
-        if handle >= 20 {
+        let Ok(sft_index) = self.read_jft_entry(handle, mem) else {
             return;
-        }
-        let sft_index = mem.read_byte(psp_base + tables::PSP_OFF_JFT + handle as u32);
+        };
         if sft_index == 0xFF {
             return;
         }
-        mem.write_byte(psp_base + tables::PSP_OFF_JFT + handle as u32, 0xFF);
+        let _ = self.write_jft_entry(handle, 0xFF, mem);
         if let Some(sft_addr) = self.sft_entry_addr(sft_index) {
             let ref_count = mem.read_word(sft_addr + tables::SFT_ENT_REF_COUNT);
             if ref_count > 0 {

@@ -460,6 +460,12 @@ fn exec_load_only_com_uses_child_program_path() {
         child_env_seg, parent_env_seg,
         "Load-only COM should allocate a separate child environment"
     );
+    let child_env_mcb = child_env_seg.wrapping_sub(1);
+    let child_env_size = harness::read_word(&machine.bus, harness::far_to_linear(child_env_mcb, 3));
+    assert_eq!(
+        child_env_size, 5,
+        "Child environment should be compact, got {child_env_size} paragraphs"
+    );
 
     let (count, pathname) = read_program_path_from_environment(&machine.bus, child_env_seg);
     assert_eq!(
