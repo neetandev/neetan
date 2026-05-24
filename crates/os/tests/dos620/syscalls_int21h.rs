@@ -1,3 +1,5 @@
+use os::tables;
+
 use crate::harness;
 
 #[test]
@@ -82,6 +84,45 @@ fn get_set_interrupt_vector() {
         "INT 60h segment should be 0x1234 after set, got {:#06X}",
         segment
     );
+}
+
+#[test]
+fn set_handle_count_expands_jft() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBB, 0x28, 0x00,                   // MOV BX, 40
+        0xB4, 0x67,                         // MOV AH, 67h
+        0xCD, 0x21,                         // INT 21h
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let flags = harness::result_word(&machine.bus, 0);
+    assert_eq!(flags & 0x0001, 0, "AH=67h should clear carry");
+
+    let psp_segment = harness::get_psp_segment(&mut machine);
+    let psp_base = harness::far_to_linear(psp_segment, 0);
+    let handle_count = harness::read_word(&machine.bus, psp_base + tables::PSP_OFF_HANDLE_SIZE);
+    let (jft_segment, jft_offset) =
+        harness::read_far_ptr(&machine.bus, psp_base + tables::PSP_OFF_HANDLE_PTR);
+    let jft_base = harness::far_to_linear(jft_segment, jft_offset);
+
+    assert_eq!(handle_count, 40);
+    assert_ne!((jft_segment, jft_offset), (psp_segment, 0x0018));
+    for handle in 0..5u32 {
+        assert_eq!(
+            harness::read_byte(&machine.bus, jft_base + handle),
+            handle as u8
+        );
+    }
+    for handle in 5..40u32 {
+        assert_eq!(harness::read_byte(&machine.bus, jft_base + handle), 0xFF);
+    }
 }
 
 #[test]
@@ -1951,6 +1992,40 @@ fn int21h_4ah_resize_grows_into_adjacent_free_block() {
     let a_mcb = a_data.wrapping_sub(1);
     let size = harness::read_word(&machine.bus, harness::far_to_linear(a_mcb, 3));
     assert_eq!(size, 0x21, "A should be resized to 0x21, got {:#06X}", size);
+}
+
+#[test]
+fn int21h_4ah_resize_grows_into_adjacent_free_run() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,                   // A
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x02, 0x01,                   // B
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x04, 0x01,                   // C
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21, // D sentinel
+        0x8B, 0x1E, 0x02, 0x01, 0x8E, 0xC3, 0xB4, 0x49, 0xCD, 0x21,
+        0x8B, 0x1E, 0x04, 0x01, 0x8E, 0xC3, 0xB4, 0x49, 0xCD, 0x21,
+        0x8B, 0x1E, 0x00, 0x01, 0x8E, 0xC3,
+        0xBB, 0x32, 0x00, 0xB4, 0x4A, 0xCD, 0x21,
+        0x9C, 0x58, 0xA3, 0x06, 0x01,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let a_data = harness::result_word(&machine.bus, 0);
+    let flags = harness::result_word(&machine.bus, 6);
+    assert_eq!(
+        flags & 1,
+        0,
+        "Grow into adjacent free run should succeed, flags={:#06X}",
+        flags
+    );
+    let a_mcb = a_data.wrapping_sub(1);
+    let size = harness::read_word(&machine.bus, harness::far_to_linear(a_mcb, 3));
+    assert_eq!(size, 0x32, "A should be resized to 0x32, got {:#06X}", size);
 }
 
 #[test]

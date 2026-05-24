@@ -849,6 +849,15 @@ pub(crate) fn resize(
     let current_size = read_mcb_size(mem, target_mcb);
     let block_type = read_mcb_type(mem, target_mcb);
 
+    if block_type != MCB_TYPE_Z {
+        let next_segment = target_mcb + current_size + 1;
+        if is_valid_mcb_type(read_mcb_type(mem, next_segment))
+            && read_mcb_owner(mem, next_segment) == MCB_OWNER_FREE
+        {
+            coalesce_chain_from(mem, next_segment);
+        }
+    }
+
     // Compute the maximum size this particular block could grow to (current
     // plus any immediately-following free block). Used for both the
     // query-only path (new_paragraphs == 0xFFFF) and as the error-return
@@ -1000,6 +1009,15 @@ pub(crate) fn resize_without_grow_failure(
 
     let current_size = read_mcb_size(mem, target_mcb);
     let block_type = read_mcb_type(mem, target_mcb);
+    if block_type != MCB_TYPE_Z {
+        let next_segment = target_mcb + current_size + 1;
+        if is_valid_mcb_type(read_mcb_type(mem, next_segment))
+            && read_mcb_owner(mem, next_segment) == MCB_OWNER_FREE
+        {
+            coalesce_chain_from(mem, next_segment);
+        }
+    }
+
     let max_growable = if block_type == MCB_TYPE_Z {
         current_size
     } else {
@@ -1246,6 +1264,23 @@ fn coalesce_chain(mem: &mut dyn MemoryAccess, first_mcb_segment: u16) {
             return;
         }
         current = current + read_mcb_size(mem, current) + 1;
+    }
+}
+
+fn coalesce_chain_from(mem: &mut dyn MemoryAccess, segment: u16) {
+    loop {
+        let block_type = read_mcb_type(mem, segment);
+        if block_type != MCB_TYPE_M || read_mcb_owner(mem, segment) != MCB_OWNER_FREE {
+            return;
+        }
+
+        let next_segment = segment + read_mcb_size(mem, segment) + 1;
+        let next_type = read_mcb_type(mem, next_segment);
+        if !is_valid_mcb_type(next_type) || read_mcb_owner(mem, next_segment) != MCB_OWNER_FREE {
+            return;
+        }
+
+        coalesce_forward(mem, segment);
     }
 }
 

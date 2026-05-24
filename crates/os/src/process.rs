@@ -40,6 +40,11 @@ pub(crate) struct SftBases {
     pub secondary: u32,
 }
 
+fn allocated_block_end_segment(mem: &dyn MemoryAccess, data_segment: u16) -> u16 {
+    let mcb_addr = ((data_segment - 1) as u32) << 4;
+    data_segment.wrapping_add(mem.read_word(mcb_addr + MCB_OFF_SIZE))
+}
+
 /// Writes a 256-byte Program Segment Prefix at the given segment.
 ///
 /// `psp_segment`: segment where the PSP is placed.
@@ -293,10 +298,11 @@ pub(crate) fn write_psp_command_tail(
 fn write_environment_program_path(
     mem: &mut dyn MemoryAccess,
     env_segment: u16,
+    env_paragraphs: u16,
     program_path: &[u8],
 ) {
     let base = (env_segment as u32) << 4;
-    let block_size = ENV_BLOCK_PARAGRAPHS as u32 * 16;
+    let block_size = env_paragraphs as u32 * 16;
 
     let mut offset = 0u32;
     while offset + 1 < block_size {
@@ -324,6 +330,22 @@ fn write_environment_program_path(
     mem.write_byte(base + offset + path_len as u32, 0x00);
 }
 
+fn environment_block_size_bytes(mem: &dyn MemoryAccess, env_segment: u16) -> usize {
+    let mcb_addr = ((env_segment.wrapping_sub(1)) as u32) << 4;
+    mem.read_word(mcb_addr + MCB_OFF_SIZE) as usize * 16
+}
+
+fn environment_strings_len(mem: &dyn MemoryAccess, env_segment: u16, max_bytes: usize) -> usize {
+    let base = (env_segment as u32) << 4;
+    for offset in 0..max_bytes.saturating_sub(1) {
+        if mem.read_byte(base + offset as u32) == 0 && mem.read_byte(base + offset as u32 + 1) == 0
+        {
+            return offset + 2;
+        }
+    }
+    2
+}
+
 fn allocate_child_environment(
     mem: &mut dyn MemoryAccess,
     first_mcb: u16,
@@ -332,27 +354,40 @@ fn allocate_child_environment(
     allocation_strategy: u16,
     program_path: &[u8],
 ) -> Result<u16, u16> {
+    let env_paragraphs = if source_env == 0 {
+        environment_block_paragraphs(b"Z:\\COMMAND.COM", 0)
+            .max(environment_block_paragraphs(program_path, 0))
+    } else {
+        let source_size = environment_block_size_bytes(mem, source_env);
+        let strings_len = environment_strings_len(mem, source_env, source_size);
+        (strings_len + 2 + program_path.len() + 1).div_ceil(16) as u16
+    };
+
     let env_segment = memory::allocate_dos(
         mem,
         first_mcb,
         umb_first_mcb,
-        ENV_BLOCK_PARAGRAPHS,
+        env_paragraphs,
         MCB_OWNER_DOS,
         allocation_strategy,
     )
     .map_err(|(e, _)| e as u16)?;
 
     if source_env == 0 {
-        write_environment_block(mem, env_segment, ENV_BLOCK_PARAGRAPHS, b"Z:\\COMMAND.COM");
+        write_environment_block(mem, env_segment, env_paragraphs, b"Z:\\COMMAND.COM");
     } else {
         let source_base = (source_env as u32) << 4;
         let dest_base = (env_segment as u32) << 4;
-        let mut env_data = [0u8; ENV_BLOCK_PARAGRAPHS as usize * 16];
-        mem.read_block(source_base, &mut env_data);
+        let source_size = environment_block_size_bytes(mem, source_env);
+        let strings_len = environment_strings_len(mem, source_env, source_size);
+        let mut env_data = vec![0u8; env_paragraphs as usize * 16];
+        for (offset, byte) in env_data.iter_mut().take(strings_len).enumerate() {
+            *byte = mem.read_byte(source_base + offset as u32);
+        }
         mem.write_block(dest_base, &env_data);
     }
 
-    write_environment_program_path(mem, env_segment, program_path);
+    write_environment_program_path(mem, env_segment, env_paragraphs, program_path);
 
     Ok(env_segment)
 }
@@ -372,6 +407,52 @@ fn dos_allocation_umb_first(state: &OsState) -> Option<u16> {
 
 fn child_allocation_owner() -> u16 {
     MCB_OWNER_DOS
+}
+
+fn allocate_exe_memory(
+    mem: &mut dyn MemoryAccess,
+    first_mcb: u16,
+    umb_first: Option<u16>,
+    allocation_strategy: u16,
+    image_paragraphs: u16,
+    min_alloc: u16,
+    max_alloc: u16,
+) -> Result<u16, u16> {
+    let required = 0x10u32 + image_paragraphs as u32;
+    let min_needed = required + min_alloc as u32;
+    if min_needed > u16::MAX as u32 {
+        return Err(0x0008);
+    }
+
+    let min_needed = min_needed as u16;
+    let requested = (required + max_alloc as u32)
+        .min(u16::MAX as u32)
+        .max(min_needed as u32) as u16;
+
+    match memory::allocate_dos(
+        mem,
+        first_mcb,
+        umb_first,
+        requested,
+        child_allocation_owner(),
+        allocation_strategy,
+    ) {
+        Ok(segment) => Ok(segment),
+        Err((error_code, largest)) => {
+            if largest < min_needed {
+                return Err(error_code as u16);
+            }
+            memory::allocate_dos(
+                mem,
+                first_mcb,
+                umb_first,
+                largest,
+                child_allocation_owner(),
+                allocation_strategy,
+            )
+            .map_err(|(e, _)| e as u16)
+        }
+    }
 }
 
 /// Writes the COMMAND.COM code stub at PSP:0100h.
@@ -397,11 +478,15 @@ pub(crate) fn write_child_psp(
     write_psp(mem, child_psp, parent_psp, env_segment, mem_top);
 
     let child_base = (child_psp as u32) << 4;
-    let parent_base = (parent_psp as u32) << 4;
 
-    // Inherit parent's JFT and increment SFT ref counts.
+    // Inherit the first 20 parent handles and increment SFT ref counts.
+    let (parent_jft_addr, parent_jft_size) = OsState::handle_table_info_for_psp(mem, parent_psp);
     for i in 0..20u32 {
-        let sft_index = mem.read_byte(parent_base + PSP_OFF_JFT + i);
+        let sft_index = if i < parent_jft_size as u32 {
+            mem.read_byte(parent_jft_addr + i)
+        } else {
+            0xFF
+        };
         mem.write_byte(child_base + PSP_OFF_JFT + i, sft_index);
         if sft_index != 0xFF
             && let Some(sft_addr) =
@@ -669,12 +754,13 @@ impl NeetanOs {
         mem.write_word(((mcb_segment as u32) << 4) + MCB_OFF_OWNER, child_psp);
         mem.write_word(((env_segment as u32 - 1) << 4) + MCB_OFF_OWNER, child_psp);
 
+        let child_mem_top = allocated_block_end_segment(mem, child_psp);
         write_child_psp(
             mem,
             child_psp,
             self.state.current_psp,
             env_segment,
-            MEMORY_TOP_SEGMENT,
+            child_mem_top,
             params,
             SftBases {
                 primary: SFT_BASE,
@@ -745,47 +831,30 @@ impl NeetanOs {
             program_path,
         )?;
 
-        let total_needed = psp_paragraphs
-            .saturating_add(image_paragraphs)
-            .saturating_add(max_alloc);
-        let child_psp = match memory::allocate_dos(
+        let child_psp = allocate_exe_memory(
             mem,
             first_mcb,
             umb_first,
-            total_needed,
-            child_allocation_owner(),
             self.state.allocation_strategy,
-        ) {
-            Ok(seg) => seg,
-            Err(_) => {
-                let min_needed = psp_paragraphs
-                    .saturating_add(image_paragraphs)
-                    .saturating_add(min_alloc);
-                memory::allocate_dos(
-                    mem,
-                    first_mcb,
-                    umb_first,
-                    min_needed,
-                    child_allocation_owner(),
-                    self.state.allocation_strategy,
-                )
-                .map_err(|(e, _)| {
-                    let _ = memory::free_dos(mem, first_mcb, umb_first, env_segment);
-                    e as u16
-                })?
-            }
-        };
+            image_paragraphs,
+            min_alloc,
+            max_alloc,
+        )
+        .inspect_err(|_| {
+            let _ = memory::free_dos(mem, first_mcb, umb_first, env_segment);
+        })?;
 
         let mcb_segment = child_psp - 1;
         mem.write_word(((mcb_segment as u32) << 4) + MCB_OFF_OWNER, child_psp);
         mem.write_word(((env_segment as u32 - 1) << 4) + MCB_OFF_OWNER, child_psp);
 
+        let child_mem_top = allocated_block_end_segment(mem, child_psp);
         write_child_psp(
             mem,
             child_psp,
             self.state.current_psp,
             env_segment,
-            MEMORY_TOP_SEGMENT,
+            child_mem_top,
             params,
             SftBases {
                 primary: SFT_BASE,
@@ -875,12 +944,13 @@ impl NeetanOs {
         mem.write_word(((env_segment as u32 - 1) << 4) + MCB_OFF_OWNER, child_psp);
 
         // Write child PSP with inherited handles, command tail, FCBs.
+        let child_mem_top = allocated_block_end_segment(mem, child_psp);
         write_child_psp(
             mem,
             child_psp,
             self.state.current_psp,
             env_segment,
-            MEMORY_TOP_SEGMENT,
+            child_mem_top,
             params,
             SftBases {
                 primary: SFT_BASE,
@@ -969,37 +1039,18 @@ impl NeetanOs {
             program_path,
         )?;
 
-        // Try with max_alloc first, fall back to min_alloc.
-        let total_needed = psp_paragraphs
-            .saturating_add(image_paragraphs)
-            .saturating_add(max_alloc);
-        let child_psp = match memory::allocate_dos(
+        let child_psp = allocate_exe_memory(
             mem,
             first_mcb,
             umb_first,
-            total_needed,
-            child_allocation_owner(),
             self.state.allocation_strategy,
-        ) {
-            Ok(seg) => seg,
-            Err(_) => {
-                let min_needed = psp_paragraphs
-                    .saturating_add(image_paragraphs)
-                    .saturating_add(min_alloc);
-                memory::allocate_dos(
-                    mem,
-                    first_mcb,
-                    umb_first,
-                    min_needed,
-                    child_allocation_owner(),
-                    self.state.allocation_strategy,
-                )
-                .map_err(|(e, _)| {
-                    let _ = memory::free_dos(mem, first_mcb, umb_first, env_segment);
-                    e as u16
-                })?
-            }
-        };
+            image_paragraphs,
+            min_alloc,
+            max_alloc,
+        )
+        .inspect_err(|_| {
+            let _ = memory::free_dos(mem, first_mcb, umb_first, env_segment);
+        })?;
 
         // Set MCB owner to child PSP.
         let mcb_segment = child_psp - 1;
@@ -1007,12 +1058,13 @@ impl NeetanOs {
         mem.write_word(((env_segment as u32 - 1) << 4) + MCB_OFF_OWNER, child_psp);
 
         // Write child PSP.
+        let child_mem_top = allocated_block_end_segment(mem, child_psp);
         write_child_psp(
             mem,
             child_psp,
             self.state.current_psp,
             env_segment,
-            MEMORY_TOP_SEGMENT,
+            child_mem_top,
             params,
             SftBases {
                 primary: SFT_BASE,
@@ -1123,12 +1175,9 @@ impl NeetanOs {
         let child_psp_base = (child_psp as u32) << 4;
         let is_shell_process = self.shells.remove(&child_psp).is_some();
 
-        // Close all JFT handles owned by the child.
-        for handle in 0..20u16 {
-            let sft_index = mem.read_byte(child_psp_base + PSP_OFF_JFT + handle as u32);
-            if sft_index != 0xFF {
-                self.state.free_handle(handle, mem);
-            }
+        let (_, handle_count) = OsState::handle_table_info_for_psp(mem, child_psp);
+        for handle in 0..handle_count.min(u8::MAX as u16 + 1) {
+            self.state.free_handle(handle, mem);
         }
 
         // Free all MCBs owned by the child.
@@ -1207,12 +1256,9 @@ impl NeetanOs {
         let child_psp_base = (child_psp as u32) << 4;
         self.shells.remove(&child_psp);
 
-        // Close all JFT handles owned by the child.
-        for handle in 0..20u16 {
-            let sft_index = mem.read_byte(child_psp_base + PSP_OFF_JFT + handle as u32);
-            if sft_index != 0xFF {
-                self.state.free_handle(handle, mem);
-            }
+        let (_, handle_count) = OsState::handle_table_info_for_psp(mem, child_psp);
+        for handle in 0..handle_count.min(u8::MAX as u16 + 1) {
+            self.state.free_handle(handle, mem);
         }
 
         // Resize PSP's MCB and free other blocks.

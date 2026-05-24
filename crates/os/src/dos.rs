@@ -148,6 +148,7 @@ impl NeetanOs {
             0x63 => self.int21h_63h_dbcs_support(cpu),
             0x64 => {}
             0x65 => self.int21h_65h_get_extended_country_info(cpu, memory),
+            0x67 => self.int21h_67h_set_handle_count(cpu, memory),
             0x68 | 0x6A => self.int21h_68h_commit_file(cpu, memory),
             0x69 => self.int21h_69h_get_set_media_info(cpu, memory),
             0x6B => {
@@ -1152,10 +1153,15 @@ impl NeetanOs {
         // Memory top segment.
         memory.write_word(base + tables::PSP_OFF_MEM_TOP, mem_top);
 
-        // Copy handle table from parent PSP.
         let parent_base = (self.state.current_psp as u32) << 4;
+        let (parent_jft_addr, parent_jft_size) =
+            crate::OsState::handle_table_info_for_psp(memory, self.state.current_psp);
         for i in 0..20u32 {
-            let handle = memory.read_byte(parent_base + tables::PSP_OFF_JFT + i);
+            let handle = if i < parent_jft_size as u32 {
+                memory.read_byte(parent_jft_addr + i)
+            } else {
+                0xFF
+            };
             memory.write_byte(base + tables::PSP_OFF_JFT + i, handle);
         }
 
@@ -1177,6 +1183,84 @@ impl NeetanOs {
 
         // INT 21h / RETF stub at PSP:0050h.
         memory.write_block(base + tables::PSP_OFF_INT21_STUB, &[0xCD, 0x21, 0xCB]);
+    }
+
+    /// AH=67h: Set handle count.
+    /// BX = requested number of handles for the current process.
+    fn int21h_67h_set_handle_count(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let requested = cpu.bx();
+        if requested > u8::MAX as u16 + 1 {
+            cpu.set_ax(0x0004);
+            set_iret_carry(cpu, memory, true);
+            return;
+        }
+
+        let psp_base = (self.state.current_psp as u32) << 4;
+        let (old_table_addr, current_size) = self.state.handle_table_info(memory);
+        if requested <= current_size {
+            set_iret_carry(cpu, memory, false);
+            return;
+        }
+
+        let paragraphs = requested.div_ceil(16);
+        let first_mcb = memory.read_word(self.state.sysvars_base - 2);
+        let umb_first = if self.state.umb_link
+            && self
+                .state
+                .memory_manager
+                .as_ref()
+                .is_some_and(|mm| mm.is_umb_enabled())
+        {
+            Some(tables::UMB_FIRST_MCB_SEGMENT)
+        } else {
+            None
+        };
+
+        let new_segment = match memory::allocate_dos(
+            memory,
+            first_mcb,
+            umb_first,
+            paragraphs,
+            self.state.current_psp,
+            self.state.allocation_strategy,
+        ) {
+            Ok(segment) => segment,
+            Err((error_code, largest)) => {
+                cpu.set_ax(error_code as u16);
+                cpu.set_bx(largest);
+                set_iret_carry(cpu, memory, true);
+                return;
+            }
+        };
+
+        let new_table_addr = (new_segment as u32) << 4;
+        for i in 0..requested as u32 {
+            memory.write_byte(new_table_addr + i, 0xFF);
+        }
+        for i in 0..current_size as u32 {
+            let handle = memory.read_byte(old_table_addr + i);
+            memory.write_byte(new_table_addr + i, handle);
+        }
+
+        let old_offset = memory.read_word(psp_base + tables::PSP_OFF_HANDLE_PTR);
+        let old_segment = memory.read_word(psp_base + tables::PSP_OFF_HANDLE_PTR + 2);
+        memory.write_word(psp_base + tables::PSP_OFF_HANDLE_SIZE, requested);
+        tables::write_far_ptr(
+            memory,
+            psp_base + tables::PSP_OFF_HANDLE_PTR,
+            new_segment,
+            0x0000,
+        );
+
+        if old_segment != self.state.current_psp || old_offset != tables::PSP_OFF_JFT as u16 {
+            let _ = memory::free_dos(memory, first_mcb, umb_first, old_segment);
+        }
+
+        set_iret_carry(cpu, memory, false);
     }
 
     /// AH=68h / AH=6Ah: Commit (flush) file.

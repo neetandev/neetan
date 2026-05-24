@@ -585,6 +585,30 @@ fn exec_exe_and_get_return_code() {
     exec_file_and_check_return_code(&mut machine, b"A:\\TEST.EXE\x00", 0x0042);
 }
 
+#[test]
+fn exec_exe_max_alloc_gets_largest_available_block() {
+    let code: &[u8] = &[
+        0xA1, 0x02, 0x00, // MOV AX, [0002h] (PSP memory top)
+        0x16, // PUSH SS
+        0x5B, // POP BX
+        0x2B, 0xC3, // SUB AX, BX
+        0x3D, 0x00, 0x01, // CMP AX, 0100h
+        0xB0, 0x01, // MOV AL, 01h
+        0x72, 0x02, // JC short exit
+        0xB0, 0x42, // MOV AL, 42h
+        0xB4, 0x4C, // MOV AH, 4Ch
+        0xCD, 0x21, // INT 21h
+    ];
+    let exe_data = build_exe(code, 0, 0, 256);
+
+    let mut machine = boot_hle_with_floppy();
+    machine.bus.eject_floppy(0);
+    let floppy = create_test_floppy_with_program(b"TEST    EXE", &exe_data);
+    machine.bus.insert_floppy(0, floppy, None);
+
+    exec_file_and_check_return_code(&mut machine, b"A:\\TEST.EXE\x00", 0x0042);
+}
+
 /// EXEC a .EXE with a relocation entry and verify it runs correctly.
 #[test]
 fn exec_exe_with_relocation() {
