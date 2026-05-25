@@ -329,18 +329,32 @@ mod tests {
     use super::*;
 
     fn tempfile_with(bytes: &[u8], suffix: &str) -> PathBuf {
+        use std::{
+            fs::OpenOptions,
+            io::Write,
+            sync::atomic::{AtomicU64, Ordering},
+        };
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
         let dir = std::env::temp_dir();
         let unique = format!(
-            "neetan_floppy_test_{}_{}{}",
+            "neetan_floppy_test_{}_{}_{}{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos(),
+            COUNTER.fetch_add(1, Ordering::Relaxed),
             suffix
         );
         let path = dir.join(unique);
-        std::fs::write(&path, bytes).expect("write temp file");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .expect("create temp file");
+        file.write_all(bytes).expect("write temp file");
         path
     }
 
@@ -380,7 +394,8 @@ mod tests {
         let pattern = [0x42u8; 256];
         assert!(mounted.write_sector_data(0, 0, 0, 1, 1, &pattern));
 
-        // Drop the mount to flush the BufWriter, then re-read the file.
+        // Flush the BufWriter before re-reading the file.
+        mounted.flush();
         drop(mounted);
         let raw = std::fs::read(&path).unwrap();
         let reparsed = FloppyImage::from_d88_bytes(&raw).unwrap();
@@ -406,6 +421,7 @@ mod tests {
         let pattern = [0x55u8; 256];
         assert!(mounted.write_sector_data(0, 0, 0, 2, 1, &pattern));
 
+        mounted.flush();
         drop(mounted);
         let raw = std::fs::read(&path).unwrap();
         let reparsed = FloppyImage::from_d88_bytes(&raw).unwrap();
@@ -432,6 +448,7 @@ mod tests {
         let pattern = [0xCCu8; 1024];
         assert!(mounted.write_sector_data(0, 0, 0, 1, 3, &pattern));
 
+        mounted.flush();
         drop(mounted);
         let raw = std::fs::read(&path).unwrap();
         // First 1024 bytes should now be 0xCC.
