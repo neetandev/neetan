@@ -20,6 +20,7 @@ pub mod format;
 pub mod md;
 pub mod mem;
 pub mod more;
+pub mod path;
 pub mod rd;
 pub mod rem;
 pub mod ren;
