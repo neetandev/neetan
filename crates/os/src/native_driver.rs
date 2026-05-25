@@ -25,7 +25,7 @@
 //! `NativeDriverSpec`. This keeps the feature scoped to binaries we have
 //! audited and verified with the HLE OS.
 
-use common::warn;
+use common::{info, warn};
 
 use crate::{
     BootEntryPoint, DriveIo, LoadedNativeDriver, MemoryAccess, NeetanOs, config,
@@ -103,6 +103,7 @@ const GABIOS_SPEC: NativeDriverSpec = NativeDriverSpec {
 };
 
 const WHITELIST: &[NativeDriverSpec] = &[STMOUSE_SPEC, GABIOS_SPEC];
+const IGNORED_NATIVE_DRIVER_PATTERNS: &[&[u8]] = &[b"HIMEM.SYS", b"EMM386.EXE", b"VEM486.EXE"];
 
 struct NativeDriverImage {
     spec: NativeDriverSpec,
@@ -422,6 +423,13 @@ impl NeetanOs {
             if is_builtin_config_driver(&basename) {
                 continue;
             }
+            if is_ignored_config_driver(&basename) {
+                info!(
+                    "CONFIG.SYS DEVICE={} ignored: HLE OS memory manager supersedes this driver",
+                    display_bytes(&line.path)
+                );
+                continue;
+            }
 
             let Some(spec) = WHITELIST
                 .iter()
@@ -723,6 +731,14 @@ fn is_builtin_config_driver(basename: &[u8]) -> bool {
     basename == b"NECCD.SYS" || basename == b"NECCDD.SYS"
 }
 
+fn is_ignored_config_driver(basename: &[u8]) -> bool {
+    IGNORED_NATIVE_DRIVER_PATTERNS.iter().any(|pattern| {
+        basename
+            .windows(pattern.len())
+            .any(|window| window == *pattern)
+    })
+}
+
 fn display_bytes(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
@@ -739,7 +755,7 @@ fn high(value: u16) -> u8 {
 mod tests {
     use super::*;
     use crate::{
-        MemoryAccess,
+        AudioChannelInfo, CdAudioStatus, CdromIo, CdromTrackInfo, DiskIo, MemoryAccess,
         memory::memory_manager::MemoryManager,
         test_support::{MockCpu, MockMemory},
     };
@@ -777,6 +793,88 @@ mod tests {
         memory.read_word(mcb_addr(segment) + tables::MCB_OFF_OWNER)
     }
 
+    struct PanickingDriveIo;
+
+    impl DiskIo for PanickingDriveIo {
+        fn read_sectors(&mut self, _drive_da: u8, _lba: u32, _count: u32) -> Result<Vec<u8>, u8> {
+            panic!("ignored native driver should not read disk sectors");
+        }
+
+        fn write_sectors(&mut self, _drive_da: u8, _lba: u32, _data: &[u8]) -> Result<(), u8> {
+            panic!("ignored native driver should not write disk sectors");
+        }
+
+        fn sector_size(&self, _drive_da: u8) -> Option<u16> {
+            panic!("ignored native driver should not query disk sector size");
+        }
+
+        fn total_sectors(&self, _drive_da: u8) -> Option<u32> {
+            panic!("ignored native driver should not query disk sector count");
+        }
+
+        fn drive_geometry(&self, _drive_da: u8) -> Option<(u16, u8, u8)> {
+            panic!("ignored native driver should not query disk geometry");
+        }
+    }
+
+    impl CdromIo for PanickingDriveIo {
+        fn cdrom_present(&self) -> bool {
+            panic!("ignored native driver should not query CD-ROM presence");
+        }
+
+        fn cdrom_media_loaded(&self) -> bool {
+            panic!("ignored native driver should not query CD-ROM media");
+        }
+
+        fn read_sector_cooked(&self, _lba: u32, _buf: &mut [u8]) -> Option<usize> {
+            panic!("ignored native driver should not read cooked CD-ROM sectors");
+        }
+
+        fn read_sector_raw(&self, _lba: u32, _buf: &mut [u8]) -> Option<usize> {
+            panic!("ignored native driver should not read raw CD-ROM sectors");
+        }
+
+        fn track_count(&self) -> u8 {
+            panic!("ignored native driver should not query CD-ROM track count");
+        }
+
+        fn track_info(&self, _track_number: u8) -> Option<CdromTrackInfo> {
+            panic!("ignored native driver should not query CD-ROM track info");
+        }
+
+        fn leadout_lba(&self) -> u32 {
+            panic!("ignored native driver should not query CD-ROM leadout");
+        }
+
+        fn total_sectors(&self) -> u32 {
+            panic!("ignored native driver should not query CD-ROM sector count");
+        }
+
+        fn audio_play(&mut self, _start_lba: u32, _sector_count: u32) {
+            panic!("ignored native driver should not start CD audio");
+        }
+
+        fn audio_stop(&mut self) {
+            panic!("ignored native driver should not stop CD audio");
+        }
+
+        fn audio_resume(&mut self) {
+            panic!("ignored native driver should not resume CD audio");
+        }
+
+        fn audio_state(&self) -> CdAudioStatus {
+            panic!("ignored native driver should not query CD audio state");
+        }
+
+        fn audio_channel_info(&self) -> AudioChannelInfo {
+            panic!("ignored native driver should not query CD audio channels");
+        }
+
+        fn set_audio_channel_info(&mut self, _info: &AudioChannelInfo) {
+            panic!("ignored native driver should not set CD audio channels");
+        }
+    }
+
     #[test]
     fn boot_root_path_defaults_to_boot_drive_root() {
         assert_eq!(
@@ -801,6 +899,35 @@ mod tests {
     fn upper_basename_handles_drive_and_directories() {
         assert_eq!(upper_basename(b"a:\\sv1\\stmouse.sys"), b"STMOUSE.SYS");
         assert_eq!(upper_basename(b"dos/mouse.sys"), b"MOUSE.SYS");
+    }
+
+    #[test]
+    fn ignored_config_driver_matches_hle_superseded_memory_managers() {
+        assert!(is_ignored_config_driver(b"HIMEM.SYS"));
+        assert!(is_ignored_config_driver(b"EMM386.EXE"));
+        assert!(is_ignored_config_driver(b"VEM486.EXE"));
+        assert!(is_ignored_config_driver(&upper_basename(
+            b"C:\\DOS\\himem.sys"
+        )));
+        assert!(is_ignored_config_driver(&upper_basename(
+            b"A:/MEMORY/emm386.exe"
+        )));
+        assert!(is_ignored_config_driver(b"JHIMEM.SYS"));
+        assert!(!is_ignored_config_driver(b"MOUSE.SYS"));
+    }
+
+    #[test]
+    fn ignored_config_drivers_are_skipped_before_file_access() {
+        let cfg = config::parse_config_sys(
+            b"DEVICE=C:\\DOS\\HIMEM.SYS\nDEVICEHIGH=C:\\DOS\\EMM386.EXE RAM\nDEVICE=A:\\VEM486.EXE /X\n",
+        );
+        let mut os = NeetanOs::new();
+        let memory = MockMemory::with_extended_memory(0x100000, 4 * 1024 * 1024);
+        let mut disk = PanickingDriveIo;
+
+        let images = os.collect_native_driver_images(&cfg, &memory, &mut disk);
+
+        assert!(images.is_empty());
     }
 
     #[test]
