@@ -79,6 +79,9 @@ mod commands_copy;
 #[path = "dos620/commands_b3sum.rs"]
 mod commands_b3sum;
 
+#[path = "dos620/commands_path.rs"]
+mod commands_path;
+
 #[path = "dos620/file_copy_harness.rs"]
 mod file_copy_harness;
 

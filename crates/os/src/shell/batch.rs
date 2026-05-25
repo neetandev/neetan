@@ -449,49 +449,16 @@ impl BatchState {
         }
 
         let (bat_name, bat_args) = super::split_command(trimmed);
-        let mut full_name = bat_name.to_vec();
-        let upper: Vec<u8> = full_name.iter().map(|b| b.to_ascii_uppercase()).collect();
-        if !upper.ends_with(b".BAT") {
-            full_name.extend_from_slice(b".BAT");
-        }
-
-        let (drive_index, dir_cluster, fcb_name) =
-            match crate::filesystem::resolve_file_path(state, &full_name, io.memory, disk) {
-                Ok(r) => r,
-                Err(_) => {
-                    io.println(b"Batch file not found");
-                    self.current_line += 1;
-                    return;
-                }
-            };
-
-        if drive_index == 25 {
-            io.println(b"Access denied");
-            self.current_line += 1;
-            return;
-        }
-
-        let vol = match state.fat_volumes[drive_index as usize].as_ref() {
-            Some(v) => v,
-            None => {
-                self.current_line += 1;
-                return;
-            }
-        };
-
-        let entry = match fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk) {
-            Ok(Some(e)) => e,
-            _ => {
-                io.println(b"Batch file not found");
-                self.current_line += 1;
-                return;
-            }
-        };
-
-        let new_lines = match load_bat_file(vol, &entry, disk) {
-            Ok(l) => l,
-            Err(_) => {
+        let (full_name, new_lines) = match super::find_batch_file(bat_name, state, io.memory, disk)
+        {
+            super::BatchSearchResult::Found { path, lines } => (path, lines),
+            super::BatchSearchResult::ReadError => {
                 io.println(b"Error reading batch file");
+                self.current_line += 1;
+                return;
+            }
+            super::BatchSearchResult::NotFound => {
+                io.println(b"Batch file not found");
                 self.current_line += 1;
                 return;
             }

@@ -10,7 +10,7 @@ use history::History;
 use crate::{
     DiskIo, DriveIo, IoAccess, MemoryAccess, OsState,
     commands::{self, Command, RunningCommand, StepResult},
-    filesystem,
+    environment, filesystem,
     filesystem::{fat, fat_dir, fat_file},
     process, tables,
 };
@@ -106,6 +106,7 @@ impl Shell {
             Box::new(commands::rem::Rem),
             Box::new(commands::cd::Cd),
             Box::new(commands::set::Set),
+            Box::new(commands::path::PathCommand),
             Box::new(commands::copy::Copy),
             Box::new(commands::date::Date),
             Box::new(commands::del::Del),
@@ -501,6 +502,21 @@ impl Shell {
         let (cmd_name, args) = split_command(trimmed);
         let cmd_upper: Vec<u8> = cmd_name.iter().map(|b| b.to_ascii_uppercase()).collect();
 
+        if trimmed.len() >= 5
+            && eq_ignore_ascii_case(&trimmed[..5], b"PATH=")
+            && let Some(cmd) = self.find_command(b"PATH")
+        {
+            let running = cmd.start(&trimmed[4..]);
+            return ShellPhase::ExecutingCommand(running);
+        }
+
+        if eq_ignore_ascii_case(trimmed, b"PATH;")
+            && let Some(cmd) = self.find_command(b"PATH")
+        {
+            let running = cmd.start(b";");
+            return ShellPhase::ExecutingCommand(running);
+        }
+
         // Handle ECHO ON/OFF specially (affects shell state)
         if cmd_upper == b"ECHO" {
             let args_trimmed = args.trim_ascii();
@@ -567,42 +583,24 @@ impl Shell {
             return ShellPhase::ExecutingCommand(running);
         }
 
-        // Try to find .BAT file (skip if command already has .COM/.EXE extension,
-        // otherwise name_to_fcb would truncate e.g. "INSTALL.EXE.BAT" to match "INSTALL.EXE")
-        let has_exe_ext =
-            cmd_upper.len() > 4 && (cmd_upper.ends_with(b".COM") || cmd_upper.ends_with(b".EXE"));
-        let mut bat_name = cmd_upper.clone();
-        bat_name.extend_from_slice(b".BAT");
-        if !has_exe_ext
-            && let Ok((drive_index, dir_cluster, fcb_name)) =
-                crate::filesystem::resolve_file_path(state, &bat_name, io.memory, disk)
-            && drive_index != 25
-            && let Some(vol) = state.fat_volumes[drive_index as usize].as_ref()
-            && let Ok(Some(entry)) = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)
-            && entry.attribute & fat_dir::ATTR_DIRECTORY == 0
-        {
-            match batch::load_bat_file(vol, &entry, disk) {
-                Ok(lines) => {
-                    let params = parse_bat_params(args);
-                    let bat_state =
-                        batch::BatchState::new(lines, params, bat_name.clone(), self.echo_on);
-                    return ShellPhase::ExecutingBatch(Box::new(bat_state));
-                }
-                Err(_) => {
-                    io.println(b"Error reading batch file");
-                    return ShellPhase::ShowPrompt;
-                }
+        match find_command_file(cmd_name, &cmd_upper, state, io.memory, disk) {
+            Some(FoundCommandFile::External(path)) => {
+                self.pending_exec = Some(PendingExec {
+                    path,
+                    args: args.to_vec(),
+                });
+                return ShellPhase::WaitingForChild;
             }
-        }
-
-        // Try external program (.COM or .EXE)
-        if let Some(full_path) = find_external_program(cmd_name, &cmd_upper, state, io.memory, disk)
-        {
-            self.pending_exec = Some(PendingExec {
-                path: full_path,
-                args: args.to_vec(),
-            });
-            return ShellPhase::WaitingForChild;
+            Some(FoundCommandFile::Batch { path, lines }) => {
+                let params = parse_bat_params(args);
+                let bat_state = batch::BatchState::new(lines, params, path, self.echo_on);
+                return ShellPhase::ExecutingBatch(Box::new(bat_state));
+            }
+            Some(FoundCommandFile::BatchReadError) => {
+                io.println(b"Error reading batch file");
+                return ShellPhase::ShowPrompt;
+            }
+            None => {}
         }
 
         io.println(b"Bad command or file name");
@@ -827,46 +825,7 @@ pub(crate) fn read_env_var(
     memory: &dyn MemoryAccess,
     var_name: &[u8],
 ) -> Option<Vec<u8>> {
-    let psp_base = (state.current_psp as u32) << 4;
-    let env_seg = memory.read_word(psp_base + tables::PSP_OFF_ENV_SEG);
-    let base = (env_seg as u32) << 4;
-    let upper_name: Vec<u8> = var_name.iter().map(|b| b.to_ascii_uppercase()).collect();
-
-    let mut offset = 0u32;
-    loop {
-        let byte = memory.read_byte(base + offset);
-        if byte == 0 {
-            return None;
-        }
-        let start = offset;
-        while memory.read_byte(base + offset) != 0 {
-            offset += 1;
-        }
-
-        // Check if this entry's name matches
-        if let Some(eq_pos) = (start..offset).position(|i| memory.read_byte(base + i) == b'=') {
-            let mut name_matches = eq_pos == upper_name.len();
-            if name_matches {
-                for (j, &expected) in upper_name.iter().enumerate() {
-                    let actual = memory.read_byte(base + start + j as u32);
-                    if actual.to_ascii_uppercase() != expected {
-                        name_matches = false;
-                        break;
-                    }
-                }
-            }
-            if name_matches {
-                let value_start = start + eq_pos as u32 + 1;
-                let mut value = Vec::new();
-                for i in value_start..offset {
-                    value.push(memory.read_byte(base + i));
-                }
-                return Some(value);
-            }
-        }
-
-        offset += 1;
-    }
+    environment::read_var(state, memory, var_name)
 }
 
 fn split_on_sequence(line: &[u8]) -> Vec<Vec<u8>> {
@@ -971,86 +930,234 @@ fn parse_redirections(segment: &[u8]) -> ParsedCommand {
     }
 }
 
-/// Searches for an external program (.COM or .EXE) matching the command name.
-///
-/// Search order: if the command already has an extension (.COM/.EXE), use as-is.
-/// Otherwise, try .COM then .EXE in: current directory, then each PATH directory.
-fn find_external_program(
+enum FoundCommandFile {
+    External(Vec<u8>),
+    Batch { path: Vec<u8>, lines: Vec<Vec<u8>> },
+    BatchReadError,
+}
+
+pub(crate) enum BatchSearchResult {
+    Found { path: Vec<u8>, lines: Vec<Vec<u8>> },
+    ReadError,
+    NotFound,
+}
+
+#[derive(Clone, Copy)]
+enum CommandFileExtension {
+    Com,
+    Exe,
+    Bat,
+}
+
+fn find_command_file(
     original_cmd: &[u8],
     cmd_upper: &[u8],
     state: &mut OsState,
     memory: &dyn MemoryAccess,
     disk: &mut dyn DriveIo,
-) -> Option<Vec<u8>> {
-    let has_extension =
-        cmd_upper.len() > 4 && (cmd_upper.ends_with(b".COM") || cmd_upper.ends_with(b".EXE"));
+) -> Option<FoundCommandFile> {
+    let extension = command_file_extension(cmd_upper);
 
-    // If the command contains a path separator or drive letter, try it directly
-    let has_path = original_cmd.contains(&b'\\') || original_cmd.contains(&b'/');
-    let has_drive = original_cmd.len() >= 2 && original_cmd[1] == b':';
-
-    if has_path || has_drive {
-        // Direct path: try as given (with extension search if needed)
-        return try_find_program(original_cmd, has_extension, state, memory, disk);
+    if command_has_path(original_cmd) {
+        return try_find_command_file(original_cmd, extension, state, memory, disk);
     }
 
-    // Search current directory first
-    if let Some(path) = try_find_program(original_cmd, has_extension, state, memory, disk) {
-        return Some(path);
+    if let Some(found) = try_find_command_file(original_cmd, extension, state, memory, disk) {
+        return Some(found);
     }
 
-    // Search PATH directories
     let path_value = read_env_var(state, memory, b"PATH")?;
     for dir in path_value.split(|&b| b == b';') {
-        let dir = dir.trim_ascii();
-        if dir.is_empty() {
-            continue;
-        }
-        let mut full_path = dir.to_vec();
-        if !full_path.ends_with(b"\\") {
-            full_path.push(b'\\');
-        }
-        full_path.extend_from_slice(original_cmd);
-        if let Some(path) = try_find_program(&full_path, has_extension, state, memory, disk) {
-            return Some(path);
+        if let Some(candidate) = path_candidate(dir, original_cmd)
+            && let Some(found) = try_find_command_file(&candidate, extension, state, memory, disk)
+        {
+            return Some(found);
         }
     }
 
     None
 }
 
-/// Tries to find a program file at the given path, optionally appending .COM/.EXE.
-fn try_find_program(
+pub(crate) fn find_batch_file(
+    original_name: &[u8],
+    state: &mut OsState,
+    memory: &dyn MemoryAccess,
+    disk: &mut dyn DriveIo,
+) -> BatchSearchResult {
+    let upper_name: Vec<u8> = original_name
+        .iter()
+        .map(|byte| byte.to_ascii_uppercase())
+        .collect();
+    let extension = command_file_extension(&upper_name);
+
+    if matches!(
+        extension,
+        Some(CommandFileExtension::Com | CommandFileExtension::Exe)
+    ) {
+        return BatchSearchResult::NotFound;
+    }
+
+    if command_has_path(original_name) {
+        return try_find_batch_candidate(original_name, extension, state, memory, disk);
+    }
+
+    match try_find_batch_candidate(original_name, extension, state, memory, disk) {
+        BatchSearchResult::NotFound => {}
+        result => return result,
+    }
+
+    let Some(path_value) = read_env_var(state, memory, b"PATH") else {
+        return BatchSearchResult::NotFound;
+    };
+    for dir in path_value.split(|&byte| byte == b';') {
+        let Some(candidate) = path_candidate(dir, original_name) else {
+            continue;
+        };
+        match try_find_batch_candidate(&candidate, extension, state, memory, disk) {
+            BatchSearchResult::NotFound => {}
+            result => return result,
+        }
+    }
+
+    BatchSearchResult::NotFound
+}
+
+fn try_find_command_file(
     path: &[u8],
-    has_extension: bool,
+    extension: Option<CommandFileExtension>,
+    state: &mut OsState,
+    memory: &dyn MemoryAccess,
+    disk: &mut dyn DriveIo,
+) -> Option<FoundCommandFile> {
+    match extension {
+        Some(CommandFileExtension::Com | CommandFileExtension::Exe) => {
+            try_find_external_program(path, state, memory, disk).map(FoundCommandFile::External)
+        }
+        Some(CommandFileExtension::Bat) => {
+            match try_find_batch_candidate(path, extension, state, memory, disk) {
+                BatchSearchResult::Found { path, lines } => {
+                    Some(FoundCommandFile::Batch { path, lines })
+                }
+                BatchSearchResult::ReadError => Some(FoundCommandFile::BatchReadError),
+                BatchSearchResult::NotFound => None,
+            }
+        }
+        None => {
+            let mut com_path = path.to_vec();
+            com_path.extend_from_slice(b".COM");
+            if let Some(found) = try_find_external_program(&com_path, state, memory, disk) {
+                return Some(FoundCommandFile::External(found));
+            }
+
+            let mut exe_path = path.to_vec();
+            exe_path.extend_from_slice(b".EXE");
+            if let Some(found) = try_find_external_program(&exe_path, state, memory, disk) {
+                return Some(FoundCommandFile::External(found));
+            }
+
+            let mut bat_path = path.to_vec();
+            bat_path.extend_from_slice(b".BAT");
+            match try_find_batch_candidate(
+                &bat_path,
+                Some(CommandFileExtension::Bat),
+                state,
+                memory,
+                disk,
+            ) {
+                BatchSearchResult::Found { path, lines } => {
+                    Some(FoundCommandFile::Batch { path, lines })
+                }
+                BatchSearchResult::ReadError => Some(FoundCommandFile::BatchReadError),
+                BatchSearchResult::NotFound => None,
+            }
+        }
+    }
+}
+
+fn try_find_external_program(
+    path: &[u8],
     state: &mut OsState,
     memory: &dyn MemoryAccess,
     disk: &mut dyn DriveIo,
 ) -> Option<Vec<u8>> {
-    if has_extension {
-        if process::is_command_processor_path(path) {
-            return Some(path.to_vec());
-        }
-        if file_exists_on_disk(path, state, memory, disk) {
-            return Some(path.to_vec());
-        }
+    if process::is_command_processor_path(path) || file_exists_on_disk(path, state, memory, disk) {
+        Some(path.to_vec())
     } else {
-        // Try .COM first, then .EXE
-        let mut com_path = path.to_vec();
-        com_path.extend_from_slice(b".COM");
-        if process::is_command_processor_path(&com_path) {
-            return Some(com_path);
-        }
-        if file_exists_on_disk(&com_path, state, memory, disk) {
-            return Some(com_path);
-        }
-        let mut exe_path = path.to_vec();
-        exe_path.extend_from_slice(b".EXE");
-        if file_exists_on_disk(&exe_path, state, memory, disk) {
-            return Some(exe_path);
-        }
+        None
     }
-    None
+}
+
+fn try_find_batch_candidate(
+    path: &[u8],
+    extension: Option<CommandFileExtension>,
+    state: &mut OsState,
+    memory: &dyn MemoryAccess,
+    disk: &mut dyn DriveIo,
+) -> BatchSearchResult {
+    let mut bat_path = path.to_vec();
+    if !matches!(extension, Some(CommandFileExtension::Bat)) {
+        bat_path.extend_from_slice(b".BAT");
+    }
+
+    let (drive_index, dir_cluster, fcb_name) =
+        match crate::filesystem::resolve_file_path(state, &bat_path, memory, disk) {
+            Ok(path) => path,
+            Err(_) => return BatchSearchResult::NotFound,
+        };
+
+    if drive_index == 25 {
+        return BatchSearchResult::NotFound;
+    }
+
+    let Some(vol) = state.fat_volumes[drive_index as usize].as_ref() else {
+        return BatchSearchResult::NotFound;
+    };
+
+    let entry = match fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk) {
+        Ok(Some(entry)) if entry.attribute & fat_dir::ATTR_DIRECTORY == 0 => entry,
+        _ => return BatchSearchResult::NotFound,
+    };
+
+    match batch::load_bat_file(vol, &entry, disk) {
+        Ok(lines) => BatchSearchResult::Found {
+            path: bat_path,
+            lines,
+        },
+        Err(_) => BatchSearchResult::ReadError,
+    }
+}
+
+fn command_file_extension(cmd_upper: &[u8]) -> Option<CommandFileExtension> {
+    if cmd_upper.len() <= 4 {
+        return None;
+    }
+    if cmd_upper.ends_with(b".COM") {
+        Some(CommandFileExtension::Com)
+    } else if cmd_upper.ends_with(b".EXE") {
+        Some(CommandFileExtension::Exe)
+    } else if cmd_upper.ends_with(b".BAT") {
+        Some(CommandFileExtension::Bat)
+    } else {
+        None
+    }
+}
+
+fn command_has_path(command: &[u8]) -> bool {
+    command.contains(&b'\\') || command.contains(&b'/') || command.len() >= 2 && command[1] == b':'
+}
+
+fn path_candidate(dir: &[u8], command: &[u8]) -> Option<Vec<u8>> {
+    let dir = dir.trim_ascii();
+    if dir.is_empty() {
+        return None;
+    }
+
+    let mut path = dir.to_vec();
+    if !path.ends_with(b"\\") && !path.ends_with(b"/") {
+        path.push(b'\\');
+    }
+    path.extend_from_slice(command);
+    Some(path)
 }
 
 /// Checks if a file exists on a DOS drive, including the virtual Z: drive.

@@ -14,6 +14,7 @@ mod console_esc;
 pub mod copy_common;
 mod country;
 mod dos;
+mod environment;
 mod file_io;
 pub mod filesystem;
 mod interrupt;
