@@ -155,7 +155,7 @@ int_1ch_handler:    hle_stub 0x1C            ; Timer/Calendar
 int_1fh_handler:    hle_stub 0x1F            ; Extended
 int_d2h_handler:    hle_stub 0xD2            ; Sound BIOS
 
-; --- DOS interrupt handler stubs (routed to the HLE OS when active) ---
+; --- DOS interrupt handler stubs (routed to the HLE DOS when active) ---
 
 int_20h_handler:    hle_stub 0x20            ; DOS: Terminate Program
 int_21h_handler:    hle_stub 0x21            ; DOS: Function Dispatch

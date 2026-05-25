@@ -1,11 +1,11 @@
-//! Shared tracing infrastructure for the machine and HLE OS.
+//! Shared tracing infrastructure for the machine and HLE DOS.
 
 use crate::{CpuAccess, MemoryAccess, ScheduledEvent};
 
-/// High-level HLE OS boot stages.
+/// High-level HLE DOS boot stages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OsBootStage {
-    /// Start of HLE OS boot.
+pub enum DosBootStage {
+    /// Start of HLE DOS boot.
     Start,
     /// DOS data structures were written.
     DosDataStructuresReady,
@@ -23,11 +23,11 @@ pub enum OsBootStage {
     AutoexecReady,
     /// Shell initialized.
     ShellReady,
-    /// End of HLE OS boot.
+    /// End of HLE DOS boot.
     End,
 }
 
-/// Records bus activity and HLE OS dispatch activity.
+/// Records bus activity and HLE DOS dispatch activity.
 ///
 /// All methods have empty default bodies so that [`NoTracing`] compiles
 /// every call to nothing.
@@ -134,18 +134,23 @@ pub trait Tracing {
         _bp: u16,
     ) {
     }
-    /// An HLE OS boot stage was reached.
-    fn trace_os_boot(
+    /// An HLE DOS boot stage was reached.
+    fn trace_dos_boot(
         &mut self,
-        _stage: OsBootStage,
+        _stage: DosBootStage,
         _cpu: &dyn CpuAccess,
         _memory: &dyn MemoryAccess,
     ) {
     }
-    /// An HLE OS interrupt was dispatched.
-    fn trace_os_dispatch(&mut self, _vector: u8, _cpu: &dyn CpuAccess, _memory: &dyn MemoryAccess) {
+    /// An HLE DOS interrupt was dispatched.
+    fn trace_dos_dispatch(
+        &mut self,
+        _vector: u8,
+        _cpu: &dyn CpuAccess,
+        _memory: &dyn MemoryAccess,
+    ) {
     }
-    /// INT 20h process termination entered the HLE OS.
+    /// INT 20h process termination entered the HLE DOS.
     fn trace_int20h(&mut self, _cpu: &dyn CpuAccess, _memory: &dyn MemoryAccess) {}
     /// INT 21h entered the HLE DOS dispatcher.
     fn trace_int21h(&mut self, _cpu: &dyn CpuAccess, _memory: &dyn MemoryAccess) {}

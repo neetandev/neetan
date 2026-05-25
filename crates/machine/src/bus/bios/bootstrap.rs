@@ -6,7 +6,7 @@ use device::floppy::D88MediaType;
 use super::{
     super::{
         BootDevice, Pc9801Bus,
-        os_adapter::{OsCpuAccess, OsDiskIo, OsMemoryAccess},
+        dos_adapter::{DosCpuAccess, DosDiskIo, DosMemoryAccess},
     },
     boot_sector_has_signature, iret_stack_base,
 };
@@ -226,32 +226,32 @@ impl<T: Tracing> Pc9801Bus<T> {
                     return;
                 }
             }
-            BootDevice::Os => {}
+            BootDevice::Dos => {}
         }
 
-        // No bootable device found (or Os selected): activate NEETAN OS HLE DOS.
-        let mut neetan_os = os::NeetanOs::new();
-        neetan_os.set_host_local_time_fn(self.host_local_time_fn);
-        neetan_os.set_ems_enabled(self.ems_enabled);
-        neetan_os.set_xms_enabled(self.xms_enabled);
-        neetan_os.set_xms_32_enabled(self.xms_32_enabled);
-        neetan_os.set_xms_hmamin_kb(self.xms_hmamin_kb);
+        // No bootable device found (or Dos selected): activate NEETAN DOS HLE.
+        let mut neetan_dos = dos::NeetanDos::new();
+        neetan_dos.set_host_local_time_fn(self.host_local_time_fn);
+        neetan_dos.set_ems_enabled(self.ems_enabled);
+        neetan_dos.set_xms_enabled(self.xms_enabled);
+        neetan_dos.set_xms_32_enabled(self.xms_32_enabled);
+        neetan_dos.set_xms_hmamin_kb(self.xms_hmamin_kb);
 
         {
-            let mut cpu_access = OsCpuAccess(cpu);
+            let mut cpu_access = DosCpuAccess(cpu);
             let access_page = self.access_page_index();
-            let mut mem_access = OsMemoryAccess::new(
+            let mut mem_access = DosMemoryAccess::new(
                 &mut self.memory,
                 access_page,
                 self.b_bank_ems,
                 self.vram_ems_bank,
             );
-            let mut disk_io = OsDiskIo {
+            let mut disk_io = DosDiskIo {
                 floppy: &mut self.floppy,
                 sasi: &mut self.sasi,
                 ide: &mut self.ide,
             };
-            neetan_os.boot(
+            neetan_dos.boot(
                 &mut cpu_access,
                 &mut mem_access,
                 &mut disk_io,
@@ -259,14 +259,14 @@ impl<T: Tracing> Pc9801Bus<T> {
             );
         }
 
-        // Enable GDC hardware cursor for HLE OS.
+        // Enable GDC hardware cursor for HLE DOS.
         self.gdc_master.state.cursor_display = true;
 
-        // Redirect IRET to the OS boot entry. This is normally COMMAND.COM at
+        // Redirect IRET to the DOS boot entry. This is normally COMMAND.COM at
         // PSP:0100h, but CONFIG.SYS native drivers may install an init
         // trampoline that transfers to COMMAND.COM after driver INIT completes.
-        let entry = neetan_os.boot_entry_point();
-        self.os = Some(neetan_os);
+        let entry = neetan_dos.boot_entry_point();
+        self.dos = Some(neetan_dos);
         let iret_base = iret_stack_base(cpu);
         self.write_mem_word(iret_base, entry.offset);
         self.write_mem_word(iret_base + 2, entry.segment);

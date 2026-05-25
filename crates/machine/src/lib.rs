@@ -12,7 +12,7 @@ mod machine;
 mod memory;
 
 use common::MachineModel;
-pub use common::{NoTracing, OsBootStage, SchedulerState, Tracing};
+pub use common::{DosBootStage, NoTracing, SchedulerState, Tracing};
 use device::{
     beeper::BeeperState, cgrom::CgromState, display_control::DisplayControlState, egc::EgcState,
     fdd320_ppi::Fdd320PpiState, ga1280a::Ga1280aState, grcg::GrcgState,

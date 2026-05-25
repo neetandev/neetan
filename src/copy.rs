@@ -14,7 +14,7 @@ use device::{
     disk::{HddImage, load_hdd_image},
     floppy::{FloppyImage, d88::D88MediaType, load_floppy_image},
 };
-use os::{
+use dos::{
     DiskIo,
     copy_common::{
         dos_display, dos_leaf_basename, dos_now, join_dos, split_dos_parent,

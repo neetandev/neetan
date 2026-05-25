@@ -59,7 +59,7 @@ Options:
       --midi <DEVICE>           MIDI device: none, mt32, sc55 (default: none)
       --mt32-roms <PATH>        Path to MT-32 ROM directory
       --sc55-roms <PATH>        Path to SC55 ROM directory
-      --boot-device <DEVICE>    Boot device: auto, fdd1, fdd2, hdd1, hdd2, os (default: auto)
+      --boot-device <DEVICE>    Boot device: auto, fdd1, fdd2, hdd1, hdd2, dos (default: auto)
       --printer <PATH>          Output file for printer (must exist)
       --enable-extractor        Copy on-screen text to the system clipboard
   -h, --help                    Print help
