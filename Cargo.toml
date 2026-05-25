@@ -15,8 +15,8 @@ blake3 = { path = "crates/blake3" }
 common = { path = "crates/common" }
 cpu = { path = "crates/cpu" }
 device = { path = "crates/device" }
+dos = { path = "crates/dos" }
 machine = { path = "crates/machine" }
-os = { path = "crates/os" }
 resampler = { path = "crates/resampler" }
 sdl3 = { path = "crates/sdl3" }
 sdl3_backend = { path = "crates/sdl3_backend" }
@@ -55,7 +55,7 @@ cpu = { workspace = true }
 common = { workspace = true }
 device = { workspace = true }
 machine = { workspace = true }
-os = { workspace = true }
+dos = { workspace = true }
 sdl3 = { workspace = true }
 sdl3_backend = { workspace = true }
 software_renderer = { workspace = true }
@@ -97,6 +97,10 @@ codegen-units = 1
 opt-level = 3
 codegen-units = 1
 
+[profile.dev.package.dos]
+opt-level = 3
+codegen-units = 1
+
 [profile.dev.package.machine]
 opt-level = 3
 codegen-units = 1
@@ -106,10 +110,6 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.nuked_sc55_oxide]
-opt-level = 3
-codegen-units = 1
-
-[profile.dev.package.os]
 opt-level = 3
 codegen-units = 1
 

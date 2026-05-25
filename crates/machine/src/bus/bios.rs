@@ -21,7 +21,7 @@ use common::{Cpu, SegmentRegister, warn};
 
 use super::{
     Pc9801Bus,
-    os_adapter::{OsCpuAccess, OsCursorAccess, OsDiskIo, OsMemoryAccess},
+    dos_adapter::{DosCpuAccess, DosCursorAccess, DosDiskIo, DosMemoryAccess},
 };
 use crate::{Tracing, memory::Pc9801Memory};
 
@@ -192,22 +192,22 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x1C => self.hle_int1ch(cpu),
             0x1F => self.hle_int1fh(cpu),
             0x20..=0x2A | 0x2F | 0x33 | 0x67 | 0xDC | 0xE7 | 0xEF | 0xFE => {
-                if let Some(mut neetan_os) = self.os.take() {
-                    let mut cpu_access = OsCpuAccess(cpu);
+                if let Some(mut neetan_dos) = self.dos.take() {
+                    let mut cpu_access = DosCpuAccess(cpu);
                     let access_page = self.access_page_index();
-                    let mut mem_access = OsMemoryAccess::new(
+                    let mut mem_access = DosMemoryAccess::new(
                         &mut self.memory,
                         access_page,
                         self.b_bank_ems,
                         self.vram_ems_bank,
                     );
-                    let mut disk_io = OsDiskIo {
+                    let mut disk_io = DosDiskIo {
                         floppy: &mut self.floppy,
                         sasi: &mut self.sasi,
                         ide: &mut self.ide,
                     };
-                    let mut cursor_access = OsCursorAccess(&mut self.gdc_master.state);
-                    neetan_os.dispatch(
+                    let mut cursor_access = DosCursorAccess(&mut self.gdc_master.state);
+                    neetan_dos.dispatch(
                         vector,
                         &mut cpu_access,
                         &mut mem_access,
@@ -215,7 +215,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                         &mut cursor_access,
                         &mut self.tracer,
                     );
-                    self.os = Some(neetan_os);
+                    self.dos = Some(neetan_dos);
                 }
             }
             0xD2 => {}

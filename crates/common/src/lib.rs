@@ -8,26 +8,26 @@
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
+mod dos;
 pub mod error;
 mod jis;
 pub mod log;
-mod os;
 mod stack_vec;
 mod text_extractor;
 mod trace;
 
+pub use dos::{
+    AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
+    ConsoleIo, CpuAccess, CursorAccess, DiskIo, DriveIo, HardwareCursorState, MemoryAccess,
+};
 pub use error::{Context, ContextError, OptionContext, StringError};
 pub use jis::{
     JisChar, char_to_jis, is_shift_jis_lead_byte, is_shift_jis_trail_byte, jis_slice_to_string,
     jis_to_char, jis_to_shift_jis, shift_jis_pair_to_jis, str_to_jis,
 };
-pub use os::{
-    AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
-    ConsoleIo, CpuAccess, CursorAccess, DiskIo, DriveIo, HardwareCursorState, MemoryAccess,
-};
 pub use stack_vec::StackVec;
 pub use text_extractor::TextExtractor;
-pub use trace::{NoTracing, OsBootStage, Tracing};
+pub use trace::{DosBootStage, NoTracing, Tracing};
 
 /// CPU generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

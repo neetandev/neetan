@@ -268,7 +268,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             hle_cr0: 0,
             hle_cr3: 0,
             boot_device: BootDevice::default(),
-            os: None,
+            dos: None,
             ems_enabled: true,
             xms_enabled: true,
             xms_32_enabled: false,

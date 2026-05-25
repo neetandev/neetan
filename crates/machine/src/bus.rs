@@ -4,6 +4,7 @@
 //! the appropriate peripheral (PIC, PIT, etc.).
 
 mod bios;
+mod dos_adapter;
 mod fdc;
 mod fdd_hle;
 mod graphics;
@@ -11,7 +12,6 @@ mod hdd;
 mod init;
 mod io_read;
 mod io_write;
-mod os_adapter;
 
 use std::path::PathBuf;
 
@@ -252,7 +252,7 @@ const E_PLANE_PAGE_SIZE_BYTES: usize = 0x8000;
 /// Boot device selection for the HLE bootstrap.
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
 pub enum BootDevice {
-    /// Try all devices in standard order: FDD 0-1, CD-ROM, SASI HDD, IDE HDD, HLE OS.
+    /// Try all devices in standard order: FDD 0-1, CD-ROM, SASI HDD, IDE HDD, HLE DOS.
     #[default]
     Auto,
     /// Boot from FDD drive 0 only.
@@ -263,8 +263,8 @@ pub enum BootDevice {
     Hdd1,
     /// Boot from HDD drive 1 (SASI or IDE depending on machine model).
     Hdd2,
-    /// Skip all disk boot attempts, go straight to HLE Neetan OS.
-    Os,
+    /// Skip all disk boot attempts, go straight to HLE Neetan DOS.
+    Dos,
 }
 
 impl std::fmt::Display for BootDevice {
@@ -275,7 +275,7 @@ impl std::fmt::Display for BootDevice {
             Self::Fdd2 => f.write_str("fdd2"),
             Self::Hdd1 => f.write_str("hdd1"),
             Self::Hdd2 => f.write_str("hdd2"),
-            Self::Os => f.write_str("os"),
+            Self::Dos => f.write_str("dos"),
         }
     }
 }
@@ -290,9 +290,9 @@ impl std::str::FromStr for BootDevice {
             "fdd2" => Ok(Self::Fdd2),
             "hdd1" => Ok(Self::Hdd1),
             "hdd2" => Ok(Self::Hdd2),
-            "os" => Ok(Self::Os),
+            "dos" => Ok(Self::Dos),
             _ => Err(format!(
-                "unknown boot device '{s}', expected auto, fdd1, fdd2, hdd1, hdd2 or os"
+                "unknown boot device '{s}', expected auto, fdd1, fdd2, hdd1, hdd2 or dos"
             )),
         }
     }
@@ -450,12 +450,12 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     hle_cr0: u32,
     /// Cached CR3 from the CPU, set before HLE dispatch.
     hle_cr3: u32,
-    /// NEETAN OS HLE DOS instance. `None` when running with real DOS media.
+    /// NEETAN DOS HLE DOS instance. `None` when running with real DOS media.
     boot_device: BootDevice,
-    os: Option<os::NeetanOs>,
-    /// Whether EMS expanded memory is enabled for the HLE OS.
+    dos: Option<dos::NeetanDos>,
+    /// Whether EMS expanded memory is enabled for the HLE DOS.
     ems_enabled: bool,
-    /// Whether XMS extended memory is enabled for the HLE OS.
+    /// Whether XMS extended memory is enabled for the HLE DOS.
     xms_enabled: bool,
     /// Whether 32-bit XMS super functions (0x88-0x8F) are enabled.
     xms_32_enabled: bool,
@@ -478,17 +478,17 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.boot_device = device;
     }
 
-    /// Enables or disables EMS expanded memory for the HLE OS.
+    /// Enables or disables EMS expanded memory for the HLE DOS.
     pub fn set_ems_enabled(&mut self, enabled: bool) {
         self.ems_enabled = enabled;
     }
 
-    /// Enables or disables XMS extended memory for the HLE OS.
+    /// Enables or disables XMS extended memory for the HLE DOS.
     pub fn set_xms_enabled(&mut self, enabled: bool) {
         self.xms_enabled = enabled;
     }
 
-    /// Sets the XMS /HMAMIN= threshold in KB for the HLE OS.
+    /// Sets the XMS /HMAMIN= threshold in KB for the HLE DOS.
     pub fn set_xms_hmamin_kb(&mut self, hmamin_kb: u16) {
         self.xms_hmamin_kb = hmamin_kb;
     }
@@ -498,15 +498,15 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.xms_32_enabled = enabled;
     }
 
-    /// Enables the NEETAN OS HLE DOS subsystem.
+    /// Enables the NEETAN DOS HLE DOS subsystem.
     ///
     /// When enabled, DOS interrupt vectors (INT 20h-2Ah, 2Fh, 33h, DCh) are
     /// routed to the built-in Rust implementation instead of being passed
     /// through to a real DOS loaded from disk.
-    pub fn enable_neetan_os(&mut self) {
-        let mut os = os::NeetanOs::new();
-        os.set_host_local_time_fn(self.host_local_time_fn);
-        self.os = Some(os);
+    pub fn enable_neetan_dos(&mut self) {
+        let mut dos = dos::NeetanDos::new();
+        dos.set_host_local_time_fn(self.host_local_time_fn);
+        self.dos = Some(dos);
     }
 
     /// Loads BIOS ROM data (mapped at E8000-FFFFF, up to 96 KB).
@@ -555,14 +555,14 @@ impl<T: Tracing> Pc9801Bus<T> {
         let access_page = self.access_page_index();
         let b_bank_ems = self.b_bank_ems;
         let vram_ems_bank = self.vram_ems_bank;
-        if let Some(os) = self.os.as_mut() {
-            let memory = os_adapter::OsMemoryAccess::new(
+        if let Some(dos) = self.dos.as_mut() {
+            let memory = dos_adapter::DosMemoryAccess::new(
                 &mut self.memory,
                 access_page,
                 b_bank_ems,
                 vram_ems_bank,
             );
-            os.invalidate_drive_caches(&memory, 0x90 | drive as u8);
+            dos.invalidate_drive_caches(&memory, 0x90 | drive as u8);
         }
     }
 
@@ -582,14 +582,14 @@ impl<T: Tracing> Pc9801Bus<T> {
         let access_page = self.access_page_index();
         let b_bank_ems = self.b_bank_ems;
         let vram_ems_bank = self.vram_ems_bank;
-        if let Some(os) = self.os.as_mut() {
-            let memory = os_adapter::OsMemoryAccess::new(
+        if let Some(dos) = self.dos.as_mut() {
+            let memory = dos_adapter::DosMemoryAccess::new(
                 &mut self.memory,
                 access_page,
                 b_bank_ems,
                 vram_ems_bank,
             );
-            os.invalidate_drive_caches(&memory, 0x90 | drive as u8);
+            dos.invalidate_drive_caches(&memory, 0x90 | drive as u8);
         }
     }
 
@@ -626,14 +626,14 @@ impl<T: Tracing> Pc9801Bus<T> {
         let access_page = self.access_page_index();
         let b_bank_ems = self.b_bank_ems;
         let vram_ems_bank = self.vram_ems_bank;
-        if let Some(os) = self.os.as_mut() {
-            let memory = os_adapter::OsMemoryAccess::new(
+        if let Some(dos) = self.dos.as_mut() {
+            let memory = dos_adapter::DosMemoryAccess::new(
                 &mut self.memory,
                 access_page,
                 b_bank_ems,
                 vram_ems_bank,
             );
-            os.invalidate_drive_caches(&memory, 0x80 | drive as u8);
+            dos.invalidate_drive_caches(&memory, 0x80 | drive as u8);
         }
     }
 
@@ -1033,14 +1033,14 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Returns a host-formatted overview of current HLE DOS memory usage.
     pub fn debug_memory_overview_lines(&mut self) -> Option<Vec<String>> {
         let access_page = self.access_page_index();
-        let os = self.os.as_ref()?;
-        let memory = os_adapter::OsMemoryAccess::new(
+        let dos = self.dos.as_ref()?;
+        let memory = dos_adapter::DosMemoryAccess::new(
             &mut self.memory,
             access_page,
             self.b_bank_ems,
             self.vram_ems_bank,
         );
-        Some(os.debug_memory_overview_lines(&memory))
+        Some(dos.debug_memory_overview_lines(&memory))
     }
 
     fn update_plane_e_mapping(&mut self) {
@@ -1574,7 +1574,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     ///
     /// Intended for test harnesses that need to position the text cursor
     /// without going through INT 18H AH=13h. Writes only the GDC execute
-    /// address (ead) - callers that also need the HLE OS IOSYS fields
+    /// address (ead) - callers that also need the HLE DOS IOSYS fields
     /// updated must do that separately.
     pub fn set_text_cursor_position(&mut self, row: u8, col: u8) {
         self.gdc_master.state.ead = u32::from(row) * 80 + u32::from(col);

@@ -15,7 +15,7 @@ sc55 = ["device/sc55"]
 common = { workspace = true }
 cpu = { workspace = true }
 device = { workspace = true }
-os = { workspace = true }
+dos = { workspace = true }
 software_renderer = { workspace = true }
 
 [dev-dependencies]

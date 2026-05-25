@@ -68,7 +68,7 @@ neetan <COMMAND>
 | `--midi <DEVICE>`            | MIDI device: `none`, `mt32`, `sc55`                                                 | `none`     |
 | `--mt32-roms <PATH>`         | Path to MT-32 ROM directory (requires `mt32` feature)                               | -          |
 | `--sc55-roms <PATH>`         | Path to SC-55 ROM directory (requires `sc55` feature)                               | -          |
-| `--boot-device <DEVICE>`     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `os`                           | `auto`     |
+| `--boot-device <DEVICE>`     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `dos`                          | `auto`     |
 | `--printer <PATH>`           | Output file for printer (must exist)                                                | -          |
 | `--enable-extractor`         | Copy on-screen Japanese text to the system clipboard, one line at a time            | off        |
 | `-h, --help`                 | Print help                                                                          | -          |
