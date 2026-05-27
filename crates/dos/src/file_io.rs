@@ -28,19 +28,71 @@ fn path_is_named_device(path: &[u8], device_name: &[u8; 8]) -> bool {
     if component.len() >= 2 && component[1] == b':' {
         component = &component[2..];
     }
-    while let Some(byte) = component.first() {
-        if *byte != b'\\' && *byte != b'/' {
-            break;
-        }
-        component = &component[1..];
+    if let Some(last_separator) = component
+        .iter()
+        .rposition(|byte| *byte == b'\\' || *byte == b'/')
+    {
+        component = &component[last_separator + 1..];
     }
-    if component.len() != 8 {
+    if let Some(extension) = component.iter().position(|byte| *byte == b'.') {
+        component = &component[..extension];
+    }
+    if component.last() == Some(&b':') {
+        component = &component[..component.len() - 1];
+    }
+    if component.is_empty() || component.len() > 8 {
         return false;
     }
-    component
-        .iter()
-        .zip(device_name.iter())
-        .all(|(actual, expected)| actual.to_ascii_uppercase() == *expected)
+    let mut padded = [b' '; 8];
+    padded[..component.len()].copy_from_slice(component);
+    padded.make_ascii_uppercase();
+    &padded == device_name
+}
+
+struct CharacterDeviceOpen {
+    sft_name: &'static [u8; 11],
+    device_offset: u16,
+    device_info: u16,
+}
+
+fn path_character_device(path: &[u8]) -> Option<CharacterDeviceOpen> {
+    // Real DOS 6.20 sets bit 15 (mirror of DEVATTR_CHAR) and bit 6 (no-EOF
+    // / binary mode) on every character-device SFT entry alongside bit 7
+    // (CHAR) and the per-device low-byte flags.
+    const CHAR_DEVICE_COMMON: u16 =
+        tables::SFT_DEVINFO_DRIVER_CHAR | tables::SFT_DEVINFO_CHAR | tables::SFT_DEVINFO_EOF;
+    if path_is_named_device(path, b"CON     ") {
+        return Some(CharacterDeviceOpen {
+            sft_name: b"CON        ",
+            device_offset: tables::DEV_CON_OFFSET,
+            device_info: CHAR_DEVICE_COMMON
+                | tables::SFT_DEVINFO_SPECIAL
+                | tables::SFT_DEVINFO_STDIN
+                | tables::SFT_DEVINFO_STDOUT,
+        });
+    }
+    if path_is_named_device(path, b"NUL     ") {
+        return Some(CharacterDeviceOpen {
+            sft_name: b"NUL        ",
+            device_offset: tables::DEV_NUL_OFFSET,
+            device_info: CHAR_DEVICE_COMMON | tables::SFT_DEVINFO_NUL,
+        });
+    }
+    if path_is_named_device(path, b"AUX     ") {
+        return Some(CharacterDeviceOpen {
+            sft_name: b"AUX        ",
+            device_offset: tables::DEV_NUL_OFFSET,
+            device_info: CHAR_DEVICE_COMMON,
+        });
+    }
+    if path_is_named_device(path, b"PRN     ") {
+        return Some(CharacterDeviceOpen {
+            sft_name: b"PRN        ",
+            device_offset: tables::DEV_NUL_OFFSET,
+            device_info: CHAR_DEVICE_COMMON,
+        });
+    }
+    None
 }
 
 fn path_is_ems_device(path: &[u8]) -> bool {
@@ -360,7 +412,13 @@ impl NeetanDos {
         let path_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
         let open_mode = cpu.ax() as u8 & 0x03;
         let path = DosState::read_asciiz(memory, path_addr, 128);
-        let is_ems_probe = self.state.ems_enabled && path_is_ems_device(&path);
+        let is_ems_probe = path_is_ems_device(&path)
+            && self.state.ems_enabled
+            && self
+                .state
+                .memory_manager
+                .as_ref()
+                .is_some_and(|mm| mm.is_ems_enabled());
         let is_xms_probe = self.state.xms_enabled && path_is_xms_device(&path);
 
         let result = (|| -> Result<u16, u16> {
@@ -371,6 +429,10 @@ impl NeetanDos {
                     sft_index,
                     b"EMMXXXX0   ",
                     tables::DEV_EMS_OFFSET,
+                    tables::SFT_DEVINFO_DRIVER_CHAR
+                        | tables::SFT_DEVINFO_CHAR
+                        | tables::SFT_DEVINFO_EOF
+                        | tables::SFT_DEVINFO_IOCTL,
                     open_mode as u16,
                 );
                 return Ok(handle);
@@ -382,6 +444,22 @@ impl NeetanDos {
                     sft_index,
                     b"XMSXXXX0   ",
                     tables::DEV_XMS_OFFSET,
+                    tables::SFT_DEVINFO_DRIVER_CHAR
+                        | tables::SFT_DEVINFO_CHAR
+                        | tables::SFT_DEVINFO_EOF
+                        | tables::SFT_DEVINFO_IOCTL,
+                    open_mode as u16,
+                );
+                return Ok(handle);
+            }
+            if let Some(device) = path_character_device(&path) {
+                let (handle, sft_index) = self.state.allocate_handle(memory)?;
+                self.write_sft_for_character_device(
+                    memory,
+                    sft_index,
+                    device.sft_name,
+                    device.device_offset,
+                    device.device_info,
                     open_mode as u16,
                 );
                 return Ok(handle);
@@ -407,11 +485,11 @@ impl NeetanDos {
                 return Ok(handle);
             }
 
-            let (handle, sft_index) = self.state.allocate_handle(memory)?;
             let entry = find_read_entry(&self.state, &read_path, disk)?.ok_or(0x0002u16)?;
             if entry.attribute & fat_dir::ATTR_DIRECTORY != 0 {
                 return Err(0x0005);
             }
+            let (handle, sft_index) = self.state.allocate_handle(memory)?;
             match &entry.source {
                 ReadDirEntrySource::Fat(entry) => {
                     self.write_sft_for_file(
@@ -1139,6 +1217,7 @@ impl NeetanDos {
         sft_index: u8,
         name: &[u8; 11],
         device_offset: u16,
+        device_info: u16,
         open_mode: u16,
     ) {
         let sft_addr = match self.state.sft_entry_addr(sft_index) {
@@ -1149,10 +1228,7 @@ impl NeetanDos {
         mem.write_word(sft_addr + tables::SFT_ENT_REF_COUNT, 1);
         mem.write_word(sft_addr + tables::SFT_ENT_OPEN_MODE, open_mode);
         mem.write_byte(sft_addr + tables::SFT_ENT_FILE_ATTR, 0x00);
-        mem.write_word(
-            sft_addr + tables::SFT_ENT_DEV_INFO,
-            tables::SFT_DEVINFO_CHAR,
-        );
+        mem.write_word(sft_addr + tables::SFT_ENT_DEV_INFO, device_info);
         tables::write_far_ptr(
             mem,
             sft_addr + tables::SFT_ENT_DEV_PTR,
