@@ -189,7 +189,10 @@ impl MemoryManager {
             xms_handles,
             hma_allocated: false,
             umb_enabled,
-            a20_global_enabled: false,
+            // HIMEM globally enables the A20 line when it loads; on PC-98 it
+            // then stays enabled (real DOS reports A20 on both via the
+            // physical gate and the XMS query for the lifetime of HIMEM).
+            a20_global_enabled: xms_enabled,
             a20_local_enable_count: 0,
             hmamin_kb: 0,
             ems_os_access_key: None,
