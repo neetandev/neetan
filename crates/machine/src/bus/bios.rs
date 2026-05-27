@@ -220,7 +220,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x1B => self.hle_int1bh(cpu),
             0x1C => self.hle_int1ch(cpu),
             0x1F => self.hle_int1fh(cpu),
-            0x20..=0x2A | 0x2F | 0x33 | 0x67 | 0xDC | 0xE7 | 0xEF | 0xFE => {
+            0x20..=0x2A | 0x2F | 0x33 | 0x67 | 0xDC | 0xE7 | 0xEF | 0xFD | 0xFE => {
                 if let Some(mut neetan_dos) = self.dos.take() {
                     let mut cpu_access = DosCpuAccess(cpu);
                     let access_page = self.access_page_index();
