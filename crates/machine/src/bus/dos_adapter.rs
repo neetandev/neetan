@@ -164,6 +164,8 @@ pub(super) struct DosMemoryAccess<'a> {
     access_page: usize,
     b_bank_ems: bool,
     vram_ems_bank: u8,
+    hle_cr0: u32,
+    hle_cr3: u32,
 }
 
 impl<'a> DosMemoryAccess<'a> {
@@ -178,14 +180,43 @@ impl<'a> DosMemoryAccess<'a> {
             access_page,
             b_bank_ems,
             vram_ems_bank,
+            hle_cr0: 0,
+            hle_cr3: 0,
         }
+    }
+
+    pub(super) fn with_paging(
+        memory: &'a mut Pc9801Memory,
+        access_page: usize,
+        b_bank_ems: bool,
+        vram_ems_bank: u8,
+        hle_cr0: u32,
+        hle_cr3: u32,
+    ) -> Self {
+        Self {
+            memory,
+            access_page,
+            b_bank_ems,
+            vram_ems_bank,
+            hle_cr0,
+            hle_cr3,
+        }
+    }
+
+    fn translate_read(&self, address: u32) -> u32 {
+        super::bios::hle_page_translate_read_only(self.hle_cr0, self.hle_cr3, address, self.memory)
+    }
+
+    fn translate_write(&mut self, address: u32) -> u32 {
+        super::bios::hle_page_translate_write(self.hle_cr0, self.hle_cr3, address, self.memory)
     }
 }
 
 impl MemoryAccess for DosMemoryAccess<'_> {
     fn read_byte(&self, address: u32) -> u8 {
+        let physical = self.translate_read(address);
         self.memory.read_byte_with_access_page(
-            address,
+            physical,
             self.access_page,
             self.b_bank_ems,
             self.vram_ems_bank,
@@ -193,8 +224,9 @@ impl MemoryAccess for DosMemoryAccess<'_> {
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
+        let physical = self.translate_write(address);
         self.memory.write_byte_with_access_page(
-            address,
+            physical,
             self.access_page,
             self.b_bank_ems,
             self.vram_ems_bank,

@@ -107,6 +107,35 @@ pub(super) fn hle_page_translate_write(
     hle_page_translate_access(cr0, cr3, linear, true, memory)
 }
 
+/// Read-only linear-to-physical translation for HLE accessors that only hold
+/// an immutable memory reference and therefore cannot update the accessed and
+/// dirty bits. Returns the linear address unchanged when paging is disabled or
+/// the mapping is not present.
+pub(super) fn hle_page_translate_read_only(
+    cr0: u32,
+    cr3: u32,
+    linear: u32,
+    memory: &Pc9801Memory,
+) -> u32 {
+    if cr0 & 0x8000_0001 != 0x8000_0001 {
+        return linear;
+    }
+    let dir_idx = (linear >> 22) & 0x3FF;
+    let tbl_idx = (linear >> 12) & 0x3FF;
+    let offset = linear & 0xFFF;
+    let pde_addr = (cr3 & 0xFFFFF000) + dir_idx * 4;
+    let pde = hle_read_dword(memory, pde_addr);
+    if pde & PAGE_PRESENT == 0 {
+        return linear;
+    }
+    let pte_addr = (pde & 0xFFFFF000) + tbl_idx * 4;
+    let pte = hle_read_dword(memory, pte_addr);
+    if pte & PAGE_PRESENT == 0 {
+        return linear;
+    }
+    (pte & 0xFFFFF000) | offset
+}
+
 fn boot_sector_has_signature(data: &[u8]) -> bool {
     data.len() >= 0x400 && data[0x3FE] == 0x55 && data[0x3FF] == 0xAA
 }
@@ -195,11 +224,13 @@ impl<T: Tracing> Pc9801Bus<T> {
                 if let Some(mut neetan_dos) = self.dos.take() {
                     let mut cpu_access = DosCpuAccess(cpu);
                     let access_page = self.access_page_index();
-                    let mut mem_access = DosMemoryAccess::new(
+                    let mut mem_access = DosMemoryAccess::with_paging(
                         &mut self.memory,
                         access_page,
                         self.b_bank_ems,
                         self.vram_ems_bank,
+                        self.hle_cr0,
+                        self.hle_cr3,
                     );
                     let mut disk_io = DosDiskIo {
                         floppy: &mut self.floppy,
