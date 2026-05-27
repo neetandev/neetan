@@ -86,9 +86,9 @@ fn host_memory_overview_reports_umb_usage() {
         .expect("overview should be available under HLE DOS");
     let umb_line = find_line(&lines, "UMB: ");
     assert!(
-        umb_line.contains("total=65,504 bytes")
-            && umb_line.contains("used=256 bytes")
-            && umb_line.contains("free=65,248 bytes"),
+        umb_line.contains("total=65,456 bytes")
+            && umb_line.contains("used=8,384 bytes")
+            && umb_line.contains("free=57,072 bytes"),
         "unexpected UMB line: {umb_line}"
     );
 }
@@ -125,14 +125,14 @@ fn host_memory_overview_reports_shared_ems_xms_pool_usage() {
     );
     assert!(
         xms_line.contains("total=12,224K (12,517,376 bytes)")
-            && xms_line.contains("used=80K (81,920 bytes)")
-            && xms_line.contains("free=12,144K (12,435,456 bytes)"),
+            && xms_line.contains("used=208K (212,992 bytes)")
+            && xms_line.contains("free=12,016K (12,304,384 bytes)"),
         "unexpected XMS line: {xms_line}"
     );
     assert!(
         pool_line.contains("total=12,224K (12,517,376 bytes)")
-            && pool_line.contains("used=80K (81,920 bytes)")
-            && pool_line.contains("free=12,144K (12,435,456 bytes)"),
+            && pool_line.contains("used=208K (212,992 bytes)")
+            && pool_line.contains("free=12,016K (12,304,384 bytes)"),
         "unexpected shared pool line: {pool_line}"
     );
 }

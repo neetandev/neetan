@@ -104,6 +104,7 @@ impl BestFitAllocator {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn allocate(&mut self, size: u32) -> Option<Allocation> {
         let request_size = normalize_allocation_size(size)?;
         let (region_size, region_offset) = self
@@ -126,6 +127,47 @@ impl BestFitAllocator {
 
         let allocation = self.create_allocation(region_offset, allocation_size);
         Some(allocation)
+    }
+
+    pub(crate) fn allocate_aligned(&mut self, size: u32, alignment: u32) -> Option<Allocation> {
+        let request_size = normalize_allocation_size(size)?;
+        if alignment < ALIGN_SIZE || !alignment.is_power_of_two() {
+            return None;
+        }
+
+        let mut candidate = None;
+        for (&region_offset, &region) in &self.free_by_offset {
+            let aligned_offset = align_up(region_offset, alignment)?;
+            let leading_size = aligned_offset.checked_sub(region_offset)?;
+            if leading_size > 0 && leading_size < BLOCK_SIZE_MIN {
+                continue;
+            }
+            let needed_size = leading_size.checked_add(request_size)?;
+            if region.size >= needed_size {
+                candidate = Some((region_offset, region.size, aligned_offset));
+                break;
+            }
+        }
+
+        let (region_offset, region_size, aligned_offset) = candidate?;
+        self.remove_free_region(region_offset);
+
+        let leading_size = aligned_offset - region_offset;
+        if leading_size > 0 {
+            self.insert_free_region(region_offset, leading_size);
+        }
+
+        let region_end = region_offset + region_size;
+        let requested_end = aligned_offset + request_size;
+        let trailing_size = region_end - requested_end;
+        let allocation_size = if trailing_size >= BLOCK_SIZE_MIN {
+            self.insert_free_region(requested_end, trailing_size);
+            request_size
+        } else {
+            region_end - aligned_offset
+        };
+
+        Some(self.create_allocation(aligned_offset, allocation_size))
     }
 
     pub(crate) fn deallocate(&mut self, allocation: Allocation) {
@@ -198,11 +240,18 @@ impl BestFitAllocator {
         self.total_free_size
     }
 
+    #[cfg(test)]
     pub(crate) fn largest_free_block_size(&self) -> u32 {
         self.free_by_size
             .last()
             .map(|(size, _offset)| *size)
             .unwrap_or(0)
+    }
+
+    pub(crate) fn free_regions(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.free_by_offset
+            .iter()
+            .map(|(&offset, region)| (offset, region.size))
     }
 
     #[cfg(test)]
@@ -430,6 +479,12 @@ impl BestFitAllocator {
 fn normalize_allocation_size(size: u32) -> Option<u32> {
     let aligned_size = size.checked_add(ALIGN_SIZE - 1)? & !(ALIGN_SIZE - 1);
     Some(aligned_size.max(BLOCK_SIZE_MIN))
+}
+
+fn align_up(value: u32, alignment: u32) -> Option<u32> {
+    value
+        .checked_add(alignment - 1)
+        .map(|value| value & !(alignment - 1))
 }
 
 #[cfg(test)]

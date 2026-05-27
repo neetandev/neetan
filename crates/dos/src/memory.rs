@@ -270,7 +270,7 @@ pub(crate) fn collect_memory_overview(state: &DosState, mem: &dyn MemoryAccess) 
     let umb = if let Some(manager) = memory_manager {
         if manager.is_umb_enabled() {
             let (umb_used_paragraphs, umb_free_paragraphs) =
-                walk_mcb_chain_usage(mem, UMB_FIRST_MCB_SEGMENT);
+                walk_mcb_chain_usage(mem, manager.umb_first_mcb_segment());
             let total_bytes = (umb_used_paragraphs + umb_free_paragraphs) * 16;
             let used_bytes = umb_used_paragraphs * 16;
             MemoryAmount {
@@ -306,11 +306,11 @@ pub(crate) fn collect_memory_overview(state: &DosState, mem: &dyn MemoryAccess) 
         allocated: hma_allocated,
     };
 
-    let ems_total_bytes = memory_manager.map_or(0, |manager| manager.ems_total_kb() * 1024);
+    let ems_used_bytes = memory_manager.map_or(0, |manager| manager.ems_allocated_kb() * 1024);
     let ems_free_bytes = memory_manager.map_or(0, |manager| manager.ems_free_kb() * 1024);
     let ems = MemoryAmount {
-        total_bytes: ems_total_bytes,
-        used_bytes: ems_total_bytes.saturating_sub(ems_free_bytes),
+        total_bytes: ems_used_bytes + ems_free_bytes,
+        used_bytes: ems_used_bytes,
         free_bytes: ems_free_bytes,
     };
 
@@ -349,7 +349,11 @@ pub(crate) fn collect_memory_overview(state: &DosState, mem: &dyn MemoryAccess) 
             Some(MEMORY_TOP_SEGMENT),
         ) * 16,
         largest_umb_free_bytes: if umb.total_bytes > 0 {
-            largest_free_block_paragraphs(mem, UMB_FIRST_MCB_SEGMENT) * 16
+            memory_manager
+                .map(|manager| {
+                    largest_free_block_paragraphs(mem, manager.umb_first_mcb_segment()) * 16
+                })
+                .unwrap_or(0)
         } else {
             0
         },
