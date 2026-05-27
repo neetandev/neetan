@@ -466,6 +466,345 @@ fn windows_not_running() {
 }
 
 #[test]
+fn windows_dosmgr_virtual_device_api_reports_dos5_kernel_support() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x07, 0x16,                   // MOV AX, 1607h
+        0xBB, 0x15, 0x00,                   // MOV BX, 0015h
+        0x31, 0xC9,                         // XOR CX, CX
+        0x31, 0xD2,                         // XOR DX, DX
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0102h], BX
+        0x89, 0x0E, 0x04, 0x01,             // MOV [0104h], CX
+        0x89, 0x16, 0x06, 0x01,             // MOV [0106h], DX
+        0x8C, 0x06, 0x08, 0x01,             // MOV [0108h], ES
+        0xB8, 0x07, 0x16,                   // MOV AX, 1607h
+        0xBB, 0x15, 0x00,                   // MOV BX, 0015h
+        0xB9, 0x04, 0x00,                   // MOV CX, 0004h
+        0x31, 0xD2,                         // XOR DX, DX
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x0A, 0x01,                   // MOV [010Ah], AX
+        0x89, 0x1E, 0x0C, 0x01,             // MOV [010Ch], BX
+        0x89, 0x16, 0x0E, 0x01,             // MOV [010Eh], DX
+        0x89, 0x0E, 0x16, 0x01,             // MOV [0116h], CX
+        0xB8, 0x07, 0x16,                   // MOV AX, 1607h
+        0xBB, 0x15, 0x00,                   // MOV BX, 0015h
+        0xB9, 0x01, 0x00,                   // MOV CX, 0001h
+        0xBA, 0x1F, 0x00,                   // MOV DX, 001Fh
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x10, 0x01,                   // MOV [0110h], AX
+        0x89, 0x1E, 0x12, 0x01,             // MOV [0112h], BX
+        0x89, 0x16, 0x14, 0x01,             // MOV [0114h], DX
+        0x89, 0x0E, 0x18, 0x01,             // MOV [0118h], CX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    assert_eq!(harness::result_word(&machine.bus, 4), 0x0001);
+    assert_eq!(harness::result_word(&machine.bus, 6), 0x0000);
+    assert_eq!(
+        harness::result_word(&machine.bus, 8),
+        tables::DOS_DATA_SEGMENT
+    );
+    assert_eq!(
+        harness::result_word(&machine.bus, 2),
+        tables::WINDOWS_DOSMGR_PATCH_TABLE_OFFSET
+    );
+
+    let patch_table = harness::far_to_linear(
+        harness::result_word(&machine.bus, 8),
+        harness::result_word(&machine.bus, 2),
+    );
+    assert_eq!(harness::read_word(&machine.bus, patch_table), 0x1406);
+    assert_eq!(
+        harness::read_word(&machine.bus, patch_table + 0x06),
+        tables::INDOS_FLAG_OFFSET
+    );
+    assert_eq!(
+        harness::read_word(&machine.bus, patch_table + 0x0C),
+        tables::FIRST_MCB_SEGMENT
+    );
+    assert_eq!(
+        harness::read_word(&machine.bus, patch_table + 0x0A),
+        tables::WINDOWS_DOSMGR_UMB_HEAD_OFFSET
+    );
+    assert_eq!(
+        harness::read_word(
+            &machine.bus,
+            tables::WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_ADDR
+        ),
+        0x0D0C
+    );
+    let umb_head = harness::read_word(&machine.bus, tables::WINDOWS_DOSMGR_UMB_HEAD_ADDR);
+    let umb_head_addr = harness::far_to_linear(umb_head, 0);
+    let umb_head_size = harness::read_word(&machine.bus, umb_head_addr + tables::MCB_OFF_SIZE);
+    assert!(
+        matches!(harness::read_byte(&machine.bus, umb_head_addr), b'M' | b'Z'),
+        "UMB_HEAD should point at an MCB"
+    );
+    assert_eq!(umb_head + umb_head_size + 1, tables::MEMORY_TOP_SEGMENT);
+
+    assert_eq!(harness::result_word(&machine.bus, 10), 0x1607);
+    assert_eq!(harness::result_word(&machine.bus, 12), 0x0015);
+    assert_eq!(harness::result_word(&machine.bus, 14), 0x0000);
+    assert_eq!(harness::result_word(&machine.bus, 22), 0x0000);
+    assert_eq!(harness::result_word(&machine.bus, 16), 0xB97C);
+    assert_eq!(harness::result_word(&machine.bus, 18), 0x001F);
+    assert_eq!(harness::result_word(&machine.bus, 20), 0xA2AB);
+    assert_eq!(harness::result_word(&machine.bus, 24), 0x0000);
+}
+
+#[test]
+fn windows_dosmgr_virtual_device_api_reports_hle_device_driver_size() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, (tables::DOS_DATA_SEGMENT & 0x00FF) as u8,
+              (tables::DOS_DATA_SEGMENT >> 8) as u8, // MOV AX, DOS_DATA_SEGMENT
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBF, (tables::DEV_CON_OFFSET & 0x00FF) as u8,
+              (tables::DEV_CON_OFFSET >> 8) as u8,   // MOV DI, DEV_CON_OFFSET
+        0xB8, 0x07, 0x16,                   // MOV AX, 1607h
+        0xBB, 0x15, 0x00,                   // MOV BX, 0015h
+        0xB9, 0x05, 0x00,                   // MOV CX, 0005h
+        0x31, 0xD2,                         // XOR DX, DX
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0102h], BX
+        0x89, 0x0E, 0x04, 0x01,             // MOV [0104h], CX
+        0x89, 0x16, 0x06, 0x01,             // MOV [0106h], DX
+
+        0x31, 0xC0,                         // XOR AX, AX
+        0x8E, 0xC0,                         // MOV ES, AX
+        0x31, 0xFF,                         // XOR DI, DI
+        0xB8, 0x07, 0x16,                   // MOV AX, 1607h
+        0xBB, 0x15, 0x00,                   // MOV BX, 0015h
+        0xB9, 0x05, 0x00,                   // MOV CX, 0005h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x08, 0x01,                   // MOV [0108h], AX
+        0x89, 0x16, 0x0A, 0x01,             // MOV [010Ah], DX
+
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    assert_eq!(harness::result_word(&machine.bus, 0), 0xB97C);
+    assert_eq!(harness::result_word(&machine.bus, 2), 0x0000);
+    assert_eq!(
+        harness::result_word(&machine.bus, 4),
+        tables::FIRST_MCB_OFFSET
+    );
+    assert_eq!(harness::result_word(&machine.bus, 6), 0xA2AB);
+    assert_eq!(harness::result_word(&machine.bus, 8), 0x0000);
+    assert_eq!(harness::result_word(&machine.bus, 10), 0x0000);
+}
+
+#[test]
+fn windows_dosmgr_virtual_device_api_clears_carry_on_success() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xF9,                               // STC
+        0xB8, 0x07, 0x16,                   // MOV AX, 1607h
+        0xBB, 0x15, 0x00,                   // MOV BX, 0015h
+        0x31, 0xC9,                         // XOR CX, CX
+        0x31, 0xD2,                         // XOR DX, DX
+        0xCD, 0x2F,                         // INT 2Fh
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+
+        0xF9,                               // STC
+        0xB8, 0x07, 0x16,                   // MOV AX, 1607h
+        0xBB, 0x15, 0x00,                   // MOV BX, 0015h
+        0xB9, 0x03, 0x00,                   // MOV CX, 0003h
+        0xBA, 0x01, 0x00,                   // MOV DX, 0001h
+        0xCD, 0x2F,                         // INT 2Fh
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0102h], AX
+
+        0xF9,                               // STC
+        0xB8, 0x07, 0x16,                   // MOV AX, 1607h
+        0xBB, 0x15, 0x00,                   // MOV BX, 0015h
+        0xB9, 0x05, 0x00,                   // MOV CX, 0005h
+        0xBA, 0xAB, 0xA2,                   // MOV DX, A2ABh
+        0xCD, 0x2F,                         // INT 2Fh
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x04, 0x01,                   // MOV [0104h], AX
+
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    assert_eq!(harness::result_word(&machine.bus, 0) & 1, 0);
+    assert_eq!(harness::result_word(&machine.bus, 2) & 1, 0);
+    assert_eq!(harness::result_word(&machine.bus, 4) & 1, 0);
+}
+
+#[test]
+fn windows_real_or_standard_mode_not_running() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x80, 0x46,                   // MOV AX, 4680h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    assert_ne!(
+        harness::result_word(&machine.bus, 0),
+        0x0000,
+        "AX=4680h should return nonzero when Windows real/standard mode is not running"
+    );
+}
+
+#[test]
+fn unhandled_windows_broadcasts_preserve_registers() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x08, 0x16,                   // MOV AX, 1608h
+        0xBB, 0x34, 0x12,                   // MOV BX, 1234h
+        0xB9, 0x78, 0x56,                   // MOV CX, 5678h
+        0xBA, 0xBC, 0x9A,                   // MOV DX, 9ABCh
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0102h], BX
+        0x89, 0x0E, 0x04, 0x01,             // MOV [0104h], CX
+        0x89, 0x16, 0x06, 0x01,             // MOV [0106h], DX
+        0xB8, 0x0A, 0x16,                   // MOV AX, 160Ah
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x08, 0x01,                   // MOV [0108h], AX
+        0xB8, 0x0B, 0x16,                   // MOV AX, 160Bh
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x0A, 0x01,                   // MOV [010Ah], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    assert_eq!(harness::result_word(&machine.bus, 0), 0x1608);
+    assert_eq!(harness::result_word(&machine.bus, 2), 0x1234);
+    assert_eq!(harness::result_word(&machine.bus, 4), 0x5678);
+    assert_eq!(harness::result_word(&machine.bus, 6), 0x9ABC);
+    // Real DOS 6.20 leaves AX untouched for 160Ah/160Bh broadcasts when no
+    // Windows TSR has hooked them; only AL=00h is documented to clear AL.
+    assert_eq!(harness::result_word(&machine.bus, 8), 0x160A);
+    assert_eq!(harness::result_word(&machine.bus, 10), 0x160B);
+}
+
+#[test]
+fn windows_mcb_save_restore_is_a_noop_on_stock_dos() {
+    let mut machine = harness::boot_hle();
+    let current_psp = harness::get_psp_segment(&mut machine);
+    let current_mcb_segment = current_psp - 1;
+    let current_mcb_addr = harness::far_to_linear(current_mcb_segment, 0);
+    let current_mcb_size =
+        harness::read_word(&machine.bus, current_mcb_addr + tables::MCB_OFF_SIZE);
+    let next_mcb_segment = current_mcb_segment + current_mcb_size + 1;
+    let next_mcb_addr = harness::far_to_linear(next_mcb_segment, 0);
+
+    #[rustfmt::skip]
+    let save_code: &[u8] = &[
+        0xB8, 0x01, 0x46,                   // MOV AX, 4601h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, save_code);
+
+    // Trash the next MCB header after the save call.
+    let trashed = [0xEEu8, 0xFF];
+    harness::write_bytes(&mut machine.bus, next_mcb_addr, &trashed);
+
+    #[rustfmt::skip]
+    let restore_code: &[u8] = &[
+        0xB8, 0x02, 0x46,                   // MOV AX, 4602h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, restore_code);
+
+    let after_restore = harness::read_bytes(&machine.bus, next_mcb_addr, trashed.len());
+    assert_eq!(
+        after_restore, trashed,
+        "AX=4602h on stock DOS must not touch any MCB header (oracle-verified)"
+    );
+}
+
+#[test]
+fn windows_mcb_noop_callbacks_preserve_registers_and_carry() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xF9,                               // STC
+        0xB8, 0x03, 0x46,                   // MOV AX, 4603h
+        0xBB, 0x34, 0x12,                   // MOV BX, 1234h
+        0xB9, 0x78, 0x56,                   // MOV CX, 5678h
+        0xBA, 0xBC, 0x9A,                   // MOV DX, 9ABCh
+        0xBE, 0xEF, 0x0D,                   // MOV SI, 0DEFh
+        0xBF, 0x68, 0x24,                   // MOV DI, 2468h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0102h], BX
+        0x89, 0x0E, 0x04, 0x01,             // MOV [0104h], CX
+        0x89, 0x16, 0x06, 0x01,             // MOV [0106h], DX
+        0x89, 0x36, 0x08, 0x01,             // MOV [0108h], SI
+        0x89, 0x3E, 0x0A, 0x01,             // MOV [010Ah], DI
+        0x9C,                               // PUSHF
+        0x5D,                               // POP BP
+        0x89, 0x2E, 0x0C, 0x01,             // MOV [010Ch], BP
+        0xF8,                               // CLC
+        0xB8, 0x04, 0x46,                   // MOV AX, 4604h
+        0xBB, 0x21, 0x43,                   // MOV BX, 4321h
+        0xB9, 0x65, 0x87,                   // MOV CX, 8765h
+        0xBA, 0xA9, 0xCB,                   // MOV DX, CBA9h
+        0xBE, 0xFE, 0xED,                   // MOV SI, EDFEh
+        0xBF, 0x86, 0x42,                   // MOV DI, 4286h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x10, 0x01,                   // MOV [0110h], AX
+        0x89, 0x1E, 0x12, 0x01,             // MOV [0112h], BX
+        0x89, 0x0E, 0x14, 0x01,             // MOV [0114h], CX
+        0x89, 0x16, 0x16, 0x01,             // MOV [0116h], DX
+        0x89, 0x36, 0x18, 0x01,             // MOV [0118h], SI
+        0x89, 0x3E, 0x1A, 0x01,             // MOV [011Ah], DI
+        0x9C,                               // PUSHF
+        0x5D,                               // POP BP
+        0x89, 0x2E, 0x1C, 0x01,             // MOV [011Ch], BP
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    assert_eq!(harness::result_word(&machine.bus, 0x00), 0x4603);
+    assert_eq!(harness::result_word(&machine.bus, 0x02), 0x1234);
+    assert_eq!(harness::result_word(&machine.bus, 0x04), 0x5678);
+    assert_eq!(harness::result_word(&machine.bus, 0x06), 0x9ABC);
+    assert_eq!(harness::result_word(&machine.bus, 0x08), 0x0DEF);
+    assert_eq!(harness::result_word(&machine.bus, 0x0A), 0x2468);
+    assert_ne!(harness::result_word(&machine.bus, 0x0C) & 0x0001, 0);
+
+    assert_eq!(harness::result_word(&machine.bus, 0x10), 0x4604);
+    assert_eq!(harness::result_word(&machine.bus, 0x12), 0x4321);
+    assert_eq!(harness::result_word(&machine.bus, 0x14), 0x8765);
+    assert_eq!(harness::result_word(&machine.bus, 0x16), 0xCBA9);
+    assert_eq!(harness::result_word(&machine.bus, 0x18), 0xEDFE);
+    assert_eq!(harness::result_word(&machine.bus, 0x1A), 0x4286);
+    assert_eq!(harness::result_word(&machine.bus, 0x1C) & 0x0001, 0);
+}
+
+#[test]
 fn xms_check() {
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]

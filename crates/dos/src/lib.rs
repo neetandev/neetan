@@ -1154,6 +1154,12 @@ impl NeetanDos {
         // Disk buffer header + one buffer
         self.write_disk_buffer(mem);
 
+        // Windows DOSMGR signature and patch table (consumed by enhanced-mode
+        // Windows during init when it scans the kernel for InDOS, save-area,
+        // critical-section, UMB-head, and first-MCB pointers).
+        Self::write_windows_dosmgr_signature(mem);
+        self.write_windows_dosmgr_patch_table(mem);
+
         // InDOS flag and critical error flag
         mem.write_byte(INDOS_FLAG_ADDR, 0x00);
         mem.write_byte(CRITICAL_ERROR_FLAG_ADDR, 0x00);
@@ -1640,6 +1646,91 @@ impl NeetanDos {
         // Remaining header bytes and buffer data are already zero from memset.
     }
 
+    /// Plant the MS-DOS 6.20 kernel signature bytes that Windows enhanced-mode
+    /// DOSMGR scans for. Each block is followed by an 8-byte gap so the
+    /// signature scan terminates on a known boundary. The byte values
+    /// themselves come from the real DOS 6.20 kernel and are not interpreted
+    /// by the HLE; they exist only so DOSMGR believes a supported kernel is
+    /// resident.
+    fn write_windows_dosmgr_signature(mem: &mut dyn MemoryAccess) {
+        const SIGNATURE_BLOCKS: &[&[u8]] = &[
+            &[
+                0x2E, 0x8C, 0x1E, 0x7E, 0x05, 0x2E, 0x89, 0x1E, 0x7C, 0x05, 0x8C, 0xCB, 0x8E, 0xDB,
+                0xFE, 0x06, 0xCF, 0x02, 0x33, 0xC0, 0xA3, 0xEA, 0x02, 0x3C,
+            ],
+            &[
+                0x3C, 0x07, 0x72, 0x04, 0x3C, 0x09, 0x76, 0x12, 0x8B, 0xF2, 0x8B, 0x5C, 0x12, 0x36,
+                0x89, 0x1E, 0xEA, 0x02, 0x8B, 0x5C, 0x14, 0x3C, 0x07, 0x72, 0x19, 0x3C, 0x09, 0x76,
+                0x27, 0x3C, 0x0B, 0x75,
+            ],
+            &[
+                0x3C, 0x07, 0x72, 0x19, 0x3C, 0x09, 0x76, 0x27, 0x3C, 0x0B, 0x75, 0x11, 0xBF, 0xFE,
+                0x10, 0x16, 0x07, 0xE8, 0x84, 0xA1, 0x8C, 0x44, 0x0E, 0x89, 0x7C, 0x08, 0xE9, 0x9D,
+                0xA2, 0x8B, 0xF2, 0x8B,
+            ],
+            &[
+                0x50, 0x36, 0xA1, 0xEA, 0x02, 0x26, 0x3B, 0x45, 0x06, 0x1F, 0x8B, 0xDF, 0x33, 0xC0,
+                0x8B, 0xD0,
+            ],
+            &[
+                0x06, 0x1F, 0x8B, 0xDF, 0x33, 0xC0, 0x8B, 0xD0, 0xE8, 0xDF, 0x0E, 0x1E, 0x36, 0xC5,
+                0x36, 0x36, 0x05, 0xE8, 0xAF, 0x0E, 0x8B, 0xD7, 0xB4, 0x86, 0x36, 0x8B, 0x3E, 0x09,
+                0x03, 0xF7, 0xC7, 0x00, 0x80, 0x74, 0x19, 0xE8, 0x47, 0x17, 0x8B, 0xFA, 0x0A, 0xC0,
+                0x74, 0x10, 0x3C, 0x03, 0x74, 0x03, 0x1F, 0xEB, 0xCF, 0x5F, 0x36, 0xC4, 0x3E, 0x36,
+                0x05, 0xE9, 0xA1, 0x04, 0xAC, 0x3C, 0x24, 0x74, 0x08, 0xB3, 0x07, 0xB4,
+            ],
+            &[
+                0xCA, 0x13, 0x8C, 0xC0, 0xFA, 0x36, 0xC6, 0xD6, 0xCF, 0x02, 0x00, 0x8E, 0xD0, 0x8B,
+                0xE7, 0xFB, 0x1E, 0x56, 0x33, 0xC0, 0xCD, 0x16, 0x32, 0xE4, 0xCD, 0x16, 0x5B, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+            ],
+        ];
+
+        let mut addr = tables::WINDOWS_DOSMGR_SIGNATURE_BANK_ADDR;
+        let end = addr + tables::WINDOWS_DOSMGR_SIGNATURE_BANK_SIZE as u32;
+        for block in SIGNATURE_BLOCKS {
+            debug_assert!(addr + block.len() as u32 <= end);
+            mem.write_block(addr, block);
+            addr += block.len() as u32 + 8;
+        }
+    }
+
+    /// Plant the DOSMGR patch table that AX=1607h BX=15h CX=00h returns to
+    /// the caller. Fields point at the kernel's InDOS flag, the save-DS /
+    /// save-BX scratch words, the critical-section table, the UMB MCB chain
+    /// head, and the first MCB segment.
+    fn write_windows_dosmgr_patch_table(&self, mem: &mut dyn MemoryAccess) {
+        let (major, minor) = self.state.version;
+        let addr = tables::WINDOWS_DOSMGR_PATCH_TABLE_ADDR;
+        mem.write_word(addr, ((minor as u16) << 8) | major as u16);
+        mem.write_word(addr + 0x02, tables::WINDOWS_DOSMGR_SAVEDS_OFFSET);
+        mem.write_word(addr + 0x04, tables::WINDOWS_DOSMGR_SAVEBX_OFFSET);
+        mem.write_word(addr + 0x06, tables::INDOS_FLAG_OFFSET);
+        mem.write_word(
+            addr + 0x08,
+            tables::WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_OFFSET,
+        );
+        mem.write_word(addr + 0x0A, tables::WINDOWS_DOSMGR_UMB_HEAD_OFFSET);
+        mem.write_word(addr + 0x0C, tables::FIRST_MCB_SEGMENT);
+        mem.write_word(
+            tables::WINDOWS_DOSMGR_UMB_HEAD_ADDR,
+            tables::FREE_MCB_SEGMENT,
+        );
+        mem.write_word(
+            tables::DOS_DATA_BASE + tables::WINDOWS_DOSMGR_SAVEDS_OFFSET as u32,
+            0x0000,
+        );
+        mem.write_word(
+            tables::DOS_DATA_BASE + tables::WINDOWS_DOSMGR_SAVEBX_OFFSET as u32,
+            0x0000,
+        );
+        mem.write_word(tables::WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_ADDR, 0x0D0C);
+        mem.write_word(
+            tables::WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_ADDR + 2,
+            0x0000,
+        );
+    }
+
     /// Creates the MCB chain with SFT2 block, environment block, PSP, and COMMAND.COM.
     fn write_initial_mcb_and_process(
         &mut self,
@@ -1774,6 +1865,9 @@ impl NeetanDos {
         mem.write_word(free_mcb_addr + 1, MCB_OWNER_FREE);
         mem.write_word(free_mcb_addr + 3, free_size);
         mem.write_block(free_mcb_addr + 5, &[0x00; 11]);
+        // DOSMGR UMB-head pointer tracks the actual final free MCB after
+        // SFT2 has been inserted into the MCB chain.
+        mem.write_word(WINDOWS_DOSMGR_UMB_HEAD_ADDR, new_free_mcb_segment);
 
         // Update SYSVARS first MCB pointer (it stays the same: FIRST_MCB_SEGMENT)
     }
