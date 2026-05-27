@@ -21,18 +21,26 @@ pub(crate) struct ExecParams {
 /// Saved context of a suspended parent process during nested EXEC.
 pub(crate) struct ProcessContext {
     pub psp_segment: u16,
+    /// PSP of the most-recently-EXECed child of this context; zero for the
+    /// root shell. Used to recover from an abandoned nested EXEC where the
+    /// child never terminated properly.
+    pub child_psp_segment: u16,
     pub return_ax: u16,
     pub return_bx: u16,
     pub return_cx: u16,
     pub return_dx: u16,
     pub return_ss: u16,
     pub return_sp: u16,
+    pub return_ip: u16,
+    pub return_cs: u16,
+    pub return_flags: u16,
     pub return_si: u16,
     pub return_di: u16,
     pub return_ds: u16,
     pub return_es: u16,
     pub saved_dta_seg: u16,
     pub saved_dta_off: u16,
+    pub saved_dta_addr: u32,
 }
 
 pub(crate) struct SftBases {
@@ -43,6 +51,58 @@ pub(crate) struct SftBases {
 fn allocated_block_end_segment(mem: &dyn MemoryAccess, data_segment: u16) -> u16 {
     let mcb_addr = ((data_segment - 1) as u32) << 4;
     data_segment.wrapping_add(mem.read_word(mcb_addr + MCB_OFF_SIZE))
+}
+
+/// Returns true if `segment` falls inside any MCB owned by `owner_psp` on
+/// either the conventional or UMB chain. Used on termination to decide
+/// whether the child is unwinding through its own stack (normal IRET-frame
+/// restore) or has switched onto memory owned by the parent.
+fn process_owns_segment(
+    mem: &dyn MemoryAccess,
+    first_mcb_segment: u16,
+    umb_first_mcb_segment: Option<u16>,
+    owner_psp: u16,
+    segment: u16,
+) -> bool {
+    process_owns_segment_in_chain(mem, first_mcb_segment, owner_psp, segment)
+        || umb_first_mcb_segment.is_some_and(|first_mcb| {
+            process_owns_segment_in_chain(mem, first_mcb, owner_psp, segment)
+        })
+}
+
+fn process_owns_segment_in_chain(
+    mem: &dyn MemoryAccess,
+    first_mcb_segment: u16,
+    owner_psp: u16,
+    segment: u16,
+) -> bool {
+    let mut current = first_mcb_segment;
+    let segment = u32::from(segment);
+
+    for _ in 0..4096 {
+        let mcb_addr = (u32::from(current)) << 4;
+        let block_type = mem.read_byte(mcb_addr + MCB_OFF_TYPE);
+        if !matches!(block_type, b'M' | b'Z') {
+            break;
+        }
+
+        let size = mem.read_word(mcb_addr + MCB_OFF_SIZE);
+        let data_start = u32::from(current) + 1;
+        let data_end = data_start + u32::from(size);
+        if mem.read_word(mcb_addr + MCB_OFF_OWNER) == owner_psp
+            && segment >= data_start
+            && segment < data_end
+        {
+            return true;
+        }
+
+        if block_type == b'Z' {
+            break;
+        }
+        current = current.wrapping_add(size).wrapping_add(1);
+    }
+
+    false
 }
 
 /// Writes a 256-byte Program Segment Prefix at the given segment.
@@ -393,16 +453,18 @@ fn allocate_child_environment(
 }
 
 fn dos_allocation_umb_first(state: &DosState) -> Option<u16> {
-    if state.umb_link
-        && state
-            .memory_manager
-            .as_ref()
-            .is_some_and(|mm| mm.is_umb_enabled())
-    {
-        Some(UMB_FIRST_MCB_SEGMENT)
-    } else {
-        None
-    }
+    state
+        .umb_link
+        .then(|| memory_manager_umb_first(state))
+        .flatten()
+}
+
+fn memory_manager_umb_first(state: &DosState) -> Option<u16> {
+    state
+        .memory_manager
+        .as_ref()
+        .filter(|memory_manager| memory_manager.is_umb_enabled())
+        .map(|memory_manager| memory_manager.umb_first_mcb_segment())
 }
 
 fn child_allocation_owner() -> u16 {
@@ -1123,27 +1185,33 @@ impl NeetanDos {
         child_ss: u16,
         child_sp: u16,
     ) {
-        // Read parent's return address from IRET frame for INT 22h.
-        let ss_base = (cpu.ss() as u32) << 4;
-        let sp = cpu.sp() as u32;
-        let return_ip = mem.read_word(ss_base + sp);
-        let return_cs = mem.read_word(ss_base + sp + 2);
+        // Read parent's full IRET frame (IP/CS/FLAGS) for INT 22h and for
+        // possible restore on termination.
+        let return_addr = cpu.linear_address(SegmentRegister::SS, cpu.sp());
+        let return_ip = mem.read_word(return_addr);
+        let return_cs = mem.read_word(return_addr + 2);
+        let return_flags = mem.read_word(return_addr + 4);
 
         // Push parent context.
         self.state.process_stack.push(ProcessContext {
             psp_segment: self.state.current_psp,
+            child_psp_segment: child_psp,
             return_ax: cpu.ax(),
             return_bx: cpu.bx(),
             return_cx: cpu.cx(),
             return_dx: cpu.dx(),
             return_ss: cpu.ss(),
             return_sp: cpu.sp(),
+            return_ip,
+            return_cs,
+            return_flags,
             return_si: cpu.si(),
             return_di: cpu.di(),
             return_ds: cpu.ds(),
             return_es: cpu.es(),
             saved_dta_seg: self.state.dta_segment,
             saved_dta_off: self.state.dta_offset,
+            saved_dta_addr: self.state.dta_address,
         });
 
         // Set IVT INT 22h to parent's return address.
@@ -1154,6 +1222,7 @@ impl NeetanDos {
         self.state.current_psp = child_psp;
         self.state.dta_segment = child_psp;
         self.state.dta_offset = 0x0080;
+        self.state.dta_address = ((child_psp as u32) << 4) | 0x0080;
 
         // Point CPU at child's IRET frame.
         cpu.set_ss(child_ss);
@@ -1171,6 +1240,7 @@ impl NeetanDos {
         return_code: u8,
         termination_type: u8,
     ) {
+        self.discard_abandoned_child_execs(mem);
         let child_psp = self.state.current_psp;
         let child_psp_base = (child_psp as u32) << 4;
         let is_shell_process = self.shells.remove(&child_psp).is_some();
@@ -1180,14 +1250,14 @@ impl NeetanDos {
             self.state.free_handle(handle, mem);
         }
 
-        // Free all MCBs owned by the child.
+        // Free all MCBs owned by the child. Decide whether the child has been
+        // running on memory it owns (normal IRET-frame restore) or on memory
+        // borrowed from the parent (preserve whatever IRET frame the parent
+        // has pre-installed at the current SS:SP).
         let first_mcb = mem.read_word(self.state.sysvars_base - 2);
-        let umb_first = self
-            .state
-            .memory_manager
-            .as_ref()
-            .is_some_and(|mm| mm.is_umb_enabled())
-            .then_some(UMB_FIRST_MCB_SEGMENT);
+        let umb_first = memory_manager_umb_first(&self.state);
+        let terminate_stack_owned_by_child =
+            process_owns_segment(mem, first_mcb, umb_first, child_psp, cpu.ss());
         memory::free_process_blocks_dos(mem, first_mcb, umb_first, self.state.current_psp);
 
         // Restore IVT INT 22h/23h/24h from child PSP.
@@ -1215,6 +1285,7 @@ impl NeetanDos {
         self.state.current_psp = parent.psp_segment;
         self.state.dta_segment = parent.saved_dta_seg;
         self.state.dta_offset = parent.saved_dta_off;
+        self.state.dta_address = parent.saved_dta_addr;
 
         // Store return code.
         self.state.last_return_code = return_code;
@@ -1230,6 +1301,14 @@ impl NeetanDos {
             // self.console.hard_clear_screen(mem);
         }
 
+        // If the child was running on the parent's stack (a "load and call"
+        // EXEC that never switched SS), do not overwrite the parent's IRET
+        // frame; trust whatever the parent already has in flight.
+        if !terminate_stack_owned_by_child {
+            set_iret_carry(cpu, mem, false);
+            return;
+        }
+
         // Restore parent's IRET frame.
         cpu.set_ax(parent.return_ax);
         cpu.set_bx(parent.return_bx);
@@ -1241,7 +1320,40 @@ impl NeetanDos {
         cpu.set_es(parent.return_es);
         cpu.set_ss(parent.return_ss);
         cpu.set_sp(parent.return_sp);
+        let return_addr = cpu.linear_address(SegmentRegister::SS, cpu.sp());
+        mem.write_word(return_addr, parent.return_ip);
+        mem.write_word(return_addr + 2, parent.return_cs);
+        mem.write_word(return_addr + 4, parent.return_flags);
         set_iret_carry(cpu, mem, false);
+    }
+
+    /// Pops nested EXEC contexts that match the currently-running process,
+    /// freeing the abandoned child's handles and MCBs. This recovers from a
+    /// parent that abandoned a nested EXEC without first terminating the
+    /// child (e.g. a load-only EXEC followed by a non-returning jump).
+    fn discard_abandoned_child_execs(&mut self, mem: &mut dyn MemoryAccess) {
+        loop {
+            let Some(context) = self.state.process_stack.last() else {
+                return;
+            };
+            if context.child_psp_segment == 0 || context.psp_segment != self.state.current_psp {
+                return;
+            }
+
+            let abandoned_psp = context.child_psp_segment;
+            let saved_psp = self.state.current_psp;
+            self.state.current_psp = abandoned_psp;
+            let (_, handle_count) = DosState::handle_table_info_for_psp(mem, abandoned_psp);
+            for handle in 0..handle_count.min(u8::MAX as u16 + 1) {
+                self.state.free_handle(handle, mem);
+            }
+
+            let first_mcb = mem.read_word(self.state.sysvars_base - 2);
+            let umb_first = memory_manager_umb_first(&self.state);
+            memory::free_process_blocks_dos(mem, first_mcb, umb_first, abandoned_psp);
+            self.state.current_psp = saved_psp;
+            self.state.process_stack.pop();
+        }
     }
 
     /// Terminates with TSR: resize the PSP's MCB instead of freeing it.
@@ -1263,12 +1375,7 @@ impl NeetanDos {
 
         // Resize PSP's MCB and free other blocks.
         let first_mcb = mem.read_word(self.state.sysvars_base - 2);
-        let umb_first = self
-            .state
-            .memory_manager
-            .as_ref()
-            .is_some_and(|mm| mm.is_umb_enabled())
-            .then_some(UMB_FIRST_MCB_SEGMENT);
+        let umb_first = memory_manager_umb_first(&self.state);
         memory::free_process_blocks_tsr_dos(
             mem,
             first_mcb,
@@ -1302,6 +1409,7 @@ impl NeetanDos {
         self.state.current_psp = parent.psp_segment;
         self.state.dta_segment = parent.saved_dta_seg;
         self.state.dta_offset = parent.saved_dta_off;
+        self.state.dta_address = parent.saved_dta_addr;
 
         // Store return code.
         self.state.last_return_code = return_code;
@@ -1318,6 +1426,196 @@ impl NeetanDos {
         cpu.set_es(parent.return_es);
         cpu.set_ss(parent.return_ss);
         cpu.set_sp(parent.return_sp);
+        let return_addr = cpu.linear_address(SegmentRegister::SS, cpu.sp());
+        mem.write_word(return_addr, parent.return_ip);
+        mem.write_word(return_addr + 2, parent.return_cs);
+        mem.write_word(return_addr + 4, parent.return_flags);
         set_iret_carry(cpu, mem, false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{MockCpu, MockMemory};
+
+    fn write_mcb(mem: &mut MockMemory, segment: u16, block_type: u8, owner: u16, size: u16) {
+        let address = (u32::from(segment)) << 4;
+        mem.write_byte(address + MCB_OFF_TYPE, block_type);
+        mem.write_word(address + MCB_OFF_OWNER, owner);
+        mem.write_word(address + MCB_OFF_SIZE, size);
+    }
+
+    fn initialize_child_psp(mem: &mut MockMemory, child_psp: u16, parent_psp: u16) {
+        write_psp(mem, child_psp, parent_psp, 0, child_psp + 0x20);
+        let psp_base = (u32::from(child_psp)) << 4;
+        for offset in 0..20 {
+            mem.write_byte(psp_base + PSP_OFF_JFT + offset, 0xFF);
+        }
+    }
+
+    fn parent_context(parent_psp: u16, child_psp: u16) -> ProcessContext {
+        ProcessContext {
+            psp_segment: parent_psp,
+            child_psp_segment: child_psp,
+            return_ax: 0x4B00,
+            return_bx: 0x1111,
+            return_cx: 0x2222,
+            return_dx: 0x3333,
+            return_ss: 0x1040,
+            return_sp: 0x0100,
+            return_ip: 0x0200,
+            return_cs: 0x1234,
+            return_flags: 0x0243,
+            return_si: 0x4444,
+            return_di: 0x5555,
+            return_ds: 0x6666,
+            return_es: 0x7777,
+            saved_dta_seg: parent_psp,
+            saved_dta_off: 0x0080,
+            saved_dta_addr: (u32::from(parent_psp) << 4) | 0x0080,
+        }
+    }
+
+    #[test]
+    fn terminate_restores_exec_frame_when_child_owns_stack() {
+        let mut dos = NeetanDos::new();
+        let mut mem = MockMemory::with_extended_memory(0x100000, 0);
+        let parent_psp = 0x1001;
+        let child_psp = 0x1101;
+        mem.write_word(dos.state.sysvars_base - 2, 0x1000);
+        write_mcb(&mut mem, 0x1000, b'M', parent_psp, 0x00FF);
+        write_mcb(&mut mem, 0x1100, b'Z', child_psp, 0x0020);
+        initialize_child_psp(&mut mem, child_psp, parent_psp);
+
+        dos.state.current_psp = child_psp;
+        dos.state
+            .process_stack
+            .push(parent_context(parent_psp, child_psp));
+        let mut cpu = MockCpu {
+            eax: 0x4C7F,
+            ebx: 0xAAAA,
+            ss: 0x1110,
+            sp: 0x0100,
+            ..MockCpu::default()
+        };
+
+        dos.terminate_process(&mut cpu, &mut mem, 0x7F, 0);
+
+        assert_eq!(dos.state.current_psp, parent_psp);
+        assert_eq!(dos.state.last_return_code, 0x7F);
+        assert_eq!(cpu.ax(), 0x4B00);
+        assert_eq!(cpu.bx(), 0x1111);
+        assert_eq!(cpu.ss(), 0x1040);
+        assert_eq!(cpu.sp(), 0x0100);
+        let frame = cpu.linear_address(SegmentRegister::SS, cpu.sp());
+        assert_eq!(mem.read_word(frame), 0x0200);
+        assert_eq!(mem.read_word(frame + 2), 0x1234);
+        assert_eq!(mem.read_word(frame + 4) & 0x0001, 0);
+        assert_eq!(
+            mem.read_word(((u32::from(child_psp - 1)) << 4) + MCB_OFF_OWNER),
+            MCB_OWNER_FREE
+        );
+    }
+
+    #[test]
+    fn terminate_preserves_parent_stack_return_when_child_borrowed_parent_stack() {
+        let mut dos = NeetanDos::new();
+        let mut mem = MockMemory::with_extended_memory(0x100000, 0);
+        let parent_psp = 0x1001;
+        let child_psp = 0x1101;
+        mem.write_word(dos.state.sysvars_base - 2, 0x1000);
+        write_mcb(&mut mem, 0x1000, b'M', parent_psp, 0x00FF);
+        write_mcb(&mut mem, 0x1100, b'Z', child_psp, 0x0020);
+        initialize_child_psp(&mut mem, child_psp, parent_psp);
+
+        dos.state.current_psp = child_psp;
+        dos.state
+            .process_stack
+            .push(parent_context(parent_psp, child_psp));
+        let mut cpu = MockCpu {
+            eax: 0x4CFF,
+            ebx: 0xAAAA,
+            ecx: 0xBBBB,
+            edx: 0xCCCC,
+            si: 0xDDDD,
+            di: 0xEEEE,
+            ds: 0x0493,
+            es: 0x0200,
+            ss: 0x1040,
+            sp: 0x0200,
+            ..MockCpu::default()
+        };
+        let frame = cpu.linear_address(SegmentRegister::SS, cpu.sp());
+        mem.write_word(frame, 0x0650);
+        mem.write_word(frame + 2, 0x0493);
+        mem.write_word(frame + 4, 0x3243);
+
+        dos.terminate_process(&mut cpu, &mut mem, 0xFF, 0);
+
+        assert_eq!(dos.state.current_psp, parent_psp);
+        assert_eq!(dos.state.last_return_code, 0xFF);
+        assert_eq!(cpu.ax(), 0x4CFF);
+        assert_eq!(cpu.bx(), 0xAAAA);
+        assert_eq!(cpu.cx(), 0xBBBB);
+        assert_eq!(cpu.dx(), 0xCCCC);
+        assert_eq!(cpu.si(), 0xDDDD);
+        assert_eq!(cpu.di(), 0xEEEE);
+        assert_eq!(cpu.ds(), 0x0493);
+        assert_eq!(cpu.es(), 0x0200);
+        assert_eq!(cpu.ss(), 0x1040);
+        assert_eq!(cpu.sp(), 0x0200);
+        assert_eq!(mem.read_word(frame), 0x0650);
+        assert_eq!(mem.read_word(frame + 2), 0x0493);
+        assert_eq!(mem.read_word(frame + 4) & 0x0001, 0);
+        assert_eq!(
+            mem.read_word(((u32::from(child_psp - 1)) << 4) + MCB_OFF_OWNER),
+            MCB_OWNER_FREE
+        );
+    }
+
+    #[test]
+    fn terminate_discards_abandoned_child_exec_when_parent_process_exits() {
+        let mut dos = NeetanDos::new();
+        let mut mem = MockMemory::with_extended_memory(0x100000, 0);
+        let grandparent_psp = 0x1001;
+        let parent_psp = 0x1101;
+        let abandoned_child_psp = 0x1201;
+        mem.write_word(dos.state.sysvars_base - 2, 0x1000);
+        write_mcb(&mut mem, 0x1000, b'M', grandparent_psp, 0x00FF);
+        write_mcb(&mut mem, 0x1100, b'M', parent_psp, 0x00FF);
+        write_mcb(&mut mem, 0x1200, b'Z', abandoned_child_psp, 0x0020);
+        initialize_child_psp(&mut mem, parent_psp, grandparent_psp);
+        initialize_child_psp(&mut mem, abandoned_child_psp, parent_psp);
+
+        dos.state.current_psp = parent_psp;
+        dos.state
+            .process_stack
+            .push(parent_context(grandparent_psp, parent_psp));
+        dos.state
+            .process_stack
+            .push(parent_context(parent_psp, abandoned_child_psp));
+        let mut cpu = MockCpu {
+            eax: 0x4CFF,
+            ss: 0x1110,
+            sp: 0x0200,
+            ..MockCpu::default()
+        };
+
+        dos.terminate_process(&mut cpu, &mut mem, 0xFF, 0);
+
+        assert_eq!(dos.state.current_psp, grandparent_psp);
+        assert_eq!(dos.state.last_return_code, 0xFF);
+        assert_eq!(cpu.ax(), 0x4B00);
+        assert_eq!(cpu.ss(), 0x1040);
+        assert_eq!(cpu.sp(), 0x0100);
+        assert_eq!(
+            mem.read_word(((u32::from(parent_psp - 1)) << 4) + MCB_OFF_OWNER),
+            MCB_OWNER_FREE
+        );
+        assert_eq!(
+            mem.read_word(((u32::from(abandoned_child_psp - 1)) << 4) + MCB_OFF_OWNER),
+            MCB_OWNER_FREE
+        );
     }
 }
