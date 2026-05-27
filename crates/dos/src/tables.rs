@@ -14,6 +14,11 @@ pub const DOS_DATA_BASE: u32 = (DOS_DATA_SEGMENT as u32) << 4;
 pub const SYSVARS_SEGMENT: u16 = DOS_DATA_SEGMENT;
 pub const SYSVARS_OFFSET: u16 = 0x0000;
 pub const SYSVARS_BASE: u32 = DOS_DATA_BASE;
+// Pointer returned by INT 21h AH=52h. It resolves to the same linear address
+// as SYSVARS_BASE but carries a non-zero offset so callers can read the
+// negative-offset fields (e.g. the first-MCB pointer at SYSVARS-2).
+pub const SYSVARS_LIST_SEGMENT: u16 = DOS_DATA_SEGMENT - 1;
+pub const SYSVARS_LIST_OFFSET: u16 = 0x0010;
 
 // SYSVARS field offsets (relative to SYSVARS_BASE)
 pub const SYSVARS_OFF_FIRST_MCB: u32 = 0x02; // at SYSVARS - 2 (written to SYSVARS_BASE - 2)

@@ -1599,8 +1599,8 @@ fn int21h_48h_allocate_high_only_without_umb_link_fails() {
 
 #[test]
 fn int21h_5802h_umb_link_defaults_unlinked_and_5803h_toggles_it() {
-    // After boot with EMS/XMS enabled, AX=5802h returns AX=0 (unlinked).
-    // AX=5803h BX=1 links, subsequent AX=5802h returns AX=1.
+    // After boot with EMS/XMS enabled, AX=5802h returns AL=0 (unlinked) with
+    // AH=58h preserved. AX=5803h BX=1 links, subsequent AX=5802h returns AL=1.
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
@@ -1630,16 +1630,16 @@ fn int21h_5802h_umb_link_defaults_unlinked_and_5803h_toggles_it() {
     let linked = harness::result_word(&machine.bus, 2);
     let unlinked = harness::result_word(&machine.bus, 4);
     assert_eq!(
-        initial, 0,
-        "Initial UMB link state should be 0, got {initial:#06X}"
+        initial, 0x5800,
+        "Initial UMB link state should be AL=0 with AH=58h preserved, got {initial:#06X}"
     );
     assert_eq!(
-        linked, 1,
-        "After SET link=1, GET should return 1, got {linked:#06X}"
+        linked, 0x5801,
+        "After SET link=1, GET should return AL=1 with AH=58h preserved, got {linked:#06X}"
     );
     assert_eq!(
-        unlinked, 0,
-        "After SET link=0, GET should return 0, got {unlinked:#06X}"
+        unlinked, 0x5800,
+        "After SET link=0, GET should return AL=0 with AH=58h preserved, got {unlinked:#06X}"
     );
 }
 
@@ -1673,11 +1673,14 @@ fn int21h_5803h_rejects_invalid_link_state_values() {
     let flags = harness::result_word(&machine.bus, 4);
     let final_state = harness::result_word(&machine.bus, 6);
 
-    assert_eq!(initial, 0, "UMB link should start unlinked");
+    assert_eq!(
+        initial, 0x5800,
+        "UMB link should start unlinked (AL=0, AH=58h preserved)"
+    );
     assert_eq!(ax, 0x0001, "Invalid 5803h input should return AX=0001h");
     assert_ne!(flags & 0x0001, 0, "Invalid 5803h input should set carry");
     assert_eq!(
-        final_state, 0,
+        final_state, 0x5800,
         "Invalid 5803h input must not change the link state"
     );
 }
@@ -2311,19 +2314,16 @@ fn int21h_5803h_umb_link_query_and_set_round_trip() {
     let after_link = harness::result_word(&machine.bus, 2);
     let after_unlink = harness::result_word(&machine.bus, 4);
     assert!(
-        initial <= 1,
-        "Initial UMB link should be 0 or 1, got {}",
-        initial
+        initial == 0x5800 || initial == 0x5801,
+        "Initial UMB link query should preserve AH=58h with AL in 0..=1, got {initial:#06X}"
     );
     assert_eq!(
-        after_link, 1,
-        "After link, query should return 1, got {}",
-        after_link
+        after_link, 0x5801,
+        "After link, query should return AL=1 with AH=58h preserved, got {after_link:#06X}"
     );
     assert_eq!(
-        after_unlink, 0,
-        "After unlink, query should return 0, got {}",
-        after_unlink
+        after_unlink, 0x5800,
+        "After unlink, query should return AL=0 with AH=58h preserved, got {after_unlink:#06X}"
     );
 }
 

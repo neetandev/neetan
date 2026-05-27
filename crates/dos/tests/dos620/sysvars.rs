@@ -22,6 +22,32 @@ fn int21h_52h_returns_valid_pointer() {
 }
 
 #[test]
+fn int21h_52h_allows_first_mcb_probe() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x52,                         // MOV AH, 52h
+        0xCD, 0x21,                         // INT 21h
+        0x83, 0xEB, 0x02,                   // SUB BX, 2
+        0x26, 0x8B, 0x07,                   // MOV AX, ES:[BX]
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let mcb_segment = harness::result_word(&machine.bus, 0);
+    let mcb_linear = harness::far_to_linear(mcb_segment, 0);
+    let mcb_type = harness::read_byte(&machine.bus, mcb_linear);
+    assert!(
+        mcb_type == 0x4D || mcb_type == 0x5A,
+        "First MCB probe should return a valid MCB segment, got segment {:#06X} type {:#04X}",
+        mcb_segment,
+        mcb_type
+    );
+}
+
+#[test]
 fn first_mcb_segment() {
     let (machine, sysvars) = boot_and_get_sysvars();
     let mcb_segment = harness::read_word(&machine.bus, sysvars - 2);

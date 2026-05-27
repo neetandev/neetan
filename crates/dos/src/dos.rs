@@ -127,9 +127,7 @@ impl NeetanDos {
             0x50 => self.int21h_50h_set_psp(cpu),
             0x51 => self.int21h_51h_get_psp(cpu),
             0x52 => self.int21h_52h_get_sysvars(cpu),
-            0x53 => {
-                warn!("INT 21h AH=53h (Create DPB from BPB) called but not implemented");
-            }
+            0x53 => self.int21h_53h_create_dpb_from_bpb(cpu, memory),
             0x55 => self.int21h_55h_create_child_psp(cpu, memory),
             0x56 => {
                 tracer.trace_int21h_rename(cpu, memory);
@@ -155,6 +153,7 @@ impl NeetanDos {
                 cpu.set_ax(0x0001);
                 set_iret_carry(cpu, memory, true);
             }
+            0xDC => self.int21h_dch_netware_connection_number(cpu, memory),
             0xFF => self.int21h_ffh_shell_step(cpu, memory, disk),
             _ => warn!("INT 21h AH={ah:#04X} is unimplemented"),
         }
@@ -803,17 +802,11 @@ impl NeetanDos {
         // UMB is considered for allocation only when DOS has been told to
         // link UMB (INT 21h AX=5803h) and the memory manager has a UMB
         // region. Strategy flags +0x40/+0x80 drive the actual preference.
-        let umb_first = if self.state.umb_link
-            && self
-                .state
-                .memory_manager
-                .as_ref()
-                .is_some_and(|mm| mm.is_umb_enabled())
-        {
-            Some(tables::UMB_FIRST_MCB_SEGMENT)
-        } else {
-            None
-        };
+        let umb_first = self
+            .state
+            .umb_link
+            .then(|| self.umb_first_mcb_segment())
+            .flatten();
         match memory::allocate_dos(
             memory,
             first_mcb,
@@ -841,17 +834,11 @@ impl NeetanDos {
     fn int21h_49h_free(&self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
         let data_segment = cpu.es();
         let first_mcb = memory.read_word(self.state.sysvars_base - 2);
-        let umb_first = if self.state.umb_link
-            && self
-                .state
-                .memory_manager
-                .as_ref()
-                .is_some_and(|mm| mm.is_umb_enabled())
-        {
-            Some(tables::UMB_FIRST_MCB_SEGMENT)
-        } else {
-            None
-        };
+        let umb_first = self
+            .state
+            .umb_link
+            .then(|| self.umb_first_mcb_segment())
+            .flatten();
         match memory::free_dos(memory, first_mcb, umb_first, data_segment) {
             Ok(()) => {
                 set_iret_carry(cpu, memory, false);
@@ -871,17 +858,11 @@ impl NeetanDos {
         let data_segment = cpu.es();
         let new_paragraphs = cpu.bx();
         let first_mcb = memory.read_word(self.state.sysvars_base - 2);
-        let umb_first = if self.state.umb_link
-            && self
-                .state
-                .memory_manager
-                .as_ref()
-                .is_some_and(|mm| mm.is_umb_enabled())
-        {
-            Some(tables::UMB_FIRST_MCB_SEGMENT)
-        } else {
-            None
-        };
+        let umb_first = self
+            .state
+            .umb_link
+            .then(|| self.umb_first_mcb_segment())
+            .flatten();
         match memory::resize_dos(memory, first_mcb, umb_first, data_segment, new_paragraphs) {
             Ok(()) => {
                 set_iret_carry(cpu, memory, false);
@@ -933,10 +914,97 @@ impl NeetanDos {
     }
 
     /// AH=52h: Get List of Lists (SYSVARS pointer).
-    /// Returns ES:BX pointing to SYSVARS.
+    /// Returns ES:BX pointing to SYSVARS. The pointer carries a non-zero
+    /// offset so that programs can read the negative-offset fields (e.g. the
+    /// first-MCB pointer at SYSVARS-2) via ES:[BX-2] without underflowing BX.
     fn int21h_52h_get_sysvars(&self, cpu: &mut dyn CpuAccess) {
-        cpu.set_es(tables::SYSVARS_SEGMENT);
-        cpu.set_bx(tables::SYSVARS_OFFSET);
+        cpu.set_es(tables::SYSVARS_LIST_SEGMENT);
+        cpu.set_bx(tables::SYSVARS_LIST_OFFSET);
+    }
+
+    /// AH=53h: Translate a BIOS Parameter Block (DS:SI) into a DOS 4.x Drive
+    /// Parameter Block (ES:BP).
+    fn int21h_53h_create_dpb_from_bpb(
+        &self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let bpb_addr = cpu.linear_address(SegmentRegister::DS, cpu.si());
+        let dpb_addr = cpu.linear_address(SegmentRegister::ES, cpu.bp());
+
+        let bytes_per_sector = memory.read_word(bpb_addr);
+        let sectors_per_cluster = memory.read_byte(bpb_addr + 0x02);
+        let reserved_sectors = memory.read_word(bpb_addr + 0x03);
+        let num_fats = memory.read_byte(bpb_addr + 0x05);
+        let root_entries = memory.read_word(bpb_addr + 0x06);
+        let total_sectors_16 = memory.read_word(bpb_addr + 0x08);
+        let media_descriptor = memory.read_byte(bpb_addr + 0x0A);
+        let sectors_per_fat = memory.read_word(bpb_addr + 0x0B);
+        let total_sectors_32 = read_dword(memory, bpb_addr + 0x15);
+        let total_sectors = if total_sectors_16 != 0 {
+            total_sectors_16 as u32
+        } else {
+            total_sectors_32
+        };
+
+        if bytes_per_sector == 0
+            || sectors_per_cluster == 0
+            || !sectors_per_cluster.is_power_of_two()
+            || num_fats == 0
+            || sectors_per_fat == 0
+            || total_sectors == 0
+        {
+            cpu.set_ax(0x0001);
+            set_iret_carry(cpu, memory, true);
+            return;
+        }
+
+        let first_root_sector = reserved_sectors as u32 + num_fats as u32 * sectors_per_fat as u32;
+        let root_dir_sectors = (root_entries as u32 * 32).div_ceil(bytes_per_sector as u32);
+        let first_data_sector = first_root_sector + root_dir_sectors;
+        let max_cluster = total_sectors
+            .saturating_sub(first_data_sector)
+            .checked_div(sectors_per_cluster as u32)
+            .unwrap_or(0)
+            + 1;
+
+        memory.write_word(
+            dpb_addr + tables::DPB_OFF_BYTES_PER_SECTOR,
+            bytes_per_sector,
+        );
+        memory.write_byte(
+            dpb_addr + tables::DPB_OFF_CLUSTER_MASK,
+            sectors_per_cluster - 1,
+        );
+        memory.write_byte(
+            dpb_addr + tables::DPB_OFF_CLUSTER_SHIFT,
+            sectors_per_cluster.trailing_zeros() as u8,
+        );
+        memory.write_word(
+            dpb_addr + tables::DPB_OFF_RESERVED_SECTORS,
+            reserved_sectors,
+        );
+        memory.write_byte(dpb_addr + tables::DPB_OFF_NUM_FATS, num_fats);
+        memory.write_word(dpb_addr + tables::DPB_OFF_ROOT_ENTRIES, root_entries);
+        memory.write_word(
+            dpb_addr + tables::DPB_OFF_FIRST_DATA_SECTOR,
+            first_data_sector.min(u16::MAX as u32) as u16,
+        );
+        memory.write_word(
+            dpb_addr + tables::DPB_OFF_MAX_CLUSTER,
+            max_cluster.min(u16::MAX as u32) as u16,
+        );
+        memory.write_word(dpb_addr + tables::DPB_OFF_SECTORS_PER_FAT, sectors_per_fat);
+        memory.write_word(
+            dpb_addr + tables::DPB_OFF_FIRST_ROOT_SECTOR,
+            first_root_sector.min(u16::MAX as u32) as u16,
+        );
+        memory.write_byte(dpb_addr + tables::DPB_OFF_MEDIA_DESC, media_descriptor);
+        // Real DOS 6.20 leaves the access flag (+0x18) untouched; AH=53h only
+        // fills fields derivable from the BPB.
+        memory.write_word(dpb_addr + 0x1D, 0x0000);
+        memory.write_word(dpb_addr + 0x1F, 0xFFFF);
+        set_iret_carry(cpu, memory, false);
     }
 
     /// AH=58h: Get/set memory allocation strategy / UMB link.
@@ -974,7 +1042,9 @@ impl NeetanDos {
                 }
             }
             0x02 => {
-                cpu.set_ax(if self.state.umb_link { 1 } else { 0 });
+                // Returns the link state in AL, preserving the AH=58h
+                // function code in AH (real DOS leaves AH untouched).
+                cpu.set_ax((cpu.ax() & 0xFF00) | u16::from(self.state.umb_link));
                 set_iret_carry(cpu, memory, false);
             }
             0x03 => {
@@ -987,20 +1057,11 @@ impl NeetanDos {
 
                 // Only accept the UMB link request if UMB is actually
                 // available (memory manager initialized and UMB enabled).
-                let umb_available = self
-                    .state
-                    .memory_manager
-                    .as_ref()
-                    .is_some_and(|mm| mm.is_umb_enabled());
-                if umb_available {
+                if let Some(umb_first) = self.umb_first_mcb_segment() {
                     let first_mcb = memory.read_word(self.state.sysvars_base - 2);
                     let linked = link_state != 0;
-                    match memory::set_dos_umb_link_state(
-                        memory,
-                        first_mcb,
-                        Some(tables::UMB_FIRST_MCB_SEGMENT),
-                        linked,
-                    ) {
+                    match memory::set_dos_umb_link_state(memory, first_mcb, Some(umb_first), linked)
+                    {
                         Ok(()) => {
                             self.state.umb_link = linked;
                             set_iret_carry(cpu, memory, false);
@@ -1208,17 +1269,11 @@ impl NeetanDos {
 
         let paragraphs = requested.div_ceil(16);
         let first_mcb = memory.read_word(self.state.sysvars_base - 2);
-        let umb_first = if self.state.umb_link
-            && self
-                .state
-                .memory_manager
-                .as_ref()
-                .is_some_and(|mm| mm.is_umb_enabled())
-        {
-            Some(tables::UMB_FIRST_MCB_SEGMENT)
-        } else {
-            None
-        };
+        let umb_first = self
+            .state
+            .umb_link
+            .then(|| self.umb_first_mcb_segment())
+            .flatten();
 
         let new_segment = match memory::allocate_dos(
             memory,
@@ -1350,6 +1405,29 @@ impl NeetanDos {
     fn int21h_2dh_set_time(&mut self, cpu: &mut dyn CpuAccess) {
         cpu.set_ax(cpu.ax() & 0xFF00);
     }
+
+    /// AH=DCh: Get NetWare connection number. No network redirector is
+    /// present, so report connection 0 (AL=0) with CF=0. Real DOS 6.20 leaves
+    /// CX untouched.
+    fn int21h_dch_netware_connection_number(
+        &self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        cpu.set_ax(cpu.ax() & 0xFF00);
+        set_iret_carry(cpu, memory, false);
+    }
+
+    /// First MCB segment of the UMB chain, or `None` when no UMB region is
+    /// available. The segment depends on whether EMS is enabled (D000h with
+    /// EMS, C000h without).
+    fn umb_first_mcb_segment(&self) -> Option<u16> {
+        self.state
+            .memory_manager
+            .as_ref()
+            .filter(|memory_manager| memory_manager.is_umb_enabled())
+            .map(|memory_manager| memory_manager.umb_first_mcb_segment())
+    }
 }
 
 /// Normalizes a DOS path by resolving `.` and `..` components.
@@ -1394,6 +1472,10 @@ pub(crate) fn normalize_path(path: &[u8]) -> Vec<u8> {
     result
 }
 
+fn read_dword(memory: &dyn MemoryAccess, address: u32) -> u32 {
+    memory.read_word(address) as u32 | ((memory.read_word(address + 2) as u32) << 16)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -1429,6 +1511,48 @@ mod tests {
 
     fn mcb_addr(segment: u16) -> u32 {
         (segment as u32) << 4
+    }
+
+    #[test]
+    fn int21h_dch_reports_netware_absent() {
+        let dos = NeetanDos::new();
+        let mut memory = MockMemory::with_extended_memory(0x200000, 0);
+        let mut cpu = MockCpu::default();
+
+        cpu.set_ax(0xDC7F);
+        cpu.set_cx(0x1234);
+        dos.int21h_dch_netware_connection_number(&mut cpu, &mut memory);
+
+        assert_eq!(cpu.ax(), 0xDC00);
+        assert_eq!(
+            cpu.cx(),
+            0x1234,
+            "AH=DCh leaves CX untouched on real DOS 6.20"
+        );
+        assert!(!iret_carry(&memory, &cpu));
+    }
+
+    #[test]
+    fn int21h_5802_preserves_function_in_ah() {
+        let (mut dos, mut memory) = prepare_dos_with_umb();
+        let mut cpu = MockCpu::default();
+
+        cpu.set_ax(0x5802);
+        dos.int21h_58h_allocation_strategy(&mut cpu, &mut memory);
+
+        assert_eq!(cpu.ax(), 0x5800);
+        assert!(!iret_carry(&memory, &cpu));
+
+        cpu.set_ax(0x5803);
+        cpu.set_bx(1);
+        dos.int21h_58h_allocation_strategy(&mut cpu, &mut memory);
+        assert!(!iret_carry(&memory, &cpu));
+
+        cpu.set_ax(0x5802);
+        dos.int21h_58h_allocation_strategy(&mut cpu, &mut memory);
+
+        assert_eq!(cpu.ax(), 0x5801);
+        assert!(!iret_carry(&memory, &cpu));
     }
 
     #[test]
