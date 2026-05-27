@@ -192,6 +192,24 @@ pub const EMS_PGMAPRET_STUB_SEGMENT: u16 = DOS_DATA_SEGMENT;
 pub const INT24_STUB_OFFSET: u16 = 0x0D8E;
 pub const INT24_STUB_ADDR: u32 = DOS_DATA_BASE + INT24_STUB_OFFSET as u32;
 
+// INT 2Fh AX=122Eh error message retriever far-callback (9 bytes).
+pub const ERROR_RETRIEVER_VECTOR: u8 = 0xFD;
+pub const ERROR_RETRIEVER_STUB_OFFSET: u16 = 0x0D96;
+pub const ERROR_RETRIEVER_STUB_ADDR: u32 = DOS_DATA_BASE + ERROR_RETRIEVER_STUB_OFFSET as u32;
+
+// Counted message buffer filled by the AX=122Eh retriever.
+pub const ERROR_MESSAGE_BUFFER_OFFSET: u16 = 0x0DA8;
+pub const ERROR_MESSAGE_BUFFER_ADDR: u32 = DOS_DATA_BASE + ERROR_MESSAGE_BUFFER_OFFSET as u32;
+pub const ERROR_MESSAGE_BUFFER_SIZE: usize = 0x78;
+
+// HLE tokens returned by AX=122Eh DL=00h/02h/04h/06h. Real DOS 5+ returns far
+// pointers to internal tables; we return synthetic identifiers in a sentinel
+// segment that the retriever uses to pick the right message table.
+pub const ERROR_TABLE_SEGMENT: u16 = 0x0001;
+pub const ERROR_TABLE_STANDARD_TOKEN: u16 = 0x0100;
+pub const ERROR_TABLE_PARAMETER_TOKEN: u16 = 0x0200;
+pub const ERROR_TABLE_CRITICAL_TOKEN: u16 = 0x0300;
+
 // UMB region with EMS: MCB chain at segment D000h (64 KB at D0000-DFFFF).
 // UMB region without EMS starts at C000h and reuses the would-be EMS page frame.
 pub const UMB_NOEMS_FIRST_MCB_SEGMENT: u16 = 0xC000;
@@ -209,8 +227,10 @@ pub const UMB_TRAILING_RESERVED_PARAGRAPHS: u16 = 0x00FF;
 pub const EMS_PAGE_FRAME_SEGMENT: u16 = 0xC000;
 pub const EMS_PAGE_SIZE: u32 = 0x4000;
 
-// First MCB (sentinel)
-pub const FIRST_MCB_OFFSET: u16 = 0x0DA0;
+// First MCB (sentinel). Pushed up to 0x1700 so the AX=122Eh error message
+// buffer and (later) Windows DOSMGR signature/patch table fit between the
+// stub area and the MCB chain.
+pub const FIRST_MCB_OFFSET: u16 = 0x1700;
 pub const FIRST_MCB_ADDR: u32 = DOS_DATA_BASE + FIRST_MCB_OFFSET as u32;
 pub const FIRST_MCB_SEGMENT: u16 = (FIRST_MCB_ADDR >> 4) as u16;
 

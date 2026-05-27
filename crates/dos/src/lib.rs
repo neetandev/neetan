@@ -511,6 +511,7 @@ impl NeetanDos {
         self.write_iosys_work_area(memory);
 
         Self::install_int24h_stub(memory);
+        Self::install_error_retriever_stub(memory);
 
         tracer.trace_dos_boot(DosBootStage::DosDataStructuresReady, cpu, memory);
         let drives = Self::discover_drives(memory, device);
@@ -596,6 +597,31 @@ impl NeetanDos {
         let ivt_24h_addr: u32 = 0x24 * 4;
         memory.write_word(ivt_24h_addr, tables::INT24_STUB_OFFSET);
         memory.write_word(ivt_24h_addr + 2, tables::DOS_DATA_SEGMENT);
+    }
+
+    /// Installs the INT 2Fh AX=122Eh error message retriever callback.
+    ///
+    /// Programs invoke it via CALL FAR to the stub address. The stub fires
+    /// the HLE BIOS trap (OUT 07F0h, AL with AL = `ERROR_RETRIEVER_VECTOR`);
+    /// AX/DX are saved across the OUT and restored before RETF so the Rust
+    /// handler can fill ES:DI with a counted message buffer.
+    ///   50              push ax
+    ///   52              push dx
+    ///   B0 FD           mov  al, FDh
+    ///   BA F0 07        mov  dx, 07F0h
+    ///   EE              out  dx, al
+    ///   CB              retf
+    fn install_error_retriever_stub(memory: &mut dyn MemoryAccess) {
+        let stub = tables::ERROR_RETRIEVER_STUB_ADDR;
+        memory.write_byte(stub, 0x50);
+        memory.write_byte(stub + 1, 0x52);
+        memory.write_byte(stub + 2, 0xB0);
+        memory.write_byte(stub + 3, tables::ERROR_RETRIEVER_VECTOR);
+        memory.write_byte(stub + 4, 0xBA);
+        memory.write_byte(stub + 5, 0xF0);
+        memory.write_byte(stub + 6, 0x07);
+        memory.write_byte(stub + 7, 0xEE);
+        memory.write_byte(stub + 8, 0xCB);
     }
 
     /// EMS INT 67h trap stub + device name. When an app does
@@ -1041,6 +1067,10 @@ impl NeetanDos {
             0xDC => {
                 tracer.trace_intdch(cpu, memory);
                 self.intdch(cpu, memory);
+                true
+            }
+            tables::ERROR_RETRIEVER_VECTOR => {
+                self.int2fh_122eh_retrieve_error_message(cpu, memory);
                 true
             }
             0xFE => {

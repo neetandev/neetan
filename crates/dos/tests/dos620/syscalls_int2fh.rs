@@ -1,4 +1,448 @@
+use dos::tables;
+
 use crate::harness;
+
+fn run_dos_internal_uppercase(input_character: u8) -> (u16, u16) {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, input_character, 0xAB,        // MOV AX, ABxxh
+        0x50,                               // PUSH AX
+        0xB8, 0x13, 0x12,                   // MOV AX, 1213h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0x5B,                               // POP BX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0102h], BX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    (
+        harness::result_word(&machine.bus, 0),
+        harness::result_word(&machine.bus, 2),
+    )
+}
+
+fn get_dos_internal_error_table(dl: u8) -> (u16, u16) {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x2E, 0x12,                   // MOV AX, 122Eh
+        0xB2, dl,                           // MOV DL, subfunction
+        0xCD, 0x2F,                         // INT 2Fh
+        0x8C, 0x06, 0x00, 0x01,             // MOV [0100h], ES
+        0x89, 0x3E, 0x02, 0x01,             // MOV [0102h], DI
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    (
+        harness::result_word(&machine.bus, 0),
+        harness::result_word(&machine.bus, 2),
+    )
+}
+
+fn retrieve_dos_internal_error_message(table_subfunction: u8, error_number: u16) -> Vec<u8> {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: Vec<u8> = vec![
+        // Get requested table token.
+        0xB8, 0x2E, 0x12,                   // MOV AX, 122Eh
+        0xB2, table_subfunction,            // MOV DL, subfunction
+        0xCD, 0x2F,                         // INT 2Fh
+        0x89, 0x3E, 0x10, 0x01,             // MOV [0110h], DI
+        // Get retriever callback.
+        0xB8, 0x2E, 0x12,                   // MOV AX, 122Eh
+        0xB2, 0x08,                         // MOV DL, 08h
+        0xCD, 0x2F,                         // INT 2Fh
+        0x89, 0x3E, 0x00, 0x02,             // MOV [0200h], DI
+        0x8C, 0x06, 0x02, 0x02,             // MOV [0202h], ES
+        // Retrieve requested error.
+        0x8B, 0x3E, 0x10, 0x01,             // MOV DI, [0110h]
+        0xB8, error_number as u8, (error_number >> 8) as u8, // MOV AX, error
+        0xFF, 0x1E, 0x00, 0x02,             // CALL FAR [0200h]
+        0x8C, 0x06, 0x00, 0x01,             // MOV [0100h], ES
+        0x89, 0x3E, 0x02, 0x01,             // MOV [0102h], DI
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, &code);
+
+    let segment = harness::result_word(&machine.bus, 0);
+    let offset = harness::result_word(&machine.bus, 2);
+    let message_addr = harness::far_to_linear(segment, offset);
+    let message_len = harness::read_byte(&machine.bus, message_addr) as usize;
+    harness::read_bytes(&machine.bus, message_addr + 1, message_len)
+}
+
+#[test]
+fn network_redirector_not_installed() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x00, 0x11,                   // MOV AX, 1100h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0xB8, 0x01, 0x11,                   // MOV AX, 1101h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x02, 0x01,                   // MOV [0102h], AX
+        0x9C,                               // PUSHF
+        0x5B,                               // POP BX
+        0x89, 0x1E, 0x04, 0x01,             // MOV [0104h], BX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    assert_eq!(
+        harness::result_byte(&machine.bus, 0),
+        0x00,
+        "AX=1100h should report no redirector installed"
+    );
+    assert_eq!(
+        harness::result_word(&machine.bus, 2),
+        0x0001,
+        "AX=1101h should fail as invalid function"
+    );
+    assert_ne!(
+        harness::result_word(&machine.bus, 4) & 0x0001,
+        0,
+        "AX=1101h should set carry"
+    );
+}
+
+#[test]
+fn absent_resident_multiplex_slots_return_not_installed_or_passthrough() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xF9,                               // STC
+        0xB8, 0x00, 0x10,                   // MOV AX, 1000h
+        0xBB, 0x34, 0x12,                   // MOV BX, 1234h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0102h], BX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x04, 0x01,                   // MOV [0104h], AX
+
+        0xF9,                               // STC
+        0xB8, 0x03, 0x4D,                   // MOV AX, 4D03h
+        0xBB, 0x78, 0x56,                   // MOV BX, 5678h
+        0xB9, 0xDC, 0x26,                   // MOV CX, 26DCh
+        0xBA, 0xBC, 0x9A,                   // MOV DX, 9ABCh
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x10, 0x01,                   // MOV [0110h], AX
+        0x89, 0x1E, 0x12, 0x01,             // MOV [0112h], BX
+        0x89, 0x0E, 0x14, 0x01,             // MOV [0114h], CX
+        0x89, 0x16, 0x16, 0x01,             // MOV [0116h], DX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x18, 0x01,                   // MOV [0118h], AX
+
+        0xF9,                               // STC
+        0xB8, 0x03, 0xFE,                   // MOV AX, FE03h
+        0xBB, 0x05, 0x00,                   // MOV BX, 0005h
+        0xB9, 0x00, 0x02,                   // MOV CX, 0200h
+        0xBA, 0x21, 0x43,                   // MOV DX, 4321h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x20, 0x01,                   // MOV [0120h], AX
+        0x89, 0x1E, 0x22, 0x01,             // MOV [0122h], BX
+        0x89, 0x0E, 0x24, 0x01,             // MOV [0124h], CX
+        0x89, 0x16, 0x26, 0x01,             // MOV [0126h], DX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x28, 0x01,                   // MOV [0128h], AX
+
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    assert_eq!(harness::result_word(&machine.bus, 0x00), 0x1000);
+    assert_eq!(harness::result_word(&machine.bus, 0x02), 0x1234);
+    assert_ne!(harness::result_word(&machine.bus, 0x04) & 0x0001, 0);
+
+    assert_eq!(harness::result_word(&machine.bus, 0x10), 0x4D03);
+    assert_eq!(harness::result_word(&machine.bus, 0x12), 0x5678);
+    assert_eq!(harness::result_word(&machine.bus, 0x14), 0x26DC);
+    assert_eq!(harness::result_word(&machine.bus, 0x16), 0x9ABC);
+    assert_ne!(harness::result_word(&machine.bus, 0x18) & 0x0001, 0);
+
+    assert_eq!(harness::result_word(&machine.bus, 0x20), 0xFE03);
+    assert_eq!(harness::result_word(&machine.bus, 0x22), 0x0005);
+    assert_eq!(harness::result_word(&machine.bus, 0x24), 0x0200);
+    assert_eq!(harness::result_word(&machine.bus, 0x26), 0x4321);
+    assert_ne!(harness::result_word(&machine.bus, 0x28) & 0x0001, 0);
+}
+
+#[test]
+fn quarterdeck_rpci_not_installed() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x00, 0xD2,                   // MOV AX, D200h
+        0xBB, 0x44, 0x51,                   // MOV BX, 5144h
+        0xB9, 0x45, 0x4D,                   // MOV CX, 4D45h
+        0xBA, 0x30, 0x4D,                   // MOV DX, 4D30h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0102h], BX
+        0x89, 0x0E, 0x04, 0x01,             // MOV [0104h], CX
+        0x89, 0x16, 0x06, 0x01,             // MOV [0106h], DX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    assert_eq!(
+        harness::result_byte(&machine.bus, 0),
+        0x00,
+        "Quarterdeck RPCI installation check should report not installed"
+    );
+    assert_eq!(harness::result_word(&machine.bus, 2), 0x5144);
+    assert_eq!(harness::result_word(&machine.bus, 4), 0x4D45);
+    assert_eq!(harness::result_word(&machine.bus, 6), 0x4D30);
+}
+
+#[test]
+fn qemm_rpci_not_installed() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0xAA, 0xAA,                   // MOV AX, AAAAh
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBF, 0xBB, 0xBB,                   // MOV DI, BBBBh
+        0xB8, 0x01, 0xD2,                   // MOV AX, D201h
+        0xBB, 0x45, 0x51,                   // MOV BX, 5145h
+        0xB9, 0x4D, 0x4D,                   // MOV CX, 4D4Dh
+        0xBA, 0x32, 0x34,                   // MOV DX, 3432h
+        0xCD, 0x2F,                         // INT 2Fh
+        0x89, 0x1E, 0x00, 0x01,             // MOV [0100h], BX
+        0x89, 0x0E, 0x02, 0x01,             // MOV [0102h], CX
+        0x89, 0x16, 0x04, 0x01,             // MOV [0104h], DX
+        0x8C, 0x06, 0x06, 0x01,             // MOV [0106h], ES
+        0x89, 0x3E, 0x08, 0x01,             // MOV [0108h], DI
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    assert_eq!(
+        harness::result_word(&machine.bus, 0),
+        0x5145,
+        "QEMM RPCI query should not return the OK signature"
+    );
+    assert_eq!(harness::result_word(&machine.bus, 2), 0x4D4D);
+    assert_eq!(harness::result_word(&machine.bus, 4), 0x3432);
+    assert_eq!(harness::result_word(&machine.bus, 6), 0xAAAA);
+    assert_eq!(harness::result_word(&machine.bus, 8), 0xBBBB);
+}
+
+#[test]
+fn dos_internal_data_segment() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0x1E,                               // PUSH DS
+        0xB8, 0x03, 0x12,                   // MOV AX, 1203h
+        0xCD, 0x2F,                         // INT 2Fh
+        0x8C, 0xD8,                         // MOV AX, DS
+        0x1F,                               // POP DS
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    assert_eq!(
+        harness::result_word(&machine.bus, 0),
+        tables::DOS_DATA_SEGMENT,
+        "AX=1203h should return the DOS data segment in DS"
+    );
+}
+
+#[test]
+fn dos_internal_uppercase_character() {
+    for (input_character, expected_character) in [
+        (b'a', b'A'),
+        (b'z', b'Z'),
+        (b'A', b'A'),
+        (b'1', b'1'),
+        (0x80, 0x80),
+    ] {
+        let (returned_ax, stack_word) = run_dos_internal_uppercase(input_character);
+        assert_eq!(
+            returned_ax & 0x00FF,
+            expected_character as u16,
+            "AX=1213h input {input_character:#04X}: AL should be {expected_character:#04X}, got {:#04X}",
+            returned_ax as u8
+        );
+        // Real DOS 6.20 reads the entire caller stack word into AX; AH ends
+        // up as the high byte of the input PUSH (0xAB here), not 0x12.
+        assert_eq!(
+            returned_ax >> 8,
+            0xAB,
+            "AX=1213h should return AH from the pushed stack word, got AX={returned_ax:#06X}"
+        );
+        assert_eq!(
+            stack_word,
+            0xAB00 | input_character as u16,
+            "AX=1213h should leave the caller stack word unchanged"
+        );
+    }
+}
+
+#[test]
+fn dos_internal_error_messages_use_dos_error_numbers() {
+    for (table_subfunction, error_number, expected_message) in [
+        (0x02, 0x01, b"Too many parameters".as_slice()),
+        (0x02, 0x02, b"Required parameter missing".as_slice()),
+        (0x02, 0x0A, b"Invalid parameter".as_slice()),
+        (0x02, 0x0B, b"Invalid parameter combination".as_slice()),
+        (0x00, 0x13, b"Write protect error".as_slice()),
+        (0x04, 0x13, b"Write protect error".as_slice()),
+        (0x04, 0x21, b"Lock violation".as_slice()),
+    ] {
+        assert_eq!(
+            retrieve_dos_internal_error_message(table_subfunction, error_number),
+            expected_message,
+            "AX=122Eh DL={table_subfunction:#04X} error {error_number:#06X}"
+        );
+    }
+}
+
+#[test]
+fn dos_internal_error_table_addresses() {
+    for (dl, expected_token) in [
+        (0x00, tables::ERROR_TABLE_STANDARD_TOKEN),
+        (0x02, tables::ERROR_TABLE_PARAMETER_TOKEN),
+        (0x04, tables::ERROR_TABLE_CRITICAL_TOKEN),
+    ] {
+        let (segment, offset) = get_dos_internal_error_table(dl);
+        assert_eq!(
+            segment,
+            tables::ERROR_TABLE_SEGMENT,
+            "AX=122Eh DL={dl:#04X}: ES should be the DOS 5+ table sentinel"
+        );
+        assert_eq!(
+            offset, expected_token,
+            "AX=122Eh DL={dl:#04X}: DI should be the expected HLE table token"
+        );
+    }
+
+    // DL=06h (parse error table): real DOS 6.20 returns ES:DI = 0000:0000.
+    let (parse_segment, parse_offset) = get_dos_internal_error_table(0x06);
+    assert_eq!(
+        (parse_segment, parse_offset),
+        (0, 0),
+        "AX=122Eh DL=06h must return NULL (no parse table in real DOS 6.20)"
+    );
+
+    let (retriever_segment, retriever_offset) = get_dos_internal_error_table(0x08);
+    assert_eq!(
+        retriever_segment,
+        tables::DOS_DATA_SEGMENT,
+        "AX=122Eh DL=08h should return the retriever stub segment"
+    );
+    assert_eq!(
+        retriever_offset,
+        tables::ERROR_RETRIEVER_STUB_OFFSET,
+        "AX=122Eh DL=08h should return the retriever stub offset"
+    );
+
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Get parameter table token.
+        0xB8, 0x2E, 0x12,                   // MOV AX, 122Eh
+        0xB2, 0x02,                         // MOV DL, 02h
+        0xCD, 0x2F,                         // INT 2Fh
+        0x89, 0x3E, 0x10, 0x01,             // MOV [0110h], DI
+        // Attempt to replace the parameter table. DOS 5+ ignores this.
+        0xB8, 0xAD, 0xDE,                   // MOV AX, DEADh
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBF, 0xEF, 0xBE,                   // MOV DI, BEEFh
+        0xB8, 0x2E, 0x12,                   // MOV AX, 122Eh
+        0xB2, 0x03,                         // MOV DL, 03h
+        0xCD, 0x2F,                         // INT 2Fh
+        // Get parameter table token again.
+        0xB8, 0x2E, 0x12,                   // MOV AX, 122Eh
+        0xB2, 0x02,                         // MOV DL, 02h
+        0xCD, 0x2F,                         // INT 2Fh
+        0x89, 0x3E, 0x12, 0x01,             // MOV [0112h], DI
+        // Get retriever callback and call it for parameter error 2.
+        0xB8, 0x2E, 0x12,                   // MOV AX, 122Eh
+        0xB2, 0x08,                         // MOV DL, 08h
+        0xCD, 0x2F,                         // INT 2Fh
+        0x89, 0x3E, 0x00, 0x02,             // MOV [0200h], DI
+        0x8C, 0x06, 0x02, 0x02,             // MOV [0202h], ES
+        0x8B, 0x3E, 0x10, 0x01,             // MOV DI, [0110h]
+        0xB8, 0x02, 0x00,                   // MOV AX, 0002h
+        0xFF, 0x1E, 0x00, 0x02,             // CALL FAR [0200h]
+        0x8C, 0x06, 0x00, 0x01,             // MOV [0100h], ES
+        0x89, 0x3E, 0x02, 0x01,             // MOV [0102h], DI
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let token_before = harness::result_word(&machine.bus, 0x10);
+    let token_after = harness::result_word(&machine.bus, 0x12);
+    assert_eq!(
+        token_before, token_after,
+        "AX=122Eh set subfunctions should not replace DOS 5+ error tables"
+    );
+
+    let segment = harness::result_word(&machine.bus, 0);
+    let offset = harness::result_word(&machine.bus, 2);
+    assert_eq!(segment, tables::DOS_DATA_SEGMENT);
+    assert_eq!(offset, tables::ERROR_MESSAGE_BUFFER_OFFSET);
+    let message_addr = harness::far_to_linear(segment, offset);
+    let message_len = harness::read_byte(&machine.bus, message_addr) as usize;
+    let message = harness::read_bytes(&machine.bus, message_addr + 1, message_len);
+    assert_eq!(
+        message, b"Required parameter missing",
+        "retriever should return the counted parameter error message"
+    );
+
+    let mut fallback_machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let fallback_code: &[u8] = &[
+        // Get standard table token.
+        0xB8, 0x2E, 0x12,                   // MOV AX, 122Eh
+        0xB2, 0x00,                         // MOV DL, 00h
+        0xCD, 0x2F,                         // INT 2Fh
+        0x89, 0x3E, 0x10, 0x01,             // MOV [0110h], DI
+        // Get retriever callback.
+        0xB8, 0x2E, 0x12,                   // MOV AX, 122Eh
+        0xB2, 0x08,                         // MOV DL, 08h
+        0xCD, 0x2F,                         // INT 2Fh
+        0x89, 0x3E, 0x00, 0x02,             // MOV [0200h], DI
+        0x8C, 0x06, 0x02, 0x02,             // MOV [0202h], ES
+        // Retrieve an unknown standard error.
+        0x8B, 0x3E, 0x10, 0x01,             // MOV DI, [0110h]
+        0xB8, 0xFF, 0x00,                   // MOV AX, 00FFh
+        0xFF, 0x1E, 0x00, 0x02,             // CALL FAR [0200h]
+        0x8C, 0x06, 0x00, 0x01,             // MOV [0100h], ES
+        0x89, 0x3E, 0x02, 0x01,             // MOV [0102h], DI
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut fallback_machine, fallback_code);
+
+    let fallback_segment = harness::result_word(&fallback_machine.bus, 0);
+    let fallback_offset = harness::result_word(&fallback_machine.bus, 2);
+    let fallback_addr = harness::far_to_linear(fallback_segment, fallback_offset);
+    let fallback_len = harness::read_byte(&fallback_machine.bus, fallback_addr) as usize;
+    let fallback = harness::read_bytes(&fallback_machine.bus, fallback_addr + 1, fallback_len);
+    assert_eq!(
+        fallback, b"Unknown error",
+        "retriever should return a counted fallback message"
+    );
+}
 
 #[test]
 fn windows_not_running() {

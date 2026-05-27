@@ -17,14 +17,121 @@ impl NeetanDos {
     ) {
         let ah = (cpu.ax() >> 8) as u8;
         match ah {
+            0x10 => self.int2fh_10h_share(cpu),
+            0x11 => self.int2fh_11h_network_redirector(cpu, memory),
+            0x12 => self.int2fh_12h_dos_internal(cpu, memory),
             0x15 => self.int2fh_15h_mscdex(cpu, memory, cdrom),
             0x16 => self.int2fh_16h_windows_check(cpu),
             0x43 => self.int2fh_43h_xms_check(cpu),
             0x48 => self.int2fh_48h_doskey_check(cpu),
             0x4A => self.int2fh_4ah_hma_query(cpu),
+            0x4D => self.int2fh_4dh_kkcfunc(),
             0x4F => set_iret_carry(cpu, memory, true), // Keyboard intercept: no translation.
+            0xD2 => self.int2fh_d2h_quarterdeck_rpci(cpu),
+            0xFE => self.int2fh_feh_user_multiplex(),
             _ => warn!("INT 2Fh AH={ah:#04X} is unimplemented"),
         }
+    }
+
+    /// AH=10h: SHARE.EXE interface. Installation check reports not present.
+    fn int2fh_10h_share(&self, cpu: &mut dyn CpuAccess) {
+        let al = cpu.ax() as u8;
+        if al == 0x00 {
+            cpu.set_ax(cpu.ax() & 0xFF00);
+        }
+    }
+
+    /// AH=11h: DOS network redirector interface.
+    fn int2fh_11h_network_redirector(
+        &self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let al = cpu.ax() as u8;
+        match al {
+            0x00 => cpu.set_ax(cpu.ax() & 0xFF00),
+            _ => {
+                cpu.set_ax(0x0001);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// AH=12h: DOS-internal services.
+    fn int2fh_12h_dos_internal(&self, cpu: &mut dyn CpuAccess, memory: &dyn MemoryAccess) {
+        let al = cpu.ax() as u8;
+        match al {
+            0x03 => cpu.set_ds(tables::DOS_DATA_SEGMENT),
+            0x13 => {
+                // Real DOS 6.20 reads the caller's pushed stack word into AX
+                // (so AH = high byte of the original PUSH), then uppercases
+                // the low byte. AX from the INT 2Fh call (1213h) is clobbered.
+                let caller_stack_addr = cpu
+                    .linear_address(SegmentRegister::SS, cpu.sp())
+                    .wrapping_add(6);
+                let stack_word = memory.read_word(caller_stack_addr);
+                let character = stack_word as u8;
+                let uppercase = if character.is_ascii_lowercase() {
+                    character.to_ascii_uppercase()
+                } else {
+                    character
+                };
+                cpu.set_ax((stack_word & 0xFF00) | uppercase as u16);
+            }
+            0x2E => self.int2fh_122eh_error_tables(cpu),
+            _ => {
+                warn!("INT 2Fh AX=12{al:02X}h is unimplemented");
+            }
+        }
+    }
+
+    /// AX=122Eh: Get DOS 5+ error table addresses or the message retriever.
+    fn int2fh_122eh_error_tables(&self, cpu: &mut dyn CpuAccess) {
+        let dl = cpu.dx() as u8;
+        match dl {
+            0x00 => self.set_error_table_result(cpu, tables::ERROR_TABLE_STANDARD_TOKEN),
+            0x02 => self.set_error_table_result(cpu, tables::ERROR_TABLE_PARAMETER_TOKEN),
+            0x04 => self.set_error_table_result(cpu, tables::ERROR_TABLE_CRITICAL_TOKEN),
+            0x06 => {
+                // Real DOS 6.20 has no parse error table here; return NULL.
+                cpu.set_es(0);
+                cpu.set_di(0);
+            }
+            0x08 => {
+                cpu.set_es(tables::DOS_DATA_SEGMENT);
+                cpu.set_di(tables::ERROR_RETRIEVER_STUB_OFFSET);
+            }
+            // DL=01h/03h/05h/07h/09h set the tables; DOS 5+ ignores them.
+            0x01 | 0x03 | 0x05 | 0x07 | 0x09 => {}
+            _ => {
+                warn!("INT 2Fh AX=122Eh DL={dl:#04X} is unimplemented");
+            }
+        }
+    }
+
+    fn set_error_table_result(&self, cpu: &mut dyn CpuAccess, table_token: u16) {
+        cpu.set_es(tables::ERROR_TABLE_SEGMENT);
+        cpu.set_di(table_token);
+    }
+
+    /// Retriever callback fired through INT FDh from the stub at
+    /// `tables::ERROR_RETRIEVER_STUB_ADDR`. The caller passes the table token
+    /// in DI and the error number in AX; we write a counted message to a
+    /// scratch buffer and return ES:DI pointing at the count byte.
+    pub(crate) fn int2fh_122eh_retrieve_error_message(
+        &self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let message = error_table_message(cpu.di(), cpu.ax());
+        let len = message.len().min(tables::ERROR_MESSAGE_BUFFER_SIZE - 1);
+        memory.write_byte(tables::ERROR_MESSAGE_BUFFER_ADDR, len as u8);
+        memory.write_block(tables::ERROR_MESSAGE_BUFFER_ADDR + 1, &message[..len]);
+        if len + 1 < tables::ERROR_MESSAGE_BUFFER_SIZE {
+            memory.write_byte(tables::ERROR_MESSAGE_BUFFER_ADDR + 1 + len as u32, 0);
+        }
+        cpu.set_es(tables::DOS_DATA_SEGMENT);
+        cpu.set_di(tables::ERROR_MESSAGE_BUFFER_OFFSET);
     }
 
     /// AH=15h: MSCDEX CD-ROM interface.
@@ -205,6 +312,19 @@ impl NeetanDos {
         cpu.set_ax(cpu.ax() & 0xFF00);
     }
 
+    /// AH=4Dh: KKCFUNC.SYS API.
+    fn int2fh_4dh_kkcfunc(&self) {}
+
+    /// AH=FEh: unclaimed user multiplex slot.
+    fn int2fh_feh_user_multiplex(&self) {}
+
+    /// AH=D2h: Quarterdeck RPCI/PCL-838 multiplex slot.
+    fn int2fh_d2h_quarterdeck_rpci(&self, cpu: &mut dyn CpuAccess) {
+        if cpu.ax() as u8 == 0x00 {
+            cpu.set_ax(cpu.ax() & 0xFF00);
+        }
+    }
+
     /// AH=4Ah, AL=01h: HMA (High Memory Area) query.
     fn int2fh_4ah_hma_query(&self, cpu: &mut dyn CpuAccess) {
         let hma_free = self
@@ -250,5 +370,108 @@ impl NeetanDos {
         memory.write_block(buffer_addr, &sector_buf[pvd_offset..pvd_offset + 37]);
         memory.write_byte(buffer_addr + 37, 0);
         set_iret_carry(cpu, memory, false);
+    }
+}
+
+fn error_table_message(table_token: u16, error_number: u16) -> &'static [u8] {
+    match table_token {
+        tables::ERROR_TABLE_PARAMETER_TOKEN => parameter_error_message(error_number),
+        tables::ERROR_TABLE_CRITICAL_TOKEN => critical_error_message(error_number),
+        _ => standard_error_message(error_number),
+    }
+}
+
+fn standard_error_message(error_number: u16) -> &'static [u8] {
+    match error_number {
+        0x00 => b"No error",
+        0x01 => b"Invalid function number",
+        0x02 => b"File not found",
+        0x03 => b"Path not found",
+        0x04 => b"Too many open files",
+        0x05 => b"Access denied",
+        0x06 => b"Invalid handle",
+        0x07 => b"Memory control blocks destroyed",
+        0x08 => b"Insufficient memory",
+        0x09 => b"Invalid memory block address",
+        0x0A => b"Invalid environment",
+        0x0B => b"Invalid format",
+        0x0C => b"Invalid access code",
+        0x0D => b"Invalid data",
+        0x0F => b"Invalid drive",
+        0x10 => b"Cannot remove current directory",
+        0x11 => b"Not same device",
+        0x12 => b"No more files",
+        0x13 => b"Write protect error",
+        0x14 => b"Unknown unit",
+        0x15 => b"Drive not ready",
+        0x16 => b"Unknown command",
+        0x17 => b"Data error",
+        0x18 => b"Bad request structure length",
+        0x19 => b"Seek error",
+        0x1A => b"Unknown media type",
+        0x1B => b"Sector not found",
+        0x1C => b"Printer out of paper",
+        0x1D => b"Write fault",
+        0x1E => b"Read fault",
+        0x1F => b"General failure",
+        0x20 => b"Sharing violation",
+        0x21 => b"Lock violation",
+        0x22 => b"Invalid disk change",
+        0x23 => b"FCB unavailable",
+        0x24 => b"Sharing buffer overflow",
+        0x25 => b"Code page mismatch",
+        0x26 => b"Cannot complete file operation",
+        0x4F => b"Reserved error",
+        0x51 => b"Duplicate FCB",
+        0x52 => b"Cannot make directory",
+        0x53 => b"Fail on INT 24",
+        0x54 => b"Too many redirections",
+        0x55 => b"Duplicate redirection",
+        0x56 => b"Invalid password",
+        0x57 => b"Invalid parameter",
+        0x58 => b"Network write fault",
+        0x59 => b"Function not supported on network",
+        _ => b"Unknown error",
+    }
+}
+
+fn parameter_error_message(error_number: u16) -> &'static [u8] {
+    match error_number {
+        0x01 => b"Too many parameters",
+        0x02 => b"Required parameter missing",
+        0x03 => b"Invalid switch",
+        0x04 => b"Invalid keyword",
+        0x06 => b"Parameter value not in allowed range",
+        0x07 | 0x08 => b"Parameter value not allowed",
+        0x09 => b"Parameter format not correct",
+        0x0A => b"Invalid parameter",
+        0x0B => b"Invalid parameter combination",
+        _ => b"Parameter error",
+    }
+}
+
+fn critical_error_message(error_number: u16) -> &'static [u8] {
+    match error_number {
+        0x13 => b"Write protect error",
+        0x14 => b"Unknown unit",
+        0x15 => b"Drive not ready",
+        0x16 => b"Unknown command",
+        0x17 => b"Data error",
+        0x18 => b"Bad request structure length",
+        0x19 => b"Seek error",
+        0x1A => b"Unknown media type",
+        0x1B => b"Sector not found",
+        0x1C => b"Printer out of paper",
+        0x1D => b"Write fault",
+        0x1E => b"Read fault",
+        0x1F => b"General failure",
+        0x20 => b"Sharing violation",
+        0x21 => b"Lock violation",
+        0x22 => b"Invalid disk change",
+        0x23 => b"FCB unavailable",
+        0x24 => b"Sharing buffer overflow",
+        0x25 => b"Code page mismatch",
+        0x26 => b"Cannot complete file operation",
+        _ => b"Critical error",
     }
 }
