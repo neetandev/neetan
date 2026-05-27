@@ -49,9 +49,9 @@ pub const DEV_CLOCK_OFFSET: u16 = 0x005A;
 pub const DEV_AID_NEC_OFFSET: u16 = 0x006C;
 pub const DEV_CDROM_OFFSET: u16 = 0x007E;
 // XMSXXXX0 device header (conditionally linked when XMS is enabled)
-pub const DEV_XMS_OFFSET: u16 = 0x0D4E;
+pub const DEV_XMS_OFFSET: u16 = 0x0D52;
 // EMMXXXX0 device header (conditionally linked when EMS is enabled)
-pub const DEV_EMS_OFFSET: u16 = 0x0D60;
+pub const DEV_EMS_OFFSET: u16 = 0x0D64;
 
 // Device header structure (18 bytes each)
 pub const DEVHDR_SIZE: usize = 18;
@@ -179,13 +179,15 @@ pub const DBCS_TABLE_ADDR: u32 = DOS_DATA_BASE + DBCS_TABLE_OFFSET as u32;
 pub const FCB_SFT_OFFSET: u16 = 0x0D38;
 pub const FCB_SFT_BASE: u32 = DOS_DATA_BASE + FCB_SFT_OFFSET as u32;
 
-// XMS driver entry stub (3 bytes: INT FEh / RETF)
+// XMS driver entry stub (8 bytes: JMP +3 / NOP / NOP / NOP / INT FEh / RETF).
+// The JMP / three NOP prologue matches the HIMEM.SYS entry-point shape that
+// Windows enhanced mode validates before talking to the XMS provider.
 pub const XMS_ENTRY_STUB_OFFSET: u16 = 0x0D44;
 pub const XMS_ENTRY_STUB_ADDR: u32 = DOS_DATA_BASE + XMS_ENTRY_STUB_OFFSET as u32;
 pub const XMS_ENTRY_STUB_SEGMENT: u16 = DOS_DATA_SEGMENT;
 
 // XMSXXXX0 strategy/interrupt stub (6 bytes: set DONE bit + RETF)
-pub const XMS_DEV_STUB_OFFSET: u16 = 0x0D47;
+pub const XMS_DEV_STUB_OFFSET: u16 = 0x0D4C;
 pub const XMS_DEV_STUB_ADDR: u32 = DOS_DATA_BASE + XMS_DEV_STUB_OFFSET as u32;
 
 // EMS INT 67h trap stub + device name (18 bytes: 10 code + 8 "EMMXXXX0").
@@ -193,17 +195,23 @@ pub const XMS_DEV_STUB_ADDR: u32 = DOS_DATA_BASE + XMS_DEV_STUB_OFFSET as u32;
 // check read the INT 67h vector and compare [ES:BX+000Ah] with "EMMXXXX0".
 // IVT[67h] points here; the first 10 bytes are executable code that fires
 // the BIOS HLE trap via OUT 07F0h, AL.
-pub const EMS_INT67_STUB_OFFSET: u16 = 0x0D72;
+pub const EMS_INT67_STUB_OFFSET: u16 = 0x0D76;
 pub const EMS_INT67_STUB_ADDR: u32 = DOS_DATA_BASE + EMS_INT67_STUB_OFFSET as u32;
 
 pub const EMS_PGMAPRET_VECTOR: u8 = 0xE7;
-pub const EMS_PGMAPRET_STUB_OFFSET: u16 = 0x0D84;
+pub const EMS_PGMAPRET_STUB_OFFSET: u16 = 0x0D88;
 pub const EMS_PGMAPRET_STUB_ADDR: u32 = DOS_DATA_BASE + EMS_PGMAPRET_STUB_OFFSET as u32;
 pub const EMS_PGMAPRET_STUB_SEGMENT: u16 = DOS_DATA_SEGMENT;
 
 // INT 24h default critical-error handler (3 bytes: MOV AL,3 / IRET).
-pub const INT24_STUB_OFFSET: u16 = 0x0D8E;
+pub const INT24_STUB_OFFSET: u16 = 0x0D92;
 pub const INT24_STUB_ADDR: u32 = DOS_DATA_BASE + INT24_STUB_OFFSET as u32;
+
+// INT 5Ch default NetBIOS handler (1 byte: IRET). Installed by boot init
+// only if the IVT entry is otherwise zero, so a native NetBIOS driver
+// loaded later keeps priority.
+pub const INT5C_STUB_OFFSET: u16 = 0x0D95;
+pub const INT5C_STUB_ADDR: u32 = DOS_DATA_BASE + INT5C_STUB_OFFSET as u32;
 
 // INT 2Fh AX=122Eh error message retriever far-callback (9 bytes).
 pub const ERROR_RETRIEVER_VECTOR: u8 = 0xFD;

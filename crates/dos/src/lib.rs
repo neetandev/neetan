@@ -514,6 +514,7 @@ impl NeetanDos {
         self.write_iosys_work_area(memory);
 
         Self::install_int24h_stub(memory);
+        Self::install_int5ch_stub(memory);
         Self::install_error_retriever_stub(memory);
 
         tracer.trace_dos_boot(DosBootStage::DosDataStructuresReady, cpu, memory);
@@ -673,9 +674,13 @@ impl NeetanDos {
 
     /// Installs the two extended-memory plumbing stubs in the DOS data segment.
     ///
-    /// 1. XMS driver entry point (3 bytes). Programs obtain its far address
-    ///    via INT 2Fh AX=4310h and call it to invoke XMS functions; INT FEh
-    ///    traps to our HLE XMS handler.
+    /// 1. XMS driver entry point. Programs obtain its far address via INT 2Fh
+    ///    AX=4310h and call it to invoke XMS functions; INT FEh traps to our
+    ///    HLE XMS handler. The jump/NOP prologue matches the HIMEM.SYS entry
+    ///    shape that Windows enhanced mode validates before talking to the
+    ///    XMS provider.
+    ///    EB 03             jmp  +3
+    ///    90 90 90          nop  nop  nop
     ///    CD FE             int  0FEh
     ///    CB                retf
     ///
@@ -687,9 +692,14 @@ impl NeetanDos {
     ///    CB                retf
     fn install_xms_stubs(memory: &mut dyn MemoryAccess) {
         let stub_addr = tables::XMS_ENTRY_STUB_ADDR;
-        memory.write_byte(stub_addr, 0xCD);
-        memory.write_byte(stub_addr + 1, 0xFE);
-        memory.write_byte(stub_addr + 2, 0xCB);
+        memory.write_byte(stub_addr, 0xEB);
+        memory.write_byte(stub_addr + 1, 0x03);
+        memory.write_byte(stub_addr + 2, 0x90);
+        memory.write_byte(stub_addr + 3, 0x90);
+        memory.write_byte(stub_addr + 4, 0x90);
+        memory.write_byte(stub_addr + 5, 0xCD);
+        memory.write_byte(stub_addr + 6, 0xFE);
+        memory.write_byte(stub_addr + 7, 0xCB);
 
         let dev_stub_addr = tables::XMS_DEV_STUB_ADDR;
         memory.write_byte(dev_stub_addr, 0x26);
@@ -698,6 +708,19 @@ impl NeetanDos {
         memory.write_byte(dev_stub_addr + 3, 0x04);
         memory.write_byte(dev_stub_addr + 4, 0x01);
         memory.write_byte(dev_stub_addr + 5, 0xCB);
+    }
+
+    /// Installs a no-op IRET stub at INT5C_STUB_ADDR and points the INT 5Ch
+    /// vector at it, but only if no NetBIOS provider has already claimed the
+    /// vector. NetBIOS drivers loaded later via DEVICE= overwrite it.
+    fn install_int5ch_stub(memory: &mut dyn MemoryAccess) {
+        memory.write_byte(tables::INT5C_STUB_ADDR, 0xCF);
+
+        let ivt_5ch_addr: u32 = 0x5C * 4;
+        if memory.read_word(ivt_5ch_addr) == 0 && memory.read_word(ivt_5ch_addr + 2) == 0 {
+            memory.write_word(ivt_5ch_addr, tables::INT5C_STUB_OFFSET);
+            memory.write_word(ivt_5ch_addr + 2, tables::DOS_DATA_SEGMENT);
+        }
     }
 
     /// Searches the boot drive root for CONFIG.SYS and parses it.
@@ -2187,4 +2210,32 @@ pub(crate) fn adjust_iret_ip(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, de
     let ip_addr = cpu.linear_address(SegmentRegister::SS, cpu.sp());
     let ip = mem.read_word(ip_addr);
     mem.write_word(ip_addr, ip.wrapping_add(delta as u16));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::MockMemory;
+
+    #[test]
+    fn install_int5ch_stub_points_empty_vector_to_iret() {
+        let mut memory = MockMemory::with_extended_memory(0x10000, 0);
+        NeetanDos::install_int5ch_stub(&mut memory);
+        let ivt_5ch_addr: u32 = 0x5C * 4;
+        assert_eq!(memory.read_word(ivt_5ch_addr), tables::INT5C_STUB_OFFSET);
+        assert_eq!(memory.read_word(ivt_5ch_addr + 2), tables::DOS_DATA_SEGMENT);
+        assert_eq!(memory.read_byte(tables::INT5C_STUB_ADDR), 0xCF);
+    }
+
+    #[test]
+    fn install_int5ch_stub_preserves_existing_vector() {
+        let mut memory = MockMemory::with_extended_memory(0x10000, 0);
+        let ivt_5ch_addr: u32 = 0x5C * 4;
+        memory.write_word(ivt_5ch_addr, 0x1234);
+        memory.write_word(ivt_5ch_addr + 2, 0x5678);
+        NeetanDos::install_int5ch_stub(&mut memory);
+        assert_eq!(memory.read_byte(tables::INT5C_STUB_ADDR), 0xCF);
+        assert_eq!(memory.read_word(ivt_5ch_addr), 0x1234);
+        assert_eq!(memory.read_word(ivt_5ch_addr + 2), 0x5678);
+    }
 }
