@@ -326,7 +326,8 @@ mod tests {
         cpu.set_bx(0x12FF);
         dos.xms_entry(&mut cpu, &mut memory);
 
-        assert_eq!(cpu.ax(), 0);
+        // HIMEM globally enables A20 at load, so the query reports enabled.
+        assert_eq!(cpu.ax(), 1);
         assert_eq!(cpu.bx(), 0x1200);
     }
 

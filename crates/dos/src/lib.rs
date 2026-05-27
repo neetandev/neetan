@@ -475,6 +475,17 @@ impl NeetanDos {
         self.state.xms_32_enabled = enabled;
     }
 
+    /// Returns the XMS-visible A20 state, if XMS is available.
+    pub fn xms_a20_enabled(&self) -> Option<bool> {
+        if !self.state.xms_enabled {
+            return None;
+        }
+        self.state
+            .memory_manager
+            .as_ref()
+            .map(|memory_manager| memory_manager.xms_query_a20())
+    }
+
     /// Drops mounted FAT caches for any DOS drive backed by the given DA/UA.
     pub fn invalidate_drive_caches(&mut self, memory: &dyn MemoryAccess, da_ua: u8) {
         for drive_index in 0..26usize {

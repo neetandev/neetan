@@ -1,3 +1,5 @@
+use common::Bus;
+
 use crate::harness;
 
 #[test]
@@ -2095,16 +2097,16 @@ fn test_xms_a20_query_tracks_xms_visible_state() {
     let enabled = harness::result_word(&machine.bus, 2);
     let disabled = harness::result_word(&machine.bus, 4);
     assert_eq!(
-        initial, 0,
-        "Query A20 should report disabled before any XMS A20 enable, got {initial:#06X}"
+        initial, 1,
+        "Query A20 should report enabled from HIMEM load (PC-98 keeps A20 on), got {initial:#06X}"
     );
     assert_eq!(
         enabled, 1,
-        "Query A20 should report enabled after Local Enable"
+        "Query A20 should remain enabled after Local Enable"
     );
     assert_eq!(
-        disabled, 0,
-        "Query A20 should report disabled after Local Disable, got {disabled:#06X}"
+        disabled, 1,
+        "Query A20 should remain enabled after Local Disable (HIMEM global enable persists), got {disabled:#06X}"
     );
 }
 
@@ -2178,6 +2180,59 @@ fn test_xms_a20_global_disable_blocked_by_local_enable() {
         0x94,
         "BL should be 0x94 (A20 still enabled), got {:#04X}",
         bx & 0xFF
+    );
+}
+
+#[test]
+fn test_xms_a20_calls_drive_machine_a20_gate() {
+    // Real PC-98 MS-DOS keeps the A20 line enabled for the lifetime of HIMEM:
+    // the physical gate (port 0x00F2 bit 0 == 0) and the XMS query both report
+    // enabled at the prompt and stay enabled across XMS local enable/disable.
+    let mut machine = harness::boot_hle();
+    assert_eq!(
+        machine.bus.io_read_byte(0x00F2) & 0x01,
+        0x00,
+        "machine A20 gate should be enabled at the prompt (HIMEM loaded)"
+    );
+
+    #[rustfmt::skip]
+    let enable_code: &[u8] = &[
+        0xB4, 0x05,                         // MOV AH, 05h (local enable A20)
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry stub)
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, enable_code);
+    assert_eq!(
+        harness::result_word(&machine.bus, 0),
+        1,
+        "XMS local enable A20 should succeed"
+    );
+    assert_eq!(
+        machine.bus.io_read_byte(0x00F2) & 0x01,
+        0x00,
+        "machine A20 gate should stay enabled after XMS local enable"
+    );
+
+    #[rustfmt::skip]
+    let disable_code: &[u8] = &[
+        0xB4, 0x06,                         // MOV AH, 06h (local disable A20)
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry stub)
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, disable_code);
+    assert_eq!(
+        harness::result_word(&machine.bus, 0),
+        1,
+        "XMS local disable A20 should succeed"
+    );
+    assert_eq!(
+        machine.bus.io_read_byte(0x00F2) & 0x01,
+        0x00,
+        "machine A20 gate should stay enabled after XMS local disable (HIMEM global enable persists)"
     );
 }
 
