@@ -1022,17 +1022,69 @@ fn server_call_5d06_returns_error() {
 }
 
 #[test]
-fn create_dpb_from_bpb_stub() {
+fn create_dpb_from_bpb_fills_dos4_dpb_fields() {
     let mut machine = harness::boot_hle();
+    const BPB_OFFSET: u16 = 0x0180;
+    const DPB_OFFSET: u16 = 0x01A0;
+    const DPB_ADDR: u32 = harness::INJECT_CODE_BASE + DPB_OFFSET as u32;
+    #[rustfmt::skip]
+    let bpb: &[u8] = &[
+        0x00, 0x02,                             // bytes per sector = 512
+        0x04,                                   // sectors per cluster = 4
+        0x01, 0x00,                             // reserved sectors = 1
+        0x02,                                   // FAT count = 2
+        0x00, 0x02,                             // root entries = 512
+        0x10, 0x27,                             // total sectors = 10000
+        0xF8,                                   // media descriptor
+        0x08, 0x00,                             // sectors per FAT = 8
+        0x11, 0x00,                             // sectors per track
+        0x08, 0x00,                             // heads
+        0x00, 0x00, 0x00, 0x00,                 // hidden sectors
+        0x00, 0x00, 0x00, 0x00,                 // large total sectors
+    ];
+    harness::write_bytes(
+        &mut machine.bus,
+        harness::INJECT_CODE_BASE + BPB_OFFSET as u32,
+        bpb,
+    );
+    harness::write_bytes(&mut machine.bus, DPB_ADDR, &[0xCC; 0x21]);
+
     #[rustfmt::skip]
     let code: &[u8] = &[
+        0x0E,                                   // PUSH CS
+        0x1F,                                   // POP DS
+        0x0E,                                   // PUSH CS
+        0x07,                                   // POP ES
+        0xBE, 0x80, 0x01,                       // MOV SI, 0180h
+        0xBD, 0xA0, 0x01,                       // MOV BP, 01A0h
+        0xC6, 0x06, 0xA0, 0x01, 0x02,           // MOV BYTE [01A0h], 02h
+        0xC6, 0x06, 0xA1, 0x01, 0x00,           // MOV BYTE [01A1h], 00h
         0xB4, 0x53,                             // MOV AH, 53h
         0xCD, 0x21,                             // INT 21h
-        0xC6, 0x06, 0x00, 0x01, 0x01,           // MOV BYTE [0100h], 01h
+        0x9C,                                   // PUSHF
+        0x58,                                   // POP AX
+        0xA3, 0x00, 0x01,                       // MOV [0100h], AX
         0xFA, 0xF4,                             // CLI; HLT
     ];
     harness::inject_and_run(&mut machine, code);
 
-    let marker = harness::result_byte(&machine.bus, 0);
-    assert_eq!(marker, 0x01, "AH=53h should return without crashing");
+    let flags = harness::result_word(&machine.bus, 0);
+    assert_eq!(flags & 1, 0, "AH=53h should return CF=0");
+    assert_eq!(harness::read_byte(&machine.bus, DPB_ADDR), 0x02);
+    assert_eq!(harness::read_byte(&machine.bus, DPB_ADDR + 1), 0x00);
+    assert_eq!(harness::read_word(&machine.bus, DPB_ADDR + 0x02), 512);
+    assert_eq!(harness::read_byte(&machine.bus, DPB_ADDR + 0x04), 3);
+    assert_eq!(harness::read_byte(&machine.bus, DPB_ADDR + 0x05), 2);
+    assert_eq!(harness::read_word(&machine.bus, DPB_ADDR + 0x06), 1);
+    assert_eq!(harness::read_byte(&machine.bus, DPB_ADDR + 0x08), 2);
+    assert_eq!(harness::read_word(&machine.bus, DPB_ADDR + 0x09), 512);
+    assert_eq!(harness::read_word(&machine.bus, DPB_ADDR + 0x0B), 49);
+    assert_eq!(harness::read_word(&machine.bus, DPB_ADDR + 0x0D), 2488);
+    assert_eq!(harness::read_word(&machine.bus, DPB_ADDR + 0x0F), 8);
+    assert_eq!(harness::read_word(&machine.bus, DPB_ADDR + 0x11), 17);
+    assert_eq!(harness::read_byte(&machine.bus, DPB_ADDR + 0x17), 0xF8);
+    // Real DOS 6.20 leaves the access flag (+0x18) untouched (still the 0xCC fill).
+    assert_eq!(harness::read_byte(&machine.bus, DPB_ADDR + 0x18), 0xCC);
+    assert_eq!(harness::read_word(&machine.bus, DPB_ADDR + 0x1D), 0x0000);
+    assert_eq!(harness::read_word(&machine.bus, DPB_ADDR + 0x1F), 0xFFFF);
 }
