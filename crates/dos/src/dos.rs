@@ -3,8 +3,8 @@
 use common::warn;
 
 use crate::{
-    BufferedInputState, CpuAccess, DriveIo, MemoryAccess, NeetanDos, Tracing, adjust_iret_ip,
-    country, filesystem, memory, set_iret_carry, set_iret_zf, tables,
+    BufferedInputState, CpuAccess, DriveIo, MemoryAccess, NeetanDos, SegmentRegister, Tracing,
+    adjust_iret_ip, country, filesystem, memory, set_iret_carry, set_iret_zf, tables,
 };
 
 impl NeetanDos {
@@ -330,7 +330,7 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
     ) {
         if self.state.buffered_input.is_none() {
-            let buffer_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+            let buffer_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
             let max_chars = memory.read_byte(buffer_addr);
             if max_chars == 0 {
                 return;
@@ -424,7 +424,7 @@ impl NeetanDos {
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
     ) {
-        let start = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let start = cpu.linear_address(SegmentRegister::DS, cpu.dx());
         for addr in start..start + 0xFFFFu32 {
             let byte = memory.read_byte(addr);
             if byte == b'$' {
@@ -521,8 +521,8 @@ impl NeetanDos {
     /// DS:SI = input ASCIIZ path, ES:DI = 128-byte output buffer.
     /// Returns CF=0 on success, CF=1 with AX=error on failure.
     fn int21h_60h_truename(&self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
-        let input_addr = ((cpu.ds() as u32) << 4) + cpu.si() as u32;
-        let output_addr = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+        let input_addr = cpu.linear_address(SegmentRegister::DS, cpu.si());
+        let output_addr = cpu.linear_address(SegmentRegister::ES, cpu.di());
 
         let mut path = Vec::new();
         for i in 0..128u32 {
@@ -699,7 +699,7 @@ impl NeetanDos {
     /// AH=38h: Get country-dependent information.
     /// AL=00h: Get current country info. DS:DX = 34-byte buffer. BX = country code on return.
     fn int21h_38h_get_country_info(&self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
-        let buffer_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let buffer_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
         country::write_country_info(memory, buffer_addr);
         cpu.set_bx(country::COUNTRY_CODE);
         set_iret_carry(cpu, memory, false);
@@ -713,7 +713,7 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
         disk: &mut dyn DriveIo,
     ) {
-        let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let path_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
 
         let mut path_bytes = Vec::new();
         for i in 0..80u32 {
@@ -775,7 +775,7 @@ impl NeetanDos {
         }
 
         // Copy everything after "X:\" to the buffer
-        let buffer_addr = ((cpu.ds() as u32) << 4) + cpu.si() as u32;
+        let buffer_addr = cpu.linear_address(SegmentRegister::DS, cpu.si());
         let skip = if path.len() >= 3 && path[1] == b':' && path[2] == b'\\' {
             3
         } else if path.len() >= 2 && path[1] == b':' {
@@ -1074,7 +1074,7 @@ impl NeetanDos {
                 set_iret_carry(cpu, memory, false);
             }
             0x21 | 0xA1 => {
-                let addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+                let addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
                 let len = cpu.cx() as u32;
                 for i in 0..len {
                     let ch = memory.read_byte(addr + i);
@@ -1083,7 +1083,7 @@ impl NeetanDos {
                 set_iret_carry(cpu, memory, false);
             }
             0x22 | 0xA2 => {
-                let addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+                let addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
                 for i in 0..256u32 {
                     let ch = memory.read_byte(addr + i);
                     if ch == 0 {
@@ -1103,7 +1103,7 @@ impl NeetanDos {
                 set_iret_carry(cpu, memory, false);
             }
             0x01 | 0x03 | 0x05 | 0x07 => {
-                let buffer_addr = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+                let buffer_addr = cpu.linear_address(SegmentRegister::ES, cpu.di());
                 let max_bytes = cpu.cx();
 
                 let written = match al {
@@ -1300,7 +1300,7 @@ impl NeetanDos {
 
         match al {
             0x00 => {
-                let buffer_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+                let buffer_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
                 // Info level: 0
                 memory.write_word(buffer_addr, 0x0000);
                 // Serial number (synthetic from drive index).

@@ -1,7 +1,7 @@
 //! INT 67h: Expanded Memory Manager (EMS 4.0).
 
 use crate::{
-    CpuAccess, MemoryAccess, NeetanDos,
+    CpuAccess, MemoryAccess, NeetanDos, SegmentRegister,
     memory::memory_manager::{EmsMoveParams, EmsPageMapCallContext},
     tables,
 };
@@ -92,7 +92,7 @@ impl NeetanDos {
                 }
             }
             0x4D => {
-                let buffer_addr = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+                let buffer_addr = cpu.linear_address(SegmentRegister::ES, cpu.di());
                 let handles = mm.ems_all_handle_pages();
                 for (i, &(handle, pages)) in handles.iter().enumerate() {
                     let entry_addr = buffer_addr + (i as u32) * 4;
@@ -109,7 +109,7 @@ impl NeetanDos {
                         // Get Partial Page Map: save partial mapping context
                         // for segments listed at DS:SI into dest_array at ES:DI.
                         // partial_page_map: WORD count, WORD[] segments.
-                        let src_addr = ((cpu.ds() as u32) << 4) + cpu.si() as u32;
+                        let src_addr = cpu.linear_address(SegmentRegister::DS, cpu.si());
                         let count = memory.read_word(src_addr);
                         let count_usize = count as usize;
                         if count_usize > 4 {
@@ -121,7 +121,7 @@ impl NeetanDos {
                             }
                             match mm.ems_get_partial_page_map(&segments) {
                                 Ok(buf) => {
-                                    let dest = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+                                    let dest = cpu.linear_address(SegmentRegister::ES, cpu.di());
                                     memory.write_block(dest, &buf);
                                     cpu.set_ax(cpu.ax() & 0x00FF);
                                 }
@@ -133,7 +133,7 @@ impl NeetanDos {
                     }
                     0x01 => {
                         // Set Partial Page Map: source_array at DS:SI.
-                        let src_addr = ((cpu.ds() as u32) << 4) + cpu.si() as u32;
+                        let src_addr = cpu.linear_address(SegmentRegister::DS, cpu.si());
                         let count = memory.read_byte(src_addr) as usize;
                         if count > 4 {
                             cpu.set_ax((cpu.ax() & 0x00FF) | 0xA300);
@@ -173,7 +173,7 @@ impl NeetanDos {
                     return;
                 }
                 let handle = cpu.dx();
-                let struct_addr = ((cpu.ds() as u32) << 4) + cpu.si() as u32;
+                let struct_addr = cpu.linear_address(SegmentRegister::DS, cpu.si());
                 let target_ip = memory.read_word(struct_addr);
                 let target_cs = memory.read_word(struct_addr + 2);
                 let map_len = memory.read_byte(struct_addr + 4);
@@ -189,7 +189,7 @@ impl NeetanDos {
                     // Modify the IRET frame (IP at SS:SP, CS at SS:SP+2,
                     // FLAGS at SS:SP+4) to jump to target_cs:target_ip
                     // preserving the caller's FLAGS.
-                    let iret_base = ((cpu.ss() as u32) << 4) + cpu.sp() as u32;
+                    let iret_base = cpu.linear_address(SegmentRegister::SS, cpu.sp());
                     memory.write_word(iret_base, target_ip);
                     memory.write_word(iret_base + 2, target_cs);
                     cpu.set_ax(cpu.ax() & 0x00FF);
@@ -202,7 +202,7 @@ impl NeetanDos {
                 match al {
                     0x00 | 0x01 => {
                         let handle = cpu.dx();
-                        let struct_addr = ((cpu.ds() as u32) << 4) + cpu.si() as u32;
+                        let struct_addr = cpu.linear_address(SegmentRegister::DS, cpu.si());
                         let target_ip = memory.read_word(struct_addr);
                         let target_cs = memory.read_word(struct_addr + 2);
                         let new_len = memory.read_byte(struct_addr + 4);
@@ -226,12 +226,12 @@ impl NeetanDos {
                                 old_map_addr: old_addr,
                             });
                             let original_sp = cpu.sp();
-                            let iret_base = ((cpu.ss() as u32) << 4) + original_sp as u32;
+                            let iret_base = cpu.linear_address(SegmentRegister::SS, original_sp);
                             let original_ip = memory.read_word(iret_base);
                             let original_cs = memory.read_word(iret_base + 2);
                             let original_flags = memory.read_word(iret_base + 4);
                             let new_sp = original_sp.wrapping_sub(10);
-                            let new_iret_base = ((cpu.ss() as u32) << 4) + new_sp as u32;
+                            let new_iret_base = cpu.linear_address(SegmentRegister::SS, new_sp);
 
                             memory.write_word(new_iret_base, target_ip);
                             memory.write_word(new_iret_base + 2, target_cs);
@@ -260,7 +260,7 @@ impl NeetanDos {
                 let al = cpu.ax() as u8;
                 match al {
                     0x00 => {
-                        let dest_addr = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+                        let dest_addr = cpu.linear_address(SegmentRegister::ES, cpu.di());
                         let map = mm.ems_get_page_map();
                         for (i, slot) in map.iter().enumerate() {
                             let addr = dest_addr + (i as u32) * 4;
@@ -278,7 +278,7 @@ impl NeetanDos {
                         cpu.set_ax(cpu.ax() & 0x00FF);
                     }
                     0x01 => {
-                        let src_addr = ((cpu.ds() as u32) << 4) + cpu.si() as u32;
+                        let src_addr = cpu.linear_address(SegmentRegister::DS, cpu.si());
                         match read_page_map_from_memory(mm, memory, src_addr) {
                             Ok(map) => {
                                 mm.ems_set_page_map(map, memory);
@@ -290,11 +290,11 @@ impl NeetanDos {
                         }
                     }
                     0x02 => {
-                        let dest_addr = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+                        let dest_addr = cpu.linear_address(SegmentRegister::ES, cpu.di());
                         let old_map = mm.ems_get_page_map();
                         write_page_map_to_memory(memory, dest_addr, &old_map);
 
-                        let src_addr = ((cpu.ds() as u32) << 4) + cpu.si() as u32;
+                        let src_addr = cpu.linear_address(SegmentRegister::DS, cpu.si());
                         match read_page_map_from_memory(mm, memory, src_addr) {
                             Ok(new_map) => {
                                 mm.ems_set_page_map(new_map, memory);
@@ -317,7 +317,7 @@ impl NeetanDos {
                 let al = cpu.ax() as u8;
                 let handle = cpu.dx();
                 let count = cpu.cx();
-                let src_addr = ((cpu.ds() as u32) << 4) + cpu.si() as u32;
+                let src_addr = cpu.linear_address(SegmentRegister::DS, cpu.si());
                 match al {
                     0x00 | 0x01 => {
                         if count as usize > 4 {
@@ -415,7 +415,7 @@ impl NeetanDos {
                         let handle = cpu.dx();
                         match mm.ems_handle_name(handle) {
                             Ok(name) => {
-                                let dest = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+                                let dest = cpu.linear_address(SegmentRegister::ES, cpu.di());
                                 memory.write_block(dest, &name);
                                 cpu.set_ax(cpu.ax() & 0x00FF);
                             }
@@ -426,7 +426,7 @@ impl NeetanDos {
                     }
                     0x01 => {
                         let handle = cpu.dx();
-                        let src = ((cpu.ds() as u32) << 4) + cpu.si() as u32;
+                        let src = cpu.linear_address(SegmentRegister::DS, cpu.si());
                         let mut name = [0u8; 8];
                         memory.read_block(src, &mut name);
                         let status = mm.ems_set_handle_name(handle, name);
@@ -441,7 +441,7 @@ impl NeetanDos {
                 let al = cpu.ax() as u8;
                 match al {
                     0x00 => {
-                        let dest = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+                        let dest = cpu.linear_address(SegmentRegister::ES, cpu.di());
                         let dir = mm.ems_handle_directory();
                         for (i, &(handle, ref name)) in dir.iter().enumerate() {
                             let addr = dest + (i as u32) * 10;
@@ -451,7 +451,7 @@ impl NeetanDos {
                         cpu.set_ax(dir.len() as u16);
                     }
                     0x01 => {
-                        let src = ((cpu.ds() as u32) << 4) + cpu.si() as u32;
+                        let src = cpu.linear_address(SegmentRegister::DS, cpu.si());
                         let mut name = [0u8; 8];
                         memory.read_block(src, &mut name);
                         match mm.ems_search_handle_name(&name) {
@@ -475,7 +475,7 @@ impl NeetanDos {
             }
             0x57 => {
                 let al = cpu.ax() as u8;
-                let src = ((cpu.ds() as u32) << 4) + cpu.si() as u32;
+                let src = cpu.linear_address(SegmentRegister::DS, cpu.si());
                 let params = EmsMoveParams {
                     region_length: memory.read_word(src) as u32
                         | ((memory.read_word(src + 2) as u32) << 16),
@@ -500,7 +500,7 @@ impl NeetanDos {
                 let al = cpu.ax() as u8;
                 match al {
                     0x00 => {
-                        let dest = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+                        let dest = cpu.linear_address(SegmentRegister::ES, cpu.di());
                         let segments: [u16; 4] = [0xC000, 0xC400, 0xC800, 0xCC00];
                         for (i, &seg) in segments.iter().enumerate() {
                             let addr = dest + (i as u32) * 4;
@@ -527,7 +527,7 @@ impl NeetanDos {
                             cpu.set_ax((cpu.ax() & 0x00FF) | 0xA400);
                             return;
                         }
-                        let dest = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+                        let dest = cpu.linear_address(SegmentRegister::ES, cpu.di());
                         memory.write_word(dest, 0x0400);
                         memory.write_word(dest + 2, 0x0000);
                         memory.write_word(dest + 4, mm.ems_page_map_size());

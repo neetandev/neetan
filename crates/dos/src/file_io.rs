@@ -3,7 +3,7 @@
 use common::warn;
 
 use crate::{
-    CpuAccess, DiskIo, DosState, DriveIo, MemoryAccess, NeetanDos,
+    CpuAccess, DiskIo, DosState, DriveIo, MemoryAccess, NeetanDos, SegmentRegister,
     filesystem::{
         self, FatHandleMetadata, ReadDirEntrySource, ReadDirectory, fat_dir,
         fat_file::FatFileCursor, find_matching_read_entry, find_read_entry, iso9660, split_path,
@@ -156,7 +156,7 @@ impl NeetanDos {
                 cpu.set_dx(max_cluster);
                 cpu.set_bx(dpb_addr as u16); // DS:BX -> media byte (approximate)
                 // Write media byte at DS:BX for callers that read it
-                let ds_bx = ((cpu.ds() as u32) << 4) + cpu.bx() as u32;
+                let ds_bx = cpu.linear_address(SegmentRegister::DS, cpu.bx());
                 memory.write_byte(ds_bx, media);
                 found = true;
                 break;
@@ -243,9 +243,9 @@ impl NeetanDos {
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
     ) {
-        let original_si_addr = ((cpu.ds() as u32) << 4) + cpu.si() as u32;
+        let original_si_addr = cpu.linear_address(SegmentRegister::DS, cpu.si());
         let mut si_addr = original_si_addr;
-        let di_addr = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+        let di_addr = cpu.linear_address(SegmentRegister::ES, cpu.di());
         let al_flags = cpu.ax() as u8;
 
         // AL bit 0: skip leading separators (space, tab, comma, semicolon, etc.)
@@ -302,7 +302,7 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
         disk: &mut dyn DiskIo,
     ) {
-        let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let path_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
         let path = DosState::read_asciiz(memory, path_addr, 128);
 
         match filesystem::create_directory(&mut self.state, memory, disk, &path) {
@@ -321,7 +321,7 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
         disk: &mut dyn DiskIo,
     ) {
-        let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let path_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
         let attr = cpu.cx() as u8;
         let path = DosState::read_asciiz(memory, path_addr, 128);
 
@@ -357,7 +357,7 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
         disk: &mut dyn DriveIo,
     ) {
-        let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let path_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
         let open_mode = cpu.ax() as u8 & 0x03;
         let path = DosState::read_asciiz(memory, path_addr, 128);
         let is_ems_probe = self.state.ems_enabled && path_is_ems_device(&path);
@@ -500,7 +500,7 @@ impl NeetanDos {
     ) {
         let handle = cpu.bx();
         let count = cpu.cx() as u32;
-        let buf_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let buf_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
 
         let result = (|| -> Result<u16, u16> {
             let sft_index = self.state.handle_to_sft_index(handle, memory)?;
@@ -589,7 +589,7 @@ impl NeetanDos {
     ) {
         let handle = cpu.bx();
         let count = cpu.cx() as u32;
-        let buf_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let buf_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
 
         let result = (|| -> Result<u16, u16> {
             let sft_index = self.state.handle_to_sft_index(handle, memory)?;
@@ -655,7 +655,7 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
         disk: &mut dyn DiskIo,
     ) {
-        let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let path_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
         let path = DosState::read_asciiz(memory, path_addr, 128);
 
         let result = filesystem::delete_file(&mut self.state, memory, disk, &path);
@@ -717,7 +717,7 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
         disk: &mut dyn DriveIo,
     ) {
-        let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let path_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
         let al = cpu.ax() as u8;
         let path = DosState::read_asciiz(memory, path_addr, 128);
 
@@ -857,7 +857,7 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
         disk: &mut dyn DriveIo,
     ) {
-        let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let path_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
         let attr_mask = cpu.cx() as u8;
         let path = DosState::read_asciiz(memory, path_addr, 128);
 
@@ -998,8 +998,8 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
         disk: &mut dyn DiskIo,
     ) {
-        let old_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
-        let new_addr = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+        let old_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
+        let new_addr = cpu.linear_address(SegmentRegister::ES, cpu.di());
         let old_path = DosState::read_asciiz(memory, old_addr, 128);
         let new_path = DosState::read_asciiz(memory, new_addr, 128);
 

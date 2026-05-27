@@ -33,7 +33,7 @@ use std::collections::BTreeMap;
 pub use common::{
     AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
     ConsoleIo, CpuAccess, CursorAccess, DiskIo, DosBootStage, DriveIo, HardwareCursorState,
-    MemoryAccess, Tracing,
+    MemoryAccess, SegmentRegister, Tracing,
 };
 
 use crate::memory::memory_manager::MemoryManager;
@@ -2004,7 +2004,9 @@ impl DosState {
 
 /// Writes the carry flag into the IRET frame on the stack.
 pub(crate) fn set_iret_carry(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, carry: bool) {
-    let flags_addr = ((cpu.ss() as u32) << 4) + cpu.sp() as u32 + 4;
+    let flags_addr = cpu
+        .linear_address(SegmentRegister::SS, cpu.sp())
+        .wrapping_add(4);
     let mut flags = mem.read_word(flags_addr);
     if carry {
         flags |= 0x0001;
@@ -2015,7 +2017,9 @@ pub(crate) fn set_iret_carry(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, ca
 }
 
 pub(crate) fn set_iret_zf(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, zero: bool) {
-    let flags_addr = ((cpu.ss() as u32) << 4) + cpu.sp() as u32 + 4;
+    let flags_addr = cpu
+        .linear_address(SegmentRegister::SS, cpu.sp())
+        .wrapping_add(4);
     let mut flags = mem.read_word(flags_addr);
     if zero {
         flags |= 0x0040;
@@ -2026,7 +2030,7 @@ pub(crate) fn set_iret_zf(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, zero:
 }
 
 pub(crate) fn adjust_iret_ip(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, delta: i16) {
-    let ip_addr = ((cpu.ss() as u32) << 4) + cpu.sp() as u32;
+    let ip_addr = cpu.linear_address(SegmentRegister::SS, cpu.sp());
     let ip = mem.read_word(ip_addr);
     mem.write_word(ip_addr, ip.wrapping_add(delta as u16));
 }

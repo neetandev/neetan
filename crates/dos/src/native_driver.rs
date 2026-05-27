@@ -25,7 +25,7 @@
 //! `NativeDriverSpec`. This keeps the feature scoped to binaries we have
 //! audited and verified with the HLE DOS.
 
-use common::{info, warn};
+use common::{SegmentRegister, info, warn};
 
 use crate::{
     BootEntryPoint, DriveIo, LoadedNativeDriver, MemoryAccess, NeetanDos, config,
@@ -280,7 +280,7 @@ impl NeetanDos {
 
         self.pending_native_drivers.clear();
 
-        let iret_base = ((cpu.ss() as u32) << 4) + cpu.sp() as u32;
+        let iret_base = cpu.linear_address(SegmentRegister::SS, cpu.sp());
         let entry = BootEntryPoint::command_com(self.root_command_com_psp);
         memory.write_word(iret_base, entry.offset);
         memory.write_word(iret_base + 2, entry.segment);

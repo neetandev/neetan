@@ -5,7 +5,7 @@
 
 use common::{
     AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType, Cpu,
-    CpuAccess, CursorAccess, DiskIo, HardwareCursorState, MemoryAccess,
+    CpuAccess, CursorAccess, DiskIo, HardwareCursorState, MemoryAccess, SegmentRegister,
 };
 use device::{
     cd_audio::CdAudioState as DeviceCdAudioState, cdrom::TrackType, ide::IdeController,
@@ -65,6 +65,14 @@ impl<C: Cpu> CpuAccess for DosCpuAccess<'_, C> {
         self.0.set_di(value);
     }
 
+    fn bp(&self) -> u16 {
+        self.0.bp()
+    }
+
+    fn set_bp(&mut self, value: u16) {
+        self.0.set_bp(value);
+    }
+
     fn ds(&self) -> u16 {
         self.0.ds()
     }
@@ -112,6 +120,10 @@ impl<C: Cpu> CpuAccess for DosCpuAccess<'_, C> {
             flags &= !0x0001;
         }
         self.0.set_flags(flags);
+    }
+
+    fn segment_base(&self, segment: SegmentRegister) -> u32 {
+        self.0.segment_base(segment)
     }
 
     fn eax(&self) -> u32 {

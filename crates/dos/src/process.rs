@@ -4,7 +4,7 @@
 pub(crate) static COMMAND_COM_STUB: &[u8] = include_bytes!("../../../utils/dos/dos.rom");
 
 use crate::{
-    CpuAccess, DiskIo, DosState, DriveIo, MemoryAccess, NeetanDos, country, dos,
+    CpuAccess, DiskIo, DosState, DriveIo, MemoryAccess, NeetanDos, SegmentRegister, country, dos,
     filesystem::{fat::FatVolume, fat_dir, fat_file, find_read_entry, read_entry_all},
     memory, set_iret_carry,
     tables::*,
@@ -579,11 +579,11 @@ impl NeetanDos {
         disk: &mut dyn DriveIo,
     ) -> Result<(), u16> {
         // Parse parameters.
-        let filename_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let filename_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
         let path = DosState::read_asciiz(mem, filename_addr, 128);
         let program_path = build_program_path(&self.state, mem, &path);
 
-        let pb_addr = ((cpu.es() as u32) << 4) + cpu.bx() as u32;
+        let pb_addr = cpu.linear_address(SegmentRegister::ES, cpu.bx());
         let env_seg = mem.read_word(pb_addr);
         let cmd_tail_off = mem.read_word(pb_addr + 2);
         let cmd_tail_seg = mem.read_word(pb_addr + 4);
@@ -639,11 +639,11 @@ impl NeetanDos {
         mem: &mut dyn MemoryAccess,
         disk: &mut dyn DriveIo,
     ) -> Result<(), u16> {
-        let filename_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let filename_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
         let path = DosState::read_asciiz(mem, filename_addr, 128);
         let program_path = build_program_path(&self.state, mem, &path);
 
-        let pb_addr = ((cpu.es() as u32) << 4) + cpu.bx() as u32;
+        let pb_addr = cpu.linear_address(SegmentRegister::ES, cpu.bx());
         let env_seg = mem.read_word(pb_addr);
         let cmd_tail_off = mem.read_word(pb_addr + 2);
         let cmd_tail_seg = mem.read_word(pb_addr + 4);
