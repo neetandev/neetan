@@ -104,10 +104,10 @@ const EMS_PHYSICAL_PAGE_COUNT: usize = 4;
 /// EMS physical page size in bytes.
 const EMS_PHYSICAL_PAGE_SIZE: u32 = 0x4000;
 
-/// UMB (Upper Memory Block) region start address (D0000h). 64 KB.
-const UMB_START: u32 = 0xD0000;
-/// UMB region size in bytes (64 KB).
-const UMB_REGION_SIZE: usize = 0x10000;
+/// UMB (Upper Memory Block) region start address (C0000h).
+const UMB_START: u32 = 0xC0000;
+/// UMB region size in bytes (128 KB at C0000h-DFFFFh).
+const UMB_REGION_SIZE: usize = 0x20000;
 
 /// Sound ROM start address (CC000h). 16 KB.
 const SOUND_ROM_START: u32 = 0xCC000;
@@ -158,8 +158,10 @@ pub struct Pc9801MemoryState {
     pub ems_page_frame: Option<Box<[u8; EMS_PAGE_FRAME_SIZE]>>,
     /// Live slot mappings for the EMS page frame. Unmapped slots use `ems_page_frame`.
     pub ems_page_frame_slot_mappings: [Option<u32>; EMS_PHYSICAL_PAGE_COUNT],
-    /// UMB region backing (64 KB at D0000-DFFFF). Enabled by the HLE memory manager.
+    /// UMB region backing (128 KB at C0000-DFFFF). Enabled by the HLE memory manager.
     pub umb_region: Option<Box<[u8; UMB_REGION_SIZE]>>,
+    /// Optional extended-RAM backing address for the UMB window.
+    pub umb_region_backing_linear_addr: Option<u32>,
 }
 
 impl fmt::Debug for Pc9801MemoryState {
@@ -208,6 +210,10 @@ impl fmt::Debug for Pc9801MemoryState {
                 &self.ems_page_frame_slot_mappings,
             )
             .field("umb_region", &self.umb_region.is_some())
+            .field(
+                "umb_region_backing_linear_addr",
+                &self.umb_region_backing_linear_addr,
+            )
             .finish()
     }
 }
@@ -338,6 +344,7 @@ impl Pc9801Memory {
                 ems_page_frame: None,
                 ems_page_frame_slot_mappings: [None; EMS_PHYSICAL_PAGE_COUNT],
                 umb_region: None,
+                umb_region_backing_linear_addr: None,
             },
             rom: vec![0u8; BIOS_ROM_SIZE]
                 .into_boxed_slice()
@@ -606,11 +613,16 @@ impl Pc9801Memory {
         self.state.ems_page_frame_slot_mappings[physical_page] = backing_linear_addr;
     }
 
-    /// Enables the UMB region backing at D0000-DFFFF (64 KB).
-    pub(crate) fn enable_umb_region(&mut self) {
-        if self.state.umb_region.is_none() {
+    /// Enables the UMB region backing at C0000-DFFFF (128 KB).
+    pub(crate) fn enable_umb_region(&mut self, backing_linear_addr: Option<u32>) {
+        self.state.umb_region_backing_linear_addr = backing_linear_addr;
+        if backing_linear_addr.is_none() && self.state.umb_region.is_none() {
             self.state.umb_region = Some(Box::new([0u8; UMB_REGION_SIZE]));
         }
+    }
+
+    pub(crate) fn umb_region_enabled(&self) -> bool {
+        self.state.umb_region.is_some() || self.state.umb_region_backing_linear_addr.is_some()
     }
 
     /// Returns the size of extended RAM in bytes (0 for V30 machines).
@@ -653,10 +665,14 @@ impl Pc9801Memory {
                 {
                     return pf[(address - EMS_PAGE_FRAME_START) as usize];
                 }
-                if let Some(ref umb) = self.state.umb_region
-                    && address >= UMB_START
-                {
-                    return umb[(address - UMB_START) as usize];
+                if address >= UMB_START {
+                    let offset = address - UMB_START;
+                    if let Some(backing) = self.state.umb_region_backing_linear_addr {
+                        return self.read_byte(backing + offset);
+                    }
+                    if let Some(ref umb) = self.state.umb_region {
+                        return umb[offset as usize];
+                    }
                 }
                 if let Some(ref rom) = self.sound_rom
                     && (SOUND_ROM_START..=SOUND_ROM_END).contains(&address)
@@ -728,10 +744,15 @@ impl Pc9801Memory {
                     pf[(address - EMS_PAGE_FRAME_START) as usize] = value;
                     return;
                 }
-                if let Some(ref mut umb) = self.state.umb_region
-                    && address >= UMB_START
-                {
-                    umb[(address - UMB_START) as usize] = value;
+                if address >= UMB_START {
+                    let offset = address - UMB_START;
+                    if let Some(backing) = self.state.umb_region_backing_linear_addr {
+                        self.write_byte(backing + offset, value);
+                        return;
+                    }
+                    if let Some(ref mut umb) = self.state.umb_region {
+                        umb[offset as usize] = value;
+                    }
                 }
             }
             E_PLANE_VRAM_START..=E_PLANE_VRAM_END if self.e_plane_enabled => {

@@ -122,8 +122,12 @@ pub trait MemoryAccess {
     fn enable_ems_page_frame(&mut self) {}
     /// Maps a 16 KB EMS page-frame slot to a backing linear address in extended RAM.
     fn map_ems_page_frame_slot(&mut self, _physical_page: u8, _backing_linear_addr: Option<u32>) {}
-    /// Enables the UMB region backing at D0000-DFFFF.
-    fn enable_umb_region(&mut self) {}
+    /// Enables the UMB region at C0000-DFFFF.
+    ///
+    /// When `backing_linear_addr` is set, reads and writes are redirected to
+    /// extended RAM starting at that linear address. When it is `None`, the
+    /// implementation may use private RAM backing.
+    fn enable_umb_region(&mut self, _backing_linear_addr: Option<u32>) {}
 }
 
 /// Disk I/O for the filesystem layer.

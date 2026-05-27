@@ -270,8 +270,8 @@ impl MemoryAccess for DosMemoryAccess<'_> {
             .map_ems_page_frame_slot(physical_page, backing_linear_addr);
     }
 
-    fn enable_umb_region(&mut self) {
-        self.memory.enable_umb_region();
+    fn enable_umb_region(&mut self, backing_linear_addr: Option<u32>) {
+        self.memory.enable_umb_region(backing_linear_addr);
     }
 }
 
