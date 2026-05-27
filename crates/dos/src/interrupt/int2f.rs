@@ -21,8 +21,9 @@ impl NeetanDos {
             0x11 => self.int2fh_11h_network_redirector(cpu, memory),
             0x12 => self.int2fh_12h_dos_internal(cpu, memory),
             0x15 => self.int2fh_15h_mscdex(cpu, memory, cdrom),
-            0x16 => self.int2fh_16h_windows_check(cpu),
+            0x16 => self.int2fh_16h_windows_check(cpu, memory),
             0x43 => self.int2fh_43h_xms_check(cpu),
+            0x46 => self.int2fh_46h_windows_mcb(cpu),
             0x48 => self.int2fh_48h_doskey_check(cpu),
             0x4A => self.int2fh_4ah_hma_query(cpu),
             0x4D => self.int2fh_4dh_kkcfunc(),
@@ -276,10 +277,98 @@ impl NeetanDos {
         }
     }
 
-    /// AH=16h: Windows enhanced mode check.
-    /// Returns AL=00h (no Windows running).
-    fn int2fh_16h_windows_check(&self, cpu: &mut dyn CpuAccess) {
-        cpu.set_ax(cpu.ax() & 0xFF00);
+    /// AH=16h: Windows enhanced mode broadcasts and DOSMGR API.
+    ///
+    /// AL=00h ("Get Enhanced Mode version") returns AL=0 to signal Windows is
+    /// not running. AL=07h with BX=15h is the DOSMGR virtual device API used
+    /// during Windows enhanced-mode init. All other broadcasts (160Ah/0Bh/0Ch
+    /// and friends) must leave the caller's registers and CF untouched, just
+    /// like real DOS 6.20 with no Windows resident.
+    fn int2fh_16h_windows_check(&mut self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+        let al = cpu.ax() as u8;
+        match al {
+            0x00 => cpu.set_ax(cpu.ax() & 0xFF00),
+            0x07 if cpu.bx() == 0x0015 => self.int2fh_1607h_dosmgr_api(cpu, memory),
+            _ => {}
+        }
+    }
+
+    /// AX=1607h BX=15h: DOSMGR virtual device API.
+    ///
+    /// Each subfunction is selected by CX. Responses are modeled on real DOS
+    /// 5+/6.20 kernels: CX=0 returns the patch table, CX=1 acknowledges the
+    /// device-specific flags, CX=2/3/4/5 implement the optional services
+    /// DOSMGR uses to probe for HMA, instance data, and kernel device
+    /// drivers.
+    fn int2fh_1607h_dosmgr_api(&self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+        match cpu.cx() {
+            0x0000 if cpu.dx() == 0x0000 => {
+                let (segment, offset) =
+                    tables::dos_data_far(tables::WINDOWS_DOSMGR_PATCH_TABLE_OFFSET);
+                cpu.set_cx(0x0001);
+                cpu.set_dx(0x0000);
+                cpu.set_es(segment);
+                cpu.set_bx(offset);
+                set_iret_carry(cpu, memory, false);
+            }
+            0x0001 => {
+                let value = cpu.dx();
+                cpu.set_ax(0xB97C);
+                cpu.set_bx(value);
+                cpu.set_cx(0x0000);
+                cpu.set_dx(0xA2AB);
+                set_iret_carry(cpu, memory, false);
+            }
+            0x0002 => {
+                cpu.set_cx(0x0000);
+                set_iret_carry(cpu, memory, false);
+            }
+            0x0003 => {
+                if cpu.dx() == 0x0001 {
+                    cpu.set_ax(0xB97C);
+                    cpu.set_cx(0x0058);
+                    cpu.set_dx(0xA2AB);
+                }
+                set_iret_carry(cpu, memory, false);
+            }
+            0x0004 => {
+                cpu.set_cx(0x0000);
+                cpu.set_dx(0x0000);
+                set_iret_carry(cpu, memory, false);
+            }
+            0x0005 => {
+                // Device driver size probe. Inputs: ES:DI points at a device
+                // header inside the DOS data segment. We report the HLE
+                // device-driver region by responding only when ES:DI is in
+                // our reserved area below FIRST_MCB_OFFSET.
+                if cpu.es() == tables::DOS_DATA_SEGMENT && cpu.di() < tables::FIRST_MCB_OFFSET {
+                    cpu.set_ax(0xB97C);
+                    cpu.set_bx(0x0000);
+                    cpu.set_cx(tables::FIRST_MCB_OFFSET);
+                    cpu.set_dx(0xA2AB);
+                } else {
+                    cpu.set_ax(0x0000);
+                    cpu.set_bx(0x0000);
+                    cpu.set_cx(0x0000);
+                    cpu.set_dx(0x0000);
+                }
+                set_iret_carry(cpu, memory, false);
+            }
+            _ => {}
+        }
+    }
+
+    /// AH=46h: DOS 5+/Windows MCB save/restore compatibility hooks. Real DOS
+    /// 6.20 itself does NOT mutate any MCB state for AL=01h/02h or the other
+    /// subfunctions; oracle reads confirm the trashed bytes survive a 4602h
+    /// "restore". Windows installs its own MCB management when it runs, so on
+    /// stock DOS these calls only need to preserve the caller's registers and
+    /// CF.
+    fn int2fh_46h_windows_mcb(&self, cpu: &dyn CpuAccess) {
+        let al = cpu.ax() as u8;
+        if !matches!(al, 0x01 | 0x02 | 0x03 | 0x04 | 0x80) {
+            warn!("INT 2Fh AX={:#06X}h is unimplemented", cpu.ax());
+        }
     }
 
     /// AH=43h: XMS driver installation check and entry point.

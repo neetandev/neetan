@@ -210,6 +210,25 @@ pub const ERROR_TABLE_STANDARD_TOKEN: u16 = 0x0100;
 pub const ERROR_TABLE_PARAMETER_TOKEN: u16 = 0x0200;
 pub const ERROR_TABLE_CRITICAL_TOKEN: u16 = 0x0300;
 
+// Windows enhanced mode DOSMGR support. DOSMGR scans the DOS data segment
+// for these signature blocks during init; the patch table tells it where the
+// kernel keeps the InDOS flag, the save-DS/save-BX scratch words, the
+// critical-section table, and the UMB MCB chain head.
+pub const WINDOWS_DOSMGR_SIGNATURE_BANK_OFFSET: u16 = 0x0E28;
+pub const WINDOWS_DOSMGR_SIGNATURE_BANK_ADDR: u32 =
+    DOS_DATA_BASE + WINDOWS_DOSMGR_SIGNATURE_BANK_OFFSET as u32;
+pub const WINDOWS_DOSMGR_SIGNATURE_BANK_SIZE: usize = 0x100;
+pub const WINDOWS_DOSMGR_PATCH_TABLE_OFFSET: u16 = 0x0F28;
+pub const WINDOWS_DOSMGR_PATCH_TABLE_ADDR: u32 =
+    DOS_DATA_BASE + WINDOWS_DOSMGR_PATCH_TABLE_OFFSET as u32;
+pub const WINDOWS_DOSMGR_UMB_HEAD_OFFSET: u16 = 0x0F36;
+pub const WINDOWS_DOSMGR_UMB_HEAD_ADDR: u32 = DOS_DATA_BASE + WINDOWS_DOSMGR_UMB_HEAD_OFFSET as u32;
+pub const WINDOWS_DOSMGR_SAVEDS_OFFSET: u16 = 0x0F38;
+pub const WINDOWS_DOSMGR_SAVEBX_OFFSET: u16 = 0x0F3A;
+pub const WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_OFFSET: u16 = 0x0F3C;
+pub const WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_ADDR: u32 =
+    DOS_DATA_BASE + WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_OFFSET as u32;
+
 // UMB region with EMS: MCB chain at segment D000h (64 KB at D0000-DFFFF).
 // UMB region without EMS starts at C000h and reuses the would-be EMS page frame.
 pub const UMB_NOEMS_FIRST_MCB_SEGMENT: u16 = 0xC000;
