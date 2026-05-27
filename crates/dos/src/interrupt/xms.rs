@@ -177,41 +177,35 @@ impl NeetanDos {
                 }
             }
             0x10 => {
-                let paragraphs = cpu.dx();
-                match mm.umb_allocate(paragraphs, memory) {
-                    Ok((segment, size)) => {
-                        cpu.set_ax(1);
-                        cpu.set_bx(segment);
-                        cpu.set_dx(size);
-                    }
-                    Err((code, largest)) => {
-                        cpu.set_ax(0);
-                        cpu.set_bx((cpu.bx() & 0xFF00) | code as u16);
-                        cpu.set_dx(largest);
-                    }
+                if !mm.is_ems_enabled() {
+                    // Without a UMB provider (no EMM386) HIMEM does not hook
+                    // the UMB management functions at all.
+                    cpu.set_ax(0);
+                    cpu.set_bx((cpu.bx() & 0xFF00) | 0x0080);
+                    return;
                 }
+                // DOS=UMB claims the entire upper-memory region into the DOS
+                // MCB chain at boot, so HIMEM's XMS UMB pool stays empty.
+                // Programs obtain upper memory through INT 21h AH=48h instead.
+                cpu.set_ax(0);
+                cpu.set_bx((cpu.bx() & 0xFF00) | 0x00B1);
+                cpu.set_dx(0);
             }
             0x11 => {
-                let segment = cpu.dx();
-                match mm.umb_free(segment, memory) {
-                    Ok(()) => cpu.set_ax(1),
-                    Err(code) => {
-                        cpu.set_ax(0);
-                        cpu.set_bx((cpu.bx() & 0xFF00) | code as u16);
-                    }
+                if !mm.is_ems_enabled() {
+                    cpu.set_ax(0);
+                    cpu.set_bx((cpu.bx() & 0xFF00) | 0x0080);
+                    return;
                 }
+                // No UMB is ever handed out through the XMS API, so any
+                // segment a program could pass is invalid.
+                cpu.set_ax(0);
+                cpu.set_bx((cpu.bx() & 0xFF00) | 0x00B2);
             }
             0x12 => {
-                let new_size = cpu.bx();
-                let segment = cpu.dx();
-                match mm.umb_reallocate(segment, new_size, memory) {
-                    Ok(()) => cpu.set_ax(1),
-                    Err((code, largest)) => {
-                        cpu.set_ax(0);
-                        cpu.set_bx((cpu.bx() & 0xFF00) | code as u16);
-                        cpu.set_dx(largest);
-                    }
-                }
+                // HIMEM 3.10 (MS-DOS 6.20) does not implement reallocate-UMB.
+                cpu.set_ax(0);
+                cpu.set_bx((cpu.bx() & 0xFF00) | 0x0080);
             }
             0x88 => {
                 if !mm.is_xms_32_enabled() {
@@ -299,7 +293,7 @@ impl NeetanDos {
 mod tests {
     use crate::{
         CpuAccess, MemoryAccess, NeetanDos,
-        memory::{self, memory_manager::MemoryManager},
+        memory::memory_manager::MemoryManager,
         test_support::{MockCpu, MockMemory},
     };
 
@@ -309,6 +303,19 @@ mod tests {
         dos.state.memory_manager = Some(MemoryManager::new(
             memory.extended_memory_size(),
             false,
+            true,
+            true,
+            &mut memory,
+        ));
+        (dos, memory)
+    }
+
+    fn prepare_dos_with_xms_and_ems() -> (NeetanDos, MockMemory) {
+        let mut dos = NeetanDos::new();
+        let mut memory = MockMemory::with_extended_memory(0x200000, 0x200000);
+        dos.state.memory_manager = Some(MemoryManager::new(
+            memory.extended_memory_size(),
+            true,
             true,
             true,
             &mut memory,
@@ -346,28 +353,68 @@ mod tests {
         assert_eq!(cpu.dx(), 0);
     }
 
+    // Without a UMB provider (no EMM386) HIMEM does not hook the UMB
+    // management functions, so all three report 0x80 (not implemented),
+    // matching real MS-DOS 6.20 booted with HIMEM only.
     #[test]
-    fn xms_umb_reallocate_failure_returns_largest_free_umb() {
+    fn xms_umb_functions_not_implemented_without_ems() {
         let (mut dos, mut memory) = prepare_dos_with_xms();
-        let mm = dos
-            .state
-            .memory_manager
-            .as_ref()
-            .expect("XMS memory manager should exist");
-        let (segment, _) = mm.umb_allocate(4, &mut memory).unwrap();
-        let (_second_segment, _) = mm.umb_allocate(4, &mut memory).unwrap();
-        let expected_largest =
-            memory::largest_free_block_paragraphs_pub(&memory, mm.umb_first_mcb_segment());
 
+        for function in [0x1000, 0x1100, 0x1200] {
+            let mut cpu = MockCpu::default();
+            cpu.set_ax(function);
+            cpu.set_bx(0xFFFF);
+            cpu.set_dx(0xD000);
+            dos.xms_entry(&mut cpu, &mut memory);
+
+            assert_eq!(cpu.ax(), 0, "function {function:#06X}");
+            assert_eq!(cpu.bx() & 0x00FF, 0x0080, "function {function:#06X}");
+        }
+    }
+
+    // With EMM386 + DOS=UMB the upper-memory region is owned by the DOS MCB
+    // chain, so HIMEM's XMS UMB pool is always empty (10h -> 0xB1) and no
+    // segment is ever valid to free (11h -> 0xB2), matching real DOS 6.20.
+    #[test]
+    fn xms_umb_allocate_reports_no_free_umbs_with_ems() {
+        let (mut dos, mut memory) = prepare_dos_with_xms_and_ems();
         let mut cpu = MockCpu::default();
-        cpu.set_ax(0x1200);
-        cpu.set_bx(0xFFFF);
-        cpu.set_dx(segment);
+
+        cpu.set_ax(0x1000);
+        cpu.set_dx(0xFFFF);
         dos.xms_entry(&mut cpu, &mut memory);
 
         assert_eq!(cpu.ax(), 0);
-        assert_eq!(cpu.bx() & 0x00FF, 0x00B0);
-        assert_eq!(cpu.dx(), expected_largest);
-        assert_eq!(memory::read_mcb_size_pub(&memory, segment - 1), 4);
+        assert_eq!(cpu.bx() & 0x00FF, 0x00B1);
+        assert_eq!(cpu.dx(), 0);
+    }
+
+    #[test]
+    fn xms_umb_free_reports_invalid_segment_with_ems() {
+        let (mut dos, mut memory) = prepare_dos_with_xms_and_ems();
+        let mut cpu = MockCpu::default();
+
+        cpu.set_ax(0x1100);
+        cpu.set_dx(0xD000);
+        dos.xms_entry(&mut cpu, &mut memory);
+
+        assert_eq!(cpu.ax(), 0);
+        assert_eq!(cpu.bx() & 0x00FF, 0x00B2);
+    }
+
+    // HIMEM 3.10 never implements reallocate-UMB, so 12h reports 0x80
+    // regardless of whether a UMB provider is present.
+    #[test]
+    fn xms_umb_reallocate_is_not_implemented_with_ems() {
+        let (mut dos, mut memory) = prepare_dos_with_xms_and_ems();
+        let mut cpu = MockCpu::default();
+
+        cpu.set_ax(0x1200);
+        cpu.set_bx(0x0010);
+        cpu.set_dx(0xD000);
+        dos.xms_entry(&mut cpu, &mut memory);
+
+        assert_eq!(cpu.ax(), 0);
+        assert_eq!(cpu.bx() & 0x00FF, 0x0080);
     }
 }
