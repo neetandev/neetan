@@ -105,6 +105,23 @@ basic_entry:
 
     times 0x0DD8 - ($ - $$) db 0xFF
 
+; DOS 3.3 probes these bytes at offset 0xD38E.
+    times 0x0D38E - ($ - $$) db 0xFF
+
+dos330_probe:
+    mov  al, [es:di]
+    test al, 0x10
+    jnz  .high_resolution
+    mov  byte [0x09D6], 0x1B
+    mov  byte [0x09D7], 0x4B
+    mov  byte [0x09D8], 0x48
+    jmp  .done
+.high_resolution:
+    mov  byte [0x09D6], 0x1A
+    mov  byte [0x09D7], 0x70
+    mov  byte [0x09D8], 0x71
+.done:
+
 ; ===========================================================================
 ; Section 2: BIOS code region at offset 0x15800 (physical 0xFD800)
 ; ===========================================================================
