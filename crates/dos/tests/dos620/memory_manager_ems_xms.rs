@@ -551,8 +551,8 @@ fn test_xms_version() {
         version
     );
     assert_eq!(
-        revision, 0x0001,
-        "XMS revision should be 0001, got {:#06X}",
+        revision, 0x0310,
+        "XMS revision should be 0310, got {:#06X}",
         revision
     );
     assert_eq!(hma, 1, "HMA should exist (DX=1), got {}", hma);

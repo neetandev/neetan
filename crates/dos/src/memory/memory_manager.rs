@@ -22,10 +22,12 @@ pub(crate) struct EmsMoveParams {
 }
 const EMS_PAGE_FRAME_BASE: u32 = 0xC0000;
 const EMS_PAGE_SIZE: u32 = 0x4000;
+const PAGE_SIZE_4K: u32 = 0x1000;
 const MAX_EMS_HANDLES: usize = 255;
-const MAX_XMS_HANDLES: usize = 128;
+const MAX_XMS_HANDLES: usize = 255;
 const PHYSICAL_PAGES: usize = 4;
 const HMA_POOL_RESERVATION_BYTES: u32 = 64 * 1024;
+const UMB_BACKING_BYTES: u32 = 128 * 1024;
 const EMS_OS_RESERVED_HANDLE: usize = 0;
 
 #[derive(Clone, Copy)]
@@ -111,6 +113,7 @@ pub(crate) struct MemoryManager {
     hma_allocated: bool,
 
     umb_enabled: bool,
+    umb_first_mcb_segment: u16,
 
     // XMS A20 state. PC-98 hardware has no A20 line (A20 is permanently
     // enabled), so these fields only track API-level state so that
@@ -146,22 +149,60 @@ impl MemoryManager {
             0
         };
         let allocator_size = extended_memory_size.saturating_sub(allocator_base_offset);
-        let allocator = BestFitAllocator::new(allocator_size);
+        let mut allocator = BestFitAllocator::new(allocator_size);
 
         if ems_enabled {
             mem.enable_ems_page_frame();
         }
 
-        let umb_enabled = ems_enabled || xms_enabled;
+        let requested_umb_enabled = ems_enabled || xms_enabled;
+        let umb_backing_allocation = if requested_umb_enabled {
+            allocator.allocate_aligned(UMB_BACKING_BYTES, PAGE_SIZE_4K)
+        } else {
+            None
+        };
+        let umb_enabled = requested_umb_enabled && umb_backing_allocation.is_some();
+        let (umb_first_mcb_segment, umb_first_block_paragraphs) = if ems_enabled {
+            (UMB_FIRST_MCB_SEGMENT, UMB_BLOCK_PARAGRAPHS)
+        } else {
+            (UMB_NOEMS_FIRST_MCB_SEGMENT, UMB_NOEMS_BLOCK_PARAGRAPHS)
+        };
         if umb_enabled {
-            mem.enable_umb_region(None);
+            let backing = umb_backing_allocation
+                .as_ref()
+                .map(|allocation| EXTENDED_RAM_BASE + allocator_base_offset + allocation.offset());
+            mem.enable_umb_region(backing);
             memory::write_mcb(
                 mem,
-                UMB_FIRST_MCB_SEGMENT,
-                0x5A,
+                umb_first_mcb_segment,
+                0x4D,
                 MCB_OWNER_FREE,
-                UMB_TOTAL_PARAGRAPHS,
+                umb_first_block_paragraphs,
                 b"\0\0\0\0\0\0\0\0",
+            );
+            memory::write_mcb(
+                mem,
+                UMB_RESERVED_MCB_SEGMENT,
+                0x4D,
+                MCB_OWNER_DOS,
+                UMB_RESERVED_PARAGRAPHS,
+                b"UMBRES  ",
+            );
+            memory::write_mcb(
+                mem,
+                UMB_SECOND_MCB_SEGMENT,
+                0x4D,
+                MCB_OWNER_FREE,
+                UMB_BLOCK_PARAGRAPHS,
+                b"\0\0\0\0\0\0\0\0",
+            );
+            memory::write_mcb(
+                mem,
+                UMB_TRAILING_RESERVED_MCB_SEGMENT,
+                0x5A,
+                MCB_OWNER_DOS,
+                UMB_TRAILING_RESERVED_PARAGRAPHS,
+                b"UMBRES  ",
             );
         }
 
@@ -189,6 +230,7 @@ impl MemoryManager {
             xms_handles,
             hma_allocated: false,
             umb_enabled,
+            umb_first_mcb_segment,
             // HIMEM globally enables the A20 line when it loads; on PC-98 it
             // then stays enabled (real DOS reports A20 on both via the
             // physical gate and the XMS query for the lifetime of HIMEM).
@@ -293,14 +335,20 @@ impl MemoryManager {
         (self.allocator_total_bytes() / EMS_PAGE_SIZE) as u16
     }
 
-    fn allocated_ems_pages(&self) -> u16 {
-        let mut count: u16 = 0;
-        for handle in &self.ems_handles {
-            if handle.active {
-                count += handle.pages.len() as u16;
-            }
-        }
-        count
+    fn free_ems_pages(&self) -> u16 {
+        self.allocator
+            .free_regions()
+            .map(|(offset, size)| {
+                let start = align_up_to(offset, EMS_PAGE_SIZE);
+                let end = offset + size;
+                if start >= end {
+                    0
+                } else {
+                    (end - start) / EMS_PAGE_SIZE
+                }
+            })
+            .sum::<u32>()
+            .min(u16::MAX as u32) as u16
     }
 
     fn find_free_ems_handle(&self) -> Option<u16> {
@@ -346,9 +394,11 @@ impl MemoryManager {
     }
 
     pub(crate) fn ems_unallocated_pages(&self) -> (u16, u16) {
+        if !self.ems_enabled {
+            return (0, 0);
+        }
         let total = self.total_ems_pages();
-        let allocated = self.allocated_ems_pages();
-        (total.saturating_sub(allocated), total)
+        (self.free_ems_pages().min(total), total)
     }
 
     pub(crate) fn ems_allocate_pages(&mut self, count: u16) -> Result<u16, u8> {
@@ -371,7 +421,7 @@ impl MemoryManager {
         let mut pages = Vec::with_capacity(count as usize);
         for _ in 0..count {
             let size = (EMS_PAGE_SIZE as u64 + ALIGN_MASK) & !ALIGN_MASK;
-            match self.allocator.allocate(size as u32) {
+            match self.allocator.allocate_aligned(size as u32, EMS_PAGE_SIZE) {
                 Some(alloc) => pages.push(alloc),
                 None => {
                     for alloc in pages {
@@ -405,7 +455,7 @@ impl MemoryManager {
         let mut pages = Vec::with_capacity(count as usize);
         for _ in 0..count {
             let size = (EMS_PAGE_SIZE as u64 + ALIGN_MASK) & !ALIGN_MASK;
-            match self.allocator.allocate(size as u32) {
+            match self.allocator.allocate_aligned(size as u32, EMS_PAGE_SIZE) {
                 Some(alloc) => pages.push(alloc),
                 None => {
                     for alloc in pages {
@@ -653,7 +703,7 @@ impl MemoryManager {
             let mut new_pages: Vec<Allocation> = Vec::with_capacity(extra as usize);
             for _ in 0..extra {
                 let size = (EMS_PAGE_SIZE as u64 + ALIGN_MASK) & !ALIGN_MASK;
-                match self.allocator.allocate(size as u32) {
+                match self.allocator.allocate_aligned(size as u32, EMS_PAGE_SIZE) {
                     Some(alloc) => new_pages.push(alloc),
                     None => {
                         for alloc in new_pages {
@@ -1000,7 +1050,9 @@ impl MemoryManager {
     }
 
     pub(crate) fn xms_version(&self) -> (u16, u16, u16) {
-        (0x0300, 0x0001, if self.hma_exists() { 1 } else { 0 })
+        // XMS spec 3.00; driver revision 3.10 to match the HIMEM.SYS that
+        // ships with MS-DOS 6.20 (verified against real DOS).
+        (0x0300, 0x0310, if self.hma_exists() { 1 } else { 0 })
     }
 
     pub(crate) fn xms_request_hma(&mut self, size: u16) -> Result<(), u8> {
@@ -1044,8 +1096,8 @@ impl MemoryManager {
     }
 
     pub(crate) fn xms_query_free(&self) -> (u16, u16) {
-        let total_free_kb = self.allocator.total_free_size() / 1024;
-        let largest_free_kb = self.allocator.largest_free_block_size() / 1024;
+        let total_free_kb = self.xms_total_free_kb();
+        let largest_free_kb = self.xms_largest_free_kb();
         (
             largest_free_kb.min(0xFFFF) as u16,
             total_free_kb.min(0xFFFF) as u16,
@@ -1055,7 +1107,7 @@ impl MemoryManager {
     pub(crate) fn xms_allocate(&mut self, size_kb: u16) -> Result<u16, u8> {
         let handle_index = self.find_free_xms_handle().ok_or(0xA1u8)?;
         let size_bytes = (size_kb as u64) * 1024;
-        let aligned_size = ((size_bytes + ALIGN_MASK) & !ALIGN_MASK) as u32;
+        let aligned_size = page_aligned_allocation_size(size_bytes).ok_or(0xA0u8)?;
 
         if aligned_size == 0 {
             let handle = &mut self.xms_handles[handle_index as usize];
@@ -1066,7 +1118,10 @@ impl MemoryManager {
             return Ok(handle_index + 1);
         }
 
-        let allocation = self.allocator.allocate(aligned_size).ok_or(0xA0u8)?;
+        let allocation = self
+            .allocator
+            .allocate_aligned(aligned_size, PAGE_SIZE_4K)
+            .ok_or(0xA0u8)?;
         let handle = &mut self.xms_handles[handle_index as usize];
         handle.active = true;
         handle.allocation = Some(allocation);
@@ -1246,7 +1301,7 @@ impl MemoryManager {
         }
 
         let size_bytes = (new_size_kb as u64) * 1024;
-        let aligned_size = ((size_bytes + ALIGN_MASK) & !ALIGN_MASK) as u32;
+        let aligned_size = page_aligned_allocation_size(size_bytes).ok_or(0xA0u8)?;
         let copy_bytes = old_size_kb.min(new_size_kb) * 1024;
 
         // XMS only guarantees a locked block stays at a fixed physical
@@ -1264,7 +1319,7 @@ impl MemoryManager {
             return Ok(());
         }
 
-        if let Some(new_alloc) = self.allocator.allocate(aligned_size) {
+        if let Some(new_alloc) = self.allocator.allocate_aligned(aligned_size, PAGE_SIZE_4K) {
             if copy_bytes > 0
                 && let Some(ref old_alloc) = self.xms_handles[index].allocation
             {
@@ -1294,7 +1349,7 @@ impl MemoryManager {
         }
         self.allocator.deallocate(old_alloc);
 
-        match self.allocator.allocate(aligned_size) {
+        match self.allocator.allocate_aligned(aligned_size, PAGE_SIZE_4K) {
             Some(new_alloc) => {
                 let new_base = self.extended_pool_linear_address(new_alloc.offset());
                 if copy_bytes > 0 {
@@ -1306,12 +1361,15 @@ impl MemoryManager {
             }
             None => {
                 let old_aligned_size =
-                    (((old_size_kb as u64) * 1024 + ALIGN_MASK) & !ALIGN_MASK) as u32;
+                    page_aligned_allocation_size((old_size_kb as u64) * 1024).unwrap_or(0);
                 if old_aligned_size == 0 {
                     self.xms_handles[index].size_kb = 0;
                     return Err(0xA0);
                 }
-                match self.allocator.allocate(old_aligned_size) {
+                match self
+                    .allocator
+                    .allocate_aligned(old_aligned_size, PAGE_SIZE_4K)
+                {
                     Some(restored) => {
                         let restored_base = self.extended_pool_linear_address(restored.offset());
                         if copy_bytes > 0 {
@@ -1338,7 +1396,13 @@ impl MemoryManager {
         if !self.umb_enabled {
             return Err((0xB1, 0));
         }
-        match memory::allocate(mem, UMB_FIRST_MCB_SEGMENT, paragraphs, MCB_OWNER_DOS, 0) {
+        match memory::allocate(
+            mem,
+            self.umb_first_mcb_segment,
+            paragraphs,
+            MCB_OWNER_DOS,
+            0,
+        ) {
             Ok(data_segment) => {
                 let mcb_segment = data_segment - 1;
                 let actual_size = memory::read_mcb_size_pub(mem, mcb_segment);
@@ -1358,7 +1422,7 @@ impl MemoryManager {
         if !self.umb_enabled {
             return Err(0xB2);
         }
-        memory::free(mem, UMB_FIRST_MCB_SEGMENT, segment).map_err(|_| 0xB2)
+        memory::free(mem, self.umb_first_mcb_segment, segment).map_err(|_| 0xB2)
     }
 
     pub(crate) fn umb_reallocate(
@@ -1371,17 +1435,22 @@ impl MemoryManager {
             return Err((0xB2, 0));
         }
         let largest_available =
-            memory::largest_free_block_paragraphs_pub(mem, UMB_FIRST_MCB_SEGMENT);
-        memory::resize_without_grow_failure(mem, UMB_FIRST_MCB_SEGMENT, segment, new_paragraphs)
-            .map_err(|(code, _largest)| {
-                if code == 0x09 {
-                    (0xB2, 0)
-                } else if largest_available == 0 {
-                    (0xB1, 0)
-                } else {
-                    (0xB0, largest_available)
-                }
-            })
+            memory::largest_free_block_paragraphs_pub(mem, self.umb_first_mcb_segment);
+        memory::resize_without_grow_failure(
+            mem,
+            self.umb_first_mcb_segment,
+            segment,
+            new_paragraphs,
+        )
+        .map_err(|(code, _largest)| {
+            if code == 0x09 {
+                (0xB2, 0)
+            } else if largest_available == 0 {
+                (0xB1, 0)
+            } else {
+                (0xB0, largest_available)
+            }
+        })
     }
 
     pub(crate) fn ems_total_kb(&self) -> u32 {
@@ -1399,6 +1468,17 @@ impl MemoryManager {
         } else {
             0
         }
+    }
+
+    pub(crate) fn ems_allocated_kb(&self) -> u32 {
+        if !self.ems_enabled {
+            return 0;
+        }
+        self.ems_handles
+            .iter()
+            .filter(|handle| handle.active)
+            .map(|handle| (handle.pages.len() as u32) * (EMS_PAGE_SIZE / 1024))
+            .sum()
     }
 
     pub(crate) fn xms_total_kb(&self) -> u32 {
@@ -1451,23 +1531,22 @@ impl MemoryManager {
         self.umb_enabled
     }
 
+    pub(crate) fn umb_first_mcb_segment(&self) -> u16 {
+        self.umb_first_mcb_segment
+    }
+
     pub(crate) fn extended_memory_size_bytes(&self) -> u32 {
         self.extended_memory_size
     }
 
     pub(crate) fn xms_query_free_32(&self) -> (u32, u32) {
-        (
-            self.allocator.largest_free_block_size() / 1024,
-            self.allocator.total_free_size() / 1024,
-        )
+        (self.xms_largest_free_kb(), self.xms_total_free_kb())
     }
 
     pub(crate) fn xms_allocate_32(&mut self, size_kb: u32) -> Result<u16, u8> {
         let handle_index = self.find_free_xms_handle().ok_or(0xA1u8)?;
         let size_bytes = size_kb.checked_mul(1024).ok_or(0xA0u8)? as u64;
-        let aligned_size = ((size_bytes + ALIGN_MASK) & !ALIGN_MASK)
-            .try_into()
-            .map_err(|_| 0xA0u8)?;
+        let aligned_size = page_aligned_allocation_size(size_bytes).ok_or(0xA0u8)?;
 
         if aligned_size == 0 {
             let handle = &mut self.xms_handles[handle_index as usize];
@@ -1478,7 +1557,10 @@ impl MemoryManager {
             return Ok(handle_index + 1);
         }
 
-        let allocation = self.allocator.allocate(aligned_size).ok_or(0xA0u8)?;
+        let allocation = self
+            .allocator
+            .allocate_aligned(aligned_size, PAGE_SIZE_4K)
+            .ok_or(0xA0u8)?;
         let handle = &mut self.xms_handles[handle_index as usize];
         handle.active = true;
         handle.allocation = Some(allocation);
@@ -1557,6 +1639,43 @@ impl MemoryManager {
             _ => Err(0xA4),
         }
     }
+
+    fn xms_largest_free_kb(&self) -> u32 {
+        self.allocator
+            .free_regions()
+            .map(|(offset, size)| xms_usable_region_kb(offset, size))
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn xms_total_free_kb(&self) -> u32 {
+        self.allocator
+            .free_regions()
+            .map(|(offset, size)| xms_usable_region_kb(offset, size))
+            .sum()
+    }
+}
+
+fn align_up_to(value: u32, alignment: u32) -> u32 {
+    (value + alignment - 1) & !(alignment - 1)
+}
+
+fn page_aligned_allocation_size(size_bytes: u64) -> Option<u32> {
+    if size_bytes == 0 {
+        return Some(0);
+    }
+    let alignment = PAGE_SIZE_4K as u64;
+    let aligned_size = (size_bytes + alignment - 1) & !(alignment - 1);
+    aligned_size.try_into().ok()
+}
+
+fn xms_usable_region_kb(offset: u32, size: u32) -> u32 {
+    let start = align_up_to(offset, PAGE_SIZE_4K);
+    let end = offset.saturating_add(size);
+    if start >= end {
+        return 0;
+    }
+    ((end - start) / PAGE_SIZE_4K) * (PAGE_SIZE_4K / 1024)
 }
 
 #[cfg(test)]
@@ -1694,12 +1813,14 @@ mod tests {
     #[test]
     fn test_initial_free_pages() {
         let (mm, _mem) = create_manager(1024);
+        // 8 pages (128 KB) of the pool back the UMB window, so they are no
+        // longer reported as free EMS/XMS.
         let (free, total) = mm.ems_unallocated_pages();
         assert_eq!(total, 60);
-        assert_eq!(free, 60);
+        assert_eq!(free, 52);
         let (largest, total_free) = mm.xms_query_free();
-        assert_eq!(total_free, 960);
-        assert_eq!(largest, 960);
+        assert_eq!(total_free, 832);
+        assert_eq!(largest, 832);
     }
 
     #[test]
@@ -1724,7 +1845,8 @@ mod tests {
     fn test_ems_total_and_free_kb() {
         let (mm, _mem) = create_manager(1024);
         assert_eq!(mm.ems_total_kb(), 960);
-        assert_eq!(mm.ems_free_kb(), 960);
+        // 128 KB of the pool backs the UMB window, leaving 832 KB free.
+        assert_eq!(mm.ems_free_kb(), 832);
 
         let (mm_disabled, _mem) = create_manager_selective(1024, false, true);
         assert_eq!(mm_disabled.ems_total_kb(), 0);
@@ -1738,7 +1860,7 @@ mod tests {
         assert_eq!(mm.ems_handle_count(), 2);
         assert_eq!(mm.ems_handle_pages(handle).unwrap(), 1);
         let (free, _) = mm.ems_unallocated_pages();
-        assert_eq!(free, 59);
+        assert_eq!(free, 51);
     }
 
     #[test]
@@ -1747,7 +1869,7 @@ mod tests {
         let handle = mm.ems_allocate_pages(4).unwrap();
         assert_eq!(mm.ems_handle_pages(handle).unwrap(), 4);
         let (free, _) = mm.ems_unallocated_pages();
-        assert_eq!(free, 56);
+        assert_eq!(free, 48);
     }
 
     #[test]
@@ -1758,7 +1880,7 @@ mod tests {
         assert_ne!(h1, h2);
         assert_eq!(mm.ems_handle_count(), 3);
         let (free, _) = mm.ems_unallocated_pages();
-        assert_eq!(free, 55);
+        assert_eq!(free, 47);
     }
 
     #[test]
@@ -1809,10 +1931,11 @@ mod tests {
     #[test]
     fn test_ems_deallocate_valid() {
         let (mut mm, mut mem) = create_manager(1024);
+        let (initial_free, _) = mm.ems_unallocated_pages();
         let handle = mm.ems_allocate_pages(4).unwrap();
         assert_eq!(mm.ems_deallocate(handle, &mut mem), 0x00);
-        let (free, total) = mm.ems_unallocated_pages();
-        assert_eq!(free, total);
+        let (free, _) = mm.ems_unallocated_pages();
+        assert_eq!(free, initial_free);
         assert!(!mm.ems_is_valid_handle(handle));
         assert_eq!(mm.ems_handle_count(), 1);
     }
@@ -1826,10 +1949,11 @@ mod tests {
     #[test]
     fn test_ems_deallocate_frees_for_reuse() {
         let (mut mm, mut mem) = create_manager(1024);
-        let handle = mm.ems_allocate_pages(60).unwrap();
+        let (free_pages, _) = mm.ems_unallocated_pages();
+        let handle = mm.ems_allocate_pages(free_pages).unwrap();
         assert_eq!(mm.ems_deallocate(handle, &mut mem), 0x00);
-        let handle2 = mm.ems_allocate_pages(60).unwrap();
-        assert_eq!(mm.ems_handle_pages(handle2).unwrap(), 60);
+        let handle2 = mm.ems_allocate_pages(free_pages).unwrap();
+        assert_eq!(mm.ems_handle_pages(handle2).unwrap(), free_pages);
     }
 
     #[test]
@@ -2485,7 +2609,7 @@ mod tests {
         let (mm, _mem) = create_manager(1024);
         let (version, revision, has_ext) = mm.xms_version();
         assert_eq!(version, 0x0300);
-        assert_eq!(revision, 0x0001);
+        assert_eq!(revision, 0x0310);
         assert_eq!(has_ext, 1);
 
         let (mm_zero, _mem) = create_manager_selective(0, false, true);
@@ -2497,7 +2621,8 @@ mod tests {
     fn test_xms_total_and_free_kb() {
         let (mm, _mem) = create_manager(1024);
         assert_eq!(mm.xms_total_kb(), 960);
-        assert_eq!(mm.xms_free_kb(), 960);
+        // 128 KB of the pool backs the UMB window, leaving 832 KB free.
+        assert_eq!(mm.xms_free_kb(), 832);
 
         let (mm_disabled, _mem) = create_manager_selective(1024, true, false);
         assert_eq!(mm_disabled.xms_total_kb(), 0);
@@ -2567,7 +2692,8 @@ mod tests {
         let first = mm.xms_allocate(128).unwrap();
         let middle = mm.xms_allocate(256).unwrap();
         let second = mm.xms_allocate(128).unwrap();
-        let third = mm.xms_allocate(448).unwrap();
+        // 832 KB free after the UMB reservation: 128 + 256 + 128 + 320.
+        let third = mm.xms_allocate(320).unwrap();
         assert_eq!(mm.xms_query_free(), (0, 0));
 
         mm.xms_free(middle).unwrap();
@@ -2651,6 +2777,21 @@ mod tests {
         let handle = mm.xms_allocate(64).unwrap();
         let addr = mm.xms_lock(handle).unwrap();
         assert!(addr >= EXTENDED_RAM_BASE);
+        assert_eq!(addr % PAGE_SIZE_4K, 0);
+    }
+
+    #[test]
+    fn test_xms_allocations_do_not_share_physical_pages() {
+        let (mut mm, _mem) = create_manager(1024);
+        let first = mm.xms_allocate(1).unwrap();
+        let second = mm.xms_allocate(1).unwrap();
+
+        let first_address = mm.xms_lock(first).unwrap();
+        let second_address = mm.xms_lock(second).unwrap();
+
+        assert_eq!(first_address % PAGE_SIZE_4K, 0);
+        assert_eq!(second_address % PAGE_SIZE_4K, 0);
+        assert!(second_address >= first_address + PAGE_SIZE_4K);
     }
 
     #[test]
@@ -3012,7 +3153,48 @@ mod tests {
         assert!(result.is_err());
         let (code, largest) = result.unwrap_err();
         assert_eq!(code, 0xB0);
-        assert!(largest > 0);
+        assert_eq!(largest, UMB_BLOCK_PARAGRAPHS);
+    }
+
+    #[test]
+    fn test_umb_chain_matches_hdd1_noems_layout() {
+        let (_mm, mem) = create_manager_selective(1024, false, true);
+
+        let mcb_type = |segment| mem.read_byte(((segment as u32) << 4) + MCB_OFF_TYPE);
+        let mcb_owner = |segment| mem.read_word(((segment as u32) << 4) + MCB_OFF_OWNER);
+
+        assert_eq!(mcb_type(UMB_NOEMS_FIRST_MCB_SEGMENT), 0x4D);
+        assert_eq!(
+            memory::read_mcb_size_pub(&mem, UMB_NOEMS_FIRST_MCB_SEGMENT),
+            UMB_NOEMS_BLOCK_PARAGRAPHS
+        );
+        assert_eq!(mcb_owner(UMB_NOEMS_FIRST_MCB_SEGMENT), MCB_OWNER_FREE);
+
+        assert_eq!(mcb_type(UMB_RESERVED_MCB_SEGMENT), 0x4D);
+        assert_eq!(
+            memory::read_mcb_size_pub(&mem, UMB_RESERVED_MCB_SEGMENT),
+            UMB_RESERVED_PARAGRAPHS
+        );
+        assert_eq!(mcb_owner(UMB_RESERVED_MCB_SEGMENT), MCB_OWNER_DOS);
+
+        assert_eq!(mcb_type(UMB_SECOND_MCB_SEGMENT), 0x4D);
+        assert_eq!(
+            memory::read_mcb_size_pub(&mem, UMB_SECOND_MCB_SEGMENT),
+            UMB_BLOCK_PARAGRAPHS
+        );
+        assert_eq!(mcb_owner(UMB_SECOND_MCB_SEGMENT), MCB_OWNER_FREE);
+
+        assert_eq!(mcb_type(UMB_TRAILING_RESERVED_MCB_SEGMENT), 0x5A);
+        assert_eq!(
+            memory::read_mcb_size_pub(&mem, UMB_TRAILING_RESERVED_MCB_SEGMENT),
+            UMB_TRAILING_RESERVED_PARAGRAPHS
+        );
+        assert_eq!(mcb_owner(UMB_TRAILING_RESERVED_MCB_SEGMENT), MCB_OWNER_DOS);
+
+        assert_eq!(
+            memory::largest_free_block_paragraphs_pub(&mem, UMB_NOEMS_FIRST_MCB_SEGMENT),
+            UMB_NOEMS_BLOCK_PARAGRAPHS
+        );
     }
 
     #[test]
@@ -3034,7 +3216,8 @@ mod tests {
         let (mm, mut mem) = create_manager_selective(1024, false, true);
         let (segment, _) = mm.umb_allocate(4, &mut mem).unwrap();
         let (_second_segment, _) = mm.umb_allocate(4, &mut mem).unwrap();
-        let expected_largest = memory::read_mcb_size_pub(&mem, UMB_FIRST_MCB_SEGMENT + 10);
+        let expected_largest =
+            memory::largest_free_block_paragraphs_pub(&mem, mm.umb_first_mcb_segment());
 
         assert_eq!(
             mm.umb_reallocate(segment, 0xFFFF, &mut mem),
@@ -3047,11 +3230,19 @@ mod tests {
     fn test_umb_reallocate_returns_b1_when_no_umbs_free() {
         let (mm, mut mem) = create_manager_selective(1024, false, true);
         let (first_segment, _) = mm.umb_allocate(4, &mut mem).unwrap();
-        let (_, largest) = mm.umb_allocate(0xFFFF, &mut mem).unwrap_err();
-        let (_, _) = mm.umb_allocate(largest, &mut mem).unwrap();
+
+        loop {
+            let largest =
+                memory::largest_free_block_paragraphs_pub(&mem, mm.umb_first_mcb_segment());
+            if largest == 0 {
+                break;
+            }
+            let (_, size) = mm.umb_allocate(largest, &mut mem).unwrap();
+            assert_eq!(size, largest);
+        }
 
         assert_eq!(
-            memory::largest_free_block_paragraphs_pub(&mem, UMB_FIRST_MCB_SEGMENT),
+            memory::largest_free_block_paragraphs_pub(&mem, mm.umb_first_mcb_segment()),
             0
         );
 
@@ -3111,8 +3302,9 @@ mod tests {
     fn test_xms_query_free_32() {
         let (mm, _mem) = create_manager(1024);
         let (largest, total) = mm.xms_query_free_32();
-        assert_eq!(largest, 960);
-        assert_eq!(total, 960);
+        // 128 KB of the pool backs the UMB window, leaving 832 KB free.
+        assert_eq!(largest, 832);
+        assert_eq!(total, 832);
     }
 
     #[test]

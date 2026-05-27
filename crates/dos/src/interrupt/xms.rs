@@ -300,7 +300,6 @@ mod tests {
     use crate::{
         CpuAccess, MemoryAccess, NeetanDos,
         memory::{self, memory_manager::MemoryManager},
-        tables::UMB_FIRST_MCB_SEGMENT,
         test_support::{MockCpu, MockMemory},
     };
 
@@ -357,7 +356,8 @@ mod tests {
             .expect("XMS memory manager should exist");
         let (segment, _) = mm.umb_allocate(4, &mut memory).unwrap();
         let (_second_segment, _) = mm.umb_allocate(4, &mut memory).unwrap();
-        let expected_largest = memory::read_mcb_size_pub(&memory, UMB_FIRST_MCB_SEGMENT + 10);
+        let expected_largest =
+            memory::largest_free_block_paragraphs_pub(&memory, mm.umb_first_mcb_segment());
 
         let mut cpu = MockCpu::default();
         cpu.set_ax(0x1200);
