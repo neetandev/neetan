@@ -1,6 +1,6 @@
 //! INT 26h: Absolute Disk Write.
 
-use crate::{CpuAccess, DiskIo, MemoryAccess, NeetanDos, tables};
+use crate::{CpuAccess, DiskIo, MemoryAccess, NeetanDos, SegmentRegister, tables};
 
 impl NeetanDos {
     /// INT 26h: Absolute disk write.
@@ -14,7 +14,7 @@ impl NeetanDos {
         let drive_index = (cpu.ax() & 0xFF) as u8;
         let sector_count = cpu.cx() as u32;
         let start_sector = cpu.dx() as u32;
-        let buf_addr = ((cpu.ds() as u32) << 4) + cpu.bx() as u32;
+        let buf_addr = cpu.linear_address(SegmentRegister::DS, cpu.bx());
 
         let da_ua = memory
             .read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DAUA_TABLE + drive_index as u32);
@@ -40,7 +40,9 @@ impl NeetanDos {
 }
 
 fn set_int26_carry(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, carry: bool) {
-    let flags_addr = ((cpu.ss() as u32) << 4) + cpu.sp() as u32 + 4;
+    let flags_addr = cpu
+        .linear_address(SegmentRegister::SS, cpu.sp())
+        .wrapping_add(4);
     let mut flags = mem.read_word(flags_addr);
     if carry {
         flags |= 0x0001;

@@ -1,6 +1,6 @@
 //! Shared OS/machine bridge traits and related media types.
 
-use crate::jis::JisChar;
+use crate::{SegmentRegister, jis::JisChar};
 
 /// CPU register access for the HLE DOS.
 pub trait CpuAccess {
@@ -28,6 +28,10 @@ pub trait CpuAccess {
     fn di(&self) -> u16;
     /// Sets the DI register.
     fn set_di(&mut self, value: u16);
+    /// Returns the BP register.
+    fn bp(&self) -> u16;
+    /// Sets the BP register.
+    fn set_bp(&mut self, value: u16);
     /// Returns the DS segment register.
     fn ds(&self) -> u16;
     /// Sets the DS segment register.
@@ -48,6 +52,20 @@ pub trait CpuAccess {
     fn cs(&self) -> u16;
     /// Sets the carry flag in the IRET frame.
     fn set_carry(&mut self, carry: bool);
+    /// Returns the cached linear base for the given segment register.
+    fn segment_base(&self, segment: SegmentRegister) -> u32 {
+        let selector = match segment {
+            SegmentRegister::ES => self.es(),
+            SegmentRegister::CS => self.cs(),
+            SegmentRegister::SS => self.ss(),
+            SegmentRegister::DS => self.ds(),
+        };
+        u32::from(selector) << 4
+    }
+    /// Returns the linear address for a segment:offset pointer.
+    fn linear_address(&self, segment: SegmentRegister, offset: u16) -> u32 {
+        self.segment_base(segment).wrapping_add(u32::from(offset))
+    }
     /// Returns the EAX register (32-bit). Defaults to zero-extending AX.
     fn eax(&self) -> u32 {
         self.ax() as u32

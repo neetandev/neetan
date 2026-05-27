@@ -7,6 +7,7 @@ pub(crate) struct MockCpu {
     pub(crate) edx: u32,
     pub(crate) si: u16,
     pub(crate) di: u16,
+    pub(crate) bp: u16,
     pub(crate) ds: u16,
     pub(crate) es: u16,
     pub(crate) ss: u16,
@@ -24,6 +25,7 @@ impl Default for MockCpu {
             edx: 0,
             si: 0,
             di: 0,
+            bp: 0,
             ds: 0,
             es: 0,
             ss: 0x2000,
@@ -87,6 +89,14 @@ impl CpuAccess for MockCpu {
 
     fn set_di(&mut self, value: u16) {
         self.di = value;
+    }
+
+    fn bp(&self) -> u16 {
+        self.bp
+    }
+
+    fn set_bp(&mut self, value: u16) {
+        self.bp = value;
     }
 
     fn ds(&self) -> u16 {

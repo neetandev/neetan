@@ -6,7 +6,7 @@
 
 use common::warn;
 
-use crate::{CpuAccess, MemoryAccess, NeetanDos, tables};
+use crate::{CpuAccess, MemoryAccess, NeetanDos, SegmentRegister, tables};
 
 impl NeetanDos {
     /// Dispatches an INT DCh call based on the CL register.
@@ -38,7 +38,7 @@ impl NeetanDos {
             }
             0x01 => {
                 // String display. DS:DX = string, BX = length.
-                let addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+                let addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
                 let length = cpu.bx() as u32;
                 for i in 0..length {
                     let byte = memory.read_byte(addr + i);
@@ -140,7 +140,7 @@ impl NeetanDos {
 
     /// CL=13h: Fill 96-byte DA/UA mapping buffer at DS:DX.
     fn intdch_13h_daua_mapping_buffer(&self, cpu: &dyn CpuAccess, memory: &mut dyn MemoryAccess) {
-        let buffer_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let buffer_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
         let base = tables::IOSYS_BASE;
 
         // +00h-0Fh: 16 bytes from legacy DA/UA table (0060:006Ch).
@@ -225,7 +225,7 @@ impl NeetanDos {
     /// groups between the basic groups.
     fn intdch_0ch_read_fnkey_map(&self, cpu: &dyn CpuAccess, memory: &mut dyn MemoryAccess) {
         let key_specifier = cpu.ax();
-        let buffer_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let buffer_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
 
         if key_specifier == 0x00FF {
             // Extended format: repack basic layout into extended wire format.
@@ -320,7 +320,7 @@ impl NeetanDos {
     /// AX = key specifier, DS:DX = source buffer.
     fn intdch_0dh_write_fnkey_map(&mut self, cpu: &dyn CpuAccess, memory: &dyn MemoryAccess) {
         let key_specifier = cpu.ax();
-        let buffer_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let buffer_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
 
         if key_specifier == 0x00FF {
             // Extended format: unpack extended wire format into basic layout.

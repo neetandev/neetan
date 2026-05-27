@@ -5,7 +5,7 @@
 
 use common::warn;
 
-use crate::{CdromIo, CpuAccess, MemoryAccess, NeetanDos, set_iret_carry, tables};
+use crate::{CdromIo, CpuAccess, MemoryAccess, NeetanDos, SegmentRegister, set_iret_carry, tables};
 
 impl NeetanDos {
     /// Dispatches an INT 2Fh call based on the AH register.
@@ -48,7 +48,7 @@ impl NeetanDos {
             0x01 => {
                 // Get CD-ROM drive device list.
                 if cdrom.cdrom_present() {
-                    let buffer_addr = (cpu.es() as u32) << 4 | cpu.bx() as u32;
+                    let buffer_addr = cpu.linear_address(SegmentRegister::ES, cpu.bx());
                     memory.write_byte(buffer_addr, 0); // Subunit 0.
                     memory.write_word(buffer_addr + 1, tables::DEV_CDROM_OFFSET);
                     memory.write_word(buffer_addr + 3, tables::DOS_DATA_SEGMENT);
@@ -81,7 +81,7 @@ impl NeetanDos {
                 }
                 let sector_index = cpu.dx() as u32;
                 let lba = 16 + sector_index;
-                let buffer_addr = (cpu.es() as u32) << 4 | cpu.bx() as u32;
+                let buffer_addr = cpu.linear_address(SegmentRegister::ES, cpu.bx());
                 let mut sector_buf = [0u8; 2048];
                 match cdrom.read_sector_cooked(lba, &mut sector_buf) {
                     Some(n) => {
@@ -119,7 +119,7 @@ impl NeetanDos {
                 }
                 let sector_count = cpu.dx() as u32;
                 let start_lba = ((cpu.si() as u32) << 16) | cpu.di() as u32;
-                let buffer_addr = (cpu.es() as u32) << 4 | cpu.bx() as u32;
+                let buffer_addr = cpu.linear_address(SegmentRegister::ES, cpu.bx());
                 let mut sector_buf = [0u8; 2048];
                 for i in 0..sector_count {
                     match cdrom.read_sector_cooked(start_lba + i, &mut sector_buf) {
@@ -152,15 +152,13 @@ impl NeetanDos {
             0x0D => {
                 // Get CD-ROM drive letters.
                 if cdrom.cdrom_present() {
-                    let buffer_addr = (cpu.es() as u32) << 4 | cpu.bx() as u32;
+                    let buffer_addr = cpu.linear_address(SegmentRegister::ES, cpu.bx());
                     memory.write_byte(buffer_addr, self.state.mscdex.drive_letter);
                 }
             }
             0x10 => {
                 // Send device driver request.
-                let es = cpu.es() as u32;
-                let bx = cpu.bx() as u32;
-                let request_addr = (es << 4) + bx;
+                let request_addr = cpu.linear_address(SegmentRegister::ES, cpu.bx());
                 if cdrom.cdrom_present() {
                     self.handle_device_request(memory, cdrom, request_addr);
                 }
@@ -248,7 +246,7 @@ impl NeetanDos {
             set_iret_carry(cpu, memory, true);
             return;
         }
-        let buffer_addr = (cpu.es() as u32) << 4 | cpu.bx() as u32;
+        let buffer_addr = cpu.linear_address(SegmentRegister::ES, cpu.bx());
         memory.write_block(buffer_addr, &sector_buf[pvd_offset..pvd_offset + 37]);
         memory.write_byte(buffer_addr + 37, 0);
         set_iret_carry(cpu, memory, false);

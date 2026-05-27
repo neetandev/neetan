@@ -1,6 +1,6 @@
 //! XMS driver entry point handler (via INT FEh trampoline).
 
-use crate::{CpuAccess, MemoryAccess, NeetanDos};
+use crate::{CpuAccess, MemoryAccess, NeetanDos, SegmentRegister};
 
 impl NeetanDos {
     pub(crate) fn xms_entry(&mut self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
@@ -118,7 +118,7 @@ impl NeetanDos {
                 }
             }
             0x0B => {
-                let params = ((cpu.ds() as u32) << 4) + cpu.si() as u32;
+                let params = cpu.linear_address(SegmentRegister::DS, cpu.si());
                 match mm.xms_move(memory, params) {
                     Ok(()) => cpu.set_ax(1),
                     Err(code) => {
