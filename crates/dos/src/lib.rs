@@ -1225,7 +1225,10 @@ impl NeetanDos {
                 xms_next_seg,
                 xms_next_off,
             );
-            mem.write_word(xms_header_addr + DEVHDR_OFF_ATTRIBUTE, DEVATTR_CHAR);
+            mem.write_word(
+                xms_header_addr + DEVHDR_OFF_ATTRIBUTE,
+                DEVATTR_CHAR | DEVATTR_IOCTL,
+            );
             mem.write_word(xms_header_addr + DEVHDR_OFF_STRATEGY, XMS_DEV_STUB_OFFSET);
             mem.write_word(xms_header_addr + DEVHDR_OFF_INTERRUPT, XMS_DEV_STUB_OFFSET);
             mem.write_block(xms_header_addr + DEVHDR_OFF_NAME, b"XMSXXXX0");
@@ -1235,7 +1238,10 @@ impl NeetanDos {
         if ems_in_chain {
             let ems_header_addr = base + DEV_EMS_OFFSET as u32;
             write_far_ptr(mem, ems_header_addr + DEVHDR_OFF_NEXT_PTR, 0xFFFF, 0xFFFF);
-            mem.write_word(ems_header_addr + DEVHDR_OFF_ATTRIBUTE, DEVATTR_CHAR);
+            mem.write_word(
+                ems_header_addr + DEVHDR_OFF_ATTRIBUTE,
+                DEVATTR_CHAR | DEVATTR_IOCTL,
+            );
             mem.write_word(ems_header_addr + DEVHDR_OFF_STRATEGY, XMS_DEV_STUB_OFFSET);
             mem.write_word(ems_header_addr + DEVHDR_OFF_INTERRUPT, XMS_DEV_STUB_OFFSET);
             mem.write_block(ems_header_addr + DEVHDR_OFF_NAME, b"EMMXXXX0");

@@ -1626,7 +1626,7 @@ fn test_xmsxxxx0_device_in_chain_when_enabled() {
             .collect::<Vec<_>>()
     );
 
-    // Attribute must be DEVATTR_CHAR (0x8000).
+    // Attribute must be DEVATTR_CHAR | DEVATTR_IOCTL (0xC000).
     const DOS_DATA_BASE: u32 = 0x2000;
     const DEV_XMS_OFFSET: u16 = 0x0D4E;
     const DEVHDR_OFF_ATTRIBUTE: u32 = 0x04;
@@ -1635,8 +1635,8 @@ fn test_xmsxxxx0_device_in_chain_when_enabled() {
         DOS_DATA_BASE + DEV_XMS_OFFSET as u32 + DEVHDR_OFF_ATTRIBUTE,
     );
     assert_eq!(
-        attr, 0x8000,
-        "XMSXXXX0 attribute should be DEVATTR_CHAR (0x8000), got {attr:#06X}"
+        attr, 0xC000,
+        "XMSXXXX0 attribute should be DEVATTR_CHAR | DEVATTR_IOCTL (0xC000), got {attr:#06X}"
     );
 }
 
@@ -1700,8 +1700,8 @@ fn test_emmxxxx0_device_in_chain_when_enabled() {
         DOS_DATA_BASE + DEV_EMS_OFFSET as u32 + DEVHDR_OFF_ATTRIBUTE,
     );
     assert_eq!(
-        attr, 0x8000,
-        "EMMXXXX0 attribute should be DEVATTR_CHAR (0x8000), got {attr:#06X}"
+        attr, 0xC000,
+        "EMMXXXX0 attribute should be DEVATTR_CHAR | DEVATTR_IOCTL (0xC000), got {attr:#06X}"
     );
 }
 

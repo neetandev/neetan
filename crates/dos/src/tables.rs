@@ -102,6 +102,10 @@ pub const SFT_TOTAL_COUNT: u16 = SFT_INITIAL_COUNT + SFT_EXTENDED_COUNT;
 // Device info word flags (SFT entry +0x05)
 pub const SFT_DEVINFO_CHAR: u16 = 0x0080;
 pub const SFT_DEVINFO_EOF: u16 = 0x0040;
+pub const SFT_DEVINFO_IOCTL: u16 = 0x4000;
+// Bit-15 mirror of DEVATTR_CHAR. Real DOS always copies it into the SFT
+// device-info word for character-device handles.
+pub const SFT_DEVINFO_DRIVER_CHAR: u16 = 0x8000;
 pub const SFT_DEVINFO_STDIN: u16 = 0x0001;
 pub const SFT_DEVINFO_STDOUT: u16 = 0x0002;
 pub const SFT_DEVINFO_NUL: u16 = 0x0004;

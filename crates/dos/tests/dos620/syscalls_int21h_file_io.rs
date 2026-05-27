@@ -200,6 +200,20 @@ fn open_existing_file() {
 }
 
 #[test]
+fn failed_open_does_not_consume_file_handle() {
+    let mut machine = harness::boot_hle_with_floppy();
+
+    for _ in 0..20 {
+        let (ax, flags) = open_file_raw(&mut machine, b"A:\\MISSING.386\0", 0x00);
+        assert_eq!(flags & 0x0001, 0x0001, "open should fail");
+        assert_eq!(ax, 0x0002);
+    }
+
+    let handle = open_file(&mut machine, b"A:\\COMMAND.COM\0");
+    close_file(&mut machine, handle);
+}
+
+#[test]
 fn open_emmxxxx0_as_character_device() {
     let mut machine = harness::boot_hle_with_floppy();
 
@@ -212,7 +226,10 @@ fn open_emmxxxx0_as_character_device() {
     );
     assert_eq!(
         harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_INFO),
-        tables::SFT_DEVINFO_CHAR
+        tables::SFT_DEVINFO_DRIVER_CHAR
+            | tables::SFT_DEVINFO_CHAR
+            | tables::SFT_DEVINFO_EOF
+            | tables::SFT_DEVINFO_IOCTL
     );
     assert_eq!(
         harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR),
@@ -241,7 +258,10 @@ fn open_xmsxxxx0_as_character_device() {
     );
     assert_eq!(
         harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_INFO),
-        tables::SFT_DEVINFO_CHAR
+        tables::SFT_DEVINFO_DRIVER_CHAR
+            | tables::SFT_DEVINFO_CHAR
+            | tables::SFT_DEVINFO_EOF
+            | tables::SFT_DEVINFO_IOCTL
     );
     assert_eq!(
         harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR),
@@ -258,7 +278,41 @@ fn open_xmsxxxx0_as_character_device() {
 }
 
 #[test]
-fn open_emmxxxx0_fails_when_ems_disabled() {
+fn open_con_as_character_device() {
+    let mut machine = harness::boot_hle_with_floppy();
+
+    let handle = open_file_with_mode(&mut machine, b"CON\0", 0x02);
+    let sft_addr = sft_addr_for_handle(&mut machine, handle);
+
+    assert_eq!(
+        harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_OPEN_MODE),
+        0x0002
+    );
+    assert_eq!(
+        harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_INFO),
+        tables::SFT_DEVINFO_DRIVER_CHAR
+            | tables::SFT_DEVINFO_CHAR
+            | tables::SFT_DEVINFO_EOF
+            | tables::SFT_DEVINFO_SPECIAL
+            | tables::SFT_DEVINFO_STDIN
+            | tables::SFT_DEVINFO_STDOUT
+    );
+    assert_eq!(
+        harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR),
+        tables::DEV_CON_OFFSET
+    );
+    assert_eq!(
+        harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR + 2),
+        tables::DOS_DATA_SEGMENT
+    );
+    assert_eq!(
+        harness::read_bytes(&machine.bus, sft_addr + tables::SFT_ENT_NAME, 11),
+        b"CON        "
+    );
+}
+
+#[test]
+fn open_emmxxxx0_fails_without_ems() {
     let mut machine = harness::boot_hle_without_ems();
 
     let (ax, flags) = open_file_raw(&mut machine, b"EMMXXXX0\0", 0x00);
