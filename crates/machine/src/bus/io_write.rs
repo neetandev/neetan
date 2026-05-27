@@ -952,10 +952,17 @@ impl<T: Tracing> Pc9801Bus<T> {
             return;
         }
         let is_mode_set = value & 0x30 != 0;
+        let control_cycle = if !is_mode_set && self.machine_model.is_pc9821() {
+            let delay = self.pc9821_pit_latch_delay_cycles();
+            self.pending_wait_cycles += delay as i64;
+            self.current_cycle + delay
+        } else {
+            self.current_cycle
+        };
         self.pit.write_control(
             channel,
             value,
-            self.current_cycle,
+            control_cycle,
             self.clocks.cpu_clock_hz,
             self.clocks.pit_clock_hz,
         );
@@ -964,6 +971,16 @@ impl<T: Tracing> Pc9801Bus<T> {
             self.tracer.trace_irq_clear(0);
             self.pit.channels[0].flag |= PIT_FLAG_I;
         }
+    }
+
+    fn pc9821_pit_latch_delay_cycles(&self) -> u64 {
+        // The PC-9821 defers a counter-latch command so the count is not sampled
+        // mid-cycle. The delay is one period of half the 1.9968 MHz PIT input
+        // clock (998.4 kHz, i.e. two PIT clocks), converted to CPU cycles.
+        const PIT_LATCH_SETTLE_HZ: u32 = 998_400;
+        u64::from(self.clocks.cpu_clock_hz)
+            .div_ceil(u64::from(PIT_LATCH_SETTLE_HZ))
+            .max(1)
     }
 
     /// Seek delay in CPU cycles (~500µs at 10 MHz = 5000 cycles).

@@ -329,6 +329,25 @@ fn pit_mirror_ports() {
 }
 
 #[test]
+fn pc9821_pit_latch_command_applies_delay() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+
+    bus.io_write_byte(0x77, 0x34);
+    bus.io_write_byte(0x71, 0xE8);
+    bus.io_write_byte(0x71, 0x03);
+    bus.drain_wait_cycles();
+
+    bus.set_current_cycle(1000);
+    bus.io_write_byte(0x77, 0x00);
+    assert_eq!(bus.drain_wait_cycles(), 68);
+
+    let low = bus.io_read_byte(0x71);
+    let high = bus.io_read_byte(0x71);
+    let count = (high as u16) << 8 | low as u16;
+    assert_eq!(count, 968);
+}
+
+#[test]
 fn timer_full_cycle() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
 
