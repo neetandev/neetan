@@ -1627,12 +1627,11 @@ fn test_xmsxxxx0_device_in_chain_when_enabled() {
     );
 
     // Attribute must be DEVATTR_CHAR | DEVATTR_IOCTL (0xC000).
-    const DOS_DATA_BASE: u32 = 0x2000;
-    const DEV_XMS_OFFSET: u16 = 0x0D4E;
-    const DEVHDR_OFF_ATTRIBUTE: u32 = 0x04;
     let attr = harness::read_word(
         &machine.bus,
-        DOS_DATA_BASE + DEV_XMS_OFFSET as u32 + DEVHDR_OFF_ATTRIBUTE,
+        dos::tables::DOS_DATA_BASE
+            + dos::tables::DEV_XMS_OFFSET as u32
+            + dos::tables::DEVHDR_OFF_ATTRIBUTE,
     );
     assert_eq!(
         attr, 0xC000,
@@ -1652,14 +1651,13 @@ fn test_xmsxxxx0_absent_when_xms_disabled() {
 
     // With XMS disabled but EMS enabled (the default), CD-ROM's next_ptr
     // should link directly to EMMXXXX0 (skipping the absent XMS entry).
-    const DOS_DATA_BASE: u32 = 0x2000;
-    const DEV_CDROM_OFFSET: u16 = 0x007E;
-    const DEV_EMS_OFFSET: u16 = 0x0D60;
-    const DOS_DATA_SEGMENT: u16 = 0x0200;
-    let (seg, off) = harness::read_far_ptr(&machine.bus, DOS_DATA_BASE + DEV_CDROM_OFFSET as u32);
+    let (seg, off) = harness::read_far_ptr(
+        &machine.bus,
+        dos::tables::DOS_DATA_BASE + dos::tables::DEV_CDROM_OFFSET as u32,
+    );
     assert_eq!(
         (seg, off),
-        (DOS_DATA_SEGMENT, DEV_EMS_OFFSET),
+        (dos::tables::DOS_DATA_SEGMENT, dos::tables::DEV_EMS_OFFSET),
         "CD-ROM next_ptr should point to EMMXXXX0 when XMS disabled but EMS enabled, got {seg:#06X}:{off:#06X}"
     );
 }
@@ -1692,12 +1690,11 @@ fn test_emmxxxx0_device_in_chain_when_enabled() {
             .collect::<Vec<_>>()
     );
 
-    const DOS_DATA_BASE: u32 = 0x2000;
-    const DEV_EMS_OFFSET: u16 = 0x0D60;
-    const DEVHDR_OFF_ATTRIBUTE: u32 = 0x04;
     let attr = harness::read_word(
         &machine.bus,
-        DOS_DATA_BASE + DEV_EMS_OFFSET as u32 + DEVHDR_OFF_ATTRIBUTE,
+        dos::tables::DOS_DATA_BASE
+            + dos::tables::DEV_EMS_OFFSET as u32
+            + dos::tables::DEVHDR_OFF_ATTRIBUTE,
     );
     assert_eq!(
         attr, 0xC000,
@@ -2337,13 +2334,16 @@ fn test_xms_request_hma_respects_hmamin() {
 fn test_xmsxxxx0_strategy_stub_sets_done_bit() {
     let mut machine = harness::boot_hle();
     // Fake request header at CS:0x0200 (ES = CS = INJECT_CODE_SEGMENT by default).
-    // Call far ptr 0x0200:0x0D47 (XMS_DEV_STUB). Verify status word at +3 has 0x0100 set.
+    // Call far ptr 0x0200:XMS_DEV_STUB_OFFSET. Verify status word at +3 has 0x0100 set.
+    let stub_off = dos::tables::XMS_DEV_STUB_OFFSET;
+    let stub_lo = stub_off as u8;
+    let stub_hi = (stub_off >> 8) as u8;
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xBB, 0x00, 0x02,                   // MOV BX, 0x0200 (request header offset)
         0x31, 0xC0,                         // XOR AX, AX
         0x89, 0x47, 0x03,                   // MOV [BX+3], AX (zero status)
-        0x9A, 0x47, 0x0D, 0x00, 0x02,       // CALL FAR 0x0200:0x0D47 (stub)
+        0x9A, stub_lo, stub_hi, 0x00, 0x02, // CALL FAR 0x0200:XMS_DEV_STUB
         0x8B, 0x47, 0x03,                   // MOV AX, [BX+3]
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         0xFA,                               // CLI

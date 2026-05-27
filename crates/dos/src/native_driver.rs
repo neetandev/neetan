@@ -43,6 +43,8 @@ const REQUEST_STRIDE: u16 = 0x20;
 const LINE_TAIL_BASE_OFFSET: u16 = 0x0400;
 const LINE_TAIL_STRIDE: u16 = 0x80;
 const INIT_REQUEST_LENGTH: u8 = 0x18;
+const INIT_REQUEST_OFF_AVAILABLE_OFFSET: u32 = 14;
+const INIT_REQUEST_OFF_AVAILABLE_SEGMENT: u32 = 16;
 const INIT_REQUEST_OFF_ARG_OFFSET: u32 = 18;
 const INIT_REQUEST_OFF_ARG_SEGMENT: u32 = 20;
 
@@ -109,6 +111,7 @@ struct NativeDriverImage {
     spec: NativeDriverSpec,
     source_path: Vec<u8>,
     raw_line: Vec<u8>,
+    directive: config::DeviceDirective,
     data: Vec<u8>,
 }
 
@@ -122,6 +125,7 @@ struct LoadedDriverInit {
     spec: NativeDriverSpec,
     source_path: Vec<u8>,
     raw_line: Vec<u8>,
+    image_paragraphs: u16,
     segment: u16,
     loaded_high: bool,
     request_segment: u16,
@@ -149,9 +153,12 @@ impl NeetanDos {
         let mut loaded = Vec::with_capacity(images.len());
         for image in images {
             let paragraphs = image.data.len().div_ceil(16) as u16;
-            let Some(allocation) =
-                self.allocate_native_driver_image(memory, &image.source_path, paragraphs)
-            else {
+            let Some(allocation) = self.allocate_native_driver_image(
+                memory,
+                &image.source_path,
+                paragraphs,
+                image.directive,
+            ) else {
                 continue;
             };
 
@@ -163,6 +170,7 @@ impl NeetanDos {
                 spec: image.spec,
                 source_path: image.source_path,
                 raw_line: image.raw_line,
+                image_paragraphs: paragraphs,
                 segment: allocation.segment,
                 loaded_high: allocation.high,
                 request_segment: 0,
@@ -203,6 +211,8 @@ impl NeetanDos {
                 memory,
                 driver.request_segment,
                 driver.request_offset,
+                driver.segment + driver.image_paragraphs,
+                0,
                 trampoline_segment,
                 driver.line_tail_offset,
             );
@@ -300,8 +310,22 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
         display_name: &[u8],
         image_paragraphs: u16,
+        directive: config::DeviceDirective,
     ) -> Option<NativeAllocation> {
-        self.allocate_native_block_high_first(memory, image_paragraphs, display_name, "image")
+        match directive {
+            config::DeviceDirective::Device => self
+                .allocate_conventional_native_block(memory, image_paragraphs, display_name, "image")
+                .map(|segment| NativeAllocation {
+                    segment,
+                    high: false,
+                }),
+            config::DeviceDirective::DeviceHigh => self.allocate_native_block_high_first(
+                memory,
+                image_paragraphs,
+                display_name,
+                "image",
+            ),
+        }
     }
 
     fn allocate_native_block_high_first(
@@ -474,6 +498,7 @@ impl NeetanDos {
                 spec,
                 source_path: full_path,
                 raw_line: line.raw_value.clone(),
+                directive: line.directive,
                 data,
             });
         }
@@ -536,6 +561,8 @@ fn write_init_request(
     memory: &mut dyn MemoryAccess,
     segment: u16,
     offset: u16,
+    available_end_segment: u16,
+    available_end_offset: u16,
     arg_segment: u16,
     arg_offset: u16,
 ) {
@@ -544,6 +571,14 @@ fn write_init_request(
     memory.write_byte(address, INIT_REQUEST_LENGTH);
     memory.write_byte(address + 1, 0);
     memory.write_byte(address + 2, 0);
+    memory.write_word(
+        address + INIT_REQUEST_OFF_AVAILABLE_OFFSET,
+        available_end_offset,
+    );
+    memory.write_word(
+        address + INIT_REQUEST_OFF_AVAILABLE_SEGMENT,
+        available_end_segment,
+    );
     memory.write_word(address + INIT_REQUEST_OFF_ARG_OFFSET, arg_offset);
     memory.write_word(address + INIT_REQUEST_OFF_ARG_SEGMENT, arg_segment);
 }
@@ -983,6 +1018,7 @@ mod tests {
             },
             source_path: b"A:\\TESTDRV.SYS".to_vec(),
             raw_line: b"A:\\TESTDRV.SYS /D:foo".to_vec(),
+            image_paragraphs: 0x20,
             segment: 0x3456,
             loaded_high: false,
             request_segment: 0x9000,
@@ -993,12 +1029,35 @@ mod tests {
     }
 
     #[test]
-    fn native_driver_image_loads_high_first_for_any_whitelisted_driver() {
+    fn native_driver_image_uses_conventional_memory_for_device_directive() {
         let mut memory = mock_memory_with_conventional_chain(0x1000);
         let dos = dos_with_umb(&mut memory);
 
         let allocation = dos
-            .allocate_native_driver_image(&mut memory, b"A:\\GENERIC.SYS", 0x20)
+            .allocate_native_driver_image(
+                &mut memory,
+                b"A:\\GENERIC.SYS",
+                0x20,
+                config::DeviceDirective::Device,
+            )
+            .expect("driver image should allocate");
+
+        assert!(!allocation.high);
+        assert_eq!(allocation.segment, tables::FIRST_MCB_SEGMENT + 1);
+    }
+
+    #[test]
+    fn native_driver_image_loads_high_first_for_devicehigh_directive() {
+        let mut memory = mock_memory_with_conventional_chain(0x1000);
+        let dos = dos_with_umb(&mut memory);
+
+        let allocation = dos
+            .allocate_native_driver_image(
+                &mut memory,
+                b"A:\\GENERIC.SYS",
+                0x20,
+                config::DeviceDirective::DeviceHigh,
+            )
             .expect("driver image should allocate");
 
         assert!(allocation.high);
@@ -1011,7 +1070,12 @@ mod tests {
         let dos = NeetanDos::new();
 
         let allocation = dos
-            .allocate_native_driver_image(&mut memory, b"A:\\GENERIC.SYS", 0x20)
+            .allocate_native_driver_image(
+                &mut memory,
+                b"A:\\GENERIC.SYS",
+                0x20,
+                config::DeviceDirective::DeviceHigh,
+            )
             .expect("driver image should allocate");
 
         assert!(!allocation.high);
@@ -1026,7 +1090,12 @@ mod tests {
         dos.state.umb_link = true;
 
         let allocation = dos
-            .allocate_native_driver_image(&mut memory, b"A:\\GENERIC.SYS", 0x20)
+            .allocate_native_driver_image(
+                &mut memory,
+                b"A:\\GENERIC.SYS",
+                0x20,
+                config::DeviceDirective::DeviceHigh,
+            )
             .expect("driver image should allocate");
 
         assert!(allocation.high);
@@ -1063,10 +1132,18 @@ mod tests {
     #[test]
     fn write_init_request_populates_argument_far_pointer() {
         let mut memory = MockMemory::with_extended_memory(0x100000, 0);
-        write_init_request(&mut memory, 0x9000, 0x0200, 0x9000, 0x0400);
+        write_init_request(&mut memory, 0x9000, 0x0200, 0x3458, 0x0000, 0x9000, 0x0400);
         let request_addr = (0x9000u32 << 4) + 0x0200;
         assert_eq!(memory.read_byte(request_addr), INIT_REQUEST_LENGTH);
         assert_eq!(memory.read_byte(request_addr + 2), 0);
+        assert_eq!(
+            memory.read_word(request_addr + INIT_REQUEST_OFF_AVAILABLE_OFFSET),
+            0x0000
+        );
+        assert_eq!(
+            memory.read_word(request_addr + INIT_REQUEST_OFF_AVAILABLE_SEGMENT),
+            0x3458
+        );
         assert_eq!(
             memory.read_word(request_addr + INIT_REQUEST_OFF_ARG_OFFSET),
             0x0400
