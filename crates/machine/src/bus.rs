@@ -1138,7 +1138,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             // 640KB FDD HLE ROM overlay (PC-9801-09-compatible expansion ROM area).
             0xD6000..=0xD6FFF => {
-                if self.fdd640k_hle.rom_installed() {
+                if self.fdd640k_hle.rom_installed() && !self.memory.umb_region_enabled() {
                     self.fdd640k_hle.read_rom_byte((address - 0xD6000) as usize)
                 } else {
                     self.memory.read_byte(address)
@@ -1146,7 +1146,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             // SASI HLE ROM overlay (expansion ROM area).
             0xD7000..=0xD7FFF => {
-                if self.sasi.rom_installed() {
+                if self.sasi.rom_installed() && !self.memory.umb_region_enabled() {
                     self.sasi.read_rom_byte((address - 0xD7000) as usize)
                 } else {
                     self.memory.read_byte(address)
@@ -1154,7 +1154,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             // IDE HLE ROM overlay (expansion ROM area).
             0xD8000..=0xD9FFF => {
-                if self.ide.rom_installed() {
+                if self.ide.rom_installed() && !self.memory.umb_region_enabled() {
                     self.ide.read_rom_byte((address - 0xD8000) as usize)
                 } else {
                     self.memory.read_byte(address)
@@ -2624,6 +2624,9 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             self.memory.state.ram[a + 1] = (value >> 8) as u8;
             self.memory.state.ram[a + 2] = (value >> 16) as u8;
             self.memory.state.ram[a + 3] = (value >> 24) as u8;
+            self.tracer.trace_mem_write_word(address, value as u16);
+            self.tracer
+                .trace_mem_write_word(address.wrapping_add(2), (value >> 16) as u16);
             return;
         }
         let address_masked = self.a20_mask(address);
@@ -2681,6 +2684,9 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                         self.memory.extended_ram[base + 1] = (value >> 8) as u8;
                         self.memory.extended_ram[base + 2] = (value >> 16) as u8;
                         self.memory.extended_ram[base + 3] = (value >> 24) as u8;
+                        self.tracer.trace_mem_write_word(address, value as u16);
+                        self.tracer
+                            .trace_mem_write_word(address.wrapping_add(2), (value >> 16) as u16);
                         return;
                     }
                 }
@@ -2833,6 +2839,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
 #[cfg(test)]
 mod tests {
     use common::{Bus, CpuMode, MachineModel};
+    use device::disk::{HddFormat, HddGeometry, HddImage};
 
     use super::{NoTracing, Pc9801Bus};
 
@@ -2995,12 +3002,41 @@ mod tests {
             Some(0xC000)
         );
 
-        bus.memory.enable_umb_region();
+        bus.memory.enable_umb_region(None);
 
         assert_eq!(
             gainit_choose_window_segment(32, |address| bus.read_word(address)),
             None,
-            "A 128 KB GA window cannot fit once UMB occupies D0000h-DFFFFh"
+            "A 128 KB GA window cannot fit once UMB occupies C0000h-DFFFFh"
+        );
+    }
+
+    #[test]
+    fn umb_region_overrides_hle_expansion_rom_overlay_reads() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AP, CpuMode::Low, 48000);
+        let geometry = HddGeometry {
+            cylinders: 1,
+            heads: 1,
+            sectors_per_track: 1,
+            sector_size: 512,
+        };
+        let image = HddImage::from_raw(geometry, HddFormat::Hdi, vec![0; 512]);
+        bus.insert_hdd(0, image, None);
+
+        bus.write_byte(0xD8000, 0x5A);
+        assert_ne!(
+            bus.read_byte(0xD8000),
+            0x5A,
+            "Before UMBs are enabled, the IDE HLE ROM overlay owns D8000h."
+        );
+
+        bus.memory.enable_umb_region(None);
+        bus.write_byte(0xD8000, 0xA5);
+
+        assert_eq!(
+            bus.read_byte(0xD8000),
+            0xA5,
+            "After UMBs are enabled, D8000h must read the RAM page DOS writes."
         );
     }
 

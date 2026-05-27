@@ -154,7 +154,7 @@ impl MemoryManager {
 
         let umb_enabled = ems_enabled || xms_enabled;
         if umb_enabled {
-            mem.enable_umb_region();
+            mem.enable_umb_region(None);
             memory::write_mcb(
                 mem,
                 UMB_FIRST_MCB_SEGMENT,
