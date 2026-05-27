@@ -153,10 +153,23 @@ pub const DPB_OFF_NEXT_DPB: u32 = 0x19;
 pub const DISK_BUFFER_OFFSET: u16 = 0x0B20;
 pub const DISK_BUFFER_BASE: u32 = DOS_DATA_BASE + DISK_BUFFER_OFFSET as u32;
 
-// InDOS and critical error flags
-pub const INDOS_FLAG_OFFSET: u16 = 0x0D30;
+// DOS swappable data area returned by INT 21h AX=5D06h. The critical-error
+// flag is at SDA+0, the InDOS flag at SDA+1, both of which Windows DOSMGR
+// expects to find via the patch table. CX/DX returned by 5D06h advertise the
+// kernel-internal "swap while in DOS" and "always swap" region sizes; we
+// publish the real-DOS-6.20 values so DOS extenders see the same layout.
+pub const SDA_OFFSET: u16 = 0x0F40;
+pub const SDA_ADDR: u32 = DOS_DATA_BASE + SDA_OFFSET as u32;
+pub const SDA_SIZE: u16 = 0x078C;
+pub const SDA_SWAP_ALWAYS_SIZE: u16 = 0x001A;
+
+// InDOS and critical error flags. The kernel keeps them as the first two
+// bytes of the SDA header so 5D06h callers, INT 28h idlers, and the DOSMGR
+// patch table all see the same memory.
+pub const CRITICAL_ERROR_FLAG_OFFSET: u16 = SDA_OFFSET;
+pub const CRITICAL_ERROR_FLAG_ADDR: u32 = SDA_ADDR;
+pub const INDOS_FLAG_OFFSET: u16 = SDA_OFFSET + 1;
 pub const INDOS_FLAG_ADDR: u32 = DOS_DATA_BASE + INDOS_FLAG_OFFSET as u32;
-pub const CRITICAL_ERROR_FLAG_ADDR: u32 = INDOS_FLAG_ADDR + 1;
 
 // DBCS lead byte table (6 bytes: 81,9F, E0,FC, 00,00)
 pub const DBCS_TABLE_OFFSET: u16 = 0x0D3E;

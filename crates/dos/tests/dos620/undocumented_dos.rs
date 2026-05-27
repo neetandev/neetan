@@ -1,3 +1,5 @@
+use dos::tables;
+
 use crate::harness;
 
 #[test]
@@ -1001,24 +1003,48 @@ fn server_call_5d0a_set_error_noop() {
 }
 
 #[test]
-fn server_call_5d06_returns_error() {
+fn server_call_5d06_returns_swappable_data_area() {
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
+        0x1E,                                   // PUSH DS
         0xB8, 0x06, 0x5D,                       // MOV AX, 5D06h
+        0xBB, 0x5A, 0xA5,                       // MOV BX, A55Ah
         0xCD, 0x21,                             // INT 21h
-        0xA3, 0x00, 0x01,                       // MOV [0100h], AX  (error code)
+        0x8B, 0xFB,                             // MOV DI, BX  (returned BX)
         0x9C,                                   // PUSHF
-        0x58,                                   // POP AX
-        0xA3, 0x02, 0x01,                       // MOV [0102h], AX  (flags)
+        0x1E,                                   // PUSH DS
+        0x5B,                                   // POP BX (returned DS)
+        0x58,                                   // POP AX (flags)
+        0x1F,                                   // POP DS (restore probe DS)
+        0xA3, 0x00, 0x01,                       // MOV [0100h], AX  (flags)
+        0x89, 0x1E, 0x02, 0x01,                 // MOV [0102h], BX  (SDA segment)
+        0x89, 0x36, 0x04, 0x01,                 // MOV [0104h], SI  (SDA offset)
+        0x89, 0x0E, 0x06, 0x01,                 // MOV [0106h], CX  (swap-in-DOS size)
+        0x89, 0x16, 0x08, 0x01,                 // MOV [0108h], DX  (always-swap size)
+        0x89, 0x3E, 0x0A, 0x01,                 // MOV [010Ah], DI  (returned BX)
         0xFA, 0xF4,                             // CLI; HLT
     ];
     harness::inject_and_run(&mut machine, code);
 
-    let ax = harness::result_word(&machine.bus, 0);
-    let flags = harness::result_word(&machine.bus, 2);
-    assert_eq!(ax, 0x0001, "AX=5D06h should return AX=0001h");
-    assert_ne!(flags & 1, 0, "AX=5D06h should return CF=1");
+    let flags = harness::result_word(&machine.bus, 0);
+    let segment = harness::result_word(&machine.bus, 2);
+    let offset = harness::result_word(&machine.bus, 4);
+    let swap_in_dos_size = harness::result_word(&machine.bus, 6);
+    let always_swap_size = harness::result_word(&machine.bus, 8);
+    let returned_bx = harness::result_word(&machine.bus, 10);
+    assert_eq!(flags & 1, 0, "AX=5D06h should return CF=0");
+    assert_eq!(returned_bx, 0xA55A, "AX=5D06h should pass BX through");
+    assert_eq!(segment, tables::DOS_DATA_SEGMENT);
+    assert_eq!(offset, tables::SDA_OFFSET);
+    assert_eq!(swap_in_dos_size, tables::SDA_SIZE);
+    assert_eq!(always_swap_size, tables::SDA_SWAP_ALWAYS_SIZE);
+
+    let sda = harness::far_to_linear(segment, offset);
+    assert_eq!(harness::read_byte(&machine.bus, sda), 0x00);
+    assert_eq!(harness::read_byte(&machine.bus, sda + 1), 0x00);
+    assert_eq!(harness::read_byte(&machine.bus, sda + 2), 0xFF);
+    assert_ne!(harness::read_word(&machine.bus, sda + 0x10), 0x0000);
 }
 
 #[test]
