@@ -75,6 +75,8 @@ pub(crate) struct DosState {
     pub(crate) dta_segment: u16,
     /// DTA (Disk Transfer Area) offset.
     pub(crate) dta_offset: u16,
+    /// Cached DTA linear address, kept in sync with dta_segment/dta_offset.
+    pub(crate) dta_address: u32,
     /// Ctrl-Break check state (false=off, true=on).
     pub(crate) ctrl_break: bool,
     /// Switch character (default 0x2F = '/').
@@ -393,6 +395,7 @@ impl NeetanDos {
                 current_drive: 0,
                 dta_segment: 0,
                 dta_offset: 0x0080,
+                dta_address: 0x0080,
                 ctrl_break: false,
                 switch_char: 0x2F,
                 allocation_strategy: 0,
@@ -1772,6 +1775,7 @@ impl NeetanDos {
         self.state.current_drive = root_shell_boot.initial_drive;
         self.state.dta_segment = self.state.current_psp;
         self.state.dta_offset = 0x0080;
+        self.state.dta_address = ((self.state.current_psp as u32) << 4) | 0x0080;
         self.state.dbcs_table_addr = tables::DBCS_TABLE_ADDR;
         self.root_command_com_psp = self.state.current_psp;
         self.boot_entry_point = BootEntryPoint::command_com(self.state.current_psp);
@@ -1780,18 +1784,23 @@ impl NeetanDos {
         // the root process is an error).
         self.state.process_stack.push(process::ProcessContext {
             psp_segment: self.state.current_psp,
+            child_psp_segment: 0,
             return_ax: 0,
             return_bx: 0,
             return_cx: 0,
             return_dx: 0,
             return_ss: 0,
             return_sp: 0,
+            return_ip: 0,
+            return_cs: 0,
+            return_flags: 0,
             return_si: 0,
             return_di: 0,
             return_ds: 0,
             return_es: 0,
             saved_dta_seg: self.state.dta_segment,
             saved_dta_off: self.state.dta_offset,
+            saved_dta_addr: self.state.dta_address,
         });
     }
 

@@ -454,6 +454,7 @@ impl NeetanDos {
     fn int21h_1ah_set_dta(&mut self, cpu: &dyn CpuAccess) {
         self.state.dta_segment = cpu.ds();
         self.state.dta_offset = cpu.dx();
+        self.state.dta_address = cpu.linear_address(SegmentRegister::DS, cpu.dx());
     }
 
     /// AH=25h: Set interrupt vector.

@@ -959,7 +959,7 @@ impl NeetanDos {
                 (drive_index, pattern, dir_cluster, None)
             };
 
-            let dta_addr = ((self.state.dta_segment as u32) << 4) + self.state.dta_offset as u32;
+            let dta_addr = self.state.dta_address;
 
             // Write search state to DTA
             memory.write_byte(dta_addr, 0x80 | drive_index);
@@ -1004,7 +1004,7 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
         disk: &mut dyn DriveIo,
     ) -> Result<(), u16> {
-        let dta_addr = ((self.state.dta_segment as u32) << 4) + self.state.dta_offset as u32;
+        let dta_addr = self.state.dta_address;
 
         let drive_byte = memory.read_byte(dta_addr);
         let drive_index = drive_byte & 0x7F;
