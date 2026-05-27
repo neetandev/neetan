@@ -1160,9 +1160,13 @@ impl NeetanDos {
         Self::write_windows_dosmgr_signature(mem);
         self.write_windows_dosmgr_patch_table(mem);
 
-        // InDOS flag and critical error flag
+        // InDOS flag, critical error flag, and last-critical-error drive
+        // (0xFF outside of an INT 24h handler invocation). These live at the
+        // base of the SDA so AX=5D06h, INT 28h idlers and the Windows DOSMGR
+        // patch table all observe the same memory.
         mem.write_byte(INDOS_FLAG_ADDR, 0x00);
         mem.write_byte(CRITICAL_ERROR_FLAG_ADDR, 0x00);
+        mem.write_byte(tables::SDA_ADDR + 2, 0xFF);
 
         // DBCS lead byte table (Shift-JIS ranges)
         mem.write_block(DBCS_TABLE_ADDR, &country::DBCS_LEAD_BYTES);

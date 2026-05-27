@@ -1141,6 +1141,7 @@ impl NeetanDos {
     }
 
     /// AH=5Dh: Server function call (undocumented).
+    /// AL=06h: Get swappable data area pointer.
     /// AL=0Ah: Set extended error information (no-op).
     /// Other subfunctions: not supported.
     pub(crate) fn int21h_5dh_server_call(
@@ -1150,6 +1151,15 @@ impl NeetanDos {
     ) {
         let al = (cpu.ax() & 0xFF) as u8;
         match al {
+            0x06 => {
+                self.write_swappable_data_area(memory);
+                let (segment, offset) = tables::dos_data_far(tables::SDA_OFFSET);
+                cpu.set_ds(segment);
+                cpu.set_si(offset);
+                cpu.set_cx(tables::SDA_SIZE);
+                cpu.set_dx(tables::SDA_SWAP_ALWAYS_SIZE);
+                set_iret_carry(cpu, memory, false);
+            }
             0x0A => {
                 set_iret_carry(cpu, memory, false);
             }
@@ -1158,6 +1168,26 @@ impl NeetanDos {
                 set_iret_carry(cpu, memory, true);
             }
         }
+    }
+
+    /// Refreshes the SDA "current state" fields consumed by AX=5D06h. The
+    /// critical-error flag (SDA+0), InDOS flag (SDA+1) and last-error fields
+    /// are owned by the INT 21h dispatcher and INT 24h critical-error path
+    /// and must not be touched here, or the dispatcher's pre/post InDOS
+    /// counter rebalance would observe a stale value.
+    fn write_swappable_data_area(&self, memory: &mut dyn MemoryAccess) {
+        let base = tables::SDA_ADDR;
+        tables::write_far_ptr(
+            memory,
+            base + 0x0C,
+            self.state.dta_segment,
+            self.state.dta_offset,
+        );
+        memory.write_word(base + 0x10, self.state.current_psp);
+        memory.write_word(base + 0x12, 0x0000);
+        memory.write_word(base + 0x14, self.state.last_return_code as u16);
+        memory.write_byte(base + 0x16, self.state.current_drive);
+        memory.write_byte(base + 0x17, self.state.ctrl_break as u8);
     }
 
     /// Helper: populates an SFT entry for a newly opened/created file.
