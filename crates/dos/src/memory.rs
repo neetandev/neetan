@@ -133,6 +133,7 @@ fn largest_free_block_paragraphs(mem: &dyn MemoryAccess, first_segment: u16) -> 
     largest_free_block_paragraphs_until(mem, first_segment, None)
 }
 
+#[cfg(test)]
 pub(crate) fn largest_free_block_paragraphs_pub(mem: &dyn MemoryAccess, first_segment: u16) -> u16 {
     largest_free_block_paragraphs(mem, first_segment).min(u16::MAX as u32) as u16
 }
@@ -974,98 +975,6 @@ pub(crate) fn resize(
 
         Ok(())
     }
-}
-
-pub(crate) fn resize_without_grow_failure(
-    mem: &mut dyn MemoryAccess,
-    first_mcb_segment: u16,
-    data_segment: u16,
-    new_paragraphs: u16,
-) -> Result<(), (u8, u16)> {
-    let target_mcb = data_segment.wrapping_sub(1);
-
-    let mut current = first_mcb_segment;
-    let mut found = false;
-
-    for _ in 0..MAX_CHAIN_WALK {
-        let block_type = read_mcb_type(mem, current);
-        if !is_valid_mcb_type(block_type) {
-            let largest = largest_free_block_paragraphs(mem, first_mcb_segment);
-            return Err((ERR_MCB_DESTROYED, largest.min(0xFFFF) as u16));
-        }
-
-        if current == target_mcb {
-            found = true;
-            break;
-        }
-
-        if block_type == MCB_TYPE_Z {
-            break;
-        }
-
-        current = current + read_mcb_size(mem, current) + 1;
-    }
-
-    if !found {
-        let largest = largest_free_block_paragraphs(mem, first_mcb_segment);
-        return Err((ERR_INVALID_BLOCK, largest.min(0xFFFF) as u16));
-    }
-
-    let current_size = read_mcb_size(mem, target_mcb);
-    let block_type = read_mcb_type(mem, target_mcb);
-    if block_type != MCB_TYPE_Z {
-        let next_segment = target_mcb + current_size + 1;
-        if is_valid_mcb_type(read_mcb_type(mem, next_segment))
-            && read_mcb_owner(mem, next_segment) == MCB_OWNER_FREE
-        {
-            coalesce_chain_from(mem, next_segment);
-        }
-    }
-
-    let max_growable = if block_type == MCB_TYPE_Z {
-        current_size
-    } else {
-        let next_segment = target_mcb + current_size + 1;
-        let next_type = read_mcb_type(mem, next_segment);
-        if !is_valid_mcb_type(next_type) {
-            current_size
-        } else if read_mcb_owner(mem, next_segment) == MCB_OWNER_FREE {
-            let next_size = read_mcb_size(mem, next_segment);
-            ((current_size as u32) + 1 + next_size as u32).min(0xFFFF) as u16
-        } else {
-            current_size
-        }
-    };
-
-    if new_paragraphs == current_size {
-        return Ok(());
-    }
-
-    if new_paragraphs < current_size {
-        return resize(mem, first_mcb_segment, data_segment, new_paragraphs);
-    }
-
-    if block_type == MCB_TYPE_Z {
-        return Err((ERR_INSUFFICIENT_MEMORY, max_growable));
-    }
-
-    let next_segment = target_mcb + current_size + 1;
-    let next_type = read_mcb_type(mem, next_segment);
-    if !is_valid_mcb_type(next_type) {
-        return Err((ERR_MCB_DESTROYED, max_growable));
-    }
-
-    if read_mcb_owner(mem, next_segment) != MCB_OWNER_FREE {
-        return Err((ERR_INSUFFICIENT_MEMORY, max_growable));
-    }
-
-    let next_size = read_mcb_size(mem, next_segment);
-    let total_available = current_size as u32 + 1 + next_size as u32;
-    if (new_paragraphs as u32) > total_available {
-        return Err((ERR_INSUFFICIENT_MEMORY, total_available.min(0xFFFF) as u16));
-    }
-
-    resize(mem, first_mcb_segment, data_segment, new_paragraphs)
 }
 
 fn conventional_link_anchor_segment(

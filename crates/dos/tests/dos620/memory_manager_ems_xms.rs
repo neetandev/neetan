@@ -931,64 +931,42 @@ fn test_hma_query_reflects_allocation() {
     );
 }
 
+// DOS=UMB owns the entire upper-memory region (it is linked into the DOS
+// MCB chain at boot), so HIMEM's XMS UMB pool is always empty and XMS 10h
+// reports 0xB1, matching real MS-DOS 6.20. Programs obtain upper memory
+// through INT 21h AH=48h instead (see syscalls_int21h.rs).
 #[test]
-fn test_umb_allocate() {
+fn test_umb_allocate_reports_no_free_umbs() {
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
-        // UMB Allocate: AH=10h, DX=paragraphs
         0xBA, 0x10, 0x00,                   // MOV DX, 16
         0xB4, 0x10,                         // MOV AH, 10h
         0xCD, 0xFE,                         // INT FEh
-        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
-        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (segment)
-        0x89, 0x16, 0x04, 0x01,             // MOV [0x0104], DX (actual size)
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (0=fail)
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (BL=error)
+        0x89, 0x16, 0x04, 0x01,             // MOV [0x0104], DX
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
     harness::inject_and_run(&mut machine, code);
     let ax = harness::result_word(&machine.bus, 0);
-    let segment = harness::result_word(&machine.bus, 2);
-    let size = harness::result_word(&machine.bus, 4);
-    assert_eq!(ax, 1, "UMB allocate AX={}", ax);
-    assert!(
-        segment >= 0xD000,
-        "UMB segment should be >= D000, got {:#06X}",
-        segment
-    );
-    assert!(size >= 16, "UMB size should be >= 16, got {}", size);
+    let bl = harness::result_byte(&machine.bus, 2);
+    let dx = harness::result_word(&machine.bus, 4);
+    assert_eq!(ax, 0, "UMB allocate AX={}", ax);
+    assert_eq!(bl, 0xB1, "Error code should be 0xB1, got {:#04X}", bl);
+    assert_eq!(dx, 0, "DX should be 0, got {}", dx);
 }
 
+// No UMB is ever handed out through the XMS API, so XMS 11h reports 0xB2
+// (invalid segment) for any segment, matching real MS-DOS 6.20.
 #[test]
-fn test_umb_allocate_and_free() {
+fn test_umb_free_reports_invalid_segment() {
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
-        // UMB Allocate
-        0xBA, 0x10, 0x00,                   // MOV DX, 16
-        0xB4, 0x10,                         // MOV AH, 10h
-        0xCD, 0xFE,                         // INT FEh
-        0x89, 0x1E, 0x00, 0x01,             // MOV [0x0100], BX (segment)
-        // UMB Free: AH=11h, DX=segment
-        0x8B, 0x16, 0x00, 0x01,             // MOV DX, [segment]
+        0xBA, 0x00, 0xD0,                   // MOV DX, D000h
         0xB4, 0x11,                         // MOV AH, 11h
-        0xCD, 0xFE,                         // INT FEh
-        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (1=success)
-        0xFA,                               // CLI
-        0xF4,                               // HLT
-    ];
-    harness::inject_and_run(&mut machine, code);
-    let free_ax = harness::result_word(&machine.bus, 2);
-    assert_eq!(free_ax, 1, "UMB free AX={}", free_ax);
-}
-
-#[test]
-fn test_umb_allocate_too_large() {
-    let mut machine = harness::boot_hle();
-    #[rustfmt::skip]
-    let code: &[u8] = &[
-        0xBA, 0xFF, 0xFF,                   // MOV DX, FFFFh
-        0xB4, 0x10,                         // MOV AH, 10h
         0xCD, 0xFE,                         // INT FEh
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (0=fail)
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (BL=error)
@@ -998,36 +976,31 @@ fn test_umb_allocate_too_large() {
     harness::inject_and_run(&mut machine, code);
     let ax = harness::result_word(&machine.bus, 0);
     let bl = harness::result_byte(&machine.bus, 2);
-    assert_eq!(ax, 0, "Should fail, AX={}", ax);
-    assert_eq!(bl, 0xB0, "Error code should be 0xB0, got {:#04X}", bl);
+    assert_eq!(ax, 0, "UMB free AX={}", ax);
+    assert_eq!(bl, 0xB2, "Error code should be 0xB2, got {:#04X}", bl);
 }
 
+// HIMEM 3.10 (MS-DOS 6.20) never implements reallocate-UMB, so XMS 12h
+// always reports 0x80 (not implemented).
 #[test]
-fn test_umb_reallocate() {
+fn test_umb_reallocate_not_implemented() {
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
-        // Allocate 32 paragraphs
-        0xBA, 0x20, 0x00,                   // MOV DX, 32
-        0xB4, 0x10,                         // MOV AH, 10h
-        0xCD, 0xFE,                         // INT FEh
-        0x89, 0x1E, 0x00, 0x01,             // MOV [0x0100], BX (segment)
-        // Reallocate to 16: AH=12h, BX=new_size, DX=segment
         0xBB, 0x10, 0x00,                   // MOV BX, 16
-        0x8B, 0x16, 0x00, 0x01,             // MOV DX, [segment]
+        0xBA, 0x00, 0xD0,                   // MOV DX, D000h
         0xB4, 0x12,                         // MOV AH, 12h
         0xCD, 0xFE,                         // INT FEh
-        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (1=success)
-        // Free
-        0x8B, 0x16, 0x00, 0x01,             // MOV DX, [segment]
-        0xB4, 0x11,                         // MOV AH, 11h
-        0xCD, 0xFE,                         // INT FEh
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (0=fail)
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (BL=error)
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
     harness::inject_and_run(&mut machine, code);
-    let realloc_ax = harness::result_word(&machine.bus, 2);
-    assert_eq!(realloc_ax, 1, "UMB reallocate AX={}", realloc_ax);
+    let ax = harness::result_word(&machine.bus, 0);
+    let bl = harness::result_byte(&machine.bus, 2);
+    assert_eq!(ax, 0, "UMB reallocate AX={}", ax);
+    assert_eq!(bl, 0x80, "Error code should be 0x80, got {:#04X}", bl);
 }
 
 #[test]

@@ -72,9 +72,12 @@ fn host_memory_overview_reports_umb_usage() {
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
-        0xBA, 0x10, 0x00,                   // MOV DX, 16
-        0xB4, 0x10,                         // MOV AH, 10h (UMB allocate)
-        0xCD, 0xFE,                         // INT FEh
+        // Link UMB into the MCB chain: AX=5803h, BX=1.
+        0xB8, 0x03, 0x58, 0xBB, 0x01, 0x00, 0xCD, 0x21,
+        // Set allocation strategy = 0x80 (high-only).
+        0xB8, 0x01, 0x58, 0xBB, 0x80, 0x00, 0xCD, 0x21,
+        // Allocate 16 paragraphs via INT 21h AH=48h (lands in the UMB).
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];

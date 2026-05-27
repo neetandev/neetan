@@ -1425,34 +1425,6 @@ impl MemoryManager {
         memory::free(mem, self.umb_first_mcb_segment, segment).map_err(|_| 0xB2)
     }
 
-    pub(crate) fn umb_reallocate(
-        &self,
-        segment: u16,
-        new_paragraphs: u16,
-        mem: &mut dyn MemoryAccess,
-    ) -> Result<(), (u8, u16)> {
-        if !self.umb_enabled {
-            return Err((0xB2, 0));
-        }
-        let largest_available =
-            memory::largest_free_block_paragraphs_pub(mem, self.umb_first_mcb_segment);
-        memory::resize_without_grow_failure(
-            mem,
-            self.umb_first_mcb_segment,
-            segment,
-            new_paragraphs,
-        )
-        .map_err(|(code, _largest)| {
-            if code == 0x09 {
-                (0xB2, 0)
-            } else if largest_available == 0 {
-                (0xB1, 0)
-            } else {
-                (0xB0, largest_available)
-            }
-        })
-    }
-
     pub(crate) fn ems_total_kb(&self) -> u32 {
         if self.ems_enabled {
             self.allocator_total_bytes() / 1024
@@ -3202,62 +3174,6 @@ mod tests {
         let (mm, mut mem) = create_manager(1024);
         let (segment, _) = mm.umb_allocate(16, &mut mem).unwrap();
         assert!(mm.umb_free(segment, &mut mem).is_ok());
-    }
-
-    #[test]
-    fn test_umb_reallocate() {
-        let (mm, mut mem) = create_manager(1024);
-        let (segment, _) = mm.umb_allocate(32, &mut mem).unwrap();
-        assert!(mm.umb_reallocate(segment, 16, &mut mem).is_ok());
-    }
-
-    #[test]
-    fn test_umb_reallocate_failure_reports_largest_free_umb_without_resizing() {
-        let (mm, mut mem) = create_manager_selective(1024, false, true);
-        let (segment, _) = mm.umb_allocate(4, &mut mem).unwrap();
-        let (_second_segment, _) = mm.umb_allocate(4, &mut mem).unwrap();
-        let expected_largest =
-            memory::largest_free_block_paragraphs_pub(&mem, mm.umb_first_mcb_segment());
-
-        assert_eq!(
-            mm.umb_reallocate(segment, 0xFFFF, &mut mem),
-            Err((0xB0, expected_largest))
-        );
-        assert_eq!(memory::read_mcb_size_pub(&mem, segment - 1), 4);
-    }
-
-    #[test]
-    fn test_umb_reallocate_returns_b1_when_no_umbs_free() {
-        let (mm, mut mem) = create_manager_selective(1024, false, true);
-        let (first_segment, _) = mm.umb_allocate(4, &mut mem).unwrap();
-
-        loop {
-            let largest =
-                memory::largest_free_block_paragraphs_pub(&mem, mm.umb_first_mcb_segment());
-            if largest == 0 {
-                break;
-            }
-            let (_, size) = mm.umb_allocate(largest, &mut mem).unwrap();
-            assert_eq!(size, largest);
-        }
-
-        assert_eq!(
-            memory::largest_free_block_paragraphs_pub(&mem, mm.umb_first_mcb_segment()),
-            0
-        );
-
-        assert_eq!(
-            mm.umb_reallocate(first_segment, 0xFFFF, &mut mem),
-            Err((0xB1, 0))
-        );
-    }
-
-    #[test]
-    fn test_umb_reallocate_returns_b2_for_invalid_segment() {
-        let (mm, mut mem) = create_manager_selective(1024, false, true);
-        let _ = mm.umb_allocate(4, &mut mem).unwrap();
-
-        assert_eq!(mm.umb_reallocate(0xEEEE, 8, &mut mem), Err((0xB2, 0)));
     }
 
     #[test]
