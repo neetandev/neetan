@@ -4949,19 +4949,17 @@ fn vm86_iret_cannot_change_iopl() {
     );
 }
 
-/// 32-bit IRETD in VM86 must clear ip_upper (bits 16–31 of EIP are always 0 in VM86).
+/// 32-bit IRETD in VM86 must clear ip_upper. EIP is a 16-bit value in V86
+/// mode and the popped upper 16 bits are discarded so subsequent fetches do
+/// not exceed the implicit 64KB CS limit.
 #[test]
-fn vm86_iretd_preserves_ip_upper() {
+fn vm86_iretd_clears_ip_upper() {
     let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_vm86(&mut bus);
     cpu.load_state(&state);
 
-    // Push a 32-bit IRETD frame (IOPL=3 short path, operand-size override).
-    // Frame layout (popped in order): EIP, CS, EFLAGS.
-    // 32-bit IRET in V86 mode loads the full 32-bit EIP per the 386 PRM,
-    // even though instruction fetch only uses the low 16 bits.
     let new_eip: u32 = 0xDEAD_0010;
     let new_cs: u32 = 0x1000;
     let new_eflags: u32 = 0x0002_3202; // VM=1, IOPL=3, IF=1, bit1
@@ -4985,8 +4983,8 @@ fn vm86_iretd_preserves_ip_upper() {
         "IP should be low 16 bits of new_eip"
     );
     assert_eq!(
-        cpu.ip_upper, 0xDEAD_0000,
-        "ip_upper must hold the upper 16 bits of EIP after a 32-bit V86 IRETD"
+        cpu.ip_upper, 0,
+        "ip_upper must be zero in VM86 regardless of the popped EIP upper bits"
     );
 }
 
@@ -5096,12 +5094,11 @@ fn iret_cpl0_to_vm86_clocks_60() {
     );
 }
 
-/// 32-bit IRETD from CPL0 returning to VM86 must preserve the upper 16 bits of
-/// EIP popped from the stack frame, per the 386 PRM IRETD pseudocode (which
-/// pops a full 32-bit EIP regardless of the target mode). Mirror of the
-/// VM86->VM86 path tested by `vm86_iretd_preserves_ip_upper`.
+/// 32-bit IRETD from CPL0 returning to VM86 must clear the upper 16 bits of
+/// EIP. EIP is a 16-bit value in V86 mode and the popped upper 16 bits are
+/// discarded so subsequent fetches do not exceed the implicit 64KB CS limit.
 #[test]
-fn iret_cpl0_to_vm86_preserves_ip_upper() {
+fn iret_cpl0_to_vm86_clears_ip_upper() {
     let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
@@ -5140,9 +5137,8 @@ fn iret_cpl0_to_vm86_preserves_ip_upper() {
         "IP low 16 bits should match the popped EIP"
     );
     assert_eq!(
-        cpu.ip_upper,
-        new_eip & 0xFFFF_0000,
-        "ip_upper must hold the upper 16 bits of EIP after a 32-bit IRETD from CPL0 to VM86"
+        cpu.ip_upper, 0,
+        "ip_upper must be zero in VM86 regardless of the popped EIP upper bits"
     );
 }
 
