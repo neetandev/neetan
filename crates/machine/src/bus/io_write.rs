@@ -104,15 +104,11 @@ impl<T: Tracing> Pc9801Bus<T> {
             // GDC master (text)
             0x60 => {
                 let action = self.gdc_master.write_data(value);
-                if matches!(action, GdcAction::TimingChanged) {
-                    self.reschedule_gdc_events();
-                }
+                self.handle_gdc_master_action(action);
             }
             0x62 => {
                 let action = self.gdc_master.write_command(value);
-                if matches!(action, GdcAction::TimingChanged) {
-                    self.reschedule_gdc_events();
-                }
+                self.handle_gdc_master_action(action);
             }
 
             // VSYNC IRQ control and acknowledge
@@ -1073,6 +1069,42 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
     }
 
+    fn handle_gdc_master_action(&mut self, action: GdcAction) {
+        match action {
+            GdcAction::None => {}
+            GdcAction::Draw(result) => {
+                for i in 0..self.gdc_master.draw_buffer.len() {
+                    let op = self.gdc_master.draw_buffer[i];
+                    self.apply_gdc_text_vram_op(&op);
+                }
+                self.gdc_master.draw_buffer.clear();
+                if result.dot_count == 0 {
+                    self.gdc_master.state.status &= !STATUS_DRAWING;
+                }
+            }
+            GdcAction::DackWrite(op) => {
+                self.apply_gdc_text_vram_op(&op);
+            }
+            GdcAction::ReadVram(_request) => {
+                self.feed_gdc_master_rdat();
+            }
+            GdcAction::TimingChanged => self.reschedule_gdc_events(),
+        }
+    }
+
+    pub(super) fn feed_gdc_master_rdat(&mut self) {
+        while let Some(address) = self.gdc_master.rdat_next_address() {
+            let word = self.read_gdc_text_vram_word(address);
+            let needs_more = self.gdc_master.provide_rdat_word(word);
+            if !needs_more {
+                break;
+            }
+            if self.gdc_master.state.fifo.count >= 14 {
+                break;
+            }
+        }
+    }
+
     fn schedule_drawing_timing(&mut self, dot_count: u32) {
         let dots = dot_count as u64;
         let is_8mhz_lineage = self.clocks.pit_clock_hz == 1_996_800;
@@ -1217,6 +1249,33 @@ impl<T: Tracing> Pc9801Bus<T> {
         };
 
         self.write_gdc_vram_word_to_access_page(op.address, result);
+    }
+
+    fn read_gdc_text_vram_word(&self, address: u32) -> u16 {
+        let byte_offset = ((address as usize) & 0x1FFF) * 2;
+        let low = self.memory.state.text_vram[byte_offset];
+        let high = self.memory.state.text_vram[byte_offset + 1];
+        u16::from(low) | (u16::from(high) << 8)
+    }
+
+    fn write_gdc_text_vram_word(&mut self, address: u32, value: u16) {
+        let byte_offset = ((address as usize) & 0x1FFF) * 2;
+        self.memory.state.text_vram[byte_offset] = value as u8;
+        self.memory.state.text_vram[byte_offset + 1] = (value >> 8) as u8;
+    }
+
+    fn apply_gdc_text_vram_op(&mut self, op: &VramOp) {
+        let current = self.read_gdc_text_vram_word(op.address);
+        let mask = op.mask;
+        let data = op.data;
+        let result = match op.mode {
+            0 => (current & !mask) | (data & mask),
+            1 => current ^ (data & mask),
+            2 => current & !(data & mask),
+            3 => current | (data & mask),
+            _ => current,
+        };
+        self.write_gdc_text_vram_word(op.address, result);
     }
 
     fn apply_gdc_vram_op_grcg(&mut self, op: &VramOp) {

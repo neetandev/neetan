@@ -3,7 +3,7 @@ use std::{
     process::Command,
 };
 
-use common::{CpuMode, JisChar, MachineModel};
+use common::{Bus, CpuMode, JisChar, MachineModel};
 use machine::{Pc9801Bus, Pc9801Vm};
 
 const CYCLES_PER_STEP: u64 = 200_000;
@@ -53,6 +53,73 @@ fn read_text_char(bus: &Pc9801Bus, row: u32, column: u32) -> JisChar {
     let offset = text_offset(row, column) as usize;
     let text_vram = bus.text_vram();
     JisChar::from_vram_bytes(text_vram[offset], text_vram[offset + 1])
+}
+
+fn gdc_data(bus: &mut Pc9801Bus, value: u8) {
+    bus.io_write_byte(0x60, value);
+}
+
+fn gdc_command(bus: &mut Pc9801Bus, value: u8) {
+    bus.io_write_byte(0x62, value);
+}
+
+fn gdc_set_cursor(bus: &mut Pc9801Bus, address: u16) {
+    gdc_command(bus, 0x49);
+    gdc_data(bus, address as u8);
+    gdc_data(bus, (address >> 8) as u8);
+    gdc_data(bus, 0);
+}
+
+fn gdc_set_mask(bus: &mut Pc9801Bus, mask: u16) {
+    gdc_command(bus, 0x4A);
+    gdc_data(bus, mask as u8);
+    gdc_data(bus, (mask >> 8) as u8);
+}
+
+fn gdc_set_vector_right(bus: &mut Pc9801Bus, count: u16) {
+    gdc_command(bus, 0x4C);
+    gdc_data(bus, 2);
+    gdc_data(bus, count as u8);
+    gdc_data(bus, (count >> 8) as u8);
+}
+
+fn gdc_write_word(bus: &mut Pc9801Bus, address: u16, value: u16) {
+    gdc_set_cursor(bus, address);
+    gdc_set_mask(bus, 0xFFFF);
+    gdc_set_vector_right(bus, 0);
+    gdc_command(bus, 0x20);
+    gdc_data(bus, value as u8);
+    gdc_data(bus, (value >> 8) as u8);
+}
+
+fn gdc_read_word(bus: &mut Pc9801Bus, address: u16) -> u16 {
+    gdc_set_cursor(bus, address);
+    gdc_set_vector_right(bus, 1);
+    gdc_command(bus, 0xA0);
+    let low = bus.io_read_byte(0x62);
+    let high = bus.io_read_byte(0x62);
+    u16::from(low) | (u16::from(high) << 8)
+}
+
+#[test]
+fn master_gdc_wdat_rdat_accesses_text_vram_through_character_ports() {
+    let mut bus = Pc9801Bus::new(MachineModel::PC9801VM, CpuMode::High, 48_000);
+
+    gdc_write_word(&mut bus, 0x0000, 0x1241);
+    gdc_write_word(&mut bus, 0x0001, 0x5678);
+    gdc_write_word(&mut bus, 0x1000, 0x00E1);
+
+    let text_vram = bus.text_vram();
+    assert_eq!(text_vram[0], 0x41);
+    assert_eq!(text_vram[1], 0x12);
+    assert_eq!(text_vram[2], 0x78);
+    assert_eq!(text_vram[3], 0x56);
+    assert_eq!(text_vram[0x2000], 0xE1);
+    assert_eq!(text_vram[0x2001], 0x00);
+
+    assert_eq!(gdc_read_word(&mut bus, 0x0000), 0x1241);
+    assert_eq!(gdc_read_word(&mut bus, 0x0001), 0x5678);
+    assert_eq!(gdc_read_word(&mut bus, 0x1000), 0x00E1);
 }
 
 #[test]

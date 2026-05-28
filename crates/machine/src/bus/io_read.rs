@@ -164,7 +164,11 @@ impl<T: Tracing> Pc9801Bus<T> {
                     .update_hblank_status(cycles_until_frame_event);
                 self.gdc_master.read_status()
             }
-            0x62 => self.gdc_master.read_data(),
+            0x62 => {
+                let value = self.gdc_master.read_data();
+                self.feed_gdc_master_rdat();
+                value
+            }
 
             // Video mode
             0x68 => self.display_control.read_video_mode(),
