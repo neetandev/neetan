@@ -1185,7 +1185,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.clk(Self::timing(12, 10));
             }
             2 => {
-                // LGDT - load full 32-bit base on 386
+                // LGDT - load full 32-bit base on 386. With a 16-bit operand
+                // size (no 0x66 prefix), the upper 8 bits of the loaded base
+                // are forced to zero.
                 if modrm >= 0xC0 {
                     self.raise_fault(6, bus)?;
                     return Ok(());
@@ -1196,13 +1198,18 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
                 self.calc_ea(modrm, bus);
                 let limit = self.read_word_linear(bus, self.seg_addr(0))?;
-                let base = self.read_dword_linear(bus, self.seg_addr(2))?;
+                let mut base = self.read_dword_linear(bus, self.seg_addr(2))?;
+                if !self.operand_size_override {
+                    base &= 0x00FF_FFFF;
+                }
                 self.gdt_base = base;
                 self.gdt_limit = limit;
                 self.clk(Self::timing(11, 12));
             }
             3 => {
-                // LIDT - load full 32-bit base on 386
+                // LIDT - load full 32-bit base on 386. With a 16-bit operand
+                // size (no 0x66 prefix), the upper 8 bits of the loaded base
+                // are forced to zero.
                 if modrm >= 0xC0 {
                     self.raise_fault(6, bus)?;
                     return Ok(());
@@ -1213,7 +1220,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
                 self.calc_ea(modrm, bus);
                 let limit = self.read_word_linear(bus, self.seg_addr(0))?;
-                let base = self.read_dword_linear(bus, self.seg_addr(2))?;
+                let mut base = self.read_dword_linear(bus, self.seg_addr(2))?;
+                if !self.operand_size_override {
+                    base &= 0x00FF_FFFF;
+                }
                 self.idt_base = base;
                 self.idt_limit = limit;
                 self.clk(Self::timing(12, 12));

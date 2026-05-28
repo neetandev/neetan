@@ -2090,6 +2090,124 @@ fn lgdt_real_mode_with_24_bit_base_value_loads_correctly() {
 }
 
 #[test]
+fn lgdt_16bit_operand_forces_upper_8_bits_of_base_to_zero() {
+    // With a 16-bit operand size attribute, the  upper 8 bits of the loaded
+    // 32-bit base are forced to zero. The physical byte at offset +5 of the
+    // operand is not part of the loaded base and must not leak into bits 24-31
+    // of GDTR.base, even if it happens to be non-zero (as it does in DOS
+    // 3.30's EMM386.SYS, where the byte following a six-byte LGDT operand
+    // is 0x92 unrelated data).
+    let mut cpu = make_cpu_386();
+    let mut bus = TestBus::new();
+
+    let mut state = cpu::I386State::default();
+    state.set_cs(0xF000);
+    state.set_ds(0x1000);
+    state.seg_bases[cpu::SegReg32::CS as usize] = 0x000F_0000;
+    state.seg_bases[cpu::SegReg32::DS as usize] = 0x0001_0000;
+    state.seg_limits = [0xFFFF; 6];
+    state.seg_rights[cpu::SegReg32::CS as usize] = 0x9B;
+    state.seg_rights[cpu::SegReg32::DS as usize] = 0x93;
+    state.seg_valid = [true; 6];
+    cpu.load_state(&state);
+
+    write_pseudo_descriptor_48bit(&mut bus, 0x0001_0000, 0x0137, 0x92FF_9680);
+    place_at(&mut bus, 0x000F_0000, &[0x0F, 0x01, 0x16, 0x00, 0x00]);
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.state.gdt_limit, 0x0137);
+    assert_eq!(
+        cpu.state.gdt_base, 0x00FF_9680,
+        "16-bit LGDT must mask base to 24 bits; byte at operand+5 (0x92) \
+         must not leak into bits 24-31"
+    );
+}
+
+#[test]
+fn lgdt_32bit_operand_with_66_prefix_loads_full_32bit_base() {
+    // With operand-size override (0x66 in 16-bit code), LGDT loads the full
+    // 32-bit base from the descriptor.
+    let mut cpu = make_cpu_386();
+    let mut bus = TestBus::new();
+
+    let mut state = cpu::I386State::default();
+    state.set_cs(0xF000);
+    state.set_ds(0x1000);
+    state.seg_bases[cpu::SegReg32::CS as usize] = 0x000F_0000;
+    state.seg_bases[cpu::SegReg32::DS as usize] = 0x0001_0000;
+    state.seg_limits = [0xFFFF; 6];
+    state.seg_rights[cpu::SegReg32::CS as usize] = 0x9B;
+    state.seg_rights[cpu::SegReg32::DS as usize] = 0x93;
+    state.seg_valid = [true; 6];
+    cpu.load_state(&state);
+
+    write_pseudo_descriptor_48bit(&mut bus, 0x0001_0000, 0x0FFF, 0x9234_5678);
+    place_at(&mut bus, 0x000F_0000, &[0x66, 0x0F, 0x01, 0x16, 0x00, 0x00]);
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.state.gdt_limit, 0x0FFF);
+    assert_eq!(cpu.state.gdt_base, 0x9234_5678);
+}
+
+#[test]
+fn lidt_16bit_operand_forces_upper_8_bits_of_base_to_zero() {
+    // Mirror of `lgdt_16bit_operand_forces_upper_8_bits_of_base_to_zero` for
+    // LIDT: the 16-bit operand variant must not let the byte at operand+5
+    // leak into bits 24-31 of IDTR.base.
+    let mut cpu = make_cpu_386();
+    let mut bus = TestBus::new();
+
+    let mut state = cpu::I386State::default();
+    state.set_cs(0xF000);
+    state.set_ds(0x1000);
+    state.seg_bases[cpu::SegReg32::CS as usize] = 0x000F_0000;
+    state.seg_bases[cpu::SegReg32::DS as usize] = 0x0001_0000;
+    state.seg_limits = [0xFFFF; 6];
+    state.seg_rights[cpu::SegReg32::CS as usize] = 0x9B;
+    state.seg_rights[cpu::SegReg32::DS as usize] = 0x93;
+    state.seg_valid = [true; 6];
+    cpu.load_state(&state);
+
+    write_pseudo_descriptor_48bit(&mut bus, 0x0001_0000, 0x03BF, 0x92FF_97C0);
+    place_at(&mut bus, 0x000F_0000, &[0x0F, 0x01, 0x1E, 0x00, 0x00]);
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.state.idt_limit, 0x03BF);
+    assert_eq!(
+        cpu.state.idt_base, 0x00FF_97C0,
+        "16-bit LIDT must mask base to 24 bits; byte at operand+5 (0x92) \
+         must not leak into bits 24-31"
+    );
+}
+
+#[test]
+fn lidt_32bit_operand_with_66_prefix_loads_full_32bit_base() {
+    // Mirror of `lgdt_32bit_operand_with_66_prefix_loads_full_32bit_base`
+    // for LIDT: with the operand-size override, LIDT loads the full 32-bit
+    // base.
+    let mut cpu = make_cpu_386();
+    let mut bus = TestBus::new();
+
+    let mut state = cpu::I386State::default();
+    state.set_cs(0xF000);
+    state.set_ds(0x1000);
+    state.seg_bases[cpu::SegReg32::CS as usize] = 0x000F_0000;
+    state.seg_bases[cpu::SegReg32::DS as usize] = 0x0001_0000;
+    state.seg_limits = [0xFFFF; 6];
+    state.seg_rights[cpu::SegReg32::CS as usize] = 0x9B;
+    state.seg_rights[cpu::SegReg32::DS as usize] = 0x93;
+    state.seg_valid = [true; 6];
+    cpu.load_state(&state);
+
+    write_pseudo_descriptor_48bit(&mut bus, 0x0001_0000, 0x03FF, 0x9234_5678);
+    place_at(&mut bus, 0x000F_0000, &[0x66, 0x0F, 0x01, 0x1E, 0x00, 0x00]);
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.state.idt_limit, 0x03FF);
+    assert_eq!(cpu.state.idt_base, 0x9234_5678);
+}
+
+#[test]
 fn ltr_then_immediate_clear_via_secondary_load_unsupported_succeeds_first() {
     let mut cpu = make_cpu_386();
     let mut bus = TestBus::new();
