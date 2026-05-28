@@ -1240,8 +1240,27 @@ impl NeetanDos {
         return_code: u8,
         termination_type: u8,
     ) {
+        if !self.pending_native_drivers.is_empty() {
+            self.state.last_return_code = return_code;
+            self.state.last_termination_type = termination_type;
+            self.complete_native_driver_init(cpu, mem);
+            return;
+        }
+
         self.discard_abandoned_child_execs(mem);
         let child_psp = self.state.current_psp;
+        // Resident/native code can call DOS terminate while the root shell is
+        // current. Only EXEC-created children have a matching parent context.
+        if self
+            .state
+            .process_stack
+            .last()
+            .is_none_or(|context| context.child_psp_segment != child_psp)
+        {
+            set_iret_carry(cpu, mem, false);
+            return;
+        }
+
         let child_psp_base = (child_psp as u32) << 4;
         let is_shell_process = self.shells.remove(&child_psp).is_some();
 
@@ -1364,7 +1383,26 @@ impl NeetanDos {
         return_code: u8,
         keep_paragraphs: u16,
     ) {
+        if !self.pending_native_drivers.is_empty() {
+            self.state.last_return_code = return_code;
+            self.state.last_termination_type = 3;
+            self.complete_native_driver_init(cpu, mem);
+            return;
+        }
+
         let child_psp = self.state.current_psp;
+        // Resident/native code can call DOS terminate while the root shell is
+        // current. Only EXEC-created children have a matching parent context.
+        if self
+            .state
+            .process_stack
+            .last()
+            .is_none_or(|context| context.child_psp_segment != child_psp)
+        {
+            set_iret_carry(cpu, mem, false);
+            return;
+        }
+
         let child_psp_base = (child_psp as u32) << 4;
         self.shells.remove(&child_psp);
 
@@ -1572,6 +1610,41 @@ mod tests {
             mem.read_word(((u32::from(child_psp - 1)) << 4) + MCB_OFF_OWNER),
             MCB_OWNER_FREE
         );
+    }
+
+    #[test]
+    fn terminate_without_matching_exec_context_does_not_pop_or_free_root_process() {
+        let mut dos = NeetanDos::new();
+        let mut mem = MockMemory::with_extended_memory(0x100000, 0);
+        let root_psp = 0x1001;
+        mem.write_word(dos.state.sysvars_base - 2, 0x1000);
+        write_mcb(&mut mem, 0x1000, b'Z', root_psp, 0x00FF);
+        initialize_child_psp(&mut mem, root_psp, root_psp);
+
+        dos.state.current_psp = root_psp;
+        dos.state.process_stack.push(parent_context(root_psp, 0));
+        let mut cpu = MockCpu {
+            eax: 0x4CFF,
+            ss: 0x1040,
+            sp: 0x0200,
+            ..MockCpu::default()
+        };
+        let frame = cpu.linear_address(SegmentRegister::SS, cpu.sp());
+        mem.write_word(frame, 0x1234);
+        mem.write_word(frame + 2, 0x5678);
+        mem.write_word(frame + 4, 0x0203);
+
+        dos.terminate_process(&mut cpu, &mut mem, 0xFF, 0);
+
+        assert_eq!(dos.state.current_psp, root_psp);
+        assert_eq!(dos.state.process_stack.len(), 1);
+        assert_eq!(
+            mem.read_word(((u32::from(root_psp - 1)) << 4) + MCB_OFF_OWNER),
+            root_psp
+        );
+        assert_eq!(mem.read_word(frame), 0x1234);
+        assert_eq!(mem.read_word(frame + 2), 0x5678);
+        assert_eq!(mem.read_word(frame + 4) & 0x0001, 0);
     }
 
     #[test]
