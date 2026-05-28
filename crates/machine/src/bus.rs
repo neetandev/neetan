@@ -2637,6 +2637,25 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
         }
         let pegc_active = self.pegc.is_256_color_active();
         let has_pegc = self.machine_model.has_pegc();
+        let dword_end = address_masked.wrapping_add(3);
+        let ems_b_bank = self.b_bank_ems
+            && self.vram_ems_bank & 0x02 != 0
+            && ((0xB0000..=0xBFFFF).contains(&address_masked)
+                || (0xB0000..=0xBFFFF).contains(&dword_end));
+        let in_grcg_range = !ems_b_bank
+            && !pegc_active
+            && (((0xA8000..=0xBFFFF).contains(&address_masked)
+                && (0xA8000..=0xBFFFF).contains(&dword_end))
+                || ((0xE0000..=0xE7FFF).contains(&address_masked)
+                    && (0xE0000..=0xE7FFF).contains(&dword_end)));
+
+        if self.grcg.is_active() && in_grcg_range && self.is_egc_effective() {
+            self.egc_write_dword(address_masked, value);
+            self.tracer.trace_mem_write_word(address, value as u16);
+            self.tracer
+                .trace_mem_write_word(address.wrapping_add(2), (value >> 16) as u16);
+            return;
+        }
 
         match address_masked {
             0xA8000..=0xB7FFC if pegc_active && self.pegc.is_plane_mode() => {

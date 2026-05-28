@@ -309,6 +309,17 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
         }
     }
+
+    pub(super) fn egc_write_dword(&mut self, address: u32, value: u32) {
+        self.pending_wait_cycles += self.grcg_wait;
+        if !self.egc.is_descending() {
+            self.egc_write_word_inner(address, value as u16);
+            self.egc_write_word_inner(address.wrapping_add(2), (value >> 16) as u16);
+        } else {
+            self.egc_write_word_inner(address.wrapping_add(2), (value >> 16) as u16);
+            self.egc_write_word_inner(address, value as u16);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -320,6 +331,45 @@ mod tests {
     fn enable_egc_mode(bus: &mut Pc9801Bus<NoTracing>) {
         bus.io_write_byte(0x6A, 0x07);
         bus.io_write_byte(0x6A, 0x05);
+    }
+
+    fn configure_egc_mono(bus: &mut Pc9801Bus<NoTracing>, color: u16, rop: u16, shift: u16) {
+        bus.io_write_word(0x04A0, 0xFFF0);
+        bus.io_write_word(0x04A2, 0x00FF);
+        bus.io_write_word(0x04A8, 0xFFFF);
+        bus.io_write_word(0x04A6, color);
+        bus.io_write_word(0x04A2, 0x4000);
+        bus.io_write_word(0x04A4, 0x0C00 | rop);
+        bus.io_write_word(0x04AC, shift);
+        bus.io_write_word(0x04AE, 31);
+    }
+
+    fn seed_background_color5(bus: &mut Pc9801Bus<NoTracing>, offset: usize, len: usize) {
+        for byte in offset..offset + len {
+            bus.memory.state.graphics_vram[byte] = 0xFF;
+            bus.memory.state.graphics_vram[0x8000 + byte] = 0x00;
+            bus.memory.state.graphics_vram[0x10000 + byte] = 0xFF;
+            bus.memory.state.e_plane_vram[byte] = 0x00;
+        }
+    }
+
+    fn graphics_pixel(bus: &Pc9801Bus<NoTracing>, x: usize) -> u8 {
+        let offset = x / 8;
+        let mask = 0x80 >> (x & 7);
+        let mut color = 0;
+        if bus.memory.state.graphics_vram[offset] & mask != 0 {
+            color |= 1;
+        }
+        if bus.memory.state.graphics_vram[0x8000 + offset] & mask != 0 {
+            color |= 2;
+        }
+        if bus.memory.state.graphics_vram[0x10000 + offset] & mask != 0 {
+            color |= 4;
+        }
+        if bus.memory.state.e_plane_vram[offset] & mask != 0 {
+            color |= 8;
+        }
+        color
     }
 
     #[test]
@@ -400,6 +450,45 @@ mod tests {
             bus.pending_wait_cycles, 8,
             "misaligned should charge exactly 1x grcg_wait"
         );
+    }
+
+    #[test]
+    fn egc_mono_dword_write_draws_color_and_preserves_zero_bits() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+        bus.set_graphics_extension_enabled(true);
+        enable_egc_mode(&mut bus);
+        bus.grcg.write_mode(0x80);
+        configure_egc_mono(&mut bus, 10, 0xAC, 0x0000);
+        seed_background_color5(&mut bus, 0, 4);
+
+        bus.pending_wait_cycles = 0;
+        bus.write_dword(0xA8000, 0x81CC_AAF0);
+
+        assert_eq!(bus.pending_wait_cycles, 8);
+        assert_eq!(graphics_pixel(&bus, 0), 10);
+        assert_eq!(graphics_pixel(&bus, 4), 5);
+        assert_eq!(graphics_pixel(&bus, 8), 10);
+        assert_eq!(graphics_pixel(&bus, 9), 5);
+        assert_eq!(graphics_pixel(&bus, 31), 10);
+    }
+
+    #[test]
+    fn egc_shifted_mono_dword_with_flush_preserves_edges() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+        bus.set_graphics_extension_enabled(true);
+        enable_egc_mode(&mut bus);
+        bus.grcg.write_mode(0x80);
+        configure_egc_mono(&mut bus, 10, 0xAC, 0x0010);
+        seed_background_color5(&mut bus, 0, 6);
+
+        bus.write_dword(0xA8000, 0xFFFF_FFFF);
+        bus.write_word(0xA8004, 0);
+
+        assert_eq!(graphics_pixel(&bus, 0), 5);
+        assert_eq!(graphics_pixel(&bus, 1), 10);
+        assert_eq!(graphics_pixel(&bus, 16), 10);
+        assert_eq!(graphics_pixel(&bus, 32), 10);
+        assert_eq!(graphics_pixel(&bus, 33), 5);
     }
 
     #[test]
