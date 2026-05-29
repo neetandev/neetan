@@ -96,10 +96,7 @@ pub(crate) fn preprocess_ifft_scalar(
     }
 }
 
-#[cfg(all(
-    target_arch = "x86_64",
-    all(target_feature = "avx", target_feature = "fma"),
-))]
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn postprocess_fft_avx_fma_wrapper(
     output_left_middle: &mut [Complex32],
     output_right_middle: &mut [Complex32],
@@ -108,10 +105,7 @@ pub(crate) fn postprocess_fft_avx_fma_wrapper(
     unsafe { avx::postprocess_fft_avx_fma(output_left_middle, output_right_middle, twiddles) }
 }
 
-#[cfg(all(
-    target_arch = "x86_64",
-    all(target_feature = "avx", target_feature = "fma"),
-))]
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn preprocess_ifft_avx_fma_wrapper(
     output_left_middle: &mut [Complex32],
     output_right_middle: &mut [Complex32],
