@@ -2068,7 +2068,7 @@ fn test_xms_a20_query_tracks_xms_visible_state() {
     let disabled = harness::result_word(&machine.bus, 4);
     assert_eq!(
         initial, 1,
-        "Query A20 should report enabled from HIMEM load (PC-98 keeps A20 on), got {initial:#06X}"
+        "Query A20 should report enabled from HIMEM load, got {initial:#06X}"
     );
     assert_eq!(
         enabled, 1,
@@ -2154,15 +2154,14 @@ fn test_xms_a20_global_disable_blocked_by_local_enable() {
 }
 
 #[test]
-fn test_xms_a20_calls_drive_machine_a20_gate() {
-    // Real PC-98 MS-DOS keeps the A20 line enabled for the lifetime of HIMEM:
-    // the physical gate (port 0x00F2 bit 0 == 0) and the XMS query both report
-    // enabled at the prompt and stay enabled across XMS local enable/disable.
+fn test_xms_a20_calls_do_not_drive_machine_a20_gate() {
+    // HLE XMS tracks the DOS-visible A20 state, while the PC-98 machine gate
+    // remains controlled by the hardware ports.
     let mut machine = harness::boot_hle();
     assert_eq!(
         machine.bus.io_read_byte(0x00F2) & 0x01,
-        0x00,
-        "machine A20 gate should be enabled at the prompt (HIMEM loaded)"
+        0x01,
+        "machine A20 gate should remain masked at the prompt"
     );
 
     #[rustfmt::skip]
@@ -2181,8 +2180,8 @@ fn test_xms_a20_calls_drive_machine_a20_gate() {
     );
     assert_eq!(
         machine.bus.io_read_byte(0x00F2) & 0x01,
-        0x00,
-        "machine A20 gate should stay enabled after XMS local enable"
+        0x01,
+        "XMS local enable should not unmask the machine A20 gate"
     );
 
     #[rustfmt::skip]
@@ -2201,8 +2200,8 @@ fn test_xms_a20_calls_drive_machine_a20_gate() {
     );
     assert_eq!(
         machine.bus.io_read_byte(0x00F2) & 0x01,
-        0x00,
-        "machine A20 gate should stay enabled after XMS local disable (HIMEM global enable persists)"
+        0x01,
+        "XMS local disable should not unmask the machine A20 gate"
     );
 }
 

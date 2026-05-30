@@ -246,9 +246,6 @@ impl<T: Tracing> Pc9801Bus<T> {
                         &mut cursor_access,
                         &mut self.tracer,
                     );
-                    if let Some(a20_enabled) = neetan_dos.xms_a20_enabled() {
-                        self.a20_enabled = a20_enabled;
-                    }
                     self.dos = Some(neetan_dos);
                 }
             }

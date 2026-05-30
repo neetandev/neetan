@@ -115,10 +115,9 @@ pub(crate) struct MemoryManager {
     umb_enabled: bool,
     umb_first_mcb_segment: u16,
 
-    // XMS A20 state. PC-98 hardware has no A20 line (A20 is permanently
-    // enabled), so these fields only track API-level state so that
+    // XMS A20 state. These fields only track API-level state so that
     // applications see the correct nesting-counter semantics required by
-    // XMS 3.0 A20 Management. No machine-level gate is driven.
+    // XMS 3.0 A20 Management. The machine A20 gate remains port-controlled.
     a20_global_enabled: bool,
     a20_local_enable_count: u32,
 
@@ -231,9 +230,8 @@ impl MemoryManager {
             hma_allocated: false,
             umb_enabled,
             umb_first_mcb_segment,
-            // HIMEM globally enables the A20 line when it loads; on PC-98 it
-            // then stays enabled (real DOS reports A20 on both via the
-            // physical gate and the XMS query for the lifetime of HIMEM).
+            // HIMEM reports A20 as globally enabled through the XMS API.
+            // The physical machine gate is still controlled by hardware ports.
             a20_global_enabled: xms_enabled,
             a20_local_enable_count: 0,
             hmamin_kb: 0,
@@ -283,8 +281,8 @@ impl MemoryManager {
         Ok(())
     }
 
-    /// Function 07h: Query A20. PC-98 has no A20 gate so the physical line
-    /// is always enabled, but XMS still exposes a virtual visible state.
+    /// Function 07h: Query A20. Reports the XMS-visible state, independent
+    /// of the machine A20 gate.
     pub(crate) fn xms_query_a20(&self) -> bool {
         self.a20_global_enabled || self.a20_local_enable_count > 0
     }
