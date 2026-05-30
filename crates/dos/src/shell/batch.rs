@@ -193,6 +193,8 @@ impl BatchState {
                 }
             }
             super::ShellPhase::WaitingForChild => {
+                shell.redirect_buffer = None;
+                shell.current_redirect = None;
                 self.running_command = Some(Box::new(WaitingForChildCommand::new(shell.owner_psp)));
             }
             super::ShellPhase::ExecutingBatch(new_batch) => {
@@ -203,6 +205,8 @@ impl BatchState {
                 self.echo_on = new_batch.echo_on;
             }
             _ => {
+                shell.redirect_buffer = None;
+                shell.current_redirect = None;
                 self.current_line += 1;
             }
         }
@@ -349,7 +353,7 @@ impl BatchState {
         }
 
         // Regular command: dispatch through shell
-        let phase = shell.dispatch_parsed(state, io, disk, &effective_line);
+        let phase = shell.dispatch_single(state, io, disk, &effective_line);
         match phase {
             super::ShellPhase::ExecutingCommand(cmd) => {
                 self.running_command = Some(cmd);
@@ -361,6 +365,8 @@ impl BatchState {
                 BatchStepResult::Continue
             }
             super::ShellPhase::WaitingForChild => {
+                shell.redirect_buffer = None;
+                shell.current_redirect = None;
                 self.running_command = Some(Box::new(WaitingForChildCommand::new(shell.owner_psp)));
                 BatchStepResult::Continue
             }
@@ -375,6 +381,8 @@ impl BatchState {
                 BatchStepResult::Continue
             }
             _ => {
+                shell.redirect_buffer = None;
+                shell.current_redirect = None;
                 self.current_line += 1;
                 BatchStepResult::Continue
             }
@@ -416,8 +424,8 @@ impl BatchState {
             }
             self.current_line += 1;
             BatchStepResult::Continue
-        } else if let Some((level, command)) = parse_errorlevel_condition(rest) {
-            let condition_met = shell.last_exit_code >= level;
+        } else if let Some((comparison, level, command)) = parse_errorlevel_condition(rest) {
+            let condition_met = comparison.matches(shell.last_exit_code, level);
             let condition = if negated {
                 !condition_met
             } else {
@@ -499,7 +507,22 @@ fn first_label_word(label_args: &[u8]) -> &[u8] {
     }
 }
 
-fn parse_errorlevel_condition(rest: &[u8]) -> Option<(u8, &[u8])> {
+#[derive(Clone, Copy)]
+enum ErrorLevelComparison {
+    AtLeast,
+    Equal,
+}
+
+impl ErrorLevelComparison {
+    fn matches(self, current: u8, level: u8) -> bool {
+        match self {
+            Self::AtLeast => current >= level,
+            Self::Equal => current == level,
+        }
+    }
+}
+
+fn parse_errorlevel_condition(rest: &[u8]) -> Option<(ErrorLevelComparison, u8, &[u8])> {
     const KEYWORD: &[u8] = b"ERRORLEVEL";
 
     if rest.len() <= KEYWORD.len() || !ascii_eq_ignore_case(&rest[..KEYWORD.len()], KEYWORD) {
@@ -507,15 +530,20 @@ fn parse_errorlevel_condition(rest: &[u8]) -> Option<(u8, &[u8])> {
     }
 
     let mut index = KEYWORD.len();
+    let comparison;
     if rest[index].is_ascii_whitespace() {
         while index < rest.len() && rest[index].is_ascii_whitespace() {
             index += 1;
         }
         if rest.get(index..index + 2) == Some(b"==") {
             index += 2;
+            comparison = ErrorLevelComparison::Equal;
+        } else {
+            comparison = ErrorLevelComparison::AtLeast;
         }
     } else if rest.get(index..index + 2) == Some(b"==") {
         index += 2;
+        comparison = ErrorLevelComparison::Equal;
     } else {
         return None;
     }
@@ -536,7 +564,7 @@ fn parse_errorlevel_condition(rest: &[u8]) -> Option<(u8, &[u8])> {
         .ok()?
         .parse()
         .ok()?;
-    Some((level, rest[index..].trim_ascii()))
+    Some((comparison, level, rest[index..].trim_ascii()))
 }
 
 fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
