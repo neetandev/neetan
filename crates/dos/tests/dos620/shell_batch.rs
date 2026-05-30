@@ -97,6 +97,16 @@ fn batch_echo() {
 }
 
 #[test]
+fn batch_echoed_command_includes_prompt() {
+    let machine = run_test_batch(b"ECHO BATCH OUTPUT\r\n");
+    assert_screen_contains(
+        &machine,
+        "A:\\>ECHO BATCH OUTPUT",
+        "echoed batch command should include the active prompt",
+    );
+}
+
+#[test]
 fn batch_multi_line() {
     let machine = run_test_batch(b"ECHO ALPHA\r\nECHO BETA\r\n");
     assert_screen_contains(&machine, "ALPHA", "batch should display 'ALPHA'");
@@ -242,6 +252,21 @@ fn batch_if_errorlevel_after_external_program() {
 }
 
 #[test]
+fn batch_echo_preserves_errorlevel_after_external_program() {
+    let first_floppy_image = create_test_floppy_with_program(
+        b"TEST    BAT",
+        b"B:\\RUNME\r\nECHO.\r\nIF ERRORLEVEL 66 ECHO EXITOK\r\n",
+    );
+    let second_floppy_image = create_test_floppy_with_program(b"RUNME   COM", TEST_COM_PROGRAM);
+    let machine = run_test_batch_with_two_floppy_images(first_floppy_image, second_floppy_image);
+    assert_screen_contains(
+        &machine,
+        "EXITOK",
+        "ECHO should not clear ERRORLEVEL from an external program",
+    );
+}
+
+#[test]
 fn batch_if_errorlevel_equals_goto_after_external_program() {
     let first_floppy_image = create_test_floppy_with_program(
         b"TEST    BAT",
@@ -289,6 +314,59 @@ fn batch_external_command_supports_inline_output_redirection() {
         &machine,
         "Bad command",
         "inline output redirection must not be part of the executable name",
+    );
+}
+
+#[test]
+fn batch_external_command_output_redirects_to_nul() {
+    #[rustfmt::skip]
+    let print_and_exit_com: &[u8] = &[
+        0xBA, 0x0C, 0x01,       // MOV DX, 010Ch
+        0xB4, 0x09,             // MOV AH, 09h
+        0xCD, 0x21,             // INT 21h
+        0xB8, 0x42, 0x4C,       // MOV AX, 4C42h
+        0xCD, 0x21,             // INT 21h
+        b'L', b'O', b'U', b'D', b'$',
+    ];
+    let first_floppy_image = create_test_floppy_with_program(
+        b"TEST    BAT",
+        b"@ECHO OFF\r\nB:\\RUNME.COM>NUL\r\nIF ERRORLEVEL 66 ECHO EXITOK\r\n",
+    );
+    let second_floppy_image = create_test_floppy_with_program(b"RUNME   COM", print_and_exit_com);
+    let machine = run_test_batch_with_two_floppy_images(first_floppy_image, second_floppy_image);
+    assert_screen_contains(
+        &machine,
+        "EXITOK",
+        "redirected external command should still return its exit code",
+    );
+    assert_screen_lacks(
+        &machine,
+        "LOUD",
+        "external program stdout should be discarded by >NUL",
+    );
+}
+
+#[test]
+fn batch_external_command_output_redirect_restores_stdout_for_next_external_command() {
+    #[rustfmt::skip]
+    let print_and_exit_com: &[u8] = &[
+        0xBA, 0x0C, 0x01,       // MOV DX, 010Ch
+        0xB4, 0x09,             // MOV AH, 09h
+        0xCD, 0x21,             // INT 21h
+        0xB8, 0x42, 0x4C,       // MOV AX, 4C42h
+        0xCD, 0x21,             // INT 21h
+        b'L', b'O', b'U', b'D', b'$',
+    ];
+    let first_floppy_image = create_test_floppy_with_program(
+        b"TEST    BAT",
+        b"@ECHO OFF\r\nB:\\RUNME.COM>NUL\r\nB:\\RUNME.COM\r\n",
+    );
+    let second_floppy_image = create_test_floppy_with_program(b"RUNME   COM", print_and_exit_com);
+    let machine = run_test_batch_with_two_floppy_images(first_floppy_image, second_floppy_image);
+    assert_screen_contains(
+        &machine,
+        "LOUD",
+        "external command stdout should be restored after a preceding >NUL child",
     );
 }
 

@@ -109,6 +109,8 @@ pub(crate) struct DosState {
     pub(crate) sft2_count: u16,
     /// Pending buffered input state for INT 21h AH=0Ah.
     pub(crate) buffered_input: Option<BufferedInputState>,
+    /// Delegated input function for INT 21h AH=0Ch while it is waiting.
+    pub(crate) flush_input_function: Option<u8>,
     /// Active ISO-backed SFT entries, indexed by SFT slot.
     pub(crate) open_iso_files: Vec<Option<filesystem::iso9660::IsoDirEntry>>,
     /// Active directory for FINDFIRST/FINDNEXT on non-FAT media.
@@ -411,6 +413,7 @@ impl NeetanDos {
                 mscdex: cdrom::MscdexState::new(),
                 sft2_count: 15,
                 buffered_input: None,
+                flush_input_function: None,
                 open_iso_files: vec![None; tables::SFT_TOTAL_COUNT as usize],
                 read_find_directory: None,
                 fn_key_map: build_default_fn_key_map(),
@@ -917,14 +920,26 @@ impl NeetanDos {
         }
 
         // Handle pending EXEC from shell dispatch.
-        if let Some(exec) = shell.pending_exec.take()
-            && let Err(error_code) = self.exec_from_shell(cpu, memory, disk, &exec.path, &exec.args)
-        {
-            let msg = format!("Error loading program ({})\r\n", error_code);
-            for &byte in msg.as_bytes() {
-                self.console.process_byte(memory, byte);
+        if let Some(exec) = shell.pending_exec.take() {
+            let exec_result = self
+                .setup_shell_output_redirect(memory, &mut shell, exec.output_redirect.as_ref())
+                .and_then(|()| self.exec_from_shell(cpu, memory, disk, &exec.path, &exec.args));
+            if let Err(error_code) = exec_result {
+                shell.restore_child_output_redirect(
+                    &mut self.state,
+                    &mut IoAccess {
+                        console: &mut self.console,
+                        memory,
+                        redirect_output: None,
+                        redirect_input: None,
+                    },
+                );
+                let msg = format!("Error loading program ({})\r\n", error_code);
+                for &byte in msg.as_bytes() {
+                    self.console.process_byte(memory, byte);
+                }
+                shell.handle_exec_failure(1);
             }
-            shell.handle_exec_failure(1);
         }
 
         if let Some(return_code) = shell.pending_terminate.take() {
@@ -934,6 +949,64 @@ impl NeetanDos {
         }
 
         self.shells.insert(shell_psp, shell);
+    }
+
+    fn setup_shell_output_redirect(
+        &mut self,
+        memory: &mut dyn MemoryAccess,
+        shell: &mut shell::Shell,
+        output_redirect: Option<&shell::RedirectSpec>,
+    ) -> Result<(), u16> {
+        let Some(output_redirect) = output_redirect else {
+            return Ok(());
+        };
+        if !shell::redirect_target_is_nul(output_redirect.filename()) {
+            return Ok(());
+        }
+
+        let saved_stdout_sft = self.state.read_jft_entry(1, memory)?;
+        let (redirect_handle, redirect_sft) = self.open_nul_device_handle(memory)?;
+        self.state.write_jft_entry(1, redirect_sft, memory)?;
+        shell.child_output_redirect = Some(shell::ChildOutputRedirect {
+            saved_stdout_sft,
+            redirect_handle,
+        });
+        Ok(())
+    }
+
+    fn open_nul_device_handle(&mut self, memory: &mut dyn MemoryAccess) -> Result<(u16, u8), u16> {
+        let (handle, sft_index) = self.state.allocate_handle(memory)?;
+        let sft_addr = self.state.sft_entry_addr(sft_index).ok_or(0x0004u16)?;
+        memory.write_word(sft_addr + tables::SFT_ENT_REF_COUNT, 1);
+        memory.write_word(sft_addr + tables::SFT_ENT_OPEN_MODE, 0x0001);
+        memory.write_byte(sft_addr + tables::SFT_ENT_FILE_ATTR, 0x00);
+        memory.write_word(
+            sft_addr + tables::SFT_ENT_DEV_INFO,
+            tables::SFT_DEVINFO_DRIVER_CHAR
+                | tables::SFT_DEVINFO_CHAR
+                | tables::SFT_DEVINFO_EOF
+                | tables::SFT_DEVINFO_NUL,
+        );
+        tables::write_far_ptr(
+            memory,
+            sft_addr + tables::SFT_ENT_DEV_PTR,
+            tables::DOS_DATA_SEGMENT,
+            tables::DEV_NUL_OFFSET,
+        );
+        memory.write_word(sft_addr + tables::SFT_ENT_START_CLUSTER, 0);
+        memory.write_word(sft_addr + tables::SFT_ENT_FILE_TIME, 0);
+        memory.write_word(sft_addr + tables::SFT_ENT_FILE_DATE, 0);
+        memory.write_word(sft_addr + tables::SFT_ENT_FILE_SIZE, 0);
+        memory.write_word(sft_addr + tables::SFT_ENT_FILE_SIZE + 2, 0);
+        memory.write_word(sft_addr + tables::SFT_ENT_FILE_POS, 0);
+        memory.write_word(sft_addr + tables::SFT_ENT_FILE_POS + 2, 0);
+        memory.write_word(sft_addr + tables::SFT_ENT_REL_CLUSTER, 0);
+        memory.write_word(sft_addr + tables::SFT_ENT_CUR_CLUSTER, 0);
+        memory.write_word(sft_addr + tables::SFT_ENT_DIR_SECTOR, 0);
+        memory.write_byte(sft_addr + tables::SFT_ENT_DIR_INDEX, 0);
+        memory.write_block(sft_addr + tables::SFT_ENT_NAME, b"NUL        ");
+        memory.write_word(sft_addr + tables::SFT_ENT_PSP_OWNER, self.state.current_psp);
+        Ok((handle, sft_index))
     }
 
     /// Performs EXEC for an external program launched from the shell.

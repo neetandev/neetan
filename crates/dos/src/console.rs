@@ -1395,6 +1395,33 @@ mod tests {
     }
 
     #[test]
+    fn csi_m_sets_pc98_text_colors() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        feed_str(
+            &mut console,
+            &mut memory,
+            "\x1B[31mR\x1B[32mG\x1B[33mY\x1B[36mC\x1B[37mW",
+        );
+
+        assert_eq!(read_vram_attr(&memory, 0, 0), 0x0041);
+        assert_eq!(read_vram_attr(&memory, 0, 1), 0x0081);
+        assert_eq!(read_vram_attr(&memory, 0, 2), 0x00C1);
+        assert_eq!(read_vram_attr(&memory, 0, 3), 0x00A1);
+        assert_eq!(read_vram_attr(&memory, 0, 4), 0x00E1);
+    }
+
+    #[test]
+    fn csi_m_reset_restores_default_text_color() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        feed_str(&mut console, &mut memory, "\x1B[31mR\x1B[0mW");
+
+        assert_eq!(read_vram_attr(&memory, 0, 0), 0x0041);
+        assert_eq!(read_vram_attr(&memory, 0, 1), 0x00E1);
+    }
+
+    #[test]
     fn cursor_up_basic() {
         let console = make_console();
         let mut memory = make_memory();

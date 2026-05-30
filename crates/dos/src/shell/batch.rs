@@ -242,18 +242,12 @@ impl BatchState {
                     return BatchStepResult::Continue;
                 }
                 StepResult::Done(code) => {
-                    shell.last_exit_code = code;
-                    // Handle redirect output
-                    if let Some(data) = io.redirect_output.take()
-                        && let Some(spec) = self.current_redirect.take()
-                    {
-                        super::write_redirect_to_file(state, io, disk, &data, &spec);
-                    }
-                    self.running_command = None;
-                    self.redirect_buffer = None;
-                    self.current_redirect = None;
-                    self.current_line += 1;
-                    return BatchStepResult::Continue;
+                    shell.restore_child_output_redirect(state, io);
+                    return self.finish_running_command(Some(code), shell, state, io, disk);
+                }
+                StepResult::DonePreserve => {
+                    shell.restore_child_output_redirect(state, io);
+                    return self.finish_running_command(None, shell, state, io, disk);
                 }
             }
         }
@@ -294,6 +288,7 @@ impl BatchState {
 
         // Echo the line if echo is on and not suppressed
         if self.echo_on && !suppress_echo {
+            super::render_prompt(state, io);
             io.print(&effective_line);
             io.console.process_byte(io.memory, b'\r');
             io.console.process_byte(io.memory, b'\n');
@@ -305,7 +300,7 @@ impl BatchState {
             .collect();
 
         // Labels: skip
-        if effective_line.starts_with(b":") || effective_line.starts_with(b":") {
+        if effective_line.starts_with(b":") {
             self.current_line += 1;
             return BatchStepResult::Continue;
         }
@@ -371,6 +366,10 @@ impl BatchState {
                 BatchStepResult::Continue
             }
             super::ShellPhase::ExecutingBatch(new_batch) => {
+                if self.echo_on && !suppress_echo {
+                    io.console.process_byte(io.memory, b'\r');
+                    io.console.process_byte(io.memory, b'\n');
+                }
                 // In DOS, invoking a batch from another batch without CALL
                 // replaces the current batch (no return to the caller).
                 self.lines = new_batch.lines;
@@ -387,6 +386,29 @@ impl BatchState {
                 BatchStepResult::Continue
             }
         }
+    }
+
+    fn finish_running_command(
+        &mut self,
+        code: Option<u8>,
+        shell: &mut super::Shell,
+        state: &mut DosState,
+        io: &mut IoAccess,
+        disk: &mut dyn DriveIo,
+    ) -> BatchStepResult {
+        if let Some(code) = code {
+            shell.last_exit_code = code;
+        }
+        if let Some(data) = io.redirect_output.take()
+            && let Some(spec) = self.current_redirect.take()
+        {
+            super::write_redirect_to_file(state, io, disk, &data, &spec);
+        }
+        self.running_command = None;
+        self.redirect_buffer = None;
+        self.current_redirect = None;
+        self.current_line += 1;
+        BatchStepResult::Continue
     }
 
     fn handle_if(

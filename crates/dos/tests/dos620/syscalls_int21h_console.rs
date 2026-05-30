@@ -336,6 +336,32 @@ fn flush_and_invoke_0ch() {
     assert_ne!(flags & 0x0040, 0, "ZF should be set (no key after flush)");
 }
 
+#[test]
+fn flush_and_invoke_0ch_blocks_without_repeated_flush() {
+    let mut machine = harness::boot_hle();
+
+    const RES_LO: u8 = (INJECT_RESULT_OFFSET & 0xFF) as u8;
+    const RES_HI: u8 = (INJECT_RESULT_OFFSET >> 8) as u8;
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x07, 0x0C,                   // MOV AX, 0C07h
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x06, RES_LO, RES_HI,         // MOV [result+0], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+
+    inject_and_run_with_budget(&mut machine, code, 1_000_000);
+    type_string(&mut machine.bus, b"2");
+    machine.run_for(INJECT_BUDGET_DISK_IO);
+
+    let al = result_word(&machine.bus, 0) & 0xFF;
+    assert_eq!(
+        al, b'2' as u16,
+        "AH=0Ch/AL=07h should read the key typed while blocked"
+    );
+}
+
 /// Extended keys (arrows) are expanded into function key map sequences by the
 /// HLE DOS, matching NEC DOS IO.SYS behavior. Arrow UP (hardware scan 0x3A)
 /// produces 0x0B (VT control character). This is a single byte, so only one

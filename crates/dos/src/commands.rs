@@ -35,6 +35,8 @@ use crate::{DosState, DriveIo, IoAccess};
 pub(crate) enum StepResult {
     /// Command completed with the given exit code.
     Done(u8),
+    /// Command completed without changing the previous exit code.
+    DonePreserve,
     /// Command yielded; call step() again on the next AH=FFh dispatch.
     Continue,
 }

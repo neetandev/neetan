@@ -1310,6 +1310,7 @@ impl NeetanDos {
         self.state.last_return_code = return_code;
         self.state.last_termination_type = termination_type;
         self.state.buffered_input = None;
+        self.state.flush_input_function = None;
         self.state.pending_key_bytes.clear();
 
         if !is_shell_process {
