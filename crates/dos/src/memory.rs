@@ -1099,38 +1099,30 @@ pub(crate) fn free_process_blocks_dos(
     }
 }
 
-/// Frees all MCB blocks owned by `owner_psp` except the PSP's own block,
-/// which is resized to `keep_paragraphs` (for TSR termination).
+/// Resizes the PSP's own block to `keep_paragraphs` for TSR termination.
+/// Other blocks owned by the process stay allocated; resident programs can
+/// keep separately allocated data buffers and refer to them after returning.
 pub(crate) fn free_process_blocks_tsr(
     mem: &mut dyn MemoryAccess,
     first_mcb_segment: u16,
     owner_psp: u16,
     keep_paragraphs: u16,
 ) {
-    let mut to_free = Vec::new();
     let mut current = first_mcb_segment;
     for _ in 0..MAX_CHAIN_WALK {
         let block_type = read_mcb_type(mem, current);
         if !is_valid_mcb_type(block_type) {
             break;
         }
-        if read_mcb_owner(mem, current) == owner_psp {
-            if current + 1 == owner_psp {
-                // PSP's own MCB: resize instead of freeing.
-                let _ = resize(mem, first_mcb_segment, owner_psp, keep_paragraphs);
-            } else {
-                to_free.push(current + 1);
-            }
+        if read_mcb_owner(mem, current) == owner_psp && current + 1 == owner_psp {
+            let _ = resize(mem, first_mcb_segment, owner_psp, keep_paragraphs);
+            break;
         }
         if block_type == MCB_TYPE_Z {
             break;
         }
         current = current + read_mcb_size(mem, current) + 1;
     }
-    for data_seg in to_free.into_iter().rev() {
-        let _ = free(mem, first_mcb_segment, data_seg);
-    }
-    coalesce_chain(mem, first_mcb_segment);
 }
 
 pub(crate) fn free_process_blocks_tsr_dos(
@@ -1303,7 +1295,7 @@ mod tests {
     }
 
     #[test]
-    fn free_process_blocks_tsr_frees_following_blocks_in_reverse_to_fully_coalesce() {
+    fn free_process_blocks_tsr_retains_auxiliary_blocks() {
         let mut mem = MockMemory::new(0x20000);
         let first_mcb = 0x1000;
         let owner_psp = 0x1003;
@@ -1316,10 +1308,10 @@ mod tests {
             1,
             b"DOS     ",
         );
-        write_mcb(&mut mem, 0x1002, MCB_TYPE_M, owner_psp, 2, b"PSP     ");
-        write_mcb(&mut mem, 0x1005, MCB_TYPE_M, owner_psp, 2, b"AUX1    ");
-        write_mcb(&mut mem, 0x1008, MCB_TYPE_M, owner_psp, 3, b"AUX2    ");
-        write_mcb(&mut mem, 0x100C, MCB_TYPE_Z, MCB_OWNER_FREE, 4, b"FREE    ");
+        write_mcb(&mut mem, 0x1002, MCB_TYPE_M, owner_psp, 4, b"PSP     ");
+        write_mcb(&mut mem, 0x1007, MCB_TYPE_M, owner_psp, 2, b"AUX1    ");
+        write_mcb(&mut mem, 0x100A, MCB_TYPE_M, owner_psp, 3, b"AUX2    ");
+        write_mcb(&mut mem, 0x100E, MCB_TYPE_Z, MCB_OWNER_FREE, 4, b"FREE    ");
 
         free_process_blocks_tsr(&mut mem, first_mcb, owner_psp, 2);
 
@@ -1330,12 +1322,15 @@ mod tests {
         );
         assert_eq!(read_mcb_size(&mem, 0x1002), 2);
         assert_eq!(read_mcb_owner(&mem, 0x1005), MCB_OWNER_FREE);
-        assert_eq!(read_mcb_type(&mem, 0x1005), MCB_TYPE_Z);
-        assert_eq!(
-            read_mcb_size(&mem, 0x1005),
-            2 + 1 + 3 + 1 + 4,
-            "all non-PSP blocks should coalesce into one trailing free Z block"
-        );
+        assert_eq!(read_mcb_type(&mem, 0x1005), MCB_TYPE_M);
+        assert_eq!(read_mcb_size(&mem, 0x1005), 1);
+        assert_eq!(read_mcb_owner(&mem, 0x1007), owner_psp);
+        assert_eq!(read_mcb_size(&mem, 0x1007), 2);
+        assert_eq!(read_mcb_owner(&mem, 0x100A), owner_psp);
+        assert_eq!(read_mcb_size(&mem, 0x100A), 3);
+        assert_eq!(read_mcb_owner(&mem, 0x100E), MCB_OWNER_FREE);
+        assert_eq!(read_mcb_type(&mem, 0x100E), MCB_TYPE_Z);
+        assert_eq!(read_mcb_size(&mem, 0x100E), 4);
     }
 
     #[test]
