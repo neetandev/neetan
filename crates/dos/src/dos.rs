@@ -171,8 +171,25 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
     ) {
         let dl = (cpu.dx() & 0xFF) as u8;
-        self.console.process_byte(memory, dl);
+        self.write_stdout_byte(memory, dl);
         cpu.set_ax((cpu.ax() & 0xFF00) | dl as u16);
+    }
+
+    fn stdout_is_nul(&self, memory: &dyn MemoryAccess) -> bool {
+        let Ok(sft_index) = self.state.handle_to_sft_index(1, memory) else {
+            return false;
+        };
+        let Some(sft_addr) = self.state.sft_entry_addr(sft_index) else {
+            return false;
+        };
+        let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
+        dev_info & tables::SFT_DEVINFO_NUL != 0
+    }
+
+    fn write_stdout_byte(&mut self, memory: &mut dyn MemoryAccess, byte: u8) {
+        if !self.stdout_is_nul(memory) {
+            self.console.process_byte(memory, byte);
+        }
     }
 
     /// Reads one key byte for INT 21h input functions.
@@ -260,12 +277,24 @@ impl NeetanDos {
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
     ) {
+        self.int21h_01h_keyboard_input_with_echo_inner(cpu, memory);
+    }
+
+    fn int21h_01h_keyboard_input_with_echo_inner(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) -> bool {
         match self.read_input_byte(memory) {
             Some(ch) => {
                 self.console.process_byte(memory, ch);
                 cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
+                true
             }
-            None => adjust_iret_ip(cpu, memory, -2),
+            None => {
+                adjust_iret_ip(cpu, memory, -2);
+                false
+            }
         }
     }
 
@@ -277,22 +306,33 @@ impl NeetanDos {
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
     ) {
+        self.int21h_06h_direct_console_io_inner(cpu, memory);
+    }
+
+    fn int21h_06h_direct_console_io_inner(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) -> bool {
         let dl = (cpu.dx() & 0xFF) as u8;
         if dl == 0xFF {
             match self.read_input_byte(memory) {
                 Some(ch) => {
                     cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
                     set_iret_zf(cpu, memory, false);
+                    true
                 }
                 None => {
                     cpu.set_ax(cpu.ax() & 0xFF00);
                     set_iret_zf(cpu, memory, true);
+                    true
                 }
             }
-            return;
+        } else {
+            self.console.process_byte(memory, dl);
+            cpu.set_ax((cpu.ax() & 0xFF00) | dl as u16);
+            true
         }
-        self.console.process_byte(memory, dl);
-        cpu.set_ax((cpu.ax() & 0xFF00) | dl as u16);
     }
 
     /// AH=07h: Direct character input without echo (blocking, no Ctrl+C check).
@@ -302,9 +342,23 @@ impl NeetanDos {
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
     ) {
+        self.int21h_07h_direct_char_input_inner(cpu, memory);
+    }
+
+    fn int21h_07h_direct_char_input_inner(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) -> bool {
         match self.read_input_byte(memory) {
-            Some(ch) => cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16),
-            None => adjust_iret_ip(cpu, memory, -2),
+            Some(ch) => {
+                cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
+                true
+            }
+            None => {
+                adjust_iret_ip(cpu, memory, -2);
+                false
+            }
         }
     }
 
@@ -315,9 +369,23 @@ impl NeetanDos {
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
     ) {
+        self.int21h_08h_char_input_no_echo_inner(cpu, memory);
+    }
+
+    fn int21h_08h_char_input_no_echo_inner(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) -> bool {
         match self.read_input_byte(memory) {
-            Some(ch) => cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16),
-            None => adjust_iret_ip(cpu, memory, -2),
+            Some(ch) => {
+                cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
+                true
+            }
+            None => {
+                adjust_iret_ip(cpu, memory, -2);
+                false
+            }
         }
     }
 
@@ -328,11 +396,19 @@ impl NeetanDos {
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
     ) {
+        self.int21h_0ah_buffered_input_inner(cpu, memory);
+    }
+
+    fn int21h_0ah_buffered_input_inner(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) -> bool {
         if self.state.buffered_input.is_none() {
             let buffer_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
             let max_chars = memory.read_byte(buffer_addr);
             if max_chars == 0 {
-                return;
+                return true;
             }
             self.state.buffered_input = Some(BufferedInputState {
                 buffer_addr,
@@ -345,7 +421,7 @@ impl NeetanDos {
             Some(ch) => ch,
             None => {
                 adjust_iret_ip(cpu, memory, -2);
-                return;
+                return false;
             }
         };
         let bi = self.state.buffered_input.as_mut().unwrap();
@@ -359,6 +435,7 @@ impl NeetanDos {
                 self.console.process_byte(memory, b'\r');
                 self.console.process_byte(memory, b'\n');
                 self.state.buffered_input = None;
+                true
             }
             0x08 => {
                 if let Some(bi) = self.state.buffered_input.as_mut()
@@ -370,6 +447,7 @@ impl NeetanDos {
                     self.console.process_byte(memory, 0x08);
                 }
                 adjust_iret_ip(cpu, memory, -2);
+                false
             }
             _ => {
                 let bi = self.state.buffered_input.as_mut().unwrap();
@@ -380,6 +458,7 @@ impl NeetanDos {
                     self.console.process_byte(memory, ch);
                 }
                 adjust_iret_ip(cpu, memory, -2);
+                false
             }
         }
     }
@@ -402,16 +481,28 @@ impl NeetanDos {
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
     ) {
-        tables::flush_keyboard_buffer(memory);
-        self.state.pending_key_bytes.clear();
-        let al = (cpu.ax() & 0xFF) as u8;
-        match al {
-            0x01 => self.int21h_01h_keyboard_input_with_echo(cpu, memory),
-            0x06 => self.int21h_06h_direct_console_io(cpu, memory),
-            0x07 => self.int21h_07h_direct_char_input(cpu, memory),
-            0x08 => self.int21h_08h_char_input_no_echo(cpu, memory),
-            0x0A => self.int21h_0ah_buffered_input(cpu, memory),
-            _ => {}
+        let input_function = match self.state.flush_input_function {
+            Some(input_function) => input_function,
+            None => {
+                tables::flush_keyboard_buffer(memory);
+                self.state.pending_key_bytes.clear();
+                let input_function = (cpu.ax() & 0xFF) as u8;
+                self.state.flush_input_function = Some(input_function);
+                input_function
+            }
+        };
+
+        let completed = match input_function {
+            0x01 => self.int21h_01h_keyboard_input_with_echo_inner(cpu, memory),
+            0x06 => self.int21h_06h_direct_console_io_inner(cpu, memory),
+            0x07 => self.int21h_07h_direct_char_input_inner(cpu, memory),
+            0x08 => self.int21h_08h_char_input_no_echo_inner(cpu, memory),
+            0x0A => self.int21h_0ah_buffered_input_inner(cpu, memory),
+            _ => true,
+        };
+
+        if completed {
+            self.state.flush_input_function = None;
         }
     }
 
@@ -429,7 +520,7 @@ impl NeetanDos {
             if byte == b'$' {
                 break;
             }
-            self.console.process_byte(memory, byte);
+            self.write_stdout_byte(memory, byte);
         }
         cpu.set_ax((cpu.ax() & 0xFF00) | 0x24);
     }

@@ -42,7 +42,7 @@ impl RunningCommand for RunningEcho {
     ) -> StepResult {
         if self.text.trim_ascii() == b"/?" {
             print_help(io);
-            return StepResult::Done(0);
+            return StepResult::DonePreserve;
         }
         if self.text.is_empty() {
             // ECHO. (bare dot) prints a blank line
@@ -55,6 +55,6 @@ impl RunningCommand for RunningEcho {
             io.output_byte(b'\r');
             io.output_byte(b'\n');
         }
-        StepResult::Done(0)
+        StepResult::DonePreserve
     }
 }

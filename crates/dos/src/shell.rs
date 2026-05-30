@@ -15,9 +15,18 @@ use crate::{
     process, tables,
 };
 
+#[derive(Clone)]
 pub(crate) enum RedirectSpec {
     Overwrite(Vec<u8>),
     Append(Vec<u8>),
+}
+
+impl RedirectSpec {
+    pub(crate) fn filename(&self) -> &[u8] {
+        match self {
+            Self::Overwrite(filename) | Self::Append(filename) => filename,
+        }
+    }
 }
 
 struct ParsedCommand {
@@ -34,6 +43,7 @@ struct PendingCommand {
 pub(crate) struct PendingExec {
     pub path: Vec<u8>,
     pub args: Vec<u8>,
+    pub output_redirect: Option<RedirectSpec>,
 }
 
 const SCAN_INSERT: u8 = 0x38;
@@ -91,8 +101,15 @@ pub(crate) struct Shell {
     pub(crate) owner_psp: u16,
     /// External program pending EXEC (set by dispatch, consumed by int21h_ffh_shell_step).
     pub(crate) pending_exec: Option<PendingExec>,
+    /// Parent shell stdout redirect installed for a running child process.
+    pub(crate) child_output_redirect: Option<ChildOutputRedirect>,
     /// Child shell termination requested by EXIT or /C completion.
     pub(crate) pending_terminate: Option<u8>,
+}
+
+pub(crate) struct ChildOutputRedirect {
+    pub saved_stdout_sft: u8,
+    pub redirect_handle: u16,
 }
 
 impl Shell {
@@ -142,6 +159,7 @@ impl Shell {
             allow_exit: false,
             owner_psp: command_com_psp,
             pending_exec: None,
+            child_output_redirect: None,
             pending_terminate: None,
         }
     }
@@ -169,6 +187,7 @@ impl Shell {
             allow_exit: false,
             owner_psp: command_com_psp,
             pending_exec: None,
+            child_output_redirect: None,
             pending_terminate: None,
         }
     }
@@ -197,6 +216,7 @@ impl Shell {
             allow_exit: true,
             owner_psp: command_com_psp,
             pending_exec: None,
+            child_output_redirect: None,
             pending_terminate,
         }
     }
@@ -359,22 +379,9 @@ impl Shell {
                         ShellPhase::ExecutingCommand(cmd)
                     }
                     StepResult::Done(code) => {
-                        self.last_exit_code = code;
-                        let output_data = io.redirect_output.take();
-                        if let Some(spec) = self.current_redirect.take()
-                            && let Some(data) = &output_data
-                        {
-                            write_redirect_to_file(state, io, disk, data, &spec);
-                        }
-                        if let Some(next) = self.pending_commands.pop_front() {
-                            self.setup_and_dispatch(next, output_data, state, io, disk)
-                        } else if self.terminate_after_command {
-                            self.pending_terminate = Some(code);
-                            ShellPhase::ShowPrompt
-                        } else {
-                            ShellPhase::ShowPrompt
-                        }
+                        self.finish_running_command(Some(code), state, io, disk)
                     }
+                    StepResult::DonePreserve => self.finish_running_command(None, state, io, disk),
                 }
             }
             ShellPhase::WaitingForChild => {
@@ -383,6 +390,7 @@ impl Shell {
                 // PSP and IRET frame. We detect completion by checking if
                 // current_psp has returned to COMMAND.COM's PSP.
                 if state.current_psp == self.owner_psp {
+                    self.restore_child_output_redirect(state, io);
                     self.last_exit_code = state.last_return_code;
                     if self.terminate_after_command {
                         self.pending_terminate = Some(state.last_return_code);
@@ -404,6 +412,45 @@ impl Shell {
                 }
             }
         };
+    }
+
+    fn finish_running_command(
+        &mut self,
+        code: Option<u8>,
+        state: &mut DosState,
+        io: &mut IoAccess,
+        disk: &mut dyn DriveIo,
+    ) -> ShellPhase {
+        if let Some(code) = code {
+            self.last_exit_code = code;
+        }
+        let code = self.last_exit_code;
+        let output_data = io.redirect_output.take();
+        if let Some(spec) = self.current_redirect.take()
+            && let Some(data) = &output_data
+        {
+            write_redirect_to_file(state, io, disk, data, &spec);
+        }
+        if let Some(next) = self.pending_commands.pop_front() {
+            self.setup_and_dispatch(next, output_data, state, io, disk)
+        } else if self.terminate_after_command {
+            self.pending_terminate = Some(code);
+            ShellPhase::ShowPrompt
+        } else {
+            ShellPhase::ShowPrompt
+        }
+    }
+
+    pub(crate) fn restore_child_output_redirect(
+        &mut self,
+        state: &mut DosState,
+        io: &mut IoAccess,
+    ) {
+        let Some(redirect) = self.child_output_redirect.take() else {
+            return;
+        };
+        let _ = state.write_jft_entry(1, redirect.saved_stdout_sft, io.memory);
+        state.free_handle(redirect.redirect_handle, io.memory);
     }
 
     fn dispatch_command(
@@ -585,9 +632,12 @@ impl Shell {
 
         match find_command_file(cmd_name, &cmd_upper, state, io.memory, disk) {
             Some(FoundCommandFile::External(path)) => {
+                let output_redirect = self.current_redirect.take();
+                self.redirect_buffer = None;
                 self.pending_exec = Some(PendingExec {
                     path,
                     args: args.to_vec(),
+                    output_redirect,
                 });
                 return ShellPhase::WaitingForChild;
             }
@@ -1219,9 +1269,10 @@ fn write_redirect_to_file(
     data: &[u8],
     spec: &RedirectSpec,
 ) {
-    let filename = match spec {
-        RedirectSpec::Overwrite(f) | RedirectSpec::Append(f) => f,
-    };
+    let filename = spec.filename();
+    if redirect_target_is_nul(filename) {
+        return;
+    }
     let is_append = matches!(spec, RedirectSpec::Append(_));
 
     let (drive_index, dir_cluster, fcb_name) =
@@ -1284,6 +1335,20 @@ fn write_redirect_to_file(
     }
 
     let _ = vol.flush_fat(disk);
+}
+
+pub(crate) fn redirect_target_is_nul(path: &[u8]) -> bool {
+    let mut component = path.trim_ascii();
+    if component.len() >= 2 && component[1] == b':' {
+        component = &component[2..];
+    }
+    if let Some(position) = component.iter().rposition(|&byte| byte == b'\\') {
+        component = &component[position + 1..];
+    }
+    if component.last() == Some(&b':') {
+        component = &component[..component.len() - 1];
+    }
+    component.eq_ignore_ascii_case(b"NUL")
 }
 
 fn append_to_existing_file(

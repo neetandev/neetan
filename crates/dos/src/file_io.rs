@@ -675,6 +675,9 @@ impl NeetanDos {
 
             let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
             if dev_info & tables::SFT_DEVINFO_CHAR != 0 {
+                if dev_info & tables::SFT_DEVINFO_NUL != 0 {
+                    return Ok(count as u16);
+                }
                 // Device write: send to console
                 for i in 0..count {
                     let byte = memory.read_byte(buf_addr + i);

@@ -304,7 +304,32 @@ impl Console {
                 let count = self.esc_parser.param(0, 1).max(1) as u8;
                 self.scroll_up(memory, count);
             }
+            b'm' => {
+                self.set_graphic_rendition(memory);
+            }
             _ => {} // Unknown CSI sequence: ignore.
+        }
+    }
+
+    fn set_graphic_rendition(&self, memory: &mut dyn MemoryAccess) {
+        if self.esc_parser.param_count == 0 {
+            self.set_attribute(memory, 0xE1);
+            return;
+        }
+
+        for index in 0..self.esc_parser.param_count {
+            let parameter = self.esc_parser.params[index];
+            match parameter {
+                0 | 39 => self.set_attribute(memory, 0xE1),
+                30..=37 => {
+                    let color = ansi_foreground_to_pc98_color(parameter as u8);
+                    let lower_bits = memory
+                        .read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DISPLAY_ATTR)
+                        & 0x1F;
+                    self.set_attribute(memory, (color << 5) | lower_bits);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -345,5 +370,19 @@ impl Console {
             }
             _ => {}
         }
+    }
+}
+
+fn ansi_foreground_to_pc98_color(code: u8) -> u8 {
+    match code {
+        30 => 0,
+        31 => 2,
+        32 => 4,
+        33 => 6,
+        34 => 1,
+        35 => 3,
+        36 => 5,
+        37 => 7,
+        _ => 7,
     }
 }
