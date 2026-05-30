@@ -207,6 +207,26 @@ fn batch_if_not_errorlevel_equals_with_spaces() {
 }
 
 #[test]
+fn batch_if_errorlevel_equals_is_exact() {
+    let first_floppy_image = create_test_floppy_with_program(
+        b"TEST    BAT",
+        b"@ECHO OFF\r\nB:\\RUNME\r\nIF ERRORLEVEL==65 ECHO BAD\r\nIF ERRORLEVEL==66 ECHO EXITOK\r\n",
+    );
+    let second_floppy_image = create_test_floppy_with_program(b"RUNME   COM", TEST_COM_PROGRAM);
+    let machine = run_test_batch_with_two_floppy_images(first_floppy_image, second_floppy_image);
+    assert_screen_contains(
+        &machine,
+        "EXITOK",
+        "IF ERRORLEVEL==n should match an exact return code",
+    );
+    assert_screen_lacks(
+        &machine,
+        "BAD",
+        "IF ERRORLEVEL==n should not use threshold matching",
+    );
+}
+
+#[test]
 fn batch_if_errorlevel_after_external_program() {
     let first_floppy_image = create_test_floppy_with_program(
         b"TEST    BAT",
@@ -235,6 +255,41 @@ fn batch_if_errorlevel_equals_goto_after_external_program() {
         "IF ERRORLEVEL==n should jump to a batch label after an external program",
     );
     assert_screen_lacks(&machine, "BAD", "inline GOTO should skip the false branch");
+}
+
+#[test]
+fn batch_regular_command_supports_inline_output_redirection() {
+    let machine = run_test_batch(b"@ECHO OFF\r\nECHO HIDDEN>NUL\r\nECHO VISIBLE\r\n");
+    assert_screen_contains(
+        &machine,
+        "VISIBLE",
+        "batch should continue after a redirected command",
+    );
+    assert_screen_lacks(
+        &machine,
+        "HIDDEN",
+        "regular batch commands should parse inline output redirection",
+    );
+}
+
+#[test]
+fn batch_external_command_supports_inline_output_redirection() {
+    let first_floppy_image = create_test_floppy_with_program(
+        b"TEST    BAT",
+        b"@ECHO OFF\r\nB:\\RUNME.COM>NUL\r\nIF ERRORLEVEL 66 ECHO EXITOK\r\n",
+    );
+    let second_floppy_image = create_test_floppy_with_program(b"RUNME   COM", TEST_COM_PROGRAM);
+    let machine = run_test_batch_with_two_floppy_images(first_floppy_image, second_floppy_image);
+    assert_screen_contains(
+        &machine,
+        "EXITOK",
+        "external batch commands should parse inline output redirection",
+    );
+    assert_screen_lacks(
+        &machine,
+        "Bad command",
+        "inline output redirection must not be part of the executable name",
+    );
 }
 
 #[test]
