@@ -1275,8 +1275,8 @@ impl NeetanDos {
         // has pre-installed at the current SS:SP).
         let first_mcb = mem.read_word(self.state.sysvars_base - 2);
         let umb_first = memory_manager_umb_first(&self.state);
-        let terminate_stack_owned_by_child =
-            process_owns_segment(mem, first_mcb, umb_first, child_psp, cpu.ss());
+        let terminate_stack_owned_by_child = cpu.ss() == child_psp
+            || process_owns_segment(mem, first_mcb, umb_first, child_psp, cpu.ss());
         memory::free_process_blocks_dos(mem, first_mcb, umb_first, self.state.current_psp);
 
         // Restore IVT INT 22h/23h/24h from child PSP.
@@ -1554,6 +1554,43 @@ mod tests {
             mem.read_word(((u32::from(child_psp - 1)) << 4) + MCB_OFF_OWNER),
             MCB_OWNER_FREE
         );
+    }
+
+    #[test]
+    fn terminate_restores_exec_frame_when_child_stack_is_psp_after_mcb_owner_changed() {
+        let mut dos = NeetanDos::new();
+        let mut mem = MockMemory::with_extended_memory(0x100000, 0);
+        let parent_psp = 0x1001;
+        let child_psp = 0x1101;
+        mem.write_word(dos.state.sysvars_base - 2, 0x1000);
+        write_mcb(&mut mem, 0x1000, b'M', parent_psp, 0x00FF);
+        write_mcb(&mut mem, 0x1100, b'Z', MCB_OWNER_FREE, 0x0020);
+        initialize_child_psp(&mut mem, child_psp, parent_psp);
+
+        dos.state.current_psp = child_psp;
+        dos.state
+            .process_stack
+            .push(parent_context(parent_psp, child_psp));
+        let mut cpu = MockCpu {
+            eax: 0x4C21,
+            ebx: 0xAAAA,
+            ss: child_psp,
+            sp: 0xFFF8,
+            ..MockCpu::default()
+        };
+
+        dos.terminate_process(&mut cpu, &mut mem, 0x21, 0);
+
+        assert_eq!(dos.state.current_psp, parent_psp);
+        assert_eq!(dos.state.last_return_code, 0x21);
+        assert_eq!(cpu.ax(), 0x4B00);
+        assert_eq!(cpu.bx(), 0x1111);
+        assert_eq!(cpu.ss(), 0x1040);
+        assert_eq!(cpu.sp(), 0x0100);
+        let frame = cpu.linear_address(SegmentRegister::SS, cpu.sp());
+        assert_eq!(mem.read_word(frame), 0x0200);
+        assert_eq!(mem.read_word(frame + 2), 0x1234);
+        assert_eq!(mem.read_word(frame + 4) & 0x0001, 0);
     }
 
     #[test]
