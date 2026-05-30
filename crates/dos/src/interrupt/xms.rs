@@ -40,8 +40,8 @@ impl NeetanDos {
                 }
             },
             0x03 => {
-                // Global Enable A20. On PC-98 A20 is always physically
-                // enabled; track the XMS-visible state only.
+                // Global Enable A20. Track the XMS-visible state only; the
+                // machine A20 gate remains port-controlled.
                 mm.xms_global_enable_a20();
                 cpu.set_ax(1);
             }
@@ -73,8 +73,8 @@ impl NeetanDos {
                 }
             }
             0x07 => {
-                // Query A20 reports the XMS-visible state, not the PC-98
-                // physical line state.
+                // Query A20 reports the XMS-visible state, not the machine
+                // gate state.
                 if mm.xms_query_a20() {
                     cpu.set_ax(1);
                     cpu.set_bx(cpu.bx() & 0xFF00);
