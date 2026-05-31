@@ -1,5 +1,7 @@
 //! Directory entry parsing, creation, 8.3 name handling.
 
+use common::{is_shift_jis_lead_byte, is_shift_jis_trail_byte};
+
 use crate::{DiskIo, filesystem::fat::FatVolume};
 
 pub(crate) const DIR_ENTRY_SIZE: usize = 32;
@@ -61,9 +63,16 @@ pub(crate) fn parse_entry(data: &[u8], sector: u32, offset: u16) -> Option<DirEn
     if first_byte == 0x00 || first_byte == 0xE5 {
         return None;
     }
+    let attribute = data[11];
+    if attribute & 0xC0 != 0 || attribute == 0x0F {
+        return None;
+    }
+    if !is_valid_fcb_name(&data[0..11]) {
+        return None;
+    }
     Some(DirEntry {
         name: data[0..11].try_into().unwrap(),
-        attribute: data[11],
+        attribute,
         time: u16::from_le_bytes([data[22], data[23]]),
         date: u16::from_le_bytes([data[24], data[25]]),
         start_cluster: u16::from_le_bytes([data[26], data[27]]),
@@ -71,6 +80,66 @@ pub(crate) fn parse_entry(data: &[u8], sector: u32, offset: u16) -> Option<DirEn
         dir_sector: sector,
         dir_offset: offset,
     })
+}
+
+fn is_valid_fcb_name(name: &[u8]) -> bool {
+    if name.len() != 11 {
+        return false;
+    }
+    if name == b".          " || name == b"..         " {
+        return true;
+    }
+    if name[0] == b' ' {
+        return false;
+    }
+
+    is_valid_fcb_field(&name[..8]) && is_valid_fcb_field(&name[8..])
+}
+
+fn is_valid_fcb_field(field: &[u8]) -> bool {
+    let end = field
+        .iter()
+        .rposition(|&byte| byte != b' ')
+        .map_or(0, |index| index + 1);
+    let mut index = 0;
+    while index < end {
+        let byte = field[index];
+        if byte <= b' ' || is_invalid_ascii_name_byte(byte) {
+            return false;
+        }
+        if is_shift_jis_lead_byte(byte) {
+            if index + 1 >= end || !is_shift_jis_trail_byte(field[index + 1]) {
+                return false;
+            }
+            index += 2;
+        } else if byte >= 0x80 && !(0xA1..=0xDF).contains(&byte) {
+            return false;
+        } else {
+            index += 1;
+        }
+    }
+    true
+}
+
+fn is_invalid_ascii_name_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'"' | b'*'
+            | b'+'
+            | b','
+            | b'.'
+            | b'/'
+            | b':'
+            | b';'
+            | b'<'
+            | b'='
+            | b'>'
+            | b'?'
+            | b'['
+            | b'\\'
+            | b']'
+            | b'|'
+    )
 }
 
 /// Converts a display filename (e.g. "FILE.TXT") to 8.3 FCB format (11 bytes, space-padded).
@@ -456,4 +525,38 @@ pub(crate) fn create_subdirectory(
 
     vol.flush_fat(disk).map_err(|_| 0x001Fu16)?;
     Ok(created)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw_entry(name: [u8; 11], attribute: u8) -> [u8; 32] {
+        let mut data = [0u8; 32];
+        data[..11].copy_from_slice(&name);
+        data[11] = attribute;
+        data
+    }
+
+    #[test]
+    fn parse_entry_accepts_dot_directory_entries() {
+        assert!(parse_entry(&raw_entry(*b".          ", ATTR_DIRECTORY), 0, 0).is_some());
+        assert!(parse_entry(&raw_entry(*b"..         ", ATTR_DIRECTORY), 0, 0).is_some());
+    }
+
+    #[test]
+    fn parse_entry_rejects_invalid_attribute_bits() {
+        assert!(parse_entry(&raw_entry(*b"FILE    TXT", 0x40), 0, 0).is_none());
+        assert!(parse_entry(&raw_entry(*b"LONGNAMEEXT", 0x0F), 0, 0).is_none());
+    }
+
+    #[test]
+    fn parse_entry_rejects_invalid_fcb_names() {
+        assert!(parse_entry(&raw_entry(*b" FILE   TXT", ATTR_ARCHIVE), 0, 0).is_none());
+        assert!(parse_entry(&raw_entry(*b"BAD.NAMEEXT", ATTR_ARCHIVE), 0, 0).is_none());
+
+        let mut shift_jis_name = *b"        TXT";
+        shift_jis_name[0] = 0x82;
+        assert!(parse_entry(&raw_entry(shift_jis_name, ATTR_ARCHIVE), 0, 0).is_none());
+    }
 }
