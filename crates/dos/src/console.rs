@@ -719,6 +719,24 @@ mod tests {
     }
 
     #[test]
+    fn process_byte_graphic_mode_does_not_pair_shift_jis_leads() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+
+        feed_str(&mut console, &mut memory, "\x1b)3");
+        console.process_byte(&mut memory, 0x86);
+        console.process_byte(&mut memory, 0x86);
+
+        assert_eq!(
+            memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_HI_FLAG),
+            0x00
+        );
+        assert_vram_char(&memory, 0, 0, 0x86, 0x00);
+        assert_vram_char(&memory, 0, 1, 0x86, 0x00);
+        assert_cursor(&console, &memory, 0, 2);
+    }
+
+    #[test]
     fn process_byte_invalid_shift_jis_trail_falls_back_to_single_byte() {
         let mut console = make_console();
         let mut memory = make_memory();
