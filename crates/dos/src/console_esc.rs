@@ -65,6 +65,10 @@ impl EscParser {
 }
 
 impl Console {
+    fn shift_jis_mode_enabled(&self, memory: &dyn MemoryAccess) -> bool {
+        memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_MODE) != 0
+    }
+
     /// Main entry point: feed one byte into the console output pipeline.
     /// Handles control characters, ESC sequences, and printable output.
     pub(crate) fn process_byte(&mut self, memory: &mut dyn MemoryAccess, byte: u8) {
@@ -84,7 +88,10 @@ impl Console {
             return;
         }
 
-        if self.esc_parser.state == EscState::Normal && is_shift_jis_lead_byte(byte) {
+        if self.esc_parser.state == EscState::Normal
+            && self.shift_jis_mode_enabled(memory)
+            && is_shift_jis_lead_byte(byte)
+        {
             self.set_pending_shift_jis_lead(memory, byte);
             return;
         }
