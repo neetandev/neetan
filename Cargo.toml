@@ -33,7 +33,7 @@ zlib-rs = { version = "0.6", default-features = false, features = ["rust-allocat
 
 [package]
 name = "neetan"
-version = "2026.5.2"
+version = "2026.6.0"
 publish = false
 authors.workspace = true
 edition.workspace = true
