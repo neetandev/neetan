@@ -9,6 +9,26 @@ pub(super) enum RepType {
 
 impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     #[inline(always)]
+    fn is_rep_string_opcode(opcode: u8) -> bool {
+        matches!(
+            opcode,
+            0x6C | 0x6D
+                | 0x6E
+                | 0x6F
+                | 0xA4
+                | 0xA5
+                | 0xA6
+                | 0xA7
+                | 0xAA
+                | 0xAB
+                | 0xAC
+                | 0xAD
+                | 0xAE
+                | 0xAF
+        )
+    }
+
+    #[inline(always)]
     fn rep_count(&self) -> u32 {
         if self.address_size_override {
             self.regs.dword(DwordReg::ECX)
@@ -78,6 +98,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
                 _ => break,
             }
+        }
+
+        // REP/REPE/REPNE only carry repeat semantics for the string
+        // primitives. For any other opcode the F2/F3 prefix is a no-op on
+        // 386-class CPUs: the instruction executes exactly once and (E)CX is
+        // not consulted as a count. This covers sequences like F3 0F BC
+        // (rep bsf) that LLVM emits for trailing_zeros on a bare i386 target.
+        if !Self::is_rep_string_opcode(next) {
+            return self.dispatch(next, bus);
         }
 
         let startup = match next {
