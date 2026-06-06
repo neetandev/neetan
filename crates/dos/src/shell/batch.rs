@@ -183,6 +183,7 @@ impl BatchState {
             return self.jump_to_label(io, command_args);
         }
 
+        shell.echo_on = self.echo_on;
         let phase = shell.dispatch_single(state, io, disk, command);
         match phase {
             super::ShellPhase::ExecutingCommand(cmd) => {
@@ -315,11 +316,13 @@ impl BatchState {
         // ECHO ON/OFF
         if upper == b"ECHO ON" {
             self.echo_on = true;
+            shell.echo_on = true;
             self.current_line += 1;
             return BatchStepResult::Continue;
         }
         if upper == b"ECHO OFF" {
             self.echo_on = false;
+            shell.echo_on = false;
             self.current_line += 1;
             return BatchStepResult::Continue;
         }
@@ -348,6 +351,7 @@ impl BatchState {
         }
 
         // Regular command: dispatch through shell
+        shell.echo_on = self.echo_on;
         let phase = shell.dispatch_single(state, io, disk, &effective_line);
         match phase {
             super::ShellPhase::ExecutingCommand(cmd) => {
@@ -448,6 +452,19 @@ impl BatchState {
             BatchStepResult::Continue
         } else if let Some((comparison, level, command)) = parse_errorlevel_condition(rest) {
             let condition_met = comparison.matches(shell.last_exit_code, level);
+            let condition = if negated {
+                !condition_met
+            } else {
+                condition_met
+            };
+
+            if condition && !command.is_empty() {
+                return self.run_conditional_command(shell, state, io, disk, command);
+            }
+            self.current_line += 1;
+            BatchStepResult::Continue
+        } else if let Some((left, right, command)) = parse_string_compare_condition(rest) {
+            let condition_met = left == right;
             let condition = if negated {
                 !condition_met
             } else {
@@ -587,6 +604,50 @@ fn parse_errorlevel_condition(rest: &[u8]) -> Option<(ErrorLevelComparison, u8, 
         .parse()
         .ok()?;
     Some((comparison, level, rest[index..].trim_ascii()))
+}
+
+fn parse_string_compare_condition(rest: &[u8]) -> Option<(Vec<u8>, Vec<u8>, &[u8])> {
+    let operator = rest.windows(2).position(|window| window == b"==")?;
+    let left = parse_left_compare_operand(&rest[..operator])?;
+    let (right, command) = parse_right_compare_operand(rest[operator + 2..].trim_ascii())?;
+    Some((left, right, command.trim_ascii()))
+}
+
+fn parse_left_compare_operand(operand: &[u8]) -> Option<Vec<u8>> {
+    let trimmed = operand.trim_ascii();
+    if trimmed.starts_with(b"\"") {
+        if trimmed.len() >= 2 && trimmed.ends_with(b"\"") {
+            Some(trimmed[1..trimmed.len() - 1].to_vec())
+        } else {
+            None
+        }
+    } else {
+        Some(trimmed.to_vec())
+    }
+}
+
+fn parse_right_compare_operand(operand_and_command: &[u8]) -> Option<(Vec<u8>, &[u8])> {
+    if operand_and_command.is_empty() {
+        return None;
+    }
+
+    if operand_and_command[0] == b'"' {
+        let end = operand_and_command[1..]
+            .iter()
+            .position(|&byte| byte == b'"')?;
+        let value_end = 1 + end;
+        let value = operand_and_command[1..value_end].to_vec();
+        return Some((value, &operand_and_command[value_end + 1..]));
+    }
+
+    let end = operand_and_command
+        .iter()
+        .position(|byte| byte.is_ascii_whitespace())
+        .unwrap_or(operand_and_command.len());
+    Some((
+        operand_and_command[..end].to_vec(),
+        &operand_and_command[end..],
+    ))
 }
 
 fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {

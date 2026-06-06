@@ -159,6 +159,26 @@ fn copy_concatenation() {
 }
 
 #[test]
+fn copy_binary_switch_with_spaced_concatenation_and_redirection() {
+    let mut machine = boot_hle_with_floppy();
+    run_command(&mut machine, b"A:\r");
+
+    run_command(&mut machine, b"COPY TESTFILE.TXT PART2.TXT\r");
+    run_command(&mut machine, b"CLS\r");
+    run_command(
+        &mut machine,
+        b"COPY /B TESTFILE.TXT + PART2.TXT JOINB.TXT > NUL\r",
+    );
+    run_command(&mut machine, b"DIR JOINB.TXT\r");
+
+    let joined = [0x004A, 0x004F, 0x0049, 0x004E, 0x0042]; // "JOINB"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &joined),
+        "COPY /B with spaced concatenation should create JOINB.TXT"
+    );
+}
+
+#[test]
 fn xcopy_recursive() {
     let mut machine = boot_hle_with_floppy();
     run_command(&mut machine, b"A:\r");

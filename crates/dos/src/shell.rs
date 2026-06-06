@@ -581,11 +581,18 @@ impl Shell {
             }
         }
 
-        // Special case: ECHO. (dot immediately after ECHO, no space)
-        if cmd_upper.starts_with(b"ECHO.")
+        // Special cases: ECHO. and ECHO\ without a separating space.
+        if cmd_upper.len() >= 5
+            && cmd_upper.starts_with(b"ECHO")
+            && matches!(cmd_upper[4], b'.' | b'\\')
             && let Some(cmd) = self.find_command(b"ECHO")
         {
-            let running = cmd.start(b"");
+            let args = if trimmed.len() == 5 {
+                b"".as_slice()
+            } else {
+                &trimmed[5..]
+            };
+            let running = cmd.start(args);
             return ShellPhase::ExecutingCommand(running);
         }
 

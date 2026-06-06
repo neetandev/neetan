@@ -1,4 +1,6 @@
-use crate::harness::*;
+use std::fs;
+
+use crate::{file_copy_harness::*, harness::*};
 
 fn boot_with_batch_file(batch_content: &[u8]) -> machine::Pc9801Ra {
     let floppy_image = create_test_floppy_with_program(b"TEST    BAT", batch_content);
@@ -12,6 +14,13 @@ fn submit_command(machine: &mut machine::Pc9801Ra, command: &[u8]) {
 
 fn submit_long_command(machine: &mut machine::Pc9801Ra, command: &[u8]) {
     type_string_long(machine, command);
+    run_until_prompt(machine);
+}
+
+fn format_drive_a(machine: &mut machine::Pc9801Ra) {
+    type_string_long(machine, b"FORMAT A:\r");
+    machine.run_for(10_000_000);
+    type_string(&mut machine.bus, b"Y");
     run_until_prompt(machine);
 }
 
@@ -117,6 +126,17 @@ fn batch_multi_line() {
 fn batch_echo_off() {
     let machine = run_test_batch(b"@ECHO OFF\r\nECHO QUIET\r\n");
     assert_screen_contains(&machine, "QUIET", "batch should display 'QUIET'");
+}
+
+#[test]
+fn batch_echo_backslash_prints_blank_line() {
+    let machine = run_test_batch(b"ECHO\\\r\nECHO AFTER\r\n");
+    assert_screen_contains(&machine, "AFTER", "batch should continue after ECHO\\");
+    assert_screen_lacks(
+        &machine,
+        "Bad command",
+        "ECHO\\ should be accepted as an ECHO command",
+    );
 }
 
 #[test]
@@ -233,6 +253,37 @@ fn batch_if_errorlevel_equals_is_exact() {
         &machine,
         "BAD",
         "IF ERRORLEVEL==n should not use threshold matching",
+    );
+}
+
+#[test]
+fn batch_if_string_compare() {
+    let machine = run_test_batch_with_long_command(
+        b"@ECHO OFF\r\nIF \"%1\"==\"FOO\" ECHO MATCH\r\nIF \"%2\"==\"NOPE\" ECHO BAD\r\n",
+        b"TEST FOO BAR\r",
+    );
+    assert_screen_contains(
+        &machine,
+        "MATCH",
+        "IF string comparison should run the matching command",
+    );
+    assert_screen_lacks(
+        &machine,
+        "BAD",
+        "IF string comparison should skip non-matching commands",
+    );
+}
+
+#[test]
+fn batch_if_not_string_compare() {
+    let machine = run_test_batch_with_long_command(
+        b"IF NOT \"%1\"==\"BAR\" ECHO MISMATCH\r\n",
+        b"TEST FOO\r",
+    );
+    assert_screen_contains(
+        &machine,
+        "MISMATCH",
+        "IF NOT string comparison should invert the condition",
     );
 }
 
@@ -406,6 +457,21 @@ fn batch_if_can_replace_with_another_batch() {
 }
 
 #[test]
+fn batch_replaced_child_inherits_echo_off() {
+    let first_floppy_image =
+        create_test_floppy_with_program(b"TEST    BAT", b"@ECHO OFF\r\nB:\\CHILD\r\n");
+    let second_floppy_image =
+        create_test_floppy_with_program(b"CHILD   BAT", b"ECHO OFF\r\nECHO CHILD\r\n");
+    let machine = run_test_batch_with_two_floppy_images(first_floppy_image, second_floppy_image);
+    assert_screen_contains(&machine, "CHILD", "child batch should run");
+    assert_screen_lacks(
+        &machine,
+        "ECHO OFF",
+        "child batch should inherit ECHO OFF from its parent",
+    );
+}
+
+#[test]
 fn batch_call_runs_child_and_returns_to_parent_batch() {
     let first_floppy_image =
         create_test_floppy_with_program(b"TEST    BAT", b"CALL B:\\CHILD ARG\r\nECHO PARENT\r\n");
@@ -532,6 +598,110 @@ fn batch_drive_change_applies_before_following_lines() {
         &machine,
         "FOUND",
         "batch drive change should affect relative paths used by following lines",
+    );
+}
+
+#[test]
+fn batch_if_exist_sees_swapped_floppy_after_pause() {
+    let first_floppy_image = create_test_floppy_with_program(
+        b"SWAP    BAT",
+        b"@ECHO OFF\r\nPAUSE\r\nIF EXIST A:\\ADISK.DAT ECHO FOUND\r\nIF NOT EXIST A:\\ADISK.DAT ECHO MISSING\r\n",
+    );
+    let second_floppy_image = create_test_floppy_with_program(b"ADISK   DAT", b"SECOND\r\n");
+    let mut machine = boot_hle_with_floppy_image(first_floppy_image);
+
+    prepare_test_batch(&mut machine);
+    type_string(&mut machine.bus, b"SWAP\r");
+    run_until_screen_contains(
+        &mut machine,
+        "Press",
+        "PAUSE should display before the floppy swap",
+    );
+
+    machine.bus.insert_floppy(0, second_floppy_image, None);
+    submit_command(&mut machine, b" ");
+
+    assert_screen_contains(
+        &machine,
+        "FOUND",
+        "IF EXIST should see files on the newly inserted floppy",
+    );
+    assert_screen_lacks(
+        &machine,
+        "MISSING",
+        "IF NOT EXIST should not match files on the newly inserted floppy",
+    );
+}
+
+#[test]
+fn batch_if_exist_sees_swapped_floppy_on_drive_c_with_hdd_present() {
+    let first_floppy_image = create_test_floppy_with_program(
+        b"SWAP    BAT",
+        b"@ECHO OFF\r\nPAUSE\r\nIF EXIST C:\\ADISK.DAT ECHO FOUND\r\nIF NOT EXIST C:\\ADISK.DAT ECHO MISSING\r\n",
+    );
+    let second_floppy_image = create_test_floppy_with_program(b"ADISK   DAT", b"SECOND\r\n");
+    let hdd_path = make_temp_hdd_path("batch-swap-c");
+    fs::write(&hdd_path, create_empty_hdd(256).to_bytes()).expect("write temp HDD image");
+    let mut machine = boot_hle_with_temp_hdd_and_floppy(&hdd_path, first_floppy_image);
+
+    submit_command(&mut machine, b"C:\r");
+    submit_command(&mut machine, b"CLS\r");
+    type_string(&mut machine.bus, b"SWAP\r");
+    run_until_screen_contains(
+        &mut machine,
+        "Press",
+        "PAUSE should display before the C: floppy swap",
+    );
+
+    machine.bus.insert_floppy(0, second_floppy_image, None);
+    submit_command(&mut machine, b" ");
+
+    assert_screen_contains(
+        &machine,
+        "FOUND",
+        "IF EXIST should see files on the newly inserted C: floppy",
+    );
+    assert_screen_lacks(
+        &machine,
+        "MISSING",
+        "IF NOT EXIST should not match files on the newly inserted C: floppy",
+    );
+}
+
+#[test]
+fn batch_copy_wildcard_from_swapped_drive_c_to_hdd_directory() {
+    let first_floppy_image = create_test_floppy_with_program(
+        b"SWAP    BAT",
+        b"@ECHO OFF\r\nPAUSE\r\nCOPY C:\\*.* A:\\ALI_ONLY > NUL\r\nIF EXIST A:\\ALI_ONLY\\ADISK.DAT ECHO COPIED\r\nIF NOT EXIST A:\\ALI_ONLY\\ADISK.DAT ECHO MISSING\r\n",
+    );
+    let second_floppy_image = create_test_floppy_with_program(b"ADISK   DAT", b"SECOND\r\n");
+    let hdd_path = make_temp_hdd_path("batch-copy-c-wildcard");
+    fs::write(&hdd_path, create_empty_hdd(256).to_bytes()).expect("write temp HDD image");
+    let mut machine = boot_hle_with_temp_hdd_and_floppy(&hdd_path, first_floppy_image);
+
+    format_drive_a(&mut machine);
+    submit_command(&mut machine, b"MD A:\\ALI_ONLY\r");
+    submit_command(&mut machine, b"C:\r");
+    submit_command(&mut machine, b"CLS\r");
+    type_string(&mut machine.bus, b"SWAP\r");
+    run_until_screen_contains(
+        &mut machine,
+        "Press",
+        "PAUSE should display before wildcard COPY from C:",
+    );
+
+    machine.bus.insert_floppy(0, second_floppy_image, None);
+    submit_command(&mut machine, b" ");
+
+    assert_screen_contains(
+        &machine,
+        "COPIED",
+        "COPY C:\\*.* A:\\ALI_ONLY should copy files from the newly inserted C: floppy",
+    );
+    assert_screen_lacks(
+        &machine,
+        "MISSING",
+        "destination file check should not fail after wildcard COPY from C:",
     );
 }
 

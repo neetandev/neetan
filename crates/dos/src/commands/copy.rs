@@ -1242,19 +1242,13 @@ fn init_copy(
         return Err(b"Required parameter missing\r\n");
     }
 
-    let first_token = tokens[0];
-    let is_concat = first_token.contains(&b'+') && !starts_with_host_prefix(first_token);
-
-    if is_concat {
-        if tokens.len() < 2 {
-            return Err(b"Required parameter missing\r\n");
-        }
+    if let Some((source_part, dest_token)) = concat_tokens(&tokens) {
         return init_concat(
             state,
             io,
             drive,
-            tokens[0],
-            tokens[1],
+            &source_part,
+            dest_token,
             verify,
             overwrite_all,
         );
@@ -1291,6 +1285,30 @@ fn init_copy(
 
 fn starts_with_host_prefix(token: &[u8]) -> bool {
     token.len() >= 5 && token[..5].eq_ignore_ascii_case(b"host:")
+}
+
+fn concat_tokens<'a>(tokens: &[&'a [u8]]) -> Option<(Vec<u8>, &'a [u8])> {
+    if tokens.len() < 2 {
+        return None;
+    }
+
+    let dest_token = *tokens.last()?;
+    let source_tokens = &tokens[..tokens.len() - 1];
+    if source_tokens
+        .iter()
+        .any(|token| starts_with_host_prefix(token))
+    {
+        return None;
+    }
+
+    let mut source_part = Vec::new();
+    for token in source_tokens {
+        source_part.extend_from_slice(token);
+    }
+
+    source_part
+        .contains(&b'+')
+        .then_some((source_part, dest_token))
 }
 
 fn init_dos_source(
