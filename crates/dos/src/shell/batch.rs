@@ -4,7 +4,7 @@ use super::{RedirectSpec, key_available, read_env_var, read_key};
 use crate::{
     DosState, DriveIo, IoAccess, MemoryAccess,
     commands::{RunningCommand, StepResult},
-    filesystem::{fat, fat_dir, fat_file},
+    filesystem,
 };
 
 struct CallFrame {
@@ -658,15 +658,6 @@ fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
             .all(|(left_byte, right_byte)| left_byte.eq_ignore_ascii_case(right_byte))
 }
 
-pub(crate) fn load_bat_file(
-    vol: &fat::FatVolume,
-    entry: &fat_dir::DirEntry,
-    disk: &mut dyn DriveIo,
-) -> Result<Vec<Vec<u8>>, u16> {
-    let data = fat_file::read_all(vol, entry, disk)?;
-    Ok(split_bat_lines(&data))
-}
-
 /// Splits raw file data into lines on \r\n or \n.
 /// Stops at Ctrl-Z (0x1A), the DOS end-of-file marker.
 pub(crate) fn split_bat_lines(data: &[u8]) -> Vec<Vec<u8>> {
@@ -697,23 +688,17 @@ fn check_file_exists(
     disk: &mut dyn DriveIo,
     filename: &[u8],
 ) -> bool {
-    let (drive_index, dir_cluster, fcb_name) =
-        match crate::filesystem::resolve_file_path(state, filename, io.memory, disk) {
-            Ok(r) => r,
-            Err(_) => return false,
-        };
+    let read_path = match filesystem::resolve_read_file_path(state, filename, io.memory, disk) {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
 
-    if drive_index == 25 {
+    if read_path.drive_index == 25 {
         return false;
     }
 
-    let vol = match state.fat_volumes[drive_index as usize].as_ref() {
-        Some(v) => v,
-        None => return false,
-    };
-
     matches!(
-        fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk),
-        Ok(Some(_))
+        filesystem::find_read_entry(state, &read_path, disk),
+        Ok(Some(entry)) if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY == 0
     )
 }

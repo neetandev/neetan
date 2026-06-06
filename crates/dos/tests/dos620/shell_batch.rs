@@ -62,6 +62,12 @@ fn screen_contains(machine: &machine::Pc9801Ra, text: &str) -> bool {
     find_string_in_text_vram(&machine.bus, &characters)
 }
 
+fn screen_contains_ap(machine: &machine::Pc9821Ap, text: &str) -> bool {
+    assert!(text.is_ascii(), "screen text helper only supports ASCII");
+    let characters = text.bytes().map(u16::from).collect::<Vec<_>>();
+    find_string_in_text_vram(&machine.bus, &characters)
+}
+
 fn assert_screen_contains(machine: &machine::Pc9801Ra, text: &str, message: &str) {
     assert!(screen_contains(machine, text), "{message}");
 }
@@ -102,6 +108,24 @@ fn batch_echo() {
         &machine,
         "BATCH OUTPUT",
         "batch file should display 'BATCH OUTPUT'",
+    );
+}
+
+#[test]
+fn batch_runs_from_cdrom() {
+    let mut machine = boot_hle_with_cdrom();
+    type_string(&mut machine.bus, b"Q:\r");
+    run_until_prompt_ap(&mut machine);
+    type_string(&mut machine.bus, b"RUNBAT\r");
+    run_until_prompt_ap(&mut machine);
+
+    assert!(
+        screen_contains_ap(&machine, "CDBATCH"),
+        "batch file on CD-ROM should execute"
+    );
+    assert!(
+        !screen_contains_ap(&machine, "Bad command"),
+        "CD-ROM batch file should be found by command lookup"
     );
 }
 
