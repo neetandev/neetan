@@ -1156,29 +1156,24 @@ fn try_find_batch_candidate(
         bat_path.extend_from_slice(b".BAT");
     }
 
-    let (drive_index, dir_cluster, fcb_name) =
-        match crate::filesystem::resolve_file_path(state, &bat_path, memory, disk) {
-            Ok(path) => path,
-            Err(_) => return BatchSearchResult::NotFound,
-        };
+    let read_path = match filesystem::resolve_read_file_path(state, &bat_path, memory, disk) {
+        Ok(path) => path,
+        Err(_) => return BatchSearchResult::NotFound,
+    };
 
-    if drive_index == 25 {
+    if read_path.drive_index == 25 {
         return BatchSearchResult::NotFound;
     }
 
-    let Some(vol) = state.fat_volumes[drive_index as usize].as_ref() else {
-        return BatchSearchResult::NotFound;
-    };
-
-    let entry = match fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk) {
+    let entry = match filesystem::find_read_entry(state, &read_path, disk) {
         Ok(Some(entry)) if entry.attribute & fat_dir::ATTR_DIRECTORY == 0 => entry,
         _ => return BatchSearchResult::NotFound,
     };
 
-    match batch::load_bat_file(vol, &entry, disk) {
-        Ok(lines) => BatchSearchResult::Found {
+    match filesystem::read_entry_all(state, read_path.drive_index, &entry, disk) {
+        Ok(data) => BatchSearchResult::Found {
             path: bat_path,
-            lines,
+            lines: batch::split_bat_lines(&data),
         },
         Err(_) => BatchSearchResult::ReadError,
     }

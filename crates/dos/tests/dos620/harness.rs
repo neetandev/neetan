@@ -1467,6 +1467,8 @@ pub fn create_test_cdimage() -> device::cdrom::CdImage {
     const ROOT_DIR_LBA: u32 = 20;
     const README_LBA: u32 = 21;
     const INSTALL_LBA: u32 = 22;
+    const RUNBAT_LBA: u32 = 23;
+    const RUNBAT_DATA: &[u8] = b"ECHO CDBATCH\r\n";
 
     // Track 1: 150 raw data sectors (2352 bytes each, with sync+header+user data).
     let mut bin_data = Vec::with_capacity(2352 * 200);
@@ -1548,12 +1550,23 @@ pub fn create_test_cdimage() -> device::cdrom::CdImage {
                     4,
                     false,
                 );
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    b"RUNBAT.BAT;1",
+                    RUNBAT_LBA,
+                    RUNBAT_DATA.len() as u32,
+                    false,
+                );
             }
             README_LBA => {
                 user_data[..TEST_CDROM_README.len()].copy_from_slice(TEST_CDROM_README);
             }
             INSTALL_LBA => {
                 user_data[..4].copy_from_slice(b"MZ\x90\x00");
+            }
+            RUNBAT_LBA => {
+                user_data[..RUNBAT_DATA.len()].copy_from_slice(RUNBAT_DATA);
             }
             _ => {
                 user_data.fill(0x11);
