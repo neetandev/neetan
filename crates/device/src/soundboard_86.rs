@@ -1409,7 +1409,7 @@ impl Soundboard86 {
                 self.resample_input.resize(total_interleaved, 0.0);
             }
 
-            const FM_SCALE: f32 = 1.25 / 32768.0;
+            const FM_SCALE: f32 = 2.0 / 32768.0;
             const SSG_SCALE: f32 = 1.0 / 32768.0;
 
             for i in 0..pending_count {
