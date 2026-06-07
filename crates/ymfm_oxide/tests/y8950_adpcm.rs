@@ -1,6 +1,6 @@
 mod common;
 
-use common::{callbacks::*, harness::*};
+use common::{harness::*, signals::*};
 use ymfm_oxide::Y8950;
 
 #[allow(dead_code)]
@@ -11,7 +11,7 @@ mod golden {
 #[test]
 fn adpcm_b_playback() {
     let adpcm_data = create_y8950_adpcm_data();
-    let mut chip = Y8950::new(RecordingCallbacksY8950::with_adpcm_data(adpcm_data));
+    let mut chip = setup_y8950_with_adpcm_data(adpcm_data);
     chip.reset();
     write_reg_y8950(&mut chip, 0x09, 0x20);
     write_reg_y8950(&mut chip, 0x0A, 0x00);
@@ -29,7 +29,7 @@ fn adpcm_b_playback() {
 #[test]
 fn adpcm_b_start_stop() {
     let adpcm_data = create_y8950_adpcm_data();
-    let mut chip = Y8950::new(RecordingCallbacksY8950::with_adpcm_data(adpcm_data));
+    let mut chip = setup_y8950_with_adpcm_data(adpcm_data);
     chip.reset();
     write_reg_y8950(&mut chip, 0x09, 0x20);
     write_reg_y8950(&mut chip, 0x0A, 0x00);
@@ -53,7 +53,7 @@ fn adpcm_b_different_rates() {
     // Low rate
     {
         let adpcm_data = create_y8950_adpcm_data();
-        let mut chip = Y8950::new(RecordingCallbacksY8950::with_adpcm_data(adpcm_data));
+        let mut chip = setup_y8950_with_adpcm_data(adpcm_data);
         chip.reset();
         write_reg_y8950(&mut chip, 0x09, 0x20);
         write_reg_y8950(&mut chip, 0x0A, 0x00);
@@ -71,7 +71,7 @@ fn adpcm_b_different_rates() {
     // High rate
     {
         let adpcm_data = create_y8950_adpcm_data();
-        let mut chip = Y8950::new(RecordingCallbacksY8950::with_adpcm_data(adpcm_data));
+        let mut chip = setup_y8950_with_adpcm_data(adpcm_data);
         chip.reset();
         write_reg_y8950(&mut chip, 0x09, 0x20);
         write_reg_y8950(&mut chip, 0x0A, 0x00);
@@ -90,7 +90,7 @@ fn adpcm_b_different_rates() {
 #[test]
 fn adpcm_b_end_of_sample() {
     let adpcm_data = create_y8950_adpcm_data();
-    let mut chip = Y8950::new(RecordingCallbacksY8950::with_adpcm_data(adpcm_data));
+    let mut chip = setup_y8950_with_adpcm_data(adpcm_data);
     chip.reset();
     write_reg_y8950(&mut chip, 0x09, 0x20);
     write_reg_y8950(&mut chip, 0x0A, 0x00);
@@ -106,10 +106,11 @@ fn adpcm_b_end_of_sample() {
 }
 
 #[test]
-fn external_write_callback() {
-    let mut chip = Y8950::new(RecordingCallbacksY8950::new());
+fn external_write_updates_adpcm_memory() {
+    let mut chip = Y8950::new();
     chip.reset();
-    chip.callbacks().take_events();
+    chip.set_adpcm_memory(vec![0; 256 * 1024]);
+    chip.take_signals();
     write_reg_y8950(&mut chip, 0x07, 0x01);
     write_reg_y8950(&mut chip, 0x08, 0xC0);
     write_reg_y8950(&mut chip, 0x09, 0x00);
@@ -118,16 +119,24 @@ fn external_write_callback() {
     write_reg_y8950(&mut chip, 0x0C, 0xFF);
     write_reg_y8950(&mut chip, 0x07, 0x60);
     write_reg_y8950(&mut chip, 0x0F, 0xAB);
+    assert_eq!(chip.adpcm_memory()[0], 0xAB);
     let samples = generate_1_y8950(&mut chip, golden::EXTERNAL_WRITE.len());
     assert_samples_1(&samples, golden::EXTERNAL_WRITE);
 }
 
 #[test]
-fn external_read_callback() {
+#[should_panic(expected = "ADPCM memory must not be empty")]
+fn empty_adpcm_memory_panics() {
+    let mut chip = Y8950::new();
+    chip.set_adpcm_memory(Vec::new());
+}
+
+#[test]
+fn external_read_uses_adpcm_memory() {
     let adpcm_data = create_y8950_adpcm_data();
-    let mut chip = Y8950::new(RecordingCallbacksY8950::with_adpcm_data(adpcm_data));
+    let mut chip = setup_y8950_with_adpcm_data(adpcm_data);
     chip.reset();
-    chip.callbacks().take_events();
+    chip.take_signals();
 
     // Start ADPCM-B playback to trigger external reads
     write_reg_y8950(&mut chip, 0x09, 0x20);
@@ -140,23 +149,18 @@ fn external_read_callback() {
     write_reg_y8950(&mut chip, 0x08, 0xC0);
     write_reg_y8950(&mut chip, 0x07, 0xA0);
 
-    // Generate some samples to cause reads
-    generate_1_y8950(&mut chip, 64);
-
-    let events = chip.callbacks().take_events();
-    let has_read = events
-        .iter()
-        .any(|e| matches!(e, CallbackEventExt::ExternalRead { .. }));
+    // Generate some samples to cause reads.
+    let samples = generate_1_y8950(&mut chip, 64);
     assert!(
-        has_read,
-        "ADPCM-B playback should trigger external read callbacks"
+        samples.iter().any(|sample| sample[0] != 0),
+        "ADPCM-B playback should read non-zero sample data"
     );
 }
 
 #[test]
 fn read_data_readback() {
     let adpcm_data = create_y8950_adpcm_data();
-    let mut chip = Y8950::new(RecordingCallbacksY8950::with_adpcm_data(adpcm_data));
+    let mut chip = setup_y8950_with_adpcm_data(adpcm_data);
     chip.reset();
 
     // The Y8950 supports read_data for ADPCM readback

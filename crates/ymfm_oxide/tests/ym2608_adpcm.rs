@@ -5,13 +5,30 @@ mod golden {
     include!("golden/ym2608_adpcm.rs");
 }
 
-use common::{callbacks::*, harness::*};
+use common::{harness::*, signals::*};
 use ymfm_oxide::{Ym2608, YmfmOpnFidelity};
+
+const RHYTHM_ROM_SIZE: usize = 8192;
+
+fn key_on_adpcm_a_channel_0(chip: &mut Ym2608) {
+    write_reg_2608(chip, 0x18, 0xDF);
+    write_reg_2608(chip, 0x11, 0x3F);
+    write_reg_2608(chip, 0x10, 0x01);
+}
+
+fn generate_adpcm_a_samples_with_rom(data: &[u8], count: usize) -> Vec<[i32; 3]> {
+    let mut chip = Ym2608::new();
+    chip.set_adpcm_a_rom(data);
+    chip.reset();
+    chip.set_fidelity(YmfmOpnFidelity::Max);
+    key_on_adpcm_a_channel_0(&mut chip);
+    generate_3(&mut chip, count)
+}
 
 #[test]
 fn adpcm_a_key_on() {
     let adpcm_data = create_adpcm_rom();
-    let mut chip = Ym2608::new(RecordingCallbacks2608::with_adpcm_data(adpcm_data));
+    let mut chip = setup_ym2608_with_adpcm_data(adpcm_data);
     chip.reset();
     chip.set_fidelity(YmfmOpnFidelity::Max);
     write_reg_2608(&mut chip, 0x29, 0x80);
@@ -31,7 +48,7 @@ fn adpcm_a_key_on() {
 #[test]
 fn adpcm_a_key_on_off() {
     let adpcm_data = create_adpcm_rom();
-    let mut chip = Ym2608::new(RecordingCallbacks2608::with_adpcm_data(adpcm_data));
+    let mut chip = setup_ym2608_with_adpcm_data(adpcm_data);
     chip.reset();
     chip.set_fidelity(YmfmOpnFidelity::Max);
     write_reg_2608(&mut chip, 0x29, 0x80);
@@ -52,9 +69,51 @@ fn adpcm_a_key_on_off() {
 }
 
 #[test]
+#[should_panic(expected = "ADPCM-A ROM data must not be empty")]
+fn adpcm_a_empty_rom_panics() {
+    let mut chip = Ym2608::new();
+    chip.set_adpcm_a_rom(&[]);
+}
+
+#[test]
+fn adpcm_a_missing_rom_does_not_panic() {
+    let mut chip = Ym2608::new();
+    chip.reset();
+    chip.set_fidelity(YmfmOpnFidelity::Max);
+    key_on_adpcm_a_channel_0(&mut chip);
+
+    let samples = generate_3(&mut chip, 64);
+    assert_eq!(samples.len(), 64);
+}
+
+#[test]
+fn adpcm_a_cleared_rom_does_not_panic() {
+    let mut chip = Ym2608::new();
+    chip.set_adpcm_a_rom(&[0x77]);
+    chip.clear_adpcm_a_rom();
+    chip.reset();
+    chip.set_fidelity(YmfmOpnFidelity::Max);
+    key_on_adpcm_a_channel_0(&mut chip);
+
+    let samples = generate_3(&mut chip, 64);
+    assert_eq!(samples.len(), 64);
+}
+
+#[test]
+fn adpcm_a_short_rom_is_zero_padded() {
+    let mut padded = vec![0; RHYTHM_ROM_SIZE];
+    padded[0] = 0x77;
+
+    let short_samples = generate_adpcm_a_samples_with_rom(&[0x77], 96);
+    let padded_samples = generate_adpcm_a_samples_with_rom(&padded, 96);
+
+    assert_samples_3(&short_samples, &padded_samples);
+}
+
+#[test]
 fn adpcm_a_all_6_channels() {
     let adpcm_data = create_adpcm_rom();
-    let mut chip = Ym2608::new(RecordingCallbacks2608::with_adpcm_data(adpcm_data));
+    let mut chip = setup_ym2608_with_adpcm_data(adpcm_data);
     chip.reset();
     chip.set_fidelity(YmfmOpnFidelity::Max);
     write_reg_2608(&mut chip, 0x29, 0x80);
@@ -76,7 +135,7 @@ fn adpcm_a_all_6_channels() {
 #[test]
 fn adpcm_b_playback() {
     let adpcm_data = create_adpcm_rom();
-    let mut chip = Ym2608::new(RecordingCallbacks2608::with_adpcm_data(adpcm_data));
+    let mut chip = setup_ym2608_with_adpcm_data(adpcm_data);
     chip.reset();
     chip.set_fidelity(YmfmOpnFidelity::Max);
     write_reg_2608(&mut chip, 0x29, 0x80);
@@ -105,7 +164,7 @@ fn adpcm_b_playback() {
 #[test]
 fn adpcm_b_end_of_sample() {
     let adpcm_data = create_adpcm_rom();
-    let mut chip = Ym2608::new(RecordingCallbacks2608::with_adpcm_data(adpcm_data));
+    let mut chip = setup_ym2608_with_adpcm_data(adpcm_data);
     chip.reset();
     chip.set_fidelity(YmfmOpnFidelity::Max);
     write_reg_2608(&mut chip, 0x29, 0x80);
@@ -126,7 +185,7 @@ fn adpcm_b_end_of_sample() {
     let samples = generate_3(&mut chip, golden::ADPCM_B_SHORT_SAMPLE.len());
     assert_samples_3(&samples, golden::ADPCM_B_SHORT_SAMPLE);
 
-    let status_hi = chip.read_status_hi();
+    let status_hi = chip.read_status_hi(false);
     assert_eq!(
         status_hi,
         golden::ADPCM_B_EOS_STATUS_HI,
@@ -137,12 +196,13 @@ fn adpcm_b_end_of_sample() {
 
 #[test]
 fn external_write() {
-    let mut chip = Ym2608::new(RecordingCallbacks2608::new());
+    let mut chip = Ym2608::new();
     chip.reset();
+    chip.set_adpcm_b_ram(vec![0; 256 * 1024]);
     chip.set_fidelity(YmfmOpnFidelity::Max);
     write_reg_2608(&mut chip, 0x29, 0x80);
     add_ssg_bg_2608(&mut chip);
-    chip.callbacks().take_events();
+    chip.take_signals();
 
     // ADPCM-B register 0: reset first
     write_reg_hi(&mut chip, 0x00, 0x01);
@@ -158,6 +218,7 @@ fn external_write() {
     write_reg_hi(&mut chip, 0x00, 0x60);
     // Write a data byte via register 8
     write_reg_hi(&mut chip, 0x08, 0xAB);
+    assert_eq!(chip.adpcm_b_ram().unwrap()[0], 0xAB);
 
     let samples = generate_3(&mut chip, golden::EXTERNAL_WRITE.len());
     assert_samples_3(&samples, golden::EXTERNAL_WRITE);

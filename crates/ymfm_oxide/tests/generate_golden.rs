@@ -2,7 +2,7 @@ mod common;
 
 use std::fmt::Write;
 
-use common::{callbacks::*, harness::*};
+use common::{harness::*, signals::*};
 use ymfm_oxide::{Y8950, Ym2203, Ym2608, Ym3526, Ymf262, YmfmOpnFidelity};
 
 const SAMPLES: usize = 256;
@@ -211,7 +211,7 @@ fn gen_ym2203_fm(dir: &str) {
 
     // channel 2 multi-freq mode
     {
-        let mut chip = Ym2203::new(RecordingCallbacks2203::new());
+        let mut chip = Ym2203::new();
         chip.reset();
         chip.set_fidelity(YmfmOpnFidelity::Max);
         add_ssg_bg_2203(&mut chip);
@@ -229,7 +229,7 @@ fn gen_ym2203_fm(dir: &str) {
 
     // CSM mode
     {
-        let mut chip = Ym2203::new(RecordingCallbacks2203::new());
+        let mut chip = Ym2203::new();
         chip.reset();
         chip.set_fidelity(YmfmOpnFidelity::Max);
         add_ssg_bg_2203(&mut chip);
@@ -752,7 +752,7 @@ fn gen_ym2608_adpcm(dir: &str) {
     // Start/end addresses are hardcoded at reset (bass drum: 0x0000-0x01BF)
     {
         let adpcm_data = create_adpcm_rom();
-        let mut chip = Ym2608::new(RecordingCallbacks2608::with_adpcm_data(adpcm_data));
+        let mut chip = setup_ym2608_with_adpcm_data(adpcm_data);
         chip.reset();
         chip.set_fidelity(YmfmOpnFidelity::Max);
         write_reg_2608(&mut chip, 0x29, 0x80);
@@ -769,7 +769,7 @@ fn gen_ym2608_adpcm(dir: &str) {
     // ADPCM-A key on then key off
     {
         let adpcm_data = create_adpcm_rom();
-        let mut chip = Ym2608::new(RecordingCallbacks2608::with_adpcm_data(adpcm_data));
+        let mut chip = setup_ym2608_with_adpcm_data(adpcm_data);
         chip.reset();
         chip.set_fidelity(YmfmOpnFidelity::Max);
         write_reg_2608(&mut chip, 0x29, 0x80);
@@ -786,7 +786,7 @@ fn gen_ym2608_adpcm(dir: &str) {
     // ADPCM-A all 6 channels simultaneously
     {
         let adpcm_data = create_adpcm_rom();
-        let mut chip = Ym2608::new(RecordingCallbacks2608::with_adpcm_data(adpcm_data));
+        let mut chip = setup_ym2608_with_adpcm_data(adpcm_data);
         chip.reset();
         chip.set_fidelity(YmfmOpnFidelity::Max);
         write_reg_2608(&mut chip, 0x29, 0x80);
@@ -806,7 +806,7 @@ fn gen_ym2608_adpcm(dir: &str) {
     // ADPCM-B registers are in HIGH bank at addresses 0x00-0x0F
     {
         let adpcm_data = create_adpcm_rom();
-        let mut chip = Ym2608::new(RecordingCallbacks2608::with_adpcm_data(adpcm_data));
+        let mut chip = setup_ym2608_with_adpcm_data(adpcm_data);
         chip.reset();
         chip.set_fidelity(YmfmOpnFidelity::Max);
         write_reg_2608(&mut chip, 0x29, 0x80);
@@ -832,7 +832,7 @@ fn gen_ym2608_adpcm(dir: &str) {
     // ADPCM-B end of sample (short sample)
     {
         let adpcm_data = create_adpcm_rom();
-        let mut chip = Ym2608::new(RecordingCallbacks2608::with_adpcm_data(adpcm_data));
+        let mut chip = setup_ym2608_with_adpcm_data(adpcm_data);
         chip.reset();
         chip.set_fidelity(YmfmOpnFidelity::Max);
         write_reg_2608(&mut chip, 0x29, 0x80);
@@ -854,7 +854,7 @@ fn gen_ym2608_adpcm(dir: &str) {
         ));
 
         // Capture EOS status
-        let status_hi = chip.read_status_hi();
+        let status_hi = chip.read_status_hi(false);
         writeln!(
             f,
             "pub const ADPCM_B_EOS_STATUS_HI: u8 = 0x{status_hi:02X};\n"
@@ -862,14 +862,14 @@ fn gen_ym2608_adpcm(dir: &str) {
         .unwrap();
     }
 
-    // External write callback test (ADPCM-B memory write mode)
+    // External write ADPCM-B memory mode (ADPCM-B memory write mode)
     {
-        let mut chip = Ym2608::new(RecordingCallbacks2608::new());
+        let mut chip = Ym2608::new();
         chip.reset();
         chip.set_fidelity(YmfmOpnFidelity::Max);
         write_reg_2608(&mut chip, 0x29, 0x80);
         add_ssg_bg_2608(&mut chip);
-        chip.callbacks().take_events();
+        chip.take_signals();
         // ADPCM-B register 0: reset first
         write_reg_hi(&mut chip, 0x00, 0x01);
         // ADPCM-B register 1: pan L+R
@@ -1105,7 +1105,7 @@ fn gen_ym3526_fm(dir: &str) {
 
     // CSM mode
     {
-        let mut chip = Ym3526::new(RecordingCallbacksOpl::new());
+        let mut chip = Ym3526::new();
         chip.reset();
         setup_opl_simple_tone(&mut chip, 0, 1, 0);
         write_reg_opl(&mut chip, 0x02, 0xFF); // Timer A value
@@ -1238,7 +1238,7 @@ fn gen_y8950_adpcm(dir: &str) {
     // ADPCM-B playback
     {
         let adpcm_data = create_y8950_adpcm_data();
-        let mut chip = Y8950::new(RecordingCallbacksY8950::with_adpcm_data(adpcm_data));
+        let mut chip = setup_y8950_with_adpcm_data(adpcm_data);
         chip.reset();
         // Start/end address
         write_reg_y8950(&mut chip, 0x09, 0x20); // start low
@@ -1260,7 +1260,7 @@ fn gen_y8950_adpcm(dir: &str) {
     // ADPCM-B on then off
     {
         let adpcm_data = create_y8950_adpcm_data();
-        let mut chip = Y8950::new(RecordingCallbacksY8950::with_adpcm_data(adpcm_data));
+        let mut chip = setup_y8950_with_adpcm_data(adpcm_data);
         chip.reset();
         write_reg_y8950(&mut chip, 0x09, 0x20);
         write_reg_y8950(&mut chip, 0x0A, 0x00);
@@ -1280,7 +1280,7 @@ fn gen_y8950_adpcm(dir: &str) {
     // ADPCM-B rate low
     {
         let adpcm_data = create_y8950_adpcm_data();
-        let mut chip = Y8950::new(RecordingCallbacksY8950::with_adpcm_data(adpcm_data));
+        let mut chip = setup_y8950_with_adpcm_data(adpcm_data);
         chip.reset();
         write_reg_y8950(&mut chip, 0x09, 0x20);
         write_reg_y8950(&mut chip, 0x0A, 0x00);
@@ -1300,7 +1300,7 @@ fn gen_y8950_adpcm(dir: &str) {
     // ADPCM-B rate high
     {
         let adpcm_data = create_y8950_adpcm_data();
-        let mut chip = Y8950::new(RecordingCallbacksY8950::with_adpcm_data(adpcm_data));
+        let mut chip = setup_y8950_with_adpcm_data(adpcm_data);
         chip.reset();
         write_reg_y8950(&mut chip, 0x09, 0x20);
         write_reg_y8950(&mut chip, 0x0A, 0x00);
@@ -1320,7 +1320,7 @@ fn gen_y8950_adpcm(dir: &str) {
     // ADPCM-B short sample
     {
         let adpcm_data = create_y8950_adpcm_data();
-        let mut chip = Y8950::new(RecordingCallbacksY8950::with_adpcm_data(adpcm_data));
+        let mut chip = setup_y8950_with_adpcm_data(adpcm_data);
         chip.reset();
         write_reg_y8950(&mut chip, 0x09, 0x20); // start=0x20
         write_reg_y8950(&mut chip, 0x0A, 0x00);
@@ -1339,9 +1339,9 @@ fn gen_y8950_adpcm(dir: &str) {
 
     // External write
     {
-        let mut chip = Y8950::new(RecordingCallbacksY8950::new());
+        let mut chip = Y8950::new();
         chip.reset();
-        chip.callbacks().take_events();
+        chip.take_signals();
         write_reg_y8950(&mut chip, 0x07, 0x01); // reset
         write_reg_y8950(&mut chip, 0x08, 0xC0); // pan L+R
         write_reg_y8950(&mut chip, 0x09, 0x00); // start low
@@ -1705,7 +1705,7 @@ fn gen_ymf262_fm(dir: &str) {
 
     // NEW mode off vs on
     {
-        let mut chip = Ymf262::new(ymfm_oxide::NoOplCallbacks);
+        let mut chip = Ymf262::new();
         chip.reset();
         // Do NOT enable NEW mode
         setup_opl3_simple_tone(&mut chip, 0, 1, 0);

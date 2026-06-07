@@ -54,16 +54,11 @@ pub struct YmfmOutput3 {
     pub data: [i32; 3],
 }
 
-/// Access class for external memory reads/writes (ADPCM ROM/RAM).
-#[repr(u8)]
+/// Timer change requested by a YMFM chip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum YmfmAccessClass {
-    /// General I/O access.
-    Io = 0,
-    /// ADPCM-A rhythm ROM access.
-    AdpcmA = 1,
-    /// ADPCM-B sample RAM access.
-    AdpcmB = 2,
-    /// PCM access.
-    Pcm = 3,
+pub enum YmfmTimerUpdate {
+    /// Cancel the timer.
+    Cancel,
+    /// Schedule the timer after the given number of chip input clocks.
+    Schedule(u32),
 }

@@ -1,5 +1,6 @@
 use crate::{
     helpers::{bit, bitfield, clamp},
+    sys::YmfmTimerUpdate,
     tables::{attenuation_increment, attenuation_to_volume},
 };
 
@@ -949,11 +950,6 @@ static S_ALGORITHM_OPS: [u32; 12] = [
     algorithm_encode(0, 2, 0, 1, 0, 1), // 11: (O1 + (O2->O3) + O4) -> out (O1+O3+O4) [unique]
 ];
 
-pub(crate) trait FmEngineCallbacks {
-    fn ymfm_set_timer(&self, tnum: u32, duration_in_clocks: i32);
-    fn ymfm_update_irq(&self, asserted: bool);
-}
-
 // A set of operators and channels which together form a Yamaha FM core;
 // chips that implement other engines (ADPCM, wavetable, etc) take this
 // output and combine it with the others externally.
@@ -965,6 +961,8 @@ pub(crate) struct FmEngine<R: FmRegisters> {
     irq_mask: u8,       // mask of which bits signal IRQs
     irq_state: u8,
     timer_running: [u8; 2],
+    timer_updates: [Option<YmfmTimerUpdate>; 2],
+    irq_update: Option<bool>,
     total_clocks: u8,       // low 8 bits of the total number of clocks processed
     active_channels: u32,   // mask of active channels (computed by prepare)
     modified_channels: u32, // mask of channels that have been modified
@@ -993,6 +991,8 @@ impl<R: FmRegisters> FmEngine<R> {
             irq_mask: R::STATUS_TIMERA | R::STATUS_TIMERB,
             irq_state: 0,
             timer_running: [0, 0],
+            timer_updates: [None, None],
+            irq_update: None,
             total_clocks: 0,
             active_channels: R::ALL_CHANNELS,
             modified_channels: R::ALL_CHANNELS,
@@ -1005,12 +1005,12 @@ impl<R: FmRegisters> FmEngine<R> {
         engine
     }
 
-    pub(crate) fn reset<C: FmEngineCallbacks>(&mut self, callbacks: &C) {
-        self.set_reset_status(0, 0xFF, callbacks);
+    pub(crate) fn reset(&mut self) {
+        self.set_reset_status(0, 0xFF);
         self.regs.reset();
         // Explicitly write to the mode register since it has side-effects.
         // QUESTION: old cores initialize this to 0x30 -- who is right?
-        self.write(R::REG_MODE as u16, 0, callbacks);
+        self.write(R::REG_MODE as u16, 0);
 
         for chan in &mut self.channels {
             chan.reset();
@@ -1020,7 +1020,7 @@ impl<R: FmRegisters> FmEngine<R> {
         }
     }
 
-    pub(crate) fn clock<C: FmEngineCallbacks>(&mut self, chanmask: u32, _callbacks: &C) -> u32 {
+    pub(crate) fn clock(&mut self, chanmask: u32) -> u32 {
         self.total_clocks = self.total_clocks.wrapping_add(1);
 
         // If something was modified, prepare.
@@ -1172,9 +1172,9 @@ impl<R: FmRegisters> FmEngine<R> {
         }
     }
 
-    pub(crate) fn write<C: FmEngineCallbacks>(&mut self, regnum: u16, data: u8, callbacks: &C) {
+    pub(crate) fn write(&mut self, regnum: u16, data: u8) {
         if regnum as u32 == R::REG_MODE {
-            self.engine_mode_write(data, callbacks);
+            self.engine_mode_write(data);
             return;
         }
 
@@ -1220,20 +1220,15 @@ impl<R: FmRegisters> FmEngine<R> {
         self.status & !R::STATUS_BUSY & !self.regs.status_mask()
     }
 
-    pub(crate) fn set_reset_status<C: FmEngineCallbacks>(
-        &mut self,
-        set: u8,
-        reset: u8,
-        callbacks: &C,
-    ) -> u8 {
+    pub(crate) fn set_reset_status(&mut self, set: u8, reset: u8) -> u8 {
         self.status = (self.status | set) & !(reset | R::STATUS_BUSY);
-        self.engine_check_interrupts(callbacks);
+        self.engine_check_interrupts();
         self.status & !self.regs.status_mask()
     }
 
-    pub(crate) fn set_irq_mask<C: FmEngineCallbacks>(&mut self, mask: u8, callbacks: &C) {
+    pub(crate) fn set_irq_mask(&mut self, mask: u8) {
         self.irq_mask = mask;
-        self.engine_check_interrupts(callbacks);
+        self.engine_check_interrupts();
     }
 
     pub(crate) fn clock_prescale(&self) -> u32 {
@@ -1255,13 +1250,21 @@ impl<R: FmRegisters> FmEngine<R> {
         }
     }
 
-    pub(crate) fn update_timer<C: FmEngineCallbacks>(
-        &mut self,
-        tnum: u32,
-        enable: u32,
-        delta_clocks: i32,
-        callbacks: &C,
-    ) {
+    pub(crate) fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        self.timer_updates
+            .get_mut(timer_id as usize)
+            .and_then(Option::take)
+    }
+
+    pub(crate) fn take_irq_update(&mut self) -> Option<bool> {
+        self.irq_update.take()
+    }
+
+    pub(crate) fn irq_asserted(&self) -> bool {
+        self.irq_state != 0
+    }
+
+    pub(crate) fn update_timer(&mut self, tnum: u32, enable: u32, delta_clocks: i32) {
         let idx = tnum as usize;
         if enable != 0 && self.timer_running[idx] == 0 {
             let period = if tnum == 0 {
@@ -1272,26 +1275,25 @@ impl<R: FmRegisters> FmEngine<R> {
 
             let period = (period + delta_clocks) as u32;
 
-            callbacks.ymfm_set_timer(
-                tnum,
+            self.timer_updates[idx] = Some(YmfmTimerUpdate::Schedule(
                 period
                     .wrapping_mul(R::OPERATORS as u32)
-                    .wrapping_mul(self.clock_prescale as u32) as i32,
-            );
+                    .wrapping_mul(self.clock_prescale as u32),
+            ));
             self.timer_running[idx] = 1;
         } else if enable == 0 {
-            callbacks.ymfm_set_timer(tnum, -1);
+            self.timer_updates[idx] = Some(YmfmTimerUpdate::Cancel);
             self.timer_running[idx] = 0;
         }
     }
 
-    pub(crate) fn engine_timer_expired<C: FmEngineCallbacks>(&mut self, tnum: u32, callbacks: &C) {
+    pub(crate) fn engine_timer_expired(&mut self, tnum: u32) {
         debug_assert!(tnum == 0 || tnum == 1);
 
         if tnum == 0 && self.regs.enable_timer_a() != 0 {
-            self.set_reset_status(R::STATUS_TIMERA, 0, callbacks);
+            self.set_reset_status(R::STATUS_TIMERA, 0);
         } else if tnum == 1 && self.regs.enable_timer_b() != 0 {
-            self.set_reset_status(R::STATUS_TIMERB, 0, callbacks);
+            self.set_reset_status(R::STATUS_TIMERB, 0);
         }
 
         // If timer A fired in CSM mode, trigger CSM on all relevant channels.
@@ -1310,10 +1312,10 @@ impl<R: FmRegisters> FmEngine<R> {
         }
 
         self.timer_running[tnum as usize] = 0;
-        self.update_timer(tnum, 1, 0, callbacks);
+        self.update_timer(tnum, 1, 0);
     }
 
-    pub(crate) fn engine_check_interrupts<C: FmEngineCallbacks>(&mut self, callbacks: &C) {
+    pub(crate) fn engine_check_interrupts(&mut self) {
         let old_state = self.irq_state;
         self.irq_state = if (self.status & self.irq_mask & !self.regs.status_mask()) != 0 {
             1
@@ -1328,11 +1330,11 @@ impl<R: FmRegisters> FmEngine<R> {
         }
 
         if old_state != self.irq_state {
-            callbacks.ymfm_update_irq(self.irq_state != 0);
+            self.irq_update = Some(self.irq_state != 0);
         }
     }
 
-    pub(crate) fn engine_mode_write<C: FmEngineCallbacks>(&mut self, data: u8, callbacks: &C) {
+    pub(crate) fn engine_mode_write(&mut self, data: u8) {
         self.modified_channels = R::ALL_CHANNELS;
 
         let mut dummy1 = 0u32;
@@ -1343,7 +1345,7 @@ impl<R: FmRegisters> FmEngine<R> {
         // QUESTION: should this maybe just reset the IRQ bit and not all the bits?
         //   That is, check_interrupts would only set, this would only clear?
         if self.regs.irq_reset() != 0 {
-            self.set_reset_status(0, 0x78, callbacks);
+            self.set_reset_status(0, 0x78);
         } else {
             let mut reset_mask: u8 = 0;
             if self.regs.reset_timer_b() != 0 {
@@ -1352,14 +1354,14 @@ impl<R: FmRegisters> FmEngine<R> {
             if self.regs.reset_timer_a() != 0 {
                 reset_mask |= R::STATUS_TIMERA;
             }
-            self.set_reset_status(0, reset_mask, callbacks);
+            self.set_reset_status(0, reset_mask);
 
             // Load timers; note that timer B gets a small negative adjustment because
             // the *16 multiplier is free-running, so the first tick of the clock
             // is a bit shorter.
             let delta = -((self.total_clocks & 15) as i32);
-            self.update_timer(1, self.regs.load_timer_b(), delta, callbacks);
-            self.update_timer(0, self.regs.load_timer_a(), 0, callbacks);
+            self.update_timer(1, self.regs.load_timer_b(), delta);
+            self.update_timer(0, self.regs.load_timer_a(), 0);
         }
     }
 }

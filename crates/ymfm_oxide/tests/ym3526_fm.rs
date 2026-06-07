@@ -257,7 +257,7 @@ fn rhythm_individual_instruments() {
 fn csm_mode_timer_a_triggers_keyon() {
     use ymfm_oxide::Ym3526;
 
-    let mut chip = Ym3526::new(common::callbacks::RecordingCallbacksOpl::new());
+    let mut chip = Ym3526::new();
     chip.reset();
     setup_opl_simple_tone(&mut chip, 0, 1, 0);
     write_reg_opl(&mut chip, 0x02, 0xFF);

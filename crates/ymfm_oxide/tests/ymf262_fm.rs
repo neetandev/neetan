@@ -222,7 +222,7 @@ fn frequency_zero() {
 fn new_mode_off_vs_on() {
     // NEW mode off
     {
-        let mut chip = ymfm_oxide::Ymf262::new(ymfm_oxide::NoOplCallbacks);
+        let mut chip = ymfm_oxide::Ymf262::new();
         chip.reset();
         setup_opl3_simple_tone(&mut chip, 0, 1, 0);
         key_on_opl3(&mut chip, 0);
