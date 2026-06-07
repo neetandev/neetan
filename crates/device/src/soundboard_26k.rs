@@ -416,8 +416,8 @@ impl Soundboard26k {
                 self.resample_input.resize(total_native, 0.0);
             }
 
-            const FM_SCALE: f32 = 1.25 / 32768.0;
-            const SSG_SCALE: f32 = 1.0 / 32768.0;
+            const FM_SCALE: f32 = 1.0 / 32768.0;
+            const SSG_SCALE: f32 = (1.0 / 3.0) / 32768.0;
 
             for i in 0..pending_count {
                 let s = &self.pending_native[i];
