@@ -873,12 +873,12 @@ impl AtapiState {
         let Some(cdrom) = cdrom else {
             return self.cmd_error(SENSE_NOT_READY, ASC_MEDIUM_NOT_PRESENT, ASCQ_NO_QUALIFIER);
         };
-        let start_m = u32::from(self.packet[3]);
-        let start_s = u32::from(self.packet[4]);
-        let start_f = u32::from(self.packet[5]);
-        let end_m = u32::from(self.packet[6]);
-        let end_s = u32::from(self.packet[7]);
-        let end_f = u32::from(self.packet[8]);
+        let start_m = decode_msf_byte(self.packet[3], self.bcd_msf_mode);
+        let start_s = decode_msf_byte(self.packet[4], self.bcd_msf_mode);
+        let start_f = decode_msf_byte(self.packet[5], self.bcd_msf_mode);
+        let end_m = decode_msf_byte(self.packet[6], self.bcd_msf_mode);
+        let end_s = decode_msf_byte(self.packet[7], self.bcd_msf_mode);
+        let end_f = decode_msf_byte(self.packet[8], self.bcd_msf_mode);
         let start_lba = msf_to_lba(start_m, start_s, start_f);
         let end_lba = msf_to_lba(end_m, end_s, end_f);
         let sector_count = end_lba.saturating_sub(start_lba);
@@ -1072,25 +1072,12 @@ impl AtapiState {
             return self.cmd_error(SENSE_NOT_READY, ASC_MEDIUM_NOT_PRESENT, ASCQ_NO_QUALIFIER);
         };
 
-        let (start_m, start_s, start_f, end_m, end_s, end_f) = if self.bcd_msf_mode {
-            (
-                u32::from(bcd_to_hex(self.packet[3])),
-                u32::from(bcd_to_hex(self.packet[4])),
-                u32::from(bcd_to_hex(self.packet[5])),
-                u32::from(bcd_to_hex(self.packet[6])),
-                u32::from(bcd_to_hex(self.packet[7])),
-                u32::from(bcd_to_hex(self.packet[8])),
-            )
-        } else {
-            (
-                u32::from(self.packet[3]),
-                u32::from(self.packet[4]),
-                u32::from(self.packet[5]),
-                u32::from(self.packet[6]),
-                u32::from(self.packet[7]),
-                u32::from(self.packet[8]),
-            )
-        };
+        let start_m = decode_msf_byte(self.packet[3], self.bcd_msf_mode);
+        let start_s = decode_msf_byte(self.packet[4], self.bcd_msf_mode);
+        let start_f = decode_msf_byte(self.packet[5], self.bcd_msf_mode);
+        let end_m = decode_msf_byte(self.packet[6], self.bcd_msf_mode);
+        let end_s = decode_msf_byte(self.packet[7], self.bcd_msf_mode);
+        let end_f = decode_msf_byte(self.packet[8], self.bcd_msf_mode);
         let flags = self.packet[9];
 
         let start_lba = msf_to_lba(start_m, start_s, start_f);
@@ -1345,6 +1332,14 @@ fn hex_to_bcd(val: u8) -> u8 {
 /// Converts a BCD (Binary-Coded Decimal) value to binary.
 fn bcd_to_hex(val: u8) -> u8 {
     (val >> 4) * 10 + (val & 0x0F)
+}
+
+fn decode_msf_byte(value: u8, bcd: bool) -> u32 {
+    if bcd {
+        u32::from(bcd_to_hex(value))
+    } else {
+        u32::from(value)
+    }
 }
 
 /// Converts an LBA to MSF (minute, second, frame).
@@ -2545,6 +2540,32 @@ mod tests {
         assert!(!has_data);
         assert!(!is_error);
         assert_eq!(cd_audio.state(), CdAudioState::Playing);
+    }
+
+    #[test]
+    fn play_audio_msf_bcd_mode_decodes_packet_addresses() {
+        let mut state = AtapiState::new();
+        state.media_loaded = true;
+        state.bcd_msf_mode = true;
+        let cue = r#"FILE "test.bin" BINARY
+  TRACK 01 AUDIO
+    INDEX 01 00:00:00
+"#;
+        let bin_data = vec![0xAAu8; 2352 * 1400];
+        let cdrom = CdImage::from_cue(cue, bin_data).unwrap();
+        let mut cd_audio = CdAudioPlayer::new(44100);
+
+        // PLAY AUDIO MSF in NEC BCD mode:
+        // start 0:12:34 (LBA 784), end 0:12:35 (LBA 785).
+        state.packet = [0x47, 0, 0, 0x00, 0x12, 0x34, 0x00, 0x12, 0x35, 0, 0, 0];
+        let (has_data, is_error) = state.cmd_play_audio_msf(Some(&cdrom), &mut cd_audio);
+        assert!(!has_data);
+        assert!(!is_error);
+        assert_eq!(cd_audio.state(), CdAudioState::Playing);
+
+        let (_, start_lba, end_lba) = cd_audio.current_position();
+        assert_eq!(start_lba, 784);
+        assert_eq!(end_lba, 785);
     }
 
     #[test]

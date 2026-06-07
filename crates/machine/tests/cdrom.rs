@@ -3,7 +3,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use common::{Bus, CpuMode, Machine, MachineModel};
+use common::{Bus, CdAudioState, CpuMode, Machine, MachineModel};
 use device::cdrom::CdImage;
 use machine::{NoTracing, Pc9801Bus};
 
@@ -26,6 +26,13 @@ fn make_multi_track_cdimage() -> CdImage {
     let mut bin_data = vec![0x11u8; 2048 * 150];
     bin_data.extend_from_slice(&vec![0xAAu8; 2352 * 50]);
     CdImage::from_cue(cue, bin_data).expect("multi-track CdImage creation failed")
+}
+
+/// Builds an audio-only CdImage with the given number of raw CD-DA sectors.
+fn make_audio_cdimage(sector_count: u32) -> CdImage {
+    let cue = "FILE \"test.bin\" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n";
+    let bin_data = vec![0xAAu8; sector_count as usize * 2352];
+    CdImage::from_cue(cue, bin_data).expect("audio CdImage creation failed")
 }
 
 /// Creates a PC-9821AS bus (IDE-equipped).
@@ -715,6 +722,33 @@ fn atapi_mode_sense_all_pages_includes_nec() {
         found_pages.contains(&0x2A),
         "all-pages response should include capabilities page 0x2A, found: {found_pages:?}"
     );
+}
+
+#[test]
+fn atapi_play_audio_msf_uses_nec_bcd_mode() {
+    let mut bus = make_ide_bus();
+    bus.insert_cdrom(make_audio_cdimage(1400));
+
+    select_ide_channel(&mut bus, 1);
+    acknowledge_media_change(&mut bus);
+
+    // MODE SENSE(10) page 0x0F enables the NEC CD-ROM BCD MSF address mode.
+    send_atapi_packet(&mut bus, &[0x5A, 0, 0x0F, 0, 0, 0, 0, 0x01, 0x00, 0, 0, 0]);
+    read_atapi_data(&mut bus, 13);
+
+    // PLAY AUDIO MSF: start 0:12:34, end 0:12:35, encoded as NEC BCD.
+    // The correct LBA range is 784..785. Binary parsing would select 1252..1253.
+    send_atapi_packet(
+        &mut bus,
+        &[0x47, 0, 0, 0x00, 0x12, 0x34, 0x00, 0x12, 0x35, 0, 0, 0],
+    );
+
+    let status = bus
+        .cd_audio_status()
+        .expect("CD audio status should be available after inserting a CD-ROM");
+    assert_eq!(status.state, CdAudioState::Playing);
+    assert_eq!(status.start_lba, 784);
+    assert_eq!(status.end_lba, 785);
 }
 
 #[test]
