@@ -201,6 +201,7 @@ pub enum CdromTrackType {
 }
 
 /// Current audio playback state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CdAudioStatus {
     /// Playback state.
     pub state: CdAudioState,

@@ -16,6 +16,8 @@ const CDROM_DRIVE_INDEX: u8 = 16;
 
 /// Status word: done flag.
 const STATUS_DONE: u16 = 0x0100;
+/// Status word: busy flag.
+const STATUS_BUSY: u16 = 0x0200;
 /// Status word: error flag.
 const STATUS_ERROR: u16 = 0x8000;
 
@@ -122,7 +124,7 @@ impl crate::NeetanDos {
         let transfer_segment = memory.read_word(request_addr + 16) as u32;
         let transfer_addr = (transfer_segment << 4) + transfer_offset;
 
-        let status = match command {
+        let mut status = match command {
             0 => STATUS_DONE, // INIT: no-op for HLE driver.
             3 => self.ioctl_input(memory, cdrom, transfer_addr),
             7 => STATUS_DONE,
@@ -149,6 +151,10 @@ impl crate::NeetanDos {
                 STATUS_DONE | STATUS_ERROR | 0x03
             }
         };
+
+        if cdrom.audio_state().state == CdAudioState::Playing {
+            status |= STATUS_BUSY;
+        }
 
         memory.write_word(request_addr + 3, status);
     }

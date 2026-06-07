@@ -1132,6 +1132,90 @@ fn mscdex_ioctl_device_status() {
 }
 
 #[test]
+fn mscdex_play_audio_sets_busy_status_for_followup_requests() {
+    let mut machine = harness::boot_hle_with_cdrom();
+
+    let base = harness::INJECT_CODE_BASE;
+    let seg = harness::INJECT_CODE_SEGMENT;
+
+    let play_req_off: u16 = 0x0200;
+    let play_req_addr = base + play_req_off as u32;
+    harness::write_bytes(&mut machine.bus, play_req_addr, &[22, 0, 132, 0, 0]);
+    harness::write_bytes(&mut machine.bus, play_req_addr + 5, &[0; 8]);
+    harness::write_bytes(&mut machine.bus, play_req_addr + 13, &[0]);
+    harness::write_bytes(&mut machine.bus, play_req_addr + 14, &150u32.to_le_bytes());
+    harness::write_bytes(&mut machine.bus, play_req_addr + 18, &50u32.to_le_bytes());
+
+    let status_req_off: u16 = 0x0240;
+    let status_req_addr = base + status_req_off as u32;
+    let ctl_off: u16 = 0x0260;
+    let ctl_addr = base + ctl_off as u32;
+    harness::write_bytes(&mut machine.bus, status_req_addr, &[26, 0, 3, 0, 0]);
+    harness::write_bytes(&mut machine.bus, status_req_addr + 5, &[0; 8]);
+    harness::write_bytes(
+        &mut machine.bus,
+        status_req_addr + 14,
+        &[
+            ctl_off as u8,
+            (ctl_off >> 8) as u8,
+            seg as u8,
+            (seg >> 8) as u8,
+        ],
+    );
+    harness::write_bytes(&mut machine.bus, ctl_addr, &[15]);
+    harness::write_bytes(&mut machine.bus, ctl_addr + 1, &[0; 10]);
+
+    let seg_lo = (seg & 0xFF) as u8;
+    let seg_hi = (seg >> 8) as u8;
+    let play_req_lo = (play_req_off & 0xFF) as u8;
+    let play_req_hi = (play_req_off >> 8) as u8;
+    let status_req_lo = (status_req_off & 0xFF) as u8;
+    let status_req_hi = (status_req_off >> 8) as u8;
+    #[rustfmt::skip]
+    let code: Vec<u8> = vec![
+        0xB8, seg_lo, seg_hi,               // MOV AX, seg
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB9, 0x10, 0x00,                   // MOV CX, 16
+        0xBB, play_req_lo, play_req_hi,     // MOV BX, play_req
+        0xB8, 0x10, 0x15,                   // MOV AX, 1510h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA1, 0x03, 0x02,                   // MOV AX, [0203h]
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0xBB, status_req_lo, status_req_hi, // MOV BX, status_req
+        0xB8, 0x10, 0x15,                   // MOV AX, 1510h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA1, 0x43, 0x02,                   // MOV AX, [0243h]
+        0xA3, 0x02, 0x01,                   // MOV [0102h], AX
+        0xA1, 0x61, 0x02,                   // MOV AX, [0261h]
+        0xA3, 0x04, 0x01,                   // MOV [0104h], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, &code, harness::INJECT_BUDGET);
+
+    let play_status = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        play_status & 0x8300,
+        0x0300,
+        "Play Audio request should report done and busy without error, status={play_status:#06X}",
+    );
+
+    let status_status = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        status_status & 0x8300,
+        0x0300,
+        "Audio Status Info request should report busy while playback is active, status={status_status:#06X}",
+    );
+
+    let paused = harness::result_word(&machine.bus, 4);
+    assert_eq!(
+        paused & 0x0001,
+        0,
+        "Audio Status Info should not mark active playback as paused, flags={paused:#06X}",
+    );
+}
+
+#[test]
 fn mscdex_ioctl_audio_disk_info() {
     let mut machine = harness::boot_hle_with_cdrom();
 

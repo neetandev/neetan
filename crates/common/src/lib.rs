@@ -1157,6 +1157,11 @@ pub trait Machine {
     /// last call, at the given `volume` (0.0–1.0).
     fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize;
 
+    /// Returns current CD audio playback state and positions, if available.
+    fn cd_audio_status(&self) -> Option<CdAudioStatus> {
+        None
+    }
+
     /// Returns the font ROM data. Used by the image selector to seed its
     /// own software renderer with the same font ROM the bus is using.
     fn font_rom_data(&self) -> &[u8];

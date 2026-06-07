@@ -687,6 +687,27 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.ide.has_cdrom()
     }
 
+    /// Returns the current CD audio playback state and positions.
+    pub fn cd_audio_status(&self) -> Option<common::CdAudioStatus> {
+        if !self.ide.has_cdrom() {
+            return None;
+        }
+
+        let player = self.ide.cd_audio_player();
+        let (current_lba, start_lba, end_lba) = player.current_position();
+        let state = match player.state() {
+            device::cd_audio::CdAudioState::Stopped => common::CdAudioState::Stopped,
+            device::cd_audio::CdAudioState::Playing => common::CdAudioState::Playing,
+            device::cd_audio::CdAudioState::Paused => common::CdAudioState::Paused,
+        };
+        Some(common::CdAudioStatus {
+            state,
+            current_lba,
+            start_lba,
+            end_lba,
+        })
+    }
+
     /// Attaches a file handle for printer output.
     pub fn attach_printer(&mut self, file: std::fs::File) {
         self.printer.attach(file);
