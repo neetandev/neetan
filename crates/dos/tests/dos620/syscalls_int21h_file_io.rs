@@ -278,6 +278,65 @@ fn open_xmsxxxx0_as_character_device() {
 }
 
 #[test]
+fn ioctl_read_cdrom_control_channel_device_status() {
+    let mut machine = harness::boot_hle_with_cdrom();
+
+    let handle = open_file_ap(&mut machine, b"CD_101\0");
+    let handle_lo = (handle & 0xFF) as u8;
+    let handle_hi = (handle >> 8) as u8;
+    harness::write_bytes(
+        &mut machine.bus,
+        harness::INJECT_CODE_BASE + 0x0200,
+        &[6, 0, 0, 0, 0],
+    );
+
+    #[rustfmt::skip]
+    let code: Vec<u8> = vec![
+        0xBB, handle_lo, handle_hi,          // MOV BX, handle
+        0xB8, 0x02, 0x44,                   // MOV AX, 4402h
+        0xB9, 0x05, 0x00,                   // MOV CX, 5
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0102h], AX
+        0xA1, 0x01, 0x02,                   // MOV AX, [0201h]
+        0xA3, 0x04, 0x01,                   // MOV [0104h], AX
+        0xA1, 0x03, 0x02,                   // MOV AX, [0203h]
+        0xA3, 0x06, 0x01,                   // MOV [0106h], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(
+        &mut machine,
+        &code,
+        harness::INJECT_BUDGET_DISK_IO,
+    );
+
+    let bytes_read = harness::result_word(&machine.bus, 0);
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "CD-ROM IOCTL read control channel should succeed, flags={flags:#06X}",
+    );
+    assert_eq!(bytes_read, 5, "IOCTL should report 5 bytes read");
+
+    let flags_lo = harness::result_word(&machine.bus, 4);
+    let flags_hi = harness::result_word(&machine.bus, 6);
+    let device_status = u32::from(flags_lo) | (u32::from(flags_hi) << 16);
+    assert!(
+        device_status & 0x10 != 0,
+        "Device status should report audio playback support, flags={device_status:#06X}",
+    );
+    assert!(
+        device_status & 0x800 != 0,
+        "Device status should report loaded media, flags={device_status:#06X}",
+    );
+}
+
+#[test]
 fn open_con_as_character_device() {
     let mut machine = harness::boot_hle_with_floppy();
 
