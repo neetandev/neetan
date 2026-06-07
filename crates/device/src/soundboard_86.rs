@@ -1,10 +1,8 @@
 //! PC-9801-86 sound board: YM2608 (OPNA) stereo FM + SSG + ADPCM + PCM86 DAC.
 
-use std::cell::{Cell, RefCell};
-
 use common::{EventKind, MachineModel};
 use resampler::{Attenuation, Latency, ResamplerFir};
-use ymfm_oxide::{Ym2608, Ym2608Callbacks, YmfmAccessClass, YmfmOpnFidelity, YmfmOutput3};
+use ymfm_oxide::{Ym2608, YmfmOpnFidelity, YmfmOutput3, YmfmTimerUpdate};
 
 use crate::soundboard_26k::FmSampleRemainder;
 
@@ -58,7 +56,8 @@ const REAMPLER_LATENCY: Latency = Latency::Sample64;
 /// Algorithmically generated YM2608 ADPCM-A rhythm ROM (8 KB).
 /// Functional equivalent of the original chip samples with completely different
 /// binary content, produced by an evolutionary algorithm.
-static EVOLVED_RHYTHM_ROM: &[u8; 8192] = include_bytes!("../../../utils/rhythm/rhythm.bin");
+static EVOLVED_RHYTHM_ROM: &[u8; RHYTHM_ROM_SIZE] =
+    include_bytes!("../../../utils/rhythm/rhythm.bin");
 
 /// Snapshot of the PC-9801-86 sound board state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,102 +195,6 @@ impl Default for Pcm86State {
             dac_clock_remainder: FmSampleRemainder::default(),
             wavestar_seq_index: 0,
             wavestar_value: 0xFF,
-        }
-    }
-}
-
-enum PendingChipAction {
-    SetTimer {
-        timer_id: u32,
-        duration_in_clocks: i32,
-    },
-    UpdateIrq {
-        asserted: bool,
-    },
-}
-
-struct ChipBridge {
-    current_cycle: Cell<u64>,
-    busy_end_cycle: Cell<u64>,
-    cpu_clock_hz: u32,
-    pending: RefCell<Vec<PendingChipAction>>,
-    rhythm_rom: Box<[u8; RHYTHM_ROM_SIZE]>,
-    adpcm_b_ram: Option<RefCell<Box<[u8; ADPCM_B_RAM_SIZE]>>>,
-}
-
-impl ChipBridge {
-    fn new(cpu_clock_hz: u32, rhythm_rom: Option<&[u8]>, adpcm_ram: bool) -> Self {
-        let mut rom = Box::new([0u8; RHYTHM_ROM_SIZE]);
-        if let Some(data) = rhythm_rom {
-            let len = data.len().min(RHYTHM_ROM_SIZE);
-            rom[..len].copy_from_slice(&data[..len]);
-        }
-        Self {
-            current_cycle: Cell::new(0),
-            busy_end_cycle: Cell::new(0),
-            cpu_clock_hz,
-            pending: RefCell::new(Vec::new()),
-            rhythm_rom: rom,
-            adpcm_b_ram: if adpcm_ram {
-                Some(RefCell::new(Box::new([0u8; ADPCM_B_RAM_SIZE])))
-            } else {
-                None
-            },
-        }
-    }
-}
-
-impl Ym2608Callbacks for ChipBridge {
-    fn set_timer(&self, timer_id: u32, duration_in_clocks: i32) {
-        self.pending.borrow_mut().push(PendingChipAction::SetTimer {
-            timer_id,
-            duration_in_clocks,
-        });
-    }
-
-    fn set_busy_end(&self, clocks: u32) {
-        let cpu_clocks = u64::from(clocks) * u64::from(self.cpu_clock_hz) / u64::from(YM2608_CLOCK);
-        self.busy_end_cycle
-            .set(self.current_cycle.get() + cpu_clocks);
-    }
-
-    fn is_busy(&self) -> bool {
-        self.current_cycle < self.busy_end_cycle
-    }
-
-    fn update_irq(&self, asserted: bool) {
-        self.pending
-            .borrow_mut()
-            .push(PendingChipAction::UpdateIrq { asserted });
-    }
-
-    fn external_read(&self, access_class: YmfmAccessClass, address: u32) -> u8 {
-        match access_class {
-            YmfmAccessClass::AdpcmA => {
-                let addr = address as usize;
-                if addr < RHYTHM_ROM_SIZE {
-                    self.rhythm_rom[addr]
-                } else {
-                    0
-                }
-            }
-            YmfmAccessClass::AdpcmB => match self.adpcm_b_ram {
-                Some(ref ram) => {
-                    let addr = (address as usize) & (ADPCM_B_RAM_SIZE - 1);
-                    ram.borrow()[addr]
-                }
-                None => 0,
-            },
-            _ => 0,
-        }
-    }
-
-    fn external_write(&self, access_class: YmfmAccessClass, address: u32, data: u8) {
-        if access_class == YmfmAccessClass::AdpcmB
-            && let Some(ref ram) = self.adpcm_b_ram
-        {
-            let addr = (address as usize) & (ADPCM_B_RAM_SIZE - 1);
-            ram.borrow_mut()[addr] = data;
         }
     }
 }
@@ -936,8 +839,9 @@ pub enum Soundboard86Action {
 pub struct Soundboard86 {
     /// Current device state (saveable).
     pub state: Soundboard86State,
-    chip: Ym2608<ChipBridge>,
+    chip: Ym2608,
     cpu_clock_hz: u32,
+    chip_action_cycle: u64,
     native_rate: u32,
     native_buffer: Vec<YmfmOutput3>,
     pending_native: Vec<YmfmOutput3>,
@@ -971,10 +875,13 @@ impl Soundboard86 {
         machine_model: MachineModel,
     ) -> Self {
         let rom_data = rhythm_rom.unwrap_or(EVOLVED_RHYTHM_ROM.as_slice());
-        let bridge = ChipBridge::new(cpu_clock_hz, Some(rom_data), adpcm_ram);
-        let mut chip = Ym2608::new(bridge);
+        let mut chip = Ym2608::new();
         chip.reset();
         chip.set_fidelity(FIDELITY);
+        chip.set_adpcm_a_rom(rom_data);
+        if adpcm_ram {
+            chip.set_adpcm_b_ram(vec![0; ADPCM_B_RAM_SIZE]);
+        }
 
         let native_rate = chip.sample_rate(YM2608_CLOCK);
         let resampler = ResamplerFir::new_from_hz(
@@ -993,6 +900,7 @@ impl Soundboard86 {
             },
             chip,
             cpu_clock_hz,
+            chip_action_cycle: 0,
             native_rate,
             native_buffer: vec![YmfmOutput3 { data: [0; 3] }; 4096],
             pending_native: Vec::new(),
@@ -1004,6 +912,18 @@ impl Soundboard86 {
             fm_timer_just_fired: false,
             action_buffer: Vec::new(),
         }
+    }
+
+    fn apply_busy(&mut self, busy_clocks: u32, current_cycle: u64) {
+        if busy_clocks != 0 {
+            let cpu_clocks =
+                u64::from(busy_clocks) * u64::from(self.cpu_clock_hz) / u64::from(YM2608_CLOCK);
+            self.state.busy_end_cycle = current_cycle + cpu_clocks;
+        }
+    }
+
+    fn busy_at(&self, current_cycle: u64) -> bool {
+        current_cycle < self.state.busy_end_cycle
     }
 
     /// Returns the low bank address latch value.
@@ -1062,8 +982,8 @@ impl Soundboard86 {
             return 0xFF;
         }
         self.sync_to_cycle(current_cycle);
-        self.chip.callbacks_mut().current_cycle.set(current_cycle);
-        self.chip.read_status()
+        self.chip_action_cycle = current_cycle;
+        self.chip.read_status(self.busy_at(current_cycle))
     }
 
     /// Reads data from the currently addressed register (port 0x018A read).
@@ -1072,7 +992,7 @@ impl Soundboard86 {
             return 0xFF;
         }
         self.sync_to_cycle(current_cycle);
-        self.chip.callbacks_mut().current_cycle.set(current_cycle);
+        self.chip_action_cycle = current_cycle;
         let addr = self.state.address_lo;
         if addr == 0x0E {
             let irq_bits = match self.state.irq_line {
@@ -1101,8 +1021,8 @@ impl Soundboard86 {
             return 0xFF;
         }
         self.sync_to_cycle(current_cycle);
-        self.chip.callbacks_mut().current_cycle.set(current_cycle);
-        self.chip.read_status_hi()
+        self.chip_action_cycle = current_cycle;
+        self.chip.read_status_hi(self.busy_at(current_cycle))
     }
 
     /// Reads data from the high bank (port 0x018E read).
@@ -1114,7 +1034,7 @@ impl Soundboard86 {
             return 0xFF;
         }
         self.sync_to_cycle(current_cycle);
-        self.chip.callbacks_mut().current_cycle.set(current_cycle);
+        self.chip_action_cycle = current_cycle;
         let addr = self.state.address_hi;
         if addr == 0x08 || addr == 0x0F {
             self.chip.read_data_hi()
@@ -1130,8 +1050,9 @@ impl Soundboard86 {
         }
         self.state.address_lo = value;
         self.sync_to_cycle(current_cycle);
-        self.chip.callbacks_mut().current_cycle.set(current_cycle);
-        self.chip.write_address(value);
+        self.chip_action_cycle = current_cycle;
+        let busy_clocks = self.chip.write_address(value);
+        self.apply_busy(busy_clocks, current_cycle);
     }
 
     /// Writes data to the currently addressed register in the low bank (port 0x018A write).
@@ -1141,8 +1062,9 @@ impl Soundboard86 {
         }
         self.state.last_written_data = value;
         self.sync_to_cycle(current_cycle);
-        self.chip.callbacks_mut().current_cycle.set(current_cycle);
-        self.chip.write_data(value);
+        self.chip_action_cycle = current_cycle;
+        let busy_clocks = self.chip.write_data(value);
+        self.apply_busy(busy_clocks, current_cycle);
     }
 
     /// Writes the register address latch for the high bank (port 0x018C write).
@@ -1155,8 +1077,9 @@ impl Soundboard86 {
         }
         self.state.address_hi = value;
         self.sync_to_cycle(current_cycle);
-        self.chip.callbacks_mut().current_cycle.set(current_cycle);
-        self.chip.write_address_hi(value);
+        self.chip_action_cycle = current_cycle;
+        let busy_clocks = self.chip.write_address_hi(value);
+        self.apply_busy(busy_clocks, current_cycle);
     }
 
     /// Writes data to the currently addressed register in the high bank (port 0x018E write).
@@ -1168,14 +1091,15 @@ impl Soundboard86 {
             return;
         }
         self.sync_to_cycle(current_cycle);
-        self.chip.callbacks_mut().current_cycle.set(current_cycle);
-        self.chip.write_data_hi(value);
+        self.chip_action_cycle = current_cycle;
+        let busy_clocks = self.chip.write_data_hi(value);
+        self.apply_busy(busy_clocks, current_cycle);
     }
 
     /// Notifies the chip that a timer has expired.
     pub fn timer_expired(&mut self, timer_id: u32, current_cycle: u64) {
         self.sync_to_cycle(current_cycle);
-        self.chip.callbacks_mut().current_cycle.set(current_cycle);
+        self.chip_action_cycle = current_cycle;
         self.chip.timer_expired(timer_id);
         self.fm_timer_just_fired = true;
     }
@@ -1199,7 +1123,7 @@ impl Soundboard86 {
         }
         // Keep the bridge cycle in sync so drain_actions can schedule PCM86
         // timers relative to the correct point in time.
-        self.chip.callbacks_mut().current_cycle.set(current_cycle);
+        self.chip_action_cycle = current_cycle;
         self.pcm86
             .write_port(port, value, current_cycle, cpu_clock_hz, self.sample_rate);
     }
@@ -1212,7 +1136,7 @@ impl Soundboard86 {
     pub fn pcm86_timer_expired(&mut self, current_cycle: u64, cpu_clock_hz: u32) {
         // Keep the bridge cycle in sync so drain_actions can schedule PCM86
         // timers relative to the correct point in time.
-        self.chip.callbacks_mut().current_cycle.set(current_cycle);
+        self.chip_action_cycle = current_cycle;
 
         if self.pcm86.state.reqirq {
             self.pcm86.update_buffer_state(current_cycle, cpu_clock_hz);
@@ -1244,42 +1168,33 @@ impl Soundboard86 {
         self.action_buffer.clear();
 
         let opna_masked = self.opna_masked();
-        let bridge = self.chip.callbacks_mut();
-        self.state.busy_end_cycle = bridge.busy_end_cycle.get();
-        let current_cycle = bridge.current_cycle.get();
-        let cpu_clock_hz = bridge.cpu_clock_hz;
+        let current_cycle = self.chip_action_cycle;
+        let cpu_clock_hz = self.cpu_clock_hz;
 
         // Snapshot previous merged IRQ state before processing updates.
         let was_merged = (self.state.irq_asserted && !opna_masked) || self.state.pcm86_irq_asserted;
 
-        for pending in bridge.pending.borrow_mut().drain(..) {
-            match pending {
-                PendingChipAction::SetTimer {
-                    timer_id,
-                    duration_in_clocks,
-                } => {
-                    let kind = if timer_id == 0 {
-                        EventKind::FmTimerA
-                    } else {
-                        EventKind::FmTimerB
-                    };
-                    if duration_in_clocks < 0 {
-                        self.action_buffer
-                            .push(Soundboard86Action::CancelTimer { kind });
-                    } else {
-                        let cpu_cycles = u64::from(duration_in_clocks as u32)
-                            * u64::from(cpu_clock_hz)
-                            / u64::from(YM2608_CLOCK);
-                        self.action_buffer.push(Soundboard86Action::ScheduleTimer {
-                            kind,
-                            fire_cycle: current_cycle + cpu_cycles,
-                        });
-                    }
-                }
-                PendingChipAction::UpdateIrq { asserted } => {
-                    self.state.irq_asserted = asserted;
+        for (timer_id, kind) in [(0, EventKind::FmTimerA), (1, EventKind::FmTimerB)] {
+            let Some(update) = self.chip.take_timer_update(timer_id) else {
+                continue;
+            };
+            match update {
+                YmfmTimerUpdate::Cancel => self
+                    .action_buffer
+                    .push(Soundboard86Action::CancelTimer { kind }),
+                YmfmTimerUpdate::Schedule(duration_in_clocks) => {
+                    let cpu_cycles = u64::from(duration_in_clocks) * u64::from(cpu_clock_hz)
+                        / u64::from(YM2608_CLOCK);
+                    self.action_buffer.push(Soundboard86Action::ScheduleTimer {
+                        kind,
+                        fire_cycle: current_cycle + cpu_cycles,
+                    });
                 }
             }
+        }
+
+        if let Some(asserted) = self.chip.take_irq_update() {
+            self.state.irq_asserted = asserted;
         }
 
         // Process PCM86 IRQ changes.
@@ -1492,12 +1407,15 @@ impl Soundboard86 {
             .resize(self.pcm86.pcm_resampler.buffer_size_output(), 0.0);
         // TODO: Save/restore ymfm internal state
         let rom_data = rhythm_rom.unwrap_or(EVOLVED_RHYTHM_ROM.as_slice());
-        let bridge = ChipBridge::new(cpu_clock_hz, Some(rom_data), saved.adpcm_ram);
-        bridge.busy_end_cycle.set(self.state.busy_end_cycle);
-        bridge.current_cycle.set(current_cycle);
-        self.chip = Ym2608::new(bridge);
+        self.chip_action_cycle = current_cycle;
+        self.cpu_clock_hz = cpu_clock_hz;
+        self.chip = Ym2608::new();
         self.chip.reset();
         self.chip.set_fidelity(FIDELITY);
+        self.chip.set_adpcm_a_rom(rom_data);
+        if saved.adpcm_ram {
+            self.chip.set_adpcm_b_ram(vec![0; ADPCM_B_RAM_SIZE]);
+        }
         self.native_rate = self.chip.sample_rate(YM2608_CLOCK);
         self.resampler = ResamplerFir::new_from_hz(
             2,
@@ -2508,7 +2426,7 @@ mod tests {
         sb.pcm86.state.data_write_irq_wait = 0;
         sb.pcm86.state.vir_buf = 0; // below threshold
         sb.pcm86.state.irq_flag = false;
-        sb.chip.callbacks_mut().current_cycle.set(1000);
+        sb.chip_action_cycle = 1000;
 
         // Simulate FM timer fire.
         sb.fm_timer_just_fired = true;
@@ -2533,7 +2451,7 @@ mod tests {
         sb.pcm86.state.data_write_irq_wait = 0;
         sb.pcm86.state.vir_buf = 0;
         sb.pcm86.state.irq_flag = false;
-        sb.chip.callbacks_mut().current_cycle.set(1000);
+        sb.chip_action_cycle = 1000;
 
         sb.fm_timer_just_fired = true;
 

@@ -1,24 +1,24 @@
 mod common;
 
-use common::{callbacks::*, harness::*};
+use common::{harness::*, signals::*};
 use ymfm_oxide::Ym2203;
 
 #[test]
 fn timer_a_configuration() {
-    let mut chip = Ym2203::new(RecordingCallbacks2203::new());
+    let mut chip = Ym2203::new();
     chip.reset();
-    chip.callbacks().take_events();
+    chip.take_signals();
 
     // Timer A value = 1023 (0x3FF): regs 0x24 (high 8 bits), 0x25 (low 2 bits)
     write_reg(&mut chip, 0x24, 0xFF); // High 8 bits = 0xFF
     write_reg(&mut chip, 0x25, 0x03); // Low 2 bits = 0x03 -> total = 1023
     write_reg(&mut chip, 0x27, 0x05); // Enable Timer A (bit 0) + Load Timer A (bit 2)
 
-    let events = chip.callbacks().take_events();
+    let events = chip.take_signals();
     let timer_events: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            CallbackEvent::SetTimer {
+            SignalEvent::SetTimer {
                 timer_id,
                 duration_in_clocks,
             } => Some((*timer_id, *duration_in_clocks)),
@@ -41,17 +41,17 @@ fn timer_a_configuration() {
 
 #[test]
 fn timer_b_configuration() {
-    let mut chip = Ym2203::new(RecordingCallbacks2203::new());
+    let mut chip = Ym2203::new();
     chip.reset();
-    chip.callbacks().take_events();
+    chip.take_signals();
 
     // Timer B value = 128
     write_reg(&mut chip, 0x26, 0x80);
     write_reg(&mut chip, 0x27, 0x0A); // Enable Timer B (bit 1) + Load Timer B (bit 3)
 
-    let events = chip.callbacks().take_events();
+    let events = chip.take_signals();
     let timer_b = events.iter().find_map(|e| match e {
-        CallbackEvent::SetTimer {
+        SignalEvent::SetTimer {
             timer_id: 1,
             duration_in_clocks,
         } => Some(*duration_in_clocks),
@@ -63,7 +63,7 @@ fn timer_b_configuration() {
 
 #[test]
 fn timer_a_expiry_sets_status_flag() {
-    let mut chip = Ym2203::new(RecordingCallbacks2203::new());
+    let mut chip = Ym2203::new();
     chip.reset();
 
     // Enable Timer A
@@ -72,7 +72,7 @@ fn timer_a_expiry_sets_status_flag() {
     write_reg(&mut chip, 0x27, 0x05);
 
     // Status before expiry: Timer A flag (bit 0) should be clear
-    let status_before = chip.read_status();
+    let status_before = chip.read_status(false);
     assert_eq!(
         status_before & 0x01,
         0,
@@ -83,7 +83,7 @@ fn timer_a_expiry_sets_status_flag() {
     chip.timer_expired(0);
 
     // Status after expiry: Timer A flag (bit 0) should be set
-    let status_after = chip.read_status();
+    let status_after = chip.read_status(false);
     assert_eq!(
         status_after & 0x01,
         0x01,
@@ -93,19 +93,19 @@ fn timer_a_expiry_sets_status_flag() {
 
 #[test]
 fn timer_b_expiry_sets_status_flag() {
-    let mut chip = Ym2203::new(RecordingCallbacks2203::new());
+    let mut chip = Ym2203::new();
     chip.reset();
 
     // Enable Timer B
     write_reg(&mut chip, 0x26, 0x80);
     write_reg(&mut chip, 0x27, 0x0A);
 
-    let status_before = chip.read_status();
+    let status_before = chip.read_status(false);
     assert_eq!(status_before & 0x02, 0, "Timer B flag should be clear");
 
     chip.timer_expired(1);
 
-    let status_after = chip.read_status();
+    let status_after = chip.read_status(false);
     assert_eq!(
         status_after & 0x02,
         0x02,
@@ -115,7 +115,7 @@ fn timer_b_expiry_sets_status_flag() {
 
 #[test]
 fn timer_flag_cleared_by_reset_bit() {
-    let mut chip = Ym2203::new(RecordingCallbacks2203::new());
+    let mut chip = Ym2203::new();
     chip.reset();
 
     // Enable and expire Timer A
@@ -125,7 +125,7 @@ fn timer_flag_cleared_by_reset_bit() {
     chip.timer_expired(0);
 
     assert_eq!(
-        chip.read_status() & 0x01,
+        chip.read_status(false) & 0x01,
         0x01,
         "Timer A flag should be set"
     );
@@ -134,7 +134,7 @@ fn timer_flag_cleared_by_reset_bit() {
     write_reg(&mut chip, 0x27, 0x15); // Keep enable (bit 0) + load (bit 2) + reset A (bit 4)
 
     assert_eq!(
-        chip.read_status() & 0x01,
+        chip.read_status(false) & 0x01,
         0x00,
         "Timer A flag should be cleared after reset"
     );
@@ -142,23 +142,23 @@ fn timer_flag_cleared_by_reset_bit() {
 
 #[test]
 fn timer_irq_assert_and_deassert() {
-    let mut chip = Ym2203::new(RecordingCallbacks2203::new());
+    let mut chip = Ym2203::new();
     chip.reset();
-    chip.callbacks().take_events();
+    chip.take_signals();
 
     // Enable Timer A
     write_reg(&mut chip, 0x24, 0xFF);
     write_reg(&mut chip, 0x25, 0x03);
     write_reg(&mut chip, 0x27, 0x05);
-    chip.callbacks().take_events(); // Clear config events
+    chip.take_signals(); // Clear config events
 
     // Expire Timer A
     chip.timer_expired(0);
 
-    let events = chip.callbacks().take_events();
+    let events = chip.take_signals();
     let irq_assert = events
         .iter()
-        .find(|e| matches!(e, CallbackEvent::UpdateIrq { asserted: true }));
+        .find(|e| matches!(e, SignalEvent::UpdateIrq { asserted: true }));
     assert!(
         irq_assert.is_some(),
         "timer expiry should trigger update_irq(true)"
@@ -167,10 +167,10 @@ fn timer_irq_assert_and_deassert() {
     // Reset Timer A flag to deassert IRQ
     write_reg(&mut chip, 0x27, 0x15);
 
-    let events = chip.callbacks().take_events();
+    let events = chip.take_signals();
     let irq_deassert = events
         .iter()
-        .find(|e| matches!(e, CallbackEvent::UpdateIrq { asserted: false }));
+        .find(|e| matches!(e, SignalEvent::UpdateIrq { asserted: false }));
     assert!(
         irq_deassert.is_some(),
         "clearing timer flag should trigger update_irq(false)"
@@ -179,7 +179,7 @@ fn timer_irq_assert_and_deassert() {
 
 #[test]
 fn status_read_does_not_clear_flags() {
-    let mut chip = Ym2203::new(RecordingCallbacks2203::new());
+    let mut chip = Ym2203::new();
     chip.reset();
 
     // Enable and expire Timer A
@@ -188,9 +188,9 @@ fn status_read_does_not_clear_flags() {
     write_reg(&mut chip, 0x27, 0x05);
     chip.timer_expired(0);
 
-    let status1 = chip.read_status();
-    let status2 = chip.read_status();
-    let status3 = chip.read_status();
+    let status1 = chip.read_status(false);
+    let status2 = chip.read_status(false);
+    let status3 = chip.read_status(false);
 
     assert_eq!(
         status1, status2,
@@ -209,7 +209,7 @@ fn status_read_does_not_clear_flags() {
 
 #[test]
 fn both_timers_can_be_active() {
-    let mut chip = Ym2203::new(RecordingCallbacks2203::new());
+    let mut chip = Ym2203::new();
     chip.reset();
 
     // Enable both timers
@@ -222,7 +222,7 @@ fn both_timers_can_be_active() {
     chip.timer_expired(0);
     chip.timer_expired(1);
 
-    let status = chip.read_status();
+    let status = chip.read_status(false);
     assert_eq!(
         status & 0x03,
         0x03,
@@ -233,19 +233,19 @@ fn both_timers_can_be_active() {
 #[test]
 fn timer_a_period_varies_with_value() {
     // Timer A = 0 (shortest period)
-    let mut chip1 = Ym2203::new(RecordingCallbacks2203::new());
+    let mut chip1 = Ym2203::new();
     chip1.reset();
-    chip1.callbacks().take_events();
+    chip1.take_signals();
 
     write_reg(&mut chip1, 0x24, 0x00);
     write_reg(&mut chip1, 0x25, 0x00);
     write_reg(&mut chip1, 0x27, 0x05);
 
-    let events1 = chip1.callbacks().take_events();
+    let events1 = chip1.take_signals();
     let duration1 = events1
         .iter()
         .filter_map(|e| match e {
-            CallbackEvent::SetTimer {
+            SignalEvent::SetTimer {
                 timer_id: 0,
                 duration_in_clocks,
             } if *duration_in_clocks > 0 => Some(*duration_in_clocks),
@@ -254,19 +254,19 @@ fn timer_a_period_varies_with_value() {
         .next_back();
 
     // Timer A = 1023 (longest period)
-    let mut chip2 = Ym2203::new(RecordingCallbacks2203::new());
+    let mut chip2 = Ym2203::new();
     chip2.reset();
-    chip2.callbacks().take_events();
+    chip2.take_signals();
 
     write_reg(&mut chip2, 0x24, 0xFF);
     write_reg(&mut chip2, 0x25, 0x03);
     write_reg(&mut chip2, 0x27, 0x05);
 
-    let events2 = chip2.callbacks().take_events();
+    let events2 = chip2.take_signals();
     let duration2 = events2
         .iter()
         .filter_map(|e| match e {
-            CallbackEvent::SetTimer {
+            SignalEvent::SetTimer {
                 timer_id: 0,
                 duration_in_clocks,
             } if *duration_in_clocks > 0 => Some(*duration_in_clocks),
@@ -281,17 +281,17 @@ fn timer_a_period_varies_with_value() {
             "Timer A=0 ({d1}) should have longer period than Timer A=1023 ({d2})"
         );
     } else {
-        // If we don't get positive durations, just verify we got set_timer calls at all
+        // If we don't get positive durations, just verify we got timer signal updates at all
         assert!(
             events1
                 .iter()
-                .any(|e| matches!(e, CallbackEvent::SetTimer { timer_id: 0, .. })),
+                .any(|e| matches!(e, SignalEvent::SetTimer { timer_id: 0, .. })),
             "should have set_timer call for Timer A=0"
         );
         assert!(
             events2
                 .iter()
-                .any(|e| matches!(e, CallbackEvent::SetTimer { timer_id: 0, .. })),
+                .any(|e| matches!(e, SignalEvent::SetTimer { timer_id: 0, .. })),
             "should have set_timer call for Timer A=1023"
         );
     }

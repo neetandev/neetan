@@ -1,30 +1,30 @@
 use ymfm_oxide::{
-    OplCallbacks, Y8950, Y8950Callbacks, Ym2203, Ym2203Callbacks, Ym2608, Ym2608Callbacks, Ym3526,
-    Ym3812, Ymf262, YmfmOpnFidelity, YmfmOutput1, YmfmOutput3, YmfmOutput4,
+    Y8950, Ym2203, Ym2608, Ym3526, Ym3812, Ymf262, YmfmOpnFidelity, YmfmOutput1, YmfmOutput3,
+    YmfmOutput4,
 };
 
-pub fn write_reg(chip: &mut Ym2203<impl Ym2203Callbacks>, addr: u8, data: u8) {
+pub fn write_reg(chip: &mut Ym2203, addr: u8, data: u8) {
     chip.write_address(addr);
     chip.write_data(data);
 }
 
-pub fn write_reg_2608(chip: &mut Ym2608<impl Ym2608Callbacks>, addr: u8, data: u8) {
+pub fn write_reg_2608(chip: &mut Ym2608, addr: u8, data: u8) {
     chip.write_address(addr);
     chip.write_data(data);
 }
 
-pub fn write_reg_hi(chip: &mut Ym2608<impl Ym2608Callbacks>, addr: u8, data: u8) {
+pub fn write_reg_hi(chip: &mut Ym2608, addr: u8, data: u8) {
     chip.write_address_hi(addr);
     chip.write_data_hi(data);
 }
 
-pub fn generate_4(chip: &mut Ym2203<impl Ym2203Callbacks>, count: usize) -> Vec<[i32; 4]> {
+pub fn generate_4(chip: &mut Ym2203, count: usize) -> Vec<[i32; 4]> {
     let mut output = vec![YmfmOutput4 { data: [0; 4] }; count];
     chip.generate(&mut output);
     output.iter().map(|s| s.data).collect()
 }
 
-pub fn generate_3(chip: &mut Ym2608<impl Ym2608Callbacks>, count: usize) -> Vec<[i32; 3]> {
+pub fn generate_3(chip: &mut Ym2608, count: usize) -> Vec<[i32; 3]> {
     let mut output = vec![YmfmOutput3 { data: [0; 3] }; count];
     chip.generate(&mut output);
     output.iter().map(|s| s.data).collect()
@@ -78,12 +78,7 @@ pub fn print_golden_3(samples: &[[i32; 3]]) {
     println!("]");
 }
 
-pub fn setup_ym2203_simple_tone(
-    chip: &mut Ym2203<impl Ym2203Callbacks>,
-    channel: u8,
-    algorithm: u8,
-    feedback: u8,
-) {
+pub fn setup_ym2203_simple_tone(chip: &mut Ym2203, channel: u8, algorithm: u8, feedback: u8) {
     let fb_algo = (feedback << 3) | (algorithm & 0x07);
     write_reg(chip, 0xB0 + channel, fb_algo);
 
@@ -103,12 +98,7 @@ pub fn setup_ym2203_simple_tone(
     write_reg(chip, 0xA0 + channel, 0x69); // F-num low=0x69
 }
 
-pub fn setup_ym2608_simple_tone(
-    chip: &mut Ym2608<impl Ym2608Callbacks>,
-    channel: u8,
-    algorithm: u8,
-    feedback: u8,
-) {
+pub fn setup_ym2608_simple_tone(chip: &mut Ym2608, channel: u8, algorithm: u8, feedback: u8) {
     let fb_algo = (feedback << 3) | (algorithm & 0x07);
 
     if channel < 3 {
@@ -146,15 +136,15 @@ pub fn setup_ym2608_simple_tone(
     }
 }
 
-pub fn key_on_2203(chip: &mut Ym2203<impl Ym2203Callbacks>, channel: u8) {
+pub fn key_on_2203(chip: &mut Ym2203, channel: u8) {
     write_reg(chip, 0x28, 0xF0 | (channel & 0x03));
 }
 
-pub fn key_off_2203(chip: &mut Ym2203<impl Ym2203Callbacks>, channel: u8) {
+pub fn key_off_2203(chip: &mut Ym2203, channel: u8) {
     write_reg(chip, 0x28, channel & 0x03);
 }
 
-pub fn key_on_2608(chip: &mut Ym2608<impl Ym2608Callbacks>, channel: u8) {
+pub fn key_on_2608(chip: &mut Ym2608, channel: u8) {
     // For YM2608, channel 0-2 = low bank, 3-5 = high bank (encoded as 4-6 in reg 0x28)
     let ch_bits = if channel < 3 {
         channel
@@ -164,7 +154,7 @@ pub fn key_on_2608(chip: &mut Ym2608<impl Ym2608Callbacks>, channel: u8) {
     write_reg_2608(chip, 0x28, 0xF0 | ch_bits);
 }
 
-pub fn key_off_2608(chip: &mut Ym2608<impl Ym2608Callbacks>, channel: u8) {
+pub fn key_off_2608(chip: &mut Ym2608, channel: u8) {
     let ch_bits = if channel < 3 {
         channel
     } else {
@@ -173,15 +163,15 @@ pub fn key_off_2608(chip: &mut Ym2608<impl Ym2608Callbacks>, channel: u8) {
     write_reg_2608(chip, 0x28, ch_bits);
 }
 
-pub fn setup_ym2203(fidelity: YmfmOpnFidelity) -> Ym2203<ymfm_oxide::NoCallbacks> {
-    let mut chip = Ym2203::new(ymfm_oxide::NoCallbacks);
+pub fn setup_ym2203(fidelity: YmfmOpnFidelity) -> Ym2203 {
+    let mut chip = Ym2203::new();
     chip.reset();
     chip.set_fidelity(fidelity);
     chip
 }
 
-pub fn setup_ym2608(fidelity: YmfmOpnFidelity) -> Ym2608<ymfm_oxide::NoCallbacksExt> {
-    let mut chip = Ym2608::new(ymfm_oxide::NoCallbacksExt);
+pub fn setup_ym2608(fidelity: YmfmOpnFidelity) -> Ym2608 {
+    let mut chip = Ym2608::new();
     chip.reset();
     chip.set_fidelity(fidelity);
     // Enable extended 6-channel FM mode (bit 7 of reg 0x29)
@@ -189,7 +179,14 @@ pub fn setup_ym2608(fidelity: YmfmOpnFidelity) -> Ym2608<ymfm_oxide::NoCallbacks
     chip
 }
 
-pub fn add_ssg_bg_2203(chip: &mut Ym2203<impl Ym2203Callbacks>) {
+pub fn setup_ym2608_with_adpcm_data(data: Vec<u8>) -> Ym2608 {
+    let mut chip = Ym2608::new();
+    chip.set_adpcm_a_rom(&data);
+    chip.set_adpcm_b_ram(data);
+    chip
+}
+
+pub fn add_ssg_bg_2203(chip: &mut Ym2203) {
     write_reg(chip, 0x00, 0x10);
     write_reg(chip, 0x01, 0x00);
     write_reg(chip, 0x02, 0x20);
@@ -202,12 +199,12 @@ pub fn add_ssg_bg_2203(chip: &mut Ym2203<impl Ym2203Callbacks>) {
     write_reg(chip, 0x0A, 0x08);
 }
 
-pub fn add_fm_bg_2203(chip: &mut Ym2203<impl Ym2203Callbacks>) {
+pub fn add_fm_bg_2203(chip: &mut Ym2203) {
     setup_ym2203_simple_tone(chip, 2, 7, 0);
     key_on_2203(chip, 2);
 }
 
-pub fn add_ssg_bg_2608(chip: &mut Ym2608<impl Ym2608Callbacks>) {
+pub fn add_ssg_bg_2608(chip: &mut Ym2608) {
     write_reg_2608(chip, 0x00, 0x10);
     write_reg_2608(chip, 0x01, 0x00);
     write_reg_2608(chip, 0x07, 0x3E);
@@ -227,50 +224,50 @@ pub fn create_adpcm_rom() -> Vec<u8> {
 
 // --- OPL helpers ---
 
-pub fn write_reg_opl(chip: &mut Ym3526<impl OplCallbacks>, addr: u8, data: u8) {
+pub fn write_reg_opl(chip: &mut Ym3526, addr: u8, data: u8) {
     chip.write_address(addr);
     chip.write_data(data);
 }
 
-pub fn write_reg_y8950(chip: &mut Y8950<impl Y8950Callbacks>, addr: u8, data: u8) {
+pub fn write_reg_y8950(chip: &mut Y8950, addr: u8, data: u8) {
     chip.write_address(addr);
     chip.write_data(data);
 }
 
-pub fn write_reg_opl2(chip: &mut Ym3812<impl OplCallbacks>, addr: u8, data: u8) {
+pub fn write_reg_opl2(chip: &mut Ym3812, addr: u8, data: u8) {
     chip.write_address(addr);
     chip.write_data(data);
 }
 
-pub fn write_reg_opl3(chip: &mut Ymf262<impl OplCallbacks>, addr: u8, data: u8) {
+pub fn write_reg_opl3(chip: &mut Ymf262, addr: u8, data: u8) {
     chip.write_address(addr);
     chip.write_data(data);
 }
 
-pub fn write_reg_opl3_hi(chip: &mut Ymf262<impl OplCallbacks>, addr: u8, data: u8) {
+pub fn write_reg_opl3_hi(chip: &mut Ymf262, addr: u8, data: u8) {
     chip.write_address_hi(addr);
     chip.write_data(data);
 }
 
-pub fn generate_1_opl(chip: &mut Ym3526<impl OplCallbacks>, count: usize) -> Vec<[i32; 1]> {
+pub fn generate_1_opl(chip: &mut Ym3526, count: usize) -> Vec<[i32; 1]> {
     let mut output = vec![YmfmOutput1 { data: [0] }; count];
     chip.generate(&mut output);
     output.iter().map(|s| s.data).collect()
 }
 
-pub fn generate_1_y8950(chip: &mut Y8950<impl Y8950Callbacks>, count: usize) -> Vec<[i32; 1]> {
+pub fn generate_1_y8950(chip: &mut Y8950, count: usize) -> Vec<[i32; 1]> {
     let mut output = vec![YmfmOutput1 { data: [0] }; count];
     chip.generate(&mut output);
     output.iter().map(|s| s.data).collect()
 }
 
-pub fn generate_1_opl2(chip: &mut Ym3812<impl OplCallbacks>, count: usize) -> Vec<[i32; 1]> {
+pub fn generate_1_opl2(chip: &mut Ym3812, count: usize) -> Vec<[i32; 1]> {
     let mut output = vec![YmfmOutput1 { data: [0] }; count];
     chip.generate(&mut output);
     output.iter().map(|s| s.data).collect()
 }
 
-pub fn generate_4_opl3(chip: &mut Ymf262<impl OplCallbacks>, count: usize) -> Vec<[i32; 4]> {
+pub fn generate_4_opl3(chip: &mut Ymf262, count: usize) -> Vec<[i32; 4]> {
     let mut output = vec![YmfmOutput4 { data: [0; 4] }; count];
     chip.generate(&mut output);
     output.iter().map(|s| s.data).collect()
@@ -305,12 +302,7 @@ pub fn opl_op_offset(channel: u8, op: u8) -> u8 {
     (channel % 3) + 8 * (channel / 3) + 3 * op
 }
 
-pub fn setup_opl_simple_tone(
-    chip: &mut Ym3526<impl OplCallbacks>,
-    channel: u8,
-    algorithm: u8,
-    feedback: u8,
-) {
+pub fn setup_opl_simple_tone(chip: &mut Ym3526, channel: u8, algorithm: u8, feedback: u8) {
     let fb_algo = (feedback << 1) | (algorithm & 0x01);
     write_reg_opl(chip, 0xC0 + channel, fb_algo);
 
@@ -327,12 +319,7 @@ pub fn setup_opl_simple_tone(
     write_reg_opl(chip, 0xB0 + channel, 0x11);
 }
 
-pub fn setup_y8950_simple_tone(
-    chip: &mut Y8950<impl Y8950Callbacks>,
-    channel: u8,
-    algorithm: u8,
-    feedback: u8,
-) {
+pub fn setup_y8950_simple_tone(chip: &mut Y8950, channel: u8, algorithm: u8, feedback: u8) {
     let fb_algo = (feedback << 1) | (algorithm & 0x01);
     write_reg_y8950(chip, 0xC0 + channel, fb_algo);
 
@@ -349,12 +336,7 @@ pub fn setup_y8950_simple_tone(
     write_reg_y8950(chip, 0xB0 + channel, 0x11);
 }
 
-pub fn setup_opl2_simple_tone(
-    chip: &mut Ym3812<impl OplCallbacks>,
-    channel: u8,
-    algorithm: u8,
-    feedback: u8,
-) {
+pub fn setup_opl2_simple_tone(chip: &mut Ym3812, channel: u8, algorithm: u8, feedback: u8) {
     let fb_algo = (feedback << 1) | (algorithm & 0x01);
     write_reg_opl2(chip, 0xC0 + channel, fb_algo);
 
@@ -371,12 +353,7 @@ pub fn setup_opl2_simple_tone(
     write_reg_opl2(chip, 0xB0 + channel, 0x11);
 }
 
-pub fn setup_opl3_simple_tone(
-    chip: &mut Ymf262<impl OplCallbacks>,
-    channel: u8,
-    algorithm: u8,
-    feedback: u8,
-) {
+pub fn setup_opl3_simple_tone(chip: &mut Ymf262, channel: u8, algorithm: u8, feedback: u8) {
     let fb_algo = (feedback << 1) | (algorithm & 0x01) | 0x30; // L+R output
 
     if channel < 9 {
@@ -407,31 +384,31 @@ pub fn setup_opl3_simple_tone(
     }
 }
 
-pub fn key_on_opl(chip: &mut Ym3526<impl OplCallbacks>, channel: u8) {
+pub fn key_on_opl(chip: &mut Ym3526, channel: u8) {
     write_reg_opl(chip, 0xB0 + channel, 0x31);
 }
 
-pub fn key_off_opl(chip: &mut Ym3526<impl OplCallbacks>, channel: u8) {
+pub fn key_off_opl(chip: &mut Ym3526, channel: u8) {
     write_reg_opl(chip, 0xB0 + channel, 0x11);
 }
 
-pub fn key_on_y8950(chip: &mut Y8950<impl Y8950Callbacks>, channel: u8) {
+pub fn key_on_y8950(chip: &mut Y8950, channel: u8) {
     write_reg_y8950(chip, 0xB0 + channel, 0x31);
 }
 
-pub fn key_off_y8950(chip: &mut Y8950<impl Y8950Callbacks>, channel: u8) {
+pub fn key_off_y8950(chip: &mut Y8950, channel: u8) {
     write_reg_y8950(chip, 0xB0 + channel, 0x11);
 }
 
-pub fn key_on_opl2(chip: &mut Ym3812<impl OplCallbacks>, channel: u8) {
+pub fn key_on_opl2(chip: &mut Ym3812, channel: u8) {
     write_reg_opl2(chip, 0xB0 + channel, 0x31);
 }
 
-pub fn key_off_opl2(chip: &mut Ym3812<impl OplCallbacks>, channel: u8) {
+pub fn key_off_opl2(chip: &mut Ym3812, channel: u8) {
     write_reg_opl2(chip, 0xB0 + channel, 0x11);
 }
 
-pub fn key_on_opl3(chip: &mut Ymf262<impl OplCallbacks>, channel: u8) {
+pub fn key_on_opl3(chip: &mut Ymf262, channel: u8) {
     if channel < 9 {
         write_reg_opl3(chip, 0xB0 + channel, 0x31);
     } else {
@@ -439,7 +416,7 @@ pub fn key_on_opl3(chip: &mut Ymf262<impl OplCallbacks>, channel: u8) {
     }
 }
 
-pub fn key_off_opl3(chip: &mut Ymf262<impl OplCallbacks>, channel: u8) {
+pub fn key_off_opl3(chip: &mut Ymf262, channel: u8) {
     if channel < 9 {
         write_reg_opl3(chip, 0xB0 + channel, 0x11);
     } else {
@@ -447,43 +424,47 @@ pub fn key_off_opl3(chip: &mut Ymf262<impl OplCallbacks>, channel: u8) {
     }
 }
 
-pub fn setup_ym3526() -> Ym3526<ymfm_oxide::NoOplCallbacks> {
-    let mut chip = Ym3526::new(ymfm_oxide::NoOplCallbacks);
+pub fn setup_ym3526() -> Ym3526 {
+    let mut chip = Ym3526::new();
     chip.reset();
     chip
 }
 
-pub fn setup_y8950() -> Y8950<ymfm_oxide::NoY8950Callbacks> {
-    let mut chip = Y8950::new(ymfm_oxide::NoY8950Callbacks);
+pub fn setup_y8950() -> Y8950 {
+    let mut chip = Y8950::new();
     chip.reset();
     chip
 }
 
-pub fn setup_ym3812() -> Ym3812<ymfm_oxide::NoOplCallbacks> {
-    let mut chip = Ym3812::new(ymfm_oxide::NoOplCallbacks);
+pub fn setup_y8950_with_adpcm_data(data: Vec<u8>) -> Y8950 {
+    let mut chip = Y8950::new();
+    chip.set_adpcm_memory(data);
+    chip
+}
+
+pub fn setup_ym3812() -> Ym3812 {
+    let mut chip = Ym3812::new();
     chip.reset();
     chip
 }
 
-pub fn setup_ymf262() -> Ymf262<ymfm_oxide::NoOplCallbacks> {
-    let mut chip = Ymf262::new(ymfm_oxide::NoOplCallbacks);
+pub fn setup_ymf262() -> Ymf262 {
+    let mut chip = Ymf262::new();
     chip.reset();
     write_reg_opl3_hi(&mut chip, 0x05, 0x01); // Enable OPL3 NEW mode
     chip
 }
 
-use super::callbacks::AdpcmTestCallbacks;
-
 pub struct AdpcmTester {
-    chip: Ym2608<AdpcmTestCallbacks>,
+    chip: Ym2608,
     output: String,
 }
 
 impl AdpcmTester {
     pub fn new() -> Self {
-        let callbacks = AdpcmTestCallbacks::new();
-        let mut chip = Ym2608::new(callbacks);
+        let mut chip = Ym2608::new();
         chip.reset();
+        chip.set_adpcm_b_ram(vec![0x80; 0x40000]);
         let mut tester = Self {
             chip,
             output: String::new(),
@@ -514,7 +495,7 @@ impl AdpcmTester {
 
     pub fn stat(&mut self) -> &mut Self {
         use std::fmt::Write;
-        let status = self.chip.read_status_hi();
+        let status = self.chip.read_status_hi(false);
         write!(self.output, "S{:02X}    ", status).unwrap();
         self
     }
@@ -543,7 +524,7 @@ impl AdpcmTester {
         for _ in 0..count {
             self.chip.write_address_hi(8);
             self.chip.write_data_hi(data);
-            let stat = self.chip.read_status_hi();
+            let stat = self.chip.read_status_hi(false);
             self.chip.write_address_hi(0x10);
             self.chip.write_data_hi(0x80);
             write!(self.output, "W{:02X}:{:02X} ", data, stat).unwrap();
@@ -557,7 +538,7 @@ impl AdpcmTester {
         for _ in 0..count {
             self.chip.write_address_hi(8);
             let data = self.chip.read_data_hi();
-            let stat = self.chip.read_status_hi();
+            let stat = self.chip.read_status_hi(false);
             self.chip.write_address_hi(0x10);
             self.chip.write_data_hi(0x80);
             write!(self.output, "R{:02X}:{:02X} ", data, stat).unwrap();

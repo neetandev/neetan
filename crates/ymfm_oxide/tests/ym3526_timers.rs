@@ -1,20 +1,20 @@
 mod common;
 
-use common::{callbacks::*, harness::*};
+use common::{harness::*, signals::*};
 use ymfm_oxide::Ym3526;
 
 #[test]
 fn timer_a_configuration() {
-    let mut chip = Ym3526::new(RecordingCallbacksOpl::new());
+    let mut chip = Ym3526::new();
     chip.reset();
-    chip.callbacks().take_events();
+    chip.take_signals();
 
     write_reg_opl(&mut chip, 0x02, 0xFF); // Timer A value
     write_reg_opl(&mut chip, 0x04, 0x01); // Start Timer A
 
-    let events = chip.callbacks().take_events();
+    let events = chip.take_signals();
     let timer_a = events.iter().find_map(|e| match e {
-        CallbackEvent::SetTimer {
+        SignalEvent::SetTimer {
             timer_id: 0,
             duration_in_clocks,
         } => Some(*duration_in_clocks),
@@ -26,16 +26,16 @@ fn timer_a_configuration() {
 
 #[test]
 fn timer_b_configuration() {
-    let mut chip = Ym3526::new(RecordingCallbacksOpl::new());
+    let mut chip = Ym3526::new();
     chip.reset();
-    chip.callbacks().take_events();
+    chip.take_signals();
 
     write_reg_opl(&mut chip, 0x03, 0x80); // Timer B value
     write_reg_opl(&mut chip, 0x04, 0x02); // Start Timer B
 
-    let events = chip.callbacks().take_events();
+    let events = chip.take_signals();
     let timer_b = events.iter().find_map(|e| match e {
-        CallbackEvent::SetTimer {
+        SignalEvent::SetTimer {
             timer_id: 1,
             duration_in_clocks,
         } => Some(*duration_in_clocks),
@@ -47,7 +47,7 @@ fn timer_b_configuration() {
 
 #[test]
 fn timer_a_expiry_sets_status_flag() {
-    let mut chip = Ym3526::new(RecordingCallbacksOpl::new());
+    let mut chip = Ym3526::new();
     chip.reset();
 
     write_reg_opl(&mut chip, 0x02, 0xFF);
@@ -72,7 +72,7 @@ fn timer_a_expiry_sets_status_flag() {
 
 #[test]
 fn timer_b_expiry_sets_status_flag() {
-    let mut chip = Ym3526::new(RecordingCallbacksOpl::new());
+    let mut chip = Ym3526::new();
     chip.reset();
 
     write_reg_opl(&mut chip, 0x03, 0x80);
@@ -93,7 +93,7 @@ fn timer_b_expiry_sets_status_flag() {
 
 #[test]
 fn timer_flag_cleared_by_reset_bit() {
-    let mut chip = Ym3526::new(RecordingCallbacksOpl::new());
+    let mut chip = Ym3526::new();
     chip.reset();
 
     write_reg_opl(&mut chip, 0x02, 0xFF);
@@ -118,20 +118,20 @@ fn timer_flag_cleared_by_reset_bit() {
 
 #[test]
 fn timer_irq_assert_and_deassert() {
-    let mut chip = Ym3526::new(RecordingCallbacksOpl::new());
+    let mut chip = Ym3526::new();
     chip.reset();
-    chip.callbacks().take_events();
+    chip.take_signals();
 
     write_reg_opl(&mut chip, 0x02, 0xFF);
     write_reg_opl(&mut chip, 0x04, 0x01);
-    chip.callbacks().take_events();
+    chip.take_signals();
 
     chip.timer_expired(0);
 
-    let events = chip.callbacks().take_events();
+    let events = chip.take_signals();
     let irq_assert = events
         .iter()
-        .find(|e| matches!(e, CallbackEvent::UpdateIrq { asserted: true }));
+        .find(|e| matches!(e, SignalEvent::UpdateIrq { asserted: true }));
     assert!(
         irq_assert.is_some(),
         "timer expiry should trigger update_irq(true)"
@@ -140,10 +140,10 @@ fn timer_irq_assert_and_deassert() {
     // IRQ reset
     write_reg_opl(&mut chip, 0x04, 0x80);
 
-    let events = chip.callbacks().take_events();
+    let events = chip.take_signals();
     let irq_deassert = events
         .iter()
-        .find(|e| matches!(e, CallbackEvent::UpdateIrq { asserted: false }));
+        .find(|e| matches!(e, SignalEvent::UpdateIrq { asserted: false }));
     assert!(
         irq_deassert.is_some(),
         "IRQ reset should trigger update_irq(false)"
@@ -152,7 +152,7 @@ fn timer_irq_assert_and_deassert() {
 
 #[test]
 fn status_read_does_not_clear_flags() {
-    let mut chip = Ym3526::new(RecordingCallbacksOpl::new());
+    let mut chip = Ym3526::new();
     chip.reset();
 
     write_reg_opl(&mut chip, 0x02, 0xFF);
@@ -180,7 +180,7 @@ fn status_read_does_not_clear_flags() {
 
 #[test]
 fn both_timers_active() {
-    let mut chip = Ym3526::new(RecordingCallbacksOpl::new());
+    let mut chip = Ym3526::new();
     chip.reset();
 
     write_reg_opl(&mut chip, 0x02, 0xFF);
@@ -201,18 +201,18 @@ fn both_timers_active() {
 #[test]
 fn timer_a_period_varies_with_value() {
     // Timer A = 0 (longest period)
-    let mut chip1 = Ym3526::new(RecordingCallbacksOpl::new());
+    let mut chip1 = Ym3526::new();
     chip1.reset();
-    chip1.callbacks().take_events();
+    chip1.take_signals();
 
     write_reg_opl(&mut chip1, 0x02, 0x00);
     write_reg_opl(&mut chip1, 0x04, 0x01);
 
-    let events1 = chip1.callbacks().take_events();
+    let events1 = chip1.take_signals();
     let duration1 = events1
         .iter()
         .filter_map(|e| match e {
-            CallbackEvent::SetTimer {
+            SignalEvent::SetTimer {
                 timer_id: 0,
                 duration_in_clocks,
             } if *duration_in_clocks > 0 => Some(*duration_in_clocks),
@@ -221,18 +221,18 @@ fn timer_a_period_varies_with_value() {
         .next_back();
 
     // Timer A = 255 (shortest period)
-    let mut chip2 = Ym3526::new(RecordingCallbacksOpl::new());
+    let mut chip2 = Ym3526::new();
     chip2.reset();
-    chip2.callbacks().take_events();
+    chip2.take_signals();
 
     write_reg_opl(&mut chip2, 0x02, 0xFF);
     write_reg_opl(&mut chip2, 0x04, 0x01);
 
-    let events2 = chip2.callbacks().take_events();
+    let events2 = chip2.take_signals();
     let duration2 = events2
         .iter()
         .filter_map(|e| match e {
-            CallbackEvent::SetTimer {
+            SignalEvent::SetTimer {
                 timer_id: 0,
                 duration_in_clocks,
             } if *duration_in_clocks > 0 => Some(*duration_in_clocks),
@@ -249,13 +249,13 @@ fn timer_a_period_varies_with_value() {
         assert!(
             events1
                 .iter()
-                .any(|e| matches!(e, CallbackEvent::SetTimer { timer_id: 0, .. })),
+                .any(|e| matches!(e, SignalEvent::SetTimer { timer_id: 0, .. })),
             "should have set_timer call for Timer A=0"
         );
         assert!(
             events2
                 .iter()
-                .any(|e| matches!(e, CallbackEvent::SetTimer { timer_id: 0, .. })),
+                .any(|e| matches!(e, SignalEvent::SetTimer { timer_id: 0, .. })),
             "should have set_timer call for Timer A=255"
         );
     }

@@ -1,12 +1,26 @@
 use crate::{
     helpers::{bit, bitfield, clamp},
-    sys::YmfmAccessClass,
     tables::{ADPCM_A_STEP_INC, ADPCM_A_STEPS, ADPCM_B_STEP_SCALE},
 };
 
-pub(crate) trait AdpcmExternalAccess {
-    fn external_read(&self, access_class: YmfmAccessClass, address: u32) -> u8;
-    fn external_write(&self, access_class: YmfmAccessClass, address: u32, data: u8);
+fn read_memory(memory: &[u8], address: u32) -> u8 {
+    memory
+        .get(address as usize % memory.len())
+        .copied()
+        .unwrap_or(0)
+}
+
+fn read_optional_memory(memory: &Option<&mut [u8]>, address: u32) -> u8 {
+    memory
+        .as_ref()
+        .and_then(|memory| memory.get(address as usize % memory.len()).copied())
+        .unwrap_or(0)
+}
+
+fn write_optional_memory(memory: &mut Option<&mut [u8]>, address: u32, value: u8) {
+    if let Some(memory) = memory.as_deref_mut() {
+        memory[address as usize % memory.len()] = value;
+    }
 }
 
 // ADPCM-A register map:
@@ -131,11 +145,7 @@ impl AdpcmAChannel {
         }
     }
 
-    pub(crate) fn clock(
-        &mut self,
-        regs: &AdpcmARegisters,
-        access: &dyn AdpcmExternalAccess,
-    ) -> bool {
+    pub(crate) fn clock(&mut self, regs: &AdpcmARegisters, memory: &[u8]) -> bool {
         if self.playing == 0 {
             self.accumulator = 0;
             return false;
@@ -159,7 +169,7 @@ impl AdpcmAChannel {
                 return true;
             }
 
-            self.curbyte = access.external_read(YmfmAccessClass::AdpcmA, self.curaddress) as u32;
+            self.curbyte = read_memory(memory, self.curaddress) as u32;
             self.curaddress += 1;
             data = self.curbyte >> 4;
             self.curnibble = 1;
@@ -234,10 +244,11 @@ impl AdpcmAEngine {
         }
     }
 
-    pub(crate) fn clock(&mut self, chanmask: u32, access: &dyn AdpcmExternalAccess) -> u32 {
+    pub(crate) fn clock(&mut self, chanmask: u32, memory: &[u8]) -> u32 {
+        assert!(!memory.is_empty(), "ADPCM-A memory must not be empty");
         let mut result = 0u32;
         for chnum in 0..6 {
-            if bit(chanmask, chnum as i32) != 0 && self.channels[chnum].clock(&self.regs, access) {
+            if bit(chanmask, chnum as i32) != 0 && self.channels[chnum].clock(&self.regs, memory) {
                 result |= 1 << chnum;
             }
         }
@@ -508,11 +519,7 @@ impl AdpcmBChannel {
         result
     }
 
-    fn request_data(
-        &mut self,
-        regs: &mut AdpcmBRegisters,
-        access: &dyn AdpcmExternalAccess,
-    ) -> bool {
+    fn request_data(&mut self, regs: &mut AdpcmBRegisters, memory: &mut Option<&mut [u8]>) -> bool {
         if self.curaddress == Self::LATCH_ADDRESS {
             self.latch_addresses(regs);
         }
@@ -525,14 +532,14 @@ impl AdpcmBChannel {
             return false;
         }
 
-        let data = access.external_read(YmfmAccessClass::AdpcmB, self.curaddress);
+        let data = read_optional_memory(memory, self.curaddress);
         self.append_buffer_byte(data);
         regs.write(0x08, data);
 
         self.advance_address(regs)
     }
 
-    fn read_ram(&mut self, regs: &mut AdpcmBRegisters, access: &dyn AdpcmExternalAccess) -> u8 {
+    fn read_ram(&mut self, regs: &mut AdpcmBRegisters, memory: &mut Option<&mut [u8]>) -> u8 {
         if self.curaddress == Self::LATCH_ADDRESS {
             self.set_reset_status(0, Self::STATUS_INTERNAL_DRAIN);
             while self.nibbles < 4 {
@@ -550,30 +557,25 @@ impl AdpcmBChannel {
                 if regs.repeat() != 0 {
                     self.append_buffer_byte(regs.cpudata() as u8);
                     self.curaddress = regs.start() << self.address_shift(regs);
-                    self.request_data(regs, access);
+                    self.request_data(regs, memory);
                 } else {
                     self.curaddress = Self::LATCH_ADDRESS;
                 }
             }
-        } else if self.request_data(regs, access) {
+        } else if self.request_data(regs, memory) {
             self.set_reset_status(Self::STATUS_INTERNAL_DRAIN, 0);
         }
 
         result
     }
 
-    fn write_ram(
-        &mut self,
-        value: u8,
-        regs: &mut AdpcmBRegisters,
-        access: &dyn AdpcmExternalAccess,
-    ) {
+    fn write_ram(&mut self, value: u8, regs: &mut AdpcmBRegisters, memory: &mut Option<&mut [u8]>) {
         if (self.status & Self::STATUS_INTERNAL_SUPPRESS_WRITE) == 0 {
             if self.curaddress == Self::LATCH_ADDRESS {
                 self.latch_addresses(regs);
             }
 
-            access.external_write(YmfmAccessClass::AdpcmB, self.curaddress, value);
+            write_optional_memory(memory, self.curaddress, value);
             self.set_reset_status(Self::STATUS_BRDY, 0);
 
             if self.advance_address(regs) {
@@ -589,11 +591,11 @@ impl AdpcmBChannel {
         if (self.status & Self::STATUS_INTERNAL_SUPPRESS_WRITE) != 0 {
             self.buffer = (value as u32) << 16;
             self.nibbles = 4;
-            self.read_ram(regs, access);
+            self.read_ram(regs, memory);
         }
     }
 
-    pub(crate) fn clock(&mut self, regs: &mut AdpcmBRegisters, access: &dyn AdpcmExternalAccess) {
+    pub(crate) fn clock(&mut self, regs: &mut AdpcmBRegisters, memory: &mut Option<&mut [u8]>) {
         // Only process if active and not recording (which we don't support).
         if regs.execute() == 0
             || regs.record() != 0
@@ -657,7 +659,7 @@ impl AdpcmBChannel {
         // If we don't have at least 3 nibbles in the buffer, request more data.
         if (self.status & Self::STATUS_INTERNAL_PLAYING) != 0
             && self.nibbles < 3
-            && self.request_data(regs, access)
+            && self.request_data(regs, memory)
         {
             // The final 3 samples are not played; chop them from the stream.
             self.consume_nibbles(3);
@@ -699,11 +701,11 @@ impl AdpcmBChannel {
         &mut self,
         regnum: u32,
         regs: &mut AdpcmBRegisters,
-        access: &dyn AdpcmExternalAccess,
+        memory: &mut Option<&mut [u8]>,
     ) -> u8 {
         let mut result = 0u8;
         if regnum == 0x08 && regs.execute() == 0 && regs.record() == 0 && regs.external() != 0 {
-            result = self.read_ram(regs, access);
+            result = self.read_ram(regs, memory);
         }
         result
     }
@@ -713,7 +715,7 @@ impl AdpcmBChannel {
         regnum: u32,
         value: u8,
         regs: &mut AdpcmBRegisters,
-        access: &dyn AdpcmExternalAccess,
+        memory: &mut Option<&mut [u8]>,
     ) {
         if regnum == 0x00 {
             // Reset flag stops playback and holds output, but does not clear the
@@ -766,10 +768,10 @@ impl AdpcmBChannel {
                 }
             // If writing to external data, process record mode, which writes data to RAM.
             } else if regs.external() != 0 && regs.record() != 0 {
-                self.write_ram(value, regs, access);
+                self.write_ram(value, regs, memory);
             // Writes in external non-record mode appear to behave like a read.
             } else {
-                self.read_ram(regs, access);
+                self.read_ram(regs, memory);
             }
         }
     }
@@ -793,21 +795,28 @@ impl AdpcmBEngine {
         self.channel.reset();
     }
 
-    pub(crate) fn clock(&mut self, access: &dyn AdpcmExternalAccess) {
-        self.channel.clock(&mut self.regs, access);
+    pub(crate) fn clock(&mut self, memory: Option<&mut [u8]>) {
+        assert_optional_memory(memory.as_ref());
+        let mut memory = memory;
+        self.channel.clock(&mut self.regs, &mut memory);
     }
 
     pub(crate) fn output<const N: usize>(&self, output: &mut [i32; N], rshift: u32) {
         self.channel.output(output, &self.regs, rshift);
     }
 
-    pub(crate) fn read(&mut self, regnum: u32, access: &dyn AdpcmExternalAccess) -> u32 {
-        self.channel.read(regnum, &mut self.regs, access) as u32
+    pub(crate) fn read(&mut self, regnum: u32, memory: Option<&mut [u8]>) -> u32 {
+        assert_optional_memory(memory.as_ref());
+        let mut memory = memory;
+        self.channel.read(regnum, &mut self.regs, &mut memory) as u32
     }
 
-    pub(crate) fn write(&mut self, regnum: u32, data: u8, access: &dyn AdpcmExternalAccess) {
+    pub(crate) fn write(&mut self, regnum: u32, data: u8, memory: Option<&mut [u8]>) {
+        assert_optional_memory(memory.as_ref());
+        let mut memory = memory;
         self.regs.write(regnum, data);
-        self.channel.write_reg(regnum, data, &mut self.regs, access);
+        self.channel
+            .write_reg(regnum, data, &mut self.regs, &mut memory);
     }
 
     pub(crate) fn status(&self) -> u8 {
@@ -816,5 +825,11 @@ impl AdpcmBEngine {
 
     pub(crate) fn clear_status(&mut self, status: u32) {
         self.channel.clear_status(status);
+    }
+}
+
+fn assert_optional_memory(memory: Option<&&mut [u8]>) {
+    if let Some(memory) = memory {
+        assert!(!memory.is_empty(), "ADPCM-B memory must not be empty");
     }
 }

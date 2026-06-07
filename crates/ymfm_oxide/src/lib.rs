@@ -19,9 +19,9 @@
 //! # Usage
 //!
 //! ```no_run
-//! use ymfm_oxide::{NoCallbacks, Ym2203, YmfmOutput4};
+//! use ymfm_oxide::{Ym2203, YmfmOutput4};
 //!
-//! let mut chip = Ym2203::new(NoCallbacks);
+//! let mut chip = Ym2203::new();
 //! chip.reset();
 //!
 //! // Write a register: first set the address, then write the data.
@@ -32,6 +32,14 @@
 //! let mut output = [YmfmOutput4 { data: [0; 4] }; 128];
 //! chip.generate(&mut output);
 //! ```
+//!
+//! ## Signal updates
+//!
+//! Timer and IRQ outputs are exposed as pull-based, coalesced updates through
+//! `take_timer_update()` and `take_irq_update()`. Callers that need to observe
+//! every scheduling or IRQ edge should drain those updates after each operation
+//! that can change chip signals, including `reset`, register writes,
+//! `timer_expired`, and status reconciliation reads.
 //!
 //! ## License
 //!
@@ -49,74 +57,18 @@ pub(crate) mod ssg;
 mod sys;
 pub(crate) mod tables;
 
-use adpcm::{AdpcmAEngine, AdpcmBChannel, AdpcmBEngine, AdpcmExternalAccess};
-use fm::{FmEngine, FmEngineCallbacks, FmRegisters};
+use adpcm::{AdpcmAEngine, AdpcmBChannel, AdpcmBEngine};
+use fm::{FmEngine, FmRegisters};
 use opl::{Opl2Registers, Opl3Registers, OplRegisters};
 use opn::{OpnRegisters, OpnaRegisters, SsgResampler};
 use ssg::SsgEngine;
-pub use sys::{YmfmAccessClass, YmfmOpnFidelity, YmfmOutput1, YmfmOutput3, YmfmOutput4};
+pub use sys::{YmfmOpnFidelity, YmfmOutput1, YmfmOutput3, YmfmOutput4, YmfmTimerUpdate};
 
-/// Callbacks invoked by the YM2203 engine during operation.
-///
-/// The emulator must implement these to integrate the chip's internal timers
-/// and interrupt output with the rest of the system.
-pub trait Ym2203Callbacks {
-    /// Called when an internal timer's period changes.
-    ///
-    /// `timer_id` is 0 (Timer A) or 1 (Timer B). `duration_in_clocks` is
-    /// the number of input clocks until the timer fires. A negative value
-    /// means the timer should be canceled.
-    fn set_timer(&self, timer_id: u32, duration_in_clocks: i32);
-
-    /// Called to mark the chip as busy for the given number of input clocks.
-    fn set_busy_end(&self, clocks: u32);
-
-    /// Returns whether the chip is still in a busy state from a previous
-    /// [`set_busy_end`](Ym2203Callbacks::set_busy_end) call.
-    fn is_busy(&self) -> bool;
-
-    /// Called when the chip's IRQ output changes state.
-    ///
-    /// `asserted` is `true` when the IRQ line goes active.
-    fn update_irq(&self, asserted: bool);
-}
-
-/// No-op [`Ym2203Callbacks`] implementation for testing or when timer /
-/// IRQ integration is not needed.
-pub struct NoCallbacks;
-
-impl Ym2203Callbacks for NoCallbacks {
-    fn set_timer(&self, _timer_id: u32, _duration_in_clocks: i32) {}
-
-    fn set_busy_end(&self, _clocks: u32) {}
-
-    fn is_busy(&self) -> bool {
-        false
-    }
-
-    fn update_irq(&self, _asserted: bool) {}
-}
-
-struct Ym2203Bridge<'a, C: Ym2203Callbacks> {
-    callbacks: &'a C,
-}
-
-impl<C: Ym2203Callbacks> FmEngineCallbacks for Ym2203Bridge<'_, C> {
-    fn ymfm_set_timer(&self, tnum: u32, duration_in_clocks: i32) {
-        self.callbacks.set_timer(tnum, duration_in_clocks);
-    }
-
-    fn ymfm_update_irq(&self, asserted: bool) {
-        self.callbacks.update_irq(asserted);
-    }
-}
+const YM2608_ADPCM_A_ROM_SIZE: usize = 8192;
+static SILENT_ADPCM_MEMORY: [u8; 1] = [0];
 
 /// Yamaha YM2203 (OPN) emulator.
-///
-/// The type parameter `C` supplies the [`Ym2203Callbacks`] implementation
-/// that integrates the chip with the emulator's timer and interrupt systems.
-pub struct Ym2203<C: Ym2203Callbacks> {
-    callbacks: C,
+pub struct Ym2203 {
     fm: FmEngine<OpnRegisters>,
     ssg: SsgEngine,
     ssg_resampler: SsgResampler,
@@ -126,16 +78,15 @@ pub struct Ym2203<C: Ym2203Callbacks> {
     last_fm: [i32; 1],
 }
 
-impl<C: Ym2203Callbacks> Ym2203<C> {
-    /// Creates a new YM2203 instance with the given callbacks.
+impl Ym2203 {
+    /// Creates a new YM2203 instance.
     ///
     /// The chip is not automatically reset; call [`reset`](Self::reset)
     /// before first use.
-    pub fn new(callbacks: C) -> Self {
+    pub fn new() -> Self {
         let fm = FmEngine::new();
         let prescale = fm.clock_prescale();
         let mut chip = Self {
-            callbacks,
             fm,
             ssg: SsgEngine::new(),
             ssg_resampler: SsgResampler::new(false, 1),
@@ -150,10 +101,7 @@ impl<C: Ym2203Callbacks> Ym2203<C> {
 
     /// Resets the chip to its initial power-on state.
     pub fn reset(&mut self) {
-        let bridge = Ym2203Bridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.reset(&bridge);
+        self.fm.reset();
         self.ssg.reset();
     }
 
@@ -182,9 +130,9 @@ impl<C: Ym2203Callbacks> Ym2203<C> {
     /// Reads the chip status register.
     ///
     /// Bit 0 = Timer A flag, bit 1 = Timer B flag, bit 7 = busy flag.
-    pub fn read_status(&mut self) -> u8 {
+    pub fn read_status(&mut self, busy: bool) -> u8 {
         let mut result = self.fm.status();
-        if self.callbacks.is_busy() {
+        if busy {
             result |= OpnRegisters::STATUS_BUSY;
         }
         result
@@ -204,7 +152,7 @@ impl<C: Ym2203Callbacks> Ym2203<C> {
 
     /// Latches the register address for a subsequent
     /// [`write_data`](Self::write_data) or [`read_data`](Self::read_data).
-    pub fn write_address(&mut self, data: u8) {
+    pub fn write_address(&mut self, data: u8) -> u32 {
         self.address = data;
 
         // 2D-2F: prescaler select
@@ -220,24 +168,20 @@ impl<C: Ym2203Callbacks> Ym2203<C> {
                 self.update_prescale(2);
             }
         }
+        0
     }
 
     /// Writes a value to the previously addressed register.
-    pub fn write_data(&mut self, data: u8) {
+    pub fn write_data(&mut self, data: u8) -> u32 {
         // 00-0F: write to SSG
         if self.address < 0x10 {
             self.ssg.write(self.address as u32 & 0x0F, data);
         } else {
             // 10-FF: write to FM
-            let bridge = Ym2203Bridge {
-                callbacks: &self.callbacks,
-            };
-            self.fm.write(self.address as u16, data, &bridge);
+            self.fm.write(self.address as u16, data);
         }
 
-        // Mark busy for 32 * prescale clocks after any data write.
-        let busy_clocks = 32 * self.fm.clock_prescale();
-        self.callbacks.set_busy_end(busy_clocks);
+        32 * self.fm.clock_prescale()
     }
 
     /// Generates audio samples into `output`.
@@ -287,30 +231,29 @@ impl<C: Ym2203Callbacks> Ym2203<C> {
     /// Notifies the chip that the specified timer has expired.
     ///
     /// The emulator should call this when the duration previously reported
-    /// by [`Ym2203Callbacks::set_timer`] has elapsed. `timer_id` is 0
-    /// (Timer A) or 1 (Timer B).
+    /// by [`take_timer_update`](Self::take_timer_update) has elapsed.
+    /// `timer_id` is 0 (Timer A) or 1 (Timer B).
     pub fn timer_expired(&mut self, timer_id: u32) {
-        let bridge = Ym2203Bridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.engine_timer_expired(timer_id, &bridge);
+        self.fm.engine_timer_expired(timer_id);
     }
 
-    /// Returns a shared reference to the callback state.
-    pub fn callbacks(&self) -> &C {
-        &self.callbacks
+    /// Returns and clears the pending update for a timer.
+    pub fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        self.fm.take_timer_update(timer_id)
     }
 
-    /// Returns an exclusive reference to the callback state.
-    pub fn callbacks_mut(&mut self) -> &mut C {
-        &mut self.callbacks
+    /// Returns and clears the pending IRQ output update.
+    pub fn take_irq_update(&mut self) -> Option<bool> {
+        self.fm.take_irq_update()
+    }
+
+    /// Returns whether the chip IRQ output is currently asserted.
+    pub fn irq_asserted(&self) -> bool {
+        self.fm.irq_asserted()
     }
 
     fn clock_fm(&mut self) {
-        let bridge = Ym2203Bridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.clock(OpnRegisters::ALL_CHANNELS, &bridge);
+        self.fm.clock(OpnRegisters::ALL_CHANNELS);
 
         // Update the FM content; OPN is full 14-bit with no intermediate clipping.
         self.last_fm = [0];
@@ -377,73 +320,6 @@ impl<C: Ym2203Callbacks> Ym2203<C> {
     }
 }
 
-/// Callbacks invoked by the YM2608 engine during operation.
-///
-/// Extends the YM2203 callbacks with external memory access for ADPCM
-/// ROM/RAM used by the ADPCM-A (rhythm) and ADPCM-B (sample) engines.
-pub trait Ym2608Callbacks {
-    /// Called when an internal timer's period changes.
-    fn set_timer(&self, timer_id: u32, duration_in_clocks: i32);
-
-    /// Called to mark the chip as busy for the given number of input clocks.
-    fn set_busy_end(&self, clocks: u32);
-
-    /// Returns whether the chip is still in a busy state.
-    fn is_busy(&self) -> bool;
-
-    /// Called when the chip's IRQ output changes state.
-    fn update_irq(&self, asserted: bool);
-
-    /// Called when the chip reads from external memory (ADPCM ROM/RAM).
-    fn external_read(&self, access_class: YmfmAccessClass, address: u32) -> u8;
-
-    /// Called when the chip writes to external memory (ADPCM RAM).
-    fn external_write(&self, access_class: YmfmAccessClass, address: u32, data: u8);
-}
-
-/// No-op [`Ym2608Callbacks`] implementation for testing.
-pub struct NoCallbacksExt;
-
-impl Ym2608Callbacks for NoCallbacksExt {
-    fn set_timer(&self, _timer_id: u32, _duration_in_clocks: i32) {}
-    fn set_busy_end(&self, _clocks: u32) {}
-
-    fn is_busy(&self) -> bool {
-        false
-    }
-
-    fn update_irq(&self, _asserted: bool) {}
-
-    fn external_read(&self, _access_class: YmfmAccessClass, _address: u32) -> u8 {
-        0
-    }
-
-    fn external_write(&self, _access_class: YmfmAccessClass, _address: u32, _data: u8) {}
-}
-
-struct Ym2608Bridge<'a, C: Ym2608Callbacks> {
-    callbacks: &'a C,
-}
-
-impl<C: Ym2608Callbacks> FmEngineCallbacks for Ym2608Bridge<'_, C> {
-    fn ymfm_set_timer(&self, tnum: u32, duration_in_clocks: i32) {
-        self.callbacks.set_timer(tnum, duration_in_clocks);
-    }
-
-    fn ymfm_update_irq(&self, asserted: bool) {
-        self.callbacks.update_irq(asserted);
-    }
-}
-
-impl<C: Ym2608Callbacks> AdpcmExternalAccess for Ym2608Bridge<'_, C> {
-    fn external_read(&self, access_class: YmfmAccessClass, address: u32) -> u8 {
-        self.callbacks.external_read(access_class, address)
-    }
-    fn external_write(&self, access_class: YmfmAccessClass, address: u32, data: u8) {
-        self.callbacks.external_write(access_class, address, data);
-    }
-}
-
 const STATUS_ADPCM_B_EOS: u8 = 0x04;
 const STATUS_ADPCM_B_BRDY: u8 = 0x08;
 const STATUS_ADPCM_B_PLAYING: u8 = 0x20;
@@ -452,13 +328,14 @@ const STATUS_ADPCM_B_PLAYING: u8 = 0x20;
 ///
 /// The YM2608 adds stereo FM (6 channels), ADPCM-A rhythm, and ADPCM-B sample
 /// playback over the YM2203.
-pub struct Ym2608<C: Ym2608Callbacks> {
-    callbacks: C,
+pub struct Ym2608 {
     fm: FmEngine<OpnaRegisters>,
     ssg: SsgEngine,
     ssg_resampler: SsgResampler,
     adpcm_a: AdpcmAEngine,
     adpcm_b: AdpcmBEngine,
+    adpcm_a_rom: Vec<u8>,
+    adpcm_b_ram: Option<Vec<u8>>,
     fidelity: YmfmOpnFidelity,
     address: u16,
     fm_samples_per_output: u32,
@@ -467,18 +344,19 @@ pub struct Ym2608<C: Ym2608Callbacks> {
     flag_control: u8,
 }
 
-impl<C: Ym2608Callbacks> Ym2608<C> {
-    /// Creates a new YM2608 instance with the given callbacks.
-    pub fn new(callbacks: C) -> Self {
+impl Ym2608 {
+    /// Creates a new YM2608 instance.
+    pub fn new() -> Self {
         let fm = FmEngine::new();
         let prescale = fm.clock_prescale();
         let mut chip = Self {
-            callbacks,
             fm,
             ssg: SsgEngine::new(),
             ssg_resampler: SsgResampler::new(true, 2),
             adpcm_a: AdpcmAEngine::new(0),
             adpcm_b: AdpcmBEngine::new(0),
+            adpcm_a_rom: SILENT_ADPCM_MEMORY.to_vec(),
+            adpcm_b_ram: None,
             fidelity: YmfmOpnFidelity::Max,
             address: 0,
             fm_samples_per_output: 0,
@@ -492,10 +370,7 @@ impl<C: Ym2608Callbacks> Ym2608<C> {
 
     /// Resets the chip to its initial power-on state.
     pub fn reset(&mut self) {
-        let bridge = Ym2608Bridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.reset(&bridge);
+        self.fm.reset();
         self.ssg.reset();
         self.adpcm_a.reset();
         self.adpcm_b.reset();
@@ -512,7 +387,49 @@ impl<C: Ym2608Callbacks> Ym2608<C> {
         // register, which updates the IRQs.
         self.irq_enable = 0x1F;
         self.flag_control = 0x1C;
-        self.read_status_hi();
+        self.read_status_hi(false);
+    }
+
+    /// Copies ADPCM-A rhythm ROM data into the chip.
+    ///
+    /// Panics if `data` is empty. Short data is zero-padded to the YM2608
+    /// rhythm ROM size, and oversized data is truncated.
+    pub fn set_adpcm_a_rom(&mut self, data: &[u8]) {
+        assert!(!data.is_empty(), "ADPCM-A ROM data must not be empty");
+        self.adpcm_a_rom.clear();
+        self.adpcm_a_rom.resize(YM2608_ADPCM_A_ROM_SIZE, 0);
+        let length = data.len().min(YM2608_ADPCM_A_ROM_SIZE);
+        self.adpcm_a_rom[..length].copy_from_slice(&data[..length]);
+    }
+
+    /// Clears ADPCM-A rhythm ROM data. Reads from missing ROM data return zero.
+    pub fn clear_adpcm_a_rom(&mut self) {
+        self.adpcm_a_rom.clear();
+        self.adpcm_a_rom.extend_from_slice(&SILENT_ADPCM_MEMORY);
+    }
+
+    /// Replaces ADPCM-B RAM with `data`.
+    ///
+    /// Panics if `data` is empty. Use [`clear_adpcm_b_ram`](Self::clear_adpcm_b_ram)
+    /// to remove ADPCM-B RAM.
+    pub fn set_adpcm_b_ram(&mut self, data: Vec<u8>) {
+        assert!(!data.is_empty(), "ADPCM-B RAM must not be empty");
+        self.adpcm_b_ram = Some(data);
+    }
+
+    /// Removes ADPCM-B RAM. Reads return zero and writes are ignored.
+    pub fn clear_adpcm_b_ram(&mut self) {
+        self.adpcm_b_ram = None;
+    }
+
+    /// Returns ADPCM-B RAM when present.
+    pub fn adpcm_b_ram(&self) -> Option<&[u8]> {
+        self.adpcm_b_ram.as_deref()
+    }
+
+    /// Returns mutable ADPCM-B RAM when present.
+    pub fn adpcm_b_ram_mut(&mut self) -> Option<&mut [u8]> {
+        self.adpcm_b_ram.as_deref_mut()
     }
 
     /// Sets the output fidelity level.
@@ -534,10 +451,10 @@ impl<C: Ym2608Callbacks> Ym2608<C> {
     }
 
     /// Reads the chip status register (low).
-    pub fn read_status(&mut self) -> u8 {
+    pub fn read_status(&mut self, busy: bool) -> u8 {
         let mut result =
             self.fm.status() & (OpnaRegisters::STATUS_TIMERA | OpnaRegisters::STATUS_TIMERB);
-        if self.callbacks.is_busy() {
+        if busy {
             result |= OpnaRegisters::STATUS_BUSY;
         }
         result
@@ -557,7 +474,7 @@ impl<C: Ym2608Callbacks> Ym2608<C> {
     }
 
     /// Reads the chip status register (high - ADPCM flags).
-    pub fn read_status_hi(&mut self) -> u8 {
+    pub fn read_status_hi(&mut self, busy: bool) -> u8 {
         // Fetch regular status, masking out the ADPCM-B bits we'll re-derive.
         let mut status =
             self.fm.status() & !(STATUS_ADPCM_B_EOS | STATUS_ADPCM_B_BRDY | STATUS_ADPCM_B_PLAYING);
@@ -578,13 +495,10 @@ impl<C: Ym2608Callbacks> Ym2608<C> {
         status &= !(self.flag_control & 0x1F);
 
         // Update the status so that IRQs are propagated.
-        let bridge = Ym2608Bridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.set_reset_status(status, !status, &bridge);
+        self.fm.set_reset_status(status, !status);
 
         // Merge in the busy flag.
-        if self.callbacks.is_busy() {
+        if busy {
             status |= OpnaRegisters::STATUS_BUSY;
         }
         status
@@ -594,17 +508,15 @@ impl<C: Ym2608Callbacks> Ym2608<C> {
     pub fn read_data_hi(&mut self) -> u8 {
         if (self.address & 0xFF) < 0x10 {
             // 00-0F: Read from ADPCM-B
-            let bridge = Ym2608Bridge {
-                callbacks: &self.callbacks,
-            };
-            self.adpcm_b.read(self.address as u32 & 0x0F, &bridge) as u8
+            self.adpcm_b
+                .read(self.address as u32 & 0x0F, self.adpcm_b_ram.as_deref_mut()) as u8
         } else {
             0
         }
     }
 
     /// Latches the register address for the low bank.
-    pub fn write_address(&mut self, data: u8) {
+    pub fn write_address(&mut self, data: u8) -> u32 {
         self.address = data as u16;
 
         // 2D-2F: prescaler select
@@ -617,13 +529,14 @@ impl<C: Ym2608Callbacks> Ym2608<C> {
                 self.update_prescale(2);
             }
         }
+        0
     }
 
     /// Writes a value to the previously addressed register (low bank).
-    pub fn write_data(&mut self, data: u8) {
+    pub fn write_data(&mut self, data: u8) -> u32 {
         // Ignore if paired with upper address (port 1 data to port 0).
         if helpers::bit(self.address as u32, 8) != 0 {
-            return;
+            return 0;
         }
 
         if self.address < 0x10 {
@@ -635,69 +548,54 @@ impl<C: Ym2608Callbacks> Ym2608<C> {
         } else if self.address == 0x29 {
             // 29: special IRQ mask register
             self.irq_enable = data;
-            let bridge = Ym2608Bridge {
-                callbacks: &self.callbacks,
-            };
             self.fm
-                .set_irq_mask(self.irq_enable & !self.flag_control & 0x1F, &bridge);
+                .set_irq_mask(self.irq_enable & !self.flag_control & 0x1F);
         } else {
             // 20-28, 2A-FF: write to FM
-            let bridge = Ym2608Bridge {
-                callbacks: &self.callbacks,
-            };
-            self.fm.write(self.address, data, &bridge);
+            self.fm.write(self.address, data);
         }
 
-        // Mark busy for 32 * prescale clocks after any data write.
-        let busy_clocks = 32 * self.fm.clock_prescale();
-        self.callbacks.set_busy_end(busy_clocks);
+        32 * self.fm.clock_prescale()
     }
 
     /// Latches the register address for the high bank.
-    pub fn write_address_hi(&mut self, data: u8) {
+    pub fn write_address_hi(&mut self, data: u8) -> u32 {
         // Port 1 address: set bit 8 to distinguish from port 0.
         self.address = 0x100 | data as u16;
+        0
     }
 
     /// Writes a value to the previously addressed register (high bank).
-    pub fn write_data_hi(&mut self, data: u8) {
+    pub fn write_data_hi(&mut self, data: u8) -> u32 {
         // Ignore if paired with lower address (port 0 data to port 1).
         if helpers::bit(self.address as u32, 8) == 0 {
-            return;
+            return 0;
         }
 
         if self.address < 0x110 {
             // 100-10F: write to ADPCM-B
-            let bridge = Ym2608Bridge {
-                callbacks: &self.callbacks,
-            };
-            self.adpcm_b
-                .write(self.address as u32 & 0x0F, data, &bridge);
+            self.adpcm_b.write(
+                self.address as u32 & 0x0F,
+                data,
+                self.adpcm_b_ram.as_deref_mut(),
+            );
         } else if self.address == 0x110 {
             // 110: IRQ flag control
-            let bridge = Ym2608Bridge {
-                callbacks: &self.callbacks,
-            };
             if helpers::bit(data as u32, 7) != 0 {
-                self.fm.set_reset_status(0, 0xFF, &bridge);
+                self.fm.set_reset_status(0, 0xFF);
                 self.adpcm_b
                     .clear_status(AdpcmBChannel::STATUS_EOS | AdpcmBChannel::STATUS_PLAYING);
             } else {
                 self.flag_control = data;
                 self.fm
-                    .set_irq_mask(self.irq_enable & !self.flag_control & 0x1F, &bridge);
+                    .set_irq_mask(self.irq_enable & !self.flag_control & 0x1F);
             }
         } else {
             // 111-1FF: write to FM
-            let bridge = Ym2608Bridge {
-                callbacks: &self.callbacks,
-            };
-            self.fm.write(self.address, data, &bridge);
+            self.fm.write(self.address, data);
         }
 
-        // Mark busy for 32 * prescale clocks after any data write.
-        let busy_clocks = 32 * self.fm.clock_prescale();
-        self.callbacks.set_busy_end(busy_clocks);
+        32 * self.fm.clock_prescale()
     }
 
     /// Generates audio samples into `output`.
@@ -749,27 +647,25 @@ impl<C: Ym2608Callbacks> Ym2608<C> {
 
     /// Notifies the chip that the specified timer has expired.
     pub fn timer_expired(&mut self, timer_id: u32) {
-        let bridge = Ym2608Bridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.engine_timer_expired(timer_id, &bridge);
+        self.fm.engine_timer_expired(timer_id);
     }
 
-    /// Returns a shared reference to the callback state.
-    pub fn callbacks(&self) -> &C {
-        &self.callbacks
+    /// Returns and clears the pending update for a timer.
+    pub fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        self.fm.take_timer_update(timer_id)
     }
 
-    /// Returns an exclusive reference to the callback state.
-    pub fn callbacks_mut(&mut self) -> &mut C {
-        &mut self.callbacks
+    /// Returns and clears the pending IRQ output update.
+    pub fn take_irq_update(&mut self) -> Option<bool> {
+        self.fm.take_irq_update()
+    }
+
+    /// Returns whether the chip IRQ output is currently asserted.
+    pub fn irq_asserted(&self) -> bool {
+        self.fm.irq_asserted()
     }
 
     fn clock_fm_and_adpcm(&mut self) {
-        let bridge = Ym2608Bridge {
-            callbacks: &self.callbacks,
-        };
-
         // Top bit of the IRQ enable flags controls 3-channel vs 6-channel mode.
         let fmmask = if helpers::bit(self.irq_enable as u32, 7) != 0 {
             0x3F
@@ -777,11 +673,7 @@ impl<C: Ym2608Callbacks> Ym2608<C> {
             0x07
         };
 
-        let env_counter = self.fm.clock(OpnaRegisters::ALL_CHANNELS, &bridge);
-
-        let adpcm_bridge = Ym2608Bridge {
-            callbacks: &self.callbacks,
-        };
+        let env_counter = self.fm.clock(OpnaRegisters::ALL_CHANNELS);
 
         // Clock the ADPCM-A engine on every envelope cycle
         // (channels 4 and 5 clock every 2 envelope clocks).
@@ -791,11 +683,11 @@ impl<C: Ym2608Callbacks> Ym2608<C> {
             } else {
                 0x3F
             };
-            self.adpcm_a.clock(chanmask, &adpcm_bridge);
+            self.adpcm_a.clock(chanmask, &self.adpcm_a_rom);
         }
 
         // Clock the ADPCM-B engine every cycle.
-        self.adpcm_b.clock(&adpcm_bridge);
+        self.adpcm_b.clock(self.adpcm_b_ram.as_deref_mut());
 
         // Update the FM content; OPNA is 13-bit with no intermediate clipping.
         self.last_fm = [0, 0];
@@ -866,108 +758,6 @@ impl<C: Ym2608Callbacks> Ym2608<C> {
     }
 }
 
-/// Callbacks invoked by OPL-family chips (YM3526, YM3812, YMF262).
-pub trait OplCallbacks {
-    /// Called when an internal timer's period changes.
-    fn set_timer(&self, timer_id: u32, duration_in_clocks: i32);
-
-    /// Called to mark the chip as busy for the given number of input clocks.
-    fn set_busy_end(&self, clocks: u32);
-
-    /// Returns whether the chip is still in a busy state.
-    fn is_busy(&self) -> bool;
-
-    /// Called when the chip's IRQ output changes state.
-    fn update_irq(&self, asserted: bool);
-}
-
-/// No-op [`OplCallbacks`] implementation for testing.
-pub struct NoOplCallbacks;
-
-impl OplCallbacks for NoOplCallbacks {
-    fn set_timer(&self, _timer_id: u32, _duration_in_clocks: i32) {}
-    fn set_busy_end(&self, _clocks: u32) {}
-    fn is_busy(&self) -> bool {
-        false
-    }
-    fn update_irq(&self, _asserted: bool) {}
-}
-
-/// Callbacks invoked by the Y8950 engine during operation.
-///
-/// Extends the OPL callbacks with external memory access for ADPCM-B
-/// sample ROM/RAM.
-pub trait Y8950Callbacks {
-    /// Called when an internal timer's period changes.
-    fn set_timer(&self, timer_id: u32, duration_in_clocks: i32);
-
-    /// Called to mark the chip as busy for the given number of input clocks.
-    fn set_busy_end(&self, clocks: u32);
-
-    /// Returns whether the chip is still in a busy state.
-    fn is_busy(&self) -> bool;
-
-    /// Called when the chip's IRQ output changes state.
-    fn update_irq(&self, asserted: bool);
-
-    /// Called when the chip reads from external memory (ADPCM-B ROM/RAM).
-    fn external_read(&self, access_class: YmfmAccessClass, address: u32) -> u8;
-
-    /// Called when the chip writes to external memory (ADPCM-B RAM).
-    fn external_write(&self, access_class: YmfmAccessClass, address: u32, data: u8);
-}
-
-/// No-op [`Y8950Callbacks`] implementation for testing.
-pub struct NoY8950Callbacks;
-
-impl Y8950Callbacks for NoY8950Callbacks {
-    fn set_timer(&self, _timer_id: u32, _duration_in_clocks: i32) {}
-    fn set_busy_end(&self, _clocks: u32) {}
-    fn is_busy(&self) -> bool {
-        false
-    }
-    fn update_irq(&self, _asserted: bool) {}
-    fn external_read(&self, _access_class: YmfmAccessClass, _address: u32) -> u8 {
-        0
-    }
-    fn external_write(&self, _access_class: YmfmAccessClass, _address: u32, _data: u8) {}
-}
-
-struct OplBridge<'a, C: OplCallbacks> {
-    callbacks: &'a C,
-}
-
-impl<C: OplCallbacks> FmEngineCallbacks for OplBridge<'_, C> {
-    fn ymfm_set_timer(&self, tnum: u32, duration_in_clocks: i32) {
-        self.callbacks.set_timer(tnum, duration_in_clocks);
-    }
-    fn ymfm_update_irq(&self, asserted: bool) {
-        self.callbacks.update_irq(asserted);
-    }
-}
-
-struct Y8950Bridge<'a, C: Y8950Callbacks> {
-    callbacks: &'a C,
-}
-
-impl<C: Y8950Callbacks> FmEngineCallbacks for Y8950Bridge<'_, C> {
-    fn ymfm_set_timer(&self, tnum: u32, duration_in_clocks: i32) {
-        self.callbacks.set_timer(tnum, duration_in_clocks);
-    }
-    fn ymfm_update_irq(&self, asserted: bool) {
-        self.callbacks.update_irq(asserted);
-    }
-}
-
-impl<C: Y8950Callbacks> AdpcmExternalAccess for Y8950Bridge<'_, C> {
-    fn external_read(&self, access_class: YmfmAccessClass, address: u32) -> u8 {
-        self.callbacks.external_read(access_class, address)
-    }
-    fn external_write(&self, access_class: YmfmAccessClass, address: u32, data: u8) {
-        self.callbacks.external_write(access_class, address, data);
-    }
-}
-
 const Y8950_STATUS_ADPCM_B_PLAYING: u8 = 0x01;
 const Y8950_STATUS_ADPCM_B_BRDY: u8 = 0x08;
 const Y8950_STATUS_ADPCM_B_EOS: u8 = 0x10;
@@ -975,17 +765,15 @@ const Y8950_STATUS_ADPCM_B_EOS: u8 = 0x10;
 /// Yamaha YM3526 (OPL) emulator.
 ///
 /// 9-channel FM synthesis chip. Produces mono output.
-pub struct Ym3526<C: OplCallbacks> {
-    callbacks: C,
+pub struct Ym3526 {
     fm: FmEngine<OplRegisters>,
     address: u8,
 }
 
-impl<C: OplCallbacks> Ym3526<C> {
-    /// Creates a new YM3526 instance with the given callbacks.
-    pub fn new(callbacks: C) -> Self {
+impl Ym3526 {
+    /// Creates a new YM3526 instance.
+    pub fn new() -> Self {
         Self {
-            callbacks,
             fm: FmEngine::new(),
             address: 0,
         }
@@ -993,10 +781,7 @@ impl<C: OplCallbacks> Ym3526<C> {
 
     /// Resets the chip to its initial power-on state.
     pub fn reset(&mut self) {
-        let bridge = OplBridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.reset(&bridge);
+        self.fm.reset();
     }
 
     /// Returns the output sample rate in Hz for the given `input_clock` in Hz.
@@ -1011,27 +796,21 @@ impl<C: OplCallbacks> Ym3526<C> {
 
     /// Latches the register address for a subsequent
     /// [`write_data`](Self::write_data).
-    pub fn write_address(&mut self, data: u8) {
-        self.callbacks.set_busy_end(12 * self.fm.clock_prescale());
+    pub fn write_address(&mut self, data: u8) -> u32 {
         self.address = data;
+        12 * self.fm.clock_prescale()
     }
 
     /// Writes a value to the previously addressed register.
-    pub fn write_data(&mut self, data: u8) {
-        self.callbacks.set_busy_end(84 * self.fm.clock_prescale());
-        let bridge = OplBridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.write(self.address as u16, data, &bridge);
+    pub fn write_data(&mut self, data: u8) -> u32 {
+        self.fm.write(self.address as u16, data);
+        84 * self.fm.clock_prescale()
     }
 
     /// Generates audio samples into `output`.
     pub fn generate(&mut self, output: &mut [YmfmOutput1]) {
         for out in output.iter_mut() {
-            let bridge = OplBridge {
-                callbacks: &self.callbacks,
-            };
-            self.fm.clock(OplRegisters::ALL_CHANNELS, &bridge);
+            self.fm.clock(OplRegisters::ALL_CHANNELS);
 
             out.data = [0];
             self.fm
@@ -1043,20 +822,22 @@ impl<C: OplCallbacks> Ym3526<C> {
 
     /// Notifies the chip that the specified timer has expired.
     pub fn timer_expired(&mut self, timer_id: u32) {
-        let bridge = OplBridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.engine_timer_expired(timer_id, &bridge);
+        self.fm.engine_timer_expired(timer_id);
     }
 
-    /// Returns a shared reference to the callback state.
-    pub fn callbacks(&self) -> &C {
-        &self.callbacks
+    /// Returns and clears the pending update for a timer.
+    pub fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        self.fm.take_timer_update(timer_id)
     }
 
-    /// Returns an exclusive reference to the callback state.
-    pub fn callbacks_mut(&mut self) -> &mut C {
-        &mut self.callbacks
+    /// Returns and clears the pending IRQ output update.
+    pub fn take_irq_update(&mut self) -> Option<bool> {
+        self.fm.take_irq_update()
+    }
+
+    /// Returns whether the chip IRQ output is currently asserted.
+    pub fn irq_asserted(&self) -> bool {
+        self.fm.irq_asserted()
     }
 }
 
@@ -1064,33 +845,70 @@ impl<C: OplCallbacks> Ym3526<C> {
 ///
 /// 9-channel FM synthesis chip with ADPCM-B sample playback.
 /// Produces mono output.
-pub struct Y8950<C: Y8950Callbacks> {
-    callbacks: C,
+pub struct Y8950 {
     fm: FmEngine<OplRegisters>,
     adpcm_b: AdpcmBEngine,
+    adpcm_memory: Option<Vec<u8>>,
     address: u8,
     io_ddr: u8,
+    io_input: [u8; 2],
+    io_output: [Option<u8>; 2],
 }
 
-impl<C: Y8950Callbacks> Y8950<C> {
-    /// Creates a new Y8950 instance with the given callbacks.
-    pub fn new(callbacks: C) -> Self {
+impl Y8950 {
+    /// Creates a new Y8950 instance.
+    pub fn new() -> Self {
         Self {
-            callbacks,
             fm: FmEngine::new(),
             adpcm_b: AdpcmBEngine::new(0),
+            adpcm_memory: None,
             address: 0,
             io_ddr: 0,
+            io_input: [0; 2],
+            io_output: [None; 2],
         }
     }
 
     /// Resets the chip to its initial power-on state.
     pub fn reset(&mut self) {
-        let bridge = Y8950Bridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.reset(&bridge);
+        self.fm.reset();
         self.adpcm_b.reset();
+    }
+
+    /// Replaces ADPCM memory with `data`.
+    ///
+    /// Panics if `data` is empty. Use [`clear_adpcm_memory`](Self::clear_adpcm_memory)
+    /// to remove ADPCM memory.
+    pub fn set_adpcm_memory(&mut self, data: Vec<u8>) {
+        assert!(!data.is_empty(), "ADPCM memory must not be empty");
+        self.adpcm_memory = Some(data);
+    }
+
+    /// Clears ADPCM memory. Reads return zero and writes are ignored.
+    pub fn clear_adpcm_memory(&mut self) {
+        self.adpcm_memory = None;
+    }
+
+    /// Returns ADPCM memory, or an empty slice when no memory is installed.
+    pub fn adpcm_memory(&self) -> &[u8] {
+        self.adpcm_memory.as_deref().unwrap_or(&[])
+    }
+
+    /// Returns mutable ADPCM memory when installed.
+    pub fn adpcm_memory_mut(&mut self) -> Option<&mut [u8]> {
+        self.adpcm_memory.as_deref_mut()
+    }
+
+    /// Sets the latched value read from an I/O port.
+    pub fn set_io_input(&mut self, port: u8, value: u8) {
+        if let Some(input) = self.io_input.get_mut(port as usize) {
+            *input = value;
+        }
+    }
+
+    /// Returns and clears a latched output value for an I/O port.
+    pub fn take_io_output(&mut self, port: u8) -> Option<u8> {
+        self.io_output.get_mut(port as usize).and_then(Option::take)
     }
 
     /// Returns the output sample rate in Hz for the given `input_clock` in Hz.
@@ -1116,10 +934,7 @@ impl<C: Y8950Callbacks> Y8950<C> {
             status |= Y8950_STATUS_ADPCM_B_PLAYING;
         }
 
-        let bridge = Y8950Bridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.set_reset_status(status, !status, &bridge)
+        self.fm.set_reset_status(status, !status)
     }
 
     /// Reads back data from the chip.
@@ -1127,18 +942,17 @@ impl<C: Y8950Callbacks> Y8950<C> {
         match self.address {
             0x05 => {
                 // keyboard in
-                self.callbacks.external_read(YmfmAccessClass::Io, 1)
+                self.io_input[1]
             }
             0x09 | 0x1A => {
                 // ADPCM data
-                let bridge = Y8950Bridge {
-                    callbacks: &self.callbacks,
-                };
-                self.adpcm_b.read(self.address as u32 - 0x07, &bridge) as u8
+                self.adpcm_b
+                    .read(self.address as u32 - 0x07, self.adpcm_memory.as_deref_mut())
+                    as u8
             }
             0x19 => {
                 // I/O data
-                self.callbacks.external_read(YmfmAccessClass::Io, 0)
+                self.io_input[0]
             }
             _ => 0xFF,
         }
@@ -1146,23 +960,19 @@ impl<C: Y8950Callbacks> Y8950<C> {
 
     /// Latches the register address for a subsequent
     /// [`write_data`](Self::write_data) or [`read_data`](Self::read_data).
-    pub fn write_address(&mut self, data: u8) {
-        self.callbacks.set_busy_end(12 * self.fm.clock_prescale());
+    pub fn write_address(&mut self, data: u8) -> u32 {
         self.address = data;
+        12 * self.fm.clock_prescale()
     }
 
     /// Writes a value to the previously addressed register.
-    pub fn write_data(&mut self, data: u8) {
+    pub fn write_data(&mut self, data: u8) -> u32 {
         let busy_clocks = if self.address <= 0x1A { 12 } else { 84 } * self.fm.clock_prescale();
-        self.callbacks.set_busy_end(busy_clocks);
 
         match self.address {
             0x04 => {
                 // IRQ control
-                let bridge = Y8950Bridge {
-                    callbacks: &self.callbacks,
-                };
-                self.fm.write(self.address as u16, data, &bridge);
+                self.fm.write(self.address as u16, data);
                 if (data & Y8950_STATUS_ADPCM_B_EOS) != 0 {
                     self.adpcm_b.clear_status(AdpcmBChannel::STATUS_EOS);
                 }
@@ -1170,24 +980,24 @@ impl<C: Y8950Callbacks> Y8950<C> {
             }
             0x06 => {
                 // keyboard out
-                self.callbacks.external_write(YmfmAccessClass::Io, 1, data);
+                self.io_output[1] = Some(data);
             }
             0x08 => {
                 // split FM/ADPCM-B
-                let bridge = Y8950Bridge {
-                    callbacks: &self.callbacks,
-                };
-                self.adpcm_b
-                    .write(self.address as u32 - 0x07, (data & 0x0F) | 0x80, &bridge);
-                self.fm.write(self.address as u16, data & 0xC0, &bridge);
+                self.adpcm_b.write(
+                    self.address as u32 - 0x07,
+                    (data & 0x0F) | 0x80,
+                    self.adpcm_memory.as_deref_mut(),
+                );
+                self.fm.write(self.address as u16, data & 0xC0);
             }
             0x07 | 0x09..=0x12 | 0x15..=0x17 => {
                 // ADPCM-B registers
-                let bridge = Y8950Bridge {
-                    callbacks: &self.callbacks,
-                };
-                self.adpcm_b
-                    .write(self.address as u32 - 0x07, data, &bridge);
+                self.adpcm_b.write(
+                    self.address as u32 - 0x07,
+                    data,
+                    self.adpcm_memory.as_deref_mut(),
+                );
             }
             0x18 => {
                 // I/O direction
@@ -1195,31 +1005,21 @@ impl<C: Y8950Callbacks> Y8950<C> {
             }
             0x19 => {
                 // I/O data
-                self.callbacks
-                    .external_write(YmfmAccessClass::Io, 0, data & self.io_ddr);
+                self.io_output[0] = Some(data & self.io_ddr);
             }
             _ => {
                 // everything else to FM
-                let bridge = Y8950Bridge {
-                    callbacks: &self.callbacks,
-                };
-                self.fm.write(self.address as u16, data, &bridge);
+                self.fm.write(self.address as u16, data);
             }
         }
+        busy_clocks
     }
 
     /// Generates audio samples into `output`.
     pub fn generate(&mut self, output: &mut [YmfmOutput1]) {
         for out in output.iter_mut() {
-            let bridge = Y8950Bridge {
-                callbacks: &self.callbacks,
-            };
-            self.fm.clock(OplRegisters::ALL_CHANNELS, &bridge);
-
-            let adpcm_bridge = Y8950Bridge {
-                callbacks: &self.callbacks,
-            };
-            self.adpcm_b.clock(&adpcm_bridge);
+            self.fm.clock(OplRegisters::ALL_CHANNELS);
+            self.adpcm_b.clock(self.adpcm_memory.as_deref_mut());
 
             out.data = [0];
             self.fm
@@ -1234,20 +1034,22 @@ impl<C: Y8950Callbacks> Y8950<C> {
 
     /// Notifies the chip that the specified timer has expired.
     pub fn timer_expired(&mut self, timer_id: u32) {
-        let bridge = Y8950Bridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.engine_timer_expired(timer_id, &bridge);
+        self.fm.engine_timer_expired(timer_id);
     }
 
-    /// Returns a shared reference to the callback state.
-    pub fn callbacks(&self) -> &C {
-        &self.callbacks
+    /// Returns and clears the pending update for a timer.
+    pub fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        self.fm.take_timer_update(timer_id)
     }
 
-    /// Returns an exclusive reference to the callback state.
-    pub fn callbacks_mut(&mut self) -> &mut C {
-        &mut self.callbacks
+    /// Returns and clears the pending IRQ output update.
+    pub fn take_irq_update(&mut self) -> Option<bool> {
+        self.fm.take_irq_update()
+    }
+
+    /// Returns whether the chip IRQ output is currently asserted.
+    pub fn irq_asserted(&self) -> bool {
+        self.fm.irq_asserted()
     }
 }
 
@@ -1255,17 +1057,15 @@ impl<C: Y8950Callbacks> Y8950<C> {
 ///
 /// 9-channel FM synthesis chip with enhanced waveform support.
 /// Produces mono output.
-pub struct Ym3812<C: OplCallbacks> {
-    callbacks: C,
+pub struct Ym3812 {
     fm: FmEngine<Opl2Registers>,
     address: u8,
 }
 
-impl<C: OplCallbacks> Ym3812<C> {
-    /// Creates a new YM3812 instance with the given callbacks.
-    pub fn new(callbacks: C) -> Self {
+impl Ym3812 {
+    /// Creates a new YM3812 instance.
+    pub fn new() -> Self {
         Self {
-            callbacks,
             fm: FmEngine::new(),
             address: 0,
         }
@@ -1273,10 +1073,7 @@ impl<C: OplCallbacks> Ym3812<C> {
 
     /// Resets the chip to its initial power-on state.
     pub fn reset(&mut self) {
-        let bridge = OplBridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.reset(&bridge);
+        self.fm.reset();
     }
 
     /// Returns the output sample rate in Hz for the given `input_clock` in Hz.
@@ -1291,27 +1088,21 @@ impl<C: OplCallbacks> Ym3812<C> {
 
     /// Latches the register address for a subsequent
     /// [`write_data`](Self::write_data).
-    pub fn write_address(&mut self, data: u8) {
-        self.callbacks.set_busy_end(12 * self.fm.clock_prescale());
+    pub fn write_address(&mut self, data: u8) -> u32 {
         self.address = data;
+        12 * self.fm.clock_prescale()
     }
 
     /// Writes a value to the previously addressed register.
-    pub fn write_data(&mut self, data: u8) {
-        self.callbacks.set_busy_end(84 * self.fm.clock_prescale());
-        let bridge = OplBridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.write(self.address as u16, data, &bridge);
+    pub fn write_data(&mut self, data: u8) -> u32 {
+        self.fm.write(self.address as u16, data);
+        84 * self.fm.clock_prescale()
     }
 
     /// Generates audio samples into `output`.
     pub fn generate(&mut self, output: &mut [YmfmOutput1]) {
         for out in output.iter_mut() {
-            let bridge = OplBridge {
-                callbacks: &self.callbacks,
-            };
-            self.fm.clock(Opl2Registers::ALL_CHANNELS, &bridge);
+            self.fm.clock(Opl2Registers::ALL_CHANNELS);
 
             out.data = [0];
             self.fm
@@ -1323,20 +1114,22 @@ impl<C: OplCallbacks> Ym3812<C> {
 
     /// Notifies the chip that the specified timer has expired.
     pub fn timer_expired(&mut self, timer_id: u32) {
-        let bridge = OplBridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.engine_timer_expired(timer_id, &bridge);
+        self.fm.engine_timer_expired(timer_id);
     }
 
-    /// Returns a shared reference to the callback state.
-    pub fn callbacks(&self) -> &C {
-        &self.callbacks
+    /// Returns and clears the pending update for a timer.
+    pub fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        self.fm.take_timer_update(timer_id)
     }
 
-    /// Returns an exclusive reference to the callback state.
-    pub fn callbacks_mut(&mut self) -> &mut C {
-        &mut self.callbacks
+    /// Returns and clears the pending IRQ output update.
+    pub fn take_irq_update(&mut self) -> Option<bool> {
+        self.fm.take_irq_update()
+    }
+
+    /// Returns whether the chip IRQ output is currently asserted.
+    pub fn irq_asserted(&self) -> bool {
+        self.fm.irq_asserted()
     }
 }
 
@@ -1344,17 +1137,15 @@ impl<C: OplCallbacks> Ym3812<C> {
 ///
 /// 18-channel FM synthesis chip with stereo output and 4-operator mode.
 /// Produces 4-channel output: `[out0, out1, out2, out3]`.
-pub struct Ymf262<C: OplCallbacks> {
-    callbacks: C,
+pub struct Ymf262 {
     fm: FmEngine<Opl3Registers>,
     address: u16,
 }
 
-impl<C: OplCallbacks> Ymf262<C> {
-    /// Creates a new YMF262 instance with the given callbacks.
-    pub fn new(callbacks: C) -> Self {
+impl Ymf262 {
+    /// Creates a new YMF262 instance.
+    pub fn new() -> Self {
         Self {
-            callbacks,
             fm: FmEngine::new(),
             address: 0,
         }
@@ -1362,10 +1153,7 @@ impl<C: OplCallbacks> Ymf262<C> {
 
     /// Resets the chip to its initial power-on state.
     pub fn reset(&mut self) {
-        let bridge = OplBridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.reset(&bridge);
+        self.fm.reset();
     }
 
     /// Returns the output sample rate in Hz for the given `input_clock` in Hz.
@@ -1379,38 +1167,32 @@ impl<C: OplCallbacks> Ymf262<C> {
     }
 
     /// Latches the register address for the low bank (0x00–0xFF).
-    pub fn write_address(&mut self, data: u8) {
-        self.callbacks.set_busy_end(32 * self.fm.clock_prescale());
+    pub fn write_address(&mut self, data: u8) -> u32 {
         self.address = data as u16;
+        32 * self.fm.clock_prescale()
     }
 
     /// Writes a value to the previously addressed register.
-    pub fn write_data(&mut self, data: u8) {
-        self.callbacks.set_busy_end(32 * self.fm.clock_prescale());
-        let bridge = OplBridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.write(self.address, data, &bridge);
+    pub fn write_data(&mut self, data: u8) -> u32 {
+        self.fm.write(self.address, data);
+        32 * self.fm.clock_prescale()
     }
 
     /// Latches the register address for the high bank (0x100–0x1FF).
-    pub fn write_address_hi(&mut self, data: u8) {
-        self.callbacks.set_busy_end(32 * self.fm.clock_prescale());
+    pub fn write_address_hi(&mut self, data: u8) -> u32 {
         self.address = data as u16 | 0x100;
 
         // in compatibility mode, upper bit is masked except for register 0x105
         if self.fm.regs.newflag() == 0 && self.address != 0x105 {
             self.address &= 0xFF;
         }
+        32 * self.fm.clock_prescale()
     }
 
     /// Generates audio samples into `output`.
     pub fn generate(&mut self, output: &mut [YmfmOutput4]) {
         for out in output.iter_mut() {
-            let bridge = OplBridge {
-                callbacks: &self.callbacks,
-            };
-            self.fm.clock(Opl3Registers::ALL_CHANNELS, &bridge);
+            self.fm.clock(Opl3Registers::ALL_CHANNELS);
 
             out.data = [0; 4];
             self.fm
@@ -1425,19 +1207,57 @@ impl<C: OplCallbacks> Ymf262<C> {
 
     /// Notifies the chip that the specified timer has expired.
     pub fn timer_expired(&mut self, timer_id: u32) {
-        let bridge = OplBridge {
-            callbacks: &self.callbacks,
-        };
-        self.fm.engine_timer_expired(timer_id, &bridge);
+        self.fm.engine_timer_expired(timer_id);
     }
 
-    /// Returns a shared reference to the callback state.
-    pub fn callbacks(&self) -> &C {
-        &self.callbacks
+    /// Returns and clears the pending update for a timer.
+    pub fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        self.fm.take_timer_update(timer_id)
     }
 
-    /// Returns an exclusive reference to the callback state.
-    pub fn callbacks_mut(&mut self) -> &mut C {
-        &mut self.callbacks
+    /// Returns and clears the pending IRQ output update.
+    pub fn take_irq_update(&mut self) -> Option<bool> {
+        self.fm.take_irq_update()
+    }
+
+    /// Returns whether the chip IRQ output is currently asserted.
+    pub fn irq_asserted(&self) -> bool {
+        self.fm.irq_asserted()
+    }
+}
+
+impl Default for Ym2203 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for Ym2608 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for Ym3526 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for Y8950 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for Ym3812 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for Ymf262 {
+    fn default() -> Self {
+        Self::new()
     }
 }

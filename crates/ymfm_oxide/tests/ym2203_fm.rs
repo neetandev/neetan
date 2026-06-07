@@ -1,6 +1,6 @@
 mod common;
 
-use common::{callbacks::*, harness::*};
+use common::harness::*;
 use ymfm_oxide::{Ym2203, YmfmOpnFidelity};
 
 #[allow(dead_code)]
@@ -240,7 +240,7 @@ fn multi_channel_produces_combined_output() {
 
 #[test]
 fn channel2_multi_freq_mode() {
-    let mut chip = Ym2203::new(RecordingCallbacks2203::new());
+    let mut chip = Ym2203::new();
     chip.reset();
     chip.set_fidelity(YmfmOpnFidelity::Max);
     add_ssg_bg_2203(&mut chip);
@@ -262,7 +262,7 @@ fn channel2_multi_freq_mode() {
 
 #[test]
 fn csm_mode_timer_a_triggers_keyon() {
-    let mut chip = Ym2203::new(RecordingCallbacks2203::new());
+    let mut chip = Ym2203::new();
     chip.reset();
     chip.set_fidelity(YmfmOpnFidelity::Max);
     add_ssg_bg_2203(&mut chip);

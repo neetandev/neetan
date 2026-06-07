@@ -1,13 +1,10 @@
 //! Creative Sound Blaster 16 for PC-98 (CT2720): YMF262 (OPL3) + CT1741 DSP + CT1745 mixer.
 
-use std::{
-    cell::{Cell, RefCell},
-    collections::VecDeque,
-};
+use std::collections::VecDeque;
 
 use common::EventKind;
 use resampler::{Attenuation, Latency, ResamplerFir};
-use ymfm_oxide::{OplCallbacks, Ymf262, YmfmOutput4};
+use ymfm_oxide::{Ymf262, YmfmOutput4, YmfmTimerUpdate};
 
 use crate::soundboard_26k::FmSampleRemainder;
 
@@ -231,59 +228,6 @@ impl Default for SoundBlaster16State {
     }
 }
 
-enum PendingChipAction {
-    SetTimer {
-        timer_id: u32,
-        duration_in_clocks: i32,
-    },
-    UpdateIrq {
-        asserted: bool,
-    },
-}
-
-struct Opl3Bridge {
-    current_cycle: Cell<u64>,
-    busy_end_cycle: Cell<u64>,
-    cpu_clock_hz: u32,
-    pending: RefCell<Vec<PendingChipAction>>,
-}
-
-impl Opl3Bridge {
-    fn new(cpu_clock_hz: u32) -> Self {
-        Self {
-            current_cycle: Cell::new(0),
-            busy_end_cycle: Cell::new(0),
-            cpu_clock_hz,
-            pending: RefCell::new(Vec::new()),
-        }
-    }
-}
-
-impl OplCallbacks for Opl3Bridge {
-    fn set_timer(&self, timer_id: u32, duration_in_clocks: i32) {
-        self.pending.borrow_mut().push(PendingChipAction::SetTimer {
-            timer_id,
-            duration_in_clocks,
-        });
-    }
-
-    fn set_busy_end(&self, clocks: u32) {
-        let cpu_clocks = u64::from(clocks) * u64::from(self.cpu_clock_hz) / u64::from(YMF262_CLOCK);
-        self.busy_end_cycle
-            .set(self.current_cycle.get() + cpu_clocks);
-    }
-
-    fn is_busy(&self) -> bool {
-        self.current_cycle < self.busy_end_cycle
-    }
-
-    fn update_irq(&self, asserted: bool) {
-        self.pending
-            .borrow_mut()
-            .push(PendingChipAction::UpdateIrq { asserted });
-    }
-}
-
 /// Actions emitted by the SB16 device for the bus to apply.
 #[derive(Clone, Copy)]
 pub enum SoundboardSb16Action {
@@ -361,7 +305,8 @@ fn dsp_params_needed(cmd: u8) -> u8 {
 pub struct SoundBlaster16 {
     /// Current device state (saveable).
     pub state: SoundBlaster16State,
-    opl3: Ymf262<Opl3Bridge>,
+    opl3: Ymf262,
+    opl3_action_cycle: u64,
     opl3_native_rate: u32,
     opl3_native_buffer: Vec<YmfmOutput4>,
     opl3_pending_native: Vec<YmfmOutput4>,
@@ -382,8 +327,7 @@ pub struct SoundBlaster16 {
 impl SoundBlaster16 {
     /// Creates a new SB16 sound board instance.
     pub fn new(cpu_clock_hz: u32, sample_rate: u32) -> Self {
-        let bridge = Opl3Bridge::new(cpu_clock_hz);
-        let mut opl3 = Ymf262::new(bridge);
+        let mut opl3 = Ymf262::new();
         opl3.reset();
 
         let opl3_native_rate = opl3.sample_rate(YMF262_CLOCK);
@@ -408,6 +352,7 @@ impl SoundBlaster16 {
         Self {
             state: SoundBlaster16State::default(),
             opl3,
+            opl3_action_cycle: 0,
             opl3_native_rate,
             opl3_native_buffer: vec![YmfmOutput4 { data: [0; 4] }; 4096],
             opl3_pending_native: Vec::new(),
@@ -459,10 +404,18 @@ impl SoundBlaster16 {
             .extend_from_slice(&self.opl3_native_buffer[..native_count]);
     }
 
+    fn apply_opl3_busy(&mut self, busy_clocks: u32, current_cycle: u64) {
+        if busy_clocks != 0 {
+            let cpu_clocks =
+                u64::from(busy_clocks) * u64::from(self.cpu_clock_hz) / u64::from(YMF262_CLOCK);
+            self.state.busy_end_cycle = current_cycle + cpu_clocks;
+        }
+    }
+
     /// Reads the OPL3 status register.
     pub fn read_opl3_status(&mut self, current_cycle: u64) -> u8 {
         self.sync_to_cycle(current_cycle);
-        self.opl3.callbacks_mut().current_cycle.set(current_cycle);
+        self.opl3_action_cycle = current_cycle;
         self.opl3.read_status()
     }
 
@@ -470,23 +423,26 @@ impl SoundBlaster16 {
     pub fn write_opl3_address_lo(&mut self, value: u8, current_cycle: u64) {
         self.state.opl3_address = value as u16;
         self.sync_to_cycle(current_cycle);
-        self.opl3.callbacks_mut().current_cycle.set(current_cycle);
-        self.opl3.write_address(value);
+        self.opl3_action_cycle = current_cycle;
+        let busy_clocks = self.opl3.write_address(value);
+        self.apply_opl3_busy(busy_clocks, current_cycle);
     }
 
     /// Writes OPL3 data to the previously latched register.
     pub fn write_opl3_data(&mut self, value: u8, current_cycle: u64) {
         self.sync_to_cycle(current_cycle);
-        self.opl3.callbacks_mut().current_cycle.set(current_cycle);
-        self.opl3.write_data(value);
+        self.opl3_action_cycle = current_cycle;
+        let busy_clocks = self.opl3.write_data(value);
+        self.apply_opl3_busy(busy_clocks, current_cycle);
     }
 
     /// Writes the OPL3 high-bank address latch.
     pub fn write_opl3_address_hi(&mut self, value: u8, current_cycle: u64) {
         self.sync_to_cycle(current_cycle);
-        self.opl3.callbacks_mut().current_cycle.set(current_cycle);
-        self.opl3.write_address_hi(value);
-        self.state.opl3_address = self.opl3.callbacks().current_cycle.get() as u16; // Unused; store high address differently
+        self.opl3_action_cycle = current_cycle;
+        let busy_clocks = self.opl3.write_address_hi(value);
+        self.apply_opl3_busy(busy_clocks, current_cycle);
+        self.state.opl3_address = 0x100 | u16::from(value);
         // The Ymf262 internally manages the full address; we just track the raw write.
     }
 
@@ -975,7 +931,7 @@ impl SoundBlaster16 {
     /// Notifies the OPL3 chip that a timer has expired.
     pub fn timer_expired(&mut self, timer_id: u32, current_cycle: u64) {
         self.sync_to_cycle(current_cycle);
-        self.opl3.callbacks_mut().current_cycle.set(current_cycle);
+        self.opl3_action_cycle = current_cycle;
         self.opl3.timer_expired(timer_id);
     }
 
@@ -1035,47 +991,37 @@ impl SoundBlaster16 {
         }
     }
 
-    /// Drains pending actions from the OPL3 bridge and DSP.
+    /// Drains pending actions from OPL3 and DSP.
     pub fn drain_actions(&mut self) -> &[SoundboardSb16Action] {
         self.action_buffer.clear();
 
-        let bridge = self.opl3.callbacks_mut();
-        self.state.busy_end_cycle = bridge.busy_end_cycle.get();
-        let current_cycle = bridge.current_cycle.get();
-        let cpu_clock_hz = bridge.cpu_clock_hz;
+        let current_cycle = self.opl3_action_cycle;
+        let cpu_clock_hz = self.cpu_clock_hz;
 
         let was_merged = self.state.irq_asserted;
 
-        // Drain OPL3 bridge actions
-        for pending in bridge.pending.borrow_mut().drain(..) {
-            match pending {
-                PendingChipAction::SetTimer {
-                    timer_id,
-                    duration_in_clocks,
-                } => {
-                    let kind = if timer_id == 0 {
-                        EventKind::Sb16OplTimerA
-                    } else {
-                        EventKind::Sb16OplTimerB
-                    };
-                    if duration_in_clocks < 0 {
-                        self.action_buffer
-                            .push(SoundboardSb16Action::CancelTimer { kind });
-                    } else {
-                        let cpu_cycles = u64::from(duration_in_clocks as u32)
-                            * u64::from(cpu_clock_hz)
-                            / u64::from(YMF262_CLOCK);
-                        self.action_buffer
-                            .push(SoundboardSb16Action::ScheduleTimer {
-                                kind,
-                                fire_cycle: current_cycle + cpu_cycles,
-                            });
-                    }
-                }
-                PendingChipAction::UpdateIrq { asserted } => {
-                    self.state.opl3_irq_asserted = asserted;
+        for (timer_id, kind) in [(0, EventKind::Sb16OplTimerA), (1, EventKind::Sb16OplTimerB)] {
+            let Some(update) = self.opl3.take_timer_update(timer_id) else {
+                continue;
+            };
+            match update {
+                YmfmTimerUpdate::Cancel => self
+                    .action_buffer
+                    .push(SoundboardSb16Action::CancelTimer { kind }),
+                YmfmTimerUpdate::Schedule(duration_in_clocks) => {
+                    let cpu_cycles = u64::from(duration_in_clocks) * u64::from(cpu_clock_hz)
+                        / u64::from(YMF262_CLOCK);
+                    self.action_buffer
+                        .push(SoundboardSb16Action::ScheduleTimer {
+                            kind,
+                            fire_cycle: current_cycle + cpu_cycles,
+                        });
                 }
             }
+        }
+
+        if let Some(asserted) = self.opl3.take_irq_update() {
+            self.state.opl3_irq_asserted = asserted;
         }
 
         // Drain DSP actions
@@ -1352,10 +1298,9 @@ impl SoundBlaster16 {
         self.pending_dsp_actions.clear();
         self.pcm_rate_dirty = false;
 
-        let bridge = Opl3Bridge::new(cpu_clock_hz);
-        bridge.busy_end_cycle.set(self.state.busy_end_cycle);
-        bridge.current_cycle.set(current_cycle);
-        self.opl3 = Ymf262::new(bridge);
+        self.cpu_clock_hz = cpu_clock_hz;
+        self.opl3_action_cycle = current_cycle;
+        self.opl3 = Ymf262::new();
         self.opl3.reset();
         self.opl3_native_rate = self.opl3.sample_rate(YMF262_CLOCK);
         self.opl3_resampler = ResamplerFir::new_from_hz(

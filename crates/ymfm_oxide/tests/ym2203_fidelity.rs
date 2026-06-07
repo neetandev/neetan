@@ -1,13 +1,13 @@
 mod common;
 
 use common::harness::*;
-use ymfm_oxide::{NoCallbacks, Ym2203, YmfmOpnFidelity};
+use ymfm_oxide::{Ym2203, YmfmOpnFidelity};
 
 const YM2203_CLOCK: u32 = 3_993_600;
 
 #[test]
 fn sample_rate_max() {
-    let mut chip = Ym2203::new(NoCallbacks);
+    let mut chip = Ym2203::new();
     chip.reset();
     chip.set_fidelity(YmfmOpnFidelity::Max);
     assert_eq!(chip.sample_rate(YM2203_CLOCK), 998_400);
@@ -15,7 +15,7 @@ fn sample_rate_max() {
 
 #[test]
 fn sample_rate_med() {
-    let mut chip = Ym2203::new(NoCallbacks);
+    let mut chip = Ym2203::new();
     chip.reset();
     chip.set_fidelity(YmfmOpnFidelity::Med);
     assert_eq!(chip.sample_rate(YM2203_CLOCK), 332_800);
@@ -23,7 +23,7 @@ fn sample_rate_med() {
 
 #[test]
 fn sample_rate_min() {
-    let mut chip = Ym2203::new(NoCallbacks);
+    let mut chip = Ym2203::new();
     chip.reset();
     chip.set_fidelity(YmfmOpnFidelity::Min);
     assert_eq!(chip.sample_rate(YM2203_CLOCK), 166_400);
@@ -31,7 +31,7 @@ fn sample_rate_min() {
 
 #[test]
 fn sample_rate_default_is_max() {
-    let mut chip = Ym2203::new(NoCallbacks);
+    let mut chip = Ym2203::new();
     chip.reset();
     // Default fidelity should be Max
     assert_eq!(chip.sample_rate(YM2203_CLOCK), 998_400);
@@ -62,7 +62,7 @@ fn fidelity_output_differs() {
 
 #[test]
 fn sample_rate_various_clocks() {
-    let mut chip = Ym2203::new(NoCallbacks);
+    let mut chip = Ym2203::new();
     chip.reset();
     chip.set_fidelity(YmfmOpnFidelity::Max);
 

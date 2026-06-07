@@ -1,10 +1,8 @@
 //! PC-9801-26K sound board: YM2203 (OPN) FM + SSG synthesis with resampling.
 
-use std::cell::{Cell, RefCell};
-
 use common::EventKind;
 use resampler::{Attenuation, Latency, ResamplerFir};
-use ymfm_oxide::{Ym2203, Ym2203Callbacks, YmfmOpnFidelity, YmfmOutput4};
+use ymfm_oxide::{Ym2203, YmfmOpnFidelity, YmfmOutput4, YmfmTimerUpdate};
 
 /// YM2203 input clock: 15.9744 MHz / 4 = 3,993,600 Hz.
 const YM2203_CLOCK: u32 = 3_993_600;
@@ -61,69 +59,6 @@ impl Default for Soundboard26kState {
     }
 }
 
-enum PendingChipAction {
-    SetTimer {
-        timer_id: u32,
-        duration_in_clocks: i32,
-    },
-    UpdateIrq {
-        asserted: bool,
-    },
-}
-
-struct ChipBridge {
-    current_cycle: Cell<u64>,
-    busy_end_cycle: Cell<u64>,
-    cpu_clock_hz: Cell<u32>,
-    timer_a_kind: EventKind,
-    timer_b_kind: EventKind,
-    pending: RefCell<Vec<PendingChipAction>>,
-}
-
-impl ChipBridge {
-    fn new(cpu_clock_hz: u32, alternate_timers: bool) -> Self {
-        let (timer_a_kind, timer_b_kind) = if alternate_timers {
-            (EventKind::FmTimer2A, EventKind::FmTimer2B)
-        } else {
-            (EventKind::FmTimerA, EventKind::FmTimerB)
-        };
-        Self {
-            current_cycle: Cell::new(0),
-            busy_end_cycle: Cell::new(0),
-            cpu_clock_hz: Cell::new(cpu_clock_hz),
-            timer_a_kind,
-            timer_b_kind,
-            pending: RefCell::new(Vec::new()),
-        }
-    }
-}
-
-impl Ym2203Callbacks for ChipBridge {
-    fn set_timer(&self, timer_id: u32, duration_in_clocks: i32) {
-        self.pending.borrow_mut().push(PendingChipAction::SetTimer {
-            timer_id,
-            duration_in_clocks,
-        });
-    }
-
-    fn set_busy_end(&self, clocks: u32) {
-        let cpu_clocks =
-            u64::from(clocks) * u64::from(self.cpu_clock_hz.get()) / u64::from(YM2203_CLOCK);
-        self.busy_end_cycle
-            .set(self.current_cycle.get() + cpu_clocks);
-    }
-
-    fn is_busy(&self) -> bool {
-        self.current_cycle < self.busy_end_cycle
-    }
-
-    fn update_irq(&self, asserted: bool) {
-        self.pending
-            .borrow_mut()
-            .push(PendingChipAction::UpdateIrq { asserted });
-    }
-}
-
 /// Action the bus must process after a sound board operation.
 #[derive(Clone, Copy)]
 pub enum Soundboard26kAction {
@@ -155,8 +90,9 @@ pub enum Soundboard26kAction {
 pub struct Soundboard26k {
     /// Current device state (saveable).
     pub state: Soundboard26kState,
-    chip: Ym2203<ChipBridge>,
+    chip: Ym2203,
     cpu_clock_hz: u32,
+    chip_action_cycle: u64,
     native_rate: u32,
     sample_rate: u32,
     native_buffer: Vec<YmfmOutput4>,
@@ -173,8 +109,7 @@ impl Soundboard26k {
     /// When `alternate_timers` is `true`, uses `FmTimer2A`/`FmTimer2B` event
     /// kinds instead of `FmTimerA`/`FmTimerB` (for dual-board configurations).
     pub fn new(cpu_clock_hz: u32, sample_rate: u32, alternate_timers: bool) -> Self {
-        let bridge = ChipBridge::new(cpu_clock_hz, alternate_timers);
-        let mut chip = Ym2203::new(bridge);
+        let mut chip = Ym2203::new();
         chip.reset();
         chip.set_fidelity(FIDELITY);
 
@@ -197,6 +132,7 @@ impl Soundboard26k {
             state,
             chip,
             cpu_clock_hz,
+            chip_action_cycle: 0,
             native_rate,
             sample_rate,
             native_buffer: vec![YmfmOutput4 { data: [0; 4] }; 4096],
@@ -206,6 +142,27 @@ impl Soundboard26k {
             resample_output: vec![0.0; resample_output_size],
             action_buffer: Vec::new(),
         }
+    }
+
+    const fn timer_kind(&self, timer_id: u8) -> EventKind {
+        match (self.state.alternate_timers, timer_id) {
+            (true, 0) => EventKind::FmTimer2A,
+            (true, _) => EventKind::FmTimer2B,
+            (false, 0) => EventKind::FmTimerA,
+            (false, _) => EventKind::FmTimerB,
+        }
+    }
+
+    fn apply_busy(&mut self, busy_clocks: u32, current_cycle: u64) {
+        if busy_clocks != 0 {
+            let cpu_clocks =
+                u64::from(busy_clocks) * u64::from(self.cpu_clock_hz) / u64::from(YM2203_CLOCK);
+            self.state.busy_end_cycle = current_cycle + cpu_clocks;
+        }
+    }
+
+    fn busy_at(&self, current_cycle: u64) -> bool {
+        current_cycle < self.state.busy_end_cycle
     }
 
     /// Returns the currently latched register address.
@@ -260,8 +217,8 @@ impl Soundboard26k {
     /// Reads the chip status register (port 0x0188 read).
     pub fn read_status(&mut self, current_cycle: u64) -> u8 {
         self.sync_to_cycle(current_cycle);
-        self.chip.callbacks_mut().current_cycle.set(current_cycle);
-        self.chip.read_status()
+        self.chip_action_cycle = current_cycle;
+        self.chip.read_status(self.busy_at(current_cycle))
     }
 
     /// Reads data from the currently addressed register (port 0x018A read).
@@ -269,7 +226,7 @@ impl Soundboard26k {
     /// Caller must call `drain_actions()` afterward.
     pub fn read_data(&mut self, current_cycle: u64) -> u8 {
         self.sync_to_cycle(current_cycle);
-        self.chip.callbacks_mut().current_cycle.set(current_cycle);
+        self.chip_action_cycle = current_cycle;
         self.chip.read_data()
     }
 
@@ -279,8 +236,9 @@ impl Soundboard26k {
     pub fn write_address(&mut self, value: u8, current_cycle: u64) {
         self.state.address = value;
         self.sync_to_cycle(current_cycle);
-        self.chip.callbacks_mut().current_cycle.set(current_cycle);
-        self.chip.write_address(value);
+        self.chip_action_cycle = current_cycle;
+        let busy_clocks = self.chip.write_address(value);
+        self.apply_busy(busy_clocks, current_cycle);
     }
 
     /// Writes data to the currently addressed register (port 0x018A write).
@@ -288,8 +246,9 @@ impl Soundboard26k {
     /// Caller must call `drain_actions()` afterward.
     pub fn write_data(&mut self, value: u8, current_cycle: u64) {
         self.sync_to_cycle(current_cycle);
-        self.chip.callbacks_mut().current_cycle.set(current_cycle);
-        self.chip.write_data(value);
+        self.chip_action_cycle = current_cycle;
+        let busy_clocks = self.chip.write_data(value);
+        self.apply_busy(busy_clocks, current_cycle);
     }
 
     /// Notifies the chip that a timer has expired.
@@ -297,61 +256,48 @@ impl Soundboard26k {
     /// Caller must call `drain_actions()` afterward.
     pub fn timer_expired(&mut self, timer_id: u32, current_cycle: u64) {
         self.sync_to_cycle(current_cycle);
-        self.chip.callbacks_mut().current_cycle.set(current_cycle);
+        self.chip_action_cycle = current_cycle;
         self.chip.timer_expired(timer_id);
     }
 
-    /// Drains pending actions from the chip bridge and syncs busy state.
+    /// Drains pending actions from the chip.
     ///
     /// Returns actions the bus must process (timer scheduling and IRQ
     /// assertion/deassertion). Also updates `state.busy_end_cycle` and
     /// `state.irq_asserted` internally.
     pub fn drain_actions(&mut self) -> &[Soundboard26kAction] {
         self.action_buffer.clear();
-        let bridge = self.chip.callbacks_mut();
-        self.state.busy_end_cycle = bridge.busy_end_cycle.get();
-        let current_cycle = bridge.current_cycle.get();
-        let cpu_clock_hz = bridge.cpu_clock_hz.get();
+        let current_cycle = self.chip_action_cycle;
 
-        let timer_a_kind = bridge.timer_a_kind;
-        let timer_b_kind = bridge.timer_b_kind;
+        for (timer_id, kind) in [(0, self.timer_kind(0)), (1, self.timer_kind(1))] {
+            let Some(update) = self.chip.take_timer_update(timer_id) else {
+                continue;
+            };
+            match update {
+                YmfmTimerUpdate::Cancel => self
+                    .action_buffer
+                    .push(Soundboard26kAction::CancelTimer { kind }),
+                YmfmTimerUpdate::Schedule(duration_in_clocks) => {
+                    let cpu_cycles = u64::from(duration_in_clocks) * u64::from(self.cpu_clock_hz)
+                        / u64::from(YM2203_CLOCK);
+                    self.action_buffer.push(Soundboard26kAction::ScheduleTimer {
+                        kind,
+                        fire_cycle: current_cycle + cpu_cycles,
+                    });
+                }
+            }
+        }
 
-        for pending in bridge.pending.borrow_mut().drain(..) {
-            match pending {
-                PendingChipAction::SetTimer {
-                    timer_id,
-                    duration_in_clocks,
-                } => {
-                    let kind = if timer_id == 0 {
-                        timer_a_kind
-                    } else {
-                        timer_b_kind
-                    };
-                    if duration_in_clocks < 0 {
-                        self.action_buffer
-                            .push(Soundboard26kAction::CancelTimer { kind });
-                    } else {
-                        let cpu_cycles = u64::from(duration_in_clocks as u32)
-                            * u64::from(cpu_clock_hz)
-                            / u64::from(YM2203_CLOCK);
-                        self.action_buffer.push(Soundboard26kAction::ScheduleTimer {
-                            kind,
-                            fire_cycle: current_cycle + cpu_cycles,
-                        });
-                    }
-                }
-                PendingChipAction::UpdateIrq { asserted } => {
-                    self.state.irq_asserted = asserted;
-                    if asserted {
-                        self.action_buffer.push(Soundboard26kAction::AssertIrq {
-                            irq: self.state.irq_line,
-                        });
-                    } else {
-                        self.action_buffer.push(Soundboard26kAction::DeassertIrq {
-                            irq: self.state.irq_line,
-                        });
-                    }
-                }
+        if let Some(asserted) = self.chip.take_irq_update() {
+            self.state.irq_asserted = asserted;
+            if asserted {
+                self.action_buffer.push(Soundboard26kAction::AssertIrq {
+                    irq: self.state.irq_line,
+                });
+            } else {
+                self.action_buffer.push(Soundboard26kAction::DeassertIrq {
+                    irq: self.state.irq_line,
+                });
             }
         }
         self.action_buffer.as_slice()
@@ -479,10 +425,9 @@ impl Soundboard26k {
     ) {
         self.state = saved.clone();
         // TODO: Save/restore ymfm internal state
-        let bridge = ChipBridge::new(cpu_clock_hz, self.state.alternate_timers);
-        bridge.busy_end_cycle.set(self.state.busy_end_cycle);
-        bridge.current_cycle.set(current_cycle);
-        self.chip = Ym2203::new(bridge);
+        self.chip_action_cycle = current_cycle;
+        self.cpu_clock_hz = cpu_clock_hz;
+        self.chip = Ym2203::new();
         self.chip.reset();
         self.chip.set_fidelity(FIDELITY);
         self.native_rate = self.chip.sample_rate(YM2203_CLOCK);
