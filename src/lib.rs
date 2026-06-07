@@ -909,7 +909,7 @@ fn host_local_time_bcd() -> [u8; 6] {
     [year, month_dow, day, hour, minute, second]
 }
 
-fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+pub fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
     let model = config.machine;
 
     info!("Selected machine model {model}");
