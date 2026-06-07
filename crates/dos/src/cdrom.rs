@@ -19,6 +19,15 @@ const STATUS_DONE: u16 = 0x0100;
 /// Status word: error flag.
 const STATUS_ERROR: u16 = 0x8000;
 
+fn status_to_result(status: u16) -> Result<(), u16> {
+    if status & STATUS_ERROR != 0 {
+        let error = status & 0x00FF;
+        Err(if error == 0 { 0x0001 } else { error })
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) struct MscdexState {
     /// Device driver name (8 bytes, space-padded).
     pub device_name: Vec<u8>,
@@ -131,6 +140,24 @@ impl crate::NeetanDos {
         };
 
         memory.write_word(request_addr + 3, status);
+    }
+
+    pub(crate) fn read_cdrom_control_channel(
+        &self,
+        memory: &mut dyn MemoryAccess,
+        cdrom: &dyn CdromIo,
+        transfer_addr: u32,
+    ) -> Result<(), u16> {
+        status_to_result(self.ioctl_input(memory, cdrom, transfer_addr))
+    }
+
+    pub(crate) fn write_cdrom_control_channel(
+        &self,
+        memory: &dyn MemoryAccess,
+        cdrom: &mut dyn CdromIo,
+        transfer_addr: u32,
+    ) -> Result<(), u16> {
+        status_to_result(self.ioctl_output(memory, cdrom, transfer_addr))
     }
 
     /// IOCTL Input (command 3): dispatches by control block code.

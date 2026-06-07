@@ -117,6 +117,11 @@ fn cdrom_sft_name(device_name: &[u8]) -> [u8; 11] {
     name
 }
 
+fn sft_is_cdrom_device(memory: &dyn MemoryAccess, sft_addr: u32) -> bool {
+    memory.read_word(sft_addr + tables::SFT_ENT_DEV_PTR) == tables::DEV_CDROM_OFFSET
+        && memory.read_word(sft_addr + tables::SFT_ENT_DEV_PTR + 2) == tables::DOS_DATA_SEGMENT
+}
+
 fn read_fat_handle_metadata(
     memory: &mut dyn MemoryAccess,
     sft_addr: u32,
@@ -857,7 +862,7 @@ impl NeetanDos {
         &mut self,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
-        _disk: &mut dyn DiskIo,
+        drive: &mut dyn DriveIo,
     ) {
         let al = cpu.ax() as u8;
         let handle = cpu.bx();
@@ -895,6 +900,66 @@ impl NeetanDos {
                 })();
                 match result {
                     Ok(()) => set_iret_carry(cpu, memory, false),
+                    Err(e) => {
+                        cpu.set_ax(e);
+                        set_iret_carry(cpu, memory, true);
+                    }
+                }
+            }
+            0x02 => {
+                // Read from character-device control channel.
+                let result = (|| -> Result<u16, u16> {
+                    let sft_index = self.state.handle_to_sft_index(handle, memory)?;
+                    let sft_addr = self.state.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+                    let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
+                    if dev_info & tables::SFT_DEVINFO_CHAR == 0
+                        || dev_info & tables::SFT_DEVINFO_IOCTL == 0
+                    {
+                        return Err(0x0001);
+                    }
+                    if !sft_is_cdrom_device(memory, sft_addr) {
+                        return Err(0x0001);
+                    }
+
+                    let transfer_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
+                    self.read_cdrom_control_channel(memory, drive, transfer_addr)?;
+                    Ok(cpu.cx())
+                })();
+                match result {
+                    Ok(bytes_read) => {
+                        cpu.set_ax(bytes_read);
+                        set_iret_carry(cpu, memory, false);
+                    }
+                    Err(e) => {
+                        cpu.set_ax(e);
+                        set_iret_carry(cpu, memory, true);
+                    }
+                }
+            }
+            0x03 => {
+                // Write to character-device control channel.
+                let result = (|| -> Result<u16, u16> {
+                    let sft_index = self.state.handle_to_sft_index(handle, memory)?;
+                    let sft_addr = self.state.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+                    let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
+                    if dev_info & tables::SFT_DEVINFO_CHAR == 0
+                        || dev_info & tables::SFT_DEVINFO_IOCTL == 0
+                    {
+                        return Err(0x0001);
+                    }
+                    if !sft_is_cdrom_device(memory, sft_addr) {
+                        return Err(0x0001);
+                    }
+
+                    let transfer_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
+                    self.write_cdrom_control_channel(memory, drive, transfer_addr)?;
+                    Ok(cpu.cx())
+                })();
+                match result {
+                    Ok(bytes_written) => {
+                        cpu.set_ax(bytes_written);
+                        set_iret_carry(cpu, memory, false);
+                    }
                     Err(e) => {
                         cpu.set_ax(e);
                         set_iret_carry(cpu, memory, true);
