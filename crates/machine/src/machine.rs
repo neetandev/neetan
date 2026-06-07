@@ -341,6 +341,10 @@ impl<T: Tracing> common::Machine for Machine<cpu::VX0, T> {
         self.bus.generate_audio_samples(volume, output)
     }
 
+    fn cd_audio_status(&self) -> Option<common::CdAudioStatus> {
+        self.bus.cd_audio_status()
+    }
+
     fn font_rom_data(&self) -> &[u8] {
         self.bus.font_rom_data()
     }
@@ -417,6 +421,10 @@ impl<T: Tracing> common::Machine for Machine<cpu::I286, T> {
 
     fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
         self.bus.generate_audio_samples(volume, output)
+    }
+
+    fn cd_audio_status(&self) -> Option<common::CdAudioStatus> {
+        self.bus.cd_audio_status()
     }
 
     fn font_rom_data(&self) -> &[u8] {
@@ -497,6 +505,10 @@ impl<const CPU_MODEL: u8, T: Tracing> common::Machine for Machine<cpu::I386<CPU_
         self.bus.generate_audio_samples(volume, output)
     }
 
+    fn cd_audio_status(&self) -> Option<common::CdAudioStatus> {
+        self.bus.cd_audio_status()
+    }
+
     fn font_rom_data(&self) -> &[u8] {
         self.bus.font_rom_data()
     }
@@ -573,6 +585,10 @@ impl<T: Tracing> common::Machine for Machine<cpu::I8086, T> {
 
     fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
         self.bus.generate_audio_samples(volume, output)
+    }
+
+    fn cd_audio_status(&self) -> Option<common::CdAudioStatus> {
+        self.bus.cd_audio_status()
     }
 
     fn font_rom_data(&self) -> &[u8] {
