@@ -96,6 +96,17 @@ fn write_address(memory: &mut dyn MemoryAccess, address: u32, lba: u32, mode: u8
 }
 
 impl crate::NeetanDos {
+    pub(crate) fn cdrom_device_request(
+        &mut self,
+        memory: &mut dyn MemoryAccess,
+        cdrom: &mut dyn CdromIo,
+    ) {
+        let request_offset = memory.read_word(crate::tables::CDROM_REQUEST_PTR_ADDR) as u32;
+        let request_segment = memory.read_word(crate::tables::CDROM_REQUEST_PTR_ADDR + 2) as u32;
+        let request_addr = (request_segment << 4) + request_offset;
+        self.handle_device_request(memory, cdrom, request_addr);
+    }
+
     /// Handles a device driver request from INT 2Fh AX=1510h.
     ///
     /// The request header is at `es_bx` (ES:BX linear address).
@@ -170,9 +181,12 @@ impl crate::NeetanDos {
         let code = memory.read_byte(transfer_addr);
         match code {
             0 => {
-                // Device header address: return 0000:0000 (synthetic).
-                memory.write_word(transfer_addr + 1, 0x0000);
-                memory.write_word(transfer_addr + 3, 0x0000);
+                // Device header address.
+                memory.write_word(transfer_addr + 1, 0);
+                memory.write_word(
+                    transfer_addr + 3,
+                    crate::tables::CDROM_MIRROR_HEADER_SEGMENT,
+                );
                 STATUS_DONE
             }
             1 => {
@@ -202,7 +216,6 @@ impl crate::NeetanDos {
                 // Bit 7: supports prefetch (1=yes)
                 // Bit 8: supports audio channel manipulation (1=yes)
                 // Bit 9: supports Red Book addressing (1=yes)
-                // Bit 11: disc present (0=no disc, 1=disc present)
                 let mut flags: u32 = 0;
                 flags |= 0x02; // door unlocked
                 flags |= 0x04; // cooked + raw
@@ -210,9 +223,6 @@ impl crate::NeetanDos {
                 flags |= 0x80; // prefetch
                 flags |= 0x100; // audio channel manipulation
                 flags |= 0x200; // Red Book
-                if cdrom.cdrom_media_loaded() {
-                    flags |= 0x800;
-                }
                 memory.write_word(transfer_addr + 1, flags as u16);
                 memory.write_word(transfer_addr + 3, (flags >> 16) as u16);
                 STATUS_DONE

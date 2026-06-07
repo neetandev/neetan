@@ -263,6 +263,25 @@ pub const UMB_TRAILING_RESERVED_MCB_SEGMENT: u16 =
     UMB_SECOND_MCB_SEGMENT + UMB_BLOCK_PARAGRAPHS + 1;
 pub const UMB_TRAILING_RESERVED_PARAGRAPHS: u16 = 0x00FF;
 
+// Synthetic CD-ROM device strategy/interrupt bridge. These live after the
+// DOS swappable data area and before the first MCB. The mirror header is
+// paragraph-aligned so callers that ignore the device-header offset can still
+// call the strategy and interrupt entries through segment:0000.
+pub const CDROM_DEVICE_VECTOR: u8 = 0xEE;
+pub const CDROM_MIRROR_HEADER_OFFSET: u16 = 0x16D0;
+pub const CDROM_MIRROR_HEADER_ADDR: u32 = DOS_DATA_BASE + CDROM_MIRROR_HEADER_OFFSET as u32;
+pub const CDROM_MIRROR_HEADER_SEGMENT: u16 = DOS_DATA_SEGMENT + (CDROM_MIRROR_HEADER_OFFSET >> 4);
+pub const CDROM_REQUEST_PTR_OFFSET: u16 = 0x16CC;
+pub const CDROM_REQUEST_PTR_ADDR: u32 = DOS_DATA_BASE + CDROM_REQUEST_PTR_OFFSET as u32;
+pub const CDROM_STRATEGY_STUB_OFFSET: u16 = 0x16E4;
+pub const CDROM_STRATEGY_STUB_ADDR: u32 = DOS_DATA_BASE + CDROM_STRATEGY_STUB_OFFSET as u32;
+pub const CDROM_INTERRUPT_STUB_OFFSET: u16 = 0x16F7;
+pub const CDROM_INTERRUPT_STUB_ADDR: u32 = DOS_DATA_BASE + CDROM_INTERRUPT_STUB_OFFSET as u32;
+pub const CDROM_MIRROR_STRATEGY_OFFSET: u16 =
+    CDROM_STRATEGY_STUB_OFFSET - CDROM_MIRROR_HEADER_OFFSET;
+pub const CDROM_MIRROR_INTERRUPT_OFFSET: u16 =
+    CDROM_INTERRUPT_STUB_OFFSET - CDROM_MIRROR_HEADER_OFFSET;
+
 // EMS page frame at C0000h (4 x 16 KB physical pages)
 pub const EMS_PAGE_FRAME_SEGMENT: u16 = 0xC000;
 pub const EMS_PAGE_SIZE: u32 = 0x4000;

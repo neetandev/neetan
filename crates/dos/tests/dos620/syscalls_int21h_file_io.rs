@@ -330,10 +330,153 @@ fn ioctl_read_cdrom_control_channel_device_status() {
         device_status & 0x10 != 0,
         "Device status should report audio playback support, flags={device_status:#06X}",
     );
-    assert!(
-        device_status & 0x800 != 0,
-        "Device status should report loaded media, flags={device_status:#06X}",
+    assert_eq!(device_status & !0x0396, 0, "Reserved bits should be clear");
+}
+
+#[test]
+fn ioctl_read_cdrom_control_channel_device_header_address() {
+    let mut machine = harness::boot_hle_with_cdrom();
+
+    let handle = open_file_ap(&mut machine, b"CD_101\0");
+    let handle_lo = (handle & 0xFF) as u8;
+    let handle_hi = (handle >> 8) as u8;
+    harness::write_bytes(
+        &mut machine.bus,
+        harness::INJECT_CODE_BASE + 0x0200,
+        &[0, 0, 0, 0, 0],
     );
+
+    #[rustfmt::skip]
+    let code: Vec<u8> = vec![
+        0xBB, handle_lo, handle_hi,          // MOV BX, handle
+        0xB8, 0x02, 0x44,                   // MOV AX, 4402h
+        0xB9, 0x05, 0x00,                   // MOV CX, 5
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0102h], AX
+        0xA1, 0x01, 0x02,                   // MOV AX, [0201h]
+        0xA3, 0x04, 0x01,                   // MOV [0104h], AX
+        0xA1, 0x03, 0x02,                   // MOV AX, [0203h]
+        0xA3, 0x06, 0x01,                   // MOV [0106h], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(
+        &mut machine,
+        &code,
+        harness::INJECT_BUDGET_DISK_IO,
+    );
+
+    let bytes_read = harness::result_word(&machine.bus, 0);
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "CD-ROM device-header IOCTL should succeed, flags={flags:#06X}",
+    );
+    assert_eq!(bytes_read, 5, "IOCTL should report 5 bytes read");
+    let header_off = harness::result_word(&machine.bus, 4);
+    let header_seg = harness::result_word(&machine.bus, 6);
+    assert_eq!(
+        header_off, 0,
+        "CD-ROM header should be normalized to offset 0, got {header_off:#06X}"
+    );
+    assert_eq!(
+        header_seg,
+        tables::CDROM_MIRROR_HEADER_SEGMENT,
+        "CD-ROM header segment should point at the mirror header, got {header_seg:#06X}"
+    );
+    let header_addr = (u32::from(header_seg) << 4) + u32::from(header_off);
+    assert_eq!(
+        harness::read_word(&machine.bus, header_addr + tables::DEVHDR_OFF_STRATEGY),
+        tables::CDROM_MIRROR_STRATEGY_OFFSET
+    );
+    assert_eq!(
+        harness::read_word(&machine.bus, header_addr + tables::DEVHDR_OFF_INTERRUPT),
+        tables::CDROM_MIRROR_INTERRUPT_OFFSET
+    );
+}
+
+#[test]
+fn cdrom_device_strategy_interrupt_processes_request() {
+    let mut machine = harness::boot_hle_with_cdrom();
+
+    let base = harness::INJECT_CODE_BASE;
+    let req_off: u16 = 0x0200;
+    let req_addr = base + u32::from(req_off);
+    let ctl_off: u16 = 0x0220;
+    let ctl_addr = base + u32::from(ctl_off);
+    let seg = harness::INJECT_CODE_SEGMENT;
+
+    harness::write_bytes(&mut machine.bus, req_addr, &[26, 0, 3, 0, 0]);
+    harness::write_bytes(&mut machine.bus, req_addr + 5, &[0; 8]);
+    harness::write_bytes(
+        &mut machine.bus,
+        req_addr + 14,
+        &[
+            ctl_off as u8,
+            (ctl_off >> 8) as u8,
+            seg as u8,
+            (seg >> 8) as u8,
+        ],
+    );
+    harness::write_bytes(&mut machine.bus, ctl_addr, &[6, 0, 0, 0, 0]);
+
+    let seg_lo = (seg & 0xFF) as u8;
+    let seg_hi = (seg >> 8) as u8;
+    let req_lo = (req_off & 0xFF) as u8;
+    let req_hi = (req_off >> 8) as u8;
+    let strategy = tables::CDROM_MIRROR_STRATEGY_OFFSET;
+    let strategy_lo = (strategy & 0xFF) as u8;
+    let strategy_hi = (strategy >> 8) as u8;
+    let interrupt = tables::CDROM_MIRROR_INTERRUPT_OFFSET;
+    let interrupt_lo = (interrupt & 0xFF) as u8;
+    let interrupt_hi = (interrupt >> 8) as u8;
+    let cdrom_seg = tables::CDROM_MIRROR_HEADER_SEGMENT;
+    let cdrom_seg_lo = (cdrom_seg & 0xFF) as u8;
+    let cdrom_seg_hi = (cdrom_seg >> 8) as u8;
+    #[rustfmt::skip]
+    let code: Vec<u8> = vec![
+        0xB8, seg_lo, seg_hi,               // MOV AX, seg
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBB, req_lo, req_hi,               // MOV BX, req_off
+        0x9A, strategy_lo, strategy_hi, cdrom_seg_lo, cdrom_seg_hi,
+                                                // CALL FAR strategy
+        0x9A, interrupt_lo, interrupt_hi, cdrom_seg_lo, cdrom_seg_hi,
+                                                // CALL FAR interrupt
+        0xA1, 0x03, 0x02,                   // MOV AX, [0203h]
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0xA1, 0x21, 0x02,                   // MOV AX, [0221h]
+        0xA3, 0x02, 0x01,                   // MOV [0102h], AX
+        0xA1, 0x23, 0x02,                   // MOV AX, [0223h]
+        0xA3, 0x04, 0x01,                   // MOV [0104h], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(
+        &mut machine,
+        &code,
+        harness::INJECT_BUDGET_DISK_IO,
+    );
+
+    let request_status = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        request_status & 0x8100,
+        0x0100,
+        "CD-ROM direct request should finish without error, status={request_status:#06X}",
+    );
+
+    let flags_lo = harness::result_word(&machine.bus, 2);
+    let flags_hi = harness::result_word(&machine.bus, 4);
+    let device_status = u32::from(flags_lo) | (u32::from(flags_hi) << 16);
+    assert!(
+        device_status & 0x10 != 0,
+        "Device status should report audio playback support, flags={device_status:#06X}",
+    );
+    assert_eq!(device_status & !0x0396, 0, "Reserved bits should be clear");
 }
 
 #[test]

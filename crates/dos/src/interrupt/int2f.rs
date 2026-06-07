@@ -158,8 +158,8 @@ impl NeetanDos {
                 if cdrom.cdrom_present() {
                     let buffer_addr = cpu.linear_address(SegmentRegister::ES, cpu.bx());
                     memory.write_byte(buffer_addr, 0); // Subunit 0.
-                    memory.write_word(buffer_addr + 1, tables::DEV_CDROM_OFFSET);
-                    memory.write_word(buffer_addr + 3, tables::DOS_DATA_SEGMENT);
+                    memory.write_word(buffer_addr + 1, 0);
+                    memory.write_word(buffer_addr + 3, tables::CDROM_MIRROR_HEADER_SEGMENT);
                 }
             }
             0x02 => {

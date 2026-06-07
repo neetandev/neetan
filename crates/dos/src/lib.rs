@@ -519,6 +519,7 @@ impl NeetanDos {
         Self::install_int24h_stub(memory);
         Self::install_int5ch_stub(memory);
         Self::install_error_retriever_stub(memory);
+        Self::install_cdrom_device_stubs(memory);
 
         tracer.trace_dos_boot(DosBootStage::DosDataStructuresReady, cpu, memory);
         let drives = Self::discover_drives(memory, device);
@@ -629,6 +630,44 @@ impl NeetanDos {
         memory.write_byte(stub + 6, 0x07);
         memory.write_byte(stub + 7, 0xEE);
         memory.write_byte(stub + 8, 0xCB);
+    }
+
+    /// Installs the synthetic CD-ROM device strategy and interrupt entries.
+    ///
+    /// The strategy entry stores ES:BX as the active request header pointer.
+    /// The interrupt entry fires a BIOS HLE trap, then returns to the caller.
+    fn install_cdrom_device_stubs(memory: &mut dyn MemoryAccess) {
+        let request_off = tables::CDROM_REQUEST_PTR_OFFSET;
+        let request_seg = tables::CDROM_REQUEST_PTR_OFFSET + 2;
+
+        let strategy = tables::CDROM_STRATEGY_STUB_ADDR;
+        memory.write_byte(strategy, 0x1E);
+        memory.write_byte(strategy + 1, 0x50);
+        memory.write_byte(strategy + 2, 0xB8);
+        memory.write_word(strategy + 3, tables::DOS_DATA_SEGMENT);
+        memory.write_byte(strategy + 5, 0x8E);
+        memory.write_byte(strategy + 6, 0xD8);
+        memory.write_byte(strategy + 7, 0x8C);
+        memory.write_byte(strategy + 8, 0xC0);
+        memory.write_byte(strategy + 9, 0xA3);
+        memory.write_word(strategy + 10, request_seg);
+        memory.write_byte(strategy + 12, 0x89);
+        memory.write_byte(strategy + 13, 0x1E);
+        memory.write_word(strategy + 14, request_off);
+        memory.write_byte(strategy + 16, 0x58);
+        memory.write_byte(strategy + 17, 0x1F);
+        memory.write_byte(strategy + 18, 0xCB);
+
+        let interrupt = tables::CDROM_INTERRUPT_STUB_ADDR;
+        memory.write_byte(interrupt, 0x50);
+        memory.write_byte(interrupt + 1, 0x52);
+        memory.write_byte(interrupt + 2, 0xB0);
+        memory.write_byte(interrupt + 3, tables::CDROM_DEVICE_VECTOR);
+        memory.write_byte(interrupt + 4, 0xBA);
+        memory.write_byte(interrupt + 5, 0xF0);
+        memory.write_byte(interrupt + 6, 0x07);
+        memory.write_byte(interrupt + 7, 0xEE);
+        memory.write_byte(interrupt + 8, 0xCB);
     }
 
     /// EMS INT 67h trap stub + device name. When an app does
@@ -1172,6 +1211,10 @@ impl NeetanDos {
                 self.int2fh_122eh_retrieve_error_message(cpu, memory);
                 true
             }
+            tables::CDROM_DEVICE_VECTOR => {
+                self.cdrom_device_request(memory, device);
+                true
+            }
             0xFE => {
                 tracer.trace_xms_entry(cpu, memory);
                 self.xms_entry(cpu, memory);
@@ -1348,6 +1391,31 @@ impl NeetanDos {
             cdrom_next_off,
             DEVATTR_CHAR | DEVATTR_IOCTL,
             &cdrom_name,
+        );
+        mem.write_word(
+            base + DEV_CDROM_OFFSET as u32 + DEVHDR_OFF_STRATEGY,
+            CDROM_STRATEGY_STUB_OFFSET,
+        );
+        mem.write_word(
+            base + DEV_CDROM_OFFSET as u32 + DEVHDR_OFF_INTERRUPT,
+            CDROM_INTERRUPT_STUB_OFFSET,
+        );
+
+        write_device_header(
+            mem,
+            CDROM_MIRROR_HEADER_ADDR,
+            cdrom_next_seg,
+            cdrom_next_off,
+            DEVATTR_CHAR | DEVATTR_IOCTL,
+            &cdrom_name,
+        );
+        mem.write_word(
+            CDROM_MIRROR_HEADER_ADDR + DEVHDR_OFF_STRATEGY,
+            CDROM_MIRROR_STRATEGY_OFFSET,
+        );
+        mem.write_word(
+            CDROM_MIRROR_HEADER_ADDR + DEVHDR_OFF_INTERRUPT,
+            CDROM_MIRROR_INTERRUPT_OFFSET,
         );
 
         // XMSXXXX0 -> EMMXXXX0 (if EMS active) else end of chain

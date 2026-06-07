@@ -1107,7 +1107,7 @@ fn mscdex_ioctl_device_status() {
     let flags = flags_lo as u32 | ((flags_hi as u32) << 16);
 
     // Expected: door unlocked (0x02), cooked+raw (0x04), audio (0x10),
-    // prefetch (0x80), audio channels (0x100), red book (0x200), disc present (0x800).
+    // prefetch (0x80), audio channels (0x100), red book (0x200).
     assert!(
         flags & 0x02 != 0,
         "Device status: door unlocked bit should be set, flags={flags:#06X}"
@@ -1124,9 +1124,10 @@ fn mscdex_ioctl_device_status() {
         flags & 0x200 != 0,
         "Device status: Red Book bit should be set, flags={flags:#06X}"
     );
-    assert!(
-        flags & 0x800 != 0,
-        "Device status: disc present bit should be set, flags={flags:#06X}"
+    assert_eq!(
+        flags & !0x0396,
+        0,
+        "Device status: reserved bits should be clear, flags={flags:#06X}"
     );
 }
 
@@ -1282,12 +1283,13 @@ fn mscdex_get_drive_device_list() {
     let header_seg = harness::result_word(&machine.bus, 3);
     assert_eq!(subunit, 0, "Subunit should be 0, got {subunit}");
     assert_eq!(
-        header_off, 0x007E,
-        "Device header offset should be DEV_CDROM_OFFSET, got {header_off:#06X}"
+        header_off, 0,
+        "Device header offset should be normalized to 0, got {header_off:#06X}"
     );
     assert_eq!(
-        header_seg, 0x0200,
-        "Device header segment should be DOS_DATA_SEGMENT, got {header_seg:#06X}"
+        header_seg,
+        tables::CDROM_MIRROR_HEADER_SEGMENT,
+        "Device header segment should point at the mirror header, got {header_seg:#06X}"
     );
 }
 

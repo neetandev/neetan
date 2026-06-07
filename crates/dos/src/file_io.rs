@@ -681,8 +681,8 @@ impl NeetanDos {
         })();
 
         match result {
-            Ok(count) => {
-                cpu.set_ax(count);
+            Ok(read_count) => {
+                cpu.set_ax(read_count);
                 set_iret_carry(cpu, memory, false);
             }
             Err(error) => {
