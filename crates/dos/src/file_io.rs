@@ -103,6 +103,20 @@ fn path_is_xms_device(path: &[u8]) -> bool {
     path_is_named_device(path, b"XMSXXXX0")
 }
 
+fn path_is_cdrom_device(path: &[u8], device_name: &[u8]) -> bool {
+    let mut padded = [b' '; 8];
+    let len = device_name.len().min(8);
+    padded[..len].copy_from_slice(&device_name[..len]);
+    path_is_named_device(path, &padded)
+}
+
+fn cdrom_sft_name(device_name: &[u8]) -> [u8; 11] {
+    let mut name = [b' '; 11];
+    let len = device_name.len().min(8);
+    name[..len].copy_from_slice(&device_name[..len]);
+    name
+}
+
 fn read_fat_handle_metadata(
     memory: &mut dyn MemoryAccess,
     sft_addr: u32,
@@ -444,6 +458,21 @@ impl NeetanDos {
                     sft_index,
                     b"XMSXXXX0   ",
                     tables::DEV_XMS_OFFSET,
+                    tables::SFT_DEVINFO_DRIVER_CHAR
+                        | tables::SFT_DEVINFO_CHAR
+                        | tables::SFT_DEVINFO_EOF
+                        | tables::SFT_DEVINFO_IOCTL,
+                    open_mode as u16,
+                );
+                return Ok(handle);
+            }
+            if path_is_cdrom_device(&path, &self.state.mscdex.device_name) {
+                let (handle, sft_index) = self.state.allocate_handle(memory)?;
+                self.write_sft_for_character_device(
+                    memory,
+                    sft_index,
+                    &cdrom_sft_name(&self.state.mscdex.device_name),
+                    tables::DEV_CDROM_OFFSET,
                     tables::SFT_DEVINFO_DRIVER_CHAR
                         | tables::SFT_DEVINFO_CHAR
                         | tables::SFT_DEVINFO_EOF
