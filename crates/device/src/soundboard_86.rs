@@ -1410,7 +1410,7 @@ impl Soundboard86 {
             }
 
             const FM_SCALE: f32 = 2.0 / 32768.0;
-            const SSG_SCALE: f32 = 1.0 / 32768.0;
+            const SSG_SCALE: f32 = 0.5 / 32768.0;
 
             for i in 0..pending_count {
                 let s = &self.pending_native[i];
