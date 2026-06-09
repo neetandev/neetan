@@ -8,7 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  SLANG_VERSION: "2026.8.1"
 
 jobs:
   fmt:
@@ -32,15 +31,12 @@ jobs:
           - name: Linux x86_64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            slang_asset: slang-2026.8.1-linux-x86_64.tar.gz
           - name: Windows x86_64
             runner: windows-2025
             target: x86_64-pc-windows-msvc
-            slang_asset: slang-2026.8.1-windows-x86_64.zip
           - name: macOS aarch64 (15)
             runner: macos-15
             target: aarch64-apple-darwin
-            slang_asset: slang-2026.8.1-macos-aarch64.tar.gz
     steps:
       - uses: actions/checkout@v4
 
@@ -95,27 +91,6 @@ jobs:
       - name: Verify Vulkan SDK
         shell: bash
         run: echo "VULKAN_SDK=$VULKAN_SDK"
-
-      - name: Install slangc (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          mkdir -p "$RUNNER_TEMP/slang"
-          curl -fsSL "https://github.com/shader-slang/slang/releases/download/v${SLANG_VERSION}/${{ matrix.slang_asset }}" \
-            | tar xz -C "$RUNNER_TEMP/slang"
-          echo "$RUNNER_TEMP/slang/bin" >> "$GITHUB_PATH"
-
-      - name: Install slangc (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $url = "https://github.com/shader-slang/slang/releases/download/v$env:SLANG_VERSION/${{ matrix.slang_asset }}"
-          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\slang.zip"
-          Expand-Archive "$env:RUNNER_TEMP\slang.zip" -DestinationPath "$env:RUNNER_TEMP\slang"
-          echo "$env:RUNNER_TEMP\slang\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Verify slangc
-        shell: bash
-        run: slangc -version
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --features sdl3-build-from-source -- -D warnings

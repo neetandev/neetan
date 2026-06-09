@@ -10,7 +10,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  SLANG_VERSION: "2026.8.1"
 
 jobs:
   build-windows:
@@ -36,18 +35,6 @@ jobs:
       - name: Verify Vulkan SDK
         shell: bash
         run: echo "VULKAN_SDK=$VULKAN_SDK"
-
-      - name: Install slangc
-        shell: pwsh
-        run: |
-          $url = "https://github.com/shader-slang/slang/releases/download/v$env:SLANG_VERSION/slang-$env:SLANG_VERSION-windows-x86_64.zip"
-          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\slang.zip"
-          Expand-Archive "$env:RUNNER_TEMP\slang.zip" -DestinationPath "$env:RUNNER_TEMP\slang"
-          echo "$env:RUNNER_TEMP\slang\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Verify slangc
-        shell: bash
-        run: slangc -version
 
       - name: Build release
         run: cargo build --release --features sdl3-build-from-source
@@ -126,16 +113,6 @@ jobs:
 
       - name: Verify Vulkan SDK
         run: echo "VULKAN_SDK=$VULKAN_SDK"
-
-      - name: Install slangc
-        run: |
-          mkdir -p "$RUNNER_TEMP/slang"
-          curl -fsSL "https://github.com/shader-slang/slang/releases/download/v${SLANG_VERSION}/slang-${SLANG_VERSION}-linux-x86_64.tar.gz" \
-            | tar xz -C "$RUNNER_TEMP/slang"
-          echo "$RUNNER_TEMP/slang/bin" >> "$GITHUB_PATH"
-
-      - name: Verify slangc
-        run: slangc -version
 
       - name: Build release
         run: cargo build --release --features sdl3-build-from-source
