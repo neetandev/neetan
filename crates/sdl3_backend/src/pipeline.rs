@@ -66,49 +66,26 @@ impl PresentUniforms {
     }
 }
 
-// Per-target shader artifacts produced by build.rs.
+// Per-target shader artifacts committed under shaders/, produced by the
+// `compile_shaders` developer tool (cargo run -p sdl3_backend --bin compile_shaders).
 #[cfg(target_os = "windows")]
 mod shader_bytes {
-    pub(super) const VERT_DXIL: &[u8] = include_bytes!(concat!(
-        env!("OUT_DIR"),
-        "/shaders_compiled/passes/present/present.vert.dxil"
-    ));
-    pub(super) const FRAG_DXIL: &[u8] = include_bytes!(concat!(
-        env!("OUT_DIR"),
-        "/shaders_compiled/passes/present/present.frag.dxil"
-    ));
-    pub(super) const VERT_SPIRV: &[u8] = include_bytes!(concat!(
-        env!("OUT_DIR"),
-        "/shaders_compiled/passes/present/present.vert.spv"
-    ));
-    pub(super) const FRAG_SPIRV: &[u8] = include_bytes!(concat!(
-        env!("OUT_DIR"),
-        "/shaders_compiled/passes/present/present.frag.spv"
-    ));
+    pub(super) const VERT_DXIL: &[u8] = include_bytes!("../shaders/present.vert.dxil");
+    pub(super) const FRAG_DXIL: &[u8] = include_bytes!("../shaders/present.frag.dxil");
+    pub(super) const VERT_SPIRV: &[u8] = include_bytes!("../shaders/present.vert.spv");
+    pub(super) const FRAG_SPIRV: &[u8] = include_bytes!("../shaders/present.frag.spv");
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod shader_bytes {
-    pub(super) const VERT_METALLIB: &[u8] = include_bytes!(concat!(
-        env!("OUT_DIR"),
-        "/shaders_compiled/passes/present/present.vert.metallib"
-    ));
-    pub(super) const FRAG_METALLIB: &[u8] = include_bytes!(concat!(
-        env!("OUT_DIR"),
-        "/shaders_compiled/passes/present/present.frag.metallib"
-    ));
+    pub(super) const VERT_METALLIB: &[u8] = include_bytes!("../shaders/present.vert.metallib");
+    pub(super) const FRAG_METALLIB: &[u8] = include_bytes!("../shaders/present.frag.metallib");
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios")))]
 mod shader_bytes {
-    pub(super) const VERT_SPIRV: &[u8] = include_bytes!(concat!(
-        env!("OUT_DIR"),
-        "/shaders_compiled/passes/present/present.vert.spv"
-    ));
-    pub(super) const FRAG_SPIRV: &[u8] = include_bytes!(concat!(
-        env!("OUT_DIR"),
-        "/shaders_compiled/passes/present/present.frag.spv"
-    ));
+    pub(super) const VERT_SPIRV: &[u8] = include_bytes!("../shaders/present.vert.spv");
+    pub(super) const FRAG_SPIRV: &[u8] = include_bytes!("../shaders/present.frag.spv");
 }
 
 /// Selects the shader format that the device accepts and returns the matching bytecode.
@@ -149,7 +126,7 @@ fn pick_shader_bytecode(
 
     let _ = formats;
     Err(Error::Message(common::StringError(
-        "SDL3 GPU device does not accept any shader format produced by build.rs".to_string(),
+        "SDL3 GPU device does not accept any shader format produced by compile_shaders".to_string(),
     )))
 }
 

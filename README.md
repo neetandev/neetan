@@ -373,7 +373,6 @@ available host key names, PC-98 key names, and the default mappings.
 
 * [Rust 1.95](https://rustup.rs/)
 * [SDL3](https://github.com/libsdl-org/SDL) (See [sdl3_sys descriptio](https://docs.rs/sdl3-sys/latest/sdl3_sys/#usage))
-* [slang](https://github.com/shader-slang/slang/)
 
 ## Acknowledgement
 
