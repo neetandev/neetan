@@ -7,10 +7,18 @@
 
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
+#![cfg_attr(not(any(test, feature = "std")), no_std)]
+
+extern crate alloc;
+
+#[cfg(feature = "std")]
+use alloc::string::ToString;
+use alloc::{boxed::Box, format, string::String};
 
 mod dos;
 pub mod error;
 mod jis;
+#[cfg(feature = "std")]
 pub mod log;
 mod stack_vec;
 mod text_extractor;
@@ -71,8 +79,8 @@ pub enum CpuMode {
     High,
 }
 
-impl std::fmt::Display for CpuMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for CpuMode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Low => f.write_str("low"),
             Self::High => f.write_str("high"),
@@ -80,7 +88,7 @@ impl std::fmt::Display for CpuMode {
     }
 }
 
-impl std::str::FromStr for CpuMode {
+impl core::str::FromStr for CpuMode {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -414,8 +422,8 @@ impl MachineModel {
     }
 }
 
-impl std::fmt::Display for MachineModel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for MachineModel {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::PC9801F => f.write_str("PC9801F"),
             Self::PC9801VM => f.write_str("PC9801VM"),
@@ -427,7 +435,7 @@ impl std::fmt::Display for MachineModel {
     }
 }
 
-impl std::str::FromStr for MachineModel {
+impl core::str::FromStr for MachineModel {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -1157,6 +1165,7 @@ pub trait Machine {
 
     /// Inserts a floppy disk image into the specified drive (0-based).
     /// Reads the file, auto-detects format, and inserts. Returns a description string on success.
+    #[cfg(feature = "std")]
     fn insert_floppy(&mut self, drive: usize, path: &std::path::Path) -> Result<String, String>;
 
     /// Ejects the floppy disk from the specified drive, flushing any dirty data first.
@@ -1167,6 +1176,7 @@ pub trait Machine {
     /// files, and inserts. Returns a description string on success.
     ///
     /// The default returns an error for machines without a CD-ROM drive.
+    #[cfg(feature = "std")]
     fn insert_cdrom(&mut self, _path: &std::path::Path) -> Result<String, String> {
         Err("CD-ROM is not supported on this machine".to_string())
     }
@@ -1440,6 +1450,7 @@ mod tests {
             &self.font_rom
         }
 
+        #[cfg(feature = "std")]
         fn insert_floppy(
             &mut self,
             _drive: usize,
@@ -1460,6 +1471,7 @@ mod tests {
             font_rom: Vec::new(),
         };
 
+        #[cfg(feature = "std")]
         assert!(
             machine
                 .insert_cdrom(std::path::Path::new("image.cue"))

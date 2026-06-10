@@ -12,7 +12,7 @@ mod rep;
 mod state;
 mod string_ops;
 
-use std::ops::{Deref, DerefMut};
+use core::ops::{Deref, DerefMut};
 
 use biu::{
     ADDRESS_MASK, BusPendingType, BusStatus, FetchState, OperandSize, QUEUE_SIZE, QueueOp,

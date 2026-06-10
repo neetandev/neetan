@@ -23,6 +23,8 @@ mod avx2;
 #[allow(unsafe_code)]
 mod neon;
 
+use alloc::boxed::Box;
+
 use super::{
     GdcGraphicsInput, GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer,
     TEXT_CELL_COUNT,

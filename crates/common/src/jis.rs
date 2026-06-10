@@ -2,6 +2,8 @@
 
 mod tables;
 
+use alloc::{string::String, vec::Vec};
+
 use tables::{ANK_TO_UNICODE, JIS_TO_UNICODE, UNICODE_TO_JIS};
 
 /// A character in JIS encoding as used by the PC-98 text VRAM.

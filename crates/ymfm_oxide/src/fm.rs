@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::{
     helpers::{bit, bitfield, clamp},
     sys::YmfmTimerUpdate,

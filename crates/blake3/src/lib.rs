@@ -12,6 +12,7 @@
 //! hasher.finalize(&mut extended_hash);
 //! assert_eq!(hash, extended_hash[..32]);
 //! ```
+#![cfg_attr(not(test), no_std)]
 
 use core::cmp::min;
 

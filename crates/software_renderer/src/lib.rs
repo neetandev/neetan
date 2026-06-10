@@ -2,7 +2,12 @@
 
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
+#![cfg_attr(not(any(test, feature = "std")), no_std)]
 
+extern crate alloc;
+
+use alloc::{boxed::Box, vec};
+#[cfg(feature = "std")]
 use std::{
     fs::File,
     io::{self, BufWriter, Write},
@@ -260,6 +265,7 @@ impl SoftwareRenderer {
 
     /// Writes the top-left `width * height` region of a packed RGBA framebuffer
     /// to a binary PPM (P6) file.
+    #[cfg(feature = "std")]
     pub fn write_ppm(
         path: impl AsRef<Path>,
         framebuffer: &[u8],
@@ -287,9 +293,13 @@ impl SoftwareRenderer {
 }
 
 pub(crate) fn detect_simd() -> bool {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", feature = "std"))]
     {
         is_x86_feature_detected!("avx2")
+    }
+    #[cfg(all(target_arch = "x86_64", not(feature = "std")))]
+    {
+        cfg!(target_feature = "avx2")
     }
     #[cfg(target_arch = "aarch64")]
     {

@@ -24,7 +24,7 @@ mod rep;
 mod state;
 mod string_ops;
 
-use std::ops::{Deref, DerefMut};
+use core::ops::{Deref, DerefMut};
 
 use common::{Cpu as _, likely, unlikely};
 pub use flags::I386Flags;

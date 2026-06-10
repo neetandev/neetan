@@ -20,7 +20,7 @@ mod state;
 mod string_ops;
 mod timing;
 
-use std::ops::{Deref, DerefMut};
+use core::ops::{Deref, DerefMut};
 
 use common::Cpu as _;
 pub use flags::I286Flags;
