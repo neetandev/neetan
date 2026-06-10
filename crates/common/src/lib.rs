@@ -445,28 +445,6 @@ impl std::str::FromStr for MachineModel {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{CpuMode, MachineModel};
-
-    #[test]
-    fn machine_cpu_clock_hz_uses_cpu_mode_for_pc9801_models() {
-        let cases = [
-            (MachineModel::PC9801F, 5_000_000, 8_000_000),
-            (MachineModel::PC9801VM, 8_000_000, 10_000_000),
-            (MachineModel::PC9801VX, 8_000_000, 10_000_000),
-            (MachineModel::PC9801RA, 16_000_000, 20_000_000),
-            (MachineModel::PC9821AS, 33_000_000, 33_000_000),
-            (MachineModel::PC9821AP, 66_000_000, 66_000_000),
-        ];
-
-        for (model, low_clock_hz, high_clock_hz) in cases {
-            assert_eq!(model.cpu_clock_hz(CpuMode::Low), low_clock_hz);
-            assert_eq!(model.cpu_clock_hz(CpuMode::High), high_clock_hz);
-        }
-    }
-}
-
 /// Number of [`EventKind`] variants.
 const EVENT_KIND_COUNT: usize = 23;
 
@@ -1126,27 +1104,38 @@ pub trait Machine {
     /// Returns `true` if the guest triggered a system shutdown.
     fn shutdown_requested(&self) -> bool;
 
-    /// Returns the composed 640x480 framebuffer rendered at the last VSYNC,
+    /// Returns the composed framebuffer rendered at the last VSYNC,
     /// as packed `R, G, B, A` bytes (little-endian per pixel).
+    ///
+    /// The buffer holds tightly packed rows of `width` pixels for at
+    /// least `height` rows, where `(width, height)` is the value
+    /// returned by [`display_dimensions`](Self::display_dimensions).
     fn display_framebuffer(&self) -> &[u8];
 
     /// Returns the `(width, height)` of the valid region in the framebuffer
     /// returned by [`display_framebuffer`](Self::display_framebuffer).
     fn display_dimensions(&self) -> (u32, u32);
 
-    /// Injects a PC-98 keyboard scan code.
+    /// Injects a keyboard scan code.
+    ///
+    /// The encoding of the scan code byte is defined by the concrete
+    /// machine. PC-98 machines use PC-98 scan codes (bit 7 set for key
+    /// release). The host-side mapping from physical keys to scan codes
+    /// lives in the application and is selected per machine family.
     fn push_keyboard_scancode(&mut self, code: u8);
 
     /// Injects mouse movement deltas for the current frame.
     ///
     /// `dx`/`dy` are relative pixel deltas from the host.
     /// Called once per frame before [`run_for`](Machine::run_for).
-    fn push_mouse_delta(&mut self, dx: i16, dy: i16);
+    /// The default is a no-op for machines without mouse hardware.
+    fn push_mouse_delta(&mut self, _dx: i16, _dy: i16) {}
 
     /// Updates mouse button state.
     ///
     /// Each parameter: `true` = pressed, `false` = released.
-    fn set_mouse_buttons(&mut self, left: bool, right: bool, middle: bool);
+    /// The default is a no-op for machines without mouse hardware.
+    fn set_mouse_buttons(&mut self, _left: bool, _right: bool, _middle: bool) {}
 
     /// Fills `output` with interleaved stereo audio samples (`[L, R, L, R, …]`)
     /// for the current frame, returning the number of `f32` values written
@@ -1173,22 +1162,32 @@ pub trait Machine {
     /// Ejects the floppy disk from the specified drive, flushing any dirty data first.
     fn eject_floppy(&mut self, drive: usize);
 
-    /// Inserts a CD-ROM disc image (CUE/BIN) into the IDE CD-ROM drive.
-    /// Reads the CUE file, resolves the referenced BIN file, and inserts.
-    /// Returns a description string on success.
-    fn insert_cdrom(&mut self, path: &std::path::Path) -> Result<String, String>;
+    /// Inserts a CD-ROM disc image into the machine's CD-ROM drive.
+    /// Reads the image description file, resolves the referenced data
+    /// files, and inserts. Returns a description string on success.
+    ///
+    /// The default returns an error for machines without a CD-ROM drive.
+    fn insert_cdrom(&mut self, _path: &std::path::Path) -> Result<String, String> {
+        Err("CD-ROM is not supported on this machine".to_string())
+    }
 
-    /// Ejects the CD-ROM disc from the IDE CD-ROM drive.
-    fn eject_cdrom(&mut self);
+    /// Ejects the CD-ROM disc from the machine's CD-ROM drive.
+    ///
+    /// The default is a no-op for machines without a CD-ROM drive.
+    fn eject_cdrom(&mut self) {}
 
     /// Flushes any dirty floppy disk images to their backing files.
     fn flush_floppies(&mut self);
 
     /// Flushes any dirty hard disk images to their backing files.
-    fn flush_hdds(&mut self);
+    ///
+    /// The default is a no-op for machines without hard disk support.
+    fn flush_hdds(&mut self) {}
 
     /// Flushes the printer output file, if attached.
-    fn flush_printer(&mut self);
+    ///
+    /// The default is a no-op for machines without printer support.
+    fn flush_printer(&mut self) {}
 
     /// Installs a text extractor sink that receives glyphs fetched from
     /// the CGROM. Default implementation is a no-op for machines that
@@ -1396,4 +1395,98 @@ pub const fn unlikely(b: bool) -> bool {
         core::hint::cold_path();
     }
     b
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CpuMode, Machine, MachineModel};
+
+    /// A machine that implements only the required [`Machine`] methods,
+    /// verifying that machines without CD-ROM, hard disk, printer, or
+    /// mouse hardware compile against the trait defaults.
+    struct MinimalMachine {
+        framebuffer: Vec<u8>,
+        font_rom: Vec<u8>,
+    }
+
+    impl Machine for MinimalMachine {
+        fn cpu_clock_hz(&self) -> f64 {
+            4_000_000.0
+        }
+
+        fn run_for(&mut self, budget: u64) -> u64 {
+            budget
+        }
+
+        fn shutdown_requested(&self) -> bool {
+            false
+        }
+
+        fn display_framebuffer(&self) -> &[u8] {
+            &self.framebuffer
+        }
+
+        fn display_dimensions(&self) -> (u32, u32) {
+            (640, 400)
+        }
+
+        fn push_keyboard_scancode(&mut self, _code: u8) {}
+
+        fn generate_audio_samples(&mut self, _volume: f32, _output: &mut [f32]) -> usize {
+            0
+        }
+
+        fn font_rom_data(&self) -> &[u8] {
+            &self.font_rom
+        }
+
+        fn insert_floppy(
+            &mut self,
+            _drive: usize,
+            _path: &std::path::Path,
+        ) -> Result<String, String> {
+            Err("no floppy drive".to_string())
+        }
+
+        fn eject_floppy(&mut self, _drive: usize) {}
+
+        fn flush_floppies(&mut self) {}
+    }
+
+    #[test]
+    fn machine_trait_defaults_cover_optional_hardware() {
+        let mut machine = MinimalMachine {
+            framebuffer: Vec::new(),
+            font_rom: Vec::new(),
+        };
+
+        assert!(
+            machine
+                .insert_cdrom(std::path::Path::new("image.cue"))
+                .is_err()
+        );
+        machine.eject_cdrom();
+        machine.flush_hdds();
+        machine.flush_printer();
+        machine.push_mouse_delta(1, -1);
+        machine.set_mouse_buttons(true, false, false);
+        assert!(machine.cd_audio_status().is_none());
+    }
+
+    #[test]
+    fn machine_cpu_clock_hz_uses_cpu_mode_for_pc9801_models() {
+        let cases = [
+            (MachineModel::PC9801F, 5_000_000, 8_000_000),
+            (MachineModel::PC9801VM, 8_000_000, 10_000_000),
+            (MachineModel::PC9801VX, 8_000_000, 10_000_000),
+            (MachineModel::PC9801RA, 16_000_000, 20_000_000),
+            (MachineModel::PC9821AS, 33_000_000, 33_000_000),
+            (MachineModel::PC9821AP, 66_000_000, 66_000_000),
+        ];
+
+        for (model, low_clock_hz, high_clock_hz) in cases {
+            assert_eq!(model.cpu_clock_hz(CpuMode::Low), low_clock_hz);
+            assert_eq!(model.cpu_clock_hz(CpuMode::High), high_clock_hz);
+        }
+    }
 }
