@@ -1,4 +1,4 @@
-use std::{
+use core::{
     mem::MaybeUninit,
     ops::{Deref, DerefMut},
 };
@@ -38,7 +38,7 @@ impl<T, const N: usize> Deref for StackVec<T, N> {
     fn deref(&self) -> &[T] {
         // Safety: elements 0..len are initialized.
         #![allow(unsafe_code)]
-        unsafe { std::slice::from_raw_parts(self.data.as_ptr().cast(), self.len) }
+        unsafe { core::slice::from_raw_parts(self.data.as_ptr().cast(), self.len) }
     }
 }
 
@@ -46,7 +46,7 @@ impl<T, const N: usize> DerefMut for StackVec<T, N> {
     fn deref_mut(&mut self) -> &mut [T] {
         // Safety: elements 0..len are initialized.
         #![allow(unsafe_code)]
-        unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr().cast(), self.len) }
+        unsafe { core::slice::from_raw_parts_mut(self.data.as_mut_ptr().cast(), self.len) }
     }
 }
 
@@ -62,7 +62,7 @@ impl<T, const N: usize> Drop for StackVec<T, N> {
 
 impl<'a, T, const N: usize> IntoIterator for &'a StackVec<T, N> {
     type Item = &'a T;
-    type IntoIter = std::slice::Iter<'a, T>;
+    type IntoIter = core::slice::Iter<'a, T>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.deref().iter()
@@ -71,7 +71,7 @@ impl<'a, T, const N: usize> IntoIterator for &'a StackVec<T, N> {
 
 impl<'a, T, const N: usize> IntoIterator for &'a mut StackVec<T, N> {
     type Item = &'a mut T;
-    type IntoIter = std::slice::IterMut<'a, T>;
+    type IntoIter = core::slice::IterMut<'a, T>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.deref_mut().iter_mut()

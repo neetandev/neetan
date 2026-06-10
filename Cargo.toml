@@ -52,7 +52,7 @@ sdl3-use-vcpkg = ["sdl3/use-vcpkg"]
 [dependencies]
 audio_engine = { workspace = true }
 cpu = { workspace = true }
-common = { workspace = true }
+common = { workspace = true, features = ["std"] }
 device = { workspace = true }
 machine = { workspace = true }
 dos = { workspace = true }

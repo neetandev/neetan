@@ -12,7 +12,7 @@ mt32 = ["device/mt32"]
 sc55 = ["device/sc55"]
 
 [dependencies]
-common = { workspace = true }
+common = { workspace = true, features = ["std"] }
 cpu = { workspace = true }
 device = { workspace = true }
 dos = { workspace = true }

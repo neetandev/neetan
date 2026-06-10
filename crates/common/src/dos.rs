@@ -1,5 +1,7 @@
 //! Shared OS/machine bridge traits and related media types.
 
+use alloc::vec::Vec;
+
 use crate::{SegmentRegister, jis::JisChar};
 
 /// CPU register access for the HLE DOS.

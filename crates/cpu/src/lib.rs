@@ -63,6 +63,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(clippy::unnecessary_wraps)]
+#![cfg_attr(not(test), no_std)]
 
 mod i286;
 mod i386;

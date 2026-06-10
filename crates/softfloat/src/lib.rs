@@ -19,6 +19,7 @@
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
+#![cfg_attr(not(test), no_std)]
 
 mod arithmetic;
 mod compare;

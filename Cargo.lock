@@ -191,6 +191,7 @@ dependencies = [
  "common",
  "cpu",
  "machine",
+ "software_renderer",
 ]
 
 [[package]]

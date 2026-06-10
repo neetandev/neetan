@@ -375,14 +375,28 @@ pub(crate) fn dd_to_i64_round(x: DoubleF64) -> i64 {
         return 0;
     }
     let sum = x.high + x.low;
-    // Use round_ties_even for banker's rounding
-    let rounded = sum.round_ties_even();
-    rounded as i64
+    let truncated = sum as i64;
+    let fraction = (sum - truncated as f64).abs();
+    if fraction < 0.5 {
+        truncated
+    } else if fraction > 0.5 {
+        if sum >= 0.0 {
+            truncated + 1
+        } else {
+            truncated - 1
+        }
+    } else if truncated % 2 == 0 {
+        truncated
+    } else if sum >= 0.0 {
+        truncated + 1
+    } else {
+        truncated - 1
+    }
 }
 
 pub(crate) const DD_LN2: DoubleF64 = DoubleF64::from_parts(
-    std::f64::consts::LN_2, // 0x1.62e42fefa39efp-1
-    2.3190468138462996e-17, // 0x1.abc9e3b39803fp-56 (ln2 - high)
+    core::f64::consts::LN_2, // 0x1.62e42fefa39efp-1
+    2.3190468138462996e-17,  // 0x1.abc9e3b39803fp-56 (ln2 - high)
 );
 
 pub(crate) const DD_LN2INV2: DoubleF64 = DoubleF64::from_parts(
@@ -396,30 +410,30 @@ pub(crate) const DD_SQRT3: DoubleF64 = DoubleF64::from_parts(
 );
 
 pub(crate) const DD_PI: DoubleF64 = DoubleF64::from_parts(
-    std::f64::consts::PI,   // 0x1.921fb54442d18p+1
+    core::f64::consts::PI,  // 0x1.921fb54442d18p+1
     1.2246467991473532e-16, // 0x1.1a62633145c07p-53
 );
 
 pub(crate) const DD_PI2: DoubleF64 = DoubleF64::from_parts(
-    std::f64::consts::FRAC_PI_2, // 0x1.921fb54442d18p+0
-    6.123233995736766e-17,       // 0x1.1a62633145c07p-54
+    core::f64::consts::FRAC_PI_2, // 0x1.921fb54442d18p+0
+    6.123233995736766e-17,        // 0x1.1a62633145c07p-54
 );
 
 /// p/2: half the 66-bit x87 internal approximation of pi, used for trig argument
 /// reduction. p = (0.C90FDAA22168C234C)_16 * 2^2; p/2 = 0xC90FDAA22168C234C * 2^-67.
 pub(crate) const DD_P2: DoubleF64 = DoubleF64::from_parts(
-    std::f64::consts::FRAC_PI_2, // 0x1.921fb54442d18p+0 (same high as DD_PI2)
-    6.123031769111886e-17,       // 0x1.1a6p-54 (only 15 extra fraction bits, NOT true pi)
+    core::f64::consts::FRAC_PI_2, // 0x1.921fb54442d18p+0 (same high as DD_PI2)
+    6.123031769111886e-17,        // 0x1.1a6p-54 (only 15 extra fraction bits, NOT true pi)
 );
 
 pub(crate) const DD_PI4: DoubleF64 = DoubleF64::from_parts(
-    std::f64::consts::FRAC_PI_4, // 0x1.921fb54442d18p-1
-    3.061616997868383e-17,       // 0x1.1a62633145c07p-55
+    core::f64::consts::FRAC_PI_4, // 0x1.921fb54442d18p-1
+    3.061616997868383e-17,        // 0x1.1a62633145c07p-55
 );
 
 pub(crate) const DD_PI6: DoubleF64 = DoubleF64::from_parts(
-    std::f64::consts::FRAC_PI_6, // 0x1.0c152382d7366p-1
-    -5.360408832255454e-17,      // -0x1.ee6913347c2a5p-55
+    core::f64::consts::FRAC_PI_6, // 0x1.0c152382d7366p-1
+    -5.360408832255454e-17,       // -0x1.ee6913347c2a5p-55
 );
 
 pub(crate) fn dd_3pi4() -> DoubleF64 {

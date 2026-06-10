@@ -14,7 +14,7 @@ mod flags;
 mod interrupt;
 mod state;
 
-use std::ops::{Deref, DerefMut};
+use core::ops::{Deref, DerefMut};
 
 use common::CpuZ80;
 pub use flags::Z80Flags;

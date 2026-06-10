@@ -47,6 +47,11 @@
 
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
+#![cfg_attr(not(test), no_std)]
+
+extern crate alloc;
+
+use alloc::vec::Vec;
 
 pub(crate) mod adpcm;
 pub(crate) mod fm;
