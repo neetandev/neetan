@@ -1939,7 +1939,7 @@ impl NeetanDos {
         self.state.current_drive = root_shell_boot.initial_drive;
         self.state.dta_segment = self.state.current_psp;
         self.state.dta_offset = 0x0080;
-        self.state.dta_address = ((self.state.current_psp as u32) << 4) | 0x0080;
+        self.state.dta_address = ((self.state.current_psp as u32) << 4) + 0x0080;
         self.state.dbcs_table_addr = tables::DBCS_TABLE_ADDR;
         self.root_command_com_psp = self.state.current_psp;
         self.boot_entry_point = BootEntryPoint::command_com(self.state.current_psp);
