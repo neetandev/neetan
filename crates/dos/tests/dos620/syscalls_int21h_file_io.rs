@@ -1547,6 +1547,50 @@ fn findfirst_root_directory() {
 }
 
 #[test]
+fn findfirst_writes_to_default_dta() {
+    let mut machine = harness::boot_hle_with_floppy();
+
+    let path_addr = harness::INJECT_CODE_BASE + 0x200;
+    harness::write_bytes(&mut machine.bus, path_addr, b"A:\\*.*\0");
+
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Read the default DTA pointer.
+        0xB4, 0x2F,
+        0xCD, 0x21,
+        0x89, 0x1E, 0x00, 0x01,             // MOV [0100h], BX
+        0x8C, 0x06, 0x02, 0x01,             // MOV [0102h], ES
+        // FINDFIRST without changing the DTA.
+        0xBA, 0x00, 0x02,
+        0xB9, 0x00, 0x00,
+        0xB4, 0x4E,
+        0xCD, 0x21,
+        0x9C,
+        0x58,
+        0xA3, 0x04, 0x01,                   // MOV [0104h], AX
+        0xFA,
+        0xF4,
+    ];
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+
+    let dta_offset = harness::result_word(&machine.bus, 0);
+    let dta_segment = harness::result_word(&machine.bus, 2);
+    let flags = harness::result_word(&machine.bus, 4);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "FINDFIRST should succeed (CF=0), flags={flags:#06X}"
+    );
+
+    let dta_base = harness::far_to_linear(dta_segment, dta_offset);
+    let filename = harness::read_string(&machine.bus, dta_base + 0x1E, 13);
+    assert!(
+        !filename.is_empty(),
+        "FINDFIRST should write the result filename at the default DTA"
+    );
+}
+
+#[test]
 fn findnext_after_findfirst() {
     let mut machine = harness::boot_hle_with_floppy();
 

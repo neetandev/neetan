@@ -1222,7 +1222,7 @@ impl NeetanDos {
         self.state.current_psp = child_psp;
         self.state.dta_segment = child_psp;
         self.state.dta_offset = 0x0080;
-        self.state.dta_address = ((child_psp as u32) << 4) | 0x0080;
+        self.state.dta_address = ((child_psp as u32) << 4) + 0x0080;
 
         // Point CPU at child's IRET frame.
         cpu.set_ss(child_ss);
