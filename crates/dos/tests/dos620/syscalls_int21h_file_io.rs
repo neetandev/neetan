@@ -1064,6 +1064,153 @@ fn create_directory_via_int21h_39h_existing_returns_access_denied() {
 }
 
 #[test]
+fn find_next_uses_restored_dta_directory() {
+    let hdd = harness::create_test_hdd(256);
+    let mut machine = harness::boot_hle_with_forced_os(None, Some(hdd));
+
+    run_mkdir(&mut machine, b"A:\\ONE\0");
+    run_mkdir(&mut machine, b"A:\\TWO\0");
+    run_create_file_with_payload(&mut machine, b"A:\\ONE\\ONE1.TXT\0");
+    run_create_file_with_payload(&mut machine, b"A:\\TWO\\TWO1.TXT\0");
+    run_create_file_with_payload(&mut machine, b"A:\\TWO\\TWO2.TXT\0");
+
+    harness::write_bytes(
+        &mut machine.bus,
+        harness::INJECT_CODE_BASE + 0x200,
+        b"A:\\ONE\\*.TXT\0",
+    );
+    harness::write_bytes(
+        &mut machine.bus,
+        harness::INJECT_CODE_BASE + 0x240,
+        b"A:\\TWO\\*.TXT\0",
+    );
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBA, 0x00, 0x03,                   // MOV DX, 0300h
+        0xB4, 0x1A,                         // MOV AH, 1Ah
+        0xCD, 0x21,                         // INT 21h
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xB9, 0x00, 0x00,                   // MOV CX, 0000h
+        0xB4, 0x4E,                         // MOV AH, 4Eh
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0102h], AX
+        0xBA, 0x00, 0x04,                   // MOV DX, 0400h
+        0xB4, 0x1A,                         // MOV AH, 1Ah
+        0xCD, 0x21,                         // INT 21h
+        0xBA, 0x40, 0x02,                   // MOV DX, 0240h
+        0xB9, 0x00, 0x00,                   // MOV CX, 0000h
+        0xB4, 0x4E,                         // MOV AH, 4Eh
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x04, 0x01,                   // MOV [0104h], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x06, 0x01,                   // MOV [0106h], AX
+        0xBA, 0x00, 0x03,                   // MOV DX, 0300h
+        0xB4, 0x1A,                         // MOV AH, 1Ah
+        0xCD, 0x21,                         // INT 21h
+        0xB4, 0x4F,                         // MOV AH, 4Fh
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x08, 0x01,                   // MOV [0108h], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x0A, 0x01,                   // MOV [010Ah], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+
+    let first_search_flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        first_search_flags & 0x0001,
+        0,
+        "first FINDFIRST should succeed, flags={first_search_flags:#06X}"
+    );
+
+    let second_search_flags = harness::result_word(&machine.bus, 6);
+    assert_eq!(
+        second_search_flags & 0x0001,
+        0,
+        "second FINDFIRST should succeed, flags={second_search_flags:#06X}"
+    );
+
+    let find_next_flags = harness::result_word(&machine.bus, 10);
+    assert_ne!(
+        find_next_flags & 0x0001,
+        0,
+        "restored DTA FINDNEXT should fail, flags={find_next_flags:#06X}"
+    );
+
+    let find_next_error = harness::result_word(&machine.bus, 8);
+    assert_eq!(
+        find_next_error, 0x0012,
+        "restored DTA FINDNEXT should continue the original directory"
+    );
+}
+
+fn run_mkdir(machine: &mut machine::Pc9801Ra, path: &[u8]) {
+    harness::write_bytes(&mut machine.bus, harness::INJECT_CODE_BASE + 0x200, path);
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xB4, 0x39,                         // MOV AH, 39h
+        0xCD, 0x21,                         // INT 21h
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(machine, code, harness::INJECT_BUDGET_DISK_IO);
+
+    let flags = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "MKDIR should succeed, flags={flags:#06X}"
+    );
+}
+
+fn run_create_file_with_payload(machine: &mut machine::Pc9801Ra, path: &[u8]) {
+    harness::write_bytes(&mut machine.bus, harness::INJECT_CODE_BASE + 0x200, path);
+    harness::write_bytes(
+        &mut machine.bus,
+        harness::INJECT_CODE_BASE + 0x300,
+        &[0xA5; 0x1200],
+    );
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB9, 0x00, 0x00,                   // MOV CX, 0000h
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xB4, 0x3C,                         // MOV AH, 3Ch
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0102h], AX
+        0x8B, 0x1E, 0x00, 0x01,             // MOV BX, [0100h]
+        0xB9, 0x00, 0x12,                   // MOV CX, 1200h
+        0xBA, 0x00, 0x03,                   // MOV DX, 0300h
+        0xB4, 0x40,                         // MOV AH, 40h
+        0xCD, 0x21,                         // INT 21h
+        0xB4, 0x3E,                         // MOV AH, 3Eh
+        0xCD, 0x21,                         // INT 21h
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(machine, code, harness::INJECT_BUDGET_DISK_IO);
+
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "create file {path:?} should succeed, flags={flags:#06X}"
+    );
+}
+
+#[test]
 fn create_directory_via_int21h_39h_missing_parent_returns_path_not_found() {
     let mut machine = harness::boot_hle_with_floppy();
 

@@ -1064,7 +1064,10 @@ impl NeetanDos {
             memory.write_byte(dta_addr + 0x0C, attr_mask);
             memory.write_word(dta_addr + 0x0D, 0); // start index
             memory.write_word(dta_addr + 0x0F, dir_cluster);
-            self.state.read_find_directory = read_directory;
+            self.state.read_find_directory = match read_directory {
+                Some(ReadDirectory::Iso(directory)) => Some(ReadDirectory::Iso(directory)),
+                Some(ReadDirectory::Fat(_)) | None => None,
+            };
 
             // Perform the search
             self.do_find_next(memory, disk)
@@ -1133,11 +1136,20 @@ impl NeetanDos {
             return Err(0x0012); // no more files
         }
 
-        let directory = self
+        let directory = if self
             .state
-            .read_find_directory
-            .clone()
-            .unwrap_or(ReadDirectory::Fat(dir_cluster));
+            .fat_volumes
+            .get(drive_index as usize)
+            .and_then(Option::as_ref)
+            .is_some()
+        {
+            ReadDirectory::Fat(dir_cluster)
+        } else {
+            self.state
+                .read_find_directory
+                .clone()
+                .unwrap_or(ReadDirectory::Fat(dir_cluster))
+        };
 
         let result = find_matching_read_entry(
             &self.state,
