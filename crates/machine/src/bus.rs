@@ -446,6 +446,8 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     tracer: T,
     /// HLE BIOS: per-drive seek cylinder position.
     fdd_seek_cylinder: [u8; 4],
+    /// HLE BIOS: per-drive rotating sector ID cursor for READ ID.
+    fdd_read_id_index: [usize; 4],
     /// Cached CR0 from the CPU, set before HLE dispatch.
     hle_cr0: u32,
     /// Cached CR3 from the CPU, set before HLE dispatch.
