@@ -7,11 +7,10 @@
 //! compose -> framebuffer bytes, for both 8-color digital and 16-color
 //! analog palettes, in 400-line and 200-line modes.
 
-use common::{Bus, Cpu, CpuMode, MachineModel};
+use common::{BUILTIN_FONT_ROM, Bus, Cpu, CpuMode, MachineModel};
 use machine::{Pc9801Bus, Pc9801F};
 
 const DEBUG_GDC_ROM: &[u8] = include_bytes!("../../../utils/debug/debug_gdc.rom");
-const FONT_ROM_DATA: &[u8] = include_bytes!("../../../utils/font/font.rom");
 
 const MODE_BYTE_ADDR: u32 = 0x0500;
 const RUN_BUDGET_CYCLES: u64 = 50_000_000;
@@ -23,7 +22,7 @@ fn run_mode(mode: u8) -> (Vec<u8>, u32) {
     let bus = Pc9801Bus::new(MachineModel::PC9801F, CpuMode::High, 48000);
 
     let mut machine = Pc9801F::new(cpu::I8086::new(), bus);
-    machine.bus.load_font_rom(FONT_ROM_DATA);
+    machine.bus.load_font_rom(BUILTIN_FONT_ROM);
     machine.bus.load_bios_rom(DEBUG_GDC_ROM);
     machine.bus.write_byte(MODE_BYTE_ADDR, mode);
 

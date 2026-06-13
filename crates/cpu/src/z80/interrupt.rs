@@ -43,28 +43,13 @@ impl Z80 {
                 self.push(bus, return_pc);
                 self.pc = 0x0038;
             }
-            _ => {
-                let return_pc = self.pc;
-                self.push(bus, return_pc);
-                self.execute_im0_opcode(vector, bus);
-            }
+            _ => self.execute_im0_opcode(vector, bus),
         }
         self.wz = self.pc;
         self.pending_irq &= !crate::PENDING_IRQ;
     }
 
     fn execute_im0_opcode(&mut self, opcode: u8, bus: &mut impl common::Bus) {
-        match opcode {
-            0x00 => {}
-            0xC7 | 0xCF | 0xD7 | 0xDF | 0xE7 | 0xEF | 0xF7 | 0xFF => {
-                self.pc = u16::from(opcode & 0x38);
-            }
-            0xFB => {
-                self.iff1 = true;
-                self.iff2 = true;
-                self.ei = 1;
-            }
-            _ => self.execute_base(opcode, IndexMode::HL, false, bus),
-        }
+        self.execute_base(opcode, IndexMode::HL, false, bus);
     }
 }

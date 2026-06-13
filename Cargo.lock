@@ -91,6 +91,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "machine88"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "common",
+ "cpu",
+ "device",
+ "software_renderer",
+]
+
+[[package]]
 name = "munt_oxide"
 version = "0.1.0"
 dependencies = [
@@ -109,6 +120,7 @@ dependencies = [
  "device",
  "dos",
  "machine",
+ "machine88",
  "sdl3",
  "sdl3_backend",
  "software_renderer",

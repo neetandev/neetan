@@ -1616,18 +1616,3 @@ fn hle_bootstrap_2hd_keeps_1mb_boot_device_vx() {
         "Drive 0 should be in 1MB DISK_EQUIP"
     );
 }
-
-#[test]
-#[ignore]
-fn inspect_f_ivt() {
-    let mut machine = super::create_machine_f();
-    let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
-    for v in [
-        0x08u8, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-        0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1F,
-    ] {
-        let (segment, offset) = super::read_ivt_vector(&state.memory.ram, v);
-        eprintln!("INT {v:02X}h: {segment:#06X}:{offset:#06X}");
-    }
-}

@@ -1,12 +1,20 @@
 # Neetan (ねーたん)
 
-An emulator for the PC-98 written in Rust.
+An emulator for the PC-8001, PC-8801, PC-9801 and PC-9821 written in Rust.
 
 [Game Compatibility](https://github.com/hasenbanck/neetan/wiki/Game-Compatibility)
 
 ## Supported systems
 
-Currently, we aim to support all 16-bit era DOS games and emulate them accurately for 6 idealized machine targets:
+Neetan emulates two distinct families, selected through the `--machine` option:
+
+* PC-9801 / PC-9821 line (six idealized targets).
+* PC-8001 / PC-8801 line (one idealized target).
+
+### PC-9801 / PC-9821
+
+We aim to support all 16-bit era DOS games and emulate them accurately for 6 idealized
+machine targets:
 
 | Machine   | CPU      | CPU Speed   | FPU (x87) | Extended RAM | Graphics | Interface | CD-ROM |
 |-----------|----------|-------------|-----------|--------------|----------|-----------|--------|
@@ -17,23 +25,29 @@ Currently, we aim to support all 16-bit era DOS games and emulate them accuratel
 | PC-9821AS | 80486DX  | 33 MHz      | Yes       | 14 MiB       | PEGC     | IDE       | Yes    |
 | PC-9821AP | 80486DX2 | 66 MHz      | Yes       | 14 MiB       | PEGC     | IDE       | Yes    |
 
-All targets have the full 640 KiB conventional RAM. The 8086 and V30 are cycle-count accurately emulated.
-The emulated 286 is calibrated to run at the same speed as the original 286 using trace data. The 386 and the 486
-are optimized for emulation speed and most likely run a bit fast compared to their real counterparts.
+All targets have the full 640 KiB conventional RAM. The 8086 and V30 are cycle-count
+accurately emulated. The emulated 286 is calibrated to run at the same speed as the
+original 286 using trace data. The 386 and the 486 are optimized for emulation speed
+and most likely run a bit fast compared to their real counterparts.
 
-We also support the following sound cards:
+The default for the CLI is the PC-9801RA machine with the PC-9801-86 + PC-9801-26k
+combo soundboards. See [PC-9801 / PC-9821 systems](#pc-9801--pc-9821-systems) for the
+sound cards and platform-specific options.
 
-* PC beeper
-* PC-9801-14 Music Generator (TMS3631 8-channel synth)
-* PC-9801-26k
-* PC-9801-86
-* PC-9801-86 + PC-9801-26k combo
-* Sound Blaster 16
-* Sound Blaster 16 + PC-9801-26k combo
-* Roland MT-32 using the MPU-PC98II interface
-* Roland SC-55 using the MPU-PC98II interface
+Games of the PC-98 normally do not require any ROM files, with the rare exception of
+games that used the PC-98's N88 (86) BASIC ROM.
 
-The default for the CLI is the PC-9801RA machine with the PC-9801-86 + PC-9801-26k combo soundboards.
+### PC-8001 / PC-8801
+
+Neetan emulates a single PC-8801 target, the PC-8801MC. Through its `--boot-mode`
+setting (the equivalent of the machine's DIP switches) it also takes on the
+personalities of the earlier PC-8001 family. Unlike the PC-98 line, the PC-8801MC
+requires a real ROM set supplied via `--pc88-roms`, since of the deep integration
+of the NEC BASIC variants (N, N80, N80 SR and N88).
+
+See [PC-8001 / PC-8801 systems](#pc-8001--pc-8801-systems) for the boot modes, their
+hardware mapping and compatibility caveats, the ROM set, and platform-specific
+options.
 
 ## Usage
 
@@ -44,43 +58,55 @@ neetan <COMMAND>
 
 ### Options
 
-| Option                       | Description                                                                         | Default    |
-|------------------------------|-------------------------------------------------------------------------------------|------------|
-| `-c, --config <PATH>`        | Load configuration from file                                                        | -          |
-| `--machine <TYPE>`           | Machine type: `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821AS`, `PC9821AP` | `PC9801RA` |
-| `--cpu-mode <MODE>`          | CPU speed mode: low or high (default: high; PC-9801 only)                           | high       |
-| `--fdd1 <PATH>`              | Floppy disk image for drive 1 (repeatable)                                          | -          |
-| `--fdd2 <PATH>`              | Floppy disk image for drive 2 (repeatable)                                          | -          |
-| `--hdd1 <PATH>`              | Hard disk image for hard disk drive 1                                               | -          |
-| `--hdd2 <PATH>`              | Hard disk image for hard disk drive 2                                               | -          |
-| `--cdrom <PATH>`             | CD-ROM disc image .cue or .ccd file (repeatable, PC-9821 only)                      | -          |
-| `--audio-volume <FLOAT>`     | Audio volume 0.0–1.0                                                                | `1.0`      |
-| `--aspect-mode <MODE>`       | Display aspect mode: `4:3` or `1:1`                                                 | `4:3`      |
-| `--crt <on\|off>`            | Enable the CRT effect. Not avialable when using the legacy backend.                 | `on`       |
-| `--scaling <MODE>`           | Scaling method: `nearest`, `bilinear`, `pixelart`                                   | `pixelart` |
-| `--backend <BACKEND>`        | Rendering backend: `modern` or `legacy`                                             | `modern`   |
-| `--window-mode <MODE>`       | Window mode: `windowed` or `fullscreen`                                             | `windowed` |
-| `--force-gdc-clock <2.5\|5>` | Force GDC clock to 2.5 or 5 MHz. VX and later only                                  | auto       |
-| `--bios-rom <PATH>`          | Path to BIOS ROM file                                                               | HLE BIOS   |
-| `--font-rom <PATH>`          | Path to font ROM file                                                               | Built-in   |
-| `--soundboard <TYPE>`        | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`                | `86+26k`   |
-| `--graphicboard <TYPE>`      | Graphics accelerator board: `none`, `ga1280a`                                       | `none`     |
-| `--midi <DEVICE>`            | MIDI device: `none`, `mt32`, `sc55`                                                 | `none`     |
-| `--mt32-roms <PATH>`         | Path to MT-32 ROM directory (requires `mt32` feature)                               | -          |
-| `--sc55-roms <PATH>`         | Path to SC-55 ROM directory (requires `sc55` feature)                               | -          |
-| `--boot-device <DEVICE>`     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `dos`                          | `auto`     |
-| `--printer <PATH>`           | Output file for printer (must exist)                                                | -          |
-| `--enable-extractor`         | Copy on-screen Japanese text to the system clipboard, one line at a time            | off        |
-| `-h, --help`                 | Print help                                                                          | -          |
-| `-V, --version`              | Print version                                                                       | -          |
+The `System` column shows where an option applies: `All` (both families), `PC-98`
+(PC-9801 / PC-9821 only), `PC-9821` (PC-9821 only), or `PC-88` (PC-8001 / PC-8801
+only). Options that apply to one family are ignored on the other.
+
+| Option                       | System  | Description                                                                       | Default           |
+|------------------------------|---------|-----------------------------------------------------------------------------------|-------------------|
+| `-c, --config <PATH>`        | All     | Load configuration from file                                                      | -                 |
+| `--machine <TYPE>`           | All     | `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821AS`, `PC9821AP`, `PC8801MC` | `PC9801RA`        |
+| `--cpu-mode <MODE>`          | All     | CPU speed mode: `low` or `high` (PC-88 default derives from the boot mode)        | `high` (PC-98)    |
+| `--boot-mode <MODE>`         | PC-88   | BASIC boot mode: `v1s`, `v1h`, `v2`, `n`, `n80`, `n80sr`                          | `v2`              |
+| `--pc88-monitor <MODE>`      | PC-88   | Monitor timing: `auto`, `15k`, `24k`                                              | `auto`            |
+| `--pc88-memory-wait <MODE>`  | PC-88   | Memory wait: `fast` or `compatible`                                               | derives from mode |
+| `--pc88-8mhz-wait <MODE>`    | PC-88   | 8 MHz wait: `fast` or `compatible`                                                | `fast`            |
+| `--pc88-roms <PATH>`         | PC-88   | Directory with the PC-8801MC ROM set (required for `PC8801MC`)                    | -                 |
+| `--fdd1 <PATH>`              | All     | Floppy disk image for drive 1 (repeatable)                                        | -                 |
+| `--fdd2 <PATH>`              | All     | Floppy disk image for drive 2 (repeatable)                                        | -                 |
+| `--hdd1 <PATH>`              | All     | Hard disk image for hard disk drive 1                                             | -                 |
+| `--hdd2 <PATH>`              | All     | Hard disk image for hard disk drive 2                                             | -                 |
+| `--cdrom <PATH>`             | PC-9821 | CD-ROM disc image .cue or .ccd file (repeatable)                                  | -                 |
+| `--audio-volume <FLOAT>`     | All     | Audio volume 0.0-1.0                                                              | `1.0`             |
+| `--aspect-mode <MODE>`       | All     | Display aspect mode: `4:3` or `1:1`                                               | `4:3`             |
+| `--crt <on\|off>`            | All     | Enable the CRT effect. Not available when using the legacy backend.               | `on`              |
+| `--scaling <MODE>`           | All     | Scaling method: `nearest`, `bilinear`, `pixelart`                                 | `pixelart`        |
+| `--backend <BACKEND>`        | All     | Rendering backend: `modern` or `legacy`                                           | `modern`          |
+| `--window-mode <MODE>`       | All     | Window mode: `windowed` or `fullscreen`                                           | `windowed`        |
+| `--force-gdc-clock <2.5\|5>` | PC-98   | Force GDC clock to 2.5 or 5 MHz. VX and later only                                | auto              |
+| `--graphicboard <TYPE>`      | PC-98   | Graphics accelerator board: `none`, `ga1280a`                                     | `none`            |
+| `--bios-rom <PATH>`          | PC-98   | Path to BIOS ROM file                                                             | HLE BIOS          |
+| `--font-rom <PATH>`          | PC-98   | Path to font ROM file                                                             | Built-in          |
+| `--soundboard <TYPE>`        | PC-98   | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`              | `86+26k`          |
+| `--adpcm-ram <on\|off>`      | PC-98   | ADPCM RAM option for the PC-9801-86                                               | `on`              |
+| `--ems <on\|off>`            | PC-98   | Enable EMS expanded memory                                                        | `on`              |
+| `--xms <on\|off>`            | PC-98   | Enable XMS extended memory                                                        | `on`              |
+| `--midi <DEVICE>`            | PC-98   | MIDI device: `none`, `mt32`, `sc55`                                               | `none`            |
+| `--mt32-roms <PATH>`         | PC-98   | Path to MT-32 ROM directory (requires `mt32` feature)                             | -                 |
+| `--sc55-roms <PATH>`         | PC-98   | Path to SC-55 ROM directory (requires `sc55` feature)                             | -                 |
+| `--boot-device <DEVICE>`     | All     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `dos`                        | `auto`            |
+| `--printer <PATH>`           | All     | Output file for printer (must exist)                                              | -                 |
+| `--enable-extractor`         | All     | Copy on-screen Japanese text to the system clipboard, one line at a time          | off               |
+| `-h, --help`                 | All     | Print help                                                                        | -                 |
+| `-V, --version`              | All     | Print version                                                                     | -                 |
 
 ### Commands
 
 `create-fdd <PATH> [OPTIONS]` - Create an empty floppy disk image (D88 format).
 
-| Option          | Description                         | Default |
-|-----------------|-------------------------------------|---------|
-| `--type <TYPE>` | `2hd` (1232 KiB) or `2dd` (640 KiB) | `2hd`   |
+| Option          | Description                                      | Default |
+|-----------------|--------------------------------------------------|---------|
+| `--type <TYPE>` | `2hd` (1232 KB), `2dd` (640 KB) or `2d` (320 KB) | `2hd`   |
 
 `create-hdd <PATH> [OPTIONS]` - Create an empty hard disk image (HDI format).
 
@@ -96,7 +122,149 @@ The smallest compatible target geometry is chosen automatically. Output is alway
 SASI to IDE conversion always succeeds (all SASI sizes fit within ide40).
 IDE to SASI conversion will fail if the IDE image exceeds the largest SASI capacity (sasi40 at ~40 MB).
 
-### Configuration file
+## PC-9801 / PC-9821 systems
+
+Select a PC-98 machine with `--machine`; the default is `PC9801RA`. See the
+[PC-9801 / PC-9821 table](#pc-9801--pc-9821) above for the per-target hardware
+summary.
+
+### Sound cards
+
+We support the following sound cards via `--soundboard`:
+
+* PC beeper
+* PC-9801-14 Music Generator (TMS3631 8-channel synth)
+* PC-9801-26k
+* PC-9801-86
+* PC-9801-86 + PC-9801-26k combo
+* Sound Blaster 16
+* Sound Blaster 16 + PC-9801-26k combo
+* Roland MT-32 using the MPU-PC98II interface
+* Roland SC-55 using the MPU-PC98II interface
+
+The MT-32 and SC-55 modules are configured separately via `--midi`; see
+[MIDI sound modules](#midi-sound-modules).
+
+### Platform options
+
+| Option                       | Description                                                          | Default  |
+|------------------------------|----------------------------------------------------------------------|----------|
+| `--soundboard <TYPE>`        | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k` | `86+26k` |
+| `--adpcm-ram <on\|off>`      | ADPCM RAM option for the PC-9801-86                                  | `on`     |
+| `--ems <on\|off>`            | Enable EMS expanded memory                                           | `on`     |
+| `--xms <on\|off>`            | Enable XMS extended memory                                           | `on`     |
+| `--force-gdc-clock <2.5\|5>` | Force GDC clock to 2.5 or 5 MHz (VX and later only)                  | auto     |
+| `--graphicboard <TYPE>`      | Graphics accelerator board: `none`, `ga1280a`                        | `none`   |
+| `--bios-rom <PATH>`          | Path to BIOS ROM file                                                | HLE BIOS |
+| `--font-rom <PATH>`          | Path to font ROM file                                                | Built-in |
+
+CD-ROM disc images (`--cdrom`) are supported on the PC-9821 targets only.
+
+### Graphic acceleration board
+
+neetan can emulate the I-O DATA GA-1280A graphics accelerator board, the
+high-end variant to the GA-1024A. All GA-1024A software is compatible with the
+GA-1280A.
+
+The board is primarily useful for Windows 3.1, where it unlocks higher
+resolutions than the stock EGC/PEGC video paths (up to 1600x1024 pixel).
+
+Enable it on the CLI with `--graphicboard ga1280a`, or in a configuration file
+with `graphicboard = ga1280a`. The default is `none`.
+
+Official I-O DATA drivers for MS-DOS, Windows 3.1, and Windows 95 are still
+available from the manufacturer:
+<https://www.iodata.jp/lib/software/g/106.htm#MS-DOS>
+
+## PC-8001 / PC-8801 systems
+
+Select the PC-88 family with `--machine PC8801MC`. The emulated machine is always
+the PC-8801MC; the `--boot-mode` option chooses which BASIC personality it powers up
+with, which is how the earlier PC-8001 family is emulated. Unlike the PC-98 targets,
+the PC-8801MC has no HLE firmware and **requires a real ROM set** (see
+[ROM set](#rom-set)).
+
+Sound is provided by the machine's built-in OPNA (Sound Board II, which should be
+fully compatible to the Sound Board I).
+
+### Boot modes
+
+The boot mode is selected with `--boot-mode` and defaults to `v2`. The `v1s`, `v1h`
+and `v2` modes are the PC-8801's own modes; the `n`, `n80` and `n80sr`
+modes emulate the three generations of the PC-8001 line:
+
+| `--boot-mode` | Alias   | BASIC dialect                 | Emulated machine |
+|---------------|---------|-------------------------------|------------------|
+| `v1s`         | -       | N88-BASIC V1 (standard speed) | PC-8801          |
+| `v1h`         | -       | N88-BASIC V1 (high speed)     | PC-8801          |
+| `v2`          | -       | N88-BASIC V2 (default)        | PC-8801          |
+| `n`           | -       | N-BASIC                       | PC-8001          |
+| `n80`         | `n80v1` | N80-BASIC                     | PC-8001mkII      |
+| `n80sr`       | `n80v2` | N80SR-BASIC                   | PC-8001mkIISR    |
+
+### N / N80 / N80SR are not interchangeable
+
+The three N-family modes correspond to three different generations of real hardware:
+
+* `n` - the original PC-8001 (1979) running plain N-BASIC.
+* `n80` - the PC-8001mkII (1983) running N80-BASIC.
+* `n80sr` - the PC-8001mkIISR (1985) running N80SR-BASIC.
+
+While each generation broadly builds on the previous one, they are not a clean
+superset chain and are not fully compatible with each other. Pick the boot mode
+that matches the machine the software was written for.
+
+The PC-8801 modes (`v1s`, `v1h`, `v2`) are a separate modes again and are
+not compatible with the N-family modes. The vast majority of PC-88 games will
+target the `v2` mode, which is the default config value.
+
+### Platform options
+
+| Option                      | Description                                                | Default           |
+|-----------------------------|------------------------------------------------------------|-------------------|
+| `--boot-mode <MODE>`        | Boot mode: `v1s`, `v1h`, `v2`, `n`, `n80`, `n80sr`         | `v2`              |
+| `--pc88-roms <PATH>`        | Directory with the PC-8801MC ROM set (required)            | -                 |
+| `--pc88-monitor <MODE>`     | Monitor timing: `auto`, `15k` (200-line), `24k` (400-line) | `auto`            |
+| `--pc88-memory-wait <MODE>` | Memory wait states: `fast` or `compatible`                 | derives from mode |
+| `--pc88-8mhz-wait <MODE>`   | 8 MHz wait mode: `fast` or `compatible`                    | `fast`            |
+| `--cpu-mode <MODE>`         | CPU speed: `low` or `high`                                 | derives from mode |
+
+The defaults of `--cpu-mode` and `--pc88-memory-wait` derive from the boot mode: the
+`v1s` and N-family modes (`n`, `n80`, `n80sr`) default to the slower, compatible
+behavior of the machines they emulate, while `v1h` and `v2` keep the fast defaults.
+Pass the flags explicitly to override.
+
+### ROM set
+
+The PC-8801MC needs a real ROM set, pointed to by `--pc88-roms`. ROMs are identified
+by their BLAKE3 content hash rather than by file name, so any dump layout works
+regardless of how the files are named.
+
+These ROMs are always required:
+
+| Slot       | Size    | Contents                         | BLAKE3                                                             |
+|------------|---------|----------------------------------|--------------------------------------------------------------------|
+| `n88`      | 32 KiB  | N88-BASIC main ROM               | `40457b507b82dd57cce0fcecf6bc65543a60bd46558ca947b0f69dd3658cdad8` |
+| `n88_ext0` | 8 KiB   | N88-BASIC extension bank 0       | `6a50a88231062ec871c65f63266fa7062a303ab870aed81c49f1f333f594a518` |
+| `n88_ext1` | 8 KiB   | N88-BASIC extension bank 1       | `d5583fcce4eabf078d17666a1fddefa6a0d8bdc7f56d4499d526818728777252` |
+| `n88_ext2` | 8 KiB   | N88-BASIC extension bank 2       | `ca200799765cb02a001bd55215b0daaf6d0593118a05e8d85754bddd92e5e8f7` |
+| `n88_ext3` | 8 KiB   | N88-BASIC extension bank 3       | `ac31c1fbabfada9890669bebd471d60fac0be0e88ddfde81f17c600d5b0a1757` |
+| `n_basic`  | 32 KiB  | N-BASIC ROM (PC-8001, 1979)      | `652eacc1ed6073bc3da1856c9c4f74ac14abef3f966f0d0fc89c40386de3d1a1` |
+| `jisyo`    | 512 KiB | Kanji dictionary ROM             | `283dcd1c4a69f8049d19021d34d1cc2094f10de8b4e1ddf85da6a4b258dd8d12` |
+| `kanji1`   | 128 KiB | Level-1 kanji ROM                | `10fd26424ae9e28be721846491d2d7b10e946da2d2ff39542248e819bc2339ba` |
+| `kanji2`   | 128 KiB | Level-2 kanji ROM                | `f528e78bbe43e3d36c3def6ef30140e22ba9e69f422736605c2c4570c7d3fbe7` |
+| `disk`     | 8 KiB   | PC80S31K disk sub-CPU ROM        | `081d2ca8ad7066de207b7360e45b5d6f3bab01769aefb9057141becbbaec5aa5` |
+| `cdbios`   | 64 KiB  | PC-8801-31 CD-ROM interface BIOS | `de4d49437344806850b22356f9e5537e413e6113902fb8fbc803f902a5728827` |
+
+These ROMs are required only when the matching boot mode is selected:
+
+| Slot         | Size   | Required by boot mode | BLAKE3                                                             |
+|--------------|--------|-----------------------|--------------------------------------------------------------------|
+| `n80_mkii`   | 32 KiB | `n80`                 | `9e4ec9c53f4432a88583dccd04ae3186f4d7849f80ea7774ac1efbdb93c992f2` |
+| `n80_mkiisr` | 32 KiB | `n80sr`               | `56406a79fd664a197c458cb3feeeb6994c34266a1e02728877b6ea5ef86e15ba` |
+| `n80sr`      | 40 KiB | `n80sr`               | `7b81e27b831ad00f264170d1d98c645298fa688b07d5a9f0c19c1d6a73fe4273` |
+
+## Configuration file
 
 Instead of passing all options on the command line, you can use a configuration file with `-c`:
 
@@ -159,7 +327,7 @@ For example, if your global config sets `machine = PC9801RA` and you run
 `neetan --config game.cfg --soundboard sb16`, the machine will be PC9801RA
 (from global config) unless `game.cfg` or CLI args override it.
 
-### Emulator controls
+## Emulator controls
 
 | Key                | Action                           |
 |--------------------|----------------------------------|
@@ -175,22 +343,13 @@ For example, if your global config sets `machine = PC9801RA` and you run
 
 (GUI is the Windows / Command key)
 
-### Text extraction
+### How do I rebind my keys?
 
-When started with `--enable-extractor` (or `enable-extractor = on` in a
-configuration file), Neetan observes glyph fetches from the CGROM and
-copies on-screen text to the system clipboard, one completed line at a time.
-This is intended for use with external machine-translation tools such as
-Textractor, Translator++, or other translation tools that watch
-the clipboard.
+You can remap keys in the configuration file using `key.<HostKey> = <PC-98 Key>` entries.
+See [`configuration/default.conf`](configuration/default.conf) for a complete reference of all
+available host key names, PC-98 key names, and the default mappings.
 
-Limitations:
-
-- This iteration covers games that render text by reading the CGROM
-  (visual novels and similar engines). Titles that draw text solely from
-  the text VRAM (most DOS prompts and menus) are not captured yet.
-- Characters that the JIS-to-Unicode conversion cannot map (custom
-  user-defined glyphs, etc.) are silently dropped.
+## Disk and disc images
 
 ### Supported floppy disk image formats
 
@@ -204,19 +363,19 @@ Only D88 images preserve modifications written by the emulated software. HDM and
 
 ### Supported CD-ROM disc image formats
 
-| Format  | Extensions | Description                                                                                       |
-|---------|------------|---------------------------------------------------------------------------------------------------|
-| CUE/BIN | `.cue`     | CUE sheet referencing a raw BIN image (PC-9821)                                                   |
-| CloneCD | `.ccd`     | CloneCD control file with sibling `.img` (raw 2352-byte sectors) and optional `.sub` subchannel data (PC-9821) |
+CD-ROM discs apply to the PC-8801 and PC-9821 targets.
 
-## Multiple disk images
+| Format  | Extensions | Description                                                                                          |
+|---------|------------|------------------------------------------------------------------------------------------------------|
+| CUE/BIN | `.cue`     | CUE sheet referencing a raw BIN image                                                                |
+| CloneCD | `.ccd`     | CloneCD control file with sibling `.img` (raw 2352-byte sectors) and optional `.sub` subchannel data |
 
-Many PC-98 games ship on multiple floppy disks and ask you to swap disks during gameplay.
+### Multiple disk images
+
+Many games ship on multiple floppy disks and ask you to swap disks during gameplay.
 Some CD-ROM games also come as multiple disc images.
 neetan handles this by letting you assign several disk images to each drive up front, then swap
 between them at runtime.
-
-### Providing multiple disks
 
 Use the `--fdd1` / `--fdd2` / `--cdrom` flags more than once to register all images for a drive:
 
@@ -237,9 +396,8 @@ cdrom = disc2.cue
 
 The first image in each list is automatically inserted at startup.
 
-### Swapping disks at runtime
-
-Press **GUI + Alt + F9** (drive 1), **GUI + Alt + F10** (drive 2), or **GUI + Alt + F11** (CD-ROM) to open the image selector.
+Press `GUI + Alt + F9` (drive 1), `GUI + Alt + F10` (drive 2), or `GUI + Alt + F11` (CD-ROM)
+to open the image selector and swap disks at runtime.
 
 ## MIDI sound modules
 
@@ -265,22 +423,6 @@ cargo build --release --no-default-features --features sc55       # SC-55 only
 
 When built without a feature, the corresponding `--midi` option is still accepted but the
 emulator will print a warning and continue without audio for that module.
-
-### Graphic acceleration board
-
-neetan can emulate the I-O DATA GA-1280A graphics accelerator board, the
-high-end variant to the GA-1024A. All GA-1024A software is compatible with the
-GA-1280A.
-
-The board is primarily useful for Windows 3.1, where it unlocks higher
-resolutions than the stock EGC/PEGC video paths (up to 1600x1024 pixel).
-
-Enable it on the CLI with `--graphicboard ga1280a`, or in a configuration file
-with `graphicboard = ga1280a`. The default is `none`.
-
-Official I-O DATA drivers for MS-DOS, Windows 3.1, and Windows 95 are still
-available from the manufacturer:
-<https://www.iodata.jp/lib/software/g/106.htm#MS-DOS>
 
 ### MT-32 ROM files
 
@@ -339,31 +481,50 @@ Both ROM paths can be set in the global configuration file so they only need to 
 MIDI emulation is only activated when both the `--midi` device and the corresponding ROM path are
 set, so you can keep ROM paths in your global config and toggle per-game by changing only `--midi`.
 
+## Text extraction
+
+When started with `--enable-extractor` (or `enable-extractor = on` in a
+configuration file), Neetan observes glyph fetches from the CGROM and
+copies on-screen text to the system clipboard, one completed line at a time.
+This is intended for use with external machine-translation tools such as
+Textractor, Translator++, or other translation tools that watch
+the clipboard.
+
+Limitations:
+
+- Only supported by the PC-98 targets only.
+- This covers games that render text by reading the CGROM (visual novels
+  and similar engines). Titles that draw text solely from the text VRAM
+  (most DOS prompts and menus) are not captured yet.
+- Characters that the JIS-to-Unicode conversion cannot map (custom
+  user-defined glyphs, etc.) are silently dropped.
+
 ## FAQ
 
 ### Which ROM files do I need for this emulation?
 
-You don't need any rom files. If you have the correct rom files, you CAN use them, but there is not a particular reason
-to use them, since our HLE BIOS and HLE SASI BIOS has very good compatibility.
-We also include a self created open source font ROM and also provide the tools to re-create / change it.
-With these systems in place we are able to run th fast majority of PC-98 games and applications.
+It depends on the emulated family:
 
-There are some BIOS extensions, mainly the sound API and LIO API that we currently haven't implemented, but outside
-some odd BASIC based games, they should not be used by games, which interface with the hardware I/O port directly.
+- PC-9801 / PC-9821: none. If you have the correct ROM files you CAN use them,
+  but there is no particular reason to, since our HLE BIOS very good compatibility.
+  We also include a self-created open source font ROM and provide the tools to
+  re-create / change it. With these systems in place we can run the vast majority
+  of PC-98 games and applications. There are some BIOS extensions, mainly the
+  sound API and LIO API that we currently haven't implemented, but outside
+  some odd BASIC-based games they should not be used by titles that interface with
+  the hardware I/O ports directly.
+- PC-8001 / PC-8801: a full ROM set is required and must be supplied via
+  `--pc88-roms`. The ROMs are matched by content hash, so file names do not matter;
+  see [ROM set](#rom-set) for the list of required ROMs and the extra ROMs that the
+  `n80` / `n80sr` boot modes need.
 
-The only exceptions are the optional MT-32 and SC-55 MIDI modules, which need external ROM files to work correctly
-as described in the "MIDI sound modules" section.
+The optional MT-32 and SC-55 MIDI modules, also need ROM files to function correctly,
+as described in the [MIDI sound modules](#midi-sound-modules) section.
 
 ### How can I use my mouse?
 
-In games that support a mouse, you first need to capture the mouse pointer via the right CTRL key. You can release
-the mouse pointer by clicking the right CTRL key again.
-
-### How do I rebind my keys?
-
-You can remap keys in the configuration file using `key.<HostKey> = <PC-98 Key>` entries.
-See [`configuration/default.conf`](configuration/default.conf) for a complete reference of all
-available host key names, PC-98 key names, and the default mappings.
+In games that support a mouse, you first need to capture the mouse pointer via the
+right CTRL key. You can release the mouse pointer by clicking the right CTRL key again.
 
 ### 日本語も分かりますか？
 

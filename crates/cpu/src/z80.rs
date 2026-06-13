@@ -116,7 +116,7 @@ impl Z80 {
 
     #[inline(always)]
     pub(crate) fn fetch_m1(&mut self, bus: &mut impl common::Bus) -> u8 {
-        let value = bus.read_byte(u32::from(self.pc));
+        let value = bus.fetch_opcode_byte(u32::from(self.pc));
         self.pc = self.pc.wrapping_add(1);
         self.increment_r();
         self.clk(4);

@@ -1,5 +1,47 @@
-use common::Machine;
+use common::{JoystickState, Machine};
 use sdl3::keyboard::Scancode;
+
+/// A joystick input the keyboard fallback can drive.
+///
+/// The fallback is only used when no gamepad is connected. The arrow keys drive
+/// the four directions and Z/X drive the two triggers; these keys also reach the
+/// emulated keyboard, which is acceptable since PC-88 software reads either the
+/// keyboard or the joystick port for a given control, not both at once.
+pub(crate) enum JoystickKey {
+    Up,
+    Down,
+    Left,
+    Right,
+    Trigger1,
+    Trigger2,
+}
+
+impl JoystickKey {
+    /// Maps a host scancode to a joystick input, if it is one of the fallback keys.
+    pub(crate) fn from_scancode(scancode: Option<Scancode>) -> Option<Self> {
+        match scancode {
+            Some(Scancode::Up) => Some(Self::Up),
+            Some(Scancode::Down) => Some(Self::Down),
+            Some(Scancode::Left) => Some(Self::Left),
+            Some(Scancode::Right) => Some(Self::Right),
+            Some(Scancode::Z) => Some(Self::Trigger1),
+            Some(Scancode::X) => Some(Self::Trigger2),
+            _ => None,
+        }
+    }
+
+    /// Sets or clears this input in `state`.
+    pub(crate) fn apply(self, state: &mut JoystickState, pressed: bool) {
+        match self {
+            Self::Up => state.up = pressed,
+            Self::Down => state.down = pressed,
+            Self::Left => state.left = pressed,
+            Self::Right => state.right = pressed,
+            Self::Trigger1 => state.trigger1 = pressed,
+            Self::Trigger2 => state.trigger2 = pressed,
+        }
+    }
+}
 
 pub fn pc98_scancode_from_name(name: &str) -> Option<u8> {
     let name_lower = name.to_ascii_lowercase();
@@ -120,6 +162,12 @@ impl KeyMap {
     pub const fn new() -> Self {
         Self {
             mappings: build_default_map(),
+        }
+    }
+
+    pub const fn new_pc88() -> Self {
+        Self {
+            mappings: build_pc88_default_map(),
         }
     }
 
@@ -372,11 +420,276 @@ pub fn parse_key_binding(host_name: &str, pc98_name: &str) -> Option<(Scancode, 
     Some((host, pc98))
 }
 
+/// Encodes a PC-88 keyboard matrix position as `row << 3 | column`. The high bit
+/// stays clear so the forwarding layer can set it to mark a key release.
+const fn pc88_cell(row: u8, column: u8) -> u8 {
+    (row << 3) | column
+}
+
+/// Maps a PC-88 key name to its matrix code, used for `key.*` config overrides.
+/// Cells follow the standard PC-8801 keyboard matrix (ports 0x00-0x0E).
+pub fn pc88_matrix_code_from_name(name: &str) -> Option<u8> {
+    let name_lower = name.to_ascii_lowercase();
+    Some(match name_lower.as_str() {
+        // Numeric keypad (matrix rows 0-1).
+        "kp0" => pc88_cell(0, 0),
+        "kp1" => pc88_cell(0, 1),
+        "kp2" => pc88_cell(0, 2),
+        "kp3" => pc88_cell(0, 3),
+        "kp4" => pc88_cell(0, 4),
+        "kp5" => pc88_cell(0, 5),
+        "kp6" => pc88_cell(0, 6),
+        "kp7" => pc88_cell(0, 7),
+        "kp8" => pc88_cell(1, 0),
+        "kp9" => pc88_cell(1, 1),
+        "kpmultiply" => pc88_cell(1, 2),
+        "kpplus" => pc88_cell(1, 3),
+        "kpequals" => pc88_cell(1, 4),
+        "kpcomma" => pc88_cell(1, 5),
+        "kpperiod" => pc88_cell(1, 6),
+        "return" | "kpenter" => pc88_cell(1, 7),
+        // '@' and letters (matrix rows 2-5).
+        "at" => pc88_cell(2, 0),
+        "a" => pc88_cell(2, 1),
+        "b" => pc88_cell(2, 2),
+        "c" => pc88_cell(2, 3),
+        "d" => pc88_cell(2, 4),
+        "e" => pc88_cell(2, 5),
+        "f" => pc88_cell(2, 6),
+        "g" => pc88_cell(2, 7),
+        "h" => pc88_cell(3, 0),
+        "i" => pc88_cell(3, 1),
+        "j" => pc88_cell(3, 2),
+        "k" => pc88_cell(3, 3),
+        "l" => pc88_cell(3, 4),
+        "m" => pc88_cell(3, 5),
+        "n" => pc88_cell(3, 6),
+        "o" => pc88_cell(3, 7),
+        "p" => pc88_cell(4, 0),
+        "q" => pc88_cell(4, 1),
+        "r" => pc88_cell(4, 2),
+        "s" => pc88_cell(4, 3),
+        "t" => pc88_cell(4, 4),
+        "u" => pc88_cell(4, 5),
+        "v" => pc88_cell(4, 6),
+        "w" => pc88_cell(4, 7),
+        "x" => pc88_cell(5, 0),
+        "y" => pc88_cell(5, 1),
+        "z" => pc88_cell(5, 2),
+        // Symbol cluster (matrix row 5).
+        "leftbracket" => pc88_cell(5, 3),
+        "yen" => pc88_cell(5, 4),
+        "rightbracket" => pc88_cell(5, 5),
+        "caret" => pc88_cell(5, 6),
+        "minus" => pc88_cell(5, 7),
+        // Digits (matrix rows 6-7).
+        "0" => pc88_cell(6, 0),
+        "1" => pc88_cell(6, 1),
+        "2" => pc88_cell(6, 2),
+        "3" => pc88_cell(6, 3),
+        "4" => pc88_cell(6, 4),
+        "5" => pc88_cell(6, 5),
+        "6" => pc88_cell(6, 6),
+        "7" => pc88_cell(6, 7),
+        "8" => pc88_cell(7, 0),
+        "9" => pc88_cell(7, 1),
+        // Punctuation (matrix row 7).
+        "colon" => pc88_cell(7, 2),
+        "semicolon" => pc88_cell(7, 3),
+        "comma" => pc88_cell(7, 4),
+        "period" => pc88_cell(7, 5),
+        "slash" => pc88_cell(7, 6),
+        "underscore" => pc88_cell(7, 7),
+        // Control cluster (matrix row 8).
+        "home" => pc88_cell(8, 0),
+        "up" => pc88_cell(8, 1),
+        "right" => pc88_cell(8, 2),
+        "del" | "ins" | "bs" => pc88_cell(8, 3),
+        "grph" => pc88_cell(8, 4),
+        "kana" => pc88_cell(8, 5),
+        "shift" => pc88_cell(8, 6),
+        "ctrl" => pc88_cell(8, 7),
+        // Matrix row 9.
+        "stop" => pc88_cell(9, 0),
+        "f1" => pc88_cell(9, 1),
+        "f2" => pc88_cell(9, 2),
+        "f3" => pc88_cell(9, 3),
+        "f4" => pc88_cell(9, 4),
+        "f5" => pc88_cell(9, 5),
+        "space" => pc88_cell(9, 6),
+        "esc" => pc88_cell(9, 7),
+        // Matrix row 10.
+        "tab" => pc88_cell(10, 0),
+        "down" => pc88_cell(10, 1),
+        "left" => pc88_cell(10, 2),
+        "help" => pc88_cell(10, 3),
+        "copy" => pc88_cell(10, 4),
+        "kpminus" => pc88_cell(10, 5),
+        "kpdivide" => pc88_cell(10, 6),
+        "caps" => pc88_cell(10, 7),
+        // Matrix row 11.
+        "rollup" => pc88_cell(11, 0),
+        "rolldown" => pc88_cell(11, 1),
+        _ => return None,
+    })
+}
+
+pub fn parse_key_binding_pc88(host_name: &str, pc88_name: &str) -> Option<(Scancode, u8)> {
+    let host = Scancode::from_name(host_name)?;
+    let code = pc88_matrix_code_from_name(pc88_name)?;
+    Some((host, code))
+}
+
+/// Default PC-88 key map: host scancodes to 16x8 matrix codes derived from the
+/// PC-8801 keyboard matrix. Host keys with no PC-88 equivalent map to an unused
+/// matrix cell so they have no effect.
+#[allow(clippy::just_underscores_and_digits)]
+const fn build_pc88_default_map() -> [u8; Scancode::COUNT] {
+    use Scancode::*;
+
+    /// Unused matrix cell (row 15 is not part of the PC-88 matrix).
+    const UNMAPPED: u8 = pc88_cell(15, 7);
+
+    const ALL_SCANCODES: &[(Scancode, u8)] = &[
+        // Numeric keypad (matrix rows 0-1).
+        (Kp0, pc88_cell(0, 0)),
+        (Kp1, pc88_cell(0, 1)),
+        (Kp2, pc88_cell(0, 2)),
+        (Kp3, pc88_cell(0, 3)),
+        (Kp4, pc88_cell(0, 4)),
+        (Kp5, pc88_cell(0, 5)),
+        (Kp6, pc88_cell(0, 6)),
+        (Kp7, pc88_cell(0, 7)),
+        (Kp8, pc88_cell(1, 0)),
+        (Kp9, pc88_cell(1, 1)),
+        (KpMultiply, pc88_cell(1, 2)),
+        (KpPlus, pc88_cell(1, 3)),
+        // Matrix cell (1, 4) is the keypad '=' key; no host scancode maps to it
+        // by default, but the `kpequals` config name can bind it.
+        (KpComma, pc88_cell(1, 5)),
+        (KpPeriod, pc88_cell(1, 6)),
+        // RETURN sits at (1, 7); both Enter keys map to it.
+        (Return, pc88_cell(1, 7)),
+        (KpEnter, pc88_cell(1, 7)),
+        // '@' and letters (matrix rows 2-5).
+        (LeftBracket, pc88_cell(2, 0)),
+        (A, pc88_cell(2, 1)),
+        (B, pc88_cell(2, 2)),
+        (C, pc88_cell(2, 3)),
+        (D, pc88_cell(2, 4)),
+        (E, pc88_cell(2, 5)),
+        (F, pc88_cell(2, 6)),
+        (G, pc88_cell(2, 7)),
+        (H, pc88_cell(3, 0)),
+        (I, pc88_cell(3, 1)),
+        (J, pc88_cell(3, 2)),
+        (K, pc88_cell(3, 3)),
+        (L, pc88_cell(3, 4)),
+        (M, pc88_cell(3, 5)),
+        (N, pc88_cell(3, 6)),
+        (O, pc88_cell(3, 7)),
+        (P, pc88_cell(4, 0)),
+        (Q, pc88_cell(4, 1)),
+        (R, pc88_cell(4, 2)),
+        (S, pc88_cell(4, 3)),
+        (T, pc88_cell(4, 4)),
+        (U, pc88_cell(4, 5)),
+        (V, pc88_cell(4, 6)),
+        (W, pc88_cell(4, 7)),
+        (X, pc88_cell(5, 0)),
+        (Y, pc88_cell(5, 1)),
+        (Z, pc88_cell(5, 2)),
+        // Symbol cluster (matrix row 5): '[' ']' yen '^' '-' mapped from the
+        // matching US-layout host keys.
+        (RightBracket, pc88_cell(5, 3)),
+        (NonUsBackslash, pc88_cell(5, 4)),
+        (Backslash, pc88_cell(5, 5)),
+        (Equals, pc88_cell(5, 6)),
+        (Minus, pc88_cell(5, 7)),
+        // Digits (matrix rows 6-7).
+        (_0, pc88_cell(6, 0)),
+        (_1, pc88_cell(6, 1)),
+        (_2, pc88_cell(6, 2)),
+        (_3, pc88_cell(6, 3)),
+        (_4, pc88_cell(6, 4)),
+        (_5, pc88_cell(6, 5)),
+        (_6, pc88_cell(6, 6)),
+        (_7, pc88_cell(6, 7)),
+        (_8, pc88_cell(7, 0)),
+        (_9, pc88_cell(7, 1)),
+        // Punctuation (matrix row 7).
+        (Apostrophe, pc88_cell(7, 2)),
+        (Semicolon, pc88_cell(7, 3)),
+        (Comma, pc88_cell(7, 4)),
+        (Period, pc88_cell(7, 5)),
+        (Slash, pc88_cell(7, 6)),
+        // Control cluster (matrix row 8). The "Del Ins" key serves backspace and
+        // delete; Grph/Kana/Shift/Ctrl carry the modifiers.
+        (Home, pc88_cell(8, 0)),
+        (Up, pc88_cell(8, 1)),
+        (Right, pc88_cell(8, 2)),
+        (Backspace, pc88_cell(8, 3)),
+        (Delete, pc88_cell(8, 3)),
+        (LAlt, pc88_cell(8, 4)),
+        (RAlt, pc88_cell(8, 5)),
+        (LShift, pc88_cell(8, 6)),
+        (RShift, pc88_cell(8, 6)),
+        (LCtrl, pc88_cell(8, 7)),
+        (RCtrl, pc88_cell(8, 7)),
+        // Matrix row 9: Stop, F1-F5, space, escape.
+        (Pause, pc88_cell(9, 0)),
+        (F1, pc88_cell(9, 1)),
+        (F2, pc88_cell(9, 2)),
+        (F3, pc88_cell(9, 3)),
+        (F4, pc88_cell(9, 4)),
+        (F5, pc88_cell(9, 5)),
+        (Space, pc88_cell(9, 6)),
+        (Escape, pc88_cell(9, 7)),
+        // Matrix row 10.
+        (Tab, pc88_cell(10, 0)),
+        (Down, pc88_cell(10, 1)),
+        (Left, pc88_cell(10, 2)),
+        (End, pc88_cell(10, 3)),
+        (PrintScreen, pc88_cell(10, 4)),
+        (KpMinus, pc88_cell(10, 5)),
+        (KpDivide, pc88_cell(10, 6)),
+        (CapsLock, pc88_cell(10, 7)),
+        // Matrix row 11: Roll Up / Roll Down.
+        (PageUp, pc88_cell(11, 0)),
+        (PageDown, pc88_cell(11, 1)),
+    ];
+
+    let mut map = [UNMAPPED; Scancode::COUNT];
+    let mut i = 0;
+    while i < ALL_SCANCODES.len() {
+        let (scancode, code) = ALL_SCANCODES[i];
+        map[scancode.index()] = code;
+        i += 1;
+    }
+    map
+}
+
 #[cfg(test)]
 mod tests {
     use sdl3::keyboard::Scancode;
 
     use super::{KeyMap, KeyboardForwardingState};
+
+    #[test]
+    fn pc88_return_and_backspace_map_to_standard_matrix_cells() {
+        use super::{KeyMap, pc88_cell, pc88_matrix_code_from_name};
+
+        // RETURN is at matrix row 1, column 7 (shared with the keypad enter);
+        // the "Del Ins" key at row 8, column 3 serves backspace and delete.
+        let map = KeyMap::new_pc88();
+        assert_eq!(map.lookup(Scancode::Return), pc88_cell(1, 7));
+        assert_eq!(map.lookup(Scancode::KpEnter), pc88_cell(1, 7));
+        assert_eq!(map.lookup(Scancode::Backspace), pc88_cell(8, 3));
+        assert_eq!(map.lookup(Scancode::Delete), pc88_cell(8, 3));
+
+        assert_eq!(pc88_matrix_code_from_name("return"), Some(pc88_cell(1, 7)));
+        assert_eq!(pc88_matrix_code_from_name("bs"), Some(pc88_cell(8, 3)));
+    }
 
     #[test]
     fn normal_left_alt_is_forwarded_to_the_guest() {

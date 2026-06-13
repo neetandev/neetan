@@ -134,6 +134,17 @@ pub struct Upd765aFdcState {
     pub drive_has_disk: u8,
     /// Bitmask of drives that have a write-protected disk (bit per drive 0-3).
     pub drive_write_protected: u8,
+    /// Non-DMA (PIO) execution-phase data FIFO (one sector at a time). Unused on
+    /// the DMA path; only touched while `exec_pio` is set.
+    pub exec_buf: Vec<u8>,
+    /// Next byte to serve (read) or accept (write) in `exec_buf`.
+    pub exec_index: usize,
+    /// Valid byte count in `exec_buf` for the current sector.
+    pub exec_len: usize,
+    /// PIO transfer direction: true = FDC->host (read), false = host->FDC (write).
+    pub exec_reading: bool,
+    /// True while a non-DMA (PIO) byte transfer is armed.
+    pub exec_pio: bool,
 }
 
 /// µPD765A FDC controller.
@@ -167,8 +178,9 @@ const MSR_RQM: u8 = 0x80;
 /// MSR bit 6: DIO (Data Input/Output) - 1 = FDC->host (result), 0 = host->FDC (command/params).
 const MSR_DIO: u8 = 0x40;
 
-/// MSR bit 5: NDM (Non-DMA Mode) - FDC is in non-DMA mode data transfer.
-const _MSR_NDM: u8 = 0x20;
+/// MSR bit 5: EXM/NDM (Execution Mode) - set during a non-DMA data transfer so
+/// the host polls this bit to know a data byte is due.
+const MSR_EXM: u8 = 0x20;
 
 /// MSR bit 4: CB (Controller Busy) - command in progress.
 const MSR_CB: u8 = 0x10;
@@ -327,6 +339,11 @@ impl Upd765aFdc {
                 drive_equipped: DEFAULT_DRIVE_EQUIPPED,
                 drive_has_disk: 0,
                 drive_write_protected: 0,
+                exec_buf: Vec::new(),
+                exec_index: 0,
+                exec_len: 0,
+                exec_reading: false,
+                exec_pio: false,
             },
         }
     }
@@ -341,8 +358,35 @@ impl Upd765aFdc {
         self.state.status
     }
 
+    /// Whether the forced-ready (FRY) control bit is asserted. When set, the
+    /// drive presents as ready regardless of disk presence, so a data command
+    /// on an empty drive fails on missing address marks rather than "not ready".
+    pub fn forced_ready(&self) -> bool {
+        self.state.control & CTRL_FORCED_READY != 0
+    }
+
     /// Reads the data register (FIFO).
     pub fn read_data(&mut self) -> u8 {
+        // Non-DMA (PIO) execution-phase read: serve the next sector byte. RQM is
+        // cleared until the bus releases the next byte via `pio_release_byte`.
+        if self.state.phase == FdcPhase::Execution && self.state.exec_pio && self.state.exec_reading
+        {
+            if self.state.status & MSR_RQM == 0 {
+                return 0xFF;
+            }
+            let value = self
+                .state
+                .exec_buf
+                .get(self.state.exec_index)
+                .copied()
+                .unwrap_or(0xFF);
+            if self.state.exec_index < self.state.exec_len {
+                self.state.exec_index += 1;
+            }
+            self.state.status = MSR_DIO | MSR_EXM | MSR_CB;
+            return value;
+        }
+
         if self.state.phase != FdcPhase::Result {
             return 0xFF;
         }
@@ -354,6 +398,7 @@ impl Upd765aFdc {
         if self.state.result_index >= self.state.result_count {
             self.state.phase = FdcPhase::Idle;
             self.state.status = MSR_RQM;
+            self.state.interrupt_pending = false;
         }
 
         value
@@ -364,6 +409,7 @@ impl Upd765aFdc {
     pub fn write_data(&mut self, value: u8) -> FdcAction {
         match self.state.phase {
             FdcPhase::Idle => {
+                self.state.interrupt_pending = false;
                 let cmd_index = (value & CMD_INDEX_MASK) as usize;
                 self.state.command_byte = value;
                 self.state.command = value & CMD_INDEX_MASK;
@@ -394,7 +440,18 @@ impl Upd765aFdc {
                     FdcAction::None
                 }
             }
-            FdcPhase::Result | FdcPhase::Execution => FdcAction::None,
+            FdcPhase::Execution => {
+                // Non-DMA (PIO) execution-phase write: accept the next sector byte.
+                if self.state.exec_pio && !self.state.exec_reading {
+                    if self.state.exec_index < self.state.exec_len {
+                        self.state.exec_buf[self.state.exec_index] = value;
+                        self.state.exec_index += 1;
+                    }
+                    self.state.status = MSR_EXM | MSR_CB;
+                }
+                FdcAction::None
+            }
+            FdcPhase::Result => FdcAction::None,
         }
     }
 
@@ -431,6 +488,64 @@ impl Upd765aFdc {
         self.state.tc = true;
     }
 
+    /// Begins a non-DMA (PIO) READ execution: loads one sector's bytes into the
+    /// FIFO. RQM stays clear until the bus releases the first byte via
+    /// [`Upd765aFdc::pio_release_byte`] (data-rate pacing).
+    pub fn begin_pio_read(&mut self, sector: &[u8]) {
+        self.state.exec_buf.clear();
+        self.state.exec_buf.extend_from_slice(sector);
+        self.state.exec_index = 0;
+        self.state.exec_len = sector.len();
+        self.state.exec_reading = true;
+        self.state.exec_pio = true;
+        self.state.phase = FdcPhase::Execution;
+        self.state.status = MSR_DIO | MSR_EXM | MSR_CB;
+    }
+
+    /// Begins a non-DMA (PIO) WRITE execution: arms the FIFO to accept `len`
+    /// bytes. RQM stays clear until the bus releases the first byte slot.
+    pub fn begin_pio_write(&mut self, len: usize) {
+        self.state.exec_buf.clear();
+        self.state.exec_buf.resize(len, 0);
+        self.state.exec_index = 0;
+        self.state.exec_len = len;
+        self.state.exec_reading = false;
+        self.state.exec_pio = true;
+        self.state.phase = FdcPhase::Execution;
+        self.state.status = MSR_EXM | MSR_CB;
+    }
+
+    /// Releases the next PIO byte slot (sets RQM) when a data-rate DRQ tick fires.
+    pub fn pio_release_byte(&mut self) {
+        if self.state.phase != FdcPhase::Execution || !self.state.exec_pio {
+            return;
+        }
+        if self.state.exec_index < self.state.exec_len {
+            self.state.status |= MSR_RQM;
+        }
+    }
+
+    /// Returns whether a non-DMA (PIO) byte transfer is currently armed.
+    pub fn pio_active(&self) -> bool {
+        self.state.exec_pio && self.state.phase == FdcPhase::Execution
+    }
+
+    /// Returns whether a non-DMA PIO byte is ready and asserting the FDC
+    /// interrupt line.
+    pub fn pio_byte_ready(&self) -> bool {
+        self.pio_active() && self.state.status & MSR_RQM != 0
+    }
+
+    /// Returns whether the current PIO sector's FIFO is exhausted.
+    pub fn pio_sector_done(&self) -> bool {
+        self.state.exec_index >= self.state.exec_len
+    }
+
+    /// Returns the accumulated PIO write bytes for the current sector.
+    pub fn take_pio_write_buf(&self) -> &[u8] {
+        &self.state.exec_buf[..self.state.exec_len]
+    }
+
     /// Completes a data command successfully, filling the 7-byte result buffer.
     pub fn complete_success(&mut self) {
         let drive = self.state.hd_us & HD_US_DRIVE_MASK;
@@ -463,6 +578,19 @@ impl Upd765aFdc {
         self.state.result[6] = self.state.n;
         self.state.interrupt_pending = true;
         self.enter_result(7);
+    }
+
+    /// Returns whether the current sector is the last one this command will
+    /// transfer, i.e. a following [`Upd765aFdc::advance_sector`] would report the
+    /// command should end. Lets the PIO read path terminate into the result phase
+    /// the moment the final byte is consumed, mirroring the hardware, without
+    /// mutating C/H/R.
+    pub fn at_last_sector(&self) -> bool {
+        if self.state.r != self.state.eot {
+            return false;
+        }
+        let head = (self.state.hd_us >> HD_US_HEAD_SHIFT) & 0x01;
+        !self.state.mt || head == 1
     }
 
     /// Advances C/H/R to the next sector for the result phase.
@@ -510,6 +638,9 @@ impl Upd765aFdc {
         self.state.result_index = 0;
         self.state.drive_st0 = [0; 4];
         self.state.interrupt_pending = false;
+        self.state.exec_pio = false;
+        self.state.exec_index = 0;
+        self.state.exec_len = 0;
         // Keep drive_cylinder - track positions survive reset.
     }
 
@@ -682,6 +813,7 @@ impl Upd765aFdc {
         self.state.result_count = count;
         self.state.result_index = 0;
         self.state.status = MSR_RQM | MSR_DIO | MSR_CB;
+        self.state.exec_pio = false;
     }
 
     fn pending_interrupt_drive(&self) -> Option<usize> {
@@ -1204,6 +1336,18 @@ mod tests {
     }
 
     #[test]
+    fn sense_interrupt_without_pending_irq_returns_invalid_st0() {
+        let mut fdc = Upd765aFdc::new();
+
+        let action = fdc.write_data(0x08);
+        assert_eq!(action, FdcAction::None);
+        assert_eq!(fdc.state.phase, FdcPhase::Result);
+
+        assert_eq!(fdc.read_data(), ST0_INVALID_COMMAND);
+        assert_eq!(fdc.state.phase, FdcPhase::Idle);
+    }
+
+    #[test]
     fn read_data_returns_start_read_data() {
         let mut fdc = Upd765aFdc::new();
         // READ DATA: 0x46 = MT=0, MF=1, SK=0, cmd=0x06
@@ -1444,5 +1588,77 @@ mod tests {
 
         std::fs::remove_file(&first_path).ok();
         std::fs::remove_file(&second_path).ok();
+    }
+
+    #[test]
+    fn pio_read_streams_sector_bytes_with_drq_pacing() {
+        let mut fdc = Upd765aFdc::new();
+        let sector = [0x11u8, 0x22, 0x33];
+        fdc.begin_pio_read(&sector);
+
+        // After arming, RQM is clear (no byte released yet) but EXM|DIO|CB are set.
+        assert!(fdc.pio_active());
+        assert_eq!(fdc.read_status(), MSR_DIO | MSR_EXM | MSR_CB);
+
+        for &expected in &sector {
+            fdc.pio_release_byte();
+            assert_eq!(fdc.read_status() & MSR_RQM, MSR_RQM, "byte released");
+            assert_eq!(fdc.read_data(), expected);
+            assert_eq!(fdc.read_status() & MSR_RQM, 0, "RQM clears after the byte");
+        }
+        assert!(fdc.pio_sector_done());
+        // No byte to release past the end.
+        fdc.pio_release_byte();
+        assert_eq!(fdc.read_status() & MSR_RQM, 0);
+    }
+
+    #[test]
+    fn pio_read_before_drq_does_not_consume_byte() {
+        let mut fdc = Upd765aFdc::new();
+        let sector = [0x11u8, 0x22];
+        fdc.begin_pio_read(&sector);
+
+        assert_eq!(fdc.read_status() & MSR_RQM, 0);
+        assert_eq!(fdc.read_data(), 0xFF);
+        assert_eq!(fdc.state.exec_index, 0);
+
+        fdc.pio_release_byte();
+        assert_eq!(fdc.read_data(), 0x11);
+        assert_eq!(fdc.state.exec_index, 1);
+    }
+
+    #[test]
+    fn pio_write_accepts_sector_bytes() {
+        let mut fdc = Upd765aFdc::new();
+        fdc.state.nd = true;
+        fdc.begin_pio_write(3);
+        assert_eq!(fdc.read_status(), MSR_EXM | MSR_CB);
+
+        for &byte in &[0xAAu8, 0xBB, 0xCC] {
+            fdc.pio_release_byte();
+            assert_eq!(fdc.read_status() & MSR_RQM, MSR_RQM);
+            assert_eq!(fdc.write_data(byte), FdcAction::None);
+            assert_eq!(fdc.read_status() & MSR_RQM, 0);
+        }
+        assert!(fdc.pio_sector_done());
+        assert_eq!(fdc.take_pio_write_buf(), &[0xAA, 0xBB, 0xCC]);
+    }
+
+    #[test]
+    fn pio_fields_do_not_affect_dma_read_data_path() {
+        // With exec_pio false (the DMA path), read_data behaves exactly as before:
+        // 0xFF outside the result phase, result bytes inside it.
+        let mut fdc = Upd765aFdc::new();
+        fdc.state.phase = FdcPhase::Execution;
+        assert_eq!(fdc.read_data(), 0xFF, "DMA execution serves no data bytes");
+
+        fdc.state.hd_us = 0;
+        fdc.state.c = 0;
+        fdc.state.h = 0;
+        fdc.state.r = 1;
+        fdc.state.n = 3;
+        fdc.complete_success();
+        assert!(!fdc.pio_active(), "completion clears the PIO arm");
+        assert_eq!(fdc.read_data(), 0x00, "result ST0");
     }
 }

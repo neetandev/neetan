@@ -17,6 +17,7 @@ pub fn create_fdd_image(path: &Path, fdd_type: FddType) -> crate::Result<()> {
     let (media_type, cylinders, heads, sectors_per_track, sector_size, size_code) = match fdd_type {
         FddType::Hd2 => (D88MediaType::Disk2HD, 77, 2, 8, 1024, 3u8),
         FddType::Dd2 => (D88MediaType::Disk2DD, 80, 2, 16, 256, 1u8),
+        FddType::D2 => (D88MediaType::Disk2D, 40, 2, 16, 256, 1u8),
     };
 
     let total_tracks = cylinders * heads;

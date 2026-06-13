@@ -48,7 +48,7 @@ macro_rules! boot_to_halt_hdd {
     }};
 }
 
-use common::{Bus, Cpu};
+use common::{BUILTIN_FONT_ROM, Bus, Cpu};
 use device::{
     cdrom::CdImage,
     disk::{HddFormat, HddGeometry, HddImage},
@@ -300,14 +300,12 @@ mod timer_tick;
 #[path = "bios/post_bios_state.rs"]
 mod post_bios_state;
 
-static FONT_ROM_DATA: &[u8] = include_bytes!("../../../utils/font/font.rom");
-
 fn create_machine_f() -> Pc9801F {
     let mut machine = Pc9801F::new(
         cpu::I8086::new(),
         machine::Pc9801Bus::new(MachineModel::PC9801F, CpuMode::High, 48000),
     );
-    machine.bus.load_font_rom(FONT_ROM_DATA);
+    machine.bus.load_font_rom(BUILTIN_FONT_ROM);
     machine
 }
 
@@ -316,7 +314,7 @@ fn create_machine_vm() -> Pc9801Vm {
         cpu::V30::new(),
         machine::Pc9801Bus::new(MachineModel::PC9801VM, CpuMode::High, 48000),
     );
-    machine.bus.load_font_rom(FONT_ROM_DATA);
+    machine.bus.load_font_rom(BUILTIN_FONT_ROM);
     machine
 }
 
@@ -325,7 +323,7 @@ fn create_machine_vx() -> Pc9801Vx {
         cpu::I286::new(),
         machine::Pc9801Bus::new(MachineModel::PC9801VX, CpuMode::High, 48000),
     );
-    machine.bus.load_font_rom(FONT_ROM_DATA);
+    machine.bus.load_font_rom(BUILTIN_FONT_ROM);
     machine
 }
 
@@ -334,7 +332,7 @@ fn create_machine_ra() -> Pc9801Ra {
         cpu::I386::new(),
         machine::Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48000),
     );
-    machine.bus.load_font_rom(FONT_ROM_DATA);
+    machine.bus.load_font_rom(BUILTIN_FONT_ROM);
     machine
 }
 
@@ -344,7 +342,7 @@ fn create_machine_pc9821as() -> Pc9821As {
         machine::Pc9801Bus::new(MachineModel::PC9821AS, CpuMode::High, 48000),
     );
     // TODO: We haven't verified our implementation yet against a real 9821 BIOS.
-    machine.bus.load_font_rom(FONT_ROM_DATA);
+    machine.bus.load_font_rom(BUILTIN_FONT_ROM);
     machine
 }
 

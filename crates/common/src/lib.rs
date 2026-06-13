@@ -37,6 +37,9 @@ pub use stack_vec::StackVec;
 pub use text_extractor::TextExtractor;
 pub use trace::{DosBootStage, NoTracing, Tracing};
 
+/// Built-in V98-format PC-98 font ROM used when no external font ROM is configured.
+pub static BUILTIN_FONT_ROM: &[u8] = include_bytes!("../../../utils/font/font.rom");
+
 /// CPU generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CpuType {
@@ -651,6 +654,13 @@ pub trait Bus {
         0
     }
 
+    /// Fetches an opcode byte for a Z80 M1 (instruction-fetch) cycle. The
+    /// default delegates to [`Bus::read_byte`]; buses that model M1-specific
+    /// memory wait states (e.g. the PC-8801 main CPU) override this.
+    fn fetch_opcode_byte(&mut self, address: u32) -> u8 {
+        self.read_byte(address)
+    }
+
     /// Returns `true` if a CPU reset has been requested by hardware.
     fn reset_pending(&self) -> bool {
         false
@@ -1101,6 +1111,26 @@ pub trait CpuZ80 {
     fn set_im(&mut self, value: u8);
 }
 
+/// Digital joystick state for a single controller.
+///
+/// Each field is `true` while the corresponding direction or trigger is held.
+/// The concrete machine maps these onto its joystick port encoding.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct JoystickState {
+    /// Up direction held.
+    pub up: bool,
+    /// Down direction held.
+    pub down: bool,
+    /// Left direction held.
+    pub left: bool,
+    /// Right direction held.
+    pub right: bool,
+    /// Primary trigger (button 1) held.
+    pub trigger1: bool,
+    /// Secondary trigger (button 2) held.
+    pub trigger2: bool,
+}
+
 /// Abstract machine that can be stepped by a host loop.
 pub trait Machine {
     /// Returns the CPU clock frequency in Hz.
@@ -1144,6 +1174,13 @@ pub trait Machine {
     /// Each parameter: `true` = pressed, `false` = released.
     /// The default is a no-op for machines without mouse hardware.
     fn set_mouse_buttons(&mut self, _left: bool, _right: bool, _middle: bool) {}
+
+    /// Updates the digital joystick state for the controller at `index`.
+    ///
+    /// `index` is 0-based; machines with a single joystick port use index 0
+    /// and ignore the rest. The default is a no-op for machines without a
+    /// joystick port.
+    fn set_joystick(&mut self, _index: usize, _state: JoystickState) {}
 
     /// Fills `output` with interleaved stereo audio samples (`[L, R, L, R, …]`)
     /// for the current frame, returning the number of `f32` values written

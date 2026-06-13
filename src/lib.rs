@@ -3,17 +3,22 @@
 #![deny(unsafe_code)]
 
 use std::{
+    borrow::Cow,
     fs::File,
     time::{Duration, Instant},
 };
 
 use audio_engine::AudioEngine;
-use common::{Context, Machine, MachineModel, StringError, ensure, error, info, warn};
+use common::{
+    BUILTIN_FONT_ROM, Context, CpuMode, JoystickState, Machine, MachineModel, StringError, ensure,
+    error, info, warn,
+};
 use device::disk::{HddGeometry, load_hdd_image};
 use sdl3::{
     Sdl,
     audio::AudioSubsystem,
     event::{DisplayEvent, Event, WindowEvent},
+    gamepad::{Gamepad, GamepadAxis, GamepadButton, GamepadSubsystem},
     keyboard::Scancode,
     mouse::MouseButton,
     video::{VideoSubsystem, Window, WindowBuilder},
@@ -24,10 +29,10 @@ use sdl3_backend::{
 };
 
 use crate::{
-    config::{AspectMode, Backend, EmulatorConfig, ForceGdcClock, ScalingMode, WindowMode},
+    config::{AspectMode, Backend, EmulatorConfig, ForceGdcClock, ScalingMode, Target, WindowMode},
     errors::Error,
     image_selector::{ImageEntry, ImageSelector, MediaType},
-    keyboard::{KeyMap, KeyboardForwardingState},
+    keyboard::{JoystickKey, KeyMap, KeyboardForwardingState},
 };
 
 pub mod config;
@@ -52,6 +57,8 @@ pub const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 const INITIAL_WINDOW_WIDTH: u32 = 1280;
 const MAX_AUDIO_STEPS: usize = 40;
 const SAMPLE_RATE: f64 = audio_engine::SAMPLE_RATE as f64;
+/// Analog-stick magnitude past which a left-stick axis counts as a held direction.
+const GAMEPAD_AXIS_DEADZONE: i16 = 16384;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -61,7 +68,7 @@ pub fn run(config: EmulatorConfig) -> Result<()> {
     let aspect_ratio = aspect_ratio_for_mode(aspect_mode);
     let graphics_display_aspect_mode = graphics_display_aspect_mode(aspect_mode);
 
-    let (sdl_context, audio_subsystem, video_subsystem) = initialize_sdl3()?;
+    let (sdl_context, audio_subsystem, video_subsystem, gamepad_subsystem) = initialize_sdl3()?;
 
     print_system_into();
 
@@ -90,6 +97,7 @@ pub fn run(config: EmulatorConfig) -> Result<()> {
     let mut application = Application::new(
         config,
         audio_subsystem,
+        gamepad_subsystem,
         &window,
         graphics_engine,
         backend,
@@ -153,7 +161,12 @@ fn print_system_into() {
     info!("System has {system_ram_mib} MiB");
 }
 
-fn initialize_sdl3() -> Result<(Sdl, AudioSubsystem, VideoSubsystem)> {
+fn initialize_sdl3() -> Result<(
+    Sdl,
+    AudioSubsystem,
+    VideoSubsystem,
+    Option<GamepadSubsystem>,
+)> {
     let sdl_context = sdl3::init().context("Failed to initialize SDL3")?;
 
     sdl3::log::set_log_priorities(sdl3::log::LogPriority::Verbose);
@@ -167,7 +180,22 @@ fn initialize_sdl3() -> Result<(Sdl, AudioSubsystem, VideoSubsystem)> {
         .video()
         .context("Failed to initialize SDL3 video subsystem")?;
 
-    Ok((sdl_context, audio_subsystem, video_subsystem))
+    // The gamepad subsystem is optional: a missing controller layer must not
+    // prevent the emulator from starting.
+    let gamepad_subsystem = match sdl_context.gamepad() {
+        Ok(subsystem) => Some(subsystem),
+        Err(error) => {
+            warn!("Failed to initialize SDL3 gamepad subsystem: {error}");
+            None
+        }
+    };
+
+    Ok((
+        sdl_context,
+        audio_subsystem,
+        video_subsystem,
+        gamepad_subsystem,
+    ))
 }
 
 fn sdl3_log_callback(_category: i32, priority: sdl3::log::LogPriority, message: &str) {
@@ -309,6 +337,17 @@ struct Application {
     mouse_middle: bool,
     /// Whether relative mouse mode is active (Right Ctrl toggles).
     mouse_captured: bool,
+    /// SDL3 gamepad subsystem, if it initialized. Kept alive while running.
+    gamepad_subsystem: Option<GamepadSubsystem>,
+    /// The currently opened gamepad, if one is connected.
+    gamepad: Option<Gamepad>,
+    /// Joystick directions and triggers from the gamepad d-pad and face buttons.
+    gamepad_buttons: JoystickState,
+    /// Left analog stick position (range -32768 to 32767).
+    gamepad_axis_x: i16,
+    gamepad_axis_y: i16,
+    /// Joystick state from the keyboard fallback (used when no gamepad is connected).
+    keyboard_joystick: JoystickState,
     /// Host-to-PC-98 key mapping.
     key_map: KeyMap,
     keyboard_forwarding_state: KeyboardForwardingState,
@@ -326,6 +365,8 @@ struct Application {
     cdrom_index: Option<usize>,
     /// Active image selection screen, if open.
     image_selector: Option<ImageSelector>,
+    /// Expanded PC-98 CGROM data used by the image selector overlay.
+    selector_font_rom: Vec<u8>,
     /// Whether the CRT effect is enabled.
     crt_enabled: bool,
     /// Scaling method of the native texture.
@@ -352,6 +393,7 @@ impl Application {
     pub(crate) fn new(
         config: EmulatorConfig,
         audio_subsystem: AudioSubsystem,
+        gamepad_subsystem: Option<GamepadSubsystem>,
         window: &Window,
         graphics_engine: Box<dyn GraphicsEngine>,
         backend: Backend,
@@ -368,6 +410,7 @@ impl Application {
             config.cdrom.iter().cloned().map(ImageEntry::new).collect();
 
         let mut machine = initialize_machine(&config, audio_engine::SAMPLE_RATE as u32)?;
+        let selector_font_rom = selector_font_rom_data(&config, machine.as_ref());
 
         if config.enable_extractor {
             machine.install_text_extractor(Box::new(text_extractor::ClipboardExtractor::new()));
@@ -430,6 +473,12 @@ impl Application {
             should_quit: false,
             mouse_dx: 0.0,
             mouse_dy: 0.0,
+            gamepad_subsystem,
+            gamepad: None,
+            gamepad_buttons: JoystickState::default(),
+            gamepad_axis_x: 0,
+            gamepad_axis_y: 0,
+            keyboard_joystick: JoystickState::default(),
             mouse_left: false,
             mouse_right: false,
             mouse_middle: false,
@@ -443,6 +492,7 @@ impl Application {
             cdrom_entries,
             cdrom_index,
             image_selector: None,
+            selector_font_rom,
             crt_enabled,
             scaling,
             backend,
@@ -523,6 +573,13 @@ impl Application {
                     self.keyboard_forwarding_state
                         .apply_pending_actions(self.machine.as_mut());
 
+                    // Keyboard joystick fallback (only used when no gamepad is
+                    // connected): drive the joystick directions/triggers.
+                    if let Some(key) = JoystickKey::from_scancode(*scancode) {
+                        key.apply(&mut self.keyboard_joystick, true);
+                        self.update_joystick();
+                    }
+
                     // Right Ctrl toggles mouse capture.
                     if !repeat
                         && *scancode == Some(Scancode::RCtrl)
@@ -557,14 +614,18 @@ impl Application {
             Event::KeyUp {
                 scancode, repeat, ..
             } => {
-                if self.image_selector.is_none()
-                    && let Some(code) = self.keyboard_forwarding_state.handle_key_up(
+                if self.image_selector.is_none() {
+                    if let Some(code) = self.keyboard_forwarding_state.handle_key_up(
                         *scancode,
                         *repeat,
                         &self.key_map,
-                    )
-                {
-                    self.machine.push_keyboard_scancode(code);
+                    ) {
+                        self.machine.push_keyboard_scancode(code);
+                    }
+                    if let Some(key) = JoystickKey::from_scancode(*scancode) {
+                        key.apply(&mut self.keyboard_joystick, false);
+                        self.update_joystick();
+                    }
                 }
             }
             Event::MouseMotion { xrel, yrel, .. } if self.mouse_captured => {
@@ -597,10 +658,107 @@ impl Application {
                     self.mouse_middle,
                 );
             }
+            Event::GamepadAdded { which } => {
+                self.open_gamepad(*which);
+            }
+            Event::GamepadRemoved { which } => {
+                if self
+                    .gamepad
+                    .as_ref()
+                    .is_some_and(|pad| pad.instance_id() == *which)
+                {
+                    self.gamepad = None;
+                    self.gamepad_buttons = JoystickState::default();
+                    self.gamepad_axis_x = 0;
+                    self.gamepad_axis_y = 0;
+                    self.update_joystick();
+                }
+            }
+            Event::GamepadButtonDown { which, button } => {
+                self.handle_gamepad_button(*which, *button, true);
+            }
+            Event::GamepadButtonUp { which, button } => {
+                self.handle_gamepad_button(*which, *button, false);
+            }
+            Event::GamepadAxisMotion { which, axis, value } => {
+                self.handle_gamepad_axis(*which, *axis, *value);
+            }
             _ => {}
         }
 
         false
+    }
+
+    /// Opens a connected gamepad if one is not already in use.
+    fn open_gamepad(&mut self, which: u32) {
+        if self.gamepad.is_some() {
+            return;
+        }
+        let Some(subsystem) = self.gamepad_subsystem.as_ref() else {
+            return;
+        };
+        match subsystem.open(which) {
+            Ok(pad) => {
+                info!("Gamepad connected (instance {which})");
+                self.gamepad = Some(pad);
+            }
+            Err(error) => warn!("Failed to open gamepad {which}: {error}"),
+        }
+    }
+
+    /// Records a gamepad button change and updates the joystick port.
+    fn handle_gamepad_button(&mut self, which: u32, button: GamepadButton, pressed: bool) {
+        if self
+            .gamepad
+            .as_ref()
+            .is_none_or(|pad| pad.instance_id() != which)
+        {
+            return;
+        }
+        match button {
+            GamepadButton::DpadUp => self.gamepad_buttons.up = pressed,
+            GamepadButton::DpadDown => self.gamepad_buttons.down = pressed,
+            GamepadButton::DpadLeft => self.gamepad_buttons.left = pressed,
+            GamepadButton::DpadRight => self.gamepad_buttons.right = pressed,
+            GamepadButton::South => self.gamepad_buttons.trigger1 = pressed,
+            GamepadButton::East => self.gamepad_buttons.trigger2 = pressed,
+            _ => return,
+        }
+        self.update_joystick();
+    }
+
+    /// Records a left-stick axis change and updates the joystick port.
+    fn handle_gamepad_axis(&mut self, which: u32, axis: GamepadAxis, value: i16) {
+        if self
+            .gamepad
+            .as_ref()
+            .is_none_or(|pad| pad.instance_id() != which)
+        {
+            return;
+        }
+        match axis {
+            GamepadAxis::LeftX => self.gamepad_axis_x = value,
+            GamepadAxis::LeftY => self.gamepad_axis_y = value,
+            _ => return,
+        }
+        self.update_joystick();
+    }
+
+    /// Recomputes the effective joystick state and pushes it to the machine.
+    /// A connected gamepad takes precedence over the keyboard fallback.
+    fn update_joystick(&mut self) {
+        let state = if self.gamepad.is_some() {
+            let mut state = self.gamepad_buttons;
+            // Fold the left analog stick into the directions past a deadzone.
+            state.left |= self.gamepad_axis_x <= -GAMEPAD_AXIS_DEADZONE;
+            state.right |= self.gamepad_axis_x >= GAMEPAD_AXIS_DEADZONE;
+            state.up |= self.gamepad_axis_y <= -GAMEPAD_AXIS_DEADZONE;
+            state.down |= self.gamepad_axis_y >= GAMEPAD_AXIS_DEADZONE;
+            state
+        } else {
+            self.keyboard_joystick
+        };
+        self.machine.set_joystick(0, state);
     }
 
     /// Toggles mouse capture (relative mouse mode) on the given window.
@@ -718,7 +876,7 @@ impl Application {
                 media_type,
                 display_cursor,
                 display_count,
-                self.machine.font_rom_data(),
+                &self.selector_font_rom,
             ));
         }
     }
@@ -910,6 +1068,118 @@ fn host_local_time_bcd() -> [u8; 6] {
 }
 
 pub fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+    match config.target {
+        Target::Pc98 => initialize_pc98_machine(config, sample_rate),
+        Target::Pc88 => initialize_pc88_machine(config, sample_rate),
+    }
+}
+
+fn selector_font_rom_data(config: &EmulatorConfig, machine: &dyn Machine) -> Vec<u8> {
+    if config.target == Target::Pc98 {
+        return machine.font_rom_data().to_vec();
+    }
+
+    let raw_font_rom = match config.font_rom {
+        Some(ref font_path) => match std::fs::read(font_path) {
+            Ok(font_rom) => {
+                info!(
+                    "Loaded selector font ROM ({} bytes) from {}",
+                    font_rom.len(),
+                    font_path.display()
+                );
+                Cow::Owned(font_rom)
+            }
+            Err(error) => {
+                error!(
+                    "Failed to read selector font ROM from {}: {error}",
+                    font_path.display()
+                );
+                Cow::Borrowed(BUILTIN_FONT_ROM)
+            }
+        },
+        None => {
+            info!(
+                "Using built-in selector font ROM ({} bytes)",
+                BUILTIN_FONT_ROM.len()
+            );
+            Cow::Borrowed(BUILTIN_FONT_ROM)
+        }
+    };
+
+    expand_selector_font_rom(&raw_font_rom)
+}
+
+fn expand_selector_font_rom(raw_font_rom: &[u8]) -> Vec<u8> {
+    let mut bus: machine::Pc9801Bus<machine::NoTracing> = machine::Pc9801Bus::new(
+        MachineModel::PC9801VM,
+        CpuMode::High,
+        audio_engine::SAMPLE_RATE as u32,
+    );
+    bus.load_font_rom(raw_font_rom);
+    bus.font_rom_data().to_vec()
+}
+
+fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+    let model = machine88::Pc8801Model::PC8801MC;
+    info!("Selected machine model {model}");
+
+    let rom_dir = config.pc88_roms.as_ref().ok_or_else(|| {
+        StringError("PC-8801MC requires a ROM directory (--pc88-roms <DIR>)".into())
+    })?;
+
+    let roms = machine88::load_rom_set(rom_dir).map_err(|error| {
+        StringError(format!(
+            "Failed to load PC-8801MC ROM set from {}: {error}",
+            rom_dir.display()
+        ))
+    })?;
+
+    roms.validate_for_boot_mode(config.pc88_boot_mode)
+        .map_err(|error| {
+            StringError(format!(
+                "PC-8801MC boot mode '{}' requires a ROM missing from {}: {error}",
+                config.pc88_boot_mode,
+                rom_dir.display()
+            ))
+        })?;
+
+    let clock_select = match config.cpu_mode {
+        common::CpuMode::Low => machine88::ClockSelect::FourMhz,
+        common::CpuMode::High => machine88::ClockSelect::EightMhz,
+    };
+
+    let mut bus: machine88::Pc8801Bus = machine88::Pc8801Bus::new(model, clock_select, sample_rate);
+    bus.set_boot_mode(config.pc88_boot_mode);
+    bus.set_monitor_timing(config.pc88_monitor);
+    bus.set_memory_wait(config.pc88_memory_wait);
+    bus.set_eight_mhz_wait(config.pc88_8mhz_wait);
+    bus.set_host_local_time_fn(host_local_time_bcd);
+    bus.load_roms(&roms);
+
+    info!(
+        "PC-8801MC configured: {} clock, boot mode {}, monitor {}, memory wait {}, 8 MHz wait {}",
+        match config.cpu_mode {
+            CpuMode::Low => "4 MHz",
+            CpuMode::High => "8 MHz",
+        },
+        config.pc88_boot_mode,
+        config.pc88_monitor,
+        config.pc88_memory_wait,
+        config.pc88_8mhz_wait
+    );
+
+    if config.hdd1.is_some() || config.hdd2.is_some() {
+        warn!("HDD options are ignored for the PC-8801MC target");
+    }
+
+    let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+    let sub_cpu = cpu::Z80::new(bus.sub_clock_hz());
+    Ok(Box::new(machine88::Pc8801Machine::new(
+        main_cpu, sub_cpu, bus,
+    )))
+}
+
+fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
     let model = config.machine;
 
     info!("Selected machine model {model}");
@@ -1003,7 +1273,6 @@ pub fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<B
             }
         },
         None => {
-            const BUILTIN_FONT_ROM: &[u8] = include_bytes!("../utils/font/font.rom");
             info!("Using built-in font ROM ({} bytes)", BUILTIN_FONT_ROM.len());
             bus.load_font_rom(BUILTIN_FONT_ROM);
         }
@@ -1184,4 +1453,37 @@ fn validate_hdd_for_machine(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{
+        BUILTIN_FONT_ROM, expand_selector_font_rom,
+        image_selector::{ImageEntry, ImageSelector, MediaType},
+    };
+
+    #[test]
+    fn selector_font_rom_expands_builtin_font_into_cgrom_layout() {
+        let font_rom = expand_selector_font_rom(BUILTIN_FONT_ROM);
+
+        assert_eq!(font_rom.len(), 0x83000);
+        assert!(
+            font_rom[0x80000..0x83000].iter().any(|&byte| byte != 0),
+            "expanded ANK font area must not be blank"
+        );
+
+        let mut selector = ImageSelector::new(MediaType::Floppy(0), 0, 2, &font_rom);
+        let entries = [ImageEntry::new(PathBuf::from("disk.d88"))];
+        selector.ensure_render(&entries, Some(0));
+
+        assert!(
+            selector
+                .framebuffer()
+                .chunks_exact(4)
+                .any(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0),
+            "image selector framebuffer must not be blank"
+        );
+    }
 }
