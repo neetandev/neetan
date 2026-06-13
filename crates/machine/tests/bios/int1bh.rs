@@ -1677,6 +1677,29 @@ fn make_int1bh_read_id(al: u8, cylinder: u8, head: u8) -> Vec<u8> {
     ]
 }
 
+/// Four Read ID calls. Stores AX, CX, DX tuples to RESULT.
+#[rustfmt::skip]
+fn make_int1bh_read_id_sequence(al: u8, cylinder: u8, head: u8) -> Vec<u8> {
+    let mut code = Vec::new();
+    for call in 0..4u16 {
+        let result = RESULT as u16 + call * 6;
+        code.extend_from_slice(&[
+            // CX: CH=0, CL=cylinder
+            0xB9, cylinder, 0x00,                              // MOV CX, 0:cyl
+            // DX: DH=head, DL=0
+            0xBA, 0x00, head,                                  // MOV DX, head:0
+            // AX: AH=0x7A (MF+NR+SEEK+ReadID), AL=DA
+            0xB8, al, 0x7A,                                    // MOV AX, 0x7A:al
+            0xCD, 0x1B,                                        // INT 1Bh
+            0xA3, result as u8, (result >> 8) as u8,           // MOV [result], AX
+            0x89, 0x0E, (result + 2) as u8, ((result + 2) >> 8) as u8, // MOV [result+2], CX
+            0x89, 0x16, (result + 4) as u8, ((result + 4) >> 8) as u8, // MOV [result+4], DX
+        ]);
+    }
+    code.push(0xF4); // HLT
+    code
+}
+
 fn assert_fdd_read_id(ram: &[u8; 0xA0000]) {
     assert_result_ah(ram, 0x00, "FDD read ID");
 }
@@ -1727,6 +1750,27 @@ fn int1bh_fdd_read_id_ra() {
     );
     let state = machine.save_state();
     assert_fdd_read_id(&state.memory.ram);
+}
+
+#[test]
+fn int1bh_fdd_read_id_sequence_advances_record_ra() {
+    let code = make_int1bh_read_id_sequence(DA_FDD_1MB_DRIVE0, 0, 0);
+    let machine = boot_and_run_fdd_ra(
+        &code,
+        Some((0, make_standard_2hd_disk(false))),
+        INT1BH_BUDGET,
+    );
+    let state = machine.save_state();
+
+    for call in 0..4usize {
+        let result = RESULT as usize + call * 6;
+        let ax = read_ram_u16(&state.memory.ram, result);
+        let cx = read_ram_u16(&state.memory.ram, result + 2);
+        let dx = read_ram_u16(&state.memory.ram, result + 4);
+        assert_eq!((ax >> 8) as u8, 0x00, "read ID call {call} AH");
+        assert_eq!(cx, 0x0300, "read ID call {call} CX");
+        assert_eq!(dx, (call as u16) + 1, "read ID call {call} DX");
+    }
 }
 
 // ============================================================================

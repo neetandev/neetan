@@ -265,6 +265,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             grcg_wait: GRCG_WAIT_CYCLES,
             tracer: T::default(),
             fdd_seek_cylinder: [0; 4],
+            fdd_read_id_index: [0; 4],
             hle_cr0: 0,
             hle_cr3: 0,
             boot_device: BootDevice::default(),

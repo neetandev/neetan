@@ -339,16 +339,25 @@ impl<T: Tracing> Pc9801Bus<T> {
                 0x00
             }
             0x0A => {
-                // Read ID: return geometry of first sector on current track.
+                // Read ID: return the next sector ID from the current track.
                 if !self.floppy.has_drive(drive) {
                     0x60
                 } else {
-                    let c = cpu.cl();
-                    let h = cpu.dh();
-                    let track_index = c as usize * 2 + h as usize;
+                    if ah & 0x10 != 0 {
+                        self.fdd_seek_cylinder[drive] = cpu.cl();
+                    }
+                    let h = (cpu.dh() ^ (cpu.al() >> 2)) & 1;
+                    let track_index = self.fdd_seek_cylinder[drive] as usize * 2 + h as usize;
                     if let Some(disk) = self.floppy.drive(drive)
-                        && let Some(sector) = disk.sector_at_index(track_index, 0)
+                        && disk.sector_count(track_index) > 0
                     {
+                        let sector_count = disk.sector_count(track_index);
+                        let sector_index = self.fdd_read_id_index[drive] % sector_count;
+                        let sector = disk
+                            .sector_at_index(track_index, sector_index)
+                            .expect("sector index must be valid");
+                        self.fdd_read_id_index[drive] =
+                            (self.fdd_read_id_index[drive] + 1) % sector_count;
                         cpu.set_cl(sector.cylinder);
                         cpu.set_dh(sector.head);
                         cpu.set_dl(sector.record);
