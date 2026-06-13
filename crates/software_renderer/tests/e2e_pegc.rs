@@ -3,11 +3,10 @@
 //! framebuffer matches the expected color pattern. This validates the full
 //! chain: CPU -> bus I/O -> PEGC state -> compose -> framebuffer bytes.
 
-use common::{Bus, Cpu, CpuMode, MachineModel};
+use common::{BUILTIN_FONT_ROM, Bus, Cpu, CpuMode, MachineModel};
 use machine::{Pc9801Bus, Pc9821Ap};
 
 const DEBUG_PEGC_ROM: &[u8] = include_bytes!("../../../utils/debug/debug_pegc.rom");
-const FONT_ROM_DATA: &[u8] = include_bytes!("../../../utils/font/font.rom");
 
 const MODE_BYTE_ADDR: u32 = 0x0500;
 const RUN_BUDGET_CYCLES: u64 = 50_000_000;
@@ -20,7 +19,7 @@ fn run_mode(mode: u8) -> (Vec<u8>, u32) {
     bus.set_gdc_clock_5mhz();
 
     let mut machine = Pc9821Ap::new(cpu::I386::<{ cpu::CPU_MODEL_486 }>::new(), bus);
-    machine.bus.load_font_rom(FONT_ROM_DATA);
+    machine.bus.load_font_rom(BUILTIN_FONT_ROM);
     machine.bus.load_bios_rom(DEBUG_PEGC_ROM);
     machine.bus.write_byte(MODE_BYTE_ADDR, mode);
 

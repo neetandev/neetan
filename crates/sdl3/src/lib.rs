@@ -9,6 +9,8 @@ pub mod clipboard;
 pub mod event;
 /// Filesystem path utilities.
 pub mod filesystem;
+/// Gamepad subsystem.
+pub mod gamepad;
 /// SDL3 GPU API.
 pub mod gpu;
 /// System information queries (version, platform, CPU, RAM).
@@ -82,6 +84,11 @@ impl Sdl {
     /// Initializes the video subsystem.
     pub fn video(&self) -> Result<video::VideoSubsystem, Error> {
         video::VideoSubsystem::new()
+    }
+
+    /// Initializes the gamepad subsystem.
+    pub fn gamepad(&self) -> Result<gamepad::GamepadSubsystem, Error> {
+        gamepad::GamepadSubsystem::new()
     }
 
     /// Creates an event pump for polling input events.

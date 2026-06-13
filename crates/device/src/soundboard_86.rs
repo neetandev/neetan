@@ -2,20 +2,15 @@
 
 use common::{EventKind, MachineModel};
 use resampler::{Attenuation, Latency, ResamplerFir};
-use ymfm_oxide::{Ym2608, YmfmOpnFidelity, YmfmOutput3, YmfmTimerUpdate};
+use ymfm_oxide::Ym2608;
 
-use crate::soundboard_26k::FmSampleRemainder;
-
-/// YM2608 input clock: 7.987200 MHz crystal.
-const YM2608_CLOCK: u32 = 7_987_200;
-
-const FIDELITY: YmfmOpnFidelity = YmfmOpnFidelity::Max;
+use crate::{
+    opn_fm::{EVOLVED_RHYTHM_ROM, FmTimerAction, OpnFm, OpnFmTiming},
+    soundboard_26k::FmSampleRemainder,
+};
 
 /// 256 KB ADPCM-B sample RAM.
 const ADPCM_B_RAM_SIZE: usize = 256 * 1024;
-
-/// ADPCM-A rhythm ROM size (ym2608.rom).
-const RHYTHM_ROM_SIZE: usize = 8192;
 
 /// PCM86 sample rates indexed by (fifo & 7).
 const PCM86_RATES: [u32; 8] = [44100, 33075, 22050, 16538, 11025, 8269, 5513, 4134];
@@ -52,12 +47,6 @@ const PCM86_RESCUE_TABLE: [i32; 8] = [
 const RESAMPLER_ATTENUTATION: Attenuation = Attenuation::Db60;
 
 const REAMPLER_LATENCY: Latency = Latency::Sample64;
-
-/// Algorithmically generated YM2608 ADPCM-A rhythm ROM (8 KB).
-/// Functional equivalent of the original chip samples with completely different
-/// binary content, produced by an evolutionary algorithm.
-static EVOLVED_RHYTHM_ROM: &[u8; RHYTHM_ROM_SIZE] =
-    include_bytes!("../../../utils/rhythm/rhythm.bin");
 
 /// Snapshot of the PC-9801-86 sound board state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -839,15 +828,10 @@ pub enum Soundboard86Action {
 pub struct Soundboard86 {
     /// Current device state (saveable).
     pub state: Soundboard86State,
-    chip: Ym2608,
+    core: OpnFm<Ym2608>,
     cpu_clock_hz: u32,
+    /// Latest activity cycle for the FM and PCM86 timing bridge.
     chip_action_cycle: u64,
-    native_rate: u32,
-    native_buffer: Vec<YmfmOutput3>,
-    pending_native: Vec<YmfmOutput3>,
-    resampler: ResamplerFir,
-    resample_input: Vec<f32>,
-    resample_output: Vec<f32>,
     pcm86: Pcm86,
     sample_rate: u32,
     /// Set by `timer_expired` (FM timer callback), consumed by `drain_actions`
@@ -875,55 +859,25 @@ impl Soundboard86 {
         machine_model: MachineModel,
     ) -> Self {
         let rom_data = rhythm_rom.unwrap_or(EVOLVED_RHYTHM_ROM.as_slice());
-        let mut chip = Ym2608::new();
-        chip.reset();
-        chip.set_fidelity(FIDELITY);
-        chip.set_adpcm_a_rom(rom_data);
+        let mut core = OpnFm::<Ym2608>::new(cpu_clock_hz, sample_rate);
+        core.chip_mut().set_adpcm_a_rom(rom_data);
         if adpcm_ram {
-            chip.set_adpcm_b_ram(vec![0; ADPCM_B_RAM_SIZE]);
+            core.chip_mut().set_adpcm_b_ram(vec![0; ADPCM_B_RAM_SIZE]);
         }
-
-        let native_rate = chip.sample_rate(YM2608_CLOCK);
-        let resampler = ResamplerFir::new_from_hz(
-            2,
-            native_rate,
-            sample_rate,
-            REAMPLER_LATENCY,
-            RESAMPLER_ATTENUTATION,
-        );
-        let resample_output_size = resampler.buffer_size_output();
 
         Self {
             state: Soundboard86State {
                 adpcm_ram,
                 ..Soundboard86State::default()
             },
-            chip,
+            core,
             cpu_clock_hz,
             chip_action_cycle: 0,
-            native_rate,
-            native_buffer: vec![YmfmOutput3 { data: [0; 3] }; 4096],
-            pending_native: Vec::new(),
-            resampler,
-            resample_input: vec![0.0; 4096 * 2],
-            resample_output: vec![0.0; resample_output_size],
             pcm86: Pcm86::new(sample_rate, cpu_clock_hz, machine_model),
             sample_rate,
             fm_timer_just_fired: false,
             action_buffer: Vec::new(),
         }
-    }
-
-    fn apply_busy(&mut self, busy_clocks: u32, current_cycle: u64) {
-        if busy_clocks != 0 {
-            let cpu_clocks =
-                u64::from(busy_clocks) * u64::from(self.cpu_clock_hz) / u64::from(YM2608_CLOCK);
-            self.state.busy_end_cycle = current_cycle + cpu_clocks;
-        }
-    }
-
-    fn busy_at(&self, current_cycle: u64) -> bool {
-        current_cycle < self.state.busy_end_cycle
     }
 
     /// Returns the low bank address latch value.
@@ -946,44 +900,13 @@ impl Soundboard86 {
         self.state.extend_enabled = enabled;
     }
 
-    /// Advances the YM2608 chip clock to `current_cycle` by generating native
-    /// samples, buffering them for later resampling in `generate_samples()`.
-    fn sync_to_cycle(&mut self, current_cycle: u64) {
-        let sync_start = self.state.fm_sync_cursor;
-        let elapsed_cycles = current_cycle.saturating_sub(sync_start);
-        if elapsed_cycles == 0 {
-            return;
-        }
-
-        let native_rate = u64::from(self.native_rate);
-        let exact_native = (elapsed_cycles as f64 * native_rate as f64)
-            / f64::from(self.cpu_clock_hz)
-            + self.state.sample_remainder.0;
-        let native_count = exact_native as usize;
-        if native_count == 0 {
-            return;
-        }
-
-        self.state.sample_remainder = FmSampleRemainder(exact_native - native_count as f64);
-        self.state.fm_sync_cursor = current_cycle;
-
-        if self.native_buffer.len() < native_count {
-            self.native_buffer
-                .resize(native_count, YmfmOutput3 { data: [0; 3] });
-        }
-        self.chip.generate(&mut self.native_buffer[..native_count]);
-        self.pending_native
-            .extend_from_slice(&self.native_buffer[..native_count]);
-    }
-
     /// Reads the chip status register (port 0x0188 read).
     pub fn read_status(&mut self, current_cycle: u64) -> u8 {
         if self.opna_masked() {
             return 0xFF;
         }
-        self.sync_to_cycle(current_cycle);
         self.chip_action_cycle = current_cycle;
-        self.chip.read_status(self.busy_at(current_cycle))
+        self.core.read_status(current_cycle)
     }
 
     /// Reads data from the currently addressed register (port 0x018A read).
@@ -991,8 +914,9 @@ impl Soundboard86 {
         if self.opna_masked() {
             return 0xFF;
         }
-        self.sync_to_cycle(current_cycle);
         self.chip_action_cycle = current_cycle;
+        self.core.sync(current_cycle);
+        self.core.set_action_cycle(current_cycle);
         let addr = self.state.address_lo;
         if addr == 0x0E {
             let irq_bits = match self.state.irq_line {
@@ -1006,7 +930,7 @@ impl Soundboard86 {
         } else if addr == 0xFF {
             1
         } else if addr < 0x10 {
-            self.chip.read_data()
+            self.core.chip_mut().read_data()
         } else {
             self.state.last_written_data
         }
@@ -1020,9 +944,8 @@ impl Soundboard86 {
         if !self.state.extend_enabled {
             return 0xFF;
         }
-        self.sync_to_cycle(current_cycle);
         self.chip_action_cycle = current_cycle;
-        self.chip.read_status_hi(self.busy_at(current_cycle))
+        self.core.read_status_hi(current_cycle)
     }
 
     /// Reads data from the high bank (port 0x018E read).
@@ -1033,11 +956,12 @@ impl Soundboard86 {
         if !self.state.extend_enabled {
             return 0xFF;
         }
-        self.sync_to_cycle(current_cycle);
         self.chip_action_cycle = current_cycle;
+        self.core.sync(current_cycle);
+        self.core.set_action_cycle(current_cycle);
         let addr = self.state.address_hi;
         if addr == 0x08 || addr == 0x0F {
-            self.chip.read_data_hi()
+            self.core.chip_mut().read_data_hi()
         } else {
             0xFF
         }
@@ -1049,10 +973,8 @@ impl Soundboard86 {
             return;
         }
         self.state.address_lo = value;
-        self.sync_to_cycle(current_cycle);
         self.chip_action_cycle = current_cycle;
-        let busy_clocks = self.chip.write_address(value);
-        self.apply_busy(busy_clocks, current_cycle);
+        self.core.write_address(value, current_cycle);
     }
 
     /// Writes data to the currently addressed register in the low bank (port 0x018A write).
@@ -1061,10 +983,8 @@ impl Soundboard86 {
             return;
         }
         self.state.last_written_data = value;
-        self.sync_to_cycle(current_cycle);
         self.chip_action_cycle = current_cycle;
-        let busy_clocks = self.chip.write_data(value);
-        self.apply_busy(busy_clocks, current_cycle);
+        self.core.write_data(value, current_cycle);
     }
 
     /// Writes the register address latch for the high bank (port 0x018C write).
@@ -1076,10 +996,8 @@ impl Soundboard86 {
             return;
         }
         self.state.address_hi = value;
-        self.sync_to_cycle(current_cycle);
         self.chip_action_cycle = current_cycle;
-        let busy_clocks = self.chip.write_address_hi(value);
-        self.apply_busy(busy_clocks, current_cycle);
+        self.core.write_address_hi(value, current_cycle);
     }
 
     /// Writes data to the currently addressed register in the high bank (port 0x018E write).
@@ -1090,17 +1008,14 @@ impl Soundboard86 {
         if !self.state.extend_enabled {
             return;
         }
-        self.sync_to_cycle(current_cycle);
         self.chip_action_cycle = current_cycle;
-        let busy_clocks = self.chip.write_data_hi(value);
-        self.apply_busy(busy_clocks, current_cycle);
+        self.core.write_data_hi(value, current_cycle);
     }
 
     /// Notifies the chip that a timer has expired.
     pub fn timer_expired(&mut self, timer_id: u32, current_cycle: u64) {
-        self.sync_to_cycle(current_cycle);
         self.chip_action_cycle = current_cycle;
-        self.chip.timer_expired(timer_id);
+        self.core.timer_expired(timer_id, current_cycle);
         self.fm_timer_just_fired = true;
     }
 
@@ -1174,26 +1089,37 @@ impl Soundboard86 {
         // Snapshot previous merged IRQ state before processing updates.
         let was_merged = (self.state.irq_asserted && !opna_masked) || self.state.pcm86_irq_asserted;
 
-        for (timer_id, kind) in [(0, EventKind::FmTimerA), (1, EventKind::FmTimerB)] {
-            let Some(update) = self.chip.take_timer_update(timer_id) else {
-                continue;
+        self.core.set_action_cycle(current_cycle);
+        let timers: [Option<FmTimerAction>; 2] = {
+            let actions = self.core.drain_timers();
+            let mut out = [None, None];
+            for (slot, action) in out.iter_mut().zip(actions.iter()) {
+                *slot = Some(*action);
+            }
+            out
+        };
+        for action in timers.into_iter().flatten() {
+            let kind = match action {
+                FmTimerAction::Cancel { timer_id } | FmTimerAction::Schedule { timer_id, .. } => {
+                    if timer_id == 0 {
+                        EventKind::FmTimerA
+                    } else {
+                        EventKind::FmTimerB
+                    }
+                }
             };
-            match update {
-                YmfmTimerUpdate::Cancel => self
+            match action {
+                FmTimerAction::Cancel { .. } => self
                     .action_buffer
                     .push(Soundboard86Action::CancelTimer { kind }),
-                YmfmTimerUpdate::Schedule(duration_in_clocks) => {
-                    let cpu_cycles = u64::from(duration_in_clocks) * u64::from(cpu_clock_hz)
-                        / u64::from(YM2608_CLOCK);
-                    self.action_buffer.push(Soundboard86Action::ScheduleTimer {
-                        kind,
-                        fire_cycle: current_cycle + cpu_cycles,
-                    });
+                FmTimerAction::Schedule { fire_cycle, .. } => {
+                    self.action_buffer
+                        .push(Soundboard86Action::ScheduleTimer { kind, fire_cycle });
                 }
             }
         }
 
-        if let Some(asserted) = self.chip.take_irq_update() {
+        if let Some(asserted) = self.core.take_irq_change() {
             self.state.irq_asserted = asserted;
         }
 
@@ -1275,108 +1201,26 @@ impl Soundboard86 {
         volume: f32,
         output: &mut [f32],
     ) {
-        if output.is_empty() {
-            self.sync_to_cycle(current_cycle);
-            self.pending_native.clear();
-            self.state.audio_frame_start_cycle = current_cycle;
-            self.state.fm_sync_cursor = current_cycle;
-            self.pcm86.advance_generate_cycle(current_cycle);
-            return;
-        }
-
-        // Generate remaining FM native samples from fm_sync_cursor to current_cycle.
-        let sync_cursor = self.state.fm_sync_cursor;
-        let gap_cycles = current_cycle.saturating_sub(sync_cursor);
-        let remaining_native = if gap_cycles > 0 {
-            let native_rate = u64::from(self.native_rate);
-            let exact_native = (gap_cycles as f64 * native_rate as f64) / f64::from(cpu_clock_hz)
-                + self.state.sample_remainder.0;
-            let count = exact_native as usize;
-            self.state.sample_remainder = FmSampleRemainder(exact_native - count as f64);
-            count
-        } else {
-            0
-        };
-
-        let pending_count = self.pending_native.len();
-        let total_from_timing = pending_count + remaining_native;
-
-        // Ensure the resampler receives enough input to fill the output.
-        let output_frames = output.len() / 2;
-        let min_native = (output_frames as u64 * u64::from(self.native_rate))
-            .div_ceil(u64::from(self.sample_rate))
-            + 1;
-        let total_native = total_from_timing.max(min_native as usize);
-        let remaining_native = total_native - pending_count;
-
-        if remaining_native > 0 {
-            if self.native_buffer.len() < remaining_native {
-                self.native_buffer
-                    .resize(remaining_native, YmfmOutput3 { data: [0; 3] });
-            }
-            self.chip
-                .generate(&mut self.native_buffer[..remaining_native]);
-        }
-
-        if total_native > 0 {
-            let total_interleaved = total_native * 2;
-            if self.resample_input.len() < total_interleaved {
-                self.resample_input.resize(total_interleaved, 0.0);
-            }
-
-            const FM_SCALE: f32 = 2.0 / 32768.0;
-            const SSG_SCALE: f32 = 0.5 / 32768.0;
-
-            for i in 0..pending_count {
-                let s = &self.pending_native[i];
-                let ssg = s.data[2] as f32 * SSG_SCALE;
-                self.resample_input[i * 2] = s.data[0] as f32 * FM_SCALE + ssg;
-                self.resample_input[i * 2 + 1] = s.data[1] as f32 * FM_SCALE + ssg;
-            }
-            for i in 0..remaining_native {
-                let s = &self.native_buffer[i];
-                let ssg = s.data[2] as f32 * SSG_SCALE;
-                let j = pending_count + i;
-                self.resample_input[j * 2] = s.data[0] as f32 * FM_SCALE + ssg;
-                self.resample_input[j * 2 + 1] = s.data[1] as f32 * FM_SCALE + ssg;
-            }
-
-            let mut input_offset = 0;
-            let mut output_offset = 0;
-            let sample_count = output.len();
-            while input_offset < total_interleaved && output_offset < sample_count {
-                let Ok((consumed, produced)) = self.resampler.resample(
-                    &self.resample_input[input_offset..total_interleaved],
-                    &mut self.resample_output,
-                ) else {
-                    break;
-                };
-                let usable = produced.min(sample_count - output_offset);
-                for (out, &resampled) in output[output_offset..output_offset + usable]
-                    .iter_mut()
-                    .zip(&self.resample_output[..usable])
-                {
-                    *out += resampled * volume;
-                }
-                input_offset += consumed;
-                output_offset += usable;
-                if consumed == 0 {
-                    break;
-                }
-            }
-        }
-
-        self.pcm86
+        self.core
             .generate_samples(current_cycle, cpu_clock_hz, volume, output);
 
-        self.pending_native.clear();
-        self.state.audio_frame_start_cycle = current_cycle;
-        self.state.fm_sync_cursor = current_cycle;
+        if output.is_empty() {
+            self.pcm86.advance_generate_cycle(current_cycle);
+        } else {
+            self.pcm86
+                .generate_samples(current_cycle, cpu_clock_hz, volume, output);
+        }
     }
 
     /// Creates a snapshot of the current state for save/restore.
     pub fn save_state(&self) -> Soundboard86State {
+        let timing = self.core.timing();
         let mut state = self.state.clone();
+        state.sample_remainder = timing.sample_remainder;
+        state.fm_sync_cursor = timing.fm_sync_cursor;
+        state.busy_end_cycle = timing.busy_end_cycle;
+        state.audio_frame_start_cycle = timing.audio_frame_start_cycle;
+        state.irq_asserted = timing.irq_asserted;
         state.pcm86 = self.pcm86.state.clone();
         state
     }
@@ -1391,6 +1235,9 @@ impl Soundboard86 {
         rhythm_rom: Option<&[u8]>,
     ) {
         self.state = saved.clone();
+        self.cpu_clock_hz = cpu_clock_hz;
+        self.sample_rate = sample_rate;
+        self.chip_action_cycle = current_cycle;
         self.pcm86.state = saved.pcm86.clone();
         self.pcm86.pending_irq_change = None;
         self.pcm86.last_generate_cycle = saved.audio_frame_start_cycle;
@@ -1407,26 +1254,20 @@ impl Soundboard86 {
             .resize(self.pcm86.pcm_resampler.buffer_size_output(), 0.0);
         // TODO: Save/restore ymfm internal state
         let rom_data = rhythm_rom.unwrap_or(EVOLVED_RHYTHM_ROM.as_slice());
-        self.chip_action_cycle = current_cycle;
-        self.cpu_clock_hz = cpu_clock_hz;
-        self.chip = Ym2608::new();
-        self.chip.reset();
-        self.chip.set_fidelity(FIDELITY);
-        self.chip.set_adpcm_a_rom(rom_data);
+        self.core.reload(cpu_clock_hz, sample_rate, current_cycle);
+        self.core.chip_mut().set_adpcm_a_rom(rom_data);
         if saved.adpcm_ram {
-            self.chip.set_adpcm_b_ram(vec![0; ADPCM_B_RAM_SIZE]);
+            self.core
+                .chip_mut()
+                .set_adpcm_b_ram(vec![0; ADPCM_B_RAM_SIZE]);
         }
-        self.native_rate = self.chip.sample_rate(YM2608_CLOCK);
-        self.resampler = ResamplerFir::new_from_hz(
-            2,
-            self.native_rate,
-            sample_rate,
-            REAMPLER_LATENCY,
-            RESAMPLER_ATTENUTATION,
-        );
-        self.resample_output
-            .resize(self.resampler.buffer_size_output(), 0.0);
-        self.sample_rate = sample_rate;
+        self.core.set_timing(OpnFmTiming {
+            sample_remainder: saved.sample_remainder,
+            fm_sync_cursor: saved.fm_sync_cursor,
+            busy_end_cycle: saved.busy_end_cycle,
+            audio_frame_start_cycle: saved.audio_frame_start_cycle,
+            irq_asserted: saved.irq_asserted,
+        });
     }
 }
 

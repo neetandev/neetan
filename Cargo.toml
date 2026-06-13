@@ -17,6 +17,7 @@ cpu = { path = "crates/cpu" }
 device = { path = "crates/device" }
 dos = { path = "crates/dos" }
 machine = { path = "crates/machine" }
+machine88 = { path = "crates/machine88" }
 resampler = { path = "crates/resampler" }
 sdl3 = { path = "crates/sdl3" }
 sdl3_backend = { path = "crates/sdl3_backend" }
@@ -55,6 +56,7 @@ cpu = { workspace = true }
 common = { workspace = true, features = ["std"] }
 device = { workspace = true }
 machine = { workspace = true }
+machine88 = { workspace = true }
 dos = { workspace = true }
 sdl3 = { workspace = true }
 sdl3_backend = { workspace = true }
@@ -102,6 +104,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.machine]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.machine88]
 opt-level = 3
 codegen-units = 1
 

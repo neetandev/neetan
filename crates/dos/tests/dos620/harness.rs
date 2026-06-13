@@ -3,13 +3,11 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use common::{Bus, CpuMode, JisChar, Machine as _, MachineModel, Tracing};
+use common::{BUILTIN_FONT_ROM, Bus, CpuMode, JisChar, Machine as _, MachineModel, Tracing};
 use device::{
     disk::{HddFormat, HddGeometry, HddImage},
     floppy::d88::{D88Disk, D88MediaType, D88Sector},
 };
-
-static FONT_ROM_DATA: &[u8] = include_bytes!("../../../../utils/font/font.rom");
 
 pub const INJECT_CODE_SEGMENT: u16 = 0x2000;
 pub const INJECT_CODE_BASE: u32 = (INJECT_CODE_SEGMENT as u32) << 4;
@@ -109,7 +107,7 @@ fn set_fat16_entry(fat: &mut [u8], cluster: u16, value: u16) {
 }
 
 fn initialize_hle_bus(bus: &mut machine::Pc9801Bus, xms_32_enabled: bool) {
-    bus.load_font_rom(FONT_ROM_DATA);
+    bus.load_font_rom(BUILTIN_FONT_ROM);
     if xms_32_enabled {
         bus.set_xms_32_enabled(true);
     }

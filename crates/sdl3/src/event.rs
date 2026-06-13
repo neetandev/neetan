@@ -4,6 +4,7 @@ use sdl3_sys::events;
 
 use crate::{
     Error,
+    gamepad::{GamepadAxis, GamepadButton},
     keyboard::{Mod, Scancode},
     mouse::MouseButton,
 };
@@ -54,6 +55,39 @@ pub enum Event {
     MouseButtonUp {
         /// The button that was released.
         mouse_btn: MouseButton,
+    },
+    /// A gamepad was connected.
+    GamepadAdded {
+        /// The joystick instance ID of the gamepad.
+        which: u32,
+    },
+    /// A gamepad was disconnected.
+    GamepadRemoved {
+        /// The joystick instance ID of the gamepad.
+        which: u32,
+    },
+    /// A gamepad button was pressed.
+    GamepadButtonDown {
+        /// The joystick instance ID of the gamepad.
+        which: u32,
+        /// The button that was pressed.
+        button: GamepadButton,
+    },
+    /// A gamepad button was released.
+    GamepadButtonUp {
+        /// The joystick instance ID of the gamepad.
+        which: u32,
+        /// The button that was released.
+        button: GamepadButton,
+    },
+    /// A gamepad analog axis moved.
+    GamepadAxisMotion {
+        /// The joystick instance ID of the gamepad.
+        which: u32,
+        /// The axis that moved.
+        axis: GamepadAxis,
+        /// The axis value (range -32768 to 32767).
+        value: i16,
     },
     /// An event type not handled by this wrapper.
     Unknown,
@@ -193,6 +227,45 @@ fn convert_event(raw: &events::SDL_Event) -> Event {
             let button = unsafe { &raw.button };
             Event::MouseButtonUp {
                 mouse_btn: MouseButton::from_raw(button.button),
+            }
+        }
+
+        events::SDL_EVENT_GAMEPAD_ADDED => {
+            let device = unsafe { &raw.gdevice };
+            Event::GamepadAdded {
+                which: device.which.0,
+            }
+        }
+
+        events::SDL_EVENT_GAMEPAD_REMOVED => {
+            let device = unsafe { &raw.gdevice };
+            Event::GamepadRemoved {
+                which: device.which.0,
+            }
+        }
+
+        events::SDL_EVENT_GAMEPAD_BUTTON_DOWN => {
+            let button = unsafe { &raw.gbutton };
+            Event::GamepadButtonDown {
+                which: button.which.0,
+                button: GamepadButton::from_raw(button.button),
+            }
+        }
+
+        events::SDL_EVENT_GAMEPAD_BUTTON_UP => {
+            let button = unsafe { &raw.gbutton };
+            Event::GamepadButtonUp {
+                which: button.which.0,
+                button: GamepadButton::from_raw(button.button),
+            }
+        }
+
+        events::SDL_EVENT_GAMEPAD_AXIS_MOTION => {
+            let axis = unsafe { &raw.gaxis };
+            Event::GamepadAxisMotion {
+                which: axis.which.0,
+                axis: GamepadAxis::from_raw(axis.axis),
+                value: axis.value,
             }
         }
 

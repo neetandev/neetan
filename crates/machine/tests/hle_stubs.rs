@@ -1,8 +1,6 @@
-use common::{Bus, CpuMode, MachineModel};
+use common::{BUILTIN_FONT_ROM, Bus, CpuMode, MachineModel};
 use device::floppy::FloppyImage;
 use machine::{Pc9801Bus, Pc9801Ra, Pc9801Vm, Pc9801Vx};
-
-static FONT_ROM_DATA: &[u8] = include_bytes!("../../../utils/font/font.rom");
 
 const TEST_CODE: u32 = 0x1000;
 const HOOK_HANDLER: u32 = 0x2000;
@@ -71,7 +69,7 @@ fn create_vm() -> Pc9801Vm {
         cpu::V30::new(),
         Pc9801Bus::new(MachineModel::PC9801VM, CpuMode::High, 48000),
     );
-    machine.bus.load_font_rom(FONT_ROM_DATA);
+    machine.bus.load_font_rom(BUILTIN_FONT_ROM);
     machine
 }
 
@@ -80,7 +78,7 @@ fn create_vx() -> Pc9801Vx {
         cpu::I286::new(),
         Pc9801Bus::new(MachineModel::PC9801VX, CpuMode::High, 48000),
     );
-    machine.bus.load_font_rom(FONT_ROM_DATA);
+    machine.bus.load_font_rom(BUILTIN_FONT_ROM);
     machine
 }
 
@@ -89,7 +87,7 @@ fn create_ra() -> Pc9801Ra {
         cpu::I386::new(),
         Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48000),
     );
-    machine.bus.load_font_rom(FONT_ROM_DATA);
+    machine.bus.load_font_rom(BUILTIN_FONT_ROM);
     machine
 }
 

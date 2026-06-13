@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use common::{Context, CpuMode, MachineModel, StringError, bail, info, warn};
+use machine88::{BootMode, EightMhzWaitMode, MemoryWaitSwitch, MonitorTiming, Pc8801Model};
 
-use crate::keyboard::{KeyMap, parse_key_binding};
+use crate::keyboard::{KeyMap, parse_key_binding, parse_key_binding_pc88};
 
 fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> crate::Result<String> {
     match args.next() {
@@ -35,8 +36,13 @@ Commands:
 
 Options:
   -c, --config <PATH>           Load configuration from file
-      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP
-      --cpu-mode <MODE>         CPU speed mode: low or high (default: high; PC-9801 only)
+      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP, PC8801MC
+      --cpu-mode <MODE>         CPU speed mode: low or high (PC-88 default derives from boot mode)
+      --boot-mode <MODE>        PC-8801 BASIC boot mode: v1s, v1h, v2, n, n80, n80sr (default: v2; PC-8801 only)
+      --pc88-monitor <MODE>     PC-8801 monitor timing: auto, 15k, 24k (default: auto; PC-8801 only)
+      --pc88-memory-wait <MODE> PC-8801 memory wait: fast or compatible (default derives from boot mode)
+      --pc88-8mhz-wait <MODE>   PC-8801 8 MHz wait: fast or compatible (default: fast; PC-8801 only)
+      --pc88-roms <PATH>        Directory with the PC-8801MC ROM set (required)
       --fdd1 <PATH>             Floppy disk image for drive 1 (repeatable)
       --fdd2 <PATH>             Floppy disk image for drive 2 (repeatable)
       --hdd1 <PATH>             Hard disk image for drive 1 (SASI or IDE)
@@ -90,7 +96,8 @@ Options:
 
 Floppy types:
   2hd    1232 KB  (77 cyl, 2 heads, 8 spt, 1024 B/sector)
-  2dd     640 KB  (80 cyl, 2 heads, 16 spt, 256 B/sector)"
+  2dd     640 KB  (80 cyl, 2 heads, 16 spt, 256 B/sector)
+  2d      320 KB  (40 cyl, 2 heads, 16 spt, 256 B/sector)"
     );
 }
 
@@ -263,6 +270,7 @@ fn parse_copy_arg(raw: &str) -> CopyArg {
 pub enum FddType {
     Hd2,
     Dd2,
+    D2,
 }
 
 impl std::str::FromStr for FddType {
@@ -272,7 +280,10 @@ impl std::str::FromStr for FddType {
         match s.to_ascii_lowercase().as_str() {
             "2hd" => Ok(Self::Hd2),
             "2dd" => Ok(Self::Dd2),
-            _ => Err(format!("unknown floppy type '{s}', expected 2hd or 2dd")),
+            "2d" => Ok(Self::D2),
+            _ => Err(format!(
+                "unknown floppy type '{s}', expected 2hd, 2dd or 2d"
+            )),
         }
     }
 }
@@ -445,12 +456,13 @@ fn parse_args_from(
     load_global_config: bool,
 ) -> crate::Result<Action> {
     let mut config = EmulatorConfig::default();
+    let mut explicit = ExplicitSettings::default();
 
     if load_global_config
         && let Some(global_path) = global_config_path()
         && global_path.exists()
     {
-        apply_config_file(&mut config, &global_path)?;
+        apply_config_file(&mut config, &mut explicit, &global_path)?;
         info!("Loaded global config: {}", global_path.display());
     }
 
@@ -493,16 +505,35 @@ fn parse_args_from(
             }
             "-c" | "--config" => {
                 let path = value(&flag)?;
-                apply_config_file(&mut config, Path::new(&path))?;
+                apply_config_file(&mut config, &mut explicit, Path::new(&path))?;
             }
             "--machine" => {
                 let val = value(&flag)?;
-                config.machine = val.parse::<MachineModel>().map_err(StringError)?;
+                apply_machine_selection(&mut config, &val).map_err(StringError)?;
             }
             "--cpu-mode" => {
                 let val = value(&flag)?;
                 config.cpu_mode = val.parse::<CpuMode>().map_err(StringError)?;
+                explicit.cpu_mode = true;
             }
+            "--boot-mode" => {
+                let val = value(&flag)?;
+                config.pc88_boot_mode = val.parse::<BootMode>().map_err(StringError)?;
+            }
+            "--pc88-monitor" => {
+                let val = value(&flag)?;
+                config.pc88_monitor = val.parse::<MonitorTiming>().map_err(StringError)?;
+            }
+            "--pc88-memory-wait" => {
+                let val = value(&flag)?;
+                config.pc88_memory_wait = val.parse::<MemoryWaitSwitch>().map_err(StringError)?;
+                explicit.pc88_memory_wait = true;
+            }
+            "--pc88-8mhz-wait" => {
+                let val = value(&flag)?;
+                config.pc88_8mhz_wait = val.parse::<EightMhzWaitMode>().map_err(StringError)?;
+            }
+            "--pc88-roms" => config.pc88_roms = Some(PathBuf::from(value(&flag)?)),
             "--fdd1" => config.fdd1.push(PathBuf::from(value(&flag)?)),
             "--fdd2" => config.fdd2.push(PathBuf::from(value(&flag)?)),
             "--hdd1" => config.hdd1 = Some(PathBuf::from(value(&flag)?)),
@@ -576,6 +607,7 @@ fn parse_args_from(
         }
     }
 
+    apply_derived_defaults(&mut config, explicit);
     validate_paths(&config)?;
 
     Ok(Action::Run(Box::new(config)))
@@ -610,7 +642,20 @@ fn validate_paths(config: &EmulatorConfig) -> crate::Result<()> {
     Ok(())
 }
 
+/// Selected machine family. The PC-98 and PC-88 targets are constructed from
+/// different crates, so the family is tracked explicitly while the model and
+/// per-family settings stay on `EmulatorConfig`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+pub enum Target {
+    /// PC-9800 series (the `machine` crate).
+    #[default]
+    Pc98,
+    /// PC-8801 series (the `machine88` crate).
+    Pc88,
+}
+
 pub struct EmulatorConfig {
+    pub target: Target,
     pub machine: MachineModel,
     pub cpu_mode: CpuMode,
     pub fdd1: Vec<PathBuf>,
@@ -639,11 +684,23 @@ pub struct EmulatorConfig {
     pub xms: bool,
     pub backend: Backend,
     pub enable_extractor: bool,
+    pub pc88_boot_mode: BootMode,
+    pub pc88_monitor: MonitorTiming,
+    pub pc88_memory_wait: MemoryWaitSwitch,
+    pub pc88_8mhz_wait: EightMhzWaitMode,
+    pub pc88_roms: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ExplicitSettings {
+    cpu_mode: bool,
+    pc88_memory_wait: bool,
 }
 
 impl Default for EmulatorConfig {
     fn default() -> Self {
         Self {
+            target: Target::Pc98,
             machine: MachineModel::PC9801RA,
             cpu_mode: CpuMode::High,
             fdd1: Vec::new(),
@@ -672,17 +729,28 @@ impl Default for EmulatorConfig {
             xms: true,
             backend: Backend::Modern,
             enable_extractor: false,
+            pc88_boot_mode: BootMode::V2,
+            pc88_monitor: MonitorTiming::Auto,
+            pc88_memory_wait: MemoryWaitSwitch::Fast,
+            pc88_8mhz_wait: EightMhzWaitMode::Fast,
+            pc88_roms: None,
         }
     }
 }
 
 pub fn parse_config_file(path: &Path) -> crate::Result<EmulatorConfig> {
     let mut config = EmulatorConfig::default();
-    apply_config_file(&mut config, path)?;
+    let mut explicit = ExplicitSettings::default();
+    apply_config_file(&mut config, &mut explicit, path)?;
+    apply_derived_defaults(&mut config, explicit);
     Ok(config)
 }
 
-fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<()> {
+fn apply_config_file(
+    config: &mut EmulatorConfig,
+    explicit: &mut ExplicitSettings,
+    path: &Path,
+) -> crate::Result<()> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
 
@@ -697,14 +765,38 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
         let key = key.trim();
         let val = val.trim();
         match key {
-            "machine" => match val.parse::<MachineModel>() {
-                Ok(mt) => config.machine = mt,
-                Err(_) => warn!("Unknown machine type in config: {val}"),
-            },
+            "machine" => {
+                if let Err(message) = apply_machine_selection(config, val) {
+                    warn!("Unknown machine type in config: {val} ({message})");
+                }
+            }
             "cpu-mode" => match val.parse::<CpuMode>() {
-                Ok(mode) => config.cpu_mode = mode,
+                Ok(mode) => {
+                    config.cpu_mode = mode;
+                    explicit.cpu_mode = true;
+                }
                 Err(_) => warn!("Unknown CPU mode in config: {val}"),
             },
+            "boot-mode" => match val.parse::<BootMode>() {
+                Ok(mode) => config.pc88_boot_mode = mode,
+                Err(_) => warn!("Unknown PC-88 boot mode in config: {val}"),
+            },
+            "pc88-monitor" => match val.parse::<MonitorTiming>() {
+                Ok(timing) => config.pc88_monitor = timing,
+                Err(_) => warn!("Unknown PC-88 monitor timing in config: {val}"),
+            },
+            "pc88-memory-wait" => match val.parse::<MemoryWaitSwitch>() {
+                Ok(switch) => {
+                    config.pc88_memory_wait = switch;
+                    explicit.pc88_memory_wait = true;
+                }
+                Err(_) => warn!("Unknown PC-88 memory wait in config: {val}"),
+            },
+            "pc88-8mhz-wait" => match val.parse::<EightMhzWaitMode>() {
+                Ok(mode) => config.pc88_8mhz_wait = mode,
+                Err(_) => warn!("Unknown PC-88 8 MHz wait in config: {val}"),
+            },
+            "pc88-roms" => config.pc88_roms = Some(PathBuf::from(val)),
             "fdd1" => config.fdd1.push(PathBuf::from(val)),
             "fdd2" => config.fdd2.push(PathBuf::from(val)),
             "hdd1" => config.hdd1 = Some(PathBuf::from(val)),
@@ -782,8 +874,12 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
             },
             key if key.starts_with("key.") => {
                 let host_name = &key[4..];
-                match parse_key_binding(host_name, val) {
-                    Some((host, pc98_code)) => config.key_map.set(host, pc98_code),
+                let binding = match config.target {
+                    Target::Pc88 => parse_key_binding_pc88(host_name, val),
+                    Target::Pc98 => parse_key_binding(host_name, val),
+                };
+                match binding {
+                    Some((host, code)) => config.key_map.set(host, code),
                     None => warn!("Invalid key binding: {key}={val}"),
                 }
             }
@@ -791,6 +887,43 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
         }
     }
 
+    Ok(())
+}
+
+fn apply_derived_defaults(config: &mut EmulatorConfig, explicit: ExplicitSettings) {
+    if config.target != Target::Pc88 {
+        return;
+    }
+    if !(matches!(config.pc88_boot_mode, BootMode::V1S) || config.pc88_boot_mode.is_n_family()) {
+        return;
+    }
+    if !explicit.cpu_mode {
+        config.cpu_mode = CpuMode::Low;
+    }
+    if !explicit.pc88_memory_wait {
+        config.pc88_memory_wait = MemoryWaitSwitch::Compatible;
+    }
+}
+
+/// Resolves a `--machine` / `machine=` value to a family and model. A PC-88
+/// model name selects the PC-88 target; anything else is parsed as a PC-98
+/// model. Returns a human-readable error if neither family recognises the value.
+fn apply_machine_selection(config: &mut EmulatorConfig, value: &str) -> Result<(), String> {
+    if let Ok(_model) = value.parse::<Pc8801Model>() {
+        // Switch the default key map to the PC-88 matrix so later `key.*`
+        // overrides layer onto the right base.
+        if config.target != Target::Pc88 {
+            config.key_map = KeyMap::new_pc88();
+        }
+        config.target = Target::Pc88;
+        return Ok(());
+    }
+    let model = value.parse::<MachineModel>()?;
+    if config.target != Target::Pc98 {
+        config.key_map = KeyMap::new();
+    }
+    config.target = Target::Pc98;
+    config.machine = model;
     Ok(())
 }
 
@@ -1068,5 +1201,122 @@ impl std::str::FromStr for MidiDevice {
                 "unknown MIDI device '{s}', expected none, mt32 or sc55"
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_run_config(args: &[&str]) -> EmulatorConfig {
+        match parse_args_from(args.iter().map(|arg| (*arg).to_owned()), false)
+            .expect("arguments should parse")
+        {
+            Action::Run(config) => *config,
+            _ => panic!("expected run action"),
+        }
+    }
+
+    #[test]
+    fn machine_flag_selects_the_pc88_target() {
+        let mut config = EmulatorConfig::default();
+        apply_machine_selection(&mut config, "PC8801MC").expect("PC8801MC is valid");
+        assert_eq!(config.target, Target::Pc88);
+    }
+
+    #[test]
+    fn machine_flag_selects_the_pc98_target() {
+        let mut config = EmulatorConfig::default();
+        apply_machine_selection(&mut config, "PC9801VX").expect("PC9801VX is valid");
+        assert_eq!(config.target, Target::Pc98);
+        assert_eq!(config.machine, MachineModel::PC9801VX);
+    }
+
+    #[test]
+    fn unknown_machine_is_rejected() {
+        let mut config = EmulatorConfig::default();
+        assert!(apply_machine_selection(&mut config, "FOOBAR").is_err());
+    }
+
+    #[test]
+    fn fdd_type_parses_2d() {
+        assert_eq!("2d".parse::<FddType>(), Ok(FddType::D2));
+        assert_eq!("2hd".parse::<FddType>(), Ok(FddType::Hd2));
+        assert_eq!("2dd".parse::<FddType>(), Ok(FddType::Dd2));
+        assert!("2xx".parse::<FddType>().is_err());
+    }
+
+    #[test]
+    fn pc88_n_family_boot_modes_derive_compatible_defaults() {
+        for boot_mode in ["n", "n80", "n80sr"] {
+            let config = parse_run_config(&["--machine", "PC8801MC", "--boot-mode", boot_mode]);
+            assert_eq!(config.cpu_mode, CpuMode::Low, "{boot_mode}");
+            assert_eq!(
+                config.pc88_memory_wait,
+                MemoryWaitSwitch::Compatible,
+                "{boot_mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn pc88_v1s_boot_mode_derives_compatible_defaults() {
+        let config = parse_run_config(&["--machine", "PC8801MC", "--boot-mode", "v1s"]);
+        assert_eq!(config.cpu_mode, CpuMode::Low);
+        assert_eq!(config.pc88_memory_wait, MemoryWaitSwitch::Compatible);
+    }
+
+    #[test]
+    fn pc88_v2_boot_mode_keeps_fast_defaults() {
+        let config = parse_run_config(&["--machine", "PC8801MC", "--boot-mode", "v2"]);
+        assert_eq!(config.cpu_mode, CpuMode::High);
+        assert_eq!(config.pc88_memory_wait, MemoryWaitSwitch::Fast);
+    }
+
+    #[test]
+    fn explicit_pc88_cpu_mode_overrides_boot_mode_default() {
+        let config = parse_run_config(&[
+            "--machine",
+            "PC8801MC",
+            "--boot-mode",
+            "n",
+            "--cpu-mode",
+            "high",
+        ]);
+        assert_eq!(config.cpu_mode, CpuMode::High);
+        assert_eq!(config.pc88_memory_wait, MemoryWaitSwitch::Compatible);
+    }
+
+    #[test]
+    fn explicit_pc88_memory_wait_overrides_boot_mode_default() {
+        let config = parse_run_config(&[
+            "--machine",
+            "PC8801MC",
+            "--boot-mode",
+            "v1s",
+            "--pc88-memory-wait",
+            "fast",
+        ]);
+        assert_eq!(config.cpu_mode, CpuMode::Low);
+        assert_eq!(config.pc88_memory_wait, MemoryWaitSwitch::Fast);
+    }
+
+    #[test]
+    fn config_file_explicit_pc88_values_override_boot_mode_default() {
+        let path = std::env::temp_dir().join(format!(
+            "neetan_config_test_{}_pc88_explicit.conf",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "machine=PC8801MC\nboot-mode=n\ncpu-mode=high\npc88-memory-wait=fast\n",
+        )
+        .expect("config file should be written");
+
+        let config = parse_run_config(&["--config", path.to_str().expect("path is UTF-8")]);
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(config.cpu_mode, CpuMode::High);
+        assert_eq!(config.pc88_memory_wait, MemoryWaitSwitch::Fast);
     }
 }
