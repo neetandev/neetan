@@ -1071,6 +1071,7 @@ pub fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<B
     match config.target {
         Target::Pc98 => initialize_pc98_machine(config, sample_rate),
         Target::Pc88 => initialize_pc88_machine(config, sample_rate),
+        Target::Pc88Va => initialize_pc88va_machine(config, sample_rate),
     }
 }
 
@@ -1177,6 +1178,36 @@ fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
     Ok(Box::new(machine88::Pc8801Machine::new(
         main_cpu, sub_cpu, bus,
     )))
+}
+
+fn initialize_pc88va_machine(
+    config: &EmulatorConfig,
+    _sample_rate: u32,
+) -> Result<Box<dyn Machine>> {
+    let model = config.pc88va_model;
+    info!("Selected machine model {model}");
+
+    let rom_dir = config.pc88va_roms.as_ref().ok_or_else(|| {
+        StringError("PC-88VA requires a ROM directory (--pc88va-roms <DIR>)".into())
+    })?;
+
+    let roms = machine88va::load_rom_set(rom_dir).map_err(|error| {
+        StringError(format!(
+            "Failed to load PC-88VA ROM set from {}: {error}",
+            rom_dir.display()
+        ))
+    })?;
+
+    if config.hdd1.is_some() || config.hdd2.is_some() {
+        warn!("HDD options are ignored for the PC-88VA target");
+    }
+    if !config.cdrom.is_empty() {
+        warn!("CD-ROM options are ignored for the PC-88VA target");
+    }
+
+    let mut machine = machine88va::Pc88VaMachine::new(model, roms);
+    machine.set_host_local_time_fn(host_local_time_bcd);
+    Ok(Box::new(machine))
 }
 
 fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {

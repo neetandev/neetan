@@ -18,11 +18,16 @@ mod compose;
 mod ga1280a;
 pub mod pc88;
 mod text_normalizer;
+pub mod va;
 
 pub use ga1280a::{
     Ga1280aCursorRenderInputs, Ga1280aRenderInputs, Ga1280aRenderMode, compose as compose_ga1280a,
 };
 pub use pc88::{GraphicsMode88, Pc88Renderer, RenderInputs88};
+pub use va::{
+    HsyncModeVa, RenderInputsVa, VA_FRAMEBUFFER_BYTES, VA_SURFACE_HEIGHT, VA_SURFACE_WIDTH,
+    VaRenderer, VaRendererState,
+};
 
 /// Total byte size of the PC-98 text VRAM image (16 KiB).
 ///

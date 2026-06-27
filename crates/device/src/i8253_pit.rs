@@ -379,10 +379,16 @@ impl I8253Pit {
         pit_clock_hz: u32,
         current_cycle: u64,
     ) {
+        let cpu_cycles = self.timer0_period_cycles(cpu_clock_hz, pit_clock_hz);
+        scheduler.schedule(EventKind::PitTimer0, current_cycle + cpu_cycles);
+    }
+
+    /// Returns the timer 0 reload period expressed in CPU cycles. Used by buses
+    /// that drive their own scheduler instead of the common [`Scheduler`].
+    pub fn timer0_period_cycles(&self, cpu_clock_hz: u32, pit_clock_hz: u32) -> u64 {
         let ch = &self.channels[0];
         let reload = count_period(ch);
-        let cpu_cycles = reload * cpu_clock_hz as u64 / pit_clock_hz as u64;
-        scheduler.schedule(EventKind::PitTimer0, current_cycle + cpu_cycles);
+        reload * cpu_clock_hz as u64 / pit_clock_hz as u64
     }
 
     /// Handles the timer 0 event. Returns `true` if an IRQ should be raised.
@@ -393,6 +399,17 @@ impl I8253Pit {
         pit_clock_hz: u32,
         current_cycle: u64,
     ) -> bool {
+        let raise_irq = self.advance_timer0(current_cycle);
+        self.schedule_timer0(scheduler, cpu_clock_hz, pit_clock_hz, current_cycle);
+        raise_irq
+    }
+
+    /// Advances timer 0 at a fire event: clears/re-arms the interrupt flag,
+    /// applies any deferred reload, and updates the output for the channel's
+    /// mode. Returns `true` if an IRQ should be raised. The caller is
+    /// responsible for rescheduling the next event (see
+    /// [`Self::timer0_period_cycles`]).
+    pub fn advance_timer0(&mut self, current_cycle: u64) -> bool {
         let ch = &mut self.channels[0];
         let raise_irq = ch.flag & PIT_FLAG_I != 0;
         if raise_irq {
@@ -420,7 +437,6 @@ impl I8253Pit {
             ch.flag |= PIT_FLAG_I;
         }
         ch.last_load_cycle = current_cycle;
-        self.schedule_timer0(scheduler, cpu_clock_hz, pit_clock_hz, current_cycle);
         raise_irq
     }
 }

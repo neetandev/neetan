@@ -1,15 +1,16 @@
 # Neetan (ねーたん)
 
-An emulator for the PC-8001, PC-8801, PC-9801 and PC-9821 written in Rust.
+An emulator for the PC-8001, PC-8801, PC-88VA, PC-9801 and PC-9821 written in Rust.
 
-[Game Compatibility](https://github.com/hasenbanck/neetan/wiki/Game-Compatibility)
+[Game Compatibility](https://github.com/neetandev/neetan/wiki)
 
 ## Supported systems
 
-Neetan emulates two distinct families, selected through the `--machine` option:
+Neetan emulates three distinct families, selected through the `--machine` option:
 
 * PC-9801 / PC-9821 line (six idealized targets).
 * PC-8001 / PC-8801 line (one idealized target).
+* PC-88VA line (one idealized target).
 
 ### PC-9801 / PC-9821
 
@@ -49,6 +50,16 @@ See [PC-8001 / PC-8801 systems](#pc-8001--pc-8801-systems) for the boot modes, t
 hardware mapping and compatibility caveats, the ROM set, and platform-specific
 options.
 
+### PC-88VA
+
+Neetan emulates a single PC-88VA target, the PC-88VA2: an NEC V30 running at roughly
+8 MHz with 512 KiB of main RAM, a built-in OPNA, and a custom graphics chipset with
+the Super Graphic Processor (SGP) blitter. A Z80 sub-CPU at 4 MHz drives the floppy
+unit. Like the PC-8801MC it has no HLE firmware and requires a real ROM set,
+supplied via `--pc88va-roms`.
+
+See [PC-88VA systems](#pc-88va-systems) for the ROM set and platform-specific options.
+
 ## Usage
 
 ```bash
@@ -58,47 +69,49 @@ neetan <COMMAND>
 
 ### Options
 
-The `System` column shows where an option applies: `All` (both families), `PC-98`
-(PC-9801 / PC-9821 only), `PC-9821` (PC-9821 only), or `PC-88` (PC-8001 / PC-8801
-only). Options that apply to one family are ignored on the other.
+The `System` column shows where an option applies: `All` (every family), `PC-98`
+(PC-9801 / PC-9821 only), `PC-9821` (PC-9821 only), `PC-88` (PC-8001 / PC-8801
+only), or `PC-88VA` (PC-88VA only). Options that apply to one family are ignored on
+the others.
 
-| Option                       | System  | Description                                                                       | Default           |
-|------------------------------|---------|-----------------------------------------------------------------------------------|-------------------|
-| `-c, --config <PATH>`        | All     | Load configuration from file                                                      | -                 |
-| `--machine <TYPE>`           | All     | `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821AS`, `PC9821AP`, `PC8801MC` | `PC9801RA`        |
-| `--cpu-mode <MODE>`          | All     | CPU speed mode: `low` or `high` (PC-88 default derives from the boot mode)        | `high` (PC-98)    |
-| `--boot-mode <MODE>`         | PC-88   | BASIC boot mode: `v1s`, `v1h`, `v2`, `n`, `n80`, `n80sr`                          | `v2`              |
-| `--pc88-monitor <MODE>`      | PC-88   | Monitor timing: `auto`, `15k`, `24k`                                              | `auto`            |
-| `--pc88-memory-wait <MODE>`  | PC-88   | Memory wait: `fast` or `compatible`                                               | derives from mode |
-| `--pc88-8mhz-wait <MODE>`    | PC-88   | 8 MHz wait: `fast` or `compatible`                                                | `fast`            |
-| `--pc88-roms <PATH>`         | PC-88   | Directory with the PC-8801MC ROM set (required for `PC8801MC`)                    | -                 |
-| `--fdd1 <PATH>`              | All     | Floppy disk image for drive 1 (repeatable)                                        | -                 |
-| `--fdd2 <PATH>`              | All     | Floppy disk image for drive 2 (repeatable)                                        | -                 |
-| `--hdd1 <PATH>`              | All     | Hard disk image for hard disk drive 1                                             | -                 |
-| `--hdd2 <PATH>`              | All     | Hard disk image for hard disk drive 2                                             | -                 |
-| `--cdrom <PATH>`             | PC-9821 | CD-ROM disc image .cue or .ccd file (repeatable)                                  | -                 |
-| `--audio-volume <FLOAT>`     | All     | Audio volume 0.0-1.0                                                              | `1.0`             |
-| `--aspect-mode <MODE>`       | All     | Display aspect mode: `4:3` or `1:1`                                               | `4:3`             |
-| `--crt <on\|off>`            | All     | Enable the CRT effect. Not available when using the legacy backend.               | `on`              |
-| `--scaling <MODE>`           | All     | Scaling method: `nearest`, `bilinear`, `pixelart`                                 | `pixelart`        |
-| `--backend <BACKEND>`        | All     | Rendering backend: `modern` or `legacy`                                           | `modern`          |
-| `--window-mode <MODE>`       | All     | Window mode: `windowed` or `fullscreen`                                           | `windowed`        |
-| `--force-gdc-clock <2.5\|5>` | PC-98   | Force GDC clock to 2.5 or 5 MHz. VX and later only                                | auto              |
-| `--graphicboard <TYPE>`      | PC-98   | Graphics accelerator board: `none`, `ga1280a`                                     | `none`            |
-| `--bios-rom <PATH>`          | PC-98   | Path to BIOS ROM file                                                             | HLE BIOS          |
-| `--font-rom <PATH>`          | PC-98   | Path to font ROM file                                                             | Built-in          |
-| `--soundboard <TYPE>`        | PC-98   | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`              | `86+26k`          |
-| `--adpcm-ram <on\|off>`      | PC-98   | ADPCM RAM option for the PC-9801-86                                               | `on`              |
-| `--ems <on\|off>`            | PC-98   | Enable EMS expanded memory                                                        | `on`              |
-| `--xms <on\|off>`            | PC-98   | Enable XMS extended memory                                                        | `on`              |
-| `--midi <DEVICE>`            | PC-98   | MIDI device: `none`, `mt32`, `sc55`                                               | `none`            |
-| `--mt32-roms <PATH>`         | PC-98   | Path to MT-32 ROM directory (requires `mt32` feature)                             | -                 |
-| `--sc55-roms <PATH>`         | PC-98   | Path to SC-55 ROM directory (requires `sc55` feature)                             | -                 |
-| `--boot-device <DEVICE>`     | All     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `dos`                        | `auto`            |
-| `--printer <PATH>`           | All     | Output file for printer (must exist)                                              | -                 |
-| `--enable-extractor`         | All     | Copy on-screen Japanese text to the system clipboard, one line at a time          | off               |
-| `-h, --help`                 | All     | Print help                                                                        | -                 |
-| `-V, --version`              | All     | Print version                                                                     | -                 |
+| Option                       | System  | Description                                                                                  | Default           |
+|------------------------------|---------|----------------------------------------------------------------------------------------------|-------------------|
+| `-c, --config <PATH>`        | All     | Load configuration from file                                                                 | -                 |
+| `--machine <TYPE>`           | All     | `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821AS`, `PC9821AP`, `PC8801MC`, `PC88VA2` | `PC9801RA`        |
+| `--cpu-mode <MODE>`          | All     | CPU speed mode: `low` or `high` (PC-88 default derives from the boot mode)                   | `high` (PC-98)    |
+| `--boot-mode <MODE>`         | PC-88   | BASIC boot mode: `v1s`, `v1h`, `v2`, `n`, `n80`, `n80sr`                                     | `v2`              |
+| `--pc88-monitor <MODE>`      | PC-88   | Monitor timing: `auto`, `15k`, `24k`                                                         | `auto`            |
+| `--pc88-memory-wait <MODE>`  | PC-88   | Memory wait: `fast` or `compatible`                                                          | derives from mode |
+| `--pc88-8mhz-wait <MODE>`    | PC-88   | 8 MHz wait: `fast` or `compatible`                                                           | `fast`            |
+| `--pc88-roms <PATH>`         | PC-88   | Directory with the PC-8801MC ROM set (required for `PC8801MC`)                               | -                 |
+| `--pc88va-roms <PATH>`       | PC-88VA | Directory with the PC-88VA2 ROM set (required for `PC88VA2`)                                 | -                 |
+| `--fdd1 <PATH>`              | All     | Floppy disk image for drive 1 (repeatable)                                                   | -                 |
+| `--fdd2 <PATH>`              | All     | Floppy disk image for drive 2 (repeatable)                                                   | -                 |
+| `--hdd1 <PATH>`              | All     | Hard disk image for hard disk drive 1                                                        | -                 |
+| `--hdd2 <PATH>`              | All     | Hard disk image for hard disk drive 2                                                        | -                 |
+| `--cdrom <PATH>`             | PC-9821 | CD-ROM disc image .cue or .ccd file (repeatable)                                             | -                 |
+| `--audio-volume <FLOAT>`     | All     | Audio volume 0.0-1.0                                                                         | `1.0`             |
+| `--aspect-mode <MODE>`       | All     | Display aspect mode: `4:3` or `1:1`                                                          | `4:3`             |
+| `--crt <on\|off>`            | All     | Enable the CRT effect. Not available when using the legacy backend.                          | `on`              |
+| `--scaling <MODE>`           | All     | Scaling method: `nearest`, `bilinear`, `pixelart`                                            | `pixelart`        |
+| `--backend <BACKEND>`        | All     | Rendering backend: `modern` or `legacy`                                                      | `modern`          |
+| `--window-mode <MODE>`       | All     | Window mode: `windowed` or `fullscreen`                                                      | `windowed`        |
+| `--force-gdc-clock <2.5\|5>` | PC-98   | Force GDC clock to 2.5 or 5 MHz. VX and later only                                           | auto              |
+| `--graphicboard <TYPE>`      | PC-98   | Graphics accelerator board: `none`, `ga1280a`                                                | `none`            |
+| `--bios-rom <PATH>`          | PC-98   | Path to BIOS ROM file                                                                        | HLE BIOS          |
+| `--font-rom <PATH>`          | PC-98   | Path to font ROM file                                                                        | Built-in          |
+| `--soundboard <TYPE>`        | PC-98   | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`                         | `86+26k`          |
+| `--adpcm-ram <on\|off>`      | PC-98   | ADPCM RAM option for the PC-9801-86                                                          | `on`              |
+| `--ems <on\|off>`            | PC-98   | Enable EMS expanded memory                                                                   | `on`              |
+| `--xms <on\|off>`            | PC-98   | Enable XMS extended memory                                                                   | `on`              |
+| `--midi <DEVICE>`            | PC-98   | MIDI device: `none`, `mt32`, `sc55`                                                          | `none`            |
+| `--mt32-roms <PATH>`         | PC-98   | Path to MT-32 ROM directory (requires `mt32` feature)                                        | -                 |
+| `--sc55-roms <PATH>`         | PC-98   | Path to SC-55 ROM directory (requires `sc55` feature)                                        | -                 |
+| `--boot-device <DEVICE>`     | All     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `dos`                                   | `auto`            |
+| `--printer <PATH>`           | All     | Output file for printer (must exist)                                                         | -                 |
+| `--enable-extractor`         | All     | Copy on-screen Japanese text to the system clipboard, one line at a time                     | off               |
+| `-h, --help`                 | All     | Print help                                                                                   | -                 |
+| `-V, --version`              | All     | Print version                                                                                | -                 |
 
 ### Commands
 
@@ -263,6 +276,40 @@ These ROMs are required only when the matching boot mode is selected:
 | `n80_mkii`   | 32 KiB | `n80`                 | `9e4ec9c53f4432a88583dccd04ae3186f4d7849f80ea7774ac1efbdb93c992f2` |
 | `n80_mkiisr` | 32 KiB | `n80sr`               | `56406a79fd664a197c458cb3feeeb6994c34266a1e02728877b6ea5ef86e15ba` |
 | `n80sr`      | 40 KiB | `n80sr`               | `7b81e27b831ad00f264170d1d98c645298fa688b07d5a9f0c19c1d6a73fe4273` |
+
+## PC-88VA systems
+
+Select the PC-88VA family with `--machine PC88VA2`. The emulated machine is the
+PC-88VA2: an NEC V30 at roughly 8 MHz with 512 KiB of main RAM and a Z80 sub-CPU at
+4 MHz for the floppy unit. Sound is provided by the machine's built-in OPNA.
+
+Only the V3 graphic mode is emulated. This target is not backwards compatible with
+the PC-8801 software. The original could run V1 and V2 BASIC games, since it's CPU
+had an integrated Z80. We don't implement th hybrid nature and if you need to run
+PC-8801 games, then please use the PC-8801MC target.
+
+Like the PC-8801MC, it has no HLE firmware and requires a real ROM set (see [ROM set](#rom-set-1)).
+
+### Platform options
+
+| Option                  | Description                                       | Default |
+|-------------------------|---------------------------------------------------|---------|
+| `--pc88va-roms <PATH>`  | Directory with the PC-88VA2 ROM set (required)    | -       |
+
+### ROM set
+
+The PC-88VA2 needs a real ROM set, pointed to by `--pc88va-roms`. ROMs are identified by their
+BLAKE3 content hash rather than by file name, so any dump layout works regardless of how the
+files are named. All slots are required:
+
+| Slot         | Size    | Contents                  | BLAKE3                                                             |
+|--------------|---------|---------------------------|--------------------------------------------------------------------|
+| `rom00`      | 512 KiB | ROM0 low image (varom00)  | `bba5011412fb266b3c15ff08d2508716ba2ac54fec3aa172b59e441486807eab` |
+| `rom08`      | 128 KiB | ROM0 high image (varom08) | `4cdf3da9a1423e874f9618a8d8859107fa5e3d20a91f4dcf908e042763c41bbb` |
+| `rom1`       | 128 KiB | ROM1 image (varom1)       | `1239bf390d444ff205f70c700527cb50bc90107904050fa8713a415a17bf0e42` |
+| `font`       | 320 KiB | Kanji / font ROM          | `b47ec9f55ff199ac71f453385aec0f370afbb958fd47ad9bb5161bdf4e2bb3ee` |
+| `dictionary` | 512 KiB | Dictionary (jisyo) ROM    | `21fcd88c97b881e55f015f22d62002022189572e171f1c5e485b751c84379b30` |
+| `subsys`     | 8 KiB   | Floppy sub-CPU (Z80) ROM  | `531ab2aa2c7d7c4deb2ddd8303c6637ea7e273648825fb51e17c8660d7496565` |
 
 ## Configuration file
 
@@ -506,7 +553,8 @@ Limitations:
 It depends on the emulated family:
 
 - PC-9801 / PC-9821: none. If you have the correct ROM files you CAN use them,
-  but there is no particular reason to, since our HLE BIOS very good compatibility.
+  but there is no particular reason to, since our HLE BIOS has very good
+  compatibility.
   We also include a self-created open source font ROM and provide the tools to
   re-create / change it. With these systems in place we can run the vast majority
   of PC-98 games and applications. There are some BIOS extensions, mainly the
@@ -517,6 +565,9 @@ It depends on the emulated family:
   `--pc88-roms`. The ROMs are matched by content hash, so file names do not matter;
   see [ROM set](#rom-set) for the list of required ROMs and the extra ROMs that the
   `n80` / `n80sr` boot modes need.
+- PC-88VA: a full ROM set is required and must be supplied via `--pc88va-roms`. The
+  ROMs are matched by content hash, so file names do not matter; see
+  [ROM set](#rom-set-1) for the list of required ROMs.
 
 The optional MT-32 and SC-55 MIDI modules, also need ROM files to function correctly,
 as described in the [MIDI sound modules](#midi-sound-modules) section.

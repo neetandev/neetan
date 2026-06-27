@@ -171,6 +171,16 @@ impl KeyMap {
         }
     }
 
+    /// PC-88VA key map: host scancodes to VA keycodes (the values read at port
+    /// 0x1C1). The VA keycode interface reuses the PC-98 scan-code protocol, so the
+    /// base map matches the PC-98 default; the machine derives the 88-compatible
+    /// scan matrix from the keycode internally.
+    pub const fn new_pc88va() -> Self {
+        Self {
+            mappings: build_pc88va_default_map(),
+        }
+    }
+
     pub fn set(&mut self, host: Scancode, pc98_code: u8) {
         self.mappings[host.index()] = pc98_code;
     }
@@ -414,10 +424,41 @@ const fn build_default_map() -> [u8; Scancode::COUNT] {
     map
 }
 
+/// PC-88VA default key map: the PC-98 keycode base with the one VA difference,
+/// the dedicated keypad ENTER keycode (the PC-98 keypad has '=' there instead).
+const fn build_pc88va_default_map() -> [u8; Scancode::COUNT] {
+    let mut map = build_default_map();
+    map[Scancode::KpEnter.index()] = 0x79;
+    map
+}
+
 pub fn parse_key_binding(host_name: &str, pc98_name: &str) -> Option<(Scancode, u8)> {
     let host = Scancode::from_name(host_name)?;
     let pc98 = pc98_scancode_from_name(pc98_name)?;
     Some((host, pc98))
+}
+
+/// Maps a PC-88VA key name to its keycode (the value read at port 0x1C1). The VA
+/// keycode interface reuses the PC-98 scan-code protocol, so this defers to the
+/// PC-98 name table and adds the few VA-only keys.
+pub fn pc88va_keycode_from_name(name: &str) -> Option<u8> {
+    if let Some(code) = pc98_scancode_from_name(name) {
+        return Some(code);
+    }
+    let name_lower = name.to_ascii_lowercase();
+    Some(match name_lower.as_str() {
+        "henkan" | "convert" => 0x35,
+        "kettei" | "decide" => 0x51,
+        "pc" => 0x7A,
+        "zenkaku" => 0x7B,
+        _ => return None,
+    })
+}
+
+pub fn parse_key_binding_pc88va(host_name: &str, va_name: &str) -> Option<(Scancode, u8)> {
+    let host = Scancode::from_name(host_name)?;
+    let code = pc88va_keycode_from_name(va_name)?;
+    Some((host, code))
 }
 
 /// Encodes a PC-88 keyboard matrix position as `row << 3 | column`. The high bit
@@ -530,6 +571,15 @@ pub fn pc88_matrix_code_from_name(name: &str) -> Option<u8> {
         // Matrix row 11.
         "rollup" => pc88_cell(11, 0),
         "rolldown" => pc88_cell(11, 1),
+        // Matrix rows 13-14: PC-88VA-specific keys (no PC-8801 equivalent).
+        "f6" => pc88_cell(13, 0),
+        "f7" => pc88_cell(13, 1),
+        "f8" => pc88_cell(13, 2),
+        "f9" => pc88_cell(13, 3),
+        "f10" => pc88_cell(13, 4),
+        "henkan" | "convert" => pc88_cell(13, 5),
+        "kettei" | "decide" => pc88_cell(13, 6),
+        "pc" => pc88_cell(14, 5),
         _ => return None,
     })
 }
@@ -657,6 +707,16 @@ const fn build_pc88_default_map() -> [u8; Scancode::COUNT] {
         // Matrix row 11: Roll Up / Roll Down.
         (PageUp, pc88_cell(11, 0)),
         (PageDown, pc88_cell(11, 1)),
+        // Matrix rows 13-14: PC-88VA keys absent from the PC-8801 keyboard. F8
+        // enters the VA boot setup menu (port 0x0D bit 2); F11/F12 stand in for
+        // the 変換 (next page) and 決定 (confirm) keys used to drive that menu.
+        (F6, pc88_cell(13, 0)),
+        (F7, pc88_cell(13, 1)),
+        (F8, pc88_cell(13, 2)),
+        (F9, pc88_cell(13, 3)),
+        (F10, pc88_cell(13, 4)),
+        (F11, pc88_cell(13, 5)),
+        (F12, pc88_cell(13, 6)),
     ];
 
     let mut map = [UNMAPPED; Scancode::COUNT];
@@ -674,6 +734,29 @@ mod tests {
     use sdl3::keyboard::Scancode;
 
     use super::{KeyMap, KeyboardForwardingState};
+
+    #[test]
+    fn pc88va_maps_host_keys_to_va_keycodes() {
+        use super::pc88va_keycode_from_name;
+
+        // The VA keycode interface returns PC-98-style scan codes; the map must
+        // distinguish keys that the 88 matrix collapses (e.g. Backspace vs Delete).
+        let map = KeyMap::new_pc88va();
+        assert_eq!(map.lookup(Scancode::A), 0x1D);
+        assert_eq!(map.lookup(Scancode::Return), 0x1C);
+        assert_eq!(map.lookup(Scancode::Space), 0x34);
+        assert_eq!(map.lookup(Scancode::Backspace), 0x0E);
+        assert_eq!(map.lookup(Scancode::Delete), 0x39);
+        assert_eq!(map.lookup(Scancode::KpEnter), 0x79);
+        assert_eq!(map.lookup(Scancode::Kp0), 0x4E);
+        assert_eq!(map.lookup(Scancode::F1), 0x62);
+        assert_eq!(map.lookup(Scancode::LShift), 0x70);
+
+        assert_eq!(pc88va_keycode_from_name("a"), Some(0x1D));
+        assert_eq!(pc88va_keycode_from_name("return"), Some(0x1C));
+        assert_eq!(pc88va_keycode_from_name("pc"), Some(0x7A));
+        assert_eq!(pc88va_keycode_from_name("kettei"), Some(0x51));
+    }
 
     #[test]
     fn pc88_return_and_backspace_map_to_standard_matrix_cells() {
