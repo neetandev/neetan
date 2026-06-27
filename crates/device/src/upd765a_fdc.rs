@@ -200,6 +200,11 @@ pub const ST0_SEEK_END: u8 = 0x20;
 /// ST0 bit 3: NR (Not Ready) - drive not ready.
 pub const ST0_NOT_READY: u8 = 0x08;
 
+/// ST0 bits 7-6: IC (Interrupt Code) - 11 = abnormal termination caused by the
+/// drive ready line changing state (the uPD765A polls each drive's ready line
+/// while idle and raises an interrupt on any transition).
+pub const ST0_READY_LINE_CHANGED: u8 = 0xC0;
+
 /// ST1 bit 0: MA (Missing Address Mark) - address mark not found.
 pub const ST1_MISSING_ADDRESS_MARK: u8 = 0x01;
 
@@ -351,6 +356,25 @@ impl Upd765aFdc {
     /// Returns and clears the interrupt pending flag.
     pub fn take_interrupt_pending(&mut self) -> bool {
         std::mem::replace(&mut self.state.interrupt_pending, false)
+    }
+
+    /// Signals that a drive's ready line changed state (media inserted or
+    /// removed). While idle the uPD765A continuously polls the four drives'
+    /// ready lines and raises an interrupt on any transition; the host then
+    /// issues Sense Interrupt Status and reads ST0 with IC = 11. System
+    /// software uses this to invalidate cached directory data when a disk is
+    /// swapped. The interrupt is only raised when the controller is idle, so an
+    /// in-flight command is never disturbed.
+    pub fn signal_ready_line_change(&mut self, drive: usize, ready: bool) {
+        if drive >= 4 || self.state.drive_equipped & (1 << drive) == 0 {
+            return;
+        }
+        if self.state.phase != FdcPhase::Idle {
+            return;
+        }
+        let not_ready = if ready { 0 } else { ST0_NOT_READY };
+        self.state.drive_st0[drive] = ST0_READY_LINE_CHANGED | not_ready | (drive as u8);
+        self.state.interrupt_pending = true;
     }
 
     /// Reads the main status register (MSR).
@@ -1345,6 +1369,46 @@ mod tests {
 
         assert_eq!(fdc.read_data(), ST0_INVALID_COMMAND);
         assert_eq!(fdc.state.phase, FdcPhase::Idle);
+    }
+
+    #[test]
+    fn ready_line_change_raises_interrupt_reported_by_sense() {
+        let mut fdc = Upd765aFdc::new();
+        fdc.state.drive_equipped = 0x03; // Drives 0 and 1 equipped.
+
+        // Disk inserted into drive 1: ready line goes active.
+        fdc.signal_ready_line_change(1, true);
+        assert!(fdc.state.interrupt_pending);
+
+        // Sense Interrupt Status reports IC = 11 (ready line changed) for drive 1.
+        fdc.write_data(0x08);
+        let st0 = fdc.read_data();
+        assert_eq!(st0, ST0_READY_LINE_CHANGED | 0x01);
+        let _pcn = fdc.read_data();
+        assert!(!fdc.state.interrupt_pending);
+
+        // Disk removed: ready line goes inactive, NR set in ST0.
+        fdc.signal_ready_line_change(1, false);
+        fdc.write_data(0x08);
+        assert_eq!(
+            fdc.read_data(),
+            ST0_READY_LINE_CHANGED | ST0_NOT_READY | 0x01
+        );
+    }
+
+    #[test]
+    fn ready_line_change_ignored_when_not_idle_or_unequipped() {
+        let mut fdc = Upd765aFdc::new();
+        fdc.state.drive_equipped = 0x01; // Only drive 0 equipped.
+
+        // Unequipped drive: no interrupt.
+        fdc.signal_ready_line_change(1, true);
+        assert!(!fdc.state.interrupt_pending);
+
+        // Mid-command (not idle): the in-flight command must not be disturbed.
+        fdc.state.phase = FdcPhase::Execution;
+        fdc.signal_ready_line_change(0, true);
+        assert!(!fdc.state.interrupt_pending);
     }
 
     #[test]

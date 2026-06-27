@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use common::{Context, CpuMode, MachineModel, StringError, bail, info, warn};
 use machine88::{BootMode, EightMhzWaitMode, MemoryWaitSwitch, MonitorTiming, Pc8801Model};
 
-use crate::keyboard::{KeyMap, parse_key_binding, parse_key_binding_pc88};
+use crate::keyboard::{
+    KeyMap, parse_key_binding, parse_key_binding_pc88, parse_key_binding_pc88va,
+};
 
 fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> crate::Result<String> {
     match args.next() {
@@ -36,13 +38,14 @@ Commands:
 
 Options:
   -c, --config <PATH>           Load configuration from file
-      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP, PC8801MC
+      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP, PC8801MC, PC88VA2
       --cpu-mode <MODE>         CPU speed mode: low or high (PC-88 default derives from boot mode)
       --boot-mode <MODE>        PC-8801 BASIC boot mode: v1s, v1h, v2, n, n80, n80sr (default: v2; PC-8801 only)
       --pc88-monitor <MODE>     PC-8801 monitor timing: auto, 15k, 24k (default: auto; PC-8801 only)
       --pc88-memory-wait <MODE> PC-8801 memory wait: fast or compatible (default derives from boot mode)
       --pc88-8mhz-wait <MODE>   PC-8801 8 MHz wait: fast or compatible (default: fast; PC-8801 only)
       --pc88-roms <PATH>        Directory with the PC-8801MC ROM set (required)
+      --pc88va-roms <PATH>      Directory with the PC-88VA2 ROM set (required)
       --fdd1 <PATH>             Floppy disk image for drive 1 (repeatable)
       --fdd2 <PATH>             Floppy disk image for drive 2 (repeatable)
       --hdd1 <PATH>             Hard disk image for drive 1 (SASI or IDE)
@@ -534,6 +537,7 @@ fn parse_args_from(
                 config.pc88_8mhz_wait = val.parse::<EightMhzWaitMode>().map_err(StringError)?;
             }
             "--pc88-roms" => config.pc88_roms = Some(PathBuf::from(value(&flag)?)),
+            "--pc88va-roms" => config.pc88va_roms = Some(PathBuf::from(value(&flag)?)),
             "--fdd1" => config.fdd1.push(PathBuf::from(value(&flag)?)),
             "--fdd2" => config.fdd2.push(PathBuf::from(value(&flag)?)),
             "--hdd1" => config.hdd1 = Some(PathBuf::from(value(&flag)?)),
@@ -652,6 +656,8 @@ pub enum Target {
     Pc98,
     /// PC-8801 series (the `machine88` crate).
     Pc88,
+    /// PC-88VA series (the `machine88va` crate).
+    Pc88Va,
 }
 
 pub struct EmulatorConfig {
@@ -689,6 +695,8 @@ pub struct EmulatorConfig {
     pub pc88_memory_wait: MemoryWaitSwitch,
     pub pc88_8mhz_wait: EightMhzWaitMode,
     pub pc88_roms: Option<PathBuf>,
+    pub pc88va_model: machine88va::Pc88VaModel,
+    pub pc88va_roms: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -734,6 +742,8 @@ impl Default for EmulatorConfig {
             pc88_memory_wait: MemoryWaitSwitch::Fast,
             pc88_8mhz_wait: EightMhzWaitMode::Fast,
             pc88_roms: None,
+            pc88va_model: machine88va::Pc88VaModel::PC88VA2,
+            pc88va_roms: None,
         }
     }
 }
@@ -797,6 +807,7 @@ fn apply_config_file(
                 Err(_) => warn!("Unknown PC-88 8 MHz wait in config: {val}"),
             },
             "pc88-roms" => config.pc88_roms = Some(PathBuf::from(val)),
+            "pc88va-roms" => config.pc88va_roms = Some(PathBuf::from(val)),
             "fdd1" => config.fdd1.push(PathBuf::from(val)),
             "fdd2" => config.fdd2.push(PathBuf::from(val)),
             "hdd1" => config.hdd1 = Some(PathBuf::from(val)),
@@ -876,6 +887,7 @@ fn apply_config_file(
                 let host_name = &key[4..];
                 let binding = match config.target {
                     Target::Pc88 => parse_key_binding_pc88(host_name, val),
+                    Target::Pc88Va => parse_key_binding_pc88va(host_name, val),
                     Target::Pc98 => parse_key_binding(host_name, val),
                 };
                 match binding {
@@ -905,9 +917,9 @@ fn apply_derived_defaults(config: &mut EmulatorConfig, explicit: ExplicitSetting
     }
 }
 
-/// Resolves a `--machine` / `machine=` value to a family and model. A PC-88
-/// model name selects the PC-88 target; anything else is parsed as a PC-98
-/// model. Returns a human-readable error if neither family recognises the value.
+/// Resolves a `--machine` / `machine=` value to a family and model. A PC-88 or
+/// PC-88VA model name selects the matching target; anything else is parsed as a
+/// PC-98 model. Returns a human-readable error if no family recognises the value.
 fn apply_machine_selection(config: &mut EmulatorConfig, value: &str) -> Result<(), String> {
     if let Ok(_model) = value.parse::<Pc8801Model>() {
         // Switch the default key map to the PC-88 matrix so later `key.*`
@@ -916,6 +928,14 @@ fn apply_machine_selection(config: &mut EmulatorConfig, value: &str) -> Result<(
             config.key_map = KeyMap::new_pc88();
         }
         config.target = Target::Pc88;
+        return Ok(());
+    }
+    if let Ok(model) = value.parse::<machine88va::Pc88VaModel>() {
+        if config.target != Target::Pc88Va {
+            config.key_map = KeyMap::new_pc88va();
+        }
+        config.target = Target::Pc88Va;
+        config.pc88va_model = model;
         return Ok(());
     }
     let model = value.parse::<MachineModel>()?;
