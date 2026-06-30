@@ -69,7 +69,7 @@ pub const SAMPLE_RATE: i32 = 48000;
 const TARGET_BUFFER_FRAMES: usize = 2400;
 
 /// Frames to produce per chunk (~5 ms at 48 kHz).
-const STEP_FRAMES: usize = 240;
+pub const STEP_FRAMES: usize = 240;
 
 /// Bytes per stereo frame: 2 channels * 4 bytes per f32.
 const BYTES_PER_FRAME: i32 = 8;
@@ -181,6 +181,13 @@ impl AudioEngine {
     pub fn reset_buffer(&mut self) {
         let _ = self.stream.clear();
         let _ = self.stream.put_data_f32(&self.silence_buffer);
+    }
+
+    /// Drains pending audio samples from the machine without sending them to
+    /// the device.
+    pub fn discard_samples(&mut self, machine: &mut dyn Machine) {
+        self.sample_buffer.fill(0.0);
+        let _ = machine.generate_audio_samples(self.volume, &mut self.sample_buffer);
     }
 
     /// Drains pending audio samples from the machine and pushes them to the audio stream.

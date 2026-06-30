@@ -381,6 +381,8 @@ For example, if your global config sets `machine = PC9801RA` and you run
 | Right Ctrl         | Toggle mouse capture             |
 | GUI + Alt + Enter  | Toggle fullscreen                |
 | GUI + Alt + Escape | Quit the emulator                |
+| GUI + Alt + R      | Hard reset                       |
+| GUI + Alt + F      | Fast forward 8x (hold)           |
 | GUI + Alt + F1     | Toggle CRT effect                |
 | GUI + Alt + F2     | Cycle scaling method             |
 | GUI + Alt + F9     | Open floppy selector for drive 1 |
