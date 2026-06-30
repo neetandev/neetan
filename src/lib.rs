@@ -57,6 +57,11 @@ pub const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 const INITIAL_WINDOW_WIDTH: u32 = 1280;
 const MAX_AUDIO_STEPS: usize = 40;
 const SAMPLE_RATE: f64 = audio_engine::SAMPLE_RATE as f64;
+/// Emulation speed multiplier applied while fast forward is held.
+const FAST_FORWARD_FACTOR: f64 = 8.0;
+/// Upper bound on the wall-clock interval used to pace a fast-forward step,
+/// preventing a large burst after a host stall.
+const FAST_FORWARD_MAX_ELAPSED: Duration = Duration::from_millis(100);
 /// Analog-stick magnitude past which a left-stick axis counts as a held direction.
 const GAMEPAD_AXIS_DEADZONE: i16 = 16384;
 
@@ -311,6 +316,8 @@ fn select_graphics_backend(
 }
 
 struct Application {
+    /// The startup configuration.
+    config: EmulatorConfig,
     /// The emulated machine.
     machine: Box<dyn Machine>,
     /// The graphics engine.
@@ -379,6 +386,11 @@ struct Application {
     busy_duration: Duration,
     /// When the window title was last updated with CPU usage.
     window_title_last_update: Instant,
+    /// Whether fast forward is currently active (held).
+    fast_forward: bool,
+    /// Wall-clock instant of the last fast-forward emulation step, used to pace
+    /// emulation at a fixed multiple of real time.
+    last_emulation_tick: Instant,
 }
 
 impl Drop for Application {
@@ -499,6 +511,9 @@ impl Application {
             fullscreen: config.window_mode == WindowMode::Fullscreen,
             busy_duration: Duration::ZERO,
             window_title_last_update: Instant::now(),
+            fast_forward: false,
+            last_emulation_tick: Instant::now(),
+            config,
         })
     }
 
@@ -536,6 +551,7 @@ impl Application {
                 win_event: WindowEvent::FocusLost,
                 ..
             } => {
+                self.set_fast_forward(false);
                 self.audio_engine.pause();
             }
             Event::Window {
@@ -608,12 +624,24 @@ impl Application {
                         self.open_or_toggle_selector(MediaType::Floppy(1));
                     } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F11) {
                         self.open_or_toggle_selector(MediaType::CdRom);
+                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::R) {
+                        self.hard_reset();
+                    } else if keymod.alt_gui() && *scancode == Some(Scancode::F) {
+                        self.set_fast_forward(true);
                     }
                 }
             }
             Event::KeyUp {
                 scancode, repeat, ..
             } => {
+                if self.fast_forward
+                    && matches!(
+                        scancode,
+                        Some(Scancode::F) | Some(Scancode::LAlt) | Some(Scancode::RAlt)
+                    )
+                {
+                    self.set_fast_forward(false);
+                }
                 if self.image_selector.is_none() {
                     if let Some(code) = self.keyboard_forwarding_state.handle_key_up(
                         *scancode,
@@ -963,6 +991,79 @@ impl Application {
         }
     }
 
+    fn hard_reset(&mut self) {
+        self.machine.flush_printer();
+        self.machine.flush_floppies();
+        self.machine.flush_hdds();
+
+        let mut machine = match initialize_machine(&self.config, audio_engine::SAMPLE_RATE as u32) {
+            Ok(machine) => machine,
+            Err(error) => {
+                warn!("Hard reset failed to re-create the machine: {error:#}");
+                return;
+            }
+        };
+
+        if self.config.enable_extractor {
+            machine.install_text_extractor(Box::new(text_extractor::ClipboardExtractor::new()));
+        }
+
+        let mut fdd1_index = None;
+        if let Some(entry) = self.fdd1_entries.first() {
+            match machine.insert_floppy(0, &entry.path) {
+                Ok(desc) => {
+                    info!("Re-inserted FDD1: {desc} from {}", entry.path.display());
+                    fdd1_index = Some(0);
+                }
+                Err(error) => warn!("Hard reset failed to re-insert FDD1: {error}"),
+            }
+        }
+        let mut fdd2_index = None;
+        if let Some(entry) = self.fdd2_entries.first() {
+            match machine.insert_floppy(1, &entry.path) {
+                Ok(desc) => {
+                    info!("Re-inserted FDD2: {desc} from {}", entry.path.display());
+                    fdd2_index = Some(0);
+                }
+                Err(error) => warn!("Hard reset failed to re-insert FDD2: {error}"),
+            }
+        }
+        let mut cdrom_index = None;
+        if let Some(entry) = self.cdrom_entries.first() {
+            match machine.insert_cdrom(&entry.path) {
+                Ok(desc) => {
+                    info!("Re-inserted CD-ROM: {desc} from {}", entry.path.display());
+                    cdrom_index = Some(0);
+                }
+                Err(error) => warn!("Hard reset failed to re-insert CD-ROM: {error}"),
+            }
+        }
+
+        self.machine = machine;
+        self.fdd1_index = fdd1_index;
+        self.fdd2_index = fdd2_index;
+        self.cdrom_index = cdrom_index;
+        self.cpu_hz = self.machine.cpu_clock_hz();
+        self.cycle_overshoot = 0;
+        self.keyboard_forwarding_state = KeyboardForwardingState::new();
+        self.audio_engine.reset_buffer();
+        info!("Hard reset complete");
+    }
+
+    fn set_fast_forward(&mut self, enabled: bool) {
+        if enabled == self.fast_forward {
+            return;
+        }
+        self.fast_forward = enabled;
+        if enabled {
+            self.last_emulation_tick = Instant::now();
+            self.audio_engine.pause();
+        } else {
+            self.audio_engine.reset_buffer();
+            self.audio_engine.resume();
+        }
+    }
+
     fn run_emulation(&mut self) {
         if self.image_selector.is_some() {
             return;
@@ -975,6 +1076,11 @@ impl Application {
             self.machine.push_mouse_delta(dx, dy);
             self.mouse_dx = 0.0;
             self.mouse_dy = 0.0;
+        }
+
+        if self.fast_forward {
+            self.run_emulation_fast_forward();
+            return;
         }
 
         for _ in 0..MAX_AUDIO_STEPS {
@@ -1000,6 +1106,34 @@ impl Application {
                 self.cycle_overshoot = ran_cycles - cycles;
             }
             self.audio_engine.push_samples(self.machine.as_mut());
+
+            if self.machine.shutdown_requested() {
+                info!("Guest triggered system shutdown");
+                self.should_quit = true;
+                return;
+            }
+        }
+    }
+
+    fn run_emulation_fast_forward(&mut self) {
+        let elapsed = self
+            .last_emulation_tick
+            .elapsed()
+            .min(FAST_FORWARD_MAX_ELAPSED);
+        self.last_emulation_tick = Instant::now();
+
+        let target_cycles = (elapsed.as_secs_f64() * self.cpu_hz * FAST_FORWARD_FACTOR) as u64;
+        let chunk_cycles =
+            (audio_engine::STEP_FRAMES as f64 * self.cpu_hz / SAMPLE_RATE).round() as u64;
+        if chunk_cycles == 0 {
+            return;
+        }
+
+        let mut ran = 0u64;
+        while ran < target_cycles {
+            self.machine.run_for(chunk_cycles);
+            self.audio_engine.discard_samples(self.machine.as_mut());
+            ran += chunk_cycles;
 
             if self.machine.shutdown_requested() {
                 info!("Guest triggered system shutdown");

@@ -154,6 +154,7 @@ pub fn pc98_scancode_from_name(name: &str) -> Option<u8> {
     })
 }
 
+#[derive(Clone, Copy)]
 pub struct KeyMap {
     mappings: [u8; Scancode::COUNT],
 }
