@@ -33,6 +33,8 @@ struct FrameSource<'a> {
     height: u32,
     source_size: [f32; 2],
     crt: bool,
+    composite: bool,
+    composite_phase: u32,
 }
 
 /// Resources owned only between `on_resume` and `on_destroy_surface`.
@@ -78,9 +80,13 @@ impl ModernSdlGpuBackend {
     }
 }
 
-fn scale_mode_for(scaling: Scaling, crt: bool) -> ScaleMode {
+fn scale_mode_for(scaling: Scaling, crt: bool, composite: bool) -> ScaleMode {
     if crt {
-        return ScaleMode::Crt;
+        return if composite {
+            ScaleMode::CrtComposite
+        } else {
+            ScaleMode::Crt
+        };
     }
     match scaling {
         Scaling::Nearest => ScaleMode::Nearest,
@@ -172,13 +178,17 @@ impl GraphicsEngine for ModernSdlGpuBackend {
             |source| [source.width as f32, source.height as f32],
         );
         let crt_enabled = frame_source.as_ref().is_some_and(|source| source.crt);
+        let composite_enabled = frame_source.as_ref().is_some_and(|source| source.composite);
+        let composite_phase = frame_source
+            .as_ref()
+            .map_or(0, |source| source.composite_phase);
 
         if let Some(source) = frame_source.as_ref() {
             upload_framebuffer(state, &mut command_buffer, source)?;
         }
 
         let (max_width, max_height) = native_target_size(self.ga_enabled);
-        let scale_mode = scale_mode_for(self.scaling, crt_enabled);
+        let scale_mode = scale_mode_for(self.scaling, crt_enabled, composite_enabled);
         let uniforms = PresentUniforms::new(
             (output_width, output_height),
             source_size,
@@ -186,6 +196,7 @@ impl GraphicsEngine for ModernSdlGpuBackend {
             [max_width as f32, max_height as f32],
             scale_mode,
             state.swapchain_is_srgb,
+            composite_phase,
         );
         // Fragment uniform data is per-command-buffer; push before draw.
         command_buffer.push_fragment_uniform_data(0, uniforms.as_bytes());
@@ -248,6 +259,8 @@ impl ModernSdlGpuBackend {
             height,
             source_size,
             crt: instructions.crt,
+            composite: instructions.composite,
+            composite_phase: instructions.composite_phase,
         })
     }
 }

@@ -3,8 +3,10 @@
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
+pub mod ay8910;
 pub mod beeper;
 pub mod bios;
+pub mod cassette;
 pub mod cd_audio;
 pub mod cdrom;
 pub mod cdrom_pc88;
@@ -52,3 +54,4 @@ pub mod upd4990a_rtc;
 pub mod upd52611_crtc;
 pub mod upd7220_gdc;
 pub mod upd765a_fdc;
+pub mod upd7752;

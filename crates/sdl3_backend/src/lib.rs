@@ -37,6 +37,13 @@ pub struct RenderInstructions<'a> {
     pub height: u32,
     /// Whether the CRT upscale effect is enabled.
     pub crt: bool,
+    /// Whether to use the composite (NTSC) CRT variant instead of the sharp
+    /// RGB-monitor one. Only meaningful when `crt` is set.
+    pub composite: bool,
+    /// Composite subcarrier phase select (0..3, in 90-degree steps). Swaps the
+    /// complementary artifact-color pair, mimicking the random boot-time phase of
+    /// a real MC6847. Only meaningful when `composite` is set.
+    pub composite_phase: u32,
 }
 
 /// Returns the backing texture dimensions for a backend configuration.

@@ -34,6 +34,10 @@ static const float MASK_TRIAD_WIDTH = 1.5;
 static const float MASK_DOT_RADIUS = 0.75;
 // Luminance threshold above which mask fades out (bright phosphors bloom through gaps).
 static const float MASK_CUTOFF = 0.3;
+// Source width the shadow mask is calibrated to. A real CRT's mask is a fixed
+// physical structure independent of the input signal resolution, so the triad
+// pitch is locked to this width rather than the live content size.
+static const float MASK_REFERENCE_WIDTH = 640.0;
 
 // Bright boost for dark pixels (compensates scanline energy loss).
 static const float BRIGHT_BOOST_DARK = 1.35;
@@ -274,9 +278,10 @@ public func sample_crt_pixel(
     var color = tri(source, region_uv, source_size, backing_size);
 
     // Luminance-adaptive dot-triad black-matrix mask in output pixel space.
-    // Scale triad width by the output-to-source ratio so the number of triads
-    // stays fixed to the source resolution, matching a real shadow mask.
-    let triad_width = MASK_TRIAD_WIDTH * (output_size.x / source_size.x);
+    // Scale triad width by the output-to-reference ratio so the number of triads
+    // stays fixed to the 640-wide reference resolution regardless of the live
+    // content size, matching a real CRT's fixed physical shadow mask.
+    let triad_width = MASK_TRIAD_WIDTH * (output_size.x / MASK_REFERENCE_WIDTH);
     color *= dot_triad_mask(region_uv * output_size * 1.000001, triad_width, color);
 
     // Hue-preserving phosphor saturation limiter.

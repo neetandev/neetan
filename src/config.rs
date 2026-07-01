@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 
 use common::{Context, CpuMode, MachineModel, StringError, bail, info, warn};
+use machine60::Pc6000Model;
 use machine88::{BootMode, EightMhzWaitMode, MemoryWaitSwitch, MonitorTiming, Pc8801Model};
 
 use crate::keyboard::{
-    KeyMap, parse_key_binding, parse_key_binding_pc88, parse_key_binding_pc88va,
+    KeyMap, parse_key_binding, parse_key_binding_pc60, parse_key_binding_pc88,
+    parse_key_binding_pc88va,
 };
 
 fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> crate::Result<String> {
@@ -19,6 +21,13 @@ fn parse_on_off(val: &str, flag: &str) -> crate::Result<bool> {
         "on" => Ok(true),
         "off" => Ok(false),
         _ => bail!("invalid value '{val}' for {flag}, expected on or off"),
+    }
+}
+
+fn parse_composite_phase(val: &str) -> crate::Result<u32> {
+    match val.parse::<u32>() {
+        Ok(phase) if phase <= 3 => Ok(phase),
+        _ => bail!("invalid composite phase '{val}', expected 0, 1, 2 or 3"),
     }
 }
 
@@ -38,7 +47,7 @@ Commands:
 
 Options:
   -c, --config <PATH>           Load configuration from file
-      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP, PC8801MC, PC88VA2
+      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP, PC8801MC, PC88VA2, PC6001, PC6001MK2, PC6601, PC6001MK2SR, PC6601SR
       --cpu-mode <MODE>         CPU speed mode: low or high (PC-88 default derives from boot mode)
       --boot-mode <MODE>        PC-8801 BASIC boot mode: v1s, v1h, v2, n, n80, n80sr (default: v2; PC-8801 only)
       --pc88-monitor <MODE>     PC-8801 monitor timing: auto, 15k, 24k (default: auto; PC-8801 only)
@@ -46,6 +55,10 @@ Options:
       --pc88-8mhz-wait <MODE>   PC-8801 8 MHz wait: fast or compatible (default: fast; PC-8801 only)
       --pc88-roms <PATH>        Directory with the PC-8801MC ROM set (required)
       --pc88va-roms <PATH>      Directory with the PC-88VA2 ROM set (required)
+      --pc60-roms <PATH>        Directory with the PC-6000 ROM set (required; PC-6000 only)
+      --pc60-cart <PATH>        Cartridge ROM image to insert (PC-6000 only)
+      --pc60-cass <PATH>        Cassette tape image to insert (.cas/.p6/.p6t; PC-6000 only)
+      --pc60-phase <0-3>        Initial composite artifact-color phase; cycle with Alt+F3 (PC-6000 only)
       --fdd1 <PATH>             Floppy disk image for drive 1 (repeatable)
       --fdd2 <PATH>             Floppy disk image for drive 2 (repeatable)
       --hdd1 <PATH>             Hard disk image for drive 1 (SASI or IDE)
@@ -538,6 +551,13 @@ fn parse_args_from(
             }
             "--pc88-roms" => config.pc88_roms = Some(PathBuf::from(value(&flag)?)),
             "--pc88va-roms" => config.pc88va_roms = Some(PathBuf::from(value(&flag)?)),
+            "--pc60-roms" => config.pc60_roms = Some(PathBuf::from(value(&flag)?)),
+            "--pc60-cart" => config.pc60_cart = Some(PathBuf::from(value(&flag)?)),
+            "--pc60-cass" => config.pc60_cass = Some(PathBuf::from(value(&flag)?)),
+            "--pc60-phase" => {
+                let val = value(&flag)?;
+                config.pc60_composite_phase = parse_composite_phase(&val)?;
+            }
             "--fdd1" => config.fdd1.push(PathBuf::from(value(&flag)?)),
             "--fdd2" => config.fdd2.push(PathBuf::from(value(&flag)?)),
             "--hdd1" => config.hdd1 = Some(PathBuf::from(value(&flag)?)),
@@ -658,6 +678,8 @@ pub enum Target {
     Pc88,
     /// PC-88VA series (the `machine88va` crate).
     Pc88Va,
+    /// PC-6000/PC-6600 series (the `machine60` crate).
+    Pc60,
 }
 
 pub struct EmulatorConfig {
@@ -697,6 +719,13 @@ pub struct EmulatorConfig {
     pub pc88_roms: Option<PathBuf>,
     pub pc88va_model: machine88va::Pc88VaModel,
     pub pc88va_roms: Option<PathBuf>,
+    pub pc60_model: Pc6000Model,
+    pub pc60_roms: Option<PathBuf>,
+    pub pc60_cart: Option<PathBuf>,
+    pub pc60_cass: Option<PathBuf>,
+    /// Initial composite subcarrier phase select (0..3). Swaps the PC-6001
+    /// artifact-color pair; also cycled at runtime with Alt+F3.
+    pub pc60_composite_phase: u32,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -744,6 +773,11 @@ impl Default for EmulatorConfig {
             pc88_roms: None,
             pc88va_model: machine88va::Pc88VaModel::PC88VA2,
             pc88va_roms: None,
+            pc60_model: Pc6000Model::Pc6001,
+            pc60_roms: None,
+            pc60_cart: None,
+            pc60_cass: None,
+            pc60_composite_phase: 0,
         }
     }
 }
@@ -808,6 +842,13 @@ fn apply_config_file(
             },
             "pc88-roms" => config.pc88_roms = Some(PathBuf::from(val)),
             "pc88va-roms" => config.pc88va_roms = Some(PathBuf::from(val)),
+            "pc60-roms" => config.pc60_roms = Some(PathBuf::from(val)),
+            "pc60-cart" => config.pc60_cart = Some(PathBuf::from(val)),
+            "pc60-cass" => config.pc60_cass = Some(PathBuf::from(val)),
+            "pc60-phase" => match parse_composite_phase(val) {
+                Ok(phase) => config.pc60_composite_phase = phase,
+                Err(error) => warn!("Invalid PC-6000 composite phase in config: {error}"),
+            },
             "fdd1" => config.fdd1.push(PathBuf::from(val)),
             "fdd2" => config.fdd2.push(PathBuf::from(val)),
             "hdd1" => config.hdd1 = Some(PathBuf::from(val)),
@@ -889,6 +930,7 @@ fn apply_config_file(
                     Target::Pc88 => parse_key_binding_pc88(host_name, val),
                     Target::Pc88Va => parse_key_binding_pc88va(host_name, val),
                     Target::Pc98 => parse_key_binding(host_name, val),
+                    Target::Pc60 => parse_key_binding_pc60(host_name, val),
                 };
                 match binding {
                     Some((host, code)) => config.key_map.set(host, code),
@@ -917,10 +959,12 @@ fn apply_derived_defaults(config: &mut EmulatorConfig, explicit: ExplicitSetting
     }
 }
 
-/// Resolves a `--machine` / `machine=` value to a family and model. A PC-88 or
-/// PC-88VA model name selects the matching target; anything else is parsed as a
-/// PC-98 model. Returns a human-readable error if no family recognises the value.
+/// Resolves a `--machine` / `machine=` value to a family and model. A PC-88,
+/// PC-88VA or PC-6000 model name selects that family's target; anything else is
+/// parsed as a PC-98 model. Returns a human-readable error if no family
+/// recognises the value.
 fn apply_machine_selection(config: &mut EmulatorConfig, value: &str) -> Result<(), String> {
+    // TODO: This is broken, since the error message when an unknown machine was parsed falls back to the PC-98 machine model error message.
     if let Ok(_model) = value.parse::<Pc8801Model>() {
         // Switch the default key map to the PC-88 matrix so later `key.*`
         // overrides layer onto the right base.
@@ -936,6 +980,14 @@ fn apply_machine_selection(config: &mut EmulatorConfig, value: &str) -> Result<(
         }
         config.target = Target::Pc88Va;
         config.pc88va_model = model;
+        return Ok(());
+    }
+    if let Ok(model) = value.parse::<Pc6000Model>() {
+        if config.target != Target::Pc60 {
+            config.key_map = KeyMap::new_pc60();
+        }
+        config.target = Target::Pc60;
+        config.pc60_model = model;
         return Ok(());
     }
     let model = value.parse::<MachineModel>()?;
@@ -1242,6 +1294,14 @@ mod tests {
         let mut config = EmulatorConfig::default();
         apply_machine_selection(&mut config, "PC8801MC").expect("PC8801MC is valid");
         assert_eq!(config.target, Target::Pc88);
+    }
+
+    #[test]
+    fn machine_flag_selects_the_pc60_target() {
+        let mut config = EmulatorConfig::default();
+        apply_machine_selection(&mut config, "PC6001MK2SR").expect("PC6001MK2SR is valid");
+        assert_eq!(config.target, Target::Pc60);
+        assert_eq!(config.pc60_model, Pc6000Model::Pc6001Mk2Sr);
     }
 
     #[test]

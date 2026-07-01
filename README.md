@@ -1,16 +1,18 @@
 # Neetan (ねーたん)
 
-An emulator for the PC-8001, PC-8801, PC-88VA, PC-9801 and PC-9821 written in Rust.
+An emulator for the PC-6001, PC-6601, PC-8001, PC-8801, PC-88VA, PC-9801 and PC-9821
+written in Rust.
 
 [Game Compatibility](https://github.com/neetandev/neetan/wiki)
 
 ## Supported systems
 
-Neetan emulates three distinct families, selected through the `--machine` option:
+Neetan emulates four distinct families, selected through the `--machine` option:
 
-* PC-9801 / PC-9821 line (six idealized targets).
-* PC-8001 / PC-8801 line (one idealized target).
-* PC-88VA line (one idealized target).
+* PC-9801 / PC-9821 line
+* PC-8001 / PC-8801 line
+* PC-88VA line
+* PC-6001 / PC-6601 line
 
 ### PC-9801 / PC-9821
 
@@ -60,6 +62,27 @@ supplied via `--pc88va-roms`.
 
 See [PC-88VA systems](#pc-88va-systems) for the ROM set and platform-specific options.
 
+### PC-6001 / PC-6601
+
+Neetan emulates five PC-6000 targets, all built around a single Z80:
+
+| Machine       | `--machine`   | CPU / Clock   | RAM    | Sound      | Voice   | Built-in FDD |
+|---------------|---------------|---------------|--------|------------|---------|--------------|
+| PC-6001       | `PC6001`      | Z80 ~4 MHz    | 16 KiB | AY-3-8910  | No      | No           |
+| PC-6001mkII   | `PC6001MK2`   | Z80 ~4 MHz    | 64 KiB | AY-3-8910  | uPD7752 | No           |
+| PC-6601       | `PC6601`      | Z80 ~4 MHz    | 64 KiB | AY-3-8910  | uPD7752 | 5.25"        |
+| PC-6001mkIISR | `PC6001MK2SR` | Z80 ~3.58 MHz | 64 KiB | YM2203 OPN | uPD7752 | No           |
+| PC-6601SR     | `PC6601SR`    | Z80 ~3.58 MHz | 64 KiB | YM2203 OPN | uPD7752 | 3.5"         |
+
+The early models use the AY-3-8910 PSG, while the SR models use a YM2203 (OPN). All
+but the PC-6001 add the uPD7752 voice synthesizer. The PC-6601 and PC-6601SR have a
+built-in floppy drive. Cartridge and cassette images can be inserted as well. Like
+the PC-8801MC, none of the PC-6000 targets have HLE firmware; they require a real ROM
+set supplied via `--pc60-roms`.
+
+See [PC-6001 / PC-6601 systems](#pc-6001--pc-6601-systems) for the ROM set and
+platform-specific options.
+
 ## Usage
 
 ```bash
@@ -71,47 +94,51 @@ neetan <COMMAND>
 
 The `System` column shows where an option applies: `All` (every family), `PC-98`
 (PC-9801 / PC-9821 only), `PC-9821` (PC-9821 only), `PC-88` (PC-8001 / PC-8801
-only), or `PC-88VA` (PC-88VA only). Options that apply to one family are ignored on
-the others.
+only), `PC-88VA` (PC-88VA only), or `PC-6000` (PC-6001 / PC-6601 only). Options that
+apply to one family are ignored on the others.
 
-| Option                       | System  | Description                                                                                  | Default           |
-|------------------------------|---------|----------------------------------------------------------------------------------------------|-------------------|
-| `-c, --config <PATH>`        | All     | Load configuration from file                                                                 | -                 |
-| `--machine <TYPE>`           | All     | `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821AS`, `PC9821AP`, `PC8801MC`, `PC88VA2` | `PC9801RA`        |
-| `--cpu-mode <MODE>`          | All     | CPU speed mode: `low` or `high` (PC-88 default derives from the boot mode)                   | `high` (PC-98)    |
-| `--boot-mode <MODE>`         | PC-88   | BASIC boot mode: `v1s`, `v1h`, `v2`, `n`, `n80`, `n80sr`                                     | `v2`              |
-| `--pc88-monitor <MODE>`      | PC-88   | Monitor timing: `auto`, `15k`, `24k`                                                         | `auto`            |
-| `--pc88-memory-wait <MODE>`  | PC-88   | Memory wait: `fast` or `compatible`                                                          | derives from mode |
-| `--pc88-8mhz-wait <MODE>`    | PC-88   | 8 MHz wait: `fast` or `compatible`                                                           | `fast`            |
-| `--pc88-roms <PATH>`         | PC-88   | Directory with the PC-8801MC ROM set (required for `PC8801MC`)                               | -                 |
-| `--pc88va-roms <PATH>`       | PC-88VA | Directory with the PC-88VA2 ROM set (required for `PC88VA2`)                                 | -                 |
-| `--fdd1 <PATH>`              | All     | Floppy disk image for drive 1 (repeatable)                                                   | -                 |
-| `--fdd2 <PATH>`              | All     | Floppy disk image for drive 2 (repeatable)                                                   | -                 |
-| `--hdd1 <PATH>`              | All     | Hard disk image for hard disk drive 1                                                        | -                 |
-| `--hdd2 <PATH>`              | All     | Hard disk image for hard disk drive 2                                                        | -                 |
-| `--cdrom <PATH>`             | PC-9821 | CD-ROM disc image .cue or .ccd file (repeatable)                                             | -                 |
-| `--audio-volume <FLOAT>`     | All     | Audio volume 0.0-1.0                                                                         | `1.0`             |
-| `--aspect-mode <MODE>`       | All     | Display aspect mode: `4:3` or `1:1`                                                          | `4:3`             |
-| `--crt <on\|off>`            | All     | Enable the CRT effect. Not available when using the legacy backend.                          | `on`              |
-| `--scaling <MODE>`           | All     | Scaling method: `nearest`, `bilinear`, `pixelart`                                            | `pixelart`        |
-| `--backend <BACKEND>`        | All     | Rendering backend: `modern` or `legacy`                                                      | `modern`          |
-| `--window-mode <MODE>`       | All     | Window mode: `windowed` or `fullscreen`                                                      | `windowed`        |
-| `--force-gdc-clock <2.5\|5>` | PC-98   | Force GDC clock to 2.5 or 5 MHz. VX and later only                                           | auto              |
-| `--graphicboard <TYPE>`      | PC-98   | Graphics accelerator board: `none`, `ga1280a`                                                | `none`            |
-| `--bios-rom <PATH>`          | PC-98   | Path to BIOS ROM file                                                                        | HLE BIOS          |
-| `--font-rom <PATH>`          | PC-98   | Path to font ROM file                                                                        | Built-in          |
-| `--soundboard <TYPE>`        | PC-98   | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`                         | `86+26k`          |
-| `--adpcm-ram <on\|off>`      | PC-98   | ADPCM RAM option for the PC-9801-86                                                          | `on`              |
-| `--ems <on\|off>`            | PC-98   | Enable EMS expanded memory                                                                   | `on`              |
-| `--xms <on\|off>`            | PC-98   | Enable XMS extended memory                                                                   | `on`              |
-| `--midi <DEVICE>`            | PC-98   | MIDI device: `none`, `mt32`, `sc55`                                                          | `none`            |
-| `--mt32-roms <PATH>`         | PC-98   | Path to MT-32 ROM directory (requires `mt32` feature)                                        | -                 |
-| `--sc55-roms <PATH>`         | PC-98   | Path to SC-55 ROM directory (requires `sc55` feature)                                        | -                 |
-| `--boot-device <DEVICE>`     | All     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `dos`                                   | `auto`            |
-| `--printer <PATH>`           | All     | Output file for printer (must exist)                                                         | -                 |
-| `--enable-extractor`         | All     | Copy on-screen Japanese text to the system clipboard, one line at a time                     | off               |
-| `-h, --help`                 | All     | Print help                                                                                   | -                 |
-| `-V, --version`              | All     | Print version                                                                                | -                 |
+| Option                       | System  | Description                                                                                                                                              | Default           |
+|------------------------------|---------|----------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------|
+| `-c, --config <PATH>`        | All     | Load configuration from file                                                                                                                             | -                 |
+| `--machine <TYPE>`           | All     | `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821AS`, `PC9821AP`, `PC8801MC`, `PC88VA2`, `PC6001`, `PC6001MK2`, `PC6601`, `PC6001MK2SR`, `PC6601SR` | `PC9801RA`        |
+| `--cpu-mode <MODE>`          | All     | CPU speed mode: `low` or `high` (PC-88 default derives from the boot mode)                                                                               | `high` (PC-98)    |
+| `--boot-mode <MODE>`         | PC-88   | BASIC boot mode: `v1s`, `v1h`, `v2`, `n`, `n80`, `n80sr`                                                                                                 | `v2`              |
+| `--pc88-monitor <MODE>`      | PC-88   | Monitor timing: `auto`, `15k`, `24k`                                                                                                                     | `auto`            |
+| `--pc88-memory-wait <MODE>`  | PC-88   | Memory wait: `fast` or `compatible`                                                                                                                      | derives from mode |
+| `--pc88-8mhz-wait <MODE>`    | PC-88   | 8 MHz wait: `fast` or `compatible`                                                                                                                       | `fast`            |
+| `--pc88-roms <PATH>`         | PC-88   | Directory with the PC-8801MC ROM set (required for `PC8801MC`)                                                                                           | -                 |
+| `--pc88va-roms <PATH>`       | PC-88VA | Directory with the PC-88VA2 ROM set (required for `PC88VA2`)                                                                                             | -                 |
+| `--pc60-roms <PATH>`         | PC-6000 | Directory with the PC-6000 ROM set (required for the PC-6000 targets)                                                                                    | -                 |
+| `--pc60-cart <PATH>`         | PC-6000 | Cartridge ROM image to insert                                                                                                                            | -                 |
+| `--pc60-cass <PATH>`         | PC-6000 | Cassette tape image to insert (`.cas`, `.p6`, `.p6t`)                                                                                                    | -                 |
+| `--pc60-phase <0-3>`         | PC-6000 | Initial composite artifact-color phase; swaps the fake-color pair Mode 4 titles rely on.                                                                 | `0`               |
+| `--fdd1 <PATH>`              | All     | Floppy disk image for drive 1 (repeatable)                                                                                                               | -                 |
+| `--fdd2 <PATH>`              | All     | Floppy disk image for drive 2 (repeatable)                                                                                                               | -                 |
+| `--hdd1 <PATH>`              | All     | Hard disk image for hard disk drive 1                                                                                                                    | -                 |
+| `--hdd2 <PATH>`              | All     | Hard disk image for hard disk drive 2                                                                                                                    | -                 |
+| `--cdrom <PATH>`             | PC-9821 | CD-ROM disc image .cue or .ccd file (repeatable)                                                                                                         | -                 |
+| `--audio-volume <FLOAT>`     | All     | Audio volume 0.0-1.0                                                                                                                                     | `1.0`             |
+| `--aspect-mode <MODE>`       | All     | Display aspect mode: `4:3` or `1:1`                                                                                                                      | `4:3`             |
+| `--crt <on\|off>`            | All     | Enable the CRT effect. Not available when using the legacy backend.                                                                                      | `on`              |
+| `--scaling <MODE>`           | All     | Scaling method: `nearest`, `bilinear`, `pixelart`                                                                                                        | `pixelart`        |
+| `--backend <BACKEND>`        | All     | Rendering backend: `modern` or `legacy`                                                                                                                  | `modern`          |
+| `--window-mode <MODE>`       | All     | Window mode: `windowed` or `fullscreen`                                                                                                                  | `windowed`        |
+| `--force-gdc-clock <2.5\|5>` | PC-98   | Force GDC clock to 2.5 or 5 MHz. VX and later only                                                                                                       | auto              |
+| `--graphicboard <TYPE>`      | PC-98   | Graphics accelerator board: `none`, `ga1280a`                                                                                                            | `none`            |
+| `--bios-rom <PATH>`          | PC-98   | Path to BIOS ROM file                                                                                                                                    | HLE BIOS          |
+| `--font-rom <PATH>`          | PC-98   | Path to font ROM file                                                                                                                                    | Built-in          |
+| `--soundboard <TYPE>`        | PC-98   | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`                                                                                     | `86+26k`          |
+| `--adpcm-ram <on\|off>`      | PC-98   | ADPCM RAM option for the PC-9801-86                                                                                                                      | `on`              |
+| `--ems <on\|off>`            | PC-98   | Enable EMS expanded memory                                                                                                                               | `on`              |
+| `--xms <on\|off>`            | PC-98   | Enable XMS extended memory                                                                                                                               | `on`              |
+| `--midi <DEVICE>`            | PC-98   | MIDI device: `none`, `mt32`, `sc55`                                                                                                                      | `none`            |
+| `--mt32-roms <PATH>`         | PC-98   | Path to MT-32 ROM directory (requires `mt32` feature)                                                                                                    | -                 |
+| `--sc55-roms <PATH>`         | PC-98   | Path to SC-55 ROM directory (requires `sc55` feature)                                                                                                    | -                 |
+| `--boot-device <DEVICE>`     | All     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `dos`                                                                                               | `auto`            |
+| `--printer <PATH>`           | All     | Output file for printer (must exist)                                                                                                                     | -                 |
+| `--enable-extractor`         | All     | Copy on-screen Japanese text to the system clipboard, one line at a time                                                                                 | off               |
+| `-h, --help`                 | All     | Print help                                                                                                                                               | -                 |
+| `-V, --version`              | All     | Print version                                                                                                                                            | -                 |
 
 ### Commands
 
@@ -311,12 +338,67 @@ files are named. All slots are required:
 | `dictionary` | 512 KiB | Dictionary (jisyo) ROM    | `21fcd88c97b881e55f015f22d62002022189572e171f1c5e485b751c84379b30` |
 | `subsys`     | 8 KiB   | Floppy sub-CPU (Z80) ROM  | `531ab2aa2c7d7c4deb2ddd8303c6637ea7e273648825fb51e17c8660d7496565` |
 
+## PC-6001 / PC-6601 systems
+
+Select the PC-6000 family with `--machine` set to one of `PC6001`, `PC6001MK2`,
+`PC6601`, `PC6001MK2SR` or `PC6601SR`. All five are single-Z80 machines: the early
+models run at roughly 4 MHz with the AY-3-8910 PSG, while the SR models run at the
+3.58 MHz NTSC colorburst clock with a YM2203 (OPN) and 64 KiB of work RAM reached
+through bank-switched 8 KiB paging.
+Every model except the PC-6001 adds the uPD7752 voice synthesizer. The PC-6601 and
+PC-6601SR have a built-in floppy drive driven directly by the main CPU.
+
+Cartridge and cassette images can be inserted with `--pc60-cart` and `--pc60-cass`
+(`.cas`, `.p6`, `.p6t`); the floppy drives use the shared `--fdd1` / `--fdd2`
+options. Like the PC-8801MC, none of these targets have HLE firmware and they require
+a real ROM set (see [ROM set](#rom-set-2)).
+
+### Platform options
+
+| Option                 | Description                                   | Default |
+|------------------------|-----------------------------------------------|---------|
+| `--pc60-roms <PATH>`   | Directory with the PC-6000 ROM set (required) | -       |
+| `--pc60-cart <PATH>`   | Cartridge ROM image to insert                 | -       |
+| `--pc60-cass <PATH>`   | Cassette tape image (`.cas`, `.p6`, `.p6t`)   | -       |
+| `--pc60-phase <0-3>`   | Initial composite artifact-color phase        | `0`     |
+
+### ROM set
+
+The PC-6000 targets need a real ROM set, pointed to by `--pc60-roms`. ROMs are
+identified by their BLAKE3 content hash rather than by file name, so any dump layout
+works regardless of how the files are named. Each model requires its boot ROM (BASIC
+or, on the SR models, the system ROM) and its base character generator; the kanji,
+extended character generator, and voice ROMs are loaded when present. Several dumps
+are bit-identical across models (the kanji ROM, the SR system ROM halves), so a single
+file can satisfy more than one slot.
+
+| Slot          | Size   | Contents                          | Required for                            | BLAKE3                                                             |
+|---------------|--------|-----------------------------------|-----------------------------------------|--------------------------------------------------------------------|
+| `basic60`     | 16 KiB | PC-6001 BASIC                     | `PC6001`                                | `13bc0696487984f7836f094312b64fb0702dcb5ac3b941a79bd6f174e657697d` |
+| `basic62`     | 32 KiB | PC-6001mkII BASIC                 | `PC6001MK2`                             | `d951eae886dec98a063e5fb11e12b0385f5dd4617c0546fe7cf9fd77b17ae41c` |
+| `basic66`     | 32 KiB | PC-6601 BASIC                     | `PC6601`                                | `d9eaf3e5e6cb1f71db527e6eeadf7a1968f8a558234b74c6812198c588ae46d1` |
+| `basic68`     | 32 KiB | PC-6601SR mkII-compat BASIC       | `PC6601SR` (optional)                   | `c4901a2149f3c8e65d3db78bbf3776fc2d963f270152923ba920274d44a0224b` |
+| `system1`     | 64 KiB | SR system ROM, first half         | `PC6001MK2SR`, `PC6601SR`               | `6ca4e747c8b17307a77150441e5d8721d5c242fcc8b8ef35737d3f5edf6e2d74` |
+| `system2`     | 64 KiB | SR system ROM, second half        | `PC6001MK2SR`, `PC6601SR`               | `998a90c4bd0bf4ae4a600a0d94f3eca96c3b8db754311ce1c8029126dbcf0a9a` |
+| `subsys`      | 8 KiB  | SR sub / disk ROM                 | `PC6601SR` (optional)                   | `becb7c1502d41a9f160b651e142044610ffa172a8bbf47eaa11aa0086953a080` |
+| `cg60`        | 4 KiB  | PC-6001 base character generator  | `PC6001`                                | `f537afe76997ec4f8b377a29771f45c39414a25f7e071d2d38b143cdd8bee7bc` |
+| `cg62`        | 8 KiB  | PC-6001mkII base CG               | `PC6001MK2`                             | `581f6d2db80386732ed09706ad3b8961f8b77b7ea024e65cec37e56ad2adf07c` |
+| `cg66`        | 8 KiB  | PC-6601 base CG                   | `PC6601`                                | `63829a1c32924a77f85716f445c445ab7be178c4438cfd8cf6ffaff5731a0965` |
+| `cg68base`    | 8 KiB  | PC-6601SR base CG                 | `PC6001MK2SR`, `PC6601SR` (optional)    | `24e524d4938809a87720f98abfba71c8e9162d742c67a167d8b87566cc1d4258` |
+| `cgext`       | 8 KiB  | Extended CG (mkII / 6601)         | `PC6001MK2`, `PC6601` (optional)        | `ba0dd650539dd3fdbf63da36982b41bfda8f4c2ea0dcda2c1c2ac56427ee26ed` |
+| `cg68ext`     | 8 KiB  | PC-6601SR extended CG             | `PC6001MK2SR`, `PC6601SR` (optional)    | `067c732525260eadfcfecbb9fc4ef9535c0c2f77caa049453bf2ab992ec3fca3` |
+| `cg68`        | 16 KiB | SR native CG                      | `PC6001MK2SR`, `PC6601SR`               | `b49b056ca06bd0c2253e6db0806969787a6fca4fc78228728422c9cf63f1e472` |
+| `kanji`       | 32 KiB | Kanji font ROM                    | mkII and later (optional)               | `f0af53e54b1b09b229d03efc9f65e65597a0c4f6aa9e3e7c0e553274ccd481fb` |
+| `voice62`     | 16 KiB | uPD7752 voice data (PC-6001mkII)  | `PC6001MK2` (optional)                  | `633e73f55479bee65ed344d818a35b15ab109f188ad5c09826c066d6ec2596c5` |
+| `voice66`     | 16 KiB | uPD7752 voice data (PC-6601)      | `PC6601` (optional)                     | `88a747147725fd618668e07744b05f34288b4454698d6182c4db2e680c7b76d0` |
+| `voice68`     | 16 KiB | uPD7752 voice data (SR models)    | `PC6001MK2SR`, `PC6601SR` (optional)    | `8ed4a9a3e9ae2e4aa0fccc0f170081f3f61c09e293812b7973a7ab9c23e22b68` |
+
 ## Configuration file
 
-Instead of passing all options on the command line, you can use a configuration file with `-c`:
+Instead of passing all options on the command line, you can use a configuration file with `-c` or `--config`:
 
 ```bash
-neetan -c my_game.cfg
+neetan --config my_game.cfg
 ```
 
 The file uses a simple `key = value` format. Lines starting with `#` or `;` are comments.
@@ -385,6 +467,7 @@ For example, if your global config sets `machine = PC9801RA` and you run
 | GUI + Alt + F      | Fast forward 8x (hold)           |
 | GUI + Alt + F1     | Toggle CRT effect                |
 | GUI + Alt + F2     | Cycle scaling method             |
+| GUI + Alt + F3     | Cycle composite phase (PC-6000)  |
 | GUI + Alt + F9     | Open floppy selector for drive 1 |
 | GUI + Alt + F10    | Open floppy selector for drive 2 |
 | GUI + Alt + F11    | Open CD-ROM selector             |
@@ -570,6 +653,9 @@ It depends on the emulated family:
 - PC-88VA: a full ROM set is required and must be supplied via `--pc88va-roms`. The
   ROMs are matched by content hash, so file names do not matter; see
   [ROM set](#rom-set-1) for the list of required ROMs.
+- PC-6001 / PC-6601: a full ROM set is required and must be supplied via
+  `--pc60-roms`. The ROMs are matched by content hash, so file names do not matter;
+  see [ROM set](#rom-set-2) for the per-model list of required and optional ROMs.
 
 The optional MT-32 and SC-55 MIDI modules, also need ROM files to function correctly,
 as described in the [MIDI sound modules](#midi-sound-modules) section.

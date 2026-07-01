@@ -12,7 +12,10 @@ use std::{
     path::PathBuf,
 };
 
-use crate::floppy::{FloppyImage, MountedFloppy, d88::D88MediaType};
+use crate::floppy::{
+    FloppyImage, MountedFloppy,
+    d88::{D88MediaType, D88Sector},
+};
 
 /// FDC command processing phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +213,22 @@ pub const ST1_MISSING_ADDRESS_MARK: u8 = 0x01;
 
 /// ST1 bit 1: NW (Not Writable) - write-protected disk.
 pub const ST1_NOT_WRITABLE: u8 = 0x02;
+
+/// ST1 bit 2: ND (No Data) - the requested sector could not be found.
+pub const ST1_NO_DATA: u8 = 0x04;
+
+/// ST1 bit 5: DE (Data Error) - CRC error in the ID or data field.
+pub const ST1_DATA_ERROR: u8 = 0x20;
+
+/// ST2 bit 0: MD (Missing Address Mark in Data Field).
+pub const ST2_MISSING_DATA_ADDRESS_MARK: u8 = 0x01;
+
+/// ST2 bit 5: DD (Data Error in Data Field) - CRC error in the data field.
+pub const ST2_DATA_ERROR: u8 = 0x20;
+
+/// ST2 bit 6: CM (Control Mark) - a deleted-data address mark was encountered
+/// while the command expected a normal one (or vice versa).
+pub const ST2_CONTROL_MARK: u8 = 0x40;
 
 /// ST3 bit 5: RY (Ready) - drive is ready.
 const ST3_READY: u8 = 0x20;
@@ -572,12 +591,19 @@ impl Upd765aFdc {
 
     /// Completes a data command successfully, filling the 7-byte result buffer.
     pub fn complete_success(&mut self) {
+        self.complete_success_with_status(0x00, 0x00);
+    }
+
+    /// Completes a data command with normal termination (IC=00) but with the
+    /// given ST1/ST2 status bits set. Used for conditions the host inspects
+    /// without the command failing, such as a deleted-data control mark.
+    pub fn complete_success_with_status(&mut self, st1: u8, st2: u8) {
         let drive = self.state.hd_us & HD_US_DRIVE_MASK;
         let head = (self.state.hd_us >> HD_US_HEAD_SHIFT) & 0x01;
         // ST0: normal termination (IC=00), head, drive.
         self.state.result[0] = (head << HD_US_HEAD_SHIFT) | drive;
-        self.state.result[1] = 0x00; // ST1
-        self.state.result[2] = 0x00; // ST2
+        self.state.result[1] = st1;
+        self.state.result[2] = st2;
         self.state.result[3] = self.state.c;
         self.state.result[4] = self.state.h;
         self.state.result[5] = self.state.r;
@@ -640,6 +666,19 @@ impl Upd765aFdc {
     /// Returns the drive number from the current command parameters.
     pub fn current_drive(&self) -> usize {
         (self.state.hd_us & HD_US_DRIVE_MASK) as usize
+    }
+
+    /// Whether the active read command is READ DIAGNOSTIC (READ TRACK), which
+    /// transfers every sector of the track in physical order rather than the
+    /// single sector named by C/H/R.
+    pub fn is_read_track(&self) -> bool {
+        self.state.command == CMD_READ_DIAGNOSTIC
+    }
+
+    /// Whether the active read command is READ DELETED DATA (it targets sectors
+    /// recorded with a deleted-data address mark).
+    pub fn is_read_deleted(&self) -> bool {
+        self.state.command == CMD_READ_DELETED_DATA
     }
 
     /// Returns the track index for the current command (cylinder*2 + head).
@@ -716,8 +755,8 @@ impl Upd765aFdc {
                 FdcAction::None
             }
 
-            // READ DATA / READ DELETED DATA.
-            CMD_READ_DATA | CMD_READ_DELETED_DATA => {
+            // READ DATA / READ DELETED DATA / READ DIAGNOSTIC (READ TRACK).
+            CMD_READ_DATA | CMD_READ_DELETED_DATA | CMD_READ_DIAGNOSTIC => {
                 self.extract_data_params();
                 self.state.active_command = FdcCommand::ReadData;
                 self.state.tc = false;
@@ -801,10 +840,7 @@ impl Upd765aFdc {
             }
 
             // Remaining data transfer commands - fail with "not ready".
-            CMD_READ_DIAGNOSTIC
-            | CMD_SCAN_EQUAL
-            | CMD_SCAN_LOW_OR_EQUAL
-            | CMD_SCAN_HIGH_OR_EQUAL => {
+            CMD_SCAN_EQUAL | CMD_SCAN_LOW_OR_EQUAL | CMD_SCAN_HIGH_OR_EQUAL => {
                 self.state.hd_us = self.state.params[0];
                 self.extract_data_params();
                 self.complete_error(ST0_NOT_READY, 0x00, 0x00);
@@ -1100,6 +1136,37 @@ impl FloppyController {
                     .find_sector_near_track_index(track_index, c, h, r, n)
             })
             .map(|s| s.data.as_slice())
+    }
+
+    /// Returns the full sector record matching C/H/R/N near the given track
+    /// index, exposing the deleted-data flag and FDC status byte alongside the
+    /// data so a programmed-I/O read path can reproduce copy-protection results.
+    pub fn find_sector(
+        &self,
+        drive: usize,
+        track_index: usize,
+        c: u8,
+        h: u8,
+        r: u8,
+        n: u8,
+    ) -> Option<&D88Sector> {
+        self.drives[drive].as_ref().and_then(|mounted| {
+            mounted
+                .image()
+                .find_sector_near_track_index(track_index, c, h, r, n)
+        })
+    }
+
+    /// Returns the full sector record at the given rotational index on a track.
+    pub fn sector_at_index(
+        &self,
+        drive: usize,
+        track_index: usize,
+        sector_index: usize,
+    ) -> Option<&D88Sector> {
+        self.drives[drive]
+            .as_ref()
+            .and_then(|mounted| mounted.image().sector_at_index(track_index, sector_index))
     }
 
     /// Writes sector data to the specified drive by C/H/R/N near the given track index.
@@ -1494,6 +1561,34 @@ mod tests {
         assert_eq!(r, 1);
         let n = fdc.read_data();
         assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn complete_success_with_status_keeps_normal_termination() {
+        let mut fdc = Upd765aFdc::new();
+        fdc.state.phase = FdcPhase::Execution;
+        fdc.state.hd_us = 0x00;
+        fdc.state.r = 1;
+
+        fdc.complete_success_with_status(0x00, ST2_CONTROL_MARK);
+
+        let st0 = fdc.read_data();
+        assert_eq!(st0 & 0xC0, 0x00, "normal termination");
+        let _st1 = fdc.read_data();
+        let st2 = fdc.read_data();
+        assert_eq!(st2 & ST2_CONTROL_MARK, ST2_CONTROL_MARK);
+    }
+
+    #[test]
+    fn read_diagnostic_is_recognised_as_read_track() {
+        let mut fdc = Upd765aFdc::new();
+        fdc.write_data(0x42); // READ DIAGNOSTIC (READ TRACK), MFM
+        for byte in [0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 0x1B, 0xFF] {
+            fdc.write_data(byte);
+        }
+        assert!(fdc.is_read_track());
+        assert!(!fdc.is_read_deleted());
+        assert_eq!(fdc.state.active_command, FdcCommand::ReadData);
     }
 
     #[test]

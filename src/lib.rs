@@ -376,6 +376,9 @@ struct Application {
     selector_font_rom: Vec<u8>,
     /// Whether the CRT effect is enabled.
     crt_enabled: bool,
+    /// Composite subcarrier phase select (0..3), cycled with Alt+F3. Swaps the
+    /// PC-6001 artifact-color pair; only used by the composite present path.
+    composite_phase: u32,
     /// Scaling method of the native texture.
     scaling: ScalingMode,
     /// The active graphics backend.
@@ -464,6 +467,7 @@ impl Application {
 
         let cpu_hz = machine.cpu_clock_hz();
         let crt_enabled = config.crt && backend == Backend::Modern;
+        let composite_phase = config.pc60_composite_phase;
         let scaling = config.scaling;
 
         let scale_factor = window.display_scale();
@@ -506,6 +510,7 @@ impl Application {
             image_selector: None,
             selector_font_rom,
             crt_enabled,
+            composite_phase,
             scaling,
             backend,
             fullscreen: config.window_mode == WindowMode::Fullscreen,
@@ -583,6 +588,8 @@ impl Application {
                     self.keyboard_forwarding_state.handle_key_down(
                         *scancode,
                         keymod.gui(),
+                        keymod.shift(),
+                        keymod.ctrl(),
                         *repeat,
                         &self.key_map,
                     );
@@ -618,6 +625,8 @@ impl Application {
                         self.toggle_crt();
                     } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F2) {
                         self.toggle_scaling();
+                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F3) {
+                        self.cycle_composite_phase();
                     } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F9) {
                         self.open_or_toggle_selector(MediaType::Floppy(0));
                     } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F10) {
@@ -643,11 +652,10 @@ impl Application {
                     self.set_fast_forward(false);
                 }
                 if self.image_selector.is_none() {
-                    if let Some(code) = self.keyboard_forwarding_state.handle_key_up(
-                        *scancode,
-                        *repeat,
-                        &self.key_map,
-                    ) {
+                    if let Some(code) = self
+                        .keyboard_forwarding_state
+                        .handle_key_up(*scancode, *repeat)
+                    {
                         self.machine.push_keyboard_scancode(code);
                     }
                     if let Some(key) = JoystickKey::from_scancode(*scancode) {
@@ -922,6 +930,14 @@ impl Application {
         info!("CRT effect set to {}", on_off(self.crt_enabled));
     }
 
+    fn cycle_composite_phase(&mut self) {
+        if self.config.target != Target::Pc60 {
+            return;
+        }
+        self.composite_phase = (self.composite_phase + 1) % 4;
+        info!("Composite artifact phase set to {}", self.composite_phase);
+    }
+
     fn toggle_scaling(&mut self) {
         self.scaling = match self.scaling {
             ScalingMode::Nearest => ScalingMode::Bilinear,
@@ -1156,6 +1172,8 @@ impl Application {
                 width: 640,
                 height: 400,
                 crt: self.crt_enabled,
+                composite: false,
+                composite_phase: 0,
             }
         } else {
             let (width, height) = self.machine.display_dimensions();
@@ -1164,6 +1182,8 @@ impl Application {
                 width,
                 height,
                 crt: self.crt_enabled,
+                composite: self.config.target == Target::Pc60,
+                composite_phase: self.composite_phase,
             }
         };
 
@@ -1206,6 +1226,7 @@ pub fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<B
         Target::Pc98 => initialize_pc98_machine(config, sample_rate),
         Target::Pc88 => initialize_pc88_machine(config, sample_rate),
         Target::Pc88Va => initialize_pc88va_machine(config, sample_rate),
+        Target::Pc60 => initialize_pc60_machine(config, sample_rate),
     }
 }
 
@@ -1341,6 +1362,62 @@ fn initialize_pc88va_machine(
 
     let mut machine = machine88va::Pc88VaMachine::new(model, roms);
     machine.set_host_local_time_fn(host_local_time_bcd);
+    Ok(Box::new(machine))
+}
+
+fn initialize_pc60_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+    let model = config.pc60_model;
+    info!("Selected machine model {model}");
+
+    let rom_dir = config.pc60_roms.as_ref().ok_or_else(|| {
+        StringError(format!(
+            "{model} requires a ROM directory (--pc60-roms <DIR>)"
+        ))
+    })?;
+
+    let roms = machine60::load_rom_set(model, rom_dir).map_err(|error| {
+        StringError(format!(
+            "Failed to load {model} ROM set from {}: {error}",
+            rom_dir.display()
+        ))
+    })?;
+
+    let mut bus: machine60::Pc6000Bus<Tracer> = machine60::Pc6000Bus::new(model, sample_rate);
+    bus.load_roms(&roms);
+
+    if let Some(cart_path) = config.pc60_cart.as_ref() {
+        let image = std::fs::read(cart_path).map_err(|error| {
+            StringError(format!(
+                "Failed to read PC-6000 cartridge {}: {error}",
+                cart_path.display()
+            ))
+        })?;
+        info!(
+            "Loaded cartridge {} ({} bytes)",
+            cart_path.display(),
+            image.len()
+        );
+        bus.load_cartridge(&image);
+    }
+
+    if config.hdd1.is_some() || config.hdd2.is_some() {
+        warn!("HDD options are ignored for the PC-6000 target");
+    }
+
+    let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+    let mut machine = machine60::Pc6000Machine::new(main_cpu, bus);
+
+    if let Some(cassette_path) = config.pc60_cass.as_ref() {
+        match machine.insert_cassette(cassette_path) {
+            Ok(description) => info!("Inserted cassette {description}"),
+            Err(error) => {
+                return Err(Error::from(StringError(format!(
+                    "Failed to insert PC-6000 cassette: {error}"
+                ))));
+            }
+        }
+    }
+
     Ok(Box::new(machine))
 }
 

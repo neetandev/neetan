@@ -3,6 +3,7 @@
 import screen_space;
 import filter;
 import crt;
+import composite;
 import transform;
 
 struct PresentUniforms {
@@ -12,13 +13,17 @@ struct PresentUniforms {
     float2 source_max_size;
     uint scale_mode;
     uint is_srgb_swapchain;
-    uint2 padding;
+    uint composite_phase;
+    uint padding;
+    float4 luma_weights[7];
+    float4 chroma_weights[7];
 }
 
 static const uint SCALE_MODE_NEAREST = 0;
 static const uint SCALE_MODE_BILINEAR = 1;
 static const uint SCALE_MODE_PIXELART = 2;
 static const uint SCALE_MODE_CRT = 3;
+static const uint SCALE_MODE_CRT_COMPOSITE = 4;
 
 // Bindings follows the SDL3 GPU SPIR-V binding convention.
 //
@@ -80,6 +85,11 @@ float4 fs_main(FullscreenVertex input) : SV_Target {
         // CRT module wants region UV (already 0..1 over the displayed area)
         // plus the source pixel dims and the actual displayed (letterbox) size.
         rgb = sample_crt_pixel(native_linear, region_uv, source_used_size, rect_size, source_max_size);
+        break;
+    }
+    case SCALE_MODE_CRT_COMPOSITE: {
+        // Composite (NTSC) CRT variant.
+        rgb = sample_composite_pixel(native_linear, region_uv, source_used_size, rect_size, source_max_size, uniforms.composite_phase, uniforms.luma_weights, uniforms.chroma_weights);
         break;
     }
     default:

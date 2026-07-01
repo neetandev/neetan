@@ -91,6 +91,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "machine60"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "common",
+ "cpu",
+ "device",
+ "software_renderer",
+]
+
+[[package]]
 name = "machine88"
 version = "0.1.0"
 dependencies = [
@@ -131,6 +142,7 @@ dependencies = [
  "device",
  "dos",
  "machine",
+ "machine60",
  "machine88",
  "machine88va",
  "sdl3",
