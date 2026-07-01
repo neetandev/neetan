@@ -15,7 +15,8 @@
 //! scheduler events and IRQ wiring.
 
 use resampler::{Attenuation, Latency, ResamplerFir};
-use ymfm_oxide::{Ym2203, Ym2608, YmfmOpnFidelity, YmfmOutput3, YmfmOutput4, YmfmTimerUpdate};
+pub use ymfm_oxide::Ym2203;
+use ymfm_oxide::{Ym2608, YmfmOpnFidelity, YmfmOutput3, YmfmOutput4, YmfmTimerUpdate};
 
 const FIDELITY: YmfmOpnFidelity = YmfmOpnFidelity::Max;
 const RESAMPLER_LATENCY: Latency = Latency::Sample64;
@@ -132,6 +133,10 @@ pub trait OpnChip {
     /// Notifies the chip that timer `timer_id` has expired.
     fn timer_expired(&mut self, timer_id: u32);
 
+    /// Sets the value read back from an SSG parallel I/O input port (port 0 is
+    /// A, port 1 is B). No-op on chips without an SSG I/O port.
+    fn set_io_input(&mut self, _port: u8, _value: u8) {}
+
     /// Returns and clears the pending timer update for `timer_id`.
     fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate>;
 
@@ -190,6 +195,10 @@ impl OpnChip for Ym2203 {
 
     fn timer_expired(&mut self, timer_id: u32) {
         Ym2203::timer_expired(self, timer_id);
+    }
+
+    fn set_io_input(&mut self, port: u8, value: u8) {
+        Ym2203::set_io_input(self, port, value);
     }
 
     fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
@@ -335,6 +344,11 @@ impl<C: OpnChip> OpnFm<C> {
     /// Borrows the chip for board-specific configuration (e.g. ADPCM setup).
     pub fn chip_mut(&mut self) -> &mut C {
         &mut self.chip
+    }
+
+    /// Sets the SSG parallel I/O input value (port 0 is A, port 1 is B).
+    pub fn set_io_input(&mut self, port: u8, value: u8) {
+        self.chip.set_io_input(port, value);
     }
 
     /// Returns the native output sample rate.

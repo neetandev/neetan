@@ -81,6 +81,7 @@ pub struct Ym2203 {
     address: u8,
     fm_samples_per_output: u32,
     last_fm: [i32; 1],
+    io_input: [u8; 2],
 }
 
 impl Ym2203 {
@@ -99,9 +100,18 @@ impl Ym2203 {
             address: 0,
             fm_samples_per_output: 0,
             last_fm: [0],
+            io_input: [0; 2],
         };
         chip.update_prescale(prescale);
         chip
+    }
+
+    /// Sets the value read back from an SSG parallel I/O port when that port is
+    /// configured as an input. Port 0 is A, port 1 is B.
+    pub fn set_io_input(&mut self, port: u8, value: u8) {
+        if let Some(input) = self.io_input.get_mut(port as usize) {
+            *input = value;
+        }
     }
 
     /// Resets the chip to its initial power-on state.
@@ -149,7 +159,16 @@ impl Ym2203 {
     /// write-only.
     pub fn read_data(&mut self) -> u8 {
         if self.address < 0x10 {
-            self.ssg.read(self.address as u32 & 0x0F)
+            let register = self.address as u32 & 0x0F;
+            // Port A/B read back the external input when configured as inputs
+            // (register 0x07 bits 6/7 clear).
+            if register == 0x0E && self.ssg.read(0x07) & 0x40 == 0 {
+                return self.io_input[0];
+            }
+            if register == 0x0F && self.ssg.read(0x07) & 0x80 == 0 {
+                return self.io_input[1];
+            }
+            self.ssg.read(register)
         } else {
             0
         }

@@ -16,12 +16,17 @@ use std::{
 
 mod compose;
 mod ga1280a;
+pub mod pc60;
 pub mod pc88;
 mod text_normalizer;
 pub mod va;
 
 pub use ga1280a::{
     Ga1280aCursorRenderInputs, Ga1280aRenderInputs, Ga1280aRenderMode, compose as compose_ga1280a,
+};
+pub use pc60::{
+    PC60_HEIGHT, PC60_MK2_HEIGHT, PC60_MK2_WIDTH, PC60_WIDTH, Pc60RenderModel, RenderInputs60,
+    RenderInputsSr, render as render_pc60, render_sr,
 };
 pub use pc88::{GraphicsMode88, Pc88Renderer, RenderInputs88};
 pub use va::{

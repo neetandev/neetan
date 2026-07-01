@@ -1208,6 +1208,21 @@ pub trait Machine {
     /// Ejects the floppy disk from the specified drive, flushing any dirty data first.
     fn eject_floppy(&mut self, drive: usize);
 
+    /// Inserts a cassette tape image into the machine's cassette deck.
+    /// Reads the file, parses it by format, and loads it. Returns a description
+    /// string on success.
+    ///
+    /// The default returns an error for machines without a cassette interface.
+    #[cfg(feature = "std")]
+    fn insert_cassette(&mut self, _path: &std::path::Path) -> Result<String, String> {
+        Err("cassette is not supported on this machine".to_string())
+    }
+
+    /// Ejects the cassette tape, if any.
+    ///
+    /// The default is a no-op for machines without a cassette interface.
+    fn eject_cassette(&mut self) {}
+
     /// Inserts a CD-ROM disc image into the machine's CD-ROM drive.
     /// Reads the image description file, resolves the referenced data
     /// files, and inserts. Returns a description string on success.

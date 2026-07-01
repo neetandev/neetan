@@ -1,5 +1,5 @@
 [package]
-name = "sdl3_backend"
+name = "machine60"
 version = "0.1.0"
 publish = false
 authors.workspace = true
@@ -9,4 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 common = { workspace = true, features = ["std"] }
-sdl3 = { workspace = true }
+cpu = { workspace = true }
+device = { workspace = true }
+software_renderer = { workspace = true, features = ["std"] }
+blake3 = { workspace = true }

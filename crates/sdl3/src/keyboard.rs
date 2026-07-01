@@ -677,6 +677,18 @@ impl Scancode {
 pub struct Mod(pub u16);
 
 impl Mod {
+    /// Returns `true` if either Shift key is held.
+    #[inline]
+    pub const fn shift(&self) -> bool {
+        self.0 & 0x0003 != 0
+    }
+
+    /// Returns `true` if either Ctrl key is held.
+    #[inline]
+    pub const fn ctrl(&self) -> bool {
+        self.0 & 0x00C0 != 0
+    }
+
     /// Returns `true` if either Alt key is held.
     #[inline]
     pub const fn alt(&self) -> bool {

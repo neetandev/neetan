@@ -157,18 +157,34 @@ pub fn pc98_scancode_from_name(name: &str) -> Option<u8> {
 #[derive(Clone, Copy)]
 pub struct KeyMap {
     mappings: [u8; Scancode::COUNT],
+    shifted_mappings: [u8; Scancode::COUNT],
+    resolve_modifiers: bool,
 }
 
 impl KeyMap {
     pub const fn new() -> Self {
+        let mappings = build_default_map();
         Self {
-            mappings: build_default_map(),
+            mappings,
+            shifted_mappings: mappings,
+            resolve_modifiers: false,
         }
     }
 
     pub const fn new_pc88() -> Self {
+        let mappings = build_pc88_default_map();
         Self {
-            mappings: build_pc88_default_map(),
+            mappings,
+            shifted_mappings: mappings,
+            resolve_modifiers: false,
+        }
+    }
+
+    pub const fn new_pc60() -> Self {
+        Self {
+            mappings: build_pc60_default_map(),
+            shifted_mappings: build_pc60_shifted_map(),
+            resolve_modifiers: true,
         }
     }
 
@@ -177,8 +193,11 @@ impl KeyMap {
     /// base map matches the PC-98 default; the machine derives the 88-compatible
     /// scan matrix from the keycode internally.
     pub const fn new_pc88va() -> Self {
+        let mappings = build_pc88va_default_map();
         Self {
-            mappings: build_pc88va_default_map(),
+            mappings,
+            shifted_mappings: mappings,
+            resolve_modifiers: false,
         }
     }
 
@@ -188,6 +207,25 @@ impl KeyMap {
 
     pub fn lookup(&self, host: Scancode) -> u8 {
         self.mappings[host.index()]
+    }
+
+    /// Resolves a host scancode to a guest keycode, applying the modifier keys
+    /// when the target keyboard expects a pre-resolved code (PC-6000). The
+    /// PC-88/PC-98 matrices forward Shift/Ctrl as their own cells, so those maps
+    /// ignore the modifier state here.
+    pub fn resolve(&self, host: Scancode, shift: bool, ctrl: bool) -> u8 {
+        let index = host.index();
+        let base = self.mappings[index];
+        if !self.resolve_modifiers {
+            return base;
+        }
+        if ctrl && (0x40..=0x5F).contains(&base) {
+            return base & 0x1F;
+        }
+        if shift {
+            return self.shifted_mappings[index];
+        }
+        base
     }
 }
 
@@ -212,6 +250,8 @@ impl KeyboardForwardingState {
         &mut self,
         scancode: Option<Scancode>,
         gui_modifier_active: bool,
+        shift_held: bool,
+        ctrl_held: bool,
         repeat: bool,
         key_map: &KeyMap,
     ) {
@@ -239,17 +279,12 @@ impl KeyboardForwardingState {
             return;
         }
 
-        let pc98_scancode = key_map.lookup(scancode);
+        let pc98_scancode = key_map.resolve(scancode, shift_held, ctrl_held);
         self.guest_pressed_pc98_scancodes[scancode_index] = Some(pc98_scancode);
         self.pending_pressed_pc98_scancode = Some(pc98_scancode);
     }
 
-    pub(crate) fn handle_key_up(
-        &mut self,
-        scancode: Option<Scancode>,
-        repeat: bool,
-        key_map: &KeyMap,
-    ) -> Option<u8> {
+    pub(crate) fn handle_key_up(&mut self, scancode: Option<Scancode>, repeat: bool) -> Option<u8> {
         if repeat {
             return None;
         }
@@ -259,9 +294,8 @@ impl KeyboardForwardingState {
         let pc98_scancode = self.guest_pressed_pc98_scancodes[scancode_index]?;
         self.guest_pressed_pc98_scancodes[scancode_index] = None;
 
-        let expected_pc98_scancode = key_map.lookup(scancode);
-        debug_assert_eq!(pc98_scancode, expected_pc98_scancode);
-
+        // The press-time code is authoritative: the live modifier state may have
+        // changed before release, so it is not re-resolved here.
         Some(pc98_scancode | 0x80)
     }
 
@@ -730,6 +764,204 @@ const fn build_pc88_default_map() -> [u8; Scancode::COUNT] {
     map
 }
 
+/// First function-key id on the PC-6001 wire encoding (F1). Function keys are
+/// sent as ids 0x60-0x69 so the release bit (0x80) stays free for every key.
+const PC60_FUNCTION_KEY_BASE: u8 = 0x60;
+
+/// Maps a key name to a PC-6001 keycode for `key.*` config overrides. Normal
+/// keys use their character code; function keys use the wire ids F1-F5.
+/// A `0xNN` hex literal binds a raw keycode directly.
+pub fn pc60_keycode_from_name(name: &str) -> Option<u8> {
+    let lower = name.to_ascii_lowercase();
+    if let Some(hex) = lower.strip_prefix("0x") {
+        return u8::from_str_radix(hex, 16).ok();
+    }
+    if lower.len() == 1 {
+        let character = lower.as_bytes()[0];
+        if character.is_ascii_lowercase() {
+            return Some(character - b'a' + b'A');
+        }
+        if character.is_ascii_digit() || (0x20..=0x5F).contains(&character) {
+            return Some(character);
+        }
+    }
+    Some(match lower.as_str() {
+        "space" => 0x20,
+        "return" | "enter" => 0x0D,
+        "backspace" | "bs" => 0x08,
+        "tab" => 0x09,
+        "up" => 0x1E,
+        "down" => 0x1F,
+        "left" => 0x1D,
+        "right" => 0x1C,
+        "f1" => PC60_FUNCTION_KEY_BASE,
+        "f2" => PC60_FUNCTION_KEY_BASE + 1,
+        "f3" => PC60_FUNCTION_KEY_BASE + 2,
+        "f4" => PC60_FUNCTION_KEY_BASE + 3,
+        "f5" => PC60_FUNCTION_KEY_BASE + 4,
+        _ => return None,
+    })
+}
+
+pub fn parse_key_binding_pc60(host_name: &str, target_name: &str) -> Option<(Scancode, u8)> {
+    let host = Scancode::from_name(host_name)?;
+    let code = pc60_keycode_from_name(target_name)?;
+    Some((host, code))
+}
+
+/// Default PC-6001 key map: host scancodes to firmware keycodes. Normal keys
+/// carry their ASCII code; function keys F1-F5 carry the wire ids 0x60-0x64.
+/// Unmapped host keys carry 0x00, which the sub-controller treats as no key.
+const fn build_pc60_default_map() -> [u8; Scancode::COUNT] {
+    use Scancode::*;
+
+    /// No-key code for host keys without a PC-6001 equivalent.
+    const UNMAPPED: u8 = 0x00;
+
+    const ALL_SCANCODES: &[(Scancode, u8)] = &[
+        // Letters carry their uppercase ASCII codes.
+        (A, b'A'),
+        (B, b'B'),
+        (C, b'C'),
+        (D, b'D'),
+        (E, b'E'),
+        (F, b'F'),
+        (G, b'G'),
+        (H, b'H'),
+        (I, b'I'),
+        (J, b'J'),
+        (K, b'K'),
+        (L, b'L'),
+        (M, b'M'),
+        (N, b'N'),
+        (O, b'O'),
+        (P, b'P'),
+        (Q, b'Q'),
+        (R, b'R'),
+        (S, b'S'),
+        (T, b'T'),
+        (U, b'U'),
+        (V, b'V'),
+        (W, b'W'),
+        (X, b'X'),
+        (Y, b'Y'),
+        (Z, b'Z'),
+        // Digits.
+        (_0, b'0'),
+        (_1, b'1'),
+        (_2, b'2'),
+        (_3, b'3'),
+        (_4, b'4'),
+        (_5, b'5'),
+        (_6, b'6'),
+        (_7, b'7'),
+        (_8, b'8'),
+        (_9, b'9'),
+        // Punctuation.
+        (Space, b' '),
+        (Minus, b'-'),
+        (Comma, b','),
+        (Period, b'.'),
+        (Slash, b'/'),
+        (Semicolon, b';'),
+        (LeftBracket, b'['),
+        (RightBracket, b']'),
+        (Equals, b'^'),
+        // Control keys and cursor cluster.
+        (Return, 0x0D),
+        (KpEnter, 0x0D),
+        (Backspace, 0x08),
+        (Delete, 0x08),
+        (Tab, 0x09),
+        (Right, 0x1C),
+        (Left, 0x1D),
+        (Up, 0x1E),
+        (Down, 0x1F),
+        // Function keys (wire ids).
+        (F1, PC60_FUNCTION_KEY_BASE),
+        (F2, PC60_FUNCTION_KEY_BASE + 1),
+        (F3, PC60_FUNCTION_KEY_BASE + 2),
+        (F4, PC60_FUNCTION_KEY_BASE + 3),
+        (F5, PC60_FUNCTION_KEY_BASE + 4),
+    ];
+
+    let mut map = [UNMAPPED; Scancode::COUNT];
+    let mut i = 0;
+    while i < ALL_SCANCODES.len() {
+        let (scancode, code) = ALL_SCANCODES[i];
+        map[scancode.index()] = code;
+        i += 1;
+    }
+    map
+}
+
+/// PC-6001 shifted key map: the keycode the sub-controller sends while Shift is
+/// held. Keys without a shifted form keep their base code. Mirrors the resolved
+/// codes the real keyboard scan produces.
+const fn build_pc60_shifted_map() -> [u8; Scancode::COUNT] {
+    use Scancode::*;
+
+    const SHIFTED_SCANCODES: &[(Scancode, u8)] = &[
+        // Letters shift to lowercase.
+        (A, b'a'),
+        (B, b'b'),
+        (C, b'c'),
+        (D, b'd'),
+        (E, b'e'),
+        (F, b'f'),
+        (G, b'g'),
+        (H, b'h'),
+        (I, b'i'),
+        (J, b'j'),
+        (K, b'k'),
+        (L, b'l'),
+        (M, b'm'),
+        (N, b'n'),
+        (O, b'o'),
+        (P, b'p'),
+        (Q, b'q'),
+        (R, b'r'),
+        (S, b's'),
+        (T, b't'),
+        (U, b'u'),
+        (V, b'v'),
+        (W, b'w'),
+        (X, b'x'),
+        (Y, b'y'),
+        (Z, b'z'),
+        // Number row.
+        (_1, b'!'),
+        (_2, b'"'),
+        (_3, b'#'),
+        (_4, b'$'),
+        (_5, b'%'),
+        (_6, b'&'),
+        (_7, b'\''),
+        (_8, b'('),
+        (_9, b')'),
+        (_0, b'='),
+        // Punctuation.
+        (Comma, b';'),
+        (Period, b':'),
+        (Slash, b'?'),
+        // Shifted function keys carry the upper wire ids (F6-F10).
+        (F1, PC60_FUNCTION_KEY_BASE + 5),
+        (F2, PC60_FUNCTION_KEY_BASE + 6),
+        (F3, PC60_FUNCTION_KEY_BASE + 7),
+        (F4, PC60_FUNCTION_KEY_BASE + 8),
+        (F5, PC60_FUNCTION_KEY_BASE + 9),
+    ];
+
+    let mut map = build_pc60_default_map();
+    let mut i = 0;
+    while i < SHIFTED_SCANCODES.len() {
+        let (scancode, code) = SHIFTED_SCANCODES[i];
+        map[scancode.index()] = code;
+        i += 1;
+    }
+    map
+}
+
 #[cfg(test)]
 mod tests {
     use sdl3::keyboard::Scancode;
@@ -780,7 +1012,14 @@ mod tests {
         let mut keyboard_forwarding_state = KeyboardForwardingState::new();
         let key_map = KeyMap::new();
 
-        keyboard_forwarding_state.handle_key_down(Some(Scancode::LAlt), false, false, &key_map);
+        keyboard_forwarding_state.handle_key_down(
+            Some(Scancode::LAlt),
+            false,
+            false,
+            false,
+            false,
+            &key_map,
+        );
         assert_eq!(
             keyboard_forwarding_state.pending_pressed_pc98_scancode(),
             Some(0x73)
@@ -791,8 +1030,7 @@ mod tests {
                 .is_empty()
         );
 
-        let key_up_scancode =
-            keyboard_forwarding_state.handle_key_up(Some(Scancode::LAlt), false, &key_map);
+        let key_up_scancode = keyboard_forwarding_state.handle_key_up(Some(Scancode::LAlt), false);
         assert_eq!(key_up_scancode, Some(0xF3));
     }
 
@@ -801,7 +1039,7 @@ mod tests {
         let mut keyboard_forwarding_state = KeyboardForwardingState::new();
         let key_map = KeyMap::new();
 
-        keyboard_forwarding_state.handle_key_down(None, true, false, &key_map);
+        keyboard_forwarding_state.handle_key_down(None, true, false, false, false, &key_map);
         assert_eq!(
             keyboard_forwarding_state.pending_pressed_pc98_scancode(),
             None
@@ -812,7 +1050,14 @@ mod tests {
                 .is_empty()
         );
 
-        keyboard_forwarding_state.handle_key_down(Some(Scancode::LAlt), true, false, &key_map);
+        keyboard_forwarding_state.handle_key_down(
+            Some(Scancode::LAlt),
+            true,
+            false,
+            false,
+            false,
+            &key_map,
+        );
         assert_eq!(
             keyboard_forwarding_state.pending_pressed_pc98_scancode(),
             None
@@ -823,7 +1068,14 @@ mod tests {
                 .is_empty()
         );
 
-        keyboard_forwarding_state.handle_key_down(Some(Scancode::F9), true, false, &key_map);
+        keyboard_forwarding_state.handle_key_down(
+            Some(Scancode::F9),
+            true,
+            false,
+            false,
+            false,
+            &key_map,
+        );
         assert_eq!(
             keyboard_forwarding_state.pending_pressed_pc98_scancode(),
             None
@@ -835,11 +1087,11 @@ mod tests {
         );
 
         let function_key_up_scancode =
-            keyboard_forwarding_state.handle_key_up(Some(Scancode::F9), false, &key_map);
+            keyboard_forwarding_state.handle_key_up(Some(Scancode::F9), false);
         assert_eq!(function_key_up_scancode, None);
 
         let left_alt_key_up_scancode =
-            keyboard_forwarding_state.handle_key_up(Some(Scancode::LAlt), false, &key_map);
+            keyboard_forwarding_state.handle_key_up(Some(Scancode::LAlt), false);
         assert_eq!(left_alt_key_up_scancode, None);
     }
 
@@ -848,13 +1100,20 @@ mod tests {
         let mut keyboard_forwarding_state = KeyboardForwardingState::new();
         let key_map = KeyMap::new();
 
-        keyboard_forwarding_state.handle_key_down(Some(Scancode::LAlt), false, false, &key_map);
+        keyboard_forwarding_state.handle_key_down(
+            Some(Scancode::LAlt),
+            false,
+            false,
+            false,
+            false,
+            &key_map,
+        );
         assert_eq!(
             keyboard_forwarding_state.pending_pressed_pc98_scancode(),
             Some(0x73)
         );
 
-        keyboard_forwarding_state.handle_key_down(None, true, false, &key_map);
+        keyboard_forwarding_state.handle_key_down(None, true, false, false, false, &key_map);
         assert_eq!(
             keyboard_forwarding_state.pending_pressed_pc98_scancode(),
             None
@@ -865,7 +1124,7 @@ mod tests {
         );
 
         let left_alt_key_up_scancode =
-            keyboard_forwarding_state.handle_key_up(Some(Scancode::LAlt), false, &key_map);
+            keyboard_forwarding_state.handle_key_up(Some(Scancode::LAlt), false);
         assert_eq!(left_alt_key_up_scancode, None);
     }
 
@@ -874,7 +1133,7 @@ mod tests {
         let mut keyboard_forwarding_state = KeyboardForwardingState::new();
         let key_map = KeyMap::new();
 
-        keyboard_forwarding_state.handle_key_down(None, true, false, &key_map);
+        keyboard_forwarding_state.handle_key_down(None, true, false, false, false, &key_map);
         assert_eq!(
             keyboard_forwarding_state.pending_pressed_pc98_scancode(),
             None
@@ -885,7 +1144,14 @@ mod tests {
                 .is_empty()
         );
 
-        keyboard_forwarding_state.handle_key_down(Some(Scancode::LAlt), true, false, &key_map);
+        keyboard_forwarding_state.handle_key_down(
+            Some(Scancode::LAlt),
+            true,
+            false,
+            false,
+            false,
+            &key_map,
+        );
         assert_eq!(
             keyboard_forwarding_state.pending_pressed_pc98_scancode(),
             None
@@ -896,7 +1162,14 @@ mod tests {
                 .is_empty()
         );
 
-        keyboard_forwarding_state.handle_key_down(Some(Scancode::A), false, false, &key_map);
+        keyboard_forwarding_state.handle_key_down(
+            Some(Scancode::A),
+            false,
+            false,
+            false,
+            false,
+            &key_map,
+        );
         assert_eq!(
             keyboard_forwarding_state.pending_pressed_pc98_scancode(),
             Some(0x1D)
@@ -906,5 +1179,51 @@ mod tests {
                 .pending_released_pc98_scancodes()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn pc60_shift_resolves_the_number_row_and_symbols() {
+        use super::PC60_FUNCTION_KEY_BASE;
+
+        let key_map = KeyMap::new_pc60();
+        assert_eq!(key_map.resolve(Scancode::_2, true, false), b'"');
+        assert_eq!(key_map.resolve(Scancode::_1, true, false), b'!');
+        assert_eq!(key_map.resolve(Scancode::_7, true, false), b'\'');
+        assert_eq!(key_map.resolve(Scancode::_0, true, false), b'=');
+        assert_eq!(key_map.resolve(Scancode::Comma, true, false), b';');
+        assert_eq!(key_map.resolve(Scancode::Period, true, false), b':');
+        assert_eq!(key_map.resolve(Scancode::Slash, true, false), b'?');
+        assert_eq!(
+            key_map.resolve(Scancode::F1, true, false),
+            PC60_FUNCTION_KEY_BASE + 5
+        );
+    }
+
+    #[test]
+    fn pc60_shift_lowercases_letters_and_ctrl_makes_control_codes() {
+        let key_map = KeyMap::new_pc60();
+        assert_eq!(key_map.resolve(Scancode::A, false, false), b'A');
+        assert_eq!(key_map.resolve(Scancode::A, true, false), b'a');
+        assert_eq!(key_map.resolve(Scancode::A, false, true), 0x01);
+        assert_eq!(key_map.resolve(Scancode::C, false, true), 0x03);
+        // Ctrl takes precedence over Shift.
+        assert_eq!(key_map.resolve(Scancode::A, true, true), 0x01);
+    }
+
+    #[test]
+    fn pc60_bare_modifiers_stay_no_key() {
+        let key_map = KeyMap::new_pc60();
+        assert_eq!(key_map.resolve(Scancode::LShift, true, false), 0x00);
+        assert_eq!(key_map.resolve(Scancode::LCtrl, false, true), 0x00);
+    }
+
+    #[test]
+    fn matrix_maps_ignore_modifier_state() {
+        for key_map in [KeyMap::new(), KeyMap::new_pc88()] {
+            assert_eq!(
+                key_map.resolve(Scancode::_2, true, true),
+                key_map.lookup(Scancode::_2)
+            );
+        }
     }
 }

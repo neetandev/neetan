@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use common::Context;
 use sdl3::gpu::{
     GpuDevice, GpuGraphicsPipeline, GraphicsPipelineDescriptor, SDL_GPU_CULLMODE_NONE,
@@ -20,7 +22,86 @@ pub(crate) enum ScaleMode {
     Pixelart = 2,
     #[allow(dead_code)]
     Crt = 3,
+    #[allow(dead_code)]
+    CrtComposite = 4,
 }
+
+/// Composite decode FIR parameters. FIR_TAPS/OVERSAMPLE must match the shader.
+const COMPOSITE_FIR_TAPS: usize = 25;
+const COMPOSITE_OVERSAMPLE: f32 = 2.0;
+const COMPOSITE_LUMA_CUTOFF: f32 = 0.4;
+const COMPOSITE_CHROMA_BANDWIDTH: f32 = 0.045;
+const COMPOSITE_CHROMA_GAIN: f32 = 2.0;
+/// Number of `float4`s needed to hold `COMPOSITE_FIR_TAPS` weights, 4 taps each.
+const COMPOSITE_FIR_VEC4: usize = COMPOSITE_FIR_TAPS.div_ceil(4);
+
+fn composite_sinc(x: f32) -> f32 {
+    if x.abs() < 1e-5 {
+        return 1.0;
+    }
+    let v = std::f32::consts::PI * x;
+    v.sin() / v
+}
+
+fn composite_blackman(taps: usize, index: usize) -> f32 {
+    let phase = std::f32::consts::TAU * index as f32 / (taps - 1) as f32;
+    0.42 - 0.5 * phase.cos() + 0.08 * (2.0 * phase).cos()
+}
+
+/// Windowed-sinc low-pass tap weight, matching `lowpass()` in composite.slang.
+fn composite_lowpass(cutoff: f32, taps: usize, index: usize) -> f32 {
+    let center = index as f32 - (taps / 2) as f32;
+    2.0 * cutoff * composite_blackman(taps, index) * composite_sinc(2.0 * cutoff * center)
+}
+
+/// The two precomputed, pre-normalized FIR weight tables, packed 4 taps per
+/// `float4` so the layout matches the shader's `float4[]` constant-buffer arrays.
+struct CompositeFir {
+    luma: [[f32; 4]; COMPOSITE_FIR_VEC4],
+    chroma: [[f32; 4]; COMPOSITE_FIR_VEC4],
+}
+
+/// Computed once: the weights depend only on compile-time constants.
+static COMPOSITE_FIR: LazyLock<CompositeFir> = LazyLock::new(|| {
+    let mut luma = [0.0f32; COMPOSITE_FIR_TAPS];
+    let mut chroma = [0.0f32; COMPOSITE_FIR_TAPS];
+    for tap in 0..COMPOSITE_FIR_TAPS {
+        luma[tap] = composite_lowpass(
+            COMPOSITE_LUMA_CUTOFF / COMPOSITE_OVERSAMPLE,
+            COMPOSITE_FIR_TAPS,
+            tap,
+        );
+        chroma[tap] = composite_lowpass(
+            COMPOSITE_CHROMA_BANDWIDTH / COMPOSITE_OVERSAMPLE,
+            COMPOSITE_FIR_TAPS,
+            tap,
+        );
+    }
+
+    // Pre-normalize so the shader loop needs no post-loop division: luma sums to
+    // one; chroma sums to one and carries the quadrature-demod gain of two.
+    let luma_sum: f32 = luma.iter().sum();
+    let chroma_sum: f32 = chroma.iter().sum();
+    for weight in &mut luma {
+        *weight /= luma_sum;
+    }
+    for weight in &mut chroma {
+        *weight = *weight / chroma_sum * COMPOSITE_CHROMA_GAIN;
+    }
+
+    let pack = |weights: &[f32; COMPOSITE_FIR_TAPS]| {
+        let mut packed = [[0.0f32; 4]; COMPOSITE_FIR_VEC4];
+        for (tap, &weight) in weights.iter().enumerate() {
+            packed[tap / 4][tap % 4] = weight;
+        }
+        packed
+    };
+
+    CompositeFir {
+        luma: pack(&luma),
+        chroma: pack(&chroma),
+    }
+});
 
 /// CPU mirror of the fragment `ConstantBuffer<PresentUniforms>` at set 3, binding 0.
 #[derive(Copy, Clone, Debug)]
@@ -32,8 +113,19 @@ pub(crate) struct PresentUniforms {
     source_max_size: [f32; 2],
     scale_mode: u32,
     is_srgb_swapchain: u32,
-    padding: [u32; 2],
+    composite_phase: u32,
+    padding: u32,
+    luma_weights: [[f32; 4]; COMPOSITE_FIR_VEC4],
+    chroma_weights: [[f32; 4]; COMPOSITE_FIR_VEC4],
 }
+
+// The weight arrays must stay tightly packed (16-byte scalar block at offset 48,
+// then two float4[] arrays at 16-byte stride) so the repr(C) layout matches the
+// shader's std140 constant buffer. This trips if repr(C) inserts any padding.
+const _: () = assert!(
+    std::mem::size_of::<PresentUniforms>() == 48 + 2 * COMPOSITE_FIR_VEC4 * 16,
+    "PresentUniforms must match the std140 constant-buffer layout",
+);
 
 impl PresentUniforms {
     pub(crate) fn new(
@@ -43,6 +135,7 @@ impl PresentUniforms {
         source_max_size: [f32; 2],
         scale_mode: ScaleMode,
         is_srgb_swapchain: bool,
+        composite_phase: u32,
     ) -> Self {
         Self {
             output_size: [output_size.0 as f32, output_size.1 as f32],
@@ -51,18 +144,16 @@ impl PresentUniforms {
             source_max_size,
             scale_mode: scale_mode as u32,
             is_srgb_swapchain: u32::from(is_srgb_swapchain),
-            padding: [0; 2],
+            composite_phase,
+            padding: 0,
+            luma_weights: COMPOSITE_FIR.luma,
+            chroma_weights: COMPOSITE_FIR.chroma,
         }
     }
 
     pub(crate) fn as_bytes(&self) -> &[u8] {
         // Safety: PresentUniforms is repr(C) with no padding/uninit fields.
-        unsafe {
-            std::slice::from_raw_parts(
-                (self as *const Self) as *const u8,
-                std::mem::size_of::<Self>(),
-            )
-        }
+        unsafe { std::slice::from_raw_parts((self as *const Self) as *const u8, size_of::<Self>()) }
     }
 }
 
