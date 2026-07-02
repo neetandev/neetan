@@ -78,7 +78,7 @@ The early models use the AY-3-8910 PSG, while the SR models use a YM2203 (OPN). 
 but the PC-6001 add the uPD7752 voice synthesizer. The PC-6601 and PC-6601SR have a
 built-in floppy drive. Cartridge and cassette images can be inserted as well. Like
 the PC-8801MC, none of the PC-6000 targets have HLE firmware; they require a real ROM
-set supplied via `--pc60-roms`.
+set supplied via `--pc6000-roms`.
 
 See [PC-6001 / PC-6601 systems](#pc-6001--pc-6601-systems) for the ROM set and
 platform-specific options.
@@ -108,15 +108,15 @@ apply to one family are ignored on the others.
 | `--pc88-8mhz-wait <MODE>`    | PC-88   | 8 MHz wait: `fast` or `compatible`                                                                                                                       | `fast`            |
 | `--pc88-roms <PATH>`         | PC-88   | Directory with the PC-8801MC ROM set (required for `PC8801MC`)                                                                                           | -                 |
 | `--pc88va-roms <PATH>`       | PC-88VA | Directory with the PC-88VA2 ROM set (required for `PC88VA2`)                                                                                             | -                 |
-| `--pc60-roms <PATH>`         | PC-6000 | Directory with the PC-6000 ROM set (required for the PC-6000 targets)                                                                                    | -                 |
-| `--pc60-cart <PATH>`         | PC-6000 | Cartridge ROM image to insert                                                                                                                            | -                 |
-| `--pc60-cass <PATH>`         | PC-6000 | Cassette tape image to insert (`.cas`, `.p6`, `.p6t`)                                                                                                    | -                 |
-| `--pc60-phase <0-3>`         | PC-6000 | Initial composite artifact-color phase; swaps the fake-color pair Mode 4 titles rely on.                                                                 | `0`               |
+| `--pc6000-roms <PATH>`       | PC-6000 | Directory with the PC-6000 ROM set (required for the PC-6000 targets)                                                                                    | -                 |
+| `--pc6000-phase <0-3>`       | PC-6000 | Initial composite artifact-color phase; swaps the fake-color pair Mode 4 titles rely on.                                                                 | `0`               |
 | `--fdd1 <PATH>`              | All     | Floppy disk image for drive 1 (repeatable)                                                                                                               | -                 |
 | `--fdd2 <PATH>`              | All     | Floppy disk image for drive 2 (repeatable)                                                                                                               | -                 |
 | `--hdd1 <PATH>`              | All     | Hard disk image for hard disk drive 1                                                                                                                    | -                 |
 | `--hdd2 <PATH>`              | All     | Hard disk image for hard disk drive 2                                                                                                                    | -                 |
 | `--cdrom <PATH>`             | PC-9821 | CD-ROM disc image .cue or .ccd file (repeatable)                                                                                                         | -                 |
+| `--cartridge <PATH>`         | PC-6000 | Cartridge ROM image to insert                                                                                                                            | -                 |
+| `--cassette <PATH>`          | PC-6000 | Cassette tape image to insert (`.cas`, `.p6`, `.p6t`)                                                                                                    | -                 |
 | `--audio-volume <FLOAT>`     | All     | Audio volume 0.0-1.0                                                                                                                                     | `1.0`             |
 | `--aspect-mode <MODE>`       | All     | Display aspect mode: `4:3` or `1:1`                                                                                                                      | `4:3`             |
 | `--crt <on\|off>`            | All     | Enable the CRT effect. Not available when using the legacy backend.                                                                                      | `on`              |
@@ -394,7 +394,7 @@ through bank-switched 8 KiB paging.
 Every model except the PC-6001 adds the uPD7752 voice synthesizer. The PC-6601 and
 PC-6601SR have a built-in floppy drive driven directly by the main CPU.
 
-Cartridge and cassette images can be inserted with `--pc60-cart` and `--pc60-cass`
+Cartridge and cassette images can be inserted with `--cartridge` and `--cassette`
 (`.cas`, `.p6`, `.p6t`); the floppy drives use the shared `--fdd1` / `--fdd2`
 options. Like the PC-8801MC, none of these targets have HLE firmware and they require
 a real ROM set (see [ROM set](#rom-set-3)).
@@ -403,14 +403,14 @@ a real ROM set (see [ROM set](#rom-set-3)).
 
 | Option                 | Description                                   | Default |
 |------------------------|-----------------------------------------------|---------|
-| `--pc60-roms <PATH>`   | Directory with the PC-6000 ROM set (required) | -       |
-| `--pc60-cart <PATH>`   | Cartridge ROM image to insert                 | -       |
-| `--pc60-cass <PATH>`   | Cassette tape image (`.cas`, `.p6`, `.p6t`)   | -       |
-| `--pc60-phase <0-3>`   | Initial composite artifact-color phase        | `0`     |
+| `--pc6000-roms <PATH>` | Directory with the PC-6000 ROM set (required) | -       |
+| `--cartridge <PATH>`   | Cartridge ROM image to insert                 | -       |
+| `--cassette <PATH>`    | Cassette tape image (`.cas`, `.p6`, `.p6t`)   | -       |
+| `--pc6000-phase <0-3>` | Initial composite artifact-color phase        | `0`     |
 
 ### ROM set
 
-The PC-6000 targets need a real ROM set, pointed to by `--pc60-roms`. ROMs are
+The PC-6000 targets need a real ROM set, pointed to by `--pc6000-roms`. ROMs are
 identified by their BLAKE3 content hash rather than by file name, so any dump layout
 works regardless of how the files are named. Each model requires its boot ROM (BASIC
 or, on the SR models, the system ROM) and its base character generator; the kanji,
