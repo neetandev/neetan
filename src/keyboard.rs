@@ -230,7 +230,7 @@ impl KeyMap {
 }
 
 pub(crate) struct KeyboardForwardingState {
-    gui_modifier_active: bool,
+    shortcut_modifier_active: bool,
     guest_pressed_pc98_scancodes: [Option<u8>; Scancode::COUNT],
     pending_pressed_pc98_scancode: Option<u8>,
     pending_released_pc98_scancodes: Vec<u8>,
@@ -239,7 +239,7 @@ pub(crate) struct KeyboardForwardingState {
 impl KeyboardForwardingState {
     pub(crate) fn new() -> Self {
         Self {
-            gui_modifier_active: false,
+            shortcut_modifier_active: false,
             guest_pressed_pc98_scancodes: [None; Scancode::COUNT],
             pending_pressed_pc98_scancode: None,
             pending_released_pc98_scancodes: Vec::with_capacity(Scancode::COUNT),
@@ -249,7 +249,7 @@ impl KeyboardForwardingState {
     pub(crate) fn handle_key_down(
         &mut self,
         scancode: Option<Scancode>,
-        gui_modifier_active: bool,
+        shortcut_modifier_active: bool,
         shift_held: bool,
         ctrl_held: bool,
         repeat: bool,
@@ -261,12 +261,12 @@ impl KeyboardForwardingState {
             return;
         }
 
-        if gui_modifier_active && !self.gui_modifier_active {
+        if shortcut_modifier_active && !self.shortcut_modifier_active {
             self.release_all_guest_keys();
         }
-        self.gui_modifier_active = gui_modifier_active;
+        self.shortcut_modifier_active = shortcut_modifier_active;
 
-        if self.gui_modifier_active {
+        if self.shortcut_modifier_active {
             return;
         }
 
@@ -446,7 +446,6 @@ const fn build_default_map() -> [u8; Scancode::COUNT] {
         (NumLock, 0x72),
         (LAlt, 0x73),
         (LCtrl, 0x74),
-        (RCtrl, 0x74),
     ];
 
     let mut map = [0u8; Scancode::COUNT];
@@ -720,7 +719,6 @@ const fn build_pc88_default_map() -> [u8; Scancode::COUNT] {
         (LShift, pc88_cell(8, 6)),
         (RShift, pc88_cell(8, 6)),
         (LCtrl, pc88_cell(8, 7)),
-        (RCtrl, pc88_cell(8, 7)),
         // Matrix row 9: Stop, F1-F5, space, escape.
         (Pause, pc88_cell(9, 0)),
         (F1, pc88_cell(9, 1)),
@@ -1035,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    fn gui_combo_does_not_forward_left_alt_or_function_keys() {
+    fn right_ctrl_combo_does_not_forward_left_alt_or_function_keys() {
         let mut keyboard_forwarding_state = KeyboardForwardingState::new();
         let key_map = KeyMap::new();
 
@@ -1096,7 +1094,7 @@ mod tests {
     }
 
     #[test]
-    fn gui_activation_releases_guest_keys_that_were_already_held() {
+    fn right_ctrl_activation_releases_guest_keys_that_were_already_held() {
         let mut keyboard_forwarding_state = KeyboardForwardingState::new();
         let key_map = KeyMap::new();
 
@@ -1129,7 +1127,7 @@ mod tests {
     }
 
     #[test]
-    fn forwarding_recovers_after_gui_is_released() {
+    fn forwarding_recovers_after_right_ctrl_is_released() {
         let mut keyboard_forwarding_state = KeyboardForwardingState::new();
         let key_map = KeyMap::new();
 

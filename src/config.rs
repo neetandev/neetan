@@ -60,7 +60,7 @@ Options:
       --pc60-roms <PATH>        Directory with the PC-6000 ROM set (required; PC-6000 only)
       --pc60-cart <PATH>        Cartridge ROM image to insert (PC-6000 only)
       --pc60-cass <PATH>        Cassette tape image to insert (.cas/.p6/.p6t; PC-6000 only)
-      --pc60-phase <0-3>        Initial composite artifact-color phase; cycle with Alt+F3 (PC-6000 only)
+      --pc60-phase <0-3>        Initial composite artifact-color phase; cycle with Right Ctrl + P (PC-6000 only)
       --fdd1 <PATH>             Floppy disk image for drive 1 (repeatable)
       --fdd2 <PATH>             Floppy disk image for drive 2 (repeatable)
       --hdd1 <PATH>             Hard disk image for drive 1 (SASI or IDE)
@@ -726,7 +726,7 @@ pub struct EmulatorConfig {
     pub pc60_cart: Option<PathBuf>,
     pub pc60_cass: Option<PathBuf>,
     /// Initial composite subcarrier phase select (0..3). Swaps the PC-6001
-    /// artifact-color pair; also cycled at runtime with Alt+F3.
+    /// artifact-color pair; also cycled at runtime with Right Ctrl + P.
     pub pc60_composite_phase: u32,
 }
 

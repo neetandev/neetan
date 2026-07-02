@@ -506,20 +506,20 @@ For example, if your global config sets `machine = PC9801RA` and you run
 
 | Key                | Action                           |
 |--------------------|----------------------------------|
-| Right Ctrl         | Toggle mouse capture             |
-| GUI + Alt + Enter  | Toggle fullscreen                |
-| GUI + Alt + Escape | Quit the emulator                |
-| GUI + Alt + R      | Hard reset                       |
-| GUI + Alt + F      | Fast forward 8x (hold)           |
-| GUI + Alt + F1     | Toggle CRT effect                |
-| GUI + Alt + F2     | Cycle scaling method             |
-| GUI + Alt + F3     | Cycle composite phase (PC-6000)  |
-| GUI + Alt + F9     | Open floppy selector for drive 1 |
-| GUI + Alt + F10    | Open floppy selector for drive 2 |
-| GUI + Alt + F11    | Open CD-ROM selector             |
-| GUI + Alt + F12    | Log HLE DOS memory overview      |
+| Right Ctrl + M     | Toggle mouse capture             |
+| Right Ctrl + Q     | Quit the emulator                |
+| Right Ctrl + Enter | Toggle fullscreen                |
+| Right Ctrl + R     | Hard reset                       |
+| Right Ctrl + F     | Fast forward 8x (hold)           |
+| Right Ctrl + C     | Toggle CRT effect                |
+| Right Ctrl + S     | Cycle scaling method             |
+| Right Ctrl + P     | Cycle composite phase (PC-6000)  |
+| Right Ctrl + 1     | Open floppy selector for drive 1 |
+| Right Ctrl + 2     | Open floppy selector for drive 2 |
+| Right Ctrl + 3     | Open CD-ROM selector             |
 
-(GUI is the Windows / Command key)
+Right Ctrl is reserved as the emulator's shortcut modifier.
+The emulated machine uses Left Ctrl.
 
 ### How do I rebind my keys?
 
@@ -574,7 +574,7 @@ cdrom = disc2.cue
 
 The first image in each list is automatically inserted at startup.
 
-Press `GUI + Alt + F9` (drive 1), `GUI + Alt + F10` (drive 2), or `GUI + Alt + F11` (CD-ROM)
+Press `Right Ctrl + 1` (drive 1), `Right Ctrl + 2` (drive 2), or `Right Ctrl + 3` (CD-ROM)
 to open the image selector and swap disks at runtime.
 
 ## MIDI sound modules
@@ -681,8 +681,8 @@ Limitations:
 
 ### How can I use my mouse?
 
-In games that support a mouse, you first need to capture the mouse pointer via the
-right CTRL key. You can release the mouse pointer by clicking the right CTRL key again.
+In games that support a mouse, you first need to capture the mouse pointer via
+`Right Ctrl + M`. You can release the mouse pointer by pressing `Right Ctrl + M` again.
 
 ### 日本語も分かりますか？
 
