@@ -2,7 +2,7 @@ use softfloat::{ExceptionFlags, Fp80, FpOrdering, Precision, RoundingMode};
 
 use super::{I386, Step};
 
-impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH> {
     pub(super) fn fpu_fninit(&mut self) {
         self.fpu_init();
         self.clk(Self::timing(33, 17));

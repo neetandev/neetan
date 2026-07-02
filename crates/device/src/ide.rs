@@ -121,7 +121,8 @@ impl IdeController {
     /// simultaneously from within the controller.
     pub fn generate_cd_audio_samples(&mut self, volume: f32, output: &mut [f32]) {
         if let Some(ref cdrom) = self.cdrom {
-            self.cd_audio_player.generate_samples(cdrom, volume, output);
+            self.cd_audio_player
+                .generate_samples(cdrom, [volume, volume], output);
         }
     }
 

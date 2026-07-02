@@ -1,7 +1,7 @@
 use super::{CPU_MODEL_386, CPU_MODEL_486, I386, Step};
 use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 
-impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH> {
     pub(super) fn extended_0f(&mut self, bus: &mut impl common::Bus) -> Step {
         let sub = self.fetch(bus);
         if self.lock_prefix {

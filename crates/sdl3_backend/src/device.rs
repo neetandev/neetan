@@ -41,7 +41,7 @@ pub(crate) struct DeviceResources {
 pub(crate) fn create(
     window: &Window,
     vsync_enabled: bool,
-    ga_enabled: bool,
+    large_native_target: bool,
 ) -> Result<DeviceResources> {
     let device = create_device().context("SDL_CreateGPUDeviceWithProperties failed")?;
 
@@ -73,9 +73,9 @@ pub(crate) fn create(
     let linear_sampler = create_sampler(&device, SDL_GPU_FILTER_LINEAR)
         .context("Failed to create linear sampler")?;
 
-    let native_target =
-        create_native_target(&device, ga_enabled).context("Failed to create native target")?;
-    let transfer_buffer = create_transfer_buffer(&device, ga_enabled)
+    let native_target = create_native_target(&device, large_native_target)
+        .context("Failed to create native target")?;
+    let transfer_buffer = create_transfer_buffer(&device, large_native_target)
         .context("Failed to create framebuffer transfer buffer")?;
 
     Ok(DeviceResources {
@@ -222,8 +222,8 @@ fn create_sampler(device: &GpuDevice, filter: SDL_GPUFilter) -> Result<GpuSample
         .map_err(Into::into)
 }
 
-fn create_native_target(device: &GpuDevice, ga_enabled: bool) -> Result<GpuTexture> {
-    let (width, height) = native_target_size(ga_enabled);
+fn create_native_target(device: &GpuDevice, large_native_target: bool) -> Result<GpuTexture> {
+    let (width, height) = native_target_size(large_native_target);
     let info = SDL_GPUTextureCreateInfo {
         r#type: SDL_GPU_TEXTURETYPE_2D,
         format: SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB,
@@ -243,10 +243,13 @@ fn create_native_target(device: &GpuDevice, ga_enabled: bool) -> Result<GpuTextu
         .map_err(Into::into)
 }
 
-fn create_transfer_buffer(device: &GpuDevice, ga_enabled: bool) -> Result<GpuTransferBuffer> {
+fn create_transfer_buffer(
+    device: &GpuDevice,
+    large_native_target: bool,
+) -> Result<GpuTransferBuffer> {
     let info = SDL_GPUTransferBufferCreateInfo {
         usage: SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-        size: native_target_bytes(ga_enabled) as u32,
+        size: native_target_bytes(large_native_target) as u32,
         ..Default::default()
     };
     device

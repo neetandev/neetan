@@ -1,6 +1,6 @@
 use super::I386;
 
-impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH> {
     #[inline(always)]
     pub(super) fn alu_add_byte(&mut self, dst: u8, src: u8) -> u8 {
         let result = dst as u32 + src as u32;

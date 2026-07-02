@@ -5,8 +5,6 @@
 //!
 //! These are system board control registers, not a single chip.
 
-// TODO(pc98-deferred): Validate mode1 bit4 raster behavior against model-specific timing.
-
 /// Mode register 1 (port 0x68) bit 0: attribute select.
 /// 0 = vertical line, 1 = simple graphics (PC-8001 compat).
 /// Ref: undoc98 `io_disp.txt` port 0068h

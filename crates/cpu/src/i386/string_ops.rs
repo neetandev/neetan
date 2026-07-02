@@ -3,7 +3,7 @@ use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 
 type ProbedDwordWrite = (u32, Option<(u32, u32, u32)>);
 
-impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH> {
     #[inline(always)]
     fn string_index_si(&self) -> u32 {
         if self.address_size_override {

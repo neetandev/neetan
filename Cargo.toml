@@ -20,6 +20,7 @@ machine = { path = "crates/machine" }
 machine60 = { path = "crates/machine60" }
 machine88 = { path = "crates/machine88" }
 machine88va = { path = "crates/machine88va" }
+machinetowns = { path = "crates/machinetowns" }
 resampler = { path = "crates/resampler" }
 sdl3 = { path = "crates/sdl3" }
 sdl3_backend = { path = "crates/sdl3_backend" }
@@ -45,8 +46,8 @@ rust-version.workspace = true
 
 [features]
 default = ["mt32", "sc55"]
-mt32 = ["machine/mt32"]
-sc55 = ["machine/sc55"]
+mt32 = ["machine/mt32", "machinetowns/mt32"]
+sc55 = ["machine/sc55", "machinetowns/sc55"]
 tracing = []
 sdl3-build-from-source = ["sdl3/build-from-source"]
 sdl3-use-pkg-config = ["sdl3/use-pkg-config"]
@@ -61,6 +62,7 @@ machine = { workspace = true }
 machine60 = { workspace = true }
 machine88 = { workspace = true }
 machine88va = { workspace = true }
+machinetowns = { workspace = true }
 dos = { workspace = true }
 sdl3 = { workspace = true }
 sdl3_backend = { workspace = true }
@@ -120,6 +122,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.machine88va]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.machinetowns]
 opt-level = 3
 codegen-units = 1
 

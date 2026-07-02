@@ -9,7 +9,7 @@ const PTE_USER: u32 = 0x04;
 const PTE_ACCESSED: u32 = 0x20;
 const PTE_DIRTY: u32 = 0x40;
 
-impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH> {
     #[inline(always)]
     pub(super) fn is_paging_enabled(&self) -> bool {
         self.cr0 & 0x8000_0001 == 0x8000_0001
@@ -34,7 +34,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return Err(Fault);
         }
         if !self.is_paging_enabled() {
-            return Ok(linear & 0x00FF_FFFF);
+            return Ok(linear & Self::physical_address_mask());
         }
 
         let page = linear >> 12;

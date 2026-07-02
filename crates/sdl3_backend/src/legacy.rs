@@ -25,7 +25,7 @@ struct SdlState {
 /// SDL 2D rendering backend.
 pub struct LegacySdlBackend {
     aspect_mode: DisplayAspectMode,
-    ga_enabled: bool,
+    large_native_target: bool,
     state: Option<SdlState>,
     scaling: Scaling,
     /// `SDL_SCALEMODE_PIXELART` was introduced in SDL 3.4.
@@ -34,7 +34,7 @@ pub struct LegacySdlBackend {
 
 impl LegacySdlBackend {
     /// Creates a new SDL graphics engine. The renderer itself is created in `on_resume`.
-    pub fn new(aspect_mode: DisplayAspectMode, ga_enabled: bool) -> Self {
+    pub fn new(aspect_mode: DisplayAspectMode, large_native_target: bool) -> Self {
         let (major, minor, patch) = sdl_version();
         let pixelart_supported = (major, minor) >= (3, 4);
         if !pixelart_supported {
@@ -45,7 +45,7 @@ impl LegacySdlBackend {
 
         Self {
             aspect_mode,
-            ga_enabled,
+            large_native_target,
             state: None,
             scaling: Scaling::Pixelart,
             pixelart_supported,
@@ -80,7 +80,7 @@ impl GraphicsEngine for LegacySdlBackend {
             .set_vsync(vsync_enabled)
             .context("SDL_SetRenderVSync failed")?;
 
-        let (target_width, target_height) = native_target_size(self.ga_enabled);
+        let (target_width, target_height) = native_target_size(self.large_native_target);
         let texture = renderer
             .create_streaming_texture(PixelFormat::Rgba32, target_width, target_height)
             .context("SDL_CreateTexture failed")?;
@@ -126,7 +126,7 @@ impl GraphicsEngine for LegacySdlBackend {
         if let Some(instructions) = render_instructions {
             let width = instructions.width.max(1);
             let height = instructions.height.max(1);
-            let (max_width, max_height) = native_target_size(self.ga_enabled);
+            let (max_width, max_height) = native_target_size(self.large_native_target);
             if width > max_width || height > max_height {
                 panic!("Frame {width}x{height} exceeds backend target {max_width}x{max_height}");
             }

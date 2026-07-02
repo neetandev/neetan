@@ -1,4 +1,5 @@
-//! Neetan, a PC-98 emulator.
+//! Neetan, an emulator for the PC-6001 / PC-6601, PC-8001 / PC-8801, PC-88VA,
+//! PC-9801 / PC-9821 and FM Towns families.
 
 #![deny(unsafe_code)]
 
@@ -282,18 +283,19 @@ fn select_graphics_backend(
     config: &EmulatorConfig,
     window: &mut Window,
 ) -> Result<(Box<dyn GraphicsEngine>, Backend)> {
-    let ga_enabled = config.graphicboard != config::GraphicboardType::None;
+    let large_native_target =
+        config.graphicboard != config::GraphicboardType::None || config.target == Target::Towns;
     match config.backend {
         Backend::Legacy => {
             info!("Using legacy backend");
-            let mut engine = LegacySdlBackend::new(aspect_mode, ga_enabled);
+            let mut engine = LegacySdlBackend::new(aspect_mode, large_native_target);
             engine
                 .on_resume(window, true)
                 .context("Failed to initialize legacy SDL backend")?;
             Ok((Box::new(engine), Backend::Legacy))
         }
         Backend::Modern => {
-            let modern_result = ModernSdlGpuBackend::new(aspect_mode, ga_enabled)
+            let modern_result = ModernSdlGpuBackend::new(aspect_mode, large_native_target)
                 .and_then(|mut engine| engine.on_resume(window, true).map(|()| engine));
 
             match modern_result {
@@ -303,7 +305,7 @@ fn select_graphics_backend(
                 }
                 Err(error) => {
                     warn!("Modern backend unavailable, falling back to legacy backend: {error:#}");
-                    let mut legacy = LegacySdlBackend::new(aspect_mode, ga_enabled);
+                    let mut legacy = LegacySdlBackend::new(aspect_mode, large_native_target);
                     legacy
                         .on_resume(window, true)
                         .context("Failed to initialize legacy backend after fallback")?;
@@ -748,8 +750,16 @@ impl Application {
             GamepadButton::DpadDown => self.gamepad_buttons.down = pressed,
             GamepadButton::DpadLeft => self.gamepad_buttons.left = pressed,
             GamepadButton::DpadRight => self.gamepad_buttons.right = pressed,
+            // Face and shoulder buttons cover the 6-button pad (A/B/C/X/Y/Z);
+            // machines with only two triggers use just A and B.
             GamepadButton::South => self.gamepad_buttons.trigger1 = pressed,
             GamepadButton::East => self.gamepad_buttons.trigger2 = pressed,
+            GamepadButton::West => self.gamepad_buttons.button_c = pressed,
+            GamepadButton::North => self.gamepad_buttons.button_x = pressed,
+            GamepadButton::LeftShoulder => self.gamepad_buttons.button_y = pressed,
+            GamepadButton::RightShoulder => self.gamepad_buttons.button_z = pressed,
+            GamepadButton::Start => self.gamepad_buttons.run = pressed,
+            GamepadButton::Back => self.gamepad_buttons.select = pressed,
             _ => return,
         }
         self.update_joystick();
@@ -1219,6 +1229,7 @@ pub fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<B
         Target::Pc88 => initialize_pc88_machine(config, sample_rate),
         Target::Pc88Va => initialize_pc88va_machine(config, sample_rate),
         Target::Pc60 => initialize_pc60_machine(config, sample_rate),
+        Target::Towns => initialize_towns_machine(config, sample_rate),
     }
 }
 
@@ -1327,6 +1338,136 @@ fn initialize_pc88va_machine(
 
     let mut machine = machine88va::Pc88VaMachine::new(model, roms);
     machine.set_host_local_time_fn(host_local_time_bcd);
+    Ok(Box::new(machine))
+}
+
+fn initialize_towns_machine(
+    config: &EmulatorConfig,
+    _sample_rate: u32,
+) -> Result<Box<dyn Machine>> {
+    let model = config.towns_model;
+    info!("Selected machine model {model}");
+
+    let rom_dir = config.towns_roms.as_ref().ok_or_else(|| {
+        StringError("FM Towns requires a ROM directory (--towns-roms <DIR>)".into())
+    })?;
+
+    let roms = machinetowns::load_rom_set(model, rom_dir).map_err(|error| {
+        StringError(format!(
+            "Failed to load FM Towns ROM set from {}: {error}",
+            rom_dir.display()
+        ))
+    })?;
+
+    let boot_device = match config.boot_device {
+        machine::BootDevice::Auto => machinetowns::TownsBootDevice::Auto,
+        machine::BootDevice::Fdd1 | machine::BootDevice::Fdd2 => {
+            machinetowns::TownsBootDevice::Floppy
+        }
+        machine::BootDevice::Hdd1 | machine::BootDevice::Hdd2 => machinetowns::TownsBootDevice::Hdd,
+        machine::BootDevice::Dos => {
+            warn!("'dos' boot is not available for the FM Towns; using the default boot device");
+            machinetowns::TownsBootDevice::Auto
+        }
+    };
+
+    match model {
+        machinetowns::TownsModel::FmTownsIICx => {
+            build_towns_machine::<{ cpu::CPU_MODEL_386 }>(config, model, roms, boot_device)
+        }
+        machinetowns::TownsModel::FmTownsIIMx => {
+            build_towns_machine::<{ cpu::CPU_MODEL_486 }>(config, model, roms, boot_device)
+        }
+    }
+}
+
+fn build_towns_machine<const CPU_MODEL: u8>(
+    config: &EmulatorConfig,
+    model: machinetowns::TownsModel,
+    roms: machinetowns::LoadedRoms,
+    boot_device: machinetowns::TownsBootDevice,
+) -> Result<Box<dyn Machine>> {
+    let cpu_name = if CPU_MODEL == cpu::CPU_MODEL_386 {
+        "i386DX"
+    } else {
+        "i486DX2"
+    };
+    info!(
+        "FM Towns configured: {} MHz {cpu_name}",
+        model.cpu_clock_hz(config.cpu_mode) / 1_000_000,
+    );
+
+    let mut machine = machinetowns::TownsMachine::<CPU_MODEL>::new(model, config.cpu_mode, roms);
+    machine.set_host_local_time_fn(host_local_time_bcd);
+    machine.set_boot_device(boot_device);
+    machine.set_pad_type(config.towns_pad);
+    machine.set_cdrom_compatibility_timing(config.cdrom_compat);
+
+    // SCSI hard disks: hdd1 -> SCSI ID 0, hdd2 -> SCSI ID 1.
+    for (drive, hdd_path) in [&config.hdd1, &config.hdd2].into_iter().enumerate() {
+        let Some(hdd_path) = hdd_path else { continue };
+        let data = std::fs::read(hdd_path)
+            .with_context(|| format!("Failed to read HDD image from {}", hdd_path.display()))?;
+        let image = load_hdd_image(hdd_path, &data)
+            .with_context(|| format!("Failed to parse HDD image from {}", hdd_path.display()))?;
+        ensure!(
+            image.format == device::disk::HddFormat::Raw,
+            "FM Towns hard disks must be raw images (.h0-.h4); {} is {}",
+            hdd_path.display(),
+            image.format_name(),
+        );
+        info!(
+            "Inserted FM Towns HDD (SCSI ID {drive}): {} sectors from {}",
+            image.geometry.total_sectors(),
+            hdd_path.display()
+        );
+        machine.insert_hdd(drive, image, Some(hdd_path.clone()));
+    }
+
+    match config.midi {
+        config::MidiDevice::None => {}
+        config::MidiDevice::Mt32 => {
+            if let Some(ref mt32_rom_dir) = config.mt32_roms {
+                #[cfg(feature = "mt32")]
+                {
+                    match machine.install_mt32(mt32_rom_dir) {
+                        Ok(()) => info!("Loaded MT-32 sound module (munt)"),
+                        Err(error) => warn!("MT-32 unavailable: {error}"),
+                    }
+                }
+                #[cfg(not(feature = "mt32"))]
+                {
+                    let _ = mt32_rom_dir;
+                    warn!("MT-32 ROM path specified, but MT-32 support was not compiled in");
+                }
+            } else {
+                warn!(
+                    "MIDI device set to MT-32, but no MT-32 ROM directory specified (--mt32-roms)"
+                );
+            }
+        }
+        config::MidiDevice::Sc55 => {
+            if let Some(ref sc55_rom_dir) = config.sc55_roms {
+                #[cfg(feature = "sc55")]
+                {
+                    match machine.install_sc55(sc55_rom_dir) {
+                        Ok(()) => info!("Loaded Nuked-SC55 sound module"),
+                        Err(error) => warn!("SC-55 unavailable: {error}"),
+                    }
+                }
+                #[cfg(not(feature = "sc55"))]
+                {
+                    let _ = sc55_rom_dir;
+                    warn!("SC-55 ROM path specified, but SC-55 support was not compiled in");
+                }
+            } else {
+                warn!(
+                    "MIDI device set to SC-55, but no SC-55 ROM directory specified (--sc55-roms)"
+                );
+            }
+        }
+    }
+
     Ok(Box::new(machine))
 }
 

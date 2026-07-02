@@ -58,6 +58,12 @@ pub trait Tracing {
     fn trace_irq_clear(&mut self, _irq: u8) {}
     /// An IRQ was acknowledged by the CPU.
     fn trace_irq_acknowledge(&mut self, _irq: u8, _vector: u8) {}
+    /// A CD-ROM controller command was issued (opcode plus its parameter queue).
+    fn trace_cd_command(&mut self, _command: u8, _params: &[u8]) {}
+    /// A CD-ROM controller status group was returned to the host.
+    fn trace_cd_status(&mut self, _status: &[u8]) {}
+    /// The CD-ROM controller interrupt line changed (status IRQ / DMA-end IRQ).
+    fn trace_cd_irq(&mut self, _status_irq: bool, _data_end_irq: bool) {}
     /// The BIOS started to execute.
     fn trace_bios_start(&mut self) {}
     /// A BIOS HLE call was dispatched.

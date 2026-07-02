@@ -22,7 +22,7 @@ use crate::{
 /// SDL3 GPU API rendering backend.
 pub struct ModernSdlGpuBackend {
     aspect_mode: DisplayAspectMode,
-    ga_enabled: bool,
+    large_native_target: bool,
     scaling: Scaling,
     state: Option<RenderState>,
 }
@@ -63,7 +63,7 @@ impl ModernSdlGpuBackend {
     ///
     /// Fails if the linked SDL3 library is older than 3.2.0, since the GPU
     /// API was only introduced with 3.2.0.
-    pub fn new(aspect_mode: DisplayAspectMode, ga_enabled: bool) -> Result<Self> {
+    pub fn new(aspect_mode: DisplayAspectMode, large_native_target: bool) -> Result<Self> {
         let (major, minor, patch) = sdl_version();
         if (major, minor) < (3, 2) {
             return Err(Error::Message(common::StringError(format!(
@@ -73,7 +73,7 @@ impl ModernSdlGpuBackend {
 
         Ok(Self {
             aspect_mode,
-            ga_enabled,
+            large_native_target,
             scaling: Scaling::Pixelart,
             state: None,
         })
@@ -101,7 +101,7 @@ impl GraphicsEngine for ModernSdlGpuBackend {
             return Ok(());
         }
 
-        let resources = create_device_resources(window, vsync_enabled, self.ga_enabled)?;
+        let resources = create_device_resources(window, vsync_enabled, self.large_native_target)?;
         let pipeline = pipeline::build(&resources.device, resources.swapchain_format)?;
         let swapchain_is_srgb =
             resources.swapchain_composition == SDL_GPUSwapchainComposition::SDR_LINEAR;
@@ -187,7 +187,7 @@ impl GraphicsEngine for ModernSdlGpuBackend {
             upload_framebuffer(state, &mut command_buffer, source)?;
         }
 
-        let (max_width, max_height) = native_target_size(self.ga_enabled);
+        let (max_width, max_height) = native_target_size(self.large_native_target);
         let scale_mode = scale_mode_for(self.scaling, crt_enabled, composite_enabled);
         let uniforms = PresentUniforms::new(
             (output_width, output_height),
@@ -246,7 +246,7 @@ impl ModernSdlGpuBackend {
     fn frame_source<'a>(&self, instructions: &'a RenderInstructions) -> Result<FrameSource<'a>> {
         let width = instructions.width.max(1);
         let height = instructions.height.max(1);
-        let (max_width, max_height) = native_target_size(self.ga_enabled);
+        let (max_width, max_height) = native_target_size(self.large_native_target);
         if width > max_width || height > max_height {
             return Err(Error::Message(common::StringError(format!(
                 "Frame {width}x{height} exceeds backend target {max_width}x{max_height}"

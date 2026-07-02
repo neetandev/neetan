@@ -36,7 +36,7 @@ impl Default for X87State {
     }
 }
 
-impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH> {
     pub(super) fn fpu_st_phys(&self, i: u8) -> usize {
         let top = ((self.state.fpu.status_word >> 11) & 7) as u8;
         ((top.wrapping_add(i)) & 7) as usize

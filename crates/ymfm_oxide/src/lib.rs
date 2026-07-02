@@ -5,16 +5,17 @@
 //!
 //! ## Ported chips
 //!
-//! Not all chips are ported. We only ported the chips that were used by different sound cards for the PC-98.
+//! Not all chips are ported. We only ported the chips that we use in our emulated machines.
 //!
-//! | Chip   | Family | Features                                  | PC-98 sound card                 |
-//! |--------|--------|-------------------------------------------|----------------------------------|
-//! | YM2203 | OPN    | 3-ch FM + 3-ch SSG                        | PC-9801-26K                      |
-//! | YM2608 | OPNA   | 6-ch stereo FM + SSG + ADPCM-A + ADPCM-B  | PC-9801-86                       |
-//! | YM3526 | OPL    | 9-ch mono FM                              | (YM3812 predecessor, for compat) |
-//! | Y8950  | OPL    | 9-ch mono FM + ADPCM-B                    | Sound Orchestra-V                |
-//! | YM3812 | OPL2   | 9-ch mono FM, 4 waveforms                 | Sound Orchestra                  |
-//! | YMF262 | OPL3   | 18-ch 4-output FM, 8 waveforms, 4-op mode | PC-9801-118, Sound Blaster 16    |
+//! | Chip   | Family | Features                                  |
+//! |--------|--------|-------------------------------------------|
+//! | YM2203 | OPN    | 3-ch FM + 3-ch SSG                        |
+//! | YM2608 | OPNA   | 6-ch stereo FM + SSG + ADPCM-A + ADPCM-B  |
+//! | YMF276 | OPN2   | 6-ch stereo FM + channel-6 DAC            |
+//! | YM3526 | OPL    | 9-ch mono FM                              |
+//! | Y8950  | OPL    | 9-ch mono FM + ADPCM-B                    |
+//! | YM3812 | OPL2   | 9-ch mono FM, 4 waveforms                 |
+//! | YMF262 | OPL3   | 18-ch 4-output FM, 8 waveforms, 4-op mode |
 //!
 //! # Usage
 //!
@@ -67,7 +68,9 @@ use fm::{FmEngine, FmRegisters};
 use opl::{Opl2Registers, Opl3Registers, OplRegisters};
 use opn::{OpnRegisters, OpnaRegisters, SsgResampler};
 use ssg::SsgEngine;
-pub use sys::{YmfmOpnFidelity, YmfmOutput1, YmfmOutput3, YmfmOutput4, YmfmTimerUpdate};
+pub use sys::{
+    YmfmOpnFidelity, YmfmOutput1, YmfmOutput2, YmfmOutput3, YmfmOutput4, YmfmTimerUpdate,
+};
 
 const YM2608_ADPCM_A_ROM_SIZE: usize = 8192;
 static SILENT_ADPCM_MEMORY: [u8; 1] = [0];
@@ -779,6 +782,173 @@ impl Ym2608 {
                 }
             },
         }
+    }
+}
+
+/// Yamaha YMF276 (OPN2L) emulator, the low-power distortion-free member of the
+/// OPN2 family.
+///
+/// Six-channel stereo FM synthesis built on the same register core as the
+/// YM2608 (OPNA), but without SSG or ADPCM. Channel 6 can be switched to an
+/// 8-bit DAC. Unlike the YM2612/YM3438, the YMF276 drives an external DAC and so
+/// has none of the YM2612 "ladder" crossover distortion: the six channels are
+/// summed and scaled cleanly.
+pub struct Ymf276 {
+    fm: FmEngine<OpnaRegisters>,
+    address: u16,
+    dac_data: u16,
+    dac_enable: bool,
+}
+
+impl Ymf276 {
+    /// Creates a new YMF276 instance.
+    pub fn new() -> Self {
+        Self {
+            fm: FmEngine::new(),
+            address: 0,
+            dac_data: 0,
+            dac_enable: false,
+        }
+    }
+
+    /// Resets the chip to its initial power-on state.
+    pub fn reset(&mut self) {
+        self.fm.reset();
+        self.dac_data = 0;
+        self.dac_enable = false;
+    }
+
+    /// Returns the output sample rate in Hz for the given `input_clock` in Hz.
+    ///
+    /// The OPN2 has a fixed prescaler of 6 and 24 operators, so the native FM
+    /// rate is `input_clock / (prescale * 24)`.
+    pub fn sample_rate(&self, input_clock: u32) -> u32 {
+        input_clock / (self.fm.clock_prescale() * 24)
+    }
+
+    /// Reads the chip status register.
+    pub fn read_status(&mut self, busy: bool) -> u8 {
+        let mut result =
+            self.fm.status() & (OpnaRegisters::STATUS_TIMERA | OpnaRegisters::STATUS_TIMERB);
+        if busy {
+            result |= OpnaRegisters::STATUS_BUSY;
+        }
+        result
+    }
+
+    /// Reads data from the currently addressed register. The OPN2 data port is
+    /// write-only.
+    pub fn read_data(&mut self) -> u8 {
+        0
+    }
+
+    /// Latches the register address for the low bank.
+    pub fn write_address(&mut self, data: u8) -> u32 {
+        self.address = data as u16;
+        0
+    }
+
+    /// Writes a value to the previously addressed register (low bank).
+    pub fn write_data(&mut self, data: u8) -> u32 {
+        // Ignore if paired with the upper address (port 1 data to port 0).
+        if helpers::bit(self.address as u32, 8) != 0 {
+            return 0;
+        }
+
+        match self.address {
+            // 2A: DAC data (most significant 8 bits).
+            0x2A => self.dac_data = (self.dac_data & !0x1FE) | (((data ^ 0x80) as u16) << 1),
+            // 2B: DAC enable (bit 7).
+            0x2B => self.dac_enable = helpers::bit(data as u32, 7) != 0,
+            // 2C: test register; bit 3 is the low DAC bit.
+            0x2C => self.dac_data = (self.dac_data & !1) | helpers::bit(data as u32, 3) as u16,
+            // 00-29, 2D-FF: write to FM.
+            _ => self.fm.write(self.address, data),
+        }
+
+        32 * self.fm.clock_prescale()
+    }
+
+    /// Latches the register address for the high bank.
+    pub fn write_address_hi(&mut self, data: u8) -> u32 {
+        self.address = 0x100 | data as u16;
+        0
+    }
+
+    /// Writes a value to the previously addressed register (high bank).
+    pub fn write_data_hi(&mut self, data: u8) -> u32 {
+        // Ignore if paired with the lower address (port 0 data to port 1).
+        if helpers::bit(self.address as u32, 8) == 0 {
+            return 0;
+        }
+
+        // 100-1FF: write to FM.
+        self.fm.write(self.address, data);
+        32 * self.fm.clock_prescale()
+    }
+
+    /// Generates audio samples into `output` using the clean output path.
+    ///
+    /// Each sample is a stereo `[FM_L, FM_R]` pair.
+    pub fn generate(&mut self, output: &mut [YmfmOutput2]) {
+        for out in output.iter_mut() {
+            self.fm.clock(OpnaRegisters::ALL_CHANNELS);
+
+            let mut data = [0i32; 2];
+            if !self.dac_enable {
+                // DAC disabled: all six channels sum together.
+                self.fm
+                    .output_mut(&mut data, 5, 256, OpnaRegisters::ALL_CHANNELS);
+            } else {
+                // DAC enabled: seed with the DAC value on channel 6, then add
+                // the other five channels. The DAC value is a sign-extended
+                // 9-bit sample.
+                let dac_value = i32::from(((self.dac_data << 7) as i16) >> 7);
+                data[0] = if self.fm.regs.ch_output_0(0x102) != 0 {
+                    dac_value
+                } else {
+                    0
+                };
+                data[1] = if self.fm.regs.ch_output_1(0x102) != 0 {
+                    dac_value
+                } else {
+                    0
+                };
+                self.fm
+                    .output_mut(&mut data, 5, 256, OpnaRegisters::ALL_CHANNELS ^ (1 << 5));
+            }
+
+            // The output is technically multiplexed rather than mixed; average
+            // over the six channels (the external DAC means no discontinuity).
+            out.data[0] = (data[0] * 128) / 6;
+            out.data[1] = (data[1] * 128) / 6;
+        }
+    }
+
+    /// Notifies the chip that the specified timer has expired.
+    pub fn timer_expired(&mut self, timer_id: u32) {
+        self.fm.engine_timer_expired(timer_id);
+    }
+
+    /// Returns and clears the pending update for a timer.
+    pub fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        self.fm.take_timer_update(timer_id)
+    }
+
+    /// Returns and clears the pending IRQ output update.
+    pub fn take_irq_update(&mut self) -> Option<bool> {
+        self.fm.take_irq_update()
+    }
+
+    /// Returns whether the chip IRQ output is currently asserted.
+    pub fn irq_asserted(&self) -> bool {
+        self.fm.irq_asserted()
+    }
+}
+
+impl Default for Ymf276 {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

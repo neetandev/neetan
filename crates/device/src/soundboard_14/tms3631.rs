@@ -15,7 +15,7 @@
 ///
 /// The datasheet's ideal calibration of 1.99936 MHz would produce A4 = 440 Hz
 /// exactly, but real PC-98 boards use the 8 MHz system clock divided by 4,
-/// producing A4 ~ 439.44 Hz (about 0.13% flat). Matches MAME and NP21W.
+/// producing A4 ~ 439.44 Hz (about 0.13% flat).
 pub const TMS3631_FCLK: u32 = 1_996_800;
 
 /// Top-octave TOS divisors from datasheet Table 2 (p. 263).

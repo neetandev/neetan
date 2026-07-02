@@ -1,18 +1,19 @@
 # Neetan (ねーたん)
 
-An emulator for the PC-6001, PC-6601, PC-8001, PC-8801, PC-88VA, PC-9801 and PC-9821
-written in Rust.
+An emulator for the PC-6001, PC-6601, PC-8001, PC-8801, PC-88VA, PC-9801, PC-9821
+and FM Towns written in Rust.
 
 [Game Compatibility](https://github.com/neetandev/neetan/wiki)
 
 ## Supported systems
 
-Neetan emulates four distinct families, selected through the `--machine` option:
+Neetan emulates five distinct families, selected through the `--machine` option:
 
 * PC-9801 / PC-9821 line
 * PC-8001 / PC-8801 line
 * PC-88VA line
 * PC-6001 / PC-6601 line
+* FM Towns line
 
 ### PC-9801 / PC-9821
 
@@ -83,6 +84,24 @@ set supplied via `--pc6000-roms`.
 See [PC-6001 / PC-6601 systems](#pc-6001--pc-6601-systems) for the ROM set and
 platform-specific options.
 
+### FM Towns
+
+Neetan emulates two FM Towns targets, both 32-bit machines built around the shared
+Towns chipset:
+
+| Machine        | `--machine`   | CPU      | CPU Speed   | Sound              | CD-ROM |
+|----------------|---------------|----------|-------------|--------------------|--------|
+| FM Towns II CX | `FMTownsIICX` | 80386DX  | 16 / 20 MHz | YMF276 OPN2 + PCM  | Yes    |
+| FM Towns II MX | `FMTownsIIMX` | 80486DX2 | 33 / 66 MHz | YMF276 OPN2 + PCM  | Yes    |
+
+Sound is the built-in YMF276 (OPN2) FM synthesizer alongside the RF5C68 PCM sound
+source. Both targets have a built-in CD-ROM drive and support the 2-button and
+6-button Towns game pads via `--towns-pad`. Like the PC-8801MC they have no HLE
+firmware and require a real ROM set, supplied via `--towns-roms`.
+
+See [FM Towns systems](#fm-towns-systems) for the ROM set and platform-specific
+options.
+
 ## Usage
 
 ```bash
@@ -94,59 +113,67 @@ neetan <COMMAND>
 
 The `System` column shows where an option applies: `All` (every family), `PC-98`
 (PC-9801 / PC-9821 only), `PC-9821` (PC-9821 only), `PC-88` (PC-8001 / PC-8801
-only), `PC-88VA` (PC-88VA only), or `PC-6000` (PC-6001 / PC-6601 only). Options that
-apply to one family are ignored on the others.
+only), `PC-88VA` (PC-88VA only), `PC-6000` (PC-6001 / PC-6601 only), or `FM Towns`
+(FM Towns only). Options that apply to one family are ignored on the others.
 
-| Option                       | System  | Description                                                                                                                                              | Default           |
-|------------------------------|---------|----------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------|
-| `-c, --config <PATH>`        | All     | Load configuration from file                                                                                                                             | -                 |
-| `--machine <TYPE>`           | All     | `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821AS`, `PC9821AP`, `PC8801MC`, `PC88VA2`, `PC6001`, `PC6001MK2`, `PC6601`, `PC6001MK2SR`, `PC6601SR` | `PC9801RA`        |
-| `--cpu-mode <MODE>`          | All     | CPU speed mode: `low` or `high` (PC-88 default derives from the boot mode)                                                                               | `high` (PC-98)    |
-| `--boot-mode <MODE>`         | PC-88   | BASIC boot mode: `v1s`, `v1h`, `v2`, `n`, `n80`, `n80sr`                                                                                                 | `v2`              |
-| `--pc88-monitor <MODE>`      | PC-88   | Monitor timing: `auto`, `15k`, `24k`                                                                                                                     | `auto`            |
-| `--pc88-memory-wait <MODE>`  | PC-88   | Memory wait: `fast` or `compatible`                                                                                                                      | derives from mode |
-| `--pc88-8mhz-wait <MODE>`    | PC-88   | 8 MHz wait: `fast` or `compatible`                                                                                                                       | `fast`            |
-| `--pc88-roms <PATH>`         | PC-88   | Directory with the PC-8801MC ROM set (required for `PC8801MC`)                                                                                           | -                 |
-| `--pc88va-roms <PATH>`       | PC-88VA | Directory with the PC-88VA2 ROM set (required for `PC88VA2`)                                                                                             | -                 |
-| `--pc6000-roms <PATH>`       | PC-6000 | Directory with the PC-6000 ROM set (required for the PC-6000 targets)                                                                                    | -                 |
-| `--pc6000-phase <0-3>`       | PC-6000 | Initial composite artifact-color phase; swaps the fake-color pair Mode 4 titles rely on.                                                                 | `0`               |
-| `--fdd1 <PATH>`              | All     | Floppy disk image for drive 1 (repeatable)                                                                                                               | -                 |
-| `--fdd2 <PATH>`              | All     | Floppy disk image for drive 2 (repeatable)                                                                                                               | -                 |
-| `--hdd1 <PATH>`              | All     | Hard disk image for hard disk drive 1                                                                                                                    | -                 |
-| `--hdd2 <PATH>`              | All     | Hard disk image for hard disk drive 2                                                                                                                    | -                 |
-| `--cdrom <PATH>`             | PC-9821 | CD-ROM disc image .cue or .ccd file (repeatable)                                                                                                         | -                 |
-| `--cartridge <PATH>`         | PC-6000 | Cartridge ROM image to insert                                                                                                                            | -                 |
-| `--cassette <PATH>`          | PC-6000 | Cassette tape image to insert (`.cas`, `.p6`, `.p6t`)                                                                                                    | -                 |
-| `--audio-volume <FLOAT>`     | All     | Audio volume 0.0-1.0                                                                                                                                     | `1.0`             |
-| `--aspect-mode <MODE>`       | All     | Display aspect mode: `4:3` or `1:1`                                                                                                                      | `4:3`             |
-| `--crt <on\|off>`            | All     | Enable the CRT effect. Not available when using the legacy backend.                                                                                      | `on`              |
-| `--scaling <MODE>`           | All     | Scaling method: `nearest`, `bilinear`, `pixelart`                                                                                                        | `pixelart`        |
-| `--backend <BACKEND>`        | All     | Rendering backend: `modern` or `legacy`                                                                                                                  | `modern`          |
-| `--window-mode <MODE>`       | All     | Window mode: `windowed` or `fullscreen`                                                                                                                  | `windowed`        |
-| `--force-gdc-clock <2.5\|5>` | PC-98   | Force GDC clock to 2.5 or 5 MHz. VX and later only                                                                                                       | auto              |
-| `--graphicboard <TYPE>`      | PC-98   | Graphics accelerator board: `none`, `ga1280a`                                                                                                            | `none`            |
-| `--pc98-roms <PATH>`         | PC-98   | Directory with the PC-98 ROM set (BIOS, font, sound), matched by content hash. All ROMs optional                                                         | -                 |
-| `--bios`                     | PC-98   | Boot the real BIOS from `--pc98-roms` instead of the HLE BIOS. Ignored (warns) on PC-9821                                                                | HLE BIOS          |
-| `--soundboard <TYPE>`        | PC-98   | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`                                                                                     | `86+26k`          |
-| `--adpcm-ram <on\|off>`      | PC-98   | ADPCM RAM option for the PC-9801-86                                                                                                                      | `on`              |
-| `--ems <on\|off>`            | PC-98   | Enable EMS expanded memory                                                                                                                               | `on`              |
-| `--xms <on\|off>`            | PC-98   | Enable XMS extended memory                                                                                                                               | `on`              |
-| `--midi <DEVICE>`            | PC-98   | MIDI device: `none`, `mt32`, `sc55`                                                                                                                      | `none`            |
-| `--mt32-roms <PATH>`         | PC-98   | Path to MT-32 ROM directory (requires `mt32` feature)                                                                                                    | -                 |
-| `--sc55-roms <PATH>`         | PC-98   | Path to SC-55 ROM directory (requires `sc55` feature)                                                                                                    | -                 |
-| `--boot-device <DEVICE>`     | All     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `dos`                                                                                               | `auto`            |
-| `--printer <PATH>`           | All     | Output file for printer (must exist)                                                                                                                     | -                 |
-| `--enable-extractor`         | All     | Copy on-screen Japanese text to the system clipboard, one line at a time                                                                                 | off               |
-| `-h, --help`                 | All     | Print help                                                                                                                                               | -                 |
-| `-V, --version`              | All     | Print version                                                                                                                                            | -                 |
+| Option                       | System            | Description                                                                                                                                              | Default           |
+|------------------------------|-------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------|
+| `-c, --config <PATH>`        | All               | Load configuration from file                                                                                                                             | -                 |
+| `--machine <TYPE>`           | All               | Machine type (see the list of values below the table)                                                                                                    | `PC9801RA`        |
+| `--cpu-mode <MODE>`          | All               | CPU speed mode: `low` or `high` (PC-88 default derives from the boot mode)                                                                               | `high` (PC-98)    |
+| `--boot-mode <MODE>`         | PC-88             | BASIC boot mode: `v1s`, `v1h`, `v2`, `n`, `n80`, `n80sr`                                                                                                 | `v2`              |
+| `--pc88-monitor <MODE>`      | PC-88             | Monitor timing: `auto`, `15k`, `24k`                                                                                                                     | `auto`            |
+| `--pc88-memory-wait <MODE>`  | PC-88             | Memory wait: `fast` or `compatible`                                                                                                                      | derives from mode |
+| `--pc88-8mhz-wait <MODE>`    | PC-88             | 8 MHz wait: `fast` or `compatible`                                                                                                                       | `fast`            |
+| `--pc88-roms <PATH>`         | PC-88             | Directory with the PC-8801MC ROM set (required for `PC8801MC`)                                                                                           | -                 |
+| `--pc88va-roms <PATH>`       | PC-88VA           | Directory with the PC-88VA2 ROM set (required for `PC88VA2`)                                                                                             | -                 |
+| `--pc6000-roms <PATH>`       | PC-6000           | Directory with the PC-6000 ROM set (required for the PC-6000 targets)                                                                                    | -                 |
+| `--pc6000-phase <0-3>`       | PC-6000           | Initial composite artifact-color phase; swaps the fake-color pair Mode 4 titles rely on.                                                                 | `0`               |
+| `--towns-roms <PATH>`        | FM Towns          | Directory with the FM Towns ROM set (required for the FM Towns targets)                                                                                  | -                 |
+| `--towns-pad <2\|6>`         | FM Towns          | FM Towns game pad type: `2` (2-button) or `6` (6-button)                                                                                                 | `6`               |
+| `--fdd1 <PATH>`              | All               | Floppy disk image for drive 1 (repeatable)                                                                                                               | -                 |
+| `--fdd2 <PATH>`              | All               | Floppy disk image for drive 2 (repeatable)                                                                                                               | -                 |
+| `--hdd1 <PATH>`              | All               | Hard disk image for hard disk drive 1                                                                                                                    | -                 |
+| `--hdd2 <PATH>`              | All               | Hard disk image for hard disk drive 2                                                                                                                    | -                 |
+| `--cdrom <PATH>`             | PC-9821, FM Towns | CD-ROM disc image .cue or .ccd file (repeatable)                                                                                                         | -                 |
+| `--cdrom-compat <on\|off>`   | FM Towns          | Slow/compatible CD-ROM drive timing                                                                                                                      | `off`             |
+| `--cartridge <PATH>`         | PC-6000           | Cartridge ROM image to insert                                                                                                                            | -                 |
+| `--cassette <PATH>`          | PC-6000           | Cassette tape image to insert (`.cas`, `.p6`, `.p6t`)                                                                                                    | -                 |
+| `--audio-volume <FLOAT>`     | All               | Audio volume 0.0-1.0                                                                                                                                     | `1.0`             |
+| `--aspect-mode <MODE>`       | All               | Display aspect mode: `4:3` or `1:1`                                                                                                                      | `4:3`             |
+| `--crt <on\|off>`            | All               | Enable the CRT effect. Not available when using the legacy backend.                                                                                      | `on`              |
+| `--scaling <MODE>`           | All               | Scaling method: `nearest`, `bilinear`, `pixelart`                                                                                                        | `pixelart`        |
+| `--backend <BACKEND>`        | All               | Rendering backend: `modern` or `legacy`                                                                                                                  | `modern`          |
+| `--window-mode <MODE>`       | All               | Window mode: `windowed` or `fullscreen`                                                                                                                  | `windowed`        |
+| `--force-gdc-clock <2.5\|5>` | PC-98             | Force GDC clock to 2.5 or 5 MHz. VX and later only                                                                                                       | auto              |
+| `--graphicboard <TYPE>`      | PC-98             | Graphics accelerator board: `none`, `ga1280a`                                                                                                            | `none`            |
+| `--pc98-roms <PATH>`         | PC-98             | Directory with the PC-98 ROM set (BIOS, font, sound), matched by content hash. All ROMs optional                                                         | -                 |
+| `--bios`                     | PC-98             | Boot the real BIOS from `--pc98-roms` instead of the HLE BIOS. Ignored (warns) on PC-9821                                                                | HLE BIOS          |
+| `--soundboard <TYPE>`        | PC-98             | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`                                                                                     | `86+26k`          |
+| `--adpcm-ram <on\|off>`      | PC-98             | ADPCM RAM option for the PC-9801-86                                                                                                                      | `on`              |
+| `--ems <on\|off>`            | PC-98             | Enable EMS expanded memory                                                                                                                               | `on`              |
+| `--xms <on\|off>`            | PC-98             | Enable XMS extended memory                                                                                                                               | `on`              |
+| `--midi <DEVICE>`            | PC-98, FM Towns   | MIDI device: `none`, `mt32`, `sc55`                                                                                                                      | `none`            |
+| `--mt32-roms <PATH>`         | PC-98             | Path to MT-32 ROM directory (requires `mt32` feature)                                                                                                    | -                 |
+| `--sc55-roms <PATH>`         | PC-98             | Path to SC-55 ROM directory (requires `sc55` feature)                                                                                                    | -                 |
+| `--boot-device <DEVICE>`     | All               | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `dos`                                                                                               | `auto`            |
+| `--printer <PATH>`           | All               | Output file for printer (must exist)                                                                                                                     | -                 |
+| `--enable-extractor`         | All               | Copy on-screen Japanese text to the system clipboard, one line at a time                                                                                 | off               |
+| `-h, --help`                 | All               | Print help                                                                                                                                               | -                 |
+| `-V, --version`              | All               | Print version                                                                                                                                            | -                 |
+
+The `--machine <TYPE>` values are: `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RA`,
+`PC9821AS`, `PC9821AP`, `PC8801MC`, `PC88VA2`, `PC6001`, `PC6001MK2`, `PC6601`,
+`PC6001MK2SR`, `PC6601SR`, `FMTownsIICX` and `FMTownsIIMX`. The default is
+`PC9801RA`.
 
 ### Commands
 
 `create-fdd <PATH> [OPTIONS]` - Create an empty floppy disk image (D88 format).
 
-| Option          | Description                                      | Default |
-|-----------------|--------------------------------------------------|---------|
-| `--type <TYPE>` | `2hd` (1232 KB), `2dd` (640 KB) or `2d` (320 KB) | `2hd`   |
+| Option          | Description                                                          | Default |
+|-----------------|----------------------------------------------------------------------|---------|
+| `--type <TYPE>` | `2hd` (1232 KB), `2hd144` (1440 KB), `2dd` (640 KB) or `2d` (320 KB) | `2hd`   |
 
 `create-hdd <PATH> [OPTIONS]` - Create an empty hard disk image (HDI format).
 
@@ -439,6 +466,67 @@ file can satisfy more than one slot.
 | `voice66`     | 16 KiB | uPD7752 voice data (PC-6601)      | `PC6601` (optional)                     | `88a747147725fd618668e07744b05f34288b4454698d6182c4db2e680c7b76d0` |
 | `voice68`     | 16 KiB | uPD7752 voice data (SR models)    | `PC6001MK2SR`, `PC6601SR` (optional)    | `8ed4a9a3e9ae2e4aa0fccc0f170081f3f61c09e293812b7973a7ab9c23e22b68` |
 
+## FM Towns systems
+
+Select the FM Towns family with `--machine FMTownsIICX` or `--machine FMTownsIIMX`.
+Both are 32-bit machines sharing the Towns chipset; they differ mainly in CPU and
+clock:
+
+| Machine        | `--machine`   | CPU      | CPU Speed   | Sound              | CD-ROM |
+|----------------|---------------|----------|-------------|--------------------|--------|
+| FM Towns II CX | `FMTownsIICX` | 80386DX  | 16 / 20 MHz | YMF276 OPN2 + PCM  | Yes    |
+| FM Towns II MX | `FMTownsIIMX` | 80486DX2 | 33 / 66 MHz | YMF276 OPN2 + PCM  | Yes    |
+
+For both targets `--cpu-mode low` selects the lower clock and `--cpu-mode high`
+(the default) the higher one: 16 / 20 MHz on the CX and 33 / 66 MHz on the MX.
+The 386 and 486 cores are optimized for emulation speed and most likely run a bit
+fast compared to their real counterparts.
+
+Sound is provided by the built-in YMF276 (OPN2) FM synthesizer and the RF5C68 PCM
+sound source. Both targets have a built-in CD-ROM drive, a SCSI interface, a
+floppy drive, and support the 2-button and 6-button Towns game pads. MIDI sound
+modules can be used just like on the PC-98; see [MIDI sound modules](#midi-sound-modules).
+
+Like the PC-8801MC, the FM Towns targets have no HLE firmware and require a real
+ROM set (see [ROM set](#rom-set-4)).
+
+### Platform options
+
+| Option                     | Description                                                     | Default |
+|----------------------------|-----------------------------------------------------------------|---------|
+| `--towns-roms <PATH>`      | Directory with the FM Towns ROM set (required)                  | -       |
+| `--towns-pad <2\|6>`       | Game pad type: `2` (2-button) or `6` (6-button)                 | `6`     |
+| `--cdrom-compat <on\|off>` | Slow/compatible CD-ROM drive timing                             | `off`   |
+
+CD-ROM disc images are supplied with the shared `--cdrom` option (repeatable), and
+floppy images with `--fdd1` / `--fdd2`.
+
+### ROM set
+
+The FM Towns targets need a real ROM set, pointed to by `--towns-roms`. Both
+targets use the FM Towns II MX ROM dump.
+
+ROMs are identified by their BLAKE3 content hash rather than by file name, so any
+dump layout works regardless of how the files are named. Two sets are accepted.
+
+Merged set:
+
+| File                  | Size     | BLAKE3                                                             |
+|-----------------------|----------|--------------------------------------------------------------------|
+| `fmtownsiimxbios.m79` | 2 MiB    | `f5c2cc7c2876a4b30f320fe6fb721bd32f3ba43bbb9b0b42c398fa6b59d72ce8` |
+| `mytownsmx.rom`       | 32 bytes | `d5dc70e34d072889c28bed51ef3ccaac7f6f3fdd9e448d89297847247a901538` |
+
+Split set:
+
+| File            | Size     | BLAKE3                                                             |
+|-----------------|----------|--------------------------------------------------------------------|
+| `FMT_SYS.ROM`   | 256 KiB  | `fba6e75d9727b6a192bf6b3e351f6ed7ae118162a0f71fea9c825a6b5f143022` |
+| `FMT_DOS.ROM`   | 512 KiB  | `7f07a3c51743b51b02f347251057cfd1bfff9ff718b6c0fd3540e0da77c8a4da` |
+| `FMT_FNT.ROM`   | 256 KiB  | `0c365fb76a886c9f426893949d73390456ed6fc6c83f3109f699b0ded8b1ef24` |
+| `FMT_F20.ROM`   | 512 KiB  | `1dde131510456c9660c2217774853822674459412d8e6f98312fff0ee83ca9a7` |
+| `FMT_DIC.ROM`   | 512 KiB  | `0fbcbecb5b62c8fa4e9a60885f887b0a2cafd680a1174b0f7ddf57f49c65ab60` |
+| `mytownsmx.rom` | 32 bytes | `d5dc70e34d072889c28bed51ef3ccaac7f6f3fdd9e448d89297847247a901538` |
+
 ## Configuration file
 
 Instead of passing all options on the command line, you can use a configuration file with `-c` or `--config`:
@@ -701,6 +789,7 @@ neetan:
 - [MAME](https://www.mamedev.org/) 
 - [MartyPC](https://github.com/dbalsom/martypc)
 - [NP21W](https://simk98.github.io/np21w/)
+- [Tsugaru](https://github.com/captainys/TOWNSEMU)
 - [SingleStepTests](https://github.com/SingleStepTests)
 - [undoc98](https://www.webtech.co.jp/company/doc/undocumented_mem/index.html)
 

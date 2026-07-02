@@ -4,6 +4,11 @@
 //! - [`CPU_MODEL_386`] - Intel 80386DX cycle timings.
 //! - [`CPU_MODEL_486`] - Intel 80486DX cycle timings.
 //!
+//! The physical address bus width is selected via the const generic parameter
+//! `ADDRESS_WIDTH`:
+//! - [`ADDRESS_WIDTH_24`] - 24 external address lines (PC-98 wiring).
+//! - [`ADDRESS_WIDTH_32`] - full 32-bit address bus (FM TOWNS wiring).
+//!
 //! Following references were used to write the emulator:
 //!
 //! - Intel Corporation, "80386 Programmer's Reference Manual".
@@ -37,7 +42,20 @@ pub const CPU_MODEL_386: u8 = 0;
 /// CPU model constant for Intel 80486DX.
 pub const CPU_MODEL_486: u8 = 1;
 
+/// Physical address width constant for a 24-bit address bus (PC-98 wiring).
+pub const ADDRESS_WIDTH_24: u8 = 24;
+/// Physical address width constant for a full 32-bit address bus (FM TOWNS wiring).
+pub const ADDRESS_WIDTH_32: u8 = 32;
+
 const EFLAGS_RESUME_FLAG: u32 = 0x0001_0000;
+const EFLAGS_VIRTUAL_8086_FLAG: u32 = 0x0002_0000;
+const EFLAGS_ALIGNMENT_CHECK_FLAG: u32 = 0x0004_0000;
+
+/// EDX after RESET holds the component identifier and revision (386 PRM 10.1):
+/// DH = 3 for the 386DX, DL = revision. 0x0308 is the D-step.
+const RESET_EDX_386DX: u32 = 0x0000_0308;
+/// EDX after RESET on the 486 (i486 PRM 10.2): 0x0435 identifies an i486DX2-66.
+const RESET_EDX_486DX2: u32 = 0x0000_0435;
 
 /// Marker returned from any 386 primitive that may have raised a CPU exception.
 ///
@@ -91,7 +109,15 @@ enum DataSegmentDecision {
 ///
 /// The const generic `CPU_MODEL` selects the instruction timings and feature set.
 /// Use [`CPU_MODEL_386`] for an 80386DX or [`CPU_MODEL_486`] for an 80486DX.
-pub struct I386<const CPU_MODEL: u8 = { CPU_MODEL_386 }> {
+///
+/// The const generic `ADDRESS_WIDTH` selects the physical address bus width.
+/// Use [`ADDRESS_WIDTH_24`] for the PC-98 wiring (physical addresses are
+/// truncated to 24 bits and reset lands at 000FFFF0) or [`ADDRESS_WIDTH_32`]
+/// for machines with a full 32-bit address bus (reset lands at FFFFFFF0).
+pub struct I386<
+    const CPU_MODEL: u8 = { CPU_MODEL_386 },
+    const ADDRESS_WIDTH: u8 = { ADDRESS_WIDTH_24 },
+> {
     /// Embedded state for save/restore.
     pub state: I386State,
 
@@ -155,26 +181,26 @@ pub struct I386<const CPU_MODEL: u8 = { CPU_MODEL_386 }> {
     shutdown: bool,
 }
 
-impl<const CPU_MODEL: u8> Deref for I386<CPU_MODEL> {
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> Deref for I386<CPU_MODEL, ADDRESS_WIDTH> {
     type Target = I386State;
     fn deref(&self) -> &Self::Target {
         &self.state
     }
 }
 
-impl<const CPU_MODEL: u8> DerefMut for I386<CPU_MODEL> {
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> DerefMut for I386<CPU_MODEL, ADDRESS_WIDTH> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.state
     }
 }
 
-impl<const CPU_MODEL: u8> Default for I386<CPU_MODEL> {
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> Default for I386<CPU_MODEL, ADDRESS_WIDTH> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH> {
     /// Creates a new I386 CPU in its reset state.
     pub fn new() -> Self {
         let mut cpu = Self {
@@ -240,6 +266,33 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         match CPU_MODEL {
             CPU_MODEL_386 => t386,
             CPU_MODEL_486 => t486,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Upper EFLAGS bits (16-31) that are writable on this CPU model: RF and
+    /// VM on the 386DX, plus AC on the 486DX. All other upper bits are
+    /// reserved and always read 0 (neither model implements CPUID, so ID is
+    /// never writable). Software relies on AC being unwritable to tell a 386
+    /// from a 486.
+    #[inline(always)]
+    const fn eflags_upper_writable() -> u32 {
+        match CPU_MODEL {
+            CPU_MODEL_386 => EFLAGS_RESUME_FLAG | EFLAGS_VIRTUAL_8086_FLAG,
+            CPU_MODEL_486 => {
+                EFLAGS_RESUME_FLAG | EFLAGS_VIRTUAL_8086_FLAG | EFLAGS_ALIGNMENT_CHECK_FLAG
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Mask applied to physical addresses before they reach the bus,
+    /// selected at compile time from `ADDRESS_WIDTH`.
+    #[inline(always)]
+    pub(super) const fn physical_address_mask() -> u32 {
+        match ADDRESS_WIDTH {
+            ADDRESS_WIDTH_24 => 0x00FF_FFFF,
+            ADDRESS_WIDTH_32 => 0xFFFF_FFFF,
             _ => unreachable!(),
         }
     }
@@ -1999,7 +2052,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
         // Load registers from new TSS.
         self.flags.expand(ntss_eflags as u16);
-        self.eflags_upper = ntss_eflags & 0xFFFF_0000;
+        self.eflags_upper = ntss_eflags & Self::eflags_upper_writable();
         self.preserve_resume_flag = true;
         self.regs.set_dword(crate::DwordReg::EAX, ntss_eax);
         self.regs.set_dword(crate::DwordReg::ECX, ntss_ecx);
@@ -2816,20 +2869,39 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 }
 
-impl<const CPU_MODEL: u8> common::Cpu for I386<CPU_MODEL> {
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> common::Cpu for I386<CPU_MODEL, ADDRESS_WIDTH> {
     crate::impl_cpu_run_for!();
 
     fn reset(&mut self) {
         self.state = I386State::default();
-        self.sregs[SegReg32::CS as usize] = 0xFFFF;
+        // With a 24-bit address bus the PC-98 wiring expects the legacy
+        // FFFF:0000 reset (first fetch at 000FFFF0). With the full 32-bit
+        // bus the architectural i386/i486 reset applies: CS selector F000
+        // with descriptor base FFFF0000 and EIP 0000FFF0, so the first
+        // fetch lands at FFFFFFF0. The high CS base persists until the
+        // first far transfer reloads CS.
+        match ADDRESS_WIDTH {
+            ADDRESS_WIDTH_24 => {
+                self.sregs[SegReg32::CS as usize] = 0xFFFF;
+            }
+            ADDRESS_WIDTH_32 => {
+                self.sregs[SegReg32::CS as usize] = 0xF000;
+                self.ip = 0xFFF0;
+            }
+            _ => {
+                unreachable!("Unhandled ADDRESS_WIDTH")
+            }
+        }
         match CPU_MODEL {
             CPU_MODEL_386 => {
                 // 386DX reset: ET=1 (80387 coprocessor present).
                 self.cr0 = 0x0000_0010;
+                self.regs.set_dword(crate::DwordReg::EDX, RESET_EDX_386DX);
             }
             CPU_MODEL_486 => {
                 // 486DX reset: ET=1 (on-chip FPU present). ET is hardwired on 486.
                 self.cr0 = 0x0000_0010;
+                self.regs.set_dword(crate::DwordReg::EDX, RESET_EDX_486DX2);
             }
             _ => {
                 unreachable!("Unhandled CPU_MODEL")
@@ -2843,7 +2915,17 @@ impl<const CPU_MODEL: u8> common::Cpu for I386<CPU_MODEL> {
             let seg = SegReg32::from_index(seg_idx);
             self.set_real_segment_cache(seg, self.sregs[seg as usize]);
         }
-        self.seg_bases[SegReg32::CS as usize] = 0xFFFF0;
+        match ADDRESS_WIDTH {
+            ADDRESS_WIDTH_24 => {
+                self.seg_bases[SegReg32::CS as usize] = 0xFFFF0;
+            }
+            ADDRESS_WIDTH_32 => {
+                self.seg_bases[SegReg32::CS as usize] = 0xFFFF_0000;
+            }
+            _ => {
+                unreachable!("Unhandled ADDRESS_WIDTH")
+            }
+        }
 
         self.prev_ip = 0;
         self.prev_ip_upper = 0;

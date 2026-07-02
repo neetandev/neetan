@@ -5,7 +5,6 @@
 //! the dispatch matches on the whole port value.
 
 mod cgrom;
-mod dmac;
 mod gactrlva;
 mod init;
 mod io_read;
@@ -33,8 +32,8 @@ use device::{
     soundboard_ii::SoundboardII,
     upd765a_fdc::{FloppyController, Upd765aFdc},
     upd4990a_rtc::Upd4990aRtc,
+    upd71071_dma::Upd71071Dma,
 };
-use dmac::Dmac71071;
 use gactrlva::GraphicsAccessVa;
 use keyboard::KeyboardVa;
 use mouse::MouseVa;
@@ -152,7 +151,7 @@ pub struct Pc88VaBus {
     /// 8259 (slave IR3, IRQ 11) instead of the floppy sub-CPU.
     pub(crate) fdc_dma_mode: bool,
     /// uPD71071 DMA controller (channel 2 serves the main-CPU FDC path).
-    pub(crate) dmac: Dmac71071,
+    pub(crate) dmac: Upd71071Dma,
     /// General-purpose timer 3 (TCU) control latch (port 0x1A8): bit 7 MINTEN
     /// enables the periodic slave IRQ 13, bits 0-1 select the 120/60/30/15 Hz rate.
     pub(crate) timer3_ctrl: u8,

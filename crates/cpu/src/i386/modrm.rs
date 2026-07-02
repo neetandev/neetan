@@ -4,7 +4,7 @@ use crate::{ByteReg, DwordReg, SegReg32, WordReg, build_x86_reg_word_table, buil
 static MODRM_REG: [u8; 256] = build_x86_reg_word_table();
 static MODRM_RM: [u8; 256] = build_x86_rm_table();
 
-impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH> {
     #[inline(always)]
     pub(super) fn reg_dword(&self, modrm: u8) -> DwordReg {
         DwordReg::from_index(MODRM_REG[modrm as usize])

@@ -1,4 +1,4 @@
-//! Hardware device emulations for PC-98 peripherals.
+//! Hardware device emulations for the emulated machines' peripherals.
 
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
@@ -10,6 +10,7 @@ pub mod cassette;
 pub mod cd_audio;
 pub mod cdrom;
 pub mod cdrom_pc88;
+pub mod cdrom_towns;
 pub mod cgrom;
 pub mod disk;
 pub mod disk_backend;
@@ -32,7 +33,9 @@ pub mod i8255_system_ppi;
 pub mod i8257_dma;
 pub mod i8259a_pic;
 pub mod ide;
+pub mod mb8877_fdc;
 pub mod mpu_pc98ii;
+pub mod msm58321_rtc;
 #[cfg(feature = "mt32")]
 pub mod mt32;
 pub mod opn_fm;
@@ -40,9 +43,11 @@ pub mod palette;
 pub mod palette_pc88;
 pub mod pegc;
 pub mod printer;
+pub mod rf5c68;
 pub mod sasi;
 #[cfg(feature = "sc55")]
 pub mod sc55;
+pub mod scsi;
 pub mod sdip;
 pub mod sound_blaster_16;
 pub mod soundboard_14;
@@ -52,6 +57,7 @@ pub mod soundboard_ii;
 pub mod upd3301_crtc;
 pub mod upd4990a_rtc;
 pub mod upd52611_crtc;
+pub mod upd71071_dma;
 pub mod upd7220_gdc;
 pub mod upd765a_fdc;
 pub mod upd7752;

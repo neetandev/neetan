@@ -15,8 +15,8 @@
 //! scheduler events and IRQ wiring.
 
 use resampler::{Attenuation, Latency, ResamplerFir};
-pub use ymfm_oxide::Ym2203;
-use ymfm_oxide::{Ym2608, YmfmOpnFidelity, YmfmOutput3, YmfmOutput4, YmfmTimerUpdate};
+pub use ymfm_oxide::{Ym2203, Ymf276};
+use ymfm_oxide::{Ym2608, YmfmOpnFidelity, YmfmOutput2, YmfmOutput3, YmfmOutput4, YmfmTimerUpdate};
 
 const FIDELITY: YmfmOpnFidelity = YmfmOpnFidelity::Max;
 const RESAMPLER_LATENCY: Latency = Latency::Sample64;
@@ -284,6 +284,75 @@ impl OpnChip for Ym2608 {
 
     fn take_irq_update(&mut self) -> Option<bool> {
         Ym2608::take_irq_update(self)
+    }
+}
+
+impl OpnChip for Ymf276 {
+    type Native = YmfmOutput2;
+    // FM TOWNS drives the OPN2 at 8 MHz (internal FM clock 8 MHz / 12).
+    const CLOCK: u32 = 8_000_000;
+    const CHANNELS: usize = 2;
+
+    fn create() -> Self {
+        let mut chip = Ymf276::new();
+        chip.reset();
+        chip
+    }
+
+    fn native_zero() -> Self::Native {
+        YmfmOutput2 { data: [0; 2] }
+    }
+
+    fn sample_rate(&mut self, clock: u32) -> u32 {
+        Ymf276::sample_rate(self, clock)
+    }
+
+    fn generate(&mut self, out: &mut [Self::Native]) {
+        Ymf276::generate(self, out);
+    }
+
+    fn mix_sample(sample: &Self::Native, out: &mut [f32]) {
+        // The OPN2 output already spans the full 16-bit range after its
+        // `* 128 / 6` scaling, so normalize straight to [-1.0, 1.0].
+        const FM_SCALE: f32 = 1.0 / 32768.0;
+        out[0] = sample.data[0] as f32 * FM_SCALE;
+        out[1] = sample.data[1] as f32 * FM_SCALE;
+    }
+
+    fn read_status(&mut self, busy: bool) -> u8 {
+        Ymf276::read_status(self, busy)
+    }
+
+    fn read_data(&mut self) -> u8 {
+        Ymf276::read_data(self)
+    }
+
+    fn write_address(&mut self, value: u8) -> u32 {
+        Ymf276::write_address(self, value)
+    }
+
+    fn write_data(&mut self, value: u8) -> u32 {
+        Ymf276::write_data(self, value)
+    }
+
+    fn write_address_hi(&mut self, value: u8) -> u32 {
+        Ymf276::write_address_hi(self, value)
+    }
+
+    fn write_data_hi(&mut self, value: u8) -> u32 {
+        Ymf276::write_data_hi(self, value)
+    }
+
+    fn timer_expired(&mut self, timer_id: u32) {
+        Ymf276::timer_expired(self, timer_id);
+    }
+
+    fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        Ymf276::take_timer_update(self, timer_id)
+    }
+
+    fn take_irq_update(&mut self) -> Option<bool> {
+        Ymf276::take_irq_update(self)
     }
 }
 

@@ -1228,11 +1228,26 @@ fn post_bios_state_ra() {
     );
 
     // === Memory: Conventional RAM zeroed ===
+    // The BIOS HLE ROM stubs push AX and DX below the IRET frame at 0x7C00.
+    // On the 386 the reset value of DX is the component identifier 0x0308,
+    // so the stub's DX save slot at 0x7BFC keeps that non-zero residue.
     check_true!(
         f,
-        state.memory.ram[0x1000..0x7C00].iter().all(|&b| b == 0)
+        state.memory.ram[0x1000..0x7BFC].iter().all(|&b| b == 0)
             && state.memory.ram[0x7C06..0x1FC00].iter().all(|&b| b == 0),
-        "Conventional RAM zeroed (excluding IRET frame at 0x7C00)"
+        "Conventional RAM zeroed (excluding stack at 0x7BFC..0x7C06)"
+    );
+    check!(
+        f,
+        read_ram_u16(&state.memory.ram, 0x7BFC),
+        0x0308,
+        "Stub DX save slot holds 386 reset component identifier"
+    );
+    check!(
+        f,
+        read_ram_u16(&state.memory.ram, 0x7BFE),
+        0x0000,
+        "Stub AX save slot"
     );
     check!(
         f,
