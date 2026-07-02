@@ -12,6 +12,7 @@ mt32 = ["device/mt32"]
 sc55 = ["device/sc55"]
 
 [dependencies]
+blake3 = { workspace = true }
 common = { workspace = true, features = ["std"] }
 cpu = { workspace = true }
 device = { workspace = true }

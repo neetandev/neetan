@@ -53,6 +53,8 @@ Options:
       --pc88-monitor <MODE>     PC-8801 monitor timing: auto, 15k, 24k (default: auto; PC-8801 only)
       --pc88-memory-wait <MODE> PC-8801 memory wait: fast or compatible (default derives from boot mode)
       --pc88-8mhz-wait <MODE>   PC-8801 8 MHz wait: fast or compatible (default: fast; PC-8801 only)
+      --pc98-roms <PATH>        Directory with the PC-98 ROM set (optional)
+      --bios                    Use the real BIOS from --pc98-roms instead of HLE
       --pc88-roms <PATH>        Directory with the PC-8801MC ROM set (required)
       --pc88va-roms <PATH>      Directory with the PC-88VA2 ROM set (required)
       --pc60-roms <PATH>        Directory with the PC-6000 ROM set (required; PC-6000 only)
@@ -72,8 +74,6 @@ Options:
       --window-mode <MODE>      Window mode: windowed or fullscreen
       --force-gdc-clock <2.5|5> Force GDC clock to 2.5 or 5 MHz (default: auto)
       --graphicboard <TYPE>     Graphics accelerator board: none, ga1280a
-      --bios-rom <PATH>         Path to BIOS ROM file
-      --font-rom <PATH>         Path to font ROM file
       --soundboard <TYPE>       Sound board type: none, 14, 26k, 86, 86+26k, sb16, sb16+26k
       --adpcm-ram <on|off>      ADPCM RAM option for PC-9801-86 (default: on)
       --ems <on|off>            Enable EMS expanded memory (default: on)
@@ -549,6 +549,9 @@ fn parse_args_from(
                 let val = value(&flag)?;
                 config.pc88_8mhz_wait = val.parse::<EightMhzWaitMode>().map_err(StringError)?;
             }
+            "--pc98-roms" => config.pc98_roms = Some(PathBuf::from(value(&flag)?)),
+            "--bios" => config.bios = true,
+            "--debug-bios" => config.debug_bios = Some(PathBuf::from(value(&flag)?)),
             "--pc88-roms" => config.pc88_roms = Some(PathBuf::from(value(&flag)?)),
             "--pc88va-roms" => config.pc88va_roms = Some(PathBuf::from(value(&flag)?)),
             "--pc60-roms" => config.pc60_roms = Some(PathBuf::from(value(&flag)?)),
@@ -585,8 +588,6 @@ fn parse_args_from(
                 let val = value(&flag)?;
                 config.window_mode = val.parse::<WindowMode>().map_err(StringError)?;
             }
-            "--bios-rom" => config.bios_rom = Some(PathBuf::from(value(&flag)?)),
-            "--font-rom" => config.font_rom = Some(PathBuf::from(value(&flag)?)),
             "--soundboard" => {
                 let val = value(&flag)?;
                 config.soundboard = val.parse::<SoundboardType>().map_err(StringError)?;
@@ -696,8 +697,9 @@ pub struct EmulatorConfig {
     pub scaling: ScalingMode,
     pub window_mode: WindowMode,
     pub audio_volume: f32,
-    pub bios_rom: Option<PathBuf>,
-    pub font_rom: Option<PathBuf>,
+    pub pc98_roms: Option<PathBuf>,
+    pub bios: bool,
+    pub debug_bios: Option<PathBuf>,
     pub soundboard: SoundboardType,
     pub adpcm_ram: bool,
     pub force_gdc_clock: Option<ForceGdcClock>,
@@ -750,8 +752,9 @@ impl Default for EmulatorConfig {
             scaling: ScalingMode::Pixelart,
             window_mode: WindowMode::Windowed,
             audio_volume: 1.0,
-            bios_rom: None,
-            font_rom: None,
+            pc98_roms: None,
+            bios: false,
+            debug_bios: None,
             soundboard: SoundboardType::Sb86And26k,
             adpcm_ram: true,
             force_gdc_clock: None,
@@ -840,6 +843,13 @@ fn apply_config_file(
                 Ok(mode) => config.pc88_8mhz_wait = mode,
                 Err(_) => warn!("Unknown PC-88 8 MHz wait in config: {val}"),
             },
+            "pc98-roms" => config.pc98_roms = Some(PathBuf::from(val)),
+            "bios" => match val {
+                "on" => config.bios = true,
+                "off" => config.bios = false,
+                _ => warn!("Invalid bios in config: {val}, expected on or off"),
+            },
+            "debug-bios" => config.debug_bios = Some(PathBuf::from(val)),
             "pc88-roms" => config.pc88_roms = Some(PathBuf::from(val)),
             "pc88va-roms" => config.pc88va_roms = Some(PathBuf::from(val)),
             "pc60-roms" => config.pc60_roms = Some(PathBuf::from(val)),
@@ -875,8 +885,6 @@ fn apply_config_file(
                 Ok(v) => config.audio_volume = v,
                 Err(_) => warn!("Invalid audio-volume in config: {val}"),
             },
-            "bios-rom" => config.bios_rom = Some(PathBuf::from(val)),
-            "font-rom" => config.font_rom = Some(PathBuf::from(val)),
             "soundboard" => match val.parse::<SoundboardType>() {
                 Ok(sb) => config.soundboard = sb,
                 Err(_) => warn!("Unknown soundboard type in config: {val}"),

@@ -10,6 +10,7 @@ mod bus;
 mod config;
 mod machine;
 mod memory;
+mod rom;
 
 use common::MachineModel;
 pub use common::{DosBootStage, NoTracing, SchedulerState, Tracing};
@@ -29,6 +30,7 @@ pub use crate::{
     bus::{BootDevice, Pc9801Bus},
     config::ClockConfig,
     memory::Pc9801MemoryState,
+    rom::{LoadedRoms, RomError, accepted_bios_digests, load_rom_set},
 };
 
 /// CPU state snapshot, discriminated by CPU type.
