@@ -341,7 +341,7 @@ struct Application {
     mouse_left: bool,
     mouse_right: bool,
     mouse_middle: bool,
-    /// Whether relative mouse mode is active (Right Ctrl toggles).
+    /// Whether relative mouse mode is active (Right Ctrl + M toggles).
     mouse_captured: bool,
     /// SDL3 gamepad subsystem, if it initialized. Kept alive while running.
     gamepad_subsystem: Option<GamepadSubsystem>,
@@ -375,7 +375,7 @@ struct Application {
     selector_font_rom: Vec<u8>,
     /// Whether the CRT effect is enabled.
     crt_enabled: bool,
-    /// Composite subcarrier phase select (0..3), cycled with Alt+F3. Swaps the
+    /// Composite subcarrier phase select (0..3), cycled with Right Ctrl + P. Swaps the
     /// PC-6001 artifact-color pair; only used by the composite present path.
     composite_phase: u32,
     /// Scaling method of the native texture.
@@ -581,12 +581,12 @@ impl Application {
             } => {
                 if self.image_selector.is_some() {
                     if !repeat {
-                        self.handle_selector_key(*scancode, keymod.alt_gui());
+                        self.handle_selector_key(*scancode, keymod.rctrl());
                     }
                 } else {
                     self.keyboard_forwarding_state.handle_key_down(
                         *scancode,
-                        keymod.gui(),
+                        keymod.rctrl(),
                         keymod.shift(),
                         keymod.ctrl(),
                         *repeat,
@@ -602,17 +602,13 @@ impl Application {
                         self.update_joystick();
                     }
 
-                    // Right Ctrl toggles mouse capture.
-                    if !repeat
-                        && *scancode == Some(Scancode::RCtrl)
-                        && let Some(w) = window
-                    {
-                        self.toggle_mouse_capture(w);
-                    }
-
-                    if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::Escape) {
+                    if !repeat && keymod.rctrl() && *scancode == Some(Scancode::M) {
+                        if let Some(w) = window {
+                            self.toggle_mouse_capture(w);
+                        }
+                    } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::Q) {
                         self.should_quit = true;
-                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::Return) {
+                    } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::Return) {
                         if let Some(w) = window {
                             if let Err(error) = w.set_fullscreen(!self.fullscreen) {
                                 warn!("Failed to toggle fullscreen: {error}");
@@ -620,21 +616,21 @@ impl Application {
                                 self.fullscreen = !self.fullscreen;
                             }
                         }
-                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F1) {
+                    } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::C) {
                         self.toggle_crt();
-                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F2) {
+                    } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::S) {
                         self.toggle_scaling();
-                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F3) {
+                    } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::P) {
                         self.cycle_composite_phase();
-                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F9) {
+                    } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::_1) {
                         self.open_or_toggle_selector(MediaType::Floppy(0));
-                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F10) {
+                    } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::_2) {
                         self.open_or_toggle_selector(MediaType::Floppy(1));
-                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F11) {
+                    } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::_3) {
                         self.open_or_toggle_selector(MediaType::CdRom);
-                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::R) {
+                    } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::R) {
                         self.hard_reset();
-                    } else if keymod.alt_gui() && *scancode == Some(Scancode::F) {
+                    } else if keymod.rctrl() && *scancode == Some(Scancode::F) {
                         self.set_fast_forward(true);
                     }
                 }
@@ -643,10 +639,7 @@ impl Application {
                 scancode, repeat, ..
             } => {
                 if self.fast_forward
-                    && matches!(
-                        scancode,
-                        Some(Scancode::F) | Some(Scancode::LAlt) | Some(Scancode::RAlt)
-                    )
+                    && matches!(scancode, Some(Scancode::F) | Some(Scancode::RCtrl))
                 {
                     self.set_fast_forward(false);
                 }
@@ -948,7 +941,7 @@ impl Application {
         info!("Scaling set to {}", self.scaling);
     }
 
-    fn handle_selector_key(&mut self, scancode: Option<Scancode>, alt_gui_held: bool) {
+    fn handle_selector_key(&mut self, scancode: Option<Scancode>, rctrl_held: bool) {
         let Some(code) = scancode else { return };
 
         match code {
@@ -993,13 +986,13 @@ impl Application {
             Scancode::Escape => {
                 self.close_selector();
             }
-            Scancode::F9 if alt_gui_held => {
+            Scancode::_1 if rctrl_held => {
                 self.open_or_toggle_selector(MediaType::Floppy(0));
             }
-            Scancode::F10 if alt_gui_held => {
+            Scancode::_2 if rctrl_held => {
                 self.open_or_toggle_selector(MediaType::Floppy(1));
             }
-            Scancode::F11 if alt_gui_held => {
+            Scancode::_3 if rctrl_held => {
                 self.open_or_toggle_selector(MediaType::CdRom);
             }
             _ => {}
