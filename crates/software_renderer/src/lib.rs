@@ -1,4 +1,4 @@
-//! CPU-side software renderer for the PC-98 display.
+//! CPU-side software renderer for the emulated machines' display.
 
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
@@ -19,6 +19,7 @@ mod ga1280a;
 pub mod pc60;
 pub mod pc88;
 mod text_normalizer;
+pub mod towns;
 pub mod va;
 
 pub use ga1280a::{
@@ -29,6 +30,11 @@ pub use pc60::{
     RenderInputsSr, render as render_pc60, render_sr,
 };
 pub use pc88::{GraphicsMode88, Pc88Renderer, RenderInputs88};
+pub use towns::{
+    HighResCursor, RenderInputsTowns, SpriteRenderParams, TOWNS_FRAMEBUFFER_BYTES,
+    TOWNS_SPRITE_LAYER_VRAM_OFFSET, TOWNS_SURFACE_HEIGHT, TOWNS_SURFACE_WIDTH, TownsLayer,
+    TownsRenderer, TownsRendererState, render_sprites, towns_color_to_rgba,
+};
 pub use va::{
     HsyncModeVa, RenderInputsVa, VA_FRAMEBUFFER_BYTES, VA_SURFACE_HEIGHT, VA_SURFACE_WIDTH,
     VaRenderer, VaRendererState,

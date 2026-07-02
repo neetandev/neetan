@@ -1,7 +1,7 @@
 use super::{CPU_MODEL_386, CPU_MODEL_486, I386, Step};
 use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 
-impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH> {
     /// Returns (register_cycles, memory_cycles) for shift/rotate group instructions.
     /// `count_source`: 0 = imm8 (C0/C1), 1 = literal 1 (D0/D1), 2 = CL (D2/D3).
     #[inline(always)]

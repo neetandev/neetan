@@ -296,9 +296,6 @@ pub(crate) fn mcu_jump_rtd(state: &mut Sc55State, operand: u8) {
         if state.mcu.r[7] & 1 != 0 {
             mcu_error_trap(state);
         }
-    } else if operand == 0x1C {
-        // TODO
-        mcu_error_trap(state);
     } else {
         mcu_error_trap(state);
     }

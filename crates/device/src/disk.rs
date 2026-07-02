@@ -1,9 +1,13 @@
 //! Hard disk image format parsers for SASI hard disk emulation.
 //!
-//! Supports three PC-98 HDD image formats:
+//! Supports the PC-98 HDD image formats:
 //! - **NHD** (.nhd): T98Next format with signature and full geometry header.
 //! - **HDI** (.hdi): Anex86 format with compact 32-byte geometry header.
 //! - **THD** (.thd): Original T98 format with minimal header, fixed SASI geometry.
+//!
+//! and the FM Towns HDD image format:
+//! - **RAW** (.h0-.h4): headerless flat 512-byte-sector image; the extension
+//!   digit is the SCSI drive index.
 
 mod hdi;
 mod nhd;
@@ -39,6 +43,15 @@ const THD_HEADS: u8 = 8;
 
 /// THD fixed sector size: 256 bytes.
 const THD_SECTOR_SIZE: u16 = 256;
+
+/// Raw (.h0-.h4) images use a fixed 512-byte sector.
+const RAW_SECTOR_SIZE: u16 = 512;
+
+/// Synthesized head count for the raw-image geometry container.
+const RAW_HEADS: u8 = 8;
+
+/// Synthesized sectors-per-track for the raw-image geometry container.
+const RAW_SECTORS_PER_TRACK: u8 = 32;
 
 /// Legacy SENSE (INT 1Bh Function 04h) return values per SASI HDD type index.
 const SASI_LEGACY_SENSE: [u8; 7] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x04, 0x05];
@@ -116,6 +129,8 @@ pub enum HddFormat {
     Hdi,
     /// Original T98 (.thd).
     Thd,
+    /// Headerless flat 512-byte-sector image (FM Towns .h0-.h4).
+    Raw,
 }
 
 /// A parsed hard disk image.
@@ -144,6 +159,36 @@ impl HddImage {
         }
     }
 
+    /// Loads a headerless flat 512-byte-sector image (.h0-.h4). The SCSI path
+    /// is purely LBA-based; the CHS geometry is synthesized only to fill the
+    /// `HddGeometry` container. The image size must be a nonzero multiple of
+    /// 128 KiB (one synthesized cylinder), which every whole-megabyte image
+    /// satisfies.
+    pub fn from_raw_flat(data: Vec<u8>) -> Result<Self, HddError> {
+        let sectors_per_cylinder = RAW_HEADS as usize * RAW_SECTORS_PER_TRACK as usize;
+        let cylinder_bytes = sectors_per_cylinder * RAW_SECTOR_SIZE as usize;
+        if data.is_empty() || !data.len().is_multiple_of(cylinder_bytes) {
+            return Err(HddError::InvalidGeometry {
+                field: "raw image size (must be a nonzero multiple of 128 KiB)",
+                value: data.len() as u32,
+            });
+        }
+        let cylinders = data.len() / cylinder_bytes;
+        if cylinders > u16::MAX as usize {
+            return Err(HddError::InvalidGeometry {
+                field: "raw image cylinders",
+                value: cylinders as u32,
+            });
+        }
+        let geometry = HddGeometry {
+            cylinders: cylinders as u16,
+            heads: RAW_HEADS,
+            sectors_per_track: RAW_SECTORS_PER_TRACK,
+            sector_size: RAW_SECTOR_SIZE,
+        };
+        Ok(Self::from_raw(geometry, HddFormat::Raw, data))
+    }
+
     /// Returns the raw sector data.
     pub fn data(&self) -> &[u8] {
         &self.data
@@ -155,6 +200,7 @@ impl HddImage {
             HddFormat::Nhd => "NHD",
             HddFormat::Hdi => "HDI",
             HddFormat::Thd => "THD",
+            HddFormat::Raw => "RAW",
         }
     }
 
@@ -249,6 +295,9 @@ fn synthesize_default_header(format: HddFormat, geometry: HddGeometry) -> Vec<u8
             header[0..2].copy_from_slice(&geometry.cylinders.to_le_bytes());
             header
         }
+        // A raw image is the bare sector data with no header, so `to_bytes`
+        // round-trips the file byte-for-byte.
+        HddFormat::Raw => Vec::new(),
     }
 }
 
@@ -303,6 +352,7 @@ pub fn load_hdd_image(path: &Path, data: &[u8]) -> Result<HddImage, HddError> {
         Some("nhd") => HddImage::from_nhd(data),
         Some("hdi") => HddImage::from_hdi(data),
         Some("thd") => HddImage::from_thd(data),
+        Some("h0" | "h1" | "h2" | "h3" | "h4") => HddImage::from_raw_flat(data.to_vec()),
         _ => Err(HddError::UnrecognizedFormat),
     }
 }
@@ -601,6 +651,44 @@ mod tests {
         assert_eq!(hdd.geometry.sectors_per_track, THD_SECTORS_PER_TRACK);
         assert_eq!(hdd.geometry.sector_size, THD_SECTOR_SIZE);
         assert_eq!(hdd.format, HddFormat::Thd);
+    }
+
+    #[test]
+    fn parse_raw_h0_round_trips() {
+        // 1 MiB image: 2048 sectors of 512 bytes = 8 cyls x 8 heads x 32 spt.
+        let mut data = vec![0u8; 1024 * 1024];
+        for lba in 0..(data.len() / 512) {
+            data[lba * 512] = lba as u8;
+        }
+        let hdd = load_hdd_image(Path::new("disk.h0"), &data).unwrap();
+
+        assert_eq!(hdd.format, HddFormat::Raw);
+        assert_eq!(hdd.geometry.sector_size, 512);
+        assert_eq!(hdd.geometry.heads, RAW_HEADS);
+        assert_eq!(hdd.geometry.sectors_per_track, RAW_SECTORS_PER_TRACK);
+        assert_eq!(hdd.geometry.cylinders, 8);
+        assert_eq!(hdd.geometry.total_sectors(), 2048);
+        assert_eq!(hdd.read_sector(5).unwrap()[0], 5);
+        // Headerless: serialization is byte-identical to the source file.
+        assert_eq!(hdd.to_bytes(), data);
+    }
+
+    #[test]
+    fn raw_h1_extension_also_parses() {
+        let data = vec![0u8; 128 * 1024];
+        let hdd = load_hdd_image(Path::new("disk.h1"), &data).unwrap();
+        assert_eq!(hdd.format, HddFormat::Raw);
+        assert_eq!(hdd.geometry.cylinders, 1);
+    }
+
+    #[test]
+    fn raw_rejects_unaligned_size() {
+        // 300 KiB is a multiple of 512 but not of the 128 KiB cylinder size.
+        let data = vec![0u8; 300 * 1024];
+        assert!(matches!(
+            HddImage::from_raw_flat(data),
+            Err(HddError::InvalidGeometry { .. })
+        ));
     }
 
     #[test]

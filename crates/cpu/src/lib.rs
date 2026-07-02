@@ -76,7 +76,9 @@ pub use i286::{
     I286FinishState, I286Flags, I286FlushState, I286PendingBusRequest, I286RepState, I286State,
     I286TimingMilestones, I286TraceBusStatus, I286WarmStartConfig,
 };
-pub use i386::{CPU_MODEL_386, CPU_MODEL_486, I386, I386Flags, I386State};
+pub use i386::{
+    ADDRESS_WIDTH_24, ADDRESS_WIDTH_32, CPU_MODEL_386, CPU_MODEL_486, I386, I386Flags, I386State,
+};
 pub use i8086::{I8086, I8086Flags, I8086State, PC9801F_CPU_CLOCK_5MHZ, PC9801F_CPU_CLOCK_8MHZ};
 pub use vx0::{
     V20, V20_BUS, V30, V30_BUS, V30BusPhase, V30Flags, V30QueueOpTrace, V30State, V30TaCycle, VX0,

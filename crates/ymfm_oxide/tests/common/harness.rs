@@ -1,6 +1,6 @@
 use ymfm_oxide::{
-    Y8950, Ym2203, Ym2608, Ym3526, Ym3812, Ymf262, YmfmOpnFidelity, YmfmOutput1, YmfmOutput3,
-    YmfmOutput4,
+    Y8950, Ym2203, Ym2608, Ym3526, Ym3812, Ymf262, Ymf276, YmfmOpnFidelity, YmfmOutput1,
+    YmfmOutput2, YmfmOutput3, YmfmOutput4,
 };
 
 pub fn write_reg(chip: &mut Ym2203, addr: u8, data: u8) {
@@ -202,6 +202,93 @@ pub fn add_ssg_bg_2203(chip: &mut Ym2203) {
 pub fn add_fm_bg_2203(chip: &mut Ym2203) {
     setup_ym2203_simple_tone(chip, 2, 7, 0);
     key_on_2203(chip, 2);
+}
+
+// --- OPN2 (YMF276) helpers ---
+
+pub fn write_reg_ymf276(chip: &mut Ymf276, addr: u8, data: u8) {
+    chip.write_address(addr);
+    chip.write_data(data);
+}
+
+pub fn write_reg_ymf276_hi(chip: &mut Ymf276, addr: u8, data: u8) {
+    chip.write_address_hi(addr);
+    chip.write_data_hi(data);
+}
+
+pub fn generate_2(chip: &mut Ymf276, count: usize) -> Vec<[i32; 2]> {
+    let mut output = vec![YmfmOutput2 { data: [0; 2] }; count];
+    chip.generate(&mut output);
+    output.iter().map(|s| s.data).collect()
+}
+
+pub fn assert_samples_2(actual: &[[i32; 2]], expected: &[[i32; 2]]) {
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "sample count mismatch: got {}, expected {}",
+        actual.len(),
+        expected.len()
+    );
+    for (i, (got, exp)) in actual.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(
+            got, exp,
+            "sample {i} mismatch: got {got:?}, expected {exp:?}"
+        );
+    }
+}
+
+pub fn setup_ymf276() -> Ymf276 {
+    let mut chip = Ymf276::new();
+    chip.reset();
+    chip
+}
+
+/// A simple 4-operator tone on the given channel (0-5), routed to the correct
+/// register bank (channels 0-2 low, 3-5 high).
+pub fn setup_ymf276_simple_tone(chip: &mut Ymf276, channel: u8, algorithm: u8, feedback: u8) {
+    let fb_algo = (feedback << 3) | (algorithm & 0x07);
+    if channel < 3 {
+        write_reg_ymf276(chip, 0xB0 + channel, fb_algo);
+        for op_offset in [0x00, 0x04, 0x08, 0x0C] {
+            let reg_base = channel + op_offset;
+            write_reg_ymf276(chip, 0x30 + reg_base, 0x01);
+            write_reg_ymf276(chip, 0x40 + reg_base, 0x00);
+            write_reg_ymf276(chip, 0x50 + reg_base, 0x1F);
+            write_reg_ymf276(chip, 0x60 + reg_base, 0x00);
+            write_reg_ymf276(chip, 0x70 + reg_base, 0x00);
+            write_reg_ymf276(chip, 0x80 + reg_base, 0x0F);
+            write_reg_ymf276(chip, 0x90 + reg_base, 0x00);
+        }
+        write_reg_ymf276(chip, 0xA4 + channel, 0x22);
+        write_reg_ymf276(chip, 0xA0 + channel, 0x69);
+        write_reg_ymf276(chip, 0xB4 + channel, 0xC0);
+    } else {
+        let ch = channel - 3;
+        write_reg_ymf276_hi(chip, 0xB0 + ch, fb_algo);
+        for op_offset in [0x00, 0x04, 0x08, 0x0C] {
+            let reg_base = ch + op_offset;
+            write_reg_ymf276_hi(chip, 0x30 + reg_base, 0x01);
+            write_reg_ymf276_hi(chip, 0x40 + reg_base, 0x00);
+            write_reg_ymf276_hi(chip, 0x50 + reg_base, 0x1F);
+            write_reg_ymf276_hi(chip, 0x60 + reg_base, 0x00);
+            write_reg_ymf276_hi(chip, 0x70 + reg_base, 0x00);
+            write_reg_ymf276_hi(chip, 0x80 + reg_base, 0x0F);
+            write_reg_ymf276_hi(chip, 0x90 + reg_base, 0x00);
+        }
+        write_reg_ymf276_hi(chip, 0xA4 + ch, 0x22);
+        write_reg_ymf276_hi(chip, 0xA0 + ch, 0x69);
+        write_reg_ymf276_hi(chip, 0xB4 + ch, 0xC0);
+    }
+}
+
+pub fn key_on_ymf276(chip: &mut Ymf276, channel: u8) {
+    let ch_bits = if channel < 3 {
+        channel
+    } else {
+        channel - 3 + 4
+    };
+    write_reg_ymf276(chip, 0x28, 0xF0 | ch_bits);
 }
 
 pub fn add_ssg_bg_2608(chip: &mut Ym2608) {

@@ -1,6 +1,6 @@
 use super::{I386, Step};
 
-impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH> {
     pub(super) fn fpu_escape(&mut self, opcode: u8, bus: &mut impl common::Bus) -> Step {
         // CR0.EM=1 -> #NM
         if self.cr0 & 0x04 != 0 {

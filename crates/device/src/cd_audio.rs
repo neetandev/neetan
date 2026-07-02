@@ -167,10 +167,10 @@ impl CdAudioPlayer {
 
     /// Generates resampled stereo audio and additively mixes it into `output`.
     ///
-    /// `output` is interleaved stereo `[L, R, L, R, ...]`. `volume` scales
-    /// the mixed result. `cd_image` is used to read additional sectors as
-    /// playback advances.
-    pub fn generate_samples(&mut self, cd_image: &CdImage, volume: f32, output: &mut [f32]) {
+    /// `output` is interleaved stereo `[L, R, L, R, ...]`. `volumes` scales
+    /// the mixed result per channel (`[left, right]`). `cd_image` is used to
+    /// read additional sectors as playback advances.
+    pub fn generate_samples(&mut self, cd_image: &CdImage, volumes: [f32; 2], output: &mut [f32]) {
         if self.state != CdAudioState::Playing || output.is_empty() {
             return;
         }
@@ -184,6 +184,7 @@ impl CdAudioPlayer {
                 let needed = output.len() - output_position;
                 let mix_count = available.min(needed);
                 for i in 0..mix_count {
+                    let volume = volumes[(output_position + i) & 1];
                     output[output_position + i] +=
                         self.resample_output[self.resample_output_position + i] * volume;
                 }

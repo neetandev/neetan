@@ -7,6 +7,7 @@ use device::{
     soundboard_ii::SoundboardII,
     upd765a_fdc::{FloppyController, Upd765aFdc},
     upd4990a_rtc::Upd4990aRtc,
+    upd71071_dma::Upd71071Dma,
 };
 use software_renderer::va::VaRenderer;
 
@@ -75,12 +76,12 @@ impl Pc88VaBus {
             resync_until: 0,
             drq_byte_cycles,
             fdc_dma_mode: false,
-            dmac: super::dmac::Dmac71071::new(),
+            dmac: Upd71071Dma::new(),
             timer3_ctrl: 0,
         };
 
         // Compute the reset-default frame timing and arm the frame loop. The
-        // first frame event is the VSYNC phase, mirroring screendispva_setnevent.
+        // first frame event is the VSYNC phase.
         bus.gactrlva.set_single_plane(bus.memory.gmsp_bit() != 0);
 
         let mode = bus.hsyncmode();

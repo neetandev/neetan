@@ -198,8 +198,9 @@ impl Pc88Cdrom {
         let Some(image) = self.image.as_ref() else {
             return;
         };
+        let gained_volume = volume * self.cdda_gain;
         self.audio
-            .generate_samples(image, volume * self.cdda_gain, output);
+            .generate_samples(image, [gained_volume, gained_volume], output);
         if self.audio.state() == CdAudioState::Stopped {
             self.audio_status = AudioStatus::Off;
         }

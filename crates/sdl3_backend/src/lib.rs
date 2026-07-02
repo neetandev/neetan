@@ -18,9 +18,10 @@ pub const PC98_NATIVE_WIDTH: u32 = 640;
 pub const PC98_NATIVE_HEIGHT: u32 = 480;
 /// Size in bytes of the native framebuffer.
 pub const PC98_FRAMEBUFFER_BYTES: u64 = (PC98_NATIVE_WIDTH * PC98_NATIVE_HEIGHT * 4) as u64;
-/// Maximum GA rendering target width in pixels.
+/// Maximum large-target width in pixels (covers the PC-88VA GA and the FM Towns
+/// MX 1024x768 high-resolution mode).
 pub const GA_MAX_WIDTH: u32 = 1600;
-/// Maximum GA rendering target height in pixels.
+/// Maximum large-target height in pixels.
 pub const GA_MAX_HEIGHT: u32 = 1024;
 
 /// Backend result type.
@@ -47,8 +48,8 @@ pub struct RenderInstructions<'a> {
 }
 
 /// Returns the backing texture dimensions for a backend configuration.
-pub fn native_target_size(ga_enabled: bool) -> (u32, u32) {
-    if ga_enabled {
+pub fn native_target_size(large_native_target: bool) -> (u32, u32) {
+    if large_native_target {
         (GA_MAX_WIDTH, GA_MAX_HEIGHT)
     } else {
         (PC98_NATIVE_WIDTH, PC98_NATIVE_HEIGHT)
@@ -56,8 +57,8 @@ pub fn native_target_size(ga_enabled: bool) -> (u32, u32) {
 }
 
 /// Returns the backing texture byte length for a backend configuration.
-pub fn native_target_bytes(ga_enabled: bool) -> u64 {
-    let (width, height) = native_target_size(ga_enabled);
+pub fn native_target_bytes(large_native_target: bool) -> u64 {
+    let (width, height) = native_target_size(large_native_target);
     u64::from(width) * u64::from(height) * 4
 }
 

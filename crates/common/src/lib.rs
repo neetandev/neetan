@@ -1,7 +1,7 @@
 //! Core library for commonly used functionality and traits.
 //!
-//! Defines the fundamental [`Bus`] and [`Cpu`] traits that all PC-98 machine
-//! model implementations must satisfy. The traits are designed for static
+//! Defines the fundamental [`Bus`] and [`Cpu`] traits that all machine model
+//! implementations must satisfy, across every emulated family. The traits are designed for static
 //! dispatch: each concrete machine model wires its specific CPU and bus types
 //! together at compile time.
 
@@ -1125,10 +1125,22 @@ pub struct JoystickState {
     pub left: bool,
     /// Right direction held.
     pub right: bool,
-    /// Primary trigger (button 1) held.
+    /// Primary trigger (button 1 / A) held.
     pub trigger1: bool,
-    /// Secondary trigger (button 2) held.
+    /// Secondary trigger (button 2 / B) held.
     pub trigger2: bool,
+    /// Button C held (6-button pad).
+    pub button_c: bool,
+    /// Button X held (6-button pad).
+    pub button_x: bool,
+    /// Button Y held (6-button pad).
+    pub button_y: bool,
+    /// Button Z held (6-button pad).
+    pub button_z: bool,
+    /// Run / Start button held (6-button pad).
+    pub run: bool,
+    /// Select button held (6-button pad).
+    pub select: bool,
 }
 
 /// Abstract machine that can be stepped by a host loop.

@@ -14,10 +14,20 @@ pub(crate) enum JoystickKey {
     Right,
     Trigger1,
     Trigger2,
+    ButtonC,
+    ButtonX,
+    ButtonY,
+    ButtonZ,
+    Run,
+    Select,
 }
 
 impl JoystickKey {
     /// Maps a host scancode to a joystick input, if it is one of the fallback keys.
+    ///
+    /// Arrows drive the directions and Z/X the two face buttons; the extra
+    /// 6-button pad inputs sit on nearby keys (C/V/B/N for C/X/Y/Z, Space for
+    /// Run, Return for Select).
     pub(crate) fn from_scancode(scancode: Option<Scancode>) -> Option<Self> {
         match scancode {
             Some(Scancode::Up) => Some(Self::Up),
@@ -26,6 +36,12 @@ impl JoystickKey {
             Some(Scancode::Right) => Some(Self::Right),
             Some(Scancode::Z) => Some(Self::Trigger1),
             Some(Scancode::X) => Some(Self::Trigger2),
+            Some(Scancode::C) => Some(Self::ButtonC),
+            Some(Scancode::V) => Some(Self::ButtonX),
+            Some(Scancode::B) => Some(Self::ButtonY),
+            Some(Scancode::N) => Some(Self::ButtonZ),
+            Some(Scancode::Space) => Some(Self::Run),
+            Some(Scancode::Return) => Some(Self::Select),
             _ => None,
         }
     }
@@ -39,6 +55,12 @@ impl JoystickKey {
             Self::Right => state.right = pressed,
             Self::Trigger1 => state.trigger1 = pressed,
             Self::Trigger2 => state.trigger2 = pressed,
+            Self::ButtonC => state.button_c = pressed,
+            Self::ButtonX => state.button_x = pressed,
+            Self::ButtonY => state.button_y = pressed,
+            Self::ButtonZ => state.button_z = pressed,
+            Self::Run => state.run = pressed,
+            Self::Select => state.select = pressed,
         }
     }
 }
@@ -194,6 +216,19 @@ impl KeyMap {
     /// scan matrix from the keycode internally.
     pub const fn new_pc88va() -> Self {
         let mappings = build_pc88va_default_map();
+        Self {
+            mappings,
+            shifted_mappings: mappings,
+            resolve_modifiers: false,
+        }
+    }
+
+    /// FM Towns key map: host scancodes to FM Towns JIS scancodes (the second
+    /// byte of the keyboard's two-byte serial packet). The machine expands each
+    /// forwarded keycode into the make/break packet; modifiers forward as their
+    /// own JIS scancodes (Ctrl 0x52, Shift 0x53).
+    pub const fn new_towns() -> Self {
+        let mappings = build_towns_default_map();
         Self {
             mappings,
             shifted_mappings: mappings,
@@ -472,6 +507,123 @@ pub fn parse_key_binding(host_name: &str, pc98_name: &str) -> Option<(Scancode, 
     Some((host, pc98))
 }
 
+/// FM Towns default key map: host scancodes to FM Towns JIS scancodes. Keys with
+/// no natural FM Towns equivalent stay at 0x00 (NULL); the machine ignores NULL.
+const fn build_towns_default_map() -> [u8; Scancode::COUNT] {
+    use Scancode::*;
+
+    const ALL_SCANCODES: &[(Scancode, u8)] = &[
+        (Escape, 0x01),
+        (_1, 0x02),
+        (_2, 0x03),
+        (_3, 0x04),
+        (_4, 0x05),
+        (_5, 0x06),
+        (_6, 0x07),
+        (_7, 0x08),
+        (_8, 0x09),
+        (_9, 0x0A),
+        (_0, 0x0B),
+        (Minus, 0x0C),
+        (Equals, 0x0D),
+        (Backslash, 0x0E),
+        (Backspace, 0x0F),
+        (Tab, 0x10),
+        (Q, 0x11),
+        (W, 0x12),
+        (E, 0x13),
+        (R, 0x14),
+        (T, 0x15),
+        (Y, 0x16),
+        (U, 0x17),
+        (I, 0x18),
+        (O, 0x19),
+        (P, 0x1A),
+        (Grave, 0x1B),
+        (LeftBracket, 0x1C),
+        (Return, 0x1D),
+        (A, 0x1E),
+        (S, 0x1F),
+        (D, 0x20),
+        (F, 0x21),
+        (G, 0x22),
+        (H, 0x23),
+        (J, 0x24),
+        (K, 0x25),
+        (L, 0x26),
+        (Semicolon, 0x27),
+        (Apostrophe, 0x28),
+        (RightBracket, 0x29),
+        (Z, 0x2A),
+        (X, 0x2B),
+        (C, 0x2C),
+        (V, 0x2D),
+        (B, 0x2E),
+        (N, 0x2F),
+        (M, 0x30),
+        (Comma, 0x31),
+        (Period, 0x32),
+        (Slash, 0x33),
+        (NonUsBackslash, 0x34),
+        (Space, 0x35),
+        (KpMultiply, 0x36),
+        (KpDivide, 0x37),
+        (KpPlus, 0x38),
+        (KpMinus, 0x39),
+        (Kp7, 0x3A),
+        (Kp8, 0x3B),
+        (Kp9, 0x3C),
+        (Kp4, 0x3E),
+        (Kp5, 0x3F),
+        (Kp6, 0x40),
+        (Kp1, 0x42),
+        (Kp2, 0x43),
+        (Kp3, 0x44),
+        (KpEnter, 0x45),
+        (Kp0, 0x46),
+        (KpPeriod, 0x47),
+        (Insert, 0x48),
+        (Delete, 0x4B),
+        (Up, 0x4D),
+        (Home, 0x4E),
+        (Left, 0x4F),
+        (Down, 0x50),
+        (Right, 0x51),
+        (LCtrl, 0x52),
+        (RCtrl, 0x52),
+        (LShift, 0x53),
+        (RShift, 0x53),
+        (CapsLock, 0x55),
+        (F12, 0x5B),
+        (LAlt, 0x5C),
+        (RAlt, 0x5C),
+        (F1, 0x5D),
+        (F2, 0x5E),
+        (F3, 0x5F),
+        (F4, 0x60),
+        (F5, 0x61),
+        (F6, 0x62),
+        (F7, 0x63),
+        (F8, 0x64),
+        (F9, 0x65),
+        (F10, 0x66),
+        (F11, 0x69),
+        (End, 0x72),
+        (PageDown, 0x73),
+        (Pause, 0x7C),
+        (PrintScreen, 0x7D),
+    ];
+
+    let mut map = [0u8; Scancode::COUNT];
+    let mut i = 0;
+    while i < ALL_SCANCODES.len() {
+        let (scancode, towns) = ALL_SCANCODES[i];
+        map[scancode.index()] = towns;
+        i += 1;
+    }
+    map
+}
+
 /// Maps a PC-88VA key name to its keycode (the value read at port 0x1C1). The VA
 /// keycode interface reuses the PC-98 scan-code protocol, so this defers to the
 /// PC-98 name table and adds the few VA-only keys.
@@ -492,6 +644,118 @@ pub fn pc88va_keycode_from_name(name: &str) -> Option<u8> {
 pub fn parse_key_binding_pc88va(host_name: &str, va_name: &str) -> Option<(Scancode, u8)> {
     let host = Scancode::from_name(host_name)?;
     let code = pc88va_keycode_from_name(va_name)?;
+    Some((host, code))
+}
+
+/// Maps an FM Towns key name to its JIS scancode (the second byte of the
+/// keyboard's serial packet).
+pub fn towns_scancode_from_name(name: &str) -> Option<u8> {
+    let name_lower = name.to_ascii_lowercase();
+    Some(match name_lower.as_str() {
+        "esc" => 0x01,
+        "1" => 0x02,
+        "2" => 0x03,
+        "3" => 0x04,
+        "4" => 0x05,
+        "5" => 0x06,
+        "6" => 0x07,
+        "7" => 0x08,
+        "8" => 0x09,
+        "0" => 0x0B,
+        "9" => 0x0A,
+        "minus" => 0x0C,
+        "caret" => 0x0D,
+        "yen" => 0x0E,
+        "bs" => 0x0F,
+        "tab" => 0x10,
+        "q" => 0x11,
+        "w" => 0x12,
+        "e" => 0x13,
+        "r" => 0x14,
+        "t" => 0x15,
+        "y" => 0x16,
+        "u" => 0x17,
+        "i" => 0x18,
+        "o" => 0x19,
+        "p" => 0x1A,
+        "at" => 0x1B,
+        "leftbracket" => 0x1C,
+        "return" => 0x1D,
+        "a" => 0x1E,
+        "s" => 0x1F,
+        "d" => 0x20,
+        "f" => 0x21,
+        "g" => 0x22,
+        "h" => 0x23,
+        "j" => 0x24,
+        "k" => 0x25,
+        "l" => 0x26,
+        "semicolon" => 0x27,
+        "colon" => 0x28,
+        "rightbracket" => 0x29,
+        "z" => 0x2A,
+        "x" => 0x2B,
+        "c" => 0x2C,
+        "v" => 0x2D,
+        "b" => 0x2E,
+        "n" => 0x2F,
+        "m" => 0x30,
+        "comma" => 0x31,
+        "period" => 0x32,
+        "slash" => 0x33,
+        "underscore" => 0x34,
+        "space" => 0x35,
+        "kpmultiply" => 0x36,
+        "kpdivide" => 0x37,
+        "kpplus" => 0x38,
+        "kpminus" => 0x39,
+        "kp7" => 0x3A,
+        "kp8" => 0x3B,
+        "kp9" => 0x3C,
+        "kp4" => 0x3E,
+        "kp5" => 0x3F,
+        "kp6" => 0x40,
+        "kp1" => 0x42,
+        "kp2" => 0x43,
+        "kp3" => 0x44,
+        "kpenter" => 0x45,
+        "kp0" => 0x46,
+        "kpperiod" => 0x47,
+        "ins" => 0x48,
+        "del" => 0x4B,
+        "up" => 0x4D,
+        "home" => 0x4E,
+        "left" => 0x4F,
+        "down" => 0x50,
+        "right" => 0x51,
+        "ctrl" => 0x52,
+        "shift" => 0x53,
+        "caps" => 0x55,
+        "alt" => 0x5C,
+        "f1" => 0x5D,
+        "f2" => 0x5E,
+        "f3" => 0x5F,
+        "f4" => 0x60,
+        "f5" => 0x61,
+        "f6" => 0x62,
+        "f7" => 0x63,
+        "f8" => 0x64,
+        "f9" => 0x65,
+        "f10" => 0x66,
+        "f11" => 0x69,
+        "f12" => 0x5B,
+        "cancel" => 0x72,
+        "execute" => 0x73,
+        "break" => 0x7C,
+        "copy" => 0x7D,
+        _ => return None,
+    })
+}
+
+/// Parses an FM Towns `key.*` binding into a host scancode and JIS scancode.
+pub fn parse_key_binding_towns(host_name: &str, towns_name: &str) -> Option<(Scancode, u8)> {
+    let host = Scancode::from_name(host_name)?;
+    let code = towns_scancode_from_name(towns_name)?;
     Some((host, code))
 }
 

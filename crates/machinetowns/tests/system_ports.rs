@@ -1,0 +1,127 @@
+//! Integration tests for the FM Towns system control ports: memory waits, the
+//! reset/power latches, and the memory-mapped stub devices.
+
+#[path = "common/harness.rs"]
+mod harness;
+
+use common::{Bus, Machine};
+use harness::machine_mx;
+
+#[test]
+fn memory_wait_latches_read_back() {
+    let mut machine = machine_mx();
+
+    // Power-on: no waits, FASTMODE lamp lit.
+    assert_eq!(machine.bus.io_read_byte(0x05E0), 0);
+    assert_eq!(machine.bus.io_read_byte(0x05E2), 0);
+    assert_eq!(machine.bus.io_read_byte(0x05E6), 0);
+    assert_eq!(machine.bus.io_read_byte(0x05EC), 1);
+
+    // 0x05E0 and 0x05E2 address the same main-RAM wait latch.
+    machine.bus.io_write_byte(0x05E0, 3);
+    assert_eq!(machine.bus.io_read_byte(0x05E2), 3);
+    machine.bus.io_write_byte(0x05E2, 5);
+    assert_eq!(machine.bus.io_read_byte(0x05E0), 5);
+
+    machine.bus.io_write_byte(0x05E6, 4);
+    assert_eq!(machine.bus.io_read_byte(0x05E6), 4);
+}
+
+#[test]
+fn fastmode_write_drives_waits_and_lamp() {
+    let mut machine = machine_mx();
+
+    // Clearing bit 0 selects the FMR-compatible slow mode.
+    machine.bus.io_write_byte(0x05EC, 0x00);
+    assert_eq!(machine.bus.io_read_byte(0x05E2), 6);
+    assert_eq!(machine.bus.io_read_byte(0x05E6), 6);
+    assert_eq!(machine.bus.io_read_byte(0x05EC), 0);
+
+    // Setting bit 0 removes all waits and lights the lamp again.
+    machine.bus.io_write_byte(0x05EC, 0x01);
+    assert_eq!(machine.bus.io_read_byte(0x05E2), 0);
+    assert_eq!(machine.bus.io_read_byte(0x05E6), 0);
+    assert_eq!(machine.bus.io_read_byte(0x05EC), 1);
+
+    // The lamp goes out once the VRAM wait reaches the slow threshold.
+    machine.bus.io_write_byte(0x05E6, 3);
+    assert_eq!(machine.bus.io_read_byte(0x05EC), 0);
+    machine.bus.io_write_byte(0x05E6, 2);
+    assert_eq!(machine.bus.io_read_byte(0x05EC), 1);
+    machine.bus.io_write_byte(0x05E0, 1);
+    assert_eq!(machine.bus.io_read_byte(0x05EC), 0);
+}
+
+/// The reset-reason port (0x0020) latches a software reset, reads it back, and
+/// self-clears; the pending reset is reflected by `reset_pending`.
+#[test]
+fn reset_reason_reports_and_clears_software_reset() {
+    let mut machine = machine_mx();
+    assert_eq!(machine.bus.io_read_byte(0x0020), 0x00);
+    machine.bus.io_write_byte(0x0020, 0x01);
+    assert!(machine.bus.reset_pending());
+    assert_eq!(machine.bus.io_read_byte(0x0020) & 0x01, 0x01);
+    // Read-to-clear.
+    assert_eq!(machine.bus.io_read_byte(0x0020) & 0x03, 0x00);
+}
+
+/// A power-off request (0x0022 bit 6) raises the machine shutdown signal.
+#[test]
+fn power_off_request_sets_shutdown() {
+    let mut machine = machine_mx();
+    assert!(!machine.shutdown_requested());
+    machine.bus.io_write_byte(0x0022, 0x40);
+    assert!(machine.shutdown_requested());
+    assert!(machine.bus.reset_pending());
+}
+
+/// The run loop consumes a pending soft reset instead of leaving it latched: the
+/// reset request clears once the loop has acted on it.
+#[test]
+fn soft_reset_request_is_consumed_by_run_loop() {
+    let mut machine = machine_mx();
+    machine.bus.io_write_byte(0x0020, 0x01);
+    assert!(machine.bus.reset_pending());
+    machine.run_for(10_000);
+    assert!(!machine.bus.reset_pending());
+}
+
+/// The CD-ROM cache/2x-speed and subcode ports return benign, non-decoded values
+/// rather than open-bus reads; their writes are dropped.
+#[test]
+fn cdrom_stub_ports_return_benign_values() {
+    let mut machine = machine_mx();
+    assert_eq!(machine.bus.io_read_byte(0x04C8), 0xFF);
+    assert_eq!(machine.bus.io_read_byte(0x04CC), 0x00);
+    assert_eq!(machine.bus.io_read_byte(0x04CD), 0x00);
+    machine.bus.io_write_byte(0x04CC, 0xFF);
+    machine.bus.io_write_byte(0x04CD, 0xFF);
+    assert_eq!(machine.bus.io_read_byte(0x04CC), 0x00);
+}
+
+/// The sound sampling (ADC) stub reports a ready sample of silence.
+#[test]
+fn sound_sampling_stub_ports() {
+    let mut machine = machine_mx();
+    assert_eq!(machine.bus.io_read_byte(0x04E7), 0x80);
+    assert_eq!(machine.bus.io_read_byte(0x04E8), 0x01);
+    machine.bus.io_write_byte(0x04E7, 0x00);
+    machine.bus.io_write_byte(0x04E8, 0x00);
+    assert_eq!(machine.bus.io_read_byte(0x04E8), 0x01);
+}
+
+/// With no memory card inserted, the status reports "no card present", the bank
+/// latch round-trips through its bit 4-5 shift, and the attribute reports the
+/// absent-card bit 7 plus the register-select latch.
+#[test]
+fn memory_card_ports_report_no_card() {
+    let mut machine = machine_mx();
+    assert_eq!(machine.bus.io_read_byte(0x048A), 0x06);
+    machine.bus.io_write_byte(0x0490, 0x30);
+    assert_eq!(machine.bus.io_read_byte(0x0490), 0x30);
+    machine.bus.io_write_byte(0x0490, 0x10);
+    assert_eq!(machine.bus.io_read_byte(0x0490), 0x10);
+    assert_eq!(machine.bus.io_read_byte(0x0491), 0x80);
+    machine.bus.io_write_byte(0x0491, 0x01);
+    assert_eq!(machine.bus.io_read_byte(0x0491), 0x81);
+}

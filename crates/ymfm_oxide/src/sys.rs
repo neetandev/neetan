@@ -42,6 +42,17 @@ pub enum YmfmOpnFidelity {
     Med = 2,
 }
 
+/// Two-channel output sample from the OPN2 family (YM2612/YM3438/YMF276).
+///
+/// Contains one stereo FM sample: `data[0]` is the left output and `data[1]`
+/// is the right output. Values are signed 32-bit integers.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct YmfmOutput2 {
+    /// Per-channel sample data: `[FM_L, FM_R]`.
+    pub data: [i32; 2],
+}
+
 /// Three-channel output sample from the YM2608.
 ///
 /// Contains one sample per output group: `data[0]` is the left FM output,

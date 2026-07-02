@@ -178,6 +178,51 @@ impl Beeper {
         volume: f32,
         output: &mut [f32],
     ) -> usize {
+        self.render(
+            frame_end_cycle,
+            cpu_clock_hz,
+            pit_clock_hz,
+            sample_rate,
+            volume,
+            output,
+            false,
+        )
+    }
+
+    /// Like [`Beeper::generate_samples`] but mixes the beep additively on top of
+    /// the existing `output` contents instead of overwriting them. Used where the
+    /// beeper shares the mix with other sound sources (FM Towns).
+    pub fn mix_samples(
+        &mut self,
+        frame_end_cycle: u64,
+        cpu_clock_hz: u32,
+        pit_clock_hz: u32,
+        sample_rate: u32,
+        volume: f32,
+        output: &mut [f32],
+    ) -> usize {
+        self.render(
+            frame_end_cycle,
+            cpu_clock_hz,
+            pit_clock_hz,
+            sample_rate,
+            volume,
+            output,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render(
+        &mut self,
+        frame_end_cycle: u64,
+        cpu_clock_hz: u32,
+        pit_clock_hz: u32,
+        sample_rate: u32,
+        volume: f32,
+        output: &mut [f32],
+        additive: bool,
+    ) -> usize {
         let frame_start = self.state.frame_start_cycle;
         let frame_cycles = frame_end_cycle.saturating_sub(frame_start);
         if frame_cycles == 0 || sample_rate == 0 {
@@ -238,8 +283,10 @@ impl Beeper {
             }
 
             if !current_buzzer || current_reload == 0 {
-                output[i * 2] = 0.0;
-                output[i * 2 + 1] = 0.0;
+                if !additive {
+                    output[i * 2] = 0.0;
+                    output[i * 2 + 1] = 0.0;
+                }
                 continue;
             }
 
@@ -252,8 +299,13 @@ impl Beeper {
             value += poly_blep(phase, dt);
             value -= poly_blep((phase + 0.5) % 1.0, dt);
             let sample = amplitude * value as f32;
-            output[i * 2] = sample;
-            output[i * 2 + 1] = sample;
+            if additive {
+                output[i * 2] += sample;
+                output[i * 2 + 1] += sample;
+            } else {
+                output[i * 2] = sample;
+                output[i * 2 + 1] = sample;
+            }
         }
 
         self.finish_frame(frame_end_cycle);

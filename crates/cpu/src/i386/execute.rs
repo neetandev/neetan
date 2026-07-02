@@ -1,7 +1,10 @@
-use super::{CPU_MODEL_386, CPU_MODEL_486, Fault, I386, Step};
+use super::{
+    CPU_MODEL_386, CPU_MODEL_486, EFLAGS_ALIGNMENT_CHECK_FLAG, EFLAGS_RESUME_FLAG,
+    EFLAGS_VIRTUAL_8086_FLAG, Fault, I386, Step,
+};
 use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 
-impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH> {
     pub(super) fn dispatch(&mut self, opcode: u8, bus: &mut impl common::Bus) -> Step {
         match opcode {
             // ADD
@@ -2533,11 +2536,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if self.operand_size_override {
             // PUSHFD: RF (bit 16) is masked. VM (bit 17) is always included.
             // AC (bit 18, 486+) is included; remaining bits 19-31 push as 0.
-            let upper_mask: u32 = if CPU_MODEL >= CPU_MODEL_486 {
-                0x0006_0000 // VM | AC
-            } else {
-                0x0002_0000 // VM
-            };
+            let upper_mask = Self::eflags_upper_writable() & !EFLAGS_RESUME_FLAG;
             let flags_val = (self.eflags_upper & upper_mask) | self.flags.compress() as u32;
             self.push_dword(bus, flags_val)?;
         } else {
@@ -2574,9 +2573,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             // VM (bit 17) is not modifiable via POPFD (only IRET at CPL=0).
             // RF (bit 16) is not modified by POPFD.
             // AC (bit 18, 486+) follows the popped value.
-            if CPU_MODEL >= CPU_MODEL_486 {
-                self.eflags_upper = (self.eflags_upper & !0x0004_0000) | (val & 0x0004_0000);
-            }
+            let ac_mask = Self::eflags_upper_writable() & EFLAGS_ALIGNMENT_CHECK_FLAG;
+            self.eflags_upper = (self.eflags_upper & !ac_mask) | (val & ac_mask);
         } else {
             let val = self.pop(bus)?;
             self.flags.load_flags(val, cpl, pm);
@@ -3045,6 +3043,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.ip = eip as u16;
                 self.ip_upper = eip & 0xFFFF_0000;
                 self.flags.load_flags(eflags as u16, 0, false);
+                // Real-mode IRETD loads RF (and AC on the 486); VM is unchanged.
+                self.eflags_upper =
+                    eflags & (Self::eflags_upper_writable() & !EFLAGS_VIRTUAL_8086_FLAG);
             } else {
                 let ip = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
                 let cs = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(2)))?;
@@ -3097,7 +3098,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.ip = new_eip as u16;
                 self.ip_upper = 0;
                 self.flags.load_flags(new_eflags as u16, 3, true);
-                self.eflags_upper = (new_eflags & 0x00FF_0000) | 0x0002_0000;
+                self.eflags_upper =
+                    (new_eflags & Self::eflags_upper_writable()) | EFLAGS_VIRTUAL_8086_FLAG;
             } else {
                 let new_ip = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
                 let new_cs = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(2)))?;
@@ -3110,7 +3112,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.ip = new_ip;
                 self.ip_upper = 0;
                 self.flags.load_flags(new_flags, 3, true);
-                self.eflags_upper = 0x0002_0000;
+                self.eflags_upper = EFLAGS_VIRTUAL_8086_FLAG;
             }
 
             self.clk(Self::timing(22, 15) + penalty);
@@ -3168,7 +3170,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 let new_gs = new_gs_dword as u16;
 
                 self.flags.load_flags(new_eflags as u16, old_cpl, true);
-                self.eflags_upper = (new_eflags & 0x00FF_0000) | 0x0002_0000;
+                self.eflags_upper =
+                    (new_eflags & Self::eflags_upper_writable()) | EFLAGS_VIRTUAL_8086_FLAG;
 
                 self.sregs[SegReg32::CS as usize] = new_cs;
                 self.set_real_segment_cache(SegReg32::CS, new_cs);
@@ -3226,9 +3229,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
                 self.flags.load_flags(new_eflags as u16, old_cpl, true);
                 if old_cpl == 0 {
-                    self.eflags_upper = new_eflags & 0x00FF_0000;
+                    self.eflags_upper = new_eflags & Self::eflags_upper_writable();
                 } else {
-                    self.eflags_upper = new_eflags & 0x00FD_0000;
+                    self.eflags_upper =
+                        new_eflags & (Self::eflags_upper_writable() & !EFLAGS_VIRTUAL_8086_FLAG);
                 }
 
                 self.set_accessed_bit(cs_validation.adjusted_selector, bus)?;
@@ -3275,9 +3279,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.ip_upper = new_eip & 0xFFFF_0000;
                 self.flags.load_flags(new_eflags as u16, old_cpl, true);
                 if old_cpl == 0 {
-                    self.eflags_upper = new_eflags & 0x00FF_0000;
+                    self.eflags_upper = new_eflags & Self::eflags_upper_writable();
                 } else {
-                    self.eflags_upper = new_eflags & 0x00FD_0000;
+                    self.eflags_upper =
+                        new_eflags & (Self::eflags_upper_writable() & !EFLAGS_VIRTUAL_8086_FLAG);
                 }
             }
         } else {

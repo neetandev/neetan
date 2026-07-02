@@ -3,10 +3,12 @@ use std::path::{Path, PathBuf};
 use common::{Context, CpuMode, MachineModel, StringError, bail, info, warn};
 use machine60::Pc6000Model;
 use machine88::{BootMode, EightMhzWaitMode, MemoryWaitSwitch, MonitorTiming, Pc8801Model};
+use machine88va::Pc88VaModel;
+use machinetowns::{TownsModel, TownsPadType};
 
 use crate::keyboard::{
     KeyMap, parse_key_binding, parse_key_binding_pc60, parse_key_binding_pc88,
-    parse_key_binding_pc88va,
+    parse_key_binding_pc88va, parse_key_binding_towns,
 };
 
 fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> crate::Result<String> {
@@ -47,8 +49,8 @@ Commands:
 
 Options:
   -c, --config <PATH>           Load configuration from file
-      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP, PC8801MC, PC88VA2, PC6001, PC6001MK2, PC6601, PC6001MK2SR, PC6601SR
-      --cpu-mode <MODE>         CPU speed mode: low or high (PC-88 default derives from boot mode)
+      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP, PC8801MC, PC88VA2, PC6001, PC6001MK2, PC6601, PC6001MK2SR, PC6601SR, FMTownsIICX, FMTownsIIMX
+      --cpu-mode <MODE>         CPU speed mode: low or high (PC-88 default derives from boot mode; FM Towns CX 16/20 MHz, MX 33/66 MHz)
       --boot-mode <MODE>        PC-8801 BASIC boot mode: v1s, v1h, v2, n, n80, n80sr (default: v2; PC-8801 only)
       --pc88-monitor <MODE>     PC-8801 monitor timing: auto, 15k, 24k (default: auto; PC-8801 only)
       --pc88-memory-wait <MODE> PC-8801 memory wait: fast or compatible (default derives from boot mode)
@@ -57,13 +59,16 @@ Options:
       --bios                    Use the real BIOS from --pc98-roms instead of HLE
       --pc88-roms <PATH>        Directory with the PC-8801MC ROM set (required)
       --pc88va-roms <PATH>      Directory with the PC-88VA2 ROM set (required)
-      --pc6000-roms <PATH>      Directory with the PC-6000 ROM set (required; PC-6000 only)
+      --pc6000-roms <PATH>      Directory with the PC-6000 ROM set (required)
+      --towns-roms <PATH>       Directory with the FM Towns ROM set (required)
+      --towns-pad <2|6>         FM Towns game pad type (default 6-button)
       --pc6000-phase <0-3>      Initial composite artifact-color phase; cycle with Right Ctrl + P (PC-6000 only)
       --fdd1 <PATH>             Floppy disk image for drive 1 (repeatable)
       --fdd2 <PATH>             Floppy disk image for drive 2 (repeatable)
       --hdd1 <PATH>             Hard disk image for drive 1 (SASI or IDE)
       --hdd2 <PATH>             Hard disk image for drive 2 (SASI or IDE)
-      --cdrom <PATH>            CD-ROM disc image .cue or .ccd file (repeatable, PC-9821 only)
+      --cdrom <PATH>            CD-ROM disc image .cue or .ccd file (repeatable, PC-9821 and FM Towns)
+      --cdrom-compat <on|off>   Slow/compatible CD-ROM drive timing (default: off; FM Towns only)
       --cartridge <PATH>        Cartridge ROM image to insert
       --cassette <PATH>         Cassette tape image to insert (.cas/.p6/.p6t)
       --audio-volume <FLOAT>    Audio volume 0.0-1.0
@@ -111,21 +116,22 @@ Options:
   -h, --help         Print help
 
 Floppy types:
-  2hd    1232 KB  (77 cyl, 2 heads, 8 spt, 1024 B/sector)
-  2dd     640 KB  (80 cyl, 2 heads, 16 spt, 256 B/sector)
-  2d      320 KB  (40 cyl, 2 heads, 16 spt, 256 B/sector)"
+  2hd     1232 KB  (77 cyl, 2 heads, 8 spt, 1024 B/sector)
+  2hd144  1440 KB  (80 cyl, 2 heads, 18 spt, 512 B/sector)
+  2dd      640 KB  (80 cyl, 2 heads, 16 spt, 256 B/sector)
+  2d       320 KB  (40 cyl, 2 heads, 16 spt, 256 B/sector)"
     );
 }
 
 fn print_create_hdd_help() {
     println!(
         "\
-Create an empty hard disk image in HDI format
+Create an empty hard disk image (HDI for SASI/IDE, raw for SCSI)
 
 Usage: neetan create-hdd <PATH> [OPTIONS]
 
 Arguments:
-  <PATH>  Output file path (must have .hdi extension)
+  <PATH>  Output file path (.hdi for SASI/IDE, .h0-.h4 for SCSI)
 
 Options:
       --type <TYPE>  HDD size (required)
@@ -144,7 +150,15 @@ IDE types:
   ide80     80 MB  (977 cyl, 10 heads, 17 spt, 512 B/sector)
   ide120   120 MB  (977 cyl, 15 heads, 17 spt, 512 B/sector)
   ide200   200 MB  (977 cyl, 15 heads, 28 spt, 512 B/sector)
-  ide500   500 MB  (1015 cyl, 16 heads, 63 spt, 512 B/sector)"
+  ide500   500 MB  (1015 cyl, 16 heads, 63 spt, 512 B/sector)
+
+SCSI types (raw 512 B/sector .h0-.h4 images):
+  scsi20    20 MB
+  scsi40    40 MB
+  scsi100  100 MB
+  scsi200  200 MB
+  scsi340  340 MB
+  scsi540  540 MB"
     );
 }
 
@@ -285,6 +299,7 @@ fn parse_copy_arg(raw: &str) -> CopyArg {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum FddType {
     Hd2,
+    Hd2Fmt144,
     Dd2,
     D2,
 }
@@ -295,10 +310,11 @@ impl std::str::FromStr for FddType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
             "2hd" => Ok(Self::Hd2),
+            "2hd144" => Ok(Self::Hd2Fmt144),
             "2dd" => Ok(Self::Dd2),
             "2d" => Ok(Self::D2),
             _ => Err(format!(
-                "unknown floppy type '{s}', expected 2hd, 2dd or 2d"
+                "unknown floppy type '{s}', expected 2hd, 2hd144, 2dd or 2d"
             )),
         }
     }
@@ -317,6 +333,12 @@ pub enum HddSizeType {
     IdeMb120,
     IdeMb200,
     IdeMb500,
+    ScsiMb20,
+    ScsiMb40,
+    ScsiMb100,
+    ScsiMb200,
+    ScsiMb340,
+    ScsiMb540,
 }
 
 impl std::str::FromStr for HddSizeType {
@@ -335,10 +357,34 @@ impl std::str::FromStr for HddSizeType {
             "ide120" => Ok(Self::IdeMb120),
             "ide200" => Ok(Self::IdeMb200),
             "ide500" => Ok(Self::IdeMb500),
+            "scsi20" => Ok(Self::ScsiMb20),
+            "scsi40" => Ok(Self::ScsiMb40),
+            "scsi100" => Ok(Self::ScsiMb100),
+            "scsi200" => Ok(Self::ScsiMb200),
+            "scsi340" => Ok(Self::ScsiMb340),
+            "scsi540" => Ok(Self::ScsiMb540),
             _ => Err(format!(
-                "unknown HDD size '{s}', expected sasi5, sasi10, sasi15, sasi20, sasi30, sasi40, ide40, ide80, ide120, ide200, or ide500"
+                "unknown HDD size '{s}', expected sasi5, sasi10, sasi15, sasi20, sasi30, sasi40, \
+                 ide40, ide80, ide120, ide200, ide500, scsi20, scsi40, scsi100, scsi200, scsi340, \
+                 or scsi540"
             )),
         }
+    }
+}
+
+impl HddSizeType {
+    /// Whether this size denotes an FM Towns raw SCSI image (.h0-.h4) rather
+    /// than a PC-98 SASI/IDE header format (.hdi).
+    pub fn is_scsi_raw(self) -> bool {
+        matches!(
+            self,
+            Self::ScsiMb20
+                | Self::ScsiMb40
+                | Self::ScsiMb100
+                | Self::ScsiMb200
+                | Self::ScsiMb340
+                | Self::ScsiMb540
+        )
     }
 }
 
@@ -554,6 +600,8 @@ fn parse_args_from(
             "--debug-bios" => config.debug_bios = Some(PathBuf::from(value(&flag)?)),
             "--pc88-roms" => config.pc88_roms = Some(PathBuf::from(value(&flag)?)),
             "--pc88va-roms" => config.pc88va_roms = Some(PathBuf::from(value(&flag)?)),
+            "--towns-roms" => config.towns_roms = Some(PathBuf::from(value(&flag)?)),
+            "--towns-pad" => config.towns_pad = value(&flag)?.parse().map_err(StringError)?,
             "--pc6000-roms" => config.pc60_roms = Some(PathBuf::from(value(&flag)?)),
             "--cartridge" => config.cartridge = Some(PathBuf::from(value(&flag)?)),
             "--cassette" => config.cassette = Some(PathBuf::from(value(&flag)?)),
@@ -566,6 +614,10 @@ fn parse_args_from(
             "--hdd1" => config.hdd1 = Some(PathBuf::from(value(&flag)?)),
             "--hdd2" => config.hdd2 = Some(PathBuf::from(value(&flag)?)),
             "--cdrom" => config.cdrom.push(PathBuf::from(value(&flag)?)),
+            "--cdrom-compat" => {
+                let val = value(&flag)?;
+                config.cdrom_compat = parse_on_off(&val, &flag)?;
+            }
             "--audio-volume" => {
                 let val = value(&flag)?;
                 config.audio_volume = val
@@ -681,6 +733,8 @@ pub enum Target {
     Pc88Va,
     /// PC-6000/PC-6600 series (the `machine60` crate).
     Pc60,
+    /// FM Towns series (the `machinetowns` crate).
+    Towns,
 }
 
 pub struct EmulatorConfig {
@@ -692,6 +746,7 @@ pub struct EmulatorConfig {
     pub hdd1: Option<PathBuf>,
     pub hdd2: Option<PathBuf>,
     pub cdrom: Vec<PathBuf>,
+    pub cdrom_compat: bool,
     pub aspect_mode: AspectMode,
     pub crt: bool,
     pub scaling: ScalingMode,
@@ -719,10 +774,13 @@ pub struct EmulatorConfig {
     pub pc88_memory_wait: MemoryWaitSwitch,
     pub pc88_8mhz_wait: EightMhzWaitMode,
     pub pc88_roms: Option<PathBuf>,
-    pub pc88va_model: machine88va::Pc88VaModel,
+    pub pc88va_model: Pc88VaModel,
     pub pc88va_roms: Option<PathBuf>,
     pub pc60_model: Pc6000Model,
     pub pc60_roms: Option<PathBuf>,
+    pub towns_model: TownsModel,
+    pub towns_roms: Option<PathBuf>,
+    pub towns_pad: TownsPadType,
     pub cartridge: Option<PathBuf>,
     pub cassette: Option<PathBuf>,
     /// Initial composite subcarrier phase select (0..3). Swaps the PC-6001
@@ -747,6 +805,7 @@ impl Default for EmulatorConfig {
             hdd1: None,
             hdd2: None,
             cdrom: Vec::new(),
+            cdrom_compat: false,
             aspect_mode: AspectMode::Aspect4By3,
             crt: true,
             scaling: ScalingMode::Pixelart,
@@ -778,6 +837,9 @@ impl Default for EmulatorConfig {
             pc88va_roms: None,
             pc60_model: Pc6000Model::Pc6001,
             pc60_roms: None,
+            towns_model: machinetowns::TownsModel::FmTownsIIMx,
+            towns_roms: None,
+            towns_pad: machinetowns::TownsPadType::SixButton,
             cartridge: None,
             cassette: None,
             pc60_composite_phase: 0,
@@ -852,6 +914,11 @@ fn apply_config_file(
             "debug-bios" => config.debug_bios = Some(PathBuf::from(val)),
             "pc88-roms" => config.pc88_roms = Some(PathBuf::from(val)),
             "pc88va-roms" => config.pc88va_roms = Some(PathBuf::from(val)),
+            "towns-roms" => config.towns_roms = Some(PathBuf::from(val)),
+            "towns-pad" => match val.parse() {
+                Ok(pad) => config.towns_pad = pad,
+                Err(error) => warn!("Invalid towns-pad in config: {error}"),
+            },
             "pc6000-roms" => config.pc60_roms = Some(PathBuf::from(val)),
             "cartridge" => config.cartridge = Some(PathBuf::from(val)),
             "cassette" => config.cassette = Some(PathBuf::from(val)),
@@ -864,6 +931,11 @@ fn apply_config_file(
             "hdd1" => config.hdd1 = Some(PathBuf::from(val)),
             "hdd2" => config.hdd2 = Some(PathBuf::from(val)),
             "cdrom" => config.cdrom.push(PathBuf::from(val)),
+            "cdrom-compat" => match val {
+                "on" => config.cdrom_compat = true,
+                "off" => config.cdrom_compat = false,
+                _ => warn!("Invalid cdrom-compat in config: {val}, expected on or off"),
+            },
             "aspect-mode" => match val.parse::<AspectMode>() {
                 Ok(mode) => config.aspect_mode = mode,
                 Err(_) => warn!("Unknown aspect mode in config: {val}"),
@@ -939,6 +1011,7 @@ fn apply_config_file(
                     Target::Pc88Va => parse_key_binding_pc88va(host_name, val),
                     Target::Pc98 => parse_key_binding(host_name, val),
                     Target::Pc60 => parse_key_binding_pc60(host_name, val),
+                    Target::Towns => parse_key_binding_towns(host_name, val),
                 };
                 match binding {
                     Some((host, code)) => config.key_map.set(host, code),
@@ -996,6 +1069,14 @@ fn apply_machine_selection(config: &mut EmulatorConfig, value: &str) -> Result<(
         }
         config.target = Target::Pc60;
         config.pc60_model = model;
+        return Ok(());
+    }
+    if let Ok(model) = value.parse::<machinetowns::TownsModel>() {
+        if config.target != Target::Towns {
+            config.key_map = KeyMap::new_towns();
+        }
+        config.target = Target::Towns;
+        config.towns_model = model;
         return Ok(());
     }
     let model = value.parse::<MachineModel>()?;
@@ -1406,5 +1487,27 @@ mod tests {
 
         assert_eq!(config.cpu_mode, CpuMode::High);
         assert_eq!(config.pc88_memory_wait, MemoryWaitSwitch::Fast);
+    }
+
+    #[test]
+    fn cdrom_compat_flag_parses_on_and_off() {
+        assert!(!parse_run_config(&[]).cdrom_compat);
+        assert!(parse_run_config(&["--cdrom-compat", "on"]).cdrom_compat);
+        assert!(!parse_run_config(&["--cdrom-compat", "off"]).cdrom_compat);
+    }
+
+    #[test]
+    fn config_file_cdrom_compat_parses_on() {
+        let path = std::env::temp_dir().join(format!(
+            "neetan_config_test_{}_cdrom_compat.conf",
+            std::process::id()
+        ));
+        std::fs::write(&path, "machine=FMTownsIICX\ncdrom-compat=on\n")
+            .expect("config file should be written");
+
+        let config = parse_run_config(&["--config", path.to_str().expect("path is UTF-8")]);
+        let _ = std::fs::remove_file(path);
+
+        assert!(config.cdrom_compat);
     }
 }
