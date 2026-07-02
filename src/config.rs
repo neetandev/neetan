@@ -57,15 +57,15 @@ Options:
       --bios                    Use the real BIOS from --pc98-roms instead of HLE
       --pc88-roms <PATH>        Directory with the PC-8801MC ROM set (required)
       --pc88va-roms <PATH>      Directory with the PC-88VA2 ROM set (required)
-      --pc60-roms <PATH>        Directory with the PC-6000 ROM set (required; PC-6000 only)
-      --pc60-cart <PATH>        Cartridge ROM image to insert (PC-6000 only)
-      --pc60-cass <PATH>        Cassette tape image to insert (.cas/.p6/.p6t; PC-6000 only)
-      --pc60-phase <0-3>        Initial composite artifact-color phase; cycle with Right Ctrl + P (PC-6000 only)
+      --pc6000-roms <PATH>      Directory with the PC-6000 ROM set (required; PC-6000 only)
+      --pc6000-phase <0-3>      Initial composite artifact-color phase; cycle with Right Ctrl + P (PC-6000 only)
       --fdd1 <PATH>             Floppy disk image for drive 1 (repeatable)
       --fdd2 <PATH>             Floppy disk image for drive 2 (repeatable)
       --hdd1 <PATH>             Hard disk image for drive 1 (SASI or IDE)
       --hdd2 <PATH>             Hard disk image for drive 2 (SASI or IDE)
       --cdrom <PATH>            CD-ROM disc image .cue or .ccd file (repeatable, PC-9821 only)
+      --cartridge <PATH>        Cartridge ROM image to insert
+      --cassette <PATH>         Cassette tape image to insert (.cas/.p6/.p6t)
       --audio-volume <FLOAT>    Audio volume 0.0-1.0
       --aspect-mode <MODE>      Display aspect mode: 4:3 or 1:1
       --crt <on|off>            Enable CRT effect (default: on; modern backend only)
@@ -554,10 +554,10 @@ fn parse_args_from(
             "--debug-bios" => config.debug_bios = Some(PathBuf::from(value(&flag)?)),
             "--pc88-roms" => config.pc88_roms = Some(PathBuf::from(value(&flag)?)),
             "--pc88va-roms" => config.pc88va_roms = Some(PathBuf::from(value(&flag)?)),
-            "--pc60-roms" => config.pc60_roms = Some(PathBuf::from(value(&flag)?)),
-            "--pc60-cart" => config.pc60_cart = Some(PathBuf::from(value(&flag)?)),
-            "--pc60-cass" => config.pc60_cass = Some(PathBuf::from(value(&flag)?)),
-            "--pc60-phase" => {
+            "--pc6000-roms" => config.pc60_roms = Some(PathBuf::from(value(&flag)?)),
+            "--cartridge" => config.cartridge = Some(PathBuf::from(value(&flag)?)),
+            "--cassette" => config.cassette = Some(PathBuf::from(value(&flag)?)),
+            "--pc6000-phase" => {
                 let val = value(&flag)?;
                 config.pc60_composite_phase = parse_composite_phase(&val)?;
             }
@@ -723,8 +723,8 @@ pub struct EmulatorConfig {
     pub pc88va_roms: Option<PathBuf>,
     pub pc60_model: Pc6000Model,
     pub pc60_roms: Option<PathBuf>,
-    pub pc60_cart: Option<PathBuf>,
-    pub pc60_cass: Option<PathBuf>,
+    pub cartridge: Option<PathBuf>,
+    pub cassette: Option<PathBuf>,
     /// Initial composite subcarrier phase select (0..3). Swaps the PC-6001
     /// artifact-color pair; also cycled at runtime with Right Ctrl + P.
     pub pc60_composite_phase: u32,
@@ -778,8 +778,8 @@ impl Default for EmulatorConfig {
             pc88va_roms: None,
             pc60_model: Pc6000Model::Pc6001,
             pc60_roms: None,
-            pc60_cart: None,
-            pc60_cass: None,
+            cartridge: None,
+            cassette: None,
             pc60_composite_phase: 0,
         }
     }
@@ -852,10 +852,10 @@ fn apply_config_file(
             "debug-bios" => config.debug_bios = Some(PathBuf::from(val)),
             "pc88-roms" => config.pc88_roms = Some(PathBuf::from(val)),
             "pc88va-roms" => config.pc88va_roms = Some(PathBuf::from(val)),
-            "pc60-roms" => config.pc60_roms = Some(PathBuf::from(val)),
-            "pc60-cart" => config.pc60_cart = Some(PathBuf::from(val)),
-            "pc60-cass" => config.pc60_cass = Some(PathBuf::from(val)),
-            "pc60-phase" => match parse_composite_phase(val) {
+            "pc6000-roms" => config.pc60_roms = Some(PathBuf::from(val)),
+            "cartridge" => config.cartridge = Some(PathBuf::from(val)),
+            "cassette" => config.cassette = Some(PathBuf::from(val)),
+            "pc6000-phase" => match parse_composite_phase(val) {
                 Ok(phase) => config.pc60_composite_phase = phase,
                 Err(error) => warn!("Invalid PC-6000 composite phase in config: {error}"),
             },

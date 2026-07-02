@@ -1336,7 +1336,7 @@ fn initialize_pc60_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
 
     let rom_dir = config.pc60_roms.as_ref().ok_or_else(|| {
         StringError(format!(
-            "{model} requires a ROM directory (--pc60-roms <DIR>)"
+            "{model} requires a ROM directory (--pc6000-roms <DIR>)"
         ))
     })?;
 
@@ -1350,7 +1350,7 @@ fn initialize_pc60_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
     let mut bus: machine60::Pc6000Bus<Tracer> = machine60::Pc6000Bus::new(model, sample_rate);
     bus.load_roms(&roms);
 
-    if let Some(cart_path) = config.pc60_cart.as_ref() {
+    if let Some(cart_path) = config.cartridge.as_ref() {
         let image = std::fs::read(cart_path).map_err(|error| {
             StringError(format!(
                 "Failed to read PC-6000 cartridge {}: {error}",
@@ -1372,7 +1372,7 @@ fn initialize_pc60_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
     let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
     let mut machine = machine60::Pc6000Machine::new(main_cpu, bus);
 
-    if let Some(cassette_path) = config.pc60_cass.as_ref() {
+    if let Some(cassette_path) = config.cassette.as_ref() {
         match machine.insert_cassette(cassette_path) {
             Ok(description) => info!("Inserted cassette {description}"),
             Err(error) => {
