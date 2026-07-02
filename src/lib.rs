@@ -3,15 +3,14 @@
 #![deny(unsafe_code)]
 
 use std::{
-    borrow::Cow,
     fs::File,
     time::{Duration, Instant},
 };
 
 use audio_engine::AudioEngine;
 use common::{
-    BUILTIN_FONT_ROM, Context, CpuMode, JoystickState, Machine, MachineModel, StringError, ensure,
-    error, info, warn,
+    BUILTIN_FONT_ROM, Context, CpuMode, JoystickState, Machine, MachineModel, StringError, bail,
+    ensure, error, info, warn,
 };
 use device::disk::{HddGeometry, load_hdd_image};
 use sdl3::{
@@ -1235,34 +1234,7 @@ fn selector_font_rom_data(config: &EmulatorConfig, machine: &dyn Machine) -> Vec
         return machine.font_rom_data().to_vec();
     }
 
-    let raw_font_rom = match config.font_rom {
-        Some(ref font_path) => match std::fs::read(font_path) {
-            Ok(font_rom) => {
-                info!(
-                    "Loaded selector font ROM ({} bytes) from {}",
-                    font_rom.len(),
-                    font_path.display()
-                );
-                Cow::Owned(font_rom)
-            }
-            Err(error) => {
-                error!(
-                    "Failed to read selector font ROM from {}: {error}",
-                    font_path.display()
-                );
-                Cow::Borrowed(BUILTIN_FONT_ROM)
-            }
-        },
-        None => {
-            info!(
-                "Using built-in selector font ROM ({} bytes)",
-                BUILTIN_FONT_ROM.len()
-            );
-            Cow::Borrowed(BUILTIN_FONT_ROM)
-        }
-    };
-
-    expand_selector_font_rom(&raw_font_rom)
+    expand_selector_font_rom(BUILTIN_FONT_ROM)
 }
 
 fn expand_selector_font_rom(raw_font_rom: &[u8]) -> Vec<u8> {
@@ -1471,49 +1443,69 @@ fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
         (false, false, Some(ForceGdcClock::Force2_5)) | (false, false, None) => {}
     }
 
-    if config.bios_rom.is_some() && model.is_pc9821() {
-        warn!("Real BIOS ROM is not supported for PC-9821. Use HLE BIOS mode (omit --bios-rom).");
+    if config.bios && config.debug_bios.is_some() {
+        bail!("--bios and --debug-bios cannot be used together");
     }
 
-    if let Some(ref bios_path) = config.bios_rom {
-        let bios_rom = std::fs::read(bios_path)
-            .with_context(|| format!("Failed to read BIOS ROM from {}", bios_path.display()))?;
+    let loaded_roms = match config.pc98_roms {
+        Some(ref rom_dir) => Some(machine::load_rom_set(model, rom_dir).map_err(|error| {
+            StringError(format!(
+                "Failed to load PC-98 ROM set from {}: {error}",
+                rom_dir.display()
+            ))
+        })?),
+        None => None,
+    };
 
+    if let Some(ref debug_path) = config.debug_bios {
+        let bios_rom = std::fs::read(debug_path).with_context(|| {
+            format!(
+                "Failed to read debug BIOS ROM from {}",
+                debug_path.display()
+            )
+        })?;
         ensure!(
             model.is_valid_bios_rom_size(bios_rom.len()),
-            "BIOS ROM is {} bytes, which is not a valid size for {}: {}",
+            "Debug BIOS ROM is {} bytes, which is not a valid size for {}: {}",
             bios_rom.len(),
             model,
-            bios_path.display(),
+            debug_path.display(),
         );
-
         info!(
-            "Loaded BIOS ROM ({} bytes) from {}",
+            "Loaded debug BIOS ROM ({} bytes) from {}",
             bios_rom.len(),
-            bios_path.display()
+            debug_path.display()
         );
         bus.load_bios_rom(&bios_rom);
+    } else if config.bios {
+        let rom_dir = config
+            .pc98_roms
+            .as_ref()
+            .ok_or_else(|| StringError("--bios requires --pc98-roms <DIR>".into()))?;
+        if model.is_pc9821() {
+            warn!("No real BIOS ROM available for PC-9821; using HLE BIOS");
+        } else if let Some(bios_rom) = loaded_roms.as_ref().and_then(|roms| roms.bios.as_ref()) {
+            info!("Loaded BIOS ROM ({} bytes) for {}", bios_rom.len(), model);
+            bus.load_bios_rom(bios_rom);
+        } else {
+            bail!(
+                "no BIOS ROM for {} found in {} (accepted digests: {})",
+                model,
+                rom_dir.display(),
+                machine::accepted_bios_digests(model).join(", "),
+            );
+        }
     } else {
-        info!("No BIOS ROM provided - running in HLE BIOS mode");
+        info!("No BIOS ROM selected - running in HLE BIOS mode");
     }
 
-    match config.font_rom {
-        Some(ref font_path) => match std::fs::read(font_path) {
-            Ok(font_rom) => {
-                info!(
-                    "Loaded font ROM ({} bytes) from {}",
-                    font_rom.len(),
-                    font_path.display()
-                );
-                bus.load_font_rom(&font_rom);
-            }
-            Err(error) => {
-                error!(
-                    "Failed to read font ROM from {}: {error}",
-                    font_path.display()
-                );
-            }
-        },
+    // Font ROM is best-effort regardless of --bios: use the directory font when
+    // present, otherwise the built-in font.
+    match loaded_roms.as_ref().and_then(|roms| roms.font.as_ref()) {
+        Some(font_rom) => {
+            info!("Loaded font ROM ({} bytes) for {}", font_rom.len(), model);
+            bus.load_font_rom(font_rom);
+        }
         None => {
             info!("Using built-in font ROM ({} bytes)", BUILTIN_FONT_ROM.len());
             bus.load_font_rom(BUILTIN_FONT_ROM);
@@ -1557,6 +1549,24 @@ fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
             info!("Installed PC-9801-26K sound board (YM2203 OPN)");
             bus.install_sound_blaster_16();
             info!("Installed Sound Blaster 16 (CT2720, YMF262 OPL3 + CT1741 DSP)");
+        }
+    }
+
+    // The PC-9801-26K sound BIOS ROM (CC000-CFFFF) is loaded only in real-BIOS
+    // mode when a 26K board is present; otherwise the built-in stub is kept.
+    let has_26k_board = matches!(
+        config.soundboard,
+        config::SoundboardType::Sb26k
+            | config::SoundboardType::Sb86And26k
+            | config::SoundboardType::Sb16And26k
+    );
+    if config.bios && has_26k_board {
+        match loaded_roms.as_ref().and_then(|roms| roms.sound.as_ref()) {
+            Some(sound_rom) => {
+                info!("Loaded PC-9801-26K sound ROM ({} bytes)", sound_rom.len());
+                bus.load_sound_rom(Some(sound_rom));
+            }
+            None => info!("No 26K sound ROM found - using built-in sound BIOS stub"),
         }
     }
 

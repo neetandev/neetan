@@ -125,8 +125,8 @@ apply to one family are ignored on the others.
 | `--window-mode <MODE>`       | All     | Window mode: `windowed` or `fullscreen`                                                                                                                  | `windowed`        |
 | `--force-gdc-clock <2.5\|5>` | PC-98   | Force GDC clock to 2.5 or 5 MHz. VX and later only                                                                                                       | auto              |
 | `--graphicboard <TYPE>`      | PC-98   | Graphics accelerator board: `none`, `ga1280a`                                                                                                            | `none`            |
-| `--bios-rom <PATH>`          | PC-98   | Path to BIOS ROM file                                                                                                                                    | HLE BIOS          |
-| `--font-rom <PATH>`          | PC-98   | Path to font ROM file                                                                                                                                    | Built-in          |
+| `--pc98-roms <PATH>`         | PC-98   | Directory with the PC-98 ROM set (BIOS, font, sound), matched by content hash. All ROMs optional                                                         | -                 |
+| `--bios`                     | PC-98   | Boot the real BIOS from `--pc98-roms` instead of the HLE BIOS. Ignored (warns) on PC-9821                                                                | HLE BIOS          |
 | `--soundboard <TYPE>`        | PC-98   | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`                                                                                     | `86+26k`          |
 | `--adpcm-ram <on\|off>`      | PC-98   | ADPCM RAM option for the PC-9801-86                                                                                                                      | `on`              |
 | `--ems <on\|off>`            | PC-98   | Enable EMS expanded memory                                                                                                                               | `on`              |
@@ -187,18 +187,64 @@ The MT-32 and SC-55 modules are configured separately via `--midi`; see
 
 ### Platform options
 
-| Option                       | Description                                                          | Default  |
-|------------------------------|----------------------------------------------------------------------|----------|
-| `--soundboard <TYPE>`        | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k` | `86+26k` |
-| `--adpcm-ram <on\|off>`      | ADPCM RAM option for the PC-9801-86                                  | `on`     |
-| `--ems <on\|off>`            | Enable EMS expanded memory                                           | `on`     |
-| `--xms <on\|off>`            | Enable XMS extended memory                                           | `on`     |
-| `--force-gdc-clock <2.5\|5>` | Force GDC clock to 2.5 or 5 MHz (VX and later only)                  | auto     |
-| `--graphicboard <TYPE>`      | Graphics accelerator board: `none`, `ga1280a`                        | `none`   |
-| `--bios-rom <PATH>`          | Path to BIOS ROM file                                                | HLE BIOS |
-| `--font-rom <PATH>`          | Path to font ROM file                                                | Built-in |
+| Option                       | Description                                                           | Default  |
+|------------------------------|-----------------------------------------------------------------------|----------|
+| `--soundboard <TYPE>`        | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`  | `86+26k` |
+| `--adpcm-ram <on\|off>`      | ADPCM RAM option for the PC-9801-86                                   | `on`     |
+| `--ems <on\|off>`            | Enable EMS expanded memory                                            | `on`     |
+| `--xms <on\|off>`            | Enable XMS extended memory                                            | `on`     |
+| `--force-gdc-clock <2.5\|5>` | Force GDC clock to 2.5 or 5 MHz (VX and later only)                   | auto     |
+| `--graphicboard <TYPE>`      | Graphics accelerator board: `none`, `ga1280a`                         | `none`   |
+| `--pc98-roms <PATH>`         | Directory with the PC-98 ROM set (BIOS, font, sound), by content hash | -        |
+| `--bios`                     | Boot the real BIOS from `--pc98-roms` instead of the HLE BIOS         | HLE BIOS |
 
 CD-ROM disc images (`--cdrom`) are supported on the PC-9821 targets only.
+
+### ROM set
+
+Unlike the other families, the PC-98 targets run on a built-in HLE BIOS and a
+built-in font by default, so a ROM set is mostly optional. Point `--pc98-roms` at
+a directory of dumps and pass `--bios` to boot the model's real BIOS instead of the
+HLE BIOS. ROMs are identified by their BLAKE3 content hash rather than by file name,
+so any dump layout works regardless of how the files are named; the directory is
+scanned non-recursively.
+
+If a game doesn't boot or has strange errors, then you might need to use a real PC-98
+BIOS file. Please open an issue in such cases, since outside BASIC games, we want to
+have full compatibility with the HLE BIOS. 
+
+With `--bios` the model's BIOS is required. The PC-9821 targets are the exception:
+they have currently no real-BIOS boot path and always fall back to HLE with a warning.
+The 26K sound ROM is loaded when a PC-9801-26K board is selected. A font ROM is best-effort:
+the model's preferred dump is used when present, otherwise the built-in font is kept.
+
+BIOS ROM (192 KiB dual-bank image, one per model):
+
+| Model      | Size    | BLAKE3                                                             |
+|------------|---------|--------------------------------------------------------------------|
+| `PC9801F`  | 192 KiB | `5587b89b968b005e81ea2bb4c2ef6fc762154d589e627920e3d9be9cd3e01b06` |
+| `PC9801VM` | 192 KiB | `4377eeba8410c57f9a313ed2d24cd929cbfb7cac40244d5c6cafd1a27bf3495e` |
+| `PC9801VX` | 192 KiB | `89ff271aa046bb6428761cdc3ec92d82e87350c5a4941974293c5b7fe2238aed` |
+| `PC9801RA` | 192 KiB | `f18e91e8097661efe4543f30558383a02021047acfaa6d0a78e06d025094aa5e` |
+| `PC9821AS` | -       | HLE only (no real BIOS)                                            |
+| `PC9821AP` | -       | HLE only (no real BIOS)                                            |
+
+Font ROM (V98 format, 282 KiB). Any of these dumps is accepted for any model; each
+model just prefers the one matching its family:
+
+| Dump         | Preferred by     | BLAKE3                                                             |
+|--------------|------------------|--------------------------------------------------------------------|
+| standard     | F / VM / VX / RA | `4b6f751f34e633e072ded2a109c25ddb90ac70350792dc55914a4cefa4dbe005` |
+| PC-9821As    | `PC9821AS`       | `a567134a3d5c2a215b9573ee07b5204fff243631052e7a40be340e863aff8eef` |
+| PC-9821Ap2   | `PC9821AP`       | `7fb96af345c33f9bd7be5c22f75c650ac41da9b543ca5f9ca7b3d3906f2abb40` |
+| PC-9801UX    | fallback         | `3c1efa858b80fc11bb7482bdc5e15004dd9a015d7d22d48159cd43ed63f540dc` |
+| PC-9821Ce2   | fallback         | `b38096265c76cf9f54cb47df905cfb6c8b4d4f27019a04835bbc3dc8782d33e1` |
+
+Sound ROM (loaded when a PC-9801-26K board is selected):
+
+| Slot    | Size   | BLAKE3                                                             |
+|---------|--------|--------------------------------------------------------------------|
+| `sound` | 16 KiB | `93816a6e42ed9a10135af634ed500e10b1d266e0b4158d3f8471910609255e24` |
 
 ### Graphic acceleration board
 
@@ -222,7 +268,7 @@ Select the PC-88 family with `--machine PC8801MC`. The emulated machine is alway
 the PC-8801MC; the `--boot-mode` option chooses which BASIC personality it powers up
 with, which is how the earlier PC-8001 family is emulated. Unlike the PC-98 targets,
 the PC-8801MC has no HLE firmware and **requires a real ROM set** (see
-[ROM set](#rom-set)).
+[ROM set](#rom-set-1)).
 
 Sound is provided by the machine's built-in OPNA (Sound Board II, which should be
 fully compatible to the Sound Board I).
@@ -315,7 +361,7 @@ the PC-8801 software. The original could run V1 and V2 BASIC games, since it's C
 had an integrated Z80. We don't implement th hybrid nature and if you need to run
 PC-8801 games, then please use the PC-8801MC target.
 
-Like the PC-8801MC, it has no HLE firmware and requires a real ROM set (see [ROM set](#rom-set-1)).
+Like the PC-8801MC, it has no HLE firmware and requires a real ROM set (see [ROM set](#rom-set-2)).
 
 ### Platform options
 
@@ -351,7 +397,7 @@ PC-6601SR have a built-in floppy drive driven directly by the main CPU.
 Cartridge and cassette images can be inserted with `--pc60-cart` and `--pc60-cass`
 (`.cas`, `.p6`, `.p6t`); the floppy drives use the shared `--fdd1` / `--fdd2`
 options. Like the PC-8801MC, none of these targets have HLE firmware and they require
-a real ROM set (see [ROM set](#rom-set-2)).
+a real ROM set (see [ROM set](#rom-set-3)).
 
 ### Platform options
 
@@ -632,33 +678,6 @@ Limitations:
   user-defined glyphs, etc.) are silently dropped.
 
 ## FAQ
-
-### Which ROM files do I need for this emulation?
-
-It depends on the emulated family:
-
-- PC-9801 / PC-9821: none. If you have the correct ROM files you CAN use them,
-  but there is no particular reason to, since our HLE BIOS has very good
-  compatibility.
-  We also include a self-created open source font ROM and provide the tools to
-  re-create / change it. With these systems in place we can run the vast majority
-  of PC-98 games and applications. There are some BIOS extensions, mainly the
-  sound API and LIO API that we currently haven't implemented, but outside
-  some odd BASIC-based games they should not be used by titles that interface with
-  the hardware I/O ports directly.
-- PC-8001 / PC-8801: a full ROM set is required and must be supplied via
-  `--pc88-roms`. The ROMs are matched by content hash, so file names do not matter;
-  see [ROM set](#rom-set) for the list of required ROMs and the extra ROMs that the
-  `n80` / `n80sr` boot modes need.
-- PC-88VA: a full ROM set is required and must be supplied via `--pc88va-roms`. The
-  ROMs are matched by content hash, so file names do not matter; see
-  [ROM set](#rom-set-1) for the list of required ROMs.
-- PC-6001 / PC-6601: a full ROM set is required and must be supplied via
-  `--pc60-roms`. The ROMs are matched by content hash, so file names do not matter;
-  see [ROM set](#rom-set-2) for the per-model list of required and optional ROMs.
-
-The optional MT-32 and SC-55 MIDI modules, also need ROM files to function correctly,
-as described in the [MIDI sound modules](#midi-sound-modules) section.
 
 ### How can I use my mouse?
 
