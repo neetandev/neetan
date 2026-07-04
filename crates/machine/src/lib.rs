@@ -30,7 +30,7 @@ pub use crate::{
     bus::{BootDevice, Pc9801Bus},
     config::ClockConfig,
     memory::Pc9801MemoryState,
-    rom::{LoadedRoms, RomError, accepted_bios_digests, load_rom_set},
+    rom::{LoadedRoms, RomError, accepted_bios_digests, load_rom_set, required_mame_set},
 };
 
 /// CPU state snapshot, discriminated by CPU type.

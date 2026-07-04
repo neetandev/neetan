@@ -1,6 +1,10 @@
 # ROMs
 
 - [How ROM loading works](#how-rom-loading-works)
+- [Which MAME ROM set do I need?](#which-mame-rom-set-do-i-need)
+- [Example directory layout](#example-directory-layout)
+- [Example configuration](#example-configuration)
+- [Build script](#build-script)
 - [PC-9801 / PC-9821](#pc-9801--pc-9821)
 - [PC-8001 / PC-8801](#pc-8001--pc-8801)
 - [PC-88VA2](#pc-88va2)
@@ -11,21 +15,19 @@
 
 ## How ROM loading works
 
+neetan loads its ROMs from officially MAME ROM sets or ROMS of real machine
+that were correctly dumped and have the same BLAKE3 hash. You do not need to
+merge, split, or rename anything: extract the set(s) for your machine into a
+directory and point the matching `--*-roms` option at it.
+
 Every machine points its ROM option at a single directory. neetan scans that
-directory (non-recursively), reads each file, and matches it by size and BLAKE3
-content hash against the tables below. File names do not matter and stray or
-wrong-sized files are simply ignored, so any dump layout works.
+directory (non-recursively), reads each file, and matches it by BLAKE3 content hash
+against the tables below. File names do not matter and stray or unrelated files
+are simply ignored, so you can drop a whole MAME set (or several sets) into one
+directory and neetan picks out the files it needs.
 
-```
-TODO: We do not want to have these exceptions. We need to use blake3 everywhere. 
-      I collected the SC-55 Rom files we have access to here: 
-[Roland SC-55 v1.21 ROMs.zip](../reference/roms/Roland%20SC-55%20v1.21%20ROMs.zip)
-[Roland SC-55mkII ROMs.zip](../reference/roms/Roland%20SC-55mkII%20ROMs.zip)
-[Roland SC-155 Rev1.zip](../reference/roms/Roland%20SC-155%20Rev1.zip)
-```
-
-There are two exceptions where file names are used: the FM Towns loose ROM set
-and every Roland SC-55 set are matched by file name (see those sections).
+There is one exception where file names are used: every Roland SC-55 set is matched
+by file name (see that section).
 
 | Machine            | Option           | Required?                        |
 |--------------------|------------------|----------------------------------|
@@ -37,48 +39,289 @@ and every Roland SC-55 set are matched by file name (see those sections).
 | Roland MT-32       | `--mt32-roms`    | Required for `--midi mt32`       |
 | Roland SC-55       | `--sc55-roms`    | Required for `--midi sc55`       |
 
+## Which MAME ROM set do I need?
+
+MAME ROM sets are named by a short identifier (the set below). Get the set from a
+MAME ROM collection matching your MAME version, then extract it into the directory
+for that machine.
+
+| Machine / model       | MAME set(s)                               | Notes                                                                        |
+|-----------------------|-------------------------------------------|------------------------------------------------------------------------------|
+| PC-9801F              | `pc9801f`                                 | BIOS assembled from `urm01-02`..`urm06-02`                                   |
+| PC-9801VM             | `pc9801vm`                                | BIOS assembled from the `cpu_board_*` chips                                  |
+| PC-9801VX             | `pc9801vx`                                | BIOS assembled from the four `..._yll0x` chips; ships the font ROM           |
+| PC-9801RA             | `pc9801rs`                                | No RA dump exists - the RS set is used instead; ships the font ROM           |
+| PC-9821AS / PC-9821AP | -                                         | HLE BIOS only; their fonts are not part of any MAME set (built-in font used) |
+| PC-8801MC             | `pc8801mc` (+ `pc8001mk2`, `pc8001mk2sr`) | The two `pc8001*` sets only add the optional N80 boot-mode ROMs              |
+| PC-88VA2              | `pc88va2`                                 | The sub-CPU ROM is NO_DUMP in MAME and must be sourced separately            |
+| PC-6001               | `pc6001`                                  |                                                                              |
+| PC-6001mkII           | `pc6001mk2`                               |                                                                              |
+| PC-6601               | `pc6601`                                  |                                                                              |
+| PC-6001mkIISR         | `pc6001mk2sr`                             |                                                                              |
+| PC-6601SR             | `pc6601sr`                                |                                                                              |
+| FM Towns II CX & MX   | `fmtownsmx`                               | The CX target boots the shared MX ROM set until a CX dump exists             |
+| Roland MT-32          | MT-32 v1.07 (recommended)                 | Any supported control + PCM pair works; see the MT-32 section                |
+| Roland SC-55          | SC-55 v1.21 (recommended)                 | Any supported model works; see the SC-55 section                             |
+
+The PC-98 models all use the single `--pc98-roms` directory. Because matching is by
+content hash, you can extract the `pc9801f`, `pc9801vm`, `pc9801vx`, and `pc9801rs`
+sets into that one directory and neetan will pick the right chips for whichever model
+you boot.
+
+## Example directory layout
+
+One sub-directory per `--*-roms` option. The PC-98 directory holds every PC-98 set
+together; the others hold their single set.
+
+```
+roms/
+|-- pc98/          --pc98-roms                     pc9801f + pc9801vm + pc9801vx + pc9801rs sets
+|   |-- urm01-02.bin ... urm06-02.bin              (PC-9801F BIOS chips)
+|   |-- cpu_board_1a_23128e.bin ...                (PC-9801VM BIOS chips)
+|   |-- nec_d27c256d-15_cpu_extboard_yll01.bin ... (PC-9801VX BIOS chips)
+|   |-- itf_rs.rom, bios_rs.rom                    (PC-9801RA BIOS, from the RS set)
+|   |-- font_ux.rom, font_rs.rom                   (shared V98 fonts)
+|   `-- sound.rom                                  (PC-9801-26K sound BIOS)
+|-- pc88/          --pc88-roms                     pc8801mc [+ pc8001mk2, pc8001mk2sr]
+|   |-- mc_n88.rom, mc_n88_0.rom ... cdbios.rom, kanji1.rom, mc_kanji2.rom, ...
+|   `-- n80_2.rom, n80_2sr.rom, n80_3.rom          (optional N80 boot modes)
+|-- pc88va/        --pc88va-roms   pc88va2
+|   |-- varom00_va2.rom, varom08_va2.rom, varom1_va2.rom, vafont_va2.rom, vadic_va2.rom
+|   `-- (sub-CPU ROM: not in the MAME set, source separately)
+|-- pc6000/        --pc6000-roms   pc6001 ... pc6601sr
+|   `-- basicrom.60, systemrom1.64, cgrom*.*, kanjirom.*, voicerom.*, ...
+|-- fmtowns/       --towns-roms    fmtownsmx
+|   |-- fmtownsiimxbios.m79
+|   `-- mytownsmx.rom
+|-- mt32/          --mt32-roms     MT-32 v1.07
+|   |-- MT32_CONTROL.ROM
+|   `-- MT32_PCM.ROM
+`-- sc55/          --sc55-roms     SC-55 v1.21
+    |-- sc55_rom1.bin, sc55_rom2.bin
+    `-- sc55_waverom1.bin, sc55_waverom2.bin, sc55_waverom3.bin
+```
+
+## Example configuration
+
+A `.conf` file (see `configuration/default.conf` for the full template) that points
+every ROM option at the layout above:
+
+```ini
+; PC-98: one directory holding all PC-9801 MAME sets.
+; Boot the real BIOS with bios=on for games that need it.
+; 98% of games will work with the HLE BIOS just fine
+; (and booting is faster on the HLE BIOS).
+pc98-roms = roms/pc98
+
+; PC-88 family.
+pc88-roms   = roms/pc88
+pc88va-roms = roms/pc88va
+pc6000-roms = roms/pc6000
+
+; FM Towns.
+towns-roms = roms/fmtowns
+
+; MIDI modules.
+mt32-roms = roms/mt32
+sc55-roms = roms/sc55
+```
+
+## Build script
+
+The bash script below turns a set of extracted MAME sets into the `roms/` layout
+above. Run it from a directory that contains the extracted sets (any depth, any
+names); it hashes every file once, then verifies and copies each ROM neetan needs
+with `b3sum` + `cp`, printing `OK` / `MISS` per file. It requires `b3sum`.
+
+```bash
+#!/usr/bin/env bash
+# Build a neetan ROM directory tree from extracted MAME ROM sets.
+# Usage: run from a directory containing the extracted sets. Output goes to ./roms.
+set -euo pipefail
+
+DEST="${1:-roms}"
+
+echo "Hashing source files ..."
+declare -A SRC
+while IFS= read -r -d '' file; do
+    SRC["$(b3sum --no-names "$file")"]="$file"
+done < <(find . -type f -not -path "./$DEST/*" -print0)
+
+status=0
+place() { # <blake3> <dest-relative-path>
+    local want="$1" dest="$2" src="${SRC[$1]:-}"
+    if [ -z "$src" ]; then
+        echo "MISS  $dest  (no source file with b3sum $want)" >&2
+        status=1
+        return
+    fi
+    mkdir -p "$DEST/$(dirname "$dest")"
+    cp -f "$src" "$DEST/$dest"
+    echo "OK    $dest"
+}
+
+while read -r hash dest; do
+    [ -z "${hash:-}" ] && continue
+    case "$hash" in \#*) continue ;; esac
+    place "$hash" "$dest"
+done <<'ROMS'
+# --- PC-9801 / PC-9821 (all sets share roms/pc98) ---
+cbac44179293aa4ad530c72fa19f2e3ac8278f3e6816a8691db82fa81d82e11c  pc98/urm01-02.bin
+e2717e5f6145218f2ddfa53d57c51df4da117b3b97ce044f81e90032bda4db69  pc98/urm02-02.bin
+a3ae6097b2203e5a5434dedb83f3eaeb9417551649e96af0e07cae1b8e8d4a7f  pc98/urm03-02.bin
+6b171375a77c20d515babda27c6189be6c5caa32c84825b003e616932c2d99bb  pc98/urm04-02.bin
+76f8963dd66a65b05b862f6193a8bd05b2ce64b4c388394136544a297bcc2757  pc98/urm05-02.bin
+8c14048b85a320340a07a44fadb1d54b04fa3da50e38f36ed19ae2cc1870886f  pc98/urm06-02.bin
+eb16e6050452c218497e6cf28591e8c049cca0a313bb5d9b8f30e2b22a58a939  pc98/cpu_board_1a_23128e.bin
+f8b7cda3cf40c9feca6899cc1045cdd65cd85a90511560eace8028253e1ce1f3  pc98/cpu_board_2a_d23c256ec.bin
+13218482d54793a10a25ea712a5be362d1d490c568c3e0228939af3f2c244b9c  pc98/cpu_board_3a_23c256e.bin
+00b3558c12b28dff9ab823354b289ad559c59d3695e80c1586f07e23890d45a6  pc98/cpu_board_4a_d23128ec.bin
+04de20aabdf46d943cd5148e4bbfdd7ba843fe19d8fec7afbaa48630f6887e52  pc98/nec_d27c256d-15_cpu_extboard_yll01.bin
+3de5476a72aadd3e32870f3525bc4fc945e941f8c3cfe81aeb0fd73c955294ee  pc98/nec_d27c256d-15_cpu_extboard_yll02.bin
+05e3220b53a61c9325ceb694629bddc20c593dbf2218ee78a9e5635e8a7bf5f6  pc98/nec_d27c256d-15_cpu_extboard_yll03.bin
+a0f6e1e87afa336c21648f972c96e20ea88dda792a1fc3d0acf26d8c50546158  pc98/nec_d27c256d-15_cpu_extboard_yll04.bin
+c1881b44dc07a7f20ceff00a24fe4467a933fd2c94e64213c9a8526d60e4d3d1  pc98/itf_rs.rom
+ac5b46fbec4a5ac6b3185066d86af8e3d76cd1b66955301dad3cae8736b31f2d  pc98/bios_rs.rom
+3c1efa858b80fc11bb7482bdc5e15004dd9a015d7d22d48159cd43ed63f540dc  pc98/font_ux.rom
+4b6f751f34e633e072ded2a109c25ddb90ac70350792dc55914a4cefa4dbe005  pc98/font_rs.rom
+93816a6e42ed9a10135af634ed500e10b1d266e0b4158d3f8471910609255e24  pc98/sound.rom
+# --- PC-8801MC (roms/pc88) ---
+40457b507b82dd57cce0fcecf6bc65543a60bd46558ca947b0f69dd3658cdad8  pc88/mc_n88.rom
+6a50a88231062ec871c65f63266fa7062a303ab870aed81c49f1f333f594a518  pc88/mc_n88_0.rom
+d5583fcce4eabf078d17666a1fddefa6a0d8bdc7f56d4499d526818728777252  pc88/mc_n88_1.rom
+ca200799765cb02a001bd55215b0daaf6d0593118a05e8d85754bddd92e5e8f7  pc88/mc_n88_2.rom
+ac31c1fbabfada9890669bebd471d60fac0be0e88ddfde81f17c600d5b0a1757  pc88/mc_n88_3.rom
+652eacc1ed6073bc3da1856c9c4f74ac14abef3f966f0d0fc89c40386de3d1a1  pc88/mc_n80.rom
+283dcd1c4a69f8049d19021d34d1cc2094f10de8b4e1ddf85da6a4b258dd8d12  pc88/mc_jisyo.rom
+10fd26424ae9e28be721846491d2d7b10e946da2d2ff39542248e819bc2339ba  pc88/kanji1.rom
+f528e78bbe43e3d36c3def6ef30140e22ba9e69f422736605c2c4570c7d3fbe7  pc88/mc_kanji2.rom
+081d2ca8ad7066de207b7360e45b5d6f3bab01769aefb9057141becbbaec5aa5  pc88/ma_disk.rom
+de4d49437344806850b22356f9e5537e413e6113902fb8fbc803f902a5728827  pc88/cdbios.rom
+9e4ec9c53f4432a88583dccd04ae3186f4d7849f80ea7774ac1efbdb93c992f2  pc88/n80_2.rom
+56406a79fd664a197c458cb3feeeb6994c34266a1e02728877b6ea5ef86e15ba  pc88/n80_2sr.rom
+7b81e27b831ad00f264170d1d98c645298fa688b07d5a9f0c19c1d6a73fe4273  pc88/n80_3.rom
+# --- PC-88VA2 (roms/pc88va) ---
+bba5011412fb266b3c15ff08d2508716ba2ac54fec3aa172b59e441486807eab  pc88va/varom00_va2.rom
+4cdf3da9a1423e874f9618a8d8859107fa5e3d20a91f4dcf908e042763c41bbb  pc88va/varom08_va2.rom
+1239bf390d444ff205f70c700527cb50bc90107904050fa8713a415a17bf0e42  pc88va/varom1_va2.rom
+b47ec9f55ff199ac71f453385aec0f370afbb958fd47ad9bb5161bdf4e2bb3ee  pc88va/vafont_va2.rom
+21fcd88c97b881e55f015f22d62002022189572e171f1c5e485b751c84379b30  pc88va/vadic_va2.rom
+# --- PC-6001 / PC-6601 (roms/pc6000) ---
+13bc0696487984f7836f094312b64fb0702dcb5ac3b941a79bd6f174e657697d  pc6000/basicrom.60
+d951eae886dec98a063e5fb11e12b0385f5dd4617c0546fe7cf9fd77b17ae41c  pc6000/basicrom.62
+d9eaf3e5e6cb1f71db527e6eeadf7a1968f8a558234b74c6812198c588ae46d1  pc6000/basicrom.66
+c4901a2149f3c8e65d3db78bbf3776fc2d963f270152923ba920274d44a0224b  pc6000/basicrom.68
+6ca4e747c8b17307a77150441e5d8721d5c242fcc8b8ef35737d3f5edf6e2d74  pc6000/systemrom1.64
+998a90c4bd0bf4ae4a600a0d94f3eca96c3b8db754311ce1c8029126dbcf0a9a  pc6000/systemrom2.64
+becb7c1502d41a9f160b651e142044610ffa172a8bbf47eaa11aa0086953a080  pc6000/sysrom2.68
+f537afe76997ec4f8b377a29771f45c39414a25f7e071d2d38b143cdd8bee7bc  pc6000/cgrom60.60
+581f6d2db80386732ed09706ad3b8961f8b77b7ea024e65cec37e56ad2adf07c  pc6000/cgrom60.62
+63829a1c32924a77f85716f445c445ab7be178c4438cfd8cf6ffaff5731a0965  pc6000/cgrom60.66
+24e524d4938809a87720f98abfba71c8e9162d742c67a167d8b87566cc1d4258  pc6000/cgrom60.68
+ba0dd650539dd3fdbf63da36982b41bfda8f4c2ea0dcda2c1c2ac56427ee26ed  pc6000/cgrom66.66
+067c732525260eadfcfecbb9fc4ef9535c0c2f77caa049453bf2ab992ec3fca3  pc6000/cgrom66.68
+b49b056ca06bd0c2253e6db0806969787a6fca4fc78228728422c9cf63f1e472  pc6000/cgrom68.64
+f0af53e54b1b09b229d03efc9f65e65597a0c4f6aa9e3e7c0e553274ccd481fb  pc6000/kanjirom.62
+633e73f55479bee65ed344d818a35b15ab109f188ad5c09826c066d6ec2596c5  pc6000/voicerom.62
+88a747147725fd618668e07744b05f34288b4454698d6182c4db2e680c7b76d0  pc6000/voicerom.66
+8ed4a9a3e9ae2e4aa0fccc0f170081f3f61c09e293812b7973a7ab9c23e22b68  pc6000/voicerom.68
+# --- FM Towns II CX / MX (roms/fmtowns) ---
+f5c2cc7c2876a4b30f320fe6fb721bd32f3ba43bbb9b0b42c398fa6b59d72ce8  fmtowns/fmtownsiimxbios.m79
+d5dc70e34d072889c28bed51ef3ccaac7f6f3fdd9e448d89297847247a901538  fmtowns/mytownsmx.rom
+# --- Roland MT-32 v1.07 (roms/mt32) ---
+8f123c1f38104a2a7eb1df35fd5b26ca1b857185086a87233b355510264602bf  mt32/MT32_CONTROL.ROM
+7805996b758fab5469e96d9a28588eb2e991440242372f7546345cdc66c8d97a  mt32/MT32_PCM.ROM
+# --- Roland SC-55 v1.21 (roms/sc55; names matter for SC-55) ---
+4755d6b3b0455b13c9176f409f4d9c2d9953f61fb5e68df3094886b7b2795f9e  sc55/sc55_rom1.bin
+593282df20a4a9ed9b595711fce19b84999316fa8bc6bf2ff63df66871ca81ce  sc55/sc55_rom2.bin
+482581a5042a54ed6d8c46df929a898902feddee248ee0becb5e228dbab638e3  sc55/sc55_waverom1.bin
+3b14ffc7e6803fa7cb0f5cb2cca3eb07094b49b9563f5a55b656360df7a90965  sc55/sc55_waverom2.bin
+cd0b796db0b37467bb64cb2f89c66befe841125620daa008531bdd3723880cd3  sc55/sc55_waverom3.bin
+ROMS
+
+exit $status
+```
+
 ## PC-9801 / PC-9821
 
-The PC-98 targets run on a built-in HLE BIOS and a built-in font by default, so a
-ROM set is optional. Point `--pc98-roms` at a directory of dumps and pass `--bios`
-to boot the model's real BIOS instead of the HLE BIOS.
+The PC-98 targets run on a built-in HLE BIOS and a built-in font by default, so a ROM
+set is optional. Point `--pc98-roms` at a directory of MAME dumps and pass `--bios`
+to boot the model's real BIOS instead of the HLE BIOS. neetan assembles the model's
+BIOS from its individual mask-ROM chips (following MAME's ROM layout) into the
+192 KiB dual-bank image the emulator uses.
 
 With `--bios` the model's BIOS is required. The PC-9821 targets are the exception:
 they have no real-BIOS boot path and always fall back to HLE with a warning. The 26K
-sound ROM is loaded when a PC-9801-26K board is selected. A font ROM is best-effort:
-the model's preferred dump is used when present, otherwise the built-in font is kept.
+sound ROM (`sound.rom`) is loaded when a PC-9801-26K board is selected. A font ROM is
+best-effort: any V98 font in the directory is used, otherwise the built-in font is
+kept.
 
-BIOS ROM (192 KiB dual-bank ITF + BIOS image, one per model):
+BIOS chips (assembled per model). Extract the model's MAME set into `--pc98-roms`:
 
-| Model      | Size    | BLAKE3                                                             |
-|------------|---------|--------------------------------------------------------------------|
-| `PC9801F`  | 192 KiB | `5587b89b968b005e81ea2bb4c2ef6fc762154d589e627920e3d9be9cd3e01b06` |
-| `PC9801VM` | 192 KiB | `4377eeba8410c57f9a313ed2d24cd929cbfb7cac40244d5c6cafd1a27bf3495e` |
-| `PC9801VX` | 192 KiB | `89ff271aa046bb6428761cdc3ec92d82e87350c5a4941974293c5b7fe2238aed` |
-| `PC9801RA` | 192 KiB | `f18e91e8097661efe4543f30558383a02021047acfaa6d0a78e06d025094aa5e` |
-| `PC9821AS` | -       | HLE only (no real BIOS)                                            |
-| `PC9821AP` | -       | HLE only (no real BIOS)                                            |
+PC-9801F (MAME set `pc9801f`):
 
-Font ROM (V98 format, 282 KiB). If none are provided, uses the open source fallback font.
-Any of these dumps is accepted for any model. Each model just prefers the one matching its family:
+| File           | Size   | BLAKE3                                                             |
+|----------------|--------|--------------------------------------------------------------------|
+| `urm01-02.bin` | 16 KiB | `cbac44179293aa4ad530c72fa19f2e3ac8278f3e6816a8691db82fa81d82e11c` |
+| `urm02-02.bin` | 16 KiB | `e2717e5f6145218f2ddfa53d57c51df4da117b3b97ce044f81e90032bda4db69` |
+| `urm03-02.bin` | 16 KiB | `a3ae6097b2203e5a5434dedb83f3eaeb9417551649e96af0e07cae1b8e8d4a7f` |
+| `urm04-02.bin` | 16 KiB | `6b171375a77c20d515babda27c6189be6c5caa32c84825b003e616932c2d99bb` |
+| `urm05-02.bin` | 16 KiB | `76f8963dd66a65b05b862f6193a8bd05b2ce64b4c388394136544a297bcc2757` |
+| `urm06-02.bin` | 16 KiB | `8c14048b85a320340a07a44fadb1d54b04fa3da50e38f36ed19ae2cc1870886f` |
 
-| Dump         | Preferred by     | BLAKE3                                                             |
+PC-9801VM (MAME set `pc9801vm`):
+
+| File                          | Size   | BLAKE3                                                             |
+|-------------------------------|--------|--------------------------------------------------------------------|
+| `cpu_board_1a_23128e.bin`     | 16 KiB | `eb16e6050452c218497e6cf28591e8c049cca0a313bb5d9b8f30e2b22a58a939` |
+| `cpu_board_2a_d23c256ec.bin`  | 32 KiB | `f8b7cda3cf40c9feca6899cc1045cdd65cd85a90511560eace8028253e1ce1f3` |
+| `cpu_board_3a_23c256e.bin`    | 32 KiB | `13218482d54793a10a25ea712a5be362d1d490c568c3e0228939af3f2c244b9c` |
+| `cpu_board_4a_d23128ec.bin`   | 16 KiB | `00b3558c12b28dff9ab823354b289ad559c59d3695e80c1586f07e23890d45a6` |
+
+PC-9801VX (MAME set `pc9801vx`):
+
+| File                                       | Size   | BLAKE3                                                             |
+|--------------------------------------------|--------|--------------------------------------------------------------------|
+| `nec_d27c256d-15_cpu_extboard_yll01.bin`   | 32 KiB | `04de20aabdf46d943cd5148e4bbfdd7ba843fe19d8fec7afbaa48630f6887e52` |
+| `nec_d27c256d-15_cpu_extboard_yll02.bin`   | 32 KiB | `3de5476a72aadd3e32870f3525bc4fc945e941f8c3cfe81aeb0fd73c955294ee` |
+| `nec_d27c256d-15_cpu_extboard_yll03.bin`   | 32 KiB | `05e3220b53a61c9325ceb694629bddc20c593dbf2218ee78a9e5635e8a7bf5f6` |
+| `nec_d27c256d-15_cpu_extboard_yll04.bin`   | 32 KiB | `a0f6e1e87afa336c21648f972c96e20ea88dda792a1fc3d0acf26d8c50546158` |
+
+PC-9801RA (MAME set `pc9801rs` - there is no dedicated RA dump, so the RS set is
+used):
+
+| File          | Size   | BLAKE3                                                             |
+|---------------|--------|--------------------------------------------------------------------|
+| `itf_rs.rom`  | 32 KiB | `c1881b44dc07a7f20ceff00a24fe4467a933fd2c94e64213c9a8526d60e4d3d1` |
+| `bios_rs.rom` | 96 KiB | `ac5b46fbec4a5ac6b3185066d86af8e3d76cd1b66955301dad3cae8736b31f2d` |
+
+The PC-9821AS and PC-9821AP have no real-BIOS boot path and always run the
+HLE BIOS.
+
+Font ROM (V98 format, 282 KiB). Best-effort: any of these dumps is accepted for any
+model, otherwise the built-in font is used. The `pc9801vx` and `pc9801rs` sets ship a
+font (`font_ux.rom` / `font_rs.rom`); the `pc9801f` and `pc9801vm` sets do not, so
+those models fall back to the built-in font unless one of the other fonts is in the
+same directory.
+
+| Dump         | Source           | BLAKE3                                                             |
 |--------------|------------------|--------------------------------------------------------------------|
-| standard     | F / VM / VX / RA | `4b6f751f34e633e072ded2a109c25ddb90ac70350792dc55914a4cefa4dbe005` |
-| PC-9821As    | `PC9821AS`       | `a567134a3d5c2a215b9573ee07b5204fff243631052e7a40be340e863aff8eef` |
-| PC-9821Ap2   | `PC9821AP`       | `7fb96af345c33f9bd7be5c22f75c650ac41da9b543ca5f9ca7b3d3906f2abb40` |
-| PC-9801UX    | fallback         | `3c1efa858b80fc11bb7482bdc5e15004dd9a015d7d22d48159cd43ed63f540dc` |
-| PC-9821Ce2   | fallback         | `b38096265c76cf9f54cb47df905cfb6c8b4d4f27019a04835bbc3dc8782d33e1` |
+| `font_rs.rom`| `pc9801rs`       | `4b6f751f34e633e072ded2a109c25ddb90ac70350792dc55914a4cefa4dbe005` |
+| `font_ux.rom`| `pc9801vx`       | `3c1efa858b80fc11bb7482bdc5e15004dd9a015d7d22d48159cd43ed63f540dc` |
+| PC-9821As    | -                | `a567134a3d5c2a215b9573ee07b5204fff243631052e7a40be340e863aff8eef` |
+| PC-9821Ap2   | -                | `7fb96af345c33f9bd7be5c22f75c650ac41da9b543ca5f9ca7b3d3906f2abb40` |
+| PC-9821Ce2   | -                | `b38096265c76cf9f54cb47df905cfb6c8b4d4f27019a04835bbc3dc8782d33e1` |
 
-Sound ROM (loaded when a PC-9801-26K board is selected):
+Sound ROM (loaded when a PC-9801-26K board is selected; present in every PC-98 set):
 
-| Slot    | Size   | BLAKE3                                                             |
-|---------|--------|--------------------------------------------------------------------|
-| `sound` | 16 KiB | `93816a6e42ed9a10135af634ed500e10b1d266e0b4158d3f8471910609255e24` |
+| File        | Size   | BLAKE3                                                             |
+|-------------|--------|--------------------------------------------------------------------|
+| `sound.rom` | 16 KiB | `93816a6e42ed9a10135af634ed500e10b1d266e0b4158d3f8471910609255e24` |
 
 ## PC-8001 / PC-8801
 
-The PC-8801MC needs a real ROM set, pointed to by `--pc88-roms`.
+The PC-8801MC needs a real ROM set (MAME set `pc8801mc`), pointed to by `--pc88-roms`.
+The optional N80 boot-mode ROMs come from the `pc8001mk2` and `pc8001mk2sr` sets.
 
 These ROMs are always required:
 
@@ -98,16 +341,18 @@ These ROMs are always required:
 
 These ROMs are required only when the matching boot mode is selected:
 
-| Slot         | Size   | Required by boot mode | BLAKE3                                                             |
-|--------------|--------|-----------------------|--------------------------------------------------------------------|
-| `n80_mkii`   | 32 KiB | `n80`                 | `9e4ec9c53f4432a88583dccd04ae3186f4d7849f80ea7774ac1efbdb93c992f2` |
-| `n80_mkiisr` | 32 KiB | `n80sr`               | `56406a79fd664a197c458cb3feeeb6994c34266a1e02728877b6ea5ef86e15ba` |
-| `n80sr`      | 40 KiB | `n80sr`               | `7b81e27b831ad00f264170d1d98c645298fa688b07d5a9f0c19c1d6a73fe4273` |
+| Slot         | Size   | Required by boot mode | MAME set       | BLAKE3                                                             |
+|--------------|--------|-----------------------|----------------|--------------------------------------------------------------------|
+| `n80_mkii`   | 32 KiB | `n80`                 | `pc8001mk2`    | `9e4ec9c53f4432a88583dccd04ae3186f4d7849f80ea7774ac1efbdb93c992f2` |
+| `n80_mkiisr` | 32 KiB | `n80sr`               | `pc8001mk2sr`  | `56406a79fd664a197c458cb3feeeb6994c34266a1e02728877b6ea5ef86e15ba` |
+| `n80sr`      | 40 KiB | `n80sr`               | `pc8001mk2sr`  | `7b81e27b831ad00f264170d1d98c645298fa688b07d5a9f0c19c1d6a73fe4273` |
 
 ## PC-88VA2
 
-The PC-88VA2 needs a real ROM set, pointed to by `--pc88va-roms`. All slots are
-required:
+The PC-88VA2 needs a real ROM set (MAME set `pc88va2`), pointed to by `--pc88va-roms`.
+The floppy sub-CPU ROM (`subsys`) is marked `NO_DUMP` in MAME and is not part of the
+`pc88va2` set; it must be sourced separately (sometimes called `disk.rom` (8 KiB) in
+older dumps; a PC-88VA's disk.rom should be the same). All slots are required:
 
 | Slot         | Size    | Contents                  | BLAKE3                                                             |
 |--------------|---------|---------------------------|--------------------------------------------------------------------|
@@ -120,11 +365,12 @@ required:
 
 ## PC-6001 / PC-6601
 
-The PC-6000 targets need a real ROM set, pointed to by `--pc6000-roms`. Each model
-requires its boot ROM (BASIC or, on the SR models, the system ROM) and its base
-character generator; the kanji, extended character generator, and voice ROMs are
-loaded when present. Several dumps are bit-identical across models (the kanji ROM,
-the SR system ROM halves), so a single file can satisfy more than one slot.
+The PC-6000 targets need a real ROM set, pointed to by `--pc6000-roms`. Each model has
+its own MAME set (`pc6001`, `pc6001mk2`, `pc6601`, `pc6001mk2sr`, `pc6601sr`); extract
+whichever you need into the directory (they can share it). Each model requires its boot
+ROM (BASIC or, on the SR models, the system ROM) and its base character generator; the
+kanji, extended character generator, and voice ROMs are loaded when present. Several
+dumps are bit-identical across models, so a single file can satisfy more than one slot.
 
 | Slot          | Size   | Contents                          | Required for                            | BLAKE3                                                             |
 |---------------|--------|-----------------------------------|-----------------------------------------|--------------------------------------------------------------------|
@@ -150,10 +396,11 @@ the SR system ROM halves), so a single file can satisfy more than one slot.
 ## FM Towns
 
 The FM Towns targets need a real ROM set, pointed to by `--towns-roms`. Both the
-FM Towns II CX and MX use the FM Towns II MX ROM dump. Two layouts are accepted.
+FM Towns II CX and MX use the FM Towns II MX ROM dump (MAME set `fmtownsmx`). Two
+layouts are accepted.
 
-The merged set is the packed 2 MiB MAME BIOS image plus the 32-byte serial ROM.
-These two files are matched by name:
+The merged set is the packed 2 MiB MAME BIOS image plus the 32-byte serial ROM (this
+is what the `fmtownsmx` set contains):
 
 | File                  | Size     | BLAKE3                                                             |
 |-----------------------|----------|--------------------------------------------------------------------|
@@ -174,11 +421,13 @@ The split set provides the five images individually plus the serial ROM:
 ## MIDI: Roland MT-32
 
 Place your MT-32 ROM files into a single directory and point `--mt32-roms` at it.
-ROMs are identified by size and BLAKE3 hash, so file names do not matter. You need
-one control ROM and one PCM ROM. Split ROM pairs (two halves) are also supported and
-merged automatically.
+ROMs are identified by size and BLAKE3 hash, so file names do not matter. You need one
+control ROM and one PCM ROM. Split ROM pairs (two halves) are also supported and merged
+automatically.
 
-The control ROM version determines the emulated model:
+Recommended: MT-32 control ROM v1.07 (`MT32_CONTROL.ROM`
+`8f123c1f...`) with the MT-32 PCM ROM (`MT32_PCM.ROM` `7805996b...`). The control ROM
+version determines the emulated model:
 
 | Model                     | Control ROM versions                  |
 |---------------------------|---------------------------------------|
@@ -187,8 +436,8 @@ The control ROM version determines the emulated model:
 | CM-32L / LAPC-I           | v1.00, v1.02                          |
 | CM-32LN / CM-500 / LAPC-N | v1.00                                 |
 
-Currently the MT-32 control ROM versions v1.04, v1.05, v1.06 and v1.07 have the best
-compatibility.
+The MT-32 control ROM versions v1.04, v1.05, v1.06 and v1.07 have the best
+compatibility; v1.07 is recommended.
 
 Full ROMs (a single control ROM plus a single PCM ROM is enough):
 
@@ -197,7 +446,7 @@ Full ROMs (a single control ROM plus a single PCM ROM is enough):
 | MT-32 Control v1.04                     | Control | 64 KiB  | `9102699229706ff459a718924884559d50a6a8749a2d27fe58548f3c0606f66a` |
 | MT-32 Control v1.05                     | Control | 64 KiB  | `6b05c40c21d67c6780c39dac669dc7869d2b9fbde62bfc73a03ec3634282658f` |
 | MT-32 Control v1.06                     | Control | 64 KiB  | `93e8a9bd5fdea0f3e92d9a9949e307bc98dc7d9ff7650b28d9dbfd2e863054bb` |
-| MT-32 Control v1.07                     | Control | 64 KiB  | `8f123c1f38104a2a7eb1df35fd5b26ca1b857185086a87233b355510264602bf` |
+| MT-32 Control v1.07 (recommended)       | Control | 64 KiB  | `8f123c1f38104a2a7eb1df35fd5b26ca1b857185086a87233b355510264602bf` |
 | MT-32 Control BlueRidge                 | Control | 64 KiB  | `af3cc9fe2f9844adde07377af66b4e1b0636df499abf4f2cdba716bb886642ad` |
 | MT-32 Control v2.04                     | Control | 128 KiB | `788364d4f8dbe7577f092ef944418461b65bdbd449e2808a3403e28e90c4ee5d` |
 | MT-32 Control v2.06                     | Control | 128 KiB | `3bd5adf2aba6f5bd9a85d52dc164b2c0efd3c8e69b7cf058d4dcc644c85d98b3` |
@@ -230,21 +479,24 @@ Half dumps (merged automatically into the corresponding full ROM):
 ## MIDI: Roland SC-55
 
 Place the ROM files for your device model into a single directory and point
-`--sc55-roms` at it. Unlike every other ROM set, the SC-55 is matched by **file
-name** (and size), not content hash; the emulator auto-detects the model from the
-file names present and the first matching set wins.
+`--sc55-roms` at it. Unlike every other ROM set, the SC-55 is matched by file name
+(and size), not content hash; the emulator auto-detects the model from the file names
+present and the first matching set wins.
 
-| Model                   | Required files                                                                                       |
-|-------------------------|------------------------------------------------------------------------------------------------------|
-| SC-55mk2 / SC-155mk2    | `rom1.bin`, `rom2.bin`, `rom_sm.bin`, `waverom1.bin`, `waverom2.bin`                                 |
-| SC-55st                 | `rom1.bin`, `rom2_st.bin`, `rom_sm.bin`, `waverom1.bin`, `waverom2.bin`                              |
-| SC-55 (mk1)             | `sc55_rom1.bin`, `sc55_rom2.bin`, `sc55_waverom1.bin`, `sc55_waverom2.bin`, `sc55_waverom3.bin`      |
-| CM-300 / SCC-1 / SCC-1A | `cm300_rom1.bin`, `cm300_rom2.bin`, `cm300_waverom1.bin`, `cm300_waverom2.bin`, `cm300_waverom3.bin` |
-| JV-880                  | `jv880_rom1.bin`, `jv880_rom2.bin`, `jv880_waverom1.bin`, `jv880_waverom2.bin`                       |
-| SCB-55 / RLP-3194       | `scb55_rom1.bin`, `scb55_rom2.bin`, `scb55_waverom1.bin`, `scb55_waverom2.bin`                       |
-| RLP-3237                | `rlp3237_rom1.bin`, `rlp3237_rom2.bin`, `rlp3237_waverom1.bin`                                       |
-| SC-155                  | `sc155_rom1.bin`, `sc155_rom2.bin`, `sc155_waverom1.bin`, `sc155_waverom2.bin`, `sc155_waverom3.bin` |
+Recommended: SC-55 v1.21 (mk1) - place `sc55_rom1.bin`, `sc55_rom2.bin`,
+`sc55_waverom1.bin`, `sc55_waverom2.bin`, and `sc55_waverom3.bin`.
+
+| Model                    | Required files                                                                                       |
+|--------------------------|------------------------------------------------------------------------------------------------------|
+| SC-55mk2 / SC-155mk2     | `rom1.bin`, `rom2.bin`, `rom_sm.bin`, `waverom1.bin`, `waverom2.bin`                                 |
+| SC-55st                  | `rom1.bin`, `rom2_st.bin`, `rom_sm.bin`, `waverom1.bin`, `waverom2.bin`                              |
+| SC-55 (mk1, recommended) | `sc55_rom1.bin`, `sc55_rom2.bin`, `sc55_waverom1.bin`, `sc55_waverom2.bin`, `sc55_waverom3.bin`      |
+| CM-300 / SCC-1 / SCC-1A  | `cm300_rom1.bin`, `cm300_rom2.bin`, `cm300_waverom1.bin`, `cm300_waverom2.bin`, `cm300_waverom3.bin` |
+| JV-880                   | `jv880_rom1.bin`, `jv880_rom2.bin`, `jv880_waverom1.bin`, `jv880_waverom2.bin`                       |
+| SCB-55 / RLP-3194        | `scb55_rom1.bin`, `scb55_rom2.bin`, `scb55_waverom1.bin`, `scb55_waverom2.bin`                       |
+| RLP-3237                 | `rlp3237_rom1.bin`, `rlp3237_rom2.bin`, `rlp3237_waverom1.bin`                                       |
+| SC-155                   | `sc155_rom1.bin`, `sc155_rom2.bin`, `sc155_waverom1.bin`, `sc155_waverom2.bin`, `sc155_waverom3.bin` |
 
 The MT-32 and SC-55 emulations are optional build features. See
-[Build requirements](../README.md#build-requirements) for how to enable or disable
-them and [License](../README.md#license) for the licensing implications.
+[Build requirements](../README.md#build-requirements) for how to enable or disable them
+and [License](../README.md#license) for the licensing implications.
