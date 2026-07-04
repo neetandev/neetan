@@ -1622,10 +1622,13 @@ fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
             info!("Loaded BIOS ROM ({} bytes) for {}", bios_rom.len(), model);
             bus.load_bios_rom(bios_rom);
         } else {
+            let set = machine::required_mame_set(model).unwrap_or("(none)");
             bail!(
-                "no BIOS ROM for {} found in {} (accepted digests: {})",
+                "could not assemble the BIOS for {} from {}: install the MAME `{}` ROM set \
+                 (required chip digests: {})",
                 model,
                 rom_dir.display(),
+                set,
                 machine::accepted_bios_digests(model).join(", "),
             );
         }
