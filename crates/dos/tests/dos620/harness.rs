@@ -850,12 +850,12 @@ pub fn write_bytes(bus: &mut impl Bus, addr: u32, data: &[u8]) {
     }
 }
 
-/// Sets both IOSYS and GDC text cursor position so the HLE DOS dispatch
-/// pre-sync does not clobber the test setup with stale GDC state.
+/// Positions the cursor by writing the IOSYS cursor bytes directly, the way a
+/// program using the IO.SYS convention does. The HLE DOS dispatch reconciliation
+/// propagates this change to the GDC on the next syscall.
 pub fn set_cursor_position<T: Tracing>(bus: &mut machine::Pc9801Bus<T>, row: u8, col: u8) {
     const IOSYS_CURSOR_Y: u32 = 0x0600 + 0x0110;
     const IOSYS_CURSOR_X: u32 = 0x0600 + 0x011C;
-    bus.set_text_cursor_position(row, col);
     bus.write_byte(IOSYS_CURSOR_Y, row);
     bus.write_byte(IOSYS_CURSOR_X, col);
 }

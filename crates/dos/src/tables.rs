@@ -111,6 +111,10 @@ pub const SFT_DEVINFO_STDOUT: u16 = 0x0002;
 pub const SFT_DEVINFO_NUL: u16 = 0x0004;
 pub const SFT_DEVINFO_CLOCK: u16 = 0x0008;
 pub const SFT_DEVINFO_SPECIAL: u16 = 0x0010;
+// Base device-info bits real DOS 6.20 sets on every character-device SFT
+// entry: bit 15 (mirror of DEVATTR_CHAR), bit 7 (CHAR), and bit 6 (no-EOF).
+pub const SFT_DEVINFO_CHAR_DEVICE_COMMON: u16 =
+    SFT_DEVINFO_DRIVER_CHAR | SFT_DEVINFO_CHAR | SFT_DEVINFO_EOF;
 
 // CDS (Current Directory Structure)
 pub const CDS_OFFSET: u16 = 0x01C0;
