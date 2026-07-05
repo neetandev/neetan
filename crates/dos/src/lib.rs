@@ -352,6 +352,10 @@ pub struct NeetanDos {
     pub(crate) pending_native_drivers: Vec<LoadedNativeDriver>,
     /// Active shell sessions keyed by PSP segment.
     pub(crate) shells: BTreeMap<u16, shell::Shell>,
+    /// Cursor state as of the last syscall-boundary reconciliation. Used to
+    /// detect which side (IOSYS bytes or hardware GDC) the guest changed
+    /// between syscalls so `dispatch` can propagate the real change.
+    last_cursor: HardwareCursorState,
 }
 
 struct RootShellBootConfig {
@@ -367,21 +371,21 @@ impl Default for NeetanDos {
     }
 }
 
-fn sync_hardware_cursor_to_iosys(cursor: &impl CursorAccess, memory: &mut dyn MemoryAccess) {
-    let state = cursor.read();
+fn read_iosys_cursor(memory: &dyn MemoryAccess) -> HardwareCursorState {
+    HardwareCursorState {
+        visible: memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_VISIBLE) != 0,
+        row: memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_Y),
+        col: memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_X),
+    }
+}
+
+fn write_iosys_cursor(memory: &mut dyn MemoryAccess, state: HardwareCursorState) {
     memory.write_byte(
         tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_VISIBLE,
         u8::from(state.visible),
     );
     memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_Y, state.row);
     memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_X, state.col);
-}
-
-fn sync_iosys_to_hardware_cursor(cursor: &mut impl CursorAccess, memory: &dyn MemoryAccess) {
-    let visible = memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_VISIBLE) != 0;
-    let row = memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_Y);
-    let col = memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_X);
-    cursor.write(HardwareCursorState { visible, row, col });
 }
 
 impl NeetanDos {
@@ -431,6 +435,11 @@ impl NeetanDos {
             boot_entry_point: BootEntryPoint::command_com(0),
             pending_native_drivers: Vec::new(),
             shells: BTreeMap::new(),
+            last_cursor: HardwareCursorState {
+                visible: true,
+                row: 0,
+                col: 0,
+            },
         }
     }
 
@@ -1111,10 +1120,13 @@ impl NeetanDos {
     /// Returns `true` if the interrupt was handled, `false` if the vector
     /// should fall through to the default IRET behavior.
     ///
-    /// Reconciles the BIOS-owned hardware cursor with the HLE DOS IOSYS cursor
-    /// tracking at entry and exit: the DOS overwrites its IOSYS copy from the
-    /// hardware first (so it does not act on stale state), runs the syscall,
-    /// then writes any DOS-side cursor changes back to the hardware.
+    /// Reconciles the BIOS-owned hardware cursor (GDC) with the HLE DOS IOSYS
+    /// cursor bytes at each syscall boundary. Between syscalls the guest can move
+    /// the cursor either by programming the GDC (e.g. INT 18h AH=13h) or by
+    /// writing the IOSYS bytes at 0060:0110/011B/011C directly. On entry the side
+    /// that actually changed since the last reconciliation wins and is propagated
+    /// to the other. The IOSYS side wins if both changed. On exit any DOS-side
+    /// cursor advance is pushed back to the hardware.
     pub fn dispatch(
         &mut self,
         vector: u8,
@@ -1124,10 +1136,21 @@ impl NeetanDos {
         cursor: &mut impl CursorAccess,
         tracer: &mut impl Tracing,
     ) -> bool {
-        sync_hardware_cursor_to_iosys(cursor, memory);
+        let hardware = cursor.read();
+        let iosys = read_iosys_cursor(memory);
+        if iosys != self.last_cursor {
+            cursor.write(iosys);
+        } else if hardware != self.last_cursor {
+            write_iosys_cursor(memory, hardware);
+        }
+        self.last_cursor = read_iosys_cursor(memory);
+
         tracer.trace_dos_dispatch(vector, cpu, memory);
         let result = self.dispatch_inner(vector, cpu, memory, device, tracer);
-        sync_iosys_to_hardware_cursor(cursor, memory);
+
+        let iosys = read_iosys_cursor(memory);
+        cursor.write(iosys);
+        self.last_cursor = iosys;
         result
     }
 
@@ -1478,7 +1501,10 @@ impl NeetanDos {
             mem.write_byte(entry + SFT_ENT_FILE_ATTR, 0x00);
             mem.write_word(
                 entry + SFT_ENT_DEV_INFO,
-                SFT_DEVINFO_CHAR | SFT_DEVINFO_SPECIAL | SFT_DEVINFO_STDIN | SFT_DEVINFO_STDOUT,
+                SFT_DEVINFO_CHAR_DEVICE_COMMON
+                    | SFT_DEVINFO_SPECIAL
+                    | SFT_DEVINFO_STDIN
+                    | SFT_DEVINFO_STDOUT,
             );
             write_far_ptr(mem, entry + SFT_ENT_DEV_PTR, con_seg, con_off);
             mem.write_block(entry + SFT_ENT_NAME, b"CON        ");
@@ -1490,7 +1516,7 @@ impl NeetanDos {
             mem.write_word(entry + SFT_ENT_REF_COUNT, 1);
             mem.write_word(entry + SFT_ENT_OPEN_MODE, 0x0002);
             mem.write_byte(entry + SFT_ENT_FILE_ATTR, 0x00);
-            mem.write_word(entry + SFT_ENT_DEV_INFO, SFT_DEVINFO_CHAR);
+            mem.write_word(entry + SFT_ENT_DEV_INFO, SFT_DEVINFO_CHAR_DEVICE_COMMON);
             // Point to NUL device as a safe fallback
             let nul_off = DEV_NUL_OFFSET;
             write_far_ptr(mem, entry + SFT_ENT_DEV_PTR, DOS_DATA_SEGMENT, nul_off);
@@ -1503,7 +1529,7 @@ impl NeetanDos {
             mem.write_word(entry + SFT_ENT_REF_COUNT, 1);
             mem.write_word(entry + SFT_ENT_OPEN_MODE, 0x0002);
             mem.write_byte(entry + SFT_ENT_FILE_ATTR, 0x00);
-            mem.write_word(entry + SFT_ENT_DEV_INFO, SFT_DEVINFO_CHAR);
+            mem.write_word(entry + SFT_ENT_DEV_INFO, SFT_DEVINFO_CHAR_DEVICE_COMMON);
             let nul_off = DEV_NUL_OFFSET;
             write_far_ptr(mem, entry + SFT_ENT_DEV_PTR, DOS_DATA_SEGMENT, nul_off);
             mem.write_block(entry + SFT_ENT_NAME, b"PRN        ");

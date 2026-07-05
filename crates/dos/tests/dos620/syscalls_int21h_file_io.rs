@@ -1639,3 +1639,50 @@ fn findnext_after_findfirst() {
         fn_flags
     );
 }
+
+/// Runs INT 21h AX=4400h (IOCTL get device info) for the given handle and
+/// returns (AX, DX, flags).
+fn ioctl_get_device_info(machine: &mut machine::Pc9801Ra, handle: u8) -> (u16, u16, u16) {
+    #[rustfmt::skip]
+    let mut code: Vec<u8> = vec![
+        0xB8, 0x00, 0x44,                   // MOV AX, 4400h
+        0xBB, 0x00, 0x00,                   // MOV BX, handle
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x89, 0x16, 0x02, 0x01,             // MOV [0x0102], DX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x04, 0x01,                   // MOV [0x0104], AX (flags)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    code[4] = handle;
+    harness::inject_and_run(machine, &code);
+    (
+        harness::result_word(&machine.bus, 0),
+        harness::result_word(&machine.bus, 2),
+        harness::result_word(&machine.bus, 4),
+    )
+}
+
+#[test]
+fn ioctl_get_device_info_standard_handles_set_bit15() {
+    let mut machine = harness::boot_hle();
+
+    // stdin(0), stdout(1), stderr(2) are all pre-opened to CON. Real DOS 6.20
+    // returns the character-device SFT word 0x80D3 (bit 15 + bit 7 + bit 6 +
+    // SPECIAL|STDIN|STDOUT). TurboC's conio checks bit 15 to detect the console.
+    for handle in [0u8, 1, 2] {
+        let (ax, dx, flags) = ioctl_get_device_info(&mut machine, handle);
+        assert_eq!(
+            ax, 0x80D3,
+            "AX=4400h handle {handle} must return 0x80D3 (bit 15 set), got {ax:#06X}"
+        );
+        assert_eq!(dx, ax, "AX=4400h handle {handle} must return DX == AX");
+        assert_eq!(
+            flags & 0x0001,
+            0,
+            "AX=4400h handle {handle} must clear CF, flags={flags:#06X}"
+        );
+    }
+}

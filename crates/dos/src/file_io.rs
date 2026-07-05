@@ -56,16 +56,11 @@ struct CharacterDeviceOpen {
 }
 
 fn path_character_device(path: &[u8]) -> Option<CharacterDeviceOpen> {
-    // Real DOS 6.20 sets bit 15 (mirror of DEVATTR_CHAR) and bit 6 (no-EOF
-    // / binary mode) on every character-device SFT entry alongside bit 7
-    // (CHAR) and the per-device low-byte flags.
-    const CHAR_DEVICE_COMMON: u16 =
-        tables::SFT_DEVINFO_DRIVER_CHAR | tables::SFT_DEVINFO_CHAR | tables::SFT_DEVINFO_EOF;
     if path_is_named_device(path, b"CON     ") {
         return Some(CharacterDeviceOpen {
             sft_name: b"CON        ",
             device_offset: tables::DEV_CON_OFFSET,
-            device_info: CHAR_DEVICE_COMMON
+            device_info: tables::SFT_DEVINFO_CHAR_DEVICE_COMMON
                 | tables::SFT_DEVINFO_SPECIAL
                 | tables::SFT_DEVINFO_STDIN
                 | tables::SFT_DEVINFO_STDOUT,
@@ -75,21 +70,21 @@ fn path_character_device(path: &[u8]) -> Option<CharacterDeviceOpen> {
         return Some(CharacterDeviceOpen {
             sft_name: b"NUL        ",
             device_offset: tables::DEV_NUL_OFFSET,
-            device_info: CHAR_DEVICE_COMMON | tables::SFT_DEVINFO_NUL,
+            device_info: tables::SFT_DEVINFO_CHAR_DEVICE_COMMON | tables::SFT_DEVINFO_NUL,
         });
     }
     if path_is_named_device(path, b"AUX     ") {
         return Some(CharacterDeviceOpen {
             sft_name: b"AUX        ",
             device_offset: tables::DEV_NUL_OFFSET,
-            device_info: CHAR_DEVICE_COMMON,
+            device_info: tables::SFT_DEVINFO_CHAR_DEVICE_COMMON,
         });
     }
     if path_is_named_device(path, b"PRN     ") {
         return Some(CharacterDeviceOpen {
             sft_name: b"PRN        ",
             device_offset: tables::DEV_NUL_OFFSET,
-            device_info: CHAR_DEVICE_COMMON,
+            device_info: tables::SFT_DEVINFO_CHAR_DEVICE_COMMON,
         });
     }
     None
