@@ -53,13 +53,16 @@
 //! | 80386 | Yes                    | No                   | No                  | Yes               |
 //! | 80486 | Yes                    | No                   | No                  | Yes               |
 //! | Z80   | Yes                    | Yes                  | Yes                 | No                |
+//! | 6809  | Yes                    | Yes (2)              | Yes                 | No                |
 //!
 //! Note 1: We validated the timings using the V20 testdata and the V20 bus behavior. We then
 //!         added the V30 bus behavior and verified if the cycles adjust accordingly, how we
 //!         would expect them based on the documentation NEC provided. We will use V30 testdata,
 //!         as soon as they are available, but we are very confident, that our current V30 is
 //!         already 99% cycle accurate when beeing compared to an original V30.
-
+//! Note 2: We validate the cycle-count against test files generated with MAME's m6809 core, which
+//!         is believed to be the most accurate emulation of the 6809. Once real hardware traces
+//!         become available, we will use those instead.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(clippy::unnecessary_wraps)]
@@ -68,6 +71,7 @@
 mod i286;
 mod i386;
 mod i8086;
+mod m6809;
 mod vx0;
 mod z80;
 
@@ -80,6 +84,7 @@ pub use i386::{
     ADDRESS_WIDTH_24, ADDRESS_WIDTH_32, CPU_MODEL_386, CPU_MODEL_486, I386, I386Flags, I386State,
 };
 pub use i8086::{I8086, I8086Flags, I8086State, PC9801F_CPU_CLOCK_5MHZ, PC9801F_CPU_CLOCK_8MHZ};
+pub use m6809::{M6809, M6809Flags, M6809State};
 pub use vx0::{
     V20, V20_BUS, V30, V30_BUS, V30BusPhase, V30Flags, V30QueueOpTrace, V30State, V30TaCycle, VX0,
 };

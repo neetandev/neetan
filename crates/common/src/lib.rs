@@ -1168,6 +1168,90 @@ pub trait CpuZ80 {
     fn set_im(&mut self, value: u8);
 }
 
+/// Trait representing a Motorola 6809-compatible CPU core.
+///
+/// This is separate from [`Cpu`], which models the x86 CPUs used by the
+/// PC-98 machines and exposes segment-oriented state. The 6809 has a flat
+/// 16-bit address space and shares the same [`Bus`] abstraction for memory,
+/// interrupt polling, and cycle accounting.
+pub trait Cpu6809 {
+    /// Executes instructions until approximately `cycles_to_run` cycles have
+    /// been consumed, then returns the actual number of consumed cycles.
+    fn run_for(&mut self, cycles_to_run: u64, bus: &mut impl Bus) -> u64;
+
+    /// Resets the CPU to its power-on state.
+    fn reset(&mut self);
+
+    /// Returns `true` if the CPU is waiting for an interrupt.
+    fn halted(&self) -> bool;
+
+    /// Returns the configured input clock frequency in Hz.
+    fn clock_hz(&self) -> u32;
+
+    /// Updates the configured input clock frequency in Hz.
+    fn set_clock_hz(&mut self, clock_hz: u32);
+
+    /// Returns the program counter.
+    fn pc(&self) -> u16;
+
+    /// Sets the program counter.
+    fn set_pc(&mut self, value: u16);
+
+    /// Returns the hardware stack pointer.
+    fn s(&self) -> u16;
+
+    /// Sets the hardware stack pointer.
+    fn set_s(&mut self, value: u16);
+
+    /// Returns the user stack pointer.
+    fn u(&self) -> u16;
+
+    /// Sets the user stack pointer.
+    fn set_u(&mut self, value: u16);
+
+    /// Returns the X index register.
+    fn x(&self) -> u16;
+
+    /// Sets the X index register.
+    fn set_x(&mut self, value: u16);
+
+    /// Returns the Y index register.
+    fn y(&self) -> u16;
+
+    /// Sets the Y index register.
+    fn set_y(&mut self, value: u16);
+
+    /// Returns accumulator A.
+    fn a(&self) -> u8;
+
+    /// Sets accumulator A.
+    fn set_a(&mut self, value: u8);
+
+    /// Returns accumulator B.
+    fn b(&self) -> u8;
+
+    /// Sets accumulator B.
+    fn set_b(&mut self, value: u8);
+
+    /// Returns the combined D accumulator.
+    fn d(&self) -> u16;
+
+    /// Sets the combined D accumulator.
+    fn set_d(&mut self, value: u16);
+
+    /// Returns the direct page register.
+    fn dp(&self) -> u8;
+
+    /// Sets the direct page register.
+    fn set_dp(&mut self, value: u8);
+
+    /// Returns the packed condition code register.
+    fn cc(&self) -> u8;
+
+    /// Sets the packed condition code register.
+    fn set_cc(&mut self, value: u8);
+}
+
 /// Digital joystick state for a single controller.
 ///
 /// Each field is `true` while the corresponding direction or trigger is held.
