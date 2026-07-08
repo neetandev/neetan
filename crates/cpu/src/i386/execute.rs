@@ -3043,9 +3043,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 self.ip = eip as u16;
                 self.ip_upper = eip & 0xFFFF_0000;
                 self.flags.load_flags(eflags as u16, 0, false);
-                // Real-mode IRETD loads RF (and AC on the 486); VM is unchanged.
-                self.eflags_upper =
-                    eflags & (Self::eflags_upper_writable() & !EFLAGS_VIRTUAL_8086_FLAG);
+                // Real-mode IRETD loads the writable upper flags (RF, and AC on
+                // the 486) from the stack image. VM and the reserved bits keep
+                // their previous value.
+                let load_mask = Self::eflags_upper_writable() & !EFLAGS_VIRTUAL_8086_FLAG;
+                self.eflags_upper = (self.eflags_upper & !load_mask) | (eflags & load_mask);
             } else {
                 let ip = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
                 let cs = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(2)))?;
