@@ -1,13 +1,15 @@
 //! Floppy disk image format parsers for FDC emulation.
 //!
-//! Supports three PC-98 floppy image formats:
+//! Supports these floppy image formats:
 //! - **D88** (.d88/.d98/.88d/.98d): Standard D88 format with per-sector metadata.
 //! - **HDM** (.hdm): Headerless raw sector format for 2HD floppies.
 //! - **NFD** (.nfd): T98Next format with per-sector metadata (R0 and R1 revisions).
+//! - **2D** (.2d): Headerless raw sector format for Sharp X1 2D floppies.
 
 pub mod d88;
 pub mod hdm;
 pub mod nfd;
+pub mod two_d;
 
 use std::{
     error::Error,
@@ -33,6 +35,8 @@ pub enum FloppyFormat {
     NfdR0,
     /// T98Next floppy format, R1 revision (.nfd, magic `T98FDDIMAGE.R1`).
     NfdR1,
+    /// Headerless raw 2D sector format (.2d).
+    TwoD,
 }
 
 /// A parsed floppy disk image.
@@ -94,6 +98,15 @@ impl FloppyImage {
         Ok(Self { disk, format })
     }
 
+    /// Parses a 2D floppy image from raw bytes.
+    pub fn from_2d_bytes(data: &[u8]) -> Result<Self, FloppyError> {
+        let disk = two_d::from_bytes(data).map_err(FloppyError::TwoD)?;
+        Ok(Self {
+            disk,
+            format: FloppyFormat::TwoD,
+        })
+    }
+
     /// Returns a human-readable format name.
     pub fn format_name(&self) -> &'static str {
         match self.format {
@@ -101,6 +114,7 @@ impl FloppyImage {
             FloppyFormat::Hdm => "HDM",
             FloppyFormat::NfdR0 => "NFD R0",
             FloppyFormat::NfdR1 => "NFD R1",
+            FloppyFormat::TwoD => "2D",
         }
     }
 
@@ -111,6 +125,7 @@ impl FloppyImage {
             FloppyFormat::Hdm => hdm::to_bytes(&self.disk),
             FloppyFormat::NfdR0 => nfd::to_bytes_r0(&self.disk),
             FloppyFormat::NfdR1 => nfd::to_bytes_r1(&self.disk),
+            FloppyFormat::TwoD => two_d::to_bytes(&self.disk),
         }
     }
 
@@ -126,6 +141,13 @@ impl FloppyImage {
             }
             FloppyFormat::NfdR0 | FloppyFormat::NfdR1 => {
                 Some("NFD full-image serialization does not preserve all source metadata")
+            }
+            FloppyFormat::TwoD => {
+                if two_d::is_representable(&self.disk) {
+                    None
+                } else {
+                    Some("2D cannot represent the current track layout")
+                }
             }
         }
     }
@@ -293,6 +315,7 @@ pub fn load_floppy_image(path: &Path, data: &[u8]) -> Result<FloppyImage, Floppy
     match extension.as_deref() {
         Some("hdm") => FloppyImage::from_hdm_bytes(data),
         Some("nfd") => FloppyImage::from_nfd_bytes(data),
+        Some("2d") => FloppyImage::from_2d_bytes(data),
         Some("d88") | Some("d98") | Some("88d") | Some("98d") => FloppyImage::from_d88_bytes(data),
         _ => FloppyImage::from_d88_bytes(data),
     }
@@ -307,6 +330,8 @@ pub enum FloppyError {
     Hdm(hdm::HdmError),
     /// NFD format parsing error.
     Nfd(nfd::NfdError),
+    /// 2D format parsing error.
+    TwoD(two_d::TwoDError),
     /// File extension not recognized as a supported floppy format.
     UnrecognizedFormat,
 }
@@ -317,6 +342,7 @@ impl fmt::Display for FloppyError {
             FloppyError::D88(err) => write!(f, "{err}"),
             FloppyError::Hdm(err) => write!(f, "{err}"),
             FloppyError::Nfd(err) => write!(f, "{err}"),
+            FloppyError::TwoD(err) => write!(f, "{err}"),
             FloppyError::UnrecognizedFormat => write!(f, "unrecognized floppy image format"),
         }
     }

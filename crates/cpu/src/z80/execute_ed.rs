@@ -250,6 +250,11 @@ impl Z80 {
                 self.wz = self.pop(bus);
                 self.pc = self.wz;
                 self.iff1 = self.iff2;
+                // Opcode 0x4D (y == 1) is RETI; the rest of the group are RETN.
+                // RETI signals the interrupt daisy chain to dismiss the handler.
+                if y == 1 {
+                    bus.notify_reti();
+                }
             }
             (1, 6) => {
                 self.set_q_latch(false);

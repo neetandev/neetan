@@ -1145,25 +1145,42 @@ impl SoundBlaster16 {
             let mut output_offset = 0;
             let sample_count = output.len();
             while input_offset < total_interleaved && output_offset < sample_count {
+                // Cap the resampler's output to the samples still needed so it
+                // never produces (and then discards) more than fits.
+                let out_len = (sample_count - output_offset).min(self.opl3_resample_output.len());
                 let Ok((consumed, produced)) = self.opl3_resampler.resample(
                     &self.opl3_resample_input[input_offset..total_interleaved],
-                    &mut self.opl3_resample_output,
+                    &mut self.opl3_resample_output[..out_len],
                 ) else {
                     break;
                 };
-                let usable = produced.min(sample_count - output_offset);
-                for (out, &resampled) in output[output_offset..output_offset + usable]
+                for (out, &resampled) in output[output_offset..output_offset + produced]
                     .iter_mut()
-                    .zip(&self.opl3_resample_output[..usable])
+                    .zip(&self.opl3_resample_output[..produced])
                 {
                     *out += resampled * volume;
                 }
                 input_offset += consumed;
-                output_offset += usable;
-                if consumed == 0 {
+                output_offset += produced;
+                if consumed == 0 && produced == 0 {
                     break;
                 }
             }
+
+            // Carry the native samples the resampler has not consumed yet into
+            // the next call instead of discarding them, so the OPL3 sample
+            // stream stays continuous across audio-frame boundaries.
+            let consumed_native = input_offset / 2;
+            let mut carried = Vec::with_capacity(total_native - consumed_native);
+            for i in consumed_native..total_native {
+                let sample = if i < pending_count {
+                    self.opl3_pending_native[i]
+                } else {
+                    self.opl3_native_buffer[i - pending_count]
+                };
+                carried.push(sample);
+            }
+            self.opl3_pending_native = carried;
         }
 
         // PCM mixing from DSP ring buffer
@@ -1207,26 +1224,35 @@ impl SoundBlaster16 {
                 let mut output_offset = 0;
                 let sample_count = output.len();
                 while input_offset < total_interleaved && output_offset < sample_count {
+                    // Cap the resampler's output to the samples still needed so
+                    // it never produces (and then discards) more than fits; the
+                    // resampler retains any not-yet-convolved input internally.
+                    let out_len =
+                        (sample_count - output_offset).min(self.pcm_resample_output.len());
                     let Ok((consumed, produced)) = self.pcm_resampler.resample(
                         &self.pcm_resample_input[input_offset..total_interleaved],
-                        &mut self.pcm_resample_output,
+                        &mut self.pcm_resample_output[..out_len],
                     ) else {
                         break;
                     };
-                    let usable = produced.min(sample_count - output_offset);
-                    for i in 0..usable {
+                    for i in 0..produced {
                         output[output_offset + i] += self.pcm_resample_output[i] * volume;
                     }
                     input_offset += consumed;
-                    output_offset += usable;
-                    if consumed == 0 {
+                    output_offset += produced;
+                    if consumed == 0 && produced == 0 {
                         break;
                     }
                 }
             }
         }
 
-        self.opl3_pending_native.clear();
+        // When the OPL3 block ran it already replaced opl3_pending_native with the
+        // carried (unconsumed) tail; only clear it when there were no samples to
+        // resample this call.
+        if total_native == 0 {
+            self.opl3_pending_native.clear();
+        }
         self.state.audio_frame_start_cycle = current_cycle;
         self.state.fm_sync_cursor = current_cycle;
     }

@@ -1,7 +1,7 @@
 # Neetan (ねーたん)
 
-An emulator for the PC-6001, PC-6601, PC-8001, PC-8801, PC-88VA, PC-9801, PC-9821
-and FM Towns written in Rust.
+An emulator for the PC-6001, PC-6601, PC-8001, PC-8801, PC-88VA, PC-9801, PC-9821,
+FM Towns and Sharp X1 written in Rust.
 
 ## Documentation
 
@@ -12,6 +12,7 @@ Each machine family has its own detailed guide:
 * [PC-88VA2](doc/machine-pc88va.md)
 * [PC-6001 / PC-6601](doc/machine-pc6000.md)
 * [FM Towns](doc/machine-towns.md)
+* [Sharp X1](doc/machine-x1.md)
 
 The [ROMs](doc/roms.md) page is the unified reference for every ROM file the
 emulator can load.
@@ -27,7 +28,7 @@ Updates to the compatibility list is always greatly welcome!
 
 ## Supported systems
 
-Neetan emulates five distinct families, selected through the `--machine` option. See
+Neetan emulates six distinct families, selected through the `--machine` option. See
 each family's guide for the detailed target list, sound options, ROM requirements,
 and platform-specific flags.
 
@@ -38,6 +39,7 @@ and platform-specific flags.
 | [PC-88VA2](doc/machine-pc88va.md)          | PC-88VA2                                                        | Real ROM set required    |
 | [PC-6001 / PC-6601](doc/machine-pc6000.md) | PC-6001, PC-6001mkII, PC-6601, PC-6001mkIISR, PC-6601SR         | Real ROM set required    |
 | [FM Towns](doc/machine-towns.md)           | FM Towns II CX, FM Towns II MX                                  | Real ROM set required    |
+| [Sharp X1](doc/machine-x1.md)              | X1, X1 turbo                                                    | Real ROM set required    |
 
 The default machine is `PC9801RA`. Games of the PC-98 normally do not require any ROM
 files. The other families need a real ROM set. See [ROMs](doc/roms.md) for details.
@@ -53,8 +55,9 @@ neetan <COMMAND>
 
 The `System` column shows where an option applies: `All` (every family), `PC-98`
 (PC-9801 / PC-9821 only), `PC-9821` (PC-9821 only), `PC-88` (PC-8001 / PC-8801
-only), `PC-88VA` (PC-88VA only), `PC-6000` (PC-6001 / PC-6601 only), or `FM Towns`
-(FM Towns only). Options that apply to one family are ignored on the others.
+only), `PC-88VA` (PC-88VA only), `PC-6000` (PC-6001 / PC-6601 only), `FM Towns`
+(FM Towns only), or `X1` (Sharp X1 only). Options that apply to one family are
+ignored on the others.
 
 | Option                       | System            | Description                                                                                      | Default           |
 |------------------------------|-------------------|--------------------------------------------------------------------------------------------------|-------------------|
@@ -62,7 +65,7 @@ only), `PC-88VA` (PC-88VA only), `PC-6000` (PC-6001 / PC-6601 only), or `FM Town
 | `--machine <TYPE>`           | All               | Machine type (see the list of values below the table)                                            | `PC9801RA`        |
 | `--cpu-mode <MODE>`          | All               | CPU speed mode: `low` or `high` (PC-88 default derives from the boot mode)                       | `high` (PC-98)    |
 | `--boot-mode <MODE>`         | PC-88             | BASIC boot mode: `v1s`, `v1h`, `v2`, `n`, `n80`, `n80sr`                                         | `v2`              |
-| `--pc88-monitor <MODE>`      | PC-88             | Monitor timing: `auto`, `15k`, `24k`                                                             | `auto`            |
+| `--monitor <MODE>`           | PC-88, X1         | Monitor timing: `auto`, `15k`, `24k`                                                             | `auto`            |
 | `--pc88-memory-wait <MODE>`  | PC-88             | Memory wait: `fast` or `compatible`                                                              | derives from mode |
 | `--pc88-8mhz-wait <MODE>`    | PC-88             | 8 MHz wait: `fast` or `compatible`                                                               | `fast`            |
 | `--pc88-roms <PATH>`         | PC-88             | Directory with the PC-8801MC ROM set (required for `PC8801MC`)                                   | -                 |
@@ -71,6 +74,8 @@ only), `PC-88VA` (PC-88VA only), `PC-6000` (PC-6001 / PC-6601 only), or `FM Town
 | `--pc6000-phase <0-3>`       | PC-6000           | Initial composite artifact-color phase; swaps the fake-color pair Mode 4 titles rely on.         | `0`               |
 | `--towns-roms <PATH>`        | FM Towns          | Directory with the FM Towns ROM set (required for the FM Towns targets)                          | -                 |
 | `--towns-pad <2\|6>`         | FM Towns          | FM Towns game pad type: `2` (2-button) or `6` (6-button)                                         | `6`               |
+| `--x1-roms <PATH>`           | X1                | Directory with the Sharp X1 ROM set (required for the X1 targets)                                | -                 |
+| `--x1-keyboard <A\|B>`       | X1                | X1 turbo keyboard mode switch: `A` (standard) or `B` (game-key matrix, mode-B kana layout)       | `A`               |
 | `--fdd1 <PATH>`              | All               | Floppy disk image for drive 1 (repeatable)                                                       | -                 |
 | `--fdd2 <PATH>`              | All               | Floppy disk image for drive 2 (repeatable)                                                       | -                 |
 | `--hdd1 <PATH>`              | All               | Hard disk image for hard disk drive 1                                                            | -                 |
@@ -78,7 +83,7 @@ only), `PC-88VA` (PC-88VA only), `PC-6000` (PC-6001 / PC-6601 only), or `FM Town
 | `--cdrom <PATH>`             | PC-9821, FM Towns | CD-ROM disc image .cue or .ccd file (repeatable)                                                 | -                 |
 | `--cdrom-compat <on\|off>`   | FM Towns          | Slow/compatible CD-ROM drive timing                                                              | `off`             |
 | `--cartridge <PATH>`         | PC-6000           | Cartridge ROM image to insert                                                                    | -                 |
-| `--cassette <PATH>`          | PC-6000           | Cassette tape image to insert (`.cas`, `.p6`, `.p6t`)                                            | -                 |
+| `--cassette <PATH>`          | PC-6000, X1       | Cassette tape image to insert (`.cas`, `.p6`, `.p6t`; X1 `.tap`)                                 | -                 |
 | `--audio-volume <FLOAT>`     | All               | Audio volume 0.0-1.0                                                                             | `1.0`             |
 | `--aspect-mode <MODE>`       | All               | Display aspect mode: `4:3` or `1:1`                                                              | `4:3`             |
 | `--crt <on\|off>`            | All               | Enable the CRT effect. Not available when using the legacy backend.                              | `on`              |
@@ -104,8 +109,8 @@ only), `PC-88VA` (PC-88VA only), `PC-6000` (PC-6001 / PC-6601 only), or `FM Town
 
 The `--machine <TYPE>` values are: `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RA`,
 `PC9821AS`, `PC9821AP`, `PC8801MC`, `PC88VA2`, `PC6001`, `PC6001MK2`, `PC6601`,
-`PC6001MK2SR`, `PC6601SR`, `FMTownsIICX` and `FMTownsIIMX`. The default is
-`PC9801RA`.
+`PC6001MK2SR`, `PC6601SR`, `FMTownsIICX`, `FMTownsIIMX`, `X1` and `X1TURBO`.
+The default is `PC9801RA`.
 
 ### Commands
 
@@ -151,7 +156,7 @@ neetan copy src.hdi:A:\FOO.EXE dst.hdi:A:\FOO.EXE
 Directories are copied recursively (there is no `-r` flag). DOS paths must use 8.3
 ASCII filenames. Longer names are rejected before any file is written. Recognized
 image extensions are `hdi`, `nhd`, `thd` (hard disks) and `d88`, `d98`, `88d`, `98d`,
-`hdm`, `nfd` (floppies).
+`hdm`, `nfd`, `2d` (floppies).
 
 ## Configuration file
 
@@ -253,11 +258,14 @@ mappings.
 | Format  | Extensions                     | Writable | Description                                        |
 |---------|--------------------------------|----------|----------------------------------------------------|
 | D88     | `.d88`, `.d98`, `.88d`, `.98d` | Yes      | Standard PC-98 disk image with per-sector metadata |
-| HDM     | `.hdm`                         | No       | Headerless raw sector image (2HD only)             |
-| NFD     | `.nfd`                         | No       | T98Next format with per-sector metadata            |
+| HDM     | `.hdm`                         | Yes      | Headerless raw sector image (2HD only)             |
+| NFD     | `.nfd`                         | Partial  | T98Next format with per-sector metadata            |
+| 2D      | `.2d`                          | Yes      | Headerless raw sector image (Sharp X1, 2D only)    |
 
-Only D88 images preserve modifications written by the emulated software. HDM and NFD
-images are currently read-only.
+Sector writes made by the emulated software (e.g. game saves) are persisted back to the
+source file for all formats. Full track reformatting (`FORMAT TRACK`) is re-emitted for
+D88, HDM, and 2D, but not for NFD, whose full-image serialization cannot preserve all
+per-sector metadata.
 
 ### Supported CD-ROM disc image formats
 
@@ -348,6 +356,7 @@ were invaluable for developing neetan:
 - [MartyPC](https://github.com/dbalsom/martypc)
 - [NP21W](https://simk98.github.io/np21w/)
 - [Tsugaru](https://github.com/captainys/TOWNSEMU)
+- [Common Source Code Project](https://takeda-toshiya.my.coocan.jp/common/index.html)
 - [SingleStepTests](https://github.com/SingleStepTests)
 - [undoc98](https://www.webtech.co.jp/company/doc/undocumented_mem/index.html)
 

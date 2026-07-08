@@ -210,6 +210,20 @@ impl KeyMap {
         }
     }
 
+    /// Sharp X1 key map: host scancodes to sub-CPU key sub-ids. The sub-CPU
+    /// resolves the modifier state itself, so modifiers forward as their own
+    /// sub-ids and this map ignores the host modifier state. Punctuation keys
+    /// whose native virtual-key codes exceed 0x7F use the spare low sub-ids the
+    /// bus remaps (so the host release flag, bit 7, never collides).
+    pub const fn new_x1() -> Self {
+        let mappings = build_x1_default_map();
+        Self {
+            mappings,
+            shifted_mappings: mappings,
+            resolve_modifiers: false,
+        }
+    }
+
     /// PC-88VA key map: host scancodes to VA keycodes (the values read at port
     /// 0x1C1). The VA keycode interface reuses the PC-98 scan-code protocol, so the
     /// base map matches the PC-98 default; the machine derives the 88-compatible
@@ -498,6 +512,142 @@ const fn build_default_map() -> [u8; Scancode::COUNT] {
 const fn build_pc88va_default_map() -> [u8; Scancode::COUNT] {
     let mut map = build_default_map();
     map[Scancode::KpEnter.index()] = 0x79;
+    map
+}
+
+/// Default Sharp X1 key map: host scancodes to sub-CPU key sub-ids. Alphanumeric
+/// and control keys carry their virtual-key code directly; punctuation keys whose
+/// virtual-key codes exceed 0x7F carry the spare sub-ids the bus remaps. Unmapped
+/// host keys carry 0x00, which the sub-CPU treats as no key.
+#[allow(clippy::just_underscores_and_digits)]
+const fn build_x1_default_map() -> [u8; Scancode::COUNT] {
+    use Scancode::*;
+
+    /// No-key code for host keys without an X1 equivalent.
+    const UNMAPPED: u8 = 0x00;
+
+    // Modifier virtual-key codes (identity-mapped by the bus).
+    const VK_SHIFT: u8 = 0x10;
+    const VK_CTRL: u8 = 0x11;
+    const VK_GRAPH: u8 = 0x12;
+    const VK_CAPS: u8 = 0x14;
+
+    // Spare sub-ids the bus remaps to the punctuation virtual-key codes > 0x7F.
+    const SUBID_COLON: u8 = 0x01; // -> ':'
+    const SUBID_SEMICOLON: u8 = 0x02; // -> ';'
+    const SUBID_COMMA: u8 = 0x04; // -> ','
+    const SUBID_MINUS: u8 = 0x05; // -> '-'
+    const SUBID_PERIOD: u8 = 0x06; // -> '.'
+    const SUBID_SLASH: u8 = 0x07; // -> '/'
+    const SUBID_AT: u8 = 0x0A; // -> '@'
+    const SUBID_LEFT_BRACKET: u8 = 0x0B; // -> '['
+    const SUBID_BACKSLASH: u8 = 0x0C; // -> '\'
+    const SUBID_RIGHT_BRACKET: u8 = 0x0E; // -> ']'
+    const SUBID_CARET: u8 = 0x0F; // -> '^'
+
+    const ALL_SCANCODES: &[(Scancode, u8)] = &[
+        // Letters carry their virtual-key codes (0x41-0x5A); the sub-CPU applies
+        // Shift / Caps to pick the case.
+        (A, 0x41),
+        (B, 0x42),
+        (C, 0x43),
+        (D, 0x44),
+        (E, 0x45),
+        (F, 0x46),
+        (G, 0x47),
+        (H, 0x48),
+        (I, 0x49),
+        (J, 0x4A),
+        (K, 0x4B),
+        (L, 0x4C),
+        (M, 0x4D),
+        (N, 0x4E),
+        (O, 0x4F),
+        (P, 0x50),
+        (Q, 0x51),
+        (R, 0x52),
+        (S, 0x53),
+        (T, 0x54),
+        (U, 0x55),
+        (V, 0x56),
+        (W, 0x57),
+        (X, 0x58),
+        (Y, 0x59),
+        (Z, 0x5A),
+        // Digits (0x30-0x39).
+        (_0, 0x30),
+        (_1, 0x31),
+        (_2, 0x32),
+        (_3, 0x33),
+        (_4, 0x34),
+        (_5, 0x35),
+        (_6, 0x36),
+        (_7, 0x37),
+        (_8, 0x38),
+        (_9, 0x39),
+        // Control keys and cursor cluster.
+        (Space, 0x20),
+        (Return, 0x0D),
+        (KpEnter, 0x0D),
+        (Backspace, 0x08),
+        (Delete, 0x2E),
+        (Insert, 0x2D),
+        (Tab, 0x09),
+        (Escape, 0x1B),
+        (Home, 0x24),
+        (End, 0x23),
+        (PageUp, 0x21),
+        (PageDown, 0x22),
+        (Left, 0x25),
+        (Up, 0x26),
+        (Right, 0x27),
+        (Down, 0x28),
+        // Numeric keypad (virtual keys 0x60-0x6F)
+        (Kp0, 0x60),
+        (Kp1, 0x61),
+        (Kp2, 0x62),
+        (Kp3, 0x63),
+        (Kp4, 0x64),
+        (Kp5, 0x65),
+        (Kp6, 0x66),
+        (Kp7, 0x67),
+        (Kp8, 0x68),
+        (Kp9, 0x69),
+        (KpMultiply, 0x6A),
+        (KpPlus, 0x6B),
+        (KpComma, 0x6C),
+        (KpMinus, 0x6D),
+        (KpPeriod, 0x6E),
+        (KpDivide, 0x6F),
+        // Punctuation via the bus-remapped spare sub-ids.
+        (Semicolon, SUBID_SEMICOLON),
+        (Apostrophe, SUBID_COLON),
+        (Comma, SUBID_COMMA),
+        (Period, SUBID_PERIOD),
+        (Slash, SUBID_SLASH),
+        (Minus, SUBID_MINUS),
+        (Grave, SUBID_AT),
+        (LeftBracket, SUBID_LEFT_BRACKET),
+        (RightBracket, SUBID_RIGHT_BRACKET),
+        (Backslash, SUBID_BACKSLASH),
+        (Equals, SUBID_CARET),
+        // Modifiers forward as their own virtual-key codes.
+        (LShift, VK_SHIFT),
+        (RShift, VK_SHIFT),
+        (LCtrl, VK_CTRL),
+        (RCtrl, VK_CTRL),
+        (LAlt, VK_GRAPH),
+        (RAlt, VK_GRAPH),
+        (CapsLock, VK_CAPS),
+    ];
+
+    let mut map = [UNMAPPED; Scancode::COUNT];
+    let mut i = 0;
+    while i < ALL_SCANCODES.len() {
+        let (scancode, code) = ALL_SCANCODES[i];
+        map[scancode.index()] = code;
+        i += 1;
+    }
     map
 }
 
@@ -1267,6 +1417,24 @@ mod tests {
 
         assert_eq!(pc88_matrix_code_from_name("return"), Some(pc88_cell(1, 7)));
         assert_eq!(pc88_matrix_code_from_name("bs"), Some(pc88_cell(8, 3)));
+    }
+
+    #[test]
+    fn x1_maps_the_numeric_keypad_to_tenkey_virtual_keys() {
+        // The X1 tenkey occupies virtual keys 0x60-0x6F; games commonly steer
+        // with tenkey 4/6, so the host numpad must reach the sub-CPU.
+        let map = KeyMap::new_x1();
+        assert_eq!(map.lookup(Scancode::Kp0), 0x60);
+        assert_eq!(map.lookup(Scancode::Kp4), 0x64);
+        assert_eq!(map.lookup(Scancode::Kp6), 0x66);
+        assert_eq!(map.lookup(Scancode::Kp9), 0x69);
+        assert_eq!(map.lookup(Scancode::KpMultiply), 0x6A);
+        assert_eq!(map.lookup(Scancode::KpPlus), 0x6B);
+        assert_eq!(map.lookup(Scancode::KpComma), 0x6C);
+        assert_eq!(map.lookup(Scancode::KpMinus), 0x6D);
+        assert_eq!(map.lookup(Scancode::KpPeriod), 0x6E);
+        assert_eq!(map.lookup(Scancode::KpDivide), 0x6F);
+        assert_eq!(map.lookup(Scancode::KpEnter), 0x0D);
     }
 
     #[test]

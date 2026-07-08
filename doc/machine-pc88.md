@@ -45,7 +45,7 @@ compatible with the N-family modes. The vast majority of PC-88 games will target
 |-----------------------------|-------------------------------------------------------------|-------------------|
 | `--boot-mode <MODE>`        | Boot mode: `v1s`, `v1h`, `v2`, `n`, `n80`, `n80sr`          | `v2`              |
 | `--pc88-roms <PATH>`        | Directory with the PC-8801MC ROM set (required)             | -                 |
-| `--pc88-monitor <MODE>`     | Monitor timing: `auto`, `15k` (200-line), `24k` (400-line)  | `auto`            |
+| `--monitor <MODE>`          | Monitor timing: `auto`, `15k` (200-line), `24k` (400-line)  | `auto`            |
 | `--pc88-memory-wait <MODE>` | Memory wait states: `fast` or `compatible`                  | derives from mode |
 | `--pc88-8mhz-wait <MODE>`   | 8 MHz wait mode: `fast` or `compatible`                     | `fast`            |
 | `--cpu-mode <MODE>`         | CPU speed: `low` or `high`                                  | derives from mode |

@@ -1,4 +1,4 @@
-use ymfm_oxide::{Y8950, Ym2203, Ym2608, Ym3526, Ym3812, Ymf262, YmfmTimerUpdate};
+use ymfm_oxide::{Y8950, Ym2151, Ym2203, Ym2608, Ym3526, Ym3812, Ymf262, YmfmTimerUpdate};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SignalEvent {
@@ -50,3 +50,4 @@ impl_take_signals!(Ym3526);
 impl_take_signals!(Y8950);
 impl_take_signals!(Ym3812);
 impl_take_signals!(Ymf262);
+impl_take_signals!(Ym2151);

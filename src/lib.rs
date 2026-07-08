@@ -1,5 +1,5 @@
 //! Neetan, an emulator for the PC-6001 / PC-6601, PC-8001 / PC-8801, PC-88VA,
-//! PC-9801 / PC-9821 and FM Towns families.
+//! PC-9801 / PC-9821, FM Towns and Sharp X1 / X1 turbo families.
 
 #![deny(unsafe_code)]
 
@@ -1230,6 +1230,7 @@ pub fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<B
         Target::Pc88Va => initialize_pc88va_machine(config, sample_rate),
         Target::Pc60 => initialize_pc60_machine(config, sample_rate),
         Target::Towns => initialize_towns_machine(config, sample_rate),
+        Target::X1 => initialize_x1_machine(config, sample_rate),
     }
 }
 
@@ -1282,7 +1283,7 @@ fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
 
     let mut bus: machine88::Pc8801Bus = machine88::Pc8801Bus::new(model, clock_select, sample_rate);
     bus.set_boot_mode(config.pc88_boot_mode);
-    bus.set_monitor_timing(config.pc88_monitor);
+    bus.set_monitor_timing(config.monitor);
     bus.set_memory_wait(config.pc88_memory_wait);
     bus.set_eight_mhz_wait(config.pc88_8mhz_wait);
     bus.set_host_local_time_fn(host_local_time_bcd);
@@ -1295,7 +1296,7 @@ fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
             CpuMode::High => "8 MHz",
         },
         config.pc88_boot_mode,
-        config.pc88_monitor,
+        config.monitor,
         config.pc88_memory_wait,
         config.pc88_8mhz_wait
     );
@@ -1519,6 +1520,53 @@ fn initialize_pc60_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
             Err(error) => {
                 return Err(Error::from(StringError(format!(
                     "Failed to insert PC-6000 cassette: {error}"
+                ))));
+            }
+        }
+    }
+
+    Ok(Box::new(machine))
+}
+
+fn initialize_x1_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+    let model = config.x1_model;
+    info!("Selected machine model {model}");
+    if model.is_turbo() {
+        info!("X1 turbo monitor {}", config.monitor);
+    }
+
+    let rom_dir = config.x1_roms.as_ref().ok_or_else(|| {
+        StringError(format!(
+            "{model} requires a ROM directory (--x1-roms <DIR>)"
+        ))
+    })?;
+
+    let roms = machinex1::load_rom_set(model, rom_dir).map_err(|error| {
+        StringError(format!(
+            "Failed to load {model} ROM set from {}: {error}",
+            rom_dir.display()
+        ))
+    })?;
+
+    let mut bus: machinex1::X1Bus<Tracer> = machinex1::X1Bus::new(model, sample_rate);
+    bus.set_monitor_timing(config.monitor);
+    bus.set_keyboard_mode(config.x1_keyboard);
+    bus.load_roms(&roms);
+    bus.seed_host_clock();
+
+    if config.hdd1.is_some() || config.hdd2.is_some() {
+        warn!("HDD options are ignored for the X1 target");
+    }
+
+    let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+    let mut machine = machinex1::X1Machine::new(main_cpu, bus);
+
+    if let Some(cassette_path) = config.cassette.as_ref() {
+        match machine.insert_cassette(cassette_path) {
+            Ok(description) => info!("Inserted cassette {description}"),
+            Err(error) => {
+                return Err(Error::from(StringError(format!(
+                    "Failed to insert X1 cassette: {error}"
                 ))));
             }
         }

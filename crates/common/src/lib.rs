@@ -103,6 +103,49 @@ impl core::str::FromStr for CpuMode {
     }
 }
 
+/// Display monitor timing.
+///
+/// Both the PC-8801 and the Sharp X1 turbo can drive a 15 kHz (200-line) monitor
+/// or a 24 kHz (400-line) monitor. On the PC-88 this selects the horizontal scan
+/// period; on the X1 it is reported through the turbo DIP switch so software knows
+/// which monitor is attached and programs the CRTC accordingly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MonitorTiming {
+    /// Follow the machine's default: on the PC-88 the software-selected line mode,
+    /// on the X1 the 24 kHz (400-line) monitor so hi-res software works unaided.
+    #[default]
+    Auto,
+    /// Force the 15 kHz (200-line) monitor.
+    Fixed15kHz,
+    /// Force the 24 kHz (400-line) monitor.
+    Fixed24kHz,
+}
+
+impl core::fmt::Display for MonitorTiming {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Auto => f.write_str("auto"),
+            Self::Fixed15kHz => f.write_str("15k"),
+            Self::Fixed24kHz => f.write_str("24k"),
+        }
+    }
+}
+
+impl core::str::FromStr for MonitorTiming {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "15k" | "15khz" => Ok(Self::Fixed15kHz),
+            "24k" | "24khz" => Ok(Self::Fixed24kHz),
+            _ => Err(format!(
+                "unknown monitor timing '{s}', expected auto, 15k or 24k"
+            )),
+        }
+    }
+}
+
 /// Beeper hardware architecture.
 ///
 /// PC-98 models split into two families with very different beeper hardware,
@@ -617,6 +660,14 @@ pub trait Bus {
     /// The CPU vectors through interrupt vector 2 after calling this.
     fn acknowledge_nmi(&mut self);
 
+    /// Notifies the interrupt daisy chain that the CPU executed a `RETI`.
+    ///
+    /// On the Z80, peripherals such as the CTC and SIO watch for the `RETI`
+    /// opcode fetch to clear their "interrupt under service" latch, re-enabling
+    /// lower-priority interrupts in the chain. Machines that model the daisy
+    /// chain override this; the default is a no-op.
+    fn notify_reti(&mut self) {}
+
     /// Returns the current CPU cycle count.
     ///
     /// The value represents the number of CPU cycles elapsed since the
@@ -653,6 +704,12 @@ pub trait Bus {
     fn drain_wait_cycles(&mut self) -> i64 {
         0
     }
+
+    /// Called by the CPU after each executed instruction, before interrupts
+    /// are sampled. Buses that host a bus-mastering device (e.g. the X1 turbo
+    /// Z80 DMA in single mode) run it here; stolen bus clocks are reported
+    /// through [`Bus::drain_wait_cycles`].
+    fn on_instruction_end(&mut self) {}
 
     /// Fetches an opcode byte for a Z80 M1 (instruction-fetch) cycle. The
     /// default delegates to [`Bus::read_byte`]; buses that model M1-specific

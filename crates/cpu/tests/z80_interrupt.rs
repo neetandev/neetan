@@ -6,6 +6,7 @@ struct TestBus {
     irq: bool,
     acknowledge_opcode: u8,
     acknowledge_count: usize,
+    reti_count: usize,
     current_cycle: u64,
 }
 
@@ -16,6 +17,7 @@ impl TestBus {
             irq: true,
             acknowledge_opcode,
             acknowledge_count: 0,
+            reti_count: 0,
             current_cycle: 0,
         }
     }
@@ -51,6 +53,10 @@ impl common::Bus for TestBus {
     }
 
     fn acknowledge_nmi(&mut self) {}
+
+    fn notify_reti(&mut self) {
+        self.reti_count += 1;
+    }
 
     fn current_cycle(&self) -> u64 {
         self.current_cycle
@@ -91,4 +97,40 @@ fn im0_rst_acknowledge_pushes_via_rst_instruction() {
     assert_eq!(bus.acknowledge_count, 1);
     assert_eq!(cpu.state.sp, 0x7FFE);
     assert_eq!(bus.read_word(0x7FFE), 0x0001);
+}
+
+/// Runs one instruction placed at 0x0000 with a return address staged on the
+/// stack, returning the bus so the test can inspect the daisy-chain callback.
+fn execute_return_opcode(opcode: [u8; 2]) -> TestBus {
+    let mut cpu = Z80::new(4_000_000);
+    cpu.state.iff1 = true;
+    cpu.state.iff2 = true;
+    cpu.state.sp = 0x8000;
+    cpu.state.pc = 0x0000;
+
+    let mut bus = TestBus::new(0x00);
+    bus.irq = false;
+    bus.ram[0x0000] = opcode[0];
+    bus.ram[0x0001] = opcode[1];
+    bus.ram[0x8000] = 0x34;
+    bus.ram[0x8001] = 0x12;
+
+    cpu.run_for(14, &mut bus);
+    assert_eq!(cpu.pc(), 0x1234, "the return address is popped");
+    assert_eq!(cpu.state.sp, 0x8002);
+    bus
+}
+
+#[test]
+fn reti_notifies_the_daisy_chain() {
+    // ED 4D = RETI: the CPU signals the interrupt daisy chain.
+    let bus = execute_return_opcode([0xED, 0x4D]);
+    assert_eq!(bus.reti_count, 1);
+}
+
+#[test]
+fn retn_does_not_notify_the_daisy_chain() {
+    // ED 45 = RETN: shares the return path but must not signal RETI.
+    let bus = execute_return_opcode([0xED, 0x45]);
+    assert_eq!(bus.reti_count, 0);
 }

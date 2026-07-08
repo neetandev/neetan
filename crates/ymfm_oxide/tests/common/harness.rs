@@ -1,5 +1,5 @@
 use ymfm_oxide::{
-    Y8950, Ym2203, Ym2608, Ym3526, Ym3812, Ymf262, Ymf276, YmfmOpnFidelity, YmfmOutput1,
+    Y8950, Ym2151, Ym2203, Ym2608, Ym3526, Ym3812, Ymf262, Ymf276, YmfmOpnFidelity, YmfmOutput1,
     YmfmOutput2, YmfmOutput3, YmfmOutput4,
 };
 
@@ -307,6 +307,53 @@ pub fn create_adpcm_rom() -> Vec<u8> {
         data[0x2000 + i] = ((i * 3) & 0xFF) as u8;
     }
     data
+}
+
+// --- OPM (YM2151) helpers ---
+//
+// These mirror the C++ golden generator (tests/cpp/gen_opm_golden.cpp) exactly;
+// the sample sequences must stay in lockstep for the golden comparison.
+
+pub fn write_reg_ym2151(chip: &mut Ym2151, addr: u8, data: u8) {
+    chip.write_address(addr);
+    chip.write_data(data);
+}
+
+pub fn generate_2_opm(chip: &mut Ym2151, count: usize) -> Vec<[i32; 2]> {
+    let mut output = vec![YmfmOutput2 { data: [0; 2] }; count];
+    chip.generate(&mut output);
+    output.iter().map(|s| s.data).collect()
+}
+
+pub fn setup_ym2151() -> Ym2151 {
+    let mut chip = Ym2151::new();
+    chip.reset();
+    chip
+}
+
+// Operator register offset for OPM: channel in bits 0-2, operator in bits 3-4.
+pub fn opm_op_offset(channel: u8, op: u8) -> u8 {
+    channel + (op << 3)
+}
+
+pub fn setup_ym2151_simple_tone(chip: &mut Ym2151, channel: u8, algorithm: u8, feedback: u8) {
+    let pan_fb_algo = 0xC0 | (feedback << 3) | (algorithm & 0x07);
+    write_reg_ym2151(chip, 0x20 + channel, pan_fb_algo);
+    for op in 0..4u8 {
+        let off = opm_op_offset(channel, op);
+        write_reg_ym2151(chip, 0x40 + off, 0x01); // DT1=0, MUL=1
+        write_reg_ym2151(chip, 0x60 + off, 0x00); // TL=0
+        write_reg_ym2151(chip, 0x80 + off, 0x1F); // KS=0, AR=31
+        write_reg_ym2151(chip, 0xA0 + off, 0x00); // AMS-EN=0, D1R=0
+        write_reg_ym2151(chip, 0xC0 + off, 0x00); // DT2=0, D2R=0
+        write_reg_ym2151(chip, 0xE0 + off, 0x0F); // D1L=0, RR=15
+    }
+    write_reg_ym2151(chip, 0x28 + channel, 0x4A); // key code
+    write_reg_ym2151(chip, 0x30 + channel, 0x00); // key fraction
+}
+
+pub fn key_on_ym2151(chip: &mut Ym2151, channel: u8) {
+    write_reg_ym2151(chip, 0x08, 0x78 | (channel & 0x07));
 }
 
 // --- OPL helpers ---

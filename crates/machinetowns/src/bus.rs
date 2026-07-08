@@ -24,7 +24,7 @@ use device::{
     floppy::{FloppyImage, MountedFloppy},
     i8251_serial::I8251Serial,
     i8259a_pic::I8259aPic,
-    mb8877_fdc::Mb8877Fdc,
+    mb8877_fdc::{Mb8877Config, Mb8877Fdc},
     msm58321_rtc::Msm58321Rtc,
     opn_fm::{FmTimerAction, OpnFm, Ymf276},
     rf5c68::Rf5c68,
@@ -238,7 +238,7 @@ impl<T: Tracing + Default> TownsBus<T> {
             rtc: Msm58321Rtc::new(),
             keyboard: TownsKeyboard::new(),
             cdc: TownsCdController::new(clocks.sample_rate, clocks.cpu_clock_hz),
-            fdc: Mb8877Fdc::new(clocks.cpu_clock_hz),
+            fdc: Mb8877Fdc::new(clocks.cpu_clock_hz, Mb8877Config::towns()),
             scsi: TownsScsiController::new(clocks.cpu_clock_hz),
             beeper: Beeper::new(BeeperKind::PitDriven, TIMER_CLOCK_HZ),
             buzzer_memio: false,
@@ -684,16 +684,34 @@ impl<T: Tracing> TownsBus<T> {
         self.update_next_event_cycle();
     }
 
-    /// Dispatches an FDC I/O read and refreshes its IRQ and scheduled task.
+    /// Dispatches an FDC I/O read and refreshes its IRQ and scheduled task. The
+    /// low nibble of the port selects the register.
     fn fdc_io_read(&mut self, port: u16) -> u8 {
-        let value = self.fdc.io_read(port, self.current_cycle);
+        let value = match port & 0x0F {
+            0x00 => self.fdc.read_status(self.current_cycle),
+            0x02 => self.fdc.read_track_register(),
+            0x04 => self.fdc.read_sector_register(),
+            0x06 => self.fdc.read_data_register(),
+            0x08 => self.fdc.read_drive_status(),
+            0x0D => 0x7F,
+            0x0E => 0xFF,
+            _ => 0xFF,
+        };
         self.refresh_fdc_irq();
         self.reschedule_fdc();
         value
     }
 
     fn fdc_io_write(&mut self, port: u16, value: u8) {
-        self.fdc.io_write(port, value, self.current_cycle);
+        match port & 0x0F {
+            0x00 => self.fdc.write_command(value, self.current_cycle),
+            0x02 => self.fdc.write_track_register(value),
+            0x04 => self.fdc.write_sector_register(value),
+            0x06 => self.fdc.write_data_register(value),
+            0x08 => self.fdc.write_drive_control(value),
+            0x0C => self.fdc.write_drive_select(value),
+            _ => {}
+        }
         self.refresh_fdc_irq();
         self.reschedule_fdc();
     }

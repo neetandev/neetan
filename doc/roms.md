@@ -10,6 +10,7 @@
 - [PC-88VA2](#pc-88va2)
 - [PC-6001 / PC-6601](#pc-6001--pc-6601)
 - [FM Towns](#fm-towns)
+- [Sharp X1](#sharp-x1)
 - [MIDI: Roland MT-32](#midi-roland-mt-32)
 - [MIDI: Roland SC-55](#midi-roland-sc-55)
 
@@ -36,6 +37,7 @@ by file name (see that section).
 | PC-88VA2           | `--pc88va-roms`  | Required                         |
 | PC-6001 / PC-6601  | `--pc6000-roms`  | Required                         |
 | FM Towns           | `--towns-roms`   | Required                         |
+| Sharp X1           | `--x1-roms`      | Required                         |
 | Roland MT-32       | `--mt32-roms`    | Required for `--midi mt32`       |
 | Roland SC-55       | `--sc55-roms`    | Required for `--midi sc55`       |
 
@@ -60,6 +62,8 @@ for that machine.
 | PC-6001mkIISR         | `pc6001mk2sr`                             |                                                                              |
 | PC-6601SR             | `pc6601sr`                                |                                                                              |
 | FM Towns II CX & MX   | `fmtownsmx`                               | The CX target boots the shared MX ROM set until a CX dump exists             |
+| Sharp X1              | `x1`                                      | Both X1 sets share the `--x1-roms` directory                                 |
+| Sharp X1 turbo        | `x1turbo`                                 | The ANK font is byte-identical with the `x1` set                             |
 | Roland MT-32          | MT-32 v1.07 (recommended)                 | Any supported control + PCM pair works; see the MT-32 section                |
 | Roland SC-55          | SC-55 v1.21 (recommended)                 | Any supported model works; see the SC-55 section                             |
 
@@ -93,6 +97,10 @@ roms/
 |-- fmtowns/       --towns-roms    fmtownsmx
 |   |-- fmtownsiimxbios.m79
 |   `-- mytownsmx.rom
+|-- x1/            --x1-roms                       x1 + x1turbo sets
+|   |-- ipl.x1, ipl.x1t                            (IPL ROMs: X1, X1turbo)
+|   |-- fnt0808.x1, fnt0808_turbo.x1, ank.fnt      (8x8 CG fonts + shared 8x16 ANK font)
+|   `-- kanji1.rom ... kanji4.rom                  (turbo kanji ROMs)
 |-- mt32/          --mt32-roms     MT-32 v1.07
 |   |-- MT32_CONTROL.ROM
 |   `-- MT32_PCM.ROM
@@ -120,6 +128,9 @@ pc6000-roms = roms/pc6000
 
 ; FM Towns.
 towns-roms = roms/fmtowns
+
+; Sharp X1.
+x1-roms = roms/x1
 
 ; MIDI modules.
 mt32-roms = roms/mt32
@@ -228,6 +239,16 @@ f0af53e54b1b09b229d03efc9f65e65597a0c4f6aa9e3e7c0e553274ccd481fb  pc6000/kanjiro
 # --- FM Towns II CX / MX (roms/fmtowns) ---
 f5c2cc7c2876a4b30f320fe6fb721bd32f3ba43bbb9b0b42c398fa6b59d72ce8  fmtowns/fmtownsiimxbios.m79
 d5dc70e34d072889c28bed51ef3ccaac7f6f3fdd9e448d89297847247a901538  fmtowns/mytownsmx.rom
+# --- Sharp X1 / X1 turbo (both sets share roms/x1) ---
+194f351bc1024188162856e2374d92bc608d9c742ca007d8c19a4b4eed44abbc  x1/ipl.x1
+871c77226a6e65bf1820c0a3e6f63a330cb1d2eb6c135fc9e4da9741ce38106c  x1/ipl.x1t
+61440d736fdec066b825428f4d26fbdb04b3a4fcc7f05bbdd4b5bbe9e55318c3  x1/fnt0808.x1
+f26c67af04f3b4819e0bd474ded7b083e3d370a62ea0672f09787b8ca4ebc4a6  x1/fnt0808_turbo.x1
+a8695470e98492a2d969ba3fdeee76ee9b3573f525eee20f98627fb5e98279a0  x1/ank.fnt
+212d081a600377a1068d56f4049d03916ea705465eb2feca950b6df186a12ba4  x1/kanji1.rom
+0bd59d087b3197c8136e5664e311234930ec566b61d184204144f04a84ba769b  x1/kanji2.rom
+f2495255441c15bfce5c7441f6d94809d4f0e0dba1c7f43f9153991e326b881a  x1/kanji3.rom
+84e0afa27e1f4ef01b6e5dac452835f487c98968e14fceaac3c93331524b51d7  x1/kanji4.rom
 # --- Roland MT-32 v1.07 (roms/mt32) ---
 8f123c1f38104a2a7eb1df35fd5b26ca1b857185086a87233b355510264602bf  mt32/MT32_CONTROL.ROM
 7805996b758fab5469e96d9a28588eb2e991440242372f7546345cdc66c8d97a  mt32/MT32_PCM.ROM
@@ -417,6 +438,31 @@ The split set provides the five images individually plus the serial ROM:
 | `FMT_F20.ROM`   | 512 KiB  | `1dde131510456c9660c2217774853822674459412d8e6f98312fff0ee83ca9a7` |
 | `FMT_DIC.ROM`   | 512 KiB  | `0fbcbecb5b62c8fa4e9a60885f887b0a2cafd680a1174b0f7ddf57f49c65ab60` |
 | `mytownsmx.rom` | 32 bytes | `d5dc70e34d072889c28bed51ef3ccaac7f6f3fdd9e448d89297847247a901538` |
+
+## Sharp X1
+
+The Sharp X1 targets need a real ROM set, pointed to by `--x1-roms`. Each model has
+its own MAME set (`x1`, `x1turbo`); extract whichever you need into the directory
+(they can share it, and the files that appear in both sets are byte-identical). ROMs
+are identified by their BLAKE3 content hash rather than by file name, so any dump
+layout works.
+
+Each model requires its IPL boot ROM, its 8x8 character generator, and the 8x16 ANK
+font. The turbo additionally requires the four kanji ROMs. The ANK font is
+byte-identical across both sets, so a single file can satisfy the matching slot for
+both models.
+
+| Slot              | Size   | Contents                    | Required for            | BLAKE3                                                             |
+|-------------------|--------|-----------------------------|-------------------------|--------------------------------------------------------------------|
+| `ipl` (X1)        | 4 KiB  | IPL boot ROM                | `X1`                    | `194f351bc1024188162856e2374d92bc608d9c742ca007d8c19a4b4eed44abbc` |
+| `ipl` (X1turbo)   | 32 KiB | IPL boot ROM                | `X1TURBO`               | `871c77226a6e65bf1820c0a3e6f63a330cb1d2eb6c135fc9e4da9741ce38106c` |
+| `cgrom` (X1)      | 2 KiB  | 8x8 character generator     | `X1`                    | `61440d736fdec066b825428f4d26fbdb04b3a4fcc7f05bbdd4b5bbe9e55318c3` |
+| `cgrom` (turbo)   | 2 KiB  | 8x8 character generator     | `X1TURBO`               | `f26c67af04f3b4819e0bd474ded7b083e3d370a62ea0672f09787b8ca4ebc4a6` |
+| `ank`             | 8 KiB  | 8x16 ANK font               | both models             | `a8695470e98492a2d969ba3fdeee76ee9b3573f525eee20f98627fb5e98279a0` |
+| `kanji1`          | 32 KiB | Kanji ROM, first quarter    | `X1TURBO`               | `212d081a600377a1068d56f4049d03916ea705465eb2feca950b6df186a12ba4` |
+| `kanji2`          | 32 KiB | Kanji ROM, second quarter   | `X1TURBO`               | `0bd59d087b3197c8136e5664e311234930ec566b61d184204144f04a84ba769b` |
+| `kanji3`          | 32 KiB | Kanji ROM, third quarter    | `X1TURBO`               | `f2495255441c15bfce5c7441f6d94809d4f0e0dba1c7f43f9153991e326b881a` |
+| `kanji4`          | 32 KiB | Kanji ROM, fourth quarter   | `X1TURBO`               | `84e0afa27e1f4ef01b6e5dac452835f487c98968e14fceaac3c93331524b51d7` |
 
 ## MIDI: Roland MT-32
 

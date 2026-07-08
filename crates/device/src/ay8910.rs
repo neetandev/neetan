@@ -164,8 +164,11 @@ impl AyEngine {
         }
     }
 
-    /// Computes the three channel amplitudes for the current state.
-    fn output(&mut self) -> [i32; 3] {
+    /// Computes the three channel amplitudes for the current state. A tone whose
+    /// period is below `min_audible_tone_period` is ultrasonic for the current
+    /// sample rate. Its oscillation is dropped so it cannot alias into the output
+    /// band.
+    fn output(&mut self, min_audible_tone_period: u32) -> [i32; 3] {
         let envelope_volume;
         if (self.regs.envelope_hold() | (self.regs.envelope_continue() ^ 1)) != 0
             && self.envelope_state >= 32
@@ -191,7 +194,12 @@ impl AyEngine {
         for (channel, slot) in data.iter_mut().enumerate() {
             let channel = channel as u32;
             let noise_on = self.regs.ch_noise_enable_n(channel) | (self.noise_state & 1);
-            let tone_on = self.regs.ch_tone_enable_n(channel) | self.tone_state[channel as usize];
+            let tone_bit = if self.regs.ch_tone_period(channel) > min_audible_tone_period {
+                self.tone_state[channel as usize]
+            } else {
+                1
+            };
+            let tone_on = self.regs.ch_tone_enable_n(channel) | tone_bit;
 
             let volume = if (noise_on & tone_on) == 0 {
                 0
@@ -331,6 +339,9 @@ impl Ay8910 {
         }
 
         let ticks_per_sample = f64::from(input_clock_hz / CLOCK_DIVIDER) / f64::from(sample_rate);
+        // Tones at or below this period are ultrasonic for the current sample rate
+        // and are muted rather than aliased.
+        let min_audible_tone_period = input_clock_hz / (4 * sample_rate);
 
         for frame in 0..frame_count {
             self.clock_accumulator += ticks_per_sample;
@@ -339,7 +350,7 @@ impl Ay8910 {
                 self.clock_accumulator -= 1.0;
             }
 
-            let channels = self.engine.output();
+            let channels = self.engine.output(min_audible_tone_period);
             let mixed = (channels[0] + channels[1] + channels[2]) as f32 / MIX_PEAK;
             let sample = mixed * volume;
             output[frame * 2] = sample;
@@ -394,6 +405,30 @@ mod tests {
         assert!(
             output[..written].iter().any(|&s| s != 0.0),
             "an enabled tone should produce a non-silent frame"
+        );
+    }
+
+    #[test]
+    fn ultrasonic_tone_is_silent_not_aliased() {
+        // A tone left latched at period 0 (ultrasonic) with tone enabled, noise
+        // disabled and maximum amplitude must not oscillate into the audible band:
+        // the channel holds a constant level (Galaxian PSG "latched tone" regression).
+        let mut psg = Ay8910::new();
+        // Channel A tone period 0 (fine and coarse both zero, the power-on state).
+        // Mixer: enable tone A (clear bit 0), disable noise (set bits 3-5).
+        psg.address_w(0x07);
+        psg.data_w(0x3E);
+        // Channel A amplitude maximum.
+        psg.address_w(0x08);
+        psg.data_w(0x0F);
+
+        let mut output = vec![0.0f32; 4096];
+        let written = psg.generate_samples(48_000, 2_000_000, 4_000_000, 48_000, 1.0, &mut output);
+        assert!(written > 0);
+        let first = output[0];
+        assert!(
+            output[..written].iter().all(|&s| s == first),
+            "an ultrasonic tone must hold a constant level, not oscillate"
         );
     }
 
