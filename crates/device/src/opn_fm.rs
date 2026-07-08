@@ -15,7 +15,7 @@
 //! scheduler events and IRQ wiring.
 
 use resampler::{Attenuation, Latency, ResamplerFir};
-pub use ymfm_oxide::{Ym2203, Ymf276};
+pub use ymfm_oxide::{Ym2151, Ym2203, Ymf276};
 use ymfm_oxide::{Ym2608, YmfmOpnFidelity, YmfmOutput2, YmfmOutput3, YmfmOutput4, YmfmTimerUpdate};
 
 const FIDELITY: YmfmOpnFidelity = YmfmOpnFidelity::Max;
@@ -356,6 +356,69 @@ impl OpnChip for Ymf276 {
     }
 }
 
+impl OpnChip for Ym2151 {
+    type Native = YmfmOutput2;
+    // The Sharp X1 CZ-8BS1 board drives the OPM at 2 MHz (the 16 MHz master
+    // clock divided by 8; internal FM sample clock 2 MHz / 64).
+    const CLOCK: u32 = 2_000_000;
+    const CHANNELS: usize = 2;
+
+    fn create() -> Self {
+        let mut chip = Ym2151::new();
+        chip.reset();
+        chip
+    }
+
+    fn native_zero() -> Self::Native {
+        YmfmOutput2 { data: [0; 2] }
+    }
+
+    fn sample_rate(&mut self, clock: u32) -> u32 {
+        Ym2151::sample_rate(self, clock)
+    }
+
+    fn generate(&mut self, out: &mut [Self::Native]) {
+        Ym2151::generate(self, out);
+    }
+
+    fn mix_sample(sample: &Self::Native, out: &mut [f32]) {
+        // The OPM output is a full-range 16-bit stereo pair; normalize straight
+        // to [-1.0, 1.0].
+        const FM_SCALE: f32 = 1.0 / 32768.0;
+        out[0] = sample.data[0] as f32 * FM_SCALE;
+        out[1] = sample.data[1] as f32 * FM_SCALE;
+    }
+
+    fn read_status(&mut self, busy: bool) -> u8 {
+        Ym2151::read_status(self, busy)
+    }
+
+    fn read_data(&mut self) -> u8 {
+        // The OPM has no readable data register (only the status port).
+        0xFF
+    }
+
+    fn write_address(&mut self, value: u8) -> u32 {
+        Ym2151::write_address(self, value)
+    }
+
+    fn write_data(&mut self, value: u8) -> u32 {
+        Ym2151::write_data(self, value)
+    }
+
+    fn timer_expired(&mut self, timer_id: u32) {
+        Ym2151::timer_expired(self, timer_id);
+    }
+
+    fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        Ym2151::take_timer_update(self, timer_id)
+    }
+
+    fn take_irq_update(&mut self) -> Option<bool> {
+        Ym2151::take_irq_update(self)
+    }
+}
+
 /// Generic OPN/OPNA FM audio driver: chip clocking, busy timing, timer/IRQ
 /// coalescing, and resampling.
 pub struct OpnFm<C: OpnChip> {
@@ -651,69 +714,103 @@ impl<C: OpnChip> OpnFm<C> {
                 );
             }
 
-            if C::CHANNELS == 1 {
-                self.mix_mono_into(total_interleaved, volume, output);
+            let consumed_native = if C::CHANNELS == 1 {
+                self.mix_mono_into(total_interleaved, volume, output)
             } else {
-                self.mix_interleaved_into(total_interleaved, volume, output);
+                self.mix_interleaved_into(total_interleaved, volume, output) / C::CHANNELS
+            };
+
+            // Carry the native samples the resampler has not consumed yet into
+            // the next call instead of discarding them. The min-native margin
+            // over-generates a sample or two each call; discarding the excess
+            // made the chip's sample stream skip ahead by that amount every
+            // call, producing a click at each audio-frame boundary.
+            if consumed_native < total_native {
+                let mut carried = Vec::with_capacity(total_native - consumed_native);
+                for i in consumed_native..total_native {
+                    let sample = if i < pending_count {
+                        self.pending_native[i]
+                    } else {
+                        self.native_buffer[i - pending_count]
+                    };
+                    carried.push(sample);
+                }
+                self.pending_native = carried;
+            } else {
+                self.pending_native.clear();
             }
+        } else {
+            self.pending_native.clear();
         }
 
-        self.pending_native.clear();
         self.audio_frame_start_cycle = current_cycle;
         self.fm_sync_cursor = current_cycle;
     }
 
     /// Mono path: resample, then duplicate each output sample to L and R.
-    fn mix_mono_into(&mut self, total_native: usize, volume: f32, output: &mut [f32]) {
+    /// Returns the number of native input samples consumed by the resampler.
+    fn mix_mono_into(&mut self, total_native: usize, volume: f32, output: &mut [f32]) -> usize {
         let mut input_offset = 0;
         let mut output_frame_offset = 0;
         let frame_count = output.len() / 2;
         while input_offset < total_native && output_frame_offset < frame_count {
+            // Cap the resampler's output to the frames still needed so it never
+            // produces (and then discards) more than fits.
+            let out_len = (frame_count - output_frame_offset).min(self.resample_output.len());
             let Ok((consumed, produced)) = self.resampler.resample(
                 &self.resample_input[input_offset..total_native],
-                &mut self.resample_output,
+                &mut self.resample_output[..out_len],
             ) else {
                 break;
             };
-            let usable = produced.min(frame_count - output_frame_offset);
-            for i in 0..usable {
+            for i in 0..produced {
                 let sample = self.resample_output[i] * volume;
                 output[(output_frame_offset + i) * 2] += sample;
                 output[(output_frame_offset + i) * 2 + 1] += sample;
             }
             input_offset += consumed;
-            output_frame_offset += usable;
-            if consumed == 0 {
+            output_frame_offset += produced;
+            if consumed == 0 && produced == 0 {
                 break;
             }
         }
+        input_offset
     }
 
     /// Stereo path: resample interleaved L/R directly into the output.
-    fn mix_interleaved_into(&mut self, total_interleaved: usize, volume: f32, output: &mut [f32]) {
+    /// Returns the number of interleaved input samples consumed by the resampler.
+    fn mix_interleaved_into(
+        &mut self,
+        total_interleaved: usize,
+        volume: f32,
+        output: &mut [f32],
+    ) -> usize {
         let mut input_offset = 0;
         let mut output_offset = 0;
         let sample_count = output.len();
         while input_offset < total_interleaved && output_offset < sample_count {
+            // Cap the resampler's output to the samples still needed so it never
+            // produces (and then discards) more than fits.
+            let out_len = (sample_count - output_offset).min(self.resample_output.len());
             let Ok((consumed, produced)) = self.resampler.resample(
                 &self.resample_input[input_offset..total_interleaved],
-                &mut self.resample_output,
+                &mut self.resample_output[..out_len],
             ) else {
                 break;
             };
-            let usable = produced.min(sample_count - output_offset);
-            for (out, &resampled) in output[output_offset..output_offset + usable]
+            for (out, &resampled) in output[output_offset..output_offset + produced]
                 .iter_mut()
-                .zip(&self.resample_output[..usable])
+                .zip(&self.resample_output[..produced])
             {
                 *out += resampled * volume;
             }
             input_offset += consumed;
-            output_offset += usable;
-            if consumed == 0 {
+            output_offset += produced;
+            if consumed == 0 && produced == 0 {
                 break;
             }
         }
+        input_offset
     }
 
     /// Returns the timing scalars for save/restore.

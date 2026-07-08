@@ -16,6 +16,7 @@
 //! | Y8950  | OPL    | 9-ch mono FM + ADPCM-B                    |
 //! | YM3812 | OPL2   | 9-ch mono FM, 4 waveforms                 |
 //! | YMF262 | OPL3   | 18-ch 4-output FM, 8 waveforms, 4-op mode |
+//! | YM2151 | OPM    | 8-ch stereo FM + noise + LFO              |
 //!
 //! # Usage
 //!
@@ -58,6 +59,7 @@ pub(crate) mod adpcm;
 pub(crate) mod fm;
 pub(crate) mod helpers;
 pub(crate) mod opl;
+pub(crate) mod opm;
 pub(crate) mod opn;
 pub(crate) mod ssg;
 mod sys;
@@ -66,6 +68,7 @@ pub(crate) mod tables;
 use adpcm::{AdpcmAEngine, AdpcmBChannel, AdpcmBEngine};
 use fm::{FmEngine, FmRegisters};
 use opl::{Opl2Registers, Opl3Registers, OplRegisters};
+use opm::OpmRegisters;
 use opn::{OpnRegisters, OpnaRegisters, SsgResampler};
 use ssg::SsgEngine;
 pub use sys::{
@@ -1451,6 +1454,106 @@ impl Default for Ym3812 {
 }
 
 impl Default for Ymf262 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Yamaha YM2151 (OPM) emulator.
+///
+/// 8-channel 4-operator stereo FM synthesis chip with a hardware LFO and a
+/// noise generator on operator 32. Produces stereo output: `[left, right]`.
+pub struct Ym2151 {
+    fm: FmEngine<OpmRegisters>,
+    address: u8,
+}
+
+impl Ym2151 {
+    /// Creates a new YM2151 instance.
+    pub fn new() -> Self {
+        Self {
+            fm: FmEngine::new(),
+            address: 0,
+        }
+    }
+
+    /// Resets the chip to its initial power-on state.
+    pub fn reset(&mut self) {
+        self.fm.reset();
+    }
+
+    /// Returns the output sample rate in Hz for the given `input_clock` in Hz.
+    ///
+    /// The OPM has a fixed prescaler of 2 and 32 operators, so the native FM
+    /// rate is `input_clock / (prescale * 32)`.
+    pub fn sample_rate(&self, input_clock: u32) -> u32 {
+        input_clock / (OpmRegisters::OPERATORS as u32 * self.fm.clock_prescale())
+    }
+
+    /// Reads the chip status register.
+    pub fn read_status(&mut self, busy: bool) -> u8 {
+        let mut result =
+            self.fm.status() & (OpmRegisters::STATUS_TIMERA | OpmRegisters::STATUS_TIMERB);
+        if busy {
+            result |= OpmRegisters::STATUS_BUSY;
+        }
+        result
+    }
+
+    /// Latches the register address for a subsequent
+    /// [`write_data`](Self::write_data).
+    pub fn write_address(&mut self, data: u8) -> u32 {
+        self.address = data;
+        0
+    }
+
+    /// Writes a value to the previously addressed register.
+    pub fn write_data(&mut self, data: u8) -> u32 {
+        self.fm.write(self.address as u16, data);
+        32 * self.fm.clock_prescale()
+    }
+
+    /// Generates audio samples into `output`.
+    ///
+    /// Each sample is a stereo `[left, right]` pair.
+    pub fn generate(&mut self, output: &mut [YmfmOutput2]) {
+        for out in output.iter_mut() {
+            self.fm.clock(OpmRegisters::ALL_CHANNELS);
+
+            // OPM is full 14-bit with no intermediate clipping
+            out.data = [0; 2];
+            self.fm
+                .output_mut(&mut out.data, 0, 32767, OpmRegisters::ALL_CHANNELS);
+
+            // the YM2151 uses an external DAC (YM3012) with mantissa/exponent
+            // format; simulate the truncation with a 10.3 float round trip
+            out.data[0] = helpers::roundtrip_fp(out.data[0]) as i32;
+            out.data[1] = helpers::roundtrip_fp(out.data[1]) as i32;
+        }
+    }
+
+    /// Notifies the chip that the specified timer has expired.
+    pub fn timer_expired(&mut self, timer_id: u32) {
+        self.fm.engine_timer_expired(timer_id);
+    }
+
+    /// Returns and clears the pending update for a timer.
+    pub fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        self.fm.take_timer_update(timer_id)
+    }
+
+    /// Returns and clears the pending IRQ output update.
+    pub fn take_irq_update(&mut self) -> Option<bool> {
+        self.fm.take_irq_update()
+    }
+
+    /// Returns whether the chip IRQ output is currently asserted.
+    pub fn irq_asserted(&self) -> bool {
+        self.fm.irq_asserted()
+    }
+}
+
+impl Default for Ym2151 {
     fn default() -> Self {
         Self::new()
     }

@@ -231,6 +231,9 @@ impl Z80 {
         self.execute_one(bus);
         self.cycles_remaining -= bus.drain_wait_cycles();
         bus.set_current_cycle(start_cycle + self.cycles_consumed());
+        bus.on_instruction_end();
+        self.cycles_remaining -= bus.drain_wait_cycles();
+        bus.set_current_cycle(start_cycle + self.cycles_consumed());
     }
 
     /// Returns the number of T-states consumed by the last `step()` call.
@@ -266,6 +269,12 @@ impl CpuZ80 for Z80 {
             }
 
             self.execute_one(bus);
+            self.cycles_remaining -= bus.drain_wait_cycles();
+
+            let consumed = cycles_to_run as i64 - self.cycles_remaining;
+            bus.set_current_cycle(start_cycle + consumed as u64);
+
+            bus.on_instruction_end();
             self.cycles_remaining -= bus.drain_wait_cycles();
 
             let consumed = cycles_to_run as i64 - self.cycles_remaining;

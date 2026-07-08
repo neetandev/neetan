@@ -173,44 +173,7 @@ impl std::str::FromStr for BootMode {
     }
 }
 
-/// Display monitor timing. The PC-8801 supports a 15 kHz (200-line) monitor and
-/// a 24 kHz (400-line) monitor; the horizontal scan period differs between them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum MonitorTiming {
-    /// Follow the software-selected line mode: 200-line graphics select the
-    /// 15 kHz monitor, 400-line select the 24 kHz monitor.
-    #[default]
-    Auto,
-    /// Force the 15 kHz (200-line) monitor.
-    Fixed15kHz,
-    /// Force the 24 kHz (400-line) monitor.
-    Fixed24kHz,
-}
-
-impl std::fmt::Display for MonitorTiming {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MonitorTiming::Auto => formatter.write_str("auto"),
-            MonitorTiming::Fixed15kHz => formatter.write_str("15k"),
-            MonitorTiming::Fixed24kHz => formatter.write_str("24k"),
-        }
-    }
-}
-
-impl std::str::FromStr for MonitorTiming {
-    type Err = String;
-
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        match text.to_ascii_lowercase().as_str() {
-            "auto" => Ok(MonitorTiming::Auto),
-            "15k" | "15khz" => Ok(MonitorTiming::Fixed15kHz),
-            "24k" | "24khz" => Ok(MonitorTiming::Fixed24kHz),
-            _ => Err(format!(
-                "unknown PC-88 monitor timing '{text}', expected auto, 15k or 24k"
-            )),
-        }
-    }
-}
+pub use common::MonitorTiming;
 
 /// Memory wait compatibility switch. `Compatible` inserts the additional
 /// real-hardware memory wait states; `Fast` omits them where the hardware

@@ -21,6 +21,7 @@ machine60 = { path = "crates/machine60" }
 machine88 = { path = "crates/machine88" }
 machine88va = { path = "crates/machine88va" }
 machinetowns = { path = "crates/machinetowns" }
+machinex1 = { path = "crates/machinex1" }
 resampler = { path = "crates/resampler" }
 sdl3 = { path = "crates/sdl3" }
 sdl3_backend = { path = "crates/sdl3_backend" }
@@ -63,6 +64,7 @@ machine60 = { workspace = true }
 machine88 = { workspace = true }
 machine88va = { workspace = true }
 machinetowns = { workspace = true }
+machinex1 = { workspace = true }
 dos = { workspace = true }
 sdl3 = { workspace = true }
 sdl3_backend = { workspace = true }
@@ -126,6 +128,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.machinetowns]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.machinex1]
 opt-level = 3
 codegen-units = 1
 

@@ -328,6 +328,56 @@ impl D88Disk {
         None
     }
 
+    /// Finds a sector by C/H/R on the given track index, ignoring the size code.
+    pub fn find_sector_id_on_track_index(
+        &self,
+        track_index: usize,
+        cylinder: u8,
+        head: u8,
+        record: u8,
+    ) -> Option<&D88Sector> {
+        let track = self.tracks.get(track_index)?.as_ref()?;
+        track.sectors.iter().find(|sector| {
+            sector.cylinder == cylinder && sector.head == head && sector.record == record
+        })
+    }
+
+    /// Finds a sector by C/H/R near the provided physical track index, ignoring
+    /// the size code. Mirrors [`Self::find_sector_near_track_index`] but matches
+    /// on the sector ID alone.
+    pub fn find_sector_id_near_track_index(
+        &self,
+        track_index: usize,
+        cylinder: u8,
+        head: u8,
+        record: u8,
+    ) -> Option<&D88Sector> {
+        if track_index >= self.tracks.len() {
+            return None;
+        }
+        if let Some(sector) =
+            self.find_sector_id_on_track_index(track_index, cylinder, head, record)
+        {
+            return Some(sector);
+        }
+        for distance in 1..self.tracks.len() {
+            if let Some(upper) = track_index.checked_add(distance)
+                && upper < self.tracks.len()
+                && let Some(sector) =
+                    self.find_sector_id_on_track_index(upper, cylinder, head, record)
+            {
+                return Some(sector);
+            }
+            if let Some(lower) = track_index.checked_sub(distance)
+                && let Some(sector) =
+                    self.find_sector_id_on_track_index(lower, cylinder, head, record)
+            {
+                return Some(sector);
+            }
+        }
+        None
+    }
+
     /// Returns the sector at the given rotational index on the specified track.
     pub fn sector_at_index(&self, track_index: usize, sector_index: usize) -> Option<&D88Sector> {
         let track = self.tracks.get(track_index)?.as_ref()?;

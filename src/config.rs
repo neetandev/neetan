@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use common::{Context, CpuMode, MachineModel, StringError, bail, info, warn};
+use common::{Context, CpuMode, MachineModel, MonitorTiming, StringError, bail, info, warn};
 use machine60::Pc6000Model;
-use machine88::{BootMode, EightMhzWaitMode, MemoryWaitSwitch, MonitorTiming, Pc8801Model};
+use machine88::{BootMode, EightMhzWaitMode, MemoryWaitSwitch, Pc8801Model};
 use machine88va::Pc88VaModel;
 use machinetowns::{TownsModel, TownsPadType};
+use machinex1::{X1KeyboardMode, X1Model};
 
 use crate::keyboard::{
     KeyMap, parse_key_binding, parse_key_binding_pc60, parse_key_binding_pc88,
@@ -49,10 +50,10 @@ Commands:
 
 Options:
   -c, --config <PATH>           Load configuration from file
-      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP, PC8801MC, PC88VA2, PC6001, PC6001MK2, PC6601, PC6001MK2SR, PC6601SR, FMTownsIICX, FMTownsIIMX
+      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP, PC8801MC, PC88VA2, PC6001, PC6001MK2, PC6601, PC6001MK2SR, PC6601SR, FMTownsIICX, FMTownsIIMX, X1, X1TURBO
       --cpu-mode <MODE>         CPU speed mode: low or high (PC-88 default derives from boot mode; FM Towns CX 16/20 MHz, MX 33/66 MHz)
       --boot-mode <MODE>        PC-8801 BASIC boot mode: v1s, v1h, v2, n, n80, n80sr (default: v2; PC-8801 only)
-      --pc88-monitor <MODE>     PC-8801 monitor timing: auto, 15k, 24k (default: auto; PC-8801 only)
+      --monitor <MODE>          Monitor timing: auto, 15k, 24k (default: auto; PC-8801 and X1 turbo)
       --pc88-memory-wait <MODE> PC-8801 memory wait: fast or compatible (default derives from boot mode)
       --pc88-8mhz-wait <MODE>   PC-8801 8 MHz wait: fast or compatible (default: fast; PC-8801 only)
       --pc98-roms <PATH>        Directory with the PC-98 ROM set (optional)
@@ -60,6 +61,8 @@ Options:
       --pc88-roms <PATH>        Directory with the PC-8801MC ROM set (required)
       --pc88va-roms <PATH>      Directory with the PC-88VA2 ROM set (required)
       --pc6000-roms <PATH>      Directory with the PC-6000 ROM set (required)
+      --x1-roms <PATH>          Directory with the Sharp X1 ROM set (required)
+      --x1-keyboard <A|B>       X1 turbo keyboard mode switch (default: A)
       --towns-roms <PATH>       Directory with the FM Towns ROM set (required)
       --towns-pad <2|6>         FM Towns game pad type (default 6-button)
       --pc6000-phase <0-3>      Initial composite artifact-color phase; cycle with Right Ctrl + P (PC-6000 only)
@@ -70,7 +73,7 @@ Options:
       --cdrom <PATH>            CD-ROM disc image .cue or .ccd file (repeatable, PC-9821 and FM Towns)
       --cdrom-compat <on|off>   Slow/compatible CD-ROM drive timing (default: off; FM Towns only)
       --cartridge <PATH>        Cartridge ROM image to insert
-      --cassette <PATH>         Cassette tape image to insert (.cas/.p6/.p6t)
+      --cassette <PATH>         Cassette tape image to insert (.cas/.p6/.p6t, X1 .tap)
       --audio-volume <FLOAT>    Audio volume 0.0-1.0
       --aspect-mode <MODE>      Display aspect mode: 4:3 or 1:1
       --crt <on|off>            Enable CRT effect (default: on; modern backend only)
@@ -270,7 +273,7 @@ pub enum CopyArg {
 /// of these (case-insensitive) for the argument to be treated as an image
 /// reference; otherwise the colon is part of a host path.
 const IMAGE_EXTENSIONS: &[&str] = &[
-    "hdi", "nhd", "thd", "d88", "d98", "88d", "98d", "hdm", "nfd",
+    "hdi", "nhd", "thd", "d88", "d98", "88d", "98d", "hdm", "nfd", "2d",
 ];
 
 fn parse_copy_arg(raw: &str) -> CopyArg {
@@ -582,9 +585,9 @@ fn parse_args_from(
                 let val = value(&flag)?;
                 config.pc88_boot_mode = val.parse::<BootMode>().map_err(StringError)?;
             }
-            "--pc88-monitor" => {
+            "--monitor" => {
                 let val = value(&flag)?;
-                config.pc88_monitor = val.parse::<MonitorTiming>().map_err(StringError)?;
+                config.monitor = val.parse::<MonitorTiming>().map_err(StringError)?;
             }
             "--pc88-memory-wait" => {
                 let val = value(&flag)?;
@@ -603,6 +606,10 @@ fn parse_args_from(
             "--towns-roms" => config.towns_roms = Some(PathBuf::from(value(&flag)?)),
             "--towns-pad" => config.towns_pad = value(&flag)?.parse().map_err(StringError)?,
             "--pc6000-roms" => config.pc60_roms = Some(PathBuf::from(value(&flag)?)),
+            "--x1-roms" => config.x1_roms = Some(PathBuf::from(value(&flag)?)),
+            "--x1-keyboard" => {
+                config.x1_keyboard = value(&flag)?.parse().map_err(StringError)?;
+            }
             "--cartridge" => config.cartridge = Some(PathBuf::from(value(&flag)?)),
             "--cassette" => config.cassette = Some(PathBuf::from(value(&flag)?)),
             "--pc6000-phase" => {
@@ -735,6 +742,8 @@ pub enum Target {
     Pc60,
     /// FM Towns series (the `machinetowns` crate).
     Towns,
+    /// Sharp X1 series (the `machinex1` crate).
+    X1,
 }
 
 pub struct EmulatorConfig {
@@ -770,7 +779,7 @@ pub struct EmulatorConfig {
     pub backend: Backend,
     pub enable_extractor: bool,
     pub pc88_boot_mode: BootMode,
-    pub pc88_monitor: MonitorTiming,
+    pub monitor: MonitorTiming,
     pub pc88_memory_wait: MemoryWaitSwitch,
     pub pc88_8mhz_wait: EightMhzWaitMode,
     pub pc88_roms: Option<PathBuf>,
@@ -778,6 +787,9 @@ pub struct EmulatorConfig {
     pub pc88va_roms: Option<PathBuf>,
     pub pc60_model: Pc6000Model,
     pub pc60_roms: Option<PathBuf>,
+    pub x1_model: X1Model,
+    pub x1_roms: Option<PathBuf>,
+    pub x1_keyboard: X1KeyboardMode,
     pub towns_model: TownsModel,
     pub towns_roms: Option<PathBuf>,
     pub towns_pad: TownsPadType,
@@ -829,7 +841,7 @@ impl Default for EmulatorConfig {
             backend: Backend::Modern,
             enable_extractor: false,
             pc88_boot_mode: BootMode::V2,
-            pc88_monitor: MonitorTiming::Auto,
+            monitor: MonitorTiming::Auto,
             pc88_memory_wait: MemoryWaitSwitch::Fast,
             pc88_8mhz_wait: EightMhzWaitMode::Fast,
             pc88_roms: None,
@@ -837,6 +849,9 @@ impl Default for EmulatorConfig {
             pc88va_roms: None,
             pc60_model: Pc6000Model::Pc6001,
             pc60_roms: None,
+            x1_model: X1Model::X1,
+            x1_roms: None,
+            x1_keyboard: X1KeyboardMode::ModeA,
             towns_model: machinetowns::TownsModel::FmTownsIIMx,
             towns_roms: None,
             towns_pad: machinetowns::TownsPadType::SixButton,
@@ -890,9 +905,9 @@ fn apply_config_file(
                 Ok(mode) => config.pc88_boot_mode = mode,
                 Err(_) => warn!("Unknown PC-88 boot mode in config: {val}"),
             },
-            "pc88-monitor" => match val.parse::<MonitorTiming>() {
-                Ok(timing) => config.pc88_monitor = timing,
-                Err(_) => warn!("Unknown PC-88 monitor timing in config: {val}"),
+            "monitor" => match val.parse::<MonitorTiming>() {
+                Ok(timing) => config.monitor = timing,
+                Err(_) => warn!("Unknown monitor timing in config: {val}"),
             },
             "pc88-memory-wait" => match val.parse::<MemoryWaitSwitch>() {
                 Ok(switch) => {
@@ -920,6 +935,11 @@ fn apply_config_file(
                 Err(error) => warn!("Invalid towns-pad in config: {error}"),
             },
             "pc6000-roms" => config.pc60_roms = Some(PathBuf::from(val)),
+            "x1-roms" => config.x1_roms = Some(PathBuf::from(val)),
+            "x1-keyboard" => match val.parse() {
+                Ok(mode) => config.x1_keyboard = mode,
+                Err(error) => warn!("Invalid x1-keyboard in config: {error}"),
+            },
             "cartridge" => config.cartridge = Some(PathBuf::from(val)),
             "cassette" => config.cassette = Some(PathBuf::from(val)),
             "pc6000-phase" => match parse_composite_phase(val) {
@@ -1012,6 +1032,8 @@ fn apply_config_file(
                     Target::Pc98 => parse_key_binding(host_name, val),
                     Target::Pc60 => parse_key_binding_pc60(host_name, val),
                     Target::Towns => parse_key_binding_towns(host_name, val),
+                    // Placeholder until the X1 key map lands in a later phase.
+                    Target::X1 => parse_key_binding(host_name, val),
                 };
                 match binding {
                     Some((host, code)) => config.key_map.set(host, code),
@@ -1069,6 +1091,14 @@ fn apply_machine_selection(config: &mut EmulatorConfig, value: &str) -> Result<(
         }
         config.target = Target::Pc60;
         config.pc60_model = model;
+        return Ok(());
+    }
+    if let Ok(model) = value.parse::<X1Model>() {
+        if config.target != Target::X1 {
+            config.key_map = KeyMap::new_x1();
+        }
+        config.target = Target::X1;
+        config.x1_model = model;
         return Ok(());
     }
     if let Ok(model) = value.parse::<machinetowns::TownsModel>() {

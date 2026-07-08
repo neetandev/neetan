@@ -2047,6 +2047,59 @@ fn gen_ym2203_fidelity(dir: &str) {
     println!("  wrote ym2203_fidelity.rs");
 }
 
+// The OPM golden is authored by the standalone C++ harness in tests/cpp
+// (gen_opm_golden.cpp); this Rust generator mirrors the same register
+// sequences and must reproduce it byte-for-byte.
+fn gen_ym2151_fm(dir: &str) {
+    let mut f = header();
+
+    // silence_after_reset
+    {
+        let mut chip = setup_ym2151();
+        f.push_str(&fmt2("SILENCE", &generate_2_opm(&mut chip, SAMPLES)));
+    }
+
+    // single tone, algorithm 7 (all four operators are parallel carriers)
+    {
+        let mut chip = setup_ym2151();
+        setup_ym2151_simple_tone(&mut chip, 0, 7, 0);
+        key_on_ym2151(&mut chip, 0);
+        f.push_str(&fmt2("TONE_ALGO7", &generate_2_opm(&mut chip, SAMPLES)));
+    }
+
+    // algorithm 4 with feedback (two stacked 2-op voices, feedback on op1)
+    {
+        let mut chip = setup_ym2151();
+        setup_ym2151_simple_tone(&mut chip, 0, 4, 5);
+        key_on_ym2151(&mut chip, 0);
+        f.push_str(&fmt2("TONE_ALGO4_FB", &generate_2_opm(&mut chip, SAMPLES)));
+    }
+
+    // LFO phase modulation (vibrato); exercises the dynamic phase-step path
+    {
+        let mut chip = setup_ym2151();
+        write_reg_ym2151(&mut chip, 0x18, 0x80);
+        write_reg_ym2151(&mut chip, 0x19, 0xFF);
+        write_reg_ym2151(&mut chip, 0x1B, 0x00);
+        setup_ym2151_simple_tone(&mut chip, 0, 7, 0);
+        write_reg_ym2151(&mut chip, 0x38, 0x70);
+        key_on_ym2151(&mut chip, 0);
+        f.push_str(&fmt2("LFO_PM", &generate_2_opm(&mut chip, SAMPLES)));
+    }
+
+    // noise enabled on channel 7 operator 4 (register operator 31)
+    {
+        let mut chip = setup_ym2151();
+        write_reg_ym2151(&mut chip, 0x0F, 0x90);
+        setup_ym2151_simple_tone(&mut chip, 7, 7, 0);
+        key_on_ym2151(&mut chip, 7);
+        f.push_str(&fmt2("NOISE", &generate_2_opm(&mut chip, SAMPLES)));
+    }
+
+    std::fs::write(format!("{dir}/ym2151_fm.rs"), f).unwrap();
+    println!("  wrote ym2151_fm.rs");
+}
+
 #[test]
 #[ignore = "run once to regenerate golden vector files from C++ reference"]
 fn generate_golden_vectors() {
@@ -2067,5 +2120,6 @@ fn generate_golden_vectors() {
     gen_ym3812_fm(&dir);
     gen_ymf262_fm(&dir);
     gen_ymf262_stereo(&dir);
+    gen_ym2151_fm(&dir);
     println!("Done!");
 }

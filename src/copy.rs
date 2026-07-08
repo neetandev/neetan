@@ -26,7 +26,7 @@ use dos::{
 use crate::config::CopyArg;
 
 const HDD_EXTENSIONS: &[&str] = &["hdi", "nhd", "thd"];
-const FDD_EXTENSIONS: &[&str] = &["d88", "d98", "88d", "98d", "hdm", "nfd"];
+const FDD_EXTENSIONS: &[&str] = &["d88", "d98", "88d", "98d", "hdm", "nfd", "2d"];
 
 /// Top-level dispatcher for the `copy` subcommand.
 pub fn copy(source: CopyArg, dest: CopyArg) -> crate::Result<()> {
