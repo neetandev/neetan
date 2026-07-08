@@ -118,6 +118,10 @@ impl<T: Tracing> X1Bus<T> {
                 self.psg.set_port_b_input(self.joystick_p2);
                 self.psg.data_r()
             }
+            0x1E00 => {
+                self.memory.select_ram();
+                OPEN_BUS
+            }
             0x1F00 => self.io_read_1f00(port),
             _ => OPEN_BUS,
         }

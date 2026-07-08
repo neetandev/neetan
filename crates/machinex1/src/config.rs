@@ -5,8 +5,6 @@ const CLOCK_HZ_4MHZ: u32 = 4_000_000;
 
 /// Base X1 work RAM: a single 64 KiB bank.
 const WORK_RAM_64K: usize = 0x1_0000;
-/// X1 turbo work RAM: sixteen 64 KiB banks.
-const WORK_RAM_16_BANKS: usize = 16 * 0x1_0000;
 
 /// Base X1 IPL ROM size.
 const IPL_ROM_4K: usize = 0x1000;
@@ -30,11 +28,10 @@ impl X1Model {
         }
     }
 
-    /// Work RAM size in bytes. Turbo machines expose sixteen 64 KiB banks.
+    /// Work RAM size in bytes.
     pub const fn work_ram_size(self) -> usize {
         match self {
-            X1Model::X1 => WORK_RAM_64K,
-            X1Model::X1Turbo => WORK_RAM_16_BANKS,
+            X1Model::X1 | X1Model::X1Turbo => WORK_RAM_64K,
         }
     }
 

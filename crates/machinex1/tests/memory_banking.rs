@@ -1,4 +1,4 @@
-//! Memory banking tests: the base-X1 ROM/RAM toggle over the bottom 32 KiB.
+//! Memory tests: the base-X1 ROM/RAM toggle and X1turbo lower-window banking.
 
 mod harness;
 
@@ -41,14 +41,19 @@ fn upper_half_is_always_ram() {
     assert!(machine.bus.rom_selected());
 }
 
-/// Selects flat RAM bank `bank` via the turbo bank register (`0x0B00`): BMCS (bit
-/// 4) clear, bank index in the low nibble.
+/// Selects lower-window RAM bank `bank` via the turbo bank register (`0x0B00`).
+/// BMCS (bit 4) is clear; BMNO aliases physical storage by parity.
 fn select_bank(machine: &mut machinex1::X1Machine, bank: u8) {
     machine.bus.io_write(0x0B00, bank & 0x0F);
 }
 
 #[test]
-fn turbo_bank_register_selects_independent_64k_windows() {
+fn turbo_has_64k_main_ram() {
+    assert_eq!(X1Model::X1Turbo.work_ram_size(), 0x1_0000);
+}
+
+#[test]
+fn turbo_bank_register_selects_two_physical_lower_windows() {
     let mut machine = build_machine_with_synthetic_roms(X1Model::X1Turbo, |roms| {
         roms.ipl.fill(0xFF);
     });
@@ -57,36 +62,80 @@ fn turbo_bank_register_selects_independent_64k_windows() {
     assert_eq!(machine.bus.io_read(0x0B00), 0x10);
     assert!(machine.bus.rom_selected());
 
-    // Write a distinctive byte at the same address in three different banks.
+    // Bank 0 and bank 1 are independent. The upper half stays normal main RAM
+    // and is shared across bank selections.
     select_bank(&mut machine, 0);
     machine.bus.poke_byte(0x0000, 0xA0);
+    machine.bus.poke_byte(0xC000, 0xC0);
+
     select_bank(&mut machine, 1);
     machine.bus.poke_byte(0x0000, 0xA1);
-    select_bank(&mut machine, 15);
-    machine.bus.poke_byte(0x0000, 0xAF);
+    assert_eq!(machine.bus.peek_byte(0xC000), 0xC0);
+    machine.bus.poke_byte(0xC000, 0xC1);
 
-    // Each bank reads back its own byte; banks do not alias.
     select_bank(&mut machine, 0);
     assert_eq!(machine.bus.peek_byte(0x0000), 0xA0);
+    assert_eq!(machine.bus.peek_byte(0xC000), 0xC1);
+
     select_bank(&mut machine, 1);
     assert_eq!(machine.bus.peek_byte(0x0000), 0xA1);
-    select_bank(&mut machine, 15);
-    assert_eq!(machine.bus.peek_byte(0x0000), 0xAF);
+    assert_eq!(machine.bus.peek_byte(0xC000), 0xC1);
 
-    // The bank register reads back the six stored bits.
+    // Higher BMNO values alias the two physical banks by parity.
+    select_bank(&mut machine, 2);
+    assert_eq!(machine.bus.peek_byte(0x0000), 0xA0);
+    machine.bus.poke_byte(0x0000, 0xA2);
+
+    select_bank(&mut machine, 0);
+    assert_eq!(machine.bus.peek_byte(0x0000), 0xA2);
+
+    select_bank(&mut machine, 15);
     assert_eq!(machine.bus.io_read(0x0B00), 0x0F);
+    assert_eq!(machine.bus.peek_byte(0x0000), 0xA1);
+    machine.bus.poke_byte(0x0000, 0xAF);
+    assert_eq!(machine.bus.peek_byte(0xC000), 0xC1);
+
+    select_bank(&mut machine, 1);
+    assert_eq!(machine.bus.peek_byte(0x0000), 0xAF);
+    assert_eq!(machine.bus.peek_byte(0xC000), 0xC1);
+
+    // The bank register reads back the stored byte.
+    assert_eq!(machine.bus.io_read(0x0B00), 0x01);
 }
 
 #[test]
-fn turbo_flat_bank_has_no_rom_overlay() {
+fn turbo_bank_register_preserves_high_bits_but_maps_bank_parity() {
+    let mut machine = build_machine_with_synthetic_roms(X1Model::X1Turbo, |roms| {
+        roms.ipl[0] = 0xC3;
+    });
+
+    machine.bus.io_write(0x0B00, 0xE1);
+    assert_eq!(machine.bus.io_read(0x0B00), 0xE1);
+    machine.bus.poke_byte(0x0000, 0xA1);
+
+    machine.bus.io_write(0x0B00, 0xF1);
+    assert_eq!(machine.bus.io_read(0x0B00), 0xF1);
+    assert_eq!(machine.bus.peek_byte(0x0000), 0xC3);
+
+    machine.bus.io_write(0x0B00, 0xE3);
+    assert_eq!(machine.bus.io_read(0x0B00), 0xE3);
+    assert_eq!(machine.bus.peek_byte(0x0000), 0xA1);
+}
+
+#[test]
+fn turbo_lower_bank_has_no_rom_overlay() {
     let mut machine = build_machine_with_synthetic_roms(X1Model::X1Turbo, |roms| {
         roms.ipl[0] = 0xC3; // distinctive IPL byte
     });
 
     // Base map: the IPL shows through the bottom of the address space.
     assert_eq!(machine.bus.peek_byte(0x0000), 0xC3);
+    machine.bus.io_write(0x1E00, 0x00);
+    machine.bus.poke_byte(0x0000, 0x33);
+    assert_eq!(machine.bus.peek_byte(0x0000), 0x33);
 
-    // Selecting a flat bank removes the ROM overlay; the bottom is plain RAM.
+    // Selecting a lower-window bank removes the ROM overlay and uses separate
+    // storage from main RAM.
     select_bank(&mut machine, 0);
     assert_eq!(machine.bus.peek_byte(0x0000), 0x00);
     machine.bus.poke_byte(0x0000, 0x5A);
@@ -111,6 +160,41 @@ fn turbo_base_map_toggle_still_works() {
     machine.bus.io_write(0x1D00, 0x00);
     assert!(machine.bus.rom_selected());
     assert_eq!(machine.bus.peek_byte(0x0000), 0xC3);
+}
+
+#[test]
+fn rom_ram_toggle_decodes_full_io_pages() {
+    let mut machine = build_machine_with_synthetic_roms(X1Model::X1, |roms| {
+        roms.ipl[0] = 0xC3;
+    });
+
+    machine.bus.io_write(0x1E7F, 0x00);
+    assert!(!machine.bus.rom_selected());
+    machine.bus.poke_byte(0x0000, 0x42);
+    assert_eq!(machine.bus.peek_byte(0x0000), 0x42);
+
+    machine.bus.io_write(0x1D80, 0x00);
+    assert!(machine.bus.rom_selected());
+    assert_eq!(machine.bus.peek_byte(0x0000), 0xC3);
+
+    machine.bus.io_write(0x1EFF, 0x00);
+    assert!(!machine.bus.rom_selected());
+    assert_eq!(machine.bus.peek_byte(0x0000), 0x42);
+}
+
+#[test]
+fn read_1exx_selects_ram_and_returns_open_bus() {
+    let mut machine = build_machine_with_synthetic_roms(X1Model::X1, |roms| {
+        roms.ipl[0] = 0xC3;
+    });
+
+    machine.bus.poke_byte(0x0000, 0x5A);
+    assert!(machine.bus.rom_selected());
+    assert_eq!(machine.bus.peek_byte(0x0000), 0xC3);
+
+    assert_eq!(machine.bus.io_read(0x1E40), 0xFF);
+    assert!(!machine.bus.rom_selected());
+    assert_eq!(machine.bus.peek_byte(0x0000), 0x5A);
 }
 
 #[test]
