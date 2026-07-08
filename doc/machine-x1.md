@@ -3,10 +3,10 @@
 Select the Sharp X1 family with `--machine` set to `X1` or `X1TURBO`. Both are
 single-Z80 machines running at a fixed 4 MHz (`--cpu-mode` is ignored):
 
-| Machine    | `--machine` | CPU / Clock | RAM              | Sound              | Drive default |
-|------------|-------------|-------------|------------------|--------------------|---------------|
-| Sharp X1   | `X1`        | Z80A 4 MHz  | 64 KiB           | AY-3-8910          | 5.25" 2D      |
-| X1 turbo   | `X1TURBO`   | Z80A 4 MHz  | 16 x 64 KiB      | AY-3-8910 + YM2151 | 5.25" 2D      |
+| Machine    | `--machine` | CPU / Clock | Main RAM | Sound              | Drive default |
+|------------|-------------|-------------|----------|--------------------|---------------|
+| Sharp X1   | `X1`        | Z80A 4 MHz  | 64 KiB   | AY-3-8910          | 5.25" 2D      |
+| X1 turbo   | `X1TURBO`   | Z80A 4 MHz  | 64 KiB   | AY-3-8910 + YM2151 | 5.25" 2D      |
 
 The base X1 (CZ-800C) offers 640x200 and 320x200 graphics with a digital 8-color
 palette, a programmable character generator (PCG), text attributes, and the
@@ -14,12 +14,12 @@ AY-3-8910 PSG. The keyboard, cassette transport, and real-time clock are handled
 the machine's sub-CPU, which the emulator provides as a high-level emulation.
 
 The X1 turbo (CZ-850C) is a strict hardware superset of the base X1 and still runs
-all base-X1 software. It adds sixteen 64 KiB work-RAM banks, a Z80 DMA controller
-that drives the floppy controller, a Z80 SIO (RS-232C on channel 0 and the mouse on
-channel 1), a kanji ROM with a kanji text VRAM plane, the 400-line 24 kHz hi-res
-video mode, and a hi-speed PCG mode. The turbo is fitted with the CZ-8BS1 FM sound
-board (YM2151 OPM), which software detects through the board's detection port; the
-base X1 has the PSG only.
+all base-X1 software. It keeps 64 KiB of main RAM while adding expanded graphics
+RAM, a Z80 DMA controller that drives the floppy controller, a Z80 SIO (RS-232C on
+channel 0 and the mouse on channel 1), a kanji ROM with a kanji text VRAM plane,
+the 400-line 24 kHz hi-res video mode, and a hi-speed PCG mode. The turbo is fitted
+with the CZ-8BS1 FM sound board (YM2151 OPM), which software detects through the
+board's detection port; the base X1 has the PSG only.
 
 To use the mouse, capture the pointer with `Right Ctrl + M` (see
 [Emulator controls](../README.md#emulator-controls)).

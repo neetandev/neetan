@@ -1,16 +1,21 @@
 //! Sharp X1 memory map: base X1 IPL ROM + work RAM + ROM/RAM toggle, plus the
-//! turbo 64 KiB bank register.
+//! turbo lower-window RAM banking.
 //!
 //! The base X1 maps the IPL ROM over the bottom 32 KiB of the address space while
 //! the ROM/RAM latch selects ROM; the upper 32 KiB is always work RAM and all
 //! writes go to RAM. A write to I/O `0x1D00` selects ROM in the bottom half, a
 //! write to `0x1E00` selects RAM.
 //!
-//! On turbo machines the bank register (I/O `0x0B00`) selects one of sixteen flat
-//! 64 KiB RAM banks: when its bit 4 (BMCS) is clear the whole address space maps
-//! to `bank * 0x1_0000` with no ROM overlay, and when it is set the machine falls
-//! back to the base ROM/RAM toggle (which addresses bank 0). Bank 0's lower half is
-//! therefore the same storage as the base RAM.
+//! On turbo machines, clearing BMCS in the bank register (I/O `0x0B00`) maps
+//! bank RAM over the bottom half of the address space. The register stores the
+//! full byte, including the inert BML5 latch in bit 5 and the 4-bit BMNO field
+//! in bits 3..0, but known implementations provide only physical bank 0/1, so
+//! BMNO aliases by parity. Setting BMCS in bit 4 falls back to the base ROM/RAM
+//! toggle. The upper half remains normal work RAM.
+//!
+//! X1center references used for this behavior:
+//! - I/O map and memory banking: http://x1center.org/sdx1/sdx1_0.html
+//! - External EMM boards, separate from `0x0B00`: http://x1center.org/resource/x1emm.html
 
 use crate::config::X1Model;
 
@@ -18,25 +23,26 @@ use crate::config::X1Model;
 /// base X1 dump is only 4 KiB; the remainder of the region reads back as 0xFF.
 const IPL_WINDOW_SIZE: usize = 0x8000;
 
-/// One flat turbo RAM bank spans the whole 64 KiB address space.
-const BANK_SIZE: usize = 0x1_0000;
+/// The turbo banked window covers the bottom 32 KiB of the CPU address space.
+const TURBO_BANK_WINDOW_SIZE: usize = 0x8000;
 
-/// Bank register bit 4 (BMCS): when clear a flat RAM bank is selected, when set the
-/// base ROM/RAM map applies. Reset selects the base map so the IPL is visible.
+/// Physical turbo lower-window bank count documented by X1center.
+const TURBO_BANK_COUNT: usize = 2;
+
+/// Bank register bit 4 (BMCS): when clear a lower-window RAM bank is selected,
+/// when set the base ROM/RAM map applies. Reset selects the base map so the IPL is
+/// visible.
 const BANK_SELECT_BASE_MAP: u8 = 0x10;
 
-/// Only the low six bits of the bank register are stored.
-const BANK_REGISTER_MASK: u8 = 0x3F;
+/// Only BMNO bit 0 selects physical storage; the full register still reads back.
+const PHYSICAL_BANK_INDEX_MASK: u8 = 0x01;
 
-/// Low nibble of the bank register: the selected flat RAM bank (0..=15).
-const BANK_INDEX_MASK: u8 = 0x0F;
-
-/// Base X1 memory: an IPL ROM shadow, the work-RAM banks, the ROM/RAM latch and the
-/// turbo bank register. The work-RAM buffer is sized per model (one bank for the
-/// base X1, sixteen for turbo).
+/// Base X1 memory: an IPL ROM shadow, work RAM, the ROM/RAM latch and the
+/// turbo bank register.
 pub struct X1Memory {
     ipl_rom: Vec<u8>,
     work_ram: Vec<u8>,
+    turbo_lower_banks: Vec<u8>,
     rom_selected: bool,
     is_turbo: bool,
     ex_bank: u8,
@@ -48,6 +54,11 @@ impl X1Memory {
         Self {
             ipl_rom: vec![0xFFu8; IPL_WINDOW_SIZE],
             work_ram: vec![0u8; model.work_ram_size()],
+            turbo_lower_banks: if model.is_turbo() {
+                vec![0u8; TURBO_BANK_COUNT * TURBO_BANK_WINDOW_SIZE]
+            } else {
+                Vec::new()
+            },
             rom_selected: true,
             is_turbo: model.is_turbo(),
             ex_bank: BANK_SELECT_BASE_MAP,
@@ -78,9 +89,9 @@ impl X1Memory {
         self.rom_selected
     }
 
-    /// Sets the turbo bank register (I/O `0x0B00`); only the low six bits are kept.
+    /// Sets the turbo bank register (I/O `0x0B00`).
     pub fn set_ex_bank(&mut self, value: u8) {
-        self.ex_bank = value & BANK_REGISTER_MASK;
+        self.ex_bank = value;
     }
 
     /// The current turbo bank-register value.
@@ -88,20 +99,20 @@ impl X1Memory {
         self.ex_bank
     }
 
-    /// Whether a flat turbo RAM bank is currently selected (BMCS clear).
-    fn flat_bank_selected(&self) -> bool {
+    /// Whether a turbo lower-window RAM bank is currently selected (BMCS clear).
+    fn turbo_lower_bank_selected(&self) -> bool {
         self.is_turbo && (self.ex_bank & BANK_SELECT_BASE_MAP) == 0
     }
 
-    /// The offset into `work_ram` of the currently selected flat RAM bank.
-    fn flat_bank_offset(&self) -> usize {
-        (self.ex_bank & BANK_INDEX_MASK) as usize * BANK_SIZE
+    /// The offset into `turbo_lower_banks` of the currently selected bank.
+    fn turbo_lower_bank_offset(&self) -> usize {
+        (self.ex_bank & PHYSICAL_BANK_INDEX_MASK) as usize * TURBO_BANK_WINDOW_SIZE
     }
 
     /// Reads a byte from the CPU address space.
     pub fn read(&self, address: u16) -> u8 {
-        if self.flat_bank_selected() {
-            self.work_ram[self.flat_bank_offset() + address as usize]
+        if self.turbo_lower_bank_selected() && (address as usize) < TURBO_BANK_WINDOW_SIZE {
+            self.turbo_lower_banks[self.turbo_lower_bank_offset() + address as usize]
         } else if address < IPL_WINDOW_SIZE as u16 && self.rom_selected {
             self.ipl_rom[address as usize]
         } else {
@@ -109,12 +120,12 @@ impl X1Memory {
         }
     }
 
-    /// Writes a byte to the CPU address space. Flat-bank mode writes to the selected
-    /// bank; otherwise all writes go to work RAM (the ROM window is never written).
+    /// Writes a byte to the CPU address space. Turbo lower-bank mode writes the
+    /// bottom half to the selected slot; all other writes go to work RAM.
     pub fn write(&mut self, address: u16, value: u8) {
-        if self.flat_bank_selected() {
-            let offset = self.flat_bank_offset() + address as usize;
-            self.work_ram[offset] = value;
+        if self.turbo_lower_bank_selected() && (address as usize) < TURBO_BANK_WINDOW_SIZE {
+            let offset = self.turbo_lower_bank_offset() + address as usize;
+            self.turbo_lower_banks[offset] = value;
         } else {
             self.work_ram[address as usize] = value;
         }
