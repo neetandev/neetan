@@ -16,3 +16,6 @@
 [submodule "crates/cpu/tests/SingleStepTests/8086"]
 	path = crates/cpu/tests/SingleStepTests/8086
 	url = https://github.com/SingleStepTests/8086
+[submodule "crates/cpu/tests/SingleStepTests/6809"]
+	path = crates/cpu/tests/SingleStepTests/6809
+	url = https://github.com/neetandev/m6809
