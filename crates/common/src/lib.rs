@@ -668,6 +668,19 @@ pub trait Bus {
     /// chain override this; the default is a no-op.
     fn notify_reti(&mut self) {}
 
+    /// Returns the currently asserted Motorola 68000 interrupt level, 0-7.
+    fn m68000_interrupt_level(&self) -> u8 {
+        0
+    }
+
+    /// Acknowledges a Motorola 68000 interrupt and returns the vector number.
+    fn m68000_acknowledge_interrupt(&mut self, level: u8) -> u8 {
+        0x18 + level
+    }
+
+    /// Receives RESET instruction line changes.
+    fn m68000_reset_line(&mut self, _asserted: bool) {}
+
     /// Returns the current CPU cycle count.
     ///
     /// The value represents the number of CPU cycles elapsed since the
@@ -1166,6 +1179,63 @@ pub trait CpuZ80 {
 
     /// Sets the interrupt mode.
     fn set_im(&mut self, value: u8);
+}
+
+/// Trait representing a Motorola 68000-compatible CPU core.
+pub trait CpuM68000 {
+    /// Executes instructions until approximately `cycles_to_run` cycles have been consumed.
+    fn run_for(&mut self, cycles_to_run: u64, bus: &mut impl Bus) -> u64;
+
+    /// Executes one instruction and returns its cycle count.
+    fn step(&mut self, bus: &mut impl Bus) -> u64;
+
+    /// Resets the CPU to its reset-entry microstate.
+    fn reset(&mut self);
+
+    /// Returns `true` if the CPU is stopped waiting for an interrupt.
+    fn halted(&self) -> bool;
+
+    /// Returns the configured input clock frequency in Hz.
+    fn clock_hz(&self) -> u32;
+
+    /// Updates the configured input clock frequency in Hz.
+    fn set_clock_hz(&mut self, clock_hz: u32);
+
+    /// Returns the instruction program counter.
+    fn pc(&self) -> u32;
+
+    /// Sets the instruction program counter.
+    fn set_pc(&mut self, value: u32);
+
+    /// Returns data register `index`.
+    fn d(&self, index: usize) -> u32;
+
+    /// Sets data register `index`.
+    fn set_d(&mut self, index: usize, value: u32);
+
+    /// Returns address register `index`.
+    fn a(&self, index: usize) -> u32;
+
+    /// Sets address register `index`.
+    fn set_a(&mut self, index: usize, value: u32);
+
+    /// Returns the user stack pointer.
+    fn usp(&self) -> u32;
+
+    /// Sets the user stack pointer.
+    fn set_usp(&mut self, value: u32);
+
+    /// Returns the supervisor stack pointer.
+    fn ssp(&self) -> u32;
+
+    /// Sets the supervisor stack pointer.
+    fn set_ssp(&mut self, value: u32);
+
+    /// Returns the packed status register.
+    fn sr(&self) -> u16;
+
+    /// Sets the packed status register.
+    fn set_sr(&mut self, value: u16);
 }
 
 /// Trait representing a Motorola 6809-compatible CPU core.

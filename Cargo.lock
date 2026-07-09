@@ -47,6 +47,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpu_68k"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "zlib-rs",
+]
+
+[[package]]
 name = "create_font"
 version = "0.1.0"
 
