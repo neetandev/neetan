@@ -412,3 +412,6 @@ is licensed under [LGPL 2.1](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.
 
 The source code of the BSD 3-Clause licensed components remains available under BSD
 3-Clause regardless of the build configuration.
+
+The binary embeds third-party components; their license notices are collected in the
+[`licenses/`](licenses/) folder, which is included in every release.

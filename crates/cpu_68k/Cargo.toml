@@ -1,0 +1,15 @@
+[package]
+name = "cpu_68k"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file = "LICENSE"
+
+[features]
+verification = ["zlib-rs"]
+
+[dependencies]
+common = { workspace = true }
+zlib-rs = { workspace = true, optional = true }

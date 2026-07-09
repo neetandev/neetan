@@ -14,6 +14,7 @@ audio_engine = { path = "crates/audio_engine" }
 blake3 = { path = "crates/blake3" }
 common = { path = "crates/common" }
 cpu = { path = "crates/cpu" }
+cpu_68k = { path = "crates/cpu_68k" }
 device = { path = "crates/device" }
 dos = { path = "crates/dos" }
 machine = { path = "crates/machine" }
@@ -102,6 +103,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.cpu]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.cpu_68k]
 opt-level = 3
 codegen-units = 1
 
