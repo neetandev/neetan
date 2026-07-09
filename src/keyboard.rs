@@ -224,6 +224,21 @@ impl KeyMap {
         }
     }
 
+    /// FM-7 key map: host scancodes to FM-7 physical scancodes (0x00-0x66, the
+    /// key identifier the machine's keyboard tables index). The machine resolves
+    /// Shift / Ctrl / Graph / Kana internally, so modifiers forward as their own
+    /// physical scancodes and this map ignores the host modifier state. The
+    /// forwarding layer applies the release flag (bit 7), so every mapped value
+    /// stays within 0x00-0x7F.
+    pub const fn new_fm7() -> Self {
+        let mappings = build_fm7_default_map();
+        Self {
+            mappings,
+            shifted_mappings: mappings,
+            resolve_modifiers: false,
+        }
+    }
+
     /// PC-88VA key map: host scancodes to VA keycodes (the values read at port
     /// 0x1C1). The VA keycode interface reuses the PC-98 scan-code protocol, so the
     /// base map matches the PC-98 default; the machine derives the 88-compatible
@@ -655,6 +670,145 @@ pub fn parse_key_binding(host_name: &str, pc98_name: &str) -> Option<(Scancode, 
     let host = Scancode::from_name(host_name)?;
     let pc98 = pc98_scancode_from_name(pc98_name)?;
     Some((host, pc98))
+}
+
+/// FM-7 default key map: host scancodes to FM-7 physical scancodes. The values
+/// are the indices used by the machine's keycode tables (ESC = 0x01, digits
+/// `1`-`0` = 0x02-0x0B, `Q` = 0x11, and so on). Host keys without an FM-7
+/// equivalent stay UNMAPPED; the machine ignores that scancode.
+const fn build_fm7_default_map() -> [u8; Scancode::COUNT] {
+    use Scancode::*;
+
+    /// No-key code for host keys without an FM-7 equivalent.
+    const UNMAPPED: u8 = 0x00;
+
+    /// Ctrl key physical scancode.
+    const SCANCODE_CTRL: u8 = 0x52;
+    /// Left Shift physical scancode.
+    const SCANCODE_SHIFT_LEFT: u8 = 0x53;
+    /// Right Shift physical scancode.
+    const SCANCODE_SHIFT_RIGHT: u8 = 0x54;
+    /// Caps lock physical scancode (toggles the caps latch).
+    const SCANCODE_CAPS: u8 = 0x55;
+    /// Graph key physical scancode.
+    const SCANCODE_GRAPH: u8 = 0x56;
+    /// Break key physical scancode (drives the FIRQ break line directly).
+    const SCANCODE_BREAK: u8 = 0x5C;
+
+    const ALL_SCANCODES: &[(Scancode, u8)] = &[
+        // Top row: ESC, digits, and the two right-hand symbol keys.
+        (Escape, 0x01),
+        (_1, 0x02),
+        (_2, 0x03),
+        (_3, 0x04),
+        (_4, 0x05),
+        (_5, 0x06),
+        (_6, 0x07),
+        (_7, 0x08),
+        (_8, 0x09),
+        (_9, 0x0A),
+        (_0, 0x0B),
+        (Minus, 0x0C),
+        (Equals, 0x0D),
+        (Backslash, 0x0E),
+        (Backspace, 0x0F),
+        // Second row.
+        (Tab, 0x10),
+        (Q, 0x11),
+        (W, 0x12),
+        (E, 0x13),
+        (R, 0x14),
+        (T, 0x15),
+        (Y, 0x16),
+        (U, 0x17),
+        (I, 0x18),
+        (O, 0x19),
+        (P, 0x1A),
+        (Grave, 0x1B),
+        (LeftBracket, 0x1C),
+        (Return, 0x1D),
+        // Home row.
+        (A, 0x1E),
+        (S, 0x1F),
+        (D, 0x20),
+        (F, 0x21),
+        (G, 0x22),
+        (H, 0x23),
+        (J, 0x24),
+        (K, 0x25),
+        (L, 0x26),
+        (Semicolon, 0x27),
+        (Apostrophe, 0x28),
+        (RightBracket, 0x29),
+        // Bottom row.
+        (Z, 0x2A),
+        (X, 0x2B),
+        (C, 0x2C),
+        (V, 0x2D),
+        (B, 0x2E),
+        (N, 0x2F),
+        (M, 0x30),
+        (Comma, 0x31),
+        (Period, 0x32),
+        (Slash, 0x33),
+        (NonUsBackslash, 0x34),
+        (Space, 0x35),
+        // Numeric keypad.
+        (KpMultiply, 0x36),
+        (KpDivide, 0x37),
+        (KpPlus, 0x38),
+        (KpMinus, 0x39),
+        (Kp7, 0x3A),
+        (Kp8, 0x3B),
+        (Kp9, 0x3C),
+        (Kp4, 0x3E),
+        (Kp5, 0x3F),
+        (Kp6, 0x40),
+        (KpComma, 0x41),
+        (Kp1, 0x42),
+        (Kp2, 0x43),
+        (Kp3, 0x44),
+        (KpEnter, 0x45),
+        (Kp0, 0x46),
+        (KpPeriod, 0x47),
+        // Edit and cursor cluster.
+        (Home, 0x49),
+        (Delete, 0x4B),
+        (Insert, 0x4C),
+        (Up, 0x4D),
+        (Left, 0x4F),
+        (Down, 0x50),
+        (Right, 0x51),
+        // Modifiers forward as their own physical scancodes.
+        (LCtrl, SCANCODE_CTRL),
+        (RCtrl, SCANCODE_CTRL),
+        (LShift, SCANCODE_SHIFT_LEFT),
+        (RShift, SCANCODE_SHIFT_RIGHT),
+        (CapsLock, SCANCODE_CAPS),
+        (LAlt, SCANCODE_GRAPH),
+        (RAlt, SCANCODE_GRAPH),
+        (Pause, SCANCODE_BREAK),
+        // Function keys F1-F10.
+        (F1, 0x5D),
+        (F2, 0x5E),
+        (F3, 0x5F),
+        (F4, 0x60),
+        (F5, 0x61),
+        (F6, 0x62),
+        (F7, 0x63),
+        (F8, 0x64),
+        (F9, 0x65),
+        (F10, 0x66),
+    ];
+
+    let mut map = [UNMAPPED; Scancode::COUNT];
+    let mut i = 0;
+    while i < ALL_SCANCODES.len() {
+        let (scancode, code) = ALL_SCANCODES[i];
+        map[scancode.index()] = code;
+        i += 1;
+    }
+    map
 }
 
 /// FM Towns default key map: host scancodes to FM Towns JIS scancodes. Keys with

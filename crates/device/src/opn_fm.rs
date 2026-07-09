@@ -77,9 +77,6 @@ pub trait OpnChip {
     /// Native output sample type produced by `generate`.
     type Native: Copy;
 
-    /// Chip input clock in Hz.
-    const CLOCK: u32;
-
     /// Number of output channels written by `mix_sample` (1 mono, 2 stereo).
     const CHANNELS: usize;
 
@@ -146,7 +143,6 @@ pub trait OpnChip {
 
 impl OpnChip for Ym2203 {
     type Native = YmfmOutput4;
-    const CLOCK: u32 = 3_993_600;
     const CHANNELS: usize = 1;
 
     fn create() -> Self {
@@ -212,7 +208,6 @@ impl OpnChip for Ym2203 {
 
 impl OpnChip for Ym2608 {
     type Native = YmfmOutput3;
-    const CLOCK: u32 = 7_987_200;
     const CHANNELS: usize = 2;
 
     fn create() -> Self {
@@ -289,8 +284,6 @@ impl OpnChip for Ym2608 {
 
 impl OpnChip for Ymf276 {
     type Native = YmfmOutput2;
-    // FM TOWNS drives the OPN2 at 8 MHz (internal FM clock 8 MHz / 12).
-    const CLOCK: u32 = 8_000_000;
     const CHANNELS: usize = 2;
 
     fn create() -> Self {
@@ -358,9 +351,6 @@ impl OpnChip for Ymf276 {
 
 impl OpnChip for Ym2151 {
     type Native = YmfmOutput2;
-    // The Sharp X1 CZ-8BS1 board drives the OPM at 2 MHz (the 16 MHz master
-    // clock divided by 8; internal FM sample clock 2 MHz / 64).
-    const CLOCK: u32 = 2_000_000;
     const CHANNELS: usize = 2;
 
     fn create() -> Self {
@@ -424,6 +414,7 @@ impl OpnChip for Ym2151 {
 pub struct OpnFm<C: OpnChip> {
     chip: C,
     cpu_clock_hz: u32,
+    chip_clock_hz: u32,
     sample_rate: u32,
     native_rate: u32,
     chip_action_cycle: u64,
@@ -442,9 +433,11 @@ pub struct OpnFm<C: OpnChip> {
 
 impl<C: OpnChip> OpnFm<C> {
     /// Creates a driver around a reset chip and a configured resampler.
-    pub fn new(cpu_clock_hz: u32, sample_rate: u32) -> Self {
+    /// `chip_clock_hz` is the board's chip input clock, which scales the
+    /// native sample rate, the busy window, and the FM timer periods.
+    pub fn new(cpu_clock_hz: u32, sample_rate: u32, chip_clock_hz: u32) -> Self {
         let mut chip = C::create();
-        let native_rate = chip.sample_rate(C::CLOCK);
+        let native_rate = chip.sample_rate(chip_clock_hz);
         let resampler = ResamplerFir::new_from_hz(
             C::CHANNELS,
             native_rate,
@@ -456,6 +449,7 @@ impl<C: OpnChip> OpnFm<C> {
         Self {
             chip,
             cpu_clock_hz,
+            chip_clock_hz,
             sample_rate,
             native_rate,
             chip_action_cycle: 0,
@@ -495,8 +489,8 @@ impl<C: OpnChip> OpnFm<C> {
 
     fn apply_busy(&mut self, busy_clocks: u32, current_cycle: u64) {
         if busy_clocks != 0 {
-            let cpu_clocks =
-                u64::from(busy_clocks) * u64::from(self.cpu_clock_hz) / u64::from(C::CLOCK);
+            let cpu_clocks = u64::from(busy_clocks) * u64::from(self.cpu_clock_hz)
+                / u64::from(self.chip_clock_hz);
             self.busy_end_cycle = current_cycle + cpu_clocks;
         }
     }
@@ -623,7 +617,7 @@ impl<C: OpnChip> OpnFm<C> {
                 }
                 YmfmTimerUpdate::Schedule(duration_in_clocks) => {
                     let cpu_cycles = u64::from(duration_in_clocks) * u64::from(self.cpu_clock_hz)
-                        / u64::from(C::CLOCK);
+                        / u64::from(self.chip_clock_hz);
                     self.timer_actions.push(FmTimerAction::Schedule {
                         timer_id,
                         fire_cycle: current_cycle + cpu_cycles,
@@ -841,7 +835,7 @@ impl<C: OpnChip> OpnFm<C> {
         self.sample_rate = sample_rate;
         self.chip_action_cycle = current_cycle;
         self.chip = C::create();
-        self.native_rate = self.chip.sample_rate(C::CLOCK);
+        self.native_rate = self.chip.sample_rate(self.chip_clock_hz);
         self.resampler = ResamplerFir::new_from_hz(
             C::CHANNELS,
             self.native_rate,
@@ -876,7 +870,7 @@ mod tests {
 
     #[test]
     fn schedule_then_cancel_timer_a_round_trip() {
-        let mut fm = OpnFm::<Ym2608>::new(8_000_000, 48_000);
+        let mut fm = OpnFm::<Ym2608>::new(8_000_000, 48_000, 7_987_200);
         // Program timer A and enable/load it: set period registers then the
         // timer control (reg 0x27) load bits.
         fm.write_address(0x24, 0);
@@ -903,7 +897,7 @@ mod tests {
 
     #[test]
     fn mono_generation_is_non_silent_after_key_on() {
-        let mut fm = OpnFm::<Ym2203>::new(4_000_000, 48_000);
+        let mut fm = OpnFm::<Ym2203>::new(4_000_000, 48_000, 3_993_600);
         // A minimal FM note: set a total level and key it on.
         fm.write_address(0x40, 0);
         fm.write_data(0x00, 0); // operator 1 total level = max volume
@@ -918,7 +912,7 @@ mod tests {
 
     #[test]
     fn empty_output_advances_cursors() {
-        let mut fm = OpnFm::<Ym2608>::new(8_000_000, 48_000);
+        let mut fm = OpnFm::<Ym2608>::new(8_000_000, 48_000, 7_987_200);
         let mut empty: [f32; 0] = [];
         fm.generate_samples(1_000, 8_000_000, 1.0, &mut empty);
         assert_eq!(fm.timing().fm_sync_cursor, 1_000);

@@ -48,6 +48,9 @@ const BYTES_PER_PIXEL: usize = 4;
 /// AY-3-8910 input clock (main crystal divided by four).
 const AY_INPUT_CLOCK_HZ: u32 = 1_996_800;
 
+/// YM2203 input clock on the SR generation (main crystal divided by two).
+const OPN_INPUT_CLOCK_HZ: u32 = 3_993_600;
+
 /// Mixing level for the uPD7752 voice relative to the PSG/FM output.
 const VOICE_MIX_LEVEL: f32 = 0.4;
 
@@ -203,7 +206,11 @@ impl<T: Tracing> Pc6000Bus<T> {
             ppi: PpiLink::new(),
             sub: SubHle::new(),
             sound: if model.has_fm() {
-                SoundChip::Opn(Box::new(OpnFm::new(model.main_clock_hz(), sample_rate)))
+                SoundChip::Opn(Box::new(OpnFm::new(
+                    model.main_clock_hz(),
+                    sample_rate,
+                    OPN_INPUT_CLOCK_HZ,
+                )))
             } else {
                 SoundChip::Ay(Ay8910::new())
             },

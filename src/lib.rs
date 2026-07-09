@@ -1,5 +1,5 @@
 //! Neetan, an emulator for the PC-6001 / PC-6601, PC-8001 / PC-8801, PC-88VA,
-//! PC-9801 / PC-9821, FM Towns and Sharp X1 / X1 turbo families.
+//! PC-9801 / PC-9821, FM Towns, Sharp X1 / X1 turbo and Fujitsu FM-7 families.
 
 #![deny(unsafe_code)]
 
@@ -1231,6 +1231,7 @@ pub fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<B
         Target::Pc60 => initialize_pc60_machine(config, sample_rate),
         Target::Towns => initialize_towns_machine(config, sample_rate),
         Target::X1 => initialize_x1_machine(config, sample_rate),
+        Target::Fm7 => initialize_fm7_machine(config, sample_rate),
     }
 }
 
@@ -1267,14 +1268,21 @@ fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
         ))
     })?;
 
-    roms.validate_for_boot_mode(config.pc88_boot_mode)
-        .map_err(|error| {
-            StringError(format!(
-                "PC-8801MC boot mode '{}' requires a ROM missing from {}: {error}",
-                config.pc88_boot_mode,
-                rom_dir.display()
-            ))
-        })?;
+    // The shared --boot-mode field carries every family's values; reject an
+    // FM-7-only choice here and fall back to V2 when unset.
+    let boot_mode = config
+        .boot_mode
+        .map(|mode| mode.to_pc88())
+        .transpose()
+        .map_err(StringError)?
+        .unwrap_or(machine88::BootMode::V2);
+
+    roms.validate_for_boot_mode(boot_mode).map_err(|error| {
+        StringError(format!(
+            "PC-8801MC boot mode '{boot_mode}' requires a ROM missing from {}: {error}",
+            rom_dir.display()
+        ))
+    })?;
 
     let clock_select = match config.cpu_mode {
         common::CpuMode::Low => machine88::ClockSelect::FourMhz,
@@ -1282,7 +1290,7 @@ fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
     };
 
     let mut bus: machine88::Pc8801Bus = machine88::Pc8801Bus::new(model, clock_select, sample_rate);
-    bus.set_boot_mode(config.pc88_boot_mode);
+    bus.set_boot_mode(boot_mode);
     bus.set_monitor_timing(config.monitor);
     bus.set_memory_wait(config.pc88_memory_wait);
     bus.set_eight_mhz_wait(config.pc88_8mhz_wait);
@@ -1295,7 +1303,7 @@ fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
             CpuMode::Low => "4 MHz",
             CpuMode::High => "8 MHz",
         },
-        config.pc88_boot_mode,
+        boot_mode,
         config.monitor,
         config.pc88_memory_wait,
         config.pc88_8mhz_wait
@@ -1571,6 +1579,64 @@ fn initialize_x1_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Bo
             }
         }
     }
+
+    Ok(Box::new(machine))
+}
+
+/// Builds an FM-7 / FM-77AV machine: loads the ROM set, resolves the shared
+/// boot mode to an FM-7 mode, wires the two MC6809 cores (main and sub) and the
+/// bus, and returns the boxed machine.
+fn initialize_fm7_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+    let model = config.fm7_model;
+    info!("Selected machine model {model}");
+
+    let rom_dir = config.fm7_roms.as_ref().ok_or_else(|| {
+        StringError(format!(
+            "{model} requires a ROM directory (--fm7-roms <DIR>)"
+        ))
+    })?;
+
+    let roms = machinefm7::load_rom_set(model, rom_dir).map_err(|error| {
+        StringError(format!(
+            "Failed to load {model} ROM set from {}: {error}",
+            rom_dir.display()
+        ))
+    })?;
+
+    // The shared --boot-mode field carries every family's values; reject a
+    // PC-88-only choice here and default to BASIC when unset.
+    let boot_mode = config
+        .boot_mode
+        .map(|mode| mode.to_fm7())
+        .transpose()
+        .map_err(StringError)?
+        .unwrap_or(machinefm7::BootMode::Basic);
+
+    let mut bus: machinefm7::Fm7Bus<Tracer> =
+        machinefm7::Fm7Bus::new(model, boot_mode, sample_rate);
+    bus.load_roms(&roms);
+    bus.seed_host_clock();
+
+    if config.hdd1.is_some() || config.hdd2.is_some() {
+        warn!("HDD options are ignored for the FM-7 target");
+    }
+
+    let main_cpu = cpu::M6809::new(bus.cpu_clock_hz());
+    let sub_cpu = cpu::M6809::new(model.sub_clock_hz());
+    let mut machine = machinefm7::Fm7Machine::new(main_cpu, sub_cpu, bus);
+
+    if let Some(cassette_path) = config.cassette.as_ref() {
+        match machine.insert_cassette(cassette_path) {
+            Ok(description) => info!("Inserted cassette {description}"),
+            Err(error) => {
+                return Err(Error::from(StringError(format!(
+                    "Failed to insert FM-7 cassette: {error}"
+                ))));
+            }
+        }
+    }
+
+    info!("FM-7 configured: model {model}, boot mode {boot_mode}");
 
     Ok(Box::new(machine))
 }

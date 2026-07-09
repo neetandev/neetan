@@ -7,6 +7,7 @@
 
 mod cas;
 mod p6t;
+mod t77;
 mod tap;
 
 use std::fmt;
@@ -453,6 +454,7 @@ pub fn load_cassette(extension: &str, data: &[u8]) -> Result<CassetteMedia, Cass
         "cas" | "p6" => Ok(CassetteMedia::Bytes(cas::parse(data))),
         "p6t" => Ok(CassetteMedia::Bytes(p6t::parse(data))),
         "tap" => Ok(CassetteMedia::Samples(tap::parse(data)?)),
+        "t77" => Ok(CassetteMedia::Samples(t77::parse(data)?)),
         other => Err(CassetteError::UnknownFormat(other.to_string())),
     }
 }
@@ -610,6 +612,49 @@ mod tests {
         deck.automatic_program_search(true);
         assert_eq!(deck.read_byte(), CassetteRead::EndOfTape); // sample media
         assert!(deck.ear_level()); // positioned on the high marker after the gap
+    }
+
+    fn t77_image(records: &[u16]) -> Vec<u8> {
+        let mut image = b"XM7 TAPE IMAGE 0".to_vec();
+        for record in records {
+            image.extend_from_slice(&record.to_be_bytes());
+        }
+        image
+    }
+
+    #[test]
+    fn t77_expands_level_and_count_records() {
+        // One high tick, two low ticks, one high tick.
+        let image = t77_image(&[0x8001, 0x0002, 0x8001]);
+        let CassetteMedia::Samples(signal) = load_cassette("t77", &image).expect("parses") else {
+            panic!("expected a sample waveform");
+        };
+        assert_eq!(signal.sample_rate, 111_111);
+        assert_eq!(signal.bit_count, 4);
+        assert!(signal.level_at(0));
+        assert!(!signal.level_at(1));
+        assert!(!signal.level_at(2));
+        assert!(signal.level_at(3));
+    }
+
+    #[test]
+    fn t77_skips_zero_width_records() {
+        let image = t77_image(&[0x8000, 0x0003]);
+        let CassetteMedia::Samples(signal) = load_cassette("t77", &image).expect("parses") else {
+            panic!("expected a sample waveform");
+        };
+        assert_eq!(signal.bit_count, 3);
+        assert!(!signal.level_at(0));
+    }
+
+    #[test]
+    fn t77_rejects_a_bad_header() {
+        let mut image = b"NOT A TAPE IMAGE".to_vec();
+        image.extend_from_slice(&0x8004u16.to_be_bytes());
+        assert_eq!(
+            load_cassette("t77", &image).unwrap_err(),
+            CassetteError::UnknownFormat("t77".to_string())
+        );
     }
 
     #[test]

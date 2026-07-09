@@ -6,6 +6,10 @@ use ymfm_oxide::Ym2203;
 pub use crate::opn_fm::FmSampleRemainder;
 use crate::opn_fm::{FmTimerAction, OpnFm, OpnFmTiming};
 
+/// YM2203 input clock on the PC-9801-26K board: the 15.9744 MHz system clock
+/// divided by 4.
+const YM2203_CLOCK_HZ: u32 = 3_993_600;
+
 /// Snapshot of the PC-9801-26K sound board state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Soundboard26kState {
@@ -85,7 +89,7 @@ impl Soundboard26k {
     /// When `alternate_timers` is `true`, uses `FmTimer2A`/`FmTimer2B` event
     /// kinds instead of `FmTimerA`/`FmTimerB` (for dual-board configurations).
     pub fn new(cpu_clock_hz: u32, sample_rate: u32, alternate_timers: bool) -> Self {
-        let core = OpnFm::<Ym2203>::new(cpu_clock_hz, sample_rate);
+        let core = OpnFm::<Ym2203>::new(cpu_clock_hz, sample_rate, YM2203_CLOCK_HZ);
         let state = Soundboard26kState {
             alternate_timers,
             ..Default::default()

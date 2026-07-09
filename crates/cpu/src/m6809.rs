@@ -59,6 +59,8 @@ pub struct M6809 {
     run_start_cycle: u64,
     run_budget: u64,
     nmi_armed: bool,
+    cwai_waiting: bool,
+    pending_extended_clear: Option<u16>,
 }
 
 impl Deref for M6809 {
@@ -93,6 +95,8 @@ impl M6809 {
             run_start_cycle: 0,
             run_budget: 0,
             nmi_armed: false,
+            cwai_waiting: false,
+            pending_extended_clear: None,
         };
         cpu.reset();
         cpu
@@ -104,6 +108,8 @@ impl M6809 {
         self.halted = false;
         self.pending_irq = 0;
         self.nmi_armed = true;
+        self.cwai_waiting = false;
+        self.pending_extended_clear = None;
     }
 
     /// Resets the CPU and fetches the reset vector from the bus.
@@ -127,6 +133,9 @@ impl M6809 {
         let start_cycle = bus.current_cycle();
         self.cycles_remaining = i64::MAX;
         self.execute_one(bus);
+        if self.pending_extended_clear.is_some() {
+            self.execute_one(bus);
+        }
         self.cycles_remaining -= bus.drain_wait_cycles();
         bus.set_current_cycle(start_cycle + self.cycles_consumed());
         bus.on_instruction_end();
@@ -255,6 +264,12 @@ impl M6809 {
 
     pub(crate) fn execute_one(&mut self, bus: &mut impl common::Bus) {
         let cycle_start = self.cycles_remaining;
+        if let Some(address) = self.pending_extended_clear.take() {
+            self.write_byte(bus, address, 0);
+            let _ = self.clr8();
+            self.finish_instruction(cycle_start, 3);
+            return;
+        }
         if let Some(cycles) = self.check_interrupts(bus) {
             self.finish_instruction(cycle_start, cycles);
             return;
@@ -293,10 +308,18 @@ impl Cpu6809 for M6809 {
                 self.pending_irq &= !crate::PENDING_IRQ;
             }
 
-            if self.halted && self.pending_irq == 0 {
-                let consumed = (cycles_to_run as i64 - self.cycles_remaining) as u64;
-                bus.set_current_cycle(start_cycle + consumed);
-                return consumed;
+            if self.halted {
+                let interrupt_serviceable = self.pending_irq & crate::PENDING_NMI != 0
+                    || self.pending_irq & PENDING_FIRQ != 0 && !self.flags.firq_mask
+                    || self.pending_irq & crate::PENDING_IRQ != 0 && !self.flags.irq_mask;
+                if self.cwai_waiting && !interrupt_serviceable || self.pending_irq == 0 {
+                    let consumed = (cycles_to_run as i64 - self.cycles_remaining) as u64;
+                    bus.set_current_cycle(start_cycle + consumed);
+                    return consumed;
+                }
+                if !self.cwai_waiting {
+                    self.halted = false;
+                }
             }
 
             self.execute_one(bus);
@@ -304,6 +327,10 @@ impl Cpu6809 for M6809 {
 
             let consumed = cycles_to_run as i64 - self.cycles_remaining;
             bus.set_current_cycle(start_cycle + consumed as u64);
+
+            if self.pending_extended_clear.is_some() {
+                break;
+            }
 
             bus.on_instruction_end();
             self.cycles_remaining -= bus.drain_wait_cycles();
@@ -329,6 +356,8 @@ impl Cpu6809 for M6809 {
         self.halted = false;
         self.pending_irq = 0;
         self.nmi_armed = false;
+        self.cwai_waiting = false;
+        self.pending_extended_clear = None;
     }
 
     fn halted(&self) -> bool {

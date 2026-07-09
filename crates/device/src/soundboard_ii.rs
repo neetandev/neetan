@@ -7,6 +7,9 @@ use crate::opn_fm::{EVOLVED_RHYTHM_ROM, FmTimerAction, OpnFm};
 /// 256 KiB ADPCM-B sample RAM.
 const ADPCM_B_RAM_SIZE: usize = 256 * 1024;
 
+/// YM2608 input clock on the Sound Board II (7.9872 MHz).
+const YM2608_CLOCK_HZ: u32 = 7_987_200;
+
 /// Idle joystick/mouse readback (active-low: nothing pressed).
 const JOYSTICK_IDLE: u8 = 0xFF;
 
@@ -21,7 +24,7 @@ pub struct SoundboardII {
 impl SoundboardII {
     /// Creates a Sound Board II with the embedded rhythm ROM and ADPCM-B RAM.
     pub fn new(cpu_clock_hz: u32, sample_rate: u32) -> Self {
-        let mut core = OpnFm::<Ym2608>::new(cpu_clock_hz, sample_rate);
+        let mut core = OpnFm::<Ym2608>::new(cpu_clock_hz, sample_rate, YM2608_CLOCK_HZ);
         core.chip_mut()
             .set_adpcm_a_rom(EVOLVED_RHYTHM_ROM.as_slice());
         core.chip_mut().set_adpcm_b_ram(vec![0; ADPCM_B_RAM_SIZE]);

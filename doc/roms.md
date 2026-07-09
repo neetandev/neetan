@@ -11,6 +11,7 @@
 - [PC-6001 / PC-6601](#pc-6001--pc-6601)
 - [FM Towns](#fm-towns)
 - [Sharp X1](#sharp-x1)
+- [Fujitsu FM-7 / FM-77AV](#fujitsu-fm-7--fm-77av)
 - [MIDI: Roland MT-32](#midi-roland-mt-32)
 - [MIDI: Roland SC-55](#midi-roland-sc-55)
 
@@ -38,6 +39,7 @@ by file name (see that section).
 | PC-6001 / PC-6601  | `--pc6000-roms`  | Required                         |
 | FM Towns           | `--towns-roms`   | Required                         |
 | Sharp X1           | `--x1-roms`      | Required                         |
+| FM-7 / FM-77AV     | `--fm7-roms`     | Required                         |
 | Roland MT-32       | `--mt32-roms`    | Required for `--midi mt32`       |
 | Roland SC-55       | `--sc55-roms`    | Required for `--midi sc55`       |
 
@@ -64,6 +66,8 @@ for that machine.
 | FM Towns II CX & MX   | `fmtownsmx`                               | The CX target boots the shared MX ROM set until a CX dump exists             |
 | Sharp X1              | `x1`                                      | Both X1 sets share the `--x1-roms` directory                                 |
 | Sharp X1 turbo        | `x1turbo`                                 | The ANK font is byte-identical with the `x1` set                             |
+| Fujitsu FM-7          | `fm7`                                     | Both FM-7 sets share the `--fm7-roms` directory; kanji ROM optional          |
+| Fujitsu FM-77AV       | `fm77av`                                  | The sub monitor C and kanji ROMs are byte-identical with the `fm7` set       |
 | Roland MT-32          | MT-32 v1.07 (recommended)                 | Any supported control + PCM pair works; see the MT-32 section                |
 | Roland SC-55          | SC-55 v1.21 (recommended)                 | Any supported model works; see the SC-55 section                             |
 
@@ -101,6 +105,11 @@ roms/
 |   |-- ipl.x1, ipl.x1t                            (IPL ROMs: X1, X1turbo)
 |   |-- fnt0808.x1, fnt0808_turbo.x1, ank.fnt      (8x8 CG fonts + shared 8x16 ANK font)
 |   `-- kanji1.rom ... kanji4.rom                  (turbo kanji ROMs)
+|-- fm7/           --fm7-roms                      fm7 + fm77av sets
+|   |-- fbasic300.rom, boot_bas.rom, boot_dos_a.rom (FM-7 F-BASIC + boot ROMs)
+|   |-- initiate.rom, fbasic30.rom                 (FM-77AV initiator + F-BASIC)
+|   |-- subsys_c.rom, subsys_a.rom, subsys_b.rom, subsyscg.rom (sub monitors + CG)
+|   `-- kanji.rom                                  (shared JIS level-1 kanji ROM)
 |-- mt32/          --mt32-roms     MT-32 v1.07
 |   |-- MT32_CONTROL.ROM
 |   `-- MT32_PCM.ROM
@@ -131,6 +140,9 @@ towns-roms = roms/fmtowns
 
 ; Sharp X1.
 x1-roms = roms/x1
+
+; Fujitsu FM-7 / FM-77AV.
+fm7-roms = roms/fm7
 
 ; MIDI modules.
 mt32-roms = roms/mt32
@@ -249,6 +261,17 @@ a8695470e98492a2d969ba3fdeee76ee9b3573f525eee20f98627fb5e98279a0  x1/ank.fnt
 0bd59d087b3197c8136e5664e311234930ec566b61d184204144f04a84ba769b  x1/kanji2.rom
 f2495255441c15bfce5c7441f6d94809d4f0e0dba1c7f43f9153991e326b881a  x1/kanji3.rom
 84e0afa27e1f4ef01b6e5dac452835f487c98968e14fceaac3c93331524b51d7  x1/kanji4.rom
+# --- Fujitsu FM-7 / FM-77AV (both sets share roms/fm7) ---
+059a5c926109fc156f07d91aaad05307ff0bd9d3eb5bffa805d554863f4a01bc  fm7/fbasic300.rom
+d6a8dda5482a337e28aaf7b838be0543411277ba17f260ae62f9f1af46592b2d  fm7/boot_bas.rom
+fbc9e9240f810deb8e28207b7a3362486f5f57294fb7ff8225628286479d26f3  fm7/boot_dos_a.rom
+276f3953b3f8fe975d29d13463261d9e70ce9c339d2af12536cf2010ae0f2a8d  fm7/fbasic30.rom
+4ac5111f650f4415763c1e0d9f6b997432f80c5ba9b60a38b68b308dcea9f404  fm7/initiate.rom
+55b0e4f72561ea0fafe6353376642d70595b08989a2d76c2b6423c7d85a9d1d2  fm7/subsys_c.rom
+413b20a42227ddf95e153685cc989dcf03b193aaf79f3429848db899bd6635e3  fm7/subsys_a.rom
+edf5fc537af21d93c73d3446e44654fbab0106edaf85f564abfad99bd28590e1  fm7/subsys_b.rom
+7b430d28aebaf260a823e8585c31dacc2aaca9d4f69ab34672a1ded0b37cfd23  fm7/subsyscg.rom
+482b314f15b6a063e06a8c3e6e7426d4de9b8513086ab0e72ff0ea1623ac51f6  fm7/kanji.rom
 # --- Roland MT-32 v1.07 (roms/mt32) ---
 8f123c1f38104a2a7eb1df35fd5b26ca1b857185086a87233b355510264602bf  mt32/MT32_CONTROL.ROM
 7805996b758fab5469e96d9a28588eb2e991440242372f7546345cdc66c8d97a  mt32/MT32_PCM.ROM
@@ -463,6 +486,34 @@ both models.
 | `kanji2`          | 32 KiB | Kanji ROM, second quarter   | `X1TURBO`               | `0bd59d087b3197c8136e5664e311234930ec566b61d184204144f04a84ba769b` |
 | `kanji3`          | 32 KiB | Kanji ROM, third quarter    | `X1TURBO`               | `f2495255441c15bfce5c7441f6d94809d4f0e0dba1c7f43f9153991e326b881a` |
 | `kanji4`          | 32 KiB | Kanji ROM, fourth quarter   | `X1TURBO`               | `84e0afa27e1f4ef01b6e5dac452835f487c98968e14fceaac3c93331524b51d7` |
+
+## Fujitsu FM-7 / FM-77AV
+
+The FM-7 targets need a real ROM set, pointed to by `--fm7-roms`. Each model has
+its own MAME set (`fm7`, `fm77av`); extract whichever you need into the directory
+(they can share it, and the files that appear in both sets are byte-identical).
+ROMs are identified by their BLAKE3 content hash rather than by file name, so any
+dump layout works.
+
+The FM-7 requires the F-BASIC 3.0 ROM, the BASIC and DOS boot ROMs, and the
+type-C sub monitor; its kanji ROM slot is optional (kanji reads return open bus
+when it is absent). The FM-77AV requires the initiator ROM, its F-BASIC 3.0 ROM,
+all three sub monitors plus the sub CG font, and the kanji ROM. The sub monitor C
+and kanji ROMs are byte-identical across both sets, so a single file satisfies
+the matching slot for both models.
+
+| Slot               | Size    | Contents                | Required for                 | BLAKE3                                                             |
+|--------------------|---------|-------------------------|------------------------------|--------------------------------------------------------------------|
+| `fbasic` (FM-7)    | 31 KiB  | F-BASIC v3.0 ROM        | `FM7`                        | `059a5c926109fc156f07d91aaad05307ff0bd9d3eb5bffa805d554863f4a01bc` |
+| `fbasic` (FM-77AV) | 31 KiB  | F-BASIC v3.0 ROM        | `FM77AV`                     | `276f3953b3f8fe975d29d13463261d9e70ce9c339d2af12536cf2010ae0f2a8d` |
+| `boot_bas`         | 512 B   | Boot ROM, BASIC mode    | `FM7`                        | `d6a8dda5482a337e28aaf7b838be0543411277ba17f260ae62f9f1af46592b2d` |
+| `boot_dos`         | 512 B   | Boot ROM, DOS mode      | `FM7`                        | `fbc9e9240f810deb8e28207b7a3362486f5f57294fb7ff8225628286479d26f3` |
+| `initiate`         | 8 KiB   | Initiator ROM           | `FM77AV`                     | `4ac5111f650f4415763c1e0d9f6b997432f80c5ba9b60a38b68b308dcea9f404` |
+| `subsys_c`         | 10 KiB  | Sub monitor type C + CG | both models                  | `55b0e4f72561ea0fafe6353376642d70595b08989a2d76c2b6423c7d85a9d1d2` |
+| `subsys_a`         | 8 KiB   | Sub monitor type A      | `FM77AV`                     | `413b20a42227ddf95e153685cc989dcf03b193aaf79f3429848db899bd6635e3` |
+| `subsys_b`         | 8 KiB   | Sub monitor type B      | `FM77AV`                     | `edf5fc537af21d93c73d3446e44654fbab0106edaf85f564abfad99bd28590e1` |
+| `subsyscg`         | 8 KiB   | Sub CG font ROM         | `FM77AV`                     | `7b430d28aebaf260a823e8585c31dacc2aaca9d4f69ab34672a1ded0b37cfd23` |
+| `kanji`            | 128 KiB | JIS level-1 kanji ROM   | `FM77AV` (optional on `FM7`) | `482b314f15b6a063e06a8c3e6e7426d4de9b8513086ab0e72ff0ea1623ac51f6` |
 
 ## MIDI: Roland MT-32
 

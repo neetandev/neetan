@@ -190,7 +190,7 @@ impl M6809 {
                 self.pc = self.fetch_u16(bus);
                 4
             }
-            0x7F => self.execute_memory_unary(AddressMode::Extended, UnaryOp::Clr, 7, bus),
+            0x7F => self.begin_extended_clear(bus),
             0x80..=0xFF => {
                 if opcode == 0x8D {
                     self.short_bsr(bus)
@@ -404,6 +404,13 @@ impl M6809 {
         2
     }
 
+    fn begin_extended_clear(&mut self, bus: &mut impl common::Bus) -> i32 {
+        let address = self.fetch_u16(bus);
+        let _ = self.read_byte(bus, address);
+        self.pending_extended_clear = Some(address);
+        4
+    }
+
     fn apply_unary(&mut self, operation: UnaryOp, value: u8) -> u8 {
         match operation {
             UnaryOp::Neg => self.neg8(value),
@@ -440,9 +447,16 @@ impl M6809 {
     ) -> i32 {
         let mask = self.fetch_u8(bus);
         if push {
+            // A real FM-77AV seems to observe the initial PSH stack bus cycle.
+            let stack_address = if use_hardware_stack { self.s } else { self.u };
+            self.read_byte(bus, stack_address);
             self.push_registers(bus, use_hardware_stack, mask);
         } else {
             self.pull_registers(bus, use_hardware_stack, mask);
+            // sic! A real FM-77AV seems to observe the final PUL stack bus cycle (ref. 77AVEMU).
+            // If not read, the game "Metal -X-" will not draw correctly.
+            let stack_address = if use_hardware_stack { self.s } else { self.u };
+            self.read_byte(bus, stack_address);
         }
         5 + push_pull_bytes(mask)
     }
@@ -814,8 +828,8 @@ impl M6809 {
             0x05 => self.pc,
             0x08 => 0xFF00 | u16::from(self.a),
             0x09 => 0xFF00 | u16::from(self.b),
-            0x0A => (u16::from(self.flags.compress()) << 8) | u16::from(self.flags.compress()),
-            0x0B => (u16::from(self.dp) << 8) | u16::from(self.dp),
+            0x0A => 0xFF00 | u16::from(self.flags.compress()),
+            0x0B => 0xFF00 | u16::from(self.dp),
             0x06 | 0x07 | 0x0C | 0x0D | 0x0E | 0x0F => 0xFFFF,
             _ => 0xFFFF,
         }

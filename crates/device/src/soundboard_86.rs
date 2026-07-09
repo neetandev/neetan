@@ -12,6 +12,9 @@ use crate::{
 /// 256 KB ADPCM-B sample RAM.
 const ADPCM_B_RAM_SIZE: usize = 256 * 1024;
 
+/// YM2608 input clock on the PC-9801-86 board (7.9872 MHz).
+const YM2608_CLOCK_HZ: u32 = 7_987_200;
+
 /// PCM86 sample rates indexed by (fifo & 7).
 const PCM86_RATES: [u32; 8] = [44100, 33075, 22050, 16538, 11025, 8269, 5513, 4134];
 
@@ -859,7 +862,7 @@ impl Soundboard86 {
         machine_model: MachineModel,
     ) -> Self {
         let rom_data = rhythm_rom.unwrap_or(EVOLVED_RHYTHM_ROM.as_slice());
-        let mut core = OpnFm::<Ym2608>::new(cpu_clock_hz, sample_rate);
+        let mut core = OpnFm::<Ym2608>::new(cpu_clock_hz, sample_rate, YM2608_CLOCK_HZ);
         core.chip_mut().set_adpcm_a_rom(rom_data);
         if adpcm_ram {
             core.chip_mut().set_adpcm_b_ram(vec![0; ADPCM_B_RAM_SIZE]);

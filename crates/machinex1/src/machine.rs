@@ -23,8 +23,7 @@ impl<T: Tracing> X1Machine<T> {
 
     /// Runs the main CPU for up to `budget` main-clock cycles, returning the
     /// cycles actually advanced. Execution is sliced to the next scheduled event
-    /// so periodic interrupts fire promptly; a stalled CPU idles forward to the
-    /// next event to keep the scheduler clock moving.
+    /// so periodic interrupts fire promptly.
     pub fn run_for(&mut self, budget: u64) -> u64 {
         let start = self.bus.current_cycle();
         let target = start + budget;
@@ -43,17 +42,13 @@ impl<T: Tracing> X1Machine<T> {
                 .unwrap_or(target)
                 .min(target);
 
-            if self.bus.cpu_stalled() {
+            let slice = next.saturating_sub(current).max(1);
+            let ran = {
+                let mut view = MainBusView { bus: &mut self.bus };
+                self.main_cpu.run_for(slice, &mut view)
+            };
+            if ran == 0 && self.bus.current_cycle() < next {
                 self.bus.set_current_cycle(next);
-            } else {
-                let slice = next.saturating_sub(current).max(1);
-                let ran = {
-                    let mut view = MainBusView { bus: &mut self.bus };
-                    self.main_cpu.run_for(slice, &mut view)
-                };
-                if ran == 0 && self.bus.current_cycle() < next {
-                    self.bus.set_current_cycle(next);
-                }
             }
 
             if self.bus.current_cycle() >= next {
