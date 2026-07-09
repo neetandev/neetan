@@ -61,6 +61,9 @@ const RS232C_INT_ENABLE_RXRDY: u8 = 0x02;
 /// OPN2 FM timers and the RF5C68 PCM chip share it.
 const IRQ_SOUND: u8 = 13;
 
+/// YM3438/YMF276 (OPN2) input clock: 8 MHz (internal FM clock 8 MHz / 12).
+const OPN2_INPUT_CLOCK_HZ: u32 = 8_000_000;
+
 /// Sound mute latch bit gating the RF5C68 PCM output.
 const MUTE_PCM_AUDIBLE: u8 = 0x01;
 /// Sound mute latch bit gating the OPN2 FM output.
@@ -242,7 +245,7 @@ impl<T: Tracing + Default> TownsBus<T> {
             scsi: TownsScsiController::new(clocks.cpu_clock_hz),
             beeper: Beeper::new(BeeperKind::PitDriven, TIMER_CLOCK_HZ),
             buzzer_memio: false,
-            fm: OpnFm::new(clocks.cpu_clock_hz, clocks.sample_rate),
+            fm: OpnFm::new(clocks.cpu_clock_hz, clocks.sample_rate, OPN2_INPUT_CLOCK_HZ),
             pcm: Rf5c68::new(clocks.sample_rate),
             sound_mute: 0,
             sound_audio: 0,

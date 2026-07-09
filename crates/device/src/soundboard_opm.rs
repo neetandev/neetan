@@ -1,25 +1,23 @@
 //! Sharp X1 CZ-8BS1 FM sound board: the YM2151 (OPM).
-//!
-//! A thin wrapper over the shared [`OpnFm`] driver instantiated for the OPM.
-//! The paired Z80 CTC (`ctc_ym`) that provides the board's vectored interrupt
-//! lives in the machine crate; this wrapper only owns the FM chip. The OPM's
-//! own Timer A/B set its pollable status flags but are not wired to the CPU on
-//! this board.
 
 use ymfm_oxide::Ym2151;
 
 use crate::opn_fm::{FmTimerAction, OpnFm};
 
+/// YM2151 input clock on the CZ-8BS1 board: 4 MHz (internal FM sample clock
+/// 4 MHz / 64).
+const YM2151_CLOCK_HZ: u32 = 4_000_000;
+
 /// Sharp X1 CZ-8BS1 FM sound board: YM2151 (OPM) with resampling.
-pub struct OpmSoundBoard {
+pub struct SoundBoardOpm {
     core: OpnFm<Ym2151>,
 }
 
-impl OpmSoundBoard {
+impl SoundBoardOpm {
     /// Creates a CZ-8BS1 sound board.
     pub fn new(cpu_clock_hz: u32, sample_rate: u32) -> Self {
         Self {
-            core: OpnFm::<Ym2151>::new(cpu_clock_hz, sample_rate),
+            core: OpnFm::<Ym2151>::new(cpu_clock_hz, sample_rate, YM2151_CLOCK_HZ),
         }
     }
 

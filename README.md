@@ -1,7 +1,7 @@
 # Neetan (ねーたん)
 
 An emulator for the PC-6001, PC-6601, PC-8001, PC-8801, PC-88VA, PC-9801, PC-9821,
-FM Towns and Sharp X1 written in Rust.
+FM Towns, Sharp X1 and Fujitsu FM-7 written in Rust.
 
 ## Documentation
 
@@ -13,6 +13,7 @@ Each machine family has its own detailed guide:
 * [PC-6001 / PC-6601](doc/machine-pc6000.md)
 * [FM Towns](doc/machine-towns.md)
 * [Sharp X1](doc/machine-x1.md)
+* [Fujitsu FM-7 / FM-77AV](doc/machine-fm7.md)
 
 The [ROMs](doc/roms.md) page is the unified reference for every ROM file the
 emulator can load.
@@ -23,12 +24,13 @@ Verified per-title compatibility lists.
 
 * [PC-98 game compatibility](doc/games-pc98.md)
 * [PC-88 VA game compatibility](doc/games-88va.md)
+* [FM-7 game compatibility](doc/games-fm7.md)
 
 Updates to the compatibility list is always greatly welcome!
 
 ## Supported systems
 
-Neetan emulates six distinct families, selected through the `--machine` option. See
+Neetan emulates seven distinct families, selected through the `--machine` option. See
 each family's guide for the detailed target list, sound options, ROM requirements,
 and platform-specific flags.
 
@@ -40,6 +42,7 @@ and platform-specific flags.
 | [PC-6001 / PC-6601](doc/machine-pc6000.md) | PC-6001, PC-6001mkII, PC-6601, PC-6001mkIISR, PC-6601SR         | Real ROM set required    |
 | [FM Towns](doc/machine-towns.md)           | FM Towns II CX, FM Towns II MX                                  | Real ROM set required    |
 | [Sharp X1](doc/machine-x1.md)              | X1, X1 turbo                                                    | Real ROM set required    |
+| [Fujitsu FM-7](doc/machine-fm7.md)         | FM-7, FM-77AV                                                   | Real ROM set required    |
 
 The default machine is `PC9801RA`. Games of the PC-98 normally do not require any ROM
 files. The other families need a real ROM set. See [ROMs](doc/roms.md) for details.
@@ -56,15 +59,15 @@ neetan <COMMAND>
 The `System` column shows where an option applies: `All` (every family), `PC-98`
 (PC-9801 / PC-9821 only), `PC-9821` (PC-9821 only), `PC-88` (PC-8001 / PC-8801
 only), `PC-88VA` (PC-88VA only), `PC-6000` (PC-6001 / PC-6601 only), `FM Towns`
-(FM Towns only), or `X1` (Sharp X1 only). Options that apply to one family are
-ignored on the others.
+(FM Towns only), `X1` (Sharp X1 only), or `FM-7` (FM-7 / FM-77AV only). Options
+that apply to one family are ignored on the others.
 
 | Option                       | System            | Description                                                                                      | Default           |
 |------------------------------|-------------------|--------------------------------------------------------------------------------------------------|-------------------|
 | `-c, --config <PATH>`        | All               | Load configuration from file                                                                     | -                 |
 | `--machine <TYPE>`           | All               | Machine type (see the list of values below the table)                                            | `PC9801RA`        |
 | `--cpu-mode <MODE>`          | All               | CPU speed mode: `low` or `high` (PC-88 default derives from the boot mode)                       | `high` (PC-98)    |
-| `--boot-mode <MODE>`         | PC-88             | BASIC boot mode: `v1s`, `v1h`, `v2`, `n`, `n80`, `n80sr`                                         | `v2`              |
+| `--boot-mode <MODE>`         | PC-88, FM-7       | Boot mode; PC-88: `v1s`, `v1h`, `v2`, `n`, `n80`, `n80sr`; FM-7: `basic`, `dos`                  | `v2` / `basic`    |
 | `--monitor <MODE>`           | PC-88, X1         | Monitor timing: `auto`, `15k`, `24k`                                                             | `auto`            |
 | `--pc88-memory-wait <MODE>`  | PC-88             | Memory wait: `fast` or `compatible`                                                              | derives from mode |
 | `--pc88-8mhz-wait <MODE>`    | PC-88             | 8 MHz wait: `fast` or `compatible`                                                               | `fast`            |
@@ -76,6 +79,7 @@ ignored on the others.
 | `--towns-pad <2\|6>`         | FM Towns          | FM Towns game pad type: `2` (2-button) or `6` (6-button)                                         | `6`               |
 | `--x1-roms <PATH>`           | X1                | Directory with the Sharp X1 ROM set (required for the X1 targets)                                | -                 |
 | `--x1-keyboard <A\|B>`       | X1                | X1 turbo keyboard mode switch: `A` (standard) or `B` (game-key matrix, mode-B kana layout)       | `A`               |
+| `--fm7-roms <PATH>`          | FM-7              | Directory with the FM-7 / FM-77AV ROM set (required for the FM-7 targets)                        | -                 |
 | `--fdd1 <PATH>`              | All               | Floppy disk image for drive 1 (repeatable)                                                       | -                 |
 | `--fdd2 <PATH>`              | All               | Floppy disk image for drive 2 (repeatable)                                                       | -                 |
 | `--hdd1 <PATH>`              | All               | Hard disk image for hard disk drive 1                                                            | -                 |
@@ -83,7 +87,7 @@ ignored on the others.
 | `--cdrom <PATH>`             | PC-9821, FM Towns | CD-ROM disc image .cue or .ccd file (repeatable)                                                 | -                 |
 | `--cdrom-compat <on\|off>`   | FM Towns          | Slow/compatible CD-ROM drive timing                                                              | `off`             |
 | `--cartridge <PATH>`         | PC-6000           | Cartridge ROM image to insert                                                                    | -                 |
-| `--cassette <PATH>`          | PC-6000, X1       | Cassette tape image to insert (`.cas`, `.p6`, `.p6t`; X1 `.tap`)                                 | -                 |
+| `--cassette <PATH>`          | PC-6000, X1, FM-7 | Cassette tape image to insert (`.cas`, `.p6`, `.p6t`; X1 `.tap`; FM-7 `.t77`)                    | -                 |
 | `--audio-volume <FLOAT>`     | All               | Audio volume 0.0-1.0                                                                             | `1.0`             |
 | `--aspect-mode <MODE>`       | All               | Display aspect mode: `4:3` or `1:1`                                                              | `4:3`             |
 | `--crt <on\|off>`            | All               | Enable the CRT effect. Not available when using the legacy backend.                              | `on`              |
@@ -109,8 +113,8 @@ ignored on the others.
 
 The `--machine <TYPE>` values are: `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RA`,
 `PC9821AS`, `PC9821AP`, `PC8801MC`, `PC88VA2`, `PC6001`, `PC6001MK2`, `PC6601`,
-`PC6001MK2SR`, `PC6601SR`, `FMTownsIICX`, `FMTownsIIMX`, `X1` and `X1TURBO`.
-The default is `PC9801RA`.
+`PC6001MK2SR`, `PC6601SR`, `FMTownsIICX`, `FMTownsIIMX`, `X1`, `X1TURBO`, `FM7`
+and `FM77AV`. The default is `PC9801RA`.
 
 ### Commands
 
@@ -261,6 +265,7 @@ mappings.
 | HDM     | `.hdm`                         | Yes      | Headerless raw sector image (2HD only)             |
 | NFD     | `.nfd`                         | Partial  | T98Next format with per-sector metadata            |
 | 2D      | `.2d`                          | Yes      | Headerless raw sector image (Sharp X1, 2D only)    |
+| D77     | `.d77`                         | Yes      | Fujitsu FM-7 disk image; byte-compatible D88       |
 
 Sector writes made by the emulated software (e.g. game saves) are persisted back to the
 source file for all formats. Full track reformatting (`FORMAT TRACK`) is re-emitted for

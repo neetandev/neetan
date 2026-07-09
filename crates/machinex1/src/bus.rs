@@ -21,8 +21,8 @@ use device::{
     hd6845_crtc::Hd6845,
     mb8877_fdc::{Mb8877Config, Mb8877Fdc},
     mouse_x1::MouseX1,
-    opm_soundboard::OpmSoundBoard,
     opn_fm::FmTimerAction,
+    soundboard_opm::SoundBoardOpm,
     z80_ctc::Z80Ctc,
     z80_dma::Z80Dma,
     z80_sio::Z80Sio,
@@ -144,7 +144,7 @@ pub struct X1Bus<T: Tracing = NoTracing> {
     ppi: PpiLink,
     psg: Ay8910,
     /// CZ-8BS1 FM sound board (YM2151); present only on the turbo.
-    fm: Option<OpmSoundBoard>,
+    fm: Option<SoundBoardOpm>,
     /// Sound-board Z80 CTC (`ctc_ym`); used only when the FM board is present.
     sound_ctc: Z80Ctc,
     fdc: Mb8877Fdc,
@@ -239,7 +239,7 @@ impl<T: Tracing> X1Bus<T> {
             ppi: PpiLink::new(),
             psg: Ay8910::new(),
             fm: if model.has_fm() {
-                Some(OpmSoundBoard::new(clocks.main_clock_hz, sample_rate))
+                Some(SoundBoardOpm::new(clocks.main_clock_hz, sample_rate))
             } else {
                 None
             },
@@ -555,11 +555,6 @@ impl<T: Tracing> X1Bus<T> {
         }
         self.apply_fm_timers();
         count
-    }
-
-    /// Whether the CPU is currently stalled by the bus (never in Phase 1).
-    pub fn cpu_stalled(&self) -> bool {
-        false
     }
 
     /// Processes all events due at the current cycle.

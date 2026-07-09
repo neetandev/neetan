@@ -16,9 +16,9 @@ version = "1.0.0"
 
 [[package]]
 name = "cc"
-version = "1.2.65"
+version = "1.2.66"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e228eec9be7c17ccb640b59b36a5cd805ea2a564a4c5e162c2f659fea30d3b96"
+checksum = "f5d6cac793997bd970000024b2934968efe83b382de4fdcf4fcb46b6ee4ad996"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -125,6 +125,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "machinefm7"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "common",
+ "cpu",
+ "device",
+ "software_renderer",
+]
+
+[[package]]
 name = "machinetowns"
 version = "0.1.0"
 dependencies = [
@@ -168,6 +179,7 @@ dependencies = [
  "machine60",
  "machine88",
  "machine88va",
+ "machinefm7",
  "machinetowns",
  "machinex1",
  "sdl3",
@@ -209,15 +221,15 @@ dependencies = [
 
 [[package]]
 name = "sdl3-src"
-version = "3.4.10"
+version = "3.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed4dcad85f1657d3424642ca2ed8f9f185212975baefda8972ac606494755a62"
+checksum = "1f0adb191c684688f845f1dab6f5a2b36428885d01aa3afd7ec32faa3fb0b7ca"
 
 [[package]]
 name = "sdl3-sys"
-version = "0.6.6+SDL-3.4.10"
+version = "0.6.7+SDL-3.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04e7f134def04ed72e6f55187c6c29c72f7dab5d359c4be0dd49c9b97fef59c7"
+checksum = "e89cde1ff23eb110e348da9b5be904381235163272a424938a2c99c86ea33041"
 dependencies = [
  "cc",
  "cmake",

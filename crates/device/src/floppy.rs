@@ -2,6 +2,7 @@
 //!
 //! Supports these floppy image formats:
 //! - **D88** (.d88/.d98/.88d/.98d): Standard D88 format with per-sector metadata.
+//! - **D77** (.d77): Fujitsu FM-7 disk format; a byte-compatible D88 container.
 //! - **HDM** (.hdm): Headerless raw sector format for 2HD floppies.
 //! - **NFD** (.nfd): T98Next format with per-sector metadata (R0 and R1 revisions).
 //! - **2D** (.2d): Headerless raw sector format for Sharp X1 2D floppies.
@@ -29,6 +30,8 @@ use crate::disk_backend::DiskBackend;
 pub enum FloppyFormat {
     /// Standard D88 format (.d88/.d98/.88d/.98d).
     D88,
+    /// Fujitsu FM-7 disk format (.d77); a byte-compatible D88 container.
+    D77,
     /// Headerless raw sector format (.hdm).
     Hdm,
     /// T98Next floppy format, R0 revision (.nfd, magic `T98FDDIMAGE.R0`).
@@ -79,6 +82,17 @@ impl FloppyImage {
         })
     }
 
+    /// Parses a D77 floppy image from raw bytes. D77 is the FM-7 disk format and
+    /// shares the D88 container layout, so it parses through the same path while
+    /// keeping its own format tag for lossless re-emit.
+    pub fn from_d77_bytes(data: &[u8]) -> Result<Self, FloppyError> {
+        let disk = D88Disk::from_bytes(data).map_err(FloppyError::D88)?;
+        Ok(Self {
+            disk,
+            format: FloppyFormat::D77,
+        })
+    }
+
     /// Parses an HDM floppy image from raw bytes.
     pub fn from_hdm_bytes(data: &[u8]) -> Result<Self, FloppyError> {
         let disk = hdm::from_bytes(data).map_err(FloppyError::Hdm)?;
@@ -111,6 +125,7 @@ impl FloppyImage {
     pub fn format_name(&self) -> &'static str {
         match self.format {
             FloppyFormat::D88 => "D88",
+            FloppyFormat::D77 => "D77",
             FloppyFormat::Hdm => "HDM",
             FloppyFormat::NfdR0 => "NFD R0",
             FloppyFormat::NfdR1 => "NFD R1",
@@ -121,7 +136,7 @@ impl FloppyImage {
     /// Serializes the image back to its source on-disk format.
     pub fn to_bytes(&self) -> Vec<u8> {
         match self.format {
-            FloppyFormat::D88 => self.disk.to_bytes(),
+            FloppyFormat::D88 | FloppyFormat::D77 => self.disk.to_bytes(),
             FloppyFormat::Hdm => hdm::to_bytes(&self.disk),
             FloppyFormat::NfdR0 => nfd::to_bytes_r0(&self.disk),
             FloppyFormat::NfdR1 => nfd::to_bytes_r1(&self.disk),
@@ -131,7 +146,7 @@ impl FloppyImage {
 
     fn lossless_reemit_error(&self) -> Option<&'static str> {
         match self.format {
-            FloppyFormat::D88 => None,
+            FloppyFormat::D88 | FloppyFormat::D77 => None,
             FloppyFormat::Hdm => {
                 if hdm::is_representable(&self.disk) {
                     None
@@ -316,6 +331,7 @@ pub fn load_floppy_image(path: &Path, data: &[u8]) -> Result<FloppyImage, Floppy
         Some("hdm") => FloppyImage::from_hdm_bytes(data),
         Some("nfd") => FloppyImage::from_nfd_bytes(data),
         Some("2d") => FloppyImage::from_2d_bytes(data),
+        Some("d77") => FloppyImage::from_d77_bytes(data),
         Some("d88") | Some("d98") | Some("88d") | Some("98d") => FloppyImage::from_d88_bytes(data),
         _ => FloppyImage::from_d88_bytes(data),
     }
@@ -407,6 +423,19 @@ mod tests {
         let total = image.len() as u32;
         image[0x1C..0x20].copy_from_slice(&total.to_le_bytes());
         image
+    }
+
+    #[test]
+    fn d77_extension_loads_as_d77_and_round_trips() {
+        // D77 is the FM-7 disk format sharing the D88 container, so a `.d77` file
+        // parses through the D88 path but keeps its own format tag.
+        let original = build_minimal_d88(0x5A);
+        let path = tempfile_with(&original, ".d77");
+
+        let image = load_floppy_image(&path, &original).expect("load d77");
+        assert_eq!(image.format, FloppyFormat::D77);
+        assert_eq!(image.format_name(), "D77");
+        assert_eq!(image.to_bytes(), original);
     }
 
     #[test]

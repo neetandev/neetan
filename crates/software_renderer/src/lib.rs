@@ -15,6 +15,7 @@ use std::{
 };
 
 mod compose;
+pub mod fm7;
 mod ga1280a;
 pub mod pc60;
 pub mod pc88;
@@ -23,6 +24,9 @@ pub mod towns;
 pub mod va;
 pub mod x1;
 
+pub use fm7::{
+    FM7_FRAMEBUFFER_BYTES, FM7_SURFACE_HEIGHT, FM7_SURFACE_WIDTH, Fm7Renderer, RenderInputsFm7,
+};
 pub use ga1280a::{
     Ga1280aCursorRenderInputs, Ga1280aRenderInputs, Ga1280aRenderMode, compose as compose_ga1280a,
 };

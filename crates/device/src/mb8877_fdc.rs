@@ -173,6 +173,13 @@ const X1_SEEK_STEP_DELAY_NS: u64 = 6_000_000;
 /// for their timing to hold together.
 const X1_SECTOR_DELAY_NS: u64 = 15_000_000;
 
+/// Fujitsu FM-7 per-step head seek delay: the MB8877 rate-0 step time at the
+/// 1 MHz controller clock used by the 2D drives (6 ms per step).
+const FM7_SEEK_STEP_DELAY_NS: u64 = 6_000_000;
+/// Fujitsu FM-7 sector-access delay: head settle plus the rotational latency
+/// until the addressed record passes under the head of the 300 rpm 2D drive.
+const FM7_SECTOR_DELAY_NS: u64 = 15_000_000;
+
 impl Mb8877Config {
     /// The FM Towns wiring: inverted IRQ-mask/side-select polarities, the
     /// composite 3-mode drive-status register, and DMA transfers.
@@ -196,6 +203,20 @@ impl Mb8877Config {
             transfer: TransferMode::Pio,
             seek_step_delay_ns: X1_SEEK_STEP_DELAY_NS,
             sector_delay_ns: X1_SECTOR_DELAY_NS,
+        }
+    }
+
+    /// The Fujitsu FM-7 wiring: neutral polarities and CPU-polled PIO transfers.
+    /// The base FM-7 has no DMA on the floppy path, so the CPU polls the `0xFD1F`
+    /// DRQ/IRQ status and moves each byte through the data register.
+    pub const fn fm7() -> Self {
+        Self {
+            irq_mask_active_high: true,
+            side_select_active_low: false,
+            three_mode_drive_status: false,
+            transfer: TransferMode::Pio,
+            seek_step_delay_ns: FM7_SEEK_STEP_DELAY_NS,
+            sector_delay_ns: FM7_SECTOR_DELAY_NS,
         }
     }
 

@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 
 use common::{Context, CpuMode, MachineModel, MonitorTiming, StringError, bail, info, warn};
 use machine60::Pc6000Model;
-use machine88::{BootMode, EightMhzWaitMode, MemoryWaitSwitch, Pc8801Model};
+use machine88::{EightMhzWaitMode, MemoryWaitSwitch, Pc8801Model};
 use machine88va::Pc88VaModel;
+use machinefm7::Fm7Model;
 use machinetowns::{TownsModel, TownsPadType};
 use machinex1::{X1KeyboardMode, X1Model};
 
@@ -50,9 +51,9 @@ Commands:
 
 Options:
   -c, --config <PATH>           Load configuration from file
-      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP, PC8801MC, PC88VA2, PC6001, PC6001MK2, PC6601, PC6001MK2SR, PC6601SR, FMTownsIICX, FMTownsIIMX, X1, X1TURBO
+      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP, PC8801MC, PC88VA2, PC6001, PC6001MK2, PC6601, PC6001MK2SR, PC6601SR, FMTownsIICX, FMTownsIIMX, X1, X1TURBO, FM7, FM77AV
       --cpu-mode <MODE>         CPU speed mode: low or high (PC-88 default derives from boot mode; FM Towns CX 16/20 MHz, MX 33/66 MHz)
-      --boot-mode <MODE>        PC-8801 BASIC boot mode: v1s, v1h, v2, n, n80, n80sr (default: v2; PC-8801 only)
+      --boot-mode <MODE>        Boot mode; each machine accepts only its own values: PC-8801 v1s, v1h, v2 (default), n, n80, n80sr; FM-7 basic (default), dos
       --monitor <MODE>          Monitor timing: auto, 15k, 24k (default: auto; PC-8801 and X1 turbo)
       --pc88-memory-wait <MODE> PC-8801 memory wait: fast or compatible (default derives from boot mode)
       --pc88-8mhz-wait <MODE>   PC-8801 8 MHz wait: fast or compatible (default: fast; PC-8801 only)
@@ -63,6 +64,7 @@ Options:
       --pc6000-roms <PATH>      Directory with the PC-6000 ROM set (required)
       --x1-roms <PATH>          Directory with the Sharp X1 ROM set (required)
       --x1-keyboard <A|B>       X1 turbo keyboard mode switch (default: A)
+      --fm7-roms <PATH>         Directory with the FM-7 / FM-77AV ROM set (required)
       --towns-roms <PATH>       Directory with the FM Towns ROM set (required)
       --towns-pad <2|6>         FM Towns game pad type (default 6-button)
       --pc6000-phase <0-3>      Initial composite artifact-color phase; cycle with Right Ctrl + P (PC-6000 only)
@@ -73,7 +75,7 @@ Options:
       --cdrom <PATH>            CD-ROM disc image .cue or .ccd file (repeatable, PC-9821 and FM Towns)
       --cdrom-compat <on|off>   Slow/compatible CD-ROM drive timing (default: off; FM Towns only)
       --cartridge <PATH>        Cartridge ROM image to insert
-      --cassette <PATH>         Cassette tape image to insert (.cas/.p6/.p6t, X1 .tap)
+      --cassette <PATH>         Cassette tape image to insert (.cas/.p6/.p6t, X1 .tap, FM-7 .t77)
       --audio-volume <FLOAT>    Audio volume 0.0-1.0
       --aspect-mode <MODE>      Display aspect mode: 4:3 or 1:1
       --crt <on|off>            Enable CRT effect (default: on; modern backend only)
@@ -583,7 +585,7 @@ fn parse_args_from(
             }
             "--boot-mode" => {
                 let val = value(&flag)?;
-                config.pc88_boot_mode = val.parse::<BootMode>().map_err(StringError)?;
+                config.boot_mode = Some(val.parse::<BootMode>().map_err(StringError)?);
             }
             "--monitor" => {
                 let val = value(&flag)?;
@@ -607,6 +609,7 @@ fn parse_args_from(
             "--towns-pad" => config.towns_pad = value(&flag)?.parse().map_err(StringError)?,
             "--pc6000-roms" => config.pc60_roms = Some(PathBuf::from(value(&flag)?)),
             "--x1-roms" => config.x1_roms = Some(PathBuf::from(value(&flag)?)),
+            "--fm7-roms" => config.fm7_roms = Some(PathBuf::from(value(&flag)?)),
             "--x1-keyboard" => {
                 config.x1_keyboard = value(&flag)?.parse().map_err(StringError)?;
             }
@@ -744,6 +747,104 @@ pub enum Target {
     Towns,
     /// Sharp X1 series (the `machinex1` crate).
     X1,
+    /// Fujitsu FM-7 series (the `machinefm7` crate).
+    Fm7,
+}
+
+/// Boot mode requested on the command line, spanning every machine family that
+/// exposes one. Each machine accepts only the subset it understands; the
+/// conversion methods reject an out-of-subset value so a wrong `--boot-mode`
+/// choice fails cleanly at machine initialization instead of being silently
+/// ignored.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum BootMode {
+    /// PC-88 N88-BASIC V1 standard speed.
+    Pc88V1S,
+    /// PC-88 N88-BASIC V1 high speed.
+    Pc88V1H,
+    /// PC-88 N88-BASIC V2.
+    Pc88V2,
+    /// PC-88 plain N-BASIC.
+    Pc88N,
+    /// PC-88 N80-BASIC (PC-8001mkII compatibility).
+    Pc88N80,
+    /// PC-88 N80SR-BASIC (PC-8001mkIISR compatibility).
+    Pc88N80Sr,
+    /// FM-7 F-BASIC from ROM.
+    Fm7Basic,
+    /// FM-7 disk (DOS) boot.
+    Fm7Dos,
+}
+
+impl BootMode {
+    /// Maps this value to a PC-88 boot mode, erroring when the value belongs to
+    /// another machine family.
+    pub(crate) fn to_pc88(self) -> Result<machine88::BootMode, String> {
+        match self {
+            BootMode::Pc88V1S => Ok(machine88::BootMode::V1S),
+            BootMode::Pc88V1H => Ok(machine88::BootMode::V1H),
+            BootMode::Pc88V2 => Ok(machine88::BootMode::V2),
+            BootMode::Pc88N => Ok(machine88::BootMode::N),
+            BootMode::Pc88N80 => Ok(machine88::BootMode::N80),
+            BootMode::Pc88N80Sr => Ok(machine88::BootMode::N80SR),
+            BootMode::Fm7Basic | BootMode::Fm7Dos => Err(format!(
+                "boot mode '{self}' is not supported by the PC-8801, expected v1s, v1h, v2, n, n80 or n80sr"
+            )),
+        }
+    }
+
+    /// Maps this value to an FM-7 boot mode, erroring when the value belongs to
+    /// another machine family.
+    pub(crate) fn to_fm7(self) -> Result<machinefm7::BootMode, String> {
+        match self {
+            BootMode::Fm7Basic => Ok(machinefm7::BootMode::Basic),
+            BootMode::Fm7Dos => Ok(machinefm7::BootMode::Dos),
+            BootMode::Pc88V1S
+            | BootMode::Pc88V1H
+            | BootMode::Pc88V2
+            | BootMode::Pc88N
+            | BootMode::Pc88N80
+            | BootMode::Pc88N80Sr => Err(format!(
+                "boot mode '{self}' is not supported by the FM-7, expected basic or dos"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for BootMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            BootMode::Pc88V1S => "v1s",
+            BootMode::Pc88V1H => "v1h",
+            BootMode::Pc88V2 => "v2",
+            BootMode::Pc88N => "n",
+            BootMode::Pc88N80 => "n80",
+            BootMode::Pc88N80Sr => "n80sr",
+            BootMode::Fm7Basic => "basic",
+            BootMode::Fm7Dos => "dos",
+        };
+        formatter.write_str(text)
+    }
+}
+
+impl std::str::FromStr for BootMode {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text.to_ascii_lowercase().as_str() {
+            "v1s" => Ok(BootMode::Pc88V1S),
+            "v1h" => Ok(BootMode::Pc88V1H),
+            "v2" => Ok(BootMode::Pc88V2),
+            "n" => Ok(BootMode::Pc88N),
+            "n80" | "n80v1" => Ok(BootMode::Pc88N80),
+            "n80sr" | "n80v2" => Ok(BootMode::Pc88N80Sr),
+            "basic" => Ok(BootMode::Fm7Basic),
+            "dos" => Ok(BootMode::Fm7Dos),
+            _ => Err(format!(
+                "unknown boot mode '{text}', expected v1s, v1h, v2, n, n80, n80sr (PC-88) or basic, dos (FM-7)"
+            )),
+        }
+    }
 }
 
 pub struct EmulatorConfig {
@@ -778,7 +879,9 @@ pub struct EmulatorConfig {
     pub xms: bool,
     pub backend: Backend,
     pub enable_extractor: bool,
-    pub pc88_boot_mode: BootMode,
+    /// Boot mode selected via `--boot-mode`, shared across machine families.
+    /// `None` means each machine uses its own default.
+    pub boot_mode: Option<BootMode>,
     pub monitor: MonitorTiming,
     pub pc88_memory_wait: MemoryWaitSwitch,
     pub pc88_8mhz_wait: EightMhzWaitMode,
@@ -790,6 +893,8 @@ pub struct EmulatorConfig {
     pub x1_model: X1Model,
     pub x1_roms: Option<PathBuf>,
     pub x1_keyboard: X1KeyboardMode,
+    pub fm7_model: Fm7Model,
+    pub fm7_roms: Option<PathBuf>,
     pub towns_model: TownsModel,
     pub towns_roms: Option<PathBuf>,
     pub towns_pad: TownsPadType,
@@ -840,7 +945,7 @@ impl Default for EmulatorConfig {
             xms: true,
             backend: Backend::Modern,
             enable_extractor: false,
-            pc88_boot_mode: BootMode::V2,
+            boot_mode: None,
             monitor: MonitorTiming::Auto,
             pc88_memory_wait: MemoryWaitSwitch::Fast,
             pc88_8mhz_wait: EightMhzWaitMode::Fast,
@@ -852,6 +957,8 @@ impl Default for EmulatorConfig {
             x1_model: X1Model::X1,
             x1_roms: None,
             x1_keyboard: X1KeyboardMode::ModeA,
+            fm7_model: Fm7Model::Fm7,
+            fm7_roms: None,
             towns_model: machinetowns::TownsModel::FmTownsIIMx,
             towns_roms: None,
             towns_pad: machinetowns::TownsPadType::SixButton,
@@ -902,8 +1009,8 @@ fn apply_config_file(
                 Err(_) => warn!("Unknown CPU mode in config: {val}"),
             },
             "boot-mode" => match val.parse::<BootMode>() {
-                Ok(mode) => config.pc88_boot_mode = mode,
-                Err(_) => warn!("Unknown PC-88 boot mode in config: {val}"),
+                Ok(mode) => config.boot_mode = Some(mode),
+                Err(_) => warn!("Unknown boot mode in config: {val}"),
             },
             "monitor" => match val.parse::<MonitorTiming>() {
                 Ok(timing) => config.monitor = timing,
@@ -936,6 +1043,7 @@ fn apply_config_file(
             },
             "pc6000-roms" => config.pc60_roms = Some(PathBuf::from(val)),
             "x1-roms" => config.x1_roms = Some(PathBuf::from(val)),
+            "fm7-roms" => config.fm7_roms = Some(PathBuf::from(val)),
             "x1-keyboard" => match val.parse() {
                 Ok(mode) => config.x1_keyboard = mode,
                 Err(error) => warn!("Invalid x1-keyboard in config: {error}"),
@@ -1034,6 +1142,9 @@ fn apply_config_file(
                     Target::Towns => parse_key_binding_towns(host_name, val),
                     // Placeholder until the X1 key map lands in a later phase.
                     Target::X1 => parse_key_binding(host_name, val),
+                    // FM-7 reuses the generic parser; its key map yields
+                    // physical scancodes directly.
+                    Target::Fm7 => parse_key_binding(host_name, val),
                 };
                 match binding {
                     Some((host, code)) => config.key_map.set(host, code),
@@ -1051,7 +1162,13 @@ fn apply_derived_defaults(config: &mut EmulatorConfig, explicit: ExplicitSetting
     if config.target != Target::Pc88 {
         return;
     }
-    if !(matches!(config.pc88_boot_mode, BootMode::V1S) || config.pc88_boot_mode.is_n_family()) {
+    // An FM-7-only value here resolves to None and derives from V2; the real
+    // error for a mismatched value is raised when the PC-88 machine is built.
+    let boot_mode = config
+        .boot_mode
+        .and_then(|mode| mode.to_pc88().ok())
+        .unwrap_or(machine88::BootMode::V2);
+    if !(matches!(boot_mode, machine88::BootMode::V1S) || boot_mode.is_n_family()) {
         return;
     }
     if !explicit.cpu_mode {
@@ -1099,6 +1216,14 @@ fn apply_machine_selection(config: &mut EmulatorConfig, value: &str) -> Result<(
         }
         config.target = Target::X1;
         config.x1_model = model;
+        return Ok(());
+    }
+    if let Ok(model) = value.parse::<Fm7Model>() {
+        if config.target != Target::Fm7 {
+            config.key_map = KeyMap::new_fm7();
+        }
+        config.target = Target::Fm7;
+        config.fm7_model = model;
         return Ok(());
     }
     if let Ok(model) = value.parse::<machinetowns::TownsModel>() {

@@ -23,8 +23,10 @@ impl M6809 {
 
     fn service_nmi(&mut self, bus: &mut impl common::Bus) {
         self.halted = false;
-        self.flags.entire = true;
-        self.push_registers(bus, true, ENTIRE_STATE_MASK);
+        if !core::mem::take(&mut self.cwai_waiting) {
+            self.flags.entire = true;
+            self.push_registers(bus, true, ENTIRE_STATE_MASK);
+        }
         self.flags.irq_mask = true;
         self.flags.firq_mask = true;
         self.pc = self.read_word(bus, VECTOR_NMI);
@@ -34,8 +36,10 @@ impl M6809 {
 
     fn service_firq(&mut self, bus: &mut impl common::Bus) {
         self.halted = false;
-        self.flags.entire = false;
-        self.push_registers(bus, true, PARTIAL_STATE_MASK);
+        if !core::mem::take(&mut self.cwai_waiting) {
+            self.flags.entire = false;
+            self.push_registers(bus, true, PARTIAL_STATE_MASK);
+        }
         self.flags.irq_mask = true;
         self.flags.firq_mask = true;
         self.pc = self.read_word(bus, VECTOR_FIRQ);
@@ -44,8 +48,10 @@ impl M6809 {
 
     fn service_irq(&mut self, bus: &mut impl common::Bus) {
         self.halted = false;
-        self.flags.entire = true;
-        self.push_registers(bus, true, ENTIRE_STATE_MASK);
+        if !core::mem::take(&mut self.cwai_waiting) {
+            self.flags.entire = true;
+            self.push_registers(bus, true, ENTIRE_STATE_MASK);
+        }
         self.flags.irq_mask = true;
         self.pc = self.read_word(bus, VECTOR_IRQ);
         self.pending_irq &= !crate::PENDING_IRQ;
@@ -206,9 +212,11 @@ impl M6809 {
         self.flags.entire = true;
         self.push_registers(bus, true, ENTIRE_STATE_MASK);
         self.halted = true;
+        self.cwai_waiting = true;
     }
 
     pub(crate) fn sync(&mut self) {
         self.halted = true;
+        self.cwai_waiting = false;
     }
 }
