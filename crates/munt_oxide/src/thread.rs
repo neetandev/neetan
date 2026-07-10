@@ -17,8 +17,11 @@
 //! MT-32 render thread and shared buffer.
 
 use std::{
-    path::Path,
-    sync::{Arc, Condvar, Mutex},
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Condvar, Mutex,
+        mpsc::{self, SyncSender},
+    },
     thread::{self, JoinHandle},
 };
 
@@ -56,13 +59,6 @@ pub struct MuntThread;
 impl MuntThread {
     /// Starts the MT-32 render thread.
     pub fn start(rom_directory: &Path) -> Result<MuntChannels, MuntError> {
-        let context = MuntContext::new(rom_directory).map_err(MuntError::Context)?;
-
-        let native_rate = context.sample_rate();
-        if native_rate == 0 {
-            return Err(MuntError::InvalidSampleRate);
-        }
-
         let shared = Arc::new((
             Mutex::new(MuntSharedBuffer {
                 midi: Vec::new(),
@@ -74,16 +70,55 @@ impl MuntThread {
             Condvar::new(),
         ));
         let shared_clone = Arc::clone(&shared);
+        let rom_directory = rom_directory.to_owned();
+        let (initialization_sender, initialization_receiver) = mpsc::sync_channel(1);
 
         let join_handle = thread::Builder::new()
             .name("mt32-render".into())
             .spawn(move || {
-                render_thread_main(context, native_rate, shared_clone);
+                // Initialize in new thread, so to not starve the main thread of stack space.
+                initialize_and_render(rom_directory, shared_clone, initialization_sender);
             })
             .map_err(MuntError::ThreadSpawn)?;
 
-        Ok((shared, join_handle))
+        match initialization_receiver.recv() {
+            Ok(Ok(())) => Ok((shared, join_handle)),
+            Ok(Err(error)) => {
+                let _ = join_handle.join();
+                Err(error)
+            }
+            Err(_) => {
+                let _ = join_handle.join();
+                Err(MuntError::InitializationThreadExited)
+            }
+        }
     }
+}
+
+fn initialize_and_render(
+    rom_directory: PathBuf,
+    shared: Arc<(Mutex<MuntSharedBuffer>, Condvar)>,
+    initialization_sender: SyncSender<Result<(), MuntError>>,
+) {
+    let context = match MuntContext::new(&rom_directory) {
+        Ok(context) => context,
+        Err(error) => {
+            let _ = initialization_sender.send(Err(MuntError::Context(error)));
+            return;
+        }
+    };
+
+    let native_rate = context.sample_rate();
+    if native_rate == 0 {
+        let _ = initialization_sender.send(Err(MuntError::InvalidSampleRate));
+        return;
+    }
+
+    if initialization_sender.send(Ok(())).is_err() {
+        return;
+    }
+
+    render_thread_main(context, native_rate, shared);
 }
 
 fn render_thread_main(
@@ -168,6 +203,8 @@ pub enum MuntError {
     InvalidSampleRate,
     /// Failed to spawn the render thread.
     ThreadSpawn(std::io::Error),
+    /// The render thread exited before completing initialization.
+    InitializationThreadExited,
 }
 
 impl std::fmt::Display for MuntError {
@@ -176,6 +213,9 @@ impl std::fmt::Display for MuntError {
             Self::Context(error) => write!(f, "MT-32 initialization failed: {error}"),
             Self::InvalidSampleRate => write!(f, "MT-32 reported sample rate of 0"),
             Self::ThreadSpawn(error) => write!(f, "failed to spawn MT-32 thread: {error}"),
+            Self::InitializationThreadExited => {
+                f.write_str("MT-32 render thread exited during initialization")
+            }
         }
     }
 }
