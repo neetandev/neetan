@@ -2,7 +2,14 @@
 
 use std::collections::VecDeque;
 
-use common::EventKind;
+/// OPL timer outputs exposed by the Sound Blaster 16.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoundboardSb16Timer {
+    /// OPL timer A.
+    OplTimerA,
+    /// OPL timer B.
+    OplTimerB,
+}
 use resampler::{Attenuation, Latency, ResamplerFir};
 use ymfm_oxide::{Ymf262, YmfmOutput4, YmfmTimerUpdate};
 
@@ -234,14 +241,14 @@ pub enum SoundboardSb16Action {
     /// Schedule a timer to fire at the given cycle.
     ScheduleTimer {
         /// Timer event kind.
-        kind: EventKind,
+        kind: SoundboardSb16Timer,
         /// CPU cycle at which the timer should fire.
         fire_cycle: u64,
     },
     /// Cancel a previously scheduled timer.
     CancelTimer {
         /// Timer event kind.
-        kind: EventKind,
+        kind: SoundboardSb16Timer,
     },
     /// Assert an IRQ line on the PIC.
     AssertIrq {
@@ -1000,7 +1007,10 @@ impl SoundBlaster16 {
 
         let was_merged = self.state.irq_asserted;
 
-        for (timer_id, kind) in [(0, EventKind::Sb16OplTimerA), (1, EventKind::Sb16OplTimerB)] {
+        for (timer_id, kind) in [
+            (0, SoundboardSb16Timer::OplTimerA),
+            (1, SoundboardSb16Timer::OplTimerB),
+        ] {
             let Some(update) = self.opl3.take_timer_update(timer_id) else {
                 continue;
             };

@@ -22,6 +22,7 @@ use crate::{
     cd_audio::CdAudioPlayer,
     cdrom::CdImage,
     disk::{HddGeometry, HddImage, MountedHdd},
+    scsi::cdrom::ScsiCdrom,
 };
 
 /// Size of the expansion ROM window mapped at 0xD8000.
@@ -39,10 +40,10 @@ pub struct IdeController {
     rom: Option<Box<[u8; ROM_SIZE]>>,
     // Channel 0: HDD drives (master/slave).
     drives: [Option<MountedHdd>; 2],
-    // Channel 1: ATAPI CD-ROM.
-    cdrom: Option<CdImage>,
+    // Channel 1: ATAPI CD-ROM. The optical target owns the disc image and
+    // audio playback; the ATAPI state machine owns the packet transport.
+    optical: ScsiCdrom,
     atapi_state: atapi::AtapiState,
-    cd_audio_player: CdAudioPlayer,
     work_area_mapped: bool,
 }
 
@@ -61,9 +62,8 @@ impl IdeController {
             yield_requested: Cell::new(false),
             rom: None,
             drives: [None, None],
-            cdrom: None,
+            optical: ScsiCdrom::new(output_sample_rate),
             atapi_state: atapi::AtapiState::new(),
-            cd_audio_player: CdAudioPlayer::new(output_sample_rate),
             work_area_mapped: false,
         }
     }
@@ -84,7 +84,7 @@ impl IdeController {
     /// Inserts a CD-ROM image on channel 1.
     /// Installs the expansion ROM on the first insertion.
     pub fn insert_cdrom(&mut self, image: CdImage) {
-        self.cdrom = Some(image);
+        self.optical.insert_media(image);
         self.atapi_state.media_inserted();
         self.lle_controller.initialize_atapi_drive();
         self.install_rom();
@@ -92,51 +92,50 @@ impl IdeController {
 
     /// Ejects the CD-ROM image from channel 1.
     pub fn eject_cdrom(&mut self) {
-        self.cd_audio_player.reset();
-        self.cdrom = None;
+        self.optical.eject_media();
         self.atapi_state.media_ejected();
     }
 
     /// Returns true if a CD-ROM image is loaded.
     pub fn has_cdrom(&self) -> bool {
-        self.cdrom.is_some()
+        self.optical.has_media()
     }
 
     /// Returns a reference to the loaded CD-ROM image, if any.
     pub fn cdrom_image(&self) -> Option<&CdImage> {
-        self.cdrom.as_ref()
+        self.optical.media()
     }
 
     /// Returns a mutable reference to the CD audio player.
     pub fn cd_audio_player_mut(&mut self) -> &mut CdAudioPlayer {
-        &mut self.cd_audio_player
+        self.optical.audio_mut()
     }
 
     /// Returns a reference to the CD audio player.
     pub fn cd_audio_player(&self) -> &CdAudioPlayer {
-        &self.cd_audio_player
+        self.optical.audio()
     }
 
     /// Generates CD audio samples, borrowing the CD image and audio player
     /// simultaneously from within the controller.
     pub fn generate_cd_audio_samples(&mut self, volume: f32, output: &mut [f32]) {
-        if let Some(ref cdrom) = self.cdrom {
-            self.cd_audio_player
-                .generate_samples(cdrom, [volume, volume], output);
-        }
+        self.optical
+            .generate_audio_samples([volume, volume], output);
     }
 
     /// Starts CD audio playback, splitting the internal borrow.
     pub fn play_cd_audio(&mut self, start_lba: u32, sector_count: u32) {
-        if let Some(ref cdrom) = self.cdrom {
-            self.cd_audio_player.play(cdrom, start_lba, sector_count);
+        let (media, audio) = self.optical.media_and_audio_mut();
+        if let Some(media) = media {
+            audio.play(media, start_lba, sector_count);
         }
     }
 
     /// Resumes CD audio playback, splitting the internal borrow.
     pub fn resume_cd_audio(&mut self) {
-        if let Some(ref cdrom) = self.cdrom {
-            self.cd_audio_player.resume(cdrom);
+        let (media, audio) = self.optical.media_and_audio_mut();
+        if let Some(media) = media {
+            audio.resume(media);
         }
     }
 
@@ -258,13 +257,13 @@ impl IdeController {
     /// Executes a BIOS sense for the CD-ROM unit.
     /// Returns 0x0F (present) if a CD-ROM image is loaded, 0x60 otherwise.
     pub fn execute_cdrom_sense(&self) -> u8 {
-        if self.cdrom.is_some() { 0x0F } else { 0x60 }
+        if self.optical.has_media() { 0x0F } else { 0x60 }
     }
 
     /// Reads the boot sector from the CD-ROM (LBA 0, first 1024 bytes).
     /// Returns the 1024-byte buffer if a CD-ROM is loaded and sector 0 is readable.
     pub fn read_cdrom_boot_sector(&self) -> Option<[u8; 1024]> {
-        let cdrom = self.cdrom.as_ref()?;
+        let cdrom = self.optical.media()?;
         let mut sector_buf = [0u8; 2048];
         cdrom.read_sector(0, &mut sector_buf)?;
         let mut boot_buf = [0u8; 1024];
@@ -523,7 +522,7 @@ impl IdeController {
     /// Returns computed status instead of raw bank value.
     pub fn read_bank0_status(&mut self) -> u8 {
         self.lle_controller
-            .read_bank0_status(&self.drives, self.cdrom.is_some())
+            .read_bank0_status(&self.drives, self.optical.has_media())
     }
 
     /// Writes the bank select register.
@@ -533,7 +532,7 @@ impl IdeController {
 
     /// Reads the IDE presence detection register (port 0x0433).
     pub fn read_presence(&self) -> u8 {
-        self.lle_controller.read_presence(self.cdrom.is_some())
+        self.lle_controller.read_presence(self.optical.has_media())
     }
 
     /// Reads the additional status register (port 0x0435).
@@ -637,9 +636,8 @@ impl IdeController {
             IdePhase::PacketCommand => {
                 let complete = self.atapi_state.receive_packet_word(value);
                 if complete {
-                    let (has_data, is_error) = self
-                        .atapi_state
-                        .execute_packet(self.cdrom.as_ref(), &mut self.cd_audio_player);
+                    let (media, audio) = self.optical.media_and_audio_mut();
+                    let (has_data, is_error) = self.atapi_state.execute_packet(media, audio);
                     if is_error {
                         self.lle_controller.atapi_command_error(&self.atapi_state);
                     } else if has_data {

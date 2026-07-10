@@ -63,6 +63,13 @@ impl<T: Tracing> Pc6000Machine<T> {
 }
 
 impl<T: Tracing> common::Machine for Pc6000Machine<T> {
+    fn startup_capabilities(&self) -> common::StartupCapabilities {
+        common::StartupCapabilities {
+            cassette: true,
+            ..common::StartupCapabilities::default()
+        }
+    }
+
     fn cpu_clock_hz(&self) -> f64 {
         f64::from(self.bus.cpu_clock_hz())
     }

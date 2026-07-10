@@ -13,6 +13,8 @@ pub mod opcode {
     pub const REZERO_UNIT: u8 = 0x01;
     /// REQUEST SENSE.
     pub const REQUEST_SENSE: u8 = 0x03;
+    /// FORMAT UNIT.
+    pub const FORMAT_UNIT: u8 = 0x04;
     /// READ(6).
     pub const READ6: u8 = 0x08;
     /// WRITE(6).
@@ -39,6 +41,16 @@ pub mod opcode {
     pub const SEEK10: u8 = 0x2B;
     /// VERIFY(10).
     pub const VERIFY10: u8 = 0x2F;
+    /// READ SUB-CHANNEL.
+    pub const READ_SUB_CHANNEL: u8 = 0x42;
+    /// READ TOC.
+    pub const READ_TOC: u8 = 0x43;
+    /// PLAY AUDIO(10).
+    pub const PLAY_AUDIO10: u8 = 0x45;
+    /// PLAY AUDIO MSF.
+    pub const PLAY_AUDIO_MSF: u8 = 0x47;
+    /// PAUSE/RESUME audio playback.
+    pub const PAUSE_RESUME: u8 = 0x4B;
 }
 
 /// SCSI status byte values (byte returned during the STATUS phase).
@@ -75,6 +87,8 @@ pub mod asc {
     pub const INVALID_FIELD_IN_CDB: u8 = 0x24;
     /// Logical unit not supported.
     pub const LOGICAL_UNIT_NOT_SUPPORTED: u8 = 0x25;
+    /// Not-ready-to-ready transition (medium may have changed).
+    pub const NOT_READY_TO_READY_TRANSITION: u8 = 0x28;
     /// Medium not present.
     pub const MEDIUM_NOT_PRESENT: u8 = 0x3A;
 }

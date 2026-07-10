@@ -1,4 +1,4 @@
-use common::Bus;
+use common::{Bus, HostDateTime, Machine as _};
 
 use super::{
     CALLBACK_IRET, TEST_CALLBACK, TEST_CODE, boot_and_run_f, boot_and_run_ra, boot_and_run_vm,
@@ -10,14 +10,22 @@ const RESULT: u32 = 0x0600;
 const MARKER: u32 = 0x0700;
 const INT1CH_BUDGET: u64 = 2_000_000;
 
-fn test_local_time() -> [u8; 6] {
-    [0x26, 0x32, 0x03, 0x14, 0x30, 0x45]
+fn test_local_time() -> HostDateTime {
+    HostDateTime {
+        year: 2026,
+        month: 3,
+        day: 3,
+        day_of_week: 2,
+        hour: 14,
+        minute: 30,
+        second: 45,
+    }
 }
 
 const SET_DATE: [u8; 6] = [0x95, 0xA3, 0x15, 0x10, 0x30, 0x45];
 
 fn verify_datetime_buffer(bus: &mut impl Bus, base: u32) {
-    let expected = test_local_time();
+    let expected = test_local_time().to_bcd_bytes();
     for (i, &exp) in expected.iter().enumerate() {
         assert_eq!(
             bus.read_byte(base + i as u32),
@@ -160,7 +168,7 @@ fn int1ch_vector_ra() {
 fn get_datetime_reads_calendar_f() {
     let mut machine = create_machine_f();
     boot_to_halt!(machine);
-    machine.bus.set_host_local_time_fn(test_local_time);
+    machine.set_host_date_time_provider(test_local_time);
     write_bytes(&mut machine.bus, TEST_CODE, GET_DATETIME_CODE);
     machine.cpu.load_state(&{
         let mut s = cpu::I8086State {
@@ -179,7 +187,7 @@ fn get_datetime_reads_calendar_f() {
 fn get_datetime_reads_calendar_vm() {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
-    machine.bus.set_host_local_time_fn(test_local_time);
+    machine.set_host_date_time_provider(test_local_time);
     write_bytes(&mut machine.bus, TEST_CODE, GET_DATETIME_CODE);
     machine.cpu.load_state(&{
         let mut s = cpu::V30State {
@@ -198,7 +206,7 @@ fn get_datetime_reads_calendar_vm() {
 fn get_datetime_reads_calendar_vx() {
     let mut machine = create_machine_vx();
     boot_to_halt!(machine);
-    machine.bus.set_host_local_time_fn(test_local_time);
+    machine.set_host_date_time_provider(test_local_time);
     write_bytes(&mut machine.bus, TEST_CODE, GET_DATETIME_CODE);
     machine.cpu.load_state(&{
         let mut s = cpu::I286State {
@@ -217,7 +225,7 @@ fn get_datetime_reads_calendar_vx() {
 fn get_datetime_reads_calendar_ra() {
     let mut machine = create_machine_ra();
     boot_to_halt!(machine);
-    machine.bus.set_host_local_time_fn(test_local_time);
+    machine.set_host_date_time_provider(test_local_time);
     write_bytes(&mut machine.bus, TEST_CODE, GET_DATETIME_CODE);
     machine.cpu.load_state(&{
         let mut s = cpu::I386State {
@@ -239,7 +247,7 @@ fn get_datetime_uses_segment_base_in_protected_mode_ra() {
 
     let mut machine = create_machine_ra();
     boot_to_halt!(machine);
-    machine.bus.set_host_local_time_fn(test_local_time);
+    machine.set_host_date_time_provider(test_local_time);
 
     for i in 0..6 {
         machine.bus.write_byte(RESULT + i, 0x00);

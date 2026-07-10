@@ -15,5 +15,5 @@ sc55 = ["dep:nuked_sc55_oxide"]
 common = { workspace = true, features = ["std"] }
 munt_oxide = { workspace = true, optional = true }
 nuked_sc55_oxide = { workspace = true, optional = true }
-resampler = { workspace = true }
-ymfm_oxide = { workspace = true }
+resampler.workspace = true
+ymfm_oxide.workspace = true

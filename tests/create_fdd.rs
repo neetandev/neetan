@@ -36,3 +36,37 @@ fn creates_144mb_2hd_floppy() {
 
     std::fs::remove_file(&path).ok();
 }
+
+#[test]
+fn creates_raw_xdf_floppy_for_both_extensions() {
+    for extension in ["xdf", "2hd"] {
+        let pid = std::process::id();
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("neetan_create_xdf_{pid}_{counter}.{extension}"));
+        create_fdd_image(&path, FddType::Hd2).expect("create raw XDF image");
+
+        let data = std::fs::read(&path).expect("read created image");
+        assert_eq!(data.len(), 1_261_568);
+        assert!(data.iter().all(|&byte| byte == 0));
+
+        let disk = load_floppy_image(&path, &data).expect("parse created image");
+        assert_eq!(disk.format_name(), "XDF");
+        for track in 0..(77 * 2) {
+            assert_eq!(disk.sector_count(track), 8);
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
+}
+
+#[test]
+fn rejects_raw_xdf_output_for_other_types() {
+    let pid = std::process::id();
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("neetan_create_xdf_bad_{pid}_{counter}.xdf"));
+    for fdd_type in [FddType::Hd2Fmt144, FddType::Dd2, FddType::D2] {
+        assert!(create_fdd_image(&path, fdd_type).is_err());
+    }
+    assert!(!path.exists());
+}

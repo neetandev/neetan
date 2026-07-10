@@ -390,7 +390,7 @@ fn post_bios_state_vm() {
     // === Scheduler: PIT Timer0 must be scheduled ===
     check_true!(
         f,
-        state.scheduler.fire_cycles[common::EventKind::PitTimer0 as usize].is_some(),
+        state.scheduler.fire_cycles[machine::EventKind::PitTimer0 as usize].is_some(),
         "PIT Timer0 event scheduled"
     );
 
@@ -654,7 +654,7 @@ fn post_bios_state_f() {
     // === Scheduler: PIT Timer0 must be scheduled ===
     check_true!(
         f,
-        state.scheduler.fire_cycles[common::EventKind::PitTimer0 as usize].is_some(),
+        state.scheduler.fire_cycles[machine::EventKind::PitTimer0 as usize].is_some(),
         "PIT Timer0 event scheduled"
     );
 
@@ -903,7 +903,7 @@ fn post_bios_state_vx() {
     // === Scheduler: PIT Timer0 must be scheduled ===
     check_true!(
         f,
-        state.scheduler.fire_cycles[common::EventKind::PitTimer0 as usize].is_some(),
+        state.scheduler.fire_cycles[machine::EventKind::PitTimer0 as usize].is_some(),
         "PIT Timer0 event scheduled"
     );
 
@@ -1175,7 +1175,7 @@ fn post_bios_state_ra() {
     // === Scheduler: PIT Timer0 must be scheduled ===
     check_true!(
         f,
-        state.scheduler.fire_cycles[common::EventKind::PitTimer0 as usize].is_some(),
+        state.scheduler.fire_cycles[machine::EventKind::PitTimer0 as usize].is_some(),
         "PIT Timer0 event scheduled"
     );
 
@@ -1467,7 +1467,7 @@ fn post_bios_state_pc9821as_ide() {
     // === Scheduler: PIT Timer0 must be scheduled ===
     check_true!(
         f,
-        state.scheduler.fire_cycles[common::EventKind::PitTimer0 as usize].is_some(),
+        state.scheduler.fire_cycles[machine::EventKind::PitTimer0 as usize].is_some(),
         "PIT Timer0 event scheduled"
     );
 

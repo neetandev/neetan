@@ -9,4 +9,4 @@ rust-version.workspace = true
 
 [dependencies]
 common = { workspace = true, features = ["std"] }
-sdl3 = { workspace = true }
+sdl3.workspace = true

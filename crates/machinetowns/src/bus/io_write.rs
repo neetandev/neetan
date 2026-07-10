@@ -74,8 +74,6 @@ impl<T: Tracing> TownsBus<T> {
             0x0442 => self.video.write_crtc_data_low(value),
             0x0443 => self.video.write_crtc_data_high(value),
             // Video-out ("sifter") control.
-            // TODO: the video-out/superimpose (video-in overlay) registers are
-            //       not modeled; only page show/priority/palette-select bits are used.
             0x0448 => self.video.write_video_out_address(value),
             0x044A => self.video.write_video_out_data(value),
             // Sprite controller: index latch and data.

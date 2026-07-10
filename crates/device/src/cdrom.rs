@@ -657,6 +657,76 @@ impl CdImage {
     }
 }
 
+/// Loads a CD-ROM disc image (`.cue` or `.ccd`) with its companion data
+/// files, returning the image and a short description of the loaded disc.
+pub fn load_cd_image(path: &std::path::Path) -> Result<(CdImage, String), String> {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase());
+
+    if extension.as_deref() == Some("ccd") {
+        load_cd_image_ccd(path)
+    } else {
+        load_cd_image_cue(path)
+    }
+}
+
+fn load_cd_image_cue(path: &std::path::Path) -> Result<(CdImage, String), String> {
+    let cue_content = std::fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+    let bin_filenames = extract_bin_filenames(&cue_content)
+        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
+    let base_path = path.parent().unwrap_or(std::path::Path::new("."));
+    let mut bin_files = Vec::with_capacity(bin_filenames.len());
+    for bin_filename in &bin_filenames {
+        let bin_path = base_path.join(bin_filename);
+        let bin_data = std::fs::read(&bin_path)
+            .map_err(|error| format!("Failed to read {}: {error}", bin_path.display()))?;
+        bin_files.push(bin_data);
+    }
+    let image = CdImage::from_cue_files(&cue_content, bin_files)
+        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
+    let description = format!(
+        "{} ({} tracks, {} sectors)",
+        bin_filenames[0],
+        image.track_count(),
+        image.total_sectors()
+    );
+    Ok((image, description))
+}
+
+fn load_cd_image_ccd(path: &std::path::Path) -> Result<(CdImage, String), String> {
+    let ccd_content = std::fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+    let img_path = path.with_extension("img");
+    let img_data = std::fs::read(&img_path)
+        .map_err(|error| format!("Failed to read {}: {error}", img_path.display()))?;
+    let sub_path = path.with_extension("sub");
+    let sub_data = match std::fs::read(&sub_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!("Failed to read {}: {error}", sub_path.display()));
+        }
+    };
+    let has_sub = sub_data.is_some();
+    let image = CdImage::from_ccd(&ccd_content, img_data, sub_data)
+        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
+    let img_name = img_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("image.img");
+    let description = format!(
+        "{} ({} tracks, {} sectors, {})",
+        img_name,
+        image.track_count(),
+        image.total_sectors(),
+        if has_sub { "CCD+SUB" } else { "CCD" }
+    );
+    Ok((image, description))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

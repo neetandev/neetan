@@ -17,4 +17,4 @@ link-static = ["sdl3-sys/link-static"]
 no-link = ["sdl3-sys/no-link"]
 
 [dependencies]
-sdl3-sys = { workspace = true }
+sdl3-sys.workspace = true

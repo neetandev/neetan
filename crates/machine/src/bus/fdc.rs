@@ -1,7 +1,7 @@
-use common::{EventKind, StackVec};
+use common::StackVec;
 use device::upd765a_fdc::{FdcCommand, ST0_NOT_READY, ST1_MISSING_ADDRESS_MARK, ST1_NOT_WRITABLE};
 
-use crate::{Pc9801Bus, Tracing, bus::INTERRUPT_DELAY_CYCLES};
+use crate::{Pc9801Bus, Tracing, bus::INTERRUPT_DELAY_CYCLES, scheduler::EventKind};
 
 impl<T: Tracing> Pc9801Bus<T> {
     pub(super) fn handle_fdc_execution(&mut self) {
@@ -11,6 +11,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             FdcCommand::ReadId => self.handle_fdc_read_id(),
             FdcCommand::WriteData => self.handle_fdc_write_data(),
             FdcCommand::FormatTrack => self.handle_fdc_format_track(),
+            FdcCommand::Scan => unreachable!("SCAN commands are disabled on this FDC"),
             FdcCommand::None => {}
         }
     }

@@ -2,7 +2,10 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use device::disk::{HddFormat, load_hdd_image};
+use device::disk::{
+    HddFormat, X68K_SASI_HDF_10MB_BYTES, X68K_SASI_HDF_20MB_BYTES, X68K_SASI_HDF_40MB_BYTES,
+    load_hdd_image, load_x68k_hdf,
+};
 use neetan::{config::HddSizeType, create::create_hdd_image};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -56,5 +59,57 @@ fn scsi_type_rejects_hdi_extension() {
 fn sasi_type_rejects_raw_extension() {
     let path = temp_path("sasi_wrong_ext", "h0");
     assert!(create_hdd_image(&path, HddSizeType::Mb5).is_err());
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn creates_x68k_sasi_hdf_images_with_exact_sizes() {
+    let cases = [
+        (HddSizeType::X68kSasiMb10, X68K_SASI_HDF_10MB_BYTES),
+        (HddSizeType::X68kSasiMb20, X68K_SASI_HDF_20MB_BYTES),
+        (HddSizeType::X68kSasiMb40, X68K_SASI_HDF_40MB_BYTES),
+    ];
+    for (hdd_type, expected_bytes) in cases {
+        let path = temp_path("x68sasi", "hdf");
+        create_hdd_image(&path, hdd_type).expect("create X68000 SASI image");
+
+        let data = std::fs::read(&path).expect("read created image");
+        assert_eq!(data.len(), expected_bytes);
+
+        let image = load_x68k_hdf(data, 256).expect("parse created image");
+        assert_eq!(image.format, HddFormat::Raw);
+        assert_eq!(image.geometry.sector_size, 256);
+
+        std::fs::remove_file(&path).ok();
+    }
+}
+
+#[test]
+fn creates_x68k_scsi_hdf_images() {
+    let cases = [
+        (HddSizeType::X68kScsiMb20, 20 * 1024 * 1024),
+        (HddSizeType::X68kScsiMb40, 40 * 1024 * 1024),
+    ];
+    for (hdd_type, expected_bytes) in cases {
+        let path = temp_path("x68scsi", "hdf");
+        create_hdd_image(&path, hdd_type).expect("create X68000 SCSI image");
+
+        let data = std::fs::read(&path).expect("read created image");
+        assert_eq!(data.len(), expected_bytes);
+
+        let image = load_x68k_hdf(data, 512).expect("parse created image");
+        assert_eq!(image.format, HddFormat::Raw);
+        assert_eq!(image.geometry.sector_size, 512);
+
+        std::fs::remove_file(&path).ok();
+    }
+}
+
+#[test]
+fn x68k_type_rejects_other_extensions() {
+    let path = temp_path("x68_wrong_ext", "hdi");
+    assert!(create_hdd_image(&path, HddSizeType::X68kSasiMb10).is_err());
+    let path = temp_path("x68_wrong_ext", "h0");
+    assert!(create_hdd_image(&path, HddSizeType::X68kScsiMb20).is_err());
     std::fs::remove_file(&path).ok();
 }

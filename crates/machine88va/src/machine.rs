@@ -7,16 +7,10 @@
 
 use common::{Bus, Cpu, CpuZ80};
 
-use crate::{
-    bus::{Pc88VaBus, SYNC_SLICE, SubBusView, TIGHT_SLICE},
-    config::{ClockConfig, Pc88VaModel},
-    memory::Pc88VaMemory,
-    rom::LoadedRoms,
-};
+use crate::bus::{Pc88VaBus, SYNC_SLICE, SubBusView, TIGHT_SLICE};
 
 const RESET_CS: u16 = 0xF000;
 const RESET_IP: u16 = 0xFFF0;
-const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 
 /// A PC-88VA2 machine: the V30 main CPU, the Z80 floppy sub-CPU, and the VA bus.
 pub struct Pc88VaMachine {
@@ -29,32 +23,18 @@ pub struct Pc88VaMachine {
 }
 
 impl Pc88VaMachine {
-    /// Builds a machine for `model` from a loaded ROM set and points the V30 at
-    /// its reset vector (CS=0xF000, IP=0xFFF0).
-    pub fn new(model: Pc88VaModel, roms: LoadedRoms) -> Self {
-        let clocks = ClockConfig {
-            main_clock_hz: model.main_clock_hz(),
-            sub_clock_hz: model.sub_clock_hz(),
-            sample_rate: DEFAULT_SAMPLE_RATE,
-        };
-        let subsys = roms.subsys.clone();
-        let memory = Pc88VaMemory::new(model, roms);
-        let mut bus = Pc88VaBus::new(memory, clocks);
-        bus.load_disk_rom(&subsys);
-
+    /// Builds a reset V30 for the PC-88VA reset vector.
+    pub fn reset_cpu() -> cpu::V30 {
         let mut cpu = cpu::V30::new();
         cpu.reset();
         cpu.set_ip(RESET_IP);
         cpu.set_cs(RESET_CS);
-
-        let sub_cpu = cpu::Z80::new(clocks.sub_clock_hz);
-
-        Self { cpu, sub_cpu, bus }
+        cpu
     }
 
-    /// Overrides the host local-time source (BCD) used by the RTC.
-    pub fn set_host_local_time_fn(&mut self, host_local_time_fn: fn() -> [u8; 6]) {
-        self.bus.set_host_local_time_fn(host_local_time_fn);
+    /// Builds a machine around configured CPUs and bus.
+    pub fn new(cpu: cpu::V30, sub_cpu: cpu::Z80, bus: Pc88VaBus) -> Self {
+        Self { cpu, sub_cpu, bus }
     }
 
     /// The composed RGBA framebuffer from the last rendered frame.
@@ -161,6 +141,10 @@ impl Pc88VaMachine {
 }
 
 impl common::Machine for Pc88VaMachine {
+    fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
+        self.bus.set_host_date_time_provider(provider);
+    }
+
     fn cpu_clock_hz(&self) -> f64 {
         f64::from(self.bus.clock_config().main_clock_hz)
     }

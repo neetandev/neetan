@@ -1,8 +1,7 @@
-use common::EventKind;
-
 use crate::{
     Pc9801Bus, Tracing,
     bus::{INTERRUPT_DELAY_CYCLES, bios},
+    scheduler::EventKind,
 };
 
 impl<T: Tracing> Pc9801Bus<T> {

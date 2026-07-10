@@ -9,23 +9,19 @@
 //! subset needed for CD-ROM data access, TOC reading, and media change.
 
 use crate::{
-    cd_audio::{CdAudioPlayer, CdAudioState},
+    cd_audio::CdAudioPlayer,
     cdrom::CdImage,
+    scsi::cdrom::{
+        CDROM_SECTOR_SIZE, audio_status_byte, decode_msf_byte, medium_type, msf_to_lba,
+        raw_user_data_offset, read_capacity_payload, read_data_sectors,
+        sub_channel_position_payload, toc_format_0_payload, toc_format_1_payload,
+        toc_format_2_payload, write_mode_page_0d, write_mode_page_0e, write_mode_page_01,
+        write_mode_page_2a,
+    },
 };
 
 /// Maximum data buffer size (64 KB).
 const MAX_BUFFER_SIZE: usize = 65536;
-
-/// CD-ROM sector size for data reads.
-const CDROM_SECTOR_SIZE: usize = 2048;
-
-fn raw_user_data_offset(raw_sector: &[u8]) -> usize {
-    if raw_sector.get(15) == Some(&0x02) {
-        24
-    } else {
-        16
-    }
-}
 
 // ATAPI signature registers (identifies device as ATAPI, not ATA).
 pub(super) const ATAPI_SIGNATURE_CYLINDER_LOW: u8 = 0x14;
@@ -423,21 +419,9 @@ impl AtapiState {
             return self.cmd_error(SENSE_NOT_READY, ASC_MEDIUM_NOT_PRESENT, ASCQ_NO_QUALIFIER);
         };
 
-        let last_lba = cdrom.total_sectors().saturating_sub(1);
-        let block_size: u32 = CDROM_SECTOR_SIZE as u32;
-
         self.data_buffer.clear();
-        self.data_buffer.resize(8, 0);
-        // Last LBA (big-endian).
-        self.data_buffer[0] = (last_lba >> 24) as u8;
-        self.data_buffer[1] = (last_lba >> 16) as u8;
-        self.data_buffer[2] = (last_lba >> 8) as u8;
-        self.data_buffer[3] = last_lba as u8;
-        // Block size (big-endian).
-        self.data_buffer[4] = (block_size >> 24) as u8;
-        self.data_buffer[5] = (block_size >> 16) as u8;
-        self.data_buffer[6] = (block_size >> 8) as u8;
-        self.data_buffer[7] = block_size as u8;
+        self.data_buffer
+            .extend_from_slice(&read_capacity_payload(cdrom));
 
         self.cmd_complete_with_data(8)
     }
@@ -461,29 +445,18 @@ impl AtapiState {
             return self.cmd_complete_no_data();
         }
 
-        let total_bytes = count as usize * CDROM_SECTOR_SIZE;
-        self.data_buffer.clear();
-        self.data_buffer.resize(total_bytes, 0);
-
-        for i in 0..count as u32 {
-            let sector_lba = lba + i;
-            let offset = i as usize * CDROM_SECTOR_SIZE;
-            if cdrom
-                .read_sector(
-                    sector_lba,
-                    &mut self.data_buffer[offset..offset + CDROM_SECTOR_SIZE],
-                )
-                .is_none()
-            {
-                return self.cmd_error(
-                    SENSE_ILLEGAL_REQUEST,
-                    ASC_LOGICAL_BLOCK_OUT_OF_RANGE,
-                    ASCQ_NO_QUALIFIER,
-                );
+        match read_data_sectors(cdrom, lba, u32::from(count)) {
+            Some(data) => {
+                let total_bytes = data.len();
+                self.data_buffer = data;
+                self.cmd_complete_with_data(total_bytes)
             }
+            None => self.cmd_error(
+                SENSE_ILLEGAL_REQUEST,
+                ASC_LOGICAL_BLOCK_OUT_OF_RANGE,
+                ASCQ_NO_QUALIFIER,
+            ),
         }
-
-        self.cmd_complete_with_data(total_bytes)
     }
 
     // 0x2B: SEEK(10)
@@ -521,11 +494,7 @@ impl AtapiState {
             return result;
         }
 
-        let audio_status = match cd_audio.state() {
-            CdAudioState::Playing => 0x11,
-            CdAudioState::Paused => 0x12,
-            CdAudioState::Stopped => 0x15,
-        };
+        let audio_status = audio_status_byte(cd_audio.state());
 
         let sub_q = self.packet[2] & 0x40 != 0;
         let format = self.packet[3];
@@ -534,48 +503,16 @@ impl AtapiState {
 
         if sub_q && format == 0x01 {
             // Format 0x01: Current Position - return 16-byte response.
-            self.data_buffer.clear();
-            self.data_buffer.resize(16, 0);
-            self.data_buffer[0] = 0x00; // Reserved.
-            self.data_buffer[1] = audio_status;
-            self.data_buffer[2] = 0x00; // Sub-channel data length (MSB).
-            self.data_buffer[3] = 0x0C; // Sub-channel data length = 12.
-            self.data_buffer[4] = 0x01; // Sub-Q format code: current position.
-
             let (current_lba, _, _) = cd_audio.current_position();
-
-            if let Some(sub_q) = cdrom.and_then(|cdrom| cdrom.read_subchannel_q(current_lba)) {
-                decode_subq_into_response(&sub_q, &mut self.data_buffer, msf, self.bcd_msf_mode);
-            } else if let Some(cdrom) = cdrom {
-                let track = cdrom.track_for_lba(current_lba).or_else(|| cdrom.track(1));
-                let adr_ctl = track.map_or(0x14, |t| match t.track_type {
-                    crate::cdrom::TrackType::Data => 0x14,
-                    crate::cdrom::TrackType::Audio => 0x10,
-                });
-                self.data_buffer[5] = adr_ctl;
-                self.data_buffer[6] = track.map_or(1, |t| t.number);
-                self.data_buffer[7] = 0x01;
-                let track_relative_lba =
-                    track.map_or(0, |t| current_lba.saturating_sub(t.start_lba));
-                store_address(
-                    &mut self.data_buffer[8..12],
-                    current_lba,
-                    msf,
-                    self.bcd_msf_mode,
-                );
-                store_address(
-                    &mut self.data_buffer[12..16],
-                    track_relative_lba,
-                    msf,
-                    self.bcd_msf_mode,
-                );
-            } else {
-                self.data_buffer[5] = 0x14;
-                self.data_buffer[6] = 0x01;
-                self.data_buffer[7] = 0x01;
-                store_address(&mut self.data_buffer[8..12], 0, msf, self.bcd_msf_mode);
-                store_address(&mut self.data_buffer[12..16], 0, msf, self.bcd_msf_mode);
-            }
+            let payload = sub_channel_position_payload(
+                cdrom,
+                current_lba,
+                audio_status,
+                msf,
+                self.bcd_msf_mode,
+            );
+            self.data_buffer.clear();
+            self.data_buffer.extend_from_slice(&payload);
 
             let size = 16.min(allocation_length as usize);
             return self.cmd_complete_with_data(size);
@@ -645,65 +582,8 @@ impl AtapiState {
         allocation_length: u16,
         msf: bool,
     ) -> (bool, bool) {
-        let tracks = cdrom.tracks();
-        let track_count = cdrom.track_count();
-        let first_track = if starting_track == 0 {
-            1
-        } else {
-            starting_track
-        };
-
-        // Filter tracks >= starting_track.
-        let valid_tracks: Vec<&crate::cdrom::Track> =
-            tracks.iter().filter(|t| t.number >= first_track).collect();
-
-        // Header (4 bytes) + track descriptors (8 bytes each) + lead-out (8 bytes).
-        let descriptor_count = valid_tracks.len() + 1; // +1 for lead-out
-        let data_length = 2 + descriptor_count * 8; // 2 bytes header after length field
-        let total_length = 2 + data_length; // +2 for length field itself
-
-        self.data_buffer.clear();
-        self.data_buffer.resize(total_length, 0);
-
-        // TOC header.
-        self.data_buffer[0] = (data_length >> 8) as u8;
-        self.data_buffer[1] = data_length as u8;
-        self.data_buffer[2] = 1; // First track number.
-        self.data_buffer[3] = track_count; // Last track number.
-
-        // Track descriptors.
-        let mut offset = 4;
-        for track in &valid_tracks {
-            self.data_buffer[offset] = 0; // Reserved.
-            self.data_buffer[offset + 1] = match track.track_type {
-                crate::cdrom::TrackType::Data => 0x14,  // ADR/CTL: data track.
-                crate::cdrom::TrackType::Audio => 0x10, // ADR/CTL: audio track.
-            };
-            self.data_buffer[offset + 2] = track.number;
-            self.data_buffer[offset + 3] = 0; // Reserved.
-            store_address(
-                &mut self.data_buffer[offset + 4..offset + 8],
-                track.start_lba,
-                msf,
-                self.bcd_msf_mode,
-            );
-            offset += 8;
-        }
-
-        // Lead-out entry (track 0xAA).
-        let lead_out_lba = cdrom.total_sectors();
-        self.data_buffer[offset] = 0;
-        self.data_buffer[offset + 1] = 0x14; // ADR/CTL: data.
-        self.data_buffer[offset + 2] = 0xAA; // Lead-out track number.
-        self.data_buffer[offset + 3] = 0;
-        store_address(
-            &mut self.data_buffer[offset + 4..offset + 8],
-            lead_out_lba,
-            msf,
-            self.bcd_msf_mode,
-        );
-
-        let size = total_length.min(allocation_length as usize);
+        self.data_buffer = toc_format_0_payload(cdrom, starting_track, msf, self.bcd_msf_mode);
+        let size = self.data_buffer.len().min(allocation_length as usize);
         self.cmd_complete_with_data(size)
     }
 
@@ -714,108 +594,15 @@ impl AtapiState {
         allocation_length: u16,
         msf: bool,
     ) -> (bool, bool) {
-        self.data_buffer.clear();
-        self.data_buffer.resize(12, 0);
-
-        // Header.
-        self.data_buffer[0] = 0x00;
-        self.data_buffer[1] = 0x0A; // Data length = 10.
-        self.data_buffer[2] = 1; // First session.
-        self.data_buffer[3] = 1; // Last session.
-
-        // Session descriptor: first track of last session.
-        self.data_buffer[4] = 0; // Reserved.
-        self.data_buffer[5] = 0x14; // ADR/CTL.
-        self.data_buffer[6] = 1; // First track in session.
-        self.data_buffer[7] = 0; // Reserved.
-        let lba = cdrom.track(1).map_or(0, |t| t.start_lba);
-        store_address(&mut self.data_buffer[8..12], lba, msf, self.bcd_msf_mode);
-
-        let size = 12.min(allocation_length as usize);
+        self.data_buffer = toc_format_1_payload(cdrom, msf, self.bcd_msf_mode);
+        let size = self.data_buffer.len().min(allocation_length as usize);
         self.cmd_complete_with_data(size)
     }
 
     // Format 2: Full TOC (raw Q sub-channel).
     fn read_toc_format_2(&mut self, cdrom: &CdImage, allocation_length: u16) -> (bool, bool) {
-        let tracks = cdrom.tracks();
-        let track_count = cdrom.track_count();
-
-        // Header (4 bytes) + A0 entry (11 bytes) + A1 entry (11 bytes) + A2 entry (11 bytes)
-        // + track entries (11 bytes each).
-        let entry_count = 3 + tracks.len();
-        let data_length = 2 + entry_count * 11;
-        let total_length = 2 + data_length;
-
-        self.data_buffer.clear();
-        self.data_buffer.resize(total_length, 0);
-
-        // Header.
-        self.data_buffer[0] = (data_length >> 8) as u8;
-        self.data_buffer[1] = data_length as u8;
-        self.data_buffer[2] = 1; // First session.
-        self.data_buffer[3] = 1; // Last session.
-
-        let mut offset = 4;
-
-        // Point A0: first track number.
-        self.data_buffer[offset] = 1; // Session.
-        self.data_buffer[offset + 1] = 0x14; // ADR/CTL.
-        self.data_buffer[offset + 2] = 0; // TNO.
-        self.data_buffer[offset + 3] = 0xA0; // Point.
-        // PMIN = first track number.
-        self.data_buffer[offset + 8] = 1;
-        offset += 11;
-
-        // Point A1: last track number.
-        self.data_buffer[offset] = 1;
-        self.data_buffer[offset + 1] = 0x14;
-        self.data_buffer[offset + 2] = 0;
-        self.data_buffer[offset + 3] = 0xA1;
-        self.data_buffer[offset + 8] = track_count;
-        offset += 11;
-
-        // Point A2: lead-out position in MSF.
-        let lead_out = cdrom.total_sectors();
-        let (m, s, f) = lba_to_msf(lead_out);
-        self.data_buffer[offset] = 1;
-        self.data_buffer[offset + 1] = 0x14;
-        self.data_buffer[offset + 2] = 0;
-        self.data_buffer[offset + 3] = 0xA2;
-        if self.bcd_msf_mode {
-            self.data_buffer[offset + 8] = hex_to_bcd(m);
-            self.data_buffer[offset + 9] = hex_to_bcd(s);
-            self.data_buffer[offset + 10] = hex_to_bcd(f);
-        } else {
-            self.data_buffer[offset + 8] = m;
-            self.data_buffer[offset + 9] = s;
-            self.data_buffer[offset + 10] = f;
-        }
-        offset += 11;
-
-        // Track entries.
-        for track in tracks {
-            let ctl = match track.track_type {
-                crate::cdrom::TrackType::Data => 0x14,
-                crate::cdrom::TrackType::Audio => 0x10,
-            };
-            let (m, s, f) = lba_to_msf(track.start_lba);
-            self.data_buffer[offset] = 1; // Session.
-            self.data_buffer[offset + 1] = ctl;
-            self.data_buffer[offset + 2] = 0; // TNO.
-            self.data_buffer[offset + 3] = track.number; // Point.
-            if self.bcd_msf_mode {
-                self.data_buffer[offset + 8] = hex_to_bcd(m); // PMIN.
-                self.data_buffer[offset + 9] = hex_to_bcd(s); // PSEC.
-                self.data_buffer[offset + 10] = hex_to_bcd(f); // PFRAME.
-            } else {
-                self.data_buffer[offset + 8] = m; // PMIN.
-                self.data_buffer[offset + 9] = s; // PSEC.
-                self.data_buffer[offset + 10] = f; // PFRAME.
-            }
-            offset += 11;
-        }
-
-        let size = total_length.min(allocation_length as usize);
+        self.data_buffer = toc_format_2_payload(cdrom, self.bcd_msf_mode);
+        let size = self.data_buffer.len().min(allocation_length as usize);
         self.cmd_complete_with_data(size)
     }
 
@@ -970,46 +757,17 @@ impl AtapiState {
 
     // Page 0x01: Read Error Recovery Parameters.
     fn mode_page_01(&mut self, offset: usize) -> usize {
-        let end = offset + 8;
-        if end > self.data_buffer.len() {
-            self.data_buffer.resize(end, 0);
-        }
-        self.data_buffer[offset] = 0x01; // Page code.
-        self.data_buffer[offset + 1] = 0x06; // Page length.
-        end
+        write_mode_page_01(&mut self.data_buffer, offset)
     }
 
     // Page 0x0D: CD-ROM Device Parameters.
     fn mode_page_0d(&mut self, offset: usize) -> usize {
-        let end = offset + 8;
-        if end > self.data_buffer.len() {
-            self.data_buffer.resize(end, 0);
-        }
-        self.data_buffer[offset] = 0x0D; // Page code.
-        self.data_buffer[offset + 1] = 0x06; // Page length.
-        self.data_buffer[offset + 5] = 0x3C; // Inactivity timer multiplier.
-        self.data_buffer[offset + 7] = 0x4B; // Number of MSF-S units per MSF-M unit (75).
-        end
+        write_mode_page_0d(&mut self.data_buffer, offset)
     }
 
     // Page 0x0E: CD-ROM Audio Control Parameters.
     fn mode_page_0e(&mut self, offset: usize) -> usize {
-        let end = offset + 16;
-        if end > self.data_buffer.len() {
-            self.data_buffer.resize(end, 0);
-        }
-        self.data_buffer[offset] = 0x0E; // Page code.
-        self.data_buffer[offset + 1] = 0x0E; // Page length.
-        // Audio play control parameters.
-        self.data_buffer[offset + 2] = 0x04; // Immed = 1.
-        self.data_buffer[offset + 7] = 0x4B; // Number of frames per second (75).
-        // Port 0: channel 0, volume 0xFF.
-        self.data_buffer[offset + 8] = 0x01;
-        self.data_buffer[offset + 9] = 0xFF;
-        // Port 1: channel 1, volume 0xFF.
-        self.data_buffer[offset + 10] = 0x02;
-        self.data_buffer[offset + 11] = 0xFF;
-        end
+        write_mode_page_0e(&mut self.data_buffer, offset)
     }
 
     // Page 0x0F: NEC vendor-specific CD-ROM parameters.
@@ -1035,32 +793,10 @@ impl AtapiState {
         end
     }
 
-    // Page 0x2A: CD-ROM Capabilities & Mechanical Status.
+    // Page 0x2A: CD-ROM Capabilities & Mechanical Status. Page 0x0F above
+    // mirrors a subset of these flags through the vendor-specific interface.
     fn mode_page_2a(&mut self, offset: usize) -> usize {
-        let end = offset + 20;
-        if end > self.data_buffer.len() {
-            self.data_buffer.resize(end, 0);
-        }
-        self.data_buffer[offset] = 0x2A; // Page code.
-        self.data_buffer[offset + 1] = 0x12; // Page length (18 bytes).
-        // Capability bytes chosen to match the behavior expected by DOS-era
-        // ATAPI CD-ROM drivers. Page 0x0F above mirrors a subset of these
-        // flags through the vendor-specific interface.
-        self.data_buffer[offset + 4] = 0x71;
-        self.data_buffer[offset + 5] = 0x65;
-        self.data_buffer[offset + 6] = 0x2B;
-        self.data_buffer[offset + 7] = 0x07;
-        // Max speed: 4x (706 KB/s).
-        self.data_buffer[offset + 8] = 0x02;
-        self.data_buffer[offset + 9] = 0xC2;
-        self.data_buffer[offset + 11] = 0xFF;
-        // Buffer size (64 KB).
-        self.data_buffer[offset + 12] = 0x00;
-        self.data_buffer[offset + 13] = 0x80;
-        // Current speed: 4x.
-        self.data_buffer[offset + 14] = 0x02;
-        self.data_buffer[offset + 15] = 0xC2;
-        end
+        write_mode_page_2a(&mut self.data_buffer, offset)
     }
 
     // 0xB9: READ CD MSF
@@ -1324,150 +1060,6 @@ impl AtapiState {
     }
 }
 
-/// Converts a binary value to BCD (Binary-Coded Decimal).
-fn hex_to_bcd(val: u8) -> u8 {
-    ((val / 10) % 10) << 4 | (val % 10)
-}
-
-/// Converts a BCD (Binary-Coded Decimal) value to binary.
-fn bcd_to_hex(val: u8) -> u8 {
-    (val >> 4) * 10 + (val & 0x0F)
-}
-
-fn decode_msf_byte(value: u8, bcd: bool) -> u32 {
-    if bcd {
-        u32::from(bcd_to_hex(value))
-    } else {
-        u32::from(value)
-    }
-}
-
-/// Converts an LBA to MSF (minute, second, frame).
-fn lba_to_msf(lba: u32) -> (u8, u8, u8) {
-    let total_frames = lba;
-    let f = (total_frames % 75) as u8;
-    let total_seconds = total_frames / 75;
-    let s = (total_seconds % 60) as u8;
-    let m = (total_seconds / 60) as u8;
-    (m, s, f)
-}
-
-/// Converts MSF (minute, second, frame) to an absolute LBA.
-/// MSF addresses include the 150-frame lead-in offset, so we subtract it.
-fn msf_to_lba(m: u32, s: u32, f: u32) -> u32 {
-    (m * 60 * 75 + s * 75 + f).saturating_sub(150)
-}
-
-/// Returns the medium type byte for MODE SENSE header byte 2.
-fn medium_type(cdrom: Option<&CdImage>) -> u8 {
-    let Some(cdrom) = cdrom else {
-        return 0x70; // Door closed, no disc.
-    };
-    let mut has_data = false;
-    let mut has_audio = false;
-    for track in cdrom.tracks() {
-        match track.track_type {
-            crate::cdrom::TrackType::Data => has_data = true,
-            crate::cdrom::TrackType::Audio => has_audio = true,
-        }
-    }
-    match (has_data, has_audio) {
-        (true, true) => 0x03,  // Data and audio.
-        (true, false) => 0x01, // Data only.
-        (false, true) => 0x02, // Audio only.
-        (false, false) => 0x70,
-    }
-}
-
-/// Writes a 4-byte address field as either MSF or LBA.
-/// For MSF: adds the standard 150-frame (2-second) lead-in offset per Red Book.
-/// When `bcd` is true, MSF values are BCD-encoded (NEC CD-ROM quirk).
-///
-/// Writes the bytes 5..16 of a `READ SUBCHANNEL` format-0x01 response from
-/// the 12-byte raw Sub-Q recovered from disc.
-///
-/// Sub-Q byte 0 stores Control in the high nibble and ADR in the low nibble
-/// (Red Book); the MMC response byte 5 uses the opposite nibble order. The
-/// MSF fields in Sub-Q are BCD; the absolute MSF includes the standard
-/// 150-sector lead-in, the relative MSF does not.
-fn decode_subq_into_response(sub_q: &[u8; 12], buffer: &mut [u8], msf: bool, bcd: bool) {
-    buffer[5] = ((sub_q[0] & 0x0F) << 4) | ((sub_q[0] & 0xF0) >> 4);
-    buffer[6] = bcd_to_hex(sub_q[1]);
-    buffer[7] = bcd_to_hex(sub_q[2]);
-
-    write_subq_address(
-        &mut buffer[8..12],
-        bcd_to_hex(sub_q[7]),
-        bcd_to_hex(sub_q[8]),
-        bcd_to_hex(sub_q[9]),
-        true,
-        msf,
-        bcd,
-    );
-    write_subq_address(
-        &mut buffer[12..16],
-        bcd_to_hex(sub_q[3]),
-        bcd_to_hex(sub_q[4]),
-        bcd_to_hex(sub_q[5]),
-        false,
-        msf,
-        bcd,
-    );
-}
-
-fn write_subq_address(buf: &mut [u8], m: u8, s: u8, f: u8, absolute: bool, msf: bool, bcd: bool) {
-    if msf {
-        buf[0] = 0;
-        if bcd {
-            buf[1] = hex_to_bcd(m);
-            buf[2] = hex_to_bcd(s);
-            buf[3] = hex_to_bcd(f);
-        } else {
-            buf[1] = m;
-            buf[2] = s;
-            buf[3] = f;
-        }
-    } else {
-        let frames = u32::from(m) * 60 * 75 + u32::from(s) * 75 + u32::from(f);
-        let lba = if absolute {
-            frames.saturating_sub(150)
-        } else {
-            frames
-        };
-        buf[0] = (lba >> 24) as u8;
-        buf[1] = (lba >> 16) as u8;
-        buf[2] = (lba >> 8) as u8;
-        buf[3] = lba as u8;
-    }
-}
-
-fn store_address(buf: &mut [u8], lba: u32, msf: bool, bcd: bool) {
-    if msf {
-        let (m, s, f) = lba_to_msf(lba + 150);
-        buf[0] = 0;
-        if bcd {
-            if m > 99 {
-                buf[1] = 0xFF;
-                buf[2] = 0x59;
-                buf[3] = 0x74;
-            } else {
-                buf[1] = hex_to_bcd(m);
-                buf[2] = hex_to_bcd(s);
-                buf[3] = hex_to_bcd(f);
-            }
-        } else {
-            buf[1] = m;
-            buf[2] = s;
-            buf[3] = f;
-        }
-    } else {
-        buf[0] = (lba >> 24) as u8;
-        buf[1] = (lba >> 16) as u8;
-        buf[2] = (lba >> 8) as u8;
-        buf[3] = lba as u8;
-    }
-}
-
 /// Builds the 512-byte IDENTIFY PACKET DEVICE response for an ATAPI CD-ROM.
 pub(super) fn build_identify_packet_device(buffer: &mut [u8]) {
     buffer.fill(0);
@@ -1541,6 +1133,7 @@ mod tests {
     use crate::{
         cd_audio::{CdAudioPlayer, CdAudioState},
         cdrom::CdImage,
+        scsi::cdrom::{bcd_to_hex, hex_to_bcd, lba_to_msf, store_address},
     };
 
     fn make_test_cdimage() -> CdImage {

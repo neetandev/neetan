@@ -104,6 +104,10 @@ impl<T: Tracing> Pc8801Machine<T> {
 }
 
 impl<T: Tracing> common::Machine for Pc8801Machine<T> {
+    fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
+        self.bus.set_host_date_time_provider(provider);
+    }
+
     fn cpu_clock_hz(&self) -> f64 {
         f64::from(self.bus.cpu_clock_hz())
     }

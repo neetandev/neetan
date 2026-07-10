@@ -9,6 +9,9 @@ extern crate alloc;
 
 mod m68000;
 
+pub use common::{
+    M68000AccessSize, M68000BusAccess, M68000BusError, M68000CycleKind, M68000FunctionCode,
+};
 pub use m68000::{
     M68000, M68000_DEFAULT_CLOCK_HZ, M68000BusCycle, M68000BusDirection, M68000BusSize,
     M68000Flags, M68000State,

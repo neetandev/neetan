@@ -14,7 +14,7 @@ mod ppi_link;
 mod sub_hle;
 mod video;
 
-use common::{JoystickState, MonitorTiming, NoTracing, Tracing};
+use common::{HostDateTimeProvider, JoystickState, MonitorTiming, NoTracing, Tracing};
 use device::{
     ay8910::Ay8910,
     cassette::{CassetteDeck, CassetteError, load_cassette},
@@ -534,7 +534,7 @@ impl<T: Tracing> X1Bus<T> {
 
     /// Generates paced audio for the elapsed cycles, returning the number of
     /// `f32` values written. Output is stereo interleaved.
-    pub fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
+    pub(crate) fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
         // The PSG is the base writer (it overwrites the buffer).
         let count = self.psg.generate_samples(
             self.current_cycle,
@@ -764,17 +764,24 @@ impl<T: Tracing> X1Bus<T> {
     }
 
     /// Removes the loaded cassette and clears the tape-present sensor.
-    pub fn eject_cassette(&mut self) {
+    pub(crate) fn eject_cassette(&mut self) {
         self.cassette.eject();
         self.sub.set_tape_playable(false);
         self.sub.set_tape_end(false);
     }
 
-    /// Seeds the calendar/clock from the host's current local time.
-    pub fn seed_host_clock(&mut self) {
-        let (year, month, day, day_of_week, hour, minute, second) = host_local_time();
-        self.sub
-            .set_host_time(year, month, day, day_of_week, hour, minute, second);
+    /// Sets and immediately seeds the calendar/clock from the host time provider.
+    pub(crate) fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
+        let time = provider();
+        self.sub.set_host_time(
+            time.year,
+            time.month,
+            time.day,
+            time.day_of_week,
+            time.hour,
+            time.minute,
+            time.second,
+        );
     }
 
     fn frame_period(&self) -> u64 {
@@ -1214,66 +1221,6 @@ fn fdc_config(model: X1Model) -> Mb8877Config {
     } else {
         Mb8877Config::x1()
     }
-}
-
-/// The host's current time broken down into calendar fields (day-of-week 0 =
-/// Sunday), for seeding the sub-CPU calendar/clock.
-fn host_local_time() -> (u16, u8, u8, u8, u8, u8, u8) {
-    use std::time::SystemTime;
-
-    let seconds = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    let days = seconds / 86_400;
-    let time_of_day = seconds % 86_400;
-    let hour = (time_of_day / 3_600) as u8;
-    let minute = ((time_of_day % 3_600) / 60) as u8;
-    let second = (time_of_day % 60) as u8;
-    // 1970-01-01 was a Thursday (day-of-week 4 with Sunday = 0).
-    let day_of_week = ((days + 4) % 7) as u8;
-
-    let is_leap = |year: u64| {
-        year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
-    };
-    let mut year = 1970u64;
-    let mut remaining = days;
-    loop {
-        let year_days = if is_leap(year) { 366 } else { 365 };
-        if remaining < year_days {
-            break;
-        }
-        remaining -= year_days;
-        year += 1;
-    }
-    let month_lengths = [
-        31,
-        if is_leap(year) { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut month = 0usize;
-    while remaining >= month_lengths[month] {
-        remaining -= month_lengths[month];
-        month += 1;
-    }
-    (
-        year as u16,
-        month as u8 + 1,
-        remaining as u8 + 1,
-        day_of_week,
-        hour,
-        minute,
-        second,
-    )
 }
 
 /// Ephemeral `common::Bus` adapter for the main Z80.

@@ -124,9 +124,8 @@ pub(crate) struct DosState {
     pub(crate) pending_key_bytes: std::collections::VecDeque<u8>,
     /// Interim console flag for DBCS input (INT 21h AH=63h AL=01h/02h).
     pub(crate) interim_console_flag: u8,
-    /// Host local time provider (BCD-encoded).
-    /// Returns `[year, month<<4|day_of_week, day, hour, minute, second]`.
-    pub(crate) host_local_time_fn: fn() -> [u8; 6],
+    /// Host local time provider.
+    pub(crate) host_date_time_provider: common::HostDateTimeProvider,
     /// Whether EMS expanded memory is enabled.
     pub(crate) ems_enabled: bool,
     /// Whether XMS extended memory is enabled.
@@ -175,15 +174,23 @@ fn from_bcd(value: u8) -> u8 {
     (value >> 4) * 10 + (value & 0x0F)
 }
 
-fn default_host_local_time() -> [u8; 6] {
+fn default_host_local_time() -> common::HostDateTime {
     // 1995-01-01 12:00:00, Sunday
-    [0x95, 0x10, 0x01, 0x12, 0x00, 0x00]
+    common::HostDateTime {
+        year: 1995,
+        month: 1,
+        day: 1,
+        day_of_week: 0,
+        hour: 12,
+        minute: 0,
+        second: 0,
+    }
 }
 
 impl DosState {
     /// Returns the current time as a DOS timestamp pair `(time, date)`.
     pub(crate) fn dos_timestamp_now(&self) -> (u16, u16) {
-        let bcd = (self.host_local_time_fn)();
+        let bcd = (self.host_date_time_provider)().to_bcd_bytes();
         let year = from_bcd(bcd[0]) as u16;
         let month = (bcd[1] >> 4) as u16;
         let day = from_bcd(bcd[2]) as u16;
@@ -198,7 +205,7 @@ impl DosState {
 
     /// Returns `(year, month, day, day_of_week)` from the host clock.
     pub(crate) fn current_date_parts(&self) -> (u16, u16, u16, u16) {
-        let bcd = (self.host_local_time_fn)();
+        let bcd = (self.host_date_time_provider)().to_bcd_bytes();
         let year = from_bcd(bcd[0]) as u16;
         let full_year = if year < 80 { 2000 + year } else { 1900 + year };
         let month = (bcd[1] >> 4) as u16;
@@ -209,7 +216,7 @@ impl DosState {
 
     /// Returns `(hour, minute, second)` from the host clock.
     pub(crate) fn current_time_parts(&self) -> (u8, u8, u8) {
-        let bcd = (self.host_local_time_fn)();
+        let bcd = (self.host_date_time_provider)().to_bcd_bytes();
         (from_bcd(bcd[3]), from_bcd(bcd[4]), from_bcd(bcd[5]))
     }
 }
@@ -423,7 +430,7 @@ impl NeetanDos {
                 fn_key_map: build_default_fn_key_map(),
                 pending_key_bytes: std::collections::VecDeque::new(),
                 interim_console_flag: 0,
-                host_local_time_fn: default_host_local_time,
+                host_date_time_provider: default_host_local_time,
                 ems_enabled: true,
                 xms_enabled: true,
                 xms_32_enabled: false,
@@ -454,8 +461,8 @@ impl NeetanDos {
     }
 
     /// Sets the host local time provider for the DOS.
-    pub fn set_host_local_time_fn(&mut self, f: fn() -> [u8; 6]) {
-        self.state.host_local_time_fn = f;
+    pub fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
+        self.state.host_date_time_provider = provider;
     }
 
     /// Returns a host-formatted overview of current HLE DOS memory usage.

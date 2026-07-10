@@ -4,9 +4,9 @@
 
 use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
-use common::{Bus, CpuMode, Tracing};
+use common::{Bus, Cpu, CpuMode, HostDateTime, Tracing};
 use cpu::{CPU_MODEL_386, CPU_MODEL_486, I386State, SegReg32};
-use machinetowns::{LoadedRoms, TownsMachine, TownsModel};
+use machinetowns::{LoadedRoms, TownsBus, TownsMachine, TownsModel};
 
 /// SYSROM / FONT slot size (256 KiB).
 const ROM_SYSTEM_LEN: usize = 0x4_0000;
@@ -62,26 +62,38 @@ pub fn font_serial_roms(font: Vec<u8>, serial: Vec<u8>) -> LoadedRoms {
 
 /// An MX machine (i486, High mode) over synthetic ROMs.
 pub fn machine_mx() -> TownsMachine<{ CPU_MODEL_486 }> {
-    TownsMachine::new(TownsModel::FmTownsIIMx, CpuMode::High, synthetic_roms())
+    build_machine(TownsModel::FmTownsIIMx, CpuMode::High, synthetic_roms())
 }
 
 /// A CX machine (i386, Low mode) over synthetic ROMs.
 pub fn machine_cx() -> TownsMachine<{ CPU_MODEL_386 }> {
-    TownsMachine::new(TownsModel::FmTownsIICx, CpuMode::Low, synthetic_roms())
+    build_machine(TownsModel::FmTownsIICx, CpuMode::Low, synthetic_roms())
 }
 
 /// An MX machine over synthetic ROMs whose bus activity is recorded.
 pub fn machine_mx_traced() -> TownsMachine<{ CPU_MODEL_486 }, RecordingTracer> {
-    TownsMachine::new(TownsModel::FmTownsIIMx, CpuMode::High, synthetic_roms())
+    build_machine(TownsModel::FmTownsIIMx, CpuMode::High, synthetic_roms())
 }
 
 /// An MX machine with custom FONT and serial-ID ROM images.
 pub fn machine_with_font_serial(font: Vec<u8>, serial: Vec<u8>) -> TownsMachine<{ CPU_MODEL_486 }> {
-    TownsMachine::new(
+    build_machine(
         TownsModel::FmTownsIIMx,
         CpuMode::High,
         font_serial_roms(font, serial),
     )
+}
+
+/// Builds a reset CPU around a configured FM Towns bus.
+fn build_machine<const CPU_MODEL: u8, T: Tracing + Default>(
+    model: TownsModel,
+    cpu_mode: CpuMode,
+    roms: LoadedRoms,
+) -> TownsMachine<CPU_MODEL, T> {
+    let bus = TownsBus::new(model, cpu_mode, roms, 48_000);
+    let mut cpu = cpu::I386::<CPU_MODEL, { cpu::ADDRESS_WIDTH_32 }>::new();
+    cpu.reset();
+    TownsMachine::new(cpu, bus)
 }
 
 /// Writes a 16-bit CRTC register through its index/data ports.
@@ -191,8 +203,16 @@ pub fn linear_pc<const CPU_MODEL: u8, T: Tracing + Default>(
 /// A fixed RTC time source (BCD): 2000-01-01 (Saturday) 12:34:56. Deterministic
 /// so RTC readback tests do not depend on the wall clock. The layout matches the
 /// bus default: `[year, month<<4 | weekday, day, hour, minute, second]`.
-pub fn fixed_time_bcd() -> [u8; 6] {
-    [0x00, (1 << 4) | 6, 0x01, 0x12, 0x34, 0x56]
+pub fn fixed_time() -> HostDateTime {
+    HostDateTime {
+        year: 2000,
+        month: 1,
+        day: 1,
+        day_of_week: 6,
+        hour: 12,
+        minute: 34,
+        second: 56,
+    }
 }
 
 /// Records the distinct I/O ports touched and the IRQ lines raised, for

@@ -24,7 +24,7 @@ mod tsp;
 mod video;
 
 use cgrom::CgromVa;
-use common::Bus;
+use common::{Bus, HostDateTimeProvider};
 use device::{
     i8253_pit::I8253Pit,
     i8255::I8255,
@@ -45,8 +45,9 @@ use tsp::{FramePhase, HsyncMode, Sysp4Phase, TspMemEffect, TspState};
 use video::VideoVa;
 
 use crate::{
-    config::ClockConfig,
+    config::{ClockConfig, Pc88VaModel},
     memory::Pc88VaMemory,
+    rom::LoadedRoms,
     scheduler::{EventVA, Pc88VaScheduler},
 };
 
@@ -119,7 +120,7 @@ pub struct Pc88VaBus {
     /// Valid framebuffer height from the last rendered frame.
     pub(crate) display_height: u32,
     /// Host BCD local-time source used by the RTC's TIME_READ command.
-    pub(crate) host_local_time_fn: fn() -> [u8; 6],
+    pub(crate) host_date_time_provider: HostDateTimeProvider,
     /// Floppy sub-CPU (PC80S31K) 64 KiB memory: ROM, init pattern, and RAM.
     pub(crate) sub_mem: SubMemory,
     /// Sub-CPU T-state position, tracked separately from `current_cycle`.
@@ -158,14 +159,27 @@ pub struct Pc88VaBus {
 }
 
 impl Pc88VaBus {
+    /// Builds a bus for a model from its validated ROM set.
+    pub fn new(model: Pc88VaModel, roms: LoadedRoms, sample_rate: u32) -> Self {
+        let clocks = ClockConfig {
+            main_clock_hz: model.main_clock_hz(),
+            sub_clock_hz: model.sub_clock_hz(),
+            sample_rate,
+        };
+        let subsys = roms.subsys.clone();
+        let mut bus = Self::from_parts(Pc88VaMemory::new(model, roms), clocks);
+        bus.load_disk_rom(&subsys);
+        bus
+    }
+
     /// The machine's clock configuration.
     pub fn clock_config(&self) -> ClockConfig {
         self.clocks
     }
 
     /// Overrides the host local-time source (BCD), used by tests.
-    pub fn set_host_local_time_fn(&mut self, host_local_time_fn: fn() -> [u8; 6]) {
-        self.host_local_time_fn = host_local_time_fn;
+    pub(crate) fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
+        self.host_date_time_provider = provider;
     }
 
     /// The cycle of the next scheduled event, if any.
@@ -660,6 +674,6 @@ pub(crate) mod test_support {
             sample_rate: 48_000,
         };
         let memory = Pc88VaMemory::new(model, stub_roms());
-        Pc88VaBus::new(memory, clocks)
+        Pc88VaBus::from_parts(memory, clocks)
     }
 }

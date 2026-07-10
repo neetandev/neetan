@@ -15,7 +15,7 @@ mod io_write;
 
 use std::path::PathBuf;
 
-use common::{CpuType, EventKind, MachineModel, Scheduler, StackVec};
+use common::{CpuType, HostDateTimeProvider, MachineModel, StackVec};
 use device::{
     beeper::Beeper,
     cdrom::CdImage,
@@ -54,7 +54,12 @@ use software_renderer::{
     GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer, compose_ga1280a,
 };
 
-use crate::{NoTracing, Tracing, config::ClockConfig, memory::Pc9801Memory};
+use crate::{
+    NoTracing, Tracing,
+    config::ClockConfig,
+    memory::Pc9801Memory,
+    scheduler::{EventKind, Scheduler},
+};
 
 /// Text RAM (0xA0000-0xA3FFF) access wait penalty in CPU cycles.
 const TRAM_WAIT_CYCLES: i64 = 1;
@@ -177,72 +182,6 @@ const MPU_IRQ_LINE: u8 = 3;
 const KEYBOARD_ROM_OFFSET_F: usize = 0x0A58;
 const KEYBOARD_ROM_OFFSET_VM: usize = 0x0B28;
 
-/// Default host local time function: returns advancing BCD time from the system clock.
-fn default_local_time() -> [u8; 6] {
-    fn to_bcd(value: u8) -> u8 {
-        ((value / 10) << 4) | (value % 10)
-    }
-    use std::time::SystemTime;
-    let secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let days = (secs / 86400) as u32;
-    let time_of_day = (secs % 86400) as u32;
-    let hour = (time_of_day / 3600) as u8;
-    let minute = ((time_of_day % 3600) / 60) as u8;
-    let second = (time_of_day % 60) as u8;
-    // Simple date calculation from days since epoch (1970-01-01, Thursday=4).
-    let dow = ((days + 4) % 7) as u8;
-    let mut y = 1970u32;
-    let mut remaining = days;
-    loop {
-        let ydays = if y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400)) {
-            366
-        } else {
-            365
-        };
-        if remaining < ydays {
-            break;
-        }
-        remaining -= ydays;
-        y += 1;
-    }
-    let leap = y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400));
-    let mdays = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut month = 1u8;
-    for &md in &mdays {
-        if remaining < md {
-            break;
-        }
-        remaining -= md;
-        month += 1;
-    }
-    let day = remaining as u8 + 1;
-    // BCD: [year, month<<4|day_of_week, day, hour, minute, second]
-    [
-        to_bcd((y % 100) as u8),
-        (month << 4) | dow,
-        to_bcd(day),
-        to_bcd(hour),
-        to_bcd(minute),
-        to_bcd(second),
-    ]
-}
-
 /// Graphics VRAM bytes per page for the B/R/G planes.
 const GRAPHICS_PAGE_SIZE_BYTES: usize = 0x18000;
 
@@ -338,7 +277,7 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     rtc: Upd4990aRtc,
     /// Returns the current host local time as 6-byte BCD:
     /// `[year, month<<4|day_of_week, day, hour, minute, second]`.
-    host_local_time_fn: fn() -> [u8; 6],
+    host_date_time_provider: HostDateTimeProvider,
     /// MPU-PC98II MIDI interface (C-Bus, default base 0xE0D0).
     mpu_pc98ii: device::mpu_pc98ii::MpuPc98ii,
     /// MT-32 sound module (optional, requires munt).
@@ -507,7 +446,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// through to a real DOS loaded from disk.
     pub fn enable_neetan_dos(&mut self) {
         let mut dos = dos::NeetanDos::new();
-        dos.set_host_local_time_fn(self.host_local_time_fn);
+        dos.set_host_date_time_provider(self.host_date_time_provider);
         self.dos = Some(dos);
     }
 
@@ -852,9 +791,9 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Also updates Memory Switch 8 (`A000:3FFEh`) with the BCD year byte,
     /// since the µPD1990A (used by VM-class machines) has no year register
     /// and the BIOS reads the year from the memory switch instead.
-    pub fn set_host_local_time_fn(&mut self, f: fn() -> [u8; 6]) {
-        self.host_local_time_fn = f;
-        self.memory.state.text_vram[0x3FFE] = f()[0];
+    pub(crate) fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
+        self.host_date_time_provider = provider;
+        self.memory.state.text_vram[0x3FFE] = provider().to_bcd_bytes()[0];
     }
 
     /// Enables/disables the 16-color graphics extension board.
@@ -1773,10 +1712,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             for action in sb86.drain_actions(pcm86_pending) {
                 match *action {
                     Soundboard86Action::ScheduleTimer { kind, fire_cycle } => {
-                        self.scheduler.schedule(kind, fire_cycle);
+                        self.scheduler.schedule(kind.into(), fire_cycle);
                     }
                     Soundboard86Action::CancelTimer { kind } => {
-                        self.scheduler.cancel(kind);
+                        self.scheduler.cancel(kind.into());
                     }
                     Soundboard86Action::AssertIrq { irq } => {
                         self.pic.set_irq(irq);
@@ -1796,10 +1735,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             for action in sb14.drain_actions() {
                 match *action {
                     Soundboard14Action::ScheduleTimer { kind, fire_cycle } => {
-                        self.scheduler.schedule(kind, fire_cycle);
+                        self.scheduler.schedule(kind.into(), fire_cycle);
                     }
                     Soundboard14Action::CancelTimer { kind } => {
-                        self.scheduler.cancel(kind);
+                        self.scheduler.cancel(kind.into());
                     }
                     Soundboard14Action::AssertIrq { irq } => {
                         self.pic.set_irq(irq);
@@ -1820,10 +1759,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             for action in sb26k.drain_actions() {
                 match *action {
                     Soundboard26kAction::ScheduleTimer { kind, fire_cycle } => {
-                        self.scheduler.schedule(kind, fire_cycle);
+                        self.scheduler.schedule(kind.into(), fire_cycle);
                     }
                     Soundboard26kAction::CancelTimer { kind } => {
-                        self.scheduler.cancel(kind);
+                        self.scheduler.cancel(kind.into());
                     }
                     Soundboard26kAction::AssertIrq { irq } => {
                         self.pic.set_irq(irq);
@@ -1848,10 +1787,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             for action in sb16.drain_actions() {
                 match *action {
                     SoundboardSb16Action::ScheduleTimer { kind, fire_cycle } => {
-                        self.scheduler.schedule(kind, fire_cycle);
+                        self.scheduler.schedule(kind.into(), fire_cycle);
                     }
                     SoundboardSb16Action::CancelTimer { kind } => {
-                        self.scheduler.cancel(kind);
+                        self.scheduler.cancel(kind.into());
                     }
                     SoundboardSb16Action::AssertIrq { irq } => {
                         self.pic.set_irq(irq);
@@ -1899,7 +1838,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn schedule_sb16_dma(
-        scheduler: &mut common::Scheduler,
+        scheduler: &mut Scheduler,
         sb16: &device::sound_blaster_16::SoundBlaster16,
         reference_cycle: u64,
         current_cycle: u64,
@@ -1916,7 +1855,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn schedule_sb16_dma_from_params(
-        scheduler: &mut common::Scheduler,
+        scheduler: &mut Scheduler,
         sample_rate: u32,
         dma_format: u8,
         reference_cycle: u64,
@@ -2055,15 +1994,15 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         for event in &events {
             self.tracer.set_cycle(self.current_cycle);
-            self.tracer.trace_event(event);
+            self.tracer.trace_event(event.fire_cycle, event.kind as u8);
             match event.kind {
                 EventKind::PitTimer0 => {
-                    let raise_irq = self.pit.on_timer0_event(
-                        &mut self.scheduler,
-                        self.clocks.cpu_clock_hz,
-                        self.clocks.pit_clock_hz,
-                        self.current_cycle,
-                    );
+                    let raise_irq = self.pit.advance_timer0(self.current_cycle);
+                    let cpu_cycles = self
+                        .pit
+                        .timer0_period_cycles(self.clocks.cpu_clock_hz, self.clocks.pit_clock_hz);
+                    self.scheduler
+                        .schedule(EventKind::PitTimer0, self.current_cycle + cpu_cycles);
                     if raise_irq {
                         if self.current_cpu_protected_mode {
                             self.handle_bios_interval_timer_tick();

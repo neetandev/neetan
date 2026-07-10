@@ -148,6 +148,17 @@ impl<T: Tracing> Fm7Machine<T> {
 }
 
 impl<T: Tracing> common::Machine for Fm7Machine<T> {
+    fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
+        self.bus.set_host_date_time_provider(provider);
+    }
+
+    fn startup_capabilities(&self) -> common::StartupCapabilities {
+        common::StartupCapabilities {
+            cassette: true,
+            ..common::StartupCapabilities::default()
+        }
+    }
+
     fn cpu_clock_hz(&self) -> f64 {
         f64::from(self.bus.cpu_clock_hz())
     }

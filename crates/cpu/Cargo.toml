@@ -11,6 +11,6 @@ rust-version.workspace = true
 verification = ["zlib-rs"]
 
 [dependencies]
-common = { workspace = true }
-softfloat = { workspace = true }
+common.workspace = true
+softfloat.workspace = true
 zlib-rs = { workspace = true, optional = true }

@@ -7,7 +7,10 @@
 #[cfg(feature = "verification")]
 use alloc::vec::Vec;
 
-use common::{Bus, CpuM68000};
+use common::{
+    Bus, CpuM68000, M68000AccessSize, M68000BusAccess, M68000BusError, M68000CycleKind,
+    M68000FunctionCode,
+};
 
 /// Default Sharp X68000 68000 input clock in Hz.
 pub const M68000_DEFAULT_CLOCK_HZ: u32 = 10_000_000;
@@ -19,7 +22,6 @@ const MAX_STATE_STEPS: usize = 4096;
 const S_RESET: u32 = 0;
 const S_BUS_ERROR: u32 = 1;
 const S_ADDRESS_ERROR: u32 = 2;
-#[allow(dead_code)]
 const S_DOUBLE_FAULT: u32 = 3;
 const S_INTERRUPT: u32 = 4;
 const S_TRACE: u32 = 5;
@@ -53,6 +55,13 @@ const SSW_CRITICAL: u32 = 0x20;
 const PR_NONE: u32 = 0;
 const PR_BERR: u32 = 1;
 
+/// Exception vector taken when a bus error terminates an interrupt
+/// acknowledge cycle.
+const SPURIOUS_INTERRUPT_VECTOR: u16 = 0x18;
+
+/// Number of reset-vector word reads at addresses 0, 2, 4, and 6.
+const RESET_VECTOR_READ_COUNT: u32 = 4;
+
 /// Packed 68000 status register flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct M68000Flags {
@@ -81,13 +90,7 @@ pub enum M68000BusDirection {
 }
 
 /// Motorola 68000 bus cycle transfer size used by verification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum M68000BusSize {
-    /// 8-bit transfer.
-    Byte,
-    /// 16-bit transfer.
-    Word,
-}
+pub use common::M68000AccessSize as M68000BusSize;
 
 /// Motorola 68000 bus cycle observed by the MOO verification corpus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +196,7 @@ pub struct M68000 {
     m_next_state: u32,
     m_post_run: u32,
     m_post_run_cycles: i32,
+    m_reset_vector_reads_remaining: u32,
     #[cfg(feature = "verification")]
     bus_cycles: Vec<M68000BusCycle>,
 }
@@ -252,6 +256,7 @@ impl M68000 {
             m_next_state: 0,
             m_post_run: PR_NONE,
             m_post_run_cycles: 0,
+            m_reset_vector_reads_remaining: RESET_VECTOR_READ_COUNT,
             #[cfg(feature = "verification")]
             bus_cycles: Vec::new(),
         };
@@ -304,6 +309,7 @@ impl M68000 {
         self.m_inst_state = self.m_decode_table[self.m_ird as usize];
         self.m_inst_substate = 0;
         self.m_next_state = 0;
+        self.m_reset_vector_reads_remaining = 0;
     }
 
     /// Returns the cycle count consumed by the last `step` call.
@@ -349,6 +355,10 @@ impl M68000 {
         self.m_icount = RUN_BUDGET;
         let mut boundary_count = 0;
         for _ in 0..MAX_STATE_STEPS {
+            // The core keeps the state in a 16-bit field: an interrupt dispatch
+            // assigns (level << 24) | S_INTERRUPT and relies on truncation,
+            // with the level carried separately in the 32-bit m_next_state.
+            self.m_inst_state &= 0xFFFF;
             if self.m_inst_state == S_DOUBLE_FAULT {
                 self.stopped = true;
                 break;
@@ -365,6 +375,9 @@ impl M68000 {
             self.dispatch_full(bus, state);
             if self.m_post_run != PR_NONE {
                 self.do_post_run();
+            } else if self.m_inst_state == S_ADDRESS_ERROR && self.m_base_ssw & SSW_CRITICAL != 0 {
+                self.m_inst_state = S_DOUBLE_FAULT;
+                self.m_inst_substate = 0;
             }
         }
         let consumed = (RUN_BUDGET - self.m_icount).max(0) as u64;
@@ -384,23 +397,45 @@ impl M68000 {
     }
 
     fn read_program(&mut self, bus: &mut impl Bus, address: u32, mem_mask: u32) -> u32 {
-        self.read_space(bus, address, mem_mask, SSW_PROGRAM, *b"r-p-")
+        let cycle_kind = if self.m_inst_state == S_RESET && self.m_reset_vector_reads_remaining > 0
+        {
+            self.m_reset_vector_reads_remaining -= 1;
+            M68000CycleKind::ResetVector
+        } else {
+            M68000CycleKind::Normal
+        };
+        self.read_space(bus, address, mem_mask, SSW_PROGRAM, cycle_kind, *b"r-p-")
     }
 
     fn read_data(&mut self, bus: &mut impl Bus, address: u32, mem_mask: u32) -> u32 {
-        self.read_space(bus, address, mem_mask, SSW_DATA, *b"r-d-")
+        self.read_space(
+            bus,
+            address,
+            mem_mask,
+            SSW_DATA,
+            M68000CycleKind::Normal,
+            *b"r-d-",
+        )
     }
 
     fn read_cpu(&mut self, bus: &mut impl Bus, address: u32, mem_mask: u32) -> u32 {
-        let level = (self.m_next_state >> 24).min(7) as u8;
-        let vector = bus.m68000_acknowledge_interrupt(level);
+        let access = M68000BusAccess {
+            address: address & ADDRESS_MASK,
+            size: M68000AccessSize::Byte,
+            function_code: M68000FunctionCode::CpuSpace,
+            cycle_kind: M68000CycleKind::Normal,
+        };
+        let vector = match bus.m68000_read(access) {
+            Ok(value) => value & 0xFF,
+            Err(M68000BusError) => SPURIOUS_INTERRUPT_VECTOR,
+        };
         self.record_bus_cycle(M68000BusCycle {
             cycle: 0,
             direction: M68000BusDirection::Read,
             size: M68000BusSize::Byte,
             address,
-            data: u16::from(vector),
-            function_code: 7,
+            data: vector,
+            function_code: M68000FunctionCode::CpuSpace.bits(),
             status: *b"r-c-",
         });
         if mem_mask == 0xFF00 {
@@ -416,33 +451,49 @@ impl M68000 {
         address: u32,
         mem_mask: u32,
         space: u32,
+        cycle_kind: M68000CycleKind,
         status: [u8; 4],
     ) -> u32 {
         let address = address & ADDRESS_MASK;
-        let high = bus.read_byte(address) as u32;
-        let low = bus.read_byte(address.wrapping_add(1) & ADDRESS_MASK) as u32;
-        let value = (high << 8) | low;
-        let (size, cycle_address, cycle_data) = if mem_mask == 0xFFFF {
-            (M68000BusSize::Word, address, value as u16)
-        } else if mem_mask == 0xFF00 {
-            (M68000BusSize::Byte, address, high as u16)
-        } else {
-            (
-                M68000BusSize::Byte,
-                address.wrapping_add(1) & ADDRESS_MASK,
-                low as u16,
-            )
+        let function_code = self.function_code(space);
+        let (size, access_address) = match mem_mask {
+            0xFFFF => (M68000AccessSize::Word, address),
+            0xFF00 => (M68000AccessSize::Byte, address),
+            _ => (M68000AccessSize::Byte, address | 1),
+        };
+        let access = M68000BusAccess {
+            address: access_address,
+            size,
+            function_code,
+            cycle_kind,
+        };
+        let value = match bus.m68000_read(access) {
+            Ok(value) => value,
+            Err(M68000BusError) => {
+                if !self.address_error_pending(mem_mask) {
+                    self.abort_access(PR_BERR);
+                }
+                return 0;
+            }
+        };
+        let cycle_data = match mem_mask {
+            0xFFFF => value,
+            _ => value & 0xFF,
         };
         self.record_bus_cycle(M68000BusCycle {
             cycle: 0,
             direction: M68000BusDirection::Read,
             size,
-            address: cycle_address,
+            address: access_address,
             data: cycle_data,
-            function_code: self.function_code(space),
+            function_code: function_code.bits(),
             status,
         });
-        value & mem_mask
+        match mem_mask {
+            0xFFFF => u32::from(value),
+            0xFF00 => u32::from(value & 0xFF) << 8,
+            _ => u32::from(value & 0xFF),
+        }
     }
 
     fn write_data(&mut self, bus: &mut impl Bus, address: u32, data: u32, mem_mask: u32) {
@@ -452,51 +503,59 @@ impl M68000 {
     fn write_tas_data(&mut self, bus: &mut impl Bus, address: u32, data: u32) {
         let address = address & ADDRESS_MASK;
         let value = if address & 1 == 0 {
-            (data >> 8) as u8
+            ((data >> 8) & 0xFF) as u16
         } else {
-            data as u8
+            (data & 0xFF) as u16
         };
-        bus.write_byte(address, value);
+        let function_code = self.function_code(SSW_DATA);
+        let access = M68000BusAccess {
+            address,
+            size: M68000AccessSize::Byte,
+            function_code,
+            cycle_kind: M68000CycleKind::Normal,
+        };
+        if bus.m68000_write(access, value).is_err() {
+            self.abort_access(PR_BERR);
+            return;
+        }
         self.record_bus_cycle(M68000BusCycle {
             cycle: 0,
             direction: M68000BusDirection::Write,
             size: M68000BusSize::Byte,
             address,
-            data: u16::from(value),
-            function_code: self.function_code(SSW_DATA),
+            data: value,
+            function_code: function_code.bits(),
             status: *b"-wd-",
         });
     }
 
     fn write_space(&mut self, bus: &mut impl Bus, address: u32, data: u32, mem_mask: u32) {
         let address = address & ADDRESS_MASK;
-        if mem_mask & 0xFF00 != 0 {
-            let value = (data >> 8) as u8;
-            bus.write_byte(address, value);
-        }
-        if mem_mask & 0x00FF != 0 {
-            let value = data as u8;
-            let byte_address = address.wrapping_add(1) & ADDRESS_MASK;
-            bus.write_byte(byte_address, value);
-        }
-        let (size, cycle_address, cycle_data) = if mem_mask == 0xFFFF {
-            (M68000BusSize::Word, address, data as u16)
-        } else if mem_mask == 0xFF00 {
-            (M68000BusSize::Byte, address, (data >> 8) as u16)
-        } else {
-            (
-                M68000BusSize::Byte,
-                address.wrapping_add(1) & ADDRESS_MASK,
-                (data & 0xFF) as u16,
-            )
+        let function_code = self.function_code(SSW_DATA);
+        let (size, access_address, value) = match mem_mask {
+            0xFFFF => (M68000AccessSize::Word, address, data as u16),
+            0xFF00 => (M68000AccessSize::Byte, address, ((data >> 8) & 0xFF) as u16),
+            _ => (M68000AccessSize::Byte, address | 1, (data & 0xFF) as u16),
         };
+        let access = M68000BusAccess {
+            address: access_address,
+            size,
+            function_code,
+            cycle_kind: M68000CycleKind::Normal,
+        };
+        if bus.m68000_write(access, value).is_err() {
+            if !self.address_error_pending(mem_mask) {
+                self.abort_access(PR_BERR);
+            }
+            return;
+        }
         self.record_bus_cycle(M68000BusCycle {
             cycle: 0,
             direction: M68000BusDirection::Write,
             size,
-            address: cycle_address,
-            data: cycle_data,
-            function_code: self.function_code(SSW_DATA),
+            address: access_address,
+            data: value,
+            function_code: function_code.bits(),
             status: *b"-wd-",
         });
     }
@@ -511,31 +570,38 @@ impl M68000 {
     #[cfg(not(feature = "verification"))]
     fn record_bus_cycle(&mut self, _cycle: M68000BusCycle) {}
 
-    fn function_code(&self, space: u32) -> u8 {
+    fn function_code(&self, space: u32) -> M68000FunctionCode {
         match space & 3 {
             SSW_PROGRAM => {
                 if self.m_sr & SR_S != 0 {
-                    6
+                    M68000FunctionCode::SupervisorProgram
                 } else {
-                    2
+                    M68000FunctionCode::UserProgram
                 }
             }
-            SSW_CPU => 7,
+            SSW_CPU => M68000FunctionCode::CpuSpace,
             _ => {
                 if self.m_sr & SR_S != 0 {
-                    5
+                    M68000FunctionCode::SupervisorData
                 } else {
-                    1
+                    M68000FunctionCode::UserData
                 }
             }
         }
+    }
+
+    /// Returns `true` if the current word access targets an odd address, so
+    /// the generated address-error guard fires right after the access. A bus
+    /// fault on such a doomed access is discarded: the CPU-generated address
+    /// error takes precedence.
+    fn address_error_pending(&self, mem_mask: u32) -> bool {
+        mem_mask == 0xFFFF && self.m_aob & 1 != 0
     }
 
     fn access_to_be_redone(&self) -> bool {
         false
     }
 
-    #[allow(dead_code)]
     fn abort_access(&mut self, reason: u32) {
         self.m_post_run = reason;
         self.m_post_run_cycles = self.m_icount;
@@ -546,7 +612,11 @@ impl M68000 {
         self.m_icount = self.m_post_run_cycles;
         self.m_post_run_cycles = 0;
         if self.m_post_run == PR_BERR {
-            self.m_inst_state = S_BUS_ERROR;
+            self.m_inst_state = if self.m_base_ssw & SSW_CRITICAL != 0 {
+                S_DOUBLE_FAULT
+            } else {
+                S_BUS_ERROR
+            };
             self.m_inst_substate = 0;
             self.m_icount -= 10;
         }
@@ -623,8 +693,16 @@ impl M68000 {
 
     fn debugger_exception_hook(&mut self, _vector: u32) {}
 
+    /// Parks the CPU when the STOP microcode re-dispatches to itself.
+    ///
+    /// The STOP microstate ends with `m_inst_state = m_next_state` when an
+    /// interrupt or trace is pending and with the STOP decode entry otherwise.
+    /// Only the latter is the idle self-loop that may sleep; parking on the
+    /// wake pass would leave the CPU stopped after the interrupt dispatched.
     fn debugger_wait_hook(&mut self) {
-        self.stopped = true;
+        if self.m_next_state == 0 {
+            self.stopped = true;
+        }
     }
 
     fn cmpild_instr_callback(&mut self, _bus: &mut impl Bus, _register: usize, _value: u32) {}
@@ -1510,7 +1588,10 @@ impl CpuM68000 for M68000 {
 
     fn step(&mut self, bus: &mut impl Bus) -> u64 {
         let start_cycle = bus.current_cycle();
-        let cycles = self.run_one_instruction(bus);
+        let mut cycles = self.run_one_instruction(bus);
+        if cycles != 0 {
+            cycles = cycles.saturating_add(bus.drain_wait_cycles().max(0) as u64);
+        }
         bus.set_current_cycle(start_cycle + cycles);
         cycles
     }
@@ -1521,6 +1602,7 @@ impl CpuM68000 for M68000 {
         self.m_count_before_instruction_step = 0;
         self.m_post_run = PR_NONE;
         self.m_post_run_cycles = 0;
+        self.m_reset_vector_reads_remaining = RESET_VECTOR_READ_COUNT;
         self.stopped = false;
         self.update_user_super();
     }

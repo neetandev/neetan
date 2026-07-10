@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use common::Bus;
-use machine88va::{LoadedRoms, Pc88VaMachine, Pc88VaModel};
+use machine88va::{LoadedRoms, Pc88VaBus, Pc88VaMachine, Pc88VaModel};
 
 /// Deterministic filler bytes for synthetic ROM images.
 pub fn fill(seed: u8, len: usize) -> Vec<u8> {
@@ -34,7 +34,14 @@ pub fn synthetic_roms() -> LoadedRoms {
 }
 
 pub fn machine() -> Pc88VaMachine {
-    Pc88VaMachine::new(Pc88VaModel::PC88VA2, synthetic_roms())
+    machine_from_roms(synthetic_roms())
+}
+
+/// Builds a reset PC-88VA2 machine from an explicit ROM set.
+pub fn machine_from_roms(roms: LoadedRoms) -> Pc88VaMachine {
+    let bus = Pc88VaBus::new(Pc88VaModel::PC88VA2, roms, 48_000);
+    let sub_cpu = cpu::Z80::new(bus.clock_config().sub_clock_hz);
+    Pc88VaMachine::new(Pc88VaMachine::reset_cpu(), sub_cpu, bus)
 }
 
 pub const SURFACE_WIDTH: usize = 640;

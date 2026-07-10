@@ -40,6 +40,111 @@ pub use trace::{DosBootStage, NoTracing, Tracing};
 /// Built-in V98-format PC-98 font ROM used when no external font ROM is configured.
 pub static BUILTIN_FONT_ROM: &[u8] = include_bytes!("../../../utils/font/font.rom");
 
+/// Host wall-clock date and time supplied to emulated real-time clocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostDateTime {
+    /// Full Gregorian year.
+    pub year: u16,
+    /// Month number, from 1 through 12.
+    pub month: u8,
+    /// Day of month, from 1 through 31.
+    pub day: u8,
+    /// Day of week, where Sunday is zero.
+    pub day_of_week: u8,
+    /// Hour, from 0 through 23.
+    pub hour: u8,
+    /// Minute, from 0 through 59.
+    pub minute: u8,
+    /// Second, from 0 through 59.
+    pub second: u8,
+}
+
+impl HostDateTime {
+    /// Returns the PC-style BCD representation used by several machine RTCs.
+    pub const fn to_bcd_bytes(self) -> [u8; 6] {
+        [
+            to_bcd((self.year % 100) as u8),
+            (self.month << 4) | self.day_of_week,
+            to_bcd(self.day),
+            to_bcd(self.hour),
+            to_bcd(self.minute),
+            to_bcd(self.second),
+        ]
+    }
+}
+
+/// Callback used by a machine bus to obtain the current host date and time.
+pub type HostDateTimeProvider = fn() -> HostDateTime;
+
+/// Converts a decimal value below one hundred to packed BCD.
+pub const fn to_bcd(value: u8) -> u8 {
+    ((value / 10) << 4) | (value % 10)
+}
+
+/// Returns the current UTC date and time for machine RTC defaults.
+#[cfg(feature = "std")]
+pub fn default_host_date_time() -> HostDateTime {
+    use std::time::SystemTime;
+
+    let seconds = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let days = seconds / 86_400;
+    let time_of_day = seconds % 86_400;
+    let hour = (time_of_day / 3_600) as u8;
+    let minute = ((time_of_day % 3_600) / 60) as u8;
+    let second = (time_of_day % 60) as u8;
+    let day_of_week = ((days + 4) % 7) as u8;
+    let mut year = 1970u16;
+    let mut remaining = days;
+    loop {
+        let leap =
+            year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+        let year_days = if leap { 366 } else { 365 };
+        if remaining < year_days {
+            break;
+        }
+        remaining -= year_days;
+        year += 1;
+    }
+    let month_days = [
+        31,
+        if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) {
+            29
+        } else {
+            28
+        },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut month = 1u8;
+    for days_in_month in month_days {
+        if remaining < days_in_month {
+            break;
+        }
+        remaining -= days_in_month;
+        month += 1;
+    }
+    HostDateTime {
+        year,
+        month,
+        day: remaining as u8 + 1,
+        day_of_week,
+        hour,
+        minute,
+        second,
+    }
+}
+
 /// CPU generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CpuType {
@@ -499,8 +604,73 @@ impl core::str::FromStr for MachineModel {
     }
 }
 
-/// Number of [`EventKind`] variants.
-const EVENT_KIND_COUNT: usize = 23;
+/// Transfer width of a Motorola 68000 bus cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum M68000AccessSize {
+    /// 8-bit transfer on a single byte lane.
+    Byte,
+    /// 16-bit transfer on both byte lanes.
+    Word,
+}
+
+/// Motorola 68000 function code identifying the accessed address space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum M68000FunctionCode {
+    /// User-mode data access (FC 1).
+    UserData,
+    /// User-mode program access (FC 2).
+    UserProgram,
+    /// Supervisor-mode data access (FC 5).
+    SupervisorData,
+    /// Supervisor-mode program access (FC 6).
+    SupervisorProgram,
+    /// CPU space access such as an interrupt acknowledge cycle (FC 7).
+    CpuSpace,
+}
+
+impl M68000FunctionCode {
+    /// Returns the three-bit value driven on the FC2-FC0 pins.
+    pub const fn bits(self) -> u8 {
+        match self {
+            Self::UserData => 1,
+            Self::UserProgram => 2,
+            Self::SupervisorData => 5,
+            Self::SupervisorProgram => 6,
+            Self::CpuSpace => 7,
+        }
+    }
+}
+
+/// Distinguishes normal bus cycles from the initial reset-vector fetches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum M68000CycleKind {
+    /// Any bus cycle outside the reset vector sequence.
+    Normal,
+    /// One of the four word reads of SSP and PC at addresses 0, 2, 4, and 6.
+    ResetVector,
+}
+
+/// One Motorola 68000 bus access as presented to the machine bus.
+///
+/// Word accesses always carry an even address; `address` holds data bits
+/// 15-8 and `address + 1` holds bits 7-0. Byte accesses carry the true byte
+/// address: an even address selects the upper byte lane (UDS) and an odd
+/// address the lower byte lane (LDS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct M68000BusAccess {
+    /// 24-bit address; for byte accesses this is the true byte address.
+    pub address: u32,
+    /// Transfer width.
+    pub size: M68000AccessSize,
+    /// Function code describing the accessed address space.
+    pub function_code: M68000FunctionCode,
+    /// Normal cycle or reset-vector fetch.
+    pub cycle_kind: M68000CycleKind,
+}
+
+/// Synchronous bus fault (BERR) terminating a Motorola 68000 access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct M68000BusError;
 
 /// Trait representing the system bus of an emulated machine.
 ///
@@ -680,6 +850,45 @@ pub trait Bus {
 
     /// Receives RESET instruction line changes.
     fn m68000_reset_line(&mut self, _asserted: bool) {}
+
+    /// Performs a Motorola 68000 read cycle described by `access`.
+    ///
+    /// The default implementation bridges to [`Bus::read_byte`] with 68000
+    /// big-endian byte lanes and never faults. CPU-space reads bridge to
+    /// [`Bus::m68000_acknowledge_interrupt`], deriving the interrupt level
+    /// from the acknowledge address. Byte reads issue exactly one byte read
+    /// at the true byte address and return the byte in the low 8 bits.
+    fn m68000_read(&mut self, access: M68000BusAccess) -> Result<u16, M68000BusError> {
+        if matches!(access.function_code, M68000FunctionCode::CpuSpace) {
+            let level = ((access.address >> 1) & 7) as u8;
+            return Ok(u16::from(self.m68000_acknowledge_interrupt(level)));
+        }
+        match access.size {
+            M68000AccessSize::Byte => Ok(u16::from(self.read_byte(access.address))),
+            M68000AccessSize::Word => {
+                let high = self.read_byte(access.address);
+                let low = self.read_byte(access.address.wrapping_add(1));
+                Ok((u16::from(high) << 8) | u16::from(low))
+            }
+        }
+    }
+
+    /// Performs a Motorola 68000 write cycle described by `access`.
+    ///
+    /// The default implementation bridges to [`Bus::write_byte`] with 68000
+    /// big-endian byte lanes and never faults. Word writes store the high
+    /// byte first. Byte writes issue exactly one byte write at the true byte
+    /// address, taking the value from the low 8 bits.
+    fn m68000_write(&mut self, access: M68000BusAccess, value: u16) -> Result<(), M68000BusError> {
+        match access.size {
+            M68000AccessSize::Byte => self.write_byte(access.address, value as u8),
+            M68000AccessSize::Word => {
+                self.write_byte(access.address, (value >> 8) as u8);
+                self.write_byte(access.address.wrapping_add(1), value as u8);
+            }
+        }
+        Ok(())
+    }
 
     /// Returns the current CPU cycle count.
     ///
@@ -1354,6 +1563,21 @@ pub struct JoystickState {
     pub select: bool,
 }
 
+/// Startup peripherals supported by a machine.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StartupCapabilities {
+    /// Whether the machine supports cassette media.
+    pub cassette: bool,
+    /// Whether the machine supports hard disks.
+    pub hard_disk: bool,
+    /// Whether the machine supports a printer output path.
+    pub printer: bool,
+    /// Whether the machine supports an MT-32 module.
+    pub mt32: bool,
+    /// Whether the machine supports an SC-55 module.
+    pub sc55: bool,
+}
+
 /// Abstract machine that can be stepped by a host loop.
 pub trait Machine {
     /// Returns the CPU clock frequency in Hz.
@@ -1423,6 +1647,14 @@ pub trait Machine {
     /// own software renderer with the same font ROM the bus is using.
     fn font_rom_data(&self) -> &[u8];
 
+    /// Sets the host date and time provider used by this machine's RTC.
+    fn set_host_date_time_provider(&mut self, _provider: HostDateTimeProvider) {}
+
+    /// Returns the startup peripherals supported by this machine.
+    fn startup_capabilities(&self) -> StartupCapabilities {
+        StartupCapabilities::default()
+    }
+
     /// Inserts a floppy disk image into the specified drive (0-based).
     /// Reads the file, auto-detects format, and inserts. Returns a description string on success.
     #[cfg(feature = "std")]
@@ -1445,6 +1677,30 @@ pub trait Machine {
     ///
     /// The default is a no-op for machines without a cassette interface.
     fn eject_cassette(&mut self) {}
+
+    /// Loads and mounts a hard disk image into the specified drive.
+    #[cfg(feature = "std")]
+    fn insert_hdd(&mut self, _drive: usize, _path: &std::path::Path) -> Result<String, String> {
+        Err("hard disks are not supported on this machine".to_string())
+    }
+
+    /// Attaches a printer output file.
+    #[cfg(feature = "std")]
+    fn attach_printer(&mut self, _path: &std::path::Path) -> Result<(), String> {
+        Err("printer output is not supported on this machine".to_string())
+    }
+
+    /// Installs an MT-32 module from the specified ROM directory.
+    #[cfg(feature = "std")]
+    fn install_mt32(&mut self, _rom_directory: &std::path::Path) -> Result<(), String> {
+        Err("MT-32 is not supported on this machine".to_string())
+    }
+
+    /// Installs an SC-55 module from the specified ROM directory.
+    #[cfg(feature = "std")]
+    fn install_sc55(&mut self, _rom_directory: &std::path::Path) -> Result<(), String> {
+        Err("SC-55 is not supported on this machine".to_string())
+    }
 
     /// Inserts a CD-ROM disc image into the machine's CD-ROM drive.
     /// Reads the image description file, resolves the referenced data
@@ -1486,184 +1742,6 @@ pub trait Machine {
     fn tick_text_extractor(&mut self) {}
 }
 
-/// Kinds of scheduled events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[repr(u8)]
-pub enum EventKind {
-    /// PIT channel 0 reached terminal count.
-    #[default]
-    PitTimer0,
-    /// GDC vertical sync begins (VSYNC blanking interval starts).
-    ///
-    /// During VSYNC, VRAM/GRCG access wait-state penalties are reduced
-    /// because the display controller is not actively scanning the frame
-    /// buffer - there is no bus contention between CPU and GDC.
-    GdcVsync,
-    /// GDC active display period begins (VSYNC blanking interval ends).
-    ///
-    /// Marks the transition from VSYNC back to the active display period,
-    /// restoring full VRAM/GRCG wait-state penalties. Together with
-    /// `GdcVsync`, these two events alternate each frame to model the
-    /// display/blanking timing split.
-    GdcDisplayStart,
-    /// FDC execution phase complete (data ready for transfer).
-    FdcExecution,
-    /// FDC interrupt (raise IRQ after seek/data transfer).
-    FdcInterrupt,
-    /// GDC slave drawing operation complete (clear DRAWING flag).
-    GdcDrawingComplete,
-    /// Mouse interface timer tick (raises IRQ13 / INT 15h when unmasked).
-    MouseTimer,
-    /// YM2203 Timer A overflow.
-    FmTimerA,
-    /// YM2203 Timer B overflow.
-    FmTimerB,
-    /// YM2203 Timer A overflow (second board, dual-board config).
-    FmTimer2A,
-    /// YM2203 Timer B overflow (second board, dual-board config).
-    FmTimer2B,
-    /// SASI controller execution complete (data ready or command finished).
-    SasiExecution,
-    /// SASI controller interrupt (raise IRQ 9 after operation).
-    SasiInterrupt,
-    /// IDE controller execution complete (data ready or command finished).
-    IdeExecution,
-    /// IDE controller interrupt (raise IRQ 9 after operation).
-    IdeInterrupt,
-    /// PCM86 DAC IRQ check (buffer below FIFO threshold).
-    Pcm86Irq,
-    /// SB16 OPL3 (YMF262) Timer A overflow.
-    Sb16OplTimerA,
-    /// SB16 OPL3 (YMF262) Timer B overflow.
-    Sb16OplTimerB,
-    /// SB16 DSP DMA batch transfer (pulls PCM data from system memory).
-    Sb16DspDma,
-    /// MPU-PC98II intelligent-mode timing tick.
-    MpuTimer,
-    /// PC-9801-14 Music Generator board 8253 counter #2 terminal count.
-    MusicGen14Timer,
-    /// I-O DATA GA-1280A vertical blanking begins.
-    GaVsync,
-    /// I-O DATA GA-1280A active display period begins.
-    GaDisplayStart,
-}
-
-impl EventKind {
-    const ALL: [EventKind; EVENT_KIND_COUNT] = [
-        EventKind::PitTimer0,
-        EventKind::GdcVsync,
-        EventKind::GdcDisplayStart,
-        EventKind::FdcExecution,
-        EventKind::FdcInterrupt,
-        EventKind::GdcDrawingComplete,
-        EventKind::MouseTimer,
-        EventKind::FmTimerA,
-        EventKind::FmTimerB,
-        EventKind::FmTimer2A,
-        EventKind::FmTimer2B,
-        EventKind::SasiExecution,
-        EventKind::SasiInterrupt,
-        EventKind::IdeExecution,
-        EventKind::IdeInterrupt,
-        EventKind::Pcm86Irq,
-        EventKind::Sb16OplTimerA,
-        EventKind::Sb16OplTimerB,
-        EventKind::Sb16DspDma,
-        EventKind::MpuTimer,
-        EventKind::MusicGen14Timer,
-        EventKind::GaVsync,
-        EventKind::GaDisplayStart,
-    ];
-
-    const fn from_index(index: usize) -> Self {
-        Self::ALL[index]
-    }
-}
-
-/// Snapshot of a single scheduled event.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ScheduledEvent {
-    /// CPU cycle at which this event fires.
-    pub fire_cycle: u64,
-    /// The event type.
-    pub kind: EventKind,
-}
-
-/// Snapshot of the scheduler's pending event queue.
-///
-/// Uses a flat array indexed by [`EventKind`] discriminant. Each slot holds
-/// `Some(fire_cycle)` when an event of that kind is scheduled, or `None`
-/// when it is not. At most one event per kind can be active at a time.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SchedulerState {
-    /// Fire cycle for each event kind, indexed by discriminant.
-    pub fire_cycles: [Option<u64>; EVENT_KIND_COUNT],
-}
-
-/// Event-driven scheduler for timed peripheral events.
-///
-/// Internally stores at most one pending event per [`EventKind`] in a flat
-/// array, giving O(1) schedule/cancel and O(N) minimum-scan where N is the
-/// small, fixed number of event kinds.
-pub struct Scheduler {
-    /// Embedded state for save/restore.
-    pub state: SchedulerState,
-}
-
-impl Default for Scheduler {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Scheduler {
-    /// Creates a new empty scheduler.
-    pub fn new() -> Self {
-        Self {
-            state: SchedulerState {
-                fire_cycles: [None; EVENT_KIND_COUNT],
-            },
-        }
-    }
-
-    /// Schedules an event to fire at `fire_cycle`. Replaces any existing
-    /// event of the same kind.
-    pub fn schedule(&mut self, kind: EventKind, fire_cycle: u64) {
-        self.state.fire_cycles[kind as usize] = Some(fire_cycle);
-    }
-
-    /// Cancels any pending event of the given kind.
-    pub fn cancel(&mut self, kind: EventKind) {
-        self.state.fire_cycles[kind as usize] = None;
-    }
-
-    /// Returns the cycle of the earliest scheduled event, if any.
-    pub fn next_event_cycle(&self) -> Option<u64> {
-        self.state.fire_cycles.iter().filter_map(|&c| c).min()
-    }
-
-    /// Removes and returns all events due at or before `current_cycle`.
-    pub fn pop_due_events(
-        &mut self,
-        current_cycle: u64,
-    ) -> StackVec<ScheduledEvent, EVENT_KIND_COUNT> {
-        let mut due = StackVec::new();
-        for (index, slot) in self.state.fire_cycles.iter_mut().enumerate() {
-            if let Some(fire_cycle) = *slot
-                && fire_cycle <= current_cycle
-            {
-                due.push(ScheduledEvent {
-                    fire_cycle,
-                    kind: EventKind::from_index(index),
-                });
-                *slot = None;
-            }
-        }
-        due.sort_by_key(|e: &ScheduledEvent| e.fire_cycle);
-        due
-    }
-}
-
 /// Likely condition.
 #[inline(always)]
 pub const fn likely(b: bool) -> bool {
@@ -1684,7 +1762,10 @@ pub const fn unlikely(b: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{CpuMode, Machine, MachineModel};
+    use super::{
+        Bus, CpuMode, M68000AccessSize, M68000BusAccess, M68000CycleKind, M68000FunctionCode,
+        Machine, MachineModel,
+    };
 
     /// A machine that implements only the required [`Machine`] methods,
     /// verifying that machines without CD-ROM, hard disk, printer, or
@@ -1758,6 +1839,150 @@ mod tests {
         machine.push_mouse_delta(1, -1);
         machine.set_mouse_buttons(true, false, false);
         assert!(machine.cd_audio_status().is_none());
+    }
+
+    /// A byte-oriented bus that logs every byte access and interrupt
+    /// acknowledge, verifying the default Motorola 68000 bridge methods.
+    struct BridgeBus {
+        memory: [u8; 64],
+        read_log: Vec<u32>,
+        write_log: Vec<(u32, u8)>,
+        acknowledged_level: Option<u8>,
+    }
+
+    impl BridgeBus {
+        fn new() -> Self {
+            let mut memory = [0; 64];
+            for (index, byte) in memory.iter_mut().enumerate() {
+                *byte = index as u8;
+            }
+            Self {
+                memory,
+                read_log: Vec::new(),
+                write_log: Vec::new(),
+                acknowledged_level: None,
+            }
+        }
+    }
+
+    impl Bus for BridgeBus {
+        fn read_byte(&mut self, address: u32) -> u8 {
+            self.read_log.push(address);
+            self.memory[address as usize]
+        }
+
+        fn write_byte(&mut self, address: u32, value: u8) {
+            self.write_log.push((address, value));
+            self.memory[address as usize] = value;
+        }
+
+        fn io_read_byte(&mut self, _port: u16) -> u8 {
+            0
+        }
+
+        fn io_write_byte(&mut self, _port: u16, _value: u8) {}
+
+        fn has_irq(&self) -> bool {
+            false
+        }
+
+        fn acknowledge_irq(&mut self) -> u8 {
+            0
+        }
+
+        fn has_nmi(&self) -> bool {
+            false
+        }
+
+        fn acknowledge_nmi(&mut self) {}
+
+        fn m68000_acknowledge_interrupt(&mut self, level: u8) -> u8 {
+            self.acknowledged_level = Some(level);
+            0x18 + level
+        }
+
+        fn current_cycle(&self) -> u64 {
+            0
+        }
+
+        fn set_current_cycle(&mut self, _cycle: u64) {}
+    }
+
+    fn data_access(address: u32, size: M68000AccessSize) -> M68000BusAccess {
+        M68000BusAccess {
+            address,
+            size,
+            function_code: M68000FunctionCode::SupervisorData,
+            cycle_kind: M68000CycleKind::Normal,
+        }
+    }
+
+    #[test]
+    fn m68000_read_word_is_big_endian() {
+        let mut bus = BridgeBus::new();
+        let value = bus
+            .m68000_read(data_access(0x10, M68000AccessSize::Word))
+            .unwrap();
+        assert_eq!(value, 0x1011);
+        assert_eq!(bus.read_log, [0x10, 0x11]);
+    }
+
+    #[test]
+    fn m68000_read_byte_issues_single_read() {
+        let mut bus = BridgeBus::new();
+        let even = bus
+            .m68000_read(data_access(0x10, M68000AccessSize::Byte))
+            .unwrap();
+        assert_eq!(even, 0x10);
+        assert_eq!(bus.read_log, [0x10]);
+
+        let odd = bus
+            .m68000_read(data_access(0x11, M68000AccessSize::Byte))
+            .unwrap();
+        assert_eq!(odd, 0x11);
+        assert_eq!(bus.read_log, [0x10, 0x11]);
+    }
+
+    #[test]
+    fn m68000_write_word_is_big_endian() {
+        let mut bus = BridgeBus::new();
+        bus.m68000_write(data_access(0x20, M68000AccessSize::Word), 0xABCD)
+            .unwrap();
+        assert_eq!(bus.write_log, [(0x20, 0xAB), (0x21, 0xCD)]);
+    }
+
+    #[test]
+    fn m68000_write_byte_issues_single_write() {
+        let mut bus = BridgeBus::new();
+        bus.m68000_write(data_access(0x20, M68000AccessSize::Byte), 0x00AB)
+            .unwrap();
+        bus.m68000_write(data_access(0x21, M68000AccessSize::Byte), 0x00CD)
+            .unwrap();
+        assert_eq!(bus.write_log, [(0x20, 0xAB), (0x21, 0xCD)]);
+    }
+
+    #[test]
+    fn m68000_read_cpu_space_acknowledges_interrupt() {
+        let mut bus = BridgeBus::new();
+        let access = M68000BusAccess {
+            address: 0xFF_FFF0 | (3 << 1),
+            size: M68000AccessSize::Byte,
+            function_code: M68000FunctionCode::CpuSpace,
+            cycle_kind: M68000CycleKind::Normal,
+        };
+        let vector = bus.m68000_read(access).unwrap();
+        assert_eq!(vector, 0x18 + 3);
+        assert_eq!(bus.acknowledged_level, Some(3));
+        assert!(bus.read_log.is_empty());
+    }
+
+    #[test]
+    fn m68000_function_code_bits_match_pins() {
+        assert_eq!(M68000FunctionCode::UserData.bits(), 1);
+        assert_eq!(M68000FunctionCode::UserProgram.bits(), 2);
+        assert_eq!(M68000FunctionCode::SupervisorData.bits(), 5);
+        assert_eq!(M68000FunctionCode::SupervisorProgram.bits(), 6);
+        assert_eq!(M68000FunctionCode::CpuSpace.bits(), 7);
     }
 
     #[test]

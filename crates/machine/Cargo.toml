@@ -12,12 +12,12 @@ mt32 = ["device/mt32"]
 sc55 = ["device/sc55"]
 
 [dependencies]
-blake3 = { workspace = true }
+blake3.workspace = true
 common = { workspace = true, features = ["std"] }
-cpu = { workspace = true }
-device = { workspace = true }
-dos = { workspace = true }
-software_renderer = { workspace = true }
+cpu.workspace = true
+device.workspace = true
+dos.workspace = true
+software_renderer.workspace = true
 
 [dev-dependencies]
-resampler = { workspace = true }
+resampler.workspace = true

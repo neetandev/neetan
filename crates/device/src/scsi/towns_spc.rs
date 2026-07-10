@@ -31,6 +31,7 @@ use crate::{
     scsi::{
         command::{Direction, cdb_length, status},
         disk::ScsiDisk,
+        target::ScsiTarget,
     },
 };
 
@@ -108,7 +109,7 @@ pub enum ScsiDmaRequest {
 #[derive(Debug)]
 pub struct TownsScsiController {
     cpu_clock_hz: u64,
-    targets: [Option<ScsiDisk>; SCSI_ID_COUNT],
+    targets: [Option<ScsiTarget>; SCSI_ID_COUNT],
     phase: Phase,
     /// BSY line: raised by a successful selection, dropped at bus free.
     busy: bool,
@@ -165,7 +166,7 @@ impl TownsScsiController {
     /// Attaches a hard disk at the given SCSI ID.
     pub fn insert_drive(&mut self, id: usize, drive: MountedHdd) {
         if id < SCSI_ID_COUNT {
-            self.targets[id] = Some(ScsiDisk::new(drive));
+            self.targets[id] = Some(ScsiTarget::Disk(ScsiDisk::new(drive)));
         }
     }
 
@@ -585,7 +586,7 @@ impl TownsScsiController {
         );
     }
 
-    fn selected_target_mut(&mut self) -> Option<&mut ScsiDisk> {
+    fn selected_target_mut(&mut self) -> Option<&mut ScsiTarget> {
         self.selected_id
             .and_then(|id| self.targets.get_mut(id))
             .and_then(Option::as_mut)

@@ -9,7 +9,7 @@ mod sound;
 mod sub_io;
 mod video;
 
-use common::{BeeperKind, NoTracing, Tracing};
+use common::{BeeperKind, HostDateTimeProvider, NoTracing, Tracing};
 use device::{
     ay8910::Ay8910,
     beeper::Beeper,
@@ -1271,11 +1271,18 @@ impl<T: Tracing> Fm7Bus<T> {
         }
     }
 
-    /// Seeds the FM-77AV encoder RTC from the host's current wall-clock time.
-    pub fn seed_host_clock(&mut self) {
-        let (year, month, day, day_of_week, hour, minute, second) = host_local_time();
-        self.encoder
-            .seed_from_host(year, month, day, day_of_week, hour, minute, second);
+    /// Sets and immediately seeds the FM-77AV encoder RTC from the host time provider.
+    pub(crate) fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
+        let time = provider();
+        self.encoder.seed_from_host(
+            time.year,
+            time.month,
+            time.day,
+            time.day_of_week,
+            time.hour,
+            time.minute,
+            time.second,
+        );
     }
 
     /// Schedules the next periodic timer IRQ event.
@@ -1461,66 +1468,4 @@ fn is_sub_io(address: u16) -> bool {
 /// Whether an access receives the averaged I/O wait-state charge.
 fn charges_io_wait(address: u16) -> bool {
     matches!(address, MAIN_IO_START..=MAIN_IO_END | VECTOR_WAIT_START..=VECTOR_WAIT_END)
-}
-
-/// The host's current time decomposed into (year, month, day, day-of-week, hour,
-/// minute, second) for seeding the FM-77AV RTC. The day of week is 0 for Sunday
-/// through 6 for Saturday. The value comes from the system clock's seconds since
-/// the Unix epoch, so it is UTC rather than the host's local timezone.
-fn host_local_time() -> (u16, u8, u8, u8, u8, u8, u8) {
-    use std::time::SystemTime;
-
-    let seconds = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    let days = seconds / 86_400;
-    let time_of_day = seconds % 86_400;
-    let hour = (time_of_day / 3_600) as u8;
-    let minute = ((time_of_day % 3_600) / 60) as u8;
-    let second = (time_of_day % 60) as u8;
-    // 1970-01-01 was a Thursday (day-of-week 4 with Sunday = 0).
-    let day_of_week = ((days + 4) % 7) as u8;
-
-    let is_leap = |year: u64| {
-        (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
-    };
-    let mut year = 1970u64;
-    let mut remaining = days;
-    loop {
-        let year_days = if is_leap(year) { 366 } else { 365 };
-        if remaining < year_days {
-            break;
-        }
-        remaining -= year_days;
-        year += 1;
-    }
-    let month_lengths = [
-        31,
-        if is_leap(year) { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut month = 0usize;
-    while remaining >= month_lengths[month] {
-        remaining -= month_lengths[month];
-        month += 1;
-    }
-    (
-        year as u16,
-        month as u8 + 1,
-        remaining as u8 + 1,
-        day_of_week,
-        hour,
-        minute,
-        second,
-    )
 }

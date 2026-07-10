@@ -101,7 +101,7 @@ impl<T: Tracing + Default> Pc8801Bus<T> {
             ),
             rtc: Upd4990aRtc::new(),
             serial: I8251Serial::new(),
-            host_local_time_fn: super::default_local_time,
+            host_date_time_provider: common::default_host_date_time,
             port10: 0,
             kanji1_addr: 0,
             kanji2_addr: 0,

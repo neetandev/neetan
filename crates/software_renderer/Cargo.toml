@@ -15,6 +15,6 @@ std = []
 
 [dev-dependencies]
 software_renderer = { path = ".", features = ["std"] }
-common = { workspace = true }
-cpu = { workspace = true }
-machine = { workspace = true }
+common.workspace = true
+cpu.workspace = true
+machine.workspace = true

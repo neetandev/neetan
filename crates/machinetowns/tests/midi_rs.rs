@@ -9,8 +9,8 @@
 mod harness;
 
 use common::Bus;
-use harness::empty_roms;
-use machinetowns::{TownsMachine, TownsModel};
+use harness::machine_mx;
+use machinetowns::TownsMachine;
 
 const RS232C_DATA_PORT: u16 = 0x0A00;
 const RS232C_STATUS_PORT: u16 = 0x0A02;
@@ -18,7 +18,7 @@ const STATUS_TXRDY: u8 = 1 << 0;
 const STATUS_TXEMPTY: u8 = 1 << 2;
 
 fn towns() -> TownsMachine<{ cpu::CPU_MODEL_486 }> {
-    TownsMachine::new(TownsModel::FmTownsIIMx, common::CpuMode::High, empty_roms())
+    machine_mx()
 }
 
 #[test]

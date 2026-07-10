@@ -1,4 +1,4 @@
-use common::{BeeperKind, CpuMode, CpuType, EventKind, MachineModel, Scheduler};
+use common::{BeeperKind, CpuMode, CpuType, MachineModel};
 use device::{
     beeper::Beeper,
     cgrom::Cgrom,
@@ -30,9 +30,10 @@ use crate::{
     bus::{
         BootDevice, DMA_ACCESS_CTRL_20BIT, GRCG_WAIT_CYCLES, KEYBOARD_ROM_OFFSET_F,
         KEYBOARD_ROM_OFFSET_VM, MOUSE_TIMER_DEFAULT_SETTING, MOUSE_TIMER_IRQ_LINE,
-        TRAM_WAIT_CYCLES, VRAM_WAIT_CYCLES, default_local_time,
+        TRAM_WAIT_CYCLES, VRAM_WAIT_CYCLES,
     },
     memory::Pc9801Memory,
+    scheduler::{EventKind, Scheduler},
 };
 
 #[rustfmt::skip]
@@ -209,7 +210,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             ga1280a: None,
             beeper: Beeper::new(machine_model.beeper_kind(), clocks.pit_clock_hz),
             rtc: Upd4990aRtc::new(),
-            host_local_time_fn: default_local_time,
+            host_date_time_provider: common::default_host_date_time,
             mpu_pc98ii: MpuPc98ii::new(),
             #[cfg(feature = "mt32")]
             mt32: None,
@@ -628,12 +629,11 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.pit.state.channels[0].last_load_cycle = self.current_cycle;
         self.pit.state.channels[0].output = true;
         self.pit.state.channels[0].reload_pending = None;
-        self.pit.schedule_timer0(
-            &mut self.scheduler,
-            self.clocks.cpu_clock_hz,
-            self.clocks.pit_clock_hz,
-            self.current_cycle,
-        );
+        let cpu_cycles = self
+            .pit
+            .timer0_period_cycles(self.clocks.cpu_clock_hz, self.clocks.pit_clock_hz);
+        self.scheduler
+            .schedule(EventKind::PitTimer0, self.current_cycle + cpu_cycles);
         match self.machine_model {
             MachineModel::PC9801F => {
                 self.pit.state.channels[1].ctrl = 0x14;
@@ -912,7 +912,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         // Memory switches at text VRAM (stride 4).
         // MSW3 bits 0-2 encode conventional memory in 128 KB units above
         // the base 128 KB: 0x04 = 4 * 128 KB + 128 KB = 640 KB.
-        let year_bcd = (self.host_local_time_fn)()[0];
+        let year_bcd = (self.host_date_time_provider)().to_bcd_bytes()[0];
         let msw_values: [u8; 8] = [0x48, 0x05, 0x04, 0x00, 0x01, 0x00, 0x00, year_bcd];
         let msw_offsets: [usize; 8] = [
             0x3FE2, 0x3FE6, 0x3FEA, 0x3FEE, 0x3FF2, 0x3FF6, 0x3FFA, 0x3FFE,

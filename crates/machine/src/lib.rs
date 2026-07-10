@@ -11,9 +11,10 @@ mod config;
 mod machine;
 mod memory;
 mod rom;
+mod scheduler;
 
 use common::MachineModel;
-pub use common::{DosBootStage, NoTracing, SchedulerState, Tracing};
+pub use common::{DosBootStage, NoTracing, Tracing};
 use device::{
     beeper::BeeperState, cgrom::CgromState, display_control::DisplayControlState, egc::EgcState,
     fdd320_ppi::Fdd320PpiState, ga1280a::Ga1280aState, grcg::GrcgState,
@@ -31,6 +32,7 @@ pub use crate::{
     config::ClockConfig,
     memory::Pc9801MemoryState,
     rom::{LoadedRoms, RomError, accepted_bios_digests, load_rom_set, required_mame_set},
+    scheduler::{EventKind, SchedulerState},
 };
 
 /// CPU state snapshot, discriminated by CPU type.

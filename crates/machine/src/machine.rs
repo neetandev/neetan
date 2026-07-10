@@ -229,82 +229,62 @@ fn insert_cdrom_impl<T: Tracing>(
     bus: &mut Pc9801Bus<T>,
     path: &std::path::Path,
 ) -> Result<String, String> {
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.to_ascii_lowercase());
-
-    if extension.as_deref() == Some("ccd") {
-        insert_cdrom_ccd(bus, path)
-    } else {
-        insert_cdrom_cue(bus, path)
-    }
-}
-
-fn insert_cdrom_cue<T: Tracing>(
-    bus: &mut Pc9801Bus<T>,
-    path: &std::path::Path,
-) -> Result<String, String> {
-    let cue_content = std::fs::read_to_string(path)
-        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-    let bin_filenames = device::cdrom::extract_bin_filenames(&cue_content)
-        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
-    let base_path = path.parent().unwrap_or(std::path::Path::new("."));
-    let mut bin_files = Vec::with_capacity(bin_filenames.len());
-    for bin_filename in &bin_filenames {
-        let bin_path = base_path.join(bin_filename);
-        let bin_data = std::fs::read(&bin_path)
-            .map_err(|error| format!("Failed to read {}: {error}", bin_path.display()))?;
-        bin_files.push(bin_data);
-    }
-    let image = device::cdrom::CdImage::from_cue_files(&cue_content, bin_files)
-        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
-    let track_count = image.track_count();
-    let total_sectors = image.total_sectors();
-    let description = format!(
-        "{} ({} tracks, {} sectors)",
-        bin_filenames[0], track_count, total_sectors
-    );
+    let (image, description) = device::cdrom::load_cd_image(path)?;
     bus.insert_cdrom(image);
     Ok(description)
 }
 
-fn insert_cdrom_ccd<T: Tracing>(
-    bus: &mut Pc9801Bus<T>,
-    path: &std::path::Path,
-) -> Result<String, String> {
-    let ccd_content = std::fs::read_to_string(path)
-        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-    let img_path = path.with_extension("img");
-    let img_data = std::fs::read(&img_path)
-        .map_err(|error| format!("Failed to read {}: {error}", img_path.display()))?;
-    let sub_path = path.with_extension("sub");
-    let sub_data = match std::fs::read(&sub_path) {
-        Ok(bytes) => Some(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            return Err(format!("Failed to read {}: {error}", sub_path.display()));
+fn validate_hdd_for_model(
+    model: common::MachineModel,
+    geometry: &device::disk::HddGeometry,
+) -> Result<(), String> {
+    match model {
+        common::MachineModel::PC9801F
+        | common::MachineModel::PC9801VM
+        | common::MachineModel::PC9801VX
+        | common::MachineModel::PC9801RA => {
+            if geometry.sasi_media_type().is_none() {
+                return Err(format!(
+                    "{} is not a standard SASI geometry: {}C/{}H/{}S with {}-byte sectors",
+                    model,
+                    geometry.cylinders,
+                    geometry.heads,
+                    geometry.sectors_per_track,
+                    geometry.sector_size,
+                ));
+            }
         }
-    };
-    let has_sub = sub_data.is_some();
-    let image = device::cdrom::CdImage::from_ccd(&ccd_content, img_data, sub_data)
-        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
-    let img_name = img_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("image.img");
-    let description = format!(
-        "{} ({} tracks, {} sectors, {})",
-        img_name,
-        image.track_count(),
-        image.total_sectors(),
-        if has_sub { "CCD+SUB" } else { "CCD" }
-    );
-    bus.insert_cdrom(image);
-    Ok(description)
+        common::MachineModel::PC9821AS | common::MachineModel::PC9821AP => {
+            if geometry.sector_size != 512 && geometry.sasi_media_type().is_none() {
+                return Err(format!(
+                    "{} does not support this IDE geometry: {}C/{}H/{}S with {}-byte sectors",
+                    model,
+                    geometry.cylinders,
+                    geometry.heads,
+                    geometry.sectors_per_track,
+                    geometry.sector_size,
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
-impl<T: Tracing> common::Machine for Machine<cpu::VX0, T> {
+impl<C: Cpu, T: Tracing> common::Machine for Machine<C, T> {
+    fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
+        self.bus.set_host_date_time_provider(provider);
+    }
+
+    fn startup_capabilities(&self) -> common::StartupCapabilities {
+        common::StartupCapabilities {
+            hard_disk: true,
+            printer: true,
+            mt32: true,
+            sc55: true,
+            ..Default::default()
+        }
+    }
+
     fn cpu_clock_hz(&self) -> f64 {
         f64::from(self.bus.cpu_clock_hz())
     }
@@ -357,250 +337,48 @@ impl<T: Tracing> common::Machine for Machine<cpu::VX0, T> {
         self.bus.eject_floppy(drive);
     }
 
-    fn insert_cdrom(&mut self, path: &std::path::Path) -> Result<String, String> {
-        insert_cdrom_impl(&mut self.bus, path)
+    fn insert_hdd(&mut self, drive: usize, path: &std::path::Path) -> Result<String, String> {
+        let data = std::fs::read(path)
+            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+        let image = device::disk::load_hdd_image(path, &data)
+            .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
+        validate_hdd_for_model(self.bus.machine_model(), &image.geometry)?;
+        let description = format!(
+            "HDD{}: {}C/{}H/{}S ({}) from {}",
+            drive + 1,
+            image.geometry.cylinders,
+            image.geometry.heads,
+            image.geometry.sectors_per_track,
+            image.format_name(),
+            path.display(),
+        );
+        self.bus.insert_hdd(drive, image, Some(path.to_path_buf()));
+        Ok(description)
     }
 
-    fn eject_cdrom(&mut self) {
-        self.bus.eject_cdrom();
+    fn attach_printer(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let file = std::fs::File::options()
+            .write(true)
+            .open(path)
+            .map_err(|error| {
+                format!("Failed to open printer output {}: {error}", path.display())
+            })?;
+        self.bus.attach_printer(file);
+        Ok(())
     }
 
-    fn flush_floppies(&mut self) {
-        self.bus.flush_all_floppies();
+    #[cfg(feature = "mt32")]
+    fn install_mt32(&mut self, rom_directory: &std::path::Path) -> Result<(), String> {
+        self.bus
+            .install_mt32(rom_directory)
+            .map_err(|error| error.to_string())
     }
 
-    fn flush_hdds(&mut self) {
-        self.bus.flush_all_hdds();
-    }
-
-    fn flush_printer(&mut self) {
-        self.bus.flush_printer();
-    }
-
-    fn install_text_extractor(&mut self, extractor: Box<dyn common::TextExtractor>) {
-        self.bus.install_text_extractor(extractor);
-    }
-
-    fn tick_text_extractor(&mut self) {
-        self.bus.tick_text_extractor();
-    }
-}
-
-impl<T: Tracing> common::Machine for Machine<cpu::I286, T> {
-    fn cpu_clock_hz(&self) -> f64 {
-        f64::from(self.bus.cpu_clock_hz())
-    }
-
-    fn run_for(&mut self, budget: u64) -> u64 {
-        Machine::run_for(self, budget)
-    }
-
-    fn shutdown_requested(&self) -> bool {
-        self.bus.shutdown_requested()
-    }
-
-    fn display_framebuffer(&self) -> &[u8] {
-        self.bus.display_framebuffer()
-    }
-
-    fn display_dimensions(&self) -> (u32, u32) {
-        self.bus.display_dimensions()
-    }
-
-    fn push_keyboard_scancode(&mut self, code: u8) {
-        self.bus.push_keyboard_scancode(code);
-    }
-
-    fn push_mouse_delta(&mut self, dx: i16, dy: i16) {
-        self.bus.push_mouse_delta(dx, dy);
-    }
-
-    fn set_mouse_buttons(&mut self, left: bool, right: bool, middle: bool) {
-        self.bus.set_mouse_buttons(left, right, middle);
-    }
-
-    fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
-        self.bus.generate_audio_samples(volume, output)
-    }
-
-    fn cd_audio_status(&self) -> Option<common::CdAudioStatus> {
-        self.bus.cd_audio_status()
-    }
-
-    fn font_rom_data(&self) -> &[u8] {
-        self.bus.font_rom_data()
-    }
-
-    fn insert_floppy(&mut self, drive: usize, path: &std::path::Path) -> Result<String, String> {
-        insert_floppy_impl(&mut self.bus, drive, path)
-    }
-
-    fn eject_floppy(&mut self, drive: usize) {
-        self.bus.eject_floppy(drive);
-    }
-
-    fn insert_cdrom(&mut self, path: &std::path::Path) -> Result<String, String> {
-        insert_cdrom_impl(&mut self.bus, path)
-    }
-
-    fn eject_cdrom(&mut self) {
-        self.bus.eject_cdrom();
-    }
-
-    fn flush_floppies(&mut self) {
-        self.bus.flush_all_floppies();
-    }
-
-    fn flush_hdds(&mut self) {
-        self.bus.flush_all_hdds();
-    }
-
-    fn flush_printer(&mut self) {
-        self.bus.flush_printer();
-    }
-
-    fn install_text_extractor(&mut self, extractor: Box<dyn common::TextExtractor>) {
-        self.bus.install_text_extractor(extractor);
-    }
-
-    fn tick_text_extractor(&mut self) {
-        self.bus.tick_text_extractor();
-    }
-}
-
-impl<const CPU_MODEL: u8, T: Tracing> common::Machine for Machine<cpu::I386<CPU_MODEL>, T> {
-    fn cpu_clock_hz(&self) -> f64 {
-        f64::from(self.bus.cpu_clock_hz())
-    }
-
-    fn run_for(&mut self, budget: u64) -> u64 {
-        Machine::run_for(self, budget)
-    }
-
-    fn shutdown_requested(&self) -> bool {
-        self.bus.shutdown_requested()
-    }
-
-    fn display_framebuffer(&self) -> &[u8] {
-        self.bus.display_framebuffer()
-    }
-
-    fn display_dimensions(&self) -> (u32, u32) {
-        self.bus.display_dimensions()
-    }
-
-    fn push_keyboard_scancode(&mut self, code: u8) {
-        self.bus.push_keyboard_scancode(code);
-    }
-
-    fn push_mouse_delta(&mut self, dx: i16, dy: i16) {
-        self.bus.push_mouse_delta(dx, dy);
-    }
-
-    fn set_mouse_buttons(&mut self, left: bool, right: bool, middle: bool) {
-        self.bus.set_mouse_buttons(left, right, middle);
-    }
-
-    fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
-        self.bus.generate_audio_samples(volume, output)
-    }
-
-    fn cd_audio_status(&self) -> Option<common::CdAudioStatus> {
-        self.bus.cd_audio_status()
-    }
-
-    fn font_rom_data(&self) -> &[u8] {
-        self.bus.font_rom_data()
-    }
-
-    fn insert_floppy(&mut self, drive: usize, path: &std::path::Path) -> Result<String, String> {
-        insert_floppy_impl(&mut self.bus, drive, path)
-    }
-
-    fn eject_floppy(&mut self, drive: usize) {
-        self.bus.eject_floppy(drive);
-    }
-
-    fn insert_cdrom(&mut self, path: &std::path::Path) -> Result<String, String> {
-        insert_cdrom_impl(&mut self.bus, path)
-    }
-
-    fn eject_cdrom(&mut self) {
-        self.bus.eject_cdrom();
-    }
-
-    fn flush_floppies(&mut self) {
-        self.bus.flush_all_floppies();
-    }
-
-    fn flush_hdds(&mut self) {
-        self.bus.flush_all_hdds();
-    }
-
-    fn flush_printer(&mut self) {
-        self.bus.flush_printer();
-    }
-
-    fn install_text_extractor(&mut self, extractor: Box<dyn common::TextExtractor>) {
-        self.bus.install_text_extractor(extractor);
-    }
-
-    fn tick_text_extractor(&mut self) {
-        self.bus.tick_text_extractor();
-    }
-}
-
-impl<T: Tracing> common::Machine for Machine<cpu::I8086, T> {
-    fn cpu_clock_hz(&self) -> f64 {
-        f64::from(self.bus.cpu_clock_hz())
-    }
-
-    fn run_for(&mut self, budget: u64) -> u64 {
-        Machine::run_for(self, budget)
-    }
-
-    fn shutdown_requested(&self) -> bool {
-        self.bus.shutdown_requested()
-    }
-
-    fn display_framebuffer(&self) -> &[u8] {
-        self.bus.display_framebuffer()
-    }
-
-    fn display_dimensions(&self) -> (u32, u32) {
-        self.bus.display_dimensions()
-    }
-
-    fn push_keyboard_scancode(&mut self, code: u8) {
-        self.bus.push_keyboard_scancode(code);
-    }
-
-    fn push_mouse_delta(&mut self, dx: i16, dy: i16) {
-        self.bus.push_mouse_delta(dx, dy);
-    }
-
-    fn set_mouse_buttons(&mut self, left: bool, right: bool, middle: bool) {
-        self.bus.set_mouse_buttons(left, right, middle);
-    }
-
-    fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
-        self.bus.generate_audio_samples(volume, output)
-    }
-
-    fn cd_audio_status(&self) -> Option<common::CdAudioStatus> {
-        self.bus.cd_audio_status()
-    }
-
-    fn font_rom_data(&self) -> &[u8] {
-        self.bus.font_rom_data()
-    }
-
-    fn insert_floppy(&mut self, drive: usize, path: &std::path::Path) -> Result<String, String> {
-        insert_floppy_impl(&mut self.bus, drive, path)
-    }
-
-    fn eject_floppy(&mut self, drive: usize) {
-        self.bus.eject_floppy(drive);
+    #[cfg(feature = "sc55")]
+    fn install_sc55(&mut self, rom_directory: &std::path::Path) -> Result<(), String> {
+        self.bus
+            .install_sc55(rom_directory)
+            .map_err(|error| error.to_string())
     }
 
     fn insert_cdrom(&mut self, path: &std::path::Path) -> Result<String, String> {

@@ -8,6 +8,6 @@ rust-version.workspace = true
 license = "LGPL-2.1-or-later"
 
 [dependencies]
-blake3 = { workspace = true }
-common = { workspace = true }
-resampler = { workspace = true }
+blake3.workspace = true
+common.workspace = true
+resampler.workspace = true

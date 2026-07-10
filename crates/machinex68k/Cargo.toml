@@ -1,0 +1,22 @@
+[package]
+name = "machinex68k"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+mt32 = ["device/mt32"]
+sc55 = ["device/sc55"]
+
+[dependencies]
+blake3.workspace = true
+common = { workspace = true, features = ["std"] }
+cpu_68k.workspace = true
+device.workspace = true
+software_renderer = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+dos.workspace = true

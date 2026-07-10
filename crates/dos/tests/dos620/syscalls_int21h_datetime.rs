@@ -1,9 +1,18 @@
+use common::HostDateTime;
+
 use crate::harness;
 
 /// Fixed test time: 2026-03-15 14:30:45, Sunday (dow=0).
-/// BCD format: [year, month<<4|dow, day, hour, minute, second]
-fn test_time() -> [u8; 6] {
-    [0x26, 0x30, 0x15, 0x14, 0x30, 0x45]
+fn test_time() -> HostDateTime {
+    HostDateTime {
+        year: 2026,
+        month: 3,
+        day: 15,
+        day_of_week: 0,
+        hour: 14,
+        minute: 30,
+        second: 45,
+    }
 }
 
 fn boot_hle_with_fixed_time() -> machine::Pc9801Ra {

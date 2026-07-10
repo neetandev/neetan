@@ -166,6 +166,7 @@ impl<T: Tracing> Pc6000Bus<T> {
             FdcAction::StartWriteData => self.start_pio_write(),
             FdcAction::StartReadId => self.handle_read_id(),
             FdcAction::StartFormatTrack => self.start_pio_format(),
+            FdcAction::StartScan => unreachable!("SCAN commands are disabled on this FDC"),
         }
     }
 

@@ -16,9 +16,9 @@ version = "1.0.0"
 
 [[package]]
 name = "cc"
-version = "1.2.66"
+version = "1.2.67"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5d6cac793997bd970000024b2934968efe83b382de4fdcf4fcb46b6ee4ad996"
+checksum = "e17dd265a7d0f31ef544e1b20e03add05d3b45b491b633b10d67145d2acc1a38"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -166,6 +166,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "machinex68k"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "common",
+ "cpu_68k",
+ "device",
+ "dos",
+ "software_renderer",
+]
+
+[[package]]
 name = "munt_oxide"
 version = "0.1.0"
 dependencies = [
@@ -190,6 +202,7 @@ dependencies = [
  "machinefm7",
  "machinetowns",
  "machinex1",
+ "machinex68k",
  "sdl3",
  "sdl3_backend",
  "software_renderer",
@@ -295,6 +308,6 @@ version = "0.1.0"
 
 [[package]]
 name = "zlib-rs"
-version = "0.6.5"
+version = "0.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5431d5661c32445236631278f27946e444ddafe4684cac70b185272d4f9c52d5"
+checksum = "b142a20ec14a91d5bc708c1dc21b080c550113d8aa77afa29635673a65dd02c5"

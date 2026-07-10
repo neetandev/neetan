@@ -2,6 +2,7 @@
 
 mod harness;
 
+use common::{HostDateTime, Machine as _};
 use harness::{build_machine_with_rom, build_machine_with_synthetic_roms};
 use machine88::Pc8801Machine;
 
@@ -9,8 +10,16 @@ use machine88::Pc8801Machine;
 /// minute, second]` = 2026-03-03 (Monday) 14:30:45.
 const RTC_TIME: [u8; 6] = [0x26, 0x31, 0x03, 0x14, 0x30, 0x45];
 
-fn fixed_rtc_time() -> [u8; 6] {
-    RTC_TIME
+fn fixed_rtc_time() -> HostDateTime {
+    HostDateTime {
+        year: 2026,
+        month: 3,
+        day: 3,
+        day_of_week: 1,
+        hour: 14,
+        minute: 30,
+        second: 45,
+    }
 }
 
 // Port 0x10 RTC command line bits and port 0x40 strobe bits, matching the bus
@@ -38,7 +47,7 @@ fn rtc_dout(machine: &mut Pc8801Machine) -> u8 {
 #[test]
 fn rtc_time_read_shifts_out_host_time() {
     let mut machine = build_machine_with_rom(&[0u8; 0x8000]);
-    machine.bus.set_host_local_time_fn(fixed_rtc_time);
+    machine.set_host_date_time_provider(fixed_rtc_time);
 
     // Load the host time into the shift register, then enter shift mode.
     rtc_command(&mut machine, RTC_CMD_TIME_READ);
