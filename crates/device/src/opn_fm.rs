@@ -139,6 +139,12 @@ pub trait OpnChip {
 
     /// Returns and clears the pending IRQ-output edge.
     fn take_irq_update(&mut self) -> Option<bool>;
+
+    /// Returns and clears the pending CT-output change. Only the OPM has CT
+    /// output pins; other chips never produce a value.
+    fn take_ct_update(&mut self) -> Option<u8> {
+        None
+    }
 }
 
 impl OpnChip for Ym2203 {
@@ -407,6 +413,10 @@ impl OpnChip for Ym2151 {
     fn take_irq_update(&mut self) -> Option<bool> {
         Ym2151::take_irq_update(self)
     }
+
+    fn take_ct_update(&mut self) -> Option<u8> {
+        Ym2151::take_ct_update(self)
+    }
 }
 
 /// Generic OPN/OPNA FM audio driver: chip clocking, busy timing, timer/IRQ
@@ -636,6 +646,11 @@ impl<C: OpnChip> OpnFm<C> {
             self.irq_asserted = asserted;
         }
         change
+    }
+
+    /// Returns and clears the pending CT-output change reported by the chip.
+    pub fn take_ct_change(&mut self) -> Option<u8> {
+        self.chip.take_ct_update()
     }
 
     /// Generates resampled FM+SSG audio and additively mixes it into `output`

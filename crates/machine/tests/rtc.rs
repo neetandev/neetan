@@ -1,17 +1,26 @@
-use common::{Bus, CpuMode, MachineModel};
-use machine::{NoTracing, Pc9801Bus};
+use common::{Bus, CpuMode, HostDateTime, Machine as _, MachineModel};
+use machine::{NoTracing, Pc9801Bus, Pc9801Vm};
 
 /// Test time: 2026-03-03 14:30:45, Monday (day_of_week=1).
 const TEST_TIME: [u8; 6] = [0x26, 0x31, 0x03, 0x14, 0x30, 0x45];
 
-fn test_time() -> [u8; 6] {
-    TEST_TIME
+fn test_time() -> HostDateTime {
+    HostDateTime {
+        year: 2026,
+        month: 3,
+        day: 3,
+        day_of_week: 1,
+        hour: 14,
+        minute: 30,
+        second: 45,
+    }
 }
 
-fn make_bus() -> Pc9801Bus<NoTracing> {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
-    bus.set_host_local_time_fn(test_time);
-    bus
+fn make_machine() -> Pc9801Vm {
+    let bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut machine = machine::Machine::new(cpu::V30::new(), bus);
+    machine.set_host_date_time_provider(test_time);
+    machine
 }
 
 /// Writes a port 0x20 value to the RTC via the bus.
@@ -46,17 +55,18 @@ fn clock_pulse(bus: &mut Pc9801Bus<NoTracing>) {
 
 #[test]
 fn rtc_time_read_and_shift_out_48_bits() {
-    let mut bus = make_bus();
+    let mut machine = make_machine();
+    let bus = &mut machine.bus;
 
-    time_read(&mut bus);
-    register_shift(&mut bus);
+    time_read(bus);
+    register_shift(bus);
 
     // Clock out all 48 BCD time bits from CDAT (positions 63 down to 16).
     let mut bits = Vec::new();
-    bits.push(read_cdat(&mut bus));
+    bits.push(read_cdat(bus));
     for _ in 0..47 {
-        clock_pulse(&mut bus);
-        bits.push(read_cdat(&mut bus));
+        clock_pulse(bus);
+        bits.push(read_cdat(bus));
     }
 
     // Reconstruct the 6 BCD bytes.
@@ -75,16 +85,16 @@ fn rtc_time_read_and_shift_out_48_bits() {
 
 #[test]
 fn rtc_cdat_starts_at_zero() {
-    let mut bus = make_bus();
-    assert_eq!(read_cdat(&mut bus), 0);
+    let mut machine = make_machine();
+    assert_eq!(read_cdat(&mut machine.bus), 0);
 }
 
 #[test]
 fn rtc_cdat_reflects_time_data_after_read() {
-    let mut bus = make_bus();
-    time_read(&mut bus);
+    let mut machine = make_machine();
+    time_read(&mut machine.bus);
 
     // After TIME_READ, CDAT should reflect the LSB of the seconds byte (0x45).
     // reg[7] = 0x45 = 0100_0101, bit 0 = 1.
-    assert_eq!(read_cdat(&mut bus), 1);
+    assert_eq!(read_cdat(&mut machine.bus), 1);
 }

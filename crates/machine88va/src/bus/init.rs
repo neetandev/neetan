@@ -19,7 +19,7 @@ use super::{
     mouse::MouseVa,
     sgp::SgpState,
     sub_mem::SubMemory,
-    sysport::{SysPortVa, default_local_time},
+    sysport::SysPortVa,
     tsp::{FramePhase, Sysp4Phase, TspState},
     video::VideoVa,
 };
@@ -30,7 +30,7 @@ use crate::{
 };
 
 impl Pc88VaBus {
-    pub(crate) fn new(memory: Pc88VaMemory, clocks: ClockConfig) -> Self {
+    pub(crate) fn from_parts(memory: Pc88VaMemory, clocks: ClockConfig) -> Self {
         let renderer = VaRenderer::new(memory.font_rom());
         // PIO data-rate pacing: 250 kbps MFM is 31250 bytes/s.
         let drq_byte_cycles = (u64::from(clocks.main_clock_hz) / 31_250).max(1);
@@ -61,7 +61,7 @@ impl Pc88VaBus {
             renderer,
             display_width: 0,
             display_height: 0,
-            host_local_time_fn: default_local_time,
+            host_date_time_provider: common::default_host_date_time,
             sub_mem: SubMemory::new(),
             sub_cycle: 0,
             sub_to_main_shift,

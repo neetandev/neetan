@@ -10,6 +10,7 @@
 - [PC-88VA2](#pc-88va2)
 - [PC-6001 / PC-6601](#pc-6001--pc-6601)
 - [FM Towns](#fm-towns)
+- [Sharp X68000](#sharp-x68000)
 - [Sharp X1](#sharp-x1)
 - [Fujitsu FM-7 / FM-77AV](#fujitsu-fm-7--fm-77av)
 - [MIDI: Roland MT-32](#midi-roland-mt-32)
@@ -38,6 +39,7 @@ by file name (see that section).
 | PC-88VA2           | `--pc88va-roms`  | Required                         |
 | PC-6001 / PC-6601  | `--pc6000-roms`  | Required                         |
 | FM Towns           | `--towns-roms`   | Required                         |
+| Sharp X68000       | `--x68k-roms`    | Required                         |
 | Sharp X1           | `--x1-roms`      | Required                         |
 | FM-7 / FM-77AV     | `--fm7-roms`     | Required                         |
 | Roland MT-32       | `--mt32-roms`    | Required for `--midi mt32`       |
@@ -64,6 +66,9 @@ for that machine.
 | PC-6001mkIISR         | `pc6001mk2sr`                             |                                                                              |
 | PC-6601SR             | `pc6601sr`                                |                                                                              |
 | FM Towns II CX & MX   | `fmtownsmx`                               | The CX target boots the shared MX ROM set until a CX dump exists             |
+| Sharp X68000          | `x68000`                                  | Original CZ-600C split IPL                                                   |
+| Sharp X68000 SUPER    | `x68ksupr`                                | IPL V1.0 and internal SCSI ROM                                               |
+| Sharp X68000 XVI      | `x68kxvi`                                 | IPL V1.1 with the compatible Compact-XVI SCSI ROM                            |
 | Sharp X1              | `x1`                                      | Both X1 sets share the `--x1-roms` directory                                 |
 | Sharp X1 turbo        | `x1turbo`                                 | The ANK font is byte-identical with the `x1` set                             |
 | Fujitsu FM-7          | `fm7`                                     | Both FM-7 sets share the `--fm7-roms` directory; kanji ROM optional          |
@@ -101,6 +106,11 @@ roms/
 |-- fmtowns/       --towns-roms    fmtownsmx
 |   |-- fmtownsiimxbios.m79
 |   `-- mytownsmx.rom
+|-- x68k/          --x68k-roms                     one selected X68000 model set
+|   |-- cgrom.dat                                  (shared character generator)
+|   |-- rh-ix0897cezz.ic12, rh-ix0898cezz.ic11     (original split IPL)
+|   |-- iplrom.dat, scsiinsu.bin                   (SUPER)
+|   `-- iplromxv.dat, scsiinco.bin                 (XVI compatibility set)
 |-- x1/            --x1-roms                       x1 + x1turbo sets
 |   |-- ipl.x1, ipl.x1t                            (IPL ROMs: X1, X1turbo)
 |   |-- fnt0808.x1, fnt0808_turbo.x1, ank.fnt      (8x8 CG fonts + shared 8x16 ANK font)
@@ -137,6 +147,9 @@ pc6000-roms = roms/pc6000
 
 ; FM Towns.
 towns-roms = roms/fmtowns
+
+; Sharp X68000.
+x68k-roms = roms/x68k
 
 ; Sharp X1.
 x1-roms = roms/x1
@@ -251,6 +264,14 @@ f0af53e54b1b09b229d03efc9f65e65597a0c4f6aa9e3e7c0e553274ccd481fb  pc6000/kanjiro
 # --- FM Towns II CX / MX (roms/fmtowns) ---
 f5c2cc7c2876a4b30f320fe6fb721bd32f3ba43bbb9b0b42c398fa6b59d72ce8  fmtowns/fmtownsiimxbios.m79
 d5dc70e34d072889c28bed51ef3ccaac7f6f3fdd9e448d89297847247a901538  fmtowns/mytownsmx.rom
+# --- Sharp X68000 (roms/x68k) ---
+095cfc5c21d704cce7340982b717dadc9fa20bfb86637ce9a594af88c87dc6b8  x68k/cgrom.dat
+50f6e84f88feb32e1cf2421ea6376fed44851c269f8bd48706c2e8061ceba313  x68k/rh-ix0897cezz.ic12
+2bc789c7b172ebbe70d5099a9b8820653234e26cb5f7b4a171b4d73ee647ddaa  x68k/rh-ix0898cezz.ic11
+10ecab1df03426f4823de6cca28a26818b471b9ca20943441ba73c8fd0cd710f  x68k/iplrom.dat
+7ac5c8fa53d2693ee61ada293efd1f681b1390ef50c1117ddcf52d2280468c20  x68k/scsiinsu.bin
+06d3d6365d2b4079abf37d362a393f9224e472b8321e1826fef0a263d9e26590  x68k/iplromxv.dat
+08e08002db7e47bdf6f2f60066f7253eb94791fb2aa17b392e26d23d72e0c19f  x68k/scsiinco.bin
 # --- Sharp X1 / X1 turbo (both sets share roms/x1) ---
 194f351bc1024188162856e2374d92bc608d9c742ca007d8c19a4b4eed44abbc  x1/ipl.x1
 871c77226a6e65bf1820c0a3e6f63a330cb1d2eb6c135fc9e4da9741ce38106c  x1/ipl.x1t
@@ -461,6 +482,29 @@ The split set provides the five images individually plus the serial ROM:
 | `FMT_F20.ROM`   | 512 KiB  | `1dde131510456c9660c2217774853822674459412d8e6f98312fff0ee83ca9a7` |
 | `FMT_DIC.ROM`   | 512 KiB  | `0fbcbecb5b62c8fa4e9a60885f887b0a2cafd680a1174b0f7ddf57f49c65ab60` |
 | `mytownsmx.rom` | 32 bytes | `d5dc70e34d072889c28bed51ef3ccaac7f6f3fdd9e448d89297847247a901538` |
+
+## Sharp X68000
+
+The X68000 targets require a real ROM set selected with `--x68k-roms`. The
+loader scans one directory non-recursively and selects only the slots required
+by the chosen model. A directory may contain additional IPL variants; they are
+ignored rather than substituted for the requested model.
+
+| Slot                                      | Size    | Required for  | BLAKE3                                                             |
+|-------------------------------------------|---------|---------------|--------------------------------------------------------------------|
+| `cgrom`                                   | 768 KiB | All models    | `095cfc5c21d704cce7340982b717dadc9fa20bfb86637ce9a594af88c87dc6b8` |
+| IPL even half (`rh-ix0897cezz.ic12`)      | 64 KiB  | `X68000`      | `50f6e84f88feb32e1cf2421ea6376fed44851c269f8bd48706c2e8061ceba313` |
+| IPL odd half (`rh-ix0898cezz.ic11`)       | 64 KiB  | `X68000`      | `2bc789c7b172ebbe70d5099a9b8820653234e26cb5f7b4a171b4d73ee647ddaa` |
+| IPL V1.0 (`iplrom.dat`)                   | 128 KiB | `X68000SUPER` | `10ecab1df03426f4823de6cca28a26818b471b9ca20943441ba73c8fd0cd710f` |
+| Internal SCSI (`scsiinsu.bin`)            | 8 KiB   | `X68000SUPER` | `7ac5c8fa53d2693ee61ada293efd1f681b1390ef50c1117ddcf52d2280468c20` |
+| IPL V1.1 (`iplromxv.dat`)                 | 128 KiB | `X68000XVI`   | `06d3d6365d2b4079abf37d362a393f9224e472b8321e1826fef0a263d9e26590` |
+| Compatible internal SCSI (`scsiinco.bin`) | 8 KiB   | `X68000XVI`   | `08e08002db7e47bdf6f2f60066f7253eb94791fb2aa17b392e26d23d72e0c19f` |
+
+For the original model, the IC12 image supplies even bytes and IC11 supplies
+odd bytes. Their assembled 128 KiB IPL has BLAKE3
+`fe7832b87d5bb5f8d56d9f1d697ef9bb94c446334e17105e574c8314b7602d32`.
+The XVI SCSI image is accepted as a named compatibility substitute and produces
+a startup warning.
 
 ## Sharp X1
 

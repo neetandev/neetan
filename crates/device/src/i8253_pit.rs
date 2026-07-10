@@ -10,8 +10,6 @@
 
 use std::ops::{Deref, DerefMut};
 
-use common::{EventKind, Scheduler};
-
 /// Control word mask: read/load mode (bits 5:4).
 pub const PIT_CTRL_RL: u8 = 0x30;
 /// RL field: low byte only (01b).
@@ -371,37 +369,11 @@ impl I8253Pit {
         }
     }
 
-    /// Schedules the next timer 0 event based on the current reload value.
-    pub fn schedule_timer0(
-        &self,
-        scheduler: &mut Scheduler,
-        cpu_clock_hz: u32,
-        pit_clock_hz: u32,
-        current_cycle: u64,
-    ) {
-        let cpu_cycles = self.timer0_period_cycles(cpu_clock_hz, pit_clock_hz);
-        scheduler.schedule(EventKind::PitTimer0, current_cycle + cpu_cycles);
-    }
-
-    /// Returns the timer 0 reload period expressed in CPU cycles. Used by buses
-    /// that drive their own scheduler instead of the common [`Scheduler`].
+    /// Returns the timer 0 reload period expressed in CPU cycles.
     pub fn timer0_period_cycles(&self, cpu_clock_hz: u32, pit_clock_hz: u32) -> u64 {
         let ch = &self.channels[0];
         let reload = count_period(ch);
         reload * cpu_clock_hz as u64 / pit_clock_hz as u64
-    }
-
-    /// Handles the timer 0 event. Returns `true` if an IRQ should be raised.
-    pub fn on_timer0_event(
-        &mut self,
-        scheduler: &mut Scheduler,
-        cpu_clock_hz: u32,
-        pit_clock_hz: u32,
-        current_cycle: u64,
-    ) -> bool {
-        let raise_irq = self.advance_timer0(current_cycle);
-        self.schedule_timer0(scheduler, cpu_clock_hz, pit_clock_hz, current_cycle);
-        raise_irq
     }
 
     /// Advances timer 0 at a fire event: clears/re-arms the interrupt flag,

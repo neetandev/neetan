@@ -10,7 +10,8 @@ use common::warn;
 
 use super::d88::{D88Disk, D88MediaType, D88Sector};
 
-const HDM_FILE_SIZE: usize = 1_261_568;
+/// Exact byte size of an HDM (and XDF) raw 2HD image.
+pub(crate) const HDM_FILE_SIZE: usize = 1_261_568;
 const CYLINDERS: u8 = 77;
 const HEADS: u8 = 2;
 const SECTORS_PER_TRACK: u8 = 8;

@@ -7,10 +7,13 @@
 
 mod hle;
 mod lle;
+mod target;
+mod x68k_hdc;
 
 use std::{cell::Cell, path::PathBuf};
 
 pub use lle::{SasiAction, SasiPhase};
+pub use x68k_hdc::{X68K_SASI_DRIVE_COUNT, X68kSasiHdc};
 
 use crate::disk::{HddGeometry, HddImage, MountedHdd};
 pub use crate::disk_hle::{buffer_address, drive_index, sector_position, transfer_size};

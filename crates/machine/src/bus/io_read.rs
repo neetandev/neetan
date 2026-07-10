@@ -1,4 +1,4 @@
-use common::{EventKind, debug, warn};
+use common::{debug, warn};
 use device::ga1280a::is_ga1280a_port;
 
 use crate::{
@@ -7,6 +7,7 @@ use crate::{
         FDC_1MB_INPUT_REGISTER, FDC_640K_INPUT_REGISTER, FDC_MEDIA_READ_FIXED_BITS, IO_WAIT_CYCLES,
         MODE_DETECT_NORMAL, SYSTEM_STATUS_DEFAULT,
     },
+    scheduler::EventKind,
 };
 
 impl<T: Tracing> Pc9801Bus<T> {

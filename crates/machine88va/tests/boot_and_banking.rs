@@ -3,7 +3,6 @@
 //! write visible in the memory window.
 
 use common::{Bus, Cpu};
-use machine88va::{Pc88VaMachine, Pc88VaModel};
 
 #[path = "common/harness.rs"]
 mod harness;
@@ -13,7 +12,7 @@ const ROM1_SEED: u8 = 0x30;
 
 #[test]
 fn reset_vector_points_at_rom1() {
-    let mut machine = Pc88VaMachine::new(Pc88VaModel::PC88VA2, synthetic_roms());
+    let mut machine = machine();
     assert_eq!(machine.cpu.cs(), 0xF000);
     assert_eq!(machine.cpu.ip(), 0xFFF0);
 
@@ -23,7 +22,7 @@ fn reset_vector_points_at_rom1() {
 
 #[test]
 fn program_in_ram_drives_a_banking_write() {
-    let mut machine = Pc88VaMachine::new(Pc88VaModel::PC88VA2, synthetic_roms());
+    let mut machine = machine();
 
     // MOV DX, 0x0152 ; MOV AL, 0x05 ; OUT DX, AL ; HLT
     let program: [u8; 7] = [0xBA, 0x52, 0x01, 0xB0, 0x05, 0xEE, 0xF4];

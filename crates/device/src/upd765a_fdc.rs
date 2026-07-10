@@ -45,6 +45,8 @@ pub enum FdcAction {
     StartWriteData,
     /// Start a FORMAT TRACK (WRITE ID) transfer: bus should read CHRN from DMA and format.
     StartFormatTrack,
+    /// Start a SCAN transfer: bus should arm sectors and compare host data.
+    StartScan,
 }
 
 /// The active FDC command during execution phase.
@@ -60,6 +62,8 @@ pub enum FdcCommand {
     WriteData,
     /// FORMAT TRACK / WRITE ID (0x0D).
     FormatTrack,
+    /// SCAN EQUAL (0x11), SCAN LOW OR EQUAL (0x19), or SCAN HIGH OR EQUAL (0x1D).
+    Scan,
 }
 
 /// Snapshot of the µPD765A FDC state.
@@ -93,10 +97,14 @@ pub struct Upd765aFdcState {
     pub result_index: u8,
     /// Pending ST0 per drive (set by Recalibrate/Seek, consumed by Sense Interrupt Status).
     pub drive_st0: [u8; 4],
+    /// Seek statuses completed while another command was busy.
+    pub drive_st0_waiting: [u8; 4],
     /// Current cylinder (track) per drive.
     pub drive_cylinder: [u8; 4],
     /// Interrupt pending - set when a command completes and needs to notify the CPU.
     pub interrupt_pending: bool,
+    /// Whether a SENSE INTERRUPT STATUS result is being drained.
+    pub sense_interrupt_result: bool,
     /// MT (Multi-Track) flag from command byte.
     pub mt: bool,
     /// MF (MFM Mode) flag from command byte.
@@ -137,6 +145,10 @@ pub struct Upd765aFdcState {
     pub drive_has_disk: u8,
     /// Bitmask of drives that have a write-protected disk (bit per drive 0-3).
     pub drive_write_protected: u8,
+    /// Whether SENSE DRIVE STATUS reports the two-side signal.
+    pub report_two_side: bool,
+    /// Whether SENSE DRIVE STATUS reports the command's head-select bit.
+    pub sense_reports_command_head: bool,
     /// Non-DMA (PIO) execution-phase data FIFO (one sector at a time). Unused on
     /// the DMA path; only touched while `exec_pio` is set.
     pub exec_buf: Vec<u8>,
@@ -148,6 +160,14 @@ pub struct Upd765aFdcState {
     pub exec_reading: bool,
     /// True while a non-DMA (PIO) byte transfer is armed.
     pub exec_pio: bool,
+    /// True while a DMA-paced execution-phase byte transfer is armed.
+    pub exec_dma: bool,
+    /// Whether SCAN commands execute (uPD72065) or fail not-ready (PC-98).
+    pub scan_enabled: bool,
+    /// Whether the current SCAN sector still satisfies its condition.
+    pub scan_condition_held: bool,
+    /// Maximum RECALIBRATE step pulses (77 on uPD765A, 255 on uPD72065).
+    pub recalibrate_step_limit: u8,
 }
 
 /// µPD765A FDC controller.
@@ -189,7 +209,7 @@ const MSR_EXM: u8 = 0x20;
 const MSR_CB: u8 = 0x10;
 
 /// MSR bits 3-0: D3B-D0B (Drive Busy) - per-drive seek-in-progress flags.
-const _MSR_DB: u8 = 0x0F;
+const MSR_DB: u8 = 0x0F;
 
 /// ST0 bits 7-6: IC (Interrupt Code) - 01 = abnormal termination.
 pub const ST0_ABNORMAL_TERMINATION: u8 = 0x40;
@@ -199,6 +219,10 @@ pub const ST0_INVALID_COMMAND: u8 = 0x80;
 
 /// ST0 bit 5: SE (Seek End) - seek or recalibrate completed.
 pub const ST0_SEEK_END: u8 = 0x20;
+
+/// ST0 bit 4: EC (Equipment Check) - track 0 was not reached within the
+/// recalibrate step limit, or a fault signal was received from the drive.
+pub const ST0_EQUIPMENT_CHECK: u8 = 0x10;
 
 /// ST0 bit 3: NR (Not Ready) - drive not ready.
 pub const ST0_NOT_READY: u8 = 0x08;
@@ -222,6 +246,12 @@ pub const ST1_DATA_ERROR: u8 = 0x20;
 
 /// ST2 bit 0: MD (Missing Address Mark in Data Field).
 pub const ST2_MISSING_DATA_ADDRESS_MARK: u8 = 0x01;
+
+/// ST2 bit 2: SN (Scan Not Satisfied) - no sector satisfied the SCAN condition.
+pub const ST2_SCAN_NOT_SATISFIED: u8 = 0x04;
+
+/// ST2 bit 3: SH (Scan Equal Hit) - a SCAN EQUAL condition was satisfied.
+pub const ST2_SCAN_EQUAL_HIT: u8 = 0x08;
 
 /// ST2 bit 5: DD (Data Error in Data Field) - CRC error in the data field.
 pub const ST2_DATA_ERROR: u8 = 0x20;
@@ -341,8 +371,10 @@ impl Upd765aFdc {
                 result_count: 0,
                 result_index: 0,
                 drive_st0: [0; 4],
+                drive_st0_waiting: [0; 4],
                 drive_cylinder: [0; 4],
                 interrupt_pending: false,
+                sense_interrupt_result: false,
                 mt: false,
                 mf: false,
                 sk: false,
@@ -363,11 +395,17 @@ impl Upd765aFdc {
                 drive_equipped: DEFAULT_DRIVE_EQUIPPED,
                 drive_has_disk: 0,
                 drive_write_protected: 0,
+                report_two_side: true,
+                sense_reports_command_head: true,
                 exec_buf: Vec::new(),
                 exec_index: 0,
                 exec_len: 0,
                 exec_reading: false,
                 exec_pio: false,
+                exec_dma: false,
+                scan_enabled: false,
+                scan_condition_held: false,
+                recalibrate_step_limit: 77,
             },
         }
     }
@@ -396,6 +434,35 @@ impl Upd765aFdc {
         self.state.interrupt_pending = true;
     }
 
+    /// Moves a drive's seek status into the busy-command waiting latch.
+    pub fn defer_drive_status(&mut self, drive: usize) {
+        self.state.drive_st0_waiting[drive] = self.state.drive_st0[drive];
+        self.state.drive_st0[drive] = 0;
+    }
+
+    /// Reports whether a seek status is waiting for later delivery.
+    pub fn has_waiting_drive_status(&self) -> bool {
+        self.state
+            .drive_st0_waiting
+            .iter()
+            .any(|&status| status != 0)
+    }
+
+    /// Promotes completed seek statuses into SENSE INTERRUPT STATUS requests.
+    pub fn release_waiting_drive_statuses(&mut self) {
+        for drive in 0..self.state.drive_st0.len() {
+            let waiting_status = self.state.drive_st0_waiting[drive];
+            if waiting_status != 0 {
+                self.state.status &= !(1u8 << drive);
+                if self.state.drive_st0[drive] == 0 {
+                    self.state.drive_st0[drive] = waiting_status;
+                    self.state.drive_st0_waiting[drive] = 0;
+                }
+            }
+        }
+        self.state.interrupt_pending = self.state.drive_st0.iter().any(|&status| status != 0);
+    }
+
     /// Reads the main status register (MSR).
     pub fn read_status(&self) -> u8 {
         self.state.status
@@ -410,6 +477,22 @@ impl Upd765aFdc {
 
     /// Reads the data register (FIFO).
     pub fn read_data(&mut self) -> u8 {
+        // DMA-paced execution-phase read: serve the next sector byte without
+        // RQM gating; the external DMA controller paces the transfer.
+        if self.state.phase == FdcPhase::Execution && self.state.exec_dma && self.state.exec_reading
+        {
+            let value = self
+                .state
+                .exec_buf
+                .get(self.state.exec_index)
+                .copied()
+                .unwrap_or(0xFF);
+            if self.state.exec_index < self.state.exec_len {
+                self.state.exec_index += 1;
+            }
+            return value;
+        }
+
         // Non-DMA (PIO) execution-phase read: serve the next sector byte. RQM is
         // cleared until the bus releases the next byte via `pio_release_byte`.
         if self.state.phase == FdcPhase::Execution && self.state.exec_pio && self.state.exec_reading
@@ -441,7 +524,8 @@ impl Upd765aFdc {
         if self.state.result_index >= self.state.result_count {
             self.state.phase = FdcPhase::Idle;
             self.state.status = MSR_RQM;
-            self.state.interrupt_pending = false;
+            self.state.sense_interrupt_result = false;
+            self.state.interrupt_pending = self.state.drive_st0.iter().any(|&status| status != 0);
         }
 
         value
@@ -484,13 +568,23 @@ impl Upd765aFdc {
                 }
             }
             FdcPhase::Execution => {
-                // Non-DMA (PIO) execution-phase write: accept the next sector byte.
-                if self.state.exec_pio && !self.state.exec_reading {
+                // Execution-phase write: accept (or, for SCAN, compare) the next
+                // sector byte on either the PIO or the DMA-paced path.
+                if (self.state.exec_pio || self.state.exec_dma) && !self.state.exec_reading {
                     if self.state.exec_index < self.state.exec_len {
-                        self.state.exec_buf[self.state.exec_index] = value;
+                        if self.state.active_command == FdcCommand::Scan {
+                            let disk_byte = self.state.exec_buf[self.state.exec_index];
+                            if !Self::scan_byte_holds(self.state.command, disk_byte, value) {
+                                self.state.scan_condition_held = false;
+                            }
+                        } else {
+                            self.state.exec_buf[self.state.exec_index] = value;
+                        }
                         self.state.exec_index += 1;
                     }
-                    self.state.status = MSR_EXM | MSR_CB;
+                    if self.state.exec_pio {
+                        self.state.status = MSR_EXM | MSR_CB;
+                    }
                 }
                 FdcAction::None
             }
@@ -589,6 +683,94 @@ impl Upd765aFdc {
         &self.state.exec_buf[..self.state.exec_len]
     }
 
+    /// Begins a DMA-paced READ execution: loads one sector's bytes into the
+    /// FIFO. The external DMA controller pulls them through the data register;
+    /// the MSR keeps only CB set, without the non-DMA NDM/EXM semantics.
+    pub fn begin_execution_read(&mut self, sector: &[u8]) {
+        self.state.exec_buf.clear();
+        self.state.exec_buf.extend_from_slice(sector);
+        self.state.exec_index = 0;
+        self.state.exec_len = sector.len();
+        self.state.exec_reading = true;
+        self.state.exec_dma = true;
+        self.state.exec_pio = false;
+        self.state.phase = FdcPhase::Execution;
+        self.state.status = MSR_CB;
+    }
+
+    /// Begins a DMA-paced WRITE execution: arms the FIFO to accept `len` bytes
+    /// pushed through the data register by the external DMA controller.
+    pub fn begin_execution_write(&mut self, len: usize) {
+        self.state.exec_buf.clear();
+        self.state.exec_buf.resize(len, 0);
+        self.state.exec_index = 0;
+        self.state.exec_len = len;
+        self.state.exec_reading = false;
+        self.state.exec_dma = true;
+        self.state.exec_pio = false;
+        self.state.phase = FdcPhase::Execution;
+        self.state.status = MSR_CB;
+    }
+
+    /// Begins a SCAN comparison for one sector: loads the recorded disk bytes
+    /// and arms the FIFO so host bytes written to the data register are
+    /// compared against them under the active SCAN condition.
+    pub fn begin_scan_sector(&mut self, sector: &[u8]) {
+        self.state.exec_buf.clear();
+        self.state.exec_buf.extend_from_slice(sector);
+        self.state.exec_index = 0;
+        self.state.exec_len = sector.len();
+        self.state.exec_reading = false;
+        self.state.exec_dma = true;
+        self.state.exec_pio = false;
+        self.state.scan_condition_held = true;
+        self.state.phase = FdcPhase::Execution;
+        self.state.status = MSR_CB;
+    }
+
+    /// Returns whether a DMA-paced execution-phase byte transfer is armed.
+    pub fn execution_active(&self) -> bool {
+        self.state.exec_dma && self.state.phase == FdcPhase::Execution
+    }
+
+    /// Returns whether the current execution-phase sector FIFO is exhausted.
+    pub fn execution_sector_done(&self) -> bool {
+        self.state.exec_index >= self.state.exec_len
+    }
+
+    /// Returns the accumulated execution-phase write bytes for the current sector.
+    pub fn execution_write_buf(&self) -> &[u8] {
+        &self.state.exec_buf[..self.state.exec_len]
+    }
+
+    /// Returns whether the current SCAN sector satisfied its condition.
+    pub fn scan_sector_satisfied(&self) -> bool {
+        self.state.scan_condition_held
+    }
+
+    /// Returns the SCAN record step (1 = every sector, 2 = alternate sectors).
+    pub fn scan_step(&self) -> u8 {
+        if self.state.dtl & 0x03 == 2 { 2 } else { 1 }
+    }
+
+    /// Returns whether the active SCAN command is SCAN EQUAL.
+    pub fn is_scan_equal(&self) -> bool {
+        self.state.command == CMD_SCAN_EQUAL
+    }
+
+    /// Evaluates one SCAN byte pair; a host byte of 0xFF always matches.
+    fn scan_byte_holds(command: u8, disk_byte: u8, host_byte: u8) -> bool {
+        if host_byte == 0xFF {
+            return true;
+        }
+        match command {
+            CMD_SCAN_EQUAL => disk_byte == host_byte,
+            CMD_SCAN_LOW_OR_EQUAL => disk_byte <= host_byte,
+            CMD_SCAN_HIGH_OR_EQUAL => disk_byte >= host_byte,
+            _ => false,
+        }
+    }
+
     /// Completes a data command successfully, filling the 7-byte result buffer.
     pub fn complete_success(&mut self) {
         self.complete_success_with_status(0x00, 0x00);
@@ -647,16 +829,11 @@ impl Upd765aFdc {
     /// Returns `true` if the command should end (EOT reached without MT continuation).
     pub fn advance_sector(&mut self) -> bool {
         if self.state.r == self.state.eot {
-            self.state.r = 1;
-            if self.state.mt {
-                self.state.h ^= 1;
-                if self.state.h == 1 {
-                    // Flipped to head 1 - continue reading other side.
-                    return false;
-                }
-                // Flipped back to head 0 - both heads done.
+            if self.state.mt && self.state.h == 0 {
+                self.state.h = 1;
+                self.state.r = 1;
+                return false;
             }
-            self.state.c += 1;
             return true;
         }
         self.state.r += 1;
@@ -700,8 +877,11 @@ impl Upd765aFdc {
         self.state.result_count = 0;
         self.state.result_index = 0;
         self.state.drive_st0 = [0; 4];
+        self.state.drive_st0_waiting = [0; 4];
         self.state.interrupt_pending = false;
+        self.state.sense_interrupt_result = false;
         self.state.exec_pio = false;
+        self.state.exec_dma = false;
         self.state.exec_index = 0;
         self.state.exec_len = 0;
         // Keep drive_cylinder - track positions survive reset.
@@ -723,7 +903,11 @@ impl Upd765aFdc {
             // Sense Drive Status: return ST3.
             CMD_SENSE_DRIVE_STATUS => {
                 let drive = (self.state.params[0] & HD_US_DRIVE_MASK) as usize;
-                let head = (self.state.params[0] >> HD_US_HEAD_SHIFT) & 0x01;
+                let head = if self.state.sense_reports_command_head {
+                    (self.state.params[0] >> HD_US_HEAD_SHIFT) & 0x01
+                } else {
+                    0
+                };
                 let track0 = if self.state.drive_cylinder[drive] == 0 {
                     ST3_TRACK_0
                 } else {
@@ -739,7 +923,11 @@ impl Upd765aFdc {
                 } else {
                     0x00
                 };
-                let two_side = if equipped { ST3_TWO_SIDE } else { 0 };
+                let two_side = if equipped && self.state.report_two_side {
+                    ST3_TWO_SIDE
+                } else {
+                    0
+                };
                 let write_protect = if self.state.drive_write_protected & (1 << drive) != 0 {
                     ST3_WRITE_PROTECT
                 } else {
@@ -766,26 +954,44 @@ impl Upd765aFdc {
                 FdcAction::StartReadData
             }
 
-            // Recalibrate: seek to track 0.
+            // Recalibrate: step toward track 0, at most `recalibrate_step_limit`
+            // pulses. If track 0 is not reached the command terminates with
+            // Equipment Check and the head stays short of track 0.
             CMD_RECALIBRATE => {
                 let drive = (self.state.params[0] & HD_US_DRIVE_MASK) as usize;
-                self.state.drive_cylinder[drive] = 0;
-                // ST0: Seek End | drive number.
-                self.state.drive_st0[drive] = ST0_SEEK_END | (drive as u8);
+                let drive_busy = (1u8 << drive) & MSR_DB;
+                let position = self.state.drive_cylinder[drive];
+                let limit = self.state.recalibrate_step_limit;
+                if position > limit {
+                    self.state.drive_cylinder[drive] = position - limit;
+                    self.state.drive_st0[drive] = ST0_ABNORMAL_TERMINATION
+                        | ST0_SEEK_END
+                        | ST0_EQUIPMENT_CHECK
+                        | (drive as u8);
+                } else {
+                    self.state.drive_cylinder[drive] = 0;
+                    // ST0: Seek End | drive number.
+                    self.state.drive_st0[drive] = ST0_SEEK_END | (drive as u8);
+                }
                 self.state.interrupt_pending = true;
                 self.state.phase = FdcPhase::Idle;
-                self.state.status = MSR_RQM;
+                self.state.status = MSR_RQM | drive_busy;
                 FdcAction::ScheduleSeekInterrupt
             }
 
             // Sense Interrupt Status: return pending ST0 + PCN.
             CMD_SENSE_INTERRUPT_STATUS => {
+                self.state.sense_interrupt_result = true;
                 if let Some(drive) = self.pending_interrupt_drive() {
                     self.state.result[0] = self.state.drive_st0[drive];
                     self.state.result[1] = self.state.drive_cylinder[drive];
                     self.state.drive_st0[drive] = 0;
+                    self.state.status &= !(1u8 << drive);
+                    self.state.interrupt_pending =
+                        self.state.drive_st0.iter().any(|&status| status != 0);
                     self.enter_result(2);
                 } else {
+                    self.state.interrupt_pending = false;
                     // No pending interrupt - return invalid command status.
                     self.state.result[0] = ST0_INVALID_COMMAND;
                     self.enter_result(1);
@@ -805,13 +1011,14 @@ impl Upd765aFdc {
             // Seek: move to target cylinder.
             CMD_SEEK => {
                 let drive = (self.state.params[0] & HD_US_DRIVE_MASK) as usize;
+                let drive_busy = (1u8 << drive) & MSR_DB;
                 let target = self.state.params[1];
                 self.state.drive_cylinder[drive] = target;
                 // ST0: Seek End | drive number.
                 self.state.drive_st0[drive] = ST0_SEEK_END | (drive as u8);
                 self.state.interrupt_pending = true;
                 self.state.phase = FdcPhase::Idle;
-                self.state.status = MSR_RQM;
+                self.state.status = MSR_RQM | drive_busy;
                 FdcAction::ScheduleSeekInterrupt
             }
 
@@ -839,12 +1046,22 @@ impl Upd765aFdc {
                 FdcAction::StartFormatTrack
             }
 
-            // Remaining data transfer commands - fail with "not ready".
+            // SCAN EQUAL / SCAN LOW OR EQUAL / SCAN HIGH OR EQUAL. Executed
+            // only when scan support is enabled (uPD72065); the PC-98 path
+            // keeps failing them with "not ready".
             CMD_SCAN_EQUAL | CMD_SCAN_LOW_OR_EQUAL | CMD_SCAN_HIGH_OR_EQUAL => {
                 self.state.hd_us = self.state.params[0];
                 self.extract_data_params();
-                self.complete_error(ST0_NOT_READY, 0x00, 0x00);
-                FdcAction::None
+                if !self.state.scan_enabled {
+                    self.complete_error(ST0_NOT_READY, 0x00, 0x00);
+                    return FdcAction::None;
+                }
+                self.state.active_command = FdcCommand::Scan;
+                self.state.tc = false;
+                self.state.scan_condition_held = true;
+                self.state.phase = FdcPhase::Execution;
+                self.state.status = MSR_CB;
+                FdcAction::StartScan
             }
 
             // Unknown/unimplemented command: return invalid command status.
@@ -874,6 +1091,7 @@ impl Upd765aFdc {
         self.state.result_index = 0;
         self.state.status = MSR_RQM | MSR_DIO | MSR_CB;
         self.state.exec_pio = false;
+        self.state.exec_dma = false;
     }
 
     fn pending_interrupt_drive(&self) -> Option<usize> {
@@ -1393,6 +1611,151 @@ mod tests {
         assert_eq!(fdc.state.drive_cylinder[0], 0);
         assert_eq!(fdc.state.drive_st0[0], 0x20);
         assert_eq!(fdc.state.phase, FdcPhase::Idle);
+        assert_eq!(fdc.read_status() & MSR_DB, 0x01);
+    }
+
+    #[test]
+    fn recalibrate_default_limit_is_unchanged_for_normal_positions() {
+        // PC-98 regression pin: recalibrating from any cylinder within the
+        // default 77-step limit reaches track 0 with the unchanged ST0.
+        let mut fdc = Upd765aFdc::new();
+        assert_eq!(fdc.state.recalibrate_step_limit, 77);
+        fdc.state.drive_cylinder[1] = 77;
+
+        fdc.write_data(0x07);
+        fdc.write_data(0x01);
+        assert_eq!(fdc.state.drive_cylinder[1], 0);
+        assert_eq!(fdc.state.drive_st0[1], ST0_SEEK_END | 0x01);
+    }
+
+    #[test]
+    fn recalibrate_over_limit_sets_equipment_check() {
+        let mut fdc = Upd765aFdc::new();
+        fdc.state.drive_cylinder[0] = 100;
+
+        fdc.write_data(0x07);
+        fdc.write_data(0x00);
+        assert_eq!(fdc.state.drive_cylinder[0], 23);
+        assert_eq!(
+            fdc.state.drive_st0[0],
+            ST0_ABNORMAL_TERMINATION | ST0_SEEK_END | ST0_EQUIPMENT_CHECK
+        );
+    }
+
+    #[test]
+    fn scan_disabled_keeps_not_ready_error() {
+        // PC-98 regression pin: with scan support disabled the SCAN commands
+        // keep failing with abnormal termination and Not Ready.
+        let mut fdc = Upd765aFdc::new();
+        assert!(!fdc.state.scan_enabled);
+
+        fdc.write_data(0x11);
+        for parameter in [0x00u8, 0, 0, 1, 3, 8, 0x74, 1] {
+            fdc.write_data(parameter);
+        }
+        assert_eq!(fdc.state.phase, FdcPhase::Result);
+        assert_eq!(fdc.read_data(), ST0_ABNORMAL_TERMINATION | ST0_NOT_READY);
+    }
+
+    #[test]
+    fn scan_enabled_starts_execution() {
+        let mut fdc = Upd765aFdc::new();
+        fdc.state.scan_enabled = true;
+
+        fdc.write_data(0x11);
+        let mut action = FdcAction::None;
+        for parameter in [0x00u8, 0, 0, 1, 3, 8, 0x74, 1] {
+            action = fdc.write_data(parameter);
+        }
+        assert_eq!(action, FdcAction::StartScan);
+        assert_eq!(fdc.state.phase, FdcPhase::Execution);
+        assert_eq!(fdc.state.active_command, FdcCommand::Scan);
+        assert_eq!(fdc.scan_step(), 1);
+    }
+
+    #[test]
+    fn scan_comparison_tracks_condition_per_sector() {
+        let mut fdc = Upd765aFdc::new();
+        fdc.state.scan_enabled = true;
+
+        fdc.write_data(0x11);
+        for parameter in [0x00u8, 0, 0, 1, 0, 8, 0x74, 1] {
+            fdc.write_data(parameter);
+        }
+
+        // Equal comparison with a 0xFF wildcard in the host data.
+        fdc.begin_scan_sector(&[0x10, 0x20, 0x30]);
+        fdc.write_data(0x10);
+        fdc.write_data(0xFF);
+        fdc.write_data(0x30);
+        assert!(fdc.execution_sector_done());
+        assert!(fdc.scan_sector_satisfied());
+
+        // A mismatching byte clears the verdict for the next sector.
+        fdc.begin_scan_sector(&[0x10, 0x20, 0x30]);
+        fdc.write_data(0x10);
+        fdc.write_data(0x21);
+        fdc.write_data(0x30);
+        assert!(!fdc.scan_sector_satisfied());
+    }
+
+    #[test]
+    fn scan_low_and_high_conditions_compare_disk_against_host() {
+        assert!(Upd765aFdc::scan_byte_holds(
+            CMD_SCAN_LOW_OR_EQUAL,
+            0x10,
+            0x20
+        ));
+        assert!(!Upd765aFdc::scan_byte_holds(
+            CMD_SCAN_LOW_OR_EQUAL,
+            0x21,
+            0x20
+        ));
+        assert!(Upd765aFdc::scan_byte_holds(
+            CMD_SCAN_HIGH_OR_EQUAL,
+            0x21,
+            0x20
+        ));
+        assert!(!Upd765aFdc::scan_byte_holds(
+            CMD_SCAN_HIGH_OR_EQUAL,
+            0x10,
+            0x20
+        ));
+        assert!(Upd765aFdc::scan_byte_holds(
+            CMD_SCAN_HIGH_OR_EQUAL,
+            0x00,
+            0xFF
+        ));
+    }
+
+    #[test]
+    fn dma_execution_read_serves_bytes_without_ndm() {
+        let mut fdc = Upd765aFdc::new();
+        fdc.write_data(0x06);
+        for parameter in [0x00u8, 0, 0, 1, 0, 8, 0x74, 0xFF] {
+            fdc.write_data(parameter);
+        }
+        fdc.begin_execution_read(&[0xAA, 0xBB]);
+        assert_eq!(fdc.read_status() & MSR_EXM, 0);
+        assert_eq!(fdc.read_status() & MSR_RQM, 0);
+        assert_eq!(fdc.read_data(), 0xAA);
+        assert_eq!(fdc.read_data(), 0xBB);
+        assert!(fdc.execution_sector_done());
+    }
+
+    #[test]
+    fn dma_execution_write_accumulates_bytes() {
+        let mut fdc = Upd765aFdc::new();
+        fdc.write_data(0x05);
+        for parameter in [0x00u8, 0, 0, 1, 0, 8, 0x74, 0xFF] {
+            fdc.write_data(parameter);
+        }
+        fdc.begin_execution_write(2);
+        fdc.write_data(0x12);
+        fdc.write_data(0x34);
+        assert!(fdc.execution_sector_done());
+        assert_eq!(fdc.execution_write_buf(), &[0x12, 0x34]);
+        assert_eq!(fdc.read_status() & MSR_EXM, 0);
     }
 
     #[test]
@@ -1406,6 +1769,7 @@ mod tests {
 
         assert_eq!(fdc.state.drive_cylinder[1], 42);
         assert_eq!(fdc.state.drive_st0[1], 0x21);
+        assert_eq!(fdc.read_status() & MSR_DB, 0x02);
     }
 
     #[test]
@@ -1413,10 +1777,12 @@ mod tests {
         let mut fdc = Upd765aFdc::new();
         fdc.write_data(0x07);
         fdc.write_data(0x02); // Drive 2
+        assert_eq!(fdc.read_status() & MSR_DB, 0x04);
 
         // Now Sense Interrupt Status.
         let action = fdc.write_data(0x08);
         assert_eq!(action, FdcAction::None);
+        assert_eq!(fdc.read_status() & MSR_DB, 0);
         assert_eq!(fdc.state.phase, FdcPhase::Result);
 
         let st0 = fdc.read_data();
@@ -1424,6 +1790,46 @@ mod tests {
         let pcn = fdc.read_data();
         assert_eq!(pcn, 0); // Track 0 after recalibrate
         assert_eq!(fdc.state.phase, FdcPhase::Idle);
+    }
+
+    #[test]
+    fn deferred_seek_keeps_drive_busy_until_completion() {
+        let mut fdc = Upd765aFdc::new();
+        fdc.write_data(CMD_SEEK);
+        fdc.write_data(0x01);
+        fdc.write_data(42);
+        fdc.defer_drive_status(1);
+
+        assert_eq!(fdc.state.drive_st0[1], 0);
+        assert_eq!(fdc.state.drive_st0_waiting[1], ST0_SEEK_END | 0x01);
+        assert_eq!(fdc.read_status() & MSR_DB, 0x02);
+
+        fdc.release_waiting_drive_statuses();
+        assert_eq!(fdc.state.drive_st0[1], ST0_SEEK_END | 0x01);
+        assert_eq!(fdc.state.drive_st0_waiting[1], 0);
+        assert_eq!(fdc.read_status() & MSR_DB, 0);
+        assert!(fdc.state.interrupt_pending);
+    }
+
+    #[test]
+    fn sense_interrupt_consumes_one_drive_status_and_retains_the_others() {
+        let mut fdc = Upd765aFdc::new();
+        fdc.state.drive_st0[0] = ST0_SEEK_END;
+        fdc.state.drive_st0[1] = ST0_READY_LINE_CHANGED | 0x01;
+        fdc.state.interrupt_pending = true;
+
+        fdc.write_data(CMD_SENSE_INTERRUPT_STATUS);
+        assert_eq!(fdc.read_data(), ST0_SEEK_END);
+        assert_eq!(fdc.read_data(), 0);
+        assert_eq!(fdc.state.drive_st0[0], 0);
+        assert_eq!(fdc.state.drive_st0[1], ST0_READY_LINE_CHANGED | 0x01);
+        assert!(fdc.state.interrupt_pending);
+
+        fdc.write_data(CMD_SENSE_INTERRUPT_STATUS);
+        assert_eq!(fdc.read_data(), ST0_READY_LINE_CHANGED | 0x01);
+        assert_eq!(fdc.read_data(), 0);
+        assert_eq!(fdc.state.drive_st0, [0; 4]);
+        assert!(!fdc.state.interrupt_pending);
     }
 
     #[test]

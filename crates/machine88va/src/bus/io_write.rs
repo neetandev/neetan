@@ -165,7 +165,7 @@ impl Pc88VaBus {
         let port010 = self.sysport.port010;
         let port040 = self.sysport.port040;
         let combined = (port010 & 0x07) | ((port010 & 0x08) << 2) | ((port040 & 0x06) << 2);
-        let host_time = (self.host_local_time_fn)();
+        let host_time = (self.host_date_time_provider)().to_bcd_bytes();
         self.rtc.write_port(combined, &host_time);
     }
 

@@ -6,11 +6,15 @@
 //! - **HDM** (.hdm): Headerless raw sector format for 2HD floppies.
 //! - **NFD** (.nfd): T98Next format with per-sector metadata (R0 and R1 revisions).
 //! - **2D** (.2d): Headerless raw sector format for Sharp X1 2D floppies.
+//! - **DIM** (.dim): X68000 DIFC.X container with a per-track saved-flag table.
+//! - **XDF** (.xdf/.2hd): Headerless raw sector format for X68000 2HD floppies.
 
 pub mod d88;
+pub mod dim;
 pub mod hdm;
 pub mod nfd;
 pub mod two_d;
+pub mod xdf;
 
 use std::{
     error::Error,
@@ -40,6 +44,10 @@ pub enum FloppyFormat {
     NfdR1,
     /// Headerless raw 2D sector format (.2d).
     TwoD,
+    /// X68000 DIFC.X container (.dim).
+    Dim,
+    /// Headerless raw X68000 2HD sector format (.xdf/.2hd).
+    Xdf,
 }
 
 /// A parsed floppy disk image.
@@ -49,6 +57,8 @@ pub struct FloppyImage {
     disk: D88Disk,
     /// Original image format.
     pub format: FloppyFormat,
+    /// Original container header preserved for lossless re-emit (DIM only).
+    container_header: Option<Box<[u8; dim::DIM_HEADER_SIZE]>>,
 }
 
 impl Deref for FloppyImage {
@@ -70,6 +80,7 @@ impl FloppyImage {
         Self {
             disk,
             format: FloppyFormat::D88,
+            container_header: None,
         }
     }
 
@@ -79,6 +90,7 @@ impl FloppyImage {
         Ok(Self {
             disk,
             format: FloppyFormat::D88,
+            container_header: None,
         })
     }
 
@@ -90,6 +102,7 @@ impl FloppyImage {
         Ok(Self {
             disk,
             format: FloppyFormat::D77,
+            container_header: None,
         })
     }
 
@@ -99,6 +112,7 @@ impl FloppyImage {
         Ok(Self {
             disk,
             format: FloppyFormat::Hdm,
+            container_header: None,
         })
     }
 
@@ -109,7 +123,11 @@ impl FloppyImage {
             NfdRevision::R0 => FloppyFormat::NfdR0,
             NfdRevision::R1 => FloppyFormat::NfdR1,
         };
-        Ok(Self { disk, format })
+        Ok(Self {
+            disk,
+            format,
+            container_header: None,
+        })
     }
 
     /// Parses a 2D floppy image from raw bytes.
@@ -118,6 +136,27 @@ impl FloppyImage {
         Ok(Self {
             disk,
             format: FloppyFormat::TwoD,
+            container_header: None,
+        })
+    }
+
+    /// Parses a DIM floppy image from raw bytes, keeping the container header.
+    pub fn from_dim_bytes(data: &[u8]) -> Result<Self, FloppyError> {
+        let (disk, header) = dim::from_bytes(data).map_err(FloppyError::Dim)?;
+        Ok(Self {
+            disk,
+            format: FloppyFormat::Dim,
+            container_header: Some(header),
+        })
+    }
+
+    /// Parses an XDF floppy image from raw bytes.
+    pub fn from_xdf_bytes(data: &[u8]) -> Result<Self, FloppyError> {
+        let disk = xdf::from_bytes(data).map_err(FloppyError::Xdf)?;
+        Ok(Self {
+            disk,
+            format: FloppyFormat::Xdf,
+            container_header: None,
         })
     }
 
@@ -130,6 +169,8 @@ impl FloppyImage {
             FloppyFormat::NfdR0 => "NFD R0",
             FloppyFormat::NfdR1 => "NFD R1",
             FloppyFormat::TwoD => "2D",
+            FloppyFormat::Dim => "DIM",
+            FloppyFormat::Xdf => "XDF",
         }
     }
 
@@ -141,6 +182,8 @@ impl FloppyImage {
             FloppyFormat::NfdR0 => nfd::to_bytes_r0(&self.disk),
             FloppyFormat::NfdR1 => nfd::to_bytes_r1(&self.disk),
             FloppyFormat::TwoD => two_d::to_bytes(&self.disk),
+            FloppyFormat::Dim => dim::to_bytes(&self.disk, self.dim_header()),
+            FloppyFormat::Xdf => xdf::to_bytes(&self.disk),
         }
     }
 
@@ -164,7 +207,29 @@ impl FloppyImage {
                     Some("2D cannot represent the current track layout")
                 }
             }
+            FloppyFormat::Dim => {
+                if dim::is_representable(&self.disk, self.dim_header()) {
+                    None
+                } else {
+                    Some("DIM cannot represent the current track layout")
+                }
+            }
+            FloppyFormat::Xdf => {
+                if xdf::is_representable(&self.disk) {
+                    None
+                } else {
+                    Some("XDF cannot represent the current track layout")
+                }
+            }
         }
+    }
+
+    /// Returns the preserved DIM header, or a blank 2HD header when absent.
+    fn dim_header(&self) -> &[u8; dim::DIM_HEADER_SIZE] {
+        const DEFAULT_DIM_HEADER: [u8; dim::DIM_HEADER_SIZE] = dim::blank_header();
+        self.container_header
+            .as_deref()
+            .unwrap_or(&DEFAULT_DIM_HEADER)
     }
 }
 
@@ -278,9 +343,9 @@ impl MountedFloppy {
         }
     }
 
-    /// Re-emits the entire image if dirty. The dirty flag remains set
-    /// only when an earlier per-sector write-through reported an error,
-    /// so under normal use this is a no-op.
+    /// Re-emits the entire image if dirty and reparses it so per-sector
+    /// source offsets match the rewritten file. The dirty flag remains set
+    /// only when a write-through or re-emit step reported an error.
     pub fn flush_if_dirty(&mut self) {
         if !self.dirty {
             return;
@@ -300,7 +365,13 @@ impl MountedFloppy {
             error!("Floppy eject-time flush failed: {err}");
             return;
         }
-        self.dirty = false;
+        match load_floppy_image(backend.path(), &bytes) {
+            Ok(reparsed) => {
+                self.image = reparsed;
+                self.dirty = false;
+            }
+            Err(err) => error!("Floppy reparse after dirty flush failed: {err}"),
+        }
     }
 
     /// Flushes dirty fallback data and any buffered successful writes.
@@ -332,6 +403,8 @@ pub fn load_floppy_image(path: &Path, data: &[u8]) -> Result<FloppyImage, Floppy
         Some("nfd") => FloppyImage::from_nfd_bytes(data),
         Some("2d") => FloppyImage::from_2d_bytes(data),
         Some("d77") => FloppyImage::from_d77_bytes(data),
+        Some("dim") => FloppyImage::from_dim_bytes(data),
+        Some("xdf") | Some("2hd") => FloppyImage::from_xdf_bytes(data),
         Some("d88") | Some("d98") | Some("88d") | Some("98d") => FloppyImage::from_d88_bytes(data),
         _ => FloppyImage::from_d88_bytes(data),
     }
@@ -348,6 +421,10 @@ pub enum FloppyError {
     Nfd(nfd::NfdError),
     /// 2D format parsing error.
     TwoD(two_d::TwoDError),
+    /// DIM format parsing error.
+    Dim(dim::DimError),
+    /// XDF format parsing error.
+    Xdf(xdf::XdfError),
     /// File extension not recognized as a supported floppy format.
     UnrecognizedFormat,
 }
@@ -359,6 +436,8 @@ impl fmt::Display for FloppyError {
             FloppyError::Hdm(err) => write!(f, "{err}"),
             FloppyError::Nfd(err) => write!(f, "{err}"),
             FloppyError::TwoD(err) => write!(f, "{err}"),
+            FloppyError::Dim(err) => write!(f, "{err}"),
+            FloppyError::Xdf(err) => write!(f, "{err}"),
             FloppyError::UnrecognizedFormat => write!(f, "unrecognized floppy image format"),
         }
     }

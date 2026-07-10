@@ -1,6 +1,6 @@
 //! Shared tracing infrastructure for the machine and HLE DOS.
 
-use crate::{CpuAccess, MemoryAccess, ScheduledEvent};
+use crate::{CpuAccess, MemoryAccess};
 
 /// High-level HLE DOS boot stages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +35,7 @@ pub trait Tracing {
     /// Update the current CPU cycle counter for timestamping trace output.
     fn set_cycle(&mut self, _cycle: u64) {}
     /// A scheduled event fired.
-    fn trace_event(&mut self, _event: &ScheduledEvent) {}
+    fn trace_event(&mut self, _fire_cycle: u64, _kind: u8) {}
     /// An I/O port was read.
     fn trace_io_read(&mut self, _port: u16, _value: u8) {}
     /// An I/O port was written.

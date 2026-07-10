@@ -12,7 +12,7 @@ mod sub_io_read;
 mod sub_io_write;
 mod sub_mem;
 
-use common::{JoystickState, NoTracing, Tracing};
+use common::{HostDateTimeProvider, JoystickState, NoTracing, Tracing};
 use device::{
     beeper::Beeper,
     cdrom::CdImage,
@@ -160,71 +160,6 @@ pub(crate) const TIGHT_SLICE: u64 = 16;
 /// Default host local-time source: returns the current system time as the
 /// 6-byte BCD buffer the uPD4990A expects:
 /// `[year, month<<4|day_of_week, day, hour, minute, second]`.
-pub(crate) fn default_local_time() -> [u8; 6] {
-    fn to_bcd(value: u8) -> u8 {
-        ((value / 10) << 4) | (value % 10)
-    }
-    use std::time::SystemTime;
-    let seconds = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let days = (seconds / 86_400) as u32;
-    let time_of_day = (seconds % 86_400) as u32;
-    let hour = (time_of_day / 3_600) as u8;
-    let minute = ((time_of_day % 3_600) / 60) as u8;
-    let second = (time_of_day % 60) as u8;
-    // 1970-01-01 was a Thursday (day_of_week 4).
-    let day_of_week = ((days + 4) % 7) as u8;
-    let mut year = 1970u32;
-    let mut remaining = days;
-    loop {
-        let year_days =
-            if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) {
-                366
-            } else {
-                365
-            };
-        if remaining < year_days {
-            break;
-        }
-        remaining -= year_days;
-        year += 1;
-    }
-    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
-    let month_days = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut month = 1u8;
-    for &days_in_month in &month_days {
-        if remaining < days_in_month {
-            break;
-        }
-        remaining -= days_in_month;
-        month += 1;
-    }
-    let day = remaining as u8 + 1;
-    [
-        to_bcd((year % 100) as u8),
-        (month << 4) | day_of_week,
-        to_bcd(day),
-        to_bcd(hour),
-        to_bcd(minute),
-        to_bcd(second),
-    ]
-}
-
 /// PC-8801 system bus shared by the main and sub CPUs.
 pub struct Pc8801Bus<T: Tracing = NoTracing> {
     pub(crate) memory: Pc8801Memory,
@@ -251,7 +186,7 @@ pub struct Pc8801Bus<T: Tracing = NoTracing> {
     /// i8251 USART (RS-232C, ports 0x20/0x21), modeled as no-cable.
     pub(crate) serial: I8251Serial,
     /// Host BCD local-time source used by the RTC's TIME_READ command.
-    pub(crate) host_local_time_fn: fn() -> [u8; 6],
+    pub(crate) host_date_time_provider: HostDateTimeProvider,
     /// Port 0x10 write latch (RTC command/data lines and printer data).
     pub(crate) port10: u8,
     /// Level-1 kanji ROM read-window address latch (ports 0xE8/0xE9).
@@ -479,8 +414,8 @@ impl<T: Tracing> Pc8801Bus<T> {
 
     /// Overrides the host BCD local-time source used by the RTC. Intended for
     /// tests that need a deterministic clock.
-    pub fn set_host_local_time_fn(&mut self, host_local_time_fn: fn() -> [u8; 6]) {
-        self.host_local_time_fn = host_local_time_fn;
+    pub(crate) fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
+        self.host_date_time_provider = provider;
     }
 
     /// Sets the N88-BASIC boot mode (DIP setting), supplied by the application
@@ -1236,7 +1171,7 @@ impl<T: Tracing> Pc8801Bus<T> {
         if self.port10 & PORT10_RTC_DIN != 0 {
             command |= RTC_CHIP_DIN;
         }
-        let host_time = (self.host_local_time_fn)();
+        let host_time = (self.host_date_time_provider)().to_bcd_bytes();
         self.rtc.write_port(command, &host_time);
     }
 

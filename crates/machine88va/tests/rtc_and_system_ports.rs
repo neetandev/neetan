@@ -2,17 +2,23 @@
 //! and the SYSPORTVA mode switch, speed/DIP-switch and CRT-mode ports, all driven
 //! through the public bus surface.
 
-use common::Bus;
+use common::{Bus, HostDateTime, Machine as _};
 use machine88va::Pc88VaMachine;
 
 #[path = "common/harness.rs"]
 mod harness;
 use harness::*;
 
-const TEST_TIME: [u8; 6] = [0x26, 0x31, 0x03, 0x14, 0x30, 0x45];
-
-fn test_time() -> [u8; 6] {
-    TEST_TIME
+fn test_time() -> HostDateTime {
+    HostDateTime {
+        year: 2026,
+        month: 3,
+        day: 3,
+        day_of_week: 1,
+        hour: 14,
+        minute: 30,
+        second: 45,
+    }
 }
 
 fn rtc_stb_command(machine: &mut Pc88VaMachine, command: u8) {
@@ -38,7 +44,7 @@ fn rtc_cdat(machine: &mut Pc88VaMachine) -> u8 {
 #[test]
 fn rtc_time_read_shifts_out_calendar() {
     let mut machine = machine();
-    machine.bus.set_host_local_time_fn(test_time);
+    machine.set_host_date_time_provider(test_time);
 
     // Time Read loads the calendar; Register Shift starts the readout.
     rtc_stb_command(&mut machine, 0x03);

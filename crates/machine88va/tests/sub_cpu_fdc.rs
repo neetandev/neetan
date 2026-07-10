@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use machine88va::{LoadedRoms, Pc88VaMachine, Pc88VaModel, load_rom_set};
+use machine88va::{LoadedRoms, load_rom_set};
 
 #[path = "common/harness.rs"]
 mod harness;
@@ -42,7 +42,7 @@ fn sub_cpu_executes_its_rom_via_the_interleave() {
     subsys[0x0004] = 0x18;
     subsys[0x0005] = 0xFE;
 
-    let mut machine = Pc88VaMachine::new(Pc88VaModel::PC88VA2, roms_with_subsys(subsys));
+    let mut machine = machine_from_roms(roms_with_subsys(subsys));
 
     // The sub CPU starts at its reset vector.
     assert_eq!(machine.sub_cpu.state.pc, 0x0000);
@@ -82,7 +82,7 @@ fn real_rom_set_loads_with_subsys_and_sub_cpu_boots() {
         "disk.rom is the 8 KiB sub-CPU ROM"
     );
 
-    let mut machine = Pc88VaMachine::new(Pc88VaModel::PC88VA2, roms);
+    let mut machine = machine_from_roms(roms);
     assert_eq!(machine.sub_cpu.state.pc, 0x0000);
 
     machine.run_for(200_000);

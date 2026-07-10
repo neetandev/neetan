@@ -23,6 +23,7 @@ mod text_normalizer;
 pub mod towns;
 pub mod va;
 pub mod x1;
+pub mod x68k;
 
 pub use fm7::{
     FM7_FRAMEBUFFER_BYTES, FM7_SURFACE_HEIGHT, FM7_SURFACE_WIDTH, Fm7Renderer, RenderInputsFm7,
@@ -46,6 +47,11 @@ pub use va::{
 };
 pub use x1::{
     RenderInputsX1, X1_FRAMEBUFFER_BYTES, X1_SURFACE_HEIGHT, X1_SURFACE_WIDTH, X1Renderer,
+};
+pub use x68k::{
+    RenderInputsX68k, X68K_GVRAM_WORDS, X68K_INITIAL_HEIGHT, X68K_INITIAL_WIDTH,
+    X68K_PALETTE_ENTRIES, X68K_PIXEL_BYTES, X68K_SPRITE_COUNT, X68K_SPRITE_PATTERN_WORDS,
+    X68kRenderer,
 };
 
 /// Total byte size of the PC-98 text VRAM image (16 KiB).

@@ -9,18 +9,13 @@ use common::{Bus, Cpu, JoystickState, Machine, NoTracing, Tracing};
 
 use crate::{
     bus::TownsBus,
-    config::{ClockConfig, TownsBootDevice, TownsModel, TownsPadType},
-    memory::TownsMemory,
-    rom::LoadedRoms,
+    config::{TownsBootDevice, TownsPadType},
 };
 
 /// CMOS boot-device type / boot-device byte pairs (I/O 0x3182 / 0x3C28).
 const BOOT_CMOS_CD: (u8, u8) = (8, 0x80);
 const BOOT_CMOS_FLOPPY: (u8, u8) = (2, 0x20);
 const BOOT_CMOS_HDD: (u8, u8) = (1, 0x10);
-
-/// Default audio sample rate.
-const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 
 /// CPU cycles executed per interleave slice while the CPU is running. Kept tight
 /// so scheduled timer interrupts are serviced promptly.
@@ -36,20 +31,9 @@ pub struct TownsMachine<const CPU_MODEL: u8, T: Tracing = NoTracing> {
     boot_device: TownsBootDevice,
 }
 
-impl<const CPU_MODEL: u8, T: Tracing + Default> TownsMachine<CPU_MODEL, T> {
-    /// Builds a machine for `model` from a loaded ROM set and points the CPU at
-    /// its reset vector (0xFFFFFFF0, inside the SYSROM).
-    pub fn new(model: TownsModel, cpu_mode: common::CpuMode, roms: LoadedRoms) -> Self {
-        let clocks = ClockConfig {
-            cpu_clock_hz: model.cpu_clock_hz(cpu_mode),
-            sample_rate: DEFAULT_SAMPLE_RATE,
-        };
-        let memory = TownsMemory::new(model, roms);
-        let bus = TownsBus::new(memory, clocks, model);
-
-        let mut cpu = cpu::I386::new();
-        cpu.reset();
-
+impl<const CPU_MODEL: u8, T: Tracing> TownsMachine<CPU_MODEL, T> {
+    /// Builds a machine around a configured CPU and bus.
+    pub fn new(cpu: cpu::I386<CPU_MODEL, { cpu::ADDRESS_WIDTH_32 }>, bus: TownsBus<T>) -> Self {
         Self {
             cpu,
             bus,
@@ -59,11 +43,6 @@ impl<const CPU_MODEL: u8, T: Tracing + Default> TownsMachine<CPU_MODEL, T> {
 }
 
 impl<const CPU_MODEL: u8, T: Tracing> TownsMachine<CPU_MODEL, T> {
-    /// Overrides the host local-time source (BCD) used by the RTC.
-    pub fn set_host_local_time_fn(&mut self, host_local_time_fn: fn() -> [u8; 6]) {
-        self.bus.set_host_local_time_fn(host_local_time_fn);
-    }
-
     /// Selects the boot device and writes the resolved CMOS boot-device byte.
     pub fn set_boot_device(&mut self, boot_device: TownsBootDevice) {
         self.boot_device = boot_device;
@@ -174,6 +153,19 @@ impl<const CPU_MODEL: u8, T: Tracing> TownsMachine<CPU_MODEL, T> {
 }
 
 impl<const CPU_MODEL: u8, T: Tracing> Machine for TownsMachine<CPU_MODEL, T> {
+    fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
+        self.bus.set_host_date_time_provider(provider);
+    }
+
+    fn startup_capabilities(&self) -> common::StartupCapabilities {
+        common::StartupCapabilities {
+            hard_disk: true,
+            mt32: true,
+            sc55: true,
+            ..Default::default()
+        }
+    }
+
     fn cpu_clock_hz(&self) -> f64 {
         f64::from(self.bus.clocks.cpu_clock_hz)
     }
@@ -240,6 +232,38 @@ impl<const CPU_MODEL: u8, T: Tracing> Machine for TownsMachine<CPU_MODEL, T> {
         self.bus.flush_hdds();
     }
 
+    fn insert_hdd(&mut self, drive: usize, path: &std::path::Path) -> Result<String, String> {
+        let data = std::fs::read(path)
+            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+        let image = device::disk::load_hdd_image(path, &data)
+            .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
+        if image.format != device::disk::HddFormat::Raw {
+            return Err(format!(
+                "FM Towns hard disks must be raw images (.h0-.h4); {} is {}",
+                path.display(),
+                image.format_name(),
+            ));
+        }
+        let description = format!(
+            "FM Towns SCSI ID {drive}: {} sectors ({}) from {}",
+            image.geometry.total_sectors(),
+            image.format_name(),
+            path.display(),
+        );
+        TownsMachine::insert_hdd(self, drive, image, Some(path.to_path_buf()));
+        Ok(description)
+    }
+
+    #[cfg(feature = "mt32")]
+    fn install_mt32(&mut self, rom_directory: &std::path::Path) -> Result<(), String> {
+        TownsMachine::install_mt32(self, rom_directory).map_err(|error| error.to_string())
+    }
+
+    #[cfg(feature = "sc55")]
+    fn install_sc55(&mut self, rom_directory: &std::path::Path) -> Result<(), String> {
+        TownsMachine::install_sc55(self, rom_directory).map_err(|error| error.to_string())
+    }
+
     fn insert_cdrom(&mut self, path: &std::path::Path) -> Result<String, String> {
         let description = insert_cdrom_impl(&mut self.bus, path)?;
         self.refresh_boot_device();
@@ -269,82 +293,12 @@ fn insert_floppy_impl<T: Tracing>(
 }
 
 /// Loads a CD-ROM disc image (`.cue` or `.ccd`) and inserts it into the bus,
-/// returning a short description. Mirrors the PC-9801 machine's loader.
+/// returning a short description.
 fn insert_cdrom_impl<T: Tracing>(
     bus: &mut TownsBus<T>,
     path: &std::path::Path,
 ) -> Result<String, String> {
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.to_ascii_lowercase());
-
-    if extension.as_deref() == Some("ccd") {
-        insert_cdrom_ccd(bus, path)
-    } else {
-        insert_cdrom_cue(bus, path)
-    }
-}
-
-fn insert_cdrom_cue<T: Tracing>(
-    bus: &mut TownsBus<T>,
-    path: &std::path::Path,
-) -> Result<String, String> {
-    let cue_content = std::fs::read_to_string(path)
-        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-    let bin_filenames = device::cdrom::extract_bin_filenames(&cue_content)
-        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
-    let base_path = path.parent().unwrap_or(std::path::Path::new("."));
-    let mut bin_files = Vec::with_capacity(bin_filenames.len());
-    for bin_filename in &bin_filenames {
-        let bin_path = base_path.join(bin_filename);
-        let bin_data = std::fs::read(&bin_path)
-            .map_err(|error| format!("Failed to read {}: {error}", bin_path.display()))?;
-        bin_files.push(bin_data);
-    }
-    let image = device::cdrom::CdImage::from_cue_files(&cue_content, bin_files)
-        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
-    let description = format!(
-        "{} ({} tracks, {} sectors)",
-        bin_filenames[0],
-        image.track_count(),
-        image.total_sectors()
-    );
-    bus.insert_cdrom(image);
-    Ok(description)
-}
-
-fn insert_cdrom_ccd<T: Tracing>(
-    bus: &mut TownsBus<T>,
-    path: &std::path::Path,
-) -> Result<String, String> {
-    let ccd_content = std::fs::read_to_string(path)
-        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-    let img_path = path.with_extension("img");
-    let img_data = std::fs::read(&img_path)
-        .map_err(|error| format!("Failed to read {}: {error}", img_path.display()))?;
-    let sub_path = path.with_extension("sub");
-    let sub_data = match std::fs::read(&sub_path) {
-        Ok(bytes) => Some(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            return Err(format!("Failed to read {}: {error}", sub_path.display()));
-        }
-    };
-    let has_sub = sub_data.is_some();
-    let image = device::cdrom::CdImage::from_ccd(&ccd_content, img_data, sub_data)
-        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
-    let img_name = img_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("image.img");
-    let description = format!(
-        "{} ({} tracks, {} sectors, {})",
-        img_name,
-        image.track_count(),
-        image.total_sectors(),
-        if has_sub { "CCD+SUB" } else { "CCD" }
-    );
+    let (image, description) = device::cdrom::load_cd_image(path)?;
     bus.insert_cdrom(image);
     Ok(description)
 }

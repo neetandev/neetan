@@ -1,4 +1,3 @@
-use common::Scheduler;
 use device::i8253_pit::{I8253Pit, PIT_FLAG_I, WriteResult};
 
 const CPU_HZ: u32 = 8_000_000;
@@ -680,7 +679,6 @@ fn counter_read_immediately_after_write() {
 #[test]
 fn on_timer0_event_mode3_rearms_interrupt() {
     let mut pit = I8253Pit::new_zeroed();
-    let mut scheduler = Scheduler::new();
 
     // Ch0: mode 3 (square wave, periodic), PIT_FLAG_I armed, reload = 1000.
     pit.channels[0].ctrl = 0x36;
@@ -688,7 +686,7 @@ fn on_timer0_event_mode3_rearms_interrupt() {
     pit.channels[0].value = 1000;
 
     // First event: should raise IRQ and re-arm for next period.
-    let raised = pit.on_timer0_event(&mut scheduler, CPU_HZ, PIT_HZ, 0);
+    let raised = pit.advance_timer0(0);
     assert!(raised, "first event should raise IRQ");
     assert_ne!(
         pit.channels[0].flag & PIT_FLAG_I,
@@ -697,25 +695,18 @@ fn on_timer0_event_mode3_rearms_interrupt() {
     );
 
     // Second event: should raise IRQ again (periodic behavior).
-    let raised = pit.on_timer0_event(&mut scheduler, CPU_HZ, PIT_HZ, 1000);
+    let raised = pit.advance_timer0(1000);
     assert!(raised, "second event should also raise IRQ");
     assert_ne!(
         pit.channels[0].flag & PIT_FLAG_I,
         0,
         "mode 3 should re-arm PIT_FLAG_I again"
     );
-
-    // Scheduler should have a pending PitTimer0 event.
-    assert!(
-        scheduler.next_event_cycle().is_some(),
-        "timer0 should be rescheduled"
-    );
 }
 
 #[test]
 fn on_timer0_event_mode0_does_not_rearm() {
     let mut pit = I8253Pit::new_zeroed();
-    let mut scheduler = Scheduler::new();
 
     // Ch0: mode 0 (one-shot), PIT_FLAG_I armed, reload = 1000.
     pit.channels[0].ctrl = 0x30;
@@ -723,7 +714,7 @@ fn on_timer0_event_mode0_does_not_rearm() {
     pit.channels[0].value = 1000;
 
     // First event: should raise IRQ but NOT re-arm.
-    let raised = pit.on_timer0_event(&mut scheduler, CPU_HZ, PIT_HZ, 0);
+    let raised = pit.advance_timer0(0);
     assert!(raised, "first event should raise IRQ");
     assert_eq!(
         pit.channels[0].flag & PIT_FLAG_I,
@@ -732,7 +723,7 @@ fn on_timer0_event_mode0_does_not_rearm() {
     );
 
     // Second event: should NOT raise IRQ (one-shot expired).
-    let raised = pit.on_timer0_event(&mut scheduler, CPU_HZ, PIT_HZ, 1000);
+    let raised = pit.advance_timer0(1000);
     assert!(!raised, "second event should NOT raise IRQ in mode 0");
 }
 
@@ -899,7 +890,6 @@ fn mode0_lsb_write_drops_output() {
 #[test]
 fn on_timer0_mode3_toggles_output() {
     let mut pit = I8253Pit::new_zeroed();
-    let mut scheduler = Scheduler::new();
 
     pit.channels[0].ctrl = 0x36; // mode 3
     pit.channels[0].flag = PIT_FLAG_I;
@@ -907,14 +897,14 @@ fn on_timer0_mode3_toggles_output() {
     pit.channels[0].output = true;
 
     // First event: output toggles to false
-    pit.on_timer0_event(&mut scheduler, CPU_HZ, PIT_HZ, 0);
+    pit.advance_timer0(0);
     assert!(
         !pit.channels[0].output,
         "mode 3 first event should toggle output"
     );
 
     // Second event: output toggles back to true
-    pit.on_timer0_event(&mut scheduler, CPU_HZ, PIT_HZ, 4000);
+    pit.advance_timer0(4000);
     assert!(
         pit.channels[0].output,
         "mode 3 second event should toggle output back"
@@ -924,14 +914,13 @@ fn on_timer0_mode3_toggles_output() {
 #[test]
 fn on_timer0_mode0_sets_output_high() {
     let mut pit = I8253Pit::new_zeroed();
-    let mut scheduler = Scheduler::new();
 
     pit.channels[0].ctrl = 0x30; // mode 0
     pit.channels[0].flag = PIT_FLAG_I;
     pit.channels[0].value = 1000;
     pit.channels[0].output = false;
 
-    pit.on_timer0_event(&mut scheduler, CPU_HZ, PIT_HZ, 0);
+    pit.advance_timer0(0);
     assert!(
         pit.channels[0].output,
         "mode 0 terminal count should set output HIGH"
@@ -941,7 +930,6 @@ fn on_timer0_mode0_sets_output_high() {
 #[test]
 fn deferred_reload_mode2() {
     let mut pit = I8253Pit::new_zeroed();
-    let mut scheduler = Scheduler::new();
 
     // Initial load: mode 2, reload = 1000
     pit.write_control(0, 0x34, 0, CPU_HZ, PIT_HZ);
@@ -949,7 +937,6 @@ fn deferred_reload_mode2() {
     pit.write_counter(0, 0x03);
     pit.channels[0].last_load_cycle = 0;
     pit.channels[0].flag |= PIT_FLAG_I;
-    pit.schedule_timer0(&mut scheduler, CPU_HZ, PIT_HZ, 0);
 
     // Subsequent load: write new value 500. Since mode 2 is periodic,
     // write_counter returns SubsequentLoad.
@@ -963,7 +950,7 @@ fn deferred_reload_mode2() {
     pit.channels[0].reload_pending = Some(500);
 
     // Timer event with old period: apply pending reload.
-    pit.on_timer0_event(&mut scheduler, CPU_HZ, PIT_HZ, 4000);
+    pit.advance_timer0(4000);
     assert_eq!(
         pit.channels[0].value, 500,
         "pending reload should be applied"
@@ -977,7 +964,6 @@ fn deferred_reload_mode2() {
 #[test]
 fn deferred_reload_mode3() {
     let mut pit = I8253Pit::new_zeroed();
-    let mut scheduler = Scheduler::new();
 
     // Initial load: mode 3, reload = 1000
     pit.write_control(0, 0x36, 0, CPU_HZ, PIT_HZ);
@@ -991,7 +977,7 @@ fn deferred_reload_mode3() {
 
     // Timer event: apply pending reload and toggle output.
     let initial_output = pit.channels[0].output;
-    pit.on_timer0_event(&mut scheduler, CPU_HZ, PIT_HZ, 4000);
+    pit.advance_timer0(4000);
     assert_eq!(pit.channels[0].value, 500);
     assert_eq!(pit.channels[0].output, !initial_output);
 }
@@ -1051,18 +1037,15 @@ fn bcd_mode3_decrement_by_2() {
 }
 
 #[test]
-fn bcd_schedule_timer0() {
+fn bcd_timer0_period_cycles() {
     let mut pit = I8253Pit::new_zeroed();
-    let mut scheduler = Scheduler::new();
 
     // BCD mode, reload = 0x1000 (1000 decimal) -> period = 1000 PIT ticks
     pit.channels[0].ctrl = 0x35; // mode 2, BCD
     pit.channels[0].value = 0x1000;
 
-    pit.schedule_timer0(&mut scheduler, CPU_HZ, PIT_HZ, 0);
-
     // Expected: 1000 * 8000000 / 1996800 = 4006 cpu cycles (integer division)
-    let next = scheduler.next_event_cycle().unwrap();
+    let next = pit.timer0_period_cycles(CPU_HZ, PIT_HZ);
     assert_eq!(next, 4006);
 }
 

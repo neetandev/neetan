@@ -1,6 +1,17 @@
 //! PC-9801-86 sound board: YM2608 (OPNA) stereo FM + SSG + ADPCM + PCM86 DAC.
 
-use common::{EventKind, MachineModel};
+use common::MachineModel;
+
+/// Timer outputs exposed by the PC-9801-86 board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Soundboard86Timer {
+    /// FM timer A.
+    FmTimerA,
+    /// FM timer B.
+    FmTimerB,
+    /// PCM FIFO IRQ check.
+    Pcm86Irq,
+}
 use resampler::{Attenuation, Latency, ResamplerFir};
 use ymfm_oxide::Ym2608;
 
@@ -806,14 +817,14 @@ pub enum Soundboard86Action {
     /// Schedule a timer to fire at the given cycle.
     ScheduleTimer {
         /// Timer event kind.
-        kind: EventKind,
+        kind: Soundboard86Timer,
         /// CPU cycle at which the timer should fire.
         fire_cycle: u64,
     },
     /// Cancel a previously scheduled timer.
     CancelTimer {
         /// Timer event kind.
-        kind: EventKind,
+        kind: Soundboard86Timer,
     },
     /// Assert an IRQ line on the PIC.
     AssertIrq {
@@ -1105,9 +1116,9 @@ impl Soundboard86 {
             let kind = match action {
                 FmTimerAction::Cancel { timer_id } | FmTimerAction::Schedule { timer_id, .. } => {
                     if timer_id == 0 {
-                        EventKind::FmTimerA
+                        Soundboard86Timer::FmTimerA
                     } else {
-                        EventKind::FmTimerB
+                        Soundboard86Timer::FmTimerB
                     }
                 }
             };
@@ -1154,13 +1165,13 @@ impl Soundboard86 {
             {
                 // Buffer above threshold - schedule for when it drains.
                 self.action_buffer.push(Soundboard86Action::ScheduleTimer {
-                    kind: EventKind::Pcm86Irq,
+                    kind: Soundboard86Timer::Pcm86Irq,
                     fire_cycle,
                 });
             } else if self.pcm86.state.reqirq {
                 // Buffer already at/below threshold and reqirq set - fire immediately.
                 self.action_buffer.push(Soundboard86Action::ScheduleTimer {
-                    kind: EventKind::Pcm86Irq,
+                    kind: Soundboard86Timer::Pcm86Irq,
                     fire_cycle: current_cycle + 1,
                 });
             } else {
@@ -1169,7 +1180,7 @@ impl Soundboard86 {
                 // infinite IRQ loops on systems like WinNT4.
                 self.pcm86.state.reqirq = true;
                 self.action_buffer.push(Soundboard86Action::ScheduleTimer {
-                    kind: EventKind::Pcm86Irq,
+                    kind: Soundboard86Timer::Pcm86Irq,
                     fire_cycle: current_cycle + 100 * self.pcm86.clock_multiple,
                 });
             }
@@ -1934,7 +1945,7 @@ mod tests {
             matches!(
                 a,
                 Soundboard86Action::ScheduleTimer {
-                    kind: EventKind::Pcm86Irq,
+                    kind: Soundboard86Timer::Pcm86Irq,
                     ..
                 }
             )
@@ -1951,7 +1962,7 @@ mod tests {
             matches!(
                 a,
                 Soundboard86Action::ScheduleTimer {
-                    kind: EventKind::Pcm86Irq,
+                    kind: Soundboard86Timer::Pcm86Irq,
                     ..
                 }
             )

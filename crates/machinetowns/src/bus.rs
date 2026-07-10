@@ -16,7 +16,7 @@ mod video;
 
 use std::path::PathBuf;
 
-use common::{BeeperKind, Bus, NoTracing, Tracing};
+use common::{BeeperKind, Bus, HostDateTimeProvider, NoTracing, Tracing};
 use device::{
     beeper::Beeper,
     cdrom_towns::TownsCdController,
@@ -41,6 +41,7 @@ use video::TownsVideo;
 use crate::{
     config::{ClockConfig, TownsModel},
     memory::TownsMemory,
+    rom::LoadedRoms,
     scheduler::{EventTowns, TownsScheduler},
     timer::{TIMER_CLOCK_HZ, TownsTimer},
 };
@@ -128,12 +129,6 @@ const DMA_MAIN: usize = 0;
 const DMA_EXTENDED: usize = 1;
 
 /// Default host time source (a fixed timestamp) until the app installs one.
-fn default_host_local_time() -> [u8; 6] {
-    // 2000-01-01 (Saturday) 00:00:00, BCD, `[year, month<<4|weekday, day, hour,
-    // minute, second]`.
-    [0x00, 0x16, 0x01, 0x00, 0x00, 0x00]
-}
-
 /// The FM Towns system bus.
 pub struct TownsBus<T: Tracing = NoTracing> {
     pub(crate) memory: TownsMemory,
@@ -215,7 +210,7 @@ pub struct TownsBus<T: Tracing = NoTracing> {
     /// Memory-card attribute register-select latch (I/O 0x0491 bit 0).
     pub(crate) memcard_reg: bool,
     /// Host local-time source (BCD) for the RTC.
-    pub(crate) host_local_time_fn: fn() -> [u8; 6],
+    pub(crate) host_date_time_provider: HostDateTimeProvider,
     /// Roland MT-32 sound module, fed by RS-MIDI bytes (optional, requires munt).
     #[cfg(feature = "mt32")]
     mt32: Option<device::mt32::Mt32>,
@@ -226,8 +221,22 @@ pub struct TownsBus<T: Tracing = NoTracing> {
 }
 
 impl<T: Tracing + Default> TownsBus<T> {
+    /// Builds a bus for a model from its validated ROM set.
+    pub fn new(
+        model: TownsModel,
+        cpu_mode: common::CpuMode,
+        roms: LoadedRoms,
+        sample_rate: u32,
+    ) -> Self {
+        let clocks = ClockConfig {
+            cpu_clock_hz: model.cpu_clock_hz(cpu_mode),
+            sample_rate,
+        };
+        Self::from_parts(TownsMemory::new(model, roms), clocks, model)
+    }
+
     /// Builds the bus over a prepared memory map and clock configuration.
-    pub(crate) fn new(memory: TownsMemory, clocks: ClockConfig, model: TownsModel) -> Self {
+    pub(crate) fn from_parts(memory: TownsMemory, clocks: ClockConfig, model: TownsModel) -> Self {
         let mut bus = Self {
             memory,
             clocks,
@@ -271,7 +280,7 @@ impl<T: Tracing + Default> TownsBus<T> {
             last_serial_rom_command: 0,
             memcard_bank: 0,
             memcard_reg: false,
-            host_local_time_fn: default_host_local_time,
+            host_date_time_provider: common::default_host_date_time,
             #[cfg(feature = "mt32")]
             mt32: None,
             #[cfg(feature = "sc55")]
@@ -285,8 +294,8 @@ impl<T: Tracing + Default> TownsBus<T> {
 
 impl<T: Tracing> TownsBus<T> {
     /// Overrides the host local-time source (BCD) used by the RTC.
-    pub(crate) fn set_host_local_time_fn(&mut self, host_local_time_fn: fn() -> [u8; 6]) {
-        self.host_local_time_fn = host_local_time_fn;
+    pub(crate) fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
+        self.host_date_time_provider = provider;
     }
 
     /// Installs a Roland MT-32 sound module driven by RS-MIDI (RS-232C) output.

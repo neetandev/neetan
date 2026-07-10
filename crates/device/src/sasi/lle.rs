@@ -9,10 +9,11 @@
 //! INT 0x11) for completion interrupts.
 //!
 //! Software that talks directly to the SASI hardware ports (bypassing the
-//! BIOS) uses this path. The LLE controller implements the full SASI command
-//! protocol as a state machine: Free -> Command -> Read/Write -> Status ->
-//! Message -> Free.
+//! BIOS) uses this path. The controller implements the SASI bus protocol as
+//! a state machine: Free -> Command -> Read/Write -> Status -> Message ->
+//! Free, delegating drive-side command handling to the shared target engine.
 
+use super::target::{PC98_TARGET_PROFILE, SasiCommandStart, SasiTargetEngine, SasiTransferStep};
 use crate::disk::MountedHdd;
 
 /// SASI controller phase (state machine).
@@ -68,20 +69,13 @@ const ISR_REQ: u8 = 0x80;
 /// SASI hard disk controller state.
 #[derive(Debug)]
 pub(super) struct Controller {
+    engine: SasiTargetEngine,
     phase: SasiPhase,
     command: [u8; 6],
     command_position: u8,
-    unit: u8,
-    sector: u32,
-    blocks_remaining: u8,
-    data_buffer: [u8; 256],
-    data_position: usize,
-    data_size: usize,
-    sense_data: [u8; 4],
     sense_position: u8,
-    vendor_c2_position: u8,
-    status: u8,
-    error_code: u8,
+    vendor_position: u8,
+    vendor_expected: u8,
     output_control: u8,
     interrupt_pending: u8,
     /// Saved (unit, sector) for PIO writes that need flushing.
@@ -98,20 +92,13 @@ impl Controller {
     /// Creates a new SASI controller in the idle state.
     pub(super) fn new() -> Self {
         Self {
+            engine: SasiTargetEngine::new(PC98_TARGET_PROFILE),
             phase: SasiPhase::Free,
             command: [0; 6],
             command_position: 0,
-            unit: 0,
-            sector: 0,
-            blocks_remaining: 0,
-            data_buffer: [0; 256],
-            data_position: 0,
-            data_size: 0,
-            sense_data: [0; 4],
             sense_position: 0,
-            vendor_c2_position: 0,
-            status: 0,
-            error_code: 0,
+            vendor_position: 0,
+            vendor_expected: 0,
             output_control: 0,
             interrupt_pending: 0,
             pending_pio_write: None,
@@ -140,12 +127,12 @@ impl Controller {
 
     /// Returns the currently selected unit (drive) number (0 or 1).
     pub(super) fn current_unit(&self) -> u8 {
-        self.unit
+        self.engine.current_unit()
     }
 
     /// Returns the current sector address.
     pub(super) fn current_sector(&self) -> u32 {
-        self.sector
+        self.engine.current_sector()
     }
 
     /// Handles a write to port 0x80 (data register).
@@ -162,25 +149,30 @@ impl Controller {
                 self.command[self.command_position as usize] = value;
                 self.command_position += 1;
                 if self.command_position >= 6 {
-                    self.execute_command(drives)
+                    self.start_command(drives)
                 } else {
                     SasiAction::None
                 }
             }
             SasiPhase::VendorC2 => {
-                self.vendor_c2_position += 1;
-                if self.vendor_c2_position >= 10 {
-                    self.set_completion(0x00);
+                self.vendor_position += 1;
+                if self.vendor_position >= self.vendor_expected {
+                    self.engine.complete_vendor_parameters();
                     SasiAction::ScheduleCompletion
                 } else {
                     SasiAction::None
                 }
             }
             SasiPhase::Write => {
-                self.data_buffer[self.data_position] = value;
-                self.data_position += 1;
-                if self.data_position >= self.data_size {
-                    self.handle_write_complete(drives)
+                if self.engine.push_write_byte(value) {
+                    let (block, step) = self.engine.finish_buffered_write_block(drives);
+                    self.pending_pio_write = block;
+                    match step {
+                        SasiTransferStep::Continue => SasiAction::None,
+                        SasiTransferStep::Complete | SasiTransferStep::Failed => {
+                            SasiAction::ScheduleCompletion
+                        }
+                    }
                 } else {
                     SasiAction::None
                 }
@@ -192,13 +184,16 @@ impl Controller {
     /// Handles a read from port 0x80 (data register).
     pub(super) fn read_data(&mut self, drives: &[Option<MountedHdd>; 2]) -> u8 {
         match self.phase {
-            SasiPhase::Read => self.read_data_byte(drives),
+            SasiPhase::Read => {
+                let (value, step) = self.engine.read_byte(drives);
+                if step != SasiTransferStep::Continue {
+                    self.phase = SasiPhase::Status;
+                    self.interrupt_pending = ISR_INT;
+                }
+                value
+            }
             SasiPhase::Status => {
-                let ret = if self.error_code == 0 {
-                    self.status
-                } else {
-                    0x02
-                };
+                let ret = self.engine.status_byte();
                 self.phase = SasiPhase::Message;
                 ret
             }
@@ -207,10 +202,9 @@ impl Controller {
                 0
             }
             SasiPhase::Sense => {
-                let ret = self.sense_data[self.sense_position as usize];
+                let ret = self.engine.sense_bytes()[self.sense_position as usize];
                 self.sense_position += 1;
                 if self.sense_position >= 4 {
-                    self.set_completion(0x00);
                     self.phase = SasiPhase::Status;
                     self.interrupt_pending = ISR_INT;
                 }
@@ -261,14 +255,14 @@ impl Controller {
         if self.phase != SasiPhase::Read {
             return (0, SasiAction::None);
         }
-        let byte = self.read_data_byte(drives);
-        let action = if self.phase != SasiPhase::Read {
-            // Phase changed - either completed or errored, schedule completion.
-            SasiAction::ScheduleCompletion
+        let (value, step) = self.engine.read_byte(drives);
+        if step != SasiTransferStep::Continue {
+            self.phase = SasiPhase::Status;
+            self.interrupt_pending = ISR_INT;
+            (value, SasiAction::ScheduleCompletion)
         } else {
-            SasiAction::None
-        };
-        (byte, action)
+            (value, SasiAction::None)
+        }
     }
 
     /// Writes one byte to the sector buffer during DMA write.
@@ -281,224 +275,51 @@ impl Controller {
         if self.phase != SasiPhase::Write {
             return SasiAction::None;
         }
-        self.data_buffer[self.data_position] = value;
-        self.data_position += 1;
-        if self.data_position >= self.data_size {
-            self.handle_write_complete_mut(drives)
+        if self.engine.push_write_byte(value) {
+            match self.engine.commit_write_block(drives) {
+                SasiTransferStep::Continue => SasiAction::None,
+                SasiTransferStep::Complete | SasiTransferStep::Failed => {
+                    SasiAction::ScheduleCompletion
+                }
+            }
         } else {
             SasiAction::None
         }
     }
 
-    fn execute_command(&mut self, drives: &[Option<MountedHdd>; 2]) -> SasiAction {
-        self.unit = (self.command[1] >> 5) & 1;
-        let drive_present = drives[self.unit as usize].is_some();
-
-        match self.command[0] {
-            0x00 => {
-                // Test Drive Ready
-                if drive_present {
-                    self.status = 0x00;
-                    self.set_completion(0x00);
-                } else {
-                    self.status = 0x02;
-                    self.set_completion(0x7F);
-                }
+    fn start_command(&mut self, drives: &[Option<MountedHdd>; 2]) -> SasiAction {
+        match self.engine.begin_command(&self.command, drives) {
+            SasiCommandStart::Complete | SasiCommandStart::FormatDrive => {
                 SasiAction::ScheduleCompletion
             }
-            0x01 => {
-                // Recalibrate
-                if drive_present {
-                    self.sector = 0;
-                    self.status = 0x00;
-                    self.set_completion(0x00);
+            SasiCommandStart::DataIn => {
+                self.phase = SasiPhase::Read;
+                if self.dma_ready() {
+                    SasiAction::DmaReady
                 } else {
-                    self.status = 0x02;
-                    self.set_completion(0x7F);
+                    SasiAction::None
                 }
-                SasiAction::ScheduleCompletion
             }
-            0x03 => {
-                // Request Sense
+            SasiCommandStart::DataOut => {
+                self.phase = SasiPhase::Write;
+                if self.dma_ready() {
+                    SasiAction::DmaReady
+                } else {
+                    SasiAction::None
+                }
+            }
+            SasiCommandStart::Sense => {
                 self.phase = SasiPhase::Sense;
                 self.sense_position = 0;
-                self.sense_data[0] = self.error_code;
-                self.sense_data[1] = (self.unit << 5) | ((self.sector >> 16) as u8 & 0x1F);
-                self.sense_data[2] = (self.sector >> 8) as u8;
-                self.sense_data[3] = self.sector as u8;
-                self.error_code = 0x00;
-                self.status = 0x00;
                 SasiAction::None
             }
-            0x04 => {
-                // Format Drive
-                self.sector = 0;
-                self.status = 0;
-                self.set_completion(0x0F);
-                SasiAction::ScheduleCompletion
-            }
-            0x06 => {
-                // Format Track
-                self.parse_sector_address();
-                self.status = 0;
-                if let Some(drive) = &drives[self.unit as usize]
-                    && self.sector < drive.geometry().total_sectors()
-                {
-                    self.set_completion(0x00);
-                    return SasiAction::FormatTrack;
-                }
-                self.set_completion(0x0F);
-                SasiAction::ScheduleCompletion
-            }
-            0x08 => {
-                // Read Data
-                self.parse_sector_address();
-                self.blocks_remaining = self.command[4];
-                self.status = 0;
-                if self.blocks_remaining != 0 && self.seek_read(drives) {
-                    self.phase = SasiPhase::Read;
-                    if self.dma_ready() {
-                        SasiAction::DmaReady
-                    } else {
-                        SasiAction::None
-                    }
-                } else {
-                    self.set_completion(0x0F);
-                    SasiAction::ScheduleCompletion
-                }
-            }
-            0x0A => {
-                // Write Data
-                self.parse_sector_address();
-                self.blocks_remaining = self.command[4];
-                self.status = 0;
-                if self.blocks_remaining != 0 && self.seek_read(drives) {
-                    self.phase = SasiPhase::Write;
-                    if self.dma_ready() {
-                        SasiAction::DmaReady
-                    } else {
-                        SasiAction::None
-                    }
-                } else {
-                    self.set_completion(0x0F);
-                    SasiAction::ScheduleCompletion
-                }
-            }
-            0x0B => {
-                // Seek
-                self.parse_sector_address();
-                self.blocks_remaining = self.command[4];
-                self.status = 0x00;
-                self.set_completion(0x00);
-                SasiAction::ScheduleCompletion
-            }
-            0xC2 => {
-                // Vendor-specific
+            SasiCommandStart::VendorParameters { count } => {
                 self.phase = SasiPhase::VendorC2;
-                self.vendor_c2_position = 0;
-                self.status = 0x00;
+                self.vendor_position = 0;
+                self.vendor_expected = count;
                 SasiAction::None
             }
-            _ => {
-                self.set_completion(0x00);
-                SasiAction::ScheduleCompletion
-            }
-        }
-    }
-
-    fn parse_sector_address(&mut self) {
-        self.sector = ((self.command[1] & 0x1F) as u32) << 16
-            | (self.command[2] as u32) << 8
-            | self.command[3] as u32;
-    }
-
-    fn set_completion(&mut self, error_code: u8) {
-        self.error_code = error_code;
-    }
-
-    fn seek_read(&mut self, drives: &[Option<MountedHdd>; 2]) -> bool {
-        self.data_position = 0;
-        self.data_size = 0;
-
-        let Some(drive) = &drives[self.unit as usize] else {
-            return false;
-        };
-        if drive.geometry().sector_size != 256 {
-            return false;
-        }
-        let Some(sector_data) = drive.read_sector(self.sector) else {
-            return false;
-        };
-        self.data_buffer[..256].copy_from_slice(sector_data);
-        self.data_size = 256;
-        true
-    }
-
-    fn read_data_byte(&mut self, drives: &[Option<MountedHdd>; 2]) -> u8 {
-        if self.phase != SasiPhase::Read {
-            return 0;
-        }
-        let ret = self.data_buffer[self.data_position];
-        self.data_position += 1;
-        if self.data_position >= self.data_size {
-            self.blocks_remaining -= 1;
-            if self.blocks_remaining == 0 {
-                self.set_completion(0x00);
-                self.phase = SasiPhase::Status;
-                self.interrupt_pending = ISR_INT;
-            } else {
-                self.sector += 1;
-                if !self.seek_read(drives) {
-                    self.set_completion(0x0F);
-                    self.phase = SasiPhase::Status;
-                    self.interrupt_pending = ISR_INT;
-                }
-            }
-        }
-        ret
-    }
-
-    fn handle_write_complete(&mut self, drives: &[Option<MountedHdd>; 2]) -> SasiAction {
-        let drive_ok = drives[self.unit as usize].is_some();
-        if !drive_ok {
-            self.set_completion(0x0F);
-            return SasiAction::ScheduleCompletion;
-        }
-        // Save the current unit/sector so the wrapper can flush
-        // the buffer to disk via pending_write_data().
-        self.pending_pio_write = Some((self.unit, self.sector));
-        self.blocks_remaining -= 1;
-        if self.blocks_remaining == 0 {
-            self.set_completion(0x00);
-            SasiAction::ScheduleCompletion
-        } else {
-            self.sector += 1;
-            self.data_position = 0;
-            SasiAction::None
-        }
-    }
-
-    fn handle_write_complete_mut(&mut self, drives: &mut [Option<MountedHdd>; 2]) -> SasiAction {
-        let unit = self.unit as usize;
-        let Some(drive) = &mut drives[unit] else {
-            self.set_completion(0x0F);
-            return SasiAction::ScheduleCompletion;
-        };
-
-        if !drive.write_sector(self.sector, &self.data_buffer[..self.data_size]) {
-            self.set_completion(0x0F);
-            return SasiAction::ScheduleCompletion;
-        }
-
-        self.blocks_remaining -= 1;
-        if self.blocks_remaining == 0 {
-            self.set_completion(0x00);
-            SasiAction::ScheduleCompletion
-        } else {
-            self.sector += 1;
-            self.data_position = 0;
-            // For write, we keep data_size at 256 and wait for next sector buffer fill.
-            SasiAction::None
+            SasiCommandStart::FormatTrack => SasiAction::FormatTrack,
         }
     }
 
@@ -506,7 +327,7 @@ impl Controller {
     /// Called by the SasiController after a port-0x80-based write completes a sector buffer.
     pub(super) fn pending_write_data(&mut self) -> Option<(u8, u32, &[u8])> {
         let (unit, sector) = self.pending_pio_write.take()?;
-        Some((unit, sector, &self.data_buffer[..self.data_size]))
+        Some((unit, sector, self.engine.buffer()))
     }
 
     fn read_bus_signals(&mut self) -> u8 {
@@ -873,7 +694,7 @@ mod tests {
         }
 
         // Recalibrate should set sector to 0.
-        assert_eq!(controller.sector, 0);
+        assert_eq!(controller.current_sector(), 0);
     }
 
     #[test]
@@ -920,5 +741,41 @@ mod tests {
         // Reading clears the interrupt pending.
         let status2 = controller.read_status(&drives);
         assert_eq!(status2 & ISR_INT, 0);
+    }
+
+    #[test]
+    fn pio_write_flushes_each_block() {
+        let mut controller = Controller::new();
+        let drives = make_drives(Some(make_test_drive()));
+
+        controller.write_data(1, &drives);
+        // Write 2 blocks at LBA 3 through the PIO path.
+        for &byte in &[0x0A, 0x00, 0x00, 0x03, 0x02, 0x00] {
+            controller.write_data(byte, &drives);
+        }
+        assert_eq!(controller.phase(), SasiPhase::Write);
+
+        for _ in 0..255 {
+            assert_eq!(controller.write_data(0x77, &drives), SasiAction::None);
+        }
+        assert_eq!(controller.write_data(0x77, &drives), SasiAction::None);
+        let pending = controller.pending_write_data();
+        assert_eq!(
+            pending.map(|(unit, sector, _)| (unit, sector)),
+            Some((0, 3))
+        );
+
+        for _ in 0..255 {
+            assert_eq!(controller.write_data(0x66, &drives), SasiAction::None);
+        }
+        assert_eq!(
+            controller.write_data(0x66, &drives),
+            SasiAction::ScheduleCompletion
+        );
+        let pending = controller.pending_write_data();
+        assert_eq!(
+            pending.map(|(unit, sector, _)| (unit, sector)),
+            Some((0, 4))
+        );
     }
 }

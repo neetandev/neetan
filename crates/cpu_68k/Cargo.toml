@@ -11,5 +11,5 @@ license-file = "LICENSE"
 verification = ["zlib-rs"]
 
 [dependencies]
-common = { workspace = true }
+common.workspace = true
 zlib-rs = { workspace = true, optional = true }

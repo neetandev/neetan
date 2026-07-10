@@ -1,4 +1,4 @@
-use common::{EventKind, MachineModel, debug, warn};
+use common::{MachineModel, debug, warn};
 use device::{
     ga1280a::is_ga1280a_port,
     grcg,
@@ -12,6 +12,7 @@ use upd7220_gdc::{DOT_CLOCK_200LINE, DOT_CLOCK_400LINE, GdcAction, STATUS_DRAWIN
 use crate::{
     Pc9801Bus, Tracing,
     bus::{INTERRUPT_DELAY_CYCLES, IO_WAIT_CYCLES, MOUSE_TIMER_IRQ_LINE},
+    scheduler::EventKind,
 };
 
 impl<T: Tracing> Pc9801Bus<T> {
@@ -506,8 +507,6 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.bios.write_trap_port(value);
                 // TODO: Calibrate these by comparing against the real VM target BIOS calls,
                 //       once we have a verified V30 cycle accurate core.
-                //       There are some VM era games, like Dragon Knight that will get
-                //       audio problems when 0x18 is not tuned correctly for example.
                 let cost = match self.bios.pending_vector() {
                     0x09 | 0x0C | 0x12 | 0x13 => 50,
                     0x18 => 20,
@@ -566,7 +565,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
             // µPD4990A RTC strobe/command (port 0x20 write).
             0x20 => {
-                let host_time = (self.host_local_time_fn)();
+                let host_time = (self.host_date_time_provider)().to_bcd_bytes();
                 self.rtc.write_port(value, &host_time);
             }
 
@@ -932,12 +931,11 @@ impl<T: Tracing> Pc9801Bus<T> {
             self.pic.clear_irq(0);
             self.tracer.trace_irq_clear(0);
             self.pit.channels[0].flag |= PIT_FLAG_I;
-            self.pit.schedule_timer0(
-                &mut self.scheduler,
-                self.clocks.cpu_clock_hz,
-                self.clocks.pit_clock_hz,
-                self.current_cycle,
-            );
+            let cpu_cycles = self
+                .pit
+                .timer0_period_cycles(self.clocks.cpu_clock_hz, self.clocks.pit_clock_hz);
+            self.scheduler
+                .schedule(EventKind::PitTimer0, self.current_cycle + cpu_cycles);
             self.update_next_event_cycle();
         }
     }
@@ -1017,6 +1015,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 );
                 self.update_next_event_cycle();
             }
+            FdcAction::StartScan => unreachable!("SCAN commands are disabled on this FDC"),
         }
     }
 

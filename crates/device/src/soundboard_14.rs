@@ -8,8 +8,14 @@
 
 pub mod tms3631;
 
-use common::EventKind;
 use tms3631::Tms3631;
+
+/// Timers exposed by the PC-9801-14 board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Soundboard14Timer {
+    /// Counter 2 terminal count.
+    Timer,
+}
 
 /// Default IRQ line: strap SW defaults to INT5 which maps to IRQ 12.
 const DEFAULT_IRQ_LINE: u8 = 12;
@@ -29,14 +35,14 @@ pub enum Soundboard14Action {
     /// Schedule the 8253 counter #2 to fire at the given CPU cycle.
     ScheduleTimer {
         /// Timer event kind.
-        kind: EventKind,
+        kind: Soundboard14Timer,
         /// Absolute CPU cycle when the timer should fire.
         fire_cycle: u64,
     },
     /// Cancel the previously scheduled timer.
     CancelTimer {
         /// Timer event kind.
-        kind: EventKind,
+        kind: Soundboard14Timer,
     },
     /// Assert an IRQ line on the PIC.
     AssertIrq {
@@ -267,7 +273,7 @@ impl Soundboard14 {
         self.state.pit.running = false;
         // Cancel any previously scheduled event until the counter is reloaded.
         self.pending_actions.push(Soundboard14Action::CancelTimer {
-            kind: EventKind::MusicGen14Timer,
+            kind: Soundboard14Timer::Timer,
         });
     }
 
@@ -301,7 +307,7 @@ impl Soundboard14 {
         self.state.pit.running = true;
         self.pending_actions
             .push(Soundboard14Action::ScheduleTimer {
-                kind: EventKind::MusicGen14Timer,
+                kind: Soundboard14Timer::Timer,
                 fire_cycle: current_cycle.saturating_add(cpu_ticks),
             });
     }
@@ -405,7 +411,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![Soundboard14Action::CancelTimer {
-                kind: EventKind::MusicGen14Timer
+                kind: Soundboard14Timer::Timer
             }]
         );
     }
@@ -421,7 +427,7 @@ mod tests {
         assert!(matches!(
             actions.last(),
             Some(Soundboard14Action::ScheduleTimer {
-                kind: EventKind::MusicGen14Timer,
+                kind: Soundboard14Timer::Timer,
                 ..
             })
         ));

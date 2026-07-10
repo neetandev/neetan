@@ -3,7 +3,10 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use common::{BUILTIN_FONT_ROM, Bus, CpuMode, JisChar, Machine as _, MachineModel, Tracing};
+use common::{
+    BUILTIN_FONT_ROM, Bus, CpuMode, HostDateTimeProvider, JisChar, Machine as _, MachineModel,
+    Tracing,
+};
 use device::{
     disk::{HddFormat, HddGeometry, HddImage},
     floppy::d88::{D88Disk, D88MediaType, D88Sector},
@@ -507,10 +510,10 @@ pub fn boot_hle() -> machine::Pc9801Ra {
 }
 
 /// Boots a machine with NEETAN DOS HLE DOS and an optional fixed time provider.
-pub fn boot_hle_with_time(time_fn: Option<fn() -> [u8; 6]>) -> machine::Pc9801Ra {
+pub fn boot_hle_with_time(time_provider: Option<HostDateTimeProvider>) -> machine::Pc9801Ra {
     let mut machine = create_hle_machine();
-    if let Some(f) = time_fn {
-        machine.bus.set_host_local_time_fn(f);
+    if let Some(provider) = time_provider {
+        machine.set_host_date_time_provider(provider);
     }
     wait_for_prompt(
         &mut machine,

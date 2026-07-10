@@ -2,6 +2,7 @@
 
 mod harness;
 
+use common::Machine as _;
 use harness::{build_machine, run_bus_cycles};
 use machinex1::X1Model;
 
@@ -30,7 +31,7 @@ fn enabled_tone_produces_non_silent_audio() {
     run_bus_cycles(&mut machine.bus, 200_000);
 
     let mut output = [0.0f32; 8192];
-    let written = machine.bus.generate_audio_samples(1.0, &mut output);
+    let written = machine.generate_audio_samples(1.0, &mut output);
     assert!(written > 0);
     assert!(output[..written].iter().any(|&sample| sample != 0.0));
 }
@@ -67,7 +68,7 @@ fn opm_tone_produces_non_silent_audio_on_turbo() {
     run_bus_cycles(&mut machine.bus, 200_000);
 
     let mut output = [0.0f32; 8192];
-    let written = machine.bus.generate_audio_samples(1.0, &mut output);
+    let written = machine.generate_audio_samples(1.0, &mut output);
     assert!(written > 0);
     assert!(
         output[..written].iter().any(|&sample| sample != 0.0),
@@ -119,7 +120,7 @@ fn base_x1_has_no_fm_board() {
     setup_opm_tone(&mut machine.bus);
     run_bus_cycles(&mut machine.bus, 200_000);
     let mut output = [0.0f32; 8192];
-    let written = machine.bus.generate_audio_samples(1.0, &mut output);
+    let written = machine.generate_audio_samples(1.0, &mut output);
     assert!(written > 0);
     assert!(
         output[..written].iter().all(|&sample| sample == 0.0),

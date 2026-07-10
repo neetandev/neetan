@@ -1,7 +1,19 @@
 //! PC-9801-26K sound board: YM2203 (OPN) FM + SSG synthesis with resampling.
 
-use common::EventKind;
 use ymfm_oxide::Ym2203;
+
+/// Timer outputs exposed by the PC-9801-26K board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Soundboard26kTimer {
+    /// Primary timer A.
+    FmTimerA,
+    /// Primary timer B.
+    FmTimerB,
+    /// Alternate-board timer A.
+    FmTimer2A,
+    /// Alternate-board timer B.
+    FmTimer2B,
+}
 
 pub use crate::opn_fm::FmSampleRemainder;
 use crate::opn_fm::{FmTimerAction, OpnFm, OpnFmTiming};
@@ -54,14 +66,14 @@ pub enum Soundboard26kAction {
     /// Schedule a timer to fire at the given cycle.
     ScheduleTimer {
         /// Timer event kind.
-        kind: EventKind,
+        kind: Soundboard26kTimer,
         /// CPU cycle at which the timer should fire.
         fire_cycle: u64,
     },
     /// Cancel a previously scheduled timer.
     CancelTimer {
         /// Timer event kind.
-        kind: EventKind,
+        kind: Soundboard26kTimer,
     },
     /// Assert an IRQ line on the PIC.
     AssertIrq {
@@ -101,12 +113,12 @@ impl Soundboard26k {
         }
     }
 
-    const fn timer_kind(&self, timer_id: u8) -> EventKind {
+    const fn timer_kind(&self, timer_id: u8) -> Soundboard26kTimer {
         match (self.state.alternate_timers, timer_id) {
-            (true, 0) => EventKind::FmTimer2A,
-            (true, _) => EventKind::FmTimer2B,
-            (false, 0) => EventKind::FmTimerA,
-            (false, _) => EventKind::FmTimerB,
+            (true, 0) => Soundboard26kTimer::FmTimer2A,
+            (true, _) => Soundboard26kTimer::FmTimer2B,
+            (false, 0) => Soundboard26kTimer::FmTimerA,
+            (false, _) => Soundboard26kTimer::FmTimerB,
         }
     }
 
@@ -273,7 +285,7 @@ mod tests {
             matches!(
                 a,
                 Soundboard26kAction::ScheduleTimer {
-                    kind: EventKind::FmTimerA,
+                    kind: Soundboard26kTimer::FmTimerA,
                     ..
                 }
             )
@@ -294,7 +306,7 @@ mod tests {
             matches!(
                 a,
                 Soundboard26kAction::ScheduleTimer {
-                    kind: EventKind::FmTimer2A,
+                    kind: Soundboard26kTimer::FmTimer2A,
                     ..
                 }
             )

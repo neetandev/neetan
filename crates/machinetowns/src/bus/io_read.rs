@@ -64,7 +64,7 @@ impl<T: Tracing> TownsBus<T> {
 
             // RTC data / command.
             0x0070 => {
-                let time = (self.host_local_time_fn)();
+                let time = (self.host_date_time_provider)().to_bcd_bytes();
                 self.rtc.read_data(&time, self.subsecond_micros())
             }
             0x0080 => 0x00,

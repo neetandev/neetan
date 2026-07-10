@@ -1466,6 +1466,8 @@ impl Default for Ymf262 {
 pub struct Ym2151 {
     fm: FmEngine<OpmRegisters>,
     address: u8,
+    ct_state: u8,
+    ct_update: Option<u8>,
 }
 
 impl Ym2151 {
@@ -1474,12 +1476,16 @@ impl Ym2151 {
         Self {
             fm: FmEngine::new(),
             address: 0,
+            ct_state: 0,
+            ct_update: None,
         }
     }
 
     /// Resets the chip to its initial power-on state.
     pub fn reset(&mut self) {
         self.fm.reset();
+        self.ct_state = 0;
+        self.ct_update = None;
     }
 
     /// Returns the output sample rate in Hz for the given `input_clock` in Hz.
@@ -1509,6 +1515,13 @@ impl Ym2151 {
 
     /// Writes a value to the previously addressed register.
     pub fn write_data(&mut self, data: u8) -> u32 {
+        if self.address == 0x1B {
+            let ct = (data >> 6) & 3;
+            if ct != self.ct_state {
+                self.ct_state = ct;
+                self.ct_update = Some(ct);
+            }
+        }
         self.fm.write(self.address as u16, data);
         32 * self.fm.clock_prescale()
     }
@@ -1550,6 +1563,17 @@ impl Ym2151 {
     /// Returns whether the chip IRQ output is currently asserted.
     pub fn irq_asserted(&self) -> bool {
         self.fm.irq_asserted()
+    }
+
+    /// Returns the current CT output pair; bit 0 is register 0x1B bit 6 and
+    /// bit 1 is register 0x1B bit 7.
+    pub fn ct_state(&self) -> u8 {
+        self.ct_state
+    }
+
+    /// Returns and clears the pending CT output update.
+    pub fn take_ct_update(&mut self) -> Option<u8> {
+        self.ct_update.take()
     }
 }
 

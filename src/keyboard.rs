@@ -265,6 +265,16 @@ impl KeyMap {
         }
     }
 
+    /// X68000 key map: host scancodes to native keyboard matrix codes.
+    pub const fn new_x68k() -> Self {
+        let mappings = build_x68k_default_map();
+        Self {
+            mappings,
+            shifted_mappings: mappings,
+            resolve_modifiers: false,
+        }
+    }
+
     pub fn set(&mut self, host: Scancode, pc98_code: u8) {
         self.mappings[host.index()] = pc98_code;
     }
@@ -928,6 +938,254 @@ const fn build_towns_default_map() -> [u8; Scancode::COUNT] {
     map
 }
 
+/// Maps an X68000 key name to its native `row << 3 | column` code.
+pub fn x68k_scancode_from_name(name: &str) -> Option<u8> {
+    let name = name.to_ascii_lowercase();
+    Some(match name.as_str() {
+        "esc" => 0x01,
+        "1" => 0x02,
+        "2" => 0x03,
+        "3" => 0x04,
+        "4" => 0x05,
+        "5" => 0x06,
+        "6" => 0x07,
+        "7" => 0x08,
+        "8" => 0x09,
+        "9" => 0x0A,
+        "0" => 0x0B,
+        "minus" => 0x0C,
+        "caret" => 0x0D,
+        "yen" => 0x0E,
+        "bs" => 0x0F,
+        "tab" => 0x10,
+        "q" => 0x11,
+        "w" => 0x12,
+        "e" => 0x13,
+        "r" => 0x14,
+        "t" => 0x15,
+        "y" => 0x16,
+        "u" => 0x17,
+        "i" => 0x18,
+        "o" => 0x19,
+        "p" => 0x1A,
+        "at" => 0x1B,
+        "leftbracket" => 0x1C,
+        "return" => 0x1D,
+        "a" => 0x1E,
+        "s" => 0x1F,
+        "d" => 0x20,
+        "f" => 0x21,
+        "g" => 0x22,
+        "h" => 0x23,
+        "j" => 0x24,
+        "k" => 0x25,
+        "l" => 0x26,
+        "semicolon" => 0x27,
+        "colon" => 0x28,
+        "rightbracket" => 0x29,
+        "z" => 0x2A,
+        "x" => 0x2B,
+        "c" => 0x2C,
+        "v" => 0x2D,
+        "b" => 0x2E,
+        "n" => 0x2F,
+        "m" => 0x30,
+        "comma" => 0x31,
+        "period" => 0x32,
+        "slash" => 0x33,
+        "underscore" => 0x34,
+        "space" => 0x35,
+        "home" => 0x36,
+        "del" => 0x37,
+        "rollup" => 0x38,
+        "rolldown" => 0x39,
+        "undo" => 0x3A,
+        "left" => 0x3B,
+        "up" => 0x3C,
+        "right" => 0x3D,
+        "down" => 0x3E,
+        "clear" => 0x3F,
+        "kpdivide" => 0x40,
+        "kpmultiply" => 0x41,
+        "kpminus" => 0x42,
+        "kp7" => 0x43,
+        "kp8" => 0x44,
+        "kp9" => 0x45,
+        "kpplus" => 0x46,
+        "kp4" => 0x47,
+        "kp5" => 0x48,
+        "kp6" => 0x49,
+        "kpequals" => 0x4A,
+        "kp1" => 0x4B,
+        "kp2" => 0x4C,
+        "kp3" => 0x4D,
+        "kpenter" => 0x4E,
+        "kp0" => 0x4F,
+        "kpcomma" => 0x50,
+        "kpperiod" => 0x51,
+        "symbol" => 0x52,
+        "register" => 0x53,
+        "help" => 0x54,
+        "xf1" => 0x55,
+        "xf2" => 0x56,
+        "xf3" => 0x57,
+        "xf4" => 0x58,
+        "xf5" => 0x59,
+        "kana" => 0x5A,
+        "romaji" => 0x5B,
+        "code" => 0x5C,
+        "caps" => 0x5D,
+        "ins" => 0x5E,
+        "hiragana" => 0x5F,
+        "fullwidth" => 0x60,
+        "break" => 0x61,
+        "copy" => 0x62,
+        "f1" => 0x63,
+        "f2" => 0x64,
+        "f3" => 0x65,
+        "f4" => 0x66,
+        "f5" => 0x67,
+        "f6" => 0x68,
+        "f7" => 0x69,
+        "f8" => 0x6A,
+        "f9" => 0x6B,
+        "f10" => 0x6C,
+        "shift" => 0x70,
+        "ctrl" => 0x71,
+        "opt1" => 0x72,
+        "opt2" => 0x73,
+        _ => return None,
+    })
+}
+
+/// Parses an X68000 key binding.
+pub fn parse_key_binding_x68k(host_name: &str, x68k_name: &str) -> Option<(Scancode, u8)> {
+    let host = Scancode::from_name(host_name)?;
+    let code = x68k_scancode_from_name(x68k_name)?;
+    Some((host, code))
+}
+
+#[allow(clippy::just_underscores_and_digits)]
+const fn build_x68k_default_map() -> [u8; Scancode::COUNT] {
+    use Scancode::*;
+    const ALL_SCANCODES: &[(Scancode, u8)] = &[
+        (Escape, 0x01),
+        (_1, 0x02),
+        (_2, 0x03),
+        (_3, 0x04),
+        (_4, 0x05),
+        (_5, 0x06),
+        (_6, 0x07),
+        (_7, 0x08),
+        (_8, 0x09),
+        (_9, 0x0A),
+        (_0, 0x0B),
+        (Minus, 0x0C),
+        (Equals, 0x0D),
+        (Backslash, 0x0E),
+        (Backspace, 0x0F),
+        (Tab, 0x10),
+        (Q, 0x11),
+        (W, 0x12),
+        (E, 0x13),
+        (R, 0x14),
+        (T, 0x15),
+        (Y, 0x16),
+        (U, 0x17),
+        (I, 0x18),
+        (O, 0x19),
+        (P, 0x1A),
+        (Grave, 0x1B),
+        (LeftBracket, 0x1C),
+        (Return, 0x1D),
+        (A, 0x1E),
+        (S, 0x1F),
+        (D, 0x20),
+        (F, 0x21),
+        (G, 0x22),
+        (H, 0x23),
+        (J, 0x24),
+        (K, 0x25),
+        (L, 0x26),
+        (Semicolon, 0x27),
+        (Apostrophe, 0x28),
+        (RightBracket, 0x29),
+        (Z, 0x2A),
+        (X, 0x2B),
+        (C, 0x2C),
+        (V, 0x2D),
+        (B, 0x2E),
+        (N, 0x2F),
+        (M, 0x30),
+        (Comma, 0x31),
+        (Period, 0x32),
+        (Slash, 0x33),
+        (NonUsBackslash, 0x34),
+        (Space, 0x35),
+        (Home, 0x36),
+        (Delete, 0x37),
+        (PageUp, 0x38),
+        (PageDown, 0x39),
+        (End, 0x3A),
+        (Left, 0x3B),
+        (Up, 0x3C),
+        (Right, 0x3D),
+        (Down, 0x3E),
+        (NumLock, 0x3F),
+        (KpDivide, 0x40),
+        (KpMultiply, 0x41),
+        (KpMinus, 0x42),
+        (Kp7, 0x43),
+        (Kp8, 0x44),
+        (Kp9, 0x45),
+        (KpPlus, 0x46),
+        (Kp4, 0x47),
+        (Kp5, 0x48),
+        (Kp6, 0x49),
+        (Kp1, 0x4B),
+        (Kp2, 0x4C),
+        (Kp3, 0x4D),
+        (KpEnter, 0x4E),
+        (Kp0, 0x4F),
+        (KpComma, 0x50),
+        (KpPeriod, 0x51),
+        (Application, 0x54),
+        (F11, 0x55),
+        (F12, 0x56),
+        (F13, 0x57),
+        (F14, 0x58),
+        (F15, 0x59),
+        (CapsLock, 0x5D),
+        (Insert, 0x5E),
+        (LAlt, 0x5F),
+        (RAlt, 0x5A),
+        (RCtrl, 0x60),
+        (Pause, 0x61),
+        (PrintScreen, 0x62),
+        (F1, 0x63),
+        (F2, 0x64),
+        (F3, 0x65),
+        (F4, 0x66),
+        (F5, 0x67),
+        (F6, 0x68),
+        (F7, 0x69),
+        (F8, 0x6A),
+        (F9, 0x6B),
+        (F10, 0x6C),
+        (LShift, 0x70),
+        (RShift, 0x70),
+        (LCtrl, 0x71),
+    ];
+    let mut map = [0; Scancode::COUNT];
+    let mut index = 0;
+    while index < ALL_SCANCODES.len() {
+        let (scancode, code) = ALL_SCANCODES[index];
+        map[scancode.index()] = code;
+        index += 1;
+    }
+    map
+}
+
 /// Maps a PC-88VA key name to its keycode (the value read at port 0x1C1). The VA
 /// keycode interface reuses the PC-98 scan-code protocol, so this defers to the
 /// PC-98 name table and adds the few VA-only keys.
@@ -1532,7 +1790,7 @@ const fn build_pc60_shifted_map() -> [u8; Scancode::COUNT] {
 mod tests {
     use sdl3::keyboard::Scancode;
 
-    use super::{KeyMap, KeyboardForwardingState};
+    use super::{KeyMap, KeyboardForwardingState, x68k_scancode_from_name};
 
     #[test]
     fn pc88va_maps_host_keys_to_va_keycodes() {
@@ -1809,5 +2067,18 @@ mod tests {
                 key_map.lookup(Scancode::_2)
             );
         }
+    }
+
+    #[test]
+    fn x68000_map_uses_native_matrix_codes() {
+        let key_map = KeyMap::new_x68k();
+        assert_eq!(key_map.lookup(Scancode::Escape), 0x01);
+        assert_eq!(key_map.lookup(Scancode::Left), 0x3B);
+        assert_eq!(key_map.lookup(Scancode::Kp7), 0x43);
+        assert_eq!(key_map.lookup(Scancode::F11), 0x55);
+        assert_eq!(key_map.lookup(Scancode::F1), 0x63);
+        assert_eq!(key_map.lookup(Scancode::LShift), 0x70);
+        assert_eq!(x68k_scancode_from_name("fullwidth"), Some(0x60));
+        assert_eq!(x68k_scancode_from_name("opt2"), Some(0x73));
     }
 }

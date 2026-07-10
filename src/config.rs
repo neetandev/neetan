@@ -7,10 +7,11 @@ use machine88va::Pc88VaModel;
 use machinefm7::Fm7Model;
 use machinetowns::{TownsModel, TownsPadType};
 use machinex1::{X1KeyboardMode, X1Model};
+use machinex68k::X68kModel;
 
 use crate::keyboard::{
     KeyMap, parse_key_binding, parse_key_binding_pc60, parse_key_binding_pc88,
-    parse_key_binding_pc88va, parse_key_binding_towns,
+    parse_key_binding_pc88va, parse_key_binding_towns, parse_key_binding_x68k,
 };
 
 fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> crate::Result<String> {
@@ -38,21 +39,21 @@ fn parse_composite_phase(val: &str) -> crate::Result<u32> {
 fn print_help() {
     println!(
         "\
-{} - PC-98 emulator
+{} - Japanese computer emulator
 
 Usage: neetan [OPTIONS]
        neetan <COMMAND>
 
 Commands:
-  create-fdd <PATH>             Create an empty floppy disk image (D88)
-  create-hdd <PATH>             Create an empty hard disk image (HDI)
+  create-fdd <PATH>             Create an empty floppy disk image (D88 or raw XDF)
+  create-hdd <PATH>             Create an empty hard disk image (HDI, raw SCSI or X68000 HDF)
   convert-hdd <INPUT> <OUTPUT>  Convert HDD image between SASI and IDE
   copy <SOURCE> <DEST>          Copy files between host and FAT disk images
 
 Options:
   -c, --config <PATH>           Load configuration from file
-      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP, PC8801MC, PC88VA2, PC6001, PC6001MK2, PC6601, PC6001MK2SR, PC6601SR, FMTownsIICX, FMTownsIIMX, X1, X1TURBO, FM7, FM77AV
-      --cpu-mode <MODE>         CPU speed mode: low or high (PC-88 default derives from boot mode; FM Towns CX 16/20 MHz, MX 33/66 MHz)
+      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP, PC8801MC, PC88VA2, PC6001, PC6001MK2, PC6601, PC6001MK2SR, PC6601SR, FMTownsIICX, FMTownsIIMX, X68000, X68000SUPER, X68000XVI, X1, X1TURBO, FM7, FM77AV
+      --cpu-mode <MODE>         CPU speed mode: low or high (PC-88 derives from boot mode; X68000 XVI 10/16.67 MHz; FM Towns CX 16/20 MHz, MX 33/66 MHz)
       --boot-mode <MODE>        Boot mode; each machine accepts only its own values: PC-8801 v1s, v1h, v2 (default), n, n80, n80sr; FM-7 basic (default), dos
       --monitor <MODE>          Monitor timing: auto, 15k, 24k (default: auto; PC-8801 and X1 turbo)
       --pc88-memory-wait <MODE> PC-8801 memory wait: fast or compatible (default derives from boot mode)
@@ -66,13 +67,14 @@ Options:
       --x1-keyboard <A|B>       X1 turbo keyboard mode switch (default: A)
       --fm7-roms <PATH>         Directory with the FM-7 / FM-77AV ROM set (required)
       --towns-roms <PATH>       Directory with the FM Towns ROM set (required)
+      --x68k-roms <PATH>        Directory with the X68000 ROM set (required)
       --towns-pad <2|6>         FM Towns game pad type (default 6-button)
       --pc6000-phase <0-3>      Initial composite artifact-color phase; cycle with Right Ctrl + P (PC-6000 only)
       --fdd1 <PATH>             Floppy disk image for drive 1 (repeatable)
       --fdd2 <PATH>             Floppy disk image for drive 2 (repeatable)
-      --hdd1 <PATH>             Hard disk image for drive 1 (SASI or IDE)
-      --hdd2 <PATH>             Hard disk image for drive 2 (SASI or IDE)
-      --cdrom <PATH>            CD-ROM disc image .cue or .ccd file (repeatable, PC-9821 and FM Towns)
+      --hdd1 <PATH>             Hard disk image for drive 1 (PC-98 .hdi/.nhd/.thd, FM Towns .h0-.h4, X68000 .hdf)
+      --hdd2 <PATH>             Hard disk image for drive 2 (PC-98 .hdi/.nhd/.thd, FM Towns .h0-.h4, X68000 .hdf)
+      --cdrom <PATH>            CD-ROM disc image .cue or .ccd file (repeatable, PC-9821, FM Towns and X68000 SUPER/XVI)
       --cdrom-compat <on|off>   Slow/compatible CD-ROM drive timing (default: off; FM Towns only)
       --cartridge <PATH>        Cartridge ROM image to insert
       --cassette <PATH>         Cassette tape image to insert (.cas/.p6/.p6t, X1 .tap, FM-7 .t77)
@@ -109,12 +111,12 @@ Run 'neetan <COMMAND> --help' for more information on a command.",
 fn print_create_fdd_help() {
     println!(
         "\
-Create an empty floppy disk image in D88 format
+Create an empty floppy disk image in D88 or raw XDF format
 
 Usage: neetan create-fdd <PATH> [OPTIONS]
 
 Arguments:
-  <PATH>  Output file path (must have .d88 extension)
+  <PATH>  Output file path (.d88 for D88; .xdf or .2hd for raw XDF, 2hd type only)
 
 Options:
       --type <TYPE>  Floppy type [default: 2hd]
@@ -131,12 +133,12 @@ Floppy types:
 fn print_create_hdd_help() {
     println!(
         "\
-Create an empty hard disk image (HDI for SASI/IDE, raw for SCSI)
+Create an empty hard disk image (HDI for SASI/IDE, raw for SCSI, HDF for X68000)
 
 Usage: neetan create-hdd <PATH> [OPTIONS]
 
 Arguments:
-  <PATH>  Output file path (.hdi for SASI/IDE, .h0-.h4 for SCSI)
+  <PATH>  Output file path (.hdi for SASI/IDE, .h0-.h4 for SCSI, .hdf for X68000)
 
 Options:
       --type <TYPE>  HDD size (required)
@@ -157,13 +159,22 @@ IDE types:
   ide200   200 MB  (977 cyl, 15 heads, 28 spt, 512 B/sector)
   ide500   500 MB  (1015 cyl, 16 heads, 63 spt, 512 B/sector)
 
-SCSI types (raw 512 B/sector .h0-.h4 images):
-  scsi20    20 MB
-  scsi40    40 MB
-  scsi100  100 MB
-  scsi200  200 MB
-  scsi340  340 MB
-  scsi540  540 MB"
+SCSI types (raw .h0-.h4 images):
+  scsi20     20 MB  (160 cyl, 8 heads, 32 spt, 512 B/sector)
+  scsi40     40 MB  (320 cyl, 8 heads, 32 spt, 512 B/sector)
+  scsi100   100 MB  (800 cyl, 8 heads, 32 spt, 512 B/sector)
+  scsi200   200 MB  (1600 cyl, 8 heads, 32 spt, 512 B/sector)
+  scsi340   340 MB  (2720 cyl, 8 heads, 32 spt, 512 B/sector)
+  scsi540   540 MB  (4320 cyl, 8 heads, 32 spt, 512 B/sector)
+
+X68000 SASI types (headerless .hdf images):
+  x68sasi10  10 MB  (309 cyl, 4 heads, 33 spt, 256 B/sector)
+  x68sasi20  20 MB  (614 cyl, 4 heads, 33 spt, 256 B/sector)
+  x68sasi40  40 MB  (614 cyl, 8 heads, 33 spt, 256 B/sector)
+
+X68000 SCSI types (headerless .hdf images):
+  x68scsi20  20 MB  (160 cyl, 8 heads, 32 spt, 512 B/sector)
+  x68scsi40  40 MB  (320 cyl, 8 heads, 32 spt, 512 B/sector)"
     );
 }
 
@@ -190,7 +201,7 @@ Examples:
   neetan copy roms/disk.hdi:A:\\DOCS ./local_docs
   neetan copy src.hdi:A:\\FOO.EXE dst.hdi:A:\\FOO.EXE
 
-Image formats: HDI, NHD, THD (HDD); D88, D98, 88D, 98D, HDM, NFD (FDD).
+Image formats: HDI, NHD, THD (HDD); D88, D98, 88D, 98D, HDM, NFD, 2D (FDD).
 
 Notes:
   - Directories are copied recursively (no -r flag).
@@ -344,6 +355,11 @@ pub enum HddSizeType {
     ScsiMb200,
     ScsiMb340,
     ScsiMb540,
+    X68kSasiMb10,
+    X68kSasiMb20,
+    X68kSasiMb40,
+    X68kScsiMb20,
+    X68kScsiMb40,
 }
 
 impl std::str::FromStr for HddSizeType {
@@ -368,10 +384,15 @@ impl std::str::FromStr for HddSizeType {
             "scsi200" => Ok(Self::ScsiMb200),
             "scsi340" => Ok(Self::ScsiMb340),
             "scsi540" => Ok(Self::ScsiMb540),
+            "x68sasi10" => Ok(Self::X68kSasiMb10),
+            "x68sasi20" => Ok(Self::X68kSasiMb20),
+            "x68sasi40" => Ok(Self::X68kSasiMb40),
+            "x68scsi20" => Ok(Self::X68kScsiMb20),
+            "x68scsi40" => Ok(Self::X68kScsiMb40),
             _ => Err(format!(
                 "unknown HDD size '{s}', expected sasi5, sasi10, sasi15, sasi20, sasi30, sasi40, \
                  ide40, ide80, ide120, ide200, ide500, scsi20, scsi40, scsi100, scsi200, scsi340, \
-                 or scsi540"
+                 scsi540, x68sasi10, x68sasi20, x68sasi40, x68scsi20, or x68scsi40"
             )),
         }
     }
@@ -389,6 +410,18 @@ impl HddSizeType {
                 | Self::ScsiMb200
                 | Self::ScsiMb340
                 | Self::ScsiMb540
+        )
+    }
+
+    /// Whether this size denotes an X68000 headerless .hdf image.
+    pub fn is_x68k_hdf(self) -> bool {
+        matches!(
+            self,
+            Self::X68kSasiMb10
+                | Self::X68kSasiMb20
+                | Self::X68kSasiMb40
+                | Self::X68kScsiMb20
+                | Self::X68kScsiMb40
         )
     }
 }
@@ -606,6 +639,7 @@ fn parse_args_from(
             "--pc88-roms" => config.pc88_roms = Some(PathBuf::from(value(&flag)?)),
             "--pc88va-roms" => config.pc88va_roms = Some(PathBuf::from(value(&flag)?)),
             "--towns-roms" => config.towns_roms = Some(PathBuf::from(value(&flag)?)),
+            "--x68k-roms" => config.x68k_roms = Some(PathBuf::from(value(&flag)?)),
             "--towns-pad" => config.towns_pad = value(&flag)?.parse().map_err(StringError)?,
             "--pc6000-roms" => config.pc60_roms = Some(PathBuf::from(value(&flag)?)),
             "--x1-roms" => config.x1_roms = Some(PathBuf::from(value(&flag)?)),
@@ -749,6 +783,8 @@ pub enum Target {
     X1,
     /// Fujitsu FM-7 series (the `machinefm7` crate).
     Fm7,
+    /// Sharp X68000 series (the `machinex68k` crate).
+    X68k,
 }
 
 /// Boot mode requested on the command line, spanning every machine family that
@@ -897,6 +933,8 @@ pub struct EmulatorConfig {
     pub fm7_roms: Option<PathBuf>,
     pub towns_model: TownsModel,
     pub towns_roms: Option<PathBuf>,
+    pub x68k_model: X68kModel,
+    pub x68k_roms: Option<PathBuf>,
     pub towns_pad: TownsPadType,
     pub cartridge: Option<PathBuf>,
     pub cassette: Option<PathBuf>,
@@ -950,7 +988,7 @@ impl Default for EmulatorConfig {
             pc88_memory_wait: MemoryWaitSwitch::Fast,
             pc88_8mhz_wait: EightMhzWaitMode::Fast,
             pc88_roms: None,
-            pc88va_model: machine88va::Pc88VaModel::PC88VA2,
+            pc88va_model: Pc88VaModel::PC88VA2,
             pc88va_roms: None,
             pc60_model: Pc6000Model::Pc6001,
             pc60_roms: None,
@@ -959,9 +997,11 @@ impl Default for EmulatorConfig {
             x1_keyboard: X1KeyboardMode::ModeA,
             fm7_model: Fm7Model::Fm7,
             fm7_roms: None,
-            towns_model: machinetowns::TownsModel::FmTownsIIMx,
+            towns_model: TownsModel::FmTownsIIMx,
             towns_roms: None,
-            towns_pad: machinetowns::TownsPadType::SixButton,
+            x68k_model: X68kModel::X68000,
+            x68k_roms: None,
+            towns_pad: TownsPadType::SixButton,
             cartridge: None,
             cassette: None,
             pc60_composite_phase: 0,
@@ -1037,6 +1077,7 @@ fn apply_config_file(
             "pc88-roms" => config.pc88_roms = Some(PathBuf::from(val)),
             "pc88va-roms" => config.pc88va_roms = Some(PathBuf::from(val)),
             "towns-roms" => config.towns_roms = Some(PathBuf::from(val)),
+            "x68k-roms" => config.x68k_roms = Some(PathBuf::from(val)),
             "towns-pad" => match val.parse() {
                 Ok(pad) => config.towns_pad = pad,
                 Err(error) => warn!("Invalid towns-pad in config: {error}"),
@@ -1140,6 +1181,7 @@ fn apply_config_file(
                     Target::Pc98 => parse_key_binding(host_name, val),
                     Target::Pc60 => parse_key_binding_pc60(host_name, val),
                     Target::Towns => parse_key_binding_towns(host_name, val),
+                    Target::X68k => parse_key_binding_x68k(host_name, val),
                     // Placeholder until the X1 key map lands in a later phase.
                     Target::X1 => parse_key_binding(host_name, val),
                     // FM-7 reuses the generic parser; its key map yields
@@ -1184,7 +1226,6 @@ fn apply_derived_defaults(config: &mut EmulatorConfig, explicit: ExplicitSetting
 /// parsed as a PC-98 model. Returns a human-readable error if no family
 /// recognises the value.
 fn apply_machine_selection(config: &mut EmulatorConfig, value: &str) -> Result<(), String> {
-    // TODO: This is broken, since the error message when an unknown machine was parsed falls back to the PC-98 machine model error message.
     if let Ok(_model) = value.parse::<Pc8801Model>() {
         // Switch the default key map to the PC-88 matrix so later `key.*`
         // overrides layer onto the right base.
@@ -1234,7 +1275,22 @@ fn apply_machine_selection(config: &mut EmulatorConfig, value: &str) -> Result<(
         config.towns_model = model;
         return Ok(());
     }
-    let model = value.parse::<MachineModel>()?;
+    if let Ok(model) = value.parse::<X68kModel>() {
+        if config.target != Target::X68k {
+            config.key_map = KeyMap::new_x68k();
+        }
+        config.target = Target::X68k;
+        config.x68k_model = model;
+        return Ok(());
+    }
+    let Ok(model) = value.parse::<MachineModel>() else {
+        return Err(format!(
+            "unknown machine type '{value}', expected PC9801F, PC9801VM, PC9801VX, PC9801RA, \
+             PC9821AS, PC9821AP, PC8801MC, PC88VA2, PC6001, PC6001MK2, PC6601, PC6001MK2SR, \
+             PC6601SR, FMTownsIICX, FMTownsIIMX, X68000, X68000SUPER, X68000XVI, X1, X1TURBO, \
+             FM7 or FM77AV"
+        ));
+    };
     if config.target != Target::Pc98 {
         config.key_map = KeyMap::new();
     }
@@ -1554,6 +1610,15 @@ mod tests {
         apply_machine_selection(&mut config, "PC9801VX").expect("PC9801VX is valid");
         assert_eq!(config.target, Target::Pc98);
         assert_eq!(config.machine, MachineModel::PC9801VX);
+    }
+
+    #[test]
+    fn machine_flag_selects_x68000_and_its_rom_directory() {
+        let config = parse_run_config(&["--machine", "x68000xvi", "--x68k-roms", "roms/x68kxvi"]);
+        assert_eq!(config.target, Target::X68k);
+        assert_eq!(config.x68k_model, X68kModel::X68000Xvi);
+        assert_eq!(config.x68k_roms, Some(PathBuf::from("roms/x68kxvi")));
+        assert_eq!(config.key_map.lookup(sdl3::keyboard::Scancode::F1), 0x63);
     }
 
     #[test]

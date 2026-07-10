@@ -88,10 +88,21 @@ impl ScsiDisk {
             | opcode::START_STOP
             | opcode::PREVENT_ALLOW
             | opcode::VERIFY10 => self.ok(),
+            // A low-level format with no defect list clears the medium.
+            opcode::FORMAT_UNIT => self.format_unit(),
             // A WRITE with a zero block count is a no-op (DOS6 installer quirk).
             opcode::WRITE6 | opcode::WRITE10 => self.ok(),
             _ => self.fail(sense_key::ILLEGAL_REQUEST, asc::INVALID_COMMAND),
         }
+    }
+
+    /// Clears every block of the medium for a FORMAT UNIT low-level format.
+    fn format_unit(&mut self) -> u8 {
+        let zero = [0u8; SCSI_BLOCK_SIZE];
+        for lba in 0..self.block_count() {
+            self.drive.write_sector(lba, &zero);
+        }
+        self.ok()
     }
 
     /// Produces the DATA IN bytes for a read-type command, plus its STATUS byte.

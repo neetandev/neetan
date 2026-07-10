@@ -9,9 +9,17 @@ use device::{
 use crate::config::{FddType, HddSizeType};
 
 pub fn create_fdd_image(path: &Path, fdd_type: FddType) -> crate::Result<()> {
-    let extension = path.extension().and_then(|e| e.to_str());
-    if !matches!(extension, Some("d88")) {
-        bail!("output path must have a .d88 extension");
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    let raw_xdf = matches!(extension.as_deref(), Some("xdf" | "2hd"));
+    if raw_xdf {
+        if fdd_type != FddType::Hd2 {
+            bail!("raw XDF output is only available for the 2hd floppy type");
+        }
+    } else if extension.as_deref() != Some("d88") {
+        bail!("output path must have a .d88, .xdf, or .2hd extension");
     }
 
     let (media_type, cylinders, heads, sectors_per_track, sector_size, size_code) = match fdd_type {
@@ -20,6 +28,15 @@ pub fn create_fdd_image(path: &Path, fdd_type: FddType) -> crate::Result<()> {
         FddType::Dd2 => (D88MediaType::Disk2DD, 80, 2, 16, 256, 1u8),
         FddType::D2 => (D88MediaType::Disk2D, 40, 2, 16, 256, 1u8),
     };
+
+    if raw_xdf {
+        let bytes = vec![0u8; cylinders * heads * sectors_per_track * sector_size];
+        let size_kb = bytes.len() / 1024;
+        std::fs::write(path, &bytes)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        info!("Created {} KB floppy image: {}", size_kb, path.display());
+        return Ok(());
+    }
 
     let total_tracks = cylinders * heads;
     let mut track_sectors: Vec<Option<Vec<D88Sector>>> = Vec::with_capacity(total_tracks);
@@ -67,6 +84,10 @@ pub fn create_hdd_image(path: &Path, hdd_type: HddSizeType) -> crate::Result<()>
         if !matches!(extension.as_deref(), Some("h0" | "h1" | "h2" | "h3" | "h4")) {
             bail!("raw SCSI output path must have a .h0-.h4 extension");
         }
+    } else if hdd_type.is_x68k_hdf() {
+        if extension.as_deref() != Some("hdf") {
+            bail!("X68000 output path must have a .hdf extension");
+        }
     } else if extension.as_deref() != Some("hdi") {
         bail!("output path must have a .hdi extension");
     }
@@ -91,6 +112,11 @@ pub fn create_hdd_image(path: &Path, hdd_type: HddSizeType) -> crate::Result<()>
         HddSizeType::ScsiMb200 => (200 * 8, 8, 32, 512, HddFormat::Raw),
         HddSizeType::ScsiMb340 => (340 * 8, 8, 32, 512, HddFormat::Raw),
         HddSizeType::ScsiMb540 => (540 * 8, 8, 32, 512, HddFormat::Raw),
+        HddSizeType::X68kSasiMb10 => (309, 4, 33, 256, HddFormat::Raw),
+        HddSizeType::X68kSasiMb20 => (614, 4, 33, 256, HddFormat::Raw),
+        HddSizeType::X68kSasiMb40 => (614, 8, 33, 256, HddFormat::Raw),
+        HddSizeType::X68kScsiMb20 => (20 * 8, 8, 32, 512, HddFormat::Raw),
+        HddSizeType::X68kScsiMb40 => (40 * 8, 8, 32, 512, HddFormat::Raw),
     };
 
     let geometry = HddGeometry {

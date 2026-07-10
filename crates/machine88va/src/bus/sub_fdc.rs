@@ -86,6 +86,7 @@ impl Pc88VaBus {
             }
             FdcAction::StartReadId => self.handle_read_id(),
             FdcAction::StartFormatTrack => self.start_pio_format(),
+            FdcAction::StartScan => unreachable!("SCAN commands are disabled on this FDC"),
         }
     }
 

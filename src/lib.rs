@@ -1,19 +1,16 @@
 //! Neetan, an emulator for the PC-6001 / PC-6601, PC-8001 / PC-8801, PC-88VA,
-//! PC-9801 / PC-9821, FM Towns, Sharp X1 / X1 turbo and Fujitsu FM-7 families.
+//! PC-9801 / PC-9821, FM Towns, Sharp X68000, Sharp X1 / X1 turbo and Fujitsu
+//! FM-7 families.
 
 #![deny(unsafe_code)]
 
-use std::{
-    fs::File,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use audio_engine::AudioEngine;
 use common::{
-    BUILTIN_FONT_ROM, Context, CpuMode, JoystickState, Machine, MachineModel, StringError, bail,
-    ensure, error, info, warn,
+    BUILTIN_FONT_ROM, Context, Cpu, CpuMode, HostDateTime, JoystickState, Machine, MachineModel,
+    StringError, bail, ensure, error, info, warn,
 };
-use device::disk::{HddGeometry, load_hdd_image};
 use sdl3::{
     Sdl,
     audio::AudioSubsystem,
@@ -141,7 +138,7 @@ pub fn run(config: EmulatorConfig) -> Result<()> {
                 * 100.0)
                 .round()
                 .min(100.0) as u32;
-            window.set_title(&format!("neetan ({busy_percent}% CPU)"));
+            window.set_title(&format!("{GAME_NAME} ({busy_percent}% CPU)"));
             application.busy_duration = Duration::ZERO;
             application.window_title_last_update = Instant::now();
         }
@@ -283,8 +280,8 @@ fn select_graphics_backend(
     config: &EmulatorConfig,
     window: &mut Window,
 ) -> Result<(Box<dyn GraphicsEngine>, Backend)> {
-    let large_native_target =
-        config.graphicboard != config::GraphicboardType::None || config.target == Target::Towns;
+    let large_native_target = config.graphicboard != config::GraphicboardType::None
+        || matches!(config.target, Target::Towns | Target::X68k);
     match config.backend {
         Backend::Legacy => {
             info!("Using legacy backend");
@@ -1201,30 +1198,32 @@ const fn on_off(enabled: bool) -> &'static str {
     if enabled { "on" } else { "off" }
 }
 
-/// Returns the current host local time as a 6-byte BCD buffer for the µPD4990A RTC.
-///
-/// Format: `[year, month<<4|day_of_week, day, hour, minute, second]`.
-fn host_local_time_bcd() -> [u8; 6] {
-    fn to_bcd(value: u8) -> u8 {
-        ((value / 10) << 4) | (value % 10)
-    }
-
+/// Returns the current host local date and time for emulated RTCs.
+fn host_date_time() -> HostDateTime {
     let Ok(dt) = sdl3::time::local_date_time() else {
-        return [0; 6];
+        return HostDateTime {
+            year: 0,
+            month: 0,
+            day: 0,
+            day_of_week: 0,
+            hour: 0,
+            minute: 0,
+            second: 0,
+        };
     };
-
-    let year = to_bcd((dt.year % 100) as u8);
-    let month_dow = ((dt.month as u8) << 4) | (dt.day_of_week as u8);
-    let day = to_bcd(dt.day as u8);
-    let hour = to_bcd(dt.hour as u8);
-    let minute = to_bcd(dt.minute as u8);
-    let second = to_bcd(dt.second as u8);
-
-    [year, month_dow, day, hour, minute, second]
+    HostDateTime {
+        year: dt.year as u16,
+        month: dt.month as u8,
+        day: dt.day as u8,
+        day_of_week: dt.day_of_week as u8,
+        hour: dt.hour as u8,
+        minute: dt.minute as u8,
+        second: dt.second as u8,
+    }
 }
 
 pub fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
-    match config.target {
+    let mut machine = match config.target {
         Target::Pc98 => initialize_pc98_machine(config, sample_rate),
         Target::Pc88 => initialize_pc88_machine(config, sample_rate),
         Target::Pc88Va => initialize_pc88va_machine(config, sample_rate),
@@ -1232,413 +1231,113 @@ pub fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<B
         Target::Towns => initialize_towns_machine(config, sample_rate),
         Target::X1 => initialize_x1_machine(config, sample_rate),
         Target::Fm7 => initialize_fm7_machine(config, sample_rate),
-    }
+        Target::X68k => initialize_x68k_machine(config),
+    }?;
+    configure_machine(machine.as_mut(), config)?;
+    Ok(machine)
 }
 
-fn selector_font_rom_data(config: &EmulatorConfig, machine: &dyn Machine) -> Vec<u8> {
-    if config.target == Target::Pc98 {
-        return machine.font_rom_data().to_vec();
-    }
+/// Applies shared host services and startup peripherals after construction.
+fn configure_machine(machine: &mut dyn Machine, config: &EmulatorConfig) -> Result<()> {
+    machine.set_host_date_time_provider(host_date_time);
+    let capabilities = machine.startup_capabilities();
 
-    expand_selector_font_rom(BUILTIN_FONT_ROM)
-}
-
-fn expand_selector_font_rom(raw_font_rom: &[u8]) -> Vec<u8> {
-    let mut bus: machine::Pc9801Bus<machine::NoTracing> = machine::Pc9801Bus::new(
-        MachineModel::PC9801VM,
-        CpuMode::High,
-        audio_engine::SAMPLE_RATE as u32,
-    );
-    bus.load_font_rom(raw_font_rom);
-    bus.font_rom_data().to_vec()
-}
-
-fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
-    let model = machine88::Pc8801Model::PC8801MC;
-    info!("Selected machine model {model}");
-
-    let rom_dir = config.pc88_roms.as_ref().ok_or_else(|| {
-        StringError("PC-8801MC requires a ROM directory (--pc88-roms <DIR>)".into())
-    })?;
-
-    let roms = machine88::load_rom_set(rom_dir).map_err(|error| {
-        StringError(format!(
-            "Failed to load PC-8801MC ROM set from {}: {error}",
-            rom_dir.display()
-        ))
-    })?;
-
-    // The shared --boot-mode field carries every family's values; reject an
-    // FM-7-only choice here and fall back to V2 when unset.
-    let boot_mode = config
-        .boot_mode
-        .map(|mode| mode.to_pc88())
-        .transpose()
-        .map_err(StringError)?
-        .unwrap_or(machine88::BootMode::V2);
-
-    roms.validate_for_boot_mode(boot_mode).map_err(|error| {
-        StringError(format!(
-            "PC-8801MC boot mode '{boot_mode}' requires a ROM missing from {}: {error}",
-            rom_dir.display()
-        ))
-    })?;
-
-    let clock_select = match config.cpu_mode {
-        common::CpuMode::Low => machine88::ClockSelect::FourMhz,
-        common::CpuMode::High => machine88::ClockSelect::EightMhz,
-    };
-
-    let mut bus: machine88::Pc8801Bus = machine88::Pc8801Bus::new(model, clock_select, sample_rate);
-    bus.set_boot_mode(boot_mode);
-    bus.set_monitor_timing(config.monitor);
-    bus.set_memory_wait(config.pc88_memory_wait);
-    bus.set_eight_mhz_wait(config.pc88_8mhz_wait);
-    bus.set_host_local_time_fn(host_local_time_bcd);
-    bus.load_roms(&roms);
-
-    info!(
-        "PC-8801MC configured: {} clock, boot mode {}, monitor {}, memory wait {}, 8 MHz wait {}",
-        match config.cpu_mode {
-            CpuMode::Low => "4 MHz",
-            CpuMode::High => "8 MHz",
-        },
-        boot_mode,
-        config.monitor,
-        config.pc88_memory_wait,
-        config.pc88_8mhz_wait
-    );
-
-    if config.hdd1.is_some() || config.hdd2.is_some() {
-        warn!("HDD options are ignored for the PC-8801MC target");
-    }
-
-    let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
-    let sub_cpu = cpu::Z80::new(bus.sub_clock_hz());
-    Ok(Box::new(machine88::Pc8801Machine::new(
-        main_cpu, sub_cpu, bus,
-    )))
-}
-
-fn initialize_pc88va_machine(
-    config: &EmulatorConfig,
-    _sample_rate: u32,
-) -> Result<Box<dyn Machine>> {
-    let model = config.pc88va_model;
-    info!("Selected machine model {model}");
-
-    let rom_dir = config.pc88va_roms.as_ref().ok_or_else(|| {
-        StringError("PC-88VA requires a ROM directory (--pc88va-roms <DIR>)".into())
-    })?;
-
-    let roms = machine88va::load_rom_set(rom_dir).map_err(|error| {
-        StringError(format!(
-            "Failed to load PC-88VA ROM set from {}: {error}",
-            rom_dir.display()
-        ))
-    })?;
-
-    if config.hdd1.is_some() || config.hdd2.is_some() {
-        warn!("HDD options are ignored for the PC-88VA target");
-    }
-    if !config.cdrom.is_empty() {
-        warn!("CD-ROM options are ignored for the PC-88VA target");
-    }
-
-    let mut machine = machine88va::Pc88VaMachine::new(model, roms);
-    machine.set_host_local_time_fn(host_local_time_bcd);
-    Ok(Box::new(machine))
-}
-
-fn initialize_towns_machine(
-    config: &EmulatorConfig,
-    _sample_rate: u32,
-) -> Result<Box<dyn Machine>> {
-    let model = config.towns_model;
-    info!("Selected machine model {model}");
-
-    let rom_dir = config.towns_roms.as_ref().ok_or_else(|| {
-        StringError("FM Towns requires a ROM directory (--towns-roms <DIR>)".into())
-    })?;
-
-    let roms = machinetowns::load_rom_set(model, rom_dir).map_err(|error| {
-        StringError(format!(
-            "Failed to load FM Towns ROM set from {}: {error}",
-            rom_dir.display()
-        ))
-    })?;
-
-    let boot_device = match config.boot_device {
-        machine::BootDevice::Auto => machinetowns::TownsBootDevice::Auto,
-        machine::BootDevice::Fdd1 | machine::BootDevice::Fdd2 => {
-            machinetowns::TownsBootDevice::Floppy
-        }
-        machine::BootDevice::Hdd1 | machine::BootDevice::Hdd2 => machinetowns::TownsBootDevice::Hdd,
-        machine::BootDevice::Dos => {
-            warn!("'dos' boot is not available for the FM Towns; using the default boot device");
-            machinetowns::TownsBootDevice::Auto
-        }
-    };
-
-    match model {
-        machinetowns::TownsModel::FmTownsIICx => {
-            build_towns_machine::<{ cpu::CPU_MODEL_386 }>(config, model, roms, boot_device)
-        }
-        machinetowns::TownsModel::FmTownsIIMx => {
-            build_towns_machine::<{ cpu::CPU_MODEL_486 }>(config, model, roms, boot_device)
+    if let Some(cassette_path) = config.cassette.as_ref() {
+        if capabilities.cassette {
+            let description = machine
+                .insert_cassette(cassette_path)
+                .map_err(StringError)?;
+            info!("Inserted cassette {description}");
+        } else {
+            warn!("Cassette option is ignored for this machine");
         }
     }
-}
 
-fn build_towns_machine<const CPU_MODEL: u8>(
-    config: &EmulatorConfig,
-    model: machinetowns::TownsModel,
-    roms: machinetowns::LoadedRoms,
-    boot_device: machinetowns::TownsBootDevice,
-) -> Result<Box<dyn Machine>> {
-    let cpu_name = if CPU_MODEL == cpu::CPU_MODEL_386 {
-        "i386DX"
-    } else {
-        "i486DX2"
-    };
-    info!(
-        "FM Towns configured: {} MHz {cpu_name}",
-        model.cpu_clock_hz(config.cpu_mode) / 1_000_000,
-    );
+    for (drive, hard_disk_path) in [&config.hdd1, &config.hdd2].into_iter().enumerate() {
+        let Some(hard_disk_path) = hard_disk_path else {
+            continue;
+        };
+        if capabilities.hard_disk {
+            let description = machine
+                .insert_hdd(drive, hard_disk_path)
+                .map_err(StringError)?;
+            info!("Inserted {description}");
+        } else {
+            warn!("HDD{} option is ignored for this machine", drive + 1);
+        }
+    }
 
-    let mut machine = machinetowns::TownsMachine::<CPU_MODEL>::new(model, config.cpu_mode, roms);
-    machine.set_host_local_time_fn(host_local_time_bcd);
-    machine.set_boot_device(boot_device);
-    machine.set_pad_type(config.towns_pad);
-    machine.set_cdrom_compatibility_timing(config.cdrom_compat);
-
-    // SCSI hard disks: hdd1 -> SCSI ID 0, hdd2 -> SCSI ID 1.
-    for (drive, hdd_path) in [&config.hdd1, &config.hdd2].into_iter().enumerate() {
-        let Some(hdd_path) = hdd_path else { continue };
-        let data = std::fs::read(hdd_path)
-            .with_context(|| format!("Failed to read HDD image from {}", hdd_path.display()))?;
-        let image = load_hdd_image(hdd_path, &data)
-            .with_context(|| format!("Failed to parse HDD image from {}", hdd_path.display()))?;
-        ensure!(
-            image.format == device::disk::HddFormat::Raw,
-            "FM Towns hard disks must be raw images (.h0-.h4); {} is {}",
-            hdd_path.display(),
-            image.format_name(),
-        );
-        info!(
-            "Inserted FM Towns HDD (SCSI ID {drive}): {} sectors from {}",
-            image.geometry.total_sectors(),
-            hdd_path.display()
-        );
-        machine.insert_hdd(drive, image, Some(hdd_path.clone()));
+    if let Some(printer_path) = config.printer.as_ref() {
+        if capabilities.printer {
+            machine.attach_printer(printer_path).map_err(StringError)?;
+            info!("Printer attached: {}", printer_path.display());
+        } else {
+            warn!("Printer option is ignored for this machine");
+        }
     }
 
     match config.midi {
         config::MidiDevice::None => {}
         config::MidiDevice::Mt32 => {
-            if let Some(ref mt32_rom_dir) = config.mt32_roms {
-                #[cfg(feature = "mt32")]
-                {
-                    match machine.install_mt32(mt32_rom_dir) {
-                        Ok(()) => info!("Loaded MT-32 sound module (munt)"),
-                        Err(error) => warn!("MT-32 unavailable: {error}"),
-                    }
-                }
-                #[cfg(not(feature = "mt32"))]
-                {
-                    let _ = mt32_rom_dir;
-                    warn!("MT-32 ROM path specified, but MT-32 support was not compiled in");
-                }
-            } else {
-                warn!(
-                    "MIDI device set to MT-32, but no MT-32 ROM directory specified (--mt32-roms)"
-                );
-            }
+            configure_mt32(machine, capabilities.mt32, config.mt32_roms.as_deref())
         }
         config::MidiDevice::Sc55 => {
-            if let Some(ref sc55_rom_dir) = config.sc55_roms {
-                #[cfg(feature = "sc55")]
-                {
-                    match machine.install_sc55(sc55_rom_dir) {
-                        Ok(()) => info!("Loaded Nuked-SC55 sound module"),
-                        Err(error) => warn!("SC-55 unavailable: {error}"),
-                    }
-                }
-                #[cfg(not(feature = "sc55"))]
-                {
-                    let _ = sc55_rom_dir;
-                    warn!("SC-55 ROM path specified, but SC-55 support was not compiled in");
-                }
-            } else {
-                warn!(
-                    "MIDI device set to SC-55, but no SC-55 ROM directory specified (--sc55-roms)"
-                );
-            }
+            configure_sc55(machine, capabilities.sc55, config.sc55_roms.as_deref())
         }
     }
-
-    Ok(Box::new(machine))
+    Ok(())
 }
 
-fn initialize_pc60_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
-    let model = config.pc60_model;
-    info!("Selected machine model {model}");
-
-    let rom_dir = config.pc60_roms.as_ref().ok_or_else(|| {
-        StringError(format!(
-            "{model} requires a ROM directory (--pc6000-roms <DIR>)"
-        ))
-    })?;
-
-    let roms = machine60::load_rom_set(model, rom_dir).map_err(|error| {
-        StringError(format!(
-            "Failed to load {model} ROM set from {}: {error}",
-            rom_dir.display()
-        ))
-    })?;
-
-    let mut bus: machine60::Pc6000Bus<Tracer> = machine60::Pc6000Bus::new(model, sample_rate);
-    bus.load_roms(&roms);
-
-    if let Some(cart_path) = config.cartridge.as_ref() {
-        let image = std::fs::read(cart_path).map_err(|error| {
-            StringError(format!(
-                "Failed to read PC-6000 cartridge {}: {error}",
-                cart_path.display()
-            ))
-        })?;
-        info!(
-            "Loaded cartridge {} ({} bytes)",
-            cart_path.display(),
-            image.len()
-        );
-        bus.load_cartridge(&image);
+/// Installs the selected MT-32 module when supported and available.
+fn configure_mt32(
+    machine: &mut dyn Machine,
+    supported: bool,
+    rom_directory: Option<&std::path::Path>,
+) {
+    if !supported {
+        warn!("MT-32 MIDI is ignored for this machine");
+        return;
     }
-
-    if config.hdd1.is_some() || config.hdd2.is_some() {
-        warn!("HDD options are ignored for the PC-6000 target");
+    let Some(rom_directory) = rom_directory else {
+        warn!("MIDI device set to MT-32, but no MT-32 ROM directory specified (--mt32-roms)");
+        return;
+    };
+    #[cfg(feature = "mt32")]
+    match machine.install_mt32(rom_directory) {
+        Ok(()) => info!("Loaded MT-32 sound module (munt)"),
+        Err(error) => warn!("MT-32 unavailable: {error}"),
     }
-
-    let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
-    let mut machine = machine60::Pc6000Machine::new(main_cpu, bus);
-
-    if let Some(cassette_path) = config.cassette.as_ref() {
-        match machine.insert_cassette(cassette_path) {
-            Ok(description) => info!("Inserted cassette {description}"),
-            Err(error) => {
-                return Err(Error::from(StringError(format!(
-                    "Failed to insert PC-6000 cassette: {error}"
-                ))));
-            }
-        }
+    #[cfg(not(feature = "mt32"))]
+    {
+        let _ = (machine, rom_directory);
+        warn!("MT-32 ROM path specified, but MT-32 support was not compiled in");
     }
-
-    Ok(Box::new(machine))
 }
 
-fn initialize_x1_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
-    let model = config.x1_model;
-    info!("Selected machine model {model}");
-    if model.is_turbo() {
-        info!("X1 turbo monitor {}", config.monitor);
+/// Installs the selected SC-55 module when supported and available.
+fn configure_sc55(
+    machine: &mut dyn Machine,
+    supported: bool,
+    rom_directory: Option<&std::path::Path>,
+) {
+    if !supported {
+        warn!("SC-55 MIDI is ignored for this machine");
+        return;
     }
-
-    let rom_dir = config.x1_roms.as_ref().ok_or_else(|| {
-        StringError(format!(
-            "{model} requires a ROM directory (--x1-roms <DIR>)"
-        ))
-    })?;
-
-    let roms = machinex1::load_rom_set(model, rom_dir).map_err(|error| {
-        StringError(format!(
-            "Failed to load {model} ROM set from {}: {error}",
-            rom_dir.display()
-        ))
-    })?;
-
-    let mut bus: machinex1::X1Bus<Tracer> = machinex1::X1Bus::new(model, sample_rate);
-    bus.set_monitor_timing(config.monitor);
-    bus.set_keyboard_mode(config.x1_keyboard);
-    bus.load_roms(&roms);
-    bus.seed_host_clock();
-
-    if config.hdd1.is_some() || config.hdd2.is_some() {
-        warn!("HDD options are ignored for the X1 target");
+    let Some(rom_directory) = rom_directory else {
+        warn!("MIDI device set to SC-55, but no SC-55 ROM directory specified (--sc55-roms)");
+        return;
+    };
+    #[cfg(feature = "sc55")]
+    match machine.install_sc55(rom_directory) {
+        Ok(()) => info!("Loaded Nuked-SC55 sound module"),
+        Err(error) => warn!("SC-55 unavailable: {error}"),
     }
-
-    let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
-    let mut machine = machinex1::X1Machine::new(main_cpu, bus);
-
-    if let Some(cassette_path) = config.cassette.as_ref() {
-        match machine.insert_cassette(cassette_path) {
-            Ok(description) => info!("Inserted cassette {description}"),
-            Err(error) => {
-                return Err(Error::from(StringError(format!(
-                    "Failed to insert X1 cassette: {error}"
-                ))));
-            }
-        }
+    #[cfg(not(feature = "sc55"))]
+    {
+        let _ = (machine, rom_directory);
+        warn!("SC-55 ROM path specified, but SC-55 support was not compiled in");
     }
-
-    Ok(Box::new(machine))
-}
-
-/// Builds an FM-7 / FM-77AV machine: loads the ROM set, resolves the shared
-/// boot mode to an FM-7 mode, wires the two MC6809 cores (main and sub) and the
-/// bus, and returns the boxed machine.
-fn initialize_fm7_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
-    let model = config.fm7_model;
-    info!("Selected machine model {model}");
-
-    let rom_dir = config.fm7_roms.as_ref().ok_or_else(|| {
-        StringError(format!(
-            "{model} requires a ROM directory (--fm7-roms <DIR>)"
-        ))
-    })?;
-
-    let roms = machinefm7::load_rom_set(model, rom_dir).map_err(|error| {
-        StringError(format!(
-            "Failed to load {model} ROM set from {}: {error}",
-            rom_dir.display()
-        ))
-    })?;
-
-    // The shared --boot-mode field carries every family's values; reject a
-    // PC-88-only choice here and default to BASIC when unset.
-    let boot_mode = config
-        .boot_mode
-        .map(|mode| mode.to_fm7())
-        .transpose()
-        .map_err(StringError)?
-        .unwrap_or(machinefm7::BootMode::Basic);
-
-    let mut bus: machinefm7::Fm7Bus<Tracer> =
-        machinefm7::Fm7Bus::new(model, boot_mode, sample_rate);
-    bus.load_roms(&roms);
-    bus.seed_host_clock();
-
-    if config.hdd1.is_some() || config.hdd2.is_some() {
-        warn!("HDD options are ignored for the FM-7 target");
-    }
-
-    let main_cpu = cpu::M6809::new(bus.cpu_clock_hz());
-    let sub_cpu = cpu::M6809::new(model.sub_clock_hz());
-    let mut machine = machinefm7::Fm7Machine::new(main_cpu, sub_cpu, bus);
-
-    if let Some(cassette_path) = config.cassette.as_ref() {
-        match machine.insert_cassette(cassette_path) {
-            Ok(description) => info!("Inserted cassette {description}"),
-            Err(error) => {
-                return Err(Error::from(StringError(format!(
-                    "Failed to insert FM-7 cassette: {error}"
-                ))));
-            }
-        }
-    }
-
-    info!("FM-7 configured: model {model}, boot mode {boot_mode}");
-
-    Ok(Box::new(machine))
 }
 
 fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
@@ -1648,7 +1347,6 @@ fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
 
     let mut bus: machine::Pc9801Bus<Tracer> =
         machine::Pc9801Bus::new(model, config.cpu_mode, sample_rate);
-    bus.set_host_local_time_fn(host_local_time_bcd);
     bus.set_boot_device(config.boot_device);
 
     // EMS / XMS configuration gated by machine capability
@@ -1821,89 +1519,6 @@ fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
         }
     }
 
-    if config.midi == config::MidiDevice::Mt32 {
-        if let Some(ref mt32_rom_dir) = config.mt32_roms {
-            #[cfg(feature = "mt32")]
-            {
-                match bus.install_mt32(mt32_rom_dir) {
-                    Ok(()) => info!("Loaded MT-32 sound module (munt)"),
-                    Err(error) => warn!("MT-32 unavailable: {error}"),
-                }
-            }
-            #[cfg(not(feature = "mt32"))]
-            {
-                let _ = mt32_rom_dir;
-                warn!("MT-32 ROM path specified, but MT-32 support was not compiled in");
-            }
-        } else {
-            warn!("MIDI device set to MT-32, but no MT-32 ROM directory specified (--mt32-roms)");
-        }
-    }
-
-    if config.midi == config::MidiDevice::Sc55 {
-        if let Some(ref sc55_rom_dir) = config.sc55_roms {
-            #[cfg(feature = "sc55")]
-            {
-                match bus.install_sc55(sc55_rom_dir) {
-                    Ok(()) => info!("Loaded Nuked-SC55 sound module"),
-                    Err(error) => warn!("SC-55 unavailable: {error}"),
-                }
-            }
-            #[cfg(not(feature = "sc55"))]
-            {
-                let _ = sc55_rom_dir;
-                warn!("SC-55 ROM path specified, but SC-55 support was not compiled in");
-            }
-        } else {
-            warn!("MIDI device set to SC-55, but no SC-55 ROM directory specified (--sc55-roms)");
-        }
-    }
-
-    if let Some(ref printer_path) = config.printer {
-        let file = File::options()
-            .write(true)
-            .open(printer_path)
-            .with_context(|| {
-                format!("Failed to open printer output: {}", printer_path.display())
-            })?;
-        info!("Printer attached: {}", printer_path.display());
-        bus.attach_printer(file);
-    }
-
-    if let Some(ref hdd1_path) = config.hdd1 {
-        let data = std::fs::read(hdd1_path)
-            .with_context(|| format!("Failed to read HDD1 image from {}", hdd1_path.display()))?;
-        let image = load_hdd_image(hdd1_path, &data)
-            .with_context(|| format!("Failed to parse HDD1 image from {}", hdd1_path.display()))?;
-        validate_hdd_for_machine(model, &image.geometry, "HDD1")?;
-        info!(
-            "Inserted HDD1: {}C/{}H/{}S ({}) from {}",
-            image.geometry.cylinders,
-            image.geometry.heads,
-            image.geometry.sectors_per_track,
-            image.format_name(),
-            hdd1_path.display()
-        );
-        bus.insert_hdd(0, image, Some(hdd1_path.clone()));
-    }
-
-    if let Some(ref hdd2_path) = config.hdd2 {
-        let data = std::fs::read(hdd2_path)
-            .with_context(|| format!("Failed to read HDD2 image from {}", hdd2_path.display()))?;
-        let image = load_hdd_image(hdd2_path, &data)
-            .with_context(|| format!("Failed to parse HDD2 image from {}", hdd2_path.display()))?;
-        validate_hdd_for_machine(model, &image.geometry, "HDD2")?;
-        info!(
-            "Inserted HDD2: {}C/{}H/{}S ({}) from {}",
-            image.geometry.cylinders,
-            image.geometry.heads,
-            image.geometry.sectors_per_track,
-            image.format_name(),
-            hdd2_path.display()
-        );
-        bus.insert_hdd(1, image, Some(hdd2_path.clone()));
-    }
-
     let machine: Box<dyn Machine> = match model.cpu_type() {
         common::CpuType::I8086 => Box::new(machine::Machine::new(cpu::I8086::new(), bus)),
         common::CpuType::V30 => Box::new(machine::Machine::new(cpu::V30::new(), bus)),
@@ -1921,41 +1536,334 @@ fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
     Ok(machine)
 }
 
-fn validate_hdd_for_machine(
-    model: MachineModel,
-    geometry: &HddGeometry,
-    label: &str,
-) -> Result<()> {
-    match model {
-        MachineModel::PC9801F
-        | MachineModel::PC9801VM
-        | MachineModel::PC9801VX
-        | MachineModel::PC9801RA => {
-            ensure!(
-                geometry.sasi_media_type().is_some(),
-                "{label} is not compatible with {model} (SASI): \
-                 geometry {}C/{}H/{}S with {}-byte sectors \
-                 does not match any standard SASI drive type",
-                geometry.cylinders,
-                geometry.heads,
-                geometry.sectors_per_track,
-                geometry.sector_size,
-            );
+fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+    let model = machine88::Pc8801Model::PC8801MC;
+    info!("Selected machine model {model}");
+
+    let rom_dir = config.pc88_roms.as_ref().ok_or_else(|| {
+        StringError("PC-8801MC requires a ROM directory (--pc88-roms <DIR>)".into())
+    })?;
+
+    let roms = machine88::load_rom_set(rom_dir).map_err(|error| {
+        StringError(format!(
+            "Failed to load PC-8801MC ROM set from {}: {error}",
+            rom_dir.display()
+        ))
+    })?;
+
+    // The shared --boot-mode field carries every family's values; reject an
+    // FM-7-only choice here and fall back to V2 when unset.
+    let boot_mode = config
+        .boot_mode
+        .map(|mode| mode.to_pc88())
+        .transpose()
+        .map_err(StringError)?
+        .unwrap_or(machine88::BootMode::V2);
+
+    roms.validate_for_boot_mode(boot_mode).map_err(|error| {
+        StringError(format!(
+            "PC-8801MC boot mode '{boot_mode}' requires a ROM missing from {}: {error}",
+            rom_dir.display()
+        ))
+    })?;
+
+    let clock_select = match config.cpu_mode {
+        common::CpuMode::Low => machine88::ClockSelect::FourMhz,
+        common::CpuMode::High => machine88::ClockSelect::EightMhz,
+    };
+
+    let mut bus: machine88::Pc8801Bus = machine88::Pc8801Bus::new(model, clock_select, sample_rate);
+    bus.set_boot_mode(boot_mode);
+    bus.set_monitor_timing(config.monitor);
+    bus.set_memory_wait(config.pc88_memory_wait);
+    bus.set_eight_mhz_wait(config.pc88_8mhz_wait);
+    bus.load_roms(&roms);
+
+    info!(
+        "PC-8801MC configured: {} clock, boot mode {}, monitor {}, memory wait {}, 8 MHz wait {}",
+        match config.cpu_mode {
+            CpuMode::Low => "4 MHz",
+            CpuMode::High => "8 MHz",
+        },
+        boot_mode,
+        config.monitor,
+        config.pc88_memory_wait,
+        config.pc88_8mhz_wait
+    );
+
+    let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+    let sub_cpu = cpu::Z80::new(bus.sub_clock_hz());
+    Ok(Box::new(machine88::Pc8801Machine::new(
+        main_cpu, sub_cpu, bus,
+    )))
+}
+
+fn initialize_pc88va_machine(
+    config: &EmulatorConfig,
+    sample_rate: u32,
+) -> Result<Box<dyn Machine>> {
+    let model = config.pc88va_model;
+    info!("Selected machine model {model}");
+
+    let rom_dir = config.pc88va_roms.as_ref().ok_or_else(|| {
+        StringError("PC-88VA requires a ROM directory (--pc88va-roms <DIR>)".into())
+    })?;
+
+    let roms = machine88va::load_rom_set(rom_dir).map_err(|error| {
+        StringError(format!(
+            "Failed to load PC-88VA ROM set from {}: {error}",
+            rom_dir.display()
+        ))
+    })?;
+
+    if !config.cdrom.is_empty() {
+        warn!("CD-ROM options are ignored for the PC-88VA target");
+    }
+
+    let bus: machine88va::Pc88VaBus = machine88va::Pc88VaBus::new(model, roms, sample_rate);
+    let sub_cpu = cpu::Z80::new(bus.clock_config().sub_clock_hz);
+    Ok(Box::new(machine88va::Pc88VaMachine::new(
+        machine88va::Pc88VaMachine::reset_cpu(),
+        sub_cpu,
+        bus,
+    )))
+}
+
+fn initialize_pc60_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+    let model = config.pc60_model;
+    info!("Selected machine model {model}");
+
+    let rom_dir = config.pc60_roms.as_ref().ok_or_else(|| {
+        StringError(format!(
+            "{model} requires a ROM directory (--pc6000-roms <DIR>)"
+        ))
+    })?;
+
+    let roms = machine60::load_rom_set(model, rom_dir).map_err(|error| {
+        StringError(format!(
+            "Failed to load {model} ROM set from {}: {error}",
+            rom_dir.display()
+        ))
+    })?;
+
+    let mut bus: machine60::Pc6000Bus<Tracer> = machine60::Pc6000Bus::new(model, sample_rate);
+    bus.load_roms(&roms);
+
+    if let Some(cart_path) = config.cartridge.as_ref() {
+        let image = std::fs::read(cart_path).map_err(|error| {
+            StringError(format!(
+                "Failed to read PC-6000 cartridge {}: {error}",
+                cart_path.display()
+            ))
+        })?;
+        info!(
+            "Loaded cartridge {} ({} bytes)",
+            cart_path.display(),
+            image.len()
+        );
+        bus.load_cartridge(&image);
+    }
+
+    let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+    let machine = machine60::Pc6000Machine::new(main_cpu, bus);
+
+    Ok(Box::new(machine))
+}
+
+fn initialize_towns_machine(
+    config: &EmulatorConfig,
+    _sample_rate: u32,
+) -> Result<Box<dyn Machine>> {
+    let model = config.towns_model;
+    info!("Selected machine model {model}");
+
+    let rom_dir = config.towns_roms.as_ref().ok_or_else(|| {
+        StringError("FM Towns requires a ROM directory (--towns-roms <DIR>)".into())
+    })?;
+
+    let roms = machinetowns::load_rom_set(model, rom_dir).map_err(|error| {
+        StringError(format!(
+            "Failed to load FM Towns ROM set from {}: {error}",
+            rom_dir.display()
+        ))
+    })?;
+
+    let boot_device = match config.boot_device {
+        machine::BootDevice::Auto => machinetowns::TownsBootDevice::Auto,
+        machine::BootDevice::Fdd1 | machine::BootDevice::Fdd2 => {
+            machinetowns::TownsBootDevice::Floppy
         }
-        MachineModel::PC9821AS | MachineModel::PC9821AP => {
-            ensure!(
-                geometry.sector_size == 512 || geometry.sasi_media_type().is_some(),
-                "{label} is not compatible with {model} (IDE): \
-                 geometry {}C/{}H/{}S with {}-byte sectors \
-                 is not a valid IDE or SASI-compatible drive type",
-                geometry.cylinders,
-                geometry.heads,
-                geometry.sectors_per_track,
-                geometry.sector_size,
-            );
+        machine::BootDevice::Hdd1 | machine::BootDevice::Hdd2 => machinetowns::TownsBootDevice::Hdd,
+        machine::BootDevice::Dos => {
+            warn!("'dos' boot is not available for the FM Towns; using the default boot device");
+            machinetowns::TownsBootDevice::Auto
+        }
+    };
+
+    match model {
+        machinetowns::TownsModel::FmTownsIICx => {
+            build_towns_machine::<{ cpu::CPU_MODEL_386 }>(config, model, roms, boot_device)
+        }
+        machinetowns::TownsModel::FmTownsIIMx => {
+            build_towns_machine::<{ cpu::CPU_MODEL_486 }>(config, model, roms, boot_device)
         }
     }
-    Ok(())
+}
+
+fn build_towns_machine<const CPU_MODEL: u8>(
+    config: &EmulatorConfig,
+    model: machinetowns::TownsModel,
+    roms: machinetowns::LoadedRoms,
+    boot_device: machinetowns::TownsBootDevice,
+) -> Result<Box<dyn Machine>> {
+    let cpu_name = if CPU_MODEL == cpu::CPU_MODEL_386 {
+        "i386DX"
+    } else {
+        "i486DX2"
+    };
+    info!(
+        "FM Towns configured: {} MHz {cpu_name}",
+        model.cpu_clock_hz(config.cpu_mode) / 1_000_000,
+    );
+
+    let bus: machinetowns::TownsBus<Tracer> = machinetowns::TownsBus::new(
+        model,
+        config.cpu_mode,
+        roms,
+        audio_engine::SAMPLE_RATE as u32,
+    );
+    let mut cpu = cpu::I386::<CPU_MODEL, { cpu::ADDRESS_WIDTH_32 }>::new();
+    cpu.reset();
+    let mut machine = machinetowns::TownsMachine::new(cpu, bus);
+    machine.set_boot_device(boot_device);
+    machine.set_pad_type(config.towns_pad);
+    machine.set_cdrom_compatibility_timing(config.cdrom_compat);
+
+    Ok(Box::new(machine))
+}
+
+fn initialize_x1_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+    let model = config.x1_model;
+    info!("Selected machine model {model}");
+    if model.is_turbo() {
+        info!("X1 turbo monitor {}", config.monitor);
+    }
+
+    let rom_dir = config.x1_roms.as_ref().ok_or_else(|| {
+        StringError(format!(
+            "{model} requires a ROM directory (--x1-roms <DIR>)"
+        ))
+    })?;
+
+    let roms = machinex1::load_rom_set(model, rom_dir).map_err(|error| {
+        StringError(format!(
+            "Failed to load {model} ROM set from {}: {error}",
+            rom_dir.display()
+        ))
+    })?;
+
+    let mut bus: machinex1::X1Bus<Tracer> = machinex1::X1Bus::new(model, sample_rate);
+    bus.set_monitor_timing(config.monitor);
+    bus.set_keyboard_mode(config.x1_keyboard);
+    bus.load_roms(&roms);
+
+    let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+    let machine = machinex1::X1Machine::new(main_cpu, bus);
+
+    Ok(Box::new(machine))
+}
+
+/// Builds an FM-7 / FM-77AV machine: loads the ROM set, resolves the shared
+/// boot mode to an FM-7 mode, wires the two MC6809 cores (main and sub) and the
+/// bus, and returns the boxed machine.
+fn initialize_fm7_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+    let model = config.fm7_model;
+    info!("Selected machine model {model}");
+
+    let rom_dir = config.fm7_roms.as_ref().ok_or_else(|| {
+        StringError(format!(
+            "{model} requires a ROM directory (--fm7-roms <DIR>)"
+        ))
+    })?;
+
+    let roms = machinefm7::load_rom_set(model, rom_dir).map_err(|error| {
+        StringError(format!(
+            "Failed to load {model} ROM set from {}: {error}",
+            rom_dir.display()
+        ))
+    })?;
+
+    // The shared --boot-mode field carries every family's values; reject a
+    // PC-88-only choice here and default to BASIC when unset.
+    let boot_mode = config
+        .boot_mode
+        .map(|mode| mode.to_fm7())
+        .transpose()
+        .map_err(StringError)?
+        .unwrap_or(machinefm7::BootMode::Basic);
+
+    let mut bus: machinefm7::Fm7Bus<Tracer> =
+        machinefm7::Fm7Bus::new(model, boot_mode, sample_rate);
+    bus.load_roms(&roms);
+
+    let main_cpu = cpu::M6809::new(bus.cpu_clock_hz());
+    let sub_cpu = cpu::M6809::new(model.sub_clock_hz());
+    let machine = machinefm7::Fm7Machine::new(main_cpu, sub_cpu, bus);
+
+    info!("FM-7 configured: model {model}, boot mode {boot_mode}");
+
+    Ok(Box::new(machine))
+}
+
+fn initialize_x68k_machine(config: &EmulatorConfig) -> Result<Box<dyn Machine>> {
+    let model = config.x68k_model;
+    info!("Selected machine model {model}");
+    let rom_directory = config.x68k_roms.as_ref().ok_or_else(|| {
+        StringError(format!(
+            "{model} requires a ROM directory (--x68k-roms <DIR>)"
+        ))
+    })?;
+    let roms = machinex68k::load_rom_set(model, rom_directory).map_err(|error| {
+        StringError(format!(
+            "Failed to load {model} ROM set from {}: {error}",
+            rom_directory.display()
+        ))
+    })?;
+    if roms.uses_compatibility_scsi {
+        warn!("X68000 XVI is using the compatible internal SCSI ROM image");
+    }
+    info!(
+        "{model} configured at {:.3} MHz",
+        f64::from(model.cpu_clock_hz(config.cpu_mode)) / 1_000_000.0
+    );
+    let bus: machinex68k::X68kBus<Tracer> = machinex68k::X68kBus::new(
+        model,
+        config.cpu_mode,
+        roms,
+        audio_engine::SAMPLE_RATE as u32,
+    )
+    .map_err(StringError)?;
+    let machine = machinex68k::X68kMachine::from_bus(model, config.cpu_mode, bus);
+
+    Ok(Box::new(machine))
+}
+
+fn selector_font_rom_data(config: &EmulatorConfig, machine: &dyn Machine) -> Vec<u8> {
+    if config.target == Target::Pc98 {
+        return machine.font_rom_data().to_vec();
+    }
+
+    expand_selector_font_rom(BUILTIN_FONT_ROM)
+}
+
+fn expand_selector_font_rom(raw_font_rom: &[u8]) -> Vec<u8> {
+    let mut bus: machine::Pc9801Bus<machine::NoTracing> = machine::Pc9801Bus::new(
+        MachineModel::PC9801VM,
+        CpuMode::High,
+        audio_engine::SAMPLE_RATE as u32,
+    );
+    bus.load_font_rom(raw_font_rom);
+    bus.font_rom_data().to_vec()
 }
 
 #[cfg(test)]

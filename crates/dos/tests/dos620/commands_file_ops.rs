@@ -1,4 +1,4 @@
-use common::JisChar;
+use common::{HostDateTime, JisChar};
 
 use crate::harness::*;
 
@@ -167,8 +167,16 @@ fn md_rd_directory() {
 }
 
 /// Fixed test time: 1995-01-01 12:00:00, Sunday.
-fn test_time() -> [u8; 6] {
-    [0x95, 0x10, 0x01, 0x12, 0x00, 0x00]
+fn test_time() -> HostDateTime {
+    HostDateTime {
+        year: 1995,
+        month: 1,
+        day: 1,
+        day_of_week: 0,
+        hour: 12,
+        minute: 0,
+        second: 0,
+    }
 }
 
 #[test]

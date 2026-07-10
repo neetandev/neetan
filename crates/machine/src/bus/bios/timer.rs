@@ -68,7 +68,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn int1ch_get_datetime(&mut self, cpu: &mut impl Cpu) {
-        let time = (self.host_local_time_fn)();
+        let time = (self.host_date_time_provider)().to_bcd_bytes();
         for (i, &byte) in time.iter().enumerate() {
             self.hle_write_byte(
                 cpu,
@@ -125,12 +125,11 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.pit.state.channels[0].last_load_cycle = self.current_cycle;
         self.pic.clear_irq(0);
         self.pit.state.channels[0].flag |= PIT_FLAG_I;
-        self.pit.schedule_timer0(
-            &mut self.scheduler,
-            self.clocks.cpu_clock_hz,
-            self.clocks.pit_clock_hz,
-            self.current_cycle,
-        );
+        let cpu_cycles = self
+            .pit
+            .timer0_period_cycles(self.clocks.cpu_clock_hz, self.clocks.pit_clock_hz);
+        self.scheduler
+            .schedule(EventKind::PitTimer0, self.current_cycle + cpu_cycles);
         self.update_next_event_cycle();
 
         // Unmask IRQ 0 (system timer) in master PIC.
@@ -151,14 +150,14 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.pit.state.channels[0].last_load_cycle = self.current_cycle;
         self.pic.clear_irq(0);
         self.pit.state.channels[0].flag |= PIT_FLAG_I;
-        self.pit.schedule_timer0(
-            &mut self.scheduler,
-            self.clocks.cpu_clock_hz,
-            self.clocks.pit_clock_hz,
-            self.current_cycle,
-        );
+        let cpu_cycles = self
+            .pit
+            .timer0_period_cycles(self.clocks.cpu_clock_hz, self.clocks.pit_clock_hz);
+        self.scheduler
+            .schedule(EventKind::PitTimer0, self.current_cycle + cpu_cycles);
         self.update_next_event_cycle();
         self.pic.state.chips[0].imr &= !0x01;
         self.pic.invalidate_irq_cache();
     }
 }
+use crate::scheduler::EventKind;
