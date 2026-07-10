@@ -33,8 +33,11 @@
  */
 
 use std::{
-    path::Path,
-    sync::{Arc, Condvar, Mutex},
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Condvar, Mutex,
+        mpsc::{self, SyncSender},
+    },
     thread::{self, JoinHandle},
 };
 
@@ -72,13 +75,6 @@ pub struct Sc55Thread;
 impl Sc55Thread {
     /// Starts the SC-55 render thread.
     pub fn start(rom_directory: &Path) -> Result<Sc55Channels, Sc55Error> {
-        let context = Sc55Context::new(rom_directory).map_err(Sc55Error::Context)?;
-
-        let native_rate = context.sample_rate();
-        if native_rate == 0 {
-            return Err(Sc55Error::InvalidSampleRate);
-        }
-
         let shared = Arc::new((
             Mutex::new(Sc55SharedBuffer {
                 midi: Vec::new(),
@@ -90,16 +86,55 @@ impl Sc55Thread {
             Condvar::new(),
         ));
         let shared_clone = Arc::clone(&shared);
+        let rom_directory = rom_directory.to_owned();
+        let (initialization_sender, initialization_receiver) = mpsc::sync_channel(1);
 
         let join_handle = thread::Builder::new()
             .name("sc55-render".into())
             .spawn(move || {
-                render_thread_main(context, native_rate, shared_clone);
+                // Initialize in new thread, so to not starve the main thread of stack space.
+                initialize_and_render(rom_directory, shared_clone, initialization_sender);
             })
             .map_err(Sc55Error::ThreadSpawn)?;
 
-        Ok((shared, join_handle))
+        match initialization_receiver.recv() {
+            Ok(Ok(())) => Ok((shared, join_handle)),
+            Ok(Err(error)) => {
+                let _ = join_handle.join();
+                Err(error)
+            }
+            Err(_) => {
+                let _ = join_handle.join();
+                Err(Sc55Error::InitializationThreadExited)
+            }
+        }
     }
+}
+
+fn initialize_and_render(
+    rom_directory: PathBuf,
+    shared: Arc<(Mutex<Sc55SharedBuffer>, Condvar)>,
+    initialization_sender: SyncSender<Result<(), Sc55Error>>,
+) {
+    let context = match Sc55Context::new(&rom_directory) {
+        Ok(context) => context,
+        Err(error) => {
+            let _ = initialization_sender.send(Err(Sc55Error::Context(error)));
+            return;
+        }
+    };
+
+    let native_rate = context.sample_rate();
+    if native_rate == 0 {
+        let _ = initialization_sender.send(Err(Sc55Error::InvalidSampleRate));
+        return;
+    }
+
+    if initialization_sender.send(Ok(())).is_err() {
+        return;
+    }
+
+    render_thread_main(context, native_rate, shared);
 }
 
 fn render_thread_main(
@@ -180,6 +215,8 @@ pub enum Sc55Error {
     InvalidSampleRate,
     /// Failed to spawn the render thread.
     ThreadSpawn(std::io::Error),
+    /// The render thread exited before completing initialization.
+    InitializationThreadExited,
 }
 
 impl std::fmt::Display for Sc55Error {
@@ -188,6 +225,9 @@ impl std::fmt::Display for Sc55Error {
             Self::Context(error) => write!(f, "SC-55 initialization failed: {error}"),
             Self::InvalidSampleRate => write!(f, "SC-55 reported sample rate of 0"),
             Self::ThreadSpawn(error) => write!(f, "failed to spawn SC-55 thread: {error}"),
+            Self::InitializationThreadExited => {
+                f.write_str("SC-55 render thread exited during initialization")
+            }
         }
     }
 }

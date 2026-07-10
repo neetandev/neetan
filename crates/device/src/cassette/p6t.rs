@@ -18,7 +18,7 @@ const TABLE_MAGIC: [u8; 7] = [b'P', b'6', 0x02, 0x02, 0x00, 0x00, 0x00];
 /// Bytes of header that follow the magic before the first record.
 const HEADER_LEN: usize = TABLE_MAGIC.len() + 4;
 /// A block record opens with `TI`.
-const RECORD_MAGIC: [u8; 2] = [b'T', b'I'];
+const RECORD_MAGIC: [u8; 2] = *b"TI";
 /// Size of one block record.
 const RECORD_LEN: usize = 33;
 /// Byte offsets of the fields within a record.
