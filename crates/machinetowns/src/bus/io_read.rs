@@ -33,9 +33,9 @@ impl<T: Tracing> TownsBus<T> {
             }
             0x0022 => 0x00,
             // CPU misc register: the 2_UG and later models report 0x07 here; the
-            // CX and MX predate it and read back 0xFF.
+            // base, CX and MX models predate it and read back 0xFF.
             0x0024 => match self.model {
-                TownsModel::FmTownsIICx | TownsModel::FmTownsIIMx => 0xFF,
+                TownsModel::FmTowns | TownsModel::FmTownsIICx | TownsModel::FmTownsIIMx => 0xFF,
             },
             // Free-running microsecond counter.
             0x0026 => self.free_run_counter() as u8,

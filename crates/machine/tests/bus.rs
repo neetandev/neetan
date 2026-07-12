@@ -78,7 +78,8 @@ fn bus_clock_config_uses_cpu_mode_without_changing_pit_lineage() {
         (MachineModel::PC9801F, 5_000_000, 8_000_000, 1_996_800),
         (MachineModel::PC9801VM, 8_000_000, 10_000_000, 2_457_600),
         (MachineModel::PC9801VX, 8_000_000, 10_000_000, 2_457_600),
-        (MachineModel::PC9801RA, 16_000_000, 20_000_000, 1_996_800),
+        (MachineModel::PC9801RS, 16_000_000, 16_000_000, 1_996_800),
+        (MachineModel::PC9801RA, 20_000_000, 20_000_000, 1_996_800),
         (MachineModel::PC9821AS, 33_000_000, 33_000_000, 1_996_800),
         (MachineModel::PC9821AP, 66_000_000, 66_000_000, 1_996_800),
     ];

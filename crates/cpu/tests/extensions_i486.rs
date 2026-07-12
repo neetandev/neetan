@@ -1,5 +1,5 @@
 use common::{Bus as _, Cpu as _};
-use cpu::{CPU_MODEL_486, I386, I386State};
+use cpu::{CPU_MODEL_486_DX, I386, I386State};
 
 const RAM_SIZE: usize = 1024 * 1024;
 const ADDRESS_MASK: u32 = 0x000F_FFFF;
@@ -72,8 +72,8 @@ fn setup_ivt_entry(bus: &mut TestBus, vector: u8, handler_cs: u16, handler_ip: u
     bus.ram[addr + 3] = (handler_cs >> 8) as u8;
 }
 
-fn make_486dx() -> I386<{ CPU_MODEL_486 }> {
-    I386::<{ CPU_MODEL_486 }>::new()
+fn make_486dx() -> I386<{ CPU_MODEL_486_DX }> {
+    I386::<{ CPU_MODEL_486_DX }>::new()
 }
 
 fn setup_state(cs: u16, ip: u16) -> I386State {

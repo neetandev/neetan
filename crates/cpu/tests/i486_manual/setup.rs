@@ -3,7 +3,7 @@
 //! Identifiers are spelled out in full and constants are named after the
 //! manual sections they encode so tests do not embed magic hex.
 
-use cpu::{CPU_MODEL_386, CPU_MODEL_486, I386, I386State};
+use cpu::{CPU_MODEL_386_DX, CPU_MODEL_486_DX, I386, I386State};
 
 // Memory layout used by setup_protected_mode and friends. Bases are chosen so
 // that no two regions overlap inside a 1 MiB test bus.
@@ -159,12 +159,12 @@ pub(crate) const TSS_MINIMUM_LIMIT: u32 = 0x67;
 pub(crate) const IO_PERMISSION_BITMAP_SENTINEL: u8 = 0xFF;
 pub(crate) const IO_PERMISSION_BITMAP_DENY_ALL: u16 = 0xFFFF;
 
-pub(crate) fn make_cpu_386() -> I386<{ CPU_MODEL_386 }> {
-    I386::<{ CPU_MODEL_386 }>::new()
+pub(crate) fn make_cpu_386() -> I386<{ CPU_MODEL_386_DX }> {
+    I386::<{ CPU_MODEL_386_DX }>::new()
 }
 
-pub(crate) fn make_cpu_486() -> I386<{ CPU_MODEL_486 }> {
-    I386::<{ CPU_MODEL_486 }>::new()
+pub(crate) fn make_cpu_486() -> I386<{ CPU_MODEL_486_DX }> {
+    I386::<{ CPU_MODEL_486_DX }>::new()
 }
 
 /// Test bus: a flat 1 MiB memory with simple IRQ injection.

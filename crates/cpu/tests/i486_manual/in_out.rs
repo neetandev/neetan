@@ -18,7 +18,7 @@
 //! this is what closes off accesses near the end of the bitmap.
 
 use common::Cpu as _;
-use cpu::{CPU_MODEL_386, I386, I386State};
+use cpu::{CPU_MODEL_386_DX, I386, I386State};
 
 use super::setup::{
     ACCESS_DESCRIPTOR_SYSTEM, ACCESS_DPL_RING0, ACCESS_PRESENT, DEFAULT_IO_MAP_BASE_OFFSET,
@@ -63,7 +63,7 @@ fn promote_to_cpl3_iopl(state: &mut I386State, iopl: u8) {
     state.flags.iopl = iopl & 3;
 }
 
-fn assert_general_protection_taken(cpu: &I386<{ CPU_MODEL_386 }>) {
+fn assert_general_protection_taken(cpu: &I386<{ CPU_MODEL_386_DX }>) {
     assert!(cpu.halted(), "expected #GP handler to halt");
     assert_eq!(
         cpu.ip(),
@@ -72,7 +72,7 @@ fn assert_general_protection_taken(cpu: &I386<{ CPU_MODEL_386 }>) {
     );
 }
 
-fn assert_no_fault(cpu: &I386<{ CPU_MODEL_386 }>) {
+fn assert_no_fault(cpu: &I386<{ CPU_MODEL_386_DX }>) {
     assert!(
         !cpu.halted(),
         "expected the I/O instruction to complete without halting"

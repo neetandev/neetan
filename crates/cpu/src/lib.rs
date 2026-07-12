@@ -31,12 +31,20 @@
 //! cycles and should be indistinguishable from a performance point of view. It's also questionable
 //! that there is any games / software that requires a cycle-count accurate 286 emulation.
 //!
-//! The 386 / 486 are out of scope for cycle-count accuracy, since their real hardware
+//! The 386 / 486 are out of scope for full cycle-count accuracy, since their real hardware
 //! design and behavior is much more complex and the benefit of having a 486 cycle-count accurate
 //! core is very minimal. When the 386 and 486 were dominant, there were a lot of alternative
 //! CPU models on the market, so software really couldn't be optimized for a single CPU anymore.
-//! What could be improved is the emulated performance of the 286 and 486, since right now we are
-//! most likely faster than the original chips (since we use datasheet timings).
+//! The 386DX and 486 run on their datasheet instruction timings. Calibration against the
+//! SingleStepTests suites shows those datasheet numbers already track real throughput closely,
+//! so they are not the systematic "runs too fast" outlier they were once assumed to be.
+//!
+//! The 386SX is a special case within the 386 family. Its narrow 16-bit data bus and weaker
+//! prefetch make it noticeably slower than a 386DX at the same clock, so it gets an extra bus
+//! and prefetch penalty model on top of the shared 386 flat timings. That model is calibrated
+//! on aggregate against captured 386EX traces (the 386EX drives the same 16-bit bus), so the
+//! SX matches the real chip closely on overall throughput. Unlike the 286, it is not tuned per
+//! individual instruction, so it is not in the same accuracy league as the trace-calibrated 286.
 //!
 //! Since Neetan aims to emulate NEC machines roughly between 1979 and 1996, and put a hard line
 //! with the introduction of the Win32 API (and the irrelevance of the PC-98 as a platform),
@@ -45,15 +53,16 @@
 //!
 //! ## Supported CPUs
 //!
-//! | CPU   | Functionality verified | Cycle-count accurate | Trace based timings | Datasheet timings |
-//! |-------|------------------------|----------------------|---------------------|-------------------|
-//! | 8086  | Yes                    | Yes                  | Yes                 | No                |
-//! | V30   | Yes                    | Yes (1)              | Yes                 | No                |
-//! | 80286 | Yes                    | No                   | Yes                 | No                |
-//! | 80386 | Yes                    | No                   | No                  | Yes               |
-//! | 80486 | Yes                    | No                   | No                  | Yes               |
-//! | Z80   | Yes                    | Yes                  | Yes                 | No                |
-//! | 6809  | Yes                    | Yes (2)              | Yes                 | No                |
+//! | CPU     | Functionality verified | Cycle-count accurate | Trace based timings | Datasheet timings |
+//! |---------|------------------------|----------------------|---------------------|-------------------|
+//! | 8086    | Yes                    | Yes                  | Yes                 | No                |
+//! | V30     | Yes                    | Yes (1)              | Yes                 | No                |
+//! | 80286   | Yes                    | No                   | Yes                 | No                |
+//! | 80386DX | Yes                    | No                   | No                  | Yes               |
+//! | 80386SX | Yes                    | No                   | Aggregate (3)       | Yes               |
+//! | 80486   | Yes                    | No                   | No                  | Yes               |
+//! | Z80     | Yes                    | Yes                  | Yes                 | No                |
+//! | 6809    | Yes                    | Yes (2)              | Yes                 | No                |
 //!
 //! Note 1: We validated the timings using the V20 testdata and the V20 bus behavior. We then
 //!         added the V30 bus behavior and verified if the cycles adjust accordingly, how we
@@ -63,6 +72,10 @@
 //! Note 2: We validate the cycle-count against test files generated with MAME's m6809 core, which
 //!         is believed to be the most accurate emulation of the 6809. Once real hardware traces
 //!         become available, we will use those instead.
+//! Note 3: The 386DX and 486 use their datasheet flat timings. The 386SX shares those flat
+//!         timings but adds a 16-bit bus and prefetch penalty model that is calibrated on
+//!         aggregate against the SingleStepTests 386EX traces (same 16-bit bus). It matches the
+//!         real chip on overall throughput but, unlike the 286, is not tuned per instruction.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(clippy::unnecessary_wraps)]
@@ -81,7 +94,8 @@ pub use i286::{
     I286TimingMilestones, I286TraceBusStatus, I286WarmStartConfig,
 };
 pub use i386::{
-    ADDRESS_WIDTH_24, ADDRESS_WIDTH_32, CPU_MODEL_386, CPU_MODEL_486, I386, I386Flags, I386State,
+    ADDRESS_WIDTH_24, ADDRESS_WIDTH_32, CPU_MODEL_386_DX, CPU_MODEL_386_SX, CPU_MODEL_486_DX, I386,
+    I386Flags, I386State,
 };
 pub use i8086::{I8086, I8086Flags, I8086State, PC9801F_CPU_CLOCK_5MHZ, PC9801F_CPU_CLOCK_8MHZ};
 pub use m6809::{M6809, M6809Flags, M6809State};

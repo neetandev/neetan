@@ -108,8 +108,8 @@ const VX_YLL04: Chip = Chip {
     size: KIB_32,
 };
 
-// PC-9801RS IPL images (MAME set `pc9801rs`; used for the PC-9801RA, which has
-// no dedicated MAME dump). These are already merged bank images.
+// PC-9801RS IPL images (MAME set `pc9801rs`). This set serves both the
+// PC-9801RS and the PC-9801RA. These are already merged bank images.
 const RS_ITF: Chip = Chip {
     digest: "c1881b44dc07a7f20ceff00a24fe4467a933fd2c94e64213c9a8526d60e4d3d1",
     size: KIB_32,
@@ -189,7 +189,7 @@ pub fn required_mame_set(model: MachineModel) -> Option<&'static str> {
         MachineModel::PC9801F => Some("pc9801f"),
         MachineModel::PC9801VM => Some("pc9801vm"),
         MachineModel::PC9801VX => Some("pc9801vx"),
-        MachineModel::PC9801RA => Some("pc9801rs"),
+        MachineModel::PC9801RS | MachineModel::PC9801RA => Some("pc9801rs"),
         MachineModel::PC9821AS | MachineModel::PC9821AP => None,
     }
 }
@@ -210,7 +210,9 @@ fn bios_chips(model: MachineModel) -> Option<(&'static [&'static Chip], &'static
             &[&VX_YLL01, &VX_YLL02, &VX_YLL03, &VX_YLL04],
             ASSEMBLED_BIOS_VX,
         )),
-        MachineModel::PC9801RA => Some((&[&RS_ITF, &RS_BIOS], ASSEMBLED_BIOS_RA)),
+        MachineModel::PC9801RS | MachineModel::PC9801RA => {
+            Some((&[&RS_ITF, &RS_BIOS], ASSEMBLED_BIOS_RA))
+        }
         MachineModel::PC9821AS | MachineModel::PC9821AP => None,
     }
 }
@@ -223,6 +225,7 @@ fn font_digests(model: MachineModel) -> &'static [&'static str] {
         MachineModel::PC9801F
         | MachineModel::PC9801VM
         | MachineModel::PC9801VX
+        | MachineModel::PC9801RS
         | MachineModel::PC9801RA => FONT_STANDARD,
         MachineModel::PC9821AS => FONT_9821AS,
         MachineModel::PC9821AP => FONT_9821AP,
@@ -332,7 +335,7 @@ fn assemble_bios(model: MachineModel, by_digest: &HashMap<String, Vec<u8>>) -> O
             image[0x28000..0x30000].copy_from_slice(&biosrom[0x10000..0x18000]);
             Some(image)
         }
-        MachineModel::PC9801RA => {
+        MachineModel::PC9801RS | MachineModel::PC9801RA => {
             let itf = chip(by_digest, &RS_ITF)?;
             let bios = chip(by_digest, &RS_BIOS)?;
             let mut image = vec![0xFFu8; BIOS_ROM_SIZE];
@@ -394,6 +397,7 @@ mod tests {
         assert_eq!(required_mame_set(MachineModel::PC9801F), Some("pc9801f"));
         assert_eq!(required_mame_set(MachineModel::PC9801VM), Some("pc9801vm"));
         assert_eq!(required_mame_set(MachineModel::PC9801VX), Some("pc9801vx"));
+        assert_eq!(required_mame_set(MachineModel::PC9801RS), Some("pc9801rs"));
         assert_eq!(required_mame_set(MachineModel::PC9801RA), Some("pc9801rs"));
         assert_eq!(required_mame_set(MachineModel::PC9821AS), None);
         assert_eq!(required_mame_set(MachineModel::PC9821AP), None);
@@ -404,6 +408,7 @@ mod tests {
         assert_eq!(accepted_bios_digests(MachineModel::PC9801F).len(), 6);
         assert_eq!(accepted_bios_digests(MachineModel::PC9801VM).len(), 4);
         assert_eq!(accepted_bios_digests(MachineModel::PC9801VX).len(), 4);
+        assert_eq!(accepted_bios_digests(MachineModel::PC9801RS).len(), 2);
         assert_eq!(accepted_bios_digests(MachineModel::PC9801RA).len(), 2);
         assert!(accepted_bios_digests(MachineModel::PC9821AS).is_empty());
     }

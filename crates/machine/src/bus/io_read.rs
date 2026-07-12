@@ -522,7 +522,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 0xFF
             }
 
-            // Protected memory registration readback (VX/RA only).
+            // Protected memory registration readback (VX and later only).
             0x0567 => {
                 if self.machine_model.has_protected_memory_register() {
                     self.protected_memory_max

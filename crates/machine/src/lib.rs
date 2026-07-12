@@ -25,7 +25,7 @@ use device::{
     soundboard_26k::Soundboard26kState, soundboard_86::Soundboard86State,
     upd765a_fdc::Upd765aFdcState, upd7220_gdc::GdcState, upd52611_crtc::Upd52611CrtcState,
 };
-pub use machine::{Machine, Pc9801F, Pc9801Ra, Pc9801Vm, Pc9801Vx, Pc9821Ap, Pc9821As};
+pub use machine::{Machine, Pc9801F, Pc9801Ra, Pc9801Rs, Pc9801Vm, Pc9801Vx, Pc9821Ap, Pc9821As};
 
 pub use crate::{
     bus::{BootDevice, Pc9801Bus},

@@ -1,4 +1,4 @@
-use super::{CPU_MODEL_386, CPU_MODEL_486, I386, Step};
+use super::{CPU_MODEL_386_DX, CPU_MODEL_386_SX, CPU_MODEL_486_DX, I386, Step};
 use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 
 impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH> {
@@ -23,8 +23,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             0x02 => self.lar(bus)?,
             0x03 => self.lsl_instr(bus)?,
             0x06 => self.clts(bus)?,
-            0x08 if CPU_MODEL >= CPU_MODEL_486 => self.invd(bus)?,
-            0x09 if CPU_MODEL >= CPU_MODEL_486 => self.wbinvd(bus)?,
+            0x08 if CPU_MODEL == CPU_MODEL_486_DX => self.invd(bus)?,
+            0x09 if CPU_MODEL == CPU_MODEL_486_DX => self.wbinvd(bus)?,
 
             0x20 => self.mov_r32_cr(bus)?,
             0x21 => self.mov_r32_dr(bus)?,
@@ -56,14 +56,14 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             0xBB => self.btc_reg(bus)?,
             0xBC => self.bsf(bus)?,
             0xBD => self.bsr(bus)?,
-            0xB0 if CPU_MODEL >= CPU_MODEL_486 => self.cmpxchg_byte(bus)?,
-            0xB1 if CPU_MODEL >= CPU_MODEL_486 => self.cmpxchg_word(bus)?,
+            0xB0 if CPU_MODEL == CPU_MODEL_486_DX => self.cmpxchg_byte(bus)?,
+            0xB1 if CPU_MODEL == CPU_MODEL_486_DX => self.cmpxchg_word(bus)?,
             0xBE => self.movsx_rm8(bus)?,
             0xBF => self.movsx_rm16(bus)?,
 
-            0xC0 if CPU_MODEL >= CPU_MODEL_486 => self.xadd_byte(bus)?,
-            0xC1 if CPU_MODEL >= CPU_MODEL_486 => self.xadd_word(bus)?,
-            0xC8..=0xCF if CPU_MODEL >= CPU_MODEL_486 => self.bswap(sub),
+            0xC0 if CPU_MODEL == CPU_MODEL_486_DX => self.xadd_byte(bus)?,
+            0xC1 if CPU_MODEL == CPU_MODEL_486_DX => self.xadd_word(bus)?,
+            0xC8..=0xCF if CPU_MODEL == CPU_MODEL_486_DX => self.bswap(sub),
 
             _ => self.raise_fault(6, bus)?,
         }
@@ -112,11 +112,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 self.ip = eip as u16;
                 self.ip_upper = eip & 0xFFFF_0000;
                 match CPU_MODEL {
-                    CPU_MODEL_386 => {
+                    CPU_MODEL_386_DX | CPU_MODEL_386_SX => {
                         let m = self.next_instruction_length_approx(bus);
                         self.clk(7 + m);
                     }
-                    CPU_MODEL_486 => self.clk(3),
+                    CPU_MODEL_486_DX => self.clk(3),
                     _ => {
                         unreachable!("Unhandled CPU_MODEL")
                     }
@@ -130,11 +130,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 self.ip = self.ip.wrapping_add(disp as u16);
                 self.ip_upper = 0;
                 match CPU_MODEL {
-                    CPU_MODEL_386 => {
+                    CPU_MODEL_386_DX | CPU_MODEL_386_SX => {
                         let m = self.next_instruction_length_approx(bus);
                         self.clk(7 + m);
                     }
-                    CPU_MODEL_486 => self.clk(3),
+                    CPU_MODEL_486_DX => self.clk(3),
                     _ => {
                         unreachable!("Unhandled CPU_MODEL")
                     }
@@ -151,8 +151,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let value = if taken { 1 } else { 0 };
         self.put_rm_byte(modrm, value, bus)?;
         match CPU_MODEL {
-            CPU_MODEL_386 => self.clk_modrm(modrm, 4, 5),
-            CPU_MODEL_486 => {
+            CPU_MODEL_386_DX | CPU_MODEL_386_SX => self.clk_modrm(modrm, 4, 5),
+            CPU_MODEL_486_DX => {
                 if taken {
                     self.clk_modrm(modrm, 4, 3);
                 } else {
@@ -978,8 +978,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             }
         }
         match CPU_MODEL {
-            CPU_MODEL_386 => self.clk(10 + 3 * n as i32),
-            CPU_MODEL_486 => self.clk_modrm(modrm, 6, 7),
+            CPU_MODEL_386_DX | CPU_MODEL_386_SX => self.clk(10 + 3 * n as i32),
+            CPU_MODEL_486_DX => self.clk_modrm(modrm, 6, 7),
             _ => {
                 unreachable!("Unhandled CPU_MODEL")
             }
@@ -1016,8 +1016,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             }
         }
         match CPU_MODEL {
-            CPU_MODEL_386 => self.clk(10 + 3 * n as i32),
-            CPU_MODEL_486 => self.clk_modrm(modrm, 6, 7),
+            CPU_MODEL_386_DX | CPU_MODEL_386_SX => self.clk(10 + 3 * n as i32),
+            CPU_MODEL_486_DX => self.clk_modrm(modrm, 6, 7),
             _ => {
                 unreachable!("Unhandled CPU_MODEL")
             }
@@ -1258,7 +1258,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 self.cr0 = (self.cr0 & 0xFFFF_FFF0) | (value as u32 & 0x000F) | (self.cr0 & 1);
                 self.clk_modrm(modrm, Self::timing(10, 13), Self::timing(13, 13));
             }
-            7 if CPU_MODEL >= CPU_MODEL_486 => {
+            7 if CPU_MODEL == CPU_MODEL_486_DX => {
                 // INVLPG - invalidate TLB entry for the given memory address.
                 if modrm >= 0xC0 {
                     self.raise_fault(6, bus)?;
@@ -1486,7 +1486,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         match cr_num {
             0 => {
                 let old_cr0 = self.cr0;
-                let cr0_mask = if CPU_MODEL == super::CPU_MODEL_486 {
+                let cr0_mask = if CPU_MODEL == super::CPU_MODEL_486_DX {
                     0xE005_003F // PG | CD | NW | AM | WP | NE | ET | TS | EM | MP | PE
                 } else {
                     0x8000_001F // PG | ET | TS | EM | MP | PE

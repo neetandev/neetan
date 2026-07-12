@@ -368,7 +368,7 @@ fn int1fh_memcpy_with_offsets_ra() {
     }
 }
 
-/// §14.1 AH=0x90 - BIOS Ignores Descriptor Limits (VX/RA only)
+/// §14.1 AH=0x90 - BIOS Ignores Descriptor Limits (VX and later only)
 ///
 /// The real BIOS does NOT validate SI/DI against the descriptor limit fields.
 /// NP21W adds this validation, but the original ROM performs the copy regardless.

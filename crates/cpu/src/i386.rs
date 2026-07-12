@@ -1,8 +1,9 @@
 //! Implements the Intel 80386+ family emulation.
 //!
 //! The CPU model is selected via the const generic parameter `CPU_MODEL`:
-//! - [`CPU_MODEL_386`] - Intel 80386DX cycle timings.
-//! - [`CPU_MODEL_486`] - Intel 80486DX cycle timings.
+//! - [`CPU_MODEL_386_DX`] - Intel 80386DX cycle timings.
+//! - [`CPU_MODEL_486_DX`] - Intel 80486DX cycle timings.
+//! - [`CPU_MODEL_386_SX`] - Intel 80386SX cycle timings.
 //!
 //! The physical address bus width is selected via the const generic parameter
 //! `ADDRESS_WIDTH`:
@@ -38,9 +39,11 @@ pub use state::I386State;
 use crate::{SegReg32, WordReg};
 
 /// CPU model constant for Intel 80386DX.
-pub const CPU_MODEL_386: u8 = 0;
+pub const CPU_MODEL_386_DX: u8 = 0;
 /// CPU model constant for Intel 80486DX.
-pub const CPU_MODEL_486: u8 = 1;
+pub const CPU_MODEL_486_DX: u8 = 1;
+/// CPU model constant for Intel 80386SX.
+pub const CPU_MODEL_386_SX: u8 = 2;
 
 /// Physical address width constant for a 24-bit address bus (PC-98 wiring).
 pub const ADDRESS_WIDTH_24: u8 = 24;
@@ -56,6 +59,22 @@ const EFLAGS_ALIGNMENT_CHECK_FLAG: u32 = 0x0004_0000;
 const RESET_EDX_386DX: u32 = 0x0000_0308;
 /// EDX after RESET on the 486 (i486 PRM 10.2): 0x0435 identifies an i486DX2-66.
 const RESET_EDX_486DX2: u32 = 0x0000_0435;
+/// EDX after RESET on the 386SX: DH = 0x23 is the 386SX component identifier.
+const RESET_EDX_386SX: u32 = 0x0000_2308;
+
+/// Extra clocks on the 386SX for an aligned dword transfer, which the 16-bit
+/// data bus splits into two bus cycles. Calibration constant.
+const SX_EXTRA_CLOCKS_DWORD_ACCESS: i32 = 2;
+/// Extra clocks on the 386SX for a misaligned word transfer, which splits
+/// into two bus cycles. Calibration constant.
+const SX_EXTRA_CLOCKS_MISALIGNED_WORD: i32 = 2;
+/// Extra clocks on the 386SX for a misaligned dword transfer, which takes
+/// three bus cycles instead of one. Calibration constant.
+const SX_EXTRA_CLOCKS_MISALIGNED_DWORD: i32 = 4;
+/// Extra clocks on the 386SX per 16-bit code word fetched, approximating the
+/// halved code fetch bandwidth without a prefetch queue model. Calibration
+/// constant.
+const SX_EXTRA_CLOCKS_PER_CODE_WORD: i32 = 1;
 
 /// Marker returned from any 386 primitive that may have raised a CPU exception.
 ///
@@ -108,14 +127,16 @@ enum DataSegmentDecision {
 /// Intel 80386+ CPU emulator.
 ///
 /// The const generic `CPU_MODEL` selects the instruction timings and feature set.
-/// Use [`CPU_MODEL_386`] for an 80386DX or [`CPU_MODEL_486`] for an 80486DX.
+/// Use [`CPU_MODEL_386_DX`] for an 80386DX, [`CPU_MODEL_486_DX`] for an 80486DX or
+/// [`CPU_MODEL_386_SX`] for an 80386SX (386DX behavior with 16-bit bus timing
+/// penalties).
 ///
 /// The const generic `ADDRESS_WIDTH` selects the physical address bus width.
 /// Use [`ADDRESS_WIDTH_24`] for the PC-98 wiring (physical addresses are
 /// truncated to 24 bits and reset lands at 000FFFF0) or [`ADDRESS_WIDTH_32`]
 /// for machines with a full 32-bit address bus (reset lands at FFFFFFF0).
 pub struct I386<
-    const CPU_MODEL: u8 = { CPU_MODEL_386 },
+    const CPU_MODEL: u8 = { CPU_MODEL_386_DX },
     const ADDRESS_WIDTH: u8 = { ADDRESS_WIDTH_24 },
 > {
     /// Embedded state for save/restore.
@@ -179,6 +200,8 @@ pub struct I386<
     trap_level: u8,
     prev_exception_class: u8,
     shutdown: bool,
+
+    sx_code_fetch_bytes: u32,
 }
 
 impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> Deref for I386<CPU_MODEL, ADDRESS_WIDTH> {
@@ -255,18 +278,80 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             prev_exception_class: 0,
             shutdown: false,
             prev_ip_upper: 0,
+            sx_code_fetch_bytes: 0,
         };
         cpu.reset();
         cpu
     }
 
-    /// Selects between 386 and 486 cycle counts at compile time.
+    /// Selects between 386 and 486 cycle counts at compile time. The 386SX
+    /// shares the 386DX execution timings; its bus penalties are charged
+    /// separately.
     #[inline(always)]
     const fn timing(t386: i32, t486: i32) -> i32 {
         match CPU_MODEL {
-            CPU_MODEL_386 => t386,
-            CPU_MODEL_486 => t486,
+            CPU_MODEL_386_DX | CPU_MODEL_386_SX => t386,
+            CPU_MODEL_486_DX => t486,
             _ => unreachable!(),
+        }
+    }
+
+    /// Like [`timing`], but lets the 386SX use a distinct execute-cycle count
+    /// `tsx`. Non-SX models delegate to `timing(t386, t486)`, so the 386DX and
+    /// 486DX are unaffected by construction. Keep `t386`/`t486` identical to
+    /// the site's original `timing` call so only the SX diverges.
+    #[inline(always)]
+    const fn timing_sx(t386: i32, t486: i32, tsx: i32) -> i32 {
+        match CPU_MODEL {
+            CPU_MODEL_386_SX => tsx,
+            _ => Self::timing(t386, t486),
+        }
+    }
+
+    /// Misaligned-operand penalty charged at decode time: 4 on the 386DX,
+    /// 3 on the 486. Zero on the 386SX, whose alignment cost is charged per
+    /// bus transfer in `clk_sx_bus` instead.
+    #[inline(always)]
+    const fn misaligned_operand_penalty() -> i32 {
+        match CPU_MODEL {
+            CPU_MODEL_386_DX => 4,
+            CPU_MODEL_486_DX => 3,
+            CPU_MODEL_386_SX => 0,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Charges the 386SX penalty for a dword I/O transfer, which the 16-bit
+    /// bus splits into two port accesses. No-op on other models.
+    #[inline(always)]
+    pub(super) fn clk_sx_io_dword(&mut self) {
+        if CPU_MODEL == CPU_MODEL_386_SX {
+            self.clk(SX_EXTRA_CLOCKS_DWORD_ACCESS);
+        }
+    }
+
+    /// Charges the 386SX 16-bit-data-bus penalty for one data transfer of
+    /// `size` bytes at linear address `linear`. No-op on other models.
+    #[inline(always)]
+    fn clk_sx_bus(&mut self, linear: u32, size: u32) {
+        if CPU_MODEL != CPU_MODEL_386_SX {
+            return;
+        }
+        let misaligned = linear & 1 != 0;
+        match size {
+            2 => {
+                if misaligned {
+                    self.clk(SX_EXTRA_CLOCKS_MISALIGNED_WORD);
+                }
+            }
+            4 => {
+                if misaligned {
+                    self.clk(SX_EXTRA_CLOCKS_MISALIGNED_DWORD);
+                } else {
+                    self.clk(SX_EXTRA_CLOCKS_DWORD_ACCESS);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -278,8 +363,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     #[inline(always)]
     const fn eflags_upper_writable() -> u32 {
         match CPU_MODEL {
-            CPU_MODEL_386 => EFLAGS_RESUME_FLAG | EFLAGS_VIRTUAL_8086_FLAG,
-            CPU_MODEL_486 => {
+            CPU_MODEL_386_DX | CPU_MODEL_386_SX => EFLAGS_RESUME_FLAG | EFLAGS_VIRTUAL_8086_FLAG,
+            CPU_MODEL_486_DX => {
                 EFLAGS_RESUME_FLAG | EFLAGS_VIRTUAL_8086_FLAG | EFLAGS_ALIGNMENT_CHECK_FLAG
             }
             _ => unreachable!(),
@@ -335,7 +420,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 }
             };
             let misaligned = self.ea & alignment_mask != 0;
-            let penalty = if misaligned { Self::timing(4, 3) } else { 0 };
+            let penalty = if misaligned {
+                Self::misaligned_operand_penalty()
+            } else {
+                0
+            };
             self.clk(mem_cycles + penalty);
         }
     }
@@ -352,7 +441,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             sp & 1 != 0
         };
-        if misaligned { Self::timing(4, 3) } else { 0 }
+        if misaligned {
+            Self::misaligned_operand_penalty()
+        } else {
+            0
+        }
     }
 
     #[inline(always)]
@@ -492,6 +585,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             bus.read_byte(addr)
         };
+        if CPU_MODEL == CPU_MODEL_386_SX {
+            self.sx_code_fetch_bytes += 1;
+        }
         self.advance_ip_byte();
         // Prefetch next byte to model the 386 prefetch queue.
         // This ensures bytes already fetched before a REP string op
@@ -541,6 +637,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     return 0;
                 };
                 let value = bus.read_word(addr);
+                if CPU_MODEL == CPU_MODEL_386_SX {
+                    self.sx_code_fetch_bytes += 2;
+                }
                 self.advance_ip_by(2);
                 return value;
             }
@@ -560,6 +659,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     return 0;
                 };
                 let value = bus.read_dword(addr);
+                if CPU_MODEL == CPU_MODEL_386_SX {
+                    self.sx_code_fetch_bytes += 4;
+                }
                 self.advance_ip_by(4);
                 return value;
             }
@@ -1112,7 +1214,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         // CR0.AM=1, EFLAGS.AC=1, CPL=3, and the linear address is not
         // aligned to the access size. Instruction fetch and descriptor
         // accesses go through different paths and are exempt.
-        if CPU_MODEL >= CPU_MODEL_486
+        if CPU_MODEL == CPU_MODEL_486_DX
             && (self.cr0 & 0x0004_0000) != 0
             && (self.eflags_upper & 0x0004_0000) != 0
             && self.cpl() == 3
@@ -1318,6 +1420,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.check_segment_access(seg, offset, 2, for_update, bus)?;
         let base = self.seg_base(seg);
         let l0 = base.wrapping_add(offset);
+        self.clk_sx_bus(l0, 2);
         if l0 & 0xFFF <= 0xFFE {
             let a0 = self.translate_linear(l0, for_update, bus)?;
             return Ok(bus.read_word(a0));
@@ -1359,6 +1462,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.check_segment_access(seg, offset, 4, for_update, bus)?;
         let base = self.seg_base(seg);
         let l0 = base.wrapping_add(offset);
+        self.clk_sx_bus(l0, 4);
         if l0 & 0xFFF <= 0xFFC {
             let a0 = self.translate_linear(l0, for_update, bus)?;
             return Ok(bus.read_dword(a0));
@@ -1407,6 +1511,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.check_segment_access(seg, offset, 2, true, bus)?;
         let base = self.seg_base(seg);
         let l0 = base.wrapping_add(offset);
+        self.clk_sx_bus(l0, 2);
         if l0 & 0xFFF <= 0xFFE {
             let a0 = self.translate_linear(l0, true, bus)?;
             bus.write_word(a0, value);
@@ -1431,6 +1536,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.check_segment_access(seg, offset, 4, true, bus)?;
         let base = self.seg_base(seg);
         let l0 = base.wrapping_add(offset);
+        self.clk_sx_bus(l0, 4);
         if l0 & 0xFFF <= 0xFFC {
             let a0 = self.translate_linear(l0, true, bus)?;
             bus.write_dword(a0, value);
@@ -1467,6 +1573,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.check_segment_access(SegReg32::SS, sp, 2, true, bus)?;
         let base = self.seg_base(SegReg32::SS);
         let l0 = base.wrapping_add(sp);
+        self.clk_sx_bus(l0, 2);
         if l0 & 0xFFF <= 0xFFE {
             let a0 = self.translate_linear(l0, true, bus)?;
             self.commit_sp(sp);
@@ -1491,6 +1598,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.check_segment_access(SegReg32::SS, sp, 2, false, bus)?;
         let base = self.seg_base(SegReg32::SS);
         let l0 = base.wrapping_add(sp);
+        self.clk_sx_bus(l0, 2);
         let value = if l0 & 0xFFF <= 0xFFE {
             let a0 = self.translate_linear(l0, false, bus)?;
             bus.read_word(a0)
@@ -1513,6 +1621,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.check_segment_access(SegReg32::SS, sp, 4, true, bus)?;
         let base = self.seg_base(SegReg32::SS);
         let l0 = base.wrapping_add(sp);
+        self.clk_sx_bus(l0, 4);
         if l0 & 0xFFF <= 0xFFC {
             let a0 = self.translate_linear(l0, true, bus)?;
             self.commit_sp(sp);
@@ -1552,6 +1661,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.check_segment_access(SegReg32::SS, sp, 4, false, bus)?;
         let base = self.seg_base(SegReg32::SS);
         let l0 = base.wrapping_add(sp);
+        self.clk_sx_bus(l0, 4);
         let value = if l0 & 0xFFF <= 0xFFC {
             let a0 = self.translate_linear(l0, false, bus)?;
             bus.read_dword(a0)
@@ -1621,6 +1731,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn read_word_linear(&mut self, bus: &mut impl common::Bus, addr: u32) -> Step<u16> {
+        self.clk_sx_bus(addr, 2);
         if addr & 0xFFF <= 0xFFE {
             let a0 = self.translate_linear(addr, false, bus)?;
             return Ok(bus.read_word(a0));
@@ -1635,6 +1746,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         bus: &mut impl common::Bus,
         addr: u32,
     ) -> Step<u16> {
+        self.clk_sx_bus(addr, 2);
         if addr & 0xFFF <= 0xFFE {
             let a0 = self.translate_linear(addr, true, bus)?;
             return Ok(bus.read_word(a0));
@@ -1650,6 +1762,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         addr: u32,
         value: u16,
     ) -> Step {
+        self.clk_sx_bus(addr, 2);
         if addr & 0xFFF <= 0xFFE {
             let a0 = self.translate_linear(addr, true, bus)?;
             bus.write_word(a0, value);
@@ -1663,6 +1776,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn read_dword_linear(&mut self, bus: &mut impl common::Bus, addr: u32) -> Step<u32> {
+        self.clk_sx_bus(addr, 4);
         if addr & 0xFFF <= 0xFFC {
             let a0 = self.translate_linear(addr, false, bus)?;
             return Ok(bus.read_dword(a0));
@@ -1682,6 +1796,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         bus: &mut impl common::Bus,
         addr: u32,
     ) -> Step<u32> {
+        self.clk_sx_bus(addr, 4);
         if addr & 0xFFF <= 0xFFC {
             let a0 = self.translate_linear(addr, true, bus)?;
             return Ok(bus.read_dword(a0));
@@ -1697,6 +1812,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn write_dword_linear(&mut self, bus: &mut impl common::Bus, addr: u32, value: u32) -> Step {
+        self.clk_sx_bus(addr, 4);
         if addr & 0xFFF <= 0xFFC {
             let a0 = self.translate_linear(addr, true, bus)?;
             bus.write_dword(a0, value);
@@ -2796,6 +2912,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     fn execute_one(&mut self, bus: &mut impl common::Bus) {
         self.prefetch_valid &= self.rep_active | self.rep_completed;
         self.rep_completed = false;
+        self.sx_code_fetch_bytes = 0;
         self.prev_ip = self.ip;
         self.prev_ip_upper = self.ip_upper;
         self.fault_pending = false;
@@ -2825,6 +2942,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             let _ = self.continue_rep(bus);
         } else {
             let _ = self.execute_with_prefixes(bus);
+        }
+
+        if CPU_MODEL == CPU_MODEL_386_SX && self.sx_code_fetch_bytes > 0 {
+            let code_words = self.sx_code_fetch_bytes.div_ceil(2) as i32;
+            self.clk(code_words * SX_EXTRA_CLOCKS_PER_CODE_WORD);
         }
 
         if likely(!self.preserve_resume_flag && !self.rep_active) {
@@ -2893,15 +3015,20 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> common::Cpu for I386<CPU_MODE
             }
         }
         match CPU_MODEL {
-            CPU_MODEL_386 => {
+            CPU_MODEL_386_DX => {
                 // 386DX reset: ET=1 (80387 coprocessor present).
                 self.cr0 = 0x0000_0010;
                 self.regs.set_dword(crate::DwordReg::EDX, RESET_EDX_386DX);
             }
-            CPU_MODEL_486 => {
+            CPU_MODEL_486_DX => {
                 // 486DX reset: ET=1 (on-chip FPU present). ET is hardwired on 486.
                 self.cr0 = 0x0000_0010;
                 self.regs.set_dword(crate::DwordReg::EDX, RESET_EDX_486DX2);
+            }
+            CPU_MODEL_386_SX => {
+                // 386SX reset: ET=1 (80387SX coprocessor present).
+                self.cr0 = 0x0000_0010;
+                self.regs.set_dword(crate::DwordReg::EDX, RESET_EDX_386SX);
             }
             _ => {
                 unreachable!("Unhandled CPU_MODEL")
@@ -3157,5 +3284,23 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> common::Cpu for I386<CPU_MODE
             common::SegmentRegister::DS => SegReg32::DS,
         };
         self.state.seg_bases[seg32 as usize]
+    }
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+
+    /// The 386SX-only execute-cycle override must never change the 386DX or
+    /// 486DX result: for non-SX models `timing_sx(a, b, tsx)` equals
+    /// `timing(a, b)` regardless of `tsx`.
+    #[test]
+    fn timing_sx_leaves_dx_and_486_unchanged() {
+        type Dx = I386<{ CPU_MODEL_386_DX }, { ADDRESS_WIDTH_24 }>;
+        type M486 = I386<{ CPU_MODEL_486_DX }, { ADDRESS_WIDTH_24 }>;
+        for (t386, t486, tsx) in [(2, 1, 99), (7, 3, 0), (14, 13, 41), (5, 2, -7)] {
+            assert_eq!(Dx::timing_sx(t386, t486, tsx), Dx::timing(t386, t486));
+            assert_eq!(M486::timing_sx(t386, t486, tsx), M486::timing(t386, t486));
+        }
     }
 }

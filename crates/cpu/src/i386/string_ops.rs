@@ -85,6 +85,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         offset: u32,
     ) -> Step<u16> {
         let l0 = self.string_addr_delta(base, offset, 0);
+        self.clk_sx_bus(l0, 2);
         let same_page = if self.address_size_override {
             l0 & 0xFFF <= 0xFFE
         } else {
@@ -134,6 +135,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         offset: u32,
     ) -> Step<(u32, Option<u32>)> {
         let l0 = self.string_addr_delta(base, offset, 0);
+        self.clk_sx_bus(l0, 2);
         let same_page = if self.address_size_override {
             l0 & 0xFFF <= 0xFFE
         } else {
@@ -157,6 +159,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         offset: u32,
     ) -> Step<u32> {
         let l0 = self.string_addr_delta(base, offset, 0);
+        self.clk_sx_bus(l0, 4);
         let same_page = if self.address_size_override {
             l0 & 0xFFF <= 0xFFC
         } else {
@@ -212,6 +215,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         offset: u32,
     ) -> Step<ProbedDwordWrite> {
         let l0 = self.string_addr_delta(base, offset, 0);
+        self.clk_sx_bus(l0, 4);
         let same_page = if self.address_size_override {
             l0 & 0xFFF <= 0xFFC
         } else {
@@ -278,8 +282,16 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             si & 1 != 0 || di & 1 != 0
         };
-        let penalty = if misaligned { Self::timing(4, 3) } else { 0 };
-        self.clk(Self::timing(7, 7) + penalty);
+        let penalty = if misaligned {
+            Self::misaligned_operand_penalty()
+        } else {
+            0
+        };
+        // The 386EX real-mode traces show REP MOVSW/MOVSD running a clock per
+        // element slower than the datasheet's flat 7; the 386SX 16-bit bus is
+        // the likely cause, so only it diverges (the 386DX keeps the datasheet
+        // value). The dword form is additionally charged by clk_sx_bus.
+        self.clk(Self::timing_sx(7, 7, 8) + penalty);
         Ok(())
     }
 
@@ -329,7 +341,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             si & 1 != 0 || di & 1 != 0
         };
-        let penalty = if misaligned { Self::timing(4, 3) } else { 0 };
+        let penalty = if misaligned {
+            Self::misaligned_operand_penalty()
+        } else {
+            0
+        };
         self.clk(Self::timing(10, 8) + penalty);
         Ok(())
     }
@@ -367,7 +383,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             di & 1 != 0
         };
-        let penalty = if misaligned { Self::timing(4, 3) } else { 0 };
+        let penalty = if misaligned {
+            Self::misaligned_operand_penalty()
+        } else {
+            0
+        };
         self.clk(Self::timing(4, 5) + penalty);
         Ok(())
     }
@@ -405,8 +425,14 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             si & 1 != 0
         };
-        let penalty = if misaligned { Self::timing(4, 3) } else { 0 };
-        self.clk(Self::timing(5, 5) + penalty);
+        let penalty = if misaligned {
+            Self::misaligned_operand_penalty()
+        } else {
+            0
+        };
+        // REP LODSW runs a clock per element slower than the datasheet flat 5 on
+        // the 386EX; charge the 386SX for it (see movsw). The 386DX is unchanged.
+        self.clk(Self::timing_sx(5, 5, 6) + penalty);
         Ok(())
     }
 
@@ -444,7 +470,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             di & 1 != 0
         };
-        let penalty = if misaligned { Self::timing(4, 3) } else { 0 };
+        let penalty = if misaligned {
+            Self::misaligned_operand_penalty()
+        } else {
+            0
+        };
         self.clk(Self::timing(7, 6) + penalty);
         Ok(())
     }
@@ -480,6 +510,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             };
             let low = bus.io_read_word(port) as u32;
             let high = bus.io_read_word(port.wrapping_add(2)) as u32;
+            self.clk_sx_io_dword();
             let val = low | (high << 16);
             match cross {
                 None => bus.write_dword(a0, val),
@@ -510,7 +541,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             di & 1 != 0
         };
-        let penalty = if misaligned { Self::timing(4, 3) } else { 0 };
+        let penalty = if misaligned {
+            Self::misaligned_operand_penalty()
+        } else {
+            0
+        };
         self.clk(Self::timing(15, 17) + penalty);
         Ok(())
     }
@@ -546,6 +581,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             let val = self.string_read_dword(bus, base, si)?;
             bus.io_write_word(port, val as u16);
             bus.io_write_word(port.wrapping_add(2), (val >> 16) as u16);
+            self.clk_sx_io_dword();
             self.string_advance_si(4);
         } else {
             let val = self.string_read_word(bus, base, si)?;
@@ -557,7 +593,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             si & 1 != 0
         };
-        let penalty = if misaligned { Self::timing(4, 3) } else { 0 };
+        let penalty = if misaligned {
+            Self::misaligned_operand_penalty()
+        } else {
+            0
+        };
         self.clk(Self::timing(14, 17) + penalty);
         Ok(())
     }

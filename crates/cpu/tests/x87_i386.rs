@@ -1,5 +1,5 @@
 use common::Bus as _;
-use cpu::{CPU_MODEL_486, I386, I386State};
+use cpu::{CPU_MODEL_486_DX, I386, I386State};
 use softfloat::{Fp80, FpClass};
 
 const RAM_SIZE: usize = 1024 * 1024;
@@ -160,7 +160,7 @@ fn build_state(stack: &[Fp80], cw: u16) -> I386State {
     state
 }
 
-fn extract_result(cpu: &I386<{ CPU_MODEL_486 }>) -> X87Result {
+fn extract_result(cpu: &I386<{ CPU_MODEL_486_DX }>) -> X87Result {
     let fpu = &cpu.state.fpu;
     X87Result {
         registers: fpu.registers,
@@ -175,7 +175,7 @@ fn run_x87(code: &[u8], stack: &[Fp80]) -> X87Result {
 }
 
 fn run_x87_with_cw(code: &[u8], stack: &[Fp80], cw: u16) -> X87Result {
-    let mut cpu = I386::<{ CPU_MODEL_486 }>::new();
+    let mut cpu = I386::<{ CPU_MODEL_486_DX }>::new();
     let mut bus = TestBus::new();
     place_code(&mut bus, 0x1000, 0x0000, code);
     let state = build_state(stack, cw);
@@ -185,7 +185,7 @@ fn run_x87_with_cw(code: &[u8], stack: &[Fp80], cw: u16) -> X87Result {
 }
 
 fn run_x87_mem(code: &[u8], stack: &[Fp80], cw: u16, mem: &[u8]) -> (X87Result, TestBus) {
-    let mut cpu = I386::<{ CPU_MODEL_486 }>::new();
+    let mut cpu = I386::<{ CPU_MODEL_486_DX }>::new();
     let mut bus = TestBus::new();
     place_code(&mut bus, 0x1000, 0x0000, code);
 

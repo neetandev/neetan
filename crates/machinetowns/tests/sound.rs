@@ -25,7 +25,7 @@ fn fm_tone_mixes_into_output() {
     machine.bus.io_write_byte(0x04D5, 0x03);
 
     let fm_write =
-        |machine: &mut machinetowns::TownsMachine<{ cpu::CPU_MODEL_486 }>, reg: u8, data: u8| {
+        |machine: &mut machinetowns::TownsMachine<{ cpu::CPU_MODEL_486_DX }>, reg: u8, data: u8| {
             machine.bus.io_write_byte(0x04D8, reg);
             machine.bus.io_write_byte(0x04DA, data);
         };

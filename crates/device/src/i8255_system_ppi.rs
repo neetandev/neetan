@@ -166,7 +166,7 @@ pub struct I8255SystemPpiState {
     /// DIP switch 2 register (read-only via port 0x31).
     ///
     /// Bit mapping is `SW2:8..SW2:1` (bit7..bit0), where `1=OFF`, `0=ON`.
-    /// Default `0xF3` (`1111_0011b`) for VM/VX/RA:
+    /// Default `0xF3` (`1111_0011b`) for all models:
     /// - SW2-1 (bit0)=1 OFF: normal boot path
     /// - SW2-2 (bit1)=1 OFF: terminal mode disabled
     /// - SW2-3 (bit2)=0 ON: 80 chars/line

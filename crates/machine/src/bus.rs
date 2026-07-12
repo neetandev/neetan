@@ -550,6 +550,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801F
             | MachineModel::PC9801VM
             | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA => {
                 self.sasi.insert_drive(drive, image, path);
             }
@@ -584,6 +585,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801F
             | MachineModel::PC9801VM
             | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA => {
                 self.sasi.flush_drive(drive);
             }
@@ -599,6 +601,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801F
             | MachineModel::PC9801VM
             | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA => {
                 self.sasi.flush_all_drives();
             }

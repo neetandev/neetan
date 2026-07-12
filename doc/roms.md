@@ -56,7 +56,7 @@ for that machine.
 | PC-9801F              | `pc9801f`                                 | BIOS assembled from `urm01-02`..`urm06-02`                                   |
 | PC-9801VM             | `pc9801vm`                                | BIOS assembled from the `cpu_board_*` chips                                  |
 | PC-9801VX             | `pc9801vx`                                | BIOS assembled from the four `..._yll0x` chips; ships the font ROM           |
-| PC-9801RA             | `pc9801rs`                                | No RA dump exists - the RS set is used instead; ships the font ROM           |
+| PC-9801RS / PC-9801RA | `pc9801rs`                                | The `pc9801rs` set supplies the BIOS for both models; ships the font ROM     |
 | PC-9821AS / PC-9821AP | -                                         | HLE BIOS only; their fonts are not part of any MAME set (built-in font used) |
 | PC-8801MC             | `pc8801mc` (+ `pc8001mk2`, `pc8001mk2sr`) | The two `pc8001*` sets only add the optional N80 boot-mode ROMs              |
 | PC-88VA2              | `pc88va2`                                 | The sub-CPU ROM is NO_DUMP in MAME and must be sourced separately            |
@@ -65,7 +65,7 @@ for that machine.
 | PC-6601               | `pc6601`                                  |                                                                              |
 | PC-6001mkIISR         | `pc6001mk2sr`                             |                                                                              |
 | PC-6601SR             | `pc6601sr`                                |                                                                              |
-| FM Towns II CX & MX   | `fmtownsmx`                               | The CX target boots the shared MX ROM set until a CX dump exists             |
+| FM Towns / II CX / MX | `fmtownsmx`                               | The base FM Towns and CX targets boot the shared MX ROM set until CX dumps exist |
 | Sharp X68000          | `x68000`                                  | Original CZ-600C split IPL                                                   |
 | Sharp X68000 SUPER    | `x68ksupr`                                | IPL V1.0 and internal SCSI ROM                                               |
 | Sharp X68000 XVI      | `x68kxvi`                                 | IPL V1.1 with the compatible Compact-XVI SCSI ROM                            |
@@ -92,7 +92,7 @@ roms/
 |   |-- urm01-02.bin ... urm06-02.bin              (PC-9801F BIOS chips)
 |   |-- cpu_board_1a_23128e.bin ...                (PC-9801VM BIOS chips)
 |   |-- nec_d27c256d-15_cpu_extboard_yll01.bin ... (PC-9801VX BIOS chips)
-|   |-- itf_rs.rom, bios_rs.rom                    (PC-9801RA BIOS, from the RS set)
+|   |-- itf_rs.rom, bios_rs.rom                    (PC-9801RS / PC-9801RA BIOS, from the RS set)
 |   |-- font_ux.rom, font_rs.rom                   (shared V98 fonts)
 |   `-- sound.rom                                  (PC-9801-26K sound BIOS)
 |-- pc88/          --pc88-roms                     pc8801mc [+ pc8001mk2, pc8001mk2sr]
@@ -352,8 +352,7 @@ PC-9801VX (MAME set `pc9801vx`):
 | `nec_d27c256d-15_cpu_extboard_yll03.bin`   | 32 KiB | `05e3220b53a61c9325ceb694629bddc20c593dbf2218ee78a9e5635e8a7bf5f6` |
 | `nec_d27c256d-15_cpu_extboard_yll04.bin`   | 32 KiB | `a0f6e1e87afa336c21648f972c96e20ea88dda792a1fc3d0acf26d8c50546158` |
 
-PC-9801RA (MAME set `pc9801rs` - there is no dedicated RA dump, so the RS set is
-used):
+PC-9801RS / PC-9801RA (MAME set `pc9801rs`, shared by both models):
 
 | File          | Size   | BLAKE3                                                             |
 |---------------|--------|--------------------------------------------------------------------|
@@ -369,13 +368,13 @@ font (`font_ux.rom` / `font_rs.rom`); the `pc9801f` and `pc9801vm` sets do not, 
 those models fall back to the built-in font unless one of the other fonts is in the
 same directory.
 
-| Dump         | Source           | BLAKE3                                                             |
-|--------------|------------------|--------------------------------------------------------------------|
-| `font_rs.rom`| `pc9801rs`       | `4b6f751f34e633e072ded2a109c25ddb90ac70350792dc55914a4cefa4dbe005` |
-| `font_ux.rom`| `pc9801vx`       | `3c1efa858b80fc11bb7482bdc5e15004dd9a015d7d22d48159cd43ed63f540dc` |
-| PC-9821As    | -                | `a567134a3d5c2a215b9573ee07b5204fff243631052e7a40be340e863aff8eef` |
-| PC-9821Ap2   | -                | `7fb96af345c33f9bd7be5c22f75c650ac41da9b543ca5f9ca7b3d3906f2abb40` |
-| PC-9821Ce2   | -                | `b38096265c76cf9f54cb47df905cfb6c8b4d4f27019a04835bbc3dc8782d33e1` |
+| Dump          | Source     | BLAKE3                                                             |
+|---------------|------------|--------------------------------------------------------------------|
+| `font_rs.rom` | `pc9801rs` | `4b6f751f34e633e072ded2a109c25ddb90ac70350792dc55914a4cefa4dbe005` |
+| `font_ux.rom` | `pc9801vx` | `3c1efa858b80fc11bb7482bdc5e15004dd9a015d7d22d48159cd43ed63f540dc` |
+| PC-9821As     | -          | `a567134a3d5c2a215b9573ee07b5204fff243631052e7a40be340e863aff8eef` |
+| PC-9821Ap2    | -          | `7fb96af345c33f9bd7be5c22f75c650ac41da9b543ca5f9ca7b3d3906f2abb40` |
+| PC-9821Ce2    | -          | `b38096265c76cf9f54cb47df905cfb6c8b4d4f27019a04835bbc3dc8782d33e1` |
 
 Sound ROM (loaded when a PC-9801-26K board is selected; present in every PC-98 set):
 
@@ -460,9 +459,9 @@ dumps are bit-identical across models, so a single file can satisfy more than on
 
 ## FM Towns
 
-The FM Towns targets need a real ROM set, pointed to by `--towns-roms`. Both the
-FM Towns II CX and MX use the FM Towns II MX ROM dump (MAME set `fmtownsmx`). Two
-layouts are accepted.
+The FM Towns targets need a real ROM set, pointed to by `--towns-roms`. The base
+FM Towns, the FM Towns II CX, and the MX all use the FM Towns II MX ROM dump (MAME
+set `fmtownsmx`). Two layouts are accepted.
 
 The merged set is the packed 2 MiB MAME BIOS image plus the 32-byte serial ROM (this
 is what the `fmtownsmx` set contains):

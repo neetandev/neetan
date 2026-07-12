@@ -104,7 +104,7 @@ const RTC_DIGIT_MASK: u8 = 0x0F;
 /// Selects and reads back one RTC register through the data/command ports,
 /// returning the raw data byte (ready flag in bit 7, digit in the low nibble).
 fn read_rtc_register(
-    machine: &mut machinetowns::TownsMachine<{ cpu::CPU_MODEL_486 }>,
+    machine: &mut machinetowns::TownsMachine<{ cpu::CPU_MODEL_486_DX }>,
     reg: u8,
 ) -> u8 {
     machine.bus.io_write_byte(RTC_COMMAND_PORT, RTC_ENABLE);
