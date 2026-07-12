@@ -1,4 +1,4 @@
-use super::{CPU_MODEL_486, Fault, I386, Step};
+use super::{CPU_MODEL_486_DX, Fault, I386, Step};
 
 const TLB_SIZE: usize = 64;
 const TLB_MASK: u32 = (TLB_SIZE as u32) - 1;
@@ -45,7 +45,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             if is_user && !self.tlb_user[slot] {
                 return self.raise_page_fault(linear, write, true, bus);
             }
-            let wp_enforced = CPU_MODEL == CPU_MODEL_486 && self.cr0 & 0x0001_0000 != 0;
+            let wp_enforced = CPU_MODEL == CPU_MODEL_486_DX && self.cr0 & 0x0001_0000 != 0;
             if write && (is_user || wp_enforced) && !self.tlb_writable[slot] {
                 return self.raise_page_fault(linear, write, true, bus);
             }
@@ -97,7 +97,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 return self.raise_page_fault(linear, write, true, bus);
             }
         } else if write
-            && CPU_MODEL == CPU_MODEL_486
+            && CPU_MODEL == CPU_MODEL_486_DX
             && self.cr0 & 0x0001_0000 != 0
             && (pde & PTE_WRITABLE == 0 || pte & PTE_WRITABLE == 0)
         {

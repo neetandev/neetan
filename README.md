@@ -25,6 +25,7 @@ Verified per-title compatibility lists.
 
 * [PC-98 game compatibility](doc/games-pc98.md)
 * [PC-88 VA game compatibility](doc/games-88va.md)
+* [FM Towns game compatibility](doc/games-towns.md)
 * [FM-7 game compatibility](doc/games-fm7.md)
 * [X68000 game compatibility](doc/games-x68k.md)
 
@@ -36,16 +37,16 @@ Neetan emulates eight distinct families, selected through the `--machine` option
 each family's guide for the detailed target list, sound options, ROM requirements,
 and platform-specific flags.
 
-| Family                                         | Targets                                                         | Firmware                 |
-|------------------------------------------------|-----------------------------------------------------------------|--------------------------|
-| [NEC PC-9801 / PC-9821](doc/machine-pc98.md)   | PC-9801F, PC-9801VM, PC-9801VX, PC-9801RA, PC-9821AS, PC-9821AP | HLE BIOS (ROMs optional) |
-| [NEC PC-88VA2](doc/machine-pc88va.md)          | PC-88VA2                                                        | Real ROM set required    |
-| [NEC PC-8001 / PC-8801](doc/machine-pc88.md)   | PC-8801MC (plus PC-8001 personalities via `--boot-mode`)        | Real ROM set required    |
-| [NEC PC-6001 / PC-6601](doc/machine-pc6000.md) | PC-6001, PC-6001mkII, PC-6601, PC-6001mkIISR, PC-6601SR         | Real ROM set required    |
-| [Fujitsu FM Towns](doc/machine-towns.md)       | FM Towns II CX, FM Towns II MX                                  | Real ROM set required    |
-| [Sharp X68000](doc/machine-x68k.md)            | X68000, X68000 SUPER, X68000 XVI                                | Real ROM set required    |
-| [Sharp X1](doc/machine-x1.md)                  | X1, X1 turbo                                                    | Real ROM set required    |
-| [Fujitsu FM-7](doc/machine-fm7.md)             | FM-7, FM-77AV                                                   | Real ROM set required    |
+| Family                                         | Targets                                                                    | Firmware                 |
+|------------------------------------------------|----------------------------------------------------------------------------|--------------------------|
+| [NEC PC-9801 / PC-9821](doc/machine-pc98.md)   | PC-9801F, PC-9801VM, PC-9801VX, PC-9801RS, PC-9801RA, PC-9821AS, PC-9821AP | HLE BIOS (ROMs optional) |
+| [NEC PC-88VA2](doc/machine-pc88va.md)          | PC-88VA2                                                                   | Real ROM set required    |
+| [NEC PC-8001 / PC-8801](doc/machine-pc88.md)   | PC-8801MC (plus PC-8001 personalities via `--boot-mode`)                   | Real ROM set required    |
+| [NEC PC-6001 / PC-6601](doc/machine-pc6000.md) | PC-6001, PC-6001mkII, PC-6601, PC-6001mkIISR, PC-6601SR                    | Real ROM set required    |
+| [Fujitsu FM Towns](doc/machine-towns.md)       | FM Towns, FM Towns II CX, FM Towns II MX                                   | Real ROM set required    |
+| [Sharp X68000](doc/machine-x68k.md)            | X68000, X68000 SUPER, X68000 XVI                                           | Real ROM set required    |
+| [Sharp X1](doc/machine-x1.md)                  | X1, X1 turbo                                                               | Real ROM set required    |
+| [Fujitsu FM-7](doc/machine-fm7.md)             | FM-7, FM-77AV                                                              | Real ROM set required    |
 
 The default machine is `PC9801RA`. Games of the PC-98 normally do not require any ROM
 files. The other families need a real ROM set. See [ROMs](doc/roms.md) for details.
@@ -116,9 +117,9 @@ that apply to one family are ignored on the others.
 | `-h, --help`                 | All                       | Print help                                                                                       | -                 |
 | `-V, --version`              | All                       | Print version                                                                                    | -                 |
 
-The `--machine <TYPE>` values are: `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RA`,
-`PC9821AS`, `PC9821AP`, `PC8801MC`, `PC88VA2`, `PC6001`, `PC6001MK2`, `PC6601`,
-`PC6001MK2SR`, `PC6601SR`, `FM7`, `FM77AV`, `FMTownsIICX`, `FMTownsIIMX`, `X68000`,
+The `--machine <TYPE>` values are: `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RS`,
+`PC9801RA`, `PC9821AS`, `PC9821AP`, `PC8801MC`, `PC88VA2`, `PC6001`, `PC6001MK2`, `PC6601`,
+`PC6001MK2SR`, `PC6601SR`, `FM7`, `FM77AV`, `FMTowns`, `FMTownsIICX`, `FMTownsIIMX`, `X68000`,
 `X68000SUPER`, `X68000XVI`, `X1`, `X1TURBO`. The default is `PC9801RA`.
 
 ### Commands

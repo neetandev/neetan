@@ -338,7 +338,7 @@ fn create_machine_ra() -> Pc9801Ra {
 
 fn create_machine_pc9821as() -> Pc9821As {
     let mut machine = Pc9821As::new(
-        cpu::I386::<{ cpu::CPU_MODEL_486 }>::new(),
+        cpu::I386::<{ cpu::CPU_MODEL_486_DX }>::new(),
         machine::Pc9801Bus::new(MachineModel::PC9821AS, CpuMode::High, 48000),
     );
     // TODO: We haven't verified our implementation yet against a real 9821 BIOS.

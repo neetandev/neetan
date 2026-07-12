@@ -1,21 +1,24 @@
 # FM Towns
 
-Select the FM Towns family with `--machine FMTownsIICX` or `--machine FMTownsIIMX`.
-Both are 32-bit machines sharing the Towns chipset; they differ mainly in CPU and
-clock:
+Select the FM Towns family with `--machine FMTowns`, `--machine FMTownsIICX` or
+`--machine FMTownsIIMX`. These are 32-bit machines sharing the Towns chipset; they
+differ mainly in CPU and clock:
 
 | Machine        | `--machine`   | CPU      | CPU Speed   | Sound              | CD-ROM |
 |----------------|---------------|----------|-------------|--------------------|--------|
+| FM Towns       | `FMTowns`     | 80386SX  | 16 MHz      | YMF276 OPN2 + PCM  | Yes    |
 | FM Towns II CX | `FMTownsIICX` | 80386DX  | 16 / 20 MHz | YMF276 OPN2 + PCM  | Yes    |
 | FM Towns II MX | `FMTownsIIMX` | 80486DX2 | 33 / 66 MHz | YMF276 OPN2 + PCM  | Yes    |
 
-For both targets `--cpu-mode low` selects the lower clock and `--cpu-mode high` (the
-default) the higher one: 16 / 20 MHz on the CX and 33 / 66 MHz on the MX. The 386 and
-486 cores are optimized for emulation speed and most likely run a bit fast compared
-to their real counterparts.
+The base FM Towns runs at a fixed 16 MHz and ignores `--cpu-mode`. On the CX and MX
+`--cpu-mode low` selects the lower clock and `--cpu-mode high` (the default) the higher
+one: 16 / 20 MHz on the CX and 33 / 66 MHz on the MX. The 386DX and 486 cores run on
+their datasheet instruction timings, which calibration against test suites shows
+already track real throughput closely. The base FM Towns is a 386SX, so it also carries
+the aggregate-calibrated 16-bit bus and prefetch penalty model.
 
 Sound is provided by the built-in YMF276 (OPN2) FM synthesizer and the RF5C68 PCM
-sound source. Both targets have a built-in CD-ROM drive, a SCSI interface, a floppy
+sound source. All three targets have a built-in CD-ROM drive, a SCSI interface, a floppy
 drive, and support the 2-button and 6-button Towns game pads. MIDI sound modules can
 be used as well; see [MIDI sound modules](#midi-sound-modules).
 
@@ -35,8 +38,8 @@ floppy images with `--fdd1` / `--fdd2`.
 
 ## ROM set
 
-The FM Towns targets need a real ROM set, pointed to by `--towns-roms`. Both targets
-use the FM Towns II MX ROM dump. Two layouts are accepted: a merged set (the packed
+The FM Towns targets need a real ROM set, pointed to by `--towns-roms`. All three
+targets use the FM Towns II MX ROM dump. Two layouts are accepted: a merged set (the packed
 2 MiB MAME BIOS image plus the 32-byte serial ROM) or a split set (the five
 individual images plus the serial ROM).
 

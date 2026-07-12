@@ -88,8 +88,9 @@ const MX_TABLES: RomTables = RomTables {
 
 const fn tables_for(model: TownsModel) -> &'static RomTables {
     match model {
-        // No CX dump is available yet; the MX set is compatible (the SYSROM
-        // layout is identical across the full 32-bit models).
+        // No base-model or CX dump is available yet; the MX set is compatible
+        // (the SYSROM layout is identical across the full 32-bit models).
+        TownsModel::FmTowns => &MX_TABLES,
         TownsModel::FmTownsIICx => &MX_TABLES,
         TownsModel::FmTownsIIMx => &MX_TABLES,
     }

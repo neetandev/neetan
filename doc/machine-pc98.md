@@ -1,7 +1,7 @@
 # PC-9801 / PC-9821
 
 Select a PC-98 machine with `--machine`; the default is `PC9801RA`. neetan aims to
-support all 16-bit era DOS games and emulates them accurately for 6 idealized
+support all 16-bit era DOS games and emulates them accurately for 7 idealized
 machine targets:
 
 | Machine   | `--machine` | CPU      | CPU Speed   | FPU (x87) | Extended RAM | Graphics | Interface | CD-ROM |
@@ -9,17 +9,19 @@ machine targets:
 | PC-9801F  | `PC9801F`   | 8086     | 5 / 8 MHz   | No        | None         | GDC      | SASI      | No     |
 | PC-9801VM | `PC9801VM`  | V30      | 8 / 10 MHz  | No        | None         | GRCG     | SASI      | No     |
 | PC-9801VX | `PC9801VX`  | 80286    | 8 / 10 MHz  | No        | 4 MiB        | EGC      | SASI      | No     |
-| PC-9801RA | `PC9801RA`  | 80386DX  | 16 / 20 MHz | Yes       | 12 MiB       | EGC      | SASI      | No     |
+| PC-9801RS | `PC9801RS`  | 80386SX  | 16 MHz      | Yes       | 12 MiB       | EGC      | SASI      | No     |
+| PC-9801RA | `PC9801RA`  | 80386DX  | 20 MHz      | Yes       | 12 MiB       | EGC      | SASI      | No     |
 | PC-9821AS | `PC9821AS`  | 80486DX  | 33 MHz      | Yes       | 14 MiB       | PEGC     | IDE       | Yes    |
 | PC-9821AP | `PC9821AP`  | 80486DX2 | 66 MHz      | Yes       | 14 MiB       | PEGC     | IDE       | Yes    |
 
 All targets have the full 640 KiB conventional RAM. The 8086 and V30 are cycle-count
 accurately emulated. The emulated 286 is calibrated to run at the same speed as the
-original 286 using trace data. The 386 and the 486 are optimized for emulation speed
-and most likely run a bit fast compared to their real counterparts.
+original 286 using trace data. The 386SX shares the 386 timings but adds a 16-bit bus
+and prefetch penalty model calibrated on aggregate against real traces, so it matches
+the real chip on overall throughput. The 386DX and 486 use their datasheet instruction
+timings, which calibration against test suites shows already track real throughput closely.
 
-The default for the CLI is the PC-9801RA machine with the PC-9801-86 + PC-9801-26k
-combo soundboards.
+The default for the CLI is the PC-9801RA machine with the PC-9801-86 + PC-9801-26k combo soundboards.
 
 Games of the PC-98 normally do not require any ROM files, with the rare exception of
 games that used the PC-98's N88 (86) BASIC ROM.

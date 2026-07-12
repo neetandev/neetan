@@ -4,7 +4,7 @@
 //! 24-bit configuration (PC-98 wiring) must keep truncating physical
 //! addresses exactly as before.
 
-use cpu::{ADDRESS_WIDTH_24, ADDRESS_WIDTH_32, CPU_MODEL_386, CPU_MODEL_486, I386, SegReg32};
+use cpu::{ADDRESS_WIDTH_24, ADDRESS_WIDTH_32, CPU_MODEL_386_DX, CPU_MODEL_486_DX, I386, SegReg32};
 
 const LOW_RAM_BASE: u32 = 0x0000_0000;
 const LOW_RAM_SIZE: usize = 0x0020_0000;
@@ -169,12 +169,12 @@ fn reset_vector_lands_at_fffffff0<const CPU_MODEL: u8>() {
 
 #[test]
 fn reset_vector_lands_at_fffffff0_386() {
-    reset_vector_lands_at_fffffff0::<CPU_MODEL_386>();
+    reset_vector_lands_at_fffffff0::<CPU_MODEL_386_DX>();
 }
 
 #[test]
 fn reset_vector_lands_at_fffffff0_486() {
-    reset_vector_lands_at_fffffff0::<CPU_MODEL_486>();
+    reset_vector_lands_at_fffffff0::<CPU_MODEL_486_DX>();
 }
 
 /// Models the real boot flow: the first far jump out of the reset region
@@ -197,12 +197,12 @@ fn reset_far_jump_drops_cs_base<const CPU_MODEL: u8>() {
 
 #[test]
 fn reset_far_jump_drops_cs_base_386() {
-    reset_far_jump_drops_cs_base::<CPU_MODEL_386>();
+    reset_far_jump_drops_cs_base::<CPU_MODEL_386_DX>();
 }
 
 #[test]
 fn reset_far_jump_drops_cs_base_486() {
-    reset_far_jump_drops_cs_base::<CPU_MODEL_486>();
+    reset_far_jump_drops_cs_base::<CPU_MODEL_486_DX>();
 }
 
 fn protected_mode_fetch_above_16mb<const CPU_MODEL: u8>() {
@@ -229,12 +229,12 @@ fn protected_mode_fetch_above_16mb<const CPU_MODEL: u8>() {
 
 #[test]
 fn protected_mode_fetch_above_16mb_386() {
-    protected_mode_fetch_above_16mb::<CPU_MODEL_386>();
+    protected_mode_fetch_above_16mb::<CPU_MODEL_386_DX>();
 }
 
 #[test]
 fn protected_mode_fetch_above_16mb_486() {
-    protected_mode_fetch_above_16mb::<CPU_MODEL_486>();
+    protected_mode_fetch_above_16mb::<CPU_MODEL_486_DX>();
 }
 
 const PAGE_DIRECTORY: u32 = 0x000A_0000;
@@ -297,22 +297,22 @@ fn paged_fetch_above_16mb<const CPU_MODEL: u8>() {
 
 #[test]
 fn paged_fetch_above_16mb_386() {
-    paged_fetch_above_16mb::<CPU_MODEL_386>();
+    paged_fetch_above_16mb::<CPU_MODEL_386_DX>();
 }
 
 #[test]
 fn paged_fetch_above_16mb_486() {
-    paged_fetch_above_16mb::<CPU_MODEL_486>();
+    paged_fetch_above_16mb::<CPU_MODEL_486_DX>();
 }
 
 #[test]
 fn legacy_reset_vector_stays_at_ffff0() {
-    let cpu: I386<CPU_MODEL_386, ADDRESS_WIDTH_24> = I386::new();
+    let cpu: I386<CPU_MODEL_386_DX, ADDRESS_WIDTH_24> = I386::new();
     assert_eq!(cpu.state.cs(), 0xFFFF);
     assert_eq!(cpu.state.seg_bases[SegReg32::CS as usize], 0x000F_FFF0);
     assert_eq!(cpu.state.eip(), 0x0000);
 
-    let cpu: I386<CPU_MODEL_486, ADDRESS_WIDTH_24> = I386::new();
+    let cpu: I386<CPU_MODEL_486_DX, ADDRESS_WIDTH_24> = I386::new();
     assert_eq!(cpu.state.cs(), 0xFFFF);
     assert_eq!(cpu.state.seg_bases[SegReg32::CS as usize], 0x000F_FFF0);
     assert_eq!(cpu.state.eip(), 0x0000);
@@ -347,10 +347,10 @@ fn legacy_width_masks_to_24_bit<const CPU_MODEL: u8>() {
 
 #[test]
 fn legacy_width_masks_to_24_bit_386() {
-    legacy_width_masks_to_24_bit::<CPU_MODEL_386>();
+    legacy_width_masks_to_24_bit::<CPU_MODEL_386_DX>();
 }
 
 #[test]
 fn legacy_width_masks_to_24_bit_486() {
-    legacy_width_masks_to_24_bit::<CPU_MODEL_486>();
+    legacy_width_masks_to_24_bit::<CPU_MODEL_486_DX>();
 }

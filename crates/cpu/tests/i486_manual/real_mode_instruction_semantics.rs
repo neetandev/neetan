@@ -56,13 +56,13 @@ fn make_real_mode_state_for_semantics() -> I386State {
     state
 }
 
-fn assert_invalid_opcode_dispatched(cpu: &cpu::I386<{ cpu::CPU_MODEL_486 }>) {
+fn assert_invalid_opcode_dispatched(cpu: &cpu::I386<{ cpu::CPU_MODEL_486_DX }>) {
     assert!(cpu.halted(), "expected #UD handler HLT");
     assert_eq!(cpu.cs(), REAL_MODE_HANDLER_SEGMENT);
     assert_eq!(cpu.ip() as u16, REAL_MODE_HANDLER_INVALID_OPCODE_OFFSET + 1);
 }
 
-fn assert_general_protection_dispatched(cpu: &cpu::I386<{ cpu::CPU_MODEL_486 }>) {
+fn assert_general_protection_dispatched(cpu: &cpu::I386<{ cpu::CPU_MODEL_486_DX }>) {
     assert!(cpu.halted(), "expected #GP handler HLT");
     assert_eq!(cpu.cs(), REAL_MODE_HANDLER_SEGMENT);
     assert_eq!(

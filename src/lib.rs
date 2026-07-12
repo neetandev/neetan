@@ -1373,7 +1373,7 @@ fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
         (true, _, Some(ForceGdcClock::Force2_5)) => {
             info!("GDC clock forced to 2.5 MHz (200-line compatibility mode)");
         }
-        // EGC-only machines (PC-9801VX/RA): default to 2.5 MHz
+        // EGC-only machines (PC-9801VX/RS/RA): default to 2.5 MHz
         (false, true, Some(ForceGdcClock::Force5)) => {
             bus.set_gdc_clock_5mhz();
             info!("GDC clock forced to 5 MHz (400-line graphics mode)");
@@ -1523,12 +1523,23 @@ fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
         common::CpuType::I8086 => Box::new(machine::Machine::new(cpu::I8086::new(), bus)),
         common::CpuType::V30 => Box::new(machine::Machine::new(cpu::V30::new(), bus)),
         common::CpuType::I286 => Box::new(machine::Machine::new(cpu::I286::new(), bus)),
-        common::CpuType::I386 => Box::new(machine::Machine::new(
-            cpu::I386::<{ cpu::CPU_MODEL_386 }>::new(),
-            bus,
-        )),
+        common::CpuType::I386 => match model {
+            MachineModel::PC9801RS => Box::new(machine::Machine::new(
+                cpu::I386::<{ cpu::CPU_MODEL_386_SX }>::new(),
+                bus,
+            )),
+            MachineModel::PC9801F
+            | MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => Box::new(machine::Machine::new(
+                cpu::I386::<{ cpu::CPU_MODEL_386_DX }>::new(),
+                bus,
+            )),
+        },
         common::CpuType::I486DX => Box::new(machine::Machine::new(
-            cpu::I386::<{ cpu::CPU_MODEL_486 }>::new(),
+            cpu::I386::<{ cpu::CPU_MODEL_486_DX }>::new(),
             bus,
         )),
     };
@@ -1568,8 +1579,8 @@ fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
     })?;
 
     let clock_select = match config.cpu_mode {
-        common::CpuMode::Low => machine88::ClockSelect::FourMhz,
-        common::CpuMode::High => machine88::ClockSelect::EightMhz,
+        CpuMode::Low => machine88::ClockSelect::FourMhz,
+        CpuMode::High => machine88::ClockSelect::EightMhz,
     };
 
     let mut bus: machine88::Pc8801Bus = machine88::Pc8801Bus::new(model, clock_select, sample_rate);
@@ -1701,11 +1712,14 @@ fn initialize_towns_machine(
     };
 
     match model {
+        machinetowns::TownsModel::FmTowns => {
+            build_towns_machine::<{ cpu::CPU_MODEL_386_SX }>(config, model, roms, boot_device)
+        }
         machinetowns::TownsModel::FmTownsIICx => {
-            build_towns_machine::<{ cpu::CPU_MODEL_386 }>(config, model, roms, boot_device)
+            build_towns_machine::<{ cpu::CPU_MODEL_386_DX }>(config, model, roms, boot_device)
         }
         machinetowns::TownsModel::FmTownsIIMx => {
-            build_towns_machine::<{ cpu::CPU_MODEL_486 }>(config, model, roms, boot_device)
+            build_towns_machine::<{ cpu::CPU_MODEL_486_DX }>(config, model, roms, boot_device)
         }
     }
 }
@@ -1716,10 +1730,11 @@ fn build_towns_machine<const CPU_MODEL: u8>(
     roms: machinetowns::LoadedRoms,
     boot_device: machinetowns::TownsBootDevice,
 ) -> Result<Box<dyn Machine>> {
-    let cpu_name = if CPU_MODEL == cpu::CPU_MODEL_386 {
-        "i386DX"
-    } else {
-        "i486DX2"
+    let cpu_name = match CPU_MODEL {
+        cpu::CPU_MODEL_386_DX => "i386DX",
+        cpu::CPU_MODEL_386_SX => "i386SX",
+        cpu::CPU_MODEL_486_DX => "i486DX2",
+        _ => "unknown",
     };
     info!(
         "FM Towns configured: {} MHz {cpu_name}",

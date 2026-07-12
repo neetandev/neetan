@@ -8,7 +8,7 @@
 //! table.
 
 use common::{Bus, Cpu};
-use cpu::{CPU_MODEL_386, I386};
+use cpu::{CPU_MODEL_386_DX, I386};
 
 const ROM_BYTES: &[u8] = include_bytes!("test386/test386.bin");
 const EE_REFERENCE: &str = include_str!("test386/upstream/test386-EE-reference.txt");
@@ -90,7 +90,7 @@ impl Bus for TestBus {
     fn set_current_cycle(&mut self, _cycle: u64) {}
 }
 
-fn run_until_halt(cpu: &mut I386<CPU_MODEL_386>, bus: &mut TestBus) -> u64 {
+fn run_until_halt(cpu: &mut I386<CPU_MODEL_386_DX>, bus: &mut TestBus) -> u64 {
     let mut steps = 0u64;
     while !cpu.halted() && steps < MAX_STEPS {
         cpu.step(bus);
@@ -109,7 +109,7 @@ fn format_post_history(history: &[u8]) -> String {
 
 #[test]
 fn test386_reaches_post_ff() {
-    let mut cpu: I386<CPU_MODEL_386> = I386::new();
+    let mut cpu: I386<CPU_MODEL_386_DX> = I386::new();
     let mut bus = TestBus::new();
 
     let steps = run_until_halt(&mut cpu, &mut bus);
@@ -135,7 +135,7 @@ fn test386_reaches_post_ff() {
 
 #[test]
 fn test386_ee_output_matches_reference() {
-    let mut cpu: I386<CPU_MODEL_386> = I386::new();
+    let mut cpu: I386<CPU_MODEL_386_DX> = I386::new();
     let mut bus = TestBus::new();
     run_until_halt(&mut cpu, &mut bus);
 

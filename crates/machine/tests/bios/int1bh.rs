@@ -2675,7 +2675,7 @@ fn int1bh_sasi_format_ra() {
 // §12.4 INT 1Bh - 2DD Device Type Dispatch
 // ============================================================================
 
-// 2DD (DA=0x70) is not supported on VM/VX/RA - returns error 0x40.
+// 2DD (DA=0x70) is not supported on VM/VX/RS/RA - returns error 0x40.
 
 const DA_FDD_640KB_DRIVE0: u8 = 0x70;
 

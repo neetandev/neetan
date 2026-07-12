@@ -240,7 +240,10 @@ impl<T: Tracing> Pc9801Bus<T> {
                 MachineModel::PC9801F | MachineModel::PC9801VM | MachineModel::PC9801VX => {
                     DMA_ACCESS_CTRL_20BIT
                 }
-                MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => 0x00,
+                MachineModel::PC9801RS
+                | MachineModel::PC9801RA
+                | MachineModel::PC9821AS
+                | MachineModel::PC9821AP => 0x00,
             },
             vram_ems_bank: 0x00,
             ram_window: 0x08,
@@ -281,6 +284,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         match machine_model {
             MachineModel::PC9801F | MachineModel::PC9801VM => {}
             MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => bus.set_cg_ram(true),
@@ -299,6 +303,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801F => false,
             MachineModel::PC9801VM => true,
             MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => false,
@@ -361,6 +366,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801F => 0x20,
             MachineModel::PC9801VM
             | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => 0x03,
@@ -375,9 +381,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801F => 0xA0 | (msw3 & 0x07),
             MachineModel::PC9801VM => 0x60 | (msw3 & 0x07),
             MachineModel::PC9801VX => 0x20 | (msw3 & 0x07),
-            MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => {
-                0xA0 | (msw3 & 0x07)
-            }
+            MachineModel::PC9801RS
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => 0xA0 | (msw3 & 0x07),
         };
         self.memory.state.ram[0x0501] = bios_flag1;
 
@@ -405,6 +412,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 MachineModel::PC9801F
                 | MachineModel::PC9801VM
                 | MachineModel::PC9801VX
+                | MachineModel::PC9801RS
                 | MachineModel::PC9801RA => 0x00,
                 MachineModel::PC9821AS | MachineModel::PC9821AP => 0x80,
             };
@@ -442,6 +450,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801F => 0x00,
             MachineModel::PC9801VM
             | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => 0xFF,
@@ -452,6 +461,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801F => 0x00,
             MachineModel::PC9801VM
             | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => 0xFF,
@@ -479,7 +489,10 @@ impl<T: Tracing> Pc9801Bus<T> {
                     0xFD,
                 ]);
             }
-            MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => {
+            MachineModel::PC9801RS
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => {
                 let (f2hd_off, f2dd_off): (u16, u16) = (0x1AAF, 0x1AD7);
                 self.memory.state.ram[0x05CC..0x05D0].copy_from_slice(&[
                     f2dd_off as u8,
@@ -513,6 +526,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         match self.machine_model {
             MachineModel::PC9801F | MachineModel::PC9801VM => {}
             MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => {
@@ -529,6 +543,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801F => 0x00,
             MachineModel::PC9801VM
             | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => 0x03,
@@ -539,6 +554,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801F => KEYBOARD_ROM_OFFSET_F,
             MachineModel::PC9801VM
             | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => KEYBOARD_ROM_OFFSET_VM,
@@ -576,6 +592,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801F => KEYBOARD_ROM_OFFSET_F,
             MachineModel::PC9801VM
             | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => KEYBOARD_ROM_OFFSET_VM,
@@ -599,6 +616,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801F => 0xFD,
             MachineModel::PC9801VM
             | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => 0xF7,
@@ -610,7 +628,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801F | MachineModel::PC9801VM => {
                 self.pic.state.chips[1].ocw3 = 0x0B;
             }
-            MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => {
+            MachineModel::PC9801RS
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => {
                 self.pic.state.chips[0].ocw3 = 0x0B;
             }
             MachineModel::PC9801VX => {}
@@ -641,6 +662,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             MachineModel::PC9801VM
             | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => {
@@ -664,6 +686,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.system_ppi.state.port_c = match self.machine_model {
             MachineModel::PC9801F | MachineModel::PC9801VM => 0x18,
             MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => 0xB8,
@@ -695,6 +718,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.gdc_master.state.draw_on_retrace = true;
         match self.machine_model {
             MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => {
@@ -733,6 +757,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.gdc_slave.state.mask = match self.machine_model {
             MachineModel::PC9801F | MachineModel::PC9801VM => 0,
             MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => 1,
@@ -744,6 +769,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             MachineModel::PC9801VM
             | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => {}
@@ -753,6 +779,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.gdc_slave.state.display_mode = DISPLAY_MODE_GRAPHICS;
             }
             MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => {}
@@ -765,6 +792,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801VX => 23,
             MachineModel::PC9801F
             | MachineModel::PC9801VM
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => 1,
@@ -775,6 +803,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         let (dim, half_bright) = match self.machine_model {
             MachineModel::PC9801F | MachineModel::PC9801VM => (0x0Au8, [7u8, 7, 7]),
             MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => (0x07u8, [4u8, 4, 4]),
@@ -797,6 +826,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.palette.state.index = match self.machine_model {
             MachineModel::PC9801F | MachineModel::PC9801VM => 0x08,
             MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => 0x0F,
@@ -810,6 +840,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.grcg.state.mode = 0x0F;
             }
             MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => {
@@ -823,6 +854,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801F => 0x5F56,
             MachineModel::PC9801VM
             | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => 0x7F57,
@@ -839,6 +871,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.printer.state.port_c = 0x80;
             }
             MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => {}
@@ -877,6 +910,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.mouse_ppi.state.port_c = match self.machine_model {
             MachineModel::PC9801F | MachineModel::PC9801VM => 0xF0,
             MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => 0x00,
@@ -933,10 +967,13 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.apply_gdc_dot_clock();
         self.reschedule_gdc_events();
 
-        // RA-specific registers.
+        // Registers of the 386/486 machines (RS and later).
         match self.machine_model {
             MachineModel::PC9801F | MachineModel::PC9801VM | MachineModel::PC9801VX => {}
-            MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => {
+            MachineModel::PC9801RS
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => {
                 self.vram_ems_bank = 0x20;
                 self.protected_memory_max = 0xE0;
                 self.memory.copy_rom_to_shadow_ram();

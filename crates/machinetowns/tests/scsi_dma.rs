@@ -19,7 +19,7 @@ const INITIATOR_MASK: u8 = 1 << 7;
 
 /// Selects target 0, sends a CDB, and advances the clock past the SCSI task so
 /// its scheduled data transfer runs.
-fn run_command(machine: &mut machinetowns::TownsMachine<{ cpu::CPU_MODEL_486 }>, cdb: &[u8]) {
+fn run_command(machine: &mut machinetowns::TownsMachine<{ cpu::CPU_MODEL_486_DX }>, cdb: &[u8]) {
     machine
         .bus
         .io_write_byte(SCSI_DATA, (1 << 0) | INITIATOR_MASK);
@@ -33,7 +33,7 @@ fn run_command(machine: &mut machinetowns::TownsMachine<{ cpu::CPU_MODEL_486 }>,
 }
 
 /// Reads back STATUS and MESSAGE IN so the bus returns to BUS FREE.
-fn drain_status(machine: &mut machinetowns::TownsMachine<{ cpu::CPU_MODEL_486 }>) {
+fn drain_status(machine: &mut machinetowns::TownsMachine<{ cpu::CPU_MODEL_486_DX }>) {
     machine.bus.io_read_byte(SCSI_DATA);
     machine.bus.io_read_byte(SCSI_DATA);
 }

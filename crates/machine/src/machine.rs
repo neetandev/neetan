@@ -138,14 +138,17 @@ pub type Pc9801Vm = Machine<cpu::VX0>;
 /// PC-9801VX machine type (80286 CPU at 8 / 10 MHz).
 pub type Pc9801Vx = Machine<cpu::I286>;
 
-/// PC-9801RA machine type (80386 SX CPU at 16 / 20 MHz).
+/// PC-9801RS machine type (80386SX CPU at 16 MHz).
+pub type Pc9801Rs = Machine<cpu::I386<{ cpu::CPU_MODEL_386_SX }>>;
+
+/// PC-9801RA machine type (80386DX CPU at 20 MHz).
 pub type Pc9801Ra = Machine<cpu::I386>;
 
 /// PC-9821AS machine type (486DX CPU at 33 MHz, IDE, PEGC).
-pub type Pc9821As = Machine<cpu::I386<{ cpu::CPU_MODEL_486 }>>;
+pub type Pc9821As = Machine<cpu::I386<{ cpu::CPU_MODEL_486_DX }>>;
 
 /// PC-9821AP machine type (486DX2 CPU at 66 MHz, IDE, PEGC).
-pub type Pc9821Ap = Machine<cpu::I386<{ cpu::CPU_MODEL_486 }>>;
+pub type Pc9821Ap = Machine<cpu::I386<{ cpu::CPU_MODEL_486_DX }>>;
 
 impl<T: Tracing> Machine<cpu::I8086, T> {
     /// Captures the full machine state.
@@ -242,6 +245,7 @@ fn validate_hdd_for_model(
         common::MachineModel::PC9801F
         | common::MachineModel::PC9801VM
         | common::MachineModel::PC9801VX
+        | common::MachineModel::PC9801RS
         | common::MachineModel::PC9801RA => {
             if geometry.sasi_media_type().is_none() {
                 return Err(format!(

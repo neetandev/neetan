@@ -4270,7 +4270,7 @@ fn display_area_set_resets_scroll_ra() {
 
 /// AH=42h must NOT load new GDC slave sync parameters unless PRXDUPD has the
 /// right bit pattern ((prxdupd & 0x24) == 0x24 for 200-line, or 0x20 for 400-line).
-/// After a fresh boot PRXDUPD is 0x00 (VM) / 0x50 (VX/RA), so neither condition
+/// After a fresh boot PRXDUPD is 0x00 (VM) / 0x50 (VX and later), so neither condition
 /// is met and the slave GDC pitch, AW, AL, and timing must remain unchanged.
 #[test]
 fn display_area_set_preserves_slave_sync_f() {
@@ -4293,7 +4293,7 @@ fn display_area_set_preserves_slave_sync_f() {
 
 /// AH=42h must NOT load new GDC slave sync parameters unless PRXDUPD has the
 /// right bit pattern ((prxdupd & 0x24) == 0x24 for 200-line, or 0x20 for 400-line).
-/// After a fresh boot PRXDUPD is 0x00 (VM) / 0x50 (VX/RA), so neither condition
+/// After a fresh boot PRXDUPD is 0x00 (VM) / 0x50 (VX and later), so neither condition
 /// is met and the slave GDC pitch, AW, AL, and timing must remain unchanged.
 #[test]
 fn display_area_set_preserves_slave_sync_vm() {

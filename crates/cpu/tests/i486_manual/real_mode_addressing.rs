@@ -30,7 +30,7 @@ fn place_in_test_code(bus: &mut TestBus, offset: u16, code: &[u8]) {
     place_at(bus, TEST_CS_BASE + offset as u32, code);
 }
 
-fn assert_general_protection_dispatched(cpu: &cpu::I386<{ cpu::CPU_MODEL_486 }>) {
+fn assert_general_protection_dispatched(cpu: &cpu::I386<{ cpu::CPU_MODEL_486_DX }>) {
     assert!(cpu.halted(), "expected #GP handler HLT");
     assert_eq!(cpu.cs(), REAL_MODE_HANDLER_SEGMENT);
     assert_eq!(
@@ -39,7 +39,7 @@ fn assert_general_protection_dispatched(cpu: &cpu::I386<{ cpu::CPU_MODEL_486 }>)
     );
 }
 
-fn assert_double_fault_dispatched(cpu: &cpu::I386<{ cpu::CPU_MODEL_486 }>) {
+fn assert_double_fault_dispatched(cpu: &cpu::I386<{ cpu::CPU_MODEL_486_DX }>) {
     assert!(cpu.halted(), "expected #DF handler HLT");
     assert_eq!(cpu.cs(), REAL_MODE_HANDLER_SEGMENT);
     assert_eq!(cpu.ip() as u16, REAL_MODE_HANDLER_DOUBLE_FAULT_OFFSET + 1);

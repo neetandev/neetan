@@ -108,6 +108,11 @@ const SLOW_MODE_MEMORY_WAITS: u8 = 6;
 /// The FASTMODE lamp reads lit while the VRAM wait stays below this value.
 const FAST_MODE_LAMP_VRAM_WAIT_LIMIT: u8 = 3;
 
+/// Baseline wait-state cycles charged on every video-memory access on top of the
+/// programmed VRAM wait latch, modeling VRAM being inherently slower than RAM.
+/// Experimental tuning knob.
+const VRAM_BASELINE_WAIT_CYCLES: i64 = 2;
+
 /// Vertical-sync pulse duration in microseconds (measured ~60 us on a real MX).
 const VSYNC_DURATION_MICROS: u64 = 60;
 
@@ -166,11 +171,15 @@ pub struct TownsBus<T: Tracing = NoTracing> {
     /// Electronic-volume attenuators (I/O 0x04E0-0x04E3); the second chip's
     /// channels 0/1 set the CD-DA left/right level.
     pub(crate) elevol: [ElectronicVolume; 2],
-    /// Main-RAM wait latch (I/O 0x05E0 first-generation alias / 0x05E2); stored
-    /// and read back only, the slow-mode clock change is not modeled.
+    /// Main-RAM wait latch (I/O 0x05E0 first-generation alias / 0x05E2). Charged
+    /// as wait-state cycles on every non-video memory access (RAM, ROM, CMOS).
     pub(crate) main_ram_wait: u8,
-    /// VRAM wait latch (I/O 0x05E6); stored and read back only.
+    /// VRAM wait latch (I/O 0x05E6). Charged as wait-state cycles on every video
+    /// memory access (native VRAM, sprite RAM, and the mapped FMR VRAM window).
     pub(crate) vram_wait: u8,
+    /// Memory wait-state cycles accumulated since the last drain. The CPU pulls
+    /// these through [`Bus::drain_wait_cycles`] after each instruction.
+    pub(crate) pending_wait_cycles: i64,
     pub(crate) gameport: TownsGamePort,
     pub(crate) video: TownsVideo,
     pub(crate) sprite: TownsSprite,
@@ -261,6 +270,7 @@ impl<T: Tracing + Default> TownsBus<T> {
             elevol: [ElectronicVolume::new(), ElectronicVolume::new()],
             main_ram_wait: 0,
             vram_wait: 0,
+            pending_wait_cycles: 0,
             gameport: TownsGamePort::new(clocks.cpu_clock_hz),
             video: TownsVideo::new(model.high_res_available()),
             sprite: TownsSprite::new(clocks.cpu_clock_hz),
@@ -1095,10 +1105,23 @@ impl<T: Tracing> TownsBus<T> {
     fn vsync_duration_cycles(&self) -> u64 {
         (u64::from(self.clocks.cpu_clock_hz) * VSYNC_DURATION_MICROS / MICROS_PER_SECOND).max(1)
     }
-}
 
-impl<T: Tracing> Bus for TownsBus<T> {
-    fn read_byte(&mut self, address: u32) -> u8 {
+    /// Charges one memory access at `address` its programmed wait-state cycles:
+    /// the VRAM wait latch for video memory, the main-RAM wait latch otherwise.
+    /// Called once per access regardless of width, matching a single bus cycle
+    /// on the 32-bit data bus; the 386SX 16-bit split penalty is charged by the
+    /// CPU core.
+    fn charge_memory_wait(&mut self, address: u32) {
+        if self.memory.is_video_memory(address) {
+            self.pending_wait_cycles += VRAM_BASELINE_WAIT_CYCLES + i64::from(self.vram_wait);
+        } else {
+            self.pending_wait_cycles += i64::from(self.main_ram_wait);
+        }
+    }
+
+    /// Reads a byte through the memory-mapped windows (RF5C68 wave RAM, FMR
+    /// buzzer control) and the physical memory map, without charging waits.
+    fn read_byte_data(&mut self, address: u32) -> u8 {
         if (RF5C68_WAVE_WINDOW_BASE..RF5C68_WAVE_WINDOW_END).contains(&address) {
             return self
                 .pcm
@@ -1111,7 +1134,9 @@ impl<T: Tracing> Bus for TownsBus<T> {
         self.memory.read_byte(address)
     }
 
-    fn write_byte(&mut self, address: u32, value: u8) {
+    /// Writes a byte through the memory-mapped windows and the physical memory
+    /// map, without charging waits.
+    fn write_byte_data(&mut self, address: u32, value: u8) {
         if (RF5C68_WAVE_WINDOW_BASE..RF5C68_WAVE_WINDOW_END).contains(&address) {
             self.pcm
                 .write_wave_ram((address - RF5C68_WAVE_WINDOW_BASE) as u16, value);
@@ -1122,6 +1147,50 @@ impl<T: Tracing> Bus for TownsBus<T> {
             self.refresh_beeper_gate();
         }
         self.memory.write_byte(address, value);
+    }
+}
+
+impl<T: Tracing> Bus for TownsBus<T> {
+    fn read_byte(&mut self, address: u32) -> u8 {
+        self.charge_memory_wait(address);
+        self.read_byte_data(address)
+    }
+
+    fn write_byte(&mut self, address: u32, value: u8) {
+        self.charge_memory_wait(address);
+        self.write_byte_data(address, value);
+    }
+
+    fn read_word(&mut self, address: u32) -> u16 {
+        self.charge_memory_wait(address);
+        u16::from(self.read_byte_data(address))
+            | (u16::from(self.read_byte_data(address.wrapping_add(1))) << 8)
+    }
+
+    fn write_word(&mut self, address: u32, value: u16) {
+        self.charge_memory_wait(address);
+        self.write_byte_data(address, value as u8);
+        self.write_byte_data(address.wrapping_add(1), (value >> 8) as u8);
+    }
+
+    fn read_dword(&mut self, address: u32) -> u32 {
+        self.charge_memory_wait(address);
+        u32::from(self.read_byte_data(address))
+            | (u32::from(self.read_byte_data(address.wrapping_add(1))) << 8)
+            | (u32::from(self.read_byte_data(address.wrapping_add(2))) << 16)
+            | (u32::from(self.read_byte_data(address.wrapping_add(3))) << 24)
+    }
+
+    fn write_dword(&mut self, address: u32, value: u32) {
+        self.charge_memory_wait(address);
+        self.write_byte_data(address, value as u8);
+        self.write_byte_data(address.wrapping_add(1), (value >> 8) as u8);
+        self.write_byte_data(address.wrapping_add(2), (value >> 16) as u8);
+        self.write_byte_data(address.wrapping_add(3), (value >> 24) as u8);
+    }
+
+    fn drain_wait_cycles(&mut self) -> i64 {
+        core::mem::take(&mut self.pending_wait_cycles)
     }
 
     fn io_read_byte(&mut self, port: u16) -> u8 {

@@ -1,4 +1,4 @@
-use super::{CPU_MODEL_386, CPU_MODEL_486, I386, Step};
+use super::{CPU_MODEL_386_DX, CPU_MODEL_386_SX, CPU_MODEL_486_DX, I386, Step};
 use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 
 impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH> {
@@ -7,11 +7,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     #[inline(always)]
     fn shift_group_timing(extension: u8, count_source: u8) -> (i32, i32) {
         match CPU_MODEL {
-            CPU_MODEL_386 => match extension & 7 {
+            CPU_MODEL_386_DX | CPU_MODEL_386_SX => match extension & 7 {
                 2 | 3 => (9, 10),
                 _ => (3, 7),
             },
-            CPU_MODEL_486 => match count_source {
+            CPU_MODEL_486_DX => match count_source {
                 0 => match extension & 7 {
                     2 | 3 => (8, 9),
                     _ => (2, 4),
@@ -25,6 +25,21 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             _ => {
                 unreachable!("Unhandled CPU_MODEL")
             }
+        }
+    }
+
+    /// Base clocks for a far indirect JMP (opcode FF /5). Only protected mode
+    /// pays the descriptor-load cost; real and V86 mode load CS directly and are
+    /// much cheaper, consistent with the far CALL (FF /3) timing. The datasheet's
+    /// flat 43 is the protected-mode figure; the 386EX real-mode traces show the
+    /// cheaper cost. Applies to the 386DX and 386SX alike (shared execution
+    /// timing); the SX bus penalty for the pointer fetch is charged separately.
+    #[inline(always)]
+    fn far_jmp_indirect_base(&self) -> i32 {
+        if self.is_protected_mode() && !self.is_virtual_mode() {
+            43
+        } else {
+            18
         }
     }
 
@@ -814,7 +829,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     self.ip = dst as u16;
                     self.ip_upper = dst & 0xFFFF_0000;
                     match CPU_MODEL {
-                        CPU_MODEL_386 => {
+                        CPU_MODEL_386_DX | CPU_MODEL_386_SX => {
                             let m = self.next_instruction_length_approx(bus);
                             if modrm >= 0xC0 {
                                 self.clk(7 + m + sp_pen);
@@ -823,7 +838,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                                 self.clk(10 + m + sp_pen + ea_pen);
                             }
                         }
-                        CPU_MODEL_486 => self.clk(5 + sp_pen),
+                        CPU_MODEL_486_DX => self.clk(5 + sp_pen),
                         _ => {
                             unreachable!("Unhandled CPU_MODEL")
                         }
@@ -836,7 +851,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     self.ip = dst;
                     self.ip_upper = 0;
                     match CPU_MODEL {
-                        CPU_MODEL_386 => {
+                        CPU_MODEL_386_DX | CPU_MODEL_386_SX => {
                             let m = self.next_instruction_length_approx(bus);
                             if modrm >= 0xC0 {
                                 self.clk(7 + m + sp_pen);
@@ -845,7 +860,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                                 self.clk(10 + m + sp_pen + ea_pen);
                             }
                         }
-                        CPU_MODEL_486 => self.clk(5 + sp_pen),
+                        CPU_MODEL_486_DX => self.clk(5 + sp_pen),
                         _ => {
                             unreachable!("Unhandled CPU_MODEL")
                         }
@@ -880,12 +895,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                         )?;
                     }
                     match CPU_MODEL {
-                        CPU_MODEL_386 => {
+                        CPU_MODEL_386_DX | CPU_MODEL_386_SX => {
                             let m = self.next_instruction_length_approx(bus);
                             let ea_pen = if self.ea & 3 != 0 { 4 } else { 0 };
                             self.clk(22 + m + sp_pen + ea_pen);
                         }
-                        CPU_MODEL_486 => self.clk(17 + sp_pen),
+                        CPU_MODEL_486_DX => self.clk(17 + sp_pen),
                         _ => {
                             unreachable!("Unhandled CPU_MODEL")
                         }
@@ -914,12 +929,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                         )?;
                     }
                     match CPU_MODEL {
-                        CPU_MODEL_386 => {
+                        CPU_MODEL_386_DX | CPU_MODEL_386_SX => {
                             let m = self.next_instruction_length_approx(bus);
                             let ea_pen = if self.ea & 1 != 0 { 4 } else { 0 };
                             self.clk(22 + m + sp_pen + ea_pen);
                         }
-                        CPU_MODEL_486 => self.clk(17 + sp_pen),
+                        CPU_MODEL_486_DX => self.clk(17 + sp_pen),
                         _ => {
                             unreachable!("Unhandled CPU_MODEL")
                         }
@@ -933,7 +948,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     self.ip = dst as u16;
                     self.ip_upper = dst & 0xFFFF_0000;
                     match CPU_MODEL {
-                        CPU_MODEL_386 => {
+                        CPU_MODEL_386_DX | CPU_MODEL_386_SX => {
                             let m = self.next_instruction_length_approx(bus);
                             if modrm >= 0xC0 {
                                 self.clk(7 + m);
@@ -942,7 +957,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                                 self.clk(10 + m + ea_pen);
                             }
                         }
-                        CPU_MODEL_486 => self.clk(5),
+                        CPU_MODEL_486_DX => self.clk(5),
                         _ => {
                             unreachable!("Unhandled CPU_MODEL")
                         }
@@ -953,7 +968,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     self.ip = dst;
                     self.ip_upper = 0;
                     match CPU_MODEL {
-                        CPU_MODEL_386 => {
+                        CPU_MODEL_386_DX | CPU_MODEL_386_SX => {
                             let m = self.next_instruction_length_approx(bus);
                             if modrm >= 0xC0 {
                                 self.clk(7 + m);
@@ -962,7 +977,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                                 self.clk(10 + m + ea_pen);
                             }
                         }
-                        CPU_MODEL_486 => self.clk(5),
+                        CPU_MODEL_486_DX => self.clk(5),
                         _ => {
                             unreachable!("Unhandled CPU_MODEL")
                         }
@@ -986,12 +1001,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                         self.code_descriptor(segment, offset, super::TaskType::Jmp, 0, 0, bus)?;
                     }
                     match CPU_MODEL {
-                        CPU_MODEL_386 => {
+                        CPU_MODEL_386_DX | CPU_MODEL_386_SX => {
                             let m = self.next_instruction_length_approx(bus);
                             let penalty = if self.ea & 3 != 0 { 4 } else { 0 };
-                            self.clk(43 + m + penalty);
+                            self.clk(self.far_jmp_indirect_base() + m + penalty);
                         }
-                        CPU_MODEL_486 => self.clk(13),
+                        CPU_MODEL_486_DX => self.clk(13),
                         _ => {
                             unreachable!("Unhandled CPU_MODEL")
                         }
@@ -1016,12 +1031,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                         )?;
                     }
                     match CPU_MODEL {
-                        CPU_MODEL_386 => {
+                        CPU_MODEL_386_DX | CPU_MODEL_386_SX => {
                             let m = self.next_instruction_length_approx(bus);
                             let penalty = if self.ea & 1 != 0 { 4 } else { 0 };
-                            self.clk(43 + m + penalty);
+                            self.clk(self.far_jmp_indirect_base() + m + penalty);
                         }
-                        CPU_MODEL_486 => self.clk(13),
+                        CPU_MODEL_486_DX => self.clk(13),
                         _ => {
                             unreachable!("Unhandled CPU_MODEL")
                         }
@@ -1038,7 +1053,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                         self.clk(Self::timing(5, 1) + sp_pen);
                     } else {
                         let ea_pen = if self.ea & 3 != 0 {
-                            Self::timing(4, 3)
+                            Self::misaligned_operand_penalty()
                         } else {
                             0
                         };
@@ -1053,7 +1068,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                         self.clk(Self::timing(5, 1) + sp_pen);
                     } else {
                         let ea_pen = if self.ea & 1 != 0 {
-                            Self::timing(4, 3)
+                            Self::misaligned_operand_penalty()
                         } else {
                             0
                         };

@@ -18,7 +18,7 @@ fn run_mode(mode: u8) -> (Vec<u8>, u32) {
     let mut bus = Pc9801Bus::new(MachineModel::PC9821AP, CpuMode::High, 48000);
     bus.set_gdc_clock_5mhz();
 
-    let mut machine = Pc9821Ap::new(cpu::I386::<{ cpu::CPU_MODEL_486 }>::new(), bus);
+    let mut machine = Pc9821Ap::new(cpu::I386::<{ cpu::CPU_MODEL_486_DX }>::new(), bus);
     machine.bus.load_font_rom(BUILTIN_FONT_ROM);
     machine.bus.load_bios_rom(DEBUG_PEGC_ROM);
     machine.bus.write_byte(MODE_BYTE_ADDR, mode);

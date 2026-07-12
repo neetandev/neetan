@@ -192,6 +192,7 @@ const MX_DEFAULT_CMOS: &[u8; CMOS_SIZE] = include_bytes!("cmos_default_mx.bin");
 /// Default CMOS image for `model`.
 const fn default_cmos(model: TownsModel) -> &'static [u8; CMOS_SIZE] {
     match model {
+        TownsModel::FmTowns => MX_DEFAULT_CMOS,
         TownsModel::FmTownsIICx => MX_DEFAULT_CMOS,
         TownsModel::FmTownsIIMx => MX_DEFAULT_CMOS,
     }
@@ -322,6 +323,20 @@ impl TownsMemory {
     /// 0xCFF98) respond instead of plain RAM.
     pub(crate) fn fmr_window_mapped(&self) -> bool {
         self.fmr_vram
+    }
+
+    /// Whether `address` targets video memory for the memory wait-state
+    /// accounting: the native linear/interleaved/high-res VRAM windows, sprite
+    /// RAM, or the FMR VRAM window while it is mapped. Everything else (main and
+    /// extended RAM, ROM, CMOS) takes the main-RAM wait instead.
+    pub(crate) fn is_video_memory(&self, address: u32) -> bool {
+        (VRAM_LINEAR_BASE..VRAM_LINEAR_END).contains(&address)
+            || (VRAM_INTERLEAVED_BASE..VRAM_INTERLEAVED_END).contains(&address)
+            || (VRAM_HIGH_RES_PAGE0_BASE..VRAM_HIGH_RES_PAGE0_END).contains(&address)
+            || (VRAM_HIGH_RES_PAGE1_BASE..VRAM_HIGH_RES_PAGE1_END).contains(&address)
+            || (VRAM_HIGH_RES_SINGLE_BASE..VRAM_HIGH_RES_SINGLE_END).contains(&address)
+            || (SPRITE_RAM_BASE..SPRITE_RAM_END).contains(&address)
+            || (self.fmr_vram && (FMR_WINDOW_BASE..FMR_WINDOW_END).contains(&address))
     }
 
     /// Reads and clears the TVRAM dirty flag (I/O 0x05C8): returns 0x80 when the

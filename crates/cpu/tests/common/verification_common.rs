@@ -33,6 +33,19 @@ pub struct MooI286Cycle {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MooI386Cycle {
+    pub pin_bitfield: u8,
+    pub address: u32,
+    pub memory_status: u8,
+    pub io_status: u8,
+    pub bhe_status: u8,
+    pub data_bus: u16,
+    pub bus_status: String,
+    pub raw_bus_status: u8,
+    pub t_state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MooV20Cycle {
     pub pin_bitfield: u8,
     pub bus_value: u32,
@@ -53,6 +66,7 @@ pub struct MooV20Cycle {
 pub enum MooCycle {
     Legacy(MooLegacyCycle),
     I286(MooI286Cycle),
+    I386(MooI386Cycle),
     V20(MooV20Cycle),
 }
 
@@ -178,6 +192,29 @@ fn decode_i286_t_state(raw_t_state: u8) -> String {
     .to_string()
 }
 
+fn decode_i386_bus_status(raw_bus_status: u8) -> String {
+    match raw_bus_status & 0x07 {
+        0 => "INTA",
+        2 => "IOR",
+        3 => "IOW",
+        4 => "CODE",
+        5 => "HALT",
+        6 => "MEMR",
+        7 => "MEMW",
+        _ => "PASV",
+    }
+    .to_string()
+}
+
+fn decode_i386_t_state(raw_t_state: u8) -> String {
+    match raw_t_state & 0x07 {
+        1 => "T1",
+        2 => "T2",
+        _ => "Ti",
+    }
+    .to_string()
+}
+
 fn decode_v20_bus_status(raw_bus_status: u8) -> String {
     match raw_bus_status & 0x07 {
         0 => "INTA",
@@ -257,6 +294,41 @@ fn parse_cycles(payload: &[u8], cpu_name: &str) -> Vec<MooCycle> {
                 raw_queue_op,
                 queue_op: decode_v20_queue_op(raw_queue_op),
                 queue_byte,
+            }));
+        }
+
+        return cycles;
+    }
+
+    if cpu_name.contains("386") {
+        for _ in 0..count {
+            let pin_bitfield = payload[offset];
+            offset += 1;
+            let address = read_u32(payload, &mut offset);
+            offset += 1;
+            let memory_status = payload[offset];
+            offset += 1;
+            let io_status = payload[offset];
+            offset += 1;
+            let bhe_status = payload[offset];
+            offset += 1;
+            let data_bus = read_u16(payload, &mut offset);
+            let raw_bus_status = payload[offset];
+            offset += 1;
+            let raw_t_state = payload[offset];
+            offset += 1;
+            offset += 2;
+
+            cycles.push(MooCycle::I386(MooI386Cycle {
+                pin_bitfield,
+                address,
+                memory_status,
+                io_status,
+                bhe_status,
+                data_bus,
+                bus_status: decode_i386_bus_status(raw_bus_status),
+                raw_bus_status,
+                t_state: decode_i386_t_state(raw_t_state),
             }));
         }
 

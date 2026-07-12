@@ -79,12 +79,12 @@ fn place_in_v86_code(bus: &mut TestBus, offset: u16, code: &[u8]) {
     place_at(bus, VM86_CS_BASE + offset as u32, code);
 }
 
-fn assert_at_handler(cpu: &cpu::I386<{ cpu::CPU_MODEL_486 }>, handler_ip: u16) {
+fn assert_at_handler(cpu: &cpu::I386<{ cpu::CPU_MODEL_486_DX }>, handler_ip: u16) {
     assert!(cpu.halted(), "expected handler HLT");
     assert_eq!(cpu.ip(), handler_ip as u32 + 1);
 }
 
-fn read_saved_eip_from_pl0_stack(bus: &TestBus, cpu: &cpu::I386<{ cpu::CPU_MODEL_486 }>) -> u32 {
+fn read_saved_eip_from_pl0_stack(bus: &TestBus, cpu: &cpu::I386<{ cpu::CPU_MODEL_486_DX }>) -> u32 {
     let stack_linear =
         cpu.state.seg_bases[cpu::SegReg32::SS as usize] + cpu.state.regs.dword(cpu::DwordReg::ESP);
     read_dword_at(bus, stack_linear)

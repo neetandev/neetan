@@ -3,7 +3,7 @@
 //! from a 486DX.
 
 use common::{Bus as _, Cpu as _};
-use cpu::{CPU_MODEL_386, CPU_MODEL_486, I386, I386State};
+use cpu::{CPU_MODEL_386_DX, CPU_MODEL_486_DX, I386, I386State};
 
 const RAM_SIZE: usize = 1 << 20;
 const ADDRESS_MASK: u32 = 0x000F_FFFF;
@@ -76,7 +76,7 @@ fn setup_real_mode_state(cs: u16, ip: u16) -> I386State {
 
 #[test]
 fn reset_edx_reports_386dx_revision() {
-    let cpu = I386::<{ CPU_MODEL_386 }>::new();
+    let cpu = I386::<{ CPU_MODEL_386_DX }>::new();
     assert_eq!(
         cpu.edx(),
         0x0000_0308,
@@ -86,7 +86,7 @@ fn reset_edx_reports_386dx_revision() {
 
 #[test]
 fn reset_edx_reports_486dx2_revision() {
-    let cpu = I386::<{ CPU_MODEL_486 }>::new();
+    let cpu = I386::<{ CPU_MODEL_486_DX }>::new();
     assert_eq!(
         cpu.edx(),
         0x0000_0435,
@@ -132,7 +132,7 @@ fn run_ac_toggle_detection<const CPU_MODEL: u8>() -> u32 {
 #[test]
 fn pushfd_popfd_ac_detection_reports_386() {
     assert_eq!(
-        run_ac_toggle_detection::<{ CPU_MODEL_386 }>(),
+        run_ac_toggle_detection::<{ CPU_MODEL_386_DX }>(),
         0,
         "the AC toggle must be swallowed on the 386"
     );
@@ -141,7 +141,7 @@ fn pushfd_popfd_ac_detection_reports_386() {
 #[test]
 fn pushfd_popfd_ac_detection_reports_486() {
     assert_eq!(
-        run_ac_toggle_detection::<{ CPU_MODEL_486 }>(),
+        run_ac_toggle_detection::<{ CPU_MODEL_486_DX }>(),
         EFLAGS_ALIGNMENT_CHECK,
         "the AC toggle must stick on the 486"
     );
@@ -187,13 +187,13 @@ fn run_real_mode_iretd_ac<const CPU_MODEL: u8>() -> u32 {
 
 #[test]
 fn real_mode_iretd_ac_stays_clear_on_386() {
-    assert_eq!(run_real_mode_iretd_ac::<{ CPU_MODEL_386 }>(), 0);
+    assert_eq!(run_real_mode_iretd_ac::<{ CPU_MODEL_386_DX }>(), 0);
 }
 
 #[test]
 fn real_mode_iretd_ac_loads_on_486() {
     assert_eq!(
-        run_real_mode_iretd_ac::<{ CPU_MODEL_486 }>(),
+        run_real_mode_iretd_ac::<{ CPU_MODEL_486_DX }>(),
         EFLAGS_ALIGNMENT_CHECK
     );
 }
@@ -311,13 +311,13 @@ fn run_protected_mode_iretd_ac<const CPU_MODEL: u8>() -> u32 {
 
 #[test]
 fn protected_mode_iretd_ac_stays_clear_on_386() {
-    assert_eq!(run_protected_mode_iretd_ac::<{ CPU_MODEL_386 }>(), 0);
+    assert_eq!(run_protected_mode_iretd_ac::<{ CPU_MODEL_386_DX }>(), 0);
 }
 
 #[test]
 fn protected_mode_iretd_ac_loads_on_486() {
     assert_eq!(
-        run_protected_mode_iretd_ac::<{ CPU_MODEL_486 }>(),
+        run_protected_mode_iretd_ac::<{ CPU_MODEL_486_DX }>(),
         EFLAGS_ALIGNMENT_CHECK
     );
 }
@@ -381,13 +381,13 @@ fn run_task_switch_ac<const CPU_MODEL: u8>() -> u32 {
 
 #[test]
 fn task_switch_ac_stays_clear_on_386() {
-    assert_eq!(run_task_switch_ac::<{ CPU_MODEL_386 }>(), 0);
+    assert_eq!(run_task_switch_ac::<{ CPU_MODEL_386_DX }>(), 0);
 }
 
 #[test]
 fn task_switch_ac_loads_on_486() {
     assert_eq!(
-        run_task_switch_ac::<{ CPU_MODEL_486 }>(),
+        run_task_switch_ac::<{ CPU_MODEL_486_DX }>(),
         EFLAGS_ALIGNMENT_CHECK
     );
 }

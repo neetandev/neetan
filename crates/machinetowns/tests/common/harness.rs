@@ -5,7 +5,7 @@
 use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
 use common::{Bus, Cpu, CpuMode, HostDateTime, Tracing};
-use cpu::{CPU_MODEL_386, CPU_MODEL_486, I386State, SegReg32};
+use cpu::{CPU_MODEL_386_DX, CPU_MODEL_386_SX, CPU_MODEL_486_DX, I386State, SegReg32};
 use machinetowns::{LoadedRoms, TownsBus, TownsMachine, TownsModel};
 
 /// SYSROM / FONT slot size (256 KiB).
@@ -61,22 +61,30 @@ pub fn font_serial_roms(font: Vec<u8>, serial: Vec<u8>) -> LoadedRoms {
 }
 
 /// An MX machine (i486, High mode) over synthetic ROMs.
-pub fn machine_mx() -> TownsMachine<{ CPU_MODEL_486 }> {
+pub fn machine_mx() -> TownsMachine<{ CPU_MODEL_486_DX }> {
     build_machine(TownsModel::FmTownsIIMx, CpuMode::High, synthetic_roms())
 }
 
 /// A CX machine (i386, Low mode) over synthetic ROMs.
-pub fn machine_cx() -> TownsMachine<{ CPU_MODEL_386 }> {
+pub fn machine_cx() -> TownsMachine<{ CPU_MODEL_386_DX }> {
     build_machine(TownsModel::FmTownsIICx, CpuMode::Low, synthetic_roms())
 }
 
+/// A base FM Towns machine (i386SX, Low mode) over synthetic ROMs.
+pub fn machine_base() -> TownsMachine<{ CPU_MODEL_386_SX }> {
+    build_machine(TownsModel::FmTowns, CpuMode::Low, synthetic_roms())
+}
+
 /// An MX machine over synthetic ROMs whose bus activity is recorded.
-pub fn machine_mx_traced() -> TownsMachine<{ CPU_MODEL_486 }, RecordingTracer> {
+pub fn machine_mx_traced() -> TownsMachine<{ CPU_MODEL_486_DX }, RecordingTracer> {
     build_machine(TownsModel::FmTownsIIMx, CpuMode::High, synthetic_roms())
 }
 
 /// An MX machine with custom FONT and serial-ID ROM images.
-pub fn machine_with_font_serial(font: Vec<u8>, serial: Vec<u8>) -> TownsMachine<{ CPU_MODEL_486 }> {
+pub fn machine_with_font_serial(
+    font: Vec<u8>,
+    serial: Vec<u8>,
+) -> TownsMachine<{ CPU_MODEL_486_DX }> {
     build_machine(
         TownsModel::FmTownsIIMx,
         CpuMode::High,

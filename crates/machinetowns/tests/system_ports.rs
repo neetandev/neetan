@@ -5,7 +5,15 @@
 mod harness;
 
 use common::{Bus, Machine};
-use harness::machine_mx;
+use harness::{machine_base, machine_mx};
+
+#[test]
+fn base_model_reports_machine_id() {
+    let mut machine = machine_base();
+    // I/O 0x0030 is the CPU-class byte, 0x0031 the model byte.
+    assert_eq!(machine.bus.io_read_byte(0x0030), 0x01);
+    assert_eq!(machine.bus.io_read_byte(0x0031), 0x01);
+}
 
 #[test]
 fn memory_wait_latches_read_back() {
@@ -50,6 +58,67 @@ fn fastmode_write_drives_waits_and_lamp() {
     assert_eq!(machine.bus.io_read_byte(0x05EC), 1);
     machine.bus.io_write_byte(0x05E0, 1);
     assert_eq!(machine.bus.io_read_byte(0x05EC), 0);
+}
+
+/// The programmed wait latches are charged as real wait-state cycles: video
+/// memory takes the VRAM wait, everything else the main-RAM wait. A wide access
+/// costs one wait, not one per byte, and the counter drains to zero.
+#[test]
+fn memory_wait_latches_charge_access_cycles() {
+    let mut machine = machine_mx();
+    const MAIN_RAM: u32 = 0x0000_1000;
+    const VRAM_LINEAR: u32 = 0x8000_0000;
+
+    // Distinct RAM and VRAM waits so a mis-classified access is visible.
+    machine.bus.io_write_byte(0x05E0, 2);
+    machine.bus.io_write_byte(0x05E6, 5);
+
+    let _ = machine.bus.read_byte(MAIN_RAM);
+    assert_eq!(machine.bus.drain_wait_cycles(), 2);
+
+    machine.bus.write_byte(MAIN_RAM, 0);
+    assert_eq!(machine.bus.drain_wait_cycles(), 2);
+
+    // Video memory also carries the always-on baseline (2) on top of the latch.
+    let _ = machine.bus.read_byte(VRAM_LINEAR);
+    assert_eq!(machine.bus.drain_wait_cycles(), 2 + 5);
+
+    // A dword access is a single bus cycle: one wait, not four.
+    let _ = machine.bus.read_dword(MAIN_RAM);
+    assert_eq!(machine.bus.drain_wait_cycles(), 2);
+    machine.bus.write_dword(VRAM_LINEAR, 0);
+    assert_eq!(machine.bus.drain_wait_cycles(), 2 + 5);
+
+    // Draining leaves the counter empty.
+    assert_eq!(machine.bus.drain_wait_cycles(), 0);
+}
+
+/// Fast mode (both wait latches zero) charges no wait-state cycles for RAM, but
+/// video memory still carries the always-on VRAM baseline penalty.
+#[test]
+fn fast_mode_charges_only_vram_baseline() {
+    let mut machine = machine_mx();
+    machine.bus.io_write_byte(0x05EC, 0x01);
+
+    let _ = machine.bus.read_byte(0x0000_1000);
+    machine.bus.write_word(0x0000_1000, 0);
+    assert_eq!(machine.bus.drain_wait_cycles(), 0);
+
+    let _ = machine.bus.read_dword(0x8000_0000);
+    assert_eq!(machine.bus.drain_wait_cycles(), 2);
+}
+
+/// FMR-compatible slow mode (FASTMODE bit 0 clear) programs both latches to the
+/// slow value, so subsequent accesses are penalized.
+#[test]
+fn slow_mode_penalizes_accesses() {
+    let mut machine = machine_mx();
+    machine.bus.io_write_byte(0x05EC, 0x00);
+
+    let _ = machine.bus.read_byte(0x0000_1000);
+    let _ = machine.bus.read_byte(0x8000_0000);
+    // RAM charges the slow latch (6); VRAM charges the baseline (2) plus it (6).
+    assert_eq!(machine.bus.drain_wait_cycles(), 6 + (2 + 6));
 }
 
 /// The reset-reason port (0x0020) latches a software reset, reads it back, and

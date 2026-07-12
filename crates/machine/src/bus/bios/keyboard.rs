@@ -144,6 +144,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801F => KEYBOARD_ROM_OFFSET_F as u16,
             MachineModel::PC9801VM
             | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => KEYBOARD_ROM_OFFSET_VM as u16,
@@ -249,6 +250,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801F => KEYBOARD_ROM_OFFSET_F as u16,
             MachineModel::PC9801VM
             | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => KEYBOARD_ROM_OFFSET_VM as u16,

@@ -3,6 +3,10 @@
 /// FM Towns machine model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TownsModel {
+    /// Base FM Towns (model 1/2 class): 16 MHz, 1x CD-ROM. Wired to the 386SX
+    /// CPU model so titles tuned for the base Towns / Marty run at their
+    /// intended speed.
+    FmTowns,
     /// FM Towns II CX: i386DX at 16 MHz (20 MHz in high mode), 1x CD-ROM.
     FmTownsIICx,
     /// FM Towns II MX: i486DX2 at 66 MHz (33 MHz in low mode), 2x CD-ROM.
@@ -27,11 +31,17 @@ pub enum TownsBootDevice {
 }
 
 impl TownsModel {
-    /// Main CPU clock in Hz for the selected CPU mode. The CX pair matches the
-    /// real 386DX lineup (CX at 16 MHz, HG at 20 MHz); the MX pair matches the
-    /// 486 lineup (MA-class 33 MHz, MX 66 MHz).
+    /// Main CPU clock in Hz for the selected CPU mode. The base model runs at
+    /// a fixed 16 MHz in both modes. The CX pair matches the real 386DX lineup
+    /// (CX at 16 MHz, HG at 20 MHz); the MX pair matches the 486 lineup
+    /// (MA-class 33 MHz, MX 66 MHz).
     pub const fn cpu_clock_hz(self, mode: common::CpuMode) -> u32 {
         match self {
+            // The base machines have no clock switch; both modes run at 16 MHz.
+            TownsModel::FmTowns => match mode {
+                common::CpuMode::Low => 16_000_000,
+                common::CpuMode::High => 16_000_000,
+            },
             TownsModel::FmTownsIICx => match mode {
                 common::CpuMode::Low => 16_000_000,
                 common::CpuMode::High => 20_000_000,
@@ -45,8 +55,9 @@ impl TownsModel {
 
     /// Extended RAM size in bytes (main RAM below 1 MiB is separate).
     pub const fn extended_ram_size(self) -> usize {
-        // Defaults the MX to 8 MiB total; 1 MiB is the low map, the
-        // rest is the extended region from 0x00100000.
+        // Defaults every model to 8 MiB total; 1 MiB is the low map, the
+        // rest is the extended region from 0x00100000. The real base model
+        // 1/2 shipped 1-2 MiB, but the larger map is compatibility-safe.
         0x0070_0000
     }
 
@@ -54,6 +65,8 @@ impl TownsModel {
     /// (high). The low byte encodes the CPU class, the high byte the model.
     pub const fn machine_id(self) -> (u8, u8) {
         match self {
+            // i386 class (0x01), base model 1/2 (0x01).
+            TownsModel::FmTowns => (0x01, 0x01),
             // i386DX class (0x01), model CX (0x05).
             TownsModel::FmTownsIICx => (0x01, 0x05),
             // i486DX class (0x02), model MX (0x0C).
@@ -65,6 +78,7 @@ impl TownsModel {
     /// mode (1 for the CX's 1x drive, 2 for the MX's 2x drive).
     pub const fn cd_drive_speed(self) -> u32 {
         match self {
+            TownsModel::FmTowns => 1,
             TownsModel::FmTownsIICx => 1,
             TownsModel::FmTownsIIMx => 2,
         }
@@ -75,6 +89,7 @@ impl TownsModel {
     /// present. Only the MX-class machines carry it.
     pub const fn high_res_available(self) -> bool {
         match self {
+            TownsModel::FmTowns => false,
             TownsModel::FmTownsIICx => false,
             TownsModel::FmTownsIIMx => true,
         }
@@ -84,6 +99,7 @@ impl TownsModel {
 impl std::fmt::Display for TownsModel {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            TownsModel::FmTowns => formatter.write_str("fmtowns"),
             TownsModel::FmTownsIICx => formatter.write_str("fmtownsiicx"),
             TownsModel::FmTownsIIMx => formatter.write_str("fmtownsiimx"),
         }
@@ -95,10 +111,11 @@ impl std::str::FromStr for TownsModel {
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
         match text.to_ascii_lowercase().as_str() {
+            "fmtowns" | "towns" | "townsbase" | "base" => Ok(TownsModel::FmTowns),
             "fmtownsiicx" | "townscx" | "townsiicx" | "cx" => Ok(TownsModel::FmTownsIICx),
             "fmtownsiimx" | "townsmx" | "townsiimx" | "mx" => Ok(TownsModel::FmTownsIIMx),
             _ => Err(format!(
-                "unknown FM Towns model '{text}', expected fmtownsiicx or fmtownsiimx"
+                "unknown FM Towns model '{text}', expected fmtowns, fmtownsiicx or fmtownsiimx"
             )),
         }
     }
@@ -165,6 +182,31 @@ mod tests {
         );
         assert_eq!("CX".parse::<TownsModel>(), Ok(TownsModel::FmTownsIICx));
         assert_eq!(TownsModel::FmTownsIICx.to_string(), "fmtownsiicx");
+    }
+
+    #[test]
+    fn base_model_string_round_trips() {
+        assert_eq!("fmtowns".parse::<TownsModel>(), Ok(TownsModel::FmTowns));
+        assert_eq!("towns".parse::<TownsModel>(), Ok(TownsModel::FmTowns));
+        assert_eq!("base".parse::<TownsModel>(), Ok(TownsModel::FmTowns));
+        assert_eq!(TownsModel::FmTowns.to_string(), "fmtowns");
+    }
+
+    #[test]
+    fn base_machine_id_matches_hardware() {
+        assert_eq!(TownsModel::FmTowns.machine_id(), (0x01, 0x01));
+    }
+
+    #[test]
+    fn base_cpu_clock_is_16mhz_in_both_modes() {
+        assert_eq!(
+            TownsModel::FmTowns.cpu_clock_hz(common::CpuMode::Low),
+            16_000_000
+        );
+        assert_eq!(
+            TownsModel::FmTowns.cpu_clock_hz(common::CpuMode::High),
+            16_000_000
+        );
     }
 
     #[test]

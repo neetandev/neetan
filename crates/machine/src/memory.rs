@@ -374,6 +374,7 @@ impl Pc9801Memory {
             MachineModel::PC9801F => NEC_COPYRIGHT_OFFSET_F,
             MachineModel::PC9801VM
             | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => NEC_COPYRIGHT_OFFSET_VM,
@@ -484,9 +485,10 @@ impl Pc9801Memory {
 
         let (f2hd_ind, f2hd_data, f2dd_ind, f2dd_data): (usize, usize, usize, usize) =
             match machine_model {
-                MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => {
-                    (0x1AAF, 0x1AB7, 0x1AD7, 0x1ADF)
-                }
+                MachineModel::PC9801RS
+                | MachineModel::PC9801RA
+                | MachineModel::PC9821AS
+                | MachineModel::PC9821AP => (0x1AAF, 0x1AB7, 0x1AD7, 0x1ADF),
                 MachineModel::PC9801VM | MachineModel::PC9801VX => (0x1AB4, 0x1ABC, 0x1ADC, 0x1AE4),
                 MachineModel::PC9801F => unreachable!(),
             };

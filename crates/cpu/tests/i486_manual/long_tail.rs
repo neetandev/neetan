@@ -1225,7 +1225,7 @@ fn shrink_only_extra_segment_limit(state: &mut cpu::I386State, limit: u16) {
     state.seg_limits[cpu::SegReg32::ES as usize] = limit as u32;
 }
 
-fn run_until_halted(cpu: &mut cpu::I386<{ cpu::CPU_MODEL_486 }>, bus: &mut TestBus) {
+fn run_until_halted(cpu: &mut cpu::I386<{ cpu::CPU_MODEL_486_DX }>, bus: &mut TestBus) {
     for _ in 0..64 {
         cpu.step(bus);
         if cpu.halted() {

@@ -285,7 +285,9 @@ pub enum MachineModel {
     PC9801VM,
     /// PC-9801VX (80286, 8/10 MHz, EGC, 24-bit address space, SASI built-in).
     PC9801VX,
-    /// PC-9801RA (80386, 16/20 MHz, EGC, 32-bit address space, SASI built-in).
+    /// PC-9801RS (80386SX, 16 MHz, EGC, 32-bit address space, SASI built-in).
+    PC9801RS,
+    /// PC-9801RA (80386DX, 20 MHz, EGC, 32-bit address space, SASI built-in).
     PC9801RA,
     /// PC-9821AS (486DX, 33 MHz, PEGC, 32-bit address space, IDE built-in).
     PC9821AS,
@@ -312,7 +314,7 @@ impl MachineModel {
             Self::PC9801F => CpuType::I8086,
             Self::PC9801VM => CpuType::V30,
             Self::PC9801VX => CpuType::I286,
-            Self::PC9801RA => CpuType::I386,
+            Self::PC9801RS | Self::PC9801RA => CpuType::I386,
             Self::PC9821AS | Self::PC9821AP => CpuType::I486DX,
         }
     }
@@ -331,10 +333,8 @@ impl MachineModel {
                 CpuMode::Low => 8_000_000,
                 CpuMode::High => 10_000_000,
             },
-            Self::PC9801RA => match mode {
-                CpuMode::Low => 16_000_000,
-                CpuMode::High => 20_000_000,
-            },
+            Self::PC9801RS => 16_000_000,
+            Self::PC9801RA => 20_000_000,
             Self::PC9821AS => 33_000_000,
             Self::PC9821AP => 66_000_000,
         }
@@ -344,14 +344,18 @@ impl MachineModel {
     pub const fn pit_clock_hz(self) -> u32 {
         match self {
             Self::PC9801VM | Self::PC9801VX => 2_457_600,
-            Self::PC9801F | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => 1_996_800,
+            Self::PC9801F | Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
+                1_996_800
+            }
         }
     }
 
     /// Returns whether this machine uses the 8 MHz PIT clock lineage.
     pub const fn is_8mhz_pit_lineage(self) -> bool {
         match self {
-            Self::PC9801F | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
+            Self::PC9801F | Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
+                true
+            }
             Self::PC9801VM | Self::PC9801VX => false,
         }
     }
@@ -362,9 +366,12 @@ impl MachineModel {
     pub const fn beeper_kind(self) -> BeeperKind {
         match self {
             Self::PC9801F => BeeperKind::Fixed { hz: 2400 },
-            Self::PC9801VM | Self::PC9801VX | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
-                BeeperKind::PitDriven
-            }
+            Self::PC9801VM
+            | Self::PC9801VX
+            | Self::PC9801RS
+            | Self::PC9801RA
+            | Self::PC9821AS
+            | Self::PC9821AP => BeeperKind::PitDriven,
         }
     }
 
@@ -378,7 +385,9 @@ impl MachineModel {
         match self {
             Self::PC9801F | Self::PC9801VM => Self::ADDRESS_MASK_V30,
             Self::PC9801VX => Self::ADDRESS_MASK_I286,
-            Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => Self::ADDRESS_MASK_I386,
+            Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
+                Self::ADDRESS_MASK_I386
+            }
         }
     }
 
@@ -386,7 +395,9 @@ impl MachineModel {
     pub const fn has_egc(self) -> bool {
         match self {
             Self::PC9801F | Self::PC9801VM => false,
-            Self::PC9801VX | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
+            Self::PC9801VX | Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
+                true
+            }
         }
     }
 
@@ -397,9 +408,12 @@ impl MachineModel {
     pub const fn has_grcg(self) -> bool {
         match self {
             Self::PC9801F => false,
-            Self::PC9801VM | Self::PC9801VX | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
-                true
-            }
+            Self::PC9801VM
+            | Self::PC9801VX
+            | Self::PC9801RS
+            | Self::PC9801RA
+            | Self::PC9821AS
+            | Self::PC9821AP => true,
         }
     }
 
@@ -410,7 +424,7 @@ impl MachineModel {
         match self {
             Self::PC9801F => 0,
             Self::PC9801VM => Self::GRCG_CHIP_V1,
-            Self::PC9801VX | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
+            Self::PC9801VX | Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
                 Self::GRCG_CHIP_EGC
             }
         }
@@ -420,14 +434,16 @@ impl MachineModel {
     pub const fn has_cg_ram(self) -> bool {
         match self {
             Self::PC9801F | Self::PC9801VM => false,
-            Self::PC9801VX | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
+            Self::PC9801VX | Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
+                true
+            }
         }
     }
 
     /// Returns whether this machine supports NEC B-bank EMS.
     pub const fn has_b_bank_ems(self) -> bool {
         match self {
-            Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
+            Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
             Self::PC9801F | Self::PC9801VM | Self::PC9801VX => false,
         }
     }
@@ -435,7 +451,7 @@ impl MachineModel {
     /// Returns whether this machine has shadow RAM (E8000-FFFFF).
     pub const fn has_shadow_ram(self) -> bool {
         match self {
-            Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
+            Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
             Self::PC9801F | Self::PC9801VM | Self::PC9801VX => false,
         }
     }
@@ -445,7 +461,7 @@ impl MachineModel {
         match self {
             Self::PC9801F | Self::PC9801VM => 0,
             Self::PC9801VX => 0x400000,
-            Self::PC9801RA => 0xC00000,
+            Self::PC9801RS | Self::PC9801RA => 0xC00000,
             Self::PC9821AS | Self::PC9821AP => 0xE00000,
         }
     }
@@ -453,7 +469,9 @@ impl MachineModel {
     /// Returns whether this machine has a SASI hard disk controller.
     pub const fn has_sasi(self) -> bool {
         match self {
-            Self::PC9801F | Self::PC9801VM | Self::PC9801VX | Self::PC9801RA => true,
+            Self::PC9801F | Self::PC9801VM | Self::PC9801VX | Self::PC9801RS | Self::PC9801RA => {
+                true
+            }
             Self::PC9821AS | Self::PC9821AP => false,
         }
     }
@@ -461,7 +479,9 @@ impl MachineModel {
     /// Returns whether this machine has an IDE hard disk controller.
     pub const fn has_ide(self) -> bool {
         match self {
-            Self::PC9801F | Self::PC9801VM | Self::PC9801VX | Self::PC9801RA => false,
+            Self::PC9801F | Self::PC9801VM | Self::PC9801VX | Self::PC9801RS | Self::PC9801RA => {
+                false
+            }
             Self::PC9821AS | Self::PC9821AP => true,
         }
     }
@@ -470,7 +490,9 @@ impl MachineModel {
     pub const fn is_dual_bank_bios(self) -> bool {
         match self {
             Self::PC9801F | Self::PC9801VM => false,
-            Self::PC9801VX | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
+            Self::PC9801VX | Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
+                true
+            }
         }
     }
 
@@ -480,7 +502,7 @@ impl MachineModel {
             Self::PC9801F | Self::PC9801VM => {
                 size == BIOS_ROM_SIZE_SINGLE_BANK || size == BIOS_ROM_SIZE_DUAL_BANK
             }
-            Self::PC9801VX | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
+            Self::PC9801VX | Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
                 size == BIOS_ROM_SIZE_DUAL_BANK
             }
         }
@@ -490,7 +512,7 @@ impl MachineModel {
     pub const fn has_extended_dma(self) -> bool {
         match self {
             Self::PC9801F | Self::PC9801VM | Self::PC9801VX => false,
-            Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
+            Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
         }
     }
 
@@ -498,7 +520,9 @@ impl MachineModel {
     pub const fn has_protected_memory_register(self) -> bool {
         match self {
             Self::PC9801F | Self::PC9801VM => false,
-            Self::PC9801VX | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
+            Self::PC9801VX | Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
+                true
+            }
         }
     }
 
@@ -506,14 +530,16 @@ impl MachineModel {
     pub const fn has_a20_nmi_port(self) -> bool {
         match self {
             Self::PC9801F | Self::PC9801VM | Self::PC9801VX => false,
-            Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
+            Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
         }
     }
 
     /// Returns whether this machine has the PEGC 256-color packed pixel graphics controller.
     pub const fn has_pegc(self) -> bool {
         match self {
-            Self::PC9801F | Self::PC9801VM | Self::PC9801VX | Self::PC9801RA => false,
+            Self::PC9801F | Self::PC9801VM | Self::PC9801VX | Self::PC9801RS | Self::PC9801RA => {
+                false
+            }
             Self::PC9821AS | Self::PC9821AP => true,
         }
     }
@@ -521,7 +547,9 @@ impl MachineModel {
     /// Returns whether this machine supports the 16 MB system space (F00000-FFFFFF).
     pub const fn has_16mb_system_space(self) -> bool {
         match self {
-            Self::PC9801F | Self::PC9801VM | Self::PC9801VX | Self::PC9801RA => false,
+            Self::PC9801F | Self::PC9801VM | Self::PC9801VX | Self::PC9801RS | Self::PC9801RA => {
+                false
+            }
             Self::PC9821AS | Self::PC9821AP => true,
         }
     }
@@ -533,7 +561,9 @@ impl MachineModel {
     /// I/O ports 0x841E–0x8F1E.
     pub const fn has_sdip(self) -> bool {
         match self {
-            Self::PC9801F | Self::PC9801VM | Self::PC9801VX | Self::PC9801RA => false,
+            Self::PC9801F | Self::PC9801VM | Self::PC9801VX | Self::PC9801RS | Self::PC9801RA => {
+                false
+            }
             Self::PC9821AS | Self::PC9821AP => true,
         }
     }
@@ -542,9 +572,12 @@ impl MachineModel {
     pub const fn has_fdd320_ppi(self) -> bool {
         match self {
             Self::PC9801F => true,
-            Self::PC9801VM | Self::PC9801VX | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
-                false
-            }
+            Self::PC9801VM
+            | Self::PC9801VX
+            | Self::PC9801RS
+            | Self::PC9801RA
+            | Self::PC9821AS
+            | Self::PC9821AP => false,
         }
     }
 
@@ -552,7 +585,9 @@ impl MachineModel {
     pub const fn ems_compatible(self) -> bool {
         match self {
             Self::PC9801F | Self::PC9801VM => false,
-            Self::PC9801VX | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
+            Self::PC9801VX | Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
+                true
+            }
         }
     }
 
@@ -560,7 +595,9 @@ impl MachineModel {
     pub const fn xms_compatible(self) -> bool {
         match self {
             Self::PC9801F | Self::PC9801VM => false,
-            Self::PC9801VX | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
+            Self::PC9801VX | Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
+                true
+            }
         }
     }
 
@@ -568,7 +605,7 @@ impl MachineModel {
     pub const fn xms_32_compatible(self) -> bool {
         match self {
             Self::PC9801F | Self::PC9801VM | Self::PC9801VX => false,
-            Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
+            Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
         }
     }
 }
@@ -579,6 +616,7 @@ impl core::fmt::Display for MachineModel {
             Self::PC9801F => f.write_str("PC9801F"),
             Self::PC9801VM => f.write_str("PC9801VM"),
             Self::PC9801VX => f.write_str("PC9801VX"),
+            Self::PC9801RS => f.write_str("PC9801RS"),
             Self::PC9801RA => f.write_str("PC9801RA"),
             Self::PC9821AS => f.write_str("PC9821AS"),
             Self::PC9821AP => f.write_str("PC9821AP"),
@@ -594,11 +632,12 @@ impl core::str::FromStr for MachineModel {
             "PC9801F" => Ok(Self::PC9801F),
             "PC9801VM" => Ok(Self::PC9801VM),
             "PC9801VX" => Ok(Self::PC9801VX),
+            "PC9801RS" => Ok(Self::PC9801RS),
             "PC9801RA" => Ok(Self::PC9801RA),
             "PC9821AS" => Ok(Self::PC9821AS),
             "PC9821AP" => Ok(Self::PC9821AP),
             _ => Err(format!(
-                "unknown machine model '{s}', expected PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, or PC9821AP"
+                "unknown machine model '{s}', expected PC9801F, PC9801VM, PC9801VX, PC9801RS, PC9801RA, PC9821AS, or PC9821AP"
             )),
         }
     }
@@ -1991,7 +2030,8 @@ mod tests {
             (MachineModel::PC9801F, 5_000_000, 8_000_000),
             (MachineModel::PC9801VM, 8_000_000, 10_000_000),
             (MachineModel::PC9801VX, 8_000_000, 10_000_000),
-            (MachineModel::PC9801RA, 16_000_000, 20_000_000),
+            (MachineModel::PC9801RS, 16_000_000, 16_000_000),
+            (MachineModel::PC9801RA, 20_000_000, 20_000_000),
             (MachineModel::PC9821AS, 33_000_000, 33_000_000),
             (MachineModel::PC9821AP, 66_000_000, 66_000_000),
         ];

@@ -127,7 +127,7 @@ fn create_ra_machine(xms_32_enabled: bool) -> machine::Pc9801Ra {
 
 fn create_hle_machine_ap() -> machine::Pc9821Ap {
     let mut machine = machine::Pc9821Ap::new(
-        cpu::I386::<{ cpu::CPU_MODEL_486 }>::new(),
+        cpu::I386::<{ cpu::CPU_MODEL_486_DX }>::new(),
         machine::Pc9801Bus::new(MachineModel::PC9821AP, CpuMode::High, 48000),
     );
     initialize_hle_bus(&mut machine.bus, false);

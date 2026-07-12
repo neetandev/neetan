@@ -1,5 +1,5 @@
 use common::Cpu as _;
-use cpu::{CPU_MODEL_486, I386};
+use cpu::{CPU_MODEL_486_DX, I386};
 use softfloat::Fp80;
 
 const RAM_SIZE: usize = 2 * 1024 * 1024;
@@ -960,7 +960,7 @@ fn assert_rmw_user_fault_writes(instruction: &[u8], expected_eip_after_fault: u3
 }
 
 fn assert_rmw_user_fault_writes_486(instruction: &[u8], expected_eip_after_fault: u32) {
-    let mut cpu: I386<{ cpu::CPU_MODEL_486 }> = I386::new();
+    let mut cpu: I386<{ cpu::CPU_MODEL_486_DX }> = I386::new();
     assert_rmw_user_fault_writes_with_cpu(&mut cpu, instruction, expected_eip_after_fault);
 }
 
@@ -2480,7 +2480,7 @@ fn cr0_wp_bit_masked_on_386() {
 
 #[test]
 fn cr0_wp_bit_accepted_on_486() {
-    let mut cpu: I386<{ CPU_MODEL_486 }> = I386::new();
+    let mut cpu: I386<{ CPU_MODEL_486_DX }> = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -2505,7 +2505,7 @@ fn cr0_wp_bit_accepted_on_486() {
 
 #[test]
 fn supervisor_write_to_readonly_page_without_wp() {
-    let mut cpu: I386<{ CPU_MODEL_486 }> = I386::new();
+    let mut cpu: I386<{ CPU_MODEL_486_DX }> = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -2532,7 +2532,7 @@ fn supervisor_write_to_readonly_page_without_wp() {
 
 #[test]
 fn supervisor_write_to_readonly_page_with_wp() {
-    let mut cpu: I386<{ CPU_MODEL_486 }> = I386::new();
+    let mut cpu: I386<{ CPU_MODEL_486_DX }> = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -2567,7 +2567,7 @@ fn supervisor_write_to_readonly_page_with_wp() {
 
 #[test]
 fn supervisor_read_from_readonly_page_with_wp() {
-    let mut cpu: I386<{ CPU_MODEL_486 }> = I386::new();
+    let mut cpu: I386<{ CPU_MODEL_486_DX }> = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -3198,7 +3198,7 @@ fn paging_call_gate_pf_on_param_copy_does_not_commit_ss_esp() {
 /// surrounding state save / decode reads still succeed.
 #[test]
 fn paging_task_switch_pf_on_new_tss_busy_bit_leaves_old_tss_busy() {
-    let mut cpu: I386<{ CPU_MODEL_486 }> = I386::new();
+    let mut cpu: I386<{ CPU_MODEL_486_DX }> = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -3289,7 +3289,7 @@ fn paging_task_switch_pf_on_new_tss_busy_bit_leaves_old_tss_busy() {
 /// migration target) land on a read-only page.
 #[test]
 fn paging_iret_inter_priv_pf_on_cs_a_bit_does_not_commit_cs() {
-    let mut cpu: I386<{ CPU_MODEL_486 }> = I386::new();
+    let mut cpu: I386<{ CPU_MODEL_486_DX }> = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);

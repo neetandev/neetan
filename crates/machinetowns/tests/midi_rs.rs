@@ -17,7 +17,7 @@ const RS232C_STATUS_PORT: u16 = 0x0A02;
 const STATUS_TXRDY: u8 = 1 << 0;
 const STATUS_TXEMPTY: u8 = 1 << 2;
 
-fn towns() -> TownsMachine<{ cpu::CPU_MODEL_486 }> {
+fn towns() -> TownsMachine<{ cpu::CPU_MODEL_486_DX }> {
     machine_mx()
 }
 
