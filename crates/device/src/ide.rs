@@ -9,12 +9,16 @@
 //! - Channel 0: Up to 2 ATA hard drives (master/slave)
 //! - Channel 1: ATAPI CD-ROM drive
 
+mod at;
+mod at_atapi;
 pub(crate) mod atapi;
 mod hle;
 mod lle;
 
 use std::{cell::Cell, path::PathBuf};
 
+pub use at::AtIdeController;
+pub use at_atapi::AtAtapiController;
 pub use lle::{IdeAction, IdePhase};
 
 pub use crate::disk_hle::{buffer_address, drive_index, sector_position, transfer_size};
@@ -566,115 +570,20 @@ impl IdeController {
     // --- ATAPI command routing ---
 
     fn atapi_write_command(&mut self, command: u8) -> IdeAction {
-        match command {
-            // DEVICE RESET
-            0x08 => {
-                self.atapi_state.reset();
-                self.lle_controller.atapi_device_reset();
-                IdeAction::ScheduleCompletion
-            }
-            // EXECUTE DEVICE DIAGNOSTIC (0x90)
-            0x90 => {
-                self.atapi_state.reset();
-                self.lle_controller.atapi_device_reset();
-                IdeAction::ScheduleCompletion
-            }
-            // PACKET (0xA0)
-            0xA0 => {
-                let cyl_lo = self.lle_controller.read_cylinder_low();
-                let cyl_hi = self.lle_controller.read_cylinder_high();
-                self.atapi_state.start_packet_command(cyl_lo, cyl_hi);
-                self.lle_controller.atapi_start_packet();
-                IdeAction::None
-            }
-            // IDENTIFY PACKET DEVICE (0xA1)
-            0xA1 => {
-                self.lle_controller
-                    .atapi_identify_packet_device(&self.atapi_state);
-                IdeAction::ScheduleCompletion
-            }
-            // MEDIA LOCK (0xDE)
-            0xDE => {
-                self.lle_controller.atapi_set_ready();
-                IdeAction::ScheduleCompletion
-            }
-            // MEDIA UNLOCK (0xDF)
-            0xDF => {
-                self.lle_controller.atapi_set_ready();
-                IdeAction::ScheduleCompletion
-            }
-            // IDENTIFY DEVICE (0xEC) - abort with ATAPI signature
-            0xEC => {
-                self.lle_controller.atapi_identify_device_abort();
-                IdeAction::ScheduleCompletion
-            }
-            // SET FEATURES (0xEF)
-            0xEF => {
-                let features = self.lle_controller.read_atapi_features();
-                match features {
-                    0x02 | 0x82 | 0x03 => {
-                        self.lle_controller.atapi_set_ready();
-                        IdeAction::ScheduleCompletion
-                    }
-                    _ => {
-                        self.lle_controller.atapi_abort();
-                        IdeAction::ScheduleCompletion
-                    }
-                }
-            }
-            // All other ATA commands abort on ATAPI
-            _ => {
-                self.lle_controller.atapi_abort();
-                IdeAction::ScheduleCompletion
-            }
-        }
+        atapi::route_command(&mut self.lle_controller, &mut self.atapi_state, command)
     }
 
     fn atapi_write_data_word(&mut self, value: u16) -> IdeAction {
-        let phase = self.lle_controller.atapi_phase();
-        match phase {
-            IdePhase::PacketCommand => {
-                let complete = self.atapi_state.receive_packet_word(value);
-                if complete {
-                    let (media, audio) = self.optical.media_and_audio_mut();
-                    let (has_data, is_error) = self.atapi_state.execute_packet(media, audio);
-                    if is_error {
-                        self.lle_controller.atapi_command_error(&self.atapi_state);
-                    } else if has_data {
-                        let transfer_size = self.atapi_state.current_transfer_size();
-                        self.lle_controller.atapi_start_data_in(transfer_size);
-                    } else {
-                        self.lle_controller.atapi_command_done();
-                    }
-                    IdeAction::ScheduleCompletion
-                } else {
-                    IdeAction::None
-                }
-            }
-            _ => IdeAction::None,
-        }
+        atapi::route_write_data_word(
+            &mut self.lle_controller,
+            &mut self.atapi_state,
+            &mut self.optical,
+            value,
+        )
     }
 
     fn atapi_read_data_word(&mut self) -> (u16, IdeAction) {
-        let phase = self.lle_controller.atapi_phase();
-        if phase != IdePhase::PacketDataIn {
-            return (0xFFFF, IdeAction::None);
-        }
-
-        let word = self.atapi_state.read_data_word();
-        self.atapi_state.chunk_position += 2;
-
-        if self.atapi_state.transfer_complete() {
-            self.lle_controller.atapi_command_done();
-            (word, IdeAction::ScheduleCompletion)
-        } else if self.atapi_state.chunk_complete() {
-            self.atapi_state.start_next_chunk();
-            let transfer_size = self.atapi_state.current_transfer_size();
-            self.lle_controller.atapi_start_data_in(transfer_size);
-            (word, IdeAction::ScheduleCompletion)
-        } else {
-            (word, IdeAction::None)
-        }
+        atapi::route_read_data_word(&mut self.lle_controller, &mut self.atapi_state)
     }
 }
 

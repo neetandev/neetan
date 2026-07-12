@@ -212,6 +212,15 @@ impl Controller {
         self.active_channel
     }
 
+    /// Selects the active IDE channel (0 or 1).
+    ///
+    /// The PC-98 switches channels through the bank register at port 0x0432.
+    /// A PC/AT decodes two separate port ranges, so its ATAPI controller pins
+    /// the active channel to 1 once and drives every access through it.
+    pub(super) fn select_channel(&mut self, channel: usize) {
+        self.active_channel = channel;
+    }
+
     /// Returns whether the active channel is channel 1 (ATAPI).
     pub(super) fn is_atapi_channel_active(&self) -> bool {
         self.active_channel == 1
@@ -732,15 +741,18 @@ impl Controller {
         should_interrupt
     }
 
-    fn execute_diagnostic(&mut self, drives: &[Option<MountedHdd>; 2]) -> IdeAction {
+    /// EXECUTE DEVICE DIAGNOSTIC: both devices post their results and
+    /// device 0 becomes selected and raises the completion interrupt.
+    /// Diagnostic code 0x01 means the device passed. Bit 7 is only set
+    /// when a present device 1 failed, never for an absent device 1.
+    fn execute_diagnostic(&mut self, _drives: &[Option<MountedHdd>; 2]) -> IdeAction {
         let ch = &mut self.channels[self.active_channel];
-        for (i, drive_image) in drives.iter().enumerate() {
-            ch.drives[i].reset();
-            ch.drives[i].error = if drive_image.is_some() { 0x01 } else { 0x00 };
+        for drive in &mut ch.drives {
+            drive.reset();
+            drive.error = 0x01;
         }
-        if drives[1].is_none() {
-            ch.drives[0].error |= 0x80;
-        }
+        ch.selected_drive = 0;
+        ch.drives[0].interrupt_pending = true;
         ch.phase = IdePhase::Idle;
         IdeAction::ScheduleCompletion
     }
@@ -1744,23 +1756,28 @@ mod tests {
     }
 
     #[test]
-    fn execute_diagnostic_master_only() {
+    fn execute_diagnostic_master_only_passes_and_interrupts() {
         let mut controller = Controller::new();
         let drives = make_drives(Some(make_test_drive()));
 
         controller.write_command(0x90, &drives);
-        assert_eq!(controller.channels[0].drives[0].error, 0x81);
-        assert_eq!(controller.channels[0].drives[1].error, 0x00);
+        assert_eq!(controller.channels[0].drives[0].error, 0x01);
+        assert_eq!(controller.channels[0].drives[1].error, 0x01);
+        assert!(
+            controller.complete_operation(),
+            "the diagnostic completion raises the interrupt"
+        );
     }
 
     #[test]
-    fn execute_diagnostic_no_drives() {
+    fn execute_diagnostic_selects_device_zero() {
         let mut controller = Controller::new();
-        let drives: [Option<MountedHdd>; 2] = [None, None];
+        let drives = make_drives(Some(make_test_drive()));
 
+        controller.write_device_head(0xB0);
         controller.write_command(0x90, &drives);
-        assert_eq!(controller.channels[0].drives[0].error, 0x80);
-        assert_eq!(controller.channels[0].drives[1].error, 0x00);
+        assert_eq!(controller.channels[0].selected_drive, 0);
+        assert_eq!(controller.channels[0].drives[0].error, 0x01);
     }
 
     #[test]

@@ -106,6 +106,41 @@ fn creates_x68k_scsi_hdf_images() {
 }
 
 #[test]
+fn creates_at_flat_images_with_derived_geometry() {
+    let cases = [
+        (HddSizeType::AtMb40, 81u16),
+        (HddSizeType::AtMb100, 203),
+        (HddSizeType::AtMb250, 507),
+        (HddSizeType::AtMb504, 1023),
+    ];
+    for (hdd_type, expected_cylinders) in cases {
+        let path = temp_path("atflat", "hdd");
+        create_hdd_image(&path, hdd_type).expect("create AT flat image");
+
+        let data = std::fs::read(&path).expect("read created image");
+        assert_eq!(data.len(), expected_cylinders as usize * 16 * 63 * 512);
+
+        let image = load_hdd_image(&path, &data).expect("parse created image");
+        assert_eq!(image.format, HddFormat::AtFlat);
+        assert_eq!(image.geometry.cylinders, expected_cylinders);
+        assert_eq!(image.geometry.heads, 16);
+        assert_eq!(image.geometry.sectors_per_track, 63);
+        assert_eq!(image.geometry.sector_size, 512);
+
+        std::fs::remove_file(&path).ok();
+    }
+}
+
+#[test]
+fn at_type_rejects_other_extensions() {
+    let path = temp_path("at_wrong_ext", "hdi");
+    assert!(create_hdd_image(&path, HddSizeType::AtMb40).is_err());
+    let path = temp_path("at_wrong_ext", "img");
+    assert!(create_hdd_image(&path, HddSizeType::AtMb100).is_err());
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
 fn x68k_type_rejects_other_extensions() {
     let path = temp_path("x68_wrong_ext", "hdi");
     assert!(create_hdd_image(&path, HddSizeType::X68kSasiMb10).is_err());

@@ -1,0 +1,664 @@
+//! Register-vector tests for `Vga::resolve()`.
+//!
+//! Every vector was captured from the real ET4000AX VGA BIOS by running the
+//! machineat mode exerciser with `NEETAN_DUMP_VGA_REGS=1` after the given
+//! INT 10h mode set (or synthetic register setup for the Mode X and split
+//! screen steps). The vectors are applied through the real I/O ports, KEY
+//! unlock included, and the tests pin the resolved scan-out state per mode.
+
+use device::vga::{
+    RetraceStatus, VGA_PORT_ATC_WRITE, VGA_PORT_CRTC_DATA_COLOR, VGA_PORT_CRTC_DATA_MONO,
+    VGA_PORT_CRTC_INDEX_COLOR, VGA_PORT_CRTC_INDEX_MONO, VGA_PORT_DAC_DATA, VGA_PORT_DAC_MASK,
+    VGA_PORT_DAC_WRITE_INDEX, VGA_PORT_GC_DATA, VGA_PORT_GC_INDEX, VGA_PORT_HERCULES_COMPAT,
+    VGA_PORT_MODE_CONTROL_COLOR, VGA_PORT_MODE_CONTROL_MONO, VGA_PORT_SEGMENT_SELECT,
+    VGA_PORT_SEQ_DATA, VGA_PORT_SEQ_INDEX, VGA_PORT_STATUS_COLOR, VGA_PORT_STATUS_MONO,
+    VGA_PORT_STATUS0_MISC_WRITE, Vga, VgaRenderMode,
+};
+
+const RETRACE_IDLE: RetraceStatus = RetraceStatus {
+    display_disabled: false,
+    vertical_retrace: false,
+};
+
+/// One captured register file: misc output, sequencer, CRTC 0x00-0x18,
+/// graphics controller, attribute controller and the first 16 DAC entries.
+struct ModeVector {
+    misc: u8,
+    seq: [u8; 8],
+    crtc: [u8; 0x19],
+    gc: [u8; 9],
+    atc: [u8; 0x17],
+    dac: [[u8; 3]; 16],
+    segment_select: u8,
+}
+
+/// ET4000 extended CRTC registers the BIOS programs identically in every
+/// captured mode (RAS/CAS 0x32, auxiliary 0x34, system configuration
+/// 0x36/0x37).
+const EXTENDED_CRTC: [(u8, u8); 4] = [(0x32, 0x28), (0x34, 0x08), (0x36, 0x43), (0x37, 0x0F)];
+
+impl ModeVector {
+    /// Applies the vector to a fresh device through the real I/O ports and
+    /// returns it ready for `resolve()`.
+    fn apply(&self) -> Vga {
+        let mut vga = Vga::new();
+        vga.io_write(VGA_PORT_STATUS0_MISC_WRITE, self.misc);
+        let color = self.misc & 0x01 != 0;
+        let (crtc_index_port, crtc_data_port, mode_control_port, status_port) = if color {
+            (
+                VGA_PORT_CRTC_INDEX_COLOR,
+                VGA_PORT_CRTC_DATA_COLOR,
+                VGA_PORT_MODE_CONTROL_COLOR,
+                VGA_PORT_STATUS_COLOR,
+            )
+        } else {
+            (
+                VGA_PORT_CRTC_INDEX_MONO,
+                VGA_PORT_CRTC_DATA_MONO,
+                VGA_PORT_MODE_CONTROL_MONO,
+                VGA_PORT_STATUS_MONO,
+            )
+        };
+
+        vga.io_write(VGA_PORT_HERCULES_COMPAT, 0x03);
+        vga.io_write(mode_control_port, 0xA0);
+
+        for (index, value) in self.seq.iter().enumerate() {
+            vga.io_write(VGA_PORT_SEQ_INDEX, index as u8);
+            vga.io_write(VGA_PORT_SEQ_DATA, *value);
+        }
+
+        // Lift the CRTC write protection before loading registers 0x00-0x07,
+        // then restore the captured vertical retrace end value last.
+        vga.io_write(crtc_index_port, 0x11);
+        vga.io_write(crtc_data_port, self.crtc[0x11] & 0x7F);
+        for (index, value) in self.crtc.iter().enumerate() {
+            if index == 0x11 {
+                continue;
+            }
+            vga.io_write(crtc_index_port, index as u8);
+            vga.io_write(crtc_data_port, *value);
+        }
+        for (index, value) in EXTENDED_CRTC {
+            vga.io_write(crtc_index_port, index);
+            vga.io_write(crtc_data_port, value);
+        }
+        vga.io_write(crtc_index_port, 0x11);
+        vga.io_write(crtc_data_port, self.crtc[0x11]);
+
+        for (index, value) in self.gc.iter().enumerate() {
+            vga.io_write(VGA_PORT_GC_INDEX, index as u8);
+            vga.io_write(VGA_PORT_GC_DATA, *value);
+        }
+
+        // Reset the attribute flip-flop to index phase, load the registers
+        // with the palette address source clear, then re-enable the display.
+        vga.io_read(status_port, RETRACE_IDLE);
+        for (index, value) in self.atc.iter().enumerate() {
+            vga.io_write(VGA_PORT_ATC_WRITE, index as u8);
+            vga.io_write(VGA_PORT_ATC_WRITE, *value);
+        }
+        vga.io_write(VGA_PORT_ATC_WRITE, 0x20);
+
+        vga.io_write(VGA_PORT_DAC_MASK, 0xFF);
+        vga.io_write(VGA_PORT_DAC_WRITE_INDEX, 0x00);
+        for entry in self.dac {
+            for component in entry {
+                vga.io_write(VGA_PORT_DAC_DATA, component);
+            }
+        }
+
+        vga.io_write(VGA_PORT_SEGMENT_SELECT, self.segment_select);
+        vga
+    }
+}
+
+/// Packs 6-bit DAC components into RGBA the way `resolve()` does.
+const fn pen(red: u8, green: u8, blue: u8) -> u32 {
+    const fn expand(component: u8) -> u8 {
+        (component << 2) | (component >> 4)
+    }
+    u32::from_le_bytes([expand(red), expand(green), expand(blue), 0xFF])
+}
+
+/// The default EGA/VGA color palette the BIOS loads for the 16-color modes.
+const DAC_EGA_16: [[u8; 3]; 16] = [
+    [0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x2A],
+    [0x00, 0x2A, 0x00],
+    [0x00, 0x2A, 0x2A],
+    [0x2A, 0x00, 0x00],
+    [0x2A, 0x00, 0x2A],
+    [0x2A, 0x2A, 0x00],
+    [0x2A, 0x2A, 0x2A],
+    [0x00, 0x00, 0x15],
+    [0x00, 0x00, 0x3F],
+    [0x00, 0x2A, 0x15],
+    [0x00, 0x2A, 0x3F],
+    [0x2A, 0x00, 0x15],
+    [0x2A, 0x00, 0x3F],
+    [0x2A, 0x2A, 0x15],
+    [0x2A, 0x2A, 0x3F],
+];
+
+/// The CGA compatible palette the BIOS loads for modes 04h-06h and 0Dh/0Eh
+/// (brown at entry 6, upper half repeats the lower half).
+const DAC_CGA_16: [[u8; 3]; 16] = [
+    [0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x2A],
+    [0x00, 0x2A, 0x00],
+    [0x00, 0x2A, 0x2A],
+    [0x2A, 0x00, 0x00],
+    [0x2A, 0x00, 0x2A],
+    [0x2A, 0x15, 0x00],
+    [0x2A, 0x2A, 0x2A],
+    [0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x2A],
+    [0x00, 0x2A, 0x00],
+    [0x00, 0x2A, 0x2A],
+    [0x2A, 0x00, 0x00],
+    [0x2A, 0x00, 0x2A],
+    [0x2A, 0x15, 0x00],
+    [0x2A, 0x2A, 0x2A],
+];
+
+/// The first 16 entries of the mode 13h palette (CGA colors then gray ramp
+/// start; the exerciser only captured the low entries).
+const DAC_MODE13_16: [[u8; 3]; 16] = [
+    [0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x2A],
+    [0x00, 0x2A, 0x00],
+    [0x00, 0x2A, 0x2A],
+    [0x2A, 0x00, 0x00],
+    [0x2A, 0x00, 0x2A],
+    [0x2A, 0x15, 0x00],
+    [0x2A, 0x2A, 0x2A],
+    [0x15, 0x15, 0x15],
+    [0x15, 0x15, 0x3F],
+    [0x15, 0x3F, 0x15],
+    [0x15, 0x3F, 0x3F],
+    [0x3F, 0x15, 0x15],
+    [0x3F, 0x15, 0x3F],
+    [0x3F, 0x3F, 0x15],
+    [0x3F, 0x3F, 0x3F],
+];
+
+/// The 200-line EGA attribute controller file (identity palette 0x10-0x17
+/// in the upper half).
+const ATC_EGA_200: [u8; 0x17] = [
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+    0x01, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x00,
+];
+
+/// The 256-color attribute controller file (identity palette, mode bit 6).
+const ATC_PACKED_256: [u8; 0x17] = [
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+    0x41, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x00,
+];
+
+/// The SVGA 256-color attribute controller file (identity palette, the
+/// ET4000 BIOS clears the mode control 256-color bit in the high-res modes).
+const ATC_SVGA_256: [u8; 0x17] = [
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+    0x01, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x00,
+];
+
+#[test]
+fn mode_03_text_resolves_720x400_9dot() {
+    let vector = ModeVector {
+        misc: 0x67,
+        seq: [0x03, 0x00, 0x03, 0x00, 0x02, 0x00, 0x00, 0xBC],
+        crtc: [
+            0x5F, 0x4F, 0x50, 0x82, 0x55, 0x81, 0xBF, 0x1F, 0x00, 0x4F, 0x0D, 0x0E, 0x00, 0x00,
+            0x01, 0x40, 0x9C, 0x8E, 0x8F, 0x28, 0x1F, 0x96, 0xB9, 0xA3, 0xFF,
+        ],
+        gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0E, 0x00, 0xFF],
+        atc: [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x14, 0x07, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D,
+            0x3E, 0x3F, 0x0C, 0x00, 0x0F, 0x08, 0x00, 0x00, 0x00,
+        ],
+        dac: DAC_EGA_16,
+        segment_select: 0x00,
+    };
+    let resolved = vector.apply().resolve();
+    assert_eq!(resolved.render_mode, VgaRenderMode::Text);
+    assert!(!resolved.blanked);
+    assert_eq!(resolved.columns, 80);
+    assert_eq!(resolved.character_width, 9);
+    assert_eq!(resolved.character_height, 16);
+    assert!(!resolved.scan_doubled);
+    assert_eq!(resolved.active_scanlines, 400);
+    assert_eq!(resolved.start_address, 0);
+    assert_eq!(resolved.row_pitch, 160);
+    assert_eq!(resolved.address_step, 2);
+    assert_eq!(resolved.cursor_address, 0x0140 << 1);
+    assert_eq!(resolved.cursor_start_row, 0x0D);
+    assert_eq!(resolved.cursor_end_row, 0x0E);
+    assert!(resolved.blink_enabled);
+    assert!(resolved.line_graphics);
+    assert_eq!(resolved.pel_pan, 8);
+    assert_eq!(resolved.pens[0], pen(0x00, 0x00, 0x00));
+    assert_eq!(resolved.pens[1], pen(0x00, 0x00, 0x2A));
+    assert_eq!(resolved.pens[7], pen(0x2A, 0x2A, 0x2A));
+}
+
+#[test]
+fn mode_01_text_resolves_360x400() {
+    let vector = ModeVector {
+        misc: 0x67,
+        seq: [0x03, 0x08, 0x03, 0x00, 0x02, 0x00, 0x00, 0xBC],
+        crtc: [
+            0x2D, 0x27, 0x28, 0x90, 0x2B, 0xA0, 0xBF, 0x1F, 0x00, 0x4F, 0x0D, 0x0E, 0x00, 0x00,
+            0x00, 0xA0, 0x9C, 0x8E, 0x8F, 0x14, 0x1F, 0x96, 0xB9, 0xA3, 0xFF,
+        ],
+        gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0E, 0x00, 0xFF],
+        atc: [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x14, 0x07, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D,
+            0x3E, 0x3F, 0x0C, 0x00, 0x0F, 0x08, 0x00, 0x00, 0x00,
+        ],
+        dac: DAC_EGA_16,
+        segment_select: 0x00,
+    };
+    let resolved = vector.apply().resolve();
+    assert_eq!(resolved.render_mode, VgaRenderMode::Text);
+    assert_eq!(resolved.columns, 40);
+    assert_eq!(resolved.character_width, 9);
+    assert_eq!(resolved.character_height, 16);
+    assert_eq!(resolved.active_scanlines, 400);
+    assert_eq!(resolved.row_pitch, 80);
+    assert_eq!(resolved.address_step, 2);
+    assert_eq!(resolved.cursor_address, 0x00A0 << 1);
+}
+
+#[test]
+fn mode_04_cga_resolves_interleaved_320x200_doubled() {
+    let vector = ModeVector {
+        misc: 0x63,
+        seq: [0x03, 0x09, 0x03, 0x00, 0x02, 0x00, 0x00, 0xBC],
+        crtc: [
+            0x2D, 0x27, 0x28, 0x90, 0x2B, 0x80, 0xBF, 0x1F, 0x00, 0xC1, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x9C, 0x8E, 0x8F, 0x14, 0x00, 0x96, 0xB9, 0xA2, 0xFF,
+        ],
+        gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x0F, 0x00, 0xFF],
+        atc: [
+            0x00, 0x13, 0x15, 0x17, 0x02, 0x04, 0x06, 0x07, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
+            0x16, 0x17, 0x01, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00,
+        ],
+        dac: DAC_CGA_16,
+        segment_select: 0x00,
+    };
+    let resolved = vector.apply().resolve();
+    assert_eq!(resolved.render_mode, VgaRenderMode::CgaInterleaved);
+    assert_eq!(resolved.columns, 40);
+    assert_eq!(resolved.character_height, 2);
+    assert!(resolved.scan_doubled);
+    assert_eq!(resolved.active_scanlines, 400);
+    assert_eq!(resolved.row_pitch, 80);
+    assert_eq!(resolved.address_step, 2);
+    assert!(resolved.map13_from_row_scan);
+    assert_eq!(resolved.pens[0], pen(0x00, 0x00, 0x00));
+}
+
+#[test]
+fn mode_06_cga_640x200() {
+    let vector = ModeVector {
+        misc: 0x63,
+        seq: [0x03, 0x01, 0x01, 0x00, 0x06, 0x00, 0x00, 0xBC],
+        crtc: [
+            0x5F, 0x4F, 0x50, 0x82, 0x54, 0x80, 0xBF, 0x1F, 0x00, 0xC1, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x9C, 0x8E, 0x8F, 0x28, 0x00, 0x96, 0xB9, 0xC2, 0xFF,
+        ],
+        gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0D, 0x00, 0xFF],
+        atc: [
+            0x00, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17,
+            0x17, 0x17, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+        ],
+        dac: DAC_CGA_16,
+        segment_select: 0x00,
+    };
+    let resolved = vector.apply().resolve();
+    assert_eq!(resolved.render_mode, VgaRenderMode::Mono1bpp);
+    assert_eq!(resolved.columns, 80);
+    assert_eq!(resolved.character_height, 2);
+    assert!(resolved.scan_doubled);
+    assert_eq!(resolved.active_scanlines, 400);
+    assert_eq!(resolved.row_pitch, 80);
+    assert_eq!(resolved.address_step, 1);
+    assert!(resolved.map13_from_row_scan);
+    // Attribute 1 resolves through palette entry 0x17, above the 16 DAC
+    // entries this vector captured, so only the background pen is pinned.
+    assert_eq!(resolved.pens[0], pen(0x00, 0x00, 0x00));
+}
+
+#[test]
+fn mode_0d_planar_320x200_doubled() {
+    let vector = ModeVector {
+        misc: 0x63,
+        seq: [0x03, 0x09, 0x0F, 0x00, 0x06, 0x00, 0x00, 0xBC],
+        crtc: [
+            0x2D, 0x27, 0x28, 0x90, 0x2B, 0x80, 0xBF, 0x1F, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x9C, 0x8E, 0x8F, 0x14, 0x00, 0x96, 0xB9, 0xE3, 0xFF,
+        ],
+        gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x0F, 0xFF],
+        atc: ATC_EGA_200,
+        dac: DAC_CGA_16,
+        segment_select: 0x00,
+    };
+    let resolved = vector.apply().resolve();
+    assert_eq!(resolved.render_mode, VgaRenderMode::Planar16);
+    assert_eq!(resolved.columns, 40);
+    assert_eq!(resolved.character_height, 1);
+    assert!(resolved.scan_doubled);
+    assert_eq!(resolved.active_scanlines, 400);
+    assert_eq!(resolved.row_pitch, 40);
+    assert_eq!(resolved.address_step, 1);
+    assert_eq!(resolved.pens[6], pen(0x2A, 0x15, 0x00));
+}
+
+#[test]
+fn mode_0e_planar_640x200_doubled() {
+    let vector = ModeVector {
+        misc: 0x63,
+        seq: [0x03, 0x01, 0x0F, 0x00, 0x06, 0x00, 0x00, 0xBC],
+        crtc: [
+            0x5F, 0x4F, 0x50, 0x82, 0x54, 0x80, 0xBF, 0x1F, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x9C, 0x8E, 0x8F, 0x28, 0x00, 0x96, 0xB9, 0xE3, 0xFF,
+        ],
+        gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x0F, 0xFF],
+        atc: ATC_EGA_200,
+        dac: DAC_CGA_16,
+        segment_select: 0x00,
+    };
+    let resolved = vector.apply().resolve();
+    assert_eq!(resolved.render_mode, VgaRenderMode::Planar16);
+    assert_eq!(resolved.columns, 80);
+    assert_eq!(resolved.character_height, 1);
+    assert!(resolved.scan_doubled);
+    assert_eq!(resolved.active_scanlines, 400);
+    assert_eq!(resolved.row_pitch, 80);
+    assert_eq!(resolved.address_step, 1);
+}
+
+#[test]
+fn mode_0f_mono_640x350() {
+    let vector = ModeVector {
+        misc: 0xA2,
+        seq: [0x03, 0x01, 0x0F, 0x00, 0x06, 0x00, 0x00, 0xBC],
+        crtc: [
+            0x5F, 0x4F, 0x50, 0x82, 0x54, 0x80, 0xBF, 0x1F, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x83, 0x85, 0x5D, 0x28, 0x0F, 0x63, 0xBA, 0xE3, 0xFF,
+        ],
+        gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x05, 0xFF],
+        atc: [
+            0x00, 0x08, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x18,
+            0x00, 0x00, 0x0B, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00,
+        ],
+        dac: [
+            [0x00, 0x00, 0x00],
+            [0x00, 0x00, 0x00],
+            [0x00, 0x00, 0x00],
+            [0x00, 0x00, 0x00],
+            [0x00, 0x00, 0x00],
+            [0x00, 0x00, 0x00],
+            [0x00, 0x00, 0x00],
+            [0x00, 0x00, 0x00],
+            [0x2A, 0x2A, 0x2A],
+            [0x2A, 0x2A, 0x2A],
+            [0x2A, 0x2A, 0x2A],
+            [0x2A, 0x2A, 0x2A],
+            [0x2A, 0x2A, 0x2A],
+            [0x2A, 0x2A, 0x2A],
+            [0x2A, 0x2A, 0x2A],
+            [0x2A, 0x2A, 0x2A],
+        ],
+        segment_select: 0x00,
+    };
+    let resolved = vector.apply().resolve();
+    assert_eq!(resolved.render_mode, VgaRenderMode::Planar16);
+    assert_eq!(resolved.columns, 80);
+    assert_eq!(resolved.character_height, 1);
+    assert!(!resolved.scan_doubled);
+    assert_eq!(resolved.active_scanlines, 350);
+    assert_eq!(resolved.row_pitch, 80);
+    assert_eq!(resolved.address_step, 1);
+    // Attribute 1 (video) resolves white, attribute 0 stays black.
+    assert_eq!(resolved.pens[0], pen(0x00, 0x00, 0x00));
+    assert_eq!(resolved.pens[1], pen(0x2A, 0x2A, 0x2A));
+}
+
+#[test]
+fn mode_10_planar_640x350() {
+    let vector = ModeVector {
+        misc: 0xA3,
+        seq: [0x03, 0x01, 0x0F, 0x00, 0x06, 0x00, 0x00, 0xBC],
+        crtc: [
+            0x5F, 0x4F, 0x50, 0x82, 0x54, 0x80, 0xBF, 0x1F, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x83, 0x85, 0x5D, 0x28, 0x0F, 0x63, 0xBA, 0xE3, 0xFF,
+        ],
+        gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x0F, 0xFF],
+        atc: [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x14, 0x07, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D,
+            0x3E, 0x3F, 0x01, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x00,
+        ],
+        dac: DAC_EGA_16,
+        segment_select: 0x00,
+    };
+    let resolved = vector.apply().resolve();
+    assert_eq!(resolved.render_mode, VgaRenderMode::Planar16);
+    assert_eq!(resolved.columns, 80);
+    assert_eq!(resolved.character_height, 1);
+    assert!(!resolved.scan_doubled);
+    assert_eq!(resolved.active_scanlines, 350);
+    assert_eq!(resolved.row_pitch, 80);
+    assert_eq!(resolved.pens[1], pen(0x00, 0x00, 0x2A));
+}
+
+#[test]
+fn mode_11_640x480_2color() {
+    let vector = ModeVector {
+        misc: 0xE3,
+        seq: [0x03, 0x01, 0x0F, 0x00, 0x06, 0x00, 0x00, 0xBC],
+        crtc: [
+            0x5F, 0x4F, 0x50, 0x82, 0x54, 0x80, 0x0B, 0x3E, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0xEA, 0x8C, 0xDF, 0x28, 0x00, 0xE7, 0x04, 0xC3, 0xFF,
+        ],
+        gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x01, 0xFF],
+        atc: [
+            0x00, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F,
+            0x3F, 0x3F, 0x01, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x00,
+        ],
+        dac: DAC_EGA_16,
+        segment_select: 0x00,
+    };
+    let resolved = vector.apply().resolve();
+    assert_eq!(resolved.render_mode, VgaRenderMode::Planar16);
+    assert_eq!(resolved.columns, 80);
+    assert_eq!(resolved.character_height, 1);
+    assert!(!resolved.scan_doubled);
+    assert_eq!(resolved.active_scanlines, 480);
+    assert_eq!(resolved.row_pitch, 80);
+    assert_eq!(resolved.address_step, 1);
+}
+
+#[test]
+fn mode_12_planar_640x480() {
+    let vector = ModeVector {
+        misc: 0xE3,
+        seq: [0x03, 0x01, 0x0F, 0x00, 0x06, 0x00, 0x00, 0xBC],
+        crtc: [
+            0x5F, 0x4F, 0x50, 0x82, 0x54, 0x80, 0x0B, 0x3E, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0xEA, 0x8C, 0xDF, 0x28, 0x00, 0xE7, 0x04, 0xE3, 0xFF,
+        ],
+        gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x0F, 0xFF],
+        atc: [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x14, 0x07, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D,
+            0x3E, 0x3F, 0x01, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x00,
+        ],
+        dac: DAC_EGA_16,
+        segment_select: 0x00,
+    };
+    let resolved = vector.apply().resolve();
+    assert_eq!(resolved.render_mode, VgaRenderMode::Planar16);
+    assert_eq!(resolved.columns, 80);
+    assert_eq!(resolved.active_scanlines, 480);
+    assert_eq!(resolved.row_pitch, 80);
+    assert_eq!(resolved.address_step, 1);
+    assert_eq!(resolved.line_compare, 0x3FF);
+    assert_eq!(resolved.pens[1], pen(0x00, 0x00, 0x2A));
+}
+
+#[test]
+fn mode_13_chain4_320x200() {
+    let vector = ModeVector {
+        misc: 0x63,
+        seq: [0x03, 0x01, 0x0F, 0x00, 0x0E, 0x00, 0x00, 0xBC],
+        crtc: [
+            0x5F, 0x4F, 0x50, 0x82, 0x54, 0x80, 0xBF, 0x1F, 0x00, 0x41, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x9C, 0x8E, 0x8F, 0x28, 0x40, 0x96, 0xB9, 0xA3, 0xFF,
+        ],
+        gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x05, 0x0F, 0xFF],
+        atc: ATC_PACKED_256,
+        dac: DAC_MODE13_16,
+        segment_select: 0x00,
+    };
+    let resolved = vector.apply().resolve();
+    assert_eq!(resolved.render_mode, VgaRenderMode::Packed256);
+    assert!(resolved.packed_half_rate);
+    assert_eq!(resolved.columns, 80);
+    assert_eq!(resolved.character_height, 2);
+    assert!(!resolved.scan_doubled);
+    assert_eq!(resolved.active_scanlines, 400);
+    assert_eq!(resolved.start_address, 0);
+    assert_eq!(resolved.row_pitch, 80);
+    assert_eq!(resolved.address_step, 1);
+    assert_eq!(resolved.pens_256[1], pen(0x00, 0x00, 0x2A));
+    assert_eq!(resolved.pens_256[15], pen(0x3F, 0x3F, 0x3F));
+}
+
+#[test]
+fn mode_x_unchained_byte_mode() {
+    let vector = ModeVector {
+        misc: 0x63,
+        seq: [0x03, 0x01, 0x0F, 0x00, 0x06, 0x00, 0x00, 0xBC],
+        crtc: [
+            0x5F, 0x4F, 0x50, 0x82, 0x54, 0x80, 0xBF, 0x1F, 0x00, 0x41, 0x00, 0x00, 0x40, 0x00,
+            0x00, 0x00, 0x9C, 0x8E, 0x8F, 0x28, 0x00, 0x96, 0xB9, 0xE3, 0xFF,
+        ],
+        gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x05, 0x0F, 0xFF],
+        atc: ATC_PACKED_256,
+        dac: DAC_MODE13_16,
+        segment_select: 0x00,
+    };
+    let resolved = vector.apply().resolve();
+    assert_eq!(resolved.render_mode, VgaRenderMode::Packed256);
+    assert!(resolved.packed_half_rate);
+    assert_eq!(resolved.columns, 80);
+    assert_eq!(resolved.character_height, 2);
+    assert_eq!(resolved.active_scanlines, 400);
+    // Byte mode with the page flip start address 0x4000 (page 1).
+    assert_eq!(resolved.start_address, 0x4000);
+    assert_eq!(resolved.row_pitch, 80);
+    assert_eq!(resolved.address_step, 1);
+}
+
+#[test]
+fn mode_0d_split_pan_resolves_line_compare() {
+    let vector = ModeVector {
+        misc: 0x63,
+        seq: [0x03, 0x09, 0x01, 0x00, 0x06, 0x00, 0x00, 0xBC],
+        crtc: [
+            0x2D, 0x27, 0x28, 0x90, 0x2B, 0x80, 0xBF, 0x0F, 0x00, 0x80, 0x00, 0x00, 0x00, 0x28,
+            0x00, 0x00, 0x9C, 0x0E, 0x8F, 0x14, 0x00, 0x96, 0xB9, 0xE3, 0x64,
+        ],
+        gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x0F, 0xFF],
+        atc: [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
+            0x16, 0x17, 0x21, 0x00, 0x0F, 0x04, 0x00, 0x00, 0x00,
+        ],
+        dac: DAC_CGA_16,
+        segment_select: 0x00,
+    };
+    let resolved = vector.apply().resolve();
+    assert_eq!(resolved.render_mode, VgaRenderMode::Planar16);
+    assert_eq!(resolved.columns, 40);
+    assert!(resolved.scan_doubled);
+    assert_eq!(resolved.active_scanlines, 400);
+    assert_eq!(resolved.line_compare, 100);
+    assert!(resolved.pel_pan_reset_on_split);
+    assert_eq!(resolved.pel_pan, 4);
+    assert_eq!(resolved.start_address, 0x28);
+    assert_eq!(resolved.row_pitch, 40);
+}
+
+#[test]
+fn mode_2f_svga_640x400_256() {
+    let vector = ModeVector {
+        misc: 0x63,
+        seq: [0x03, 0x01, 0x0F, 0x00, 0x0E, 0x00, 0x00, 0xBC],
+        crtc: [
+            0x5F, 0x4F, 0x50, 0x82, 0x54, 0x80, 0xBF, 0x1F, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x9C, 0x8E, 0x8F, 0x50, 0x60, 0x96, 0xB9, 0xAB, 0xFF,
+        ],
+        gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x05, 0x0F, 0xFF],
+        atc: ATC_SVGA_256,
+        dac: DAC_MODE13_16,
+        segment_select: 0x00,
+    };
+    let resolved = vector.apply().resolve();
+    assert_eq!(resolved.render_mode, VgaRenderMode::Packed256);
+    assert!(!resolved.packed_half_rate);
+    assert_eq!(resolved.columns, 80);
+    assert_eq!(resolved.character_height, 1);
+    assert!(!resolved.scan_doubled);
+    assert_eq!(resolved.active_scanlines, 400);
+    assert_eq!(resolved.start_address, 0);
+    assert_eq!(resolved.row_pitch, 160);
+    assert_eq!(resolved.address_step, 1);
+}
+
+#[test]
+fn mode_2e_svga_640x480_256() {
+    let vector = ModeVector {
+        misc: 0xE3,
+        seq: [0x03, 0x01, 0x0F, 0x00, 0x0E, 0x00, 0x00, 0xBC],
+        crtc: [
+            0x5F, 0x4F, 0x50, 0x82, 0x54, 0x80, 0x0B, 0x3E, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0xEA, 0x8C, 0xDF, 0x50, 0x60, 0xE7, 0x04, 0xAB, 0xFF,
+        ],
+        gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x05, 0x0F, 0xFF],
+        atc: ATC_SVGA_256,
+        dac: DAC_MODE13_16,
+        segment_select: 0x00,
+    };
+    let resolved = vector.apply().resolve();
+    assert_eq!(resolved.render_mode, VgaRenderMode::Packed256);
+    assert!(!resolved.packed_half_rate);
+    assert_eq!(resolved.columns, 80);
+    assert_eq!(resolved.active_scanlines, 480);
+    assert_eq!(resolved.row_pitch, 160);
+}
+
+#[test]
+fn mode_30_svga_800x600_256() {
+    let vector = ModeVector {
+        misc: 0xEF,
+        seq: [0x03, 0x01, 0x0F, 0x00, 0x0E, 0x00, 0x00, 0xBC],
+        crtc: [
+            0x7A, 0x63, 0x64, 0x1D, 0x68, 0x9A, 0x78, 0xF0, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x5C, 0x8E, 0x57, 0x64, 0x60, 0x5B, 0x75, 0xAB, 0xFF,
+        ],
+        gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x05, 0x0F, 0xFF],
+        atc: ATC_SVGA_256,
+        dac: DAC_MODE13_16,
+        segment_select: 0x00,
+    };
+    let resolved = vector.apply().resolve();
+    assert_eq!(resolved.render_mode, VgaRenderMode::Packed256);
+    assert!(!resolved.packed_half_rate);
+    assert_eq!(resolved.columns, 100);
+    assert_eq!(resolved.character_height, 1);
+    assert!(!resolved.scan_doubled);
+    assert_eq!(resolved.active_scanlines, 600);
+    assert_eq!(resolved.row_pitch, 200);
+    assert_eq!(resolved.address_step, 1);
+}

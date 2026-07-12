@@ -40,7 +40,7 @@ use device::{
     printer::Printer,
     sasi::SasiController,
     sdip::Sdip,
-    sound_blaster_16::{SoundBlaster16, SoundboardSb16Action},
+    sound_blaster_16::{SB16_PLATFORM_PC98, SoundBlaster16, SoundboardSb16Action},
     soundboard_14::{Soundboard14, Soundboard14Action},
     soundboard_26k::{Soundboard26k, Soundboard26kAction},
     soundboard_86::{Soundboard86, Soundboard86Action},
@@ -271,7 +271,7 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     soundboard_14: Option<Soundboard14>,
     soundboard_26k: Option<Soundboard26k>,
     soundboard_86: Option<Soundboard86>,
-    sound_blaster_16: Option<SoundBlaster16>,
+    sound_blaster_16: Option<SoundBlaster16<SB16_PLATFORM_PC98>>,
     ga1280a: Option<Ga1280a>,
     beeper: Beeper,
     rtc: Upd4990aRtc,
@@ -279,7 +279,7 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     /// `[year, month<<4|day_of_week, day, hour, minute, second]`.
     host_date_time_provider: HostDateTimeProvider,
     /// MPU-PC98II MIDI interface (C-Bus, default base 0xE0D0).
-    mpu_pc98ii: device::mpu_pc98ii::MpuPc98ii,
+    mpu401: device::mpu401::Mpu401,
     /// MT-32 sound module (optional, requires munt).
     #[cfg(feature = "mt32")]
     mt32: Option<device::mt32::Mt32>,
@@ -1519,12 +1519,12 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         #[cfg(feature = "mt32")]
         if let Some(ref mt32) = self.mt32 {
-            mt32.exchange(volume, output, |buf| self.mpu_pc98ii.flush_midi_into(buf));
+            mt32.exchange(volume, output, |buf| self.mpu401.flush_midi_into(buf));
         }
 
         #[cfg(feature = "sc55")]
         if let Some(ref sc55) = self.sc55 {
-            sc55.exchange(volume, output, |buf| self.mpu_pc98ii.flush_midi_into(buf));
+            sc55.exchange(volume, output, |buf| self.mpu401.flush_midi_into(buf));
         }
 
         beeper_count
@@ -1842,7 +1842,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
     fn schedule_sb16_dma(
         scheduler: &mut Scheduler,
-        sb16: &device::sound_blaster_16::SoundBlaster16,
+        sb16: &SoundBlaster16<SB16_PLATFORM_PC98>,
         reference_cycle: u64,
         current_cycle: u64,
         cpu_clock_hz: u32,
@@ -1876,33 +1876,33 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn handle_mpu_timer(&mut self) {
-        let reschedule = self.mpu_pc98ii.tick();
-        if self.mpu_pc98ii.take_irq() {
+        let reschedule = self.mpu401.tick();
+        if self.mpu401.take_irq() {
             self.pic.set_irq(MPU_IRQ_LINE);
             self.tracer.trace_irq_raise(MPU_IRQ_LINE);
         }
         if reschedule {
-            let step_cycles = self.mpu_pc98ii.step_clock_cycles(self.clocks.cpu_clock_hz);
+            let step_cycles = self.mpu401.step_clock_cycles(self.clocks.cpu_clock_hz);
             self.scheduler
                 .schedule(EventKind::MpuTimer, self.current_cycle + step_cycles);
         }
     }
 
     fn sync_mpu_irq_and_timer(&mut self) {
-        if self.mpu_pc98ii.take_irq() {
+        if self.mpu401.take_irq() {
             self.pic.set_irq(MPU_IRQ_LINE);
             self.tracer.trace_irq_raise(MPU_IRQ_LINE);
         } else {
             self.pic.clear_irq(MPU_IRQ_LINE);
         }
-        if self.mpu_pc98ii.timer_active()
+        if self.mpu401.timer_active()
             && self.scheduler.state.fire_cycles[EventKind::MpuTimer as usize].is_none()
         {
-            let step_cycles = self.mpu_pc98ii.step_clock_cycles(self.clocks.cpu_clock_hz);
+            let step_cycles = self.mpu401.step_clock_cycles(self.clocks.cpu_clock_hz);
             self.scheduler
                 .schedule(EventKind::MpuTimer, self.current_cycle + step_cycles);
         }
-        if !self.mpu_pc98ii.timer_active() {
+        if !self.mpu401.timer_active() {
             self.scheduler.cancel(EventKind::MpuTimer);
         }
     }

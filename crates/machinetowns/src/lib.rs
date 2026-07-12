@@ -5,6 +5,9 @@
 //! This crate relied heavily on the hardware information and errata provided by the Tsugaru project
 //! for its implementation.
 
+#![warn(missing_docs)]
+#![forbid(unsafe_code)]
+
 mod bus;
 mod config;
 mod machine;

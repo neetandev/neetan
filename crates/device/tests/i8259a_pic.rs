@@ -290,7 +290,7 @@ fn icw_init_without_icw4() {
 }
 
 #[test]
-fn reinit_preserves_isr() {
+fn reinit_clears_isr() {
     let mut pic = I8259aPic::new_zeroed();
 
     // Initialize master
@@ -312,8 +312,8 @@ fn reinit_preserves_isr() {
     // Reinitialize with ICW1
     pic.write_port0(0, 0x11);
 
-    // ISR preserved
-    assert_eq!(pic.chips[0].isr, 0x08);
+    // ICW1 reinitialization clears the in-service latch.
+    assert_eq!(pic.chips[0].isr, 0x00);
     // IMR, IRR, ocw3, pry cleared
     assert_eq!(pic.chips[0].imr, 0x00);
     assert_eq!(pic.chips[0].irr, 0x00);
@@ -364,14 +364,16 @@ fn rotate_on_specific_eoi() {
     pic.write_port2(0, 0x1D);
     pic.write_port2(0, 0x00);
 
-    // Put IRQ 2 and IRQ 5 in-service
+    // Put IRQ 2 and IRQ 5 in-service. In special mask mode an in-service IRQ
+    // stops blocking only after its mask bit is set.
     pic.set_irq(2);
     pic.acknowledge();
     pic.set_irq(5);
-    // IRQ 5 blocked by IRQ 2 in ISR, so use SMM to allow it
     pic.write_port0(0, 0x68); // enable SMM
+    pic.write_port2(0, 0x04); // mask IRQ 2 while it remains in-service
     pic.acknowledge();
     pic.write_port0(0, 0x48); // disable SMM
+    pic.write_port2(0, 0x00);
     assert_eq!(pic.chips[0].isr, 0x24); // bits 2 and 5
 
     // Rotate on specific EOI for level 2: 0xE0 | 2 = 0xE2
@@ -409,10 +411,15 @@ fn special_mask_mode() {
     pic.write_port0(0, 0x68);
     assert_ne!(pic.chips[0].ocw3 & 0x20, 0);
 
-    // Now IRQ 5 fires despite IRQ 2 in-service
+    // SMM alone does not unblock IRQ 5 while IRQ 2 is still unmasked.
+    assert!(!pic.has_pending_irq());
+
+    // Masking the in-service IRQ 2 under SMM lets lower-priority IRQ 5 fire.
+    pic.write_port2(0, 0x04);
     assert!(pic.has_pending_irq());
     let vector = pic.acknowledge();
     assert_eq!(vector, 0x08 + 5);
+    pic.write_port2(0, 0x00);
 
     // Disable SMM: OCW3 = 0x48 (ESMM=1, SMM=0)
     pic.write_port0(0, 0x48);

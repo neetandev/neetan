@@ -11,8 +11,8 @@ use std::{
 
 use common::{Context, StringError, bail, info};
 use device::{
-    disk::{HddImage, load_hdd_image},
-    floppy::{FloppyImage, d88::D88MediaType, load_floppy_image},
+    disk::{HddFormat, HddImage, load_hdd_image},
+    floppy::{FloppyFormat, FloppyImage, d88::D88MediaType, load_floppy_image},
 };
 use dos::{
     DiskIo,
@@ -25,8 +25,8 @@ use dos::{
 
 use crate::config::CopyArg;
 
-const HDD_EXTENSIONS: &[&str] = &["hdi", "nhd", "thd"];
-const FDD_EXTENSIONS: &[&str] = &["d88", "d98", "88d", "98d", "hdm", "nfd", "2d"];
+const HDD_EXTENSIONS: &[&str] = &["hdi", "nhd", "thd", "hdd"];
+const FDD_EXTENSIONS: &[&str] = &["d88", "d98", "88d", "98d", "hdm", "nfd", "2d", "img", "ima"];
 
 /// Top-level dispatcher for the `copy` subcommand.
 pub fn copy(source: CopyArg, dest: CopyArg) -> crate::Result<()> {
@@ -590,8 +590,13 @@ fn load_image_as_disk_io(path: &Path) -> crate::Result<FileImageDiskIo> {
 fn mount_fat<'a>(io: &'a mut FileImageDiskIo) -> crate::Result<FatFs<'a>> {
     let drive_da = io.drive_da();
     if drive_da & 0xF0 == 0x80 {
-        FatFs::mount_hdd(io, drive_da)
-            .map_err(|e| StringError(format!("failed to mount FAT: {e}")).into())
+        if io.uses_mbr_partitions() {
+            FatFs::mount_hdd_mbr(io, drive_da)
+                .map_err(|e| StringError(format!("failed to mount FAT: {e}")).into())
+        } else {
+            FatFs::mount_hdd(io, drive_da)
+                .map_err(|e| StringError(format!("failed to mount FAT: {e}")).into())
+        }
     } else {
         FatFs::mount_fdd(io, drive_da)
             .map_err(|e| StringError(format!("failed to mount FAT: {e}")).into())
@@ -664,6 +669,13 @@ impl FileImageDiskIo {
     }
 
     fn new_fdd(image: FloppyImage) -> Result<Self, String> {
+        if image.format == FloppyFormat::IbmXdf {
+            return Err(
+                "IBM XDF floppies use mixed-size sectors and cannot be accessed by the copy \
+                 tool. Copy the files from inside the emulated DOS instead"
+                    .to_string(),
+            );
+        }
         let geometry = derive_fdd_geometry(&image)?;
         let drive_da = match geometry.sector_size {
             1024 => 0x90,
@@ -678,6 +690,15 @@ impl FileImageDiskIo {
 
     fn drive_da(&self) -> u8 {
         self.drive_da
+    }
+
+    /// Whether the image carries a PC/AT master boot record rather than a
+    /// PC-98 IPL partition table.
+    fn uses_mbr_partitions(&self) -> bool {
+        match &self.image {
+            FileImage::Hdd(image) => image.format == HddFormat::AtFlat,
+            FileImage::Fdd { .. } => false,
+        }
     }
 
     fn into_bytes(self) -> Vec<u8> {

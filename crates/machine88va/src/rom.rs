@@ -87,10 +87,17 @@ pub struct LoadedRoms {
 #[derive(Debug)]
 pub enum RomError {
     /// The ROM directory could not be scanned.
-    Read { directory: String, message: String },
+    Read {
+        /// The directory that failed to read.
+        directory: String,
+        /// The underlying error message.
+        message: String,
+    },
     /// No file in the directory matched a slot's accepted digests.
     Missing {
+        /// The ROM slot label.
         label: String,
+        /// The accepted digests for that slot.
         accepted: Vec<String>,
     },
 }

@@ -1,5 +1,8 @@
 //! Sharp X1 / X1 turbo emulation.
 
+#![warn(missing_docs)]
+#![forbid(unsafe_code)]
+
 mod bus;
 mod config;
 mod interrupt;

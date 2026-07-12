@@ -16,6 +16,7 @@ use crate::{
         },
         fat_file::{self, FileCreateOptions},
         fat_partition::find_partition_offset,
+        mbr_partition::find_mbr_partition_offset,
     },
 };
 
@@ -104,6 +105,15 @@ impl<'d> FatFs<'d> {
     /// first active DOS partition; falls back to offset 0 if none is found.
     pub fn mount_hdd(disk: &'d mut dyn DiskIo, drive_da: u8) -> Result<Self, FatError> {
         let offset = find_partition_offset(drive_da, disk).map_err(map_err)?;
+        let volume = FatVolume::mount(drive_da, offset, disk).map_err(map_err)?;
+        Ok(Self { volume, disk })
+    }
+
+    /// Mounts an HDD volume partitioned with a PC/AT master boot record.
+    /// Reads the MBR to find the first FAT partition (preferring an
+    /// active one). A disk without the boot signature mounts at offset 0.
+    pub fn mount_hdd_mbr(disk: &'d mut dyn DiskIo, drive_da: u8) -> Result<Self, FatError> {
+        let offset = find_mbr_partition_offset(drive_da, disk).map_err(map_err)?;
         let volume = FatVolume::mount(drive_da, offset, disk).map_err(map_err)?;
         Ok(Self { volume, disk })
     }

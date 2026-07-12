@@ -281,7 +281,7 @@ fn select_graphics_backend(
     window: &mut Window,
 ) -> Result<(Box<dyn GraphicsEngine>, Backend)> {
     let large_native_target = config.graphicboard != config::GraphicboardType::None
-        || matches!(config.target, Target::Towns | Target::X68k);
+        || matches!(config.target, Target::Towns | Target::X68k | Target::At);
     match config.backend {
         Backend::Legacy => {
             info!("Using legacy backend");
@@ -782,7 +782,8 @@ impl Application {
     /// Recomputes the effective joystick state and pushes it to the machine.
     /// A connected gamepad takes precedence over the keyboard fallback.
     fn update_joystick(&mut self) {
-        let state = if self.gamepad.is_some() {
+        let connected = self.gamepad.is_some();
+        let state = if connected {
             let mut state = self.gamepad_buttons;
             // Fold the left analog stick into the directions past a deadzone.
             state.left |= self.gamepad_axis_x <= -GAMEPAD_AXIS_DEADZONE;
@@ -794,6 +795,13 @@ impl Application {
             self.keyboard_joystick
         };
         self.machine.set_joystick(0, state);
+        // Forward the raw analog magnitudes for machines with an analog game
+        // port. Only while a real gamepad is connected, so it also signals
+        // stick presence to the port.
+        if connected {
+            self.machine
+                .set_joystick_axes(0, self.gamepad_axis_x, self.gamepad_axis_y);
+        }
     }
 
     /// Toggles mouse capture (relative mouse mode) on the given window.
@@ -1232,6 +1240,7 @@ pub fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<B
         Target::X1 => initialize_x1_machine(config, sample_rate),
         Target::Fm7 => initialize_fm7_machine(config, sample_rate),
         Target::X68k => initialize_x68k_machine(config),
+        Target::At => initialize_at_machine(config, sample_rate),
     }?;
     configure_machine(machine.as_mut(), config)?;
     Ok(machine)
@@ -1757,6 +1766,66 @@ fn build_towns_machine<const CPU_MODEL: u8>(
     Ok(Box::new(machine))
 }
 
+fn initialize_at_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+    let model = config.at_model;
+    let cpu_clock_hz = model.cpu_clock_hz(config.cpu_mode);
+    info!(
+        "PC/AT configured: {} MHz i486DX2, {} MiB RAM",
+        cpu_clock_hz / 1_000_000,
+        model.ram_size() / (1024 * 1024),
+    );
+
+    let rom_dir = config
+        .at_roms
+        .as_ref()
+        .ok_or_else(|| StringError("PC/AT requires a ROM directory (--at-roms <DIR>)".into()))?;
+
+    let roms = machineat::load_rom_set(rom_dir).map_err(|error| {
+        StringError(format!(
+            "Failed to load PC/AT ROM set from {}: {error}",
+            rom_dir.display()
+        ))
+    })?;
+
+    let (boot_device, boot_warning) = resolve_at_boot_device(config.boot_device);
+    if let Some(message) = boot_warning {
+        warn!("{message}");
+    }
+
+    let bus: machineat::AtBus<Tracer> =
+        machineat::AtBus::new(cpu_clock_hz, model.ram_size(), roms, sample_rate);
+    let mut cpu = cpu::I386::<{ cpu::CPU_MODEL_486_DX }, { cpu::ADDRESS_WIDTH_32 }>::new();
+    cpu.reset();
+    let mut machine = machineat::AtMachine::new(cpu, bus);
+    machine.set_boot_device(boot_device);
+
+    Ok(Box::new(machine))
+}
+
+/// Converts the shared boot selection into the two orders exposed by the AMI BIOS.
+fn resolve_at_boot_device(
+    device: machine::BootDevice,
+) -> (machineat::AtBootDevice, Option<&'static str>) {
+    match device {
+        machine::BootDevice::Auto | machine::BootDevice::Fdd1 => {
+            (machineat::AtBootDevice::FloppyFirst, None)
+        }
+        machine::BootDevice::Fdd2 => (
+            machineat::AtBootDevice::FloppyFirst,
+            Some("The PC/AT BIOS cannot select drive B: for boot. Using A: then C:"),
+        ),
+        machine::BootDevice::Hdd1 => (machineat::AtBootDevice::HddFirst, None),
+        machine::BootDevice::Hdd2 => (
+            machineat::AtBootDevice::HddFirst,
+            Some("The PC/AT BIOS cannot select the second HDD for boot. Using C: then A:"),
+        ),
+        machine::BootDevice::Dos => (
+            machineat::AtBootDevice::FloppyFirst,
+            Some("'dos' boot is not available for the PC/AT. Using A: then C:"),
+        ),
+    }
+}
+
 fn initialize_x1_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
     let model = config.x1_model;
     info!("Selected machine model {model}");
@@ -1888,7 +1957,28 @@ mod tests {
     use super::{
         BUILTIN_FONT_ROM, expand_selector_font_rom,
         image_selector::{ImageEntry, ImageSelector, MediaType},
+        resolve_at_boot_device,
     };
+
+    #[test]
+    fn pc_at_boot_devices_resolve_to_supported_bios_orders() {
+        use machine::BootDevice;
+        use machineat::AtBootDevice;
+
+        let cases = [
+            (BootDevice::Auto, AtBootDevice::FloppyFirst, false),
+            (BootDevice::Fdd1, AtBootDevice::FloppyFirst, false),
+            (BootDevice::Fdd2, AtBootDevice::FloppyFirst, true),
+            (BootDevice::Hdd1, AtBootDevice::HddFirst, false),
+            (BootDevice::Hdd2, AtBootDevice::HddFirst, true),
+            (BootDevice::Dos, AtBootDevice::FloppyFirst, true),
+        ];
+        for (requested, expected, warns) in cases {
+            let (resolved, warning) = resolve_at_boot_device(requested);
+            assert_eq!(resolved, expected, "requested {requested}");
+            assert_eq!(warning.is_some(), warns, "requested {requested}");
+        }
+    }
 
     #[test]
     fn selector_font_rom_expands_builtin_font_into_cgrom_layout() {

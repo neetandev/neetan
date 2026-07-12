@@ -3,6 +3,8 @@
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
+pub mod at_dma;
+pub mod at_fdc;
 pub mod ay8910;
 pub mod beeper;
 pub mod bios;
@@ -13,6 +15,7 @@ pub mod cdrom_pc88;
 pub mod cdrom_towns;
 pub mod cgrom;
 pub mod crtc_x68k;
+pub mod cs4031;
 pub mod disk;
 pub mod disk_backend;
 pub mod disk_hle;
@@ -23,9 +26,11 @@ pub mod fdd640k_hle;
 pub mod fdd_x68k;
 pub mod floppy;
 pub mod ga1280a;
+pub mod gameport;
 pub mod grcg;
 pub mod hd63450_dmac;
 pub mod hd6845_crtc;
+pub mod i8042_kbc;
 pub mod i8214_pic;
 pub mod i8237_dma;
 pub mod i8251_keyboard;
@@ -37,13 +42,15 @@ pub mod i8255_system_ppi;
 pub mod i8257_dma;
 pub mod i8259a_pic;
 pub mod ide;
+pub mod ins8250_uart;
 pub mod keyboard_x68k;
 pub mod mb61vh010_alu;
 pub mod mb8877_fdc;
+pub mod mc146818_rtc;
 pub mod mc68901_mfp;
 pub mod mouse_fm7;
 pub mod mouse_x1;
-pub mod mpu_pc98ii;
+pub mod mpu401;
 pub mod msm58321_rtc;
 pub mod msm6258;
 #[cfg(feature = "mt32")]
@@ -76,6 +83,7 @@ pub mod upd72065_fdc;
 pub mod upd7220_gdc;
 pub mod upd765a_fdc;
 pub mod upd7752;
+pub mod vga;
 pub mod video_controller_x68k;
 pub mod ym3802;
 pub mod z80_ctc;

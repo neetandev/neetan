@@ -6,6 +6,7 @@ use super::{OPEN_BUS, Pc6000Bus};
 use crate::config::Pc6000Model;
 
 impl<T: Tracing> Pc6000Bus<T> {
+    /// Reads a byte from an I/O port.
     pub fn io_read(&mut self, port: u16) -> u8 {
         match port & 0xF0 {
             0x90 => self

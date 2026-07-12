@@ -133,6 +133,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "machineat"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "common",
+ "cpu",
+ "device",
+ "resampler",
+ "software_renderer",
+]
+
+[[package]]
 name = "machinefm7"
 version = "0.1.0"
 dependencies = [
@@ -199,6 +211,7 @@ dependencies = [
  "machine60",
  "machine88",
  "machine88va",
+ "machineat",
  "machinefm7",
  "machinetowns",
  "machinex1",
@@ -284,6 +297,7 @@ version = "0.1.0"
 dependencies = [
  "common",
  "cpu",
+ "device",
  "machine",
  "software_renderer",
 ]

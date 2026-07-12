@@ -1643,6 +1643,39 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         Ok(())
     }
 
+    /// Returns the bytes written into a dword selector slot for this CPU model.
+    const fn dword_selector_write_size() -> u32 {
+        if CPU_MODEL == CPU_MODEL_386_SX { 4 } else { 2 }
+    }
+
+    /// Allocates a dword stack slot and writes the model-specific selector image.
+    fn push_dword_selector(&mut self, bus: &mut impl common::Bus, value: u16) -> Step {
+        if Self::dword_selector_write_size() == 4 {
+            return self.push_dword(bus, value as u32);
+        }
+        let stack_pointer = if self.use_esp() {
+            self.regs.dword(crate::DwordReg::ESP).wrapping_sub(4)
+        } else {
+            self.regs.word(WordReg::SP).wrapping_sub(4) as u32
+        };
+        self.check_segment_access(SegReg32::SS, stack_pointer, 2, true, bus)?;
+        let linear = self.seg_base(SegReg32::SS).wrapping_add(stack_pointer);
+        self.clk_sx_bus(linear, 2);
+        if linear & 0xFFF <= 0xFFE {
+            let physical = self.translate_linear(linear, true, bus)?;
+            self.commit_sp(stack_pointer);
+            bus.write_word(physical, value);
+            return Ok(());
+        }
+        let next_linear = linear.wrapping_add(1);
+        let low_physical = self.translate_linear(linear, true, bus)?;
+        let high_physical = self.translate_linear(next_linear, true, bus)?;
+        self.commit_sp(stack_pointer);
+        bus.write_byte(low_physical, value as u8);
+        bus.write_byte(high_physical, (value >> 8) as u8);
+        Ok(())
+    }
+
     #[inline(always)]
     fn commit_sp(&mut self, new_sp: u32) {
         if self.use_esp() {

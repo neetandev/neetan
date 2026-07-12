@@ -197,6 +197,75 @@ fn build_blank_partitioned_nhd() -> Vec<u8> {
     HddImage::from_raw(geometry, HddFormat::Nhd, image_data).to_bytes()
 }
 
+/// Cylinder count of the AT flat test image (about 4 MB).
+const AT_HDD_CYLINDERS: u32 = 8;
+/// Heads of the AT flat geometry.
+const AT_HDD_HEADS: u32 = 16;
+/// Sectors per track of the AT flat geometry.
+const AT_HDD_SECTORS_PER_TRACK: u32 = 63;
+/// Partition start LBA (one track reserved for the MBR).
+const AT_PARTITION_START_LBA: u32 = 63;
+
+/// Builds a flat AT `.hdd` image with an MBR whose single active FAT16
+/// partition starts at a nonzero LBA and holds a blank FAT16 filesystem.
+fn build_blank_partitioned_at_hdd() -> Vec<u8> {
+    let total_sectors = AT_HDD_CYLINDERS * AT_HDD_HEADS * AT_HDD_SECTORS_PER_TRACK;
+    let sector_size = 512usize;
+    let mut image_data = vec![0u8; total_sectors as usize * sector_size];
+
+    // Master boot record: signature plus one active FAT16B entry.
+    let partition_sectors = total_sectors - AT_PARTITION_START_LBA;
+    image_data[510] = 0x55;
+    image_data[511] = 0xAA;
+    let entry = &mut image_data[0x1BE..0x1BE + 16];
+    entry[0] = 0x80;
+    entry[4] = 0x06;
+    entry[8..12].copy_from_slice(&AT_PARTITION_START_LBA.to_le_bytes());
+    entry[12..16].copy_from_slice(&partition_sectors.to_le_bytes());
+
+    // FAT16 boot sector at the partition start.
+    let reserved_sectors = 1u16;
+    let fat_count = 2u8;
+    let sectors_per_fat = 32u16;
+    let root_entry_count = 512u16;
+    let partition_byte_offset = AT_PARTITION_START_LBA as usize * sector_size;
+    let boot_sector = &mut image_data[partition_byte_offset..partition_byte_offset + sector_size];
+    boot_sector[0] = 0xEB;
+    boot_sector[1] = 0x3C;
+    boot_sector[2] = 0x90;
+    boot_sector[3..11].copy_from_slice(b"NEETAN  ");
+    boot_sector[11..13].copy_from_slice(&(sector_size as u16).to_le_bytes());
+    boot_sector[13] = 1;
+    boot_sector[14..16].copy_from_slice(&reserved_sectors.to_le_bytes());
+    boot_sector[16] = fat_count;
+    boot_sector[17..19].copy_from_slice(&root_entry_count.to_le_bytes());
+    boot_sector[19..21].copy_from_slice(&(partition_sectors as u16).to_le_bytes());
+    boot_sector[21] = 0xF8;
+    boot_sector[22..24].copy_from_slice(&sectors_per_fat.to_le_bytes());
+    boot_sector[24..26].copy_from_slice(&(AT_HDD_SECTORS_PER_TRACK as u16).to_le_bytes());
+    boot_sector[26..28].copy_from_slice(&(AT_HDD_HEADS as u16).to_le_bytes());
+    boot_sector[510] = 0x55;
+    boot_sector[511] = 0xAA;
+
+    // Both FAT copies with the FAT16 media/EOC head entries.
+    let first_fat_offset = partition_byte_offset + reserved_sectors as usize * sector_size;
+    for fat_index in 0..fat_count as usize {
+        let fat_offset = first_fat_offset + fat_index * sectors_per_fat as usize * sector_size;
+        image_data[fat_offset] = 0xF8;
+        image_data[fat_offset + 1] = 0xFF;
+        image_data[fat_offset + 2] = 0xFF;
+        image_data[fat_offset + 3] = 0xFF;
+    }
+
+    image_data
+}
+
+fn make_blank_at_hdd_image(dir: &Path, name: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, build_blank_partitioned_at_hdd()).unwrap();
+    path
+}
+
 /// Returns a unique tempdir for a test, creating it on disk.
 fn unique_tempdir(label: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -683,4 +752,61 @@ fn partitioned_nhd_roundtrip_preserves_file_contents() {
     copy(host(&src), image(&image_path, b"A:\\NHD.TXT".to_vec())).unwrap();
     copy(image(&image_path, b"A:\\NHD.TXT".to_vec()), host(&out)).unwrap();
     assert_eq!(std::fs::read(&out).unwrap(), b"nhd data");
+}
+
+#[test]
+fn mbr_partitioned_at_hdd_roundtrip_preserves_file_contents() {
+    let dir = unique_tempdir("athdd");
+    let image_path = make_blank_at_hdd_image(&dir, "disk.hdd");
+    let src = dir.join("source.txt");
+    let out = dir.join("out.txt");
+    std::fs::write(&src, b"mbr partition data").unwrap();
+
+    copy(host(&src), image(&image_path, b"A:\\MBR.TXT".to_vec())).unwrap();
+    copy(image(&image_path, b"A:\\MBR.TXT".to_vec()), host(&out)).unwrap();
+    assert_eq!(std::fs::read(&out).unwrap(), b"mbr partition data");
+
+    // The write landed inside the partition: the MBR sector is untouched
+    // and the file data sits past the partition start.
+    let bytes = std::fs::read(&image_path).unwrap();
+    assert_eq!(bytes[510], 0x55);
+    assert_eq!(bytes[511], 0xAA);
+    let needle = b"mbr partition data";
+    let position = bytes
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .expect("file data present in the image");
+    assert!(position >= AT_PARTITION_START_LBA as usize * 512);
+}
+
+#[test]
+fn dosv_144mb_img_floppy_roundtrip() {
+    let dir = unique_tempdir("imgfdd");
+    // A blank 1.44 MB DOS floppy: FAT12, 18 sectors per track, 2 heads.
+    let mut data = vec![0u8; 1_474_560];
+    data[11..13].copy_from_slice(&512u16.to_le_bytes());
+    data[13] = 1;
+    data[14..16].copy_from_slice(&1u16.to_le_bytes());
+    data[16] = 2;
+    data[17..19].copy_from_slice(&224u16.to_le_bytes());
+    data[19..21].copy_from_slice(&2880u16.to_le_bytes());
+    data[21] = 0xF0;
+    data[22..24].copy_from_slice(&9u16.to_le_bytes());
+    data[24..26].copy_from_slice(&18u16.to_le_bytes());
+    data[26..28].copy_from_slice(&2u16.to_le_bytes());
+    for fat_offset in [512usize, 512 + 9 * 512] {
+        data[fat_offset] = 0xF0;
+        data[fat_offset + 1] = 0xFF;
+        data[fat_offset + 2] = 0xFF;
+    }
+    let image_path = dir.join("disk.img");
+    std::fs::write(&image_path, &data).unwrap();
+
+    let src = dir.join("source.txt");
+    let out = dir.join("out.txt");
+    std::fs::write(&src, b"dosv floppy data").unwrap();
+
+    copy(host(&src), image(&image_path, b"A:\\DOSV.TXT".to_vec())).unwrap();
+    copy(image(&image_path, b"A:\\DOSV.TXT".to_vec()), host(&out)).unwrap();
+    assert_eq!(std::fs::read(&out).unwrap(), b"dosv floppy data");
 }

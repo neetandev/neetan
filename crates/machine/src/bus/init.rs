@@ -12,7 +12,7 @@ use device::{
     i8255_mouse_ppi::I8255MousePpi,
     i8255_system_ppi::I8255SystemPpi,
     i8259a_pic::I8259aPic,
-    mpu_pc98ii::MpuPc98ii,
+    mpu401::Mpu401,
     palette::Palette,
     pegc::Pegc,
     printer::Printer,
@@ -211,7 +211,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             beeper: Beeper::new(machine_model.beeper_kind(), clocks.pit_clock_hz),
             rtc: Upd4990aRtc::new(),
             host_date_time_provider: common::default_host_date_time,
-            mpu_pc98ii: MpuPc98ii::new(),
+            mpu401: Mpu401::new(),
             #[cfg(feature = "mt32")]
             mt32: None,
             #[cfg(feature = "sc55")]
