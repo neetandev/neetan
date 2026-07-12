@@ -18,6 +18,7 @@ cpu_68k = { path = "crates/cpu_68k" }
 device = { path = "crates/device" }
 dos = { path = "crates/dos" }
 machine = { path = "crates/machine" }
+machineat = { path = "crates/machineat" }
 machine60 = { path = "crates/machine60" }
 machine88 = { path = "crates/machine88" }
 machine88va = { path = "crates/machine88va" }
@@ -50,8 +51,8 @@ rust-version.workspace = true
 
 [features]
 default = ["mt32", "sc55"]
-mt32 = ["machine/mt32", "machinetowns/mt32", "machinex68k/mt32"]
-sc55 = ["machine/sc55", "machinetowns/sc55", "machinex68k/sc55"]
+mt32 = ["machine/mt32", "machinetowns/mt32", "machinex68k/mt32", "machineat/mt32"]
+sc55 = ["machine/sc55", "machinetowns/sc55", "machinex68k/sc55", "machineat/sc55"]
 tracing = []
 sdl3-build-from-source = ["sdl3/build-from-source"]
 sdl3-use-pkg-config = ["sdl3/use-pkg-config"]
@@ -63,6 +64,7 @@ cpu = { workspace = true }
 common = { workspace = true, features = ["std"] }
 device = { workspace = true }
 machine = { workspace = true }
+machineat = { workspace = true }
 machine60 = { workspace = true }
 machine88 = { workspace = true }
 machine88va = { workspace = true }
@@ -133,6 +135,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.machine88va]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.machineat]
 opt-level = 3
 codegen-units = 1
 

@@ -11,6 +11,7 @@ pub(crate) mod fat_dir;
 pub(crate) mod fat_file;
 pub(crate) mod fat_partition;
 pub(crate) mod iso9660;
+pub(crate) mod mbr_partition;
 pub(crate) mod virtual_drive;
 
 #[derive(Debug, Clone, Copy)]

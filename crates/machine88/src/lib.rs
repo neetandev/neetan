@@ -1,5 +1,8 @@
 //! PC-8801 emulation: a cycle-driven dual-Z80 machine.
 
+#![warn(missing_docs)]
+#![forbid(unsafe_code)]
+
 mod bus;
 mod config;
 mod machine;

@@ -1,5 +1,5 @@
 use common::{Bus as _, Cpu as _};
-use cpu::I386;
+use cpu::{CPU_MODEL_386_DX, CPU_MODEL_386_SX, CPU_MODEL_486_DX, I386};
 
 const RAM_SIZE: usize = 1024 * 1024;
 const ADDRESS_MASK: u32 = 0x000F_FFFF;
@@ -615,9 +615,8 @@ fn i386_far_jmp_conforming_code_adjusts_cs_rpl_to_cpl() {
     assert_eq!(cpu.ip(), 0x2000);
 }
 
-#[test]
-fn i386_protected_mode_int_dispatches_via_intgate() {
-    let mut cpu: I386 = I386::new();
+fn assert_same_privilege_interrupt_selector_slot<const CPU_MODEL: u8>(padding: u16) {
+    let mut cpu: I386<{ CPU_MODEL }> = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -638,6 +637,7 @@ fn i386_protected_mode_int_dispatches_via_intgate() {
     cpu.state.flags.if_flag = true;
 
     place_at(&mut bus, PM_CODE_BASE, &[0xCD, 0x20]);
+    bus.ram[0xFFE4..0xFFF0].fill(0xA5);
 
     cpu.step(&mut bus);
     cpu.step(&mut bus);
@@ -653,11 +653,26 @@ fn i386_protected_mode_int_dispatches_via_intgate() {
     let pushed_eflags = read_dword_at(&bus, PM_STACK_BASE + sp + 8);
 
     assert_eq!(pushed_eip, 0x0002);
-    assert_eq!(pushed_cs as u16, PM_CS_SEL);
+    assert_eq!(pushed_cs, u32::from(PM_CS_SEL) | (u32::from(padding) << 16));
     assert!(
         pushed_eflags & 0x0200 != 0,
         "Pushed flags should have IF set"
     );
+}
+
+#[test]
+fn i386_protected_mode_int_dispatches_via_intgate() {
+    assert_same_privilege_interrupt_selector_slot::<CPU_MODEL_386_DX>(0xA5A5);
+}
+
+#[test]
+fn i486_same_privilege_interrupt_preserves_selector_padding() {
+    assert_same_privilege_interrupt_selector_slot::<CPU_MODEL_486_DX>(0xA5A5);
+}
+
+#[test]
+fn i386sx_same_privilege_interrupt_zeroes_selector_padding() {
+    assert_same_privilege_interrupt_selector_slot::<CPU_MODEL_386_SX>(0);
 }
 
 #[test]
@@ -4765,12 +4780,8 @@ fn setup_vm86(bus: &mut TestBus) -> cpu::I386State {
     state
 }
 
-/// VM flag must be cleared before dword pushes in interrupt dispatch so
-/// that push_dword uses 32-bit ESP (B=1 in the PL0 SS descriptor) rather than
-/// the 16-bit SP.
-#[test]
-fn vm86_interrupt_dispatch_uses_pl0_stack_correctly() {
-    let mut cpu: I386 = I386::new();
+fn assert_vm86_interrupt_selector_slots<const CPU_MODEL: u8>(padding: u16) {
+    let mut cpu: I386<{ CPU_MODEL }> = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_vm86(&mut bus);
@@ -4779,6 +4790,7 @@ fn vm86_interrupt_dispatch_uses_pl0_stack_correctly() {
     // INT 0x42 at VM86 code base (CS=0x1000 -> physical 0x10000)
     bus.ram[0x10000] = 0xCD; // INT imm8
     bus.ram[0x10001] = 0x42; // vector 0x42
+    bus.ram[0x0FDC..0x1000].fill(0xA5);
 
     cpu.step(&mut bus);
 
@@ -4803,15 +4815,16 @@ fn vm86_interrupt_dispatch_uses_pl0_stack_correctly() {
 
     // Verify the 9-dword VM86 frame on the PL0 stack (SS0 base = 0).
     // Pushes (highest to lowest): GS, FS, DS, ES, SS, SP, EFLAGS, CS, EIP
+    let selector_slot = |selector: u16| u32::from(selector) | (u32::from(padding) << 16);
     assert_eq!(
         read_dword_at(&bus, 0x0FFC),
-        0x6000,
-        "GS pushed first (highest)"
+        selector_slot(0x6000),
+        "GS pushed first with the model-specific padding"
     );
-    assert_eq!(read_dword_at(&bus, 0x0FF8), 0x5000, "FS");
-    assert_eq!(read_dword_at(&bus, 0x0FF4), 0x4000, "DS");
-    assert_eq!(read_dword_at(&bus, 0x0FF0), 0x3000, "ES");
-    assert_eq!(read_dword_at(&bus, 0x0FEC), 0x2000, "old SS");
+    assert_eq!(read_dword_at(&bus, 0x0FF8), selector_slot(0x5000), "FS");
+    assert_eq!(read_dword_at(&bus, 0x0FF4), selector_slot(0x4000), "DS");
+    assert_eq!(read_dword_at(&bus, 0x0FF0), selector_slot(0x3000), "ES");
+    assert_eq!(read_dword_at(&bus, 0x0FEC), selector_slot(0x2000), "old SS");
     assert_eq!(
         read_dword_at(&bus, 0x0FE8),
         0xF000,
@@ -4829,12 +4842,70 @@ fn vm86_interrupt_dispatch_uses_pl0_stack_correctly() {
         3,
         "IOPL=3 must be preserved in pushed EFLAGS"
     );
-    assert_eq!(read_dword_at(&bus, 0x0FE0), 0x1000, "old CS");
+    assert_eq!(read_dword_at(&bus, 0x0FE0), selector_slot(0x1000), "old CS");
     assert_eq!(
         read_dword_at(&bus, 0x0FDC),
         0x0002,
         "return EIP = IP after INT instruction (2 bytes)"
     );
+}
+
+/// The 386DX writes only the selector word into dword interrupt slots.
+#[test]
+fn vm86_interrupt_dispatch_386dx_preserves_selector_padding() {
+    assert_vm86_interrupt_selector_slots::<CPU_MODEL_386_DX>(0xA5A5);
+}
+
+/// The 486 writes only the selector word into dword interrupt slots.
+#[test]
+fn vm86_interrupt_dispatch_486_preserves_selector_padding() {
+    assert_vm86_interrupt_selector_slots::<CPU_MODEL_486_DX>(0xA5A5);
+}
+
+/// The 386SX writes a zero-extended selector through its 16-bit bus.
+#[test]
+fn vm86_interrupt_dispatch_386sx_zeroes_selector_padding() {
+    assert_vm86_interrupt_selector_slots::<CPU_MODEL_386_SX>(0);
+}
+
+fn assert_unwritten_selector_padding_is_not_paged<const CPU_MODEL: u8>() {
+    let mut cpu: I386<{ CPU_MODEL }> = I386::new();
+    let mut bus = TestBus::new();
+    let mut state = setup_vm86(&mut bus);
+
+    write_dword_at(&mut bus, VM86_TSS_BASE + 0x04, 0x1002);
+    enable_identity_paging(&mut bus, &mut state);
+    let page_directory_entry = read_dword_at(&bus, TEST_PAGE_DIRECTORY_BASE);
+    write_dword_at(
+        &mut bus,
+        TEST_PAGE_DIRECTORY_BASE,
+        page_directory_entry | TEST_PAGE_PRESENT_WRITABLE_USER,
+    );
+    set_identity_page_flags(&mut bus, 0x10000, TEST_PAGE_PRESENT_WRITABLE_USER);
+    unmap_identity_page(&mut bus, 0x1000);
+    bus.ram[0x0FFE..0x1002].fill(0xA5);
+    bus.ram[0x10000] = 0xCD;
+    bus.ram[0x10001] = 0x42;
+    cpu.load_state(&state);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.cs(), VM86_CS_SEL);
+    assert_eq!(cpu.ip(), VM86_HANDLER_IP as u32);
+    assert_eq!(cpu.esp(), 0x0FDE);
+    assert_eq!(&bus.ram[0x1000..0x1002], &[0xA5, 0xA5]);
+}
+
+/// Unwritten 386DX selector padding must not require a present page.
+#[test]
+fn vm86_interrupt_386dx_does_not_page_unwritten_selector_padding() {
+    assert_unwritten_selector_padding_is_not_paged::<CPU_MODEL_386_DX>();
+}
+
+/// Unwritten 486 selector padding must not require a present page.
+#[test]
+fn vm86_interrupt_486_does_not_page_unwritten_selector_padding() {
+    assert_unwritten_selector_padding_is_not_paged::<CPU_MODEL_486_DX>();
 }
 
 /// When TSS ESP0 exceeds 0xFFFF, the interrupt dispatch from VM86 must use

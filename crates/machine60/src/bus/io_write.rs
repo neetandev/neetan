@@ -6,6 +6,7 @@ use super::Pc6000Bus;
 use crate::config::Pc6000Model;
 
 impl<T: Tracing> Pc6000Bus<T> {
+    /// Writes a byte to an I/O port.
     pub fn io_write(&mut self, port: u16, value: u8) {
         match port & 0xF0 {
             0x90 => {

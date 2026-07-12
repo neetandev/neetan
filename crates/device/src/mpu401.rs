@@ -1,7 +1,9 @@
-//! Roland MPU-PC98II (MPU-401 compatible MIDI interface, C-Bus, default base 0xE0D0).
+//! MPU-401 MIDI interface core (data register plus status/command register).
 //!
-//! Port 0xE0D0 (R/W): MIDI data register.
-//! Port 0xE0D2 (R/W): status (read) / command (write).
+//! The device is port-agnostic. The PC-98 wires it as the Roland MPU-PC98II on
+//! the C-Bus (data 0xE0D0, status/command 0xE0D2); the PC/AT wires it at the
+//! standard MPU-401 base (data 0x330, status/command 0x331). The host bus owns
+//! the port decode and IRQ routing.
 //!
 //! Intelligent mode implements the full MPU-401 play/timing protocol:
 //! after "Start Play", the device generates periodic timing messages
@@ -52,7 +54,7 @@ const HCLK_FRACTION: [[u8; 4]; 4] = [[0, 0, 0, 0], [1, 0, 0, 0], [1, 0, 1, 0], [
 
 /// MPU-PC98II operating mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MpuPc98iiMode {
+pub enum Mpu401Mode {
     /// Power-on default. WSD state machine routes MIDI data.
     Intelligent,
     /// Transparent MIDI passthrough.
@@ -112,17 +114,17 @@ enum ConductorPhase {
 
 /// Serializable MPU-PC98II state.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MpuPc98iiState {
+pub struct Mpu401State {
     /// Current operating mode.
-    pub mode: MpuPc98iiMode,
+    pub mode: Mpu401Mode,
     /// Response FIFO: queued bytes waiting to be read from the data port.
     pub response_queue: VecDeque<u8>,
 }
 
 /// Roland MPU-PC98II MIDI interface device.
-pub struct MpuPc98ii {
+pub struct Mpu401 {
     /// Embedded state for save/restore.
-    pub state: MpuPc98iiState,
+    pub state: Mpu401State,
 
     midi_buffer: Vec<u8>,
 
@@ -160,31 +162,31 @@ pub struct MpuPc98ii {
     raise_irq: bool,
 }
 
-impl Deref for MpuPc98ii {
-    type Target = MpuPc98iiState;
+impl Deref for Mpu401 {
+    type Target = Mpu401State;
     fn deref(&self) -> &Self::Target {
         &self.state
     }
 }
 
-impl DerefMut for MpuPc98ii {
+impl DerefMut for Mpu401 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.state
     }
 }
 
-impl Default for MpuPc98ii {
+impl Default for Mpu401 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl MpuPc98ii {
+impl Mpu401 {
     /// Creates a new MPU-PC98II in intelligent mode (power-on default).
     pub fn new() -> Self {
         let mut mpu = Self {
-            state: MpuPc98iiState {
-                mode: MpuPc98iiMode::Intelligent,
+            state: Mpu401State {
+                mode: Mpu401Mode::Intelligent,
                 response_queue: VecDeque::new(),
             },
             midi_buffer: Vec::new(),
@@ -246,9 +248,9 @@ impl MpuPc98ii {
 
     /// Writes the command register (port 0xE0D2).
     pub fn write_command(&mut self, value: u8) {
-        if self.mode == MpuPc98iiMode::Uart {
+        if self.mode == Mpu401Mode::Uart {
             if value == CMD_RESET {
-                self.mode = MpuPc98iiMode::Intelligent;
+                self.mode = Mpu401Mode::Intelligent;
                 self.enqueue_response(ACK);
                 self.raise_irq = true;
             }
@@ -266,7 +268,7 @@ impl MpuPc98ii {
             }
             CMD_ENTER_UART => {
                 self.send_all_notes_off();
-                self.mode = MpuPc98iiMode::Uart;
+                self.mode = Mpu401Mode::Uart;
                 self.command_phase = CommandPhase::Idle;
                 self.timer_active = false;
             }
@@ -278,7 +280,7 @@ impl MpuPc98ii {
 
     /// Writes the data register (port 0xE0D0).
     pub fn write_data(&mut self, value: u8) {
-        if self.mode == MpuPc98iiMode::Uart {
+        if self.mode == Mpu401Mode::Uart {
             self.midi_buffer.push(value);
             return;
         }
@@ -934,12 +936,12 @@ impl MpuPc98ii {
 mod tests {
     use super::*;
 
-    fn drain_ack(mpu: &mut MpuPc98ii) {
+    fn drain_ack(mpu: &mut Mpu401) {
         assert_eq!(mpu.read_status(), 0x00, "expected data available");
         assert_eq!(mpu.read_data(), ACK);
     }
 
-    fn flush_midi(mpu: &mut MpuPc98ii) -> Vec<u8> {
+    fn flush_midi(mpu: &mut Mpu401) -> Vec<u8> {
         let mut buf = Vec::new();
         mpu.flush_midi_into(&mut buf);
         buf
@@ -947,23 +949,23 @@ mod tests {
 
     #[test]
     fn power_on_defaults() {
-        let mpu = MpuPc98ii::new();
-        assert_eq!(mpu.mode, MpuPc98iiMode::Intelligent);
+        let mpu = Mpu401::new();
+        assert_eq!(mpu.mode, Mpu401Mode::Intelligent);
         assert_eq!(mpu.read_status(), 0x80);
         assert!(!mpu.timer_active());
     }
 
     #[test]
     fn enter_uart_mode() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(CMD_ENTER_UART);
         drain_ack(&mut mpu);
-        assert_eq!(mpu.mode, MpuPc98iiMode::Uart);
+        assert_eq!(mpu.mode, Mpu401Mode::Uart);
     }
 
     #[test]
     fn uart_data_passes_through() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(CMD_ENTER_UART);
         drain_ack(&mut mpu);
         flush_midi(&mut mpu); // Discard All Notes Off from entering UART.
@@ -978,19 +980,19 @@ mod tests {
 
     #[test]
     fn uart_reset_returns_to_intelligent() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(CMD_ENTER_UART);
         drain_ack(&mut mpu);
-        assert_eq!(mpu.mode, MpuPc98iiMode::Uart);
+        assert_eq!(mpu.mode, Mpu401Mode::Uart);
 
         mpu.write_command(CMD_RESET);
         drain_ack(&mut mpu);
-        assert_eq!(mpu.mode, MpuPc98iiMode::Intelligent);
+        assert_eq!(mpu.mode, Mpu401Mode::Intelligent);
     }
 
     #[test]
     fn uart_ignores_non_reset_commands() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(CMD_ENTER_UART);
         drain_ack(&mut mpu);
 
@@ -1001,7 +1003,7 @@ mod tests {
 
     #[test]
     fn reset_sends_ack_and_all_notes_off() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(CMD_RESET);
         drain_ack(&mut mpu);
 
@@ -1014,7 +1016,7 @@ mod tests {
 
     #[test]
     fn reset_deactivates_timer() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         // Start play to activate timer.
         mpu.write_command(0x0A); // Start Play
         drain_ack(&mut mpu);
@@ -1027,7 +1029,7 @@ mod tests {
 
     #[test]
     fn wsd_short_note_on() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(0xD0); // WSD track 0
         drain_ack(&mut mpu);
 
@@ -1041,7 +1043,7 @@ mod tests {
 
     #[test]
     fn wsd_short_program_change() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(0xD0);
         drain_ack(&mut mpu);
 
@@ -1054,7 +1056,7 @@ mod tests {
 
     #[test]
     fn wsd_short_running_status() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
 
         // First message establishes running status.
         mpu.write_command(0xD0);
@@ -1075,7 +1077,7 @@ mod tests {
 
     #[test]
     fn wsd_system_sysex() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(0xDF); // WSD System
         drain_ack(&mut mpu);
 
@@ -1090,7 +1092,7 @@ mod tests {
 
     #[test]
     fn set_tempo_via_follow_byte() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(0xE0); // Set Tempo
         drain_ack(&mut mpu);
         mpu.write_data(120); // Tempo = 120
@@ -1103,7 +1105,7 @@ mod tests {
 
     #[test]
     fn set_active_tracks() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(0xEC); // Active Tracks
         drain_ack(&mut mpu);
         mpu.write_data(0x03); // Tracks 0 and 1
@@ -1122,7 +1124,7 @@ mod tests {
 
     #[test]
     fn request_version() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(0xAC); // Request Major Version
         drain_ack(&mut mpu);
         assert_eq!(mpu.read_data(), VERSION_MAJOR);
@@ -1134,7 +1136,7 @@ mod tests {
 
     #[test]
     fn request_play_count() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(0xA0); // Request Play Count Track 1
         drain_ack(&mut mpu);
         assert_eq!(mpu.read_data(), 0); // Initial step is 0
@@ -1142,7 +1144,7 @@ mod tests {
 
     #[test]
     fn clk_to_host_on_activates_timer() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         assert!(!mpu.timer_active());
 
         mpu.write_command(0x95); // CLK to Host ON
@@ -1152,7 +1154,7 @@ mod tests {
 
     #[test]
     fn clk_to_host_off_deactivates_timer_when_not_playing() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(0x95); // CLK to Host ON
         drain_ack(&mut mpu);
         assert!(mpu.timer_active());
@@ -1164,7 +1166,7 @@ mod tests {
 
     #[test]
     fn clk_to_host_off_keeps_timer_when_playing() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(0x95); // CLK to Host ON
         drain_ack(&mut mpu);
         mpu.write_command(0x0A); // Start Play
@@ -1178,7 +1180,7 @@ mod tests {
 
     #[test]
     fn start_play_activates_timer() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(0x0A); // Start Play
         drain_ack(&mut mpu);
         assert!(mpu.timer_active());
@@ -1186,7 +1188,7 @@ mod tests {
 
     #[test]
     fn stop_play_deactivates_timer() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(0x0A); // Start Play
         drain_ack(&mut mpu);
 
@@ -1197,7 +1199,7 @@ mod tests {
 
     #[test]
     fn tick_generates_hclk_when_clk_to_host() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         mpu.write_command(0x95); // CLK to Host ON
         drain_ack(&mut mpu);
 
@@ -1217,7 +1219,7 @@ mod tests {
 
     #[test]
     fn tick_generates_track_data_request() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
 
         // Set up: active track 0, start play.
         mpu.write_command(0xEC); // Active Tracks
@@ -1235,7 +1237,7 @@ mod tests {
 
     #[test]
     fn tick_generates_conductor_request_when_enabled() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
 
         // Enable conductor.
         mpu.write_command(0x8F); // Conductor ON
@@ -1257,7 +1259,7 @@ mod tests {
 
     #[test]
     fn host_responds_with_step_and_midi_data() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
 
         mpu.write_command(0xEC);
         drain_ack(&mut mpu);
@@ -1296,7 +1298,7 @@ mod tests {
 
     #[test]
     fn multiple_active_tracks_get_sequential_requests() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
 
         mpu.write_command(0xEC);
         drain_ack(&mut mpu);
@@ -1321,7 +1323,7 @@ mod tests {
 
     #[test]
     fn clear_play_counters() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
 
         mpu.write_command(0xEC);
         drain_ack(&mut mpu);
@@ -1353,7 +1355,7 @@ mod tests {
 
     #[test]
     fn status_reflects_response_queue() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
         assert_eq!(mpu.read_status(), 0x80); // Empty
 
         mpu.write_command(0xAC); // Version query -> ACK + version byte
@@ -1366,7 +1368,7 @@ mod tests {
 
     #[test]
     fn step_clock_cycles_default_tempo() {
-        let mpu = MpuPc98ii::new();
+        let mpu = Mpu401::new();
         // Default: tempo=100, relative_tempo=0x40, timebase=5
         // divisor = (100 * 2 * 0x40 / 0x40) * 5 = 200 * 5 = 1000
         // step_clock = 20_000_000 * 5 / 1000 = 100_000
@@ -1375,7 +1377,7 @@ mod tests {
 
     #[test]
     fn princess_maker_2_init_sequence() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
 
         // The game's MIDI init sequence (from the trace):
         // 1. Reset
@@ -1478,7 +1480,7 @@ mod tests {
 
     #[test]
     fn mode_command_with_zero_low_bits_is_noop() {
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
 
         // 0x08 has bits 2-3 = 2 (Start Play) but bits 0-1 = 0.
         // Hardware ignores mode commands where bits 0-1 are zero.
@@ -1514,7 +1516,7 @@ mod tests {
         // Track data must be processed before conductor data.
         // Set up: conductor in ShortInit phase, track in WaitStep phase.
         // A data byte should go to the track, not the conductor.
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
 
         // Enable conductor + track 0.
         mpu.write_command(0x8F); // Conductor ON
@@ -1562,7 +1564,7 @@ mod tests {
     fn conductor_wsd_triggers_track_search() {
         // After a conductor WSD command, pending track requests must be
         // serviced before the conductor WSD data is collected.
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
 
         mpu.write_command(0x8F); // Conductor ON
         drain_ack(&mut mpu);
@@ -1590,7 +1592,7 @@ mod tests {
     fn conductor_request_skipped_when_busy() {
         // When the conductor is already processing data (non-Idle phase),
         // a new conductor request must not be issued immediately.
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
 
         mpu.write_command(0x8F); // Conductor ON
         drain_ack(&mut mpu);
@@ -1625,7 +1627,7 @@ mod tests {
         // When a conductor's step count reaches 0 while it is still collecting
         // WSD data, the pending conductor request must be deferred until the
         // WSD completes -- without corrupting other track step counters.
-        let mut mpu = MpuPc98ii::new();
+        let mut mpu = Mpu401::new();
 
         // Enable conductor + track 0.
         mpu.write_command(0x8F); // Conductor ON

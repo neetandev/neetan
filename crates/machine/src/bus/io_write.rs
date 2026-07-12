@@ -871,12 +871,12 @@ impl<T: Tracing> Pc9801Bus<T> {
             // MPU-PC98II MIDI interface (C-Bus, default base 0xE0D0).
             0xE0D0 => {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
-                self.mpu_pc98ii.write_data(value);
+                self.mpu401.write_data(value);
                 self.sync_mpu_irq_and_timer();
             }
             0xE0D2 => {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
-                self.mpu_pc98ii.write_command(value);
+                self.mpu401.write_command(value);
                 self.sync_mpu_irq_and_timer();
             }
 

@@ -215,11 +215,21 @@ pub enum Scancode {
     LCtrl,
     /// Right Ctrl key.
     RCtrl,
+    /// International 1 key (JIS Ro, the backslash/underscore key).
+    International1,
+    /// International 2 key (JIS Katakana/Hiragana).
+    International2,
+    /// International 3 key (JIS Yen).
+    International3,
+    /// International 4 key (JIS Henkan).
+    International4,
+    /// International 5 key (JIS Muhenkan).
+    International5,
 }
 
 impl Scancode {
     /// Total number of `Scancode` variants.
-    pub const COUNT: usize = 106;
+    pub const COUNT: usize = 111;
 
     /// Converts a raw SDL3 scancode to a `Scancode`, returning `None` for unmapped keys.
     pub fn from_raw(raw: SDL_Scancode) -> Option<Self> {
@@ -330,6 +340,11 @@ impl Scancode {
             SDL_Scancode::RALT => Self::RAlt,
             SDL_Scancode::LCTRL => Self::LCtrl,
             SDL_Scancode::RCTRL => Self::RCtrl,
+            SDL_Scancode::INTERNATIONAL1 => Self::International1,
+            SDL_Scancode::INTERNATIONAL2 => Self::International2,
+            SDL_Scancode::INTERNATIONAL3 => Self::International3,
+            SDL_Scancode::INTERNATIONAL4 => Self::International4,
+            SDL_Scancode::INTERNATIONAL5 => Self::International5,
             _ => return None,
         })
     }
@@ -443,6 +458,11 @@ impl Scancode {
             Self::RAlt => 103,
             Self::LCtrl => 104,
             Self::RCtrl => 105,
+            Self::International1 => 106,
+            Self::International2 => 107,
+            Self::International3 => 108,
+            Self::International4 => 109,
+            Self::International5 => 110,
         }
     }
 
@@ -556,6 +576,11 @@ impl Scancode {
             "ralt" => Self::RAlt,
             "lctrl" => Self::LCtrl,
             "rctrl" => Self::RCtrl,
+            "international1" | "ro" => Self::International1,
+            "international2" | "katakanahiragana" => Self::International2,
+            "international3" | "yen" => Self::International3,
+            "international4" | "henkan" => Self::International4,
+            "international5" | "muhenkan" => Self::International5,
             _ => return None,
         })
     }
@@ -669,6 +694,11 @@ impl Scancode {
             Self::RAlt => "RAlt",
             Self::LCtrl => "LCtrl",
             Self::RCtrl => "RCtrl",
+            Self::International1 => "International1",
+            Self::International2 => "International2",
+            Self::International3 => "International3",
+            Self::International4 => "International4",
+            Self::International5 => "International5",
         }
     }
 }

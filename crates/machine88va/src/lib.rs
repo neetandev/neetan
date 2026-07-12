@@ -1,5 +1,8 @@
 //! PC-88VA2 emulation: a NEC V30 machine with a custom graphics chipset.
 
+#![warn(missing_docs)]
+#![forbid(unsafe_code)]
+
 mod bus;
 mod config;
 mod machine;

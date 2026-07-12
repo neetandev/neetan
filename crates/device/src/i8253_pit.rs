@@ -1,4 +1,4 @@
-//! i8253 Programmable Interval Timer for the PC-98.
+//! i8253/i8254 Programmable Interval Timer for the PC-98 and PC/AT.
 //!
 //! On the PC-98, all GATE pins are hardwired HIGH (active), so modes 1 and 5
 //! (which require a rising GATE edge to start) are effectively unusable.
@@ -7,6 +7,10 @@
 //! The BIOS programs channel 0 in mode 3 (square wave) for the 100 Hz
 //! interval timer. Counting uses lazy evaluation: the current count is
 //! computed on-demand from the reload value and elapsed CPU cycles.
+//!
+//! The 8254 read-back command (SC bits = 11) is available through
+//! [`I8253Pit::write_read_back`]; the PC/AT bus routes SC=11 control writes
+//! there while the PC-98 bus never issues them (its 8253 ignores SC=11).
 
 use std::ops::{Deref, DerefMut};
 
@@ -78,6 +82,8 @@ pub struct I8253PitChannelState {
     pub output: bool,
     /// Pending reload value for modes 2/3 (applied at next terminal count).
     pub reload_pending: Option<u16>,
+    /// Status byte latched by the 8254 read-back command.
+    pub status_latch: Option<u8>,
 }
 
 /// Snapshot of the i8253 PIT (all 3 channels).
@@ -138,6 +144,7 @@ impl I8253Pit {
                         last_load_cycle: 0,
                         output: true,
                         reload_pending: None,
+                        status_latch: None,
                     },
                     // Channel 1: beep tone generator.
                     // Counter value is lineage-dependent; ctrl/flag zeroed.
@@ -149,6 +156,7 @@ impl I8253Pit {
                         last_load_cycle: 0,
                         output: false,
                         reload_pending: None,
+                        status_latch: None,
                     },
                     // Channel 2: RS-232C baud rate generator.
                     // BIOS programs mode 3 (square wave) via control word 0xB6.
@@ -160,6 +168,7 @@ impl I8253Pit {
                         last_load_cycle: 0,
                         output: true,
                         reload_pending: None,
+                        status_latch: None,
                     },
                 ],
             },
@@ -179,6 +188,7 @@ impl I8253Pit {
                         last_load_cycle: 0,
                         output: false,
                         reload_pending: None,
+                        status_latch: None,
                     },
                     I8253PitChannelState {
                         ctrl: 0,
@@ -188,6 +198,7 @@ impl I8253Pit {
                         last_load_cycle: 0,
                         output: false,
                         reload_pending: None,
+                        status_latch: None,
                     },
                     I8253PitChannelState {
                         ctrl: 0,
@@ -197,6 +208,7 @@ impl I8253Pit {
                         last_load_cycle: 0,
                         output: false,
                         reload_pending: None,
+                        status_latch: None,
                     },
                 ],
             },
@@ -219,6 +231,7 @@ impl I8253Pit {
             ch.ctrl = (value & 0x3F) | PIT_STAT_CMD;
             ch.flag &= !(PIT_FLAG_R | PIT_FLAG_W | PIT_FLAG_L | PIT_FLAG_C);
             ch.reload_pending = None;
+            ch.status_latch = None;
             let mode = (value >> 1) & 7;
             ch.output = mode != 0;
         } else {
@@ -278,6 +291,46 @@ impl I8253Pit {
         }
     }
 
+    /// Writes the 8254 read-back command (control word with SC bits = 11).
+    ///
+    /// Bit 5 clear latches the count, bit 4 clear latches the status; bits
+    /// 3:1 select channels 2:0. An already latched count or status is not
+    /// overwritten (it stays latched until read).
+    pub fn write_read_back(
+        &mut self,
+        value: u8,
+        current_cycle: u64,
+        cpu_clock_hz: u32,
+        pit_clock_hz: u32,
+    ) {
+        let latch_count = value & 0x20 == 0;
+        let latch_status = value & 0x10 == 0;
+        for channel in 0..3 {
+            if value & (0x02 << channel) == 0 {
+                continue;
+            }
+            if latch_status && self.channels[channel].status_latch.is_none() {
+                let output = self.get_output(channel, current_cycle, cpu_clock_hz, pit_clock_hz);
+                let ctrl = self.channels[channel].ctrl;
+                let null_count = if ctrl & PIT_STAT_CMD != 0 { 0x40 } else { 0 };
+                self.channels[channel].status_latch =
+                    Some(((output as u8) << 7) | null_count | (ctrl & 0x3F));
+            }
+            if latch_count && self.channels[channel].flag & PIT_FLAG_C == 0 {
+                let count = get_count(
+                    &self.channels[channel],
+                    current_cycle,
+                    cpu_clock_hz,
+                    pit_clock_hz,
+                );
+                let ch = &mut self.channels[channel];
+                ch.flag |= PIT_FLAG_C;
+                ch.flag &= !PIT_FLAG_L;
+                ch.latch = count;
+            }
+        }
+    }
+
     /// Reads a byte from a channel's counter register.
     pub fn read_counter(
         &mut self,
@@ -287,6 +340,9 @@ impl I8253Pit {
         pit_clock_hz: u32,
     ) -> u8 {
         let ch = &mut self.channels[channel];
+        if let Some(status) = ch.status_latch.take() {
+            return status;
+        }
         let rl = ch.ctrl & PIT_CTRL_RL;
 
         let word = if ch.flag & (PIT_FLAG_C | PIT_FLAG_L) != 0 {
@@ -374,6 +430,18 @@ impl I8253Pit {
         let ch = &self.channels[0];
         let reload = count_period(ch);
         reload * cpu_clock_hz as u64 / pit_clock_hz as u64
+    }
+
+    /// Returns the delay from timer 0's rising edge to its next falling edge.
+    pub fn timer0_high_cycles(&self, cpu_clock_hz: u32, pit_clock_hz: u32) -> Option<u64> {
+        let channel = &self.channels[0];
+        let reload = count_period(channel);
+        let high_ticks = match (channel.ctrl >> 1) & 7 {
+            2 => reload.saturating_sub(1).max(1),
+            3 => reload.div_ceil(2),
+            _ => return None,
+        };
+        Some((high_ticks * cpu_clock_hz as u64 / pit_clock_hz as u64).max(1))
     }
 
     /// Advances timer 0 at a fire event: clears/re-arms the interrupt flag,

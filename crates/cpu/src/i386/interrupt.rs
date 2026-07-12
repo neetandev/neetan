@@ -13,6 +13,15 @@ enum DoubleFaultResult {
     Shutdown,
 }
 
+/// Candidate stack geometry used while probing an interrupt frame.
+#[derive(Clone, Copy)]
+struct InterruptStackProbe {
+    base: u32,
+    is_32bit: bool,
+    initial_stack_pointer: u32,
+    slot_size: u32,
+}
+
 /// Exception classification per Intel 386 Programmer's Reference Manual,
 /// Table 9-3.
 ///
@@ -42,6 +51,38 @@ const ESCALATION: [[bool; 4]; 4] = [
 ];
 
 impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH> {
+    /// Pre-translates the pages written by one allocated interrupt stack slot.
+    fn probe_interrupt_stack_slot(
+        &mut self,
+        probe: InterruptStackProbe,
+        slot_index: u32,
+        write_size: u32,
+        bus: &mut impl common::Bus,
+    ) -> Step {
+        let raw_offset = probe
+            .initial_stack_pointer
+            .wrapping_sub(slot_index * probe.slot_size);
+        let offset = if probe.is_32bit {
+            raw_offset
+        } else {
+            raw_offset as u16 as u32
+        };
+        let first_linear = probe.base.wrapping_add(offset);
+        self.translate_linear(first_linear, true, bus)?;
+
+        let raw_last = offset.wrapping_add(write_size - 1);
+        let last_offset = if probe.is_32bit {
+            raw_last
+        } else {
+            raw_last as u16 as u32
+        };
+        let last_linear = probe.base.wrapping_add(last_offset);
+        if (last_linear & !0xFFF) != (first_linear & !0xFFF) {
+            self.translate_linear(last_linear, true, bus)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn check_interrupts(&mut self, bus: &mut impl common::Bus) {
         if self.pending_irq & PENDING_NMI != 0 && self.inhibit_all == 0 {
             self.pending_irq &= !PENDING_NMI;
@@ -336,29 +377,45 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             let push_size: u32 = if is_386_gate { 4 } else { 2 };
             let push_count: u32 =
                 if from_vm86 { 4 } else { 0 } + 5 + if error_code.is_some() { 1 } else { 0 };
+            let stack_probe = InterruptStackProbe {
+                base: new_ss_base,
+                is_32bit: new_b_bit,
+                initial_stack_pointer: new_esp,
+                slot_size: push_size,
+            };
 
-            // Probe each push slot at its starting linear address (and at
-            // its last byte, for the rare cross-page case).
-            for i in 1..=push_count {
-                let raw_off = new_esp.wrapping_sub(i * push_size);
-                let off_lo = if new_b_bit {
-                    raw_off
-                } else {
-                    raw_off as u16 as u32
-                };
-                let linear_lo = new_ss_base.wrapping_add(off_lo);
-                self.translate_linear(linear_lo, true, bus)?;
-                if push_size > 1 {
-                    let raw_hi = raw_off.wrapping_add(push_size - 1);
-                    let off_hi = if new_b_bit {
-                        raw_hi
-                    } else {
-                        raw_hi as u16 as u32
-                    };
-                    let linear_hi = new_ss_base.wrapping_add(off_hi);
-                    if (linear_hi & !0xFFF) != (linear_lo & !0xFFF) {
-                        self.translate_linear(linear_hi, true, bus)?;
+            if is_386_gate {
+                let selector_write_size = Self::dword_selector_write_size();
+                let mut slot_index = 0;
+                if from_vm86 {
+                    for _ in 0..4 {
+                        slot_index += 1;
+                        self.probe_interrupt_stack_slot(
+                            stack_probe,
+                            slot_index,
+                            selector_write_size,
+                            bus,
+                        )?;
                     }
+                }
+                slot_index += 1;
+                self.probe_interrupt_stack_slot(stack_probe, slot_index, selector_write_size, bus)?;
+                for _ in 0..2 {
+                    slot_index += 1;
+                    self.probe_interrupt_stack_slot(stack_probe, slot_index, push_size, bus)?;
+                }
+                slot_index += 1;
+                self.probe_interrupt_stack_slot(stack_probe, slot_index, selector_write_size, bus)?;
+                slot_index += 1;
+                self.probe_interrupt_stack_slot(stack_probe, slot_index, push_size, bus)?;
+                if error_code.is_some() {
+                    slot_index += 1;
+                    self.probe_interrupt_stack_slot(stack_probe, slot_index, push_size, bus)?;
+                }
+                debug_assert_eq!(slot_index, push_count);
+            } else {
+                for slot_index in 1..=push_count {
+                    self.probe_interrupt_stack_slot(stack_probe, slot_index, push_size, bus)?;
                 }
             }
 
@@ -373,15 +430,15 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
             if is_386_gate {
                 if from_vm86 {
-                    self.push_dword(bus, old_gs as u32)?;
-                    self.push_dword(bus, old_fs as u32)?;
-                    self.push_dword(bus, old_ds as u32)?;
-                    self.push_dword(bus, old_es as u32)?;
+                    self.push_dword_selector(bus, old_gs)?;
+                    self.push_dword_selector(bus, old_fs)?;
+                    self.push_dword_selector(bus, old_ds)?;
+                    self.push_dword_selector(bus, old_es)?;
                 }
-                self.push_dword(bus, old_ss as u32)?;
+                self.push_dword_selector(bus, old_ss)?;
                 self.push_dword(bus, old_sp)?;
                 self.push_dword(bus, old_eflags)?;
-                self.push_dword(bus, old_cs as u32)?;
+                self.push_dword_selector(bus, old_cs)?;
                 self.push_dword(bus, return_eip)?;
                 if let Some(code) = error_code {
                     self.push_dword(bus, code as u32)?;
@@ -432,7 +489,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             }
             let cs = self.sregs[SegReg32::CS as usize];
             self.push_dword(bus, eflags)?;
-            self.push_dword(bus, cs as u32)?;
+            self.push_dword_selector(bus, cs)?;
             self.push_dword(bus, return_eip)?;
             if let Some(code) = error_code {
                 self.push_dword(bus, code as u32)?;

@@ -8,10 +8,14 @@
 //! - **2D** (.2d): Headerless raw sector format for Sharp X1 2D floppies.
 //! - **DIM** (.dim): X68000 DIFC.X container with a per-track saved-flag table.
 //! - **XDF** (.xdf/.2hd): Headerless raw sector format for X68000 2HD floppies.
+//! - **IMG** (.img/.ima): Headerless raw sector format for IBM PC floppies.
+//! - **IBM XDF** (.xdf/.img, 1,884,160 bytes): IBM Extended Density Format.
 
 pub mod d88;
 pub mod dim;
 pub mod hdm;
+pub mod ibm_xdf;
+pub mod img;
 pub mod nfd;
 pub mod two_d;
 pub mod xdf;
@@ -48,6 +52,10 @@ pub enum FloppyFormat {
     Dim,
     /// Headerless raw X68000 2HD sector format (.xdf/.2hd).
     Xdf,
+    /// Headerless raw IBM PC sector format (.img/.ima).
+    Img,
+    /// IBM Extended Density Format (.xdf/.img, 1,884,160 bytes).
+    IbmXdf,
 }
 
 /// A parsed floppy disk image.
@@ -160,6 +168,26 @@ impl FloppyImage {
         })
     }
 
+    /// Parses a raw IMG floppy image from raw bytes.
+    pub fn from_img_bytes(data: &[u8]) -> Result<Self, FloppyError> {
+        let disk = img::from_bytes(data).map_err(FloppyError::Img)?;
+        Ok(Self {
+            disk,
+            format: FloppyFormat::Img,
+            container_header: None,
+        })
+    }
+
+    /// Parses an IBM XDF floppy image from raw bytes.
+    pub fn from_ibm_xdf_bytes(data: &[u8]) -> Result<Self, FloppyError> {
+        let disk = ibm_xdf::from_bytes(data).map_err(FloppyError::IbmXdf)?;
+        Ok(Self {
+            disk,
+            format: FloppyFormat::IbmXdf,
+            container_header: None,
+        })
+    }
+
     /// Returns a human-readable format name.
     pub fn format_name(&self) -> &'static str {
         match self.format {
@@ -171,6 +199,8 @@ impl FloppyImage {
             FloppyFormat::TwoD => "2D",
             FloppyFormat::Dim => "DIM",
             FloppyFormat::Xdf => "XDF",
+            FloppyFormat::Img => "IMG",
+            FloppyFormat::IbmXdf => "IBM XDF",
         }
     }
 
@@ -184,6 +214,8 @@ impl FloppyImage {
             FloppyFormat::TwoD => two_d::to_bytes(&self.disk),
             FloppyFormat::Dim => dim::to_bytes(&self.disk, self.dim_header()),
             FloppyFormat::Xdf => xdf::to_bytes(&self.disk),
+            FloppyFormat::Img => img::to_bytes(&self.disk),
+            FloppyFormat::IbmXdf => ibm_xdf::to_bytes(&self.disk),
         }
     }
 
@@ -219,6 +251,20 @@ impl FloppyImage {
                     None
                 } else {
                     Some("XDF cannot represent the current track layout")
+                }
+            }
+            FloppyFormat::Img => {
+                if img::is_representable(&self.disk) {
+                    None
+                } else {
+                    Some("IMG cannot represent the current track layout")
+                }
+            }
+            FloppyFormat::IbmXdf => {
+                if ibm_xdf::is_representable(&self.disk) {
+                    None
+                } else {
+                    Some("IBM XDF cannot represent the current track layout")
                 }
             }
         }
@@ -404,7 +450,14 @@ pub fn load_floppy_image(path: &Path, data: &[u8]) -> Result<FloppyImage, Floppy
         Some("2d") => FloppyImage::from_2d_bytes(data),
         Some("d77") => FloppyImage::from_d77_bytes(data),
         Some("dim") => FloppyImage::from_dim_bytes(data),
+        Some("xdf") if data.len() == ibm_xdf::IBM_XDF_FILE_SIZE => {
+            FloppyImage::from_ibm_xdf_bytes(data)
+        }
         Some("xdf") | Some("2hd") => FloppyImage::from_xdf_bytes(data),
+        Some("img") | Some("ima") if data.len() == ibm_xdf::IBM_XDF_FILE_SIZE => {
+            FloppyImage::from_ibm_xdf_bytes(data)
+        }
+        Some("img") | Some("ima") => FloppyImage::from_img_bytes(data),
         Some("d88") | Some("d98") | Some("88d") | Some("98d") => FloppyImage::from_d88_bytes(data),
         _ => FloppyImage::from_d88_bytes(data),
     }
@@ -425,6 +478,10 @@ pub enum FloppyError {
     Dim(dim::DimError),
     /// XDF format parsing error.
     Xdf(xdf::XdfError),
+    /// IMG format parsing error.
+    Img(img::ImgError),
+    /// IBM XDF format parsing error.
+    IbmXdf(ibm_xdf::IbmXdfError),
     /// File extension not recognized as a supported floppy format.
     UnrecognizedFormat,
 }
@@ -438,6 +495,8 @@ impl fmt::Display for FloppyError {
             FloppyError::TwoD(err) => write!(f, "{err}"),
             FloppyError::Dim(err) => write!(f, "{err}"),
             FloppyError::Xdf(err) => write!(f, "{err}"),
+            FloppyError::Img(err) => write!(f, "{err}"),
+            FloppyError::IbmXdf(err) => write!(f, "{err}"),
             FloppyError::UnrecognizedFormat => write!(f, "unrecognized floppy image format"),
         }
     }

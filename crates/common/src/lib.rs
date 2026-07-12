@@ -1668,6 +1668,12 @@ pub trait Machine {
     /// joystick port.
     fn set_joystick(&mut self, _index: usize, _state: JoystickState) {}
 
+    /// Updates the analog joystick axes for the controller at `index`.
+    ///
+    /// `x`/`y` are the raw stick magnitudes (-32768..32767). Only machines with
+    /// an analog game port consume these; the default is a no-op.
+    fn set_joystick_axes(&mut self, _index: usize, _x: i16, _y: i16) {}
+
     /// Fills `output` with interleaved stereo audio samples (`[L, R, L, R, …]`)
     /// for the current frame, returning the number of `f32` values written
     /// (i.e. `frames × 2`).

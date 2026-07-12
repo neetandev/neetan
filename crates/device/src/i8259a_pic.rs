@@ -240,6 +240,7 @@ impl I8259aPic {
                 // ICW1: reinitialize
                 chip.icw[0] = data;
                 chip.imr = 0;
+                chip.isr = 0;
                 chip.irr = 0;
                 chip.ocw3 = 0;
                 chip.pry = 0;
@@ -362,9 +363,12 @@ impl I8259aPic {
             return None;
         }
 
-        if master.ocw3 & OCW3_SMM == 0 {
-            mir |= master.isr;
-        }
+        let master_blocking_isr = if master.ocw3 & OCW3_SMM == 0 {
+            master.isr
+        } else {
+            master.isr & !master.imr
+        };
+        mir |= master_blocking_isr;
 
         let mut num = master.pry;
         let mut bit = 1u8 << num;
@@ -379,10 +383,12 @@ impl I8259aPic {
                 return None;
             }
 
-            let mut sir_scan = sir;
-            if slave.ocw3 & OCW3_SMM == 0 {
-                sir_scan |= slave.isr;
-            }
+            let slave_blocking_isr = if slave.ocw3 & OCW3_SMM == 0 {
+                slave.isr
+            } else {
+                slave.isr & !slave.imr
+            };
+            let sir_scan = sir | slave_blocking_isr;
 
             let mut snum = slave.pry;
             let mut sbit = 1u8 << snum;

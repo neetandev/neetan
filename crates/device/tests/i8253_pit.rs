@@ -1159,3 +1159,80 @@ fn mode3_odd_reload_period() {
     assert!(!pit.get_output(0, 100, hz, hz)); // tick 100: still LOW
     assert!(pit.get_output(0, 101, hz, hz)); // tick 101: HIGH again
 }
+
+#[test]
+fn read_back_latches_status_and_count() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    // Program channel 0: word access (RL=11), mode 3, binary. Control 0x36.
+    pit.write_control(0, 0x36, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0x00); // LSB
+    pit.write_counter(0, 0x10); // MSB -> value = 0x1000
+    pit.channels[0].last_load_cycle = 0;
+
+    // Read-back channel 0, latch both status and count (bits 5,4 clear).
+    // 0xC0 | select ch0 (bit1) = 0xC2.
+    pit.write_read_back(0xC2, 0, CPU_HZ, PIT_HZ);
+
+    // First read returns the status byte: output high (mode 3 starts high),
+    // null-count set (loaded but control-word write flag was cleared by the
+    // completed counter write, so PIT_STAT_CMD is clear -> null_count 0),
+    // RW field 11, mode 3, BCD 0 -> 0x80 | 0x30 | 0x06 = 0xB6.
+    let status = pit.read_counter(0, 0, CPU_HZ, PIT_HZ);
+    assert_eq!(status, 0xB6);
+
+    // Next reads return the latched count (low then high) = 0x1000.
+    let low = pit.read_counter(0, 0, CPU_HZ, PIT_HZ);
+    let high = pit.read_counter(0, 0, CPU_HZ, PIT_HZ);
+    assert_eq!((high as u16) << 8 | low as u16, 0x1000);
+}
+
+#[test]
+fn read_back_null_count_reflects_pending_load() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    // Control word written but counter not yet loaded -> PIT_STAT_CMD set.
+    pit.write_control(0, 0x34, 0, CPU_HZ, PIT_HZ); // ch0, word, mode 2
+
+    // Read-back status only (bit 5 set keeps count un-latched): 0xC0 | 0x10
+    // clear for status... status latch = bit4 clear. 0xE2 = latch status ch0.
+    pit.write_read_back(0xE2, 0, CPU_HZ, PIT_HZ);
+
+    let status = pit.read_counter(0, 0, CPU_HZ, PIT_HZ);
+    // Null count (bit 6) set because no count has been loaded yet.
+    assert_eq!(status & 0x40, 0x40);
+    // Mode 2 -> bits 3:1 = 010.
+    assert_eq!(status & 0x0E, 0x04);
+}
+
+#[test]
+fn read_back_status_latched_once() {
+    let mut pit = I8253Pit::new_zeroed();
+    pit.write_control(0, 0x36, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0x00);
+    pit.write_counter(0, 0x10);
+
+    // Latch status twice; the second must not overwrite the first.
+    pit.write_read_back(0xE2, 0, CPU_HZ, PIT_HZ);
+    let first = pit.channels[0].status_latch;
+    pit.write_read_back(0xE2, 0, CPU_HZ, PIT_HZ);
+    assert_eq!(pit.channels[0].status_latch, first);
+
+    // After reading, the latch clears and a new read-back can latch again.
+    let _ = pit.read_counter(0, 0, CPU_HZ, PIT_HZ);
+    assert_eq!(pit.channels[0].status_latch, None);
+}
+
+#[test]
+fn read_back_selects_multiple_channels() {
+    let mut pit = I8253Pit::new_zeroed();
+    pit.write_control(0, 0x36, 0, CPU_HZ, PIT_HZ);
+    pit.write_control(2, 0xB6, 0, CPU_HZ, PIT_HZ);
+
+    // Latch status of channels 0 and 2 (bits 1 and 3): 0xC0 | 0x02 | 0x08 = 0xCA.
+    pit.write_read_back(0xCA, 0, CPU_HZ, PIT_HZ);
+
+    assert!(pit.channels[0].status_latch.is_some());
+    assert!(pit.channels[1].status_latch.is_none());
+    assert!(pit.channels[2].status_latch.is_some());
+}

@@ -1,4 +1,11 @@
-//! Creative Sound Blaster 16 for PC-98 (CT2720): YMF262 (OPL3) + CT1741 DSP + CT1745 mixer.
+//! Creative Sound Blaster 16: YMF262 (OPL3) + CT1741 DSP + CT1745 mixer.
+//!
+//! The same device serves two host buses. On the PC-98 (CT2720 card) the mixer
+//! maps ISA IRQ/DMA selections onto the machine's PC-98 IRQ lines and its single
+//! 8-bit DMA controller. On the PC/AT the mixer uses the standard ISA IRQ lines
+//! and a real 8-bit low channel plus 16-bit high channel. The `PLATFORM` const
+//! generic ([`SB16_PLATFORM_PC98`] or [`SB16_PLATFORM_ISA_AT`]) selects between
+//! the two at compile time.
 
 use std::collections::VecDeque;
 
@@ -10,6 +17,20 @@ pub enum SoundboardSb16Timer {
     /// OPL timer B.
     OplTimerB,
 }
+
+/// Host bus platform selector for [`SoundBlaster16`] (const generic parameter).
+///
+/// Selects the mixer IRQ/DMA register semantics (registers 0x80/0x81) and the
+/// DMA channel picked for a transfer. Chosen at compile time like the i386 CPU
+/// model, so each platform's paths fold to a zero-cost specialization.
+///
+/// PC-98 CT2720 card: ISA IRQ/DMA bits map onto PC-98 IRQ lines and the single
+/// 8-bit DMA controller (channel 0 or 3).
+pub const SB16_PLATFORM_PC98: u8 = 0;
+/// PC/AT ISA card: standard ISA IRQ lines and separate 8-bit low / 16-bit high
+/// DMA channels.
+pub const SB16_PLATFORM_ISA_AT: u8 = 1;
+
 use resampler::{Attenuation, Latency, ResamplerFir};
 use ymfm_oxide::{Ymf262, YmfmOutput4, YmfmTimerUpdate};
 
@@ -32,6 +53,11 @@ const RESAMPLER_LATENCY: Latency = Latency::Sample64;
 const DEFAULT_SAMPLE_RATE: u32 = 22050;
 
 const COPYRIGHT_STRING: &[u8] = b"COPYRIGHT (C) CREATIVE TECHNOLOGY LTD, 1992.\0";
+
+/// PC/AT mixer register 0x80 value selecting IRQ 5 (bit 1).
+const AT_MIXER_IRQ_5: u8 = 0x02;
+/// PC/AT mixer register 0x81 value selecting 8-bit DMA 1 (bit 1) and 16-bit DMA 5 (bit 5).
+const AT_MIXER_DMA_1_AND_5: u8 = 0x22;
 
 const DMA_FORMAT_UNSIGNED_8_MONO: u8 = 0;
 const DMA_FORMAT_UNSIGNED_8_STEREO: u8 = 1;
@@ -120,8 +146,12 @@ pub struct Sb16DspState {
     pub dma_block_size: u32,
     /// Bytes remaining in current block.
     pub dma_bytes_remaining: u32,
-    /// PC-98 DMA channel (0 or 3).
+    /// Active DMA channel used for the current transfer.
     pub dma_channel: u8,
+    /// Selected 8-bit (low) DMA channel on the PC/AT (mixer 0x81 bits 0/1/3).
+    pub dma_channel_low: u8,
+    /// Selected 16-bit (high) DMA channel on the PC/AT (mixer 0x81 bits 5/6/7).
+    pub dma_channel_high: u8,
     /// Raw mixer register 0x81 value (low + high DMA channel bits).
     pub dma_channel_register: u8,
     /// Whether the current DMA transfer is recording (device->memory) rather than playback.
@@ -158,6 +188,8 @@ impl Default for Sb16DspState {
             dma_block_size: 0,
             dma_bytes_remaining: 0,
             dma_channel: 3,
+            dma_channel_low: 1,
+            dma_channel_high: 5,
             dma_channel_register: 0x08,
             dma_is_recording: false,
             irq_pending_8bit: false,
@@ -193,7 +225,7 @@ impl Default for Sb16MixerState {
 pub struct SoundBlaster16State {
     /// I/O base address (default 0xD2).
     pub base_port: u16,
-    /// PC-98 IRQ line (default 5).
+    /// IRQ line the merged interrupt is asserted on (default 5).
     pub irq_line: u8,
     /// Whether the merged IRQ output is currently asserted.
     pub irq_asserted: bool,
@@ -308,8 +340,9 @@ fn dsp_params_needed(cmd: u8) -> u8 {
     }
 }
 
-/// Creative Sound Blaster 16 for PC-98.
-pub struct SoundBlaster16 {
+/// Creative Sound Blaster 16, specialized at compile time for `PLATFORM`
+/// (one of [`SB16_PLATFORM_PC98`] or [`SB16_PLATFORM_ISA_AT`]).
+pub struct SoundBlaster16<const PLATFORM: u8> {
     /// Current device state (saveable).
     pub state: SoundBlaster16State,
     opl3: Ymf262,
@@ -331,8 +364,8 @@ pub struct SoundBlaster16 {
     action_buffer: Vec<SoundboardSb16Action>,
 }
 
-impl SoundBlaster16 {
-    /// Creates a new SB16 sound board instance.
+impl<const PLATFORM: u8> SoundBlaster16<PLATFORM> {
+    /// Creates a new SB16 sound board specialized for `PLATFORM`.
     pub fn new(cpu_clock_hz: u32, sample_rate: u32) -> Self {
         let mut opl3 = Ymf262::new();
         opl3.reset();
@@ -356,8 +389,18 @@ impl SoundBlaster16 {
         );
         let pcm_resample_output_size = pcm_resampler.buffer_size_output();
 
-        Self {
-            state: SoundBlaster16State::default(),
+        let mut state = SoundBlaster16State::default();
+        if PLATFORM == SB16_PLATFORM_ISA_AT {
+            // Standard PC/AT SB16 power-on: IRQ 5, 8-bit DMA 1, 16-bit DMA 5.
+            state.dsp.dma_channel_low = 1;
+            state.dsp.dma_channel_high = 5;
+            state.dsp.dma_channel = 1;
+            state.mixer.registers[0x80] = AT_MIXER_IRQ_5;
+            state.mixer.registers[0x81] = AT_MIXER_DMA_1_AND_5;
+        }
+
+        let mut board = Self {
+            state,
             opl3,
             opl3_action_cycle: 0,
             opl3_native_rate,
@@ -374,7 +417,10 @@ impl SoundBlaster16 {
             pending_dsp_actions: Vec::new(),
             pcm_rate_dirty: false,
             action_buffer: Vec::new(),
-        }
+        };
+        board.apply_mixer_irq_config();
+        board.apply_mixer_dma_config();
+        board
     }
 
     /// Returns the I/O base port.
@@ -776,6 +822,15 @@ impl SoundBlaster16 {
             self.state.dsp.dma_block_size = byte_length;
         }
         self.state.dsp.dma_bytes_remaining = self.state.dsp.dma_block_size;
+        if PLATFORM == SB16_PLATFORM_ISA_AT {
+            // The PC/AT routes 8-bit transfers through the low channel and
+            // 16-bit transfers through the high channel.
+            self.state.dsp.dma_channel = if dma_format_is_16bit(format) {
+                self.state.dsp.dma_channel_high
+            } else {
+                self.state.dsp.dma_channel_low
+            };
+        }
         self.pending_dsp_actions
             .push(SoundboardSb16Action::StartDma {
                 channel: self.state.dsp.dma_channel,
@@ -808,38 +863,20 @@ impl SoundBlaster16 {
             0x00 => {
                 // Reset mixer
                 *self.state.mixer.registers = mixer_default_registers();
+                if PLATFORM == SB16_PLATFORM_ISA_AT {
+                    self.state.mixer.registers[0x80] = AT_MIXER_IRQ_5;
+                    self.state.mixer.registers[0x81] = AT_MIXER_DMA_1_AND_5;
+                }
+                self.apply_mixer_irq_config();
+                self.apply_mixer_dma_config();
             }
             0x80 => {
-                // IRQ configuration - PC-98 CT2720 maps ISA IRQ numbers
-                // to PC-98 IRQ lines differently from standard ISA.
                 self.state.mixer.registers[addr as usize] = value;
-                self.state.irq_line = match value & 0x0F {
-                    0x01 => 3,  // ISA IRQ 2 -> PC-98 IRQ 3
-                    0x02 => 10, // ISA IRQ 5 -> PC-98 IRQ 10
-                    0x04 => 12, // ISA IRQ 7 -> PC-98 IRQ 12
-                    0x08 => 5,  // ISA IRQ 10 -> PC-98 IRQ 5
-                    _ => self.state.irq_line,
-                };
+                self.apply_mixer_irq_config();
             }
             0x81 => {
-                // DMA channel configuration.
-                // Bits 0,1,3: low DMA channel (0/1/3).
-                // Bits 5,6,7: high DMA channel (5/6/7).
-                // On PC-98 CT2720, both low and high channels map to
-                // PC-98 DMA channel 0 or 3. Reserved bits 2 and 4 are
-                // masked off. The raw value (with reserved bits cleared)
-                // is stored for high-DMA detection during 16-bit transfers.
                 self.state.mixer.registers[addr as usize] = value;
-                let masked = value & !0x14;
-                self.state.dsp.dma_channel_register = masked;
-                // DMA 0 (bit 0) or DMA 5 (bit 5) -> PC-98 DMA ch 0
-                if masked & 0x21 != 0 {
-                    self.state.dsp.dma_channel = 0;
-                }
-                // DMA 1 (bit 1), DMA 3 (bit 3), DMA 6 (bit 6), DMA 7 (bit 7) -> PC-98 DMA ch 3
-                if masked & 0xCA != 0 {
-                    self.state.dsp.dma_channel = 3;
-                }
+                self.apply_mixer_dma_config();
             }
             // Legacy SB Pro volume mapping
             0x04 => {
@@ -888,13 +925,23 @@ impl SoundBlaster16 {
         let addr = self.state.mixer.address;
         match addr {
             0x80 => {
-                // IRQ config readback (PC-98 IRQ -> mixer register value)
-                match self.state.irq_line {
-                    3 => 0x01,
-                    10 => 0x02,
-                    12 => 0x04,
-                    5 => 0x08,
-                    _ => 0x00,
+                // IRQ config readback (IRQ line -> mixer register value).
+                if PLATFORM == SB16_PLATFORM_ISA_AT {
+                    match self.state.irq_line {
+                        9 => 0x01,
+                        5 => 0x02,
+                        7 => 0x04,
+                        10 => 0x08,
+                        _ => 0x00,
+                    }
+                } else {
+                    match self.state.irq_line {
+                        3 => 0x01,
+                        10 => 0x02,
+                        12 => 0x04,
+                        5 => 0x08,
+                        _ => 0x00,
+                    }
                 }
             }
             0x81 => {
@@ -913,6 +960,64 @@ impl SoundBlaster16 {
                 status
             }
             _ => self.state.mixer.registers[addr as usize],
+        }
+    }
+
+    /// Recomputes the IRQ line from mixer register 0x80 for the current platform.
+    fn apply_mixer_irq_config(&mut self) {
+        let value = self.state.mixer.registers[0x80];
+        self.state.irq_line = if PLATFORM == SB16_PLATFORM_ISA_AT {
+            match value & 0x0F {
+                0x01 => 9, // ISA IRQ 2 is wired to IRQ 9
+                0x02 => 5,
+                0x04 => 7,
+                0x08 => 10,
+                _ => self.state.irq_line,
+            }
+        } else {
+            match value & 0x0F {
+                0x01 => 3,  // ISA IRQ 2 -> PC-98 IRQ 3
+                0x02 => 10, // ISA IRQ 5 -> PC-98 IRQ 10
+                0x04 => 12, // ISA IRQ 7 -> PC-98 IRQ 12
+                0x08 => 5,  // ISA IRQ 10 -> PC-98 IRQ 5
+                _ => self.state.irq_line,
+            }
+        };
+    }
+
+    /// Recomputes the DMA channels from mixer register 0x81 for the current platform.
+    fn apply_mixer_dma_config(&mut self) {
+        let value = self.state.mixer.registers[0x81];
+        if PLATFORM == SB16_PLATFORM_ISA_AT {
+            self.state.dsp.dma_channel_register = value;
+            // Low (8-bit) channel select: bits 0/1/3 -> channel 0/1/3.
+            if value & 0x01 != 0 {
+                self.state.dsp.dma_channel_low = 0;
+            } else if value & 0x02 != 0 {
+                self.state.dsp.dma_channel_low = 1;
+            } else if value & 0x08 != 0 {
+                self.state.dsp.dma_channel_low = 3;
+            }
+            // High (16-bit) channel select: bits 5/6/7 -> channel 5/6/7.
+            if value & 0x20 != 0 {
+                self.state.dsp.dma_channel_high = 5;
+            } else if value & 0x40 != 0 {
+                self.state.dsp.dma_channel_high = 6;
+            } else if value & 0x80 != 0 {
+                self.state.dsp.dma_channel_high = 7;
+            }
+        } else {
+            // Reserved bits 2 and 4 are masked off. The result is stored for
+            // high-DMA detection during 16-bit transfers, and both low and
+            // high channels collapse onto PC-98 DMA channel 0 or 3.
+            let masked = value & !0x14;
+            self.state.dsp.dma_channel_register = masked;
+            if masked & 0x21 != 0 {
+                self.state.dsp.dma_channel = 0;
+            }
+            if masked & 0xCA != 0 {
+                self.state.dsp.dma_channel = 3;
+            }
         }
     }
 
@@ -1369,7 +1474,7 @@ impl SoundBlaster16 {
 mod tests {
     use super::*;
 
-    fn make_sb16() -> SoundBlaster16 {
+    fn make_sb16() -> SoundBlaster16<SB16_PLATFORM_PC98> {
         SoundBlaster16::new(8_000_000, 48000)
     }
 
@@ -1506,6 +1611,73 @@ mod tests {
 
         sb16.write_mixer_address(0x81);
         assert_eq!(sb16.read_mixer_data(), 0x08);
+    }
+
+    fn make_at_sb16() -> SoundBlaster16<SB16_PLATFORM_ISA_AT> {
+        SoundBlaster16::new(8_000_000, 48000)
+    }
+
+    #[test]
+    fn at_power_on_defaults() {
+        let sb16 = make_at_sb16();
+        assert_eq!(sb16.state.irq_line, 5);
+        assert_eq!(sb16.state.dsp.dma_channel_low, 1);
+        assert_eq!(sb16.state.dsp.dma_channel_high, 5);
+    }
+
+    #[test]
+    fn at_mixer_irq_config() {
+        let mut sb16 = make_at_sb16();
+        sb16.write_mixer_address(0x80);
+        sb16.write_mixer_data(0x02); // IRQ 5
+        assert_eq!(sb16.state.irq_line, 5);
+
+        sb16.write_mixer_address(0x80);
+        sb16.write_mixer_data(0x04); // IRQ 7
+        assert_eq!(sb16.state.irq_line, 7);
+
+        sb16.write_mixer_address(0x80);
+        sb16.write_mixer_data(0x01); // IRQ 2 -> wired to IRQ 9
+        assert_eq!(sb16.state.irq_line, 9);
+
+        sb16.write_mixer_address(0x80);
+        assert_eq!(sb16.read_mixer_data(), 0x01);
+    }
+
+    #[test]
+    fn at_mixer_dma_config() {
+        let mut sb16 = make_at_sb16();
+        sb16.write_mixer_address(0x81);
+        sb16.write_mixer_data(0x22); // 8-bit DMA 1 (bit 1) + 16-bit DMA 5 (bit 5)
+        assert_eq!(sb16.state.dsp.dma_channel_low, 1);
+        assert_eq!(sb16.state.dsp.dma_channel_high, 5);
+
+        sb16.write_mixer_address(0x81);
+        sb16.write_mixer_data(0x48); // 8-bit DMA 3 (bit 3) + 16-bit DMA 6 (bit 6)
+        assert_eq!(sb16.state.dsp.dma_channel_low, 3);
+        assert_eq!(sb16.state.dsp.dma_channel_high, 6);
+
+        sb16.write_mixer_address(0x81);
+        assert_eq!(sb16.read_mixer_data(), 0x48);
+    }
+
+    #[test]
+    fn at_selects_low_channel_for_8bit_and_high_for_16bit() {
+        let mut sb16 = make_at_sb16();
+        sb16.write_mixer_address(0x81);
+        sb16.write_mixer_data(0x22); // low = 1, high = 5
+
+        // 8-bit auto-init DMA (0x1C) uses the low channel.
+        sb16.state.dsp.dma_block_size = 64;
+        sb16.write_dsp_command(0x1C);
+        assert_eq!(sb16.state.dsp.dma_channel, 1);
+
+        // 16-bit DMA (0xB0) uses the high channel.
+        sb16.write_dsp_command(0xB0);
+        sb16.write_dsp_command(0x10); // mode: 16-bit mono
+        sb16.write_dsp_command(0x3F); // length low
+        sb16.write_dsp_command(0x00); // length high
+        assert_eq!(sb16.state.dsp.dma_channel, 5);
     }
 
     #[test]

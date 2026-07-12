@@ -88,6 +88,10 @@ pub fn create_hdd_image(path: &Path, hdd_type: HddSizeType) -> crate::Result<()>
         if extension.as_deref() != Some("hdf") {
             bail!("X68000 output path must have a .hdf extension");
         }
+    } else if hdd_type.is_at_flat() {
+        if extension.as_deref() != Some("hdd") {
+            bail!("PC/AT output path must have a .hdd extension");
+        }
     } else if extension.as_deref() != Some("hdi") {
         bail!("output path must have a .hdi extension");
     }
@@ -117,6 +121,10 @@ pub fn create_hdd_image(path: &Path, hdd_type: HddSizeType) -> crate::Result<()>
         HddSizeType::X68kSasiMb40 => (614, 8, 33, 256, HddFormat::Raw),
         HddSizeType::X68kScsiMb20 => (20 * 8, 8, 32, 512, HddFormat::Raw),
         HddSizeType::X68kScsiMb40 => (40 * 8, 8, 32, 512, HddFormat::Raw),
+        HddSizeType::AtMb40 => (81, 16, 63, 512, HddFormat::AtFlat),
+        HddSizeType::AtMb100 => (203, 16, 63, 512, HddFormat::AtFlat),
+        HddSizeType::AtMb250 => (507, 16, 63, 512, HddFormat::AtFlat),
+        HddSizeType::AtMb504 => (1023, 16, 63, 512, HddFormat::AtFlat),
     };
 
     let geometry = HddGeometry {

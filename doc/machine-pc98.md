@@ -58,25 +58,6 @@ The MT-32 and SC-55 modules are configured separately via `--midi`; see
 
 CD-ROM disc images (`--cdrom`) are supported on the PC-9821 targets only.
 
-## ROM set
-
-Unlike the other families, the PC-98 targets run on a built-in HLE BIOS and a
-built-in font by default, so a ROM set is mostly optional. Point `--pc98-roms` at a
-directory of dumps and pass `--bios` to boot the model's real BIOS instead of the
-HLE BIOS. ROMs are identified by their BLAKE3 content hash rather than by file name,
-so any dump layout works.
-
-If a game doesn't boot or has strange errors, then you might need to use a real
-PC-98 BIOS file. Please open an issue in such cases, since outside BASIC games we
-want to have full compatibility with the HLE BIOS.
-
-With `--bios` the model's BIOS is required. The PC-9821 targets are the exception:
-they have no real-BIOS boot path and always fall back to HLE with a warning. The 26K
-sound ROM is loaded when a PC-9801-26K board is selected; a font ROM is best-effort.
-
-See the [PC-9801 / PC-9821 ROMs](roms.md#pc-9801--pc-9821) section for the exact
-BIOS, font, and sound ROM hashes.
-
 ## Graphic acceleration board
 
 neetan can emulate the I-O DATA GA-1280A graphics accelerator board, the high-end
@@ -140,3 +121,22 @@ Limitations:
   menus) are not captured yet.
 - Characters that the JIS-to-Unicode conversion cannot map (custom user-defined
   glyphs, etc.) are silently dropped.
+
+## ROM set
+
+Unlike the other families, the PC-98 targets run on a built-in HLE BIOS and a
+built-in font by default, so a ROM set is mostly optional. Point `--pc98-roms` at a
+directory of dumps and pass `--bios` to boot the model's real BIOS instead of the
+HLE BIOS. ROMs are identified by their BLAKE3 content hash rather than by file name,
+so any dump layout works.
+
+If a game doesn't boot or has strange errors, then you might need to use a real
+PC-98 BIOS file. Please open an issue in such cases, since outside BASIC games we
+want to have full compatibility with the HLE BIOS.
+
+With `--bios` the model's BIOS is required. The PC-9821 targets are the exception:
+they have no real-BIOS boot path and always fall back to HLE with a warning. The 26K
+sound ROM is loaded when a PC-9801-26K board is selected; a font ROM is best-effort.
+
+See the [PC-9801 / PC-9821 ROMs](roms.md#pc-9801--pc-9821) section for the exact
+BIOS, font, and sound ROM hashes.

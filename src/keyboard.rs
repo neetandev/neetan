@@ -275,6 +275,19 @@ impl KeyMap {
         }
     }
 
+    /// PC/AT key map for the 106-key JIS (OADG) layout: host scancodes to
+    /// set-1 key ids (E0-extended keys use the machineat synthetic ids). The
+    /// machine expands each forwarded id into the set-2 make/break sequence;
+    /// modifiers forward as their own ids.
+    pub const fn new_at() -> Self {
+        let mappings = build_at_default_map();
+        Self {
+            mappings,
+            shifted_mappings: mappings,
+            resolve_modifiers: false,
+        }
+    }
+
     pub fn set(&mut self, host: Scancode, pc98_code: u8) {
         self.mappings[host.index()] = pc98_code;
     }
@@ -520,6 +533,12 @@ const fn build_default_map() -> [u8; Scancode::COUNT] {
         (NumLock, 0x72),
         (LAlt, 0x73),
         (LCtrl, 0x74),
+        // JIS keys on a Japanese host keyboard.
+        (International1, 0x33), // Ro (backslash / underscore)
+        (International2, 0x72), // Katakana/Hiragana (KANA)
+        (International3, 0x0D), // Yen
+        (International4, 0x35), // Henkan (XFER)
+        (International5, 0x51), // Muhenkan (NFER)
     ];
 
     let mut map = [0u8; Scancode::COUNT];
@@ -1786,11 +1805,212 @@ const fn build_pc60_shifted_map() -> [u8; Scancode::COUNT] {
     map
 }
 
+/// Default PC/AT key map for the 106-key JIS (OADG) layout: host scancodes to
+/// set-1 key ids. Unmapped host keys carry 0x00, which the machine drops.
+/// The E0-extended keys use the synthetic ids the machineat crate exports.
+#[allow(clippy::just_underscores_and_digits)]
+const AT_DEFAULT_BINDINGS: &[(Scancode, u8, &str)] = &[
+    (Scancode::Escape, 0x01, "Esc"),
+    (Scancode::_1, 0x02, "1"),
+    (Scancode::_2, 0x03, "2"),
+    (Scancode::_3, 0x04, "3"),
+    (Scancode::_4, 0x05, "4"),
+    (Scancode::_5, 0x06, "5"),
+    (Scancode::_6, 0x07, "6"),
+    (Scancode::_7, 0x08, "7"),
+    (Scancode::_8, 0x09, "8"),
+    (Scancode::_9, 0x0A, "9"),
+    (Scancode::_0, 0x0B, "0"),
+    (Scancode::Minus, 0x0C, "Minus"),
+    (Scancode::Equals, 0x0D, "Caret"),
+    (Scancode::Backspace, 0x0E, "Backspace"),
+    (Scancode::Tab, 0x0F, "Tab"),
+    (Scancode::Q, 0x10, "Q"),
+    (Scancode::W, 0x11, "W"),
+    (Scancode::E, 0x12, "E"),
+    (Scancode::R, 0x13, "R"),
+    (Scancode::T, 0x14, "T"),
+    (Scancode::Y, 0x15, "Y"),
+    (Scancode::U, 0x16, "U"),
+    (Scancode::I, 0x17, "I"),
+    (Scancode::O, 0x18, "O"),
+    (Scancode::P, 0x19, "P"),
+    (Scancode::LeftBracket, 0x1A, "LeftBracket"),
+    (Scancode::RightBracket, 0x1B, "RightBracket"),
+    (Scancode::Return, 0x1C, "Return"),
+    (Scancode::LCtrl, 0x1D, "LCtrl"),
+    (Scancode::A, 0x1E, "A"),
+    (Scancode::S, 0x1F, "S"),
+    (Scancode::D, 0x20, "D"),
+    (Scancode::F, 0x21, "F"),
+    (Scancode::G, 0x22, "G"),
+    (Scancode::H, 0x23, "H"),
+    (Scancode::J, 0x24, "J"),
+    (Scancode::K, 0x25, "K"),
+    (Scancode::L, 0x26, "L"),
+    (Scancode::Semicolon, 0x27, "Semicolon"),
+    (Scancode::Apostrophe, 0x28, "Colon"),
+    (Scancode::Grave, 0x29, "Zenkaku"),
+    (Scancode::LShift, 0x2A, "LShift"),
+    (Scancode::Backslash, 0x2B, "Backslash"),
+    (Scancode::Z, 0x2C, "Z"),
+    (Scancode::X, 0x2D, "X"),
+    (Scancode::C, 0x2E, "C"),
+    (Scancode::V, 0x2F, "V"),
+    (Scancode::B, 0x30, "B"),
+    (Scancode::N, 0x31, "N"),
+    (Scancode::M, 0x32, "M"),
+    (Scancode::Comma, 0x33, "Comma"),
+    (Scancode::Period, 0x34, "Period"),
+    (Scancode::Slash, 0x35, "Slash"),
+    (Scancode::RShift, 0x36, "RShift"),
+    (Scancode::KpMultiply, 0x37, "KpMultiply"),
+    (Scancode::LAlt, 0x38, "LAlt"),
+    (Scancode::Space, 0x39, "Space"),
+    (Scancode::CapsLock, 0x3A, "CapsLock"),
+    (Scancode::F1, 0x3B, "F1"),
+    (Scancode::F2, 0x3C, "F2"),
+    (Scancode::F3, 0x3D, "F3"),
+    (Scancode::F4, 0x3E, "F4"),
+    (Scancode::F5, 0x3F, "F5"),
+    (Scancode::F6, 0x40, "F6"),
+    (Scancode::F7, 0x41, "F7"),
+    (Scancode::F8, 0x42, "F8"),
+    (Scancode::F9, 0x43, "F9"),
+    (Scancode::F10, 0x44, "F10"),
+    (Scancode::NumLock, 0x45, "NumLock"),
+    (Scancode::Kp7, 0x47, "Kp7"),
+    (Scancode::Kp8, 0x48, "Kp8"),
+    (Scancode::Kp9, 0x49, "Kp9"),
+    (Scancode::KpMinus, 0x4A, "KpMinus"),
+    (Scancode::Kp4, 0x4B, "Kp4"),
+    (Scancode::Kp5, 0x4C, "Kp5"),
+    (Scancode::Kp6, 0x4D, "Kp6"),
+    (Scancode::KpPlus, 0x4E, "KpPlus"),
+    (Scancode::Kp1, 0x4F, "Kp1"),
+    (Scancode::Kp2, 0x50, "Kp2"),
+    (Scancode::Kp3, 0x51, "Kp3"),
+    (Scancode::Kp0, 0x52, "Kp0"),
+    (Scancode::KpPeriod, 0x53, "KpPeriod"),
+    (Scancode::NonUsBackslash, 0x56, "NonUsBackslash"),
+    (Scancode::F11, 0x57, "F11"),
+    (Scancode::F12, 0x58, "F12"),
+    (Scancode::International1, 0x73, "Ro"),
+    (Scancode::International2, 0x70, "Kana"),
+    (Scancode::International3, 0x7D, "Yen"),
+    (Scancode::International4, 0x79, "Henkan"),
+    (Scancode::International5, 0x7B, "Muhenkan"),
+    (Scancode::Up, machineat::AT_KEY_CURSOR_UP, "Up"),
+    (Scancode::Down, machineat::AT_KEY_CURSOR_DOWN, "Down"),
+    (Scancode::Left, machineat::AT_KEY_CURSOR_LEFT, "Left"),
+    (Scancode::Right, machineat::AT_KEY_CURSOR_RIGHT, "Right"),
+    (Scancode::Insert, machineat::AT_KEY_INSERT, "Insert"),
+    (Scancode::Delete, machineat::AT_KEY_DELETE, "Delete"),
+    (Scancode::Home, machineat::AT_KEY_HOME, "Home"),
+    (Scancode::End, machineat::AT_KEY_END, "End"),
+    (Scancode::PageUp, machineat::AT_KEY_PAGE_UP, "PageUp"),
+    (Scancode::PageDown, machineat::AT_KEY_PAGE_DOWN, "PageDown"),
+    (Scancode::KpEnter, machineat::AT_KEY_KEYPAD_ENTER, "KpEnter"),
+    (
+        Scancode::KpDivide,
+        machineat::AT_KEY_KEYPAD_DIVIDE,
+        "KpDivide",
+    ),
+    (Scancode::RCtrl, machineat::AT_KEY_RIGHT_CTRL, "RCtrl"),
+    (Scancode::RAlt, machineat::AT_KEY_RIGHT_ALT, "RAlt"),
+];
+
+#[allow(clippy::just_underscores_and_digits)]
+const fn build_at_default_map() -> [u8; Scancode::COUNT] {
+    let mut map = [0u8; Scancode::COUNT];
+    let mut i = 0;
+    while i < AT_DEFAULT_BINDINGS.len() {
+        let (scancode, code, _) = AT_DEFAULT_BINDINGS[i];
+        map[scancode.index()] = code;
+        i += 1;
+    }
+    map
+}
+
+/// Maps a PC/AT key name to its set-1 key id for `key.*` config overrides.
+/// A `0xNN` hex literal binds a raw id directly.
+pub fn at_key_from_name(name: &str) -> Option<u8> {
+    if let Some(hex) = name.strip_prefix("0x").or_else(|| name.strip_prefix("0X")) {
+        return u8::from_str_radix(hex, 16).ok();
+    }
+    if let Some((_, code, _)) = AT_DEFAULT_BINDINGS
+        .iter()
+        .find(|(_, _, canonical_name)| canonical_name.eq_ignore_ascii_case(name))
+    {
+        return Some(*code);
+    }
+    match name.to_ascii_lowercase().as_str() {
+        "escape" => Some(0x01),
+        "equals" => Some(0x0D),
+        "bs" => Some(0x0E),
+        "enter" => Some(0x1C),
+        "ctrl" => Some(0x1D),
+        "apostrophe" => Some(0x28),
+        "grave" | "hankaku" => Some(0x29),
+        "shift" => Some(0x2A),
+        "alt" => Some(0x38),
+        "caps" => Some(0x3A),
+        "katakana" | "hiragana" => Some(0x70),
+        "underscore" => Some(0x73),
+        "xfer" => Some(0x79),
+        "nfer" => Some(0x7B),
+        "ins" => Some(machineat::AT_KEY_INSERT),
+        "del" => Some(machineat::AT_KEY_DELETE),
+        _ => None,
+    }
+}
+
+pub fn parse_key_binding_at(host_name: &str, at_name: &str) -> Option<(Scancode, u8)> {
+    let host = Scancode::from_name(host_name)?;
+    let code = at_key_from_name(at_name)?;
+    Some((host, code))
+}
+
 #[cfg(test)]
 mod tests {
     use sdl3::keyboard::Scancode;
 
-    use super::{KeyMap, KeyboardForwardingState, x68k_scancode_from_name};
+    use super::{
+        AT_DEFAULT_BINDINGS, KeyMap, KeyboardForwardingState, at_key_from_name,
+        x68k_scancode_from_name,
+    };
+
+    #[test]
+    fn at_canonical_names_match_every_default_binding() {
+        let key_map = KeyMap::new_at();
+        for &(host, code, canonical_name) in AT_DEFAULT_BINDINGS {
+            assert_eq!(
+                key_map.lookup(host),
+                code,
+                "default binding for {canonical_name}"
+            );
+            assert_eq!(
+                at_key_from_name(canonical_name),
+                Some(code),
+                "canonical binding for {canonical_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn at_key_names_accept_aliases_and_raw_ids() {
+        assert_eq!(at_key_from_name("escape"), Some(0x01));
+        assert_eq!(at_key_from_name("a"), Some(0x1E));
+        assert_eq!(at_key_from_name("ENTER"), Some(0x1C));
+        assert_eq!(at_key_from_name("Equals"), Some(0x0D));
+        assert_eq!(at_key_from_name("Apostrophe"), Some(0x28));
+        assert_eq!(at_key_from_name("Hankaku"), Some(0x29));
+        assert_eq!(at_key_from_name("Katakana"), Some(0x70));
+        assert_eq!(at_key_from_name("0x00"), Some(0x00));
+        assert_eq!(at_key_from_name("0X66"), Some(0x66));
+        assert_eq!(at_key_from_name("0x100"), None);
+        assert_eq!(at_key_from_name("not-a-key"), None);
+    }
 
     #[test]
     fn pc88va_maps_host_keys_to_va_keycodes() {

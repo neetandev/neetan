@@ -1,5 +1,8 @@
 //! PC-6000 / PC-6600 series emulation.
 
+#![warn(missing_docs)]
+#![forbid(unsafe_code)]
+
 mod bus;
 mod config;
 mod interrupt;

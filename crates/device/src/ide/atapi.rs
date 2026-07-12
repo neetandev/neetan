@@ -8,11 +8,12 @@
 //! The SCSI command set implemented here covers the MMC (Multi-Media Commands)
 //! subset needed for CD-ROM data access, TOC reading, and media change.
 
+use super::lle::{self, IdeAction, IdePhase};
 use crate::{
     cd_audio::CdAudioPlayer,
     cdrom::CdImage,
     scsi::cdrom::{
-        CDROM_SECTOR_SIZE, audio_status_byte, decode_msf_byte, medium_type, msf_to_lba,
+        CDROM_SECTOR_SIZE, ScsiCdrom, audio_status_byte, decode_msf_byte, medium_type, msf_to_lba,
         raw_user_data_offset, read_capacity_payload, read_data_sectors,
         sub_channel_position_payload, toc_format_0_payload, toc_format_1_payload,
         toc_format_2_payload, write_mode_page_0d, write_mode_page_0e, write_mode_page_01,
@@ -1125,6 +1126,132 @@ pub(super) fn build_identify_packet_device(buffer: &mut [u8]) {
 
     // Word 82: Command set supported (PACKET, Device Reset).
     set_word(buffer, 82, 0x0214);
+}
+
+/// Routes an ATA command written while the ATAPI channel is active.
+pub(super) fn route_command(
+    lle: &mut lle::Controller,
+    state: &mut AtapiState,
+    command: u8,
+) -> IdeAction {
+    match command {
+        // DEVICE RESET
+        0x08 => {
+            state.reset();
+            lle.atapi_device_reset();
+            IdeAction::ScheduleCompletion
+        }
+        // EXECUTE DEVICE DIAGNOSTIC (0x90)
+        0x90 => {
+            state.reset();
+            lle.atapi_device_reset();
+            IdeAction::ScheduleCompletion
+        }
+        // PACKET (0xA0)
+        0xA0 => {
+            let cyl_lo = lle.read_cylinder_low();
+            let cyl_hi = lle.read_cylinder_high();
+            state.start_packet_command(cyl_lo, cyl_hi);
+            lle.atapi_start_packet();
+            IdeAction::None
+        }
+        // IDENTIFY PACKET DEVICE (0xA1)
+        0xA1 => {
+            lle.atapi_identify_packet_device(state);
+            IdeAction::ScheduleCompletion
+        }
+        // MEDIA LOCK (0xDE)
+        0xDE => {
+            lle.atapi_set_ready();
+            IdeAction::ScheduleCompletion
+        }
+        // MEDIA UNLOCK (0xDF)
+        0xDF => {
+            lle.atapi_set_ready();
+            IdeAction::ScheduleCompletion
+        }
+        // IDENTIFY DEVICE (0xEC) - abort with ATAPI signature
+        0xEC => {
+            lle.atapi_identify_device_abort();
+            IdeAction::ScheduleCompletion
+        }
+        // SET FEATURES (0xEF)
+        0xEF => {
+            let features = lle.read_atapi_features();
+            match features {
+                0x02 | 0x82 | 0x03 => {
+                    lle.atapi_set_ready();
+                    IdeAction::ScheduleCompletion
+                }
+                _ => {
+                    lle.atapi_abort();
+                    IdeAction::ScheduleCompletion
+                }
+            }
+        }
+        // All other ATA commands abort on ATAPI
+        _ => {
+            lle.atapi_abort();
+            IdeAction::ScheduleCompletion
+        }
+    }
+}
+
+/// Routes a data-register word write while the ATAPI channel is active.
+pub(super) fn route_write_data_word(
+    lle: &mut lle::Controller,
+    state: &mut AtapiState,
+    optical: &mut ScsiCdrom,
+    value: u16,
+) -> IdeAction {
+    let phase = lle.atapi_phase();
+    match phase {
+        IdePhase::PacketCommand => {
+            let complete = state.receive_packet_word(value);
+            if complete {
+                let (media, audio) = optical.media_and_audio_mut();
+                let (has_data, is_error) = state.execute_packet(media, audio);
+                if is_error {
+                    lle.atapi_command_error(state);
+                } else if has_data {
+                    let transfer_size = state.current_transfer_size();
+                    lle.atapi_start_data_in(transfer_size);
+                } else {
+                    lle.atapi_command_done();
+                }
+                IdeAction::ScheduleCompletion
+            } else {
+                IdeAction::None
+            }
+        }
+        _ => IdeAction::None,
+    }
+}
+
+/// Routes a data-register word read while the ATAPI channel is active.
+pub(super) fn route_read_data_word(
+    lle: &mut lle::Controller,
+    state: &mut AtapiState,
+) -> (u16, IdeAction) {
+    let phase = lle.atapi_phase();
+    if phase != IdePhase::PacketDataIn {
+        return (0xFFFF, IdeAction::None);
+    }
+
+    let word = state.read_data_word();
+    state.chunk_position += 2;
+
+    if state.transfer_complete() {
+        lle.atapi_command_done();
+        (word, IdeAction::ScheduleCompletion)
+    } else if state.chunk_complete() {
+        state.start_next_chunk();
+        let transfer_size = state.current_transfer_size();
+        lle.atapi_start_data_in(transfer_size);
+        (word, IdeAction::ScheduleCompletion)
+    } else {
+        (word, IdeAction::None)
+    }
 }
 
 #[cfg(test)]
