@@ -1,7 +1,7 @@
 use std::f64::consts::PI;
 
-use common::{Bus, CpuMode, MachineModel};
-use machine_98::{NoTracing, Pc9801Bus};
+use common::{Bus, CpuMode, MachineModel, NoTrace};
+use machine_98::Pc9801Bus;
 use resampler::{Complex32, Forward, Radix, RadixFFT};
 
 const OUTPUT_SAMPLE_RATE: u32 = 48_000;
@@ -9,9 +9,9 @@ const PCM_RATE: u32 = 44_100;
 const CPU_CLOCK_HZ: u32 = 20_000_000;
 const TONE_FREQ: f64 = 1000.0;
 
-fn setup_pcm86_bus() -> Pc9801Bus<NoTracing> {
+fn setup_pcm86_bus() -> Pc9801Bus<NoTrace> {
     let mut bus =
-        Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, OUTPUT_SAMPLE_RATE);
+        Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::High, OUTPUT_SAMPLE_RATE);
     bus.install_soundboard_86(None, true);
     bus
 }

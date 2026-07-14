@@ -7,7 +7,7 @@
 //! `NEETAN_RECORD_FRAME_HASHES=1` prints the golden hash table instead of
 //! asserting it.
 
-use common::{Bus, Machine, NoTracing};
+use common::{Bus, Machine, NoTrace};
 use machine_at::{AtBus, AtMachine, AtModel};
 
 #[path = "common/harness.rs"]
@@ -563,13 +563,13 @@ const ATC_SVGA_256: [u8; 0x17] = [
 ];
 
 /// Sets the sequencer map mask (which planes a CPU write reaches).
-fn set_map_mask(bus: &mut AtBus<NoTracing>, mask: u8) {
+fn set_map_mask(bus: &mut AtBus<NoTrace>, mask: u8) {
     bus.io_write_byte(0x03C4, 0x02);
     bus.io_write_byte(0x03C5, mask);
 }
 
 /// Sets the ET4000 segment select register (read and write banks equal).
-fn set_bank(bus: &mut AtBus<NoTracing>, bank: u8) {
+fn set_bank(bus: &mut AtBus<NoTrace>, bank: u8) {
     bus.io_write_byte(0x03CD, bank * 0x11);
 }
 
@@ -578,7 +578,7 @@ fn set_bank(bus: &mut AtBus<NoTracing>, bank: u8) {
 /// 'B' with lit pixels; the space glyph stays blank. Configures a linear
 /// plane-2 write path first; the caller applies the text mode vector afterwards
 /// to restore the display registers, leaving the font in place.
-fn load_text_font(bus: &mut AtBus<NoTracing>) {
+fn load_text_font(bus: &mut AtBus<NoTrace>) {
     // Plane 2 only, sequential addressing, write mode 0, full bit mask, A0000
     // 64 KiB window.
     bus.io_write_byte(0x03C4, 0x02);
@@ -600,7 +600,7 @@ fn load_text_font(bus: &mut AtBus<NoTracing>) {
 /// Paints the two top-left text cells plus the hardware cursor cell used by the
 /// text assertions: a full block yellow on blue, spaces on blue and red, then a
 /// blinking 'B'.
-fn paint_text(bus: &mut AtBus<NoTracing>) {
+fn paint_text(bus: &mut AtBus<NoTrace>) {
     // Clear the page to spaces on attribute 0x07, the way the BIOS does, so the
     // hardware cursor cell shows the light-gray foreground.
     for cell in 0..80 * 25u32 {
@@ -617,14 +617,14 @@ fn paint_text(bus: &mut AtBus<NoTracing>) {
 }
 
 /// Paints both CGA interleave halves with a repeating bar byte.
-fn paint_cga(bus: &mut AtBus<NoTracing>, bar_byte: u8) {
+fn paint_cga(bus: &mut AtBus<NoTrace>, bar_byte: u8) {
     fill_vram(bus, VGA_TEXT, bar_byte, 80 * 100);
     fill_vram(bus, VGA_TEXT + 0x2000, bar_byte, 80 * 100);
 }
 
 /// Paints planar color bars: planes 0-2 with constant patterns encoding the low
 /// three color bits, plane 3 alternating so the odd bytes light the top bit.
-fn paint_planar(bus: &mut AtBus<NoTracing>, plane_bytes: u32, planes: u8) {
+fn paint_planar(bus: &mut AtBus<NoTrace>, plane_bytes: u32, planes: u8) {
     for (plane, pattern) in [(0x01u8, 0xAAu8), (0x02, 0xCC), (0x04, 0xF0)] {
         if planes & plane == 0 {
             continue;
@@ -642,7 +642,7 @@ fn paint_planar(bus: &mut AtBus<NoTracing>, plane_bytes: u32, planes: u8) {
 }
 
 /// Applies the mode vector, loads the palette and paints the pattern for a step.
-fn setup_step(bus: &mut AtBus<NoTracing>, step: u8) {
+fn setup_step(bus: &mut AtBus<NoTrace>, step: u8) {
     route_vga_window(bus);
     match step {
         0x03 => {
@@ -719,7 +719,7 @@ fn setup_step(bus: &mut AtBus<NoTracing>, step: u8) {
 }
 
 /// Applies an SVGA vector and fills every 64 KiB bank with a position ramp.
-fn setup_svga(bus: &mut AtBus<NoTracing>, vector: &ModeVector, bank_count: u8) {
+fn setup_svga(bus: &mut AtBus<NoTrace>, vector: &ModeVector, bank_count: u8) {
     vector.apply(bus);
     for bank in 0..bank_count {
         set_bank(bus, bank);
@@ -738,19 +738,19 @@ const LIGHT_GRAY: u32 = pen6(0x2A, 0x2A, 0x2A);
 const YELLOW: u32 = pen6(0x3F, 0x3F, 0x15);
 
 /// The resolved 16-pen palette of the current frame.
-fn pens(machine: &AtMachine<NoTracing>) -> [u32; 16] {
+fn pens(machine: &AtMachine<NoTrace>) -> [u32; 16] {
     machine.bus.vga().resolve().pens
 }
 
 /// The resolved 256-pen palette of the current frame.
-fn pens_256(machine: &AtMachine<NoTracing>) -> [u32; 256] {
+fn pens_256(machine: &AtMachine<NoTrace>) -> [u32; 256] {
     machine.bus.vga().resolve().pens_256
 }
 
 /// Waits until the pixel at (x, y) takes the expected value (blink and cursor
 /// phases toggle over frames).
 fn wait_for_pixel(
-    machine: &mut AtMachine<NoTracing>,
+    machine: &mut AtMachine<NoTrace>,
     x: u32,
     y: u32,
     expected: u32,
@@ -768,7 +768,7 @@ fn wait_for_pixel(
 }
 
 /// Asserts the rendered dimensions of the current step.
-fn assert_dims(machine: &AtMachine<NoTracing>, step: u8, expected: (u32, u32)) {
+fn assert_dims(machine: &AtMachine<NoTrace>, step: u8, expected: (u32, u32)) {
     assert_eq!(
         machine.display_dimensions(),
         expected,
@@ -777,7 +777,7 @@ fn assert_dims(machine: &AtMachine<NoTracing>, step: u8, expected: (u32, u32)) {
 }
 
 /// Per-step assertions of the mode walk.
-fn assert_step(machine: &mut AtMachine<NoTracing>, step: u8) {
+fn assert_step(machine: &mut AtMachine<NoTrace>, step: u8) {
     match step {
         0x03 | 0x01 => {
             let width = if step == 0x03 { 720 } else { 360 };
@@ -1015,7 +1015,7 @@ const EXPECTED_FRAME_HASHES: &[(u8, &str)] = &[
 ];
 
 /// Checks (or records) the framebuffer hash of a graphics step.
-fn check_frame_hash(machine: &AtMachine<NoTracing>, step: u8) {
+fn check_frame_hash(machine: &AtMachine<NoTrace>, step: u8) {
     if !frame_hash_is_checked(step) {
         return;
     }
@@ -1038,7 +1038,7 @@ fn check_frame_hash(machine: &AtMachine<NoTracing>, step: u8) {
 }
 
 /// Dumps the frame as PPM when `NEETAN_DUMP_FRAMES` names a directory.
-fn dump_frame(machine: &AtMachine<NoTracing>, step: u8) {
+fn dump_frame(machine: &AtMachine<NoTrace>, step: u8) {
     let Ok(directory) = std::env::var("NEETAN_DUMP_FRAMES") else {
         return;
     };
@@ -1055,7 +1055,7 @@ fn dump_frame(machine: &AtMachine<NoTracing>, step: u8) {
 }
 
 /// Builds a fresh machine, sets up the step and renders one settled frame.
-fn render_step(model: AtModel, step: u8) -> AtMachine<NoTracing> {
+fn render_step(model: AtModel, step: u8) -> AtMachine<NoTrace> {
     let mut machine = machine_for_model(model);
     setup_step(&mut machine.bus, step);
     render_frame(&mut machine);
@@ -1089,7 +1089,7 @@ fn text_blink_and_cursor_phases_alternate() {
     let mut machine = render_step(AtModel::At486Dx66, 0x03);
 
     // Cell 3 blinks ('B', attribute 0x87); cell 0 is a steady full block.
-    let blink_region = |machine: &AtMachine<NoTracing>| {
+    let blink_region = |machine: &AtMachine<NoTrace>| {
         let mut lit = 0u32;
         for y in 0..16u32 {
             for x in 27..36u32 {

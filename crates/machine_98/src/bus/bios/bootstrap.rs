@@ -6,13 +6,13 @@ use device::floppy::D88MediaType;
 use super::{
     super::{
         BootDevice, Pc9801Bus,
-        dos_adapter::{DosCpuAccess, DosDiskIo, DosMemoryAccess},
+        dos_adapter::{DosDiskIo, DosMemoryAccess},
     },
     boot_sector_has_signature, iret_stack_base,
 };
-use crate::Tracing;
+use crate::TraceSink;
 
-impl<T: Tracing> Pc9801Bus<T> {
+impl<T: TraceSink> Pc9801Bus<T> {
     fn try_boot_fdd(&mut self, cpu: &mut impl Cpu, drive: usize) -> bool {
         if !self.floppy.has_drive(drive) {
             return false;
@@ -237,8 +237,15 @@ impl<T: Tracing> Pc9801Bus<T> {
         neetan_dos.set_xms_32_enabled(self.xms_32_enabled);
         neetan_dos.set_xms_hmamin_kb(self.xms_hmamin_kb);
 
+        self.trace_call(
+            common::trace_id::provider::NEETAN_DOS,
+            common::TraceCallInterface::Named(common::trace_id::interface::BOOT),
+            None,
+            None,
+            common::TraceCallPhase::Enter,
+            None,
+        );
         {
-            let mut cpu_access = DosCpuAccess(cpu);
             let access_page = self.access_page_index();
             let mut mem_access = DosMemoryAccess::new(
                 &mut self.memory,
@@ -251,13 +258,16 @@ impl<T: Tracing> Pc9801Bus<T> {
                 sasi: &mut self.sasi,
                 ide: &mut self.ide,
             };
-            neetan_dos.boot(
-                &mut cpu_access,
-                &mut mem_access,
-                &mut disk_io,
-                &mut self.tracer,
-            );
+            neetan_dos.boot(&mut mem_access, &mut disk_io);
         }
+        self.trace_call(
+            common::trace_id::provider::NEETAN_DOS,
+            common::TraceCallInterface::Named(common::trace_id::interface::BOOT),
+            None,
+            None,
+            common::TraceCallPhase::Exit,
+            None,
+        );
 
         // Enable GDC hardware cursor for HLE DOS.
         self.gdc_master.state.cursor_display = true;

@@ -10,7 +10,11 @@ mod keyboard;
 mod serial;
 mod sound;
 
-use common::{Bus, HostDateTime, HostDateTimeProvider, NoTracing, Tracing, default_host_date_time};
+use common::{
+    Bus, HostDateTime, HostDateTimeProvider, NoTrace, TraceAccessKind, TraceAccessWidth,
+    TraceAddressSpace, TraceContext, TraceEvent, TraceInterruptAction, TraceInterruptKind,
+    TracePresentation, TraceSink, default_host_date_time, trace_id,
+};
 use device::{
     at_dma::AtDma,
     at_fdc::AtFdc,
@@ -74,7 +78,7 @@ pub(crate) const OPEN_BUS_BYTE: u8 = 0xFF;
 const PORT_BITMAP_WORDS: usize = 1024;
 
 /// PC/AT system bus.
-pub struct AtBus<T: Tracing = NoTracing> {
+pub struct AtBus<T: TraceSink = NoTrace> {
     /// Physical memory and the shadow/A20 decode.
     pub(crate) memory: AtMemory,
     /// Clock configuration.
@@ -113,6 +117,8 @@ pub struct AtBus<T: Tracing = NoTracing> {
     pub(crate) display_width: u32,
     /// Frame height of the most recent rendered frame.
     pub(crate) display_height: u32,
+    /// Number assigned to the next published frame.
+    pub(crate) presented_frames: u64,
     /// Cycle of the most recent VGA frame event (vertical sync start).
     pub(crate) last_vsync_start_cycle: u64,
     /// PC speaker beeper.
@@ -149,14 +155,19 @@ pub struct AtBus<T: Tracing = NoTracing> {
     unhandled_write_logged: Box<[u64; PORT_BITMAP_WORDS]>,
     /// Host date-time provider used to seed the RTC.
     host_date_time_provider: HostDateTimeProvider,
-    /// Tracing sink.
+    /// TraceSink sink.
     pub(crate) tracer: T,
 }
 
-impl<T: Tracing + Default> AtBus<T> {
-    /// Builds a bus with `ram_size` bytes of RAM, the loaded ROMs, and the
-    /// given audio sample rate.
-    pub fn new(cpu_clock_hz: u32, ram_size: u32, roms: LoadedRoms, sample_rate: u32) -> Self {
+impl<T: TraceSink> AtBus<T> {
+    /// Builds a traced bus with the requested RAM, ROMs, and sample rate.
+    pub fn new_with_trace_sink(
+        cpu_clock_hz: u32,
+        ram_size: u32,
+        roms: LoadedRoms,
+        sample_rate: u32,
+        tracer: T,
+    ) -> Self {
         let provider: HostDateTimeProvider = default_host_date_time;
         let cmos_seed = initial_cmos(ram_size as usize);
         let seed = provider();
@@ -181,6 +192,7 @@ impl<T: Tracing + Default> AtBus<T> {
             renderer: VgaRenderer::new(),
             display_width: VGA_FALLBACK_WIDTH,
             display_height: VGA_FALLBACK_HEIGHT,
+            presented_frames: 0,
             last_vsync_start_cycle: 0,
             beeper: Beeper::new(common::BeeperKind::PitDriven, PIT_CLOCK_HZ),
             sound_blaster_16: SoundBlaster16::new(cpu_clock_hz, sample_rate),
@@ -200,7 +212,7 @@ impl<T: Tracing + Default> AtBus<T> {
             unhandled_read_logged: Box::new([0; PORT_BITMAP_WORDS]),
             unhandled_write_logged: Box::new([0; PORT_BITMAP_WORDS]),
             host_date_time_provider: provider,
-            tracer: T::default(),
+            tracer,
         };
         bus.memory.refresh_uma(&bus.chipset);
         bus.reschedule_rtc_update();
@@ -209,7 +221,14 @@ impl<T: Tracing + Default> AtBus<T> {
     }
 }
 
-impl<T: Tracing> AtBus<T> {
+impl AtBus<NoTrace> {
+    /// Builds an untraced bus with the requested RAM, ROMs, and sample rate.
+    pub fn new(cpu_clock_hz: u32, ram_size: u32, roms: LoadedRoms, sample_rate: u32) -> Self {
+        Self::new_with_trace_sink(cpu_clock_hz, ram_size, roms, sample_rate, NoTrace)
+    }
+}
+
+impl<T: TraceSink> AtBus<T> {
     /// Installs the host date-time provider and reseeds the RTC from it.
     pub fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
         self.host_date_time_provider = provider;
@@ -234,14 +253,40 @@ impl<T: Tracing> AtBus<T> {
 
     /// Raises an IRQ line and notifies the tracer.
     pub(crate) fn raise_irq(&mut self, irq: u8) {
-        self.pic.set_irq(irq);
-        self.tracer.trace_irq_raise(irq);
+        let changed = self.pic.set_irq(irq);
+        if T::ENABLED && changed {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::maskable_interrupt(
+                    trace_id::controller::AT_PIC,
+                    u16::from(irq),
+                    TraceInterruptAction::Assert,
+                    None,
+                ),
+            );
+        }
     }
 
     /// Clears an IRQ line and notifies the tracer.
     pub(crate) fn clear_irq(&mut self, irq: u8) {
-        self.pic.clear_irq(irq);
-        self.tracer.trace_irq_clear(irq);
+        let changed = self.pic.clear_irq(irq);
+        if T::ENABLED && changed {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::maskable_interrupt(
+                    trace_id::controller::AT_PIC,
+                    u16::from(irq),
+                    TraceInterruptAction::Clear,
+                    None,
+                ),
+            );
+        }
     }
 
     /// Sets the game-port buttons at `index` from the digital joystick state.
@@ -507,6 +552,25 @@ impl<T: Tracing> AtBus<T> {
         self.display_height = height;
     }
 
+    fn trace_presentation(&mut self) {
+        if !T::ENABLED {
+            return;
+        }
+        self.presented_frames = self.presented_frames.saturating_add(1);
+        self.tracer.trace(
+            TraceContext::presentation_main(
+                self.current_cycle,
+                Some(u64::from(self.clocks.cpu_clock_hz)),
+            ),
+            TraceEvent::Presentation(TracePresentation {
+                display: trace_id::display::MAIN,
+                frame: self.presented_frames,
+                width: self.display_width,
+                height: self.display_height,
+            }),
+        );
+    }
+
     /// Schedules the next 8042 output-buffer delivery if output is pending.
     pub(crate) fn schedule_kbc_deliver(&mut self) {
         if self.kbc.has_pending_output() {
@@ -524,7 +588,18 @@ impl<T: Tracing> AtBus<T> {
     fn process_events(&mut self) {
         let due = self.scheduler.pop_due_events(self.current_cycle);
         for event in due.iter() {
-            self.tracer.trace_event(event.fire_cycle, event.kind as u8);
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::scheduler_main(
+                        self.current_cycle,
+                        Some(u64::from(self.clocks.cpu_clock_hz)),
+                    ),
+                    TraceEvent::Scheduled {
+                        event: event.kind.trace_name(),
+                        fire_tick: event.fire_cycle,
+                    },
+                );
+            }
             match event.kind {
                 EventAt::PitChannel0 => {
                     let raise_irq = self.pit.advance_timer0(self.current_cycle);
@@ -571,6 +646,7 @@ impl<T: Tracing> AtBus<T> {
                     self.last_vsync_start_cycle = self.current_cycle;
                     self.vga.on_vsync_start();
                     self.render_frame();
+                    self.trace_presentation();
                     self.schedule_next_vga_frame();
                 }
                 EventAt::FdcExecution => self.handle_fdc_execution(),
@@ -641,7 +717,7 @@ impl<T: Tracing> AtBus<T> {
         self.rtc.cmos[index & 0x7F]
     }
 
-    /// Logs an unhandled read port once and notifies the tracer.
+    /// Logs an unhandled read port once.
     pub(crate) fn log_unhandled_read(&mut self, port: u16) {
         let word = (port >> 6) as usize;
         let bit = 1u64 << (port & 0x3F);
@@ -649,10 +725,9 @@ impl<T: Tracing> AtBus<T> {
             self.unhandled_read_logged[word] |= bit;
             common::warn!("machine_at: unhandled I/O read from port {port:#06X}");
         }
-        self.tracer.trace_io_unhandled_read(port);
     }
 
-    /// Logs an unhandled write port once and notifies the tracer.
+    /// Logs an unhandled write port once.
     pub(crate) fn log_unhandled_write(&mut self, port: u16, value: u8) {
         let word = (port >> 6) as usize;
         let bit = 1u64 << (port & 0x3F);
@@ -660,12 +735,9 @@ impl<T: Tracing> AtBus<T> {
             self.unhandled_write_logged[word] |= bit;
             common::warn!("machine_at: unhandled I/O write to port {port:#06X} value {value:#04X}");
         }
-        self.tracer.trace_io_unhandled_write(port, value);
     }
-}
 
-impl<T: Tracing> Bus for AtBus<T> {
-    fn read_byte(&mut self, address: u32) -> u8 {
+    fn read_byte_for_cpu<const FETCH: bool>(&mut self, address: u32) -> u8 {
         let physical = self.memory.apply_a20(address);
         let value = if (VGA_WINDOW_BASE..UMA_BASE).contains(&physical) {
             if self.memory.ab_internal(physical) {
@@ -679,12 +751,113 @@ impl<T: Tracing> Bus for AtBus<T> {
         } else {
             self.memory.read_physical(physical)
         };
-        self.tracer.trace_mem_read(address, value);
+        if T::ENABLED {
+            let kind = if FETCH {
+                TraceAccessKind::Fetch
+            } else {
+                TraceAccessKind::Read
+            };
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    kind,
+                    u64::from(physical),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
         value
     }
 
+    /// Reads one word while preserving data-read or instruction-fetch identity.
+    fn read_word_for_cpu<const FETCH: bool>(&mut self, address: u32) -> u16 {
+        let physical = self.memory.apply_a20(address);
+        if let Some(value) = self.memory.read_ram_word(physical) {
+            if T::ENABLED {
+                let kind = if FETCH {
+                    TraceAccessKind::Fetch
+                } else {
+                    TraceAccessKind::Read
+                };
+                self.tracer.trace(
+                    TraceContext::main_cpu(
+                        self.current_cycle,
+                        Some(u64::from(self.clocks.cpu_clock_hz)),
+                    ),
+                    TraceEvent::access(
+                        TraceAddressSpace::MAIN_MEMORY,
+                        kind,
+                        u64::from(physical),
+                        TraceAccessWidth::Word,
+                        Some(u64::from(value)),
+                        true,
+                    ),
+                );
+            }
+            return value;
+        }
+        let low = self.read_byte_for_cpu::<FETCH>(address) as u16;
+        let high = self.read_byte_for_cpu::<FETCH>(address.wrapping_add(1)) as u16;
+        low | (high << 8)
+    }
+
+    /// Reads one doubleword while preserving data-read or instruction-fetch identity.
+    fn read_dword_for_cpu<const FETCH: bool>(&mut self, address: u32) -> u32 {
+        let physical = self.memory.apply_a20(address);
+        if let Some(value) = self.memory.read_ram_dword(physical) {
+            if T::ENABLED {
+                let kind = if FETCH {
+                    TraceAccessKind::Fetch
+                } else {
+                    TraceAccessKind::Read
+                };
+                self.tracer.trace(
+                    TraceContext::main_cpu(
+                        self.current_cycle,
+                        Some(u64::from(self.clocks.cpu_clock_hz)),
+                    ),
+                    TraceEvent::access(
+                        TraceAddressSpace::MAIN_MEMORY,
+                        kind,
+                        u64::from(physical),
+                        TraceAccessWidth::Dword,
+                        Some(u64::from(value)),
+                        true,
+                    ),
+                );
+            }
+            return value;
+        }
+        let low = self.read_word_for_cpu::<FETCH>(address) as u32;
+        let high = self.read_word_for_cpu::<FETCH>(address.wrapping_add(2)) as u32;
+        low | (high << 16)
+    }
+}
+
+impl<T: TraceSink> Bus for AtBus<T> {
+    fn read_byte(&mut self, address: u32) -> u8 {
+        self.read_byte_for_cpu::<false>(address)
+    }
+
+    fn fetch_opcode_byte(&mut self, address: u32) -> u8 {
+        self.read_byte_for_cpu::<true>(address)
+    }
+
+    fn fetch_opcode_word(&mut self, address: u32) -> u16 {
+        self.read_word_for_cpu::<true>(address)
+    }
+
+    fn fetch_opcode_dword(&mut self, address: u32) -> u32 {
+        self.read_dword_for_cpu::<true>(address)
+    }
+
     fn write_byte(&mut self, address: u32, value: u8) {
-        self.tracer.trace_mem_write(address, value);
         let physical = self.memory.apply_a20(address);
         if (VGA_WINDOW_BASE..UMA_BASE).contains(&physical) {
             if self.memory.ab_internal(physical) {
@@ -696,36 +869,51 @@ impl<T: Tracing> Bus for AtBus<T> {
         } else {
             self.memory.write_physical(physical, value);
         }
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Write,
+                    u64::from(physical),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
     }
 
     fn read_word(&mut self, address: u32) -> u16 {
-        let physical = self.memory.apply_a20(address);
-        if let Some(value) = self.memory.read_ram_word(physical) {
-            self.tracer.trace_mem_read_word(address, value);
-            return value;
-        }
-        let low = self.read_byte(address) as u16;
-        let high = self.read_byte(address.wrapping_add(1)) as u16;
-        low | (high << 8)
+        self.read_word_for_cpu::<false>(address)
     }
 
     fn read_dword(&mut self, address: u32) -> u32 {
-        let physical = self.memory.apply_a20(address);
-        if let Some(value) = self.memory.read_ram_dword(physical) {
-            self.tracer.trace_mem_read_word(address, value as u16);
-            self.tracer
-                .trace_mem_read_word(address.wrapping_add(2), (value >> 16) as u16);
-            return value;
-        }
-        let low = self.read_word(address) as u32;
-        let high = self.read_word(address.wrapping_add(2)) as u32;
-        low | (high << 16)
+        self.read_dword_for_cpu::<false>(address)
     }
 
     fn write_word(&mut self, address: u32, value: u16) {
         let physical = self.memory.apply_a20(address);
         if self.memory.write_ram_word(physical, value) {
-            self.tracer.trace_mem_write_word(address, value);
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::main_cpu(
+                        self.current_cycle,
+                        Some(u64::from(self.clocks.cpu_clock_hz)),
+                    ),
+                    TraceEvent::access(
+                        TraceAddressSpace::MAIN_MEMORY,
+                        TraceAccessKind::Write,
+                        u64::from(physical),
+                        TraceAccessWidth::Word,
+                        Some(u64::from(value)),
+                        true,
+                    ),
+                );
+            }
             return;
         }
         self.write_byte(address, value as u8);
@@ -735,9 +923,22 @@ impl<T: Tracing> Bus for AtBus<T> {
     fn write_dword(&mut self, address: u32, value: u32) {
         let physical = self.memory.apply_a20(address);
         if self.memory.write_ram_dword(physical, value) {
-            self.tracer.trace_mem_write_word(address, value as u16);
-            self.tracer
-                .trace_mem_write_word(address.wrapping_add(2), (value >> 16) as u16);
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::main_cpu(
+                        self.current_cycle,
+                        Some(u64::from(self.clocks.cpu_clock_hz)),
+                    ),
+                    TraceEvent::access(
+                        TraceAddressSpace::MAIN_MEMORY,
+                        TraceAccessKind::Write,
+                        u64::from(physical),
+                        TraceAccessWidth::Dword,
+                        Some(u64::from(value)),
+                        true,
+                    ),
+                );
+            }
             return;
         }
         self.write_word(address, value as u16);
@@ -746,15 +947,45 @@ impl<T: Tracing> Bus for AtBus<T> {
 
     fn io_read_byte(&mut self, port: u16) -> u8 {
         self.pending_wait_cycles += self.clocks.io_8bit_wait_cycles;
-        let value = self.io_read(port);
-        self.tracer.trace_io_read(port, value);
+        let (value, handled) = self.io_read(port);
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Read,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
         value
     }
 
     fn io_write_byte(&mut self, port: u16, value: u8) {
         self.pending_wait_cycles += self.clocks.io_8bit_wait_cycles;
-        self.tracer.trace_io_write(port, value);
-        self.io_write(port, value);
+        let handled = self.io_write(port, value);
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Write,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
     }
 
     fn io_read_word(&mut self, port: u16) -> u16 {
@@ -764,13 +995,43 @@ impl<T: Tracing> Bus for AtBus<T> {
         if port == 0x01F0 {
             self.pending_wait_cycles += self.clocks.io_16bit_wait_cycles;
             let value = self.ide_read_data_word();
-            self.tracer.trace_io_read(port, value as u8);
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::main_cpu(
+                        self.current_cycle,
+                        Some(u64::from(self.clocks.cpu_clock_hz)),
+                    ),
+                    TraceEvent::access(
+                        TraceAddressSpace::MAIN_IO,
+                        TraceAccessKind::Read,
+                        u64::from(port),
+                        TraceAccessWidth::Word,
+                        Some(u64::from(value)),
+                        true,
+                    ),
+                );
+            }
             return value;
         }
         if port == 0x0170 {
             self.pending_wait_cycles += self.clocks.io_16bit_wait_cycles;
             let value = self.ide_secondary_read_data_word();
-            self.tracer.trace_io_read(port, value as u8);
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::main_cpu(
+                        self.current_cycle,
+                        Some(u64::from(self.clocks.cpu_clock_hz)),
+                    ),
+                    TraceEvent::access(
+                        TraceAddressSpace::MAIN_IO,
+                        TraceAccessKind::Read,
+                        u64::from(port),
+                        TraceAccessWidth::Word,
+                        Some(u64::from(value)),
+                        true,
+                    ),
+                );
+            }
             return value;
         }
         let low = self.io_read_byte(port) as u16;
@@ -781,14 +1042,44 @@ impl<T: Tracing> Bus for AtBus<T> {
     fn io_write_word(&mut self, port: u16, value: u16) {
         if port == 0x01F0 {
             self.pending_wait_cycles += self.clocks.io_16bit_wait_cycles;
-            self.tracer.trace_io_write(port, value as u8);
             self.ide_write_data_word(value);
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::main_cpu(
+                        self.current_cycle,
+                        Some(u64::from(self.clocks.cpu_clock_hz)),
+                    ),
+                    TraceEvent::access(
+                        TraceAddressSpace::MAIN_IO,
+                        TraceAccessKind::Write,
+                        u64::from(port),
+                        TraceAccessWidth::Word,
+                        Some(u64::from(value)),
+                        true,
+                    ),
+                );
+            }
             return;
         }
         if port == 0x0170 {
             self.pending_wait_cycles += self.clocks.io_16bit_wait_cycles;
-            self.tracer.trace_io_write(port, value as u8);
             self.ide_secondary_write_data_word(value);
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::main_cpu(
+                        self.current_cycle,
+                        Some(u64::from(self.clocks.cpu_clock_hz)),
+                    ),
+                    TraceEvent::access(
+                        TraceAddressSpace::MAIN_IO,
+                        TraceAccessKind::Write,
+                        u64::from(port),
+                        TraceAccessWidth::Word,
+                        Some(u64::from(value)),
+                        true,
+                    ),
+                );
+            }
             return;
         }
         self.io_write_byte(port, value as u8);
@@ -804,9 +1095,23 @@ impl<T: Tracing> Bus for AtBus<T> {
     }
 
     fn acknowledge_irq(&mut self) -> u8 {
-        let vector = self.pic.acknowledge();
-        self.tracer.trace_irq_acknowledge(vector & 0x07, vector);
-        vector
+        let acknowledge = self.pic.acknowledge_with_line();
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::interrupt(
+                    trace_id::controller::AT_PIC,
+                    TraceInterruptKind::Maskable,
+                    acknowledge.line.map(u16::from),
+                    TraceInterruptAction::Acknowledge,
+                    Some(u32::from(acknowledge.vector)),
+                ),
+            );
+        }
+        acknowledge.vector
     }
 
     fn has_nmi(&self) -> bool {
@@ -824,15 +1129,190 @@ impl<T: Tracing> Bus for AtBus<T> {
         self.cpu_reset_pending
     }
 
+    fn cpu_should_yield(&self) -> bool {
+        T::ENABLED && self.tracer.yield_requested()
+    }
+
     fn current_cycle(&self) -> u64 {
         self.current_cycle
     }
 
     fn set_current_cycle(&mut self, cycle: u64) {
         self.current_cycle = cycle;
-        self.tracer.set_cycle(cycle);
+
         if cycle >= self.next_event_cycle {
             self.process_events();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use common::{
+        Bus, TraceAccess, TraceAccessKind, TraceAccessWidth, TraceContext, TraceEvent,
+        TraceInterrupt, TraceInterruptAction, TraceSink,
+    };
+
+    use super::AtBus;
+    use crate::{rom::LoadedRoms, scheduler::EventAt};
+
+    #[derive(Default)]
+    struct AccessTrace {
+        kinds: Vec<TraceAccessKind>,
+        accesses: Vec<TraceAccess>,
+        scheduled_contexts: Vec<TraceContext>,
+        interrupts: Vec<(TraceContext, TraceInterrupt)>,
+    }
+
+    impl TraceSink for AccessTrace {
+        fn trace(&mut self, context: TraceContext, event: TraceEvent<'_>) {
+            match event {
+                TraceEvent::Access(access) => {
+                    self.kinds.push(access.kind);
+                    self.accesses.push(access);
+                }
+                TraceEvent::Scheduled { .. } => self.scheduled_contexts.push(context),
+                TraceEvent::Interrupt(interrupt) => self.interrupts.push((context, interrupt)),
+                _ => {}
+            }
+        }
+    }
+
+    fn traced_bus() -> AtBus<AccessTrace> {
+        let roms = LoadedRoms {
+            system_bios: vec![0; 0x1_0000],
+            vga_bios: vec![0; 0x8000],
+        };
+        AtBus::new_with_trace_sink(66_000_000, 0x10_0000, roms, 48_000, AccessTrace::default())
+    }
+
+    #[test]
+    fn opcode_fetch_is_distinct_from_data_read() {
+        let mut bus = traced_bus();
+
+        Bus::read_byte(&mut bus, 0);
+        Bus::fetch_opcode_byte(&mut bus, 1);
+
+        assert_eq!(
+            bus.tracer().kinds,
+            [TraceAccessKind::Read, TraceAccessKind::Fetch]
+        );
+    }
+
+    #[test]
+    fn wide_opcode_fetches_keep_ram_transaction_width() {
+        let mut bus = traced_bus();
+
+        Bus::fetch_opcode_word(&mut bus, 0);
+        Bus::fetch_opcode_dword(&mut bus, 4);
+
+        assert_eq!(bus.tracer().accesses.len(), 2);
+        assert_eq!(bus.tracer().accesses[0].kind, TraceAccessKind::Fetch);
+        assert_eq!(bus.tracer().accesses[0].width, TraceAccessWidth::Word);
+        assert_eq!(bus.tracer().accesses[1].kind, TraceAccessKind::Fetch);
+        assert_eq!(bus.tracer().accesses[1].width, TraceAccessWidth::Dword);
+    }
+
+    #[test]
+    fn unhandled_io_emits_one_access_with_open_bus_value() {
+        let mut bus = traced_bus();
+
+        assert_eq!(Bus::io_read_byte(&mut bus, 0x1234), 0xFF);
+        Bus::io_write_byte(&mut bus, 0x1235, 0x66);
+
+        assert_eq!(bus.tracer().accesses.len(), 2);
+        assert_eq!(bus.tracer().accesses[0].value, Some(0xFF));
+        assert!(!bus.tracer().accesses[0].handled);
+        assert_eq!(bus.tracer().accesses[1].value, Some(0x66));
+        assert!(!bus.tracer().accesses[1].handled);
+    }
+
+    #[test]
+    fn scheduler_context_has_explicit_source_and_clock() {
+        let mut bus = traced_bus();
+        bus.scheduler.schedule(EventAt::KbcDeliver, 7);
+        bus.next_event_cycle = 7;
+
+        Bus::set_current_cycle(&mut bus, 7);
+
+        assert_eq!(bus.tracer().scheduled_contexts.len(), 1);
+        assert_eq!(
+            bus.tracer().scheduled_contexts[0],
+            TraceContext::scheduler_main(7, Some(66_000_000))
+        );
+    }
+
+    #[test]
+    fn duplicate_irq_updates_trace_only_transitions() {
+        let mut bus = traced_bus();
+
+        bus.raise_irq(5);
+        bus.raise_irq(5);
+        bus.clear_irq(5);
+        bus.clear_irq(5);
+
+        assert_eq!(bus.tracer().interrupts.len(), 2);
+        assert_eq!(bus.tracer().interrupts[0].1.line, Some(5));
+        assert_eq!(
+            bus.tracer().interrupts[0].1.action,
+            TraceInterruptAction::Assert
+        );
+        assert_eq!(bus.tracer().interrupts[1].1.line, Some(5));
+        assert_eq!(
+            bus.tracer().interrupts[1].1.action,
+            TraceInterruptAction::Clear
+        );
+    }
+
+    #[test]
+    fn slave_interrupt_acknowledgement_preserves_global_line() {
+        let mut bus = traced_bus();
+        bus.pic.write_port0(0, 0x11);
+        bus.pic.write_port2(0, 0x08);
+        bus.pic.write_port2(0, 0x04);
+        bus.pic.write_port2(0, 0x01);
+        bus.pic.write_port2(0, 0x00);
+        bus.pic.write_port0(1, 0x11);
+        bus.pic.write_port2(1, 0x70);
+        bus.pic.write_port2(1, 0x02);
+        bus.pic.write_port2(1, 0x01);
+        bus.pic.write_port2(1, 0x00);
+        bus.pic.set_irq(12);
+
+        let vector = Bus::acknowledge_irq(&mut bus);
+
+        assert_eq!(bus.tracer().interrupts.len(), 1);
+        let (context, interrupt) = bus.tracer().interrupts[0];
+        assert_eq!(context, TraceContext::main_cpu(0, Some(66_000_000)));
+        assert_eq!(interrupt.line, Some(12));
+        assert_eq!(interrupt.vector, Some(u32::from(vector)));
+    }
+
+    struct DisabledPanicTrace;
+
+    impl TraceSink for DisabledPanicTrace {
+        const ENABLED: bool = false;
+
+        fn trace(&mut self, _context: TraceContext, _event: TraceEvent<'_>) {
+            panic!("disabled tracing callback was invoked");
+        }
+    }
+
+    #[test]
+    fn disabled_sink_is_never_called() {
+        let roms = LoadedRoms {
+            system_bios: vec![0; 0x1_0000],
+            vga_bios: vec![0; 0x8000],
+        };
+        let mut bus =
+            AtBus::new_with_trace_sink(66_000_000, 0x10_0000, roms, 48_000, DisabledPanicTrace);
+        Bus::read_byte(&mut bus, 0);
+        Bus::fetch_opcode_dword(&mut bus, 1);
+        Bus::io_read_byte(&mut bus, 0x1234);
+        Bus::io_write_byte(&mut bus, 0x1235, 0x66);
+        bus.scheduler.schedule(EventAt::KbcDeliver, 7);
+        bus.next_event_cycle = 7;
+        Bus::set_current_cycle(&mut bus, 7);
+        bus.trace_presentation();
     }
 }

@@ -3,16 +3,16 @@
 use common::Cpu;
 
 use super::super::Pc9801Bus;
-use crate::Tracing;
+use crate::TraceSink;
 
-impl<T: Tracing> Pc9801Bus<T> {
+impl<T: TraceSink> Pc9801Bus<T> {
     pub(super) fn hle_int0ch(&mut self, _cpu: &mut impl Cpu) {
         let (data, clear_irq, retrigger_irq) = self.serial.read_data();
         if clear_irq {
-            self.pic.clear_irq(4);
+            self.clear_pic_irq(4);
         }
         if retrigger_irq {
-            self.pic.set_irq(4);
+            self.raise_pic_irq(4);
         }
         // Include RS-232C signal line status (CI, CS) from sysport port B.
         let status =

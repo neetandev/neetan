@@ -44,6 +44,7 @@ impl M6809 {
         self.flags.firq_mask = true;
         self.pc = self.read_word(bus, VECTOR_FIRQ);
         self.pending_irq &= !PENDING_FIRQ;
+        bus.acknowledge_firq();
     }
 
     fn service_irq(&mut self, bus: &mut impl common::Bus) {

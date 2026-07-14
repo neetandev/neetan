@@ -132,7 +132,7 @@ fn blackclip_register_clips_bitmap_pens_zero_and_one() {
 
     machine.bus.io_write(0x1FE0, 0x30);
     // The register is write-only; reads return the open bus value.
-    assert_eq!(machine.bus.io_read(0x1FE0), 0xFF);
+    assert_eq!(machine.bus.io_read(0x1FE0).0, 0xFF);
 
     render_one_frame(&mut machine);
     assert_eq!(pixel(machine.bus.display_framebuffer(), 0, 0), BLACK);

@@ -14,7 +14,11 @@ mod ppi_link;
 mod sub_hle;
 mod video;
 
-use common::{HostDateTimeProvider, JoystickState, MonitorTiming, NoTracing, Tracing};
+use common::{
+    HostDateTimeProvider, JoystickState, MonitorTiming, NoTrace, TraceAccessKind, TraceAccessWidth,
+    TraceAddressSpace, TraceContext, TraceEvent, TraceInterruptAction, TraceInterruptKind,
+    TracePresentation, TraceSink, trace_id,
+};
 use device::{
     ay8910::Ay8910,
     cassette::{CassetteDeck, CassetteError, load_cassette},
@@ -106,6 +110,13 @@ fn subid_to_virtual_key(subid: u8) -> u8 {
     }
 }
 
+impl X1Bus<NoTrace> {
+    /// Creates an untraced bus for `model` at the given audio sample rate.
+    pub fn new(model: X1Model, sample_rate: u32) -> Self {
+        Self::new_with_trace_sink(model, sample_rate, NoTrace)
+    }
+}
+
 /// CRTC display parameters latched once per frame (and re-latched when the
 /// timing registers are reprogrammed), so the whole frame renders with one
 /// consistent geometry.
@@ -129,7 +140,7 @@ struct FrameCrtcParams {
 }
 
 /// The Sharp X1 system bus.
-pub struct X1Bus<T: Tracing = NoTracing> {
+pub struct X1Bus<T: TraceSink = NoTrace> {
     model: X1Model,
     clocks: ClockConfig,
     /// Selected monitor, reported through the turbo DIP switch so software knows
@@ -207,12 +218,9 @@ pub struct X1Bus<T: Tracing = NoTracing> {
     tracer: T,
 }
 
-impl<T: Tracing> X1Bus<T> {
-    /// Creates a bus for `model` at the given audio sample rate.
-    pub fn new(model: X1Model, sample_rate: u32) -> Self
-    where
-        T: Default,
-    {
+impl<T: TraceSink> X1Bus<T> {
+    /// Creates a traced bus for `model` at the given audio sample rate.
+    pub fn new_with_trace_sink(model: X1Model, sample_rate: u32, tracer: T) -> Self {
         let clocks = ClockConfig {
             main_clock_hz: model.main_clock_hz(),
             sample_rate,
@@ -275,7 +283,7 @@ impl<T: Tracing> X1Bus<T> {
             column40: false,
             display_width: DISPLAY_WIDTH,
             display_height: DISPLAY_HEIGHT,
-            tracer: T::default(),
+            tracer,
         }
     }
 
@@ -561,9 +569,22 @@ impl<T: Tracing> X1Bus<T> {
     pub fn process_events(&mut self) {
         let due = self.scheduler.pop_due_events(self.current_cycle);
         for event in due.iter() {
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::scheduler_main(
+                        self.current_cycle,
+                        Some(u64::from(self.cpu_clock_hz())),
+                    ),
+                    TraceEvent::Scheduled {
+                        event: event.kind.trace_name(),
+                        fire_tick: event.fire_cycle,
+                    },
+                );
+            }
             match event.kind {
                 EventX1::VBlank => {
                     self.present_latched_frame();
+                    self.trace_presentation();
                     self.frame_number = self.frame_number.wrapping_add(1);
                     self.cblink = (self.cblink + 1) & 0x3F;
                     self.frame_start_cycle = event.fire_cycle;
@@ -940,6 +961,24 @@ impl<T: Tracing> X1Bus<T> {
         self.display_height = height;
     }
 
+    fn trace_presentation(&mut self) {
+        if !T::ENABLED {
+            return;
+        }
+        self.tracer.trace(
+            TraceContext::presentation_main(
+                self.current_cycle,
+                Some(u64::from(self.cpu_clock_hz())),
+            ),
+            TraceEvent::Presentation(TracePresentation {
+                display: trace_id::display::MAIN,
+                frame: u64::from(self.frame_number) + 1,
+                width: self.display_width,
+                height: self.display_height,
+            }),
+        );
+    }
+
     fn visible_scanlines(&self) -> usize {
         if self.frame_params.hires {
             DISPLAY_HEIGHT as usize * 2
@@ -1017,8 +1056,8 @@ impl<T: Tracing> X1Bus<T> {
         }
     }
 
-    /// Acknowledges the pending interrupt, returning its mode-2 vector.
-    pub fn acknowledge_irq(&mut self) -> u8 {
+    /// Acknowledges an interrupt and returns its daisy-chain line and vector.
+    pub fn acknowledge_irq(&mut self) -> (Option<u16>, u8) {
         let source = self.interrupt.highest_pending();
         if let Some(source) = source
             && source != IrqSource::Keyboard
@@ -1028,7 +1067,7 @@ impl<T: Tracing> X1Bus<T> {
             // commonly return with RET rather than RETI.
             self.interrupt.begin_service(source);
         }
-        match source {
+        let vector = match source {
             Some(IrqSource::Keyboard) => {
                 self.interrupt.clear(IrqSource::Keyboard);
                 self.sub.acknowledge_key_irq()
@@ -1059,7 +1098,8 @@ impl<T: Tracing> X1Bus<T> {
                 vector
             }
             None => 0,
-        }
+        };
+        (source.map(|source| source as u16), vector)
     }
 
     fn memory_read(&mut self, address: u16) -> u8 {
@@ -1224,31 +1264,93 @@ fn fdc_config(model: X1Model) -> Mb8877Config {
 }
 
 /// Ephemeral `common::Bus` adapter for the main Z80.
-pub struct MainBusView<'a, T: Tracing = NoTracing> {
+pub struct MainBusView<'a, T: TraceSink = NoTrace> {
     pub bus: &'a mut X1Bus<T>,
 }
 
-impl<T: Tracing> common::Bus for MainBusView<'_, T> {
+impl<T: TraceSink> common::Bus for MainBusView<'_, T> {
     fn read_byte(&mut self, address: u32) -> u8 {
-        let value = self.bus.memory_read(address as u16);
-        self.bus.tracer.trace_mem_read(address, value);
+        let bus_address = address as u16;
+        let value = self.bus.memory_read(bus_address);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Read,
+                    u64::from(bus_address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
         value
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
-        self.bus.memory_write(address as u16, value);
-        self.bus.tracer.trace_mem_write(address, value);
+        let bus_address = address as u16;
+        self.bus.memory_write(bus_address, value);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Write,
+                    u64::from(bus_address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
     }
 
     fn io_read_byte(&mut self, port: u16) -> u8 {
-        let value = self.bus.io_read(port);
-        self.bus.tracer.trace_io_read(port, value);
+        let (value, handled) = self.bus.io_read(port);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Read,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
         value
     }
 
     fn io_write_byte(&mut self, port: u16, value: u8) {
-        self.bus.io_write(port, value);
-        self.bus.tracer.trace_io_write(port, value);
+        let handled = self.bus.io_write(port, value);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Write,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
     }
 
     fn fetch_opcode_byte(&mut self, address: u32) -> u8 {
@@ -1260,7 +1362,24 @@ impl<T: Tracing> common::Bus for MainBusView<'_, T> {
             }
             X1Model::X1Turbo => {}
         }
-        self.read_byte(address)
+        let value = self.bus.memory_read(address as u16);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Fetch,
+                    u64::from(address as u16),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
+        value
     }
 
     fn drain_wait_cycles(&mut self) -> i64 {
@@ -1272,8 +1391,22 @@ impl<T: Tracing> common::Bus for MainBusView<'_, T> {
     }
 
     fn acknowledge_irq(&mut self) -> u8 {
-        let vector = self.bus.acknowledge_irq();
-        self.bus.tracer.trace_irq_acknowledge(0, vector);
+        let (line, vector) = self.bus.acknowledge_irq();
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::interrupt(
+                    trace_id::controller::X1_DAISY,
+                    TraceInterruptKind::Maskable,
+                    line,
+                    TraceInterruptAction::Acknowledge,
+                    Some(u32::from(vector)),
+                ),
+            );
+        }
         vector
     }
 
@@ -1297,7 +1430,10 @@ impl<T: Tracing> common::Bus for MainBusView<'_, T> {
 
     fn set_current_cycle(&mut self, cycle: u64) {
         self.bus.current_cycle = cycle;
-        self.bus.tracer.set_cycle(cycle);
+    }
+
+    fn cpu_should_yield(&self) -> bool {
+        T::ENABLED && self.bus.tracer.yield_requested()
     }
 }
 
@@ -1307,8 +1443,24 @@ mod tests {
 
     use super::*;
 
+    #[derive(Default)]
+    struct RecordingTrace {
+        accesses: Vec<common::TraceAccess>,
+        interrupts: Vec<common::TraceInterrupt>,
+    }
+
+    impl TraceSink for RecordingTrace {
+        fn trace(&mut self, _context: TraceContext, event: TraceEvent<'_>) {
+            match event {
+                TraceEvent::Access(access) => self.accesses.push(access),
+                TraceEvent::Interrupt(interrupt) => self.interrupts.push(interrupt),
+                _ => {}
+            }
+        }
+    }
+
     fn make_bus(model: X1Model) -> X1Bus {
-        let mut bus = X1Bus::<NoTracing>::new(model, 48_000);
+        let mut bus = X1Bus::<NoTrace>::new(model, 48_000);
         bus.load_roms(&crate::rom::LoadedRoms {
             model,
             ipl: vec![0xC3; 0x1000],
@@ -1317,6 +1469,43 @@ mod tests {
             kanji: None,
         });
         bus
+    }
+
+    #[test]
+    fn traces_use_live_io_decode_and_daisy_source() {
+        let mut bus = X1Bus::new_with_trace_sink(X1Model::X1, 48_000, RecordingTrace::default());
+        {
+            let mut view = MainBusView { bus: &mut bus };
+            common::Bus::io_read_byte(&mut view, 0x1A00);
+            common::Bus::io_read_byte(&mut view, 0x0800);
+        }
+        bus.interrupt.raise(IrqSource::Keyboard);
+        {
+            let mut view = MainBusView { bus: &mut bus };
+            common::Bus::acknowledge_irq(&mut view);
+        }
+
+        assert!(bus.tracer().accesses[0].handled);
+        assert!(!bus.tracer().accesses[1].handled);
+        assert_eq!(
+            bus.tracer().interrupts[0].line,
+            Some(IrqSource::Keyboard as u16)
+        );
+    }
+
+    #[test]
+    fn memory_trace_addresses_apply_the_z80_address_mask() {
+        let mut bus = X1Bus::new_with_trace_sink(X1Model::X1, 48_000, RecordingTrace::default());
+        {
+            let mut view = MainBusView { bus: &mut bus };
+            common::Bus::read_byte(&mut view, 0x1_1234);
+            common::Bus::write_byte(&mut view, 0x1_5678, 0xA5);
+            common::Bus::fetch_opcode_byte(&mut view, 0x1_9ABC);
+        }
+
+        assert_eq!(bus.tracer().accesses[0].address, 0x1234);
+        assert_eq!(bus.tracer().accesses[1].address, 0x5678);
+        assert_eq!(bus.tracer().accesses[2].address, 0x9ABC);
     }
 
     #[test]
@@ -1338,12 +1527,12 @@ mod tests {
     fn dip_switch_reports_the_selected_monitor() {
         let mut bus = make_bus(X1Model::X1Turbo);
         // Default (Auto) and Fixed24kHz report a high-resolution monitor: bit 0 = 0.
-        assert_eq!(bus.io_read(0x1FF0) & 0x01, 0x00);
+        assert_eq!(bus.io_read(0x1FF0).0 & 0x01, 0x00);
         bus.set_monitor_timing(MonitorTiming::Fixed24kHz);
-        assert_eq!(bus.io_read(0x1FF0) & 0x01, 0x00);
+        assert_eq!(bus.io_read(0x1FF0).0 & 0x01, 0x00);
         // A standard 15 kHz monitor sets bit 0.
         bus.set_monitor_timing(MonitorTiming::Fixed15kHz);
-        assert_eq!(bus.io_read(0x1FF0) & 0x01, 0x01);
+        assert_eq!(bus.io_read(0x1FF0).0 & 0x01, 0x01);
     }
 
     #[test]
@@ -1432,7 +1621,7 @@ mod tests {
         bus.io_write(0x1FD0, 0x35);
         bus.io_write(0x1FE0, 0x1F);
         for port in [0x1000u16, 0x1100, 0x1200, 0x1300, 0x1FD0, 0x1FE0] {
-            assert_eq!(bus.io_read(port), OPEN_BUS, "{port:#06X}");
+            assert_eq!(bus.io_read(port).0, OPEN_BUS, "{port:#06X}");
         }
     }
 
@@ -1465,13 +1654,13 @@ mod tests {
         bus.io_write(0x0E81, 0x0E);
         bus.io_write(0x0E82, 0x01);
         for row in 0..16u8 {
-            assert_eq!(bus.io_read(0x0E80), 0x10 + row);
+            assert_eq!(bus.io_read(0x0E80).0, 0x10 + row);
             // The row only advances after both halves were read.
-            assert_eq!(bus.io_read(0x0E80), 0x10 + row);
-            assert_eq!(bus.io_read(0x0E81), 0x30 + row);
+            assert_eq!(bus.io_read(0x0E80).0, 0x10 + row);
+            assert_eq!(bus.io_read(0x0E81).0, 0x30 + row);
         }
         // After sixteen rows the counter wraps to the first row.
-        assert_eq!(bus.io_read(0x0E80), 0x10);
+        assert_eq!(bus.io_read(0x0E80).0, 0x10);
     }
 
     #[test]
@@ -1480,11 +1669,11 @@ mod tests {
         bus.kanji_rom = vec![0u8; 0x2_0000];
         bus.io_write(0x0E80, 0x21);
         bus.io_write(0x0E81, 0x00);
-        assert_eq!(bus.io_read(0x0E80), 0x01);
-        assert_eq!(bus.io_read(0x0E81), 0x00);
+        assert_eq!(bus.io_read(0x0E80).0, 0x01);
+        assert_eq!(bus.io_read(0x0E81).0, 0x00);
 
         bus.io_write(0x0E80, 0x30);
-        assert_eq!(bus.io_read(0x0E80), 0x40);
+        assert_eq!(bus.io_read(0x0E80).0, 0x40);
     }
 
     /// Programs a 100-column (80 displayed) by 25-row, 8-line, 256-line frame.
@@ -1566,10 +1755,10 @@ mod tests {
         bus.video.write_text(0x7FF, 0x41);
 
         bus.io_write(0x1FD0, 0x60); // direct access + 8x16 ANK font
-        assert_eq!(bus.io_read(0x1405), 0x5A);
+        assert_eq!(bus.io_read(0x1405).0, 0x5A);
 
         bus.io_write(0x1FD0, 0x20); // direct access, 8x8 CG-ROM font
-        assert_eq!(bus.io_read(0x1405), 0xA5);
+        assert_eq!(bus.io_read(0x1405).0, 0xA5);
     }
 
     #[test]

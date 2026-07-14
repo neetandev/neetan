@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use common::Tracing;
+use common::TraceSink;
 use device::{
     floppy::{FloppyImage, MountedFloppy},
     mb8877_fdc::{Mb8877Config, Mb8877Fdc},
@@ -71,7 +71,7 @@ pub(super) fn new_fdc(cpu_clock_hz: u32) -> Mb8877Fdc {
     fdc
 }
 
-impl<T: Tracing> Fm7Bus<T> {
+impl<T: TraceSink> Fm7Bus<T> {
     /// Reads an FDC port (`0xFD18-0xFD1F`).
     pub(crate) fn fdc_read(&mut self, port: u8) -> u8 {
         let now = self.current_cycle();
@@ -204,7 +204,14 @@ impl<T: Tracing> Fm7Bus<T> {
     /// the `0xFD02` bit 4 mask gates delivery to the CPU.
     fn sync_fdc_interrupt(&mut self) {
         let line = self.fdc.irq_line();
-        self.interrupts.set_fdc_pending(line, &mut self.tracer);
+        self.interrupts.set_fdc_pending(
+            line,
+            common::TraceContext::main_cpu(
+                self.current_cycle,
+                Some(u64::from(self.cpu_clock_hz())),
+            ),
+            &mut self.tracer,
+        );
     }
 
     /// Mounts a floppy image into `drive`, remembering its backing path.

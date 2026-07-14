@@ -23,6 +23,26 @@ pub enum IrqSource {
     Vrtc = 4,
 }
 
+impl IrqSource {
+    /// Interrupt sources in priority order.
+    const ALL: [Self; 5] = [
+        Self::SubCpu,
+        Self::Joystick,
+        Self::Timer,
+        Self::Voice,
+        Self::Vrtc,
+    ];
+}
+
+/// Result of an interrupt acknowledge cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InterruptAcknowledge {
+    /// Accepted interrupt source, or none when no source was pending.
+    pub source: Option<IrqSource>,
+    /// IM2 vector low byte returned to the processor.
+    pub vector: u8,
+}
+
 /// Number of prioritized sources and SR programmable vector slots.
 const SOURCE_COUNT: usize = 8;
 /// Fixed acknowledge vector for the joystick source.
@@ -93,23 +113,31 @@ impl InterruptController {
         self.pending != 0
     }
 
-    /// Returns the vector of the highest-priority pending source and clears it.
-    pub fn acknowledge(&mut self) -> u8 {
-        for index in 0..SOURCE_COUNT as u8 {
+    /// Acknowledges an interrupt and reports its source and vector.
+    pub fn acknowledge(&mut self) -> InterruptAcknowledge {
+        for source in IrqSource::ALL {
+            let index = source as usize;
             let mask = 1 << index;
             if self.pending & mask != 0 {
                 self.pending &= !mask;
-                return match index {
-                    x if x == IrqSource::SubCpu as u8 => self.sub_vector,
-                    x if x == IrqSource::Joystick as u8 => JOYSTICK_VECTOR,
-                    x if x == IrqSource::Timer as u8 => self.timer_vector,
-                    _ if self.programmable => self.sr_vectors[index as usize],
-                    x if x == IrqSource::Voice as u8 => VOICE_VECTOR_DEFAULT,
-                    _ => self.timer_vector,
+                let vector = match source {
+                    IrqSource::SubCpu => self.sub_vector,
+                    IrqSource::Joystick => JOYSTICK_VECTOR,
+                    IrqSource::Timer => self.timer_vector,
+                    _ if self.programmable => self.sr_vectors[index],
+                    IrqSource::Voice => VOICE_VECTOR_DEFAULT,
+                    IrqSource::Vrtc => self.timer_vector,
+                };
+                return InterruptAcknowledge {
+                    source: Some(source),
+                    vector,
                 };
             }
         }
-        self.timer_vector
+        InterruptAcknowledge {
+            source: None,
+            vector: self.timer_vector,
+        }
     }
 }
 
@@ -130,8 +158,8 @@ mod tests {
         controller.set_sub_vector(0x02);
 
         // Sub-CPU outranks the timer.
-        assert_eq!(controller.acknowledge(), 0x02);
-        assert_eq!(controller.acknowledge(), 0x06);
+        assert_eq!(controller.acknowledge().vector, 0x02);
+        assert_eq!(controller.acknowledge().vector, 0x06);
         assert!(!controller.has_pending());
     }
 
@@ -139,18 +167,18 @@ mod tests {
     fn joystick_uses_its_fixed_vector() {
         let mut controller = InterruptController::new(false);
         controller.raise(IrqSource::Joystick);
-        assert_eq!(controller.acknowledge(), JOYSTICK_VECTOR);
+        assert_eq!(controller.acknowledge().vector, JOYSTICK_VECTOR);
     }
 
     #[test]
     fn timer_vector_is_reprogrammable() {
         let mut controller = InterruptController::new(false);
         controller.raise(IrqSource::Timer);
-        assert_eq!(controller.acknowledge(), TIMER_VECTOR_DEFAULT);
+        assert_eq!(controller.acknowledge().vector, TIMER_VECTOR_DEFAULT);
 
         controller.set_timer_vector(0x22);
         controller.raise(IrqSource::Timer);
-        assert_eq!(controller.acknowledge(), 0x22);
+        assert_eq!(controller.acknowledge().vector, 0x22);
     }
 
     #[test]
@@ -158,7 +186,7 @@ mod tests {
         let mut controller = InterruptController::new(false);
         controller.set_sub_vector(0x14);
         assert!(controller.has_pending());
-        assert_eq!(controller.acknowledge(), 0x14);
+        assert_eq!(controller.acknowledge().vector, 0x14);
     }
 
     #[test]
@@ -169,8 +197,8 @@ mod tests {
         controller.set_sub_vector(0x02);
         controller.raise(IrqSource::Vrtc);
         // The sub-CPU outranks VRTC, but it keeps its latched vector.
-        assert_eq!(controller.acknowledge(), 0x02);
-        assert_eq!(controller.acknowledge(), 0x86);
+        assert_eq!(controller.acknowledge().vector, 0x02);
+        assert_eq!(controller.acknowledge().vector, 0x86);
         assert!(!controller.has_pending());
     }
 

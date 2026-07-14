@@ -1,6 +1,6 @@
 //! PC/AT I/O port write dispatch.
 
-use common::Tracing;
+use common::TraceSink;
 use device::i8253_pit::WriteResult;
 
 use crate::{
@@ -11,9 +11,10 @@ use crate::{
 /// PIT read-back command selector (control word SC bits = 11).
 const PIT_READ_BACK: u8 = 0xC0;
 
-impl<T: Tracing> AtBus<T> {
+impl<T: TraceSink> AtBus<T> {
     /// Writes a byte to an I/O port.
-    pub(crate) fn io_write(&mut self, port: u16, value: u8) {
+    pub(crate) fn io_write(&mut self, port: u16, value: u8) -> bool {
+        let mut handled = true;
         match port {
             0x80 => {
                 // Port 0x80 is both the POST diagnostic port and a DMA page
@@ -146,7 +147,11 @@ impl<T: Tracing> AtBus<T> {
             0x2100..=0x217F => {}
             // DOS/V display-adapter presence probe for an unfitted PS/55 adapter.
             0x1160 => {}
-            _ => self.log_unhandled_write(port, value),
+            _ => {
+                self.log_unhandled_write(port, value);
+                handled = false;
+            }
         }
+        handled
     }
 }

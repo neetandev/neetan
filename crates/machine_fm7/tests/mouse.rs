@@ -39,7 +39,7 @@ fn write_port_b(bus: &mut Fm7Bus, value: u8) {
 
 fn read_joystick(bus: &mut Fm7Bus) -> u8 {
     bus.write_byte(OPN_COMMAND_PORT, OPN_READ_JOYSTICK);
-    bus.read_byte(OPN_DATA_PORT)
+    bus.read_byte(OPN_DATA_PORT).0
 }
 
 #[test]

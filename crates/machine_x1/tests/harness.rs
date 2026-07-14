@@ -111,5 +111,5 @@ pub fn fire_next_event(bus: &mut X1Bus) -> Option<u8> {
     let next = bus.next_event_cycle()?;
     bus.set_current_cycle(next);
     bus.process_events();
-    bus.has_irq().then(|| bus.acknowledge_irq())
+    bus.has_irq().then(|| bus.acknowledge_irq().1)
 }

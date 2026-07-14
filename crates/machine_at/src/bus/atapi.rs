@@ -5,7 +5,7 @@
 //! of the primary HDD channel. Completions are deferred through the scheduler
 //! like the primary channel, using its own event slots.
 
-use common::Tracing;
+use common::TraceSink;
 use device::{cdrom::CdImage, ide::IdeAction};
 
 use crate::{
@@ -16,7 +16,7 @@ use crate::{
     scheduler::EventAt,
 };
 
-impl<T: Tracing> AtBus<T> {
+impl<T: TraceSink> AtBus<T> {
     /// Reads one secondary-channel register (ports 0x170-0x177 and 0x376).
     pub(super) fn ide_secondary_io_read(&mut self, port: u16) -> u8 {
         match port {

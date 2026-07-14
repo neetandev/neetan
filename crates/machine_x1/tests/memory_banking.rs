@@ -2,8 +2,9 @@
 
 mod harness;
 
+use common::MonitorTiming;
 use harness::{build_machine, build_machine_with_synthetic_roms};
-use machine_x1::{MonitorTiming, X1Model};
+use machine_x1::X1Model;
 
 #[test]
 fn rom_ram_toggle_selects_the_bottom_half() {
@@ -59,7 +60,7 @@ fn turbo_bank_register_selects_two_physical_lower_windows() {
     });
 
     // Reset selects the base map (BMCS set), so the IPL is visible.
-    assert_eq!(machine.bus.io_read(0x0B00), 0x10);
+    assert_eq!(machine.bus.io_read(0x0B00).0, 0x10);
     assert!(machine.bus.rom_selected());
 
     // Bank 0 and bank 1 are independent. The upper half stays normal main RAM
@@ -90,7 +91,7 @@ fn turbo_bank_register_selects_two_physical_lower_windows() {
     assert_eq!(machine.bus.peek_byte(0x0000), 0xA2);
 
     select_bank(&mut machine, 15);
-    assert_eq!(machine.bus.io_read(0x0B00), 0x0F);
+    assert_eq!(machine.bus.io_read(0x0B00).0, 0x0F);
     assert_eq!(machine.bus.peek_byte(0x0000), 0xA1);
     machine.bus.poke_byte(0x0000, 0xAF);
     assert_eq!(machine.bus.peek_byte(0xC000), 0xC1);
@@ -100,7 +101,7 @@ fn turbo_bank_register_selects_two_physical_lower_windows() {
     assert_eq!(machine.bus.peek_byte(0xC000), 0xC1);
 
     // The bank register reads back the stored byte.
-    assert_eq!(machine.bus.io_read(0x0B00), 0x01);
+    assert_eq!(machine.bus.io_read(0x0B00).0, 0x01);
 }
 
 #[test]
@@ -110,15 +111,15 @@ fn turbo_bank_register_preserves_high_bits_but_maps_bank_parity() {
     });
 
     machine.bus.io_write(0x0B00, 0xE1);
-    assert_eq!(machine.bus.io_read(0x0B00), 0xE1);
+    assert_eq!(machine.bus.io_read(0x0B00).0, 0xE1);
     machine.bus.poke_byte(0x0000, 0xA1);
 
     machine.bus.io_write(0x0B00, 0xF1);
-    assert_eq!(machine.bus.io_read(0x0B00), 0xF1);
+    assert_eq!(machine.bus.io_read(0x0B00).0, 0xF1);
     assert_eq!(machine.bus.peek_byte(0x0000), 0xC3);
 
     machine.bus.io_write(0x0B00, 0xE3);
-    assert_eq!(machine.bus.io_read(0x0B00), 0xE3);
+    assert_eq!(machine.bus.io_read(0x0B00).0, 0xE3);
     assert_eq!(machine.bus.peek_byte(0x0000), 0xA1);
 }
 
@@ -192,7 +193,7 @@ fn read_1exx_selects_ram_and_returns_open_bus() {
     assert!(machine.bus.rom_selected());
     assert_eq!(machine.bus.peek_byte(0x0000), 0xC3);
 
-    assert_eq!(machine.bus.io_read(0x1E40), 0xFF);
+    assert_eq!(machine.bus.io_read(0x1E40).0, 0xFF);
     assert!(!machine.bus.rom_selected());
     assert_eq!(machine.bus.peek_byte(0x0000), 0x5A);
 }
@@ -204,7 +205,7 @@ fn base_x1_ignores_the_turbo_bank_register() {
         roms.ipl[0] = 0xC3;
     });
     machine.bus.io_write(0x0B00, 0x00); // would select bank 0 on turbo
-    assert_eq!(machine.bus.io_read(0x0B00), 0xFF); // open bus
+    assert_eq!(machine.bus.io_read(0x0B00).0, 0xFF); // open bus
     assert_eq!(machine.bus.peek_byte(0x0000), 0xC3); // IPL still mapped
 }
 
@@ -212,15 +213,15 @@ fn base_x1_ignores_the_turbo_bank_register() {
 fn turbo_dip_switch_reports_monitor_type() {
     let mut turbo = build_machine(X1Model::X1Turbo);
     // Default (Auto) reports a high-resolution 24 kHz monitor: bit 0 = 0.
-    assert_eq!(turbo.bus.io_read(0x1FF0), 0x00);
+    assert_eq!(turbo.bus.io_read(0x1FF0).0, 0x00);
 
     turbo.bus.set_monitor_timing(MonitorTiming::Fixed15kHz);
-    assert_eq!(turbo.bus.io_read(0x1FF0), 0x01); // standard 15 kHz monitor
+    assert_eq!(turbo.bus.io_read(0x1FF0).0, 0x01); // standard 15 kHz monitor
 
     turbo.bus.set_monitor_timing(MonitorTiming::Fixed24kHz);
-    assert_eq!(turbo.bus.io_read(0x1FF0), 0x00);
+    assert_eq!(turbo.bus.io_read(0x1FF0).0, 0x00);
 
     // The base X1 has no DIP port.
     let mut base = build_machine(X1Model::X1);
-    assert_eq!(base.bus.io_read(0x1FF0), 0xFF);
+    assert_eq!(base.bus.io_read(0x1FF0).0, 0xFF);
 }

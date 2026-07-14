@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use common::{Bus, CpuMode, Machine, MachineModel};
-use machine_98::{NoTracing, Pc9801Bus};
+use common::{Bus, CpuMode, Machine, MachineModel, NoTrace};
+use machine_98::Pc9801Bus;
 
 /// Builds a minimal D88 2HD image with the given disk name and sectors on track 0 head 0.
 fn build_named_d88(disk_name: &[u8], sectors: &[(u8, &[u8])], write_protected: bool) -> Vec<u8> {
@@ -59,21 +59,21 @@ fn cleanup_temp_file(path: &Path) {
 fn create_machine_vm() -> machine_98::Pc9801Vm {
     machine_98::Pc9801Vm::new(
         cpu::V30::new(),
-        Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000),
+        Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000),
     )
 }
 
 fn create_machine_vx() -> machine_98::Pc9801Vx {
     machine_98::Pc9801Vx::new(
         cpu::I286::new(),
-        Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000),
+        Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000),
     )
 }
 
 fn create_machine_ra() -> machine_98::Pc9801Ra {
     machine_98::Pc9801Ra::new(
         cpu::I386::new(),
-        Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000),
+        Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::High, 48000),
     )
 }
 

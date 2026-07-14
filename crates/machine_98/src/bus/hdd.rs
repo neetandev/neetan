@@ -1,10 +1,12 @@
+use common::{TraceCallInterface, TraceCallPhase, trace_id};
+
 use crate::{
-    Pc9801Bus, Tracing,
+    Pc9801Bus, TraceSink,
     bus::{INTERRUPT_DELAY_CYCLES, bios},
     scheduler::Event98,
 };
 
-impl<T: Tracing> Pc9801Bus<T> {
+impl<T: TraceSink> Pc9801Bus<T> {
     fn hle_hdd_write_byte(&mut self, linear_address: u32, value: u8) {
         let physical_address = bios::hle_page_translate_write(
             self.hle_cr0,
@@ -192,8 +194,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
     pub(super) fn handle_sasi_interrupt(&mut self) {
         // SASI uses IRQ 9 (slave PIC IRQ 1).
-        self.pic.set_irq(9);
-        self.tracer.trace_irq_raise(9);
+        self.raise_pic_irq(9);
     }
 
     pub(super) fn process_ide_action(&mut self, action: device::ide::IdeAction) {
@@ -222,8 +223,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
     pub(super) fn handle_ide_interrupt(&mut self) {
         // IDE uses IRQ 9 (slave PIC IRQ 1), same as SASI.
-        self.pic.set_irq(9);
-        self.tracer.trace_irq_raise(9);
+        self.raise_pic_irq(9);
     }
 
     /// Returns `true` if a SASI HLE trap is pending.
@@ -265,6 +265,14 @@ impl<T: Tracing> Pc9801Bus<T> {
         let drive_select = ax as u8;
         let drive_idx = device::sasi::drive_index(drive_select);
         let function = function_code & 0x0F;
+        self.trace_call(
+            trace_id::provider::PC98_SASI,
+            TraceCallInterface::Named(trace_id::interface::EXTENSION_ROM),
+            Some(u64::from(function_code)),
+            Some(u64::from(drive_select)),
+            TraceCallPhase::Enter,
+            None,
+        );
 
         let result_ah = match function {
             0x03 => {
@@ -344,8 +352,14 @@ impl<T: Tracing> Pc9801Bus<T> {
             _ => 0x40,    // Unsupported: Equipment Check error
         };
 
-        self.tracer
-            .trace_sasi_hle(function_code, drive_select, result_ah, bx, cx, dx, es, bp);
+        self.trace_call(
+            trace_id::provider::PC98_SASI,
+            TraceCallInterface::Named(trace_id::interface::EXTENSION_ROM),
+            Some(u64::from(function_code)),
+            Some(u64::from(drive_select)),
+            TraceCallPhase::Exit,
+            Some(u64::from(result_ah)),
+        );
 
         // Write result AH back to stack (high byte of AX word at stack_base).
         self.memory.write_byte(stack_base + 1, result_ah);

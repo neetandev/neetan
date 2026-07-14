@@ -173,8 +173,6 @@ impl std::str::FromStr for BootMode {
     }
 }
 
-pub use common::MonitorTiming;
-
 /// Memory wait compatibility switch. `Compatible` inserts the additional
 /// real-hardware memory wait states; `Fast` omits them where the hardware
 /// switch would.

@@ -1,6 +1,6 @@
-use common::{Bus, CpuMode, MachineModel};
+use common::{Bus, CpuMode, MachineModel, NoTrace};
 use device::ga1280a::{Ga1280aPlaneMode, Ga1280aStreamState};
-use machine_98::{NoTracing, Pc9801Bus};
+use machine_98::Pc9801Bus;
 
 const GA_GAPORT: u16 = 0x00D8;
 const WINDOW_BASE: u32 = 0xC0000;
@@ -10,7 +10,7 @@ fn ga_port(selector: u8, offset: u8) -> u16 {
     (u16::from(selector) << 8) | (GA_GAPORT + u16::from(offset))
 }
 
-fn setup_bus() -> Pc9801Bus<NoTracing> {
+fn setup_bus() -> Pc9801Bus<NoTrace> {
     let mut bus = Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48000);
     bus.install_ga1280a();
     bus.io_write_word(ga_port(0x16, 0), 0x20C1);
@@ -21,19 +21,19 @@ fn setup_bus() -> Pc9801Bus<NoTracing> {
     bus
 }
 
-fn write_palette(bus: &mut Pc9801Bus<NoTracing>, index: u8, red: u8, green: u8, blue: u8) {
+fn write_palette(bus: &mut Pc9801Bus<NoTrace>, index: u8, red: u8, green: u8, blue: u8) {
     bus.io_write_byte(ga_port(0x18, 0), index);
     bus.io_write_byte(ga_port(0x1A, 0), red);
     bus.io_write_byte(ga_port(0x1A, 0), green);
     bus.io_write_byte(ga_port(0x1A, 0), blue);
 }
 
-fn write_crtc_word(bus: &mut Pc9801Bus<NoTracing>, index: u8, value: u16) {
+fn write_crtc_word(bus: &mut Pc9801Bus<NoTrace>, index: u8, value: u16) {
     bus.io_write_byte(ga_port(0x1E, 0), index);
     bus.io_write_word(ga_port(0x1F, 0), value);
 }
 
-fn program_full_color_mode20(bus: &mut Pc9801Bus<NoTracing>) {
+fn program_full_color_mode20(bus: &mut Pc9801Bus<NoTrace>) {
     write_crtc_word(bus, 0x00, 0x00A6);
     write_crtc_word(bus, 0x02, 0x007F);
     write_crtc_word(bus, 0x10, 0x020B);
@@ -41,7 +41,7 @@ fn program_full_color_mode20(bus: &mut Pc9801Bus<NoTracing>) {
     write_crtc_word(bus, 0x36, 0x5084);
 }
 
-fn run_ga1280_full_color_helper(bus: &mut Pc9801Bus<NoTracing>) {
+fn run_ga1280_full_color_helper(bus: &mut Pc9801Bus<NoTrace>) {
     for (selector, offset, value) in [
         (0x18, 1, 0x02),
         (0x18, 0, 0x18),
@@ -54,23 +54,23 @@ fn run_ga1280_full_color_helper(bus: &mut Pc9801Bus<NoTracing>) {
     }
 }
 
-fn set_ga1280_direct_color16(bus: &mut Pc9801Bus<NoTracing>) {
+fn set_ga1280_direct_color16(bus: &mut Pc9801Bus<NoTrace>) {
     bus.io_write_byte(ga_port(0x18, 1), 2);
     bus.io_write_byte(ga_port(0x18, 0), 0x38);
     bus.io_write_byte(ga_port(0x18, 1), 0);
 }
 
-fn set_normal_mix(bus: &mut Pc9801Bus<NoTracing>) {
+fn set_normal_mix(bus: &mut Pc9801Bus<NoTrace>) {
     bus.io_write_byte(ga_port(0x14, 0), 0x0C);
     bus.io_write_word(ga_port(0x1E, 2), 0x1000);
 }
 
-fn set_xor_mix(bus: &mut Pc9801Bus<NoTracing>) {
+fn set_xor_mix(bus: &mut Pc9801Bus<NoTrace>) {
     bus.io_write_byte(ga_port(0x14, 0), 0x06);
     bus.io_write_word(ga_port(0x1E, 2), 0x0000);
 }
 
-fn fill_rect(bus: &mut Pc9801Bus<NoTracing>, x: u16, y: u16, width: u16, height: u16, color: u16) {
+fn fill_rect(bus: &mut Pc9801Bus<NoTrace>, x: u16, y: u16, width: u16, height: u16, color: u16) {
     bus.io_write_word(ga_port(0x09, 0), color);
     bus.io_write_word(ga_port(0x0A, 2), x);
     bus.io_write_word(ga_port(0x0B, 2), y);
@@ -79,21 +79,21 @@ fn fill_rect(bus: &mut Pc9801Bus<NoTracing>, x: u16, y: u16, width: u16, height:
     bus.io_write_word(ga_port(0x1F, 2), 0x6FE8);
 }
 
-fn upload_rop_pattern(bus: &mut Pc9801Bus<NoTracing>, rows: [u8; 8]) {
+fn upload_rop_pattern(bus: &mut Pc9801Bus<NoTrace>, rows: [u8; 8]) {
     bus.io_write_byte(ga_port(0x15, 2), 0);
     for row in rows {
         bus.io_write_byte(ga_port(0x14, 2), row);
     }
 }
 
-fn read_pixel(bus: &mut Pc9801Bus<NoTracing>, x: u16, y: u16) -> u16 {
+fn read_pixel(bus: &mut Pc9801Bus<NoTrace>, x: u16, y: u16) -> u16 {
     bus.io_write_word(ga_port(0x08, 2), x);
     bus.io_write_word(ga_port(0x09, 2), y);
     bus.io_write_word(ga_port(0x1F, 2), 0x20E8);
     bus.io_read_word(ga_port(0x1C, 2))
 }
 
-fn start_image_restore(bus: &mut Pc9801Bus<NoTracing>, x: u16, y: u16, width: u16, height: u16) {
+fn start_image_restore(bus: &mut Pc9801Bus<NoTrace>, x: u16, y: u16, width: u16, height: u16) {
     bus.io_write_word(ga_port(0x0A, 2), x);
     bus.io_write_word(ga_port(0x0B, 2), y);
     bus.io_write_word(ga_port(0x04, 2), width - 1);
@@ -102,7 +102,7 @@ fn start_image_restore(bus: &mut Pc9801Bus<NoTracing>, x: u16, y: u16, width: u1
 }
 
 fn start_opaque_pattern_expand(
-    bus: &mut Pc9801Bus<NoTracing>,
+    bus: &mut Pc9801Bus<NoTrace>,
     x: u16,
     y: u16,
     width: u16,
@@ -115,14 +115,14 @@ fn start_opaque_pattern_expand(
     bus.io_write_word(ga_port(0x1F, 2), 0x4A88);
 }
 
-fn write_full_color_pixel(bus: &mut Pc9801Bus<NoTracing>, x: u32, y: u32, rgb: [u8; 3]) {
+fn write_full_color_pixel(bus: &mut Pc9801Bus<NoTrace>, x: u32, y: u32, rgb: [u8; 3]) {
     let offset = (y * FULL_COLOR_WIDTH + x) * 3;
     bus.write_byte(WINDOW_BASE + offset, rgb[0]);
     bus.write_byte(WINDOW_BASE + offset + 1, rgb[1]);
     bus.write_byte(WINDOW_BASE + offset + 2, rgb[2]);
 }
 
-fn write_indexed_pixel(bus: &mut Pc9801Bus<NoTracing>, x: u32, y: u32, palette_index: u8) {
+fn write_indexed_pixel(bus: &mut Pc9801Bus<NoTrace>, x: u32, y: u32, palette_index: u8) {
     bus.io_write_word(ga_port(0x01, 0), y as u16);
     bus.io_write_word(ga_port(0x03, 0), 0x00FF);
     bus.io_write_word(ga_port(0x05, 0), 0xFFFF);
@@ -132,7 +132,7 @@ fn write_indexed_pixel(bus: &mut Pc9801Bus<NoTracing>, x: u32, y: u32, palette_i
     bus.io_write_byte(ga_port(0x0E, 0), 0);
 }
 
-fn assert_pixel(bus: &Pc9801Bus<NoTracing>, x: u32, y: u32, expected: [u8; 4]) {
+fn assert_pixel(bus: &Pc9801Bus<NoTrace>, x: u32, y: u32, expected: [u8; 4]) {
     let (width, _) = bus.display_dimensions();
     let offset = ((y * width + x) * 4) as usize;
     assert_eq!(&bus.display_framebuffer()[offset..offset + 4], &expected);

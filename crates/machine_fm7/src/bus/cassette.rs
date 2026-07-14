@@ -8,7 +8,7 @@
 //! lines idle high (ready). The deck plays a bit-per-sample waveform and is
 //! advanced lazily against `current_cycle`, mirroring the X1.
 
-use common::Tracing;
+use common::TraceSink;
 use device::cassette::{CassetteError, load_cassette};
 
 use super::Fm7Bus;
@@ -28,7 +28,7 @@ const CASSETTE_EAR_BIT: u8 = 0x80;
 /// attached, so the byte reads `0x7F` until the EAR bit is overlaid.
 const CASSETTE_PRINTER_IDLE: u8 = 0x7F;
 
-impl<T: Tracing> Fm7Bus<T> {
+impl<T: TraceSink> Fm7Bus<T> {
     /// Loads a cassette image (chosen by file extension) into the deck.
     pub fn insert_cassette(&mut self, extension: &str, image: &[u8]) -> Result<(), CassetteError> {
         let media = load_cassette(extension, image)?;

@@ -3,7 +3,7 @@
 //! These build an `AtBus` with placeholder ROM images (the CPU never runs) and
 //! drive the devices through the I/O ports, advancing the scheduler by hand.
 
-use common::{Bus, JoystickState, NoTracing};
+use common::{Bus, JoystickState, NoTrace};
 use machine_at::{AtBus, LoadedRoms};
 
 // COM1 UART register ports.
@@ -20,16 +20,16 @@ const MCR_RTS: u8 = 0x02;
 const MCR_OUT2: u8 = 0x08;
 
 /// Builds a bus with placeholder ROMs and a 1 MHz-ish clock for simple timing.
-fn bus() -> AtBus<NoTracing> {
+fn bus() -> AtBus<NoTrace> {
     let roms = LoadedRoms {
         system_bios: vec![0xFF; 0x1_0000],
         vga_bios: vec![0xFF; 0x8000],
     };
-    AtBus::<NoTracing>::new(1_152_000, 16 << 20, roms, 48_000)
+    AtBus::<NoTrace>::new(1_152_000, 16 << 20, roms, 48_000)
 }
 
 /// Advances the scheduler clock to `cycle`, firing due events.
-fn advance(bus: &mut AtBus<NoTracing>, cycle: u64) {
+fn advance(bus: &mut AtBus<NoTrace>, cycle: u64) {
     bus.set_current_cycle(cycle);
 }
 

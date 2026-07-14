@@ -7,7 +7,7 @@
 //! full words once, and the 1024x1024 mode maps the four nibbles as screen
 //! quadrants. Accesses outside the windows a mode defines raise bus errors.
 
-use common::{M68000BusError, Tracing};
+use common::{M68000BusError, TraceSink};
 use device::crtc_x68k::GvramModeX68k;
 
 use super::X68kBus;
@@ -17,7 +17,7 @@ const GVRAM_BASE: u32 = 0xC00000;
 /// Word-offset mask within one 512x512 page.
 const PAGE_WORD_MASK: u32 = 0x3_FFFF;
 
-impl<T: Tracing> X68kBus<T> {
+impl<T: TraceSink> X68kBus<T> {
     /// Reads one packed graphics VRAM word.
     pub(super) fn read_graphic_vram_word(&self, address: u32) -> Result<u16, M68000BusError> {
         let relative = address - GVRAM_BASE;

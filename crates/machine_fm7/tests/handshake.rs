@@ -27,25 +27,25 @@ fn halt_gate_controls_shared_ram_access() {
     machine.run_for(400);
     assert!(!machine.bus.is_sub_halted());
     machine.bus.write_byte(0xFC80, 0x11);
-    assert_eq!(machine.bus.read_byte(0xFC80), 0xFF);
+    assert_eq!(machine.bus.read_byte(0xFC80).0, 0xFF);
 
     // Requesting HALT stops the sub at an instruction boundary and folds into busy.
     machine.bus.write_byte(0xFD05, FD05_HALT);
     machine.run_for(400);
     assert!(machine.bus.is_sub_halted());
     assert!(machine.bus.sub_busy());
-    assert_eq!(machine.bus.read_byte(0xFD05) & SUB_BUSY_BIT, SUB_BUSY_BIT);
+    assert_eq!(machine.bus.read_byte(0xFD05).0 & SUB_BUSY_BIT, SUB_BUSY_BIT);
 
     // Now the window aliases the sub shared RAM.
     machine.bus.write_byte(0xFC80, 0x42);
-    assert_eq!(machine.bus.read_byte(0xFC80), 0x42);
+    assert_eq!(machine.bus.read_byte(0xFC80).0, 0x42);
     assert_eq!(machine.bus.sub_peek_byte(0xD380), 0x42);
 
     // Releasing HALT lets the sub run again and closes the window.
     machine.bus.write_byte(0xFD05, 0x00);
     machine.run_for(400);
     assert!(!machine.bus.is_sub_halted());
-    assert_eq!(machine.bus.read_byte(0xFC80), 0xFF);
+    assert_eq!(machine.bus.read_byte(0xFC80).0, 0xFF);
 }
 
 #[test]
@@ -103,11 +103,11 @@ fn attention_raises_and_read_clears_main_firq() {
 
     sub_read(&mut bus, 0xD404);
     assert!(bus.firq_active());
-    assert_eq!(bus.read_byte(0xFD04) & FD04_ATTENTION, 0x00);
+    assert_eq!(bus.read_byte(0xFD04).0 & FD04_ATTENTION, 0x00);
 
     // Reading 0xFD04 acknowledges the attention FIRQ.
     assert!(!bus.firq_active());
-    assert_eq!(bus.read_byte(0xFD04) & FD04_ATTENTION, FD04_ATTENTION);
+    assert_eq!(bus.read_byte(0xFD04).0 & FD04_ATTENTION, FD04_ATTENTION);
 }
 
 #[test]

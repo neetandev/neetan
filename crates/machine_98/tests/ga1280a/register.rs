@@ -1,5 +1,5 @@
-use common::{Bus, CpuMode, MachineModel};
-use machine_98::{NoTracing, Pc9801Bus};
+use common::{Bus, CpuMode, MachineModel, NoTrace};
+use machine_98::Pc9801Bus;
 
 const GA_GAPORT: u16 = 0x00D8;
 
@@ -7,7 +7,7 @@ fn ga_port(selector: u8, offset: u8) -> u16 {
     (u16::from(selector) << 8) | (GA_GAPORT + u16::from(offset))
 }
 
-fn setup_bus() -> Pc9801Bus<NoTracing> {
+fn setup_bus() -> Pc9801Bus<NoTrace> {
     let mut bus = Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48000);
     bus.install_ga1280a();
     bus

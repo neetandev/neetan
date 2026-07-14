@@ -4,7 +4,7 @@
 
 use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
-use common::{Bus, Cpu, CpuMode, HostDateTime, Tracing};
+use common::{Bus, Cpu, CpuMode, HostDateTime, TraceSink};
 use cpu::{CPU_MODEL_386_DX, CPU_MODEL_386_SX, CPU_MODEL_486_DX, I386State, SegReg32};
 use machine_towns::{LoadedRoms, TownsBus, TownsMachine, TownsModel};
 
@@ -93,12 +93,12 @@ pub fn machine_with_font_serial(
 }
 
 /// Builds a reset CPU around a configured FM Towns bus.
-fn build_machine<const CPU_MODEL: u8, T: Tracing + Default>(
+fn build_machine<const CPU_MODEL: u8, T: TraceSink + Default>(
     model: TownsModel,
     cpu_mode: CpuMode,
     roms: LoadedRoms,
 ) -> TownsMachine<CPU_MODEL, T> {
-    let bus = TownsBus::new(model, cpu_mode, roms, 48_000);
+    let bus = TownsBus::new_with_trace_sink(model, cpu_mode, roms, 48_000, T::default());
     let mut cpu = cpu::I386::<CPU_MODEL, { cpu::ADDRESS_WIDTH_32 }>::new();
     cpu.reset();
     TownsMachine::new(cpu, bus)
@@ -202,7 +202,7 @@ pub fn load_code(bus: &mut impl Bus, linear: u32, bytes: &[u8]) {
 }
 
 /// The CPU's current linear instruction pointer (CS base + EIP).
-pub fn linear_pc<const CPU_MODEL: u8, T: Tracing + Default>(
+pub fn linear_pc<const CPU_MODEL: u8, T: TraceSink + Default>(
     machine: &TownsMachine<CPU_MODEL, T>,
 ) -> u32 {
     machine.cpu.state.seg_bases[SegReg32::CS as usize].wrapping_add(machine.cpu.state.eip())
@@ -232,16 +232,32 @@ pub struct RecordingTracer {
     pub irqs_raised: Rc<RefCell<BTreeSet<u8>>>,
 }
 
-impl Tracing for RecordingTracer {
-    fn trace_io_read(&mut self, port: u16, _value: u8) {
-        self.ports_read.borrow_mut().insert(port);
-    }
-
-    fn trace_io_write(&mut self, port: u16, _value: u8) {
-        self.ports_written.borrow_mut().insert(port);
-    }
-
-    fn trace_irq_raise(&mut self, irq: u8) {
-        self.irqs_raised.borrow_mut().insert(irq);
+impl TraceSink for RecordingTracer {
+    fn trace(&mut self, _context: common::TraceContext, event: common::TraceEvent<'_>) {
+        match event {
+            common::TraceEvent::Access(access)
+                if access.space == common::TraceAddressSpace::MAIN_IO
+                    && access.kind == common::TraceAccessKind::Read =>
+            {
+                self.ports_read.borrow_mut().insert(access.address as u16);
+            }
+            common::TraceEvent::Access(access)
+                if access.space == common::TraceAddressSpace::MAIN_IO
+                    && access.kind == common::TraceAccessKind::Write =>
+            {
+                self.ports_written
+                    .borrow_mut()
+                    .insert(access.address as u16);
+            }
+            common::TraceEvent::Interrupt(interrupt)
+                if interrupt.action == common::TraceInterruptAction::Assert
+                    && interrupt.line.is_some() =>
+            {
+                self.irqs_raised
+                    .borrow_mut()
+                    .insert(interrupt.line.unwrap() as u8);
+            }
+            _ => {}
+        }
     }
 }

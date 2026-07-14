@@ -3,9 +3,9 @@
 use common::{Cpu, MachineModel};
 
 use super::super::Pc9801Bus;
-use crate::Tracing;
+use crate::TraceSink;
 
-impl<T: Tracing> Pc9801Bus<T> {
+impl<T: TraceSink> Pc9801Bus<T> {
     pub(super) fn hle_int1fh(&mut self, cpu: &mut impl Cpu) {
         let ah = cpu.ah();
 

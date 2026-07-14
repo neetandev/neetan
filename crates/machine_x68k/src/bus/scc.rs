@@ -1,6 +1,6 @@
 //! SCC glue: the Sharp mouse on channel B and the RS-232C stub on channel A.
 
-use common::Tracing;
+use common::TraceSink;
 use device::z8530::{SccChannel, SccWriteEffect};
 
 use super::X68kBus;
@@ -55,7 +55,7 @@ fn clamp_delta(delta: i32, overflow_bit: u8, underflow_bit: u8) -> (u8, u8) {
     }
 }
 
-impl<T: Tracing> X68kBus<T> {
+impl<T: TraceSink> X68kBus<T> {
     /// Accumulates host mouse movement for the next packet.
     pub fn push_mouse_delta(&mut self, delta_x: i16, delta_y: i16) {
         self.mouse.delta_x = self.mouse.delta_x.saturating_add(i32::from(delta_x));

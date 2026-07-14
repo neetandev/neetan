@@ -228,7 +228,7 @@ fn direct_vram_window_reaches_vram_only_while_halted() {
 
     // A write through the window lands in VRAM and reads back through it.
     machine.bus.write_byte(0x2000, LEFT_PIXEL);
-    assert_eq!(machine.bus.read_byte(0x2000), LEFT_PIXEL);
+    assert_eq!(machine.bus.read_byte(0x2000).0, LEFT_PIXEL);
     assert_eq!(machine.bus.sub_peek_byte(PLANE_BLUE), LEFT_PIXEL);
 
     // The written pixel appears in the rendered image. The machine started
@@ -243,7 +243,7 @@ fn direct_vram_window_reaches_vram_only_while_halted() {
     bus.write_byte(0xFD82, 0x10);
     bus.write_byte(0xFD93, 0x80);
     assert!(!bus.is_sub_halted());
-    assert_eq!(bus.read_byte(0x2000), 0xFF);
+    assert_eq!(bus.read_byte(0x2000).0, 0xFF);
     bus.write_byte(0x2000, LEFT_PIXEL);
     assert_eq!(bus.sub_peek_byte(PLANE_BLUE), 0x00);
 }

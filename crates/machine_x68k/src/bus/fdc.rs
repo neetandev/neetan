@@ -6,7 +6,7 @@
 //! bus-master cycle. Sector lookups, drive readiness, the IOC FDC/FDD
 //! interrupt latches, and DIM/XDF/D88 media mounting all live here.
 
-use common::Tracing;
+use common::TraceSink;
 use device::{
     floppy::{FloppyImage, MountedFloppy},
     upd765a_fdc::{
@@ -21,7 +21,7 @@ use crate::{IocSource, scheduler::EventX68k};
 /// Highest drive unit that accepts media (the X68000 has two internal drives).
 const INSERTABLE_DRIVES: usize = 2;
 
-impl<T: Tracing> X68kBus<T> {
+impl<T: TraceSink> X68kBus<T> {
     /// Reads one odd-address FDC block register.
     pub(super) fn read_fdc_register(&mut self, address: u32) -> u8 {
         match address & 7 {
@@ -620,19 +620,19 @@ mod tests {
     #[test]
     fn decoder_places_the_fdc_window() {
         assert_eq!(
-            X68kBus::<common::NoTracing>::decode_region(0xE93FFF),
+            X68kBus::<common::NoTrace>::decode_region(0xE93FFF),
             X68kRegion::Adpcm
         );
         assert_eq!(
-            X68kBus::<common::NoTracing>::decode_region(0xE94000),
+            X68kBus::<common::NoTrace>::decode_region(0xE94000),
             X68kRegion::Fdc
         );
         assert_eq!(
-            X68kBus::<common::NoTracing>::decode_region(0xE95FFF),
+            X68kBus::<common::NoTrace>::decode_region(0xE95FFF),
             X68kRegion::Fdc
         );
         assert_eq!(
-            X68kBus::<common::NoTracing>::decode_region(0xE96000),
+            X68kBus::<common::NoTrace>::decode_region(0xE96000),
             X68kRegion::StorageController
         );
     }

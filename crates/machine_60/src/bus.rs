@@ -8,7 +8,10 @@ mod sub_hle;
 
 use std::path::PathBuf;
 
-use common::{JoystickState, NoTracing, Tracing};
+use common::{
+    JoystickState, NoTrace, TraceAccessKind, TraceAccessWidth, TraceAddressSpace, TraceContext,
+    TraceEvent, TraceInterruptAction, TraceInterruptKind, TracePresentation, TraceSink, trace_id,
+};
 use device::{
     ay8910::Ay8910,
     cassette::{CassetteDeck, CassetteError, CassetteRead, parse_tape},
@@ -62,6 +65,13 @@ const VOICE_SYNTHESIS_RATE_HZ: u64 = 10_000;
 enum SoundChip {
     Ay(Ay8910),
     Opn(Box<OpnFm<Ym2203>>),
+}
+
+impl Pc6000Bus<NoTrace> {
+    /// Creates an untraced bus for `model` at the given audio sample rate.
+    pub fn new(model: Pc6000Model, sample_rate: u32) -> Self {
+        Self::new_with_trace_sink(model, sample_rate, NoTrace)
+    }
 }
 
 /// Timer base divider for the periodic interrupt frequency.
@@ -124,7 +134,7 @@ const MK2_VIDEO_BASE_OFFSETS: [u16; 8] = [
 ];
 
 /// PC-6000 system bus.
-pub struct Pc6000Bus<T: Tracing = NoTracing> {
+pub struct Pc6000Bus<T: TraceSink = NoTrace> {
     model: Pc6000Model,
     clocks: ClockConfig,
     memory: Pc6000Memory,
@@ -182,16 +192,14 @@ pub struct Pc6000Bus<T: Tracing = NoTracing> {
     sr_bitmap_x_offset: u8,
     sr_bitmap_y_offset: u8,
     framebuffer: Vec<u8>,
+    presented_frames: u64,
     /// Bus-activity tracer (a no-op by default).
     tracer: T,
 }
 
-impl<T: Tracing> Pc6000Bus<T> {
-    /// Creates a bus for `model` at the given audio sample rate.
-    pub fn new(model: Pc6000Model, sample_rate: u32) -> Self
-    where
-        T: Default,
-    {
+impl<T: TraceSink> Pc6000Bus<T> {
+    /// Creates a traced bus for `model` at the given audio sample rate.
+    pub fn new_with_trace_sink(model: Pc6000Model, sample_rate: u32, tracer: T) -> Self {
         let clocks = ClockConfig {
             main_clock_hz: model.main_clock_hz(),
             sample_rate,
@@ -252,7 +260,8 @@ impl<T: Tracing> Pc6000Bus<T> {
             sr_bitmap_x_offset: 0,
             sr_bitmap_y_offset: 0,
             framebuffer: vec![0; width as usize * height as usize * BYTES_PER_PIXEL],
-            tracer: T::default(),
+            presented_frames: 0,
+            tracer,
         };
         bus.schedule_frame();
         bus.schedule_key_scan();
@@ -578,6 +587,18 @@ impl<T: Tracing> Pc6000Bus<T> {
     pub fn process_events(&mut self) {
         let due = self.scheduler.pop_due_events(self.current_cycle);
         for event in due.iter() {
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::scheduler_main(
+                        self.current_cycle,
+                        Some(u64::from(self.cpu_clock_hz())),
+                    ),
+                    TraceEvent::Scheduled {
+                        event: event.kind.trace_name(),
+                        fire_tick: event.fire_cycle,
+                    },
+                );
+            }
             match event.kind {
                 Event60::TimerIrq => {
                     if self.timer_enabled && !self.timer_irq_masked && !self.cassette_active {
@@ -590,6 +611,7 @@ impl<T: Tracing> Pc6000Bus<T> {
                         self.interrupt.raise(IrqSource::Vrtc);
                     }
                     self.render_frame();
+                    self.trace_presentation();
                     self.schedule_frame();
                 }
                 Event60::KeyScan => {
@@ -647,9 +669,29 @@ impl<T: Tracing> Pc6000Bus<T> {
         self.interrupt.has_pending()
     }
 
-    /// Acknowledges the highest-priority pending interrupt.
-    pub fn acknowledge_irq(&mut self) -> u8 {
+    /// Acknowledges the highest-priority pending interrupt and reports its source.
+    pub fn acknowledge_irq(&mut self) -> crate::interrupt::InterruptAcknowledge {
         self.interrupt.acknowledge()
+    }
+
+    fn trace_presentation(&mut self) {
+        if !T::ENABLED {
+            return;
+        }
+        let (width, height) = display_dimensions(self.model);
+        self.presented_frames = self.presented_frames.saturating_add(1);
+        self.tracer.trace(
+            TraceContext::presentation_main(
+                self.current_cycle,
+                Some(u64::from(self.cpu_clock_hz())),
+            ),
+            TraceEvent::Presentation(TracePresentation {
+                display: trace_id::display::MAIN,
+                frame: self.presented_frames,
+                width,
+                height,
+            }),
+        );
     }
 
     fn render_frame(&mut self) {
@@ -979,42 +1021,121 @@ fn io_wait(port: u16) -> i64 {
 }
 
 /// Ephemeral `common::Bus` adapter for the main Z80.
-pub struct MainBusView<'a, T: Tracing = NoTracing> {
+pub struct MainBusView<'a, T: TraceSink = NoTrace> {
     pub bus: &'a mut Pc6000Bus<T>,
 }
 
-impl<T: Tracing> common::Bus for MainBusView<'_, T> {
+impl<T: TraceSink> common::Bus for MainBusView<'_, T> {
     fn read_byte(&mut self, address: u32) -> u8 {
         self.bus.memory_wait_cycles += memory_wait(address);
-        let value = self.bus.memory.read(address as u16);
-        self.bus.tracer.trace_mem_read(address, value);
+        let bus_address = address as u16;
+        let value = self.bus.memory.read(bus_address);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Read,
+                    u64::from(bus_address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
         value
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
         self.bus.memory_wait_cycles += memory_wait(address);
-        self.bus.memory.write(address as u16, value);
-        self.bus.tracer.trace_mem_write(address, value);
+        let bus_address = address as u16;
+        self.bus.memory.write(bus_address, value);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Write,
+                    u64::from(bus_address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
     }
 
     fn fetch_opcode_byte(&mut self, address: u32) -> u8 {
         // An M1 opcode fetch always costs one wait state, independent of the
         // address (it replaces the data-access wait rather than adding to it).
         self.bus.memory_wait_cycles += MEMORY_WAIT_CYCLES;
-        self.bus.memory.read(address as u16)
+        let value = self.bus.memory.read(address as u16);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Fetch,
+                    u64::from(address as u16),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
+        value
     }
 
     fn io_read_byte(&mut self, port: u16) -> u8 {
         self.bus.memory_wait_cycles += io_wait(port);
-        let value = self.bus.io_read(port);
-        self.bus.tracer.trace_io_read(port, value);
+        let (value, handled) = self.bus.io_read(port);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Read,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
         value
     }
 
     fn io_write_byte(&mut self, port: u16, value: u8) {
         self.bus.memory_wait_cycles += io_wait(port);
-        self.bus.io_write(port, value);
-        self.bus.tracer.trace_io_write(port, value);
+        let handled = self.bus.io_write(port, value);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Write,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
     }
 
     fn drain_wait_cycles(&mut self) -> i64 {
@@ -1026,9 +1147,23 @@ impl<T: Tracing> common::Bus for MainBusView<'_, T> {
     }
 
     fn acknowledge_irq(&mut self) -> u8 {
-        let vector = self.bus.acknowledge_irq();
-        self.bus.tracer.trace_irq_acknowledge(0, vector);
-        vector
+        let acknowledge = self.bus.acknowledge_irq();
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::interrupt(
+                    trace_id::controller::PC60_IRQ,
+                    TraceInterruptKind::Maskable,
+                    acknowledge.source.map(|source| source as u16),
+                    TraceInterruptAction::Acknowledge,
+                    Some(u32::from(acknowledge.vector)),
+                ),
+            );
+        }
+        acknowledge.vector
     }
 
     fn has_nmi(&self) -> bool {
@@ -1043,7 +1178,10 @@ impl<T: Tracing> common::Bus for MainBusView<'_, T> {
 
     fn set_current_cycle(&mut self, cycle: u64) {
         self.bus.current_cycle = cycle;
-        self.bus.tracer.set_cycle(cycle);
+    }
+
+    fn cpu_should_yield(&self) -> bool {
+        T::ENABLED && self.bus.tracer.yield_requested()
     }
 }
 
@@ -1051,6 +1189,22 @@ impl<T: Tracing> common::Bus for MainBusView<'_, T> {
 mod tests {
     use super::*;
     use crate::config::Pc6000Model;
+
+    #[derive(Default)]
+    struct RecordingTrace {
+        accesses: Vec<common::TraceAccess>,
+        interrupts: Vec<common::TraceInterrupt>,
+    }
+
+    impl TraceSink for RecordingTrace {
+        fn trace(&mut self, _context: TraceContext, event: TraceEvent<'_>) {
+            match event {
+                TraceEvent::Access(access) => self.accesses.push(access),
+                TraceEvent::Interrupt(interrupt) => self.interrupts.push(interrupt),
+                _ => {}
+            }
+        }
+    }
 
     /// System-latch byte that enables the cassette motor while keeping the timer
     /// disabled (bit 0 set), to isolate cassette interrupts.
@@ -1063,7 +1217,7 @@ mod tests {
             .expect("an event is scheduled");
         bus.set_current_cycle(next);
         bus.process_events();
-        bus.has_irq().then(|| bus.acknowledge_irq())
+        bus.has_irq().then(|| bus.acknowledge_irq().vector)
     }
 
     #[test]
@@ -1180,6 +1334,49 @@ mod tests {
         // Other I/O ports are wait-free.
         let _ = view.io_read_byte(0xC1);
         assert_eq!(view.drain_wait_cycles(), 0);
+    }
+
+    #[test]
+    fn traces_use_live_io_decode_and_interrupt_source() {
+        use common::Bus;
+
+        let mut bus =
+            Pc6000Bus::new_with_trace_sink(Pc6000Model::Pc6001, 48_000, RecordingTrace::default());
+        {
+            let mut view = MainBusView { bus: &mut bus };
+            Bus::io_read_byte(&mut view, 0x90);
+            Bus::io_read_byte(&mut view, 0xC1);
+        }
+        bus.interrupt.raise(IrqSource::Joystick);
+        {
+            let mut view = MainBusView { bus: &mut bus };
+            Bus::acknowledge_irq(&mut view);
+        }
+
+        assert!(bus.tracer().accesses[0].handled);
+        assert!(!bus.tracer().accesses[1].handled);
+        assert_eq!(
+            bus.tracer().interrupts[0].line,
+            Some(IrqSource::Joystick as u16)
+        );
+    }
+
+    #[test]
+    fn memory_trace_addresses_apply_the_z80_address_mask() {
+        use common::Bus;
+
+        let mut bus =
+            Pc6000Bus::new_with_trace_sink(Pc6000Model::Pc6001, 48_000, RecordingTrace::default());
+        {
+            let mut view = MainBusView { bus: &mut bus };
+            Bus::read_byte(&mut view, 0x1_1234);
+            Bus::write_byte(&mut view, 0x1_5678, 0xA5);
+            Bus::fetch_opcode_byte(&mut view, 0x1_9ABC);
+        }
+
+        assert_eq!(bus.tracer().accesses[0].address, 0x1234);
+        assert_eq!(bus.tracer().accesses[1].address, 0x5678);
+        assert_eq!(bus.tracer().accesses[2].address, 0x9ABC);
     }
 
     #[test]

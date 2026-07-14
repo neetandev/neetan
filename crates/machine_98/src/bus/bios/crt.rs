@@ -4,9 +4,9 @@
 use common::Cpu;
 
 use super::{super::Pc9801Bus, cgrom_kanji_offset};
-use crate::Tracing;
+use crate::TraceSink;
 
-impl<T: Tracing> Pc9801Bus<T> {
+impl<T: TraceSink> Pc9801Bus<T> {
     pub(super) fn hle_int18h(&mut self, cpu: &mut impl Cpu) {
         match cpu.ah() {
             0x00 => self.int18h_key_read(cpu),

@@ -5,7 +5,7 @@
 //! MX and the 386-based CX; the physical address width is fixed at 32 bits for
 //! both.
 
-use common::{Bus, Cpu, JoystickState, Machine, NoTracing, Tracing};
+use common::{Bus, Cpu, JoystickState, Machine, NoTrace, TraceSink};
 
 use crate::{
     bus::TownsBus,
@@ -22,7 +22,7 @@ const BOOT_CMOS_HDD: (u8, u8) = (1, 0x10);
 const TIGHT_SLICE: u64 = 64;
 
 /// An FM Towns machine: the i386/i486 main CPU and the Towns bus.
-pub struct TownsMachine<const CPU_MODEL: u8, T: Tracing = NoTracing> {
+pub struct TownsMachine<const CPU_MODEL: u8, T: TraceSink = NoTrace> {
     /// The main CPU, on the 32-bit physical address map.
     pub cpu: cpu::I386<CPU_MODEL, { cpu::ADDRESS_WIDTH_32 }>,
     /// The system bus, owning memory and devices.
@@ -31,7 +31,7 @@ pub struct TownsMachine<const CPU_MODEL: u8, T: Tracing = NoTracing> {
     boot_device: TownsBootDevice,
 }
 
-impl<const CPU_MODEL: u8, T: Tracing> TownsMachine<CPU_MODEL, T> {
+impl<const CPU_MODEL: u8, T: TraceSink> TownsMachine<CPU_MODEL, T> {
     /// Builds a machine around a configured CPU and bus.
     pub fn new(cpu: cpu::I386<CPU_MODEL, { cpu::ADDRESS_WIDTH_32 }>, bus: TownsBus<T>) -> Self {
         Self {
@@ -42,7 +42,7 @@ impl<const CPU_MODEL: u8, T: Tracing> TownsMachine<CPU_MODEL, T> {
     }
 }
 
-impl<const CPU_MODEL: u8, T: Tracing> TownsMachine<CPU_MODEL, T> {
+impl<const CPU_MODEL: u8, T: TraceSink> TownsMachine<CPU_MODEL, T> {
     /// Selects the boot device and writes the resolved CMOS boot-device byte.
     pub fn set_boot_device(&mut self, boot_device: TownsBootDevice) {
         self.boot_device = boot_device;
@@ -116,6 +116,9 @@ impl<const CPU_MODEL: u8, T: Tracing> TownsMachine<CPU_MODEL, T> {
     /// can wake it.
     fn run_for_impl(&mut self, budget: u64) -> u64 {
         let start = self.bus.current_cycle;
+        if T::ENABLED && self.bus.tracer().yield_requested() {
+            return 0;
+        }
         let target = start + budget;
         while self.bus.current_cycle < target {
             let current = self.bus.current_cycle;
@@ -127,6 +130,9 @@ impl<const CPU_MODEL: u8, T: Tracing> TownsMachine<CPU_MODEL, T> {
             };
 
             let ran = self.cpu.run_for(slice_end - current, &mut self.bus);
+            if T::ENABLED && self.bus.tracer().yield_requested() {
+                break;
+            }
 
             // A soft reset or power-off requested through I/O 0x0020/0x0022
             // breaks the CPU out of its slice: stop for a shutdown, or reset the
@@ -152,7 +158,7 @@ impl<const CPU_MODEL: u8, T: Tracing> TownsMachine<CPU_MODEL, T> {
     }
 }
 
-impl<const CPU_MODEL: u8, T: Tracing> Machine for TownsMachine<CPU_MODEL, T> {
+impl<const CPU_MODEL: u8, T: TraceSink> Machine for TownsMachine<CPU_MODEL, T> {
     fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
         self.bus.set_host_date_time_provider(provider);
     }
@@ -278,7 +284,7 @@ impl<const CPU_MODEL: u8, T: Tracing> Machine for TownsMachine<CPU_MODEL, T> {
 
 /// Loads a floppy image (auto-detected by extension) and inserts it into the
 /// given drive, returning a short description.
-fn insert_floppy_impl<T: Tracing>(
+fn insert_floppy_impl<T: TraceSink>(
     bus: &mut TownsBus<T>,
     drive: usize,
     path: &std::path::Path,
@@ -294,7 +300,7 @@ fn insert_floppy_impl<T: Tracing>(
 
 /// Loads a CD-ROM disc image (`.cue` or `.ccd`) and inserts it into the bus,
 /// returning a short description.
-fn insert_cdrom_impl<T: Tracing>(
+fn insert_cdrom_impl<T: TraceSink>(
     bus: &mut TownsBus<T>,
     path: &std::path::Path,
 ) -> Result<String, String> {

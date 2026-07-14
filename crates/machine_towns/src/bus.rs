@@ -16,7 +16,11 @@ mod video;
 
 use std::path::PathBuf;
 
-use common::{BeeperKind, Bus, HostDateTimeProvider, NoTracing, Tracing};
+use common::{
+    BeeperKind, Bus, HostDateTimeProvider, NoTrace, TraceAccessKind, TraceAccessWidth,
+    TraceAddressSpace, TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField,
+    TraceInterruptAction, TraceInterruptKind, TracePresentation, TraceSink, TraceValue, trace_id,
+};
 use device::{
     beeper::Beeper,
     cdrom_towns::TownsCdController,
@@ -135,7 +139,7 @@ const DMA_EXTENDED: usize = 1;
 
 /// Default host time source (a fixed timestamp) until the app installs one.
 /// The FM Towns system bus.
-pub struct TownsBus<T: Tracing = NoTracing> {
+pub struct TownsBus<T: TraceSink = NoTrace> {
     pub(crate) memory: TownsMemory,
     pub(crate) clocks: ClockConfig,
     pub(crate) current_cycle: u64,
@@ -188,6 +192,8 @@ pub struct TownsBus<T: Tracing = NoTracing> {
     pub(crate) display_width: u32,
     /// Valid display height from the last composed frame.
     pub(crate) display_height: u32,
+    /// Number assigned to the next published frame.
+    pub(crate) presented_frames: u64,
     /// The machine model this bus was built for.
     pub(crate) model: TownsModel,
     /// Machine identity bytes for I/O 0x0030 (low) and 0x0031 (high).
@@ -229,23 +235,29 @@ pub struct TownsBus<T: Tracing = NoTracing> {
     pub(crate) tracer: T,
 }
 
-impl<T: Tracing + Default> TownsBus<T> {
-    /// Builds a bus for a model from its validated ROM set.
-    pub fn new(
+impl<T: TraceSink> TownsBus<T> {
+    /// Builds a traced bus for a model from its validated ROM set.
+    pub fn new_with_trace_sink(
         model: TownsModel,
         cpu_mode: common::CpuMode,
         roms: LoadedRoms,
         sample_rate: u32,
+        tracer: T,
     ) -> Self {
         let clocks = ClockConfig {
             cpu_clock_hz: model.cpu_clock_hz(cpu_mode),
             sample_rate,
         };
-        Self::from_parts(TownsMemory::new(model, roms), clocks, model)
+        Self::from_parts(TownsMemory::new(model, roms), clocks, model, tracer)
     }
 
     /// Builds the bus over a prepared memory map and clock configuration.
-    pub(crate) fn from_parts(memory: TownsMemory, clocks: ClockConfig, model: TownsModel) -> Self {
+    pub(crate) fn from_parts(
+        memory: TownsMemory,
+        clocks: ClockConfig,
+        model: TownsModel,
+        tracer: T,
+    ) -> Self {
         let mut bus = Self {
             memory,
             clocks,
@@ -277,6 +289,7 @@ impl<T: Tracing + Default> TownsBus<T> {
             renderer: TownsRenderer::new(),
             display_width: 640,
             display_height: 480,
+            presented_frames: 0,
             model,
             machine_id: model.machine_id(),
             last_vsync_start_cycle: 0,
@@ -295,14 +308,26 @@ impl<T: Tracing + Default> TownsBus<T> {
             mt32: None,
             #[cfg(feature = "sc55")]
             sc55: None,
-            tracer: T::default(),
+            tracer,
         };
         bus.schedule_next_vsync();
         bus
     }
 }
 
-impl<T: Tracing> TownsBus<T> {
+impl TownsBus<NoTrace> {
+    /// Builds an untraced bus for a model from its validated ROM set.
+    pub fn new(
+        model: TownsModel,
+        cpu_mode: common::CpuMode,
+        roms: LoadedRoms,
+        sample_rate: u32,
+    ) -> Self {
+        Self::new_with_trace_sink(model, cpu_mode, roms, sample_rate, NoTrace)
+    }
+}
+
+impl<T: TraceSink> TownsBus<T> {
     /// Overrides the host local-time source (BCD) used by the RTC.
     pub(crate) fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
         self.host_date_time_provider = provider;
@@ -431,24 +456,42 @@ impl<T: Tracing> TownsBus<T> {
         self.beeper.set_buzzer_enabled(enabled, self.current_cycle);
     }
 
+    /// Sets a PIC IRQ line and traces state transitions.
+    fn set_pic_irq(&mut self, irq: u8, asserted: bool) {
+        let changed = if asserted {
+            self.pic.set_irq(irq)
+        } else {
+            self.pic.clear_irq(irq)
+        };
+        if T::ENABLED && changed {
+            let action = if asserted {
+                TraceInterruptAction::Assert
+            } else {
+                TraceInterruptAction::Clear
+            };
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::maskable_interrupt(
+                    trace_id::controller::TOWNS_PIC,
+                    u16::from(irq),
+                    action,
+                    None,
+                ),
+            );
+        }
+    }
+
     /// Reasserts or clears the timer IRQ 0 line into the master PIC.
     fn refresh_timer_irq(&mut self) {
-        if self.timer.irq_active() {
-            self.pic.set_irq(0);
-            self.tracer.trace_irq_raise(0);
-        } else {
-            self.pic.clear_irq(0);
-        }
+        self.set_pic_irq(0, self.timer.irq_active());
     }
 
     /// Reasserts or clears the VSYNC IRQ 11 line (slave IR3) into the PIC.
     fn refresh_vsync_irq(&mut self) {
-        if self.video.vsync_irq_pending() {
-            self.pic.set_irq(IRQ_VSYNC);
-            self.tracer.trace_irq_raise(IRQ_VSYNC);
-        } else {
-            self.pic.clear_irq(IRQ_VSYNC);
-        }
+        self.set_pic_irq(IRQ_VSYNC, self.video.vsync_irq_pending());
     }
 
     /// Whether the CRTC is inside the horizontal blanking window of the
@@ -520,17 +563,31 @@ impl<T: Tracing> TownsBus<T> {
         self.display_height = height;
     }
 
+    fn trace_presentation(&mut self) {
+        if !T::ENABLED {
+            return;
+        }
+        self.presented_frames = self.presented_frames.saturating_add(1);
+        self.tracer.trace(
+            TraceContext::presentation_main(
+                self.current_cycle,
+                Some(u64::from(self.clocks.cpu_clock_hz)),
+            ),
+            TraceEvent::Presentation(TracePresentation {
+                display: trace_id::display::MAIN,
+                frame: self.presented_frames,
+                width: self.display_width,
+                height: self.display_height,
+            }),
+        );
+    }
+
     /// Reasserts or clears the RS-232C IRQ 2 line into the master PIC. The
     /// receiver-ready source is gated by its interrupt-enable bit (0x0A08).
     fn refresh_rs232c_irq(&mut self) {
         let rx_int = self.rs232c_int_enable & RS232C_INT_ENABLE_RXRDY != 0
             && self.rs232c.read_status() & 0x02 != 0;
-        if rx_int {
-            self.pic.set_irq(IRQ_RS232C);
-            self.tracer.trace_irq_raise(IRQ_RS232C);
-        } else {
-            self.pic.clear_irq(IRQ_RS232C);
-        }
+        self.set_pic_irq(IRQ_RS232C, rx_int);
     }
 
     /// The RS-232C interrupt-reason byte (I/O 0x0A06): the upper bits float high
@@ -574,24 +631,40 @@ impl<T: Tracing> TownsBus<T> {
 
     /// Reasserts or clears the keyboard IRQ 1 line into the master PIC.
     fn refresh_keyboard_irq(&mut self) {
-        if self.keyboard.irq_line() {
-            self.pic.set_irq(1);
-            self.tracer.trace_irq_raise(1);
-        } else {
-            self.pic.clear_irq(1);
-        }
+        self.set_pic_irq(1, self.keyboard.irq_line());
     }
 
     /// Reasserts or clears the CD-ROM IRQ 9 line (slave IR1) into the PIC.
     fn refresh_cdrom_irq(&mut self) {
         let (status_irq, data_end_irq) = self.cdc.interrupt_flags();
-        self.tracer.trace_cd_irq(status_irq, data_end_irq);
-        if self.cdc.irq_line() {
-            self.pic.set_irq(IRQ_CDROM);
-            self.tracer.trace_irq_raise(IRQ_CDROM);
-        } else {
-            self.pic.clear_irq(IRQ_CDROM);
+        if T::ENABLED
+            && self.tracer.interested(TraceEventKey::Device {
+                device: trace_id::device::TOWNS_CDROM,
+                action: trace_id::action::INTERRUPT,
+            })
+        {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::Device(TraceDeviceEvent {
+                    device: trace_id::device::TOWNS_CDROM,
+                    action: trace_id::action::INTERRUPT,
+                    fields: &[
+                        TraceField {
+                            name: trace_id::field::STATUS,
+                            value: TraceValue::Bool(status_irq),
+                        },
+                        TraceField {
+                            name: trace_id::field::DATA_END,
+                            value: TraceValue::Bool(data_end_irq),
+                        },
+                    ],
+                }),
+            );
         }
+        self.set_pic_irq(IRQ_CDROM, self.cdc.irq_line());
     }
 
     /// Rearms the CD-ROM controller task from its next internal deadline.
@@ -613,8 +686,27 @@ impl<T: Tracing> TownsBus<T> {
     /// scheduled task afterwards.
     fn cdrom_io_read(&mut self, port: u16) -> u8 {
         let value = self.cdc.io_read(port, self.current_cycle);
-        if port == 0x04C2 {
-            self.tracer.trace_cd_status(&[value]);
+        if port == 0x04C2
+            && T::ENABLED
+            && self.tracer.interested(TraceEventKey::Device {
+                device: trace_id::device::TOWNS_CDROM,
+                action: trace_id::action::STATUS,
+            })
+        {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::Device(TraceDeviceEvent {
+                    device: trace_id::device::TOWNS_CDROM,
+                    action: trace_id::action::STATUS,
+                    fields: &[TraceField {
+                        name: trace_id::field::BYTES,
+                        value: TraceValue::Bytes(&[value]),
+                    }],
+                }),
+            );
         }
         self.refresh_cdrom_irq();
         self.reschedule_cdrom();
@@ -622,11 +714,44 @@ impl<T: Tracing> TownsBus<T> {
     }
 
     fn cdrom_io_write(&mut self, port: u16, value: u8) {
+        let trace_command = port == 0x04C2
+            && T::ENABLED
+            && self.tracer.interested(TraceEventKey::Device {
+                device: trace_id::device::TOWNS_CDROM,
+                action: trace_id::action::COMMAND,
+            });
+        let mut trace_parameters = [0; 8];
+        let trace_parameter_count = if trace_command {
+            let parameters = self.cdc.params();
+            trace_parameters[..parameters.len()].copy_from_slice(parameters);
+            parameters.len()
+        } else {
+            0
+        };
         let dma_ready = self.cdrom_dma_ready();
         self.cdc
             .io_write(port, value, self.current_cycle, dma_ready);
-        if port == 0x04C2 {
-            self.tracer.trace_cd_command(value, self.cdc.params());
+        if trace_command {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::Device(TraceDeviceEvent {
+                    device: trace_id::device::TOWNS_CDROM,
+                    action: trace_id::action::COMMAND,
+                    fields: &[
+                        TraceField {
+                            name: trace_id::field::OPCODE,
+                            value: TraceValue::Unsigned(u64::from(value)),
+                        },
+                        TraceField {
+                            name: trace_id::field::PARAMETERS,
+                            value: TraceValue::Bytes(&trace_parameters[..trace_parameter_count]),
+                        },
+                    ],
+                }),
+            );
         }
         self.refresh_cdrom_irq();
         self.reschedule_cdrom();
@@ -689,12 +814,7 @@ impl<T: Tracing> TownsBus<T> {
 
     /// Reasserts or clears the FDC interrupt line (IRQ 6, master PIC).
     fn refresh_fdc_irq(&mut self) {
-        if self.fdc.irq_line() {
-            self.pic.set_irq(IRQ_FDC);
-            self.tracer.trace_irq_raise(IRQ_FDC);
-        } else {
-            self.pic.clear_irq(IRQ_FDC);
-        }
+        self.set_pic_irq(IRQ_FDC, self.fdc.irq_line());
     }
 
     /// Rearms the FDC command task from its next internal deadline.
@@ -784,12 +904,7 @@ impl<T: Tracing> TownsBus<T> {
 
     /// Reasserts or clears the SCSI interrupt line (IRQ 8, slave PIC).
     fn refresh_scsi_irq(&mut self) {
-        if self.scsi.irq_line() {
-            self.pic.set_irq(IRQ_SCSI);
-            self.tracer.trace_irq_raise(IRQ_SCSI);
-        } else {
-            self.pic.clear_irq(IRQ_SCSI);
-        }
+        self.set_pic_irq(IRQ_SCSI, self.scsi.irq_line());
     }
 
     /// Rearms the SCSI command task from its next internal deadline.
@@ -889,12 +1004,10 @@ impl<T: Tracing> TownsBus<T> {
     /// Reasserts or clears the shared sound IRQ 13 line (slave IR5). The OPN2 FM
     /// timers and the RF5C68 PCM interrupt are OR-merged onto it.
     fn refresh_sound_irq(&mut self) {
-        if self.fm.irq_asserted() || self.pcm.interrupt_asserted() {
-            self.pic.set_irq(IRQ_SOUND);
-            self.tracer.trace_irq_raise(IRQ_SOUND);
-        } else {
-            self.pic.clear_irq(IRQ_SOUND);
-        }
+        self.set_pic_irq(
+            IRQ_SOUND,
+            self.fm.irq_asserted() || self.pcm.interrupt_asserted(),
+        );
     }
 
     /// Drains the OPN2's pending FM timer requests onto the scheduler and routes
@@ -1035,6 +1148,18 @@ impl<T: Tracing> TownsBus<T> {
     fn process_events(&mut self) {
         let due = self.scheduler.pop_due_events(self.current_cycle);
         for event in due.iter() {
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::scheduler_main(
+                        self.current_cycle,
+                        Some(u64::from(self.clocks.cpu_clock_hz)),
+                    ),
+                    TraceEvent::Scheduled {
+                        event: event.kind.trace_name(),
+                        fire_tick: event.fire_cycle,
+                    },
+                );
+            }
             match event.kind {
                 EventTowns::TimerChannel0 => {
                     self.timer.latch_channel_out(0);
@@ -1063,6 +1188,7 @@ impl<T: Tracing> TownsBus<T> {
                         );
                     }
                     self.render_frame();
+                    self.trace_presentation();
                     let duration = self.vsync_duration_cycles();
                     self.scheduler.schedule(
                         EventTowns::VsyncEnd,
@@ -1148,37 +1274,161 @@ impl<T: Tracing> TownsBus<T> {
         }
         self.memory.write_byte(address, value);
     }
+
+    fn read_byte_for_cpu<const FETCH: bool>(&mut self, address: u32) -> u8 {
+        self.charge_memory_wait(address);
+        let value = self.read_byte_data(address);
+        if T::ENABLED {
+            let kind = if FETCH {
+                TraceAccessKind::Fetch
+            } else {
+                TraceAccessKind::Read
+            };
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    kind,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
+        value
+    }
+
+    /// Reads one word with a single wait charge and the requested trace kind.
+    fn read_word_for_cpu<const FETCH: bool>(&mut self, address: u32) -> u16 {
+        self.charge_memory_wait(address);
+        let value = u16::from(self.read_byte_data(address))
+            | (u16::from(self.read_byte_data(address.wrapping_add(1))) << 8);
+        if T::ENABLED {
+            let kind = if FETCH {
+                TraceAccessKind::Fetch
+            } else {
+                TraceAccessKind::Read
+            };
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    kind,
+                    u64::from(address),
+                    TraceAccessWidth::Word,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
+        value
+    }
+
+    /// Reads one doubleword with a single wait charge and the requested trace kind.
+    fn read_dword_for_cpu<const FETCH: bool>(&mut self, address: u32) -> u32 {
+        self.charge_memory_wait(address);
+        let value = u32::from(self.read_byte_data(address))
+            | (u32::from(self.read_byte_data(address.wrapping_add(1))) << 8)
+            | (u32::from(self.read_byte_data(address.wrapping_add(2))) << 16)
+            | (u32::from(self.read_byte_data(address.wrapping_add(3))) << 24);
+        if T::ENABLED {
+            let kind = if FETCH {
+                TraceAccessKind::Fetch
+            } else {
+                TraceAccessKind::Read
+            };
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    kind,
+                    u64::from(address),
+                    TraceAccessWidth::Dword,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
+        value
+    }
 }
 
-impl<T: Tracing> Bus for TownsBus<T> {
+impl<T: TraceSink> Bus for TownsBus<T> {
     fn read_byte(&mut self, address: u32) -> u8 {
-        self.charge_memory_wait(address);
-        self.read_byte_data(address)
+        self.read_byte_for_cpu::<false>(address)
+    }
+
+    fn fetch_opcode_byte(&mut self, address: u32) -> u8 {
+        self.read_byte_for_cpu::<true>(address)
+    }
+
+    fn fetch_opcode_word(&mut self, address: u32) -> u16 {
+        self.read_word_for_cpu::<true>(address)
+    }
+
+    fn fetch_opcode_dword(&mut self, address: u32) -> u32 {
+        self.read_dword_for_cpu::<true>(address)
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
         self.charge_memory_wait(address);
         self.write_byte_data(address, value);
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Write,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
     }
 
     fn read_word(&mut self, address: u32) -> u16 {
-        self.charge_memory_wait(address);
-        u16::from(self.read_byte_data(address))
-            | (u16::from(self.read_byte_data(address.wrapping_add(1))) << 8)
+        self.read_word_for_cpu::<false>(address)
     }
 
     fn write_word(&mut self, address: u32, value: u16) {
         self.charge_memory_wait(address);
         self.write_byte_data(address, value as u8);
         self.write_byte_data(address.wrapping_add(1), (value >> 8) as u8);
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Write,
+                    u64::from(address),
+                    TraceAccessWidth::Word,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
     }
 
     fn read_dword(&mut self, address: u32) -> u32 {
-        self.charge_memory_wait(address);
-        u32::from(self.read_byte_data(address))
-            | (u32::from(self.read_byte_data(address.wrapping_add(1))) << 8)
-            | (u32::from(self.read_byte_data(address.wrapping_add(2))) << 16)
-            | (u32::from(self.read_byte_data(address.wrapping_add(3))) << 24)
+        self.read_dword_for_cpu::<false>(address)
     }
 
     fn write_dword(&mut self, address: u32, value: u32) {
@@ -1187,21 +1437,71 @@ impl<T: Tracing> Bus for TownsBus<T> {
         self.write_byte_data(address.wrapping_add(1), (value >> 8) as u8);
         self.write_byte_data(address.wrapping_add(2), (value >> 16) as u8);
         self.write_byte_data(address.wrapping_add(3), (value >> 24) as u8);
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Write,
+                    u64::from(address),
+                    TraceAccessWidth::Dword,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
     }
 
     fn drain_wait_cycles(&mut self) -> i64 {
         core::mem::take(&mut self.pending_wait_cycles)
     }
 
+    fn cpu_should_yield(&self) -> bool {
+        T::ENABLED && self.tracer.yield_requested()
+    }
+
     fn io_read_byte(&mut self, port: u16) -> u8 {
-        let value = self.io_read(port);
-        self.tracer.trace_io_read(port, value);
+        let (value, handled) = self.io_read(port);
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Read,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
         value
     }
 
     fn io_write_byte(&mut self, port: u16, value: u8) {
-        self.tracer.trace_io_write(port, value);
-        self.io_write(port, value);
+        let handled = self.io_write(port, value);
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Write,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
     }
 
     fn io_write_word(&mut self, port: u16, value: u16) {
@@ -1212,16 +1512,61 @@ impl<T: Tracing> Bus for TownsBus<T> {
         // else keeps the default two-byte decomposition.
         match port {
             0x0472 => {
-                self.tracer.trace_io_write(port, value as u8);
                 self.video.write_high_res_addr_word(value);
+                if T::ENABLED {
+                    self.tracer.trace(
+                        TraceContext::main_cpu(
+                            self.current_cycle,
+                            Some(u64::from(self.clocks.cpu_clock_hz)),
+                        ),
+                        TraceEvent::access(
+                            TraceAddressSpace::MAIN_IO,
+                            TraceAccessKind::Write,
+                            u64::from(port),
+                            TraceAccessWidth::Word,
+                            Some(u64::from(value)),
+                            true,
+                        ),
+                    );
+                }
             }
             0x0474 => {
-                self.tracer.trace_io_write(port, value as u8);
                 self.video.write_high_res_data_low_word(value);
+                if T::ENABLED {
+                    self.tracer.trace(
+                        TraceContext::main_cpu(
+                            self.current_cycle,
+                            Some(u64::from(self.clocks.cpu_clock_hz)),
+                        ),
+                        TraceEvent::access(
+                            TraceAddressSpace::MAIN_IO,
+                            TraceAccessKind::Write,
+                            u64::from(port),
+                            TraceAccessWidth::Word,
+                            Some(u64::from(value)),
+                            true,
+                        ),
+                    );
+                }
             }
             0x0476 => {
-                self.tracer.trace_io_write(port, value as u8);
                 self.video.write_high_res_data_high_word(value);
+                if T::ENABLED {
+                    self.tracer.trace(
+                        TraceContext::main_cpu(
+                            self.current_cycle,
+                            Some(u64::from(self.clocks.cpu_clock_hz)),
+                        ),
+                        TraceEvent::access(
+                            TraceAddressSpace::MAIN_IO,
+                            TraceAccessKind::Write,
+                            u64::from(port),
+                            TraceAccessWidth::Word,
+                            Some(u64::from(value)),
+                            true,
+                        ),
+                    );
+                }
             }
             _ => {
                 self.io_write_byte(port, value as u8);
@@ -1235,7 +1580,23 @@ impl<T: Tracing> Bus for TownsBus<T> {
     }
 
     fn acknowledge_irq(&mut self) -> u8 {
-        self.pic.acknowledge()
+        let acknowledge = self.pic.acknowledge_with_line();
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::interrupt(
+                    trace_id::controller::TOWNS_PIC,
+                    TraceInterruptKind::Maskable,
+                    acknowledge.line.map(u16::from),
+                    TraceInterruptAction::Acknowledge,
+                    Some(u32::from(acknowledge.vector)),
+                ),
+            );
+        }
+        acknowledge.vector
     }
 
     fn reset_pending(&self) -> bool {
@@ -1257,5 +1618,171 @@ impl<T: Tracing> Bus for TownsBus<T> {
         if cycle >= self.next_event_cycle {
             self.process_events();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use common::{
+        Bus, CpuMode, TraceAccess, TraceAccessKind, TraceAccessWidth, TraceContext, TraceEvent,
+        TraceInterrupt, TraceInterruptAction, TraceSink,
+    };
+
+    use super::TownsBus;
+    use crate::{config::TownsModel, rom::LoadedRoms};
+
+    #[derive(Default)]
+    struct AccessTrace {
+        kinds: Vec<TraceAccessKind>,
+        accesses: Vec<TraceAccess>,
+        interrupts: Vec<TraceInterrupt>,
+        command_parameters: Vec<Vec<u8>>,
+    }
+
+    impl TraceSink for AccessTrace {
+        fn trace(&mut self, _context: TraceContext, event: TraceEvent<'_>) {
+            match event {
+                TraceEvent::Access(access) => {
+                    self.kinds.push(access.kind);
+                    self.accesses.push(access);
+                }
+                TraceEvent::Interrupt(interrupt) => self.interrupts.push(interrupt),
+                TraceEvent::Device(device)
+                    if device.device == common::trace_id::device::TOWNS_CDROM
+                        && device.action == common::trace_id::action::COMMAND =>
+                {
+                    let parameters = device
+                        .fields
+                        .iter()
+                        .find(|field| field.name == common::trace_id::field::PARAMETERS)
+                        .and_then(|field| match field.value {
+                            common::TraceValue::Bytes(parameters) => Some(parameters.to_vec()),
+                            _ => None,
+                        })
+                        .expect("command parameters field");
+                    self.command_parameters.push(parameters);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn traced_bus() -> TownsBus<AccessTrace> {
+        let roms = LoadedRoms {
+            dos: vec![0; 0x8_0000],
+            font: vec![0; 0x4_0000],
+            system: vec![0; 0x4_0000],
+            f20: vec![0; 0x8_0000],
+            dictionary: vec![0; 0x8_0000],
+            serial: vec![0; 0x20],
+        };
+        TownsBus::new_with_trace_sink(
+            TownsModel::FmTownsIIMx,
+            CpuMode::High,
+            roms,
+            48_000,
+            AccessTrace::default(),
+        )
+    }
+
+    #[test]
+    fn opcode_fetch_is_distinct_from_data_read() {
+        let mut bus = traced_bus();
+
+        Bus::read_byte(&mut bus, 0);
+        Bus::fetch_opcode_byte(&mut bus, 1);
+
+        assert_eq!(
+            bus.tracer().kinds,
+            [TraceAccessKind::Read, TraceAccessKind::Fetch]
+        );
+    }
+
+    #[test]
+    fn wide_opcode_fetches_keep_width_and_single_wait_charge() {
+        let mut bus = traced_bus();
+        bus.main_ram_wait = 3;
+
+        Bus::fetch_opcode_word(&mut bus, 0);
+        assert_eq!(Bus::drain_wait_cycles(&mut bus), 3);
+        Bus::fetch_opcode_dword(&mut bus, 4);
+        assert_eq!(Bus::drain_wait_cycles(&mut bus), 3);
+
+        assert_eq!(bus.tracer().accesses.len(), 2);
+        assert_eq!(bus.tracer().accesses[0].kind, TraceAccessKind::Fetch);
+        assert_eq!(bus.tracer().accesses[0].width, TraceAccessWidth::Word);
+        assert_eq!(bus.tracer().accesses[1].kind, TraceAccessKind::Fetch);
+        assert_eq!(bus.tracer().accesses[1].width, TraceAccessWidth::Dword);
+    }
+
+    #[test]
+    fn unhandled_io_emits_one_access_with_open_bus_value() {
+        let mut bus = traced_bus();
+
+        assert_eq!(Bus::io_read_byte(&mut bus, 0x1234), 0xFF);
+        Bus::io_write_byte(&mut bus, 0x1235, 0x66);
+
+        assert_eq!(bus.tracer().accesses.len(), 2);
+        assert_eq!(bus.tracer().accesses[0].value, Some(0xFF));
+        assert!(!bus.tracer().accesses[0].handled);
+        assert_eq!(bus.tracer().accesses[1].value, Some(0x66));
+        assert!(!bus.tracer().accesses[1].handled);
+    }
+
+    #[test]
+    fn cdrom_command_trace_preserves_submitted_parameters() {
+        let mut bus = traced_bus();
+        let parameters = [0x00, 0x02, 0x00, 0x00, 0x03, 0x00, 0x01, 0x00];
+
+        for parameter in parameters {
+            Bus::io_write_byte(&mut bus, 0x04C4, parameter);
+        }
+        Bus::io_write_byte(&mut bus, 0x04C2, 0x04);
+
+        assert_eq!(bus.tracer().command_parameters, [parameters]);
+    }
+
+    #[test]
+    fn duplicate_irq_updates_trace_only_transitions() {
+        let mut bus = traced_bus();
+
+        bus.set_pic_irq(8, true);
+        bus.set_pic_irq(8, true);
+        bus.set_pic_irq(8, false);
+        bus.set_pic_irq(8, false);
+
+        assert_eq!(bus.tracer().interrupts.len(), 2);
+        assert_eq!(bus.tracer().interrupts[0].line, Some(8));
+        assert_eq!(
+            bus.tracer().interrupts[0].action,
+            TraceInterruptAction::Assert
+        );
+        assert_eq!(bus.tracer().interrupts[1].line, Some(8));
+        assert_eq!(
+            bus.tracer().interrupts[1].action,
+            TraceInterruptAction::Clear
+        );
+    }
+
+    #[test]
+    fn interrupt_acknowledgement_is_traced() {
+        let mut bus = traced_bus();
+        bus.pic.write_port0(0, 0x11);
+        bus.pic.write_port2(0, 0x08);
+        bus.pic.write_port2(0, 0x80);
+        bus.pic.write_port2(0, 0x01);
+        bus.pic.write_port2(0, 0x00);
+        bus.pic.write_port0(1, 0x11);
+        bus.pic.write_port2(1, 0x10);
+        bus.pic.write_port2(1, 0x07);
+        bus.pic.write_port2(1, 0x01);
+        bus.pic.write_port2(1, 0x00);
+        bus.pic.set_irq(8);
+
+        let vector = Bus::acknowledge_irq(&mut bus);
+
+        assert_eq!(bus.tracer().interrupts.len(), 1);
+        assert_eq!(bus.tracer().interrupts[0].line, Some(8));
+        assert_eq!(bus.tracer().interrupts[0].vector, Some(u32::from(vector)));
     }
 }

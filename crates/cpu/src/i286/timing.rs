@@ -1339,14 +1339,15 @@ impl I286Timing {
         let fetch_kind = self.prefetch_fetch_kind();
         if fetch_kind != I286PrefetchFetchKind::Word {
             let fetch_width = fetch_kind.stored_bytes();
-            let value = bus.read_byte(current_address & ADDRESS_MASK);
+            let value = bus.fetch_opcode_byte(current_address & ADDRESS_MASK);
             self.prefetch_queue_fill =
                 (self.prefetch_queue_fill + fetch_width).min(PREFETCH_QUEUE_CAPACITY);
             self.decoded_queue_fill =
                 (self.decoded_queue_fill + fetch_width).min(DECODED_QUEUE_CAPACITY);
             self.prefetch_offset = self.prefetch_offset.wrapping_add(u16::from(fetch_width));
             self.data_bus_value = if fetch_kind == I286PrefetchFetchKind::QueueRoomByte {
-                let high_value = bus.read_byte(current_address.wrapping_add(1) & ADDRESS_MASK);
+                let high_value =
+                    bus.fetch_opcode_byte(current_address.wrapping_add(1) & ADDRESS_MASK);
                 u16::from(value) | (u16::from(high_value) << 8)
             } else {
                 self.merge_byte_data_bus(current_address, value)
@@ -1362,8 +1363,8 @@ impl I286Timing {
         }
 
         let low_address = current_address & !1;
-        let low_value = bus.read_byte(low_address & ADDRESS_MASK);
-        let high_value = bus.read_byte(low_address.wrapping_add(1) & ADDRESS_MASK);
+        let low_value = bus.fetch_opcode_byte(low_address & ADDRESS_MASK);
+        let high_value = bus.fetch_opcode_byte(low_address.wrapping_add(1) & ADDRESS_MASK);
         let value = u16::from(low_value) | (u16::from(high_value) << 8);
         self.prefetch_queue_fill = (self.prefetch_queue_fill + 2).min(PREFETCH_QUEUE_CAPACITY);
         self.decoded_queue_fill = (self.decoded_queue_fill + 2).min(DECODED_QUEUE_CAPACITY);

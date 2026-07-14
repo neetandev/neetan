@@ -3,7 +3,7 @@
 //! The main and display MC6809 CPUs share the machine bus and are interleaved
 //! according to their respective clock rates.
 
-use common::{Cpu6809, NoTracing, Tracing};
+use common::{Cpu6809, NoTrace, TraceSink};
 
 use crate::bus::{Fm7Bus, MainBusView, SubBusView};
 
@@ -13,7 +13,7 @@ const DEFAULT_SLICE_CYCLES: u64 = 16;
 const HANDSHAKE_SLICE_CYCLES: u64 = 4;
 
 /// FM-7 / FM-77AV machine.
-pub struct Fm7Machine<T: Tracing = NoTracing> {
+pub struct Fm7Machine<T: TraceSink = NoTrace> {
     /// Main CPU.
     pub main_cpu: cpu::M6809,
     /// Display sub CPU.
@@ -25,7 +25,7 @@ pub struct Fm7Machine<T: Tracing = NoTracing> {
     sub_cycle_target: u64,
 }
 
-impl<T: Tracing> Fm7Machine<T> {
+impl<T: TraceSink> Fm7Machine<T> {
     /// Creates a new machine from the given CPUs and bus.
     pub fn new(mut main_cpu: cpu::M6809, mut sub_cpu: cpu::M6809, mut bus: Fm7Bus<T>) -> Self {
         {
@@ -60,6 +60,21 @@ impl<T: Tracing> Fm7Machine<T> {
     /// Runs the main CPU for up to `budget` main-clock cycles.
     pub fn run_for(&mut self, budget: u64) -> u64 {
         let start = self.bus.current_cycle();
+        if T::ENABLED && self.bus.tracer().yield_requested() {
+            return 0;
+        }
+        if T::ENABLED {
+            if self.bus.take_clock_reanchor() {
+                self.sub_cycle_target = self.bus.sub_cycle();
+            }
+            if self.bus.take_sub_reset() {
+                self.reset_sub_cpu();
+            }
+            self.run_sub_to_target();
+            if self.bus.tracer().yield_requested() {
+                return 0;
+            }
+        }
         let target = start + budget;
 
         while self.bus.current_cycle() < target {
@@ -78,22 +93,33 @@ impl<T: Tracing> Fm7Machine<T> {
                 let mut view = MainBusView { bus: &mut self.bus };
                 self.main_cpu.run_for(slice, &mut view)
             };
-            if ran == 0 && self.bus.current_cycle() < slice_end {
+            let trace_yield_requested = T::ENABLED && self.bus.tracer().yield_requested();
+            if !trace_yield_requested && ran == 0 && self.bus.current_cycle() < slice_end {
                 self.bus.set_current_cycle(slice_end);
             }
 
             if self.bus.take_clock_reanchor() {
                 self.sub_cycle_target = self.bus.sub_cycle();
             }
+
+            let elapsed = self.bus.current_cycle().saturating_sub(current);
+            self.account_sub_for_main_units(elapsed);
+            if trace_yield_requested {
+                break;
+            }
             if self.bus.take_sub_reset() {
                 self.reset_sub_cpu();
             }
-
-            let elapsed = self.bus.current_cycle().saturating_sub(current);
-            self.run_sub_for_main_units(elapsed);
+            self.run_sub_to_target();
+            if T::ENABLED && self.bus.tracer().yield_requested() {
+                break;
+            }
 
             if self.bus.current_cycle() >= next {
                 self.bus.process_events();
+                if T::ENABLED && self.bus.tracer().yield_requested() {
+                    break;
+                }
             }
         }
 
@@ -118,15 +144,14 @@ impl<T: Tracing> Fm7Machine<T> {
         }
     }
 
-    /// Runs the sub CPU up to the cycles it owes for `main_units` of main time, or
-    /// idles it forward while it is halt-acknowledged.
-    ///
-    /// The owed cycles accumulate into `sub_cycle_target`; running whole
-    /// instructions may overshoot the target in one slice, and that overshoot
-    /// shrinks the next slice's budget so the long-run ratio stays exact.
-    fn run_sub_for_main_units(&mut self, main_units: u64) {
+    /// Adds the sub CPU cycles owed for elapsed main-clock time.
+    fn account_sub_for_main_units(&mut self, main_units: u64) {
         let owed = self.bus.sub_cycles_for_main_units(main_units);
         self.sub_cycle_target = self.sub_cycle_target.saturating_add(owed);
+    }
+
+    /// Runs or idles the sub CPU to its accumulated cycle target.
+    fn run_sub_to_target(&mut self) {
         let sub_now = self.bus.sub_cycle();
 
         if self.bus.sub_halt_active() {
@@ -147,7 +172,7 @@ impl<T: Tracing> Fm7Machine<T> {
     }
 }
 
-impl<T: Tracing> common::Machine for Fm7Machine<T> {
+impl<T: TraceSink> common::Machine for Fm7Machine<T> {
     fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
         self.bus.set_host_date_time_provider(provider);
     }
@@ -236,5 +261,148 @@ impl<T: Tracing> common::Machine for Fm7Machine<T> {
 
     fn flush_floppies(&mut self) {
         self.bus.flush_floppies();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use common::{TraceAccessKind, TraceEvent, TraceSink};
+
+    use super::Fm7Machine;
+    use crate::{
+        bus::Fm7Bus,
+        config::{BootMode, Fm7Model},
+        rom::LoadedRoms,
+    };
+
+    #[derive(Default)]
+    struct YieldOnScheduled {
+        saw_scheduled: bool,
+        fetch_after_scheduled: bool,
+    }
+
+    impl TraceSink for YieldOnScheduled {
+        fn trace(&mut self, _context: common::TraceContext, event: TraceEvent<'_>) {
+            match event {
+                TraceEvent::Scheduled { .. } => self.saw_scheduled = true,
+                TraceEvent::Access(access)
+                    if self.saw_scheduled && access.kind == TraceAccessKind::Fetch =>
+                {
+                    self.fetch_after_scheduled = true;
+                }
+                _ => {}
+            }
+        }
+
+        fn yield_requested(&self) -> bool {
+            self.saw_scheduled
+        }
+    }
+
+    #[derive(Default)]
+    struct YieldOnMainFetch {
+        armed: bool,
+        yield_requested: bool,
+    }
+
+    impl YieldOnMainFetch {
+        /// Arms a one-shot yield on the next main-CPU fetch.
+        fn arm(&mut self) {
+            self.armed = true;
+        }
+
+        /// Clears the one-shot yield request.
+        fn resume(&mut self) {
+            self.armed = false;
+            self.yield_requested = false;
+        }
+    }
+
+    impl TraceSink for YieldOnMainFetch {
+        fn trace(&mut self, context: common::TraceContext, event: TraceEvent<'_>) {
+            if self.armed
+                && context.source == common::trace_source::CPU_MAIN
+                && matches!(
+                    event,
+                    TraceEvent::Access(access) if access.kind == TraceAccessKind::Fetch
+                )
+            {
+                self.yield_requested = true;
+            }
+        }
+
+        fn yield_requested(&self) -> bool {
+            self.yield_requested
+        }
+    }
+
+    #[test]
+    fn scheduled_trace_yield_prevents_a_later_fetch() {
+        let model = Fm7Model::Fm7;
+        let roms = LoadedRoms {
+            model,
+            fbasic: vec![0; 0x7C00],
+            subsys_c: vec![0; 0x2800],
+            kanji: None,
+            boot_bas: Some(vec![0; 0x0200]),
+            boot_dos: Some(vec![0; 0x0200]),
+            initiate: None,
+            subsys_a: None,
+            subsys_b: None,
+            subsyscg: None,
+        };
+        let mut bus = Fm7Bus::new_with_trace_sink(
+            model,
+            BootMode::Basic,
+            48_000,
+            YieldOnScheduled::default(),
+        );
+        bus.load_roms(&roms);
+        let main_cpu = cpu::M6809::new(bus.cpu_clock_hz());
+        let sub_cpu = cpu::M6809::new(model.sub_clock_hz());
+        let mut machine = Fm7Machine::new(main_cpu, sub_cpu, bus);
+
+        machine.run_for(100_000);
+
+        assert!(machine.bus.tracer().saw_scheduled);
+        assert!(!machine.bus.tracer().fetch_after_scheduled);
+    }
+
+    #[test]
+    fn main_trace_yield_preserves_sub_cpu_cycle_target() {
+        let model = Fm7Model::Fm7;
+        let roms = LoadedRoms {
+            model,
+            fbasic: vec![0; 0x7C00],
+            subsys_c: vec![0; 0x2800],
+            kanji: None,
+            boot_bas: Some(vec![0; 0x0200]),
+            boot_dos: Some(vec![0; 0x0200]),
+            initiate: None,
+            subsys_a: None,
+            subsys_b: None,
+            subsyscg: None,
+        };
+        let mut bus = Fm7Bus::new_with_trace_sink(
+            model,
+            BootMode::Basic,
+            48_000,
+            YieldOnMainFetch::default(),
+        );
+        bus.load_roms(&roms);
+        let main_cpu = cpu::M6809::new(bus.cpu_clock_hz());
+        let sub_cpu = cpu::M6809::new(model.sub_clock_hz());
+        let mut machine = Fm7Machine::new(main_cpu, sub_cpu, bus);
+        machine.bus.tracer_mut().arm();
+
+        machine.run_for(100);
+
+        let pending_target = machine.sub_cycle_target;
+        assert!(pending_target > machine.bus.sub_cycle());
+
+        machine.bus.tracer_mut().resume();
+        assert_eq!(machine.run_for(0), 0);
+
+        assert!(machine.bus.sub_cycle() >= pending_target);
     }
 }

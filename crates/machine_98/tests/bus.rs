@@ -1,9 +1,9 @@
-use common::{Bus, CpuMode, MachineModel};
-use machine_98::{NoTracing, Pc9801Bus};
+use common::{Bus, CpuMode, MachineModel, NoTrace};
+use machine_98::Pc9801Bus;
 
 #[test]
 fn ram_read_write() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
     bus.write_byte(0x00100, 0x42);
     assert_eq!(bus.read_byte(0x00100), 0x42);
@@ -14,7 +14,7 @@ fn ram_read_write() {
 
 #[test]
 fn ram_word_access() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
     bus.write_word(0x00200, 0xBEEF);
     assert_eq!(bus.read_word(0x00200), 0xBEEF);
@@ -24,7 +24,7 @@ fn ram_word_access() {
 
 #[test]
 fn unmapped_regions() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
     assert_eq!(bus.read_byte(0xC0000), 0xFF);
     assert_eq!(bus.read_byte(0xD0000), 0xFF);
@@ -36,7 +36,7 @@ fn unmapped_regions() {
 
 #[test]
 fn rom_read_only() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
     // Load some ROM data.
     let rom_data = vec![0xAB; 16];
@@ -52,7 +52,7 @@ fn rom_read_only() {
 
 #[test]
 fn text_vram_access() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
     bus.write_byte(0xA0000, 0x55);
     assert_eq!(bus.read_byte(0xA0000), 0x55);
@@ -63,7 +63,7 @@ fn text_vram_access() {
 
 #[test]
 fn graphics_vram_access() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
     bus.write_byte(0xA8000, 0x11);
     assert_eq!(bus.read_byte(0xA8000), 0x11);
@@ -85,8 +85,8 @@ fn bus_clock_config_uses_cpu_mode_without_changing_pit_lineage() {
     ];
 
     for (model, low_clock_hz, high_clock_hz, pit_clock_hz) in cases {
-        let low_bus = Pc9801Bus::<NoTracing>::new(model, CpuMode::Low, 48000);
-        let high_bus = Pc9801Bus::<NoTracing>::new(model, CpuMode::High, 48000);
+        let low_bus = Pc9801Bus::<NoTrace>::new(model, CpuMode::Low, 48000);
+        let high_bus = Pc9801Bus::<NoTrace>::new(model, CpuMode::High, 48000);
 
         assert_eq!(low_bus.cpu_clock_hz(), low_clock_hz, "{model} low clock");
         assert_eq!(high_bus.cpu_clock_hz(), high_clock_hz, "{model} high clock");
@@ -97,7 +97,7 @@ fn bus_clock_config_uses_cpu_mode_without_changing_pit_lineage() {
 
 #[test]
 fn kanji_ram_stub() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
     assert_eq!(bus.read_byte(0xA4000), 0xFF);
     assert_eq!(bus.read_byte(0xA4FFF), 0xFF);
@@ -105,7 +105,7 @@ fn kanji_ram_stub() {
 
 #[test]
 fn plane_e_vram_stub() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
     // Default VM boot state uses mode2 bit 0 = 1, so force digital mode first.
     bus.io_write_byte(0x6A, 0x00);
@@ -115,7 +115,7 @@ fn plane_e_vram_stub() {
 
 #[test]
 fn plane_e_vram_mapped_in_analog_mode() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
     // Start from digital mode.
     bus.io_write_byte(0x6A, 0x00);
@@ -139,7 +139,7 @@ fn plane_e_vram_mapped_in_analog_mode() {
 
 #[test]
 fn grcg_writes_all_four_planes_when_extension_present() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
     // Enable analog mode so E-plane is mapped (mode2 bit 0).
     bus.io_write_byte(0x6A, 0x01);
@@ -166,7 +166,7 @@ fn grcg_writes_all_four_planes_when_extension_present() {
 
 #[test]
 fn graphics_page_select_affects_cpu_access_and_snapshot_display() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
     // Enable analog mode so E-plane addresses are valid.
     bus.io_write_byte(0x6A, 0x01);
@@ -191,7 +191,7 @@ fn graphics_page_select_affects_cpu_access_and_snapshot_display() {
 
 #[test]
 fn memory_switch_writes_require_mode1_bit6() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
     let memory_switch_1 = 0xA3FE2;
 
     // Boot state has memory-switch write protection enabled.
@@ -212,7 +212,7 @@ fn memory_switch_writes_require_mode1_bit6() {
 
 #[test]
 fn mode1_bit5_switches_cgrom_access_bank() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
     bus.io_write_byte(0xA1, 0x21);
     bus.io_write_byte(0xA3, 0x56);
@@ -235,7 +235,7 @@ fn mode1_bit5_switches_cgrom_access_bank() {
 
 #[test]
 fn io_pic_routing() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
     // Master IMR.
     bus.io_write_byte(0x02, 0xFF);
@@ -248,7 +248,7 @@ fn io_pic_routing() {
 
 #[test]
 fn io_pit_routing() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
     // Program PIT channel 0: word mode, mode 3.
     bus.io_write_byte(0x77, 0x36);
@@ -269,7 +269,7 @@ fn io_pit_routing() {
 
 #[test]
 fn io_nmi_control() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
     // NMI disable.
     bus.io_write_byte(0x50, 0x00);
@@ -283,7 +283,7 @@ fn io_nmi_control() {
 
 #[test]
 fn io_unmapped_returns_ff() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
     assert_eq!(bus.io_read_byte(0xFF), 0xFF);
     assert_eq!(bus.io_read_byte(0x1234), 0xFF);
@@ -291,7 +291,7 @@ fn io_unmapped_returns_ff() {
 
 #[test]
 fn address_wraps_20bit() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
     // Address above 1MB wraps to 20-bit.
     bus.write_byte(0x100000, 0x42); // wraps to 0x00000.
@@ -300,7 +300,7 @@ fn address_wraps_20bit() {
 
 #[test]
 fn pit_mirror_ports() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
     // Program PIT via mirror control port.
     bus.io_write_byte(0x3FDF, 0x36); // ch0: word, mode 3
@@ -331,7 +331,7 @@ fn pit_mirror_ports() {
 
 #[test]
 fn pc9821_pit_latch_command_applies_delay() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
 
     bus.io_write_byte(0x77, 0x34);
     bus.io_write_byte(0x71, 0xE8);
@@ -350,7 +350,7 @@ fn pc9821_pit_latch_command_applies_delay() {
 
 #[test]
 fn timer_full_cycle() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
 
     // Set up PIC: unmask all.
     bus.io_write_byte(0x00, 0x11);
@@ -388,7 +388,7 @@ fn timer_full_cycle() {
 
 #[test]
 fn timer_value_zero_65536_period() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
 
     // Set up PIC: enable only IRQ 0 (timer). Mask IRQ 2 (VSYNC) since this
     // test advances past the VSYNC period.
@@ -413,7 +413,7 @@ fn timer_value_zero_65536_period() {
 
 #[test]
 fn control_word_write_clears_irq0() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
 
     // Set up PIC.
     bus.io_write_byte(0x00, 0x11);
@@ -438,7 +438,7 @@ fn control_word_write_clears_irq0() {
 
 #[test]
 fn pit_latch_command_does_not_clear_irq0() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
 
     init_pic(&mut bus);
 
@@ -470,7 +470,7 @@ fn init_pic(bus: &mut Pc9801Bus) {
 
 #[test]
 fn timer_reprogram_mid_count() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
     init_pic(&mut bus);
 
     // PIT ch0: mode 2, reload = 100 -> fire at cycle 1001
@@ -499,7 +499,7 @@ fn timer_reprogram_mid_count() {
 
 #[test]
 fn timer_reprogram_larger_value_delays_fire() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
     init_pic(&mut bus);
 
     // PIT ch0: mode 2, reload = 100 -> fire at cycle 1001
@@ -531,7 +531,7 @@ fn timer_reprogram_larger_value_delays_fire() {
 
 #[test]
 fn pit_channels_1_and_2_no_irq() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
     init_pic(&mut bus);
 
     // Program PIT ch1: mode 2, reload = 100
@@ -553,7 +553,7 @@ fn pit_channels_1_and_2_no_irq() {
 
 #[test]
 fn multiple_timer_periods_accumulate() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
     init_pic(&mut bus);
 
     // PIT ch0: mode 2, reload = 100 -> fire every 1001 cycles
@@ -578,7 +578,7 @@ fn multiple_timer_periods_accumulate() {
 
 #[test]
 fn timer_count_readable_while_running() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
     init_pic(&mut bus);
 
     // PIT ch0: mode 2, reload = 1000 -> fire at cycle ~10016
@@ -605,7 +605,7 @@ fn timer_count_readable_while_running() {
 
 #[test]
 fn mouse_timer_irq15_periodic_and_masked() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
     // Unmask only the slave cascade on master and only slave IR5 (IRQ13).
     bus.io_write_byte(0x02, 0x7F);
@@ -636,7 +636,7 @@ fn mouse_timer_irq15_periodic_and_masked() {
 
 #[test]
 fn mouse_timer_ignores_upper_bit_writes_to_bfdb() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
     // Port 0xBFDB is write-only on the PC-9801VM (reads return 0xFF).
     assert_eq!(bus.io_read_byte(0xBFDB), 0xFF);
@@ -670,7 +670,7 @@ fn mouse_timer_ignores_upper_bit_writes_to_bfdb() {
 
 #[test]
 fn mouse_timer_fires_regardless_of_ppi_mode_bit3() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
     // Unmask slave cascade on master and slave IR5 (IRQ13).
     bus.io_write_byte(0x02, 0x7F);
@@ -692,7 +692,7 @@ fn mouse_timer_fires_regardless_of_ppi_mode_bit3() {
 
 #[test]
 fn sdip_ports_return_parity_correct_defaults_on_pc9821() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
 
     // Most SDIP bytes have per-byte odd parity. The BIOS checks this during
     // POST and shows "SET THE SOFTWARE DIP SWITCH" if any check fails.
@@ -732,7 +732,7 @@ fn sdip_ports_return_parity_correct_defaults_on_pc9821() {
 
 #[test]
 fn sdip_read_write_roundtrip() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
 
     // Write a test value to SDIP port 0x841E and read it back.
     bus.io_write_byte(0x841E, 0x42);
@@ -746,7 +746,7 @@ fn sdip_read_write_roundtrip() {
 
 #[test]
 fn sdip_bank_selection_via_port_f6() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
 
     // Read front bank default at offset 0.
     let _front_default = bus.io_read_byte(0x841E);
@@ -795,7 +795,7 @@ fn sdip_bank_selection_via_port_f6() {
 
 #[test]
 fn sdip_bank_selection_via_port_8f1f() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
 
     // Write to front bank.
     bus.io_write_byte(0x841E, 0xCC);
@@ -811,7 +811,7 @@ fn sdip_bank_selection_via_port_8f1f() {
 
 #[test]
 fn sdip_ports_not_present_on_pc9801() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
 
     // SDIP ports should return open bus (0xFF) on PC-9801 models.
     assert_eq!(bus.io_read_byte(0x841E), 0xFF);
@@ -820,7 +820,7 @@ fn sdip_ports_not_present_on_pc9801() {
 
 #[test]
 fn wab_relay_default_matches_np21w() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
 
     // NP21W returns 0xFC | relay_state on reads. Initial relay state = 0,
     // so reads return 0xFC (bits [7:2] high, bits [1:0] clear).
@@ -834,7 +834,7 @@ fn wab_relay_default_matches_np21w() {
 
 #[test]
 fn port_31_synthesizes_dip_switch_2_from_sdip_on_pc9821() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
 
     // Port 0x31 synthesizes DIP switch 2 from SDIP front bank registers:
     //   bits {7,6,5,3,2,1,0} from register 1 (0x851E)

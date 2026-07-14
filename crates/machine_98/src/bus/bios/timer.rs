@@ -4,9 +4,9 @@ use common::{Cpu, SegmentRegister};
 use device::i8253_pit::PIT_FLAG_I;
 
 use super::{super::Pc9801Bus, PIT_CLOCK_8MHZ_LINEAGE, iret_stack_base};
-use crate::Tracing;
+use crate::TraceSink;
 
-impl<T: Tracing> Pc9801Bus<T> {
+impl<T: TraceSink> Pc9801Bus<T> {
     pub(super) fn hle_int08h(&mut self, cpu: &mut impl Cpu) {
         if !self.bios_interval_timer_active {
             return;
@@ -123,7 +123,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.pit.write_counter(0, divider as u8);
         self.pit.write_counter(0, (divider >> 8) as u8);
         self.pit.state.channels[0].last_load_cycle = self.current_cycle;
-        self.pic.clear_irq(0);
+        self.clear_pic_irq(0);
         self.pit.state.channels[0].flag |= PIT_FLAG_I;
         let cpu_cycles = self
             .pit
@@ -148,7 +148,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.pit.write_counter(0, divider as u8);
         self.pit.write_counter(0, (divider >> 8) as u8);
         self.pit.state.channels[0].last_load_cycle = self.current_cycle;
-        self.pic.clear_irq(0);
+        self.clear_pic_irq(0);
         self.pit.state.channels[0].flag |= PIT_FLAG_I;
         let cpu_cycles = self
             .pit

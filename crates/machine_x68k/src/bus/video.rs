@@ -3,7 +3,7 @@
 //! Operation-port bit 3 is a level switch: while it stays set, the raster
 //! copy selected by R21 and R22 executes at every horizontal front porch.
 
-use common::{M68000BusError, Tracing};
+use common::{M68000BusError, TraceContext, TraceEvent, TracePresentation, TraceSink, trace_id};
 use device::{
     crtc_x68k::{CrtcBeamPositionX68k, CrtcGeometryX68k, CrtcScanClassX68k, GvramModeX68k},
     video_controller_x68k::PaletteX68k,
@@ -67,7 +67,7 @@ const fn standard_display_height(vertical_total: u16) -> Option<(u32, u16)> {
     }
 }
 
-impl<T: Tracing> X68kBus<T> {
+impl<T: TraceSink> X68kBus<T> {
     /// Reads a native 16-bit video or CRTC register.
     pub(super) fn read_device_word(
         &mut self,
@@ -407,6 +407,18 @@ impl<T: Tracing> X68kBus<T> {
             odd_field: self.crtc.beam_position().odd_field,
         };
         self.renderer.publish_frame(&inputs);
+        if T::ENABLED {
+            let (width, height) = self.renderer.dimensions();
+            self.tracer.trace(
+                TraceContext::presentation_main(self.current_cycle, Some(self.cpu_clock_hz)),
+                TraceEvent::Presentation(TracePresentation {
+                    display: trace_id::display::MAIN,
+                    frame: self.crtc.frame_count(),
+                    width,
+                    height,
+                }),
+            );
+        }
     }
 }
 

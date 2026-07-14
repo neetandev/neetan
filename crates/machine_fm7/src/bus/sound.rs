@@ -8,7 +8,7 @@
 //! either `0xFD03` bit 6 or the sub CPU can arm. The joystick pad is read back
 //! through PSG parallel port A (register 14), active low.
 
-use common::{JoystickState, Tracing};
+use common::{JoystickState, TraceSink};
 use device::opn_fm::FmTimerAction;
 
 use crate::{
@@ -87,7 +87,7 @@ const JOYSTICK_TRIGGER_1: u8 = 0x10;
 /// Port A bit pulled low while the second trigger is pressed.
 const JOYSTICK_TRIGGER_2: u8 = 0x20;
 
-impl<T: Tracing> Fm7Bus<T> {
+impl<T: TraceSink> Fm7Bus<T> {
     /// Handles a write to the sound command port `0xFD0D`.
     ///
     /// On the FM-77AV the PSG ports alias onto the OPN, so the command is routed
@@ -303,7 +303,14 @@ impl<T: Tracing> Fm7Bus<T> {
         }
 
         if let Some(asserted) = irq_change {
-            self.interrupts.set_opn_pending(asserted, &mut self.tracer);
+            self.interrupts.set_opn_pending(
+                asserted,
+                common::TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.cpu_clock_hz())),
+                ),
+                &mut self.tracer,
+            );
         }
     }
 

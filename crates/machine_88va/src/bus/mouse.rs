@@ -113,7 +113,7 @@ mod tests {
     /// Latches SSG register 0x0F (the mouse button lines) and reads it back.
     fn read_buttons(bus: &mut crate::bus::Pc88VaBus) -> u8 {
         bus.io_write(0x044, 0x0F);
-        bus.io_read(0x045)
+        bus.io_read(0x045).0
     }
 
     #[test]

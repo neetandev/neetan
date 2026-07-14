@@ -1,5 +1,5 @@
-use common::{Bus, Cpu, CpuMode, MachineModel};
-use machine_98::{NoTracing, Pc9801Bus, Pc9801Ra};
+use common::{Bus, Cpu, CpuMode, MachineModel, NoTrace};
+use machine_98::{Pc9801Bus, Pc9801Ra};
 
 const GA_GAPORT: u16 = 0x00D8;
 const GA_ID_STREAM: &[u8; 16] = b".O DATA DEVICE I";
@@ -9,7 +9,7 @@ fn ga_port(selector: u8, offset: u8) -> u16 {
     (u16::from(selector) << 8) | (GA_GAPORT + u16::from(offset))
 }
 
-fn setup_bus() -> Pc9801Bus<NoTracing> {
+fn setup_bus() -> Pc9801Bus<NoTrace> {
     let mut bus = Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48000);
     bus.install_ga1280a();
     bus
@@ -21,11 +21,11 @@ fn write_bytes(bus: &mut impl Bus, address: u32, bytes: &[u8]) {
     }
 }
 
-fn read_word_direct(bus: &Pc9801Bus<NoTracing>, address: u32) -> u16 {
+fn read_word_direct(bus: &Pc9801Bus<NoTrace>, address: u32) -> u16 {
     u16::from(bus.read_byte_direct(address)) | (u16::from(bus.read_byte_direct(address + 1)) << 8)
 }
 
-fn apply_gainit_reset_entry(bus: &mut Pc9801Bus<NoTracing>, encoded: u16, port_offset: u8) {
+fn apply_gainit_reset_entry(bus: &mut Pc9801Bus<NoTrace>, encoded: u16, port_offset: u8) {
     let selector = ((encoded >> 8) as u8) & 0x7F;
     let offset = (encoded as u8).wrapping_add(port_offset);
     if encoded & 0x8000 != 0 {
@@ -35,7 +35,7 @@ fn apply_gainit_reset_entry(bus: &mut Pc9801Bus<NoTracing>, encoded: u16, port_o
     }
 }
 
-fn apply_gainit_reset_lists(bus: &mut Pc9801Bus<NoTracing>) {
+fn apply_gainit_reset_lists(bus: &mut Pc9801Bus<NoTrace>) {
     const ZERO_PORTS_BASE: &[u16] = &[
         0x0100, 0x0200, 0x0300, 0x0500, 0x8600, 0x0700, 0x0900, 0x0B00, 0x8D00, 0x8E00, 0x0F00,
         0x1000, 0x1200, 0x1400,

@@ -144,7 +144,7 @@ impl CgromVa {
     }
 }
 
-impl Pc88VaBus {
+impl<T: common::TraceSink> Pc88VaBus<T> {
     /// The 8-dot ANK font select (text-mode register 0x148 bit 2).
     fn cgrom_font8(&self) -> bool {
         self.video.txtmode & 0x04 != 0

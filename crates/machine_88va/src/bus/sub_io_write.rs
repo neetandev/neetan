@@ -6,9 +6,9 @@ use super::Pc88VaBus;
 /// always asserts drive ready when the motor is driven).
 const FDC_FORCED_READY: u8 = 0x40;
 
-impl Pc88VaBus {
-    /// Writes a floppy sub-CPU I/O port (`port & 0xFF`). Public for tests and tooling.
-    pub(crate) fn sub_io_write(&mut self, port: u16, value: u8) {
+impl<T: common::TraceSink> Pc88VaBus<T> {
+    /// Writes a sub-CPU I/O byte and reports whether the port was decoded.
+    pub(crate) fn sub_io_write(&mut self, port: u16, value: u8) -> bool {
         match port & 0xFF {
             // Interrupt acknowledge latch: no-op (no vector latch).
             0xF0 => {}
@@ -36,7 +36,8 @@ impl Pc88VaBus {
                 let changed = self.ppi_sub.write((port & 0x03) as u8, value);
                 self.on_ppi_sub_change(changed);
             }
-            _ => {}
+            _ => return false,
         }
+        true
     }
 }

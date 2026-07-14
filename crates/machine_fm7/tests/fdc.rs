@@ -92,17 +92,17 @@ fn read_sector_streams_the_data_over_pio() {
     // Let the controller settle and stage the sector buffer.
     run_bus_cycles(&mut bus, 100_000);
 
-    let status = bus.read_byte(FDC_STATUS_COMMAND);
+    let status = bus.read_byte(FDC_STATUS_COMMAND).0;
     assert_eq!(status & STATUS_DRQ, STATUS_DRQ, "DRQ should be asserted");
 
-    let data: Vec<u8> = (0..256).map(|_| bus.read_byte(FDC_DATA)).collect();
+    let data: Vec<u8> = (0..256).map(|_| bus.read_byte(FDC_DATA).0).collect();
     let expected: Vec<u8> = (0..256)
         .map(|index| 0x10u8.wrapping_add(index as u8))
         .collect();
     assert_eq!(data, expected);
 
     // The transfer completes: DRQ and BUSY drop once the last byte is read.
-    let status = bus.read_byte(FDC_STATUS_COMMAND);
+    let status = bus.read_byte(FDC_STATUS_COMMAND).0;
     assert_eq!(status & (STATUS_DRQ | STATUS_BUSY), 0);
 }
 
@@ -116,9 +116,9 @@ fn restore_seeks_to_track_zero() {
     bus.write_byte(FDC_STATUS_COMMAND, CMD_RESTORE);
     run_bus_cycles(&mut bus, 200_000);
 
-    let status = bus.read_byte(FDC_STATUS_COMMAND);
+    let status = bus.read_byte(FDC_STATUS_COMMAND).0;
     assert_eq!(status & STATUS_BUSY, 0);
-    assert_eq!(bus.read_byte(FDC_TRACK), 0);
+    assert_eq!(bus.read_byte(FDC_TRACK).0, 0);
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn drq_and_irq_mirror_into_fd1f() {
     run_bus_cycles(&mut bus, 100_000);
 
     // Mid-transfer: DRQ is set, IRQ is not, and the low six bits read as one.
-    let status = bus.read_byte(FDC_DRQ_IRQ);
+    let status = bus.read_byte(FDC_DRQ_IRQ).0;
     assert_eq!(status & DRQ_BIT, DRQ_BIT);
     assert_eq!(status & IRQ_BIT, 0);
     assert_eq!(status & 0x3F, 0x3F);
@@ -141,12 +141,12 @@ fn drq_and_irq_mirror_into_fd1f() {
     for _ in 0..256 {
         bus.read_byte(FDC_DATA);
     }
-    let status = bus.read_byte(FDC_DRQ_IRQ);
+    let status = bus.read_byte(FDC_DRQ_IRQ).0;
     assert_eq!(status & IRQ_BIT, IRQ_BIT, "IRQ should mirror on completion");
     assert_eq!(status & DRQ_BIT, 0);
 
     // 0xFD1E is an AV40-only register and reads open bus on the FM-7.
-    assert_eq!(bus.read_byte(FDC_UNUSED), 0xFF);
+    assert_eq!(bus.read_byte(FDC_UNUSED).0, 0xFF);
 }
 
 #[test]
@@ -154,9 +154,9 @@ fn side_select_reads_back_with_the_high_bits_set() {
     let mut bus = build_bus_with_synthetic_roms(BootMode::Dos, |_| {});
 
     bus.write_byte(FDC_SIDE, 0x01);
-    assert_eq!(bus.read_byte(FDC_SIDE), 0xFF);
+    assert_eq!(bus.read_byte(FDC_SIDE).0, 0xFF);
     bus.write_byte(FDC_SIDE, 0x00);
-    assert_eq!(bus.read_byte(FDC_SIDE), 0xFE);
+    assert_eq!(bus.read_byte(FDC_SIDE).0, 0xFE);
 }
 
 #[test]
@@ -171,13 +171,13 @@ fn motor_readback_follows_the_control_latch_immediately() {
     // The boot ROM checks the bit a few microseconds after switching the motor
     // on, so the readback reflects the written latch without the spin-up delay.
     bus.write_byte(FDC_DRIVE_MOTOR, MOTOR_BIT);
-    assert_eq!(bus.read_byte(FDC_DRIVE_MOTOR) & MOTOR_BIT, MOTOR_BIT);
+    assert_eq!(bus.read_byte(FDC_DRIVE_MOTOR).0 & MOTOR_BIT, MOTOR_BIT);
     run_bus_cycles(&mut bus, 600_000);
-    assert_eq!(bus.read_byte(FDC_DRIVE_MOTOR) & MOTOR_BIT, MOTOR_BIT);
+    assert_eq!(bus.read_byte(FDC_DRIVE_MOTOR).0 & MOTOR_BIT, MOTOR_BIT);
 
     // Releasing the motor clears the latch readback immediately as well.
     bus.write_byte(FDC_DRIVE_MOTOR, 0x00);
-    assert_eq!(bus.read_byte(FDC_DRIVE_MOTOR) & MOTOR_BIT, 0);
+    assert_eq!(bus.read_byte(FDC_DRIVE_MOTOR).0 & MOTOR_BIT, 0);
 }
 
 #[test]
@@ -186,7 +186,7 @@ fn drive_select_reads_back_and_gates_the_motor_on_fitted_drives() {
 
     // Selecting drive 2 (fitted on the FM-7's four selects) reads the bits back.
     bus.write_byte(FDC_DRIVE_MOTOR, 0x02);
-    assert_eq!(bus.read_byte(FDC_DRIVE_MOTOR), 0x3E);
+    assert_eq!(bus.read_byte(FDC_DRIVE_MOTOR).0, 0x3E);
 }
 
 #[test]
@@ -203,8 +203,8 @@ fn unfitted_drive_never_reports_the_motor() {
 
     bus.write_byte(FDC_DRIVE_MOTOR, MOTOR_BIT | 0x02); // drive 2, motor on
     run_bus_cycles(&mut bus, 2_000_000);
-    assert_eq!(bus.read_byte(FDC_DRIVE_MOTOR) & MOTOR_BIT, 0);
-    assert_eq!(bus.read_byte(FDC_DRIVE_MOTOR) & 0x03, 0x02);
+    assert_eq!(bus.read_byte(FDC_DRIVE_MOTOR).0 & MOTOR_BIT, 0);
+    assert_eq!(bus.read_byte(FDC_DRIVE_MOTOR).0 & 0x03, 0x02);
 }
 
 #[test]
@@ -222,7 +222,7 @@ fn fdc_irq_reaches_the_cpu_only_when_unmasked() {
     assert!(!bus.has_irq());
 
     // 0xFD03 bit 3 reports the external IRQ pending active-low regardless of mask.
-    assert_eq!(bus.read_byte(IRQ_STATUS) & IRQ_STATUS_EXTERNAL, 0);
+    assert_eq!(bus.read_byte(IRQ_STATUS).0 & IRQ_STATUS_EXTERNAL, 0);
 
     // Enabling the FDC IRQ mask lets it reach the CPU.
     bus.write_byte(IRQ_MASK, IRQ_MASK_FDC);
@@ -231,24 +231,30 @@ fn fdc_irq_reaches_the_cpu_only_when_unmasked() {
 
 #[test]
 fn fdc_ports_are_not_traced_as_unhandled() {
-    use common::Tracing;
+    use common::TraceSink;
 
     #[derive(Default)]
     struct CountingTracer {
         unhandled: u32,
     }
 
-    impl Tracing for CountingTracer {
-        fn trace_io_unhandled_read(&mut self, _port: u16) {
-            self.unhandled += 1;
-        }
-
-        fn trace_io_unhandled_write(&mut self, _port: u16, _value: u8) {
-            self.unhandled += 1;
+    impl TraceSink for CountingTracer {
+        fn trace(&mut self, _context: common::TraceContext, event: common::TraceEvent<'_>) {
+            if let common::TraceEvent::Access(access) = event
+                && access.space == common::TraceAddressSpace::MAIN_IO
+                && !access.handled
+            {
+                self.unhandled += 1;
+            }
         }
     }
 
-    let mut bus = Fm7Bus::<CountingTracer>::new(Fm7Model::Fm7, BootMode::Dos, 48_000);
+    let mut bus = Fm7Bus::new_with_trace_sink(
+        Fm7Model::Fm7,
+        BootMode::Dos,
+        48_000,
+        CountingTracer::default(),
+    );
     bus.load_roms(&synthetic_roms(Fm7Model::Fm7));
 
     for port in FDC_STATUS_COMMAND..=FDC_DRQ_IRQ {

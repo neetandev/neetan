@@ -17,13 +17,13 @@ mod pmode;
 mod serial_rs232c;
 mod timer;
 
-use common::{Cpu, SegmentRegister, warn};
+use common::{Cpu, CpuAccess, SegmentRegister, warn};
 
 use super::{
     Pc9801Bus,
     dos_adapter::{DosCpuAccess, DosCursorAccess, DosDiskIo, DosMemoryAccess},
 };
-use crate::{Tracing, memory::Pc9801Memory};
+use crate::{TraceSink, memory::Pc9801Memory};
 
 const PIT_CLOCK_8MHZ_LINEAGE: u32 = 1_996_800;
 const PAGE_PRESENT: u32 = 0x01;
@@ -158,7 +158,7 @@ fn reverse_bits(b: u8) -> u8 {
     (v & 0xAA) >> 1 | (v & 0x55) << 1
 }
 
-impl<T: Tracing> Pc9801Bus<T> {
+impl<T: TraceSink> Pc9801Bus<T> {
     pub(crate) fn handle_bios_interval_timer_tick(&mut self) {
         if !self.bios_interval_timer_active {
             return;
@@ -197,7 +197,16 @@ impl<T: Tracing> Pc9801Bus<T> {
         cpu.set_ax(saved_ax);
         cpu.set_sp(sp.wrapping_add(4));
 
-        self.tracer.trace_bios_hle(vector, cpu.ah(), cpu.al());
+        let function = cpu.ah();
+        let subfunction = cpu.al();
+        self.trace_call(
+            common::trace_id::provider::PC98_BIOS,
+            common::TraceCallInterface::Interrupt(u32::from(vector)),
+            Some(u64::from(function)),
+            Some(u64::from(subfunction)),
+            common::TraceCallPhase::Enter,
+            None,
+        );
 
         match vector {
             0x08 => self.hle_int08h(cpu),
@@ -222,29 +231,47 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x1F => self.hle_int1fh(cpu),
             0x20..=0x2A | 0x2F | 0x33 | 0x67 | 0xDC | 0xE7 | 0xEE | 0xEF | 0xFD | 0xFE => {
                 if let Some(mut neetan_dos) = self.dos.take() {
-                    let mut cpu_access = DosCpuAccess(cpu);
-                    let access_page = self.access_page_index();
-                    let mut mem_access = DosMemoryAccess::with_paging(
-                        &mut self.memory,
-                        access_page,
-                        self.b_bank_ems,
-                        self.vram_ems_bank,
-                        self.hle_cr0,
-                        self.hle_cr3,
+                    self.trace_call(
+                        common::trace_id::provider::NEETAN_DOS,
+                        common::TraceCallInterface::Interrupt(u32::from(vector)),
+                        Some(u64::from(function)),
+                        Some(u64::from(subfunction)),
+                        common::TraceCallPhase::Enter,
+                        None,
                     );
-                    let mut disk_io = DosDiskIo {
-                        floppy: &mut self.floppy,
-                        sasi: &mut self.sasi,
-                        ide: &mut self.ide,
+                    let result = {
+                        let mut cpu_access = DosCpuAccess(cpu);
+                        let access_page = self.access_page_index();
+                        let mut mem_access = DosMemoryAccess::with_paging(
+                            &mut self.memory,
+                            access_page,
+                            self.b_bank_ems,
+                            self.vram_ems_bank,
+                            self.hle_cr0,
+                            self.hle_cr3,
+                        );
+                        let mut disk_io = DosDiskIo {
+                            floppy: &mut self.floppy,
+                            sasi: &mut self.sasi,
+                            ide: &mut self.ide,
+                        };
+                        let mut cursor_access = DosCursorAccess(&mut self.gdc_master.state);
+                        neetan_dos.dispatch(
+                            vector,
+                            &mut cpu_access,
+                            &mut mem_access,
+                            &mut disk_io,
+                            &mut cursor_access,
+                        );
+                        cpu_access.ax()
                     };
-                    let mut cursor_access = DosCursorAccess(&mut self.gdc_master.state);
-                    neetan_dos.dispatch(
-                        vector,
-                        &mut cpu_access,
-                        &mut mem_access,
-                        &mut disk_io,
-                        &mut cursor_access,
-                        &mut self.tracer,
+                    self.trace_call(
+                        common::trace_id::provider::NEETAN_DOS,
+                        common::TraceCallInterface::Interrupt(u32::from(vector)),
+                        Some(u64::from(function)),
+                        Some(u64::from(subfunction)),
+                        common::TraceCallPhase::Exit,
+                        Some(u64::from(result)),
                     );
                     self.dos = Some(neetan_dos);
                 }
@@ -260,6 +287,15 @@ impl<T: Tracing> Pc9801Bus<T> {
             0xF3 => self.hle_n88_basic_entry(),
             _ => {}
         }
+
+        self.trace_call(
+            common::trace_id::provider::PC98_BIOS,
+            common::TraceCallInterface::Interrupt(u32::from(vector)),
+            Some(u64::from(function)),
+            Some(u64::from(subfunction)),
+            common::TraceCallPhase::Exit,
+            Some(u64::from(cpu.ax())),
+        );
     }
 
     fn hle_n88_basic_entry(&mut self) {
@@ -354,7 +390,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
 #[cfg(test)]
 mod tests {
-    use common::{Bus, Cpu, CpuMode, CpuType, MachineModel, NoTracing, SegmentRegister};
+    use common::{Bus, Cpu, CpuMode, CpuType, MachineModel, NoTrace, SegmentRegister};
     use device::floppy::FloppyImage;
 
     use super::{
@@ -546,7 +582,7 @@ mod tests {
         }
     }
 
-    fn test_bus() -> Pc9801Bus<NoTracing> {
+    fn test_bus() -> Pc9801Bus<NoTrace> {
         Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::Low, 48000)
     }
 
@@ -554,14 +590,14 @@ mod tests {
         Pc9801Memory::new(MachineModel::PC9801RA, 0x400000)
     }
 
-    fn write_bus_dword(bus: &mut Pc9801Bus<NoTracing>, address: u32, value: u32) {
+    fn write_bus_dword(bus: &mut Pc9801Bus<NoTrace>, address: u32, value: u32) {
         bus.write_byte(address, value as u8);
         bus.write_byte(address + 1, (value >> 8) as u8);
         bus.write_byte(address + 2, (value >> 16) as u8);
         bus.write_byte(address + 3, (value >> 24) as u8);
     }
 
-    fn setup_hle_page_tables(bus: &mut Pc9801Bus<NoTracing>) {
+    fn setup_hle_page_tables(bus: &mut Pc9801Bus<NoTrace>) {
         const PAGE_PRESENT_WRITE: u32 = 0x03;
         let page_dir = 0x0008_0000;
         let page_table = 0x0008_1000;
@@ -579,12 +615,12 @@ mod tests {
         bus.set_hle_paging(0x8000_0001, page_dir);
     }
 
-    fn write_bus_word(bus: &mut Pc9801Bus<NoTracing>, address: u32, value: u16) {
+    fn write_bus_word(bus: &mut Pc9801Bus<NoTrace>, address: u32, value: u16) {
         bus.write_byte(address, value as u8);
         bus.write_byte(address + 1, (value >> 8) as u8);
     }
 
-    fn read_bus_word(bus: &mut Pc9801Bus<NoTracing>, address: u32) -> u16 {
+    fn read_bus_word(bus: &mut Pc9801Bus<NoTrace>, address: u32) -> u16 {
         u16::from(bus.read_byte(address)) | (u16::from(bus.read_byte(address + 1)) << 8)
     }
 

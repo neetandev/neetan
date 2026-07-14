@@ -1,40 +1,40 @@
-use common::{Bus, CpuMode, MachineModel};
-use machine_98::{NoTracing, Pc9801Bus};
+use common::{Bus, CpuMode, MachineModel, NoTrace};
+use machine_98::Pc9801Bus;
 
 const VRAM_B_BASE: u32 = 0xA8000;
 const VRAM_R_BASE: u32 = 0xB0000;
 const VRAM_G_BASE: u32 = 0xB8000;
 const VRAM_E_BASE: u32 = 0xE0000;
 
-fn setup_grcg_bus() -> Pc9801Bus<NoTracing> {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+fn setup_grcg_bus() -> Pc9801Bus<NoTrace> {
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
     bus.io_write_byte(0x6A, 0x01); // analog mode for E-plane access
     bus
 }
 
-fn enable_grcg_tdw(bus: &mut Pc9801Bus<NoTracing>, tiles: [u8; 4]) {
+fn enable_grcg_tdw(bus: &mut Pc9801Bus<NoTrace>, tiles: [u8; 4]) {
     bus.io_write_byte(0x7C, 0x80); // TDW mode, all planes enabled
     for tile in tiles {
         bus.io_write_byte(0x7E, tile);
     }
 }
 
-fn enable_grcg_rmw(bus: &mut Pc9801Bus<NoTracing>, tiles: [u8; 4]) {
+fn enable_grcg_rmw(bus: &mut Pc9801Bus<NoTrace>, tiles: [u8; 4]) {
     bus.io_write_byte(0x7C, 0xC0); // RMW mode, all planes enabled
     for tile in tiles {
         bus.io_write_byte(0x7E, tile);
     }
 }
 
-fn disable_grcg_mode(bus: &mut Pc9801Bus<NoTracing>) {
+fn disable_grcg_mode(bus: &mut Pc9801Bus<NoTrace>) {
     bus.io_write_byte(0x7C, 0x00);
 }
 
-fn read_plane_byte(bus: &Pc9801Bus<NoTracing>, plane_base: u32, offset: u32) -> u8 {
+fn read_plane_byte(bus: &Pc9801Bus<NoTrace>, plane_base: u32, offset: u32) -> u8 {
     bus.read_byte_direct(plane_base + offset)
 }
 
-fn read_all_planes_byte(bus: &Pc9801Bus<NoTracing>, offset: u32) -> [u8; 4] {
+fn read_all_planes_byte(bus: &Pc9801Bus<NoTrace>, offset: u32) -> [u8; 4] {
     [
         bus.read_byte_direct(VRAM_B_BASE + offset),
         bus.read_byte_direct(VRAM_R_BASE + offset),
@@ -43,7 +43,7 @@ fn read_all_planes_byte(bus: &Pc9801Bus<NoTracing>, offset: u32) -> [u8; 4] {
     ]
 }
 
-fn prefill_all_planes_byte(bus: &mut Pc9801Bus<NoTracing>, offset: u32, values: [u8; 4]) {
+fn prefill_all_planes_byte(bus: &mut Pc9801Bus<NoTrace>, offset: u32, values: [u8; 4]) {
     let bases = [VRAM_B_BASE, VRAM_R_BASE, VRAM_G_BASE, VRAM_E_BASE];
     for (i, &base) in bases.iter().enumerate() {
         bus.write_byte(base + offset, values[i]);

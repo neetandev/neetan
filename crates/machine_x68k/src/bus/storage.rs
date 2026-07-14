@@ -7,7 +7,7 @@
 //! accesses, mirrors the controllers' interrupt lines into the IOC, and
 //! pumps HD63450 channel 1 while a controller requests DMA.
 
-use common::Tracing;
+use common::TraceSink;
 use device::{
     cdrom::CdImage,
     disk::{HddImage, MountedHdd},
@@ -32,7 +32,7 @@ const SASI_SELECT_OFFSET: u32 = 7;
 /// SCSI ID of the internal CD-ROM drive.
 const SCSI_CDROM_ID: usize = 6;
 
-impl<T: Tracing> X68kBus<T> {
+impl<T: TraceSink> X68kBus<T> {
     /// Reads a storage-controller register.
     pub(super) fn read_storage_register(&mut self, address: u32) -> u8 {
         let value = match self.model.storage_controller() {

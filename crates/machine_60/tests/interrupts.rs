@@ -168,7 +168,7 @@ fn sr_vector_table_round_trips_per_source() {
         bus.io_write(0xB8 + index, vector);
     }
     for index in 0..8u16 {
-        assert_eq!(bus.io_read(0xB8 + index), 0x80 + index as u8);
+        assert_eq!(bus.io_read(0xB8 + index).0, 0x80 + index as u8);
     }
 }
 
@@ -177,8 +177,8 @@ fn sr_hardware_revision_distinguishes_models() {
     let mut mk2sr = build_machine(Pc6000Model::Pc6001Mk2Sr);
     let mut pc6601sr = build_machine(Pc6000Model::Pc6601Sr);
 
-    assert_eq!(mk2sr.bus.io_read(0xB2), 0x01);
-    assert_eq!(pc6601sr.bus.io_read(0xB2), 0x03);
+    assert_eq!(mk2sr.bus.io_read(0xB2).0, 0x01);
+    assert_eq!(pc6601sr.bus.io_read(0xB2).0, 0x03);
 }
 
 #[test]
@@ -189,7 +189,7 @@ fn sr_joystick_trigger_uses_fixed_vector() {
     bus.io_write(0xB9, 0x80);
     bus.io_write(0x90, 0x06);
 
-    assert_eq!(bus.acknowledge_irq(), 0x16);
+    assert_eq!(bus.acknowledge_irq().vector, 0x16);
 }
 
 #[test]

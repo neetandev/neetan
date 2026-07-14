@@ -17,7 +17,9 @@ mod write;
 
 use common::{
     Bus, CpuMode, HostDateTimeProvider, JoystickState, M68000AccessSize, M68000BusAccess,
-    M68000BusError, M68000CycleKind, M68000FunctionCode, NoTracing, Tracing,
+    M68000BusError, M68000CycleKind, M68000FunctionCode, NoTrace, TraceAccessKind,
+    TraceAccessWidth, TraceAddressSpace, TraceContext, TraceEvent, TraceInterruptAction, TraceSink,
+    trace_id,
 };
 use device::{
     crtc_x68k::CrtcX68k,
@@ -135,6 +137,36 @@ pub enum X68kRegion {
     IplRom,
 }
 
+impl X68kBus<NoTrace> {
+    /// Builds an untraced bus from a validated model-specific ROM set.
+    pub fn new(
+        model: X68kModel,
+        cpu_mode: CpuMode,
+        roms: LoadedRoms,
+        sample_rate: u32,
+    ) -> Result<Self, String> {
+        Self::new_with_trace_sink(model, cpu_mode, roms, sample_rate, NoTrace)
+    }
+
+    /// Builds an untraced bus with an explicit main-RAM size.
+    pub fn with_main_ram_size(
+        model: X68kModel,
+        cpu_mode: CpuMode,
+        roms: LoadedRoms,
+        sample_rate: u32,
+        main_ram_size: usize,
+    ) -> Result<Self, String> {
+        Self::with_main_ram_size_and_trace_sink(
+            model,
+            cpu_mode,
+            roms,
+            sample_rate,
+            main_ram_size,
+            NoTrace,
+        )
+    }
+}
+
 /// Number of CPU main-RAM accesses that share one DRAM refresh wait cycle.
 const CPU_RAM_ACCESSES_PER_REFRESH_CYCLE: u8 = 8;
 
@@ -177,7 +209,7 @@ const fn cpu_access_wait_cycles(region: X68kRegion) -> u64 {
 }
 
 /// X68000 system bus and motherboard state.
-pub struct X68kBus<T: Tracing = NoTracing> {
+pub struct X68kBus<T: TraceSink = NoTrace> {
     model: X68kModel,
     cpu_mode: CpuMode,
     ram: Box<[u8]>,
@@ -241,37 +273,34 @@ pub struct X68kBus<T: Tracing = NoTracing> {
     tracer: T,
 }
 
-impl<T: Tracing> X68kBus<T> {
-    /// Builds a bus from a validated model-specific ROM set.
-    pub fn new(
+impl<T: TraceSink> X68kBus<T> {
+    /// Builds a traced bus from a validated model-specific ROM set.
+    pub fn new_with_trace_sink(
         model: X68kModel,
         cpu_mode: CpuMode,
         roms: LoadedRoms,
         sample_rate: u32,
-    ) -> Result<Self, String>
-    where
-        T: Default,
-    {
-        Self::with_main_ram_size(
+        tracer: T,
+    ) -> Result<Self, String> {
+        Self::with_main_ram_size_and_trace_sink(
             model,
             cpu_mode,
             roms,
             sample_rate,
             X68K_DEFAULT_MAIN_RAM_SIZE,
+            tracer,
         )
     }
 
-    /// Builds a bus with an explicit main-RAM size.
-    pub fn with_main_ram_size(
+    /// Builds a traced bus with an explicit main-RAM size.
+    pub fn with_main_ram_size_and_trace_sink(
         model: X68kModel,
         cpu_mode: CpuMode,
         roms: LoadedRoms,
         sample_rate: u32,
         main_ram_size: usize,
-    ) -> Result<Self, String>
-    where
-        T: Default,
-    {
+        tracer: T,
+    ) -> Result<Self, String> {
         validate_main_ram_size(main_ram_size)?;
         if roms.model != model {
             return Err(format!(
@@ -357,7 +386,7 @@ impl<T: Tracing> X68kBus<T> {
             dmac_refresh_access_count: 0,
             host_date_time_provider: common::default_host_date_time,
             current_cycle: 0,
-            tracer: T::default(),
+            tracer,
         };
         bus.initialize_device_pins();
         bus.schedule_events();
@@ -382,6 +411,13 @@ impl<T: Tracing> X68kBus<T> {
     /// A mutable reference to the bus-activity tracer.
     pub fn tracer_mut(&mut self) -> &mut T {
         &mut self.tracer
+    }
+
+    /// Schedules one immediate CRTC event for trace-boundary tests.
+    #[cfg(test)]
+    pub(crate) fn schedule_trace_test_event(&mut self) {
+        self.scheduler
+            .schedule(EventX68k::Crtc, self.current_cycle + 1);
     }
 
     /// Classifies a 24-bit address without performing an access.
@@ -488,7 +524,15 @@ impl<T: Tracing> X68kBus<T> {
         }
         self.synchronize_devices();
         for event in due.iter() {
-            self.tracer.trace_event(event.fire_cycle, event.kind as u8);
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::scheduler_main(self.current_cycle, Some(self.cpu_clock_hz)),
+                    TraceEvent::Scheduled {
+                        event: event.kind.trace_name(),
+                        fire_tick: event.fire_cycle,
+                    },
+                );
+            }
             match event.kind {
                 EventX68k::Crtc
                 | EventX68k::Mfp
@@ -959,38 +1003,95 @@ fn binary_to_bcd(value: u8) -> u8 {
     ((value / 10) << 4) | (value % 10)
 }
 
-impl<T: Tracing> Bus for X68kBus<T> {
+impl<T: TraceSink> Bus for X68kBus<T> {
     /// Reads through the legacy supervisor bridge.
     fn read_byte(&mut self, address: u32) -> u8 {
-        self.read_checked(M68000BusAccess {
+        let bus_address = address & ADDRESS_MASK;
+        let result = self.read_checked(M68000BusAccess {
             address,
             size: M68000AccessSize::Byte,
             function_code: M68000FunctionCode::SupervisorData,
             cycle_kind: M68000CycleKind::Normal,
-        })
-        .unwrap_or(0xFF) as u8
+        });
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(self.current_cycle, Some(self.cpu_clock_hz)),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Read,
+                    u64::from(bus_address),
+                    TraceAccessWidth::Byte,
+                    result.as_ref().ok().copied().map(u64::from),
+                    result.is_ok(),
+                ),
+            );
+        }
+        result.unwrap_or(0xFF) as u8
     }
 
     /// Writes through the legacy supervisor bridge.
     fn write_byte(&mut self, address: u32, value: u8) {
-        let _ = self.write_checked(
-            M68000BusAccess {
-                address,
-                size: M68000AccessSize::Byte,
-                function_code: M68000FunctionCode::SupervisorData,
-                cycle_kind: M68000CycleKind::Normal,
-            },
-            u16::from(value),
-        );
+        let bus_address = address & ADDRESS_MASK;
+        let handled = self
+            .write_checked(
+                M68000BusAccess {
+                    address,
+                    size: M68000AccessSize::Byte,
+                    function_code: M68000FunctionCode::SupervisorData,
+                    cycle_kind: M68000CycleKind::Normal,
+                },
+                u16::from(value),
+            )
+            .is_ok();
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(self.current_cycle, Some(self.cpu_clock_hz)),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Write,
+                    u64::from(bus_address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
     }
 
     /// Returns open bus for unused port I/O.
-    fn io_read_byte(&mut self, _port: u16) -> u8 {
+    fn io_read_byte(&mut self, port: u16) -> u8 {
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(self.current_cycle, Some(self.cpu_clock_hz)),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Read,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(0xFF),
+                    false,
+                ),
+            );
+        }
         0xFF
     }
 
     /// Ignores unused port I/O writes.
-    fn io_write_byte(&mut self, _port: u16, _value: u8) {}
+    fn io_write_byte(&mut self, port: u16, value: u8) {
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(self.current_cycle, Some(self.cpu_clock_hz)),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Write,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    false,
+                ),
+            );
+        }
+    }
 
     /// Reports no x86-style IRQ.
     fn has_irq(&self) -> bool {
@@ -1032,14 +1133,34 @@ impl<T: Tracing> Bus for X68kBus<T> {
             && self.mfp.irq_asserted()
             && let Some(vector) = self.mfp.acknowledge_interrupt()
         {
-            self.tracer.trace_irq_acknowledge(level, vector);
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::main_cpu(self.current_cycle, Some(self.cpu_clock_hz)),
+                    TraceEvent::maskable_interrupt(
+                        trace_id::controller::X68K_MFP,
+                        u16::from(level),
+                        TraceInterruptAction::Acknowledge,
+                        Some(u32::from(vector)),
+                    ),
+                );
+            }
             return vector;
         }
         if level == 5
             && self.scc.irq_asserted()
             && let Some(vector) = self.scc.acknowledge_interrupt()
         {
-            self.tracer.trace_irq_acknowledge(level, vector);
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::main_cpu(self.current_cycle, Some(self.cpu_clock_hz)),
+                    TraceEvent::maskable_interrupt(
+                        trace_id::controller::X68K_SCC,
+                        u16::from(level),
+                        TraceInterruptAction::Acknowledge,
+                        Some(u32::from(vector)),
+                    ),
+                );
+            }
             return vector;
         }
         if level == 4
@@ -1047,18 +1168,48 @@ impl<T: Tracing> Bus for X68kBus<T> {
             && chip.irq_asserted()
             && let Some(vector) = chip.acknowledge_interrupt()
         {
-            self.tracer.trace_irq_acknowledge(level, vector);
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::main_cpu(self.current_cycle, Some(self.cpu_clock_hz)),
+                    TraceEvent::maskable_interrupt(
+                        trace_id::controller::X68K_MIDI,
+                        u16::from(level),
+                        TraceInterruptAction::Acknowledge,
+                        Some(u32::from(vector)),
+                    ),
+                );
+            }
             return vector;
         }
         if level == 3
             && self.dmac.irq_asserted()
             && let Some(vector) = self.dmac.acknowledge_interrupt()
         {
-            self.tracer.trace_irq_acknowledge(level, vector);
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::main_cpu(self.current_cycle, Some(self.cpu_clock_hz)),
+                    TraceEvent::maskable_interrupt(
+                        trace_id::controller::X68K_DMAC,
+                        u16::from(level),
+                        TraceInterruptAction::Acknowledge,
+                        Some(u32::from(vector)),
+                    ),
+                );
+            }
             return vector;
         }
         let vector = self.interrupts.acknowledge(level);
-        self.tracer.trace_irq_acknowledge(level, vector);
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(self.current_cycle, Some(self.cpu_clock_hz)),
+                TraceEvent::maskable_interrupt(
+                    trace_id::controller::X68K_IOC,
+                    u16::from(level),
+                    TraceInterruptAction::Acknowledge,
+                    Some(u32::from(vector)),
+                ),
+            );
+        }
         vector
     }
 
@@ -1075,24 +1226,98 @@ impl<T: Tracing> Bus for X68kBus<T> {
             let level = ((access.address >> 1) & 7) as u8;
             return Ok(u16::from(self.m68000_acknowledge_interrupt(level)));
         }
-        let value = self.read_checked(access)?;
-        self.charge_cpu_access_wait(Self::decode_region(access.address));
-        match access.size {
-            M68000AccessSize::Byte => self.tracer.trace_mem_read(access.address, value as u8),
-            M68000AccessSize::Word => self.tracer.trace_mem_read_word(access.address, value),
+        let width = match access.size {
+            M68000AccessSize::Byte => TraceAccessWidth::Byte,
+            M68000AccessSize::Word => TraceAccessWidth::Word,
+        };
+        let kind = if matches!(
+            access.function_code,
+            M68000FunctionCode::UserProgram | M68000FunctionCode::SupervisorProgram
+        ) {
+            TraceAccessKind::Fetch
+        } else {
+            TraceAccessKind::Read
+        };
+        let bus_address = access.address & ADDRESS_MASK;
+        match self.read_checked(access) {
+            Ok(value) => {
+                self.charge_cpu_access_wait(Self::decode_region(access.address));
+                if T::ENABLED {
+                    self.tracer.trace(
+                        TraceContext::main_cpu(self.current_cycle, Some(self.cpu_clock_hz)),
+                        TraceEvent::access(
+                            TraceAddressSpace::MAIN_MEMORY,
+                            kind,
+                            u64::from(bus_address),
+                            width,
+                            Some(u64::from(value)),
+                            true,
+                        ),
+                    );
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                if T::ENABLED {
+                    self.tracer.trace(
+                        TraceContext::main_cpu(self.current_cycle, Some(self.cpu_clock_hz)),
+                        TraceEvent::access(
+                            TraceAddressSpace::MAIN_MEMORY,
+                            kind,
+                            u64::from(bus_address),
+                            width,
+                            None,
+                            false,
+                        ),
+                    );
+                }
+                Err(error)
+            }
         }
-        Ok(value)
     }
 
     /// Performs a typed MC68000 write.
     fn m68000_write(&mut self, access: M68000BusAccess, value: u16) -> Result<(), M68000BusError> {
-        match access.size {
-            M68000AccessSize::Byte => self.tracer.trace_mem_write(access.address, value as u8),
-            M68000AccessSize::Word => self.tracer.trace_mem_write_word(access.address, value),
+        let width = match access.size {
+            M68000AccessSize::Byte => TraceAccessWidth::Byte,
+            M68000AccessSize::Word => TraceAccessWidth::Word,
+        };
+        let bus_address = access.address & ADDRESS_MASK;
+        match self.write_checked(access, value) {
+            Ok(()) => {
+                self.charge_cpu_access_wait(Self::decode_region(access.address));
+                if T::ENABLED {
+                    self.tracer.trace(
+                        TraceContext::main_cpu(self.current_cycle, Some(self.cpu_clock_hz)),
+                        TraceEvent::access(
+                            TraceAddressSpace::MAIN_MEMORY,
+                            TraceAccessKind::Write,
+                            u64::from(bus_address),
+                            width,
+                            Some(u64::from(value)),
+                            true,
+                        ),
+                    );
+                }
+                Ok(())
+            }
+            Err(error) => {
+                if T::ENABLED {
+                    self.tracer.trace(
+                        TraceContext::main_cpu(self.current_cycle, Some(self.cpu_clock_hz)),
+                        TraceEvent::access(
+                            TraceAddressSpace::MAIN_MEMORY,
+                            TraceAccessKind::Write,
+                            u64::from(bus_address),
+                            width,
+                            Some(u64::from(value)),
+                            false,
+                        ),
+                    );
+                }
+                Err(error)
+            }
         }
-        self.write_checked(access, value)?;
-        self.charge_cpu_access_wait(Self::decode_region(access.address));
-        Ok(())
     }
 
     /// Returns the current CPU cycle.
@@ -1103,12 +1328,15 @@ impl<T: Tracing> Bus for X68kBus<T> {
     /// Sets the current CPU cycle.
     fn set_current_cycle(&mut self, cycle: u64) {
         self.current_cycle = cycle;
-        self.tracer.set_cycle(cycle);
     }
 
     /// Drains CPU cycles stolen by DMAC bus mastery.
     fn drain_wait_cycles(&mut self) -> i64 {
         std::mem::take(&mut self.wait_cycles)
+    }
+
+    fn cpu_should_yield(&self) -> bool {
+        T::ENABLED && self.tracer.yield_requested()
     }
 }
 
@@ -1255,92 +1483,213 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use common::{HostDateTime, Machine as _};
+    use common::{Bus, HostDateTime, Machine as _, TraceContext, TraceEvent, TraceSink};
 
     use super::{
         test_support::{TEST_SAMPLE_RATE, access, bus, test_roms},
         *,
     };
 
+    #[derive(Default)]
+    struct ScheduledTrace {
+        events: Vec<(TraceContext, &'static str)>,
+    }
+
+    impl TraceSink for ScheduledTrace {
+        fn trace(&mut self, context: TraceContext, event: TraceEvent<'_>) {
+            if let TraceEvent::Scheduled { event, .. } = event {
+                self.events.push((context, event));
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct AccessTrace {
+        accesses: Vec<common::TraceAccess>,
+    }
+
+    impl TraceSink for AccessTrace {
+        fn trace(&mut self, _context: TraceContext, event: TraceEvent<'_>) {
+            if let TraceEvent::Access(access) = event {
+                self.accesses.push(access);
+            }
+        }
+    }
+
+    #[test]
+    fn scheduler_context_has_explicit_source_and_clock() {
+        let model = X68kModel::X68000;
+        let mut bus = X68kBus::new_with_trace_sink(
+            model,
+            CpuMode::High,
+            test_roms(model),
+            TEST_SAMPLE_RATE,
+            ScheduledTrace::default(),
+        )
+        .unwrap();
+        bus.scheduler.schedule(EventX68k::Keyboard, 11);
+        Bus::set_current_cycle(&mut bus, 11);
+
+        bus.process_due_events();
+
+        let (context, _) = bus
+            .tracer()
+            .events
+            .iter()
+            .find(|(_, event)| *event == trace_id::scheduled::x68k::KEYBOARD)
+            .copied()
+            .unwrap();
+        assert_eq!(
+            context,
+            TraceContext::scheduler_main(11, Some(bus.cpu_clock_hz))
+        );
+    }
+
+    #[test]
+    fn failed_bus_cycles_are_traced_as_unhandled() {
+        let model = X68kModel::X68000;
+        let mut bus = X68kBus::new_with_trace_sink(
+            model,
+            CpuMode::High,
+            test_roms(model),
+            TEST_SAMPLE_RATE,
+            AccessTrace::default(),
+        )
+        .unwrap();
+        let read = access(
+            0x01E88000,
+            M68000AccessSize::Byte,
+            M68000FunctionCode::UserData,
+        );
+        let write = access(
+            0x01E88000,
+            M68000AccessSize::Byte,
+            M68000FunctionCode::UserData,
+        );
+
+        assert!(bus.m68000_read(read).is_err());
+        assert!(bus.m68000_write(write, 0x5A).is_err());
+        assert_eq!(bus.tracer().accesses.len(), 2);
+        assert_eq!(bus.tracer().accesses[0].address, 0xE88000);
+        assert_eq!(bus.tracer().accesses[0].value, None);
+        assert!(!bus.tracer().accesses[0].handled);
+        assert_eq!(bus.tracer().accesses[1].address, 0xE88000);
+        assert_eq!(bus.tracer().accesses[1].value, Some(0x5A));
+        assert!(!bus.tracer().accesses[1].handled);
+    }
+
+    /// Confirms legacy bridge traces use the address after the 24-bit mask.
+    #[test]
+    fn legacy_memory_bridge_traces_24_bit_bus_addresses() {
+        let model = X68kModel::X68000;
+        let mut bus = X68kBus::new_with_trace_sink(
+            model,
+            CpuMode::High,
+            test_roms(model),
+            TEST_SAMPLE_RATE,
+            AccessTrace::default(),
+        )
+        .unwrap();
+
+        Bus::write_byte(&mut bus, 0x0100_0000, 0x5A);
+        assert_eq!(Bus::read_byte(&mut bus, 0x0100_0000), 0x5A);
+
+        assert_eq!(bus.tracer().accesses.len(), 2);
+        assert!(
+            bus.tracer()
+                .accesses
+                .iter()
+                .all(|access| access.address == 0 && access.handled)
+        );
+    }
+
+    /// Confirms a completed unused-port read retains its open-bus value.
+    #[test]
+    fn unused_port_read_traces_open_bus_value() {
+        let model = X68kModel::X68000;
+        let mut bus = X68kBus::new_with_trace_sink(
+            model,
+            CpuMode::High,
+            test_roms(model),
+            TEST_SAMPLE_RATE,
+            AccessTrace::default(),
+        )
+        .unwrap();
+
+        assert_eq!(Bus::io_read_byte(&mut bus, 0x1234), 0xFF);
+
+        assert_eq!(bus.tracer().accesses.len(), 1);
+        assert_eq!(bus.tracer().accesses[0].value, Some(0xFF));
+        assert!(!bus.tracer().accesses[0].handled);
+    }
+
     #[test]
     fn decoder_covers_every_boundary() {
         assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xBFFFFB),
+            X68kBus::<NoTrace>::decode_region(0xBFFFFB),
             X68kRegion::MainRam
         );
         assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xBFFFFF),
+            X68kBus::<NoTrace>::decode_region(0xBFFFFF),
             X68kRegion::MainRam
         );
         assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xC00000),
+            X68kBus::<NoTrace>::decode_region(0xC00000),
             X68kRegion::GraphicVram
         );
         assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xE80000),
+            X68kBus::<NoTrace>::decode_region(0xE80000),
             X68kRegion::Crtc
         );
         assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xE82000),
+            X68kBus::<NoTrace>::decode_region(0xE82000),
             X68kRegion::Palette
         );
         assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xE82400),
+            X68kBus::<NoTrace>::decode_region(0xE82400),
             X68kRegion::VideoController
         );
+        assert_eq!(X68kBus::<NoTrace>::decode_region(0xE88000), X68kRegion::Mfp);
+        assert_eq!(X68kBus::<NoTrace>::decode_region(0xE8A000), X68kRegion::Rtc);
+        assert_eq!(X68kBus::<NoTrace>::decode_region(0xE9A000), X68kRegion::Ppi);
+        assert_eq!(X68kBus::<NoTrace>::decode_region(0xE9BFFF), X68kRegion::Ppi);
         assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xE88000),
-            X68kRegion::Mfp
-        );
-        assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xE8A000),
-            X68kRegion::Rtc
-        );
-        assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xE9A000),
-            X68kRegion::Ppi
-        );
-        assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xE9BFFF),
-            X68kRegion::Ppi
-        );
-        assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xEAFFFF),
+            X68kBus::<NoTrace>::decode_region(0xEAFFFF),
             X68kRegion::BuiltinDevice
         );
         assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xEB0000),
+            X68kBus::<NoTrace>::decode_region(0xEB0000),
             X68kRegion::Sprite
         );
         assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xEBFFFF),
+            X68kBus::<NoTrace>::decode_region(0xEBFFFF),
             X68kRegion::Sprite
         );
         assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xEC0000),
+            X68kBus::<NoTrace>::decode_region(0xEC0000),
             X68kRegion::UserIo
         );
         assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xED3FFF),
+            X68kBus::<NoTrace>::decode_region(0xED3FFF),
             X68kRegion::Sram
         );
         assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xED4000),
+            X68kBus::<NoTrace>::decode_region(0xED4000),
             X68kRegion::Unmapped
         );
         assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0xFFFFFF),
+            X68kBus::<NoTrace>::decode_region(0xFFFFFF),
             X68kRegion::IplRom
         );
         assert_eq!(
-            X68kBus::<NoTracing>::decode_region(0x1_000000),
+            X68kBus::<NoTrace>::decode_region(0x1_000000),
             X68kRegion::MainRam
         );
     }
 
     #[test]
     fn explicit_main_ram_size_seeds_sram_and_bounds_ram_access() {
-        let mut bus = X68kBus::<NoTracing>::with_main_ram_size(
+        let mut bus = X68kBus::<NoTrace>::with_main_ram_size(
             X68kModel::X68000,
             CpuMode::High,
             test_roms(X68kModel::X68000),
@@ -1366,7 +1715,7 @@ mod tests {
     fn invalid_main_ram_sizes_are_rejected() {
         for size in [0, 3 * MEBIBYTE, 5 * MEBIBYTE, 13 * MEBIBYTE, MEBIBYTE + 512] {
             assert!(
-                X68kBus::<NoTracing>::with_main_ram_size(
+                X68kBus::<NoTrace>::with_main_ram_size(
                     X68kModel::X68000,
                     CpuMode::High,
                     test_roms(X68kModel::X68000),
@@ -1753,7 +2102,15 @@ mod tests {
 
     #[test]
     fn interrupt_acknowledge_and_legacy_bridge_stay_wait_free() {
-        let mut bus = bus(X68kModel::X68000);
+        let model = X68kModel::X68000;
+        let mut bus = X68kBus::new_with_trace_sink(
+            model,
+            CpuMode::High,
+            test_roms(model),
+            TEST_SAMPLE_RATE,
+            AccessTrace::default(),
+        )
+        .unwrap();
         bus.m68000_read(access(
             0x0E,
             M68000AccessSize::Word,
@@ -1763,6 +2120,13 @@ mod tests {
         Bus::read_byte(&mut bus, 0xE88001);
         Bus::write_byte(&mut bus, 0x001000, 0x12);
         assert_eq!(bus.drain_wait_cycles(), 0);
+        assert_eq!(bus.tracer().accesses.len(), 2);
+        assert_eq!(bus.tracer().accesses[0].kind, TraceAccessKind::Read);
+        assert_eq!(bus.tracer().accesses[0].address, 0xE88001);
+        assert!(bus.tracer().accesses[0].handled);
+        assert_eq!(bus.tracer().accesses[1].kind, TraceAccessKind::Write);
+        assert_eq!(bus.tracer().accesses[1].address, 0x001000);
+        assert!(bus.tracer().accesses[1].handled);
     }
 
     #[test]

@@ -12,8 +12,7 @@ mod scheduler;
 
 pub use bus::Pc8801Bus;
 pub use config::{
-    BootMode, ClockConfig, ClockSelect, EightMhzWaitMode, MemoryWaitSwitch, MonitorTiming,
-    Pc8801Model,
+    BootMode, ClockConfig, ClockSelect, EightMhzWaitMode, MemoryWaitSwitch, Pc8801Model,
 };
 pub use machine::Pc8801Machine;
 pub use rom::{LoadedRoms, RomError, load_rom_set};

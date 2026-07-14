@@ -4,7 +4,7 @@
 //! that signal completion are deferred through the scheduler so the
 //! interrupt arrives after the command returns to the guest.
 
-use common::Tracing;
+use common::TraceSink;
 use device::{
     disk::{HddFormat, HddImage},
     ide::IdeAction,
@@ -23,7 +23,7 @@ pub(super) const IDE_EXECUTION_DELAY_MICROS: u64 = 100;
 /// Delay from completion to the interrupt, in microseconds.
 pub(super) const IDE_INTERRUPT_DELAY_MICROS: u64 = 25;
 
-impl<T: Tracing> AtBus<T> {
+impl<T: TraceSink> AtBus<T> {
     /// Reads one IDE task-file register (ports 0x1F0-0x1F7 and 0x3F6).
     pub(super) fn ide_io_read(&mut self, port: u16) -> u8 {
         match port {

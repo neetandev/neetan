@@ -8,14 +8,14 @@
 //! I/O-mapped bitmap VRAM. Bus clocks the controller consumes are charged to
 //! the CPU as wait cycles.
 
-use common::Tracing;
+use common::TraceSink;
 use device::z80_dma::Z80DmaBus;
 
 use super::X1Bus;
 use crate::scheduler::EventX1;
 
 /// Ephemeral [`Z80DmaBus`] view over the X1 bus for one transfer run.
-struct X1DmaBusAdapter<'a, T: Tracing> {
+struct X1DmaBusAdapter<'a, T: TraceSink> {
     bus: &'a mut X1Bus<T>,
     /// Wait cycles the last memory/io access incurred, pulled back out of the
     /// bus's wait accumulator so the controller decides whether to honor them.
@@ -27,7 +27,7 @@ struct X1DmaBusAdapter<'a, T: Tracing> {
     deadline: u64,
 }
 
-impl<T: Tracing> X1DmaBusAdapter<'_, T> {
+impl<T: TraceSink> X1DmaBusAdapter<'_, T> {
     /// The current cycle including wait cycles pending from this instruction
     /// boundary, so ready sampling sees the stolen time.
     fn effective_cycle(&self) -> u64 {
@@ -37,7 +37,7 @@ impl<T: Tracing> X1DmaBusAdapter<'_, T> {
     }
 }
 
-impl<T: Tracing> Z80DmaBus for X1DmaBusAdapter<'_, T> {
+impl<T: TraceSink> Z80DmaBus for X1DmaBusAdapter<'_, T> {
     fn read_memory(&mut self, address: u16) -> u8 {
         self.bus.memory.read(address)
     }
@@ -48,7 +48,7 @@ impl<T: Tracing> Z80DmaBus for X1DmaBusAdapter<'_, T> {
 
     fn read_io(&mut self, port: u16) -> u8 {
         let waits_before = self.bus.wait_cycles;
-        let value = self.bus.io_read(port);
+        let value = self.bus.io_read(port).0;
         let delta = (self.bus.wait_cycles - waits_before).max(0);
         self.bus.wait_cycles -= delta;
         self.access_wait = delta as u32;
@@ -86,7 +86,7 @@ impl<T: Tracing> Z80DmaBus for X1DmaBusAdapter<'_, T> {
     }
 }
 
-impl<T: Tracing> X1Bus<T> {
+impl<T: TraceSink> X1Bus<T> {
     /// Runs the DMA transfer engine once (single-mode DMA). While a
     /// continuous-mode transfer holds the bus waiting for the ready line, the
     /// stall is charged to the CPU up to the next data-request slot, but never

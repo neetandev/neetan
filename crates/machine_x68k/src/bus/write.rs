@@ -1,6 +1,6 @@
 //! Validated write path: typed writes, per-region byte writes, and the IOC.
 
-use common::{M68000AccessSize, M68000BusAccess, M68000BusError, Tracing};
+use common::{M68000AccessSize, M68000BusAccess, M68000BusError, TraceSink};
 use device::{mc68901_mfp::MC68901_CLOCK_HZ, rp5c15_rtc::RP5C15_CLOCK_HZ};
 
 use super::{
@@ -9,7 +9,7 @@ use super::{
 };
 use crate::clock::cycle_to_tick;
 
-impl<T: Tracing> X68kBus<T> {
+impl<T: TraceSink> X68kBus<T> {
     /// Performs a validated typed write.
     pub(super) fn write_checked(
         &mut self,

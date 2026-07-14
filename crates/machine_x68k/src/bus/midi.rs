@@ -2,13 +2,13 @@
 //! vectoring, and routing of transmitted bytes into an installed Roland
 //! sound module.
 
-use common::Tracing;
+use common::TraceSink;
 use device::ym3802::{YM3802_CLKM_HZ, Ym3802};
 
 use super::X68kBus;
 use crate::clock::cycle_to_tick;
 
-impl<T: Tracing> X68kBus<T> {
+impl<T: TraceSink> X68kBus<T> {
     /// Reads a YM3802 register byte at an odd card address.
     pub(super) fn read_midi_register(&mut self, address: u32) -> u8 {
         self.synchronize_devices();

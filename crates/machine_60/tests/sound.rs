@@ -69,7 +69,7 @@ fn ay_joystick_reads_through_port_a() {
 
     // Address SSG register 0x0E (port A), then read it back at the data port.
     bus.io_write(0xA0, 0x0E);
-    let value = bus.io_read(0xA2);
+    let value = bus.io_read(0xA2).0;
     assert_eq!(value & 0x04, 0, "left direction reads active-low");
     assert_ne!(value & 0x01, 0, "an unpressed direction stays high");
 }
@@ -121,7 +121,7 @@ fn sr_ym2203_status_read_responds() {
     let bus = &mut machine.bus;
     bus.set_current_cycle(400_000);
     // The status port reports the chip is idle (busy bit clear), not open bus.
-    assert_eq!(bus.io_read(0xA0) & 0x80, 0);
+    assert_eq!(bus.io_read(0xA0).0 & 0x80, 0);
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn sr_ym2203_joystick_reads_through_the_ssg_port() {
     });
 
     bus.io_write(0xA0, 0x0E);
-    let value = bus.io_read(0xA2);
+    let value = bus.io_read(0xA2).0;
     assert_eq!(value & 0x10, 0, "trigger 1 reads active-low");
     assert_ne!(value & 0x01, 0, "an unpressed direction stays high");
 }
@@ -167,7 +167,7 @@ fn sr_ym2203_timer_a_overflow_is_status_only_not_an_interrupt() {
 
     // The overflow is observable only through the status register (bit 0).
     assert_ne!(
-        bus.io_read(0xA0) & 0x01,
+        bus.io_read(0xA0).0 & 0x01,
         0,
         "the YM2203 timer A overflow flag was not set in the status register"
     );

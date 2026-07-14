@@ -25,14 +25,14 @@ fn kanji_ports_return_the_selected_glyph_word() {
     // Character code 0x1234 selects the word at byte offset 0x2468.
     bus.write_byte(0xFD20, 0x12);
     bus.write_byte(0xFD21, 0x34);
-    assert_eq!(bus.read_byte(0xFD22), 0x68);
-    assert_eq!(bus.read_byte(0xFD23), 0x69);
+    assert_eq!(bus.read_byte(0xFD22).0, 0x68);
+    assert_eq!(bus.read_byte(0xFD23).0, 0x69);
 
     // The highest code stays within the 128 KiB ROM.
     bus.write_byte(0xFD20, 0xFF);
     bus.write_byte(0xFD21, 0xFF);
-    assert_eq!(bus.read_byte(0xFD22), 0xFE);
-    assert_eq!(bus.read_byte(0xFD23), 0xFF);
+    assert_eq!(bus.read_byte(0xFD22).0, 0xFE);
+    assert_eq!(bus.read_byte(0xFD23).0, 0xFF);
 }
 
 #[test]
@@ -41,6 +41,6 @@ fn kanji_reads_are_open_bus_without_a_rom() {
 
     bus.write_byte(0xFD20, 0x12);
     bus.write_byte(0xFD21, 0x34);
-    assert_eq!(bus.read_byte(0xFD22), 0xFF);
-    assert_eq!(bus.read_byte(0xFD23), 0xFF);
+    assert_eq!(bus.read_byte(0xFD22).0, 0xFF);
+    assert_eq!(bus.read_byte(0xFD23).0, 0xFF);
 }

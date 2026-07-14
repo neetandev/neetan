@@ -12,7 +12,6 @@ mod rom;
 mod scheduler;
 
 pub use bus::X1Bus;
-pub use common::MonitorTiming;
 pub use config::{ClockConfig, X1KeyboardMode, X1Model};
 pub use machine::X1Machine;
 pub use rom::{LoadedRoms, RomError, load_rom_set};

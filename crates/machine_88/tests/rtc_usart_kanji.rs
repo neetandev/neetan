@@ -41,7 +41,7 @@ fn rtc_command(machine: &mut Pc8801Machine, command: u8) {
 
 /// Reads the current RTC serial-out bit from port 0x40.
 fn rtc_dout(machine: &mut Pc8801Machine) -> u8 {
-    u8::from(machine.bus.io_read(0x40) & RTC_DOUT != 0)
+    u8::from(machine.bus.io_read(0x40).0 & RTC_DOUT != 0)
 }
 
 #[test]
@@ -106,19 +106,19 @@ fn kanji_windows_read_rom_words() {
     machine.bus.io_write(0xE8, (code & 0xFF) as u8);
     machine.bus.io_write(0xE9, (code >> 8) as u8);
     assert_eq!(
-        machine.bus.io_read(0xE8),
+        machine.bus.io_read(0xE8).0,
         kanji1_byte(code as usize * 2 + 1)
     );
-    assert_eq!(machine.bus.io_read(0xE9), kanji1_byte(code as usize * 2));
+    assert_eq!(machine.bus.io_read(0xE9).0, kanji1_byte(code as usize * 2));
 
     // Level-2 kanji ROM (ports 0xEC/0xED).
     machine.bus.io_write(0xEC, (code & 0xFF) as u8);
     machine.bus.io_write(0xED, (code >> 8) as u8);
     assert_eq!(
-        machine.bus.io_read(0xEC),
+        machine.bus.io_read(0xEC).0,
         kanji2_byte(code as usize * 2 + 1)
     );
-    assert_eq!(machine.bus.io_read(0xED), kanji2_byte(code as usize * 2));
+    assert_eq!(machine.bus.io_read(0xED).0, kanji2_byte(code as usize * 2));
 }
 
 #[test]
@@ -206,11 +206,11 @@ fn usart_rxrdy_interrupt_delivers_byte() {
     machine.run_for(50_000);
 
     // No data yet: RXRDY clear.
-    assert_eq!(machine.bus.io_read(0x21) & 0x02, 0);
+    assert_eq!(machine.bus.io_read(0x21).0 & 0x02, 0);
 
     machine.bus.inject_serial_byte(0x5A);
     // RXRDY asserted after injection (status read does not consume it).
-    assert_ne!(machine.bus.io_read(0x21) & 0x02, 0);
+    assert_ne!(machine.bus.io_read(0x21).0 & 0x02, 0);
 
     const STEP: u64 = 50_000;
     const CAP: u64 = 4_000_000;
@@ -226,5 +226,5 @@ fn usart_rxrdy_interrupt_delivers_byte() {
     assert!(machine.bus.peek_byte(0x9100) >= 1, "RXRDY ISR never ran");
     assert_eq!(machine.bus.peek_byte(0x9101), 0x5A, "wrong received byte");
     // The ISR's data read drained the FIFO, clearing RXRDY.
-    assert_eq!(machine.bus.io_read(0x21) & 0x02, 0);
+    assert_eq!(machine.bus.io_read(0x21).0 & 0x02, 0);
 }

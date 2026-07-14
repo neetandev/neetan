@@ -29,8 +29,19 @@ use crate::{
     scheduler::{Event88Va, Pc88VaScheduler},
 };
 
-impl Pc88VaBus {
+#[cfg(test)]
+impl<T: common::TraceSink + Default> Pc88VaBus<T> {
     pub(crate) fn from_parts(memory: Pc88VaMemory, clocks: ClockConfig) -> Self {
+        Self::from_parts_with_trace_sink(memory, clocks, T::default())
+    }
+}
+
+impl<T: common::TraceSink> Pc88VaBus<T> {
+    pub(crate) fn from_parts_with_trace_sink(
+        memory: Pc88VaMemory,
+        clocks: ClockConfig,
+        tracer: T,
+    ) -> Self {
         let renderer = VaRenderer::new(memory.font_rom());
         // PIO data-rate pacing: 250 kbps MFM is 31250 bytes/s.
         let drq_byte_cycles = (u64::from(clocks.main_clock_hz) / 31_250).max(1);
@@ -38,6 +49,7 @@ impl Pc88VaBus {
         // sub T-states by this power-of-two shift (main/sub is 2 on the VA).
         let sub_to_main_shift = (clocks.main_clock_hz / clocks.sub_clock_hz).trailing_zeros();
         let mut bus = Self {
+            tracer,
             memory,
             clocks,
             current_cycle: 0,
@@ -61,6 +73,7 @@ impl Pc88VaBus {
             renderer,
             display_width: 0,
             display_height: 0,
+            presented_frames: 0,
             host_date_time_provider: common::default_host_date_time,
             sub_mem: SubMemory::new(),
             sub_cycle: 0,

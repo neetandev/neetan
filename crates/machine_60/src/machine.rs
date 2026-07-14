@@ -3,19 +3,19 @@
 //! A single-Z80 machine: one CPU driving one bus, paced by a monotonic
 //! `current_cycle` in main-clock units.
 
-use common::{CpuZ80, NoTracing, Tracing};
+use common::{CpuZ80, NoTrace, TraceSink};
 
 use crate::bus::{MainBusView, Pc6000Bus};
 
 /// PC-6000 machine: the main Z80 sharing one bus.
-pub struct Pc6000Machine<T: Tracing = NoTracing> {
+pub struct Pc6000Machine<T: TraceSink = NoTrace> {
     /// Main CPU.
     pub main_cpu: cpu::Z80,
     /// System bus.
     pub bus: Pc6000Bus<T>,
 }
 
-impl<T: Tracing> Pc6000Machine<T> {
+impl<T: TraceSink> Pc6000Machine<T> {
     /// Creates a new machine from the given CPU and bus.
     pub fn new(main_cpu: cpu::Z80, bus: Pc6000Bus<T>) -> Self {
         Self { main_cpu, bus }
@@ -27,6 +27,9 @@ impl<T: Tracing> Pc6000Machine<T> {
     /// forward to the next event to keep the scheduler clock moving.
     pub fn run_for(&mut self, budget: u64) -> u64 {
         let start = self.bus.current_cycle();
+        if T::ENABLED && self.bus.tracer().yield_requested() {
+            return 0;
+        }
         let target = start + budget;
 
         while self.bus.current_cycle() < target {
@@ -48,6 +51,9 @@ impl<T: Tracing> Pc6000Machine<T> {
                     let mut view = MainBusView { bus: &mut self.bus };
                     self.main_cpu.run_for(slice, &mut view)
                 };
+                if T::ENABLED && self.bus.tracer().yield_requested() {
+                    break;
+                }
                 if ran == 0 && self.bus.current_cycle() < next {
                     self.bus.set_current_cycle(next);
                 }
@@ -55,6 +61,9 @@ impl<T: Tracing> Pc6000Machine<T> {
 
             if self.bus.current_cycle() >= next {
                 self.bus.process_events();
+                if T::ENABLED && self.bus.tracer().yield_requested() {
+                    break;
+                }
             }
         }
 
@@ -62,7 +71,7 @@ impl<T: Tracing> Pc6000Machine<T> {
     }
 }
 
-impl<T: Tracing> common::Machine for Pc6000Machine<T> {
+impl<T: TraceSink> common::Machine for Pc6000Machine<T> {
     fn startup_capabilities(&self) -> common::StartupCapabilities {
         common::StartupCapabilities {
             cassette: true,
@@ -145,7 +154,7 @@ impl<T: Tracing> common::Machine for Pc6000Machine<T> {
 
 #[cfg(test)]
 mod tests {
-    use common::{CpuZ80, Machine};
+    use common::{CpuZ80, Machine, TraceAccessKind, TraceEvent, TraceSink};
 
     use super::*;
     use crate::{config::Pc6000Model, rom::LoadedRoms};
@@ -187,6 +196,118 @@ mod tests {
             start_pc,
             "the CPU advances through ROM"
         );
+    }
+
+    #[derive(Default)]
+    struct YieldOnFirstEvent {
+        yield_requested: bool,
+    }
+
+    impl TraceSink for YieldOnFirstEvent {
+        fn trace(&mut self, _context: common::TraceContext, _event: TraceEvent<'_>) {
+            self.yield_requested = true;
+        }
+
+        fn yield_requested(&self) -> bool {
+            self.yield_requested
+        }
+    }
+
+    #[derive(Default)]
+    struct YieldOnScheduled {
+        saw_scheduled: bool,
+        fetch_after_scheduled: bool,
+    }
+
+    impl TraceSink for YieldOnScheduled {
+        fn trace(&mut self, _context: common::TraceContext, event: TraceEvent<'_>) {
+            match event {
+                TraceEvent::Scheduled { .. } => self.saw_scheduled = true,
+                TraceEvent::Access(access)
+                    if self.saw_scheduled && access.kind == TraceAccessKind::Fetch =>
+                {
+                    self.fetch_after_scheduled = true;
+                }
+                _ => {}
+            }
+        }
+
+        fn yield_requested(&self) -> bool {
+            self.saw_scheduled
+        }
+    }
+
+    #[derive(Default)]
+    struct YieldOnPresentation {
+        presentation: Option<common::TracePresentation>,
+    }
+
+    impl TraceSink for YieldOnPresentation {
+        fn trace(&mut self, _context: common::TraceContext, event: TraceEvent<'_>) {
+            if let TraceEvent::Presentation(presentation) = event {
+                self.presentation = Some(presentation);
+            }
+        }
+
+        fn yield_requested(&self) -> bool {
+            self.presentation.is_some()
+        }
+    }
+
+    #[test]
+    fn trace_yield_finishes_the_current_instruction() {
+        let model = Pc6000Model::Pc6001;
+        let mut bus = Pc6000Bus::new_with_trace_sink(model, 48_000, YieldOnFirstEvent::default());
+        bus.load_roms(&loaded_roms_with_boot(model, vec![0x00; 0x1000]));
+        let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+        let mut machine = Pc6000Machine::new(main_cpu, bus);
+        let start_pc = machine.main_cpu.pc();
+
+        let ran = machine.run_for(100);
+
+        assert!(ran > 0);
+        assert_eq!(machine.main_cpu.pc(), start_pc.wrapping_add(1));
+        assert!(machine.bus.tracer().yield_requested());
+        assert_eq!(machine.run_for(100), 0);
+        assert_eq!(machine.main_cpu.pc(), start_pc.wrapping_add(1));
+    }
+
+    #[test]
+    fn scheduled_trace_yield_prevents_a_later_fetch() {
+        let model = Pc6000Model::Pc6001;
+        let mut bus = Pc6000Bus::new_with_trace_sink(model, 48_000, YieldOnScheduled::default());
+        bus.load_roms(&loaded_roms_with_boot(model, vec![0x00; 0x1000]));
+        let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+        let mut machine = Pc6000Machine::new(main_cpu, bus);
+
+        machine.run_for(100_000);
+
+        assert!(machine.bus.tracer().saw_scheduled);
+        assert!(!machine.bus.tracer().fetch_after_scheduled);
+    }
+
+    #[test]
+    fn presentation_trace_is_emitted_after_frame_publication() {
+        let model = Pc6000Model::Pc6001;
+        let mut bus = Pc6000Bus::new_with_trace_sink(model, 48_000, YieldOnPresentation::default());
+        bus.load_roms(&loaded_roms_with_boot(model, vec![0x00; 0x1000]));
+        let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+        let mut machine = Pc6000Machine::new(main_cpu, bus);
+
+        let ran = machine.run_for(100_000);
+
+        assert!(ran < 100_000);
+        assert_eq!(
+            machine.bus.tracer().presentation,
+            Some(common::TracePresentation {
+                display: common::trace_id::display::MAIN,
+                frame: 1,
+                width: 256,
+                height: 192,
+            })
+        );
+        assert_eq!(machine.bus.display_dimensions(), (256, 192));
+        assert_eq!(machine.run_for(1), 0);
     }
 
     #[test]

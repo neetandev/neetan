@@ -4,7 +4,7 @@
 //! printer connected the IOC READY input stays busy and the printer
 //! interrupt never fires.
 
-use common::Tracing;
+use common::TraceSink;
 
 use super::X68kBus;
 
@@ -15,7 +15,7 @@ const PRINTER_STROBE_OFFSET: u32 = 3;
 /// Writable bit of the strobe latch.
 const PRINTER_STROBE_MASK: u8 = 0x01;
 
-impl<T: Tracing> X68kBus<T> {
+impl<T: TraceSink> X68kBus<T> {
     /// Reads a printer register byte at an odd address.
     pub(super) fn read_printer_register(&self, address: u32) -> u8 {
         match address & 3 {

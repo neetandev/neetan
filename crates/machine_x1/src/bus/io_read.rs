@@ -4,14 +4,14 @@
 //! (`0x4000-0xFFFF`) is handled first; the remaining device blocks live below
 //! `0x4000`. Any read clears the VRAM multi-plane latch.
 
-use common::Tracing;
+use common::TraceSink;
 
 use super::{OPEN_BUS, SUB_CPU_PSG_WAIT_CYCLES, X1Bus};
 use crate::interrupt::IrqSource;
 
-impl<T: Tracing> X1Bus<T> {
-    /// Reads a byte from an I/O port.
-    pub fn io_read(&mut self, port: u16) -> u8 {
+impl<T: TraceSink> X1Bus<T> {
+    /// Reads a byte and reports whether the hardware decoded the port.
+    pub fn io_read(&mut self, port: u16) -> (u8, bool) {
         match self.model {
             crate::config::X1Model::X1 | crate::config::X1Model::X1Turbo => {
                 self.io_read_common(port)
@@ -19,65 +19,67 @@ impl<T: Tracing> X1Bus<T> {
         }
     }
 
-    fn io_read_common(&mut self, port: u16) -> u8 {
+    fn io_read_common(&mut self, port: u16) -> (u8, bool) {
         self.video.clear_vram_mode();
         if self.video.is_bitmap_read(port) {
             self.charge_vram_access_wait();
-            return self.video.read_bitmap(port);
+            return (self.video.read_bitmap(port), true);
         }
 
-        let value = match port & 0xF000 {
+        let result = match port & 0xF000 {
             0x0000 => self.io_read_low(port),
             0x1000 => self.io_read_devices(port),
-            0x2000 => self.video.read_attr(port),
+            0x2000 => (self.video.read_attr(port), true),
             0x3000 => {
                 // On turbo the upper half of the text window is the kanji plane
                 // (kvram); on the base X1 it mirrors text VRAM.
                 if self.model.has_kanji() && (port & 0x0800) != 0 {
-                    self.video.read_kvram(port)
+                    (self.video.read_kvram(port), true)
                 } else {
-                    self.video.read_text(port)
+                    (self.video.read_text(port), true)
                 }
             }
-            _ => OPEN_BUS,
+            _ => (OPEN_BUS, false),
         };
         if matches!(port & 0xFF00, 0x1900 | 0x1B00 | 0x1C00) {
             self.add_wait_cycles(SUB_CPU_PSG_WAIT_CYCLES);
         }
-        value
+        result
     }
 
     /// Reads the 0x0000-0x0FFF block (ROM/CG window, bank register and FDC).
-    fn io_read_low(&mut self, port: u16) -> u8 {
-        match port {
-            0x0700..=0x0707 if self.model.has_fm() => self.fm_read(port),
+    fn io_read_low(&mut self, port: u16) -> (u8, bool) {
+        let value = match port {
+            0x0700..=0x0707 if self.model.has_fm() => return self.fm_read(port),
             0x0B00 if self.model.is_turbo() => self.memory.ex_bank(),
             0x0E80 | 0x0E81 if self.model.has_kanji() => self.kanji_data_read(port & 0x01),
             0x0E03 => 0x00, // cartridge ROM read; no cartridge on the base machine
             0x0FF8..=0x0FFF => self.fdc_read(port),
-            _ => OPEN_BUS,
-        }
+            _ => return (OPEN_BUS, false),
+        };
+        (value, true)
     }
 
     /// Reads the CZ-8BS1 FM sound board block (`0x0700-0x0707`): the OPM address
     /// port `0x0700` (FM detection, reads back 0x00), the OPM status port
     /// `0x0701`, and the paired sound-board CTC at `0x0704-0x0707`.
-    fn fm_read(&mut self, port: u16) -> u8 {
+    fn fm_read(&mut self, port: u16) -> (u8, bool) {
         let now = self.current_cycle;
-        match port {
+        let value = match port {
             0x0700 => 0x00,
             0x0701 => match &mut self.fm {
                 Some(fm) => fm.read_status(now),
                 None => OPEN_BUS,
             },
             0x0704..=0x0707 => self.sound_ctc.read((port - 0x0704) as usize, now),
-            _ => OPEN_BUS,
-        }
+            _ => return (OPEN_BUS, false),
+        };
+        (value, true)
     }
 
     /// Reads the 0x1000-0x1FFF device block.
-    fn io_read_devices(&mut self, port: u16) -> u8 {
-        match port & 0xFF00 {
+    fn io_read_devices(&mut self, port: u16) -> (u8, bool) {
+        let value = match port & 0xFF00 {
             0x1400 | 0x1500 | 0x1600 | 0x1700 => {
                 let plane = ((port & 0x300) >> 8) as u8;
                 if self.model.is_turbo() && self.video.pcg_direct() {
@@ -94,7 +96,7 @@ impl<T: Tracing> X1Bus<T> {
             // The CRTC register pair mirrors every 0x10 ports through 0x18FF.
             0x1800 => match port & 0xFF0F {
                 0x1801 => self.crtc.read_data(),
-                _ => OPEN_BUS,
+                _ => return (OPEN_BUS, false),
             },
             0x1900 => {
                 let value = self.sub.read_mailbox();
@@ -122,17 +124,21 @@ impl<T: Tracing> X1Bus<T> {
                 self.memory.select_ram();
                 OPEN_BUS
             }
-            0x1F00 => self.io_read_1f00(port),
-            _ => OPEN_BUS,
-        }
+            0x1F00 => return self.io_read_1f00(port),
+            _ => return (OPEN_BUS, false),
+        };
+        (value, true)
     }
 
     /// Reads the 0x1F00-0x1FFF sub-block (CTC, the turbo DMA and SIO, and the DIP
     /// switch).
-    fn io_read_1f00(&mut self, port: u16) -> u8 {
+    fn io_read_1f00(&mut self, port: u16) -> (u8, bool) {
         let low = port & 0x00FF;
-        match low {
-            0xA0..=0xA3 | 0xA8..=0xAB => self.ctc_read(port),
+        let value = match low {
+            0xA0..=0xA3 | 0xA8..=0xAB => match self.ctc_port_channel(port) {
+                Some(channel) => self.ctc.read(channel, self.current_cycle),
+                None => return (OPEN_BUS, false),
+            },
             0x80..=0x8F if self.model.has_dma() => {
                 // The live status byte reports the level-sensed ready line.
                 self.refresh_dma_ready_line();
@@ -151,8 +157,9 @@ impl<T: Tracing> X1Bus<T> {
                 }
             }
             0xF0 if self.model.is_turbo() => self.dip_switch(),
-            _ => OPEN_BUS,
-        }
+            _ => return (OPEN_BUS, false),
+        };
+        (value, true)
     }
 
     /// The CTC channel a `0x1Fxx` port selects. The turbo wires the CTC at
@@ -166,12 +173,5 @@ impl<T: Tracing> X1Bus<T> {
         (base..base + 4)
             .contains(&low)
             .then(|| usize::from(low - base))
-    }
-
-    fn ctc_read(&self, port: u16) -> u8 {
-        match self.ctc_port_channel(port) {
-            Some(channel) => self.ctc.read(channel, self.current_cycle),
-            None => OPEN_BUS,
-        }
     }
 }

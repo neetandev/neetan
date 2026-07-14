@@ -57,7 +57,7 @@ fn turbo_daisy_chain_prioritises_sio_over_ctc() {
 
     // The SIO outranks the CTC in the daisy chain, so its receive interrupt
     // acknowledges first, vectored through channel B.
-    let mut vector = bus.acknowledge_irq();
+    let mut vector = bus.acknowledge_irq().1;
     assert_eq!(vector, 0x34);
     // While the SIO is under service it holds the chain, so the lower-priority
     // CTC stays blocked until the SIO handler returns.
@@ -68,9 +68,9 @@ fn turbo_daisy_chain_prioritises_sio_over_ctc() {
         if vector != 0x34 {
             break;
         }
-        let _ = bus.io_read(0x1F92);
+        let _ = bus.io_read(0x1F92).0;
         bus.notify_reti();
-        vector = bus.acknowledge_irq();
+        vector = bus.acknowledge_irq().1;
     }
     // The CTC zero count follows once the receive FIFO is drained.
     assert_eq!(vector, 0xE0);
@@ -116,10 +116,10 @@ fn sound_ctc_outranks_main_ctc() {
 
     // The sound-board CTC heads the daisy chain, so it acknowledges first and
     // then holds the chain until its handler returns.
-    assert_eq!(bus.acknowledge_irq(), 0x40);
+    assert_eq!(bus.acknowledge_irq().1, 0x40);
     assert!(!bus.has_irq());
     bus.notify_reti();
-    assert_eq!(bus.acknowledge_irq(), 0xE0);
+    assert_eq!(bus.acknowledge_irq().1, 0xE0);
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn reti_discards_a_ctc_zero_count_latched_during_service() {
 
     run_bus_cycles(bus, 32);
     assert!(bus.has_irq());
-    assert_eq!(bus.acknowledge_irq(), 0xE0);
+    assert_eq!(bus.acknowledge_irq().1, 0xE0);
     assert!(!bus.has_irq());
 
     // The timer keeps running and hits zero again while under service.
@@ -152,7 +152,7 @@ fn reti_discards_a_ctc_zero_count_latched_during_service() {
     // The next fresh zero count interrupts normally again.
     run_bus_cycles(bus, 32);
     assert!(bus.has_irq());
-    assert_eq!(bus.acknowledge_irq(), 0xE0);
+    assert_eq!(bus.acknowledge_irq().1, 0xE0);
 }
 
 #[test]
@@ -171,5 +171,5 @@ fn keyboard_interrupt_delivers_the_programmed_vector() {
     run_bus_cycles(bus, 8_000);
 
     assert!(bus.has_irq());
-    assert_eq!(bus.acknowledge_irq(), 0x20);
+    assert_eq!(bus.acknowledge_irq().1, 0x20);
 }

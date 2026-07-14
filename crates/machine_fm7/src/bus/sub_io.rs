@@ -5,7 +5,7 @@
 //! provide the main/sub handshake and display controls, while FM-77AV-only
 //! registers are decoded directly.
 
-use common::Tracing;
+use common::TraceSink;
 use device::mb61vh010_alu::{PORT_ALU_FIRST, PORT_ALU_LAST};
 
 use crate::bus::Fm7Bus;
@@ -62,22 +62,20 @@ const PORT_SUB_MISC: u8 = 0x30;
 /// First low-byte offset of the FM-77AV AV-only sub register block (`0xD410`).
 const AV_REGISTER_FIRST: u8 = 0x10;
 
-impl<T: Tracing> Fm7Bus<T> {
-    /// Reads a sub MMIO register selected by its low-byte offset within
-    /// `0xD400-0xD4FF`. On the FM-77AV the AV-only registers (`0xD410` and up) are
-    /// decoded directly; on the FM-7 the low nibble folds onto the 16 base
-    /// registers.
-    pub(crate) fn sub_io_read(&mut self, port: u8) -> u8 {
+impl<T: TraceSink> Fm7Bus<T> {
+    /// Reads a sub MMIO register and reports whether it was decoded.
+    pub(crate) fn sub_io_read(&mut self, port: u8) -> (u8, bool) {
         if self.model().has_mmr() && port >= AV_REGISTER_FIRST {
-            return match port {
+            let value = match port {
                 PORT_ALU_FIRST..=PORT_ALU_LAST => self.alu.read_register(port),
                 PORT_SUB_MISC => self.read_sub_misc_register(),
                 PORT_ENCODER_DATA => self.encoder_read_data(),
                 PORT_ENCODER_STATUS => self.encoder_read_status(),
-                _ => OPEN_BUS,
+                _ => return (OPEN_BUS, false),
             };
+            return (value, true);
         }
-        self.sub_io_base_read(port & BASE_PORT_MASK)
+        (self.sub_io_base_read(port & BASE_PORT_MASK), true)
     }
 
     /// Reads one of the 16 base sub registers.
@@ -92,8 +90,14 @@ impl<T: Tracing> Fm7Bus<T> {
             }
             PORT_KEYBOARD_LOW => {
                 let value = self.keyboard.read_low();
-                self.interrupts
-                    .set_keyboard_pending(false, &mut self.tracer);
+                self.interrupts.set_keyboard_pending(
+                    false,
+                    common::TraceContext::main_cpu(
+                        self.current_cycle,
+                        Some(u64::from(self.cpu_clock_hz())),
+                    ),
+                    &mut self.tracer,
+                );
                 value
             }
             PORT_CANCEL_ACK => {
@@ -128,19 +132,19 @@ impl<T: Tracing> Fm7Bus<T> {
         }
     }
 
-    /// Writes a sub MMIO register selected by its low-byte offset within
-    /// `0xD400-0xD4FF`, mirroring the decode split of [`Fm7Bus::sub_io_read`].
-    pub(crate) fn sub_io_write(&mut self, port: u8, value: u8) {
+    /// Writes a sub MMIO register and reports whether it was decoded.
+    pub(crate) fn sub_io_write(&mut self, port: u8, value: u8) -> bool {
         if self.model().has_mmr() && port >= AV_REGISTER_FIRST {
             match port {
                 PORT_ALU_FIRST..=PORT_ALU_LAST => self.alu_register_write(port, value),
                 PORT_SUB_MISC => self.write_sub_misc_register(value),
                 PORT_ENCODER_DATA => self.encoder_write_data(value),
-                _ => {}
+                _ => return false,
             }
-            return;
+            return true;
         }
         self.sub_io_base_write(port & BASE_PORT_MASK, value);
+        true
     }
 
     /// Writes one of the 16 base sub registers.

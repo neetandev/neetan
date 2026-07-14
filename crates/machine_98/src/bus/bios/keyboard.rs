@@ -6,9 +6,9 @@ use super::{
     super::{KEYBOARD_ROM_OFFSET_F, KEYBOARD_ROM_OFFSET_VM, Pc9801Bus},
     iret_stack_base,
 };
-use crate::Tracing;
+use crate::TraceSink;
 
-impl<T: Tracing> Pc9801Bus<T> {
+impl<T: TraceSink> Pc9801Bus<T> {
     pub(super) fn hle_int09h(&mut self, cpu: &mut impl Cpu) {
         let Some(raw_code) = self
             .keyboard_chained_raw_code
@@ -58,10 +58,10 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         let (raw_code, clear_irq, retrigger_irq) = self.keyboard.read_data();
         if clear_irq {
-            self.pic.clear_irq(1);
+            self.clear_pic_irq(1);
         }
         if retrigger_irq {
-            self.pic.set_irq(1);
+            self.raise_pic_irq(1);
         }
         Some(raw_code)
     }

@@ -4,8 +4,8 @@
 //! used by the PC-9801F (per undoc98 `io_tcu.txt` and the PIT-driven beeper used by
 //! PC-9801VM and later.
 
-use common::{BeeperKind, Bus, CpuMode, MachineModel};
-use machine_98::{NoTracing, Pc9801Bus};
+use common::{BeeperKind, Bus, CpuMode, MachineModel, NoTrace};
+use machine_98::Pc9801Bus;
 use resampler::{Complex32, Forward, Radix, RadixFFT};
 
 const OUTPUT_SAMPLE_RATE: u32 = 48_000;
@@ -21,11 +21,11 @@ const PIT_CONTROL_PORT: u16 = 0x0077;
 const PIT_CH1_PORT: u16 = 0x0073;
 const PPI_CONTROL_PORT: u16 = 0x0037;
 
-fn setup_bus(model: MachineModel, mode: CpuMode) -> Pc9801Bus<NoTracing> {
-    Pc9801Bus::<NoTracing>::new(model, mode, OUTPUT_SAMPLE_RATE)
+fn setup_bus(model: MachineModel, mode: CpuMode) -> Pc9801Bus<NoTrace> {
+    Pc9801Bus::<NoTrace>::new(model, mode, OUTPUT_SAMPLE_RATE)
 }
 
-fn write_pit_ch1_reload(bus: &mut Pc9801Bus<NoTracing>, reload: u16) {
+fn write_pit_ch1_reload(bus: &mut Pc9801Bus<NoTrace>, reload: u16) {
     bus.io_write_byte(PIT_CONTROL_PORT, PIT_CTRL_CH1_MODE3_LH);
     bus.io_write_byte(PIT_CH1_PORT, reload as u8);
     bus.io_write_byte(PIT_CH1_PORT, (reload >> 8) as u8);
@@ -98,7 +98,7 @@ fn pc9801f_beeper_buzzer_gating_via_port_c() {
 /// Drives `bus` for ~one FFT window of audio at the configured sample rate
 /// and returns one channel of the generated samples.
 fn capture_beeper_samples(
-    bus: &mut Pc9801Bus<NoTracing>,
+    bus: &mut Pc9801Bus<NoTrace>,
     fft_size: usize,
     sample_rate: u32,
 ) -> Vec<f32> {

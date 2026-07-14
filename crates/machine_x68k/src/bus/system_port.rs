@@ -1,11 +1,11 @@
 //! Mirrored system-port register block.
 
-use common::{CpuMode, Tracing};
+use common::{CpuMode, TraceSink};
 
 use super::X68kBus;
 use crate::{InterruptSource, X68kModel};
 
-impl<T: Tracing> X68kBus<T> {
+impl<T: TraceSink> X68kBus<T> {
     /// Reads a system-port register.
     pub(super) fn read_system_port(&self, address: u32) -> u8 {
         match address & 0x0F {

@@ -76,17 +76,17 @@ fn read_sector_streams_the_data_over_pio() {
     // Let the controller settle and stage the sector buffer.
     run_bus_cycles(bus, 100_000);
 
-    let status = bus.io_read(FDC_STATUS_COMMAND);
+    let status = bus.io_read(FDC_STATUS_COMMAND).0;
     assert_eq!(status & STATUS_DRQ, STATUS_DRQ, "DRQ should be asserted");
 
-    let data: Vec<u8> = (0..256).map(|_| bus.io_read(FDC_DATA)).collect();
+    let data: Vec<u8> = (0..256).map(|_| bus.io_read(FDC_DATA).0).collect();
     let expected: Vec<u8> = (0..256)
         .map(|index| 0x10u8.wrapping_add(index as u8))
         .collect();
     assert_eq!(data, expected);
 
     // The transfer completes: DRQ and BUSY drop once the last byte is read.
-    let status = bus.io_read(FDC_STATUS_COMMAND);
+    let status = bus.io_read(FDC_STATUS_COMMAND).0;
     assert_eq!(status & (STATUS_DRQ | STATUS_BUSY), 0);
 }
 
@@ -107,9 +107,9 @@ fn restore_seeks_to_track_zero() {
     run_bus_cycles(bus, 200_000);
 
     // Restore clears busy and zeroes the track register.
-    let status = bus.io_read(FDC_STATUS_COMMAND);
+    let status = bus.io_read(FDC_STATUS_COMMAND).0;
     assert_eq!(status & STATUS_BUSY, 0);
-    assert_eq!(bus.io_read(FDC_TRACK), 0);
+    assert_eq!(bus.io_read(FDC_TRACK).0, 0);
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn read_without_media_reports_not_ready() {
     run_bus_cycles(bus, 100_000);
 
     // With no disk the drive is not ready (status bit 7) and no data is staged.
-    let status = bus.io_read(FDC_STATUS_COMMAND);
+    let status = bus.io_read(FDC_STATUS_COMMAND).0;
     assert_eq!(status & 0x80, 0x80);
     assert_eq!(status & STATUS_DRQ, 0);
 }
@@ -199,7 +199,7 @@ fn turbo_read_sector_transfers_over_dma() {
     assert_eq!(data, expected);
 
     // The DMA path never asserts the PIO DRQ handshake; the command completes.
-    let status = bus.io_read(FDC_STATUS_COMMAND);
+    let status = bus.io_read(FDC_STATUS_COMMAND).0;
     assert_eq!(status & (STATUS_DRQ | STATUS_BUSY), 0);
 }
 
@@ -243,7 +243,9 @@ fn turbo_dma_with_io_destination_streams_into_bitmap_vram() {
     bus.io_write(FDC_STATUS_COMMAND, CMD_READ_SECTOR);
     run_bus_cycles(bus, 100_000);
 
-    let data: Vec<u8> = (0..256).map(|index| bus.io_read(0x4000 + index)).collect();
+    let data: Vec<u8> = (0..256)
+        .map(|index| bus.io_read(0x4000 + index).0)
+        .collect();
     let expected: Vec<u8> = (0..256)
         .map(|index| 0x10u8.wrapping_add(index as u8))
         .collect();
@@ -252,7 +254,7 @@ fn turbo_dma_with_io_destination_streams_into_bitmap_vram() {
     // The bytes went to VRAM through I/O cycles, not to work RAM.
     assert!((0..256).all(|index| bus.peek_byte(0x4000 + index) == 0));
 
-    let status = bus.io_read(FDC_STATUS_COMMAND);
+    let status = bus.io_read(FDC_STATUS_COMMAND).0;
     assert_eq!(status & (STATUS_DRQ | STATUS_BUSY), 0);
 }
 
@@ -277,7 +279,7 @@ fn turbo_dma_end_of_block_raises_its_interrupt() {
 
     // The end-of-block interrupt vectors through the DMA's programmed vector.
     assert!(bus.has_irq());
-    assert_eq!(bus.acknowledge_irq(), 0x60);
+    assert_eq!(bus.acknowledge_irq().1, 0x60);
     assert!(!bus.has_irq());
 }
 
@@ -292,7 +294,7 @@ fn base_x1_uses_pio_not_dma() {
         synthetic_disk(vec![make_sector(1, 1, 0x10)]),
         PathBuf::from("test.d88"),
     );
-    assert_eq!(bus.io_read(DMA_PORT), 0xFF);
+    assert_eq!(bus.io_read(DMA_PORT).0, 0xFF);
 
     select_drive(bus);
     bus.io_write(FDC_TRACK, 0);
@@ -300,6 +302,6 @@ fn base_x1_uses_pio_not_dma() {
     bus.io_write(FDC_STATUS_COMMAND, CMD_READ_SECTOR);
     run_bus_cycles(bus, 100_000);
 
-    let status = bus.io_read(FDC_STATUS_COMMAND);
+    let status = bus.io_read(FDC_STATUS_COMMAND).0;
     assert_eq!(status & STATUS_DRQ, STATUS_DRQ);
 }

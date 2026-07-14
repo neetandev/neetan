@@ -6,7 +6,7 @@
 //! as wait cycles, so DMA transfers genuinely contend with instruction
 //! execution instead of completing instantly.
 
-use common::{M68000AccessSize, M68000BusAccess, M68000CycleKind, M68000FunctionCode, Tracing};
+use common::{M68000AccessSize, M68000BusAccess, M68000CycleKind, M68000FunctionCode, TraceSink};
 use device::hd63450_dmac::{DmacBusFault, DmacBusPort};
 
 use super::{X68kBus, X68kRegion};
@@ -56,7 +56,7 @@ const fn dmac_access_wait_clocks(region: X68kRegion) -> u64 {
     }
 }
 
-impl<T: Tracing> X68kBus<T> {
+impl<T: TraceSink> X68kBus<T> {
     /// Reads one DMAC register byte; the window mirrors every 0x100 bytes.
     pub(super) fn read_dmac_register(&mut self, address: u32) -> u8 {
         self.dmac.read_register((address & 0xFF) as u8)
@@ -193,7 +193,7 @@ impl<T: Tracing> X68kBus<T> {
     }
 }
 
-impl<T: Tracing> DmacBusPort for X68kBus<T> {
+impl<T: TraceSink> DmacBusPort for X68kBus<T> {
     /// Reads one byte as a DMAC bus cycle.
     fn read_byte(&mut self, address: u32) -> Result<u8, DmacBusFault> {
         self.dmac_port_read(address, M68000AccessSize::Byte)
@@ -270,19 +270,19 @@ mod tests {
     #[test]
     fn decoder_places_the_dmac_window() {
         assert_eq!(
-            X68kBus::<common::NoTracing>::decode_region(0xE83FFF),
+            X68kBus::<common::NoTrace>::decode_region(0xE83FFF),
             X68kRegion::VideoController
         );
         assert_eq!(
-            X68kBus::<common::NoTracing>::decode_region(0xE84000),
+            X68kBus::<common::NoTrace>::decode_region(0xE84000),
             X68kRegion::Dmac
         );
         assert_eq!(
-            X68kBus::<common::NoTracing>::decode_region(0xE85FFF),
+            X68kBus::<common::NoTrace>::decode_region(0xE85FFF),
             X68kRegion::Dmac
         );
         assert_eq!(
-            X68kBus::<common::NoTracing>::decode_region(0xE86000),
+            X68kBus::<common::NoTrace>::decode_region(0xE86000),
             X68kRegion::StandardSupervisorArea
         );
     }

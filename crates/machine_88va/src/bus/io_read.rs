@@ -2,9 +2,10 @@
 
 use super::{OPEN_BUS, Pc88VaBus};
 
-impl Pc88VaBus {
-    pub(crate) fn io_read(&mut self, port: u16) -> u8 {
-        match port {
+impl<T: common::TraceSink> Pc88VaBus<T> {
+    /// Reads an I/O byte and reports whether the hardware decoded the port.
+    pub(crate) fn io_read(&mut self, port: u16) -> (u8, bool) {
+        let value = match port {
             // 8259 PIC: master at 0x188/0x18A, slave at 0x184/0x186.
             0x184 => self.pic.read_port0(1),
             0x186 => self.pic.read_port2(1),
@@ -45,7 +46,10 @@ impl Pc88VaBus {
             0x1C1 => self.read_keyboard_data(),
 
             // Video controller: a few registers and the framebuffer descriptors.
-            0x100..=0x10D | 0x200..=0x27F => self.video.read(port).unwrap_or(OPEN_BUS),
+            0x100..=0x10D | 0x200..=0x27F => match self.video.read(port) {
+                Some(value) => value,
+                None => return (OPEN_BUS, false),
+            },
 
             // Super Graphic Processor (SGP) registers.
             0x500..=0x508 => self.sgp_io_read(port),
@@ -70,8 +74,12 @@ impl Pc88VaBus {
             // PPI mailbox, host side: 0xFC=A, 0xFD=B, 0xFE=C, 0xFF=control.
             0xFC..=0xFF => self.ppi_main.read((port & 0x03) as u8),
 
-            _ => self.memory.io_read_byte(port).unwrap_or(OPEN_BUS),
-        }
+            _ => match self.memory.io_read_byte(port) {
+                Some(value) => value,
+                None => return (OPEN_BUS, false),
+            },
+        };
+        (value, true)
     }
 
     fn read_pit_counter(&mut self, channel: usize) -> u8 {

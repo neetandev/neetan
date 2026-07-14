@@ -3,9 +3,9 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use common::{Bus, CdAudioState, CpuMode, Machine, MachineModel};
+use common::{Bus, CdAudioState, CpuMode, Machine, MachineModel, NoTrace};
 use device::cdrom::CdImage;
-use machine_98::{NoTracing, Pc9801Bus};
+use machine_98::Pc9801Bus;
 
 /// Builds a test CdImage with the given number of 2048-byte data sectors.
 /// Each sector's first two bytes contain the sector index (big-endian).
@@ -36,15 +36,15 @@ fn make_audio_cdimage(sector_count: u32) -> CdImage {
 }
 
 /// Creates a PC-9821AS bus (IDE-equipped).
-fn make_ide_bus() -> Pc9801Bus<NoTracing> {
-    Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, CpuMode::High, 48000)
+fn make_ide_bus() -> Pc9801Bus<NoTrace> {
+    Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AS, CpuMode::High, 48000)
 }
 
 /// Creates a PC-9821AP machine.
 fn create_machine_ap() -> machine_98::Pc9821Ap {
     machine_98::Pc9821Ap::new(
         cpu::I386::new(),
-        Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AP, CpuMode::High, 48000),
+        Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000),
     )
 }
 
@@ -264,48 +264,48 @@ fn write_temp_mode2_multi_file_cdrom(name: &str) -> TempCdromCueFiles {
 }
 
 /// Switches the IDE bank register to the given channel (0 = HDD, 1 = CD-ROM).
-fn select_ide_channel(bus: &mut Pc9801Bus<NoTracing>, channel: u8) {
+fn select_ide_channel(bus: &mut Pc9801Bus<NoTrace>, channel: u8) {
     bus.io_write_byte(0x0432, channel);
 }
 
 /// Writes a value to the IDE command register (port 0x064E).
-fn ide_write_command(bus: &mut Pc9801Bus<NoTracing>, command: u8) {
+fn ide_write_command(bus: &mut Pc9801Bus<NoTrace>, command: u8) {
     bus.io_write_byte(0x064E, command);
 }
 
 /// Reads the IDE alternate status register (port 0x074C).
-fn ide_read_alt_status(bus: &mut Pc9801Bus<NoTracing>) -> u8 {
+fn ide_read_alt_status(bus: &mut Pc9801Bus<NoTrace>) -> u8 {
     bus.io_read_byte(0x074C)
 }
 
 /// Reads the IDE cylinder low register (port 0x0648).
-fn ide_read_cylinder_low(bus: &mut Pc9801Bus<NoTracing>) -> u8 {
+fn ide_read_cylinder_low(bus: &mut Pc9801Bus<NoTrace>) -> u8 {
     bus.io_read_byte(0x0648)
 }
 
 /// Reads the IDE cylinder high register (port 0x064A).
-fn ide_read_cylinder_high(bus: &mut Pc9801Bus<NoTracing>) -> u8 {
+fn ide_read_cylinder_high(bus: &mut Pc9801Bus<NoTrace>) -> u8 {
     bus.io_read_byte(0x064A)
 }
 
 /// Reads a 16-bit word from the IDE data register (port 0x0640).
-fn ide_read_data_word(bus: &mut Pc9801Bus<NoTracing>) -> u16 {
+fn ide_read_data_word(bus: &mut Pc9801Bus<NoTrace>) -> u16 {
     bus.io_read_word(0x0640)
 }
 
 /// Writes a 16-bit word to the IDE data register (port 0x0640).
-fn ide_write_data_word(bus: &mut Pc9801Bus<NoTracing>, value: u16) {
+fn ide_write_data_word(bus: &mut Pc9801Bus<NoTrace>, value: u16) {
     bus.io_write_word(0x0640, value);
 }
 
 /// Sets the byte count limit in cylinder low/high before a PACKET command.
-fn ide_set_byte_count_limit(bus: &mut Pc9801Bus<NoTracing>, limit: u16) {
+fn ide_set_byte_count_limit(bus: &mut Pc9801Bus<NoTrace>, limit: u16) {
     bus.io_write_byte(0x0648, limit as u8);
     bus.io_write_byte(0x064A, (limit >> 8) as u8);
 }
 
 /// Sends a PACKET command and writes a 12-byte CDB.
-fn send_atapi_packet(bus: &mut Pc9801Bus<NoTracing>, cdb: &[u8; 12]) {
+fn send_atapi_packet(bus: &mut Pc9801Bus<NoTrace>, cdb: &[u8; 12]) {
     ide_set_byte_count_limit(bus, 0xFFFE);
     ide_write_command(bus, 0xA0);
     // Complete the PACKET setup event.
@@ -321,7 +321,7 @@ fn send_atapi_packet(bus: &mut Pc9801Bus<NoTracing>, cdb: &[u8; 12]) {
 }
 
 /// Reads `word_count` 16-bit words from the IDE data register.
-fn read_atapi_data(bus: &mut Pc9801Bus<NoTracing>, word_count: usize) -> Vec<u16> {
+fn read_atapi_data(bus: &mut Pc9801Bus<NoTrace>, word_count: usize) -> Vec<u16> {
     let mut data = Vec::with_capacity(word_count);
     for _ in 0..word_count {
         data.push(ide_read_data_word(bus));
@@ -340,7 +340,7 @@ fn words_to_bytes(words: &[u16]) -> Vec<u8> {
 
 /// Clears the UNIT_ATTENTION state after CD-ROM insertion by sending
 /// TEST UNIT READY (to trigger it) then REQUEST SENSE (to clear it).
-fn acknowledge_media_change(bus: &mut Pc9801Bus<NoTracing>) {
+fn acknowledge_media_change(bus: &mut Pc9801Bus<NoTrace>) {
     // TEST UNIT READY - will return CHECK CONDITION (UNIT_ATTENTION).
     send_atapi_packet(bus, &[0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     // REQUEST SENSE - clears the attention.

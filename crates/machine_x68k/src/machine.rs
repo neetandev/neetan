@@ -1,6 +1,6 @@
 //! Runnable X68000 CPU and motherboard.
 
-use common::{Bus, CpuM68000, CpuMode, JoystickState, Machine, NoTracing, Tracing};
+use common::{Bus, CpuM68000, CpuMode, JoystickState, Machine, NoTrace, TraceSink};
 use cpu_68k::M68000;
 
 use crate::{LoadedRoms, X68kBus, X68kModel};
@@ -9,32 +9,17 @@ use crate::{LoadedRoms, X68kBus, X68kModel};
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 
 /// A runnable X68000 machine with an MC68000 and motherboard bus.
-pub struct X68kMachine<T: Tracing = NoTracing> {
+pub struct X68kMachine<T: TraceSink = NoTrace> {
     /// Motorola MC68000 CPU.
     pub cpu: Box<M68000>,
     /// X68000 motherboard bus.
     pub bus: X68kBus<T>,
 }
 
-impl<T: Tracing> X68kMachine<T> {
+impl<T: TraceSink> X68kMachine<T> {
     /// Builds a machine around a configured CPU and bus.
     pub fn new(cpu: Box<M68000>, bus: X68kBus<T>) -> Self {
         Self { cpu, bus }
-    }
-
-    /// Builds and resets a machine with an explicit main-RAM size.
-    pub fn with_main_ram_size(
-        model: X68kModel,
-        cpu_mode: CpuMode,
-        roms: LoadedRoms,
-        main_ram_size: usize,
-    ) -> Result<Self, String>
-    where
-        T: Default,
-    {
-        let bus =
-            X68kBus::with_main_ram_size(model, cpu_mode, roms, DEFAULT_SAMPLE_RATE, main_ram_size)?;
-        Ok(Self::from_bus(model, cpu_mode, bus))
     }
 
     /// Builds a reset CPU around an initialized motherboard bus.
@@ -89,7 +74,7 @@ impl<T: Tracing> X68kMachine<T> {
 
     /// Advances the CPU by approximately `budget` input cycles.
     pub fn run_for(&mut self, budget: u64) -> u64 {
-        if budget == 0 {
+        if budget == 0 || T::ENABLED && self.bus.tracer().yield_requested() {
             return 0;
         }
         let start = self.bus.current_cycle();
@@ -99,16 +84,36 @@ impl<T: Tracing> X68kMachine<T> {
             let deadline = self.bus.next_event_cycle().unwrap_or(target).min(target);
             let slice = deadline.saturating_sub(current).max(1);
             let ran = self.cpu.run_for(slice, &mut self.bus);
+            if T::ENABLED && self.bus.tracer().yield_requested() {
+                break;
+            }
             if ran == 0 && self.bus.current_cycle() == current {
                 self.bus.set_current_cycle(current + slice);
             }
             self.bus.process_due_events();
+            if T::ENABLED && self.bus.tracer().yield_requested() {
+                break;
+            }
         }
         self.bus.current_cycle() - start
     }
 }
 
-impl<T: Tracing> Machine for X68kMachine<T> {
+impl X68kMachine<NoTrace> {
+    /// Builds and resets an untraced machine with an explicit main-RAM size.
+    pub fn with_main_ram_size(
+        model: X68kModel,
+        cpu_mode: CpuMode,
+        roms: LoadedRoms,
+        main_ram_size: usize,
+    ) -> Result<Self, String> {
+        let bus =
+            X68kBus::with_main_ram_size(model, cpu_mode, roms, DEFAULT_SAMPLE_RATE, main_ram_size)?;
+        Ok(Self::from_bus(model, cpu_mode, bus))
+    }
+}
+
+impl<T: TraceSink> Machine for X68kMachine<T> {
     fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
         self.bus.set_host_date_time_provider(provider);
     }
@@ -254,7 +259,7 @@ impl<T: Tracing> Machine for X68kMachine<T> {
 
 #[cfg(test)]
 mod tests {
-    use common::CpuMode;
+    use common::{CpuMode, TraceAccessKind, TraceEvent, TraceSink};
 
     use super::*;
 
@@ -268,6 +273,51 @@ mod tests {
             internal_scsi: None,
             uses_compatibility_scsi: false,
         }
+    }
+
+    #[derive(Default)]
+    struct YieldOnScheduled {
+        saw_scheduled: bool,
+        fetch_after_scheduled: bool,
+    }
+
+    impl TraceSink for YieldOnScheduled {
+        fn trace(&mut self, _context: common::TraceContext, event: TraceEvent<'_>) {
+            match event {
+                TraceEvent::Scheduled { .. } => self.saw_scheduled = true,
+                TraceEvent::Access(access)
+                    if self.saw_scheduled && access.kind == TraceAccessKind::Fetch =>
+                {
+                    self.fetch_after_scheduled = true;
+                }
+                _ => {}
+            }
+        }
+
+        fn yield_requested(&self) -> bool {
+            self.saw_scheduled
+        }
+    }
+
+    #[test]
+    fn scheduled_trace_yield_prevents_a_later_fetch() {
+        let model = X68kModel::X68000;
+        let cpu_mode = CpuMode::High;
+        let mut bus = X68kBus::new_with_trace_sink(
+            model,
+            cpu_mode,
+            roms(),
+            48_000,
+            YieldOnScheduled::default(),
+        )
+        .unwrap();
+        bus.schedule_trace_test_event();
+        let mut machine = X68kMachine::from_bus(model, cpu_mode, bus);
+
+        machine.run_for(100_000);
+
+        assert!(machine.bus.tracer().saw_scheduled);
+        assert!(!machine.bus.tracer().fetch_after_scheduled);
     }
 
     #[test]

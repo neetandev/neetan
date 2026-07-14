@@ -1,6 +1,21 @@
 use device::i8259a_pic::I8259aPic;
 
 #[test]
+fn irq_mutations_report_only_request_state_changes() {
+    let mut pic = I8259aPic::new_zeroed();
+
+    assert!(pic.set_irq(3));
+    assert!(!pic.set_irq(3));
+    assert!(pic.clear_irq(3));
+    assert!(!pic.clear_irq(3));
+
+    assert!(pic.set_irq(12));
+    assert!(!pic.set_irq(12));
+    assert!(pic.clear_irq(12));
+    assert!(!pic.clear_irq(12));
+}
+
+#[test]
 fn icw_initialization_master() {
     let mut pic = I8259aPic::new_zeroed();
 
@@ -957,4 +972,30 @@ fn canonical_slave_eoi_pattern() {
 
     // Both master and slave are now fully cleared
     assert!(!pic.has_pending_irq());
+}
+
+#[test]
+fn acknowledgement_reports_master_slave_and_spurious_lines() {
+    let mut master = I8259aPic::new_zeroed();
+    init_master(&mut master);
+    init_slave(&mut master);
+    master.set_irq(3);
+    let acknowledge = master.acknowledge_with_line();
+    assert_eq!(acknowledge.line, Some(3));
+    assert_eq!(acknowledge.vector, 0x0B);
+
+    let mut slave = I8259aPic::new_zeroed();
+    init_master(&mut slave);
+    init_slave(&mut slave);
+    slave.set_irq(12);
+    let acknowledge = slave.acknowledge_with_line();
+    assert_eq!(acknowledge.line, Some(12));
+    assert_eq!(acknowledge.vector, 0x14);
+
+    let mut spurious = I8259aPic::new_zeroed();
+    init_master(&mut spurious);
+    init_slave(&mut spurious);
+    let acknowledge = spurious.acknowledge_with_line();
+    assert_eq!(acknowledge.line, None);
+    assert_eq!(acknowledge.vector, 0x0F);
 }

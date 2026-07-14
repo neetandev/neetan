@@ -46,14 +46,14 @@ fn program_timer_a(bus: &mut Fm7Bus, command_port: u16, data_port: u16) {
 #[test]
 fn timer_a_raises_the_opn_irq_via_the_native_ports() {
     let mut bus = build_av_bus_with_synthetic_roms(BootMode::Basic, |_| {});
-    assert_eq!(bus.read_byte(OPN_EXT_PORT), 0xFF);
+    assert_eq!(bus.read_byte(OPN_EXT_PORT).0, 0xFF);
     assert!(!bus.has_irq());
 
     program_timer_a(&mut bus, OPN_COMMAND_PORT, OPN_DATA_PORT);
     run_bus_cycles(&mut bus, 4_000);
 
     assert!(bus.has_irq());
-    assert_eq!(bus.read_byte(OPN_EXT_PORT) & FD17_OPN_IRQ_BIT, 0);
+    assert_eq!(bus.read_byte(OPN_EXT_PORT).0 & FD17_OPN_IRQ_BIT, 0);
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn timer_a_raises_the_opn_irq_via_the_psg_alias_ports() {
     run_bus_cycles(&mut bus, 4_000);
 
     assert!(bus.has_irq());
-    assert_eq!(bus.read_byte(OPN_EXT_PORT) & FD17_OPN_IRQ_BIT, 0);
+    assert_eq!(bus.read_byte(OPN_EXT_PORT).0 & FD17_OPN_IRQ_BIT, 0);
 }
 
 #[test]
@@ -76,6 +76,6 @@ fn opn_status_reports_the_timer_a_overflow() {
 
     // Command 4 selects the status register on the next data-port read.
     bus.write_byte(OPN_COMMAND_PORT, OPN_READ_STATUS);
-    let status = bus.read_byte(OPN_DATA_PORT);
+    let status = bus.read_byte(OPN_DATA_PORT).0;
     assert_ne!(status & 0x01, 0, "timer A overflow flag should be set");
 }

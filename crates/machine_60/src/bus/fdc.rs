@@ -7,7 +7,7 @@
 //! [`Event60::FdcDrqByte`], and finalizes commands. The FDC interrupt line is
 //! polled through port 0xB2 rather than delivered to the vectored controller.
 
-use common::Tracing;
+use common::TraceSink;
 use device::upd765a_fdc::{
     FdcAction, FdcCommand, FdcPhase, ST0_NOT_READY, ST1_DATA_ERROR, ST1_MISSING_ADDRESS_MARK,
     ST1_NOT_WRITABLE, ST2_CONTROL_MARK, ST2_DATA_ERROR, ST2_MISSING_DATA_ADDRESS_MARK,
@@ -73,7 +73,7 @@ pub(crate) struct FdcReadState {
     dma_read_indices: Vec<usize>,
 }
 
-impl<T: Tracing> Pc6000Bus<T> {
+impl<T: TraceSink> Pc6000Bus<T> {
     /// Reads a built-in FDC port (0xB2 status, 0xD0 DMA, 0xD4 motor,
     /// 0xDC MSR, 0xDD data).
     /// Only the internal interface is implemented; the external intelligent unit

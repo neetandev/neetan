@@ -1,6 +1,6 @@
-use common::{Bus, CpuMode, MachineModel};
+use common::{Bus, CpuMode, MachineModel, NoTrace};
 use device::ga1280a::Ga1280aPlaneMode;
-use machine_98::{NoTracing, Pc9801Bus};
+use machine_98::Pc9801Bus;
 
 const GA_GAPORT: u16 = 0x00D8;
 const WINDOW_BASE: u32 = 0xC0000;
@@ -45,7 +45,7 @@ fn hga_flat_mapped_register_address(selector: u8, offset: u8) -> u32 {
     FLAT_APERTURE_BASE + aperture_base + u32::from(selector) * 2 + u32::from(offset & 1)
 }
 
-fn setup_bus() -> Pc9801Bus<NoTracing> {
+fn setup_bus() -> Pc9801Bus<NoTrace> {
     let mut bus = Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48000);
     bus.install_ga1280a();
     bus.io_write_word(ga_port(0x16, 0), 0x20C1);
@@ -56,19 +56,19 @@ fn setup_bus() -> Pc9801Bus<NoTracing> {
     bus
 }
 
-fn use_galib_wba2_window(bus: &mut Pc9801Bus<NoTracing>) {
+fn use_galib_wba2_window(bus: &mut Pc9801Bus<NoTrace>) {
     bus.io_write_word(ga_port(0x16, 0), 0x00E1);
     bus.io_write_word(ga_port(0x17, 0), 0x30C0);
 }
 
-fn write_palette(bus: &mut Pc9801Bus<NoTracing>, index: u8, red: u8, green: u8, blue: u8) {
+fn write_palette(bus: &mut Pc9801Bus<NoTrace>, index: u8, red: u8, green: u8, blue: u8) {
     bus.io_write_byte(ga_port(0x18, 0), index);
     bus.io_write_byte(ga_port(0x1A, 0), red);
     bus.io_write_byte(ga_port(0x1A, 0), green);
     bus.io_write_byte(ga_port(0x1A, 0), blue);
 }
 
-fn set_ga1280_plane_mode(bus: &mut Pc9801Bus<NoTracing>, plane_mode: Ga1280aPlaneMode) {
+fn set_ga1280_plane_mode(bus: &mut Pc9801Bus<NoTrace>, plane_mode: Ga1280aPlaneMode) {
     bus.io_write_byte(ga_port(0x18, 1), 2);
     match plane_mode {
         Ga1280aPlaneMode::Indexed8 => bus.io_write_byte(ga_port(0x18, 0), 0x48),
@@ -78,23 +78,23 @@ fn set_ga1280_plane_mode(bus: &mut Pc9801Bus<NoTracing>, plane_mode: Ga1280aPlan
     bus.io_write_byte(ga_port(0x18, 1), 0);
 }
 
-fn write_crtc_word(bus: &mut Pc9801Bus<NoTracing>, index: u8, value: u16) {
+fn write_crtc_word(bus: &mut Pc9801Bus<NoTrace>, index: u8, value: u16) {
     bus.io_write_byte(ga_port(0x1E, 0), index);
     bus.io_write_word(ga_port(0x1F, 0), value);
 }
 
-fn set_display_start(bus: &mut Pc9801Bus<NoTracing>, value: u32) {
+fn set_display_start(bus: &mut Pc9801Bus<NoTrace>, value: u32) {
     write_crtc_word(bus, 0x30, (value & 0xFF) as u16);
     write_crtc_word(bus, 0x31, ((value >> 8) & 0xFF) as u16);
     write_crtc_word(bus, 0x32, ((value >> 16) & 0xFF) as u16);
 }
 
-fn set_normal_mix(bus: &mut Pc9801Bus<NoTracing>) {
+fn set_normal_mix(bus: &mut Pc9801Bus<NoTrace>) {
     bus.io_write_byte(ga_port(0x14, 0), 0x0C);
     bus.io_write_word(ga_port(0x1E, 2), 0x1000);
 }
 
-fn fill_rect(bus: &mut Pc9801Bus<NoTracing>, x: u16, y: u16, width: u16, height: u16, color: u16) {
+fn fill_rect(bus: &mut Pc9801Bus<NoTrace>, x: u16, y: u16, width: u16, height: u16, color: u16) {
     bus.io_write_word(ga_port(0x09, 0), color);
     bus.io_write_word(ga_port(0x0A, 2), x);
     bus.io_write_word(ga_port(0x0B, 2), y);
@@ -103,7 +103,7 @@ fn fill_rect(bus: &mut Pc9801Bus<NoTracing>, x: u16, y: u16, width: u16, height:
     bus.io_write_word(ga_port(0x1F, 2), 0x6FE8);
 }
 
-fn assert_pixel(bus: &Pc9801Bus<NoTracing>, x: u32, y: u32, expected: [u8; 4]) {
+fn assert_pixel(bus: &Pc9801Bus<NoTrace>, x: u32, y: u32, expected: [u8; 4]) {
     let (width, _) = bus.display_dimensions();
     let offset = ((y * width + x) * 4) as usize;
     assert_eq!(&bus.display_framebuffer()[offset..offset + 4], &expected);
@@ -457,8 +457,7 @@ fn wba1_f00000_window_uses_planar_raster_semantics_on_pc9821() {
 
 #[test]
 fn wba1_f00000_window_exposes_hga_mapped_registers_on_pc9821() {
-    let mut bus: Pc9801Bus<NoTracing> =
-        Pc9801Bus::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+    let mut bus: Pc9801Bus<NoTrace> = Pc9801Bus::new(MachineModel::PC9821AP, CpuMode::High, 48000);
     bus.install_ga1280a();
     bus.io_write_byte(0xF2, 0);
     bus.io_write_word(ga_port(0x16, 0), 0x3F01);
@@ -477,8 +476,7 @@ fn wba1_f00000_window_exposes_hga_mapped_registers_on_pc9821() {
 
 #[test]
 fn wba1_f00000_window_executes_hga_rop_rectangle_on_pc9821() {
-    let mut bus: Pc9801Bus<NoTracing> =
-        Pc9801Bus::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+    let mut bus: Pc9801Bus<NoTrace> = Pc9801Bus::new(MachineModel::PC9821AP, CpuMode::High, 48000);
     bus.install_ga1280a();
     bus.io_write_byte(0xF2, 0);
     bus.io_write_word(ga_port(0x16, 0), 0x3F01);

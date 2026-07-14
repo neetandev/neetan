@@ -5,7 +5,7 @@ use std::{
 
 use common::{
     BUILTIN_FONT_ROM, Bus, CpuMode, HostDateTimeProvider, JisChar, Machine as _, MachineModel,
-    Tracing,
+    TraceSink,
 };
 use device::{
     disk::{HddFormat, HddGeometry, HddImage},
@@ -856,7 +856,7 @@ pub fn write_bytes(bus: &mut impl Bus, addr: u32, data: &[u8]) {
 /// Positions the cursor by writing the IOSYS cursor bytes directly, the way a
 /// program using the IO.SYS convention does. The HLE DOS dispatch reconciliation
 /// propagates this change to the GDC on the next syscall.
-pub fn set_cursor_position<T: Tracing>(bus: &mut machine_98::Pc9801Bus<T>, row: u8, col: u8) {
+pub fn set_cursor_position<T: TraceSink>(bus: &mut machine_98::Pc9801Bus<T>, row: u8, col: u8) {
     const IOSYS_CURSOR_Y: u32 = 0x0600 + 0x0110;
     const IOSYS_CURSOR_X: u32 = 0x0600 + 0x011C;
     bus.write_byte(IOSYS_CURSOR_Y, row);

@@ -5,7 +5,7 @@
 //! the held sample on an under-run) and immediately requests the next byte,
 //! mirroring the chip's data-request handshake.
 
-use common::Tracing;
+use common::TraceSink;
 use device::msm6258::Msm6258Command;
 
 use super::X68kBus;
@@ -18,7 +18,7 @@ const ADPCM_DATA_PORT_OFFSET: u32 = 3;
 /// DMAC channel connected to the ADPCM data request line.
 const ADPCM_DMAC_CHANNEL: usize = 3;
 
-impl<T: Tracing> X68kBus<T> {
+impl<T: TraceSink> X68kBus<T> {
     /// Reads an ADPCM register byte at an odd address.
     pub(super) fn read_adpcm_register(&mut self, address: u32) -> u8 {
         if address & 3 == ADPCM_COMMAND_PORT_OFFSET {

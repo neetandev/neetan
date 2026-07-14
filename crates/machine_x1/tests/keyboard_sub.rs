@@ -14,7 +14,7 @@ fn command(bus: &mut machine_x1::X1Bus, value: u8) {
 /// Reads one result byte from the mailbox, then lets a poll tick advance so the
 /// next result byte is staged.
 fn result(bus: &mut machine_x1::X1Bus) -> u8 {
-    let value = bus.io_read(0x1900);
+    let value = bus.io_read(0x1900).0;
     run_bus_cycles(bus, 2_000);
     value
 }

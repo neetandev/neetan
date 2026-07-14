@@ -49,8 +49,12 @@ fn latches_unmodified_ascii_keycode() {
     let mut bus = build_bus_with_synthetic_roms(BootMode::Basic, |_| {});
     press_and_latch(&mut bus, SCANCODE_Q);
 
-    assert_eq!(bus.read_byte(0xFD00) & 0x80, 0x00, "keycode high bit clear");
-    assert_eq!(bus.read_byte(0xFD01), 0x71, "unmodified Q latches 'q'");
+    assert_eq!(
+        bus.read_byte(0xFD00).0 & 0x80,
+        0x00,
+        "keycode high bit clear"
+    );
+    assert_eq!(bus.read_byte(0xFD01).0, 0x71, "unmodified Q latches 'q'");
 }
 
 #[test]
@@ -59,7 +63,7 @@ fn shift_selects_the_shifted_table() {
     bus.push_keyboard_scancode(SCANCODE_SHIFT);
     press_and_latch(&mut bus, SCANCODE_Q);
 
-    assert_eq!(bus.read_byte(0xFD01), 0x51, "Shift+Q latches 'Q'");
+    assert_eq!(bus.read_byte(0xFD01).0, 0x51, "Shift+Q latches 'Q'");
 }
 
 #[test]
@@ -68,7 +72,7 @@ fn caps_folds_letter_case() {
     bus.push_keyboard_scancode(SCANCODE_CAPS);
     press_and_latch(&mut bus, SCANCODE_A);
 
-    assert_eq!(bus.read_byte(0xFD01), 0x41, "caps folds 'a' to 'A'");
+    assert_eq!(bus.read_byte(0xFD01).0, 0x41, "caps folds 'a' to 'A'");
 }
 
 #[test]
@@ -78,7 +82,7 @@ fn kana_selects_the_kana_table() {
     press_and_latch(&mut bus, SCANCODE_Q);
 
     assert_eq!(
-        bus.read_byte(0xFD01),
+        bus.read_byte(0xFD01).0,
         0xC0,
         "kana Q latches its katakana code"
     );
@@ -90,12 +94,12 @@ fn function_key_sets_the_ninth_bit() {
     press_and_latch(&mut bus, SCANCODE_F1);
 
     assert_eq!(
-        bus.read_byte(0xFD00) & 0x80,
+        bus.read_byte(0xFD00).0 & 0x80,
         0x80,
         "F1 sets the keycode high bit"
     );
     assert_eq!(
-        bus.read_byte(0xFD01),
+        bus.read_byte(0xFD01).0,
         0x01,
         "F1 low byte is 0x01 (keycode 0x101)"
     );
@@ -124,7 +128,7 @@ fn reading_main_low_port_clears_the_interrupt() {
         bus.has_irq(),
         "latched keycode raises the main IRQ when enabled"
     );
-    let _ = bus.read_byte(0xFD01);
+    let _ = bus.read_byte(0xFD01).0;
     assert!(!bus.has_irq(), "reading 0xFD01 clears the keyboard IRQ");
 }
 
@@ -167,7 +171,7 @@ fn break_key_drives_the_main_firq() {
     bus.push_keyboard_scancode(SCANCODE_BREAK);
     assert!(bus.firq_active(), "BREAK press raises the main FIRQ");
     assert_eq!(
-        bus.read_byte(0xFD04) & 0x02,
+        bus.read_byte(0xFD04).0 & 0x02,
         0x00,
         "0xFD04 bit 1 active-low while held"
     );
@@ -175,7 +179,7 @@ fn break_key_drives_the_main_firq() {
     bus.push_keyboard_scancode(SCANCODE_BREAK | RELEASE);
     assert!(!bus.firq_active(), "BREAK release clears the main FIRQ");
     assert_eq!(
-        bus.read_byte(0xFD04) & 0x02,
+        bus.read_byte(0xFD04).0 & 0x02,
         0x02,
         "0xFD04 bit 1 high once released"
     );

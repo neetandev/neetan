@@ -10,7 +10,7 @@ const FDC_FORCED_READY: u8 = 0x40;
 /// uPD765A control-register bit 7: reset (RST), reset on rising edge.
 const FDC_RESET: u8 = 0x80;
 
-impl Pc88VaBus {
+impl<T: common::TraceSink> Pc88VaBus<T> {
     /// FDC operating-mode register (0x1B0): bit 0 selects DMA (1) or PIO (0).
     /// In DMA mode the uPD765A interrupt is routed to the main 8259 (IRQ 11);
     /// in PIO mode the floppy sub-CPU services it instead.

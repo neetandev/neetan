@@ -509,14 +509,12 @@ impl<const MODEL: u8> VX0<MODEL> {
     fn biu_do_bus_transfer(&mut self, bus: &mut impl Bus) {
         match (self.bus_status_latch, self.transfer_size) {
             (BusStatus::CodeFetch, TransferSize::Byte) => {
-                let byte = bus.read_byte(self.address_latch & ADDRESS_MASK);
+                let byte = bus.fetch_opcode_byte(self.address_latch & ADDRESS_MASK);
                 self.data_bus = byte as u16;
             }
             (BusStatus::CodeFetch, TransferSize::Word) => {
                 let base = self.address_latch & !1;
-                let lo = bus.read_byte(base & ADDRESS_MASK) as u16;
-                let hi = bus.read_byte(base.wrapping_add(1) & ADDRESS_MASK) as u16;
-                self.data_bus = lo | (hi << 8);
+                self.data_bus = bus.fetch_opcode_word(base & ADDRESS_MASK);
             }
             (BusStatus::MemRead, TransferSize::Byte) => {
                 let byte = bus.read_byte(self.address_latch & ADDRESS_MASK);
@@ -1545,5 +1543,78 @@ impl<const MODEL: u8> VX0<MODEL> {
             self.last_queue_byte = byte;
             self.biu_fetch_on_queue_read();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct FetchProbeBus {
+        byte_fetches: Vec<u32>,
+        word_fetches: Vec<u32>,
+        current_cycle: u64,
+    }
+
+    impl Bus for FetchProbeBus {
+        fn read_byte(&mut self, _address: u32) -> u8 {
+            panic!("word prefetch must not use data reads")
+        }
+
+        fn write_byte(&mut self, _address: u32, _value: u8) {}
+
+        fn io_read_byte(&mut self, _port: u16) -> u8 {
+            0
+        }
+
+        fn io_write_byte(&mut self, _port: u16, _value: u8) {}
+
+        fn has_irq(&self) -> bool {
+            false
+        }
+
+        fn acknowledge_irq(&mut self) -> u8 {
+            0
+        }
+
+        fn has_nmi(&self) -> bool {
+            false
+        }
+
+        fn acknowledge_nmi(&mut self) {}
+
+        fn current_cycle(&self) -> u64 {
+            self.current_cycle
+        }
+
+        fn set_current_cycle(&mut self, cycle: u64) {
+            self.current_cycle = cycle;
+        }
+
+        fn fetch_opcode_byte(&mut self, address: u32) -> u8 {
+            self.byte_fetches.push(address);
+            address as u8
+        }
+
+        fn fetch_opcode_word(&mut self, address: u32) -> u16 {
+            self.word_fetches.push(address);
+            0xDEAD
+        }
+    }
+
+    #[test]
+    fn v30_word_code_fetch_uses_wide_bus_dispatch() {
+        let mut cpu = VX0::<V30_BUS>::new();
+        cpu.bus_status_latch = BusStatus::CodeFetch;
+        cpu.transfer_size = TransferSize::Word;
+        cpu.address_latch = 0x12345;
+        let mut bus = FetchProbeBus::default();
+
+        cpu.biu_do_bus_transfer(&mut bus);
+
+        assert!(bus.byte_fetches.is_empty());
+        assert_eq!(bus.word_fetches, [0x12344]);
+        assert_eq!(cpu.data_bus, 0xDEAD);
     }
 }

@@ -60,5 +60,5 @@ fn joystick_trigger_subcommand_raises_the_joystick_irq() {
     // Sub-command 0x06 through PPI port A triggers the joystick interrupt.
     bus.io_write(0x90, 0x06);
     assert!(bus.has_irq(), "the joystick trigger raised no interrupt");
-    assert_eq!(bus.acknowledge_irq(), JOYSTICK_VECTOR);
+    assert_eq!(bus.acknowledge_irq().vector, JOYSTICK_VECTOR);
 }

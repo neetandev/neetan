@@ -98,7 +98,7 @@ fn page_registers_are_independent_per_segment() {
     bus.write_byte(0xFD80, 0x06);
 
     bus.write_byte(0xFD90, 0x00);
-    assert_eq!(bus.read_byte(0xFD80), 0x05);
+    assert_eq!(bus.read_byte(0xFD80).0, 0x05);
     bus.write_byte(0xFD90, 0x03);
-    assert_eq!(bus.read_byte(0xFD80), 0x06);
+    assert_eq!(bus.read_byte(0xFD80).0, 0x06);
 }

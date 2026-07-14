@@ -17,7 +17,7 @@ use super::{
 };
 use crate::scheduler::Event88Va;
 
-impl Pc88VaBus {
+impl<T: common::TraceSink> Pc88VaBus<T> {
     /// Reads the OPNA low-bank status (port 0x044).
     pub(crate) fn read_opn_status(&mut self) -> u8 {
         self.soundboard.read_status(self.current_cycle)

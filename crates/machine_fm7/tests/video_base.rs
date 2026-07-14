@@ -122,7 +122,7 @@ fn digital_palette_remaps_colors_and_reads_back_with_high_bits_set() {
 
     // Palette registers read back the stored colour with the upper bits forced high.
     bus.write_byte(0xFD3A, 0x05);
-    assert_eq!(bus.read_byte(0xFD3A), 0x05 | 0xF8);
+    assert_eq!(bus.read_byte(0xFD3A).0, 0x05 | 0xF8);
 }
 
 #[test]
