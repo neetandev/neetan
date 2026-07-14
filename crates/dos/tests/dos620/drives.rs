@@ -6,7 +6,7 @@ const IOSYS_BASE: u32 = 0x0600;
 const BDA_BOOT_DEVICE: u32 = 0x0584;
 const AUTOEXEC_LINES: &[u8] = b"@ECHO OFF\r\n";
 
-fn assert_boot_and_current_drive_are_a(machine: &mut machine::Pc9801Ra) {
+fn assert_boot_and_current_drive_are_a(machine: &mut machine_98::Pc9801Ra) {
     let sysvars = harness::get_sysvars_address(machine);
     let boot_drive = harness::read_byte(&machine.bus, sysvars + 0x43);
     assert_eq!(

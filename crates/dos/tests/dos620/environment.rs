@@ -1,6 +1,6 @@
 use crate::harness;
 
-fn boot_and_get_environment() -> (machine::Pc9801Ra, u32) {
+fn boot_and_get_environment() -> (machine_98::Pc9801Ra, u32) {
     let mut machine = harness::boot_hle();
     let psp_segment = harness::get_psp_segment(&mut machine);
     let psp_linear = harness::far_to_linear(psp_segment, 0);
@@ -9,7 +9,7 @@ fn boot_and_get_environment() -> (machine::Pc9801Ra, u32) {
     (machine, env_linear)
 }
 
-fn read_environment_strings(bus: &machine::Pc9801Bus, env_addr: u32) -> Vec<String> {
+fn read_environment_strings(bus: &machine_98::Pc9801Bus, env_addr: u32) -> Vec<String> {
     let mut strings = Vec::new();
     let mut offset = 0u32;
     let max_env_size = 32768u32;
@@ -32,7 +32,10 @@ fn read_environment_strings(bus: &machine::Pc9801Bus, env_addr: u32) -> Vec<Stri
     strings
 }
 
-fn read_program_path_from_environment(bus: &machine::Pc9801Bus, env_segment: u16) -> (u16, String) {
+fn read_program_path_from_environment(
+    bus: &machine_98::Pc9801Bus,
+    env_segment: u16,
+) -> (u16, String) {
     let env_addr = harness::far_to_linear(env_segment, 0);
     let mut offset = 0u32;
     let max_size = 32768u32;
@@ -54,14 +57,17 @@ fn read_program_path_from_environment(bus: &machine::Pc9801Bus, env_segment: u16
     panic!("Could not find double-null terminator in environment block");
 }
 
-fn read_psp_command_tail(bus: &machine::Pc9801Bus, psp_segment: u16) -> String {
+fn read_psp_command_tail(bus: &machine_98::Pc9801Bus, psp_segment: u16) -> String {
     let psp_addr = harness::far_to_linear(psp_segment, 0);
     let tail_len = harness::read_byte(bus, psp_addr + 0x80) as usize;
     let bytes = harness::read_string(bus, psp_addr + 0x81, tail_len);
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-fn exec_load_only(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> (u16, u16, u16, u16, u16) {
+fn exec_load_only(
+    machine: &mut machine_98::Pc9801Ra,
+    filename: &[u8],
+) -> (u16, u16, u16, u16, u16) {
     let base = harness::INJECT_CODE_BASE;
     harness::write_bytes(&mut machine.bus, base + 0x0200, filename);
     harness::write_bytes(&mut machine.bus, base + 0x0230, &[0x00, 0x0D]);

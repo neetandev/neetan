@@ -109,38 +109,38 @@ fn set_fat16_entry(fat: &mut [u8], cluster: u16, value: u16) {
     fat[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
 }
 
-fn initialize_hle_bus(bus: &mut machine::Pc9801Bus, xms_32_enabled: bool) {
+fn initialize_hle_bus(bus: &mut machine_98::Pc9801Bus, xms_32_enabled: bool) {
     bus.load_font_rom(BUILTIN_FONT_ROM);
     if xms_32_enabled {
         bus.set_xms_32_enabled(true);
     }
 }
 
-fn create_ra_machine(xms_32_enabled: bool) -> machine::Pc9801Ra {
-    let mut machine = machine::Pc9801Ra::new(
+fn create_ra_machine(xms_32_enabled: bool) -> machine_98::Pc9801Ra {
+    let mut machine = machine_98::Pc9801Ra::new(
         cpu::I386::new(),
-        machine::Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48000),
+        machine_98::Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48000),
     );
     initialize_hle_bus(&mut machine.bus, xms_32_enabled);
     machine
 }
 
-fn create_hle_machine_ap() -> machine::Pc9821Ap {
-    let mut machine = machine::Pc9821Ap::new(
+fn create_hle_machine_ap() -> machine_98::Pc9821Ap {
+    let mut machine = machine_98::Pc9821Ap::new(
         cpu::I386::<{ cpu::CPU_MODEL_486_DX }>::new(),
-        machine::Pc9801Bus::new(MachineModel::PC9821AP, CpuMode::High, 48000),
+        machine_98::Pc9801Bus::new(MachineModel::PC9821AP, CpuMode::High, 48000),
     );
     initialize_hle_bus(&mut machine.bus, false);
     machine
 }
 
-fn write_disk_equipment(bus: &mut machine::Pc9801Bus, disk_equip_low: u8, disk_equip_high: u8) {
+fn write_disk_equipment(bus: &mut machine_98::Pc9801Bus, disk_equip_low: u8, disk_equip_high: u8) {
     bus.write_byte(0x055C, disk_equip_low);
     bus.write_byte(0x055D, disk_equip_high);
 }
 
 fn wait_for_prompt<const CPU_MODEL: u8>(
-    machine: &mut machine::Machine<cpu::I386<CPU_MODEL>>,
+    machine: &mut machine_98::Pc98Machine<cpu::I386<CPU_MODEL>>,
     max_cycles: u64,
     check_interval: u64,
     timeout_message: &str,
@@ -481,7 +481,7 @@ fn build_hdd_image(volume_spec: HddVolumeSpec<'_>) -> device::disk::HddImage {
     HddImage::from_raw(geometry, HddFormat::Nhd, image_data)
 }
 
-fn text_vram_codes(bus: &machine::Pc9801Bus) -> Vec<u16> {
+fn text_vram_codes(bus: &machine_98::Pc9801Bus) -> Vec<u16> {
     bus.text_vram()
         .chunks_exact(2)
         .take(TEXT_VRAM_CELL_COUNT)
@@ -489,7 +489,7 @@ fn text_vram_codes(bus: &machine::Pc9801Bus) -> Vec<u16> {
         .collect()
 }
 
-fn text_vram_jis_chars(bus: &machine::Pc9801Bus) -> Vec<JisChar> {
+fn text_vram_jis_chars(bus: &machine_98::Pc9801Bus) -> Vec<JisChar> {
     bus.text_vram()
         .chunks_exact(2)
         .take(TEXT_VRAM_CELL_COUNT)
@@ -499,18 +499,18 @@ fn text_vram_jis_chars(bus: &machine::Pc9801Bus) -> Vec<JisChar> {
 
 /// Creates a machine with no disk images. The bootstrap will find no bootable
 /// media and activate NEETAN DOS HLE DOS automatically.
-pub fn create_hle_machine() -> machine::Pc9801Ra {
+pub fn create_hle_machine() -> machine_98::Pc9801Ra {
     create_ra_machine(true)
 }
 
 /// Boots a machine with NEETAN DOS HLE DOS (no disk images).
 /// Returns the machine after the shell prompt (`>`) is visible in text VRAM.
-pub fn boot_hle() -> machine::Pc9801Ra {
+pub fn boot_hle() -> machine_98::Pc9801Ra {
     boot_hle_with_time(None)
 }
 
 /// Boots a machine with NEETAN DOS HLE DOS and an optional fixed time provider.
-pub fn boot_hle_with_time(time_provider: Option<HostDateTimeProvider>) -> machine::Pc9801Ra {
+pub fn boot_hle_with_time(time_provider: Option<HostDateTimeProvider>) -> machine_98::Pc9801Ra {
     let mut machine = create_hle_machine();
     if let Some(provider) = time_provider {
         machine.set_host_date_time_provider(provider);
@@ -525,7 +525,7 @@ pub fn boot_hle_with_time(time_provider: Option<HostDateTimeProvider>) -> machin
 }
 
 /// Boots a machine with XMS disabled on the bus (no XMS driver, no XMSXXXX0 device).
-pub fn boot_hle_without_xms() -> machine::Pc9801Ra {
+pub fn boot_hle_without_xms() -> machine_98::Pc9801Ra {
     let mut machine = create_hle_machine();
     machine.bus.set_xms_enabled(false);
     wait_for_prompt(
@@ -538,7 +538,7 @@ pub fn boot_hle_without_xms() -> machine::Pc9801Ra {
 }
 
 /// Boots a machine with EMS disabled on the bus (no EMS driver, no EMMXXXX0 device).
-pub fn boot_hle_without_ems() -> machine::Pc9801Ra {
+pub fn boot_hle_without_ems() -> machine_98::Pc9801Ra {
     let mut machine = create_hle_machine();
     machine.bus.set_ems_enabled(false);
     wait_for_prompt(
@@ -551,7 +551,7 @@ pub fn boot_hle_without_ems() -> machine::Pc9801Ra {
 }
 
 /// Boots a machine with both XMS and EMS disabled on the bus.
-pub fn boot_hle_without_xms_and_ems() -> machine::Pc9801Ra {
+pub fn boot_hle_without_xms_and_ems() -> machine_98::Pc9801Ra {
     let mut machine = create_hle_machine();
     machine.bus.set_xms_enabled(false);
     machine.bus.set_ems_enabled(false);
@@ -565,7 +565,7 @@ pub fn boot_hle_without_xms_and_ems() -> machine::Pc9801Ra {
 }
 
 /// Boots a machine with the XMS /HMAMIN= threshold set to the given KB.
-pub fn boot_hle_with_hmamin_kb(hmamin_kb: u16) -> machine::Pc9801Ra {
+pub fn boot_hle_with_hmamin_kb(hmamin_kb: u16) -> machine_98::Pc9801Ra {
     let mut machine = create_hle_machine();
     machine.bus.set_xms_hmamin_kb(hmamin_kb);
     wait_for_prompt(
@@ -580,9 +580,9 @@ pub fn boot_hle_with_hmamin_kb(hmamin_kb: u16) -> machine::Pc9801Ra {
 pub fn boot_hle_with_forced_os(
     floppy: Option<device::floppy::FloppyImage>,
     hdd: Option<device::disk::HddImage>,
-) -> machine::Pc9801Ra {
+) -> machine_98::Pc9801Ra {
     let mut machine = create_hle_machine();
-    machine.bus.set_boot_device(machine::BootDevice::Dos);
+    machine.bus.set_boot_device(machine_98::BootDevice::Dos);
 
     let mut disk_equip_low = 0u8;
     let mut disk_equip_high = 0u8;
@@ -608,7 +608,7 @@ pub fn boot_hle_with_forced_os(
     machine
 }
 
-pub fn hle_prompt_visible(bus: &machine::Pc9801Bus) -> bool {
+pub fn hle_prompt_visible(bus: &machine_98::Pc9801Bus) -> bool {
     find_char_in_text_vram(bus, 0x003E)
 }
 
@@ -768,7 +768,7 @@ pub fn create_test_floppy_with_config_and_autoexec(
 /// Boots an HLE machine, then inserts a test floppy as drive A:.
 /// The floppy is inserted after boot so the BIOS doesn't try to boot from it.
 /// BDA_DISK_EQUIP is set before boot so discover_drives() sees the FDD.
-pub fn boot_hle_with_floppy() -> machine::Pc9801Ra {
+pub fn boot_hle_with_floppy() -> machine_98::Pc9801Ra {
     let mut machine = create_hle_machine();
     write_disk_equipment(&mut machine.bus, 0x01, 0x00);
     wait_for_prompt(
@@ -783,7 +783,7 @@ pub fn boot_hle_with_floppy() -> machine::Pc9801Ra {
 }
 
 /// Boots an HLE machine with a custom floppy image as drive A:.
-pub fn boot_hle_with_floppy_image(floppy: device::floppy::FloppyImage) -> machine::Pc9801Ra {
+pub fn boot_hle_with_floppy_image(floppy: device::floppy::FloppyImage) -> machine_98::Pc9801Ra {
     let mut machine = create_hle_machine();
     write_disk_equipment(&mut machine.bus, 0x01, 0x00);
     wait_for_prompt(
@@ -811,7 +811,7 @@ pub fn create_parsed_empty_d88_floppy() -> device::floppy::FloppyImage {
     device::floppy::FloppyImage::from_d88_bytes(&bytes).expect("parse empty D88 floppy")
 }
 
-pub fn boot_hle_with_two_floppies() -> machine::Pc9801Ra {
+pub fn boot_hle_with_two_floppies() -> machine_98::Pc9801Ra {
     let mut machine = create_hle_machine();
     write_disk_equipment(&mut machine.bus, 0x03, 0x00);
     wait_for_prompt(
@@ -832,7 +832,7 @@ pub fn boot_hle_with_two_floppies() -> machine::Pc9801Ra {
 pub fn boot_hle_with_two_floppy_images(
     floppy_a: device::floppy::FloppyImage,
     floppy_b: device::floppy::FloppyImage,
-) -> machine::Pc9801Ra {
+) -> machine_98::Pc9801Ra {
     let mut machine = create_hle_machine();
     write_disk_equipment(&mut machine.bus, 0x03, 0x00);
     wait_for_prompt(
@@ -856,19 +856,19 @@ pub fn write_bytes(bus: &mut impl Bus, addr: u32, data: &[u8]) {
 /// Positions the cursor by writing the IOSYS cursor bytes directly, the way a
 /// program using the IO.SYS convention does. The HLE DOS dispatch reconciliation
 /// propagates this change to the GDC on the next syscall.
-pub fn set_cursor_position<T: Tracing>(bus: &mut machine::Pc9801Bus<T>, row: u8, col: u8) {
+pub fn set_cursor_position<T: Tracing>(bus: &mut machine_98::Pc9801Bus<T>, row: u8, col: u8) {
     const IOSYS_CURSOR_Y: u32 = 0x0600 + 0x0110;
     const IOSYS_CURSOR_X: u32 = 0x0600 + 0x011C;
     bus.write_byte(IOSYS_CURSOR_Y, row);
     bus.write_byte(IOSYS_CURSOR_X, col);
 }
 
-pub fn inject_and_run(machine: &mut machine::Pc9801Ra, code: &[u8]) {
+pub fn inject_and_run(machine: &mut machine_98::Pc9801Ra, code: &[u8]) {
     inject_and_run_with_budget(machine, code, INJECT_BUDGET);
 }
 
 fn load_injected_i386_state<const CPU_MODEL: u8>(
-    machine: &mut machine::Machine<cpu::I386<CPU_MODEL>>,
+    machine: &mut machine_98::Pc98Machine<cpu::I386<CPU_MODEL>>,
 ) {
     let mut state = cpu::I386State {
         ip: 0x0000,
@@ -884,7 +884,7 @@ fn load_injected_i386_state<const CPU_MODEL: u8>(
 }
 
 fn type_string_long_generic<const CPU_MODEL: u8>(
-    machine: &mut machine::Machine<cpu::I386<CPU_MODEL>>,
+    machine: &mut machine_98::Pc98Machine<cpu::I386<CPU_MODEL>>,
     text: &[u8],
 ) {
     let chunk_size = 12;
@@ -895,7 +895,7 @@ fn type_string_long_generic<const CPU_MODEL: u8>(
 }
 
 fn run_until_prompt_generic<const CPU_MODEL: u8>(
-    machine: &mut machine::Machine<cpu::I386<CPU_MODEL>>,
+    machine: &mut machine_98::Pc98Machine<cpu::I386<CPU_MODEL>>,
 ) {
     wait_for_prompt(
         machine,
@@ -905,7 +905,7 @@ fn run_until_prompt_generic<const CPU_MODEL: u8>(
     );
 }
 
-pub fn inject_and_run_with_budget(machine: &mut machine::Pc9801Ra, code: &[u8], budget: u64) {
+pub fn inject_and_run_with_budget(machine: &mut machine_98::Pc9801Ra, code: &[u8], budget: u64) {
     write_bytes(&mut machine.bus, INJECT_CODE_BASE, code);
     load_injected_i386_state(machine);
     machine.run_for(budget);
@@ -923,7 +923,7 @@ pub fn inject_and_run_with_budget(machine: &mut machine::Pc9801Ra, code: &[u8], 
 ///   +0x0080: user code (the actual test code)
 ///   +0x0100: result area
 ///   +0x0200: data area (filenames, buffers)
-pub fn inject_and_run_via_int28(machine: &mut machine::Pc9801Ra, code: &[u8], budget: u64) {
+pub fn inject_and_run_via_int28(machine: &mut machine_98::Pc9801Ra, code: &[u8], budget: u64) {
     let base = INJECT_CODE_BASE;
     let seg_lo = (INJECT_CODE_SEGMENT & 0xFF) as u8;
     let seg_hi = (INJECT_CODE_SEGMENT >> 8) as u8;
@@ -982,29 +982,29 @@ pub fn far_to_linear(segment: u16, offset: u16) -> u32 {
     ((segment as u32) << 4) + offset as u32
 }
 
-pub fn read_byte(bus: &machine::Pc9801Bus, addr: u32) -> u8 {
+pub fn read_byte(bus: &machine_98::Pc9801Bus, addr: u32) -> u8 {
     bus.read_byte_direct(addr)
 }
 
-pub fn read_word(bus: &machine::Pc9801Bus, addr: u32) -> u16 {
+pub fn read_word(bus: &machine_98::Pc9801Bus, addr: u32) -> u16 {
     let low = bus.read_byte_direct(addr) as u16;
     let high = bus.read_byte_direct(addr + 1) as u16;
     low | (high << 8)
 }
 
-pub fn read_far_ptr(bus: &machine::Pc9801Bus, addr: u32) -> (u16, u16) {
+pub fn read_far_ptr(bus: &machine_98::Pc9801Bus, addr: u32) -> (u16, u16) {
     let offset = read_word(bus, addr);
     let segment = read_word(bus, addr + 2);
     (segment, offset)
 }
 
-pub fn read_bytes(bus: &machine::Pc9801Bus, addr: u32, len: usize) -> Vec<u8> {
+pub fn read_bytes(bus: &machine_98::Pc9801Bus, addr: u32, len: usize) -> Vec<u8> {
     (0..len)
         .map(|i| bus.read_byte_direct(addr + i as u32))
         .collect()
 }
 
-pub fn read_string(bus: &machine::Pc9801Bus, addr: u32, max_len: usize) -> Vec<u8> {
+pub fn read_string(bus: &machine_98::Pc9801Bus, addr: u32, max_len: usize) -> Vec<u8> {
     let mut result = Vec::new();
     for i in 0..max_len {
         let byte = bus.read_byte_direct(addr + i as u32);
@@ -1016,27 +1016,27 @@ pub fn read_string(bus: &machine::Pc9801Bus, addr: u32, max_len: usize) -> Vec<u
     result
 }
 
-pub fn read_device_name(bus: &machine::Pc9801Bus, header_addr: u32) -> String {
+pub fn read_device_name(bus: &machine_98::Pc9801Bus, header_addr: u32) -> String {
     // Device header name field is at offset +0x0A, 8 bytes.
     let name_bytes = read_bytes(bus, header_addr + 0x0A, 8);
     String::from_utf8_lossy(&name_bytes).to_string()
 }
 
-pub fn result_byte(bus: &machine::Pc9801Bus, offset: u32) -> u8 {
+pub fn result_byte(bus: &machine_98::Pc9801Bus, offset: u32) -> u8 {
     bus.read_byte_direct(INJECT_RESULT_BASE + offset)
 }
 
-pub fn result_word(bus: &machine::Pc9801Bus, offset: u32) -> u16 {
+pub fn result_word(bus: &machine_98::Pc9801Bus, offset: u32) -> u16 {
     read_word(bus, INJECT_RESULT_BASE + offset)
 }
 
-pub fn result_dword(bus: &machine::Pc9801Bus, offset: u32) -> u32 {
+pub fn result_dword(bus: &machine_98::Pc9801Bus, offset: u32) -> u32 {
     let lo = result_word(bus, offset) as u32;
     let hi = result_word(bus, offset + 2) as u32;
     lo | (hi << 16)
 }
 
-pub fn get_sysvars_address(machine: &mut machine::Pc9801Ra) -> u32 {
+pub fn get_sysvars_address(machine: &mut machine_98::Pc9801Ra) -> u32 {
     const RES_LO: u8 = (INJECT_RESULT_OFFSET & 0xFF) as u8;
     const RES_HI: u8 = (INJECT_RESULT_OFFSET >> 8) as u8;
     #[rustfmt::skip]
@@ -1055,7 +1055,7 @@ pub fn get_sysvars_address(machine: &mut machine::Pc9801Ra) -> u32 {
     far_to_linear(segment, offset)
 }
 
-pub fn get_psp_segment(machine: &mut machine::Pc9801Ra) -> u16 {
+pub fn get_psp_segment(machine: &mut machine_98::Pc9801Ra) -> u16 {
     const RES_LO: u8 = (INJECT_RESULT_OFFSET & 0xFF) as u8;
     const RES_HI: u8 = (INJECT_RESULT_OFFSET >> 8) as u8;
     #[rustfmt::skip]
@@ -1073,13 +1073,13 @@ pub fn get_psp_segment(machine: &mut machine::Pc9801Ra) -> u16 {
 
 /// Creates free memory by splitting the last MCB (Z block) in the chain.
 /// COMMAND.COM owns all remaining memory after boot, so allocation tests
-pub fn find_char_in_text_vram(bus: &machine::Pc9801Bus, char_code: u16) -> bool {
+pub fn find_char_in_text_vram(bus: &machine_98::Pc9801Bus, char_code: u16) -> bool {
     text_vram_codes(bus)
         .into_iter()
         .any(|code| code == char_code)
 }
 
-pub fn find_string_in_text_vram(bus: &machine::Pc9801Bus, chars: &[u16]) -> bool {
+pub fn find_string_in_text_vram(bus: &machine_98::Pc9801Bus, chars: &[u16]) -> bool {
     if chars.is_empty() {
         return true;
     }
@@ -1087,7 +1087,7 @@ pub fn find_string_in_text_vram(bus: &machine::Pc9801Bus, chars: &[u16]) -> bool
     codes.windows(chars.len()).any(|window| window == chars)
 }
 
-pub fn find_jis_string_in_text_vram(bus: &machine::Pc9801Bus, chars: &[JisChar]) -> bool {
+pub fn find_jis_string_in_text_vram(bus: &machine_98::Pc9801Bus, chars: &[JisChar]) -> bool {
     if chars.is_empty() {
         return true;
     }
@@ -1133,7 +1133,7 @@ pub fn find_jis_string_in_text_vram(bus: &machine::Pc9801Bus, chars: &[JisChar])
     false
 }
 
-pub fn text_vram_row_to_string(bus: &machine::Pc9801Bus, row: usize) -> String {
+pub fn text_vram_row_to_string(bus: &machine_98::Pc9801Bus, row: usize) -> String {
     let start_index = row * TEXT_VRAM_COLUMNS;
     text_vram_codes(bus)
         .into_iter()
@@ -1149,7 +1149,7 @@ pub fn text_vram_row_to_string(bus: &machine::Pc9801Bus, row: usize) -> String {
         .collect()
 }
 
-pub fn find_row_containing(bus: &machine::Pc9801Bus, needle: &str) -> Option<usize> {
+pub fn find_row_containing(bus: &machine_98::Pc9801Bus, needle: &str) -> Option<usize> {
     for row in 0..TEXT_VRAM_ROWS {
         let line = text_vram_row_to_string(bus, row);
         if line.contains(needle) {
@@ -1300,7 +1300,7 @@ pub fn create_test_hdd_mismatched_sectors() -> device::disk::HddImage {
 
 /// Boots an HLE machine (PC-9801RA / SASI) with an HDD that has mismatched
 /// physical (256) and BPB logical (1024) sector sizes.
-pub fn boot_hle_with_sasi_hdd_mismatched_sectors() -> machine::Pc9801Ra {
+pub fn boot_hle_with_sasi_hdd_mismatched_sectors() -> machine_98::Pc9801Ra {
     let mut machine = create_ra_machine(false);
     write_disk_equipment(&mut machine.bus, 0x00, 0x01);
     wait_for_prompt(
@@ -1317,7 +1317,7 @@ pub fn boot_hle_with_sasi_hdd_mismatched_sectors() -> machine::Pc9801Ra {
 }
 
 /// Boots an HLE machine (PC-9801RA / SASI) with a test HDD as the first drive.
-pub fn boot_hle_with_sasi_hdd(sector_size: u16) -> machine::Pc9801Ra {
+pub fn boot_hle_with_sasi_hdd(sector_size: u16) -> machine_98::Pc9801Ra {
     let mut machine = create_ra_machine(false);
     write_disk_equipment(&mut machine.bus, 0x00, 0x01);
     wait_for_prompt(
@@ -1333,7 +1333,7 @@ pub fn boot_hle_with_sasi_hdd(sector_size: u16) -> machine::Pc9801Ra {
 }
 
 /// Boots an HLE machine (PC-9821AP / IDE) with a test HDD as the first drive.
-pub fn boot_hle_with_ide_hdd(sector_size: u16) -> machine::Pc9821Ap {
+pub fn boot_hle_with_ide_hdd(sector_size: u16) -> machine_98::Pc9821Ap {
     let mut machine = create_hle_machine_ap();
     write_disk_equipment(&mut machine.bus, 0x00, 0x01);
     wait_for_prompt(
@@ -1361,7 +1361,7 @@ pub fn create_empty_hdd(sector_size: u16) -> device::disk::HddImage {
 }
 
 /// Boots an HLE machine (PC-9801RA / SASI) with an empty HDD for format testing.
-pub fn boot_hle_with_empty_sasi_hdd() -> machine::Pc9801Ra {
+pub fn boot_hle_with_empty_sasi_hdd() -> machine_98::Pc9801Ra {
     let mut machine = create_ra_machine(false);
     write_disk_equipment(&mut machine.bus, 0x00, 0x01);
 
@@ -1378,7 +1378,7 @@ pub fn boot_hle_with_empty_sasi_hdd() -> machine::Pc9801Ra {
 }
 
 /// Boots an HLE machine (PC-9821AP / IDE) with an empty HDD for format testing.
-pub fn boot_hle_with_empty_ide_hdd() -> machine::Pc9821Ap {
+pub fn boot_hle_with_empty_ide_hdd() -> machine_98::Pc9821Ap {
     let mut machine = create_hle_machine_ap();
     write_disk_equipment(&mut machine.bus, 0x00, 0x01);
 
@@ -1932,7 +1932,7 @@ pub fn write_temp_mode2_multi_file_cdrom(name: &str) -> TempCdromCueFiles {
 
 /// Boots an HLE machine (PC-9821AP / IDE) with a test CD-ROM inserted.
 /// The CD-ROM is inserted before boot so MSCDEX activates the Q: drive.
-pub fn boot_hle_with_cdrom() -> machine::Pc9821Ap {
+pub fn boot_hle_with_cdrom() -> machine_98::Pc9821Ap {
     let mut machine = create_hle_machine_ap();
     let cdimage = create_test_cdimage();
     machine.bus.insert_cdrom(cdimage);
@@ -1945,7 +1945,7 @@ pub fn boot_hle_with_cdrom() -> machine::Pc9821Ap {
     machine
 }
 
-pub fn boot_hle_with_cdrom_path(path: &std::path::Path) -> machine::Pc9821Ap {
+pub fn boot_hle_with_cdrom_path(path: &std::path::Path) -> machine_98::Pc9821Ap {
     let mut machine = create_hle_machine_ap();
     machine
         .insert_cdrom(path)
@@ -1960,7 +1960,7 @@ pub fn boot_hle_with_cdrom_path(path: &std::path::Path) -> machine::Pc9821Ap {
     machine
 }
 
-pub fn boot_hle_with_cdrom_image(cdimage: device::cdrom::CdImage) -> machine::Pc9821Ap {
+pub fn boot_hle_with_cdrom_image(cdimage: device::cdrom::CdImage) -> machine_98::Pc9821Ap {
     let mut machine = create_hle_machine_ap();
     machine.bus.insert_cdrom(cdimage);
     wait_for_prompt(
@@ -1974,7 +1974,7 @@ pub fn boot_hle_with_cdrom_image(cdimage: device::cdrom::CdImage) -> machine::Pc
 }
 
 pub fn inject_and_run_generic_with_budget<const M: u8>(
-    machine: &mut machine::Machine<cpu::I386<M>>,
+    machine: &mut machine_98::Pc98Machine<cpu::I386<M>>,
     code: &[u8],
     budget: u64,
 ) {
@@ -1984,7 +1984,7 @@ pub fn inject_and_run_generic_with_budget<const M: u8>(
 }
 
 /// Injects ASCII characters into the PC-98 keyboard buffer.
-pub fn type_string(bus: &mut machine::Pc9801Bus, text: &[u8]) {
+pub fn type_string(bus: &mut machine_98::Pc9801Bus, text: &[u8]) {
     for &ch in text {
         let count = bus.read_byte_direct(0x0528);
         if count >= 0x10 {
@@ -2009,13 +2009,13 @@ pub const SCAN_LEFT: u8 = 0x3B;
 /// Injects a special key through the PC-98 keyboard pipeline.
 /// Pushes make and break scancodes via the keyboard controller, then runs
 /// the machine so the BIOS INT 09h handler processes them into KB_BUF.
-pub fn type_special_key(machine: &mut machine::Pc9801Ra, scan_code: u8) {
+pub fn type_special_key(machine: &mut machine_98::Pc9801Ra, scan_code: u8) {
     machine.bus.push_keyboard_scancode(scan_code); // press down
     machine.bus.push_keyboard_scancode(scan_code | 0x80); // release
     machine.run_for(100_000);
 }
 
-fn write_word_raw(bus: &mut machine::Pc9801Bus, addr: u32, value: u16) {
+fn write_word_raw(bus: &mut machine_98::Pc9801Bus, addr: u32, value: u16) {
     bus.write_byte(addr, value as u8);
     bus.write_byte(addr + 1, (value >> 8) as u8);
 }
@@ -2023,21 +2023,21 @@ fn write_word_raw(bus: &mut machine::Pc9801Bus, addr: u32, value: u16) {
 /// Types a long string into the keyboard buffer, running the machine between
 /// chunks to drain the 16-entry buffer. Use this for command strings longer
 /// than ~14 characters.
-pub fn type_string_long(machine: &mut machine::Pc9801Ra, text: &[u8]) {
+pub fn type_string_long(machine: &mut machine_98::Pc9801Ra, text: &[u8]) {
     type_string_long_generic(machine, text);
 }
 
 /// Runs the machine until the shell prompt (`>`) reappears in text VRAM.
-pub fn run_until_prompt(machine: &mut machine::Pc9801Ra) {
+pub fn run_until_prompt(machine: &mut machine_98::Pc9801Ra) {
     run_until_prompt_generic(machine);
 }
 
 /// Types a long string for PC-9821AP machines.
-pub fn type_string_long_ap(machine: &mut machine::Pc9821Ap, text: &[u8]) {
+pub fn type_string_long_ap(machine: &mut machine_98::Pc9821Ap, text: &[u8]) {
     type_string_long_generic(machine, text);
 }
 
 /// Runs the PC-9821AP machine until the shell prompt reappears.
-pub fn run_until_prompt_ap(machine: &mut machine::Pc9821Ap) {
+pub fn run_until_prompt_ap(machine: &mut machine_98::Pc9821Ap) {
     run_until_prompt_generic(machine);
 }

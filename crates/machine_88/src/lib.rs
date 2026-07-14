@@ -1,0 +1,19 @@
+//! PC-8801 emulation: a cycle-driven dual-Z80 machine.
+
+#![warn(missing_docs)]
+#![forbid(unsafe_code)]
+
+mod bus;
+mod config;
+mod machine;
+mod memory;
+mod rom;
+mod scheduler;
+
+pub use bus::Pc8801Bus;
+pub use config::{
+    BootMode, ClockConfig, ClockSelect, EightMhzWaitMode, MemoryWaitSwitch, MonitorTiming,
+    Pc8801Model,
+};
+pub use machine::Pc8801Machine;
+pub use rom::{LoadedRoms, RomError, load_rom_set};

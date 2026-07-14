@@ -1,6 +1,6 @@
 use crate::harness;
 
-fn boot_and_get_first_mcb() -> (machine::Pc9801Ra, u32) {
+fn boot_and_get_first_mcb() -> (machine_98::Pc9801Ra, u32) {
     let mut machine = harness::boot_hle();
     let sysvars = harness::get_sysvars_address(&mut machine);
     let mcb_segment = harness::read_word(&machine.bus, sysvars - 2);
@@ -16,7 +16,7 @@ struct McbEntry {
     name: [u8; 8],
 }
 
-fn walk_mcb_chain(bus: &machine::Pc9801Bus, first_mcb: u32) -> Vec<McbEntry> {
+fn walk_mcb_chain(bus: &machine_98::Pc9801Bus, first_mcb: u32) -> Vec<McbEntry> {
     let mut entries = Vec::new();
     let mut addr = first_mcb;
 

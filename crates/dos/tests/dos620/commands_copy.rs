@@ -2,24 +2,24 @@ use std::fs;
 
 use crate::{file_copy_harness::*, harness::*};
 
-fn run_command(machine: &mut machine::Pc9801Ra, command: &[u8]) {
+fn run_command(machine: &mut machine_98::Pc9801Ra, command: &[u8]) {
     type_string_long(machine, command);
     run_until_prompt(machine);
 }
 
-fn run_command_ap(machine: &mut machine::Pc9821Ap, command: &[u8]) {
+fn run_command_ap(machine: &mut machine_98::Pc9821Ap, command: &[u8]) {
     type_string_long_ap(machine, command);
     run_until_prompt_ap(machine);
 }
 
-fn format_drive_a(machine: &mut machine::Pc9801Ra) {
+fn format_drive_a(machine: &mut machine_98::Pc9801Ra) {
     type_string_long(machine, b"FORMAT A:\r");
     machine.run_for(10_000_000);
     type_string(&mut machine.bus, b"Y");
     run_until_prompt(machine);
 }
 
-fn format_drive_a_ap(machine: &mut machine::Pc9821Ap) {
+fn format_drive_a_ap(machine: &mut machine_98::Pc9821Ap) {
     type_string_long_ap(machine, b"FORMAT A:\r");
     machine.run_for(10_000_000);
     type_string(&mut machine.bus, b"Y");

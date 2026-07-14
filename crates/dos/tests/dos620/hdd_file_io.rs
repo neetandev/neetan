@@ -1,7 +1,7 @@
 use crate::harness;
 
 fn open_file_generic<const M: u8>(
-    machine: &mut machine::Machine<cpu::I386<M>>,
+    machine: &mut machine_98::Pc98Machine<cpu::I386<M>>,
     filename: &[u8],
 ) -> u16 {
     let path_addr = harness::INJECT_CODE_BASE + 0x200;
@@ -32,7 +32,10 @@ fn open_file_generic<const M: u8>(
     ax
 }
 
-fn close_file_generic<const M: u8>(machine: &mut machine::Machine<cpu::I386<M>>, handle: u16) {
+fn close_file_generic<const M: u8>(
+    machine: &mut machine_98::Pc98Machine<cpu::I386<M>>,
+    handle: u16,
+) {
     let handle_lo = (handle & 0xFF) as u8;
     let handle_hi = (handle >> 8) as u8;
     #[rustfmt::skip]
@@ -46,7 +49,7 @@ fn close_file_generic<const M: u8>(machine: &mut machine::Machine<cpu::I386<M>>,
 }
 
 fn create_file_generic<const M: u8>(
-    machine: &mut machine::Machine<cpu::I386<M>>,
+    machine: &mut machine_98::Pc98Machine<cpu::I386<M>>,
     filename: &[u8],
 ) -> u16 {
     let path_addr = harness::INJECT_CODE_BASE + 0x200;
@@ -69,7 +72,10 @@ fn create_file_generic<const M: u8>(
     harness::result_word(&machine.bus, 0)
 }
 
-fn delete_file_generic<const M: u8>(machine: &mut machine::Machine<cpu::I386<M>>, filename: &[u8]) {
+fn delete_file_generic<const M: u8>(
+    machine: &mut machine_98::Pc98Machine<cpu::I386<M>>,
+    filename: &[u8],
+) {
     let path_addr = harness::INJECT_CODE_BASE + 0x200;
     harness::write_bytes(&mut machine.bus, path_addr, filename);
     #[rustfmt::skip]
@@ -89,7 +95,7 @@ fn delete_file_generic<const M: u8>(machine: &mut machine::Machine<cpu::I386<M>>
 
 /// Runs the open/read/lseek/close test sequence on a given machine.
 fn run_hdd_file_io_tests<const M: u8>(
-    machine: &mut machine::Machine<cpu::I386<M>>,
+    machine: &mut machine_98::Pc98Machine<cpu::I386<M>>,
     drive_letter: &[u8],
 ) {
     let mut path = Vec::new();
@@ -166,7 +172,7 @@ fn run_hdd_file_io_tests<const M: u8>(
 
 /// Runs create/write/seek/read/verify/delete on a given machine.
 fn run_hdd_write_tests<const M: u8>(
-    machine: &mut machine::Machine<cpu::I386<M>>,
+    machine: &mut machine_98::Pc98Machine<cpu::I386<M>>,
     drive_letter: &[u8],
 ) {
     let mut path = Vec::new();
@@ -246,7 +252,7 @@ fn run_hdd_write_tests<const M: u8>(
 }
 
 fn run_hdd_multicluster_write_tests<const M: u8>(
-    machine: &mut machine::Machine<cpu::I386<M>>,
+    machine: &mut machine_98::Pc98Machine<cpu::I386<M>>,
     drive_letter: &[u8],
 ) {
     let mut path = Vec::new();

@@ -4,11 +4,11 @@ use dos::tables;
 use crate::harness;
 
 /// Helper: open a file and return the handle.
-fn open_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> u16 {
+fn open_file(machine: &mut machine_98::Pc9801Ra, filename: &[u8]) -> u16 {
     open_file_with_mode(machine, filename, 0x00)
 }
 
-fn open_file_raw(machine: &mut machine::Pc9801Ra, filename: &[u8], open_mode: u8) -> (u16, u16) {
+fn open_file_raw(machine: &mut machine_98::Pc9801Ra, filename: &[u8], open_mode: u8) -> (u16, u16) {
     let path_addr = harness::INJECT_CODE_BASE + 0x200;
     harness::write_bytes(&mut machine.bus, path_addr, filename);
     #[rustfmt::skip]
@@ -32,7 +32,7 @@ fn open_file_raw(machine: &mut machine::Pc9801Ra, filename: &[u8], open_mode: u8
     )
 }
 
-fn open_file_with_mode(machine: &mut machine::Pc9801Ra, filename: &[u8], open_mode: u8) -> u16 {
+fn open_file_with_mode(machine: &mut machine_98::Pc9801Ra, filename: &[u8], open_mode: u8) -> u16 {
     let (handle, flags) = open_file_raw(machine, filename, open_mode);
     assert_eq!(
         flags & 0x0001,
@@ -43,7 +43,7 @@ fn open_file_with_mode(machine: &mut machine::Pc9801Ra, filename: &[u8], open_mo
     handle
 }
 
-fn sft_addr_for_handle(machine: &mut machine::Pc9801Ra, handle: u16) -> u32 {
+fn sft_addr_for_handle(machine: &mut machine_98::Pc9801Ra, handle: u16) -> u32 {
     let psp_segment = harness::get_psp_segment(machine);
     let psp_base = harness::far_to_linear(psp_segment, 0);
     let sft_index = u16::from(harness::read_byte(
@@ -61,7 +61,7 @@ fn sft_addr_for_handle(machine: &mut machine::Pc9801Ra, handle: u16) -> u32 {
     }
 }
 
-fn open_file_ap(machine: &mut machine::Pc9821Ap, filename: &[u8]) -> u16 {
+fn open_file_ap(machine: &mut machine_98::Pc9821Ap, filename: &[u8]) -> u16 {
     let path_addr = harness::INJECT_CODE_BASE + 0x200;
     harness::write_bytes(&mut machine.bus, path_addr, filename);
     #[rustfmt::skip]
@@ -90,7 +90,7 @@ fn open_file_ap(machine: &mut machine::Pc9821Ap, filename: &[u8]) -> u16 {
 }
 
 /// Helper: close a file handle.
-fn close_file(machine: &mut machine::Pc9801Ra, handle: u16) {
+fn close_file(machine: &mut machine_98::Pc9801Ra, handle: u16) {
     let handle_lo = (handle & 0xFF) as u8;
     let handle_hi = (handle >> 8) as u8;
     #[rustfmt::skip]
@@ -104,7 +104,7 @@ fn close_file(machine: &mut machine::Pc9801Ra, handle: u16) {
     harness::inject_and_run_with_budget(machine, &code, harness::INJECT_BUDGET_DISK_IO);
 }
 
-fn write_zero_bytes(machine: &mut machine::Pc9801Ra, handle: u16) {
+fn write_zero_bytes(machine: &mut machine_98::Pc9801Ra, handle: u16) {
     let handle_lo = (handle & 0xFF) as u8;
     let handle_hi = (handle >> 8) as u8;
     #[rustfmt::skip]
@@ -132,7 +132,7 @@ fn write_zero_bytes(machine: &mut machine::Pc9801Ra, handle: u16) {
 }
 
 /// Helper: create a file and return the handle.
-fn create_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> u16 {
+fn create_file(machine: &mut machine_98::Pc9801Ra, filename: &[u8]) -> u16 {
     let path_addr = harness::INJECT_CODE_BASE + 0x200;
     harness::write_bytes(&mut machine.bus, path_addr, filename);
     #[rustfmt::skip]
@@ -161,7 +161,7 @@ fn create_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> u16 {
 }
 
 /// Helper: delete a file.
-fn delete_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) {
+fn delete_file(machine: &mut machine_98::Pc9801Ra, filename: &[u8]) {
     let path_addr = harness::INJECT_CODE_BASE + 0x200;
     harness::write_bytes(&mut machine.bus, path_addr, filename);
     #[rustfmt::skip]
@@ -1150,7 +1150,7 @@ fn find_next_uses_restored_dta_directory() {
     );
 }
 
-fn run_mkdir(machine: &mut machine::Pc9801Ra, path: &[u8]) {
+fn run_mkdir(machine: &mut machine_98::Pc9801Ra, path: &[u8]) {
     harness::write_bytes(&mut machine.bus, harness::INJECT_CODE_BASE + 0x200, path);
     #[rustfmt::skip]
     let code: &[u8] = &[
@@ -1173,7 +1173,7 @@ fn run_mkdir(machine: &mut machine::Pc9801Ra, path: &[u8]) {
     );
 }
 
-fn run_create_file_with_payload(machine: &mut machine::Pc9801Ra, path: &[u8]) {
+fn run_create_file_with_payload(machine: &mut machine_98::Pc9801Ra, path: &[u8]) {
     harness::write_bytes(&mut machine.bus, harness::INJECT_CODE_BASE + 0x200, path);
     harness::write_bytes(
         &mut machine.bus,
@@ -1642,7 +1642,7 @@ fn findnext_after_findfirst() {
 
 /// Runs INT 21h AX=4400h (IOCTL get device info) for the given handle and
 /// returns (AX, DX, flags).
-fn ioctl_get_device_info(machine: &mut machine::Pc9801Ra, handle: u8) -> (u16, u16, u16) {
+fn ioctl_get_device_info(machine: &mut machine_98::Pc9801Ra, handle: u8) -> (u16, u16, u16) {
     #[rustfmt::skip]
     let mut code: Vec<u8> = vec![
         0xB8, 0x00, 0x44,                   // MOV AX, 4400h

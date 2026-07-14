@@ -1582,7 +1582,7 @@ fn test_xms_8f_reallocate_any_extended_memory() {
 
 /// Walks the DOS device driver chain starting at the NUL header and
 /// returns each 8-byte device name found until the end-of-chain sentinel.
-fn walk_device_chain_names(bus: &machine::Pc9801Bus) -> Vec<[u8; 8]> {
+fn walk_device_chain_names(bus: &machine_98::Pc9801Bus) -> Vec<[u8; 8]> {
     const DEV_NUL_OFFSET: u16 = 0x0022;
     const DEVHDR_OFF_NEXT_PTR: u32 = 0x00;
     const DEVHDR_OFF_NAME: u32 = 0x0A;

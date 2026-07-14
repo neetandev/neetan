@@ -8,7 +8,7 @@
 ; registers directly via the Cpu trait, and resumes the CPU to execute the IRET.
 ;
 ; This file is NOT the BIOS implementation - it's the minimal x86 code that
-; triggers Rust HLE handlers. The actual BIOS logic lives in crates/machine/src/bus/bios.rs.
+; triggers Rust HLE handlers. The actual BIOS logic lives in crates/machine_98/src/bus/bios.rs.
 ;
 ; Build: nasm -f bin -o bios.rom bios.asm
 

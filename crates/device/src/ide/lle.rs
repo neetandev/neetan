@@ -36,7 +36,7 @@ pub enum IdeAction {
     /// No action needed.
     None,
     /// Schedule a completion event after a delay.
-    /// The bus should schedule `EventKind::IdeExecution`.
+    /// The bus should schedule `Event98::IdeExecution`.
     ScheduleCompletion,
 }
 

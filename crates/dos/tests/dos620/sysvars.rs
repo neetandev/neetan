@@ -1,6 +1,6 @@
 use crate::harness;
 
-fn boot_and_get_sysvars() -> (machine::Pc9801Ra, u32) {
+fn boot_and_get_sysvars() -> (machine_98::Pc9801Ra, u32) {
     let mut machine = harness::boot_hle();
     let sysvars = harness::get_sysvars_address(&mut machine);
     (machine, sysvars)

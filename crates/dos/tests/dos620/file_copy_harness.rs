@@ -319,7 +319,7 @@ pub fn load_hdd_from_path(path: &Path) -> HddImage {
 pub fn boot_hle_with_temp_hdd_and_floppy(
     hdd_path: &Path,
     floppy: FloppyImage,
-) -> machine::Pc9801Ra {
+) -> machine_98::Pc9801Ra {
     let mut machine = create_hle_machine();
     machine.bus.write_byte(0x055C, 0x01);
     machine.bus.write_byte(0x055D, 0x01);

@@ -1,6 +1,6 @@
 use crate::harness::*;
 
-fn run_mem() -> machine::Pc9801Ra {
+fn run_mem() -> machine_98::Pc9801Ra {
     let mut machine = boot_hle();
     type_string(&mut machine.bus, b"CLS\r");
     run_until_prompt(&mut machine);

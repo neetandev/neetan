@@ -2,7 +2,7 @@ use crate::harness::*;
 
 static EXPECTED_STUB: &[u8] = include_bytes!("../../../../utils/dos/dos.rom");
 
-fn open_file_raw(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> (u16, u16) {
+fn open_file_raw(machine: &mut machine_98::Pc9801Ra, filename: &[u8]) -> (u16, u16) {
     let path_addr = INJECT_CODE_BASE + 0x200;
     write_bytes(&mut machine.bus, path_addr, filename);
     #[rustfmt::skip]
@@ -22,7 +22,7 @@ fn open_file_raw(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> (u16, u16)
     (result_word(&machine.bus, 0), result_word(&machine.bus, 2))
 }
 
-fn read_file(machine: &mut machine::Pc9801Ra, filename: &[u8], count: u16) -> Vec<u8> {
+fn read_file(machine: &mut machine_98::Pc9801Ra, filename: &[u8], count: u16) -> Vec<u8> {
     let path_addr = INJECT_CODE_BASE + 0x200;
     write_bytes(&mut machine.bus, path_addr, filename);
     let count_lo = (count & 0xFF) as u8;
@@ -53,7 +53,7 @@ fn read_file(machine: &mut machine::Pc9801Ra, filename: &[u8], count: u16) -> Ve
     read_bytes(&machine.bus, INJECT_CODE_BASE + 0x300, bytes_read)
 }
 
-fn get_file_attributes(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> (u8, u16) {
+fn get_file_attributes(machine: &mut machine_98::Pc9801Ra, filename: &[u8]) -> (u8, u16) {
     let path_addr = INJECT_CODE_BASE + 0x200;
     write_bytes(&mut machine.bus, path_addr, filename);
     #[rustfmt::skip]

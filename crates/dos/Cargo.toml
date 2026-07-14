@@ -14,4 +14,4 @@ common = { workspace = true, features = ["std"] }
 [dev-dependencies]
 cpu.workspace = true
 device.workspace = true
-machine.workspace = true
+machine_98.workspace = true

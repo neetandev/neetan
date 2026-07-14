@@ -2,44 +2,44 @@ use std::fs;
 
 use crate::{file_copy_harness::*, harness::*};
 
-fn boot_with_batch_file(batch_content: &[u8]) -> machine::Pc9801Ra {
+fn boot_with_batch_file(batch_content: &[u8]) -> machine_98::Pc9801Ra {
     let floppy_image = create_test_floppy_with_program(b"TEST    BAT", batch_content);
     boot_hle_with_floppy_image(floppy_image)
 }
 
-fn submit_command(machine: &mut machine::Pc9801Ra, command: &[u8]) {
+fn submit_command(machine: &mut machine_98::Pc9801Ra, command: &[u8]) {
     type_string(&mut machine.bus, command);
     run_until_prompt(machine);
 }
 
-fn submit_long_command(machine: &mut machine::Pc9801Ra, command: &[u8]) {
+fn submit_long_command(machine: &mut machine_98::Pc9801Ra, command: &[u8]) {
     type_string_long(machine, command);
     run_until_prompt(machine);
 }
 
-fn format_drive_a(machine: &mut machine::Pc9801Ra) {
+fn format_drive_a(machine: &mut machine_98::Pc9801Ra) {
     type_string_long(machine, b"FORMAT A:\r");
     machine.run_for(10_000_000);
     type_string(&mut machine.bus, b"Y");
     run_until_prompt(machine);
 }
 
-fn prepare_test_batch(machine: &mut machine::Pc9801Ra) {
+fn prepare_test_batch(machine: &mut machine_98::Pc9801Ra) {
     submit_command(machine, b"A:\r");
     submit_command(machine, b"CLS\r");
 }
 
-fn run_batch_command(mut machine: machine::Pc9801Ra, command: &[u8]) -> machine::Pc9801Ra {
+fn run_batch_command(mut machine: machine_98::Pc9801Ra, command: &[u8]) -> machine_98::Pc9801Ra {
     prepare_test_batch(&mut machine);
     submit_command(&mut machine, command);
     machine
 }
 
-fn run_test_batch(batch_content: &[u8]) -> machine::Pc9801Ra {
+fn run_test_batch(batch_content: &[u8]) -> machine_98::Pc9801Ra {
     run_batch_command(boot_with_batch_file(batch_content), b"TEST\r")
 }
 
-fn run_test_batch_with_long_command(batch_content: &[u8], command: &[u8]) -> machine::Pc9801Ra {
+fn run_test_batch_with_long_command(batch_content: &[u8], command: &[u8]) -> machine_98::Pc9801Ra {
     let mut machine = boot_with_batch_file(batch_content);
     prepare_test_batch(&mut machine);
     submit_long_command(&mut machine, command);
@@ -49,34 +49,34 @@ fn run_test_batch_with_long_command(batch_content: &[u8], command: &[u8]) -> mac
 fn run_test_batch_with_two_floppy_images(
     first_floppy_image: device::floppy::FloppyImage,
     second_floppy_image: device::floppy::FloppyImage,
-) -> machine::Pc9801Ra {
+) -> machine_98::Pc9801Ra {
     run_batch_command(
         boot_hle_with_two_floppy_images(first_floppy_image, second_floppy_image),
         b"TEST\r",
     )
 }
 
-fn screen_contains(machine: &machine::Pc9801Ra, text: &str) -> bool {
+fn screen_contains(machine: &machine_98::Pc9801Ra, text: &str) -> bool {
     assert!(text.is_ascii(), "screen text helper only supports ASCII");
     let characters = text.bytes().map(u16::from).collect::<Vec<_>>();
     find_string_in_text_vram(&machine.bus, &characters)
 }
 
-fn screen_contains_ap(machine: &machine::Pc9821Ap, text: &str) -> bool {
+fn screen_contains_ap(machine: &machine_98::Pc9821Ap, text: &str) -> bool {
     assert!(text.is_ascii(), "screen text helper only supports ASCII");
     let characters = text.bytes().map(u16::from).collect::<Vec<_>>();
     find_string_in_text_vram(&machine.bus, &characters)
 }
 
-fn assert_screen_contains(machine: &machine::Pc9801Ra, text: &str, message: &str) {
+fn assert_screen_contains(machine: &machine_98::Pc9801Ra, text: &str, message: &str) {
     assert!(screen_contains(machine, text), "{message}");
 }
 
-fn assert_screen_lacks(machine: &machine::Pc9801Ra, text: &str, message: &str) {
+fn assert_screen_lacks(machine: &machine_98::Pc9801Ra, text: &str, message: &str) {
     assert!(!screen_contains(machine, text), "{message}");
 }
 
-fn run_until_screen_contains(machine: &mut machine::Pc9801Ra, text: &str, message: &str) {
+fn run_until_screen_contains(machine: &mut machine_98::Pc9801Ra, text: &str, message: &str) {
     let max_cycles: u64 = 500_000_000;
     let check_interval: u64 = 100_000;
     let mut total_cycles = 0u64;
@@ -89,7 +89,7 @@ fn run_until_screen_contains(machine: &mut machine::Pc9801Ra, text: &str, messag
     }
 }
 
-fn current_shell_program_segment_prefix(machine: &mut machine::Pc9801Ra) -> u16 {
+fn current_shell_program_segment_prefix(machine: &mut machine_98::Pc9801Ra) -> u16 {
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x62,                         // MOV AH, 62h

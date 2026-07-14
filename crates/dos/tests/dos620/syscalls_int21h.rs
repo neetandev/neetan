@@ -1696,12 +1696,12 @@ struct McbView {
     size: u16,
 }
 
-fn first_mcb_segment(machine: &mut machine::Pc9801Ra) -> u16 {
+fn first_mcb_segment(machine: &mut machine_98::Pc9801Ra) -> u16 {
     let sysvars = harness::get_sysvars_address(machine);
     harness::read_word(&machine.bus, sysvars - 2)
 }
 
-fn walk_mcb_chain(bus: &machine::Pc9801Bus, first: u16) -> Vec<McbView> {
+fn walk_mcb_chain(bus: &machine_98::Pc9801Bus, first: u16) -> Vec<McbView> {
     let mut entries = Vec::new();
     let mut segment = first;
     for _ in 0..1000 {

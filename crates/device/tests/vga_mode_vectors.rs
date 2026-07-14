@@ -1,7 +1,7 @@
 //! Register-vector tests for `Vga::resolve()`.
 //!
 //! Every vector was captured from the real ET4000AX VGA BIOS by running the
-//! machineat mode exerciser with `NEETAN_DUMP_VGA_REGS=1` after the given
+//! machine_at mode exerciser with `NEETAN_DUMP_VGA_REGS=1` after the given
 //! INT 10h mode set (or synthetic register setup for the Mode X and split
 //! screen steps). The vectors are applied through the real I/O ports, KEY
 //! unlock included, and the tests pin the resolved scan-out state per mode.

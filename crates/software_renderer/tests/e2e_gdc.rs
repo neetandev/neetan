@@ -8,7 +8,7 @@
 //! analog palettes, in 400-line and 200-line modes.
 
 use common::{BUILTIN_FONT_ROM, Bus, Cpu, CpuMode, MachineModel};
-use machine::{Pc9801Bus, Pc9801F};
+use machine_98::{Pc9801Bus, Pc9801F};
 
 const DEBUG_GDC_ROM: &[u8] = include_bytes!("../../../utils/debug/debug_gdc.rom");
 
@@ -57,7 +57,7 @@ fn assert_pixel(framebuffer: &[u8], x: u32, y: u32, expected: [u8; 3], context: 
 
 /// Fixed BRG colors for digital graphics indices 0..7. Bit 0 = blue,
 /// bit 1 = red, bit 2 = green, each 0 or 0xFF. Matches
-/// `pack_fixed_color` in `crates/machine/src/bus.rs`.
+/// `pack_fixed_color` in `crates/machine_98/src/bus.rs`.
 fn digital_rgb(index: u8) -> [u8; 3] {
     let blue = if index & 0x01 != 0 { 0xFF } else { 0x00 };
     let red = if index & 0x02 != 0 { 0xFF } else { 0x00 };

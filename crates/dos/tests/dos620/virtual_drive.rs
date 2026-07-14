@@ -3,7 +3,7 @@ use crate::harness;
 /// The expected content of Z:\COMMAND.COM (the HLE stub from dos.rom).
 static EXPECTED_STUB: &[u8] = include_bytes!("../../../../utils/dos/dos.rom");
 
-fn open_file_raw(machine: &mut machine::Pc9801Ra, filename: &[u8], mode: u8) -> (u16, u16) {
+fn open_file_raw(machine: &mut machine_98::Pc9801Ra, filename: &[u8], mode: u8) -> (u16, u16) {
     let path_addr = harness::INJECT_CODE_BASE + 0x200;
     harness::write_bytes(&mut machine.bus, path_addr, filename);
     #[rustfmt::skip]
@@ -25,7 +25,7 @@ fn open_file_raw(machine: &mut machine::Pc9801Ra, filename: &[u8], mode: u8) -> 
     (ax, flags)
 }
 
-fn open_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> u16 {
+fn open_file(machine: &mut machine_98::Pc9801Ra, filename: &[u8]) -> u16 {
     let (handle, flags) = open_file_raw(machine, filename, 0x00);
     assert_eq!(
         flags & 0x0001,
@@ -36,7 +36,7 @@ fn open_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> u16 {
     handle
 }
 
-fn close_file(machine: &mut machine::Pc9801Ra, handle: u16) {
+fn close_file(machine: &mut machine_98::Pc9801Ra, handle: u16) {
     let handle_lo = (handle & 0xFF) as u8;
     let handle_hi = (handle >> 8) as u8;
     #[rustfmt::skip]

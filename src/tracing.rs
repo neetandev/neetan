@@ -1,4 +1,4 @@
 #[derive(Default)]
 pub struct Tracing;
 
-impl machine::Tracing for Tracing {}
+impl machine_98::Tracing for Tracing {}

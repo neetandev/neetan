@@ -276,7 +276,7 @@ impl KeyMap {
     }
 
     /// PC/AT key map for the 106-key JIS (OADG) layout: host scancodes to
-    /// set-1 key ids (E0-extended keys use the machineat synthetic ids). The
+    /// set-1 key ids (E0-extended keys use the machine_at synthetic ids). The
     /// machine expands each forwarded id into the set-2 make/break sequence;
     /// modifiers forward as their own ids.
     pub const fn new_at() -> Self {
@@ -1807,7 +1807,7 @@ const fn build_pc60_shifted_map() -> [u8; Scancode::COUNT] {
 
 /// Default PC/AT key map for the 106-key JIS (OADG) layout: host scancodes to
 /// set-1 key ids. Unmapped host keys carry 0x00, which the machine drops.
-/// The E0-extended keys use the synthetic ids the machineat crate exports.
+/// The E0-extended keys use the synthetic ids the machine_at crate exports.
 #[allow(clippy::just_underscores_and_digits)]
 const AT_DEFAULT_BINDINGS: &[(Scancode, u8, &str)] = &[
     (Scancode::Escape, 0x01, "Esc"),
@@ -1900,24 +1900,28 @@ const AT_DEFAULT_BINDINGS: &[(Scancode, u8, &str)] = &[
     (Scancode::International3, 0x7D, "Yen"),
     (Scancode::International4, 0x79, "Henkan"),
     (Scancode::International5, 0x7B, "Muhenkan"),
-    (Scancode::Up, machineat::AT_KEY_CURSOR_UP, "Up"),
-    (Scancode::Down, machineat::AT_KEY_CURSOR_DOWN, "Down"),
-    (Scancode::Left, machineat::AT_KEY_CURSOR_LEFT, "Left"),
-    (Scancode::Right, machineat::AT_KEY_CURSOR_RIGHT, "Right"),
-    (Scancode::Insert, machineat::AT_KEY_INSERT, "Insert"),
-    (Scancode::Delete, machineat::AT_KEY_DELETE, "Delete"),
-    (Scancode::Home, machineat::AT_KEY_HOME, "Home"),
-    (Scancode::End, machineat::AT_KEY_END, "End"),
-    (Scancode::PageUp, machineat::AT_KEY_PAGE_UP, "PageUp"),
-    (Scancode::PageDown, machineat::AT_KEY_PAGE_DOWN, "PageDown"),
-    (Scancode::KpEnter, machineat::AT_KEY_KEYPAD_ENTER, "KpEnter"),
+    (Scancode::Up, machine_at::AT_KEY_CURSOR_UP, "Up"),
+    (Scancode::Down, machine_at::AT_KEY_CURSOR_DOWN, "Down"),
+    (Scancode::Left, machine_at::AT_KEY_CURSOR_LEFT, "Left"),
+    (Scancode::Right, machine_at::AT_KEY_CURSOR_RIGHT, "Right"),
+    (Scancode::Insert, machine_at::AT_KEY_INSERT, "Insert"),
+    (Scancode::Delete, machine_at::AT_KEY_DELETE, "Delete"),
+    (Scancode::Home, machine_at::AT_KEY_HOME, "Home"),
+    (Scancode::End, machine_at::AT_KEY_END, "End"),
+    (Scancode::PageUp, machine_at::AT_KEY_PAGE_UP, "PageUp"),
+    (Scancode::PageDown, machine_at::AT_KEY_PAGE_DOWN, "PageDown"),
+    (
+        Scancode::KpEnter,
+        machine_at::AT_KEY_KEYPAD_ENTER,
+        "KpEnter",
+    ),
     (
         Scancode::KpDivide,
-        machineat::AT_KEY_KEYPAD_DIVIDE,
+        machine_at::AT_KEY_KEYPAD_DIVIDE,
         "KpDivide",
     ),
-    (Scancode::RCtrl, machineat::AT_KEY_RIGHT_CTRL, "RCtrl"),
-    (Scancode::RAlt, machineat::AT_KEY_RIGHT_ALT, "RAlt"),
+    (Scancode::RCtrl, machine_at::AT_KEY_RIGHT_CTRL, "RCtrl"),
+    (Scancode::RAlt, machine_at::AT_KEY_RIGHT_ALT, "RAlt"),
 ];
 
 #[allow(clippy::just_underscores_and_digits)]
@@ -1959,8 +1963,8 @@ pub fn at_key_from_name(name: &str) -> Option<u8> {
         "underscore" => Some(0x73),
         "xfer" => Some(0x79),
         "nfer" => Some(0x7B),
-        "ins" => Some(machineat::AT_KEY_INSERT),
-        "del" => Some(machineat::AT_KEY_DELETE),
+        "ins" => Some(machine_at::AT_KEY_INSERT),
+        "del" => Some(machine_at::AT_KEY_DELETE),
         _ => None,
     }
 }

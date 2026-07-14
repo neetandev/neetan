@@ -77,7 +77,7 @@ dependencies = [
  "common",
  "cpu",
  "device",
- "machine",
+ "machine_98",
 ]
 
 [[package]]
@@ -87,7 +87,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
-name = "machine"
+name = "machine_60"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "common",
+ "cpu",
+ "device",
+ "software_renderer",
+]
+
+[[package]]
+name = "machine_88"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "common",
+ "cpu",
+ "device",
+ "software_renderer",
+]
+
+[[package]]
+name = "machine_88va"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "common",
+ "cpu",
+ "device",
+ "software_renderer",
+]
+
+[[package]]
+name = "machine_98"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -100,40 +133,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "machine60"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "common",
- "cpu",
- "device",
- "software_renderer",
-]
-
-[[package]]
-name = "machine88"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "common",
- "cpu",
- "device",
- "software_renderer",
-]
-
-[[package]]
-name = "machine88va"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "common",
- "cpu",
- "device",
- "software_renderer",
-]
-
-[[package]]
-name = "machineat"
+name = "machine_at"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -145,7 +145,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "machinefm7"
+name = "machine_fm7"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -156,7 +156,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "machinetowns"
+name = "machine_towns"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -167,7 +167,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "machinex1"
+name = "machine_x1"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -178,7 +178,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "machinex68k"
+name = "machine_x68k"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -207,15 +207,15 @@ dependencies = [
  "cpu",
  "device",
  "dos",
- "machine",
- "machine60",
- "machine88",
- "machine88va",
- "machineat",
- "machinefm7",
- "machinetowns",
- "machinex1",
- "machinex68k",
+ "machine_60",
+ "machine_88",
+ "machine_88va",
+ "machine_98",
+ "machine_at",
+ "machine_fm7",
+ "machine_towns",
+ "machine_x1",
+ "machine_x68k",
  "sdl3",
  "sdl3_backend",
  "software_renderer",
@@ -298,7 +298,7 @@ dependencies = [
  "common",
  "cpu",
  "device",
- "machine",
+ "machine_98",
  "software_renderer",
 ]
 
