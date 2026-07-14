@@ -62,6 +62,25 @@ pub enum Event98 {
     GaDisplayStart,
 }
 
+#[cfg(test)]
+mod trace_identifier_tests {
+    use super::*;
+
+    #[test]
+    fn trace_identifiers_match_every_event_variant() {
+        assert_eq!(
+            Event98::ALL.len(),
+            common::trace_id::scheduled::pc98::ALL.len()
+        );
+        for (event, identifier) in Event98::ALL
+            .iter()
+            .zip(common::trace_id::scheduled::pc98::ALL)
+        {
+            assert_eq!(event.trace_name(), *identifier);
+        }
+    }
+}
+
 impl Event98 {
     const ALL: [Self; EVENT98_KIND_COUNT] = [
         Self::PitTimer0,
@@ -91,6 +110,35 @@ impl Event98 {
 
     const fn from_index(index: usize) -> Self {
         Self::ALL[index]
+    }
+
+    pub(crate) const fn trace_name(self) -> &'static str {
+        use common::trace_id::scheduled::pc98;
+        match self {
+            Self::PitTimer0 => pc98::PIT_TIMER0,
+            Self::GdcVsync => pc98::GDC_VSYNC,
+            Self::GdcDisplayStart => pc98::GDC_DISPLAY_START,
+            Self::FdcExecution => pc98::FDC_EXECUTION,
+            Self::FdcInterrupt => pc98::FDC_INTERRUPT,
+            Self::GdcDrawingComplete => pc98::GDC_DRAWING_COMPLETE,
+            Self::MouseTimer => pc98::MOUSE_TIMER,
+            Self::FmTimerA => pc98::FM_TIMER_A,
+            Self::FmTimerB => pc98::FM_TIMER_B,
+            Self::FmTimer2A => pc98::FM2_TIMER_A,
+            Self::FmTimer2B => pc98::FM2_TIMER_B,
+            Self::SasiExecution => pc98::SASI_EXECUTION,
+            Self::SasiInterrupt => pc98::SASI_INTERRUPT,
+            Self::IdeExecution => pc98::IDE_EXECUTION,
+            Self::IdeInterrupt => pc98::IDE_INTERRUPT,
+            Self::Pcm86Irq => pc98::PCM86_IRQ,
+            Self::Sb16OplTimerA => pc98::SB16_OPL_TIMER_A,
+            Self::Sb16OplTimerB => pc98::SB16_OPL_TIMER_B,
+            Self::Sb16DspDma => pc98::SB16_DSP_DMA,
+            Self::MpuTimer => pc98::MPU_TIMER,
+            Self::MusicGen14Timer => pc98::MUSIC_GEN14_TIMER,
+            Self::GaVsync => pc98::GA_VSYNC,
+            Self::GaDisplayStart => pc98::GA_DISPLAY_START,
+        }
     }
 }
 

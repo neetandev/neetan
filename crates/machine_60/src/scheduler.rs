@@ -33,6 +33,44 @@ pub(crate) enum Event60 {
     VoiceRequest,
 }
 
+#[cfg(test)]
+mod trace_identifier_tests {
+    use super::*;
+
+    #[test]
+    fn trace_identifiers_match_every_event_variant() {
+        assert_eq!(
+            Event60::ALL.len(),
+            common::trace_id::scheduled::pc60::ALL.len()
+        );
+        for (event, identifier) in Event60::ALL
+            .iter()
+            .zip(common::trace_id::scheduled::pc60::ALL)
+        {
+            assert_eq!(event.trace_name(), *identifier);
+        }
+    }
+}
+
+impl Event60 {
+    pub(crate) const fn trace_name(self) -> &'static str {
+        use common::trace_id::scheduled::pc60;
+        match self {
+            Self::TimerIrq => pc60::TIMER_IRQ,
+            Self::Vrtc => pc60::VIDEO_VRTC,
+            Self::CassetteByte => pc60::CASSETTE_BYTE,
+            Self::KeyScan => pc60::KEYBOARD_SCAN,
+            Self::FdcDrqByte => pc60::FDC_DRQ,
+            Self::FdcSeekComplete => pc60::FDC_SEEK_COMPLETE,
+            Self::FmTimerA => pc60::FM_TIMER_A,
+            Self::FmTimerB => pc60::FM_TIMER_B,
+            Self::Scanline => pc60::VIDEO_SCANLINE,
+            Self::BusReqEnd => pc60::VIDEO_BUS_REQUEST_END,
+            Self::VoiceRequest => pc60::VOICE_REQUEST,
+        }
+    }
+}
+
 const EVENT_COUNT: usize = 11;
 
 impl Event60 {

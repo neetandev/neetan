@@ -1,16 +1,17 @@
 //! PC/AT I/O port read dispatch.
 
-use common::Tracing;
+use common::TraceSink;
 
 use crate::{bus::AtBus, config::PIT_CLOCK_HZ};
 
 /// Value returned by an open-bus / write-only port read.
 const OPEN_BUS: u8 = 0xFF;
 
-impl<T: Tracing> AtBus<T> {
+impl<T: TraceSink> AtBus<T> {
     /// Reads a byte from an I/O port.
-    pub(crate) fn io_read(&mut self, port: u16) -> u8 {
-        match port {
+    pub(crate) fn io_read(&mut self, port: u16) -> (u8, bool) {
+        let mut handled = true;
+        let value = match port {
             0x00..=0x0F | 0x80..=0x8F | 0xC0..=0xDF => self.dma.io_read(port).unwrap_or(OPEN_BUS),
             0x20 => self.pic.read_port0(0),
             0x21 => self.pic.read_port2(0),
@@ -71,8 +72,10 @@ impl<T: Tracing> AtBus<T> {
             0x1160 => OPEN_BUS,
             _ => {
                 self.log_unhandled_read(port);
+                handled = false;
                 OPEN_BUS
             }
-        }
+        };
+        (value, handled)
     }
 }

@@ -5,7 +5,7 @@
 //! DMA channel 2, and a completion event raises IRQ 6 when the DOR gate is
 //! open. Seek completion is paced by the SPECIFY step rate time.
 
-use common::{StackVec, Tracing};
+use common::{StackVec, TraceSink};
 use device::{
     at_fdc::DorEffect,
     floppy::FloppyImage,
@@ -42,7 +42,7 @@ const FDC_RESET_POLL_MICROS: u64 = 8;
 /// Maximum sector IDs accepted by one FORMAT TRACK command.
 const FORMAT_TRACK_MAX_SECTORS: usize = 40;
 
-impl<T: Tracing> AtBus<T> {
+impl<T: TraceSink> AtBus<T> {
     /// Reads one FDC register (ports 0x3F0-0x3F5 and 0x3F7).
     pub(super) fn fdc_io_read(&mut self, port: u16) -> u8 {
         match port {

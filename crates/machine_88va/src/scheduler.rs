@@ -34,6 +34,44 @@ pub(crate) enum Event88Va {
     Timer3,
 }
 
+#[cfg(test)]
+mod trace_identifier_tests {
+    use super::*;
+
+    #[test]
+    fn trace_identifiers_match_every_event_variant() {
+        assert_eq!(
+            Event88Va::ALL.len(),
+            common::trace_id::scheduled::pc88va::ALL.len()
+        );
+        for (event, identifier) in Event88Va::ALL
+            .iter()
+            .zip(common::trace_id::scheduled::pc88va::ALL)
+        {
+            assert_eq!(event.trace_name(), *identifier);
+        }
+    }
+}
+
+impl Event88Va {
+    pub(crate) const fn trace_name(self) -> &'static str {
+        use common::trace_id::scheduled::pc88va;
+        match self {
+            Self::PitTimer0 => pc88va::PIT_TIMER0,
+            Self::TspFrame => pc88va::TSP_FRAME,
+            Self::Sysp4Vsync => pc88va::SYSTEM_VSYNC,
+            Self::SgpComplete => pc88va::SGP_COMPLETE,
+            Self::FdcDrqByte => pc88va::FDC_DRQ,
+            Self::FdcSeekComplete => pc88va::FDC_SEEK_COMPLETE,
+            Self::FdcResultComplete => pc88va::FDC_RESULT_COMPLETE,
+            Self::FdcTcClear => pc88va::FDC_TC_CLEAR,
+            Self::OpnaTimerA => pc88va::OPNA_TIMER_A,
+            Self::OpnaTimerB => pc88va::OPNA_TIMER_B,
+            Self::Timer3 => pc88va::TIMER3,
+        }
+    }
+}
+
 impl Event88Va {
     const ALL: [Event88Va; EVENT88VA_KIND_COUNT] = [
         Event88Va::PitTimer0,

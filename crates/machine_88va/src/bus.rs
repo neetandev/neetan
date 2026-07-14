@@ -24,7 +24,11 @@ mod tsp;
 mod video;
 
 use cgrom::CgromVa;
-use common::{Bus, HostDateTimeProvider};
+use common::{
+    Bus, HostDateTimeProvider, NoTrace, TraceAccessKind, TraceAccessWidth, TraceAddressSpace,
+    TraceContext, TraceEvent, TraceInterruptAction, TraceInterruptKind, TracePresentation,
+    TraceSink, trace_id,
+};
 use device::{
     i8253_pit::I8253Pit,
     i8255::I8255,
@@ -73,7 +77,8 @@ pub(crate) const SYNC_SLICE: u64 = 4;
 pub(crate) const TIGHT_SLICE: u64 = 16;
 
 /// The PC-88VA2 system bus seen by the V30.
-pub struct Pc88VaBus {
+pub struct Pc88VaBus<T: TraceSink = NoTrace> {
+    tracer: T,
     pub(crate) memory: Pc88VaMemory,
     pub(crate) clocks: ClockConfig,
     pub(crate) current_cycle: u64,
@@ -119,6 +124,8 @@ pub struct Pc88VaBus {
     pub(crate) display_width: u32,
     /// Valid framebuffer height from the last rendered frame.
     pub(crate) display_height: u32,
+    /// Number assigned to the next published frame.
+    pub(crate) presented_frames: u64,
     /// Host BCD local-time source used by the RTC's TIME_READ command.
     pub(crate) host_date_time_provider: HostDateTimeProvider,
     /// Floppy sub-CPU (PC80S31K) 64 KiB memory: ROM, init pattern, and RAM.
@@ -158,18 +165,41 @@ pub struct Pc88VaBus {
     pub(crate) timer3_ctrl: u8,
 }
 
-impl Pc88VaBus {
-    /// Builds a bus for a model from its validated ROM set.
+impl Pc88VaBus<NoTrace> {
+    /// Builds an untraced bus for a model from its validated ROM set.
     pub fn new(model: Pc88VaModel, roms: LoadedRoms, sample_rate: u32) -> Self {
+        Self::new_with_trace_sink(model, roms, sample_rate, NoTrace)
+    }
+}
+
+impl<T: TraceSink> Pc88VaBus<T> {
+    /// Builds a bus with an explicitly supplied trace sink.
+    pub fn new_with_trace_sink(
+        model: Pc88VaModel,
+        roms: LoadedRoms,
+        sample_rate: u32,
+        tracer: T,
+    ) -> Self {
         let clocks = ClockConfig {
             main_clock_hz: model.main_clock_hz(),
             sub_clock_hz: model.sub_clock_hz(),
             sample_rate,
         };
         let subsys = roms.subsys.clone();
-        let mut bus = Self::from_parts(Pc88VaMemory::new(model, roms), clocks);
+        let mut bus =
+            Self::from_parts_with_trace_sink(Pc88VaMemory::new(model, roms), clocks, tracer);
         bus.load_disk_rom(&subsys);
         bus
+    }
+
+    /// Returns a reference to the trace sink.
+    pub fn tracer(&self) -> &T {
+        &self.tracer
+    }
+
+    /// Returns a mutable reference to the trace sink.
+    pub fn tracer_mut(&mut self) -> &mut T {
+        &mut self.tracer
     }
 
     /// The machine's clock configuration.
@@ -233,6 +263,18 @@ impl Pc88VaBus {
     fn process_events(&mut self) {
         let due = self.scheduler.pop_due_events(self.current_cycle);
         for event in &due {
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::scheduler_main(
+                        self.current_cycle,
+                        Some(u64::from(self.clocks.main_clock_hz)),
+                    ),
+                    TraceEvent::Scheduled {
+                        event: event.kind.trace_name(),
+                        fire_tick: event.fire_cycle,
+                    },
+                );
+            }
             match event.kind {
                 Event88Va::PitTimer0 => {
                     if self.pit.advance_timer0(self.current_cycle) {
@@ -416,6 +458,25 @@ impl Pc88VaBus {
         self.display_height = height;
     }
 
+    fn trace_presentation(&mut self) {
+        if !T::ENABLED {
+            return;
+        }
+        self.presented_frames = self.presented_frames.saturating_add(1);
+        self.tracer.trace(
+            TraceContext::presentation_main(
+                self.current_cycle,
+                Some(u64::from(self.clocks.main_clock_hz)),
+            ),
+            TraceEvent::Presentation(TracePresentation {
+                display: trace_id::display::MAIN,
+                frame: self.presented_frames,
+                width: self.display_width,
+                height: self.display_height,
+            }),
+        );
+    }
+
     /// Advances the TSP frame loop, toggling the display and VSYNC phases.
     fn on_tsp_frame(&mut self) {
         match self.tsp.frame_phase {
@@ -424,6 +485,7 @@ impl Pc88VaBus {
                 self.tsp.update_clock(self.clocks.main_clock_hz, mode);
                 self.tsp.vsync = 0;
                 self.render_frame();
+                self.trace_presentation();
                 self.tsp.frame_phase = FramePhase::Vsync;
                 self.scheduler
                     .schedule(Event88Va::TspFrame, self.current_cycle + self.tsp.dispclock);
@@ -472,7 +534,7 @@ impl Pc88VaBus {
     }
 }
 
-impl Pc88VaBus {
+impl<T: TraceSink> Pc88VaBus<T> {
     /// Loads the floppy sub-CPU ROM (8 KiB) into the sub-CPU memory.
     pub(crate) fn load_disk_rom(&mut self, data: &[u8]) {
         self.sub_mem.load_disk_rom(data);
@@ -545,25 +607,120 @@ impl Pc88VaBus {
 /// Floppy sub-CPU (PC80S31K) view over the bus: implements `common::Bus` with
 /// the disk unit's memory and I/O maps. Built per run slice; never coexists with
 /// the main-CPU access.
-pub(crate) struct SubBusView<'a> {
-    pub(crate) bus: &'a mut Pc88VaBus,
+pub(crate) struct SubBusView<'a, T: TraceSink> {
+    pub(crate) bus: &'a mut Pc88VaBus<T>,
 }
 
-impl Bus for SubBusView<'_> {
+impl<T: TraceSink> Bus for SubBusView<'_, T> {
     fn read_byte(&mut self, address: u32) -> u8 {
-        self.bus.sub_mem.read(address as u16)
+        let address = address as u16;
+        let value = self.bus.sub_mem.read(address);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.clocks.sub_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::SUB_MEMORY,
+                    TraceAccessKind::Read,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
+        value
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
-        self.bus.sub_mem.write(address as u16, value);
+        let address = address as u16;
+        self.bus.sub_mem.write(address, value);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.clocks.sub_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::SUB_MEMORY,
+                    TraceAccessKind::Write,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
+    }
+
+    fn fetch_opcode_byte(&mut self, address: u32) -> u8 {
+        let address = address as u16;
+        let value = self.bus.sub_mem.read(address);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.clocks.sub_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::SUB_MEMORY,
+                    TraceAccessKind::Fetch,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
+        value
     }
 
     fn io_read_byte(&mut self, port: u16) -> u8 {
-        self.bus.sub_io_read(port)
+        let (value, handled) = self.bus.sub_io_read(port);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.clocks.sub_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::SUB_IO,
+                    TraceAccessKind::Read,
+                    u64::from(port & 0xFF),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
+        value
     }
 
     fn io_write_byte(&mut self, port: u16, value: u8) {
-        self.bus.sub_io_write(port, value);
+        let handled = self.bus.sub_io_write(port, value);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.clocks.sub_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::SUB_IO,
+                    TraceAccessKind::Write,
+                    u64::from(port & 0xFF),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
     }
 
     fn has_irq(&self) -> bool {
@@ -571,7 +728,23 @@ impl Bus for SubBusView<'_> {
     }
 
     fn acknowledge_irq(&mut self) -> u8 {
-        self.bus.acknowledge_sub_irq()
+        let vector = self.bus.acknowledge_sub_irq();
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.clocks.sub_clock_hz)),
+                ),
+                TraceEvent::maskable_interrupt(
+                    trace_id::controller::PC88VA_SUB_FDC,
+                    0,
+                    TraceInterruptAction::Acknowledge,
+                    Some(u32::from(vector)),
+                ),
+            );
+        }
+        vector
     }
 
     fn has_nmi(&self) -> bool {
@@ -590,33 +763,129 @@ impl Bus for SubBusView<'_> {
     fn set_current_cycle(&mut self, cycle: u64) {
         self.bus.set_sub_cycle(cycle);
     }
+
+    fn cpu_should_yield(&self) -> bool {
+        T::ENABLED && self.bus.tracer.yield_requested()
+    }
 }
 
-impl Bus for Pc88VaBus {
+impl<T: TraceSink> Bus for Pc88VaBus<T> {
     fn read_byte(&mut self, address: u32) -> u8 {
-        if let Some(offset) = self.memory.graphics_window_offset(address) {
-            return self
-                .gactrlva
-                .gvram_read(self.memory.graphics_vram(), offset);
+        let value = if let Some(offset) = self.memory.graphics_window_offset(address) {
+            self.gactrlva
+                .gvram_read(self.memory.graphics_vram(), offset)
+        } else {
+            self.memory.read_byte(address)
+        };
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.main_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Read,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
         }
-        self.memory.read_byte(address)
+        value
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
         if let Some(offset) = self.memory.graphics_window_offset(address) {
             self.gactrlva
                 .gvram_write(self.memory.graphics_vram_mut(), offset, value);
-            return;
+        } else {
+            self.memory.write_byte(address, value);
         }
-        self.memory.write_byte(address, value);
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.main_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Write,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
+    }
+
+    fn fetch_opcode_byte(&mut self, address: u32) -> u8 {
+        let value = if let Some(offset) = self.memory.graphics_window_offset(address) {
+            self.gactrlva
+                .gvram_read(self.memory.graphics_vram(), offset)
+        } else {
+            self.memory.read_byte(address)
+        };
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.main_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Fetch,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
+        value
     }
 
     fn io_read_byte(&mut self, port: u16) -> u8 {
-        self.io_read(port)
+        let (value, handled) = self.io_read(port);
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.main_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Read,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
+        value
     }
 
     fn io_write_byte(&mut self, port: u16, value: u8) {
-        self.io_write(port, value);
+        let handled = self.io_write(port, value);
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.main_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Write,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
     }
 
     fn has_irq(&self) -> bool {
@@ -624,7 +893,23 @@ impl Bus for Pc88VaBus {
     }
 
     fn acknowledge_irq(&mut self) -> u8 {
-        self.pic.acknowledge()
+        let acknowledge = self.pic.acknowledge_with_line();
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.main_clock_hz)),
+                ),
+                TraceEvent::interrupt(
+                    trace_id::controller::PC88VA_PIC,
+                    TraceInterruptKind::Maskable,
+                    acknowledge.line.map(u16::from),
+                    TraceInterruptAction::Acknowledge,
+                    Some(u32::from(acknowledge.vector)),
+                ),
+            );
+        }
+        acknowledge.vector
     }
 
     fn has_nmi(&self) -> bool {
@@ -643,11 +928,20 @@ impl Bus for Pc88VaBus {
             self.process_events();
         }
     }
+
+    fn cpu_should_yield(&self) -> bool {
+        T::ENABLED && self.tracer.yield_requested()
+    }
 }
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use super::Pc88VaBus;
+    use common::{
+        Bus, TraceAccessKind, TraceContext, TraceEvent, TraceInterrupt, TraceSink, trace_id,
+        trace_source,
+    };
+
+    use super::{Pc88VaBus, SubBusView};
     use crate::{
         config::{ClockConfig, Pc88VaModel},
         memory::Pc88VaMemory,
@@ -677,5 +971,62 @@ pub(crate) mod test_support {
         };
         let memory = Pc88VaMemory::new(model, stub_roms());
         Pc88VaBus::from_parts(memory, clocks)
+    }
+
+    #[derive(Default)]
+    struct InterruptTrace {
+        events: Vec<(TraceContext, TraceInterrupt)>,
+        accesses: Vec<common::TraceAccess>,
+    }
+
+    impl TraceSink for InterruptTrace {
+        fn trace(&mut self, context: TraceContext, event: TraceEvent<'_>) {
+            match event {
+                TraceEvent::Interrupt(interrupt) => self.events.push((context, interrupt)),
+                TraceEvent::Access(access) => self.accesses.push(access),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn main_and_sub_interrupt_acknowledgements_are_traced() {
+        let model = Pc88VaModel::PC88VA2;
+        let mut bus =
+            Pc88VaBus::new_with_trace_sink(model, stub_roms(), 48_000, InterruptTrace::default());
+        Bus::fetch_opcode_byte(&mut bus, 0);
+        Bus::io_read_byte(&mut bus, 0xFFFF);
+        {
+            let mut sub = SubBusView { bus: &mut bus };
+            Bus::io_read_byte(&mut sub, 0x01);
+        }
+        bus.pic.write_port2(0, 0);
+        bus.pic.write_port2(1, 0);
+        for line in 0..16 {
+            bus.pic.clear_irq(line);
+        }
+        bus.pic.set_irq(12);
+        Bus::acknowledge_irq(&mut bus);
+        {
+            let mut sub = SubBusView { bus: &mut bus };
+            Bus::acknowledge_irq(&mut sub);
+        }
+
+        assert_eq!(bus.tracer().events.len(), 2);
+        let (main_context, main_interrupt) = bus.tracer().events[0];
+        assert_eq!(main_context.source, trace_source::CPU_MAIN);
+        assert_eq!(main_interrupt.controller, trace_id::controller::PC88VA_PIC);
+        assert_eq!(main_interrupt.line, Some(12));
+        let (sub_context, sub_interrupt) = bus.tracer().events[1];
+        assert_eq!(sub_context.source, trace_source::CPU_SUB);
+        assert_eq!(
+            sub_interrupt.controller,
+            trace_id::controller::PC88VA_SUB_FDC
+        );
+        assert_eq!(sub_interrupt.line, Some(0));
+        assert_eq!(sub_interrupt.vector, Some(0));
+        assert_eq!(bus.tracer().accesses[0].kind, TraceAccessKind::Fetch);
+        assert!(!bus.tracer().accesses[1].handled);
+        assert!(!bus.tracer().accesses[2].handled);
     }
 }

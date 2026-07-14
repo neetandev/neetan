@@ -31,7 +31,7 @@ fn send(bus: &mut machine_x1::X1Bus, value: u8) {
 }
 
 fn read_result(bus: &mut machine_x1::X1Bus) -> u8 {
-    let value = bus.io_read(SUB_MAILBOX);
+    let value = bus.io_read(SUB_MAILBOX).0;
     run_bus_cycles(bus, 2_000);
     value
 }
@@ -63,7 +63,7 @@ fn play_streams_the_waveform_onto_port_b() {
     let mut saw_low = false;
     for _ in 0..30 {
         run_bus_cycles(bus, 500);
-        if bus.io_read(PPI_PORT_B) & PORT_B_CASSETTE != 0 {
+        if bus.io_read(PPI_PORT_B).0 & PORT_B_CASSETTE != 0 {
             saw_high = true;
         } else {
             saw_low = true;
@@ -86,7 +86,7 @@ fn stop_freezes_the_waveform() {
     send(bus, CMD_CMT_CONTROL);
     send(bus, CMT_PLAY);
     run_bus_cycles(bus, 4_000);
-    let playing = bus.io_read(PPI_PORT_B) & PORT_B_CASSETTE;
+    let playing = bus.io_read(PPI_PORT_B).0 & PORT_B_CASSETTE;
     assert_eq!(
         playing, PORT_B_CASSETTE,
         "playing a high lead-in reads high"
@@ -97,6 +97,6 @@ fn stop_freezes_the_waveform() {
     run_bus_cycles(bus, 100_000);
     // Past the (short) tape the head would run off the end; stopping holds it,
     // so the level stays at the last sample rather than the end-of-tape low.
-    let stopped = bus.io_read(PPI_PORT_B) & PORT_B_CASSETTE;
+    let stopped = bus.io_read(PPI_PORT_B).0 & PORT_B_CASSETTE;
     assert_eq!(stopped, PORT_B_CASSETTE);
 }

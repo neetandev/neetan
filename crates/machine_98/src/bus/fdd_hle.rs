@@ -1,8 +1,8 @@
 use device::floppy::{D88MediaType, FloppyImage};
 
-use crate::{Pc9801Bus, Tracing, bus::bios};
+use crate::{Pc9801Bus, TraceSink, bus::bios};
 
-impl<T: Tracing> Pc9801Bus<T> {
+impl<T: TraceSink> Pc9801Bus<T> {
     /// Returns `true` if a 640KB FDD HLE trap is pending.
     pub fn fdd640k_hle_pending(&self) -> bool {
         self.fdd640k_hle.hle_pending()
@@ -32,19 +32,18 @@ impl<T: Tracing> Pc9801Bus<T> {
         let function = function_code & 0x0F;
         let drive = (device_select & 0x03) as usize;
         let device_type = device_select & 0xF0;
+        self.trace_call(
+            common::trace_id::provider::PC98_FDD_640K,
+            common::TraceCallInterface::Named(common::trace_id::interface::EXTENSION_ROM),
+            Some(u64::from(function_code)),
+            Some(u64::from(device_select)),
+            common::TraceCallPhase::Enter,
+            None,
+        );
 
         let result_ah = if !matches!(device_type, 0x50 | 0x70 | 0x90) {
             0x40
         } else {
-            self.tracer.trace_int1bh_fdd_params(
-                function_code,
-                device_select,
-                cx as u8,
-                (dx >> 8) as u8,
-                dx as u8,
-                (cx >> 8) as u8,
-            );
-
             match function {
                 0x00 => {
                     if function_code & 0x10 != 0 {
@@ -84,8 +83,14 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
         };
 
-        self.tracer
-            .trace_fdd640k_hle(function_code, device_select, result_ah, bx, cx, dx, es, bp);
+        self.trace_call(
+            common::trace_id::provider::PC98_FDD_640K,
+            common::TraceCallInterface::Named(common::trace_id::interface::EXTENSION_ROM),
+            Some(u64::from(function_code)),
+            Some(u64::from(device_select)),
+            common::TraceCallPhase::Exit,
+            Some(u64::from(result_ah)),
+        );
 
         // Write result AH back to stack (high byte of AX word at stack_base).
         self.memory.write_byte(stack_base + 1, result_ah);
@@ -198,7 +203,6 @@ impl<T: Tracing> Pc9801Bus<T> {
         let r = dx as u8;
         let n = (cx >> 8) as u8;
         let requested_sector_size = 128usize << n;
-        let buffer_address = self.fdd640k_buffer_address(es, bp, 0, false);
         let transfer_bytes = if bx == 0 {
             requested_sector_size
         } else {
@@ -216,7 +220,6 @@ impl<T: Tracing> Pc9801Bus<T> {
         let mut track_index = (self.fdd_seek_cylinder[drive] as usize) * 2 + hd as usize;
         let mut offset = 0usize;
         let mut current_record = r;
-        let mut sectors_read = 0usize;
 
         while offset < transfer_bytes {
             if let Some(data) =
@@ -231,7 +234,6 @@ impl<T: Tracing> Pc9801Bus<T> {
                     }
                 }
                 offset += data.len().min(transfer_bytes - offset);
-                sectors_read += 1;
             } else if multi_track && hd == 0 {
                 hd = 1;
                 h = 1;
@@ -249,38 +251,14 @@ impl<T: Tracing> Pc9801Bus<T> {
                         }
                     }
                     offset += data.len().min(transfer_bytes - offset);
-                    sectors_read += 1;
                 } else {
-                    self.tracer.trace_int1bh_fdd_read(
-                        drive,
-                        c,
-                        h,
-                        current_record,
-                        n,
-                        sectors_read,
-                        buffer_address,
-                        0xE0,
-                    );
                     return if diagnostic { 0x00 } else { 0xE0 };
                 }
             } else {
-                self.tracer.trace_int1bh_fdd_read(
-                    drive,
-                    c,
-                    h,
-                    current_record,
-                    n,
-                    sectors_read,
-                    buffer_address,
-                    0xE0,
-                );
                 return if diagnostic { 0x00 } else { 0xE0 };
             }
             current_record += 1;
         }
-
-        self.tracer
-            .trace_int1bh_fdd_read(drive, c, h, r, n, sectors_read, buffer_address, 0x00);
         0x00
     }
 
@@ -329,47 +307,16 @@ impl<T: Tracing> Pc9801Bus<T> {
         let r = dx as u8;
         let n = (cx >> 8) as u8;
         let sector_size = 128usize << n;
-        let buffer_address = self.fdd640k_buffer_address(es, bp, 0, false);
         let transfer_bytes = if bx == 0 { sector_size } else { bx as usize };
         let sector_count = transfer_bytes / sector_size;
 
         if !self.floppy.has_drive(drive) {
-            self.tracer.trace_int1bh_fdd_write(
-                drive,
-                c,
-                h,
-                r,
-                n,
-                sector_count,
-                buffer_address,
-                0x60,
-            );
             return 0x60;
         }
         if self.floppy.is_write_protected(drive) {
-            self.tracer.trace_int1bh_fdd_write(
-                drive,
-                c,
-                h,
-                r,
-                n,
-                sector_count,
-                buffer_address,
-                0x70,
-            );
             return 0x70;
         }
         if Self::fdd640k_segment_wraps(bp, transfer_bytes) {
-            self.tracer.trace_int1bh_fdd_write(
-                drive,
-                c,
-                h,
-                r,
-                n,
-                sector_count,
-                buffer_address,
-                0x20,
-            );
             return 0x20;
         }
         if function_code & 0x10 != 0 {
@@ -417,10 +364,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             current_record += 1;
         }
 
-        let result = if offset == 0 { 0xE0 } else { 0x00 };
-        self.tracer
-            .trace_int1bh_fdd_write(drive, c, h, r, n, sector_count, buffer_address, result);
-        result
+        if offset == 0 { 0xE0 } else { 0x00 }
     }
 
     fn execute_fdd640k_read_id(&mut self, stack_base: u32, cx: u16, dx: u16, drive: usize) -> u8 {

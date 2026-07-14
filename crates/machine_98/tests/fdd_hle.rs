@@ -1,11 +1,9 @@
-use common::{Bus, CpuMode, MachineModel, Tracing};
+use common::{Bus, CpuMode, MachineModel, NoTrace, TraceSink};
 use device::floppy::FloppyImage;
-use machine_98::{NoTracing, Pc9801Bus};
+use machine_98::Pc9801Bus;
 
 const SECTOR_512: usize = 512;
 const TRAP_PORT: u16 = 0x07ED;
-
-type FddHleCallTrace = (u8, u8, u8, u16, u16, u16, u16, u16);
 
 /// Builds a minimal 2DD D88 image (80 cylinders, 2 heads, 8 sectors per track,
 /// 512-byte sectors). The first three bytes of each sector are the sector
@@ -99,7 +97,7 @@ impl Fdd640kTestFrame {
     const SS: u16 = 0x0000;
     const SP: u16 = 0x1000;
 
-    fn new<T: Tracing>(
+    fn new<T: TraceSink>(
         bus: &mut Pc9801Bus<T>,
         ax: u16,
         bx: u16,
@@ -125,17 +123,17 @@ impl Fdd640kTestFrame {
         }
     }
 
-    fn result_ah<T: Tracing>(&self, bus: &mut Pc9801Bus<T>) -> u8 {
+    fn result_ah<T: TraceSink>(&self, bus: &mut Pc9801Bus<T>) -> u8 {
         let base = self.ss_base + u32::from(self.sp);
         bus.read_byte(base + 1)
     }
 
-    fn result_cf<T: Tracing>(&self, bus: &mut Pc9801Bus<T>) -> bool {
+    fn result_cf<T: TraceSink>(&self, bus: &mut Pc9801Bus<T>) -> bool {
         let base = self.ss_base + u32::from(self.sp);
         bus.read_byte(base + 0x16) & 0x01 != 0
     }
 
-    fn read_stack_word<T: Tracing>(&self, bus: &mut Pc9801Bus<T>, offset: u32) -> u16 {
+    fn read_stack_word<T: TraceSink>(&self, bus: &mut Pc9801Bus<T>, offset: u32) -> u16 {
         let base = self.ss_base + u32::from(self.sp);
         let lo = bus.read_byte(base + offset) as u16;
         let hi = bus.read_byte(base + offset + 1) as u16;
@@ -143,7 +141,7 @@ impl Fdd640kTestFrame {
     }
 }
 
-fn initialize_fdd640k_hle<T: Tracing>(bus: &mut Pc9801Bus<T>) {
+fn initialize_fdd640k_hle<T: TraceSink>(bus: &mut Pc9801Bus<T>) {
     let frame = Fdd640kTestFrame::new(bus, 0x0370, 0, 0, 0, 0, 0);
     bus.execute_fdd640k_hle(frame.ss_base, frame.sp);
     assert_eq!(frame.result_ah(bus), 0x00, "FDD HLE init");
@@ -151,7 +149,7 @@ fn initialize_fdd640k_hle<T: Tracing>(bus: &mut Pc9801Bus<T>) {
 
 #[test]
 fn fdd_hle_rom_mapped_at_d6000_when_2dd_inserted_on_pc9801f() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
 
     assert_eq!(bus.read_byte(0xD6000), 0xFF);
     assert_eq!(bus.read_byte(0xD6009), 0xFF);
@@ -167,7 +165,7 @@ fn fdd_hle_rom_mapped_at_d6000_when_2dd_inserted_on_pc9801f() {
 
 #[test]
 fn fdd_hle_rom_mapped_at_d6000_when_2hd_inserted_on_pc9801f() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
 
     assert_eq!(bus.read_byte(0xD6009), 0xFF);
 
@@ -184,7 +182,7 @@ fn fdd_hle_rom_not_installed_on_non_f_machines() {
         MachineModel::PC9801VX,
         MachineModel::PC9801RA,
     ] {
-        let mut bus = Pc9801Bus::<NoTracing>::new(model, CpuMode::High, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(model, CpuMode::High, 48000);
         bus.insert_floppy(0, make_test_2dd_floppy(), None);
         assert_eq!(
             bus.read_byte(0xD6009),
@@ -196,7 +194,7 @@ fn fdd_hle_rom_not_installed_on_non_f_machines() {
 
 #[test]
 fn fdd_hle_trap_port_sets_pending_and_yield() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
 
     assert!(!bus.fdd640k_hle_pending());
@@ -213,7 +211,7 @@ fn fdd_hle_trap_port_sets_pending_and_yield() {
 
 #[test]
 fn fdd_hle_trap_port_ignored_without_rom() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
     bus.io_write_byte(TRAP_PORT, 0x70);
     assert!(!bus.fdd640k_hle_pending(), "no FDD ROM means no pending");
@@ -221,7 +219,7 @@ fn fdd_hle_trap_port_ignored_without_rom() {
 
 #[test]
 fn fdd_hle_init_sets_disk_equip_high_nibble() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
 
     // AH=0x03 (init), AL=0x70 (640KB FDD device type, drive 0).
@@ -246,7 +244,7 @@ fn fdd_hle_init_sets_disk_equip_high_nibble() {
 
 #[test]
 fn fdd_hle_init_unmasks_master_pic_irq_0() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
 
     // Mask all IRQs on the master PIC (port 0x02 = master IMR).
@@ -267,7 +265,7 @@ fn fdd_hle_init_unmasks_master_pic_irq_0() {
 
 #[test]
 fn fdd_hle_invalid_device_type_returns_0x40() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
 
     // AH=0x06 read with AL=0x80 (HDD/SASI device type) should be rejected.
@@ -280,7 +278,7 @@ fn fdd_hle_invalid_device_type_returns_0x40() {
 
 #[test]
 fn fdd_hle_sense_no_drive_returns_0x60() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
 
     // Drive 1 was never inserted.
@@ -293,7 +291,7 @@ fn fdd_hle_sense_no_drive_returns_0x60() {
 
 #[test]
 fn fdd_hle_sense_present_drive_sets_status_bits() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
     initialize_fdd640k_hle(&mut bus);
 
@@ -308,7 +306,7 @@ fn fdd_hle_sense_present_drive_sets_status_bits() {
 
 #[test]
 fn fdd_hle_sense_320kb_device_sets_double_sided_bits() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
     initialize_fdd640k_hle(&mut bus);
 
@@ -321,7 +319,7 @@ fn fdd_hle_sense_320kb_device_sets_double_sided_bits() {
 
 #[test]
 fn fdd_hle_sense_write_protected_sets_bit_4() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy_write_protected(), None);
     initialize_fdd640k_hle(&mut bus);
 
@@ -335,7 +333,7 @@ fn fdd_hle_sense_write_protected_sets_bit_4() {
 
 #[test]
 fn fdd_hle_set_operation_mode_updates_sense_bits() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
     initialize_fdd640k_hle(&mut bus);
 
@@ -358,7 +356,7 @@ fn fdd_hle_set_operation_mode_updates_sense_bits() {
 
 #[test]
 fn fdd_hle_read_single_sector_copies_to_buffer() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
 
     for index in 0..SECTOR_512 as u32 {
@@ -381,7 +379,7 @@ fn fdd_hle_read_single_sector_copies_to_buffer() {
 
 #[test]
 fn fdd_hle_read_90h_rejects_2dd_image_for_boot_fallback() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
 
     let frame = Fdd640kTestFrame::new(&mut bus, 0x0690, 0x0200, 0x0200, 0x0001, 0x0000, 0x2000);
@@ -397,7 +395,7 @@ fn fdd_hle_read_90h_rejects_2dd_image_for_boot_fallback() {
 
 #[test]
 fn fdd_hle_read_90h_uses_actual_128_byte_sectors_for_2hd_image() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_xanadu_style_2hd_floppy(), None);
 
     for index in 0..0x100u32 {
@@ -419,7 +417,7 @@ fn fdd_hle_read_90h_uses_actual_128_byte_sectors_for_2hd_image() {
 
 #[test]
 fn fdd_hle_read_no_drive_returns_0x60() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
 
     // Drive 1 was never inserted.
@@ -432,7 +430,7 @@ fn fdd_hle_read_no_drive_returns_0x60() {
 
 #[test]
 fn fdd_hle_read_id_returns_chrn_in_registers() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
 
     // AH=0x0A read-id, AL=0x70 (drive 0), CL=0 (cyl), DH=0 (head).
@@ -452,7 +450,7 @@ fn fdd_hle_read_id_returns_chrn_in_registers() {
 
 #[test]
 fn fdd_hle_write_modifies_image_and_reads_back() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
 
     // Source buffer 0xCC at 0x20000.
@@ -486,7 +484,7 @@ fn fdd_hle_write_modifies_image_and_reads_back() {
 
 #[test]
 fn fdd_hle_write_protected_returns_0x70() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy_write_protected(), None);
 
     for index in 0..SECTOR_512 as u32 {
@@ -502,7 +500,7 @@ fn fdd_hle_write_protected_returns_0x70() {
 
 #[test]
 fn fdd_hle_segment_wraps_returns_error() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
 
     // BP = 0xFFF0, length = 512 -> wraps the 64KB segment.
@@ -519,7 +517,7 @@ fn fdd_hle_segment_wraps_returns_error() {
 
 #[test]
 fn fdd_hle_diagnostic_read_segment_wraps_returns_zero() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
 
     // AH=0x02 (diagnostic read), wrapping buffer.
@@ -535,7 +533,7 @@ fn fdd_hle_diagnostic_read_segment_wraps_returns_zero() {
 
 #[test]
 fn fdd_hle_unsupported_function_returns_0x40() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
 
     // AH=0x08 is unmapped.
@@ -550,40 +548,55 @@ fn fdd_hle_unsupported_function_returns_0x40() {
 fn fdd_hle_summary_trace_emitted() {
     #[derive(Default, Debug)]
     struct CaptureTrace {
-        summary: Vec<FddHleCallTrace>,
+        calls: Vec<common::OwnedTraceCall>,
     }
-    impl Tracing for CaptureTrace {
-        fn trace_fdd640k_hle(
-            &mut self,
-            function: u8,
-            device: u8,
-            result: u8,
-            bx: u16,
-            cx: u16,
-            dx: u16,
-            es: u16,
-            bp: u16,
-        ) {
-            self.summary
-                .push((function, device, result, bx, cx, dx, es, bp));
+    impl TraceSink for CaptureTrace {
+        fn trace(&mut self, _context: common::TraceContext, event: common::TraceEvent<'_>) {
+            if let common::TraceEvent::Call(call) = event
+                && call.provider == "pc98.fdd.640k"
+            {
+                let common::OwnedTraceEvent::Call(call) =
+                    common::OwnedTraceEvent::from(common::TraceEvent::Call(call))
+                else {
+                    unreachable!();
+                };
+                self.calls.push(call);
+            }
         }
     }
 
-    let mut bus = Pc9801Bus::<CaptureTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::new_with_trace_sink(
+        MachineModel::PC9801F,
+        CpuMode::High,
+        48000,
+        CaptureTrace::default(),
+    );
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
 
     let frame = Fdd640kTestFrame::new(&mut bus, 0x0670, 0x0200, 0x0200, 0x0001, 0x0000, 0x2000);
     bus.execute_fdd640k_hle(frame.ss_base, frame.sp);
 
     let trace = bus.tracer();
-    assert_eq!(trace.summary.len(), 1, "one summary trace per HLE call");
-    let (function, device, result, bx, cx, dx, es, bp) = trace.summary[0];
-    assert_eq!(function, 0x06);
-    assert_eq!(device, 0x70);
-    assert_eq!(result, 0x00);
-    assert_eq!(bx, 0x0200);
-    assert_eq!(cx, 0x0200);
-    assert_eq!(dx, 0x0001);
-    assert_eq!(es, 0x2000);
-    assert_eq!(bp, 0x0000);
+    assert_eq!(trace.calls.len(), 2, "one enter/exit pair per HLE call");
+    assert_eq!(trace.calls[0].phase, common::TraceCallPhase::Enter);
+    assert_eq!(trace.calls[1].phase, common::TraceCallPhase::Exit);
+    let field = |name| {
+        trace.calls[1]
+            .fields
+            .iter()
+            .find(|field| field.name == name)
+            .map(|field| &field.value)
+    };
+    assert_eq!(
+        field("function"),
+        Some(&common::OwnedTraceValue::Unsigned(0x06))
+    );
+    assert_eq!(
+        field("subfunction"),
+        Some(&common::OwnedTraceValue::Unsigned(0x70))
+    );
+    assert_eq!(
+        field("result"),
+        Some(&common::OwnedTraceValue::Unsigned(0x00))
+    );
 }

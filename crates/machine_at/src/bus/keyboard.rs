@@ -5,7 +5,7 @@
 //! The bus expands it into the set-2 byte sequence the AT keyboard sends, so
 //! the 8042's set-2-to-set-1 translation delivers what the BIOS expects.
 
-use common::Tracing;
+use common::TraceSink;
 use device::i8042_kbc::SET2_TO_SET1;
 
 use crate::bus::AtBus;
@@ -86,7 +86,7 @@ fn extended_base(id: u8) -> Option<u8> {
     }
 }
 
-impl<T: Tracing> AtBus<T> {
+impl<T: TraceSink> AtBus<T> {
     /// Queues a host key event (set-1 id, bit 7 = release) as its set-2
     /// scancode sequence and schedules delivery.
     pub fn push_key_scancode(&mut self, code: u8) {

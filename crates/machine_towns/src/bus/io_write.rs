@@ -1,12 +1,13 @@
 //! FM Towns I/O port write dispatch.
 
-use common::Tracing;
+use common::TraceSink;
 
 use super::{DMA_EXTENDED, DMA_MAIN, SLOW_MODE_MEMORY_WAITS, TownsBus};
 
-impl<T: Tracing> TownsBus<T> {
+impl<T: TraceSink> TownsBus<T> {
     /// Writes a byte to an I/O port.
-    pub(crate) fn io_write(&mut self, port: u16, value: u8) {
+    pub(crate) fn io_write(&mut self, port: u16, value: u8) -> bool {
+        let mut handled = true;
         match port {
             // Master PIC (0x0000 ICW1/OCW2/OCW3, 0x0002 ICW2-4/mask).
             0x0000 => {
@@ -233,8 +234,11 @@ impl<T: Tracing> TownsBus<T> {
                 self.refresh_rs232c_irq();
             }
 
-            _ => self.tracer.trace_io_unhandled_write(port, value),
+            _ => {
+                handled = false;
+            }
         }
+        handled
     }
 
     /// Writes a byte to an interval-timer counter, rescheduling its interrupt

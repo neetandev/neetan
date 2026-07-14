@@ -1,5 +1,5 @@
-use common::{Bus, CpuMode, MachineModel};
-use machine_98::{NoTracing, Pc9801Bus};
+use common::{Bus, CpuMode, MachineModel, NoTrace};
+use machine_98::Pc9801Bus;
 
 const PEGC_VRAM_A: u32 = 0xA8000;
 const PEGC_MMIO_BANK_A8: u32 = 0xE0004;
@@ -9,15 +9,15 @@ const GRID_COLS: u32 = 16;
 const CELL_WIDTH: u32 = 40;
 const LINES_PER_ROW_400: u32 = 25;
 
-fn create_pegc_bus() -> Pc9801Bus<NoTracing> {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, CpuMode::High, 48000);
+fn create_pegc_bus() -> Pc9801Bus<NoTrace> {
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AS, CpuMode::High, 48000);
     bus.io_write_byte(0x6A, 0x01); // analog mode (mode2 bit 0)
     bus.io_write_byte(0x6A, 0x07); // mode change permission (mode2 bit 3)
     bus.set_graphics_extension_enabled(true);
     bus
 }
 
-fn enable_pegc_packed_pixel(bus: &mut Pc9801Bus<NoTracing>) {
+fn enable_pegc_packed_pixel(bus: &mut Pc9801Bus<NoTrace>) {
     bus.io_write_byte(0x6A, 0x21); // PEGC 256-color enable
     bus.io_write_byte(0x6A, 0x68); // two-screen mode (640x400)
 }
@@ -39,7 +39,7 @@ fn hsv_to_grb(i: u8) -> (u8, u8, u8) {
     }
 }
 
-fn program_hsv_palette(bus: &mut Pc9801Bus<NoTracing>) {
+fn program_hsv_palette(bus: &mut Pc9801Bus<NoTrace>) {
     for i in 0..=255u8 {
         let (green, red, blue) = hsv_to_grb(i);
         bus.io_write_byte(0xA8, i);
@@ -49,11 +49,11 @@ fn program_hsv_palette(bus: &mut Pc9801Bus<NoTracing>) {
     }
 }
 
-fn set_bank_a8(bus: &mut Pc9801Bus<NoTracing>, bank: u8) {
+fn set_bank_a8(bus: &mut Pc9801Bus<NoTrace>, bank: u8) {
     bus.write_byte(PEGC_MMIO_BANK_A8, bank);
 }
 
-fn fill_pegc_grid(bus: &mut Pc9801Bus<NoTracing>) {
+fn fill_pegc_grid(bus: &mut Pc9801Bus<NoTrace>) {
     let mut current_bank: u8 = 0;
     let mut bank_offset: u32 = 0;
     set_bank_a8(bus, 0);
@@ -186,7 +186,7 @@ fn pegc_bank_switching_across_boundary() {
 const PEGC_LINEAR_FB_LOW: u32 = 0xF00000;
 const PEGC_LINEAR_FB_HIGH: u32 = 0xFFF00000;
 
-fn enable_pegc_linear_fb(bus: &mut Pc9801Bus<NoTracing>) {
+fn enable_pegc_linear_fb(bus: &mut Pc9801Bus<NoTrace>) {
     enable_pegc_packed_pixel(bus);
     bus.write_byte(0xE0102, 0x01);
     // The linear FB at F00000h sits above the 1 MB A20 line. Without A20 the
@@ -256,7 +256,7 @@ const BDA_GRPH_ARCH_PEGC_BIT: u8 = 0x40;
 #[test]
 fn pegc_machines_advertise_extended_graph_architecture() {
     for model in [MachineModel::PC9821AS, MachineModel::PC9821AP] {
-        let mut bus = Pc9801Bus::<NoTracing>::new(model, CpuMode::High, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(model, CpuMode::High, 48000);
         let flags = bus.read_byte(BDA_GRPH_ARCH);
         assert_eq!(
             flags & BDA_GRPH_ARCH_PEGC_BIT,
@@ -274,7 +274,7 @@ fn non_pegc_machines_do_not_advertise_extended_graph_architecture() {
         MachineModel::PC9801VX,
         MachineModel::PC9801RA,
     ] {
-        let mut bus = Pc9801Bus::<NoTracing>::new(model, CpuMode::High, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(model, CpuMode::High, 48000);
         let flags = bus.read_byte(BDA_GRPH_ARCH);
         assert_eq!(
             flags & BDA_GRPH_ARCH_PEGC_BIT,

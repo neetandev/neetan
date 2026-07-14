@@ -1,5 +1,5 @@
-use common::{Bus, CpuMode, HostDateTime, Machine as _, MachineModel};
-use machine_98::{NoTracing, Pc9801Bus, Pc9801Vm};
+use common::{Bus, CpuMode, HostDateTime, Machine as _, MachineModel, NoTrace};
+use machine_98::{Pc9801Bus, Pc9801Vm};
 
 /// Test time: 2026-03-03 14:30:45, Monday (day_of_week=1).
 const TEST_TIME: [u8; 6] = [0x26, 0x31, 0x03, 0x14, 0x30, 0x45];
@@ -17,38 +17,38 @@ fn test_time() -> HostDateTime {
 }
 
 fn make_machine() -> Pc9801Vm {
-    let bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
     let mut machine = machine_98::Pc98Machine::new(cpu::V30::new(), bus);
     machine.set_host_date_time_provider(test_time);
     machine
 }
 
 /// Writes a port 0x20 value to the RTC via the bus.
-fn rtc_write(bus: &mut Pc9801Bus<NoTracing>, value: u8) {
+fn rtc_write(bus: &mut Pc9801Bus<NoTrace>, value: u8) {
     bus.io_write_byte(0x20, value);
 }
 
 /// Reads CDAT (bit 0 of port 0x33).
-fn read_cdat(bus: &mut Pc9801Bus<NoTracing>) -> u8 {
+fn read_cdat(bus: &mut Pc9801Bus<NoTrace>) -> u8 {
     bus.io_read_byte(0x33) & 0x01
 }
 
 /// Issues a TIME_READ command: DATA phase (cmd=3), STB rising edge, release.
-fn time_read(bus: &mut Pc9801Bus<NoTracing>) {
+fn time_read(bus: &mut Pc9801Bus<NoTrace>) {
     rtc_write(bus, 0x03); // DATA phase: parallel = 3.
     rtc_write(bus, 0x0B); // STB rising edge (0x03 | 0x08).
     rtc_write(bus, 0x00); // Release.
 }
 
 /// Issues a REGISTER_SHIFT command.
-fn register_shift(bus: &mut Pc9801Bus<NoTracing>) {
+fn register_shift(bus: &mut Pc9801Bus<NoTrace>) {
     rtc_write(bus, 0x01); // DATA phase: parallel = 1.
     rtc_write(bus, 0x09); // STB rising edge (0x01 | 0x08).
     rtc_write(bus, 0x00); // Release.
 }
 
 /// Pulses CLK once.
-fn clock_pulse(bus: &mut Pc9801Bus<NoTracing>) {
+fn clock_pulse(bus: &mut Pc9801Bus<NoTrace>) {
     rtc_write(bus, 0x10);
     rtc_write(bus, 0x00);
 }

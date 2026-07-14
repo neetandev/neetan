@@ -3,19 +3,19 @@
 //! A single-Z80 machine: one CPU driving one bus, paced by a monotonic
 //! `current_cycle` in main-clock units.
 
-use common::{CpuZ80, NoTracing, Tracing};
+use common::{CpuZ80, NoTrace, TraceSink};
 
 use crate::bus::{MainBusView, X1Bus};
 
 /// Sharp X1 machine: the main Z80 sharing one bus.
-pub struct X1Machine<T: Tracing = NoTracing> {
+pub struct X1Machine<T: TraceSink = NoTrace> {
     /// Main CPU.
     pub main_cpu: cpu::Z80,
     /// System bus.
     pub bus: X1Bus<T>,
 }
 
-impl<T: Tracing> X1Machine<T> {
+impl<T: TraceSink> X1Machine<T> {
     /// Creates a new machine from the given CPU and bus.
     pub fn new(main_cpu: cpu::Z80, bus: X1Bus<T>) -> Self {
         Self { main_cpu, bus }
@@ -26,6 +26,9 @@ impl<T: Tracing> X1Machine<T> {
     /// so periodic interrupts fire promptly.
     pub fn run_for(&mut self, budget: u64) -> u64 {
         let start = self.bus.current_cycle();
+        if T::ENABLED && self.bus.tracer().yield_requested() {
+            return 0;
+        }
         let target = start + budget;
 
         // Bound continuous-mode DMA stalls to this run so a long floppy transfer
@@ -47,12 +50,18 @@ impl<T: Tracing> X1Machine<T> {
                 let mut view = MainBusView { bus: &mut self.bus };
                 self.main_cpu.run_for(slice, &mut view)
             };
+            if T::ENABLED && self.bus.tracer().yield_requested() {
+                break;
+            }
             if ran == 0 && self.bus.current_cycle() < next {
                 self.bus.set_current_cycle(next);
             }
 
             if self.bus.current_cycle() >= next {
                 self.bus.process_events();
+                if T::ENABLED && self.bus.tracer().yield_requested() {
+                    break;
+                }
             }
         }
 
@@ -60,7 +69,7 @@ impl<T: Tracing> X1Machine<T> {
     }
 }
 
-impl<T: Tracing> common::Machine for X1Machine<T> {
+impl<T: TraceSink> common::Machine for X1Machine<T> {
     fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
         self.bus.set_host_date_time_provider(provider);
     }
@@ -141,5 +150,58 @@ impl<T: Tracing> common::Machine for X1Machine<T> {
 
     fn flush_floppies(&mut self) {
         self.bus.flush_floppies();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use common::{TraceAccessKind, TraceEvent, TraceSink};
+
+    use super::X1Machine;
+    use crate::{bus::X1Bus, config::X1Model, rom::LoadedRoms};
+
+    #[derive(Default)]
+    struct YieldOnScheduled {
+        saw_scheduled: bool,
+        fetch_after_scheduled: bool,
+    }
+
+    impl TraceSink for YieldOnScheduled {
+        fn trace(&mut self, _context: common::TraceContext, event: TraceEvent<'_>) {
+            match event {
+                TraceEvent::Scheduled { .. } => self.saw_scheduled = true,
+                TraceEvent::Access(access)
+                    if self.saw_scheduled && access.kind == TraceAccessKind::Fetch =>
+                {
+                    self.fetch_after_scheduled = true;
+                }
+                _ => {}
+            }
+        }
+
+        fn yield_requested(&self) -> bool {
+            self.saw_scheduled
+        }
+    }
+
+    #[test]
+    fn scheduled_trace_yield_prevents_a_later_fetch() {
+        let model = X1Model::X1;
+        let roms = LoadedRoms {
+            model,
+            ipl: vec![0; model.ipl_rom_size()],
+            cgrom_8x8: vec![0; 0x0800],
+            ank: vec![0; 0x2000],
+            kanji: None,
+        };
+        let mut bus = X1Bus::new_with_trace_sink(model, 48_000, YieldOnScheduled::default());
+        bus.load_roms(&roms);
+        let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+        let mut machine = X1Machine::new(main_cpu, bus);
+
+        machine.run_for(100_000);
+
+        assert!(machine.bus.tracer().saw_scheduled);
+        assert!(!machine.bus.tracer().fetch_after_scheduled);
     }
 }

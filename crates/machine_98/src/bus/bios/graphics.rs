@@ -7,14 +7,14 @@ use super::{
     super::{GRAPHICS_PAGE_SIZE_BYTES, Pc9801Bus},
     reverse_bits,
 };
-use crate::Tracing;
+use crate::TraceSink;
 
 const GDC_OPE_REPLACE: u8 = 0;
 const GDC_OPE_COMPLEMENT: u8 = 1;
 const GDC_OPE_CLEAR: u8 = 2;
 const GDC_OPE_SET: u8 = 3;
 
-impl<T: Tracing> Pc9801Bus<T> {
+impl<T: TraceSink> Pc9801Bus<T> {
     pub(super) fn int18h_graphics_display_start(&mut self) {
         self.gdc_slave.state.display_enabled = true;
         self.memory.state.ram[0x054C] |= 0x80;

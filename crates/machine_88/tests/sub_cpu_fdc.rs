@@ -62,7 +62,7 @@ fn temp_path(suffix: &str) -> PathBuf {
 /// the main status register has no side effects, so it is safe to poll.
 fn wait_for_rqm(machine: &mut Pc8801Machine) -> bool {
     for _ in 0..4096 {
-        if machine.bus.sub_io_read(0xFA) & 0x80 != 0 {
+        if machine.bus.sub_io_read(0xFA).0 & 0x80 != 0 {
             return true;
         }
         let cycle = machine.bus.current_cycle();
@@ -77,11 +77,11 @@ fn mailbox_carries_data_both_directions() {
 
     // Host writes port A; the sub reads it on port B.
     machine.bus.io_write(0xFC, 0x3C);
-    assert_eq!(machine.bus.sub_io_read(0xFD), 0x3C);
+    assert_eq!(machine.bus.sub_io_read(0xFD).0, 0x3C);
 
     // Sub writes port A; the host reads it on port B.
     machine.bus.sub_io_write(0xFC, 0xC3);
-    assert_eq!(machine.bus.io_read(0xFD), 0xC3);
+    assert_eq!(machine.bus.io_read(0xFD).0, 0xC3);
 }
 
 #[test]
@@ -116,7 +116,7 @@ fn fdc_reads_mounted_sector_over_pio() {
             wait_for_rqm(&mut machine),
             "FDC should signal each data byte"
         );
-        received.push(machine.bus.sub_io_read(0xFB));
+        received.push(machine.bus.sub_io_read(0xFB).0);
     }
 
     let expected: Vec<u8> = (0..SECTOR_SIZE)
@@ -125,7 +125,7 @@ fn fdc_reads_mounted_sector_over_pio() {
     assert_eq!(received, expected, "PIO read returns the sector ramp");
 
     // After the sector, the FDC enters the result phase with a normal status.
-    let st0 = machine.bus.sub_io_read(0xFB);
+    let st0 = machine.bus.sub_io_read(0xFB).0;
     assert_eq!(st0 & 0xC0, 0x00, "ST0 reports normal termination");
 
     std::fs::remove_file(&path).ok();
@@ -140,7 +140,7 @@ fn missing_drive_reports_not_ready() {
         machine.bus.sub_io_write(0xFB, byte);
     }
     // The command fails immediately into the result phase; ST0 has IC=01 and NR.
-    let st0 = machine.bus.sub_io_read(0xFB);
+    let st0 = machine.bus.sub_io_read(0xFB).0;
     assert_eq!(st0 & 0xC0, 0x40, "abnormal termination");
     assert_eq!(st0 & 0x08, 0x08, "not ready");
 }

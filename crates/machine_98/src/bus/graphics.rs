@@ -1,9 +1,9 @@
 use crate::{
-    Pc9801Bus, Tracing,
+    Pc9801Bus, TraceSink,
     bus::{E_PLANE_PAGE_SIZE_BYTES, GRAPHICS_PAGE_SIZE_BYTES},
 };
 
-impl<T: Tracing> Pc9801Bus<T> {
+impl<T: TraceSink> Pc9801Bus<T> {
     pub(super) fn access_page_index(&self) -> usize {
         usize::from(self.display_control.state.access_page & 1)
     }
@@ -326,14 +326,14 @@ impl<T: Tracing> Pc9801Bus<T> {
 mod tests {
     use common::{Bus, CpuMode, MachineModel};
 
-    use crate::bus::{GRAPHICS_PAGE_SIZE_BYTES, NoTracing, Pc9801Bus};
+    use crate::bus::{GRAPHICS_PAGE_SIZE_BYTES, NoTrace, Pc9801Bus};
 
-    fn enable_egc_mode(bus: &mut Pc9801Bus<NoTracing>) {
+    fn enable_egc_mode(bus: &mut Pc9801Bus<NoTrace>) {
         bus.io_write_byte(0x6A, 0x07);
         bus.io_write_byte(0x6A, 0x05);
     }
 
-    fn configure_egc_mono(bus: &mut Pc9801Bus<NoTracing>, color: u16, rop: u16, shift: u16) {
+    fn configure_egc_mono(bus: &mut Pc9801Bus<NoTrace>, color: u16, rop: u16, shift: u16) {
         bus.io_write_word(0x04A0, 0xFFF0);
         bus.io_write_word(0x04A2, 0x00FF);
         bus.io_write_word(0x04A8, 0xFFFF);
@@ -344,7 +344,7 @@ mod tests {
         bus.io_write_word(0x04AE, 31);
     }
 
-    fn seed_background_color5(bus: &mut Pc9801Bus<NoTracing>, offset: usize, len: usize) {
+    fn seed_background_color5(bus: &mut Pc9801Bus<NoTrace>, offset: usize, len: usize) {
         for byte in offset..offset + len {
             bus.memory.state.graphics_vram[byte] = 0xFF;
             bus.memory.state.graphics_vram[0x8000 + byte] = 0x00;
@@ -353,7 +353,7 @@ mod tests {
         }
     }
 
-    fn graphics_pixel(bus: &Pc9801Bus<NoTracing>, x: usize) -> u8 {
+    fn graphics_pixel(bus: &Pc9801Bus<NoTrace>, x: usize) -> u8 {
         let offset = x / 8;
         let mask = 0x80 >> (x & 7);
         let mut color = 0;
@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn grcg_tdw_write_byte_intercepts_e_plane() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
         bus.set_graphics_extension_enabled(true);
         bus.grcg.write_mode(0x80); // TDW mode, all planes enabled
 
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn grcg_tcr_read_byte_intercepts_e_plane() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
         bus.set_graphics_extension_enabled(true);
         bus.grcg.write_mode(0x80); // TDW/TCR mode, all planes enabled
 
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn grcg_tdw_write_word_intercepts_e_plane() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
         bus.set_graphics_extension_enabled(true);
         bus.grcg.write_mode(0x80); // TDW mode
         bus.grcg.state.tile = [0x11, 0x22, 0x33, 0x44];
@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn egc_aligned_word_write_charges_one_grcg_wait() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
         enable_egc_mode(&mut bus);
         bus.grcg.write_mode(0x80);
 
@@ -440,7 +440,7 @@ mod tests {
 
     #[test]
     fn egc_misaligned_word_write_charges_one_grcg_wait() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
         enable_egc_mode(&mut bus);
         bus.grcg.write_mode(0x80);
 
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn egc_mono_dword_write_draws_color_and_preserves_zero_bits() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
         bus.set_graphics_extension_enabled(true);
         enable_egc_mode(&mut bus);
         bus.grcg.write_mode(0x80);
@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     fn egc_shifted_mono_dword_with_flush_preserves_edges() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
         bus.set_graphics_extension_enabled(true);
         enable_egc_mode(&mut bus);
         bus.grcg.write_mode(0x80);
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn egc_misaligned_word_read_charges_one_grcg_wait() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
         enable_egc_mode(&mut bus);
         bus.grcg.write_mode(0x80);
 
@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn grcg_tdw_operates_on_access_page() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
 
         // Seed page 0 B-plane with a known value before enabling GRCG.
         bus.memory.state.graphics_vram[0] = 0x42;
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn grcg_tcr_reads_from_access_page() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
         bus.grcg.write_mode(0x80); // TCR mode, all planes enabled
         bus.grcg.state.tile = [0xAA, 0xBB, 0xCC, 0x00];
 

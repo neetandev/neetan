@@ -840,7 +840,7 @@ fn sgp_notimpl(port: u16) -> u8 {
     }
 }
 
-impl Pc88VaBus {
+impl<T: common::TraceSink> Pc88VaBus<T> {
     /// True when the SGP is active, i.e. single-plane (GMSP) mode is selected.
     fn sgp_active(&self) -> bool {
         self.memory.gmsp_bit() != 0

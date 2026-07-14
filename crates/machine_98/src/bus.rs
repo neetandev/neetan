@@ -15,7 +15,12 @@ mod io_write;
 
 use std::path::PathBuf;
 
-use common::{CpuType, HostDateTimeProvider, MachineModel, StackVec};
+use common::{
+    CpuType, HostDateTimeProvider, MachineModel, StackVec, TraceAccessKind, TraceAccessWidth,
+    TraceAddressSpace, TraceCall, TraceCallInterface, TraceCallPhase, TraceContext, TraceEvent,
+    TraceEventKey, TraceField, TraceInterruptAction, TraceInterruptKind, TracePresentation,
+    TraceValue, trace_id,
+};
 use device::{
     beeper::Beeper,
     cdrom::CdImage,
@@ -55,11 +60,73 @@ use software_renderer::{
 };
 
 use crate::{
-    NoTracing, Tracing,
+    NoTrace, TraceSink,
     config::ClockConfig,
     memory::Pc9801Memory,
     scheduler::{Event98, Pc98Scheduler},
 };
+
+/// Traces a handled main-CPU bus access when tracing is enabled.
+macro_rules! trace_access {
+    (
+        $sink:ty,
+        $bus:expr,
+        $space:ident,
+        ($kind:expr),
+        $address:expr,
+        $width:ident,
+        $value:expr $(,)?
+    ) => {
+        trace_access!(@emit, $sink, $bus, $space, $kind, $address, $width, $value);
+    };
+    (
+        $sink:ty,
+        $bus:expr,
+        $space:ident,
+        $kind:ident,
+        $address:expr,
+        $width:ident,
+        $value:expr $(,)?
+    ) => {
+        trace_access!(
+            @emit,
+            $sink,
+            $bus,
+            $space,
+            TraceAccessKind::$kind,
+            $address,
+            $width,
+            $value
+        );
+    };
+    (
+        @emit,
+        $sink:ty,
+        $bus:expr,
+        $space:ident,
+        $kind:expr,
+        $address:expr,
+        $width:ident,
+        $value:expr
+    ) => {
+        if <$sink as TraceSink>::ENABLED {
+            ($bus).tracer.trace(
+                TraceContext::main_cpu(
+                    ($bus).current_cycle,
+                    Some(u64::from(($bus).clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::$space,
+                    $kind,
+                    u64::from($address),
+                    TraceAccessWidth::$width,
+                    Some(u64::from($value)),
+                    true,
+                ),
+            );
+        }
+    };
+}
 
 /// Text RAM (0xA0000-0xA3FFF) access wait penalty in CPU cycles.
 const TRAM_WAIT_CYCLES: i64 = 1;
@@ -96,6 +163,38 @@ const SYSTEM_STATUS_DEFAULT: u8 = 0x00;
 /// Hi-res mode (1120x750) is only on PC-H98, PC-98XA/XL/RL, and some PC-9821 models.
 /// Ref: undoc98 `io_hires.txt` (port 0x0431)
 const MODE_DETECT_NORMAL: u8 = 0x04;
+
+/// Sets a PIC IRQ line and traces state transitions.
+fn update_pic_irq<T: TraceSink>(
+    pic: &mut I8259aPic,
+    tracer: &mut T,
+    current_cycle: u64,
+    cpu_clock_hz: u32,
+    irq: u8,
+    asserted: bool,
+) {
+    let changed = if asserted {
+        pic.set_irq(irq)
+    } else {
+        pic.clear_irq(irq)
+    };
+    if T::ENABLED && changed {
+        let action = if asserted {
+            TraceInterruptAction::Assert
+        } else {
+            TraceInterruptAction::Clear
+        };
+        tracer.trace(
+            TraceContext::main_cpu(current_cycle, Some(u64::from(cpu_clock_hz))),
+            TraceEvent::maskable_interrupt(
+                trace_id::controller::PC98_PIC,
+                u16::from(irq),
+                action,
+                None,
+            ),
+        );
+    }
+}
 
 fn pack_rgba(red: u8, green: u8, blue: u8) -> u32 {
     u32::from(red) | (u32::from(green) << 8) | (u32::from(blue) << 16) | 0xFF00_0000
@@ -238,7 +337,7 @@ impl std::str::FromStr for BootDevice {
 }
 
 /// PC-9801 system bus.
-pub struct Pc9801Bus<T: Tracing = NoTracing> {
+pub struct Pc9801Bus<T: TraceSink = NoTrace> {
     pub(crate) current_cycle: u64,
     pub(crate) next_event_cycle: u64,
     pub(crate) nmi_enabled: bool,
@@ -322,6 +421,8 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     display_width: u32,
     /// Active output height in pixels from the most recent composed frame.
     display_height: u32,
+    /// Number assigned to the next published frame.
+    presented_frames: u64,
     /// DMA access control register (port 0x0439). Bit 2: mask DMA above 1MB.
     dma_access_ctrl: u8,
     /// VRAM/EMS bank register (write-only via port 0x043F).
@@ -408,7 +509,7 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     text_extractor: Option<Box<dyn common::TextExtractor>>,
 }
 
-impl<T: Tracing> Pc9801Bus<T> {
+impl<T: TraceSink> Pc9801Bus<T> {
     /// Updates the cached CPU mode used for IRQ0 / BIOS interval-timer routing.
     pub(crate) fn set_cpu_protected_mode_enabled(&mut self, enabled: bool) {
         self.current_cpu_protected_mode = enabled;
@@ -680,13 +781,13 @@ impl<T: Tracing> Pc9801Bus<T> {
     pub fn push_keyboard_scancode(&mut self, code: u8) {
         self.keyboard.push_scancode(code);
         self.keyboard_chained_raw_code = None;
-        self.pic.set_irq(1);
+        self.raise_pic_irq(1);
     }
 
     /// Injects one serial byte and raises IRQ4.
     pub fn push_serial_byte(&mut self, data: u8) {
         self.serial.push_received_byte(data);
-        self.pic.set_irq(4);
+        self.raise_pic_irq(4);
     }
 
     /// Injects mouse movement deltas for the current frame.
@@ -742,6 +843,77 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Returns a mutable reference to the tracer.
     pub fn tracer_mut(&mut self) -> &mut T {
         &mut self.tracer
+    }
+
+    /// Sets a PIC IRQ line and traces state transitions.
+    pub(crate) fn set_pic_irq(&mut self, irq: u8, asserted: bool) {
+        update_pic_irq(
+            &mut self.pic,
+            &mut self.tracer,
+            self.current_cycle,
+            self.clocks.cpu_clock_hz,
+            irq,
+            asserted,
+        );
+    }
+
+    /// Raises a PIC IRQ line and traces the transition.
+    pub(crate) fn raise_pic_irq(&mut self, irq: u8) {
+        self.set_pic_irq(irq, true);
+    }
+
+    /// Clears a PIC IRQ line and traces the transition.
+    pub(crate) fn clear_pic_irq(&mut self, irq: u8) {
+        self.set_pic_irq(irq, false);
+    }
+
+    pub(crate) fn trace_call(
+        &mut self,
+        provider: &'static str,
+        interface: TraceCallInterface,
+        function: Option<u64>,
+        subfunction: Option<u64>,
+        phase: TraceCallPhase,
+        result: Option<u64>,
+    ) {
+        if !T::ENABLED
+            || !self
+                .tracer
+                .interested(TraceEventKey::Call { provider, phase })
+        {
+            return;
+        }
+        let mut fields = StackVec::<TraceField<'_>, 3>::new();
+        if let Some(function) = function {
+            fields.push(TraceField {
+                name: trace_id::field::FUNCTION,
+                value: TraceValue::Unsigned(function),
+            });
+        }
+        if let Some(subfunction) = subfunction {
+            fields.push(TraceField {
+                name: trace_id::field::SUBFUNCTION,
+                value: TraceValue::Unsigned(subfunction),
+            });
+        }
+        if let Some(result) = result {
+            fields.push(TraceField {
+                name: trace_id::field::RESULT,
+                value: TraceValue::Unsigned(result),
+            });
+        }
+        self.tracer.trace(
+            TraceContext::main_cpu(
+                self.current_cycle,
+                Some(u64::from(self.clocks.cpu_clock_hz)),
+            ),
+            TraceEvent::Call(TraceCall {
+                provider,
+                interface,
+                phase,
+                fields: &fields,
+            }),
+        );
     }
 
     /// Returns and clears the CPU reset pending flag. If a warm-reset
@@ -1264,6 +1436,25 @@ impl<T: Tracing> Pc9801Bus<T> {
         (self.display_width, self.display_height)
     }
 
+    fn trace_presentation(&mut self) {
+        if !T::ENABLED {
+            return;
+        }
+        self.presented_frames = self.presented_frames.saturating_add(1);
+        self.tracer.trace(
+            TraceContext::presentation_main(
+                self.current_cycle,
+                Some(u64::from(self.clocks.cpu_clock_hz)),
+            ),
+            TraceEvent::Presentation(TracePresentation {
+                display: trace_id::display::MAIN,
+                frame: self.presented_frames,
+                width: self.display_width,
+                height: self.display_height,
+            }),
+        );
+    }
+
     /// Returns whether the GA-1280A board is currently driving the monitor.
     pub fn ga1280a_is_driving_monitor(&self) -> bool {
         self.ga1280a
@@ -1720,11 +1911,24 @@ impl<T: Tracing> Pc9801Bus<T> {
                         self.scheduler.cancel(kind.into());
                     }
                     Soundboard86Action::AssertIrq { irq } => {
-                        self.pic.set_irq(irq);
-                        self.tracer.trace_irq_raise(irq);
+                        update_pic_irq(
+                            &mut self.pic,
+                            &mut self.tracer,
+                            self.current_cycle,
+                            self.clocks.cpu_clock_hz,
+                            irq,
+                            true,
+                        );
                     }
                     Soundboard86Action::DeassertIrq { irq } => {
-                        self.pic.clear_irq(irq);
+                        update_pic_irq(
+                            &mut self.pic,
+                            &mut self.tracer,
+                            self.current_cycle,
+                            self.clocks.cpu_clock_hz,
+                            irq,
+                            false,
+                        );
                     }
                 }
             }
@@ -1743,12 +1947,24 @@ impl<T: Tracing> Pc9801Bus<T> {
                         self.scheduler.cancel(kind.into());
                     }
                     Soundboard14Action::AssertIrq { irq } => {
-                        self.pic.set_irq(irq);
-                        self.tracer.trace_irq_raise(irq);
+                        update_pic_irq(
+                            &mut self.pic,
+                            &mut self.tracer,
+                            self.current_cycle,
+                            self.clocks.cpu_clock_hz,
+                            irq,
+                            true,
+                        );
                     }
                     Soundboard14Action::DeassertIrq { irq } => {
-                        self.pic.clear_irq(irq);
-                        self.tracer.trace_irq_clear(irq);
+                        update_pic_irq(
+                            &mut self.pic,
+                            &mut self.tracer,
+                            self.current_cycle,
+                            self.clocks.cpu_clock_hz,
+                            irq,
+                            false,
+                        );
                     }
                 }
             }
@@ -1767,12 +1983,24 @@ impl<T: Tracing> Pc9801Bus<T> {
                         self.scheduler.cancel(kind.into());
                     }
                     Soundboard26kAction::AssertIrq { irq } => {
-                        self.pic.set_irq(irq);
-                        self.tracer.trace_irq_raise(irq);
+                        update_pic_irq(
+                            &mut self.pic,
+                            &mut self.tracer,
+                            self.current_cycle,
+                            self.clocks.cpu_clock_hz,
+                            irq,
+                            true,
+                        );
                     }
                     Soundboard26kAction::DeassertIrq { irq } => {
-                        self.pic.clear_irq(irq);
-                        self.tracer.trace_irq_clear(irq);
+                        update_pic_irq(
+                            &mut self.pic,
+                            &mut self.tracer,
+                            self.current_cycle,
+                            self.clocks.cpu_clock_hz,
+                            irq,
+                            false,
+                        );
                     }
                 }
             }
@@ -1795,11 +2023,24 @@ impl<T: Tracing> Pc9801Bus<T> {
                         self.scheduler.cancel(kind.into());
                     }
                     SoundboardSb16Action::AssertIrq { irq } => {
-                        self.pic.set_irq(irq);
-                        self.tracer.trace_irq_raise(irq);
+                        update_pic_irq(
+                            &mut self.pic,
+                            &mut self.tracer,
+                            self.current_cycle,
+                            self.clocks.cpu_clock_hz,
+                            irq,
+                            true,
+                        );
                     }
                     SoundboardSb16Action::DeassertIrq { irq } => {
-                        self.pic.clear_irq(irq);
+                        update_pic_irq(
+                            &mut self.pic,
+                            &mut self.tracer,
+                            self.current_cycle,
+                            self.clocks.cpu_clock_hz,
+                            irq,
+                            false,
+                        );
                     }
                     SoundboardSb16Action::StartDma { channel: _ } => {
                         // When high-DMA channels are configured and the
@@ -1877,8 +2118,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     fn handle_mpu_timer(&mut self) {
         let reschedule = self.mpu401.tick();
         if self.mpu401.take_irq() {
-            self.pic.set_irq(MPU_IRQ_LINE);
-            self.tracer.trace_irq_raise(MPU_IRQ_LINE);
+            self.raise_pic_irq(MPU_IRQ_LINE);
         }
         if reschedule {
             let step_cycles = self.mpu401.step_clock_cycles(self.clocks.cpu_clock_hz);
@@ -1889,10 +2129,9 @@ impl<T: Tracing> Pc9801Bus<T> {
 
     fn sync_mpu_irq_and_timer(&mut self) {
         if self.mpu401.take_irq() {
-            self.pic.set_irq(MPU_IRQ_LINE);
-            self.tracer.trace_irq_raise(MPU_IRQ_LINE);
+            self.raise_pic_irq(MPU_IRQ_LINE);
         } else {
-            self.pic.clear_irq(MPU_IRQ_LINE);
+            self.clear_pic_irq(MPU_IRQ_LINE);
         }
         if self.mpu401.timer_active()
             && self.scheduler.state.fire_cycles[Event98::MpuTimer as usize].is_none()
@@ -1995,8 +2234,18 @@ impl<T: Tracing> Pc9801Bus<T> {
         let events = self.scheduler.pop_due_events(self.current_cycle);
 
         for event in &events {
-            self.tracer.set_cycle(self.current_cycle);
-            self.tracer.trace_event(event.fire_cycle, event.kind as u8);
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::scheduler_main(
+                        self.current_cycle,
+                        Some(u64::from(self.clocks.cpu_clock_hz)),
+                    ),
+                    TraceEvent::Scheduled {
+                        event: event.kind.trace_name(),
+                        fire_tick: event.fire_cycle,
+                    },
+                );
+            }
             match event.kind {
                 Event98::PitTimer0 => {
                     let raise_irq = self.pit.advance_timer0(self.current_cycle);
@@ -2009,8 +2258,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                         if self.current_cpu_protected_mode {
                             self.handle_bios_interval_timer_tick();
                         }
-                        self.pic.set_irq(0);
-                        self.tracer.trace_irq_raise(0);
+                        self.raise_pic_irq(0);
                     }
                 }
                 Event98::GdcVsync => {
@@ -2018,6 +2266,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     // side that drives the monitor may compose into it.
                     if !self.ga1280a_is_driving_monitor() {
                         self.render_display_frame();
+                        self.trace_presentation();
                     }
                     self.tram_wait = 1;
                     self.vram_wait = 1;
@@ -2026,8 +2275,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     self.gdc_slave.set_vsync(true);
                     if self.display_control.state.vsync_irq_enabled {
                         self.display_control.state.vsync_irq_enabled = false;
-                        self.pic.set_irq(2);
-                        self.tracer.trace_irq_raise(2);
+                        self.raise_pic_irq(2);
                     }
                     self.scheduler.schedule(
                         Event98::GdcDisplayStart,
@@ -2056,8 +2304,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
                 Event98::MouseTimer => {
                     if self.mouse_timer_irq_enabled() {
-                        self.pic.set_irq(MOUSE_TIMER_IRQ_LINE);
-                        self.tracer.trace_irq_raise(MOUSE_TIMER_IRQ_LINE);
+                        self.raise_pic_irq(MOUSE_TIMER_IRQ_LINE);
                         self.schedule_mouse_timer();
                     }
                 }
@@ -2144,6 +2391,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     // side that drives the monitor may compose into it.
                     if self.ga1280a_is_driving_monitor() {
                         self.render_ga1280a_frame();
+                        self.trace_presentation();
                     }
                 }
                 Event98::GaDisplayStart => {
@@ -2177,25 +2425,30 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 }
 
-impl<T: Tracing> common::Bus for Pc9801Bus<T> {
-    fn read_byte(&mut self, address: u32) -> u8 {
+impl<T: TraceSink> Pc9801Bus<T> {
+    fn read_byte_for_cpu<const FETCH: bool>(&mut self, address: u32) -> u8 {
+        let trace_kind = if FETCH {
+            TraceAccessKind::Fetch
+        } else {
+            TraceAccessKind::Read
+        };
         if address < 0x80000 {
             let value = self.memory.state.ram[address as usize];
-            self.tracer.trace_mem_read(address, value);
+            trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Byte, value);
             return value;
         }
         let address = self.a20_mask(address);
         if let Some(ga) = self.ga1280a.as_mut()
             && let Some(value) = ga.flat_aperture_read_byte(address)
         {
-            self.tracer.trace_mem_read(address, value);
+            trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Byte, value);
             return value;
         }
         if address >= 0x100000 {
             let offset = (address - 0x100000) as usize;
             if offset < self.memory.extended_ram.len() {
                 let value = self.memory.extended_ram[offset];
-                self.tracer.trace_mem_read(address, value);
+                trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Byte, value);
                 return value;
             }
         }
@@ -2209,17 +2462,17 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
         if self.grcg.is_active() && in_grcg_range {
             if self.is_egc_effective() {
                 let value = self.egc_read_byte(address);
-                self.tracer.trace_mem_read(address, value);
+                trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Byte, value);
                 return value;
             }
             let value = self.grcg_read_byte(address);
-            self.tracer.trace_mem_read(address, value);
+            trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Byte, value);
             return value;
         }
         if let Some(ga) = self.ga1280a.as_mut()
             && let Some(value) = ga.mapped_register_read_byte(address)
         {
-            self.tracer.trace_mem_read(address, value);
+            trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Byte, value);
             return value;
         }
         if !ems_b_bank
@@ -2230,28 +2483,46 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             self.pending_wait_cycles += self.tram_wait;
         }
         let value = self.read_byte_with_access_page(address);
-        self.tracer.trace_mem_read(address, value);
+        trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Byte, value);
         value
+    }
+}
+
+impl<T: TraceSink> common::Bus for Pc9801Bus<T> {
+    fn read_byte(&mut self, address: u32) -> u8 {
+        self.read_byte_for_cpu::<false>(address)
+    }
+
+    fn fetch_opcode_byte(&mut self, address: u32) -> u8 {
+        self.read_byte_for_cpu::<true>(address)
+    }
+
+    fn fetch_opcode_word(&mut self, address: u32) -> u16 {
+        self.read_word_for_cpu::<true>(address)
+    }
+
+    fn fetch_opcode_dword(&mut self, address: u32) -> u32 {
+        self.read_dword_for_cpu::<true>(address)
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
         if address < 0x80000 {
             self.memory.state.ram[address as usize] = value;
-            self.tracer.trace_mem_write(address, value);
+            trace_access!(T, self, MAIN_MEMORY, Write, address, Byte, value);
             return;
         }
         let address = self.a20_mask(address);
         if let Some(ga) = self.ga1280a.as_mut()
             && ga.flat_aperture_write_byte(address, value)
         {
-            self.tracer.trace_mem_write(address, value);
+            trace_access!(T, self, MAIN_MEMORY, Write, address, Byte, value);
             return;
         }
         if address >= 0x100000 {
             let offset = (address - 0x100000) as usize;
             if offset < self.memory.extended_ram.len() {
                 self.memory.extended_ram[offset] = value;
-                self.tracer.trace_mem_write(address, value);
+                trace_access!(T, self, MAIN_MEMORY, Write, address, Byte, value);
                 return;
             }
         }
@@ -2265,17 +2536,17 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
         if self.grcg.is_active() && in_grcg_range {
             if self.is_egc_effective() {
                 self.egc_write_byte(address, value);
-                self.tracer.trace_mem_write(address, value);
+                trace_access!(T, self, MAIN_MEMORY, Write, address, Byte, value);
                 return;
             }
             self.grcg_write_byte(address, value);
-            self.tracer.trace_mem_write(address, value);
+            trace_access!(T, self, MAIN_MEMORY, Write, address, Byte, value);
             return;
         }
         if let Some(ga) = self.ga1280a.as_mut()
             && ga.mapped_register_write_byte(address, value)
         {
-            self.tracer.trace_mem_write(address, value);
+            trace_access!(T, self, MAIN_MEMORY, Write, address, Byte, value);
             return;
         }
         if !ems_b_bank
@@ -2286,116 +2557,11 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             self.pending_wait_cycles += self.tram_wait;
         }
         self.write_byte_with_access_page(address, value);
-        self.tracer.trace_mem_write(address, value);
+        trace_access!(T, self, MAIN_MEMORY, Write, address, Byte, value);
     }
 
     fn read_word(&mut self, address: u32) -> u16 {
-        if address.wrapping_add(1) < 0x80000 {
-            let a = address as usize;
-            let value =
-                self.memory.state.ram[a] as u16 | ((self.memory.state.ram[a + 1] as u16) << 8);
-            self.tracer.trace_mem_read_word(address, value);
-            return value;
-        }
-        let address = self.a20_mask(address);
-        if let Some(ga) = self.ga1280a.as_mut()
-            && let Some(value) = ga.flat_aperture_read_word(address)
-        {
-            self.tracer.trace_mem_read_word(address, value);
-            return value;
-        }
-        if self.machine_model.has_pegc()
-            && ((0xF00000..=0xF7FFFE).contains(&address)
-                || (0xFFF00000..=0xFFF7FFFE).contains(&address))
-        {
-            let value = if self.pegc.is_upper_vram_enabled() {
-                let vram = self.memory.state.pegc_vram.as_ref().unwrap();
-                let offset = (address & 0x7FFFF) as usize;
-                vram[offset] as u16 | ((vram[offset + 1] as u16) << 8)
-            } else {
-                0xFFFF
-            };
-            self.tracer.trace_mem_read_word(address, value);
-            return value;
-        }
-        if address >= 0x100000 {
-            let base = (address - 0x100000) as usize;
-            if base + 1 < self.memory.extended_ram.len() {
-                let value = self.memory.extended_ram[base] as u16
-                    | ((self.memory.extended_ram[base + 1] as u16) << 8);
-                self.tracer.trace_mem_read_word(address, value);
-                return value;
-            }
-        }
-        let pegc_active = self.pegc.is_256_color_active();
-        if pegc_active && (0xA8000..=0xB7FFF).contains(&address) {
-            self.pending_wait_cycles += self.vram_wait;
-            if self.pegc.is_plane_mode() {
-                let mut offset = address - 0xA8000;
-                if self.pegc.state.screen_mode == device::pegc::PegcScreenMode::TwoScreen
-                    && self.access_page_index() != 0
-                {
-                    offset += 0x8000;
-                }
-                let vram = self.memory.state.pegc_vram.as_ref().unwrap().as_slice();
-                let value = self.pegc.plane_read_word(offset, vram);
-                self.tracer.trace_mem_read_word(address, value);
-                return value;
-            }
-            let vram = self.memory.state.pegc_vram.as_ref().unwrap().as_slice();
-            let window = if address < 0xB0000 { 0 } else { 1 };
-            let offset = if address < 0xB0000 {
-                address - 0xA8000
-            } else {
-                address - 0xB0000
-            };
-            let value = self.pegc.packed_read_word(window, offset, vram);
-            self.tracer.trace_mem_read_word(address, value);
-            return value;
-        }
-        if pegc_active && (0xE0000..=0xE7FFF).contains(&address) {
-            self.pending_wait_cycles += self.vram_wait;
-            let value = self.pegc.mmio_read_word(address - 0xE0000);
-            self.tracer.trace_mem_read_word(address, value);
-            return value;
-        }
-        let ems_b_bank = self.b_bank_ems
-            && self.vram_ems_bank & 0x02 != 0
-            && ((0xB0000..=0xBFFFF).contains(&address)
-                || (0xB0000..=0xBFFFF).contains(&(address + 1)));
-        let in_grcg_range = !ems_b_bank
-            && !pegc_active
-            && ((0xA8000..=0xBFFFF).contains(&address) || (0xE0000..=0xE7FFF).contains(&address))
-            && ((0xA8000..=0xBFFFF).contains(&(address + 1))
-                || (0xE0000..=0xE7FFF).contains(&(address + 1)));
-        if self.grcg.is_active() && in_grcg_range {
-            if self.is_egc_effective() {
-                let value = self.egc_read_word(address);
-                self.tracer.trace_mem_read_word(address, value);
-                return value;
-            }
-            let value = self.grcg_read_word(address);
-            self.tracer.trace_mem_read_word(address, value);
-            return value;
-        }
-        if let Some(ga) = self.ga1280a.as_mut()
-            && let Some(value) = ga.mapped_register_read_word(address)
-        {
-            self.tracer.trace_mem_read_word(address, value);
-            return value;
-        }
-        if in_grcg_range {
-            self.pending_wait_cycles += self.vram_wait;
-        } else if (0xA0000..=0xA3FFF).contains(&address)
-            && (0xA0000..=0xA3FFF).contains(&(address + 1))
-        {
-            self.pending_wait_cycles += self.tram_wait;
-        }
-        let low = self.read_byte_with_access_page(address) as u16;
-        let high = self.read_byte_with_access_page(address.wrapping_add(1)) as u16;
-        let value = low | (high << 8);
-        self.tracer.trace_mem_read_word(address, value);
-        value
+        self.read_word_for_cpu::<false>(address)
     }
 
     fn write_word(&mut self, address: u32, value: u16) {
@@ -2403,14 +2569,14 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             let a = address as usize;
             self.memory.state.ram[a] = value as u8;
             self.memory.state.ram[a + 1] = (value >> 8) as u8;
-            self.tracer.trace_mem_write_word(address, value);
+            trace_access!(T, self, MAIN_MEMORY, Write, address, Word, value);
             return;
         }
         let address = self.a20_mask(address);
         if let Some(ga) = self.ga1280a.as_mut()
             && ga.flat_aperture_write_word(address, value)
         {
-            self.tracer.trace_mem_write_word(address, value);
+            trace_access!(T, self, MAIN_MEMORY, Write, address, Word, value);
             return;
         }
         if self.machine_model.has_pegc()
@@ -2423,7 +2589,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 vram[offset] = value as u8;
                 vram[offset + 1] = (value >> 8) as u8;
             }
-            self.tracer.trace_mem_write_word(address, value);
+            trace_access!(T, self, MAIN_MEMORY, Write, address, Word, value);
             return;
         }
         if address >= 0x100000 {
@@ -2431,7 +2597,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             if base + 1 < self.memory.extended_ram.len() {
                 self.memory.extended_ram[base] = value as u8;
                 self.memory.extended_ram[base + 1] = (value >> 8) as u8;
-                self.tracer.trace_mem_write_word(address, value);
+                trace_access!(T, self, MAIN_MEMORY, Write, address, Word, value);
                 return;
             }
         }
@@ -2447,7 +2613,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 }
                 let vram = self.memory.state.pegc_vram.as_mut().unwrap().as_mut_slice();
                 self.pegc.plane_write_word(offset, value, vram);
-                self.tracer.trace_mem_write_word(address, value);
+                trace_access!(T, self, MAIN_MEMORY, Write, address, Word, value);
                 return;
             }
             let vram = self.memory.state.pegc_vram.as_mut().unwrap().as_mut_slice();
@@ -2458,13 +2624,13 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 address - 0xB0000
             };
             self.pegc.packed_write_word(window, offset, value, vram);
-            self.tracer.trace_mem_write_word(address, value);
+            trace_access!(T, self, MAIN_MEMORY, Write, address, Word, value);
             return;
         }
         if pegc_active && (0xE0000..=0xE7FFF).contains(&address) {
             self.pending_wait_cycles += self.vram_wait;
             self.pegc.mmio_write_word(address - 0xE0000, value);
-            self.tracer.trace_mem_write_word(address, value);
+            trace_access!(T, self, MAIN_MEMORY, Write, address, Word, value);
             return;
         }
         let ems_b_bank = self.b_bank_ems
@@ -2479,17 +2645,17 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
         if self.grcg.is_active() && in_grcg_range {
             if self.is_egc_effective() {
                 self.egc_write_word(address, value);
-                self.tracer.trace_mem_write_word(address, value);
+                trace_access!(T, self, MAIN_MEMORY, Write, address, Word, value);
                 return;
             }
             self.grcg_write_word(address, value);
-            self.tracer.trace_mem_write_word(address, value);
+            trace_access!(T, self, MAIN_MEMORY, Write, address, Word, value);
             return;
         }
         if let Some(ga) = self.ga1280a.as_mut()
             && ga.mapped_register_write_word(address, value)
         {
-            self.tracer.trace_mem_write_word(address, value);
+            trace_access!(T, self, MAIN_MEMORY, Write, address, Word, value);
             return;
         }
         if in_grcg_range {
@@ -2501,84 +2667,11 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
         }
         self.write_byte_with_access_page(address, value as u8);
         self.write_byte_with_access_page(address.wrapping_add(1), (value >> 8) as u8);
-        self.tracer.trace_mem_write_word(address, value);
+        trace_access!(T, self, MAIN_MEMORY, Write, address, Word, value);
     }
 
     fn read_dword(&mut self, address: u32) -> u32 {
-        if address.wrapping_add(3) < 0x80000 {
-            let a = address as usize;
-            return self.memory.state.ram[a] as u32
-                | ((self.memory.state.ram[a + 1] as u32) << 8)
-                | ((self.memory.state.ram[a + 2] as u32) << 16)
-                | ((self.memory.state.ram[a + 3] as u32) << 24);
-        }
-        let address_masked = self.a20_mask(address);
-        if let Some(ga) = self.ga1280a.as_mut()
-            && let Some(value) = ga.flat_aperture_read_dword(address_masked)
-        {
-            self.tracer.trace_mem_read_word(address, value as u16);
-            self.tracer
-                .trace_mem_read_word(address.wrapping_add(2), (value >> 16) as u16);
-            return value;
-        }
-        let pegc_active = self.pegc.is_256_color_active();
-        let has_pegc = self.machine_model.has_pegc();
-
-        match address_masked {
-            0xA8000..=0xB7FFC if pegc_active && self.pegc.is_plane_mode() => {
-                self.pending_wait_cycles += self.vram_wait;
-                let mut offset = address_masked - 0xA8000;
-                if self.pegc.state.screen_mode == device::pegc::PegcScreenMode::TwoScreen
-                    && self.access_page_index() != 0
-                {
-                    offset += 0x8000;
-                }
-                let vram = self.memory.state.pegc_vram.as_ref().unwrap().as_slice();
-                let value = self.pegc.plane_read_dword(offset, vram);
-                self.tracer.trace_mem_read_word(address, value as u16);
-                self.tracer
-                    .trace_mem_read_word(address.wrapping_add(2), (value >> 16) as u16);
-                value
-            }
-            0xE0000..=0xE7FFC if pegc_active => {
-                self.pending_wait_cycles += self.vram_wait;
-                let value = self.pegc.mmio_read_dword(address_masked - 0xE0000);
-                self.tracer.trace_mem_read_word(address, value as u16);
-                self.tracer
-                    .trace_mem_read_word(address.wrapping_add(2), (value >> 16) as u16);
-                value
-            }
-            0xF00000..=0xF7FFFC | 0xFFF00000..=0xFFF7FFFC if has_pegc => {
-                let value = if self.pegc.is_upper_vram_enabled() {
-                    let vram = self.memory.state.pegc_vram.as_ref().unwrap();
-                    let offset = (address_masked & 0x7FFFF) as usize;
-                    vram[offset] as u32
-                        | ((vram[offset + 1] as u32) << 8)
-                        | ((vram[offset + 2] as u32) << 16)
-                        | ((vram[offset + 3] as u32) << 24)
-                } else {
-                    0xFFFF_FFFF
-                };
-                self.tracer.trace_mem_read_word(address, value as u16);
-                self.tracer
-                    .trace_mem_read_word(address.wrapping_add(2), (value >> 16) as u16);
-                value
-            }
-            _ => {
-                if address_masked >= 0x100000 {
-                    let base = (address_masked - 0x100000) as usize;
-                    if base + 3 < self.memory.extended_ram.len() {
-                        return self.memory.extended_ram[base] as u32
-                            | ((self.memory.extended_ram[base + 1] as u32) << 8)
-                            | ((self.memory.extended_ram[base + 2] as u32) << 16)
-                            | ((self.memory.extended_ram[base + 3] as u32) << 24);
-                    }
-                }
-                let low = self.read_word(address) as u32;
-                let high = self.read_word(address.wrapping_add(2)) as u32;
-                low | (high << 16)
-            }
-        }
+        self.read_dword_for_cpu::<false>(address)
     }
 
     fn write_dword(&mut self, address: u32, value: u32) {
@@ -2588,18 +2681,40 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             self.memory.state.ram[a + 1] = (value >> 8) as u8;
             self.memory.state.ram[a + 2] = (value >> 16) as u8;
             self.memory.state.ram[a + 3] = (value >> 24) as u8;
-            self.tracer.trace_mem_write_word(address, value as u16);
-            self.tracer
-                .trace_mem_write_word(address.wrapping_add(2), (value >> 16) as u16);
+            trace_access!(T, self, MAIN_MEMORY, Write, address, Word, value as u16);
+            trace_access!(
+                T,
+                self,
+                MAIN_MEMORY,
+                Write,
+                address.wrapping_add(2),
+                Word,
+                (value >> 16) as u16
+            );
             return;
         }
         let address_masked = self.a20_mask(address);
         if let Some(ga) = self.ga1280a.as_mut()
             && ga.flat_aperture_write_dword(address_masked, value)
         {
-            self.tracer.trace_mem_write_word(address, value as u16);
-            self.tracer
-                .trace_mem_write_word(address.wrapping_add(2), (value >> 16) as u16);
+            trace_access!(
+                T,
+                self,
+                MAIN_MEMORY,
+                Write,
+                address_masked,
+                Word,
+                value as u16
+            );
+            trace_access!(
+                T,
+                self,
+                MAIN_MEMORY,
+                Write,
+                address_masked.wrapping_add(2),
+                Word,
+                (value >> 16) as u16
+            );
             return;
         }
         let pegc_active = self.pegc.is_256_color_active();
@@ -2618,9 +2733,24 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
 
         if self.grcg.is_active() && in_grcg_range && self.is_egc_effective() {
             self.egc_write_dword(address_masked, value);
-            self.tracer.trace_mem_write_word(address, value as u16);
-            self.tracer
-                .trace_mem_write_word(address.wrapping_add(2), (value >> 16) as u16);
+            trace_access!(
+                T,
+                self,
+                MAIN_MEMORY,
+                Write,
+                address_masked,
+                Word,
+                value as u16
+            );
+            trace_access!(
+                T,
+                self,
+                MAIN_MEMORY,
+                Write,
+                address_masked.wrapping_add(2),
+                Word,
+                (value >> 16) as u16
+            );
             return;
         }
 
@@ -2635,16 +2765,46 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 }
                 let vram = self.memory.state.pegc_vram.as_mut().unwrap().as_mut_slice();
                 self.pegc.plane_write_dword(offset, value, vram);
-                self.tracer.trace_mem_write_word(address, value as u16);
-                self.tracer
-                    .trace_mem_write_word(address.wrapping_add(2), (value >> 16) as u16);
+                trace_access!(
+                    T,
+                    self,
+                    MAIN_MEMORY,
+                    Write,
+                    address_masked,
+                    Word,
+                    value as u16
+                );
+                trace_access!(
+                    T,
+                    self,
+                    MAIN_MEMORY,
+                    Write,
+                    address_masked.wrapping_add(2),
+                    Word,
+                    (value >> 16) as u16
+                );
             }
             0xE0000..=0xE7FFC if pegc_active => {
                 self.pending_wait_cycles += self.vram_wait;
                 self.pegc.mmio_write_dword(address_masked - 0xE0000, value);
-                self.tracer.trace_mem_write_word(address, value as u16);
-                self.tracer
-                    .trace_mem_write_word(address.wrapping_add(2), (value >> 16) as u16);
+                trace_access!(
+                    T,
+                    self,
+                    MAIN_MEMORY,
+                    Write,
+                    address_masked,
+                    Word,
+                    value as u16
+                );
+                trace_access!(
+                    T,
+                    self,
+                    MAIN_MEMORY,
+                    Write,
+                    address_masked.wrapping_add(2),
+                    Word,
+                    (value >> 16) as u16
+                );
             }
             0xF00000..=0xF7FFFC | 0xFFF00000..=0xFFF7FFFC if has_pegc => {
                 if self.pegc.is_upper_vram_enabled() {
@@ -2655,9 +2815,24 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                     vram[offset + 2] = (value >> 16) as u8;
                     vram[offset + 3] = (value >> 24) as u8;
                 }
-                self.tracer.trace_mem_write_word(address, value as u16);
-                self.tracer
-                    .trace_mem_write_word(address.wrapping_add(2), (value >> 16) as u16);
+                trace_access!(
+                    T,
+                    self,
+                    MAIN_MEMORY,
+                    Write,
+                    address_masked,
+                    Word,
+                    value as u16
+                );
+                trace_access!(
+                    T,
+                    self,
+                    MAIN_MEMORY,
+                    Write,
+                    address_masked.wrapping_add(2),
+                    Word,
+                    (value >> 16) as u16
+                );
             }
             _ => {
                 if address_masked >= 0x100000 {
@@ -2667,9 +2842,24 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                         self.memory.extended_ram[base + 1] = (value >> 8) as u8;
                         self.memory.extended_ram[base + 2] = (value >> 16) as u8;
                         self.memory.extended_ram[base + 3] = (value >> 24) as u8;
-                        self.tracer.trace_mem_write_word(address, value as u16);
-                        self.tracer
-                            .trace_mem_write_word(address.wrapping_add(2), (value >> 16) as u16);
+                        trace_access!(
+                            T,
+                            self,
+                            MAIN_MEMORY,
+                            Write,
+                            address_masked,
+                            Word,
+                            value as u16
+                        );
+                        trace_access!(
+                            T,
+                            self,
+                            MAIN_MEMORY,
+                            Write,
+                            address_masked.wrapping_add(2),
+                            Word,
+                            (value >> 16) as u16
+                        );
                         return;
                     }
                 }
@@ -2698,6 +2888,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 .and_then(|ga| ga.try_handle_io_read_word(port))
         {
             self.pending_wait_cycles += IO_WAIT_CYCLES + self.cbus_wait_cycles();
+            trace_access!(T, self, MAIN_IO, Read, port, Word, value);
             return value;
         }
 
@@ -2707,6 +2898,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 self.pending_wait_cycles += IO_WAIT_CYCLES;
                 let (word, action) = self.ide.read_data_word();
                 self.process_ide_action(action);
+                trace_access!(T, self, MAIN_IO, Read, port, Word, word);
                 word
             }
             _ => {
@@ -2727,6 +2919,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 .is_some_and(|ga| ga.try_handle_io_write_word(port, value))
         {
             self.pending_wait_cycles += IO_WAIT_CYCLES + self.cbus_wait_cycles();
+            trace_access!(T, self, MAIN_IO, Write, port, Word, value);
             return;
         }
 
@@ -2736,13 +2929,14 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 self.pending_wait_cycles += IO_WAIT_CYCLES;
                 let action = self.ide.write_data_word(value);
                 self.process_ide_action(action);
+                trace_access!(T, self, MAIN_IO, Write, port, Word, value);
             }
             // EGC registers: atomic word write avoids double recalculate_shift()
             // that the default byte-split path would cause on shift (0x04AC) and
             // length (0x04AE) registers.
             0x04A0..=0x04AE if port & 1 == 0 => {
                 self.pending_wait_cycles += IO_WAIT_CYCLES;
-                self.tracer.set_cycle(self.current_cycle);
+
                 if self.machine_model.has_egc()
                     && self.display_control.is_egc_extended_mode_effective()
                     && self.grcg.is_active()
@@ -2766,17 +2960,24 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
     }
 
     fn acknowledge_irq(&mut self) -> u8 {
-        let vector = self.pic.acknowledge();
-        let master_base = self.pic.state.chips[0].icw[1] & 0xF8;
-        let slave_base = self.pic.state.chips[1].icw[1] & 0xF8;
-        let irq = if vector & 0xF8 == slave_base {
-            8 + vector.wrapping_sub(slave_base)
-        } else {
-            vector.wrapping_sub(master_base)
-        };
-        self.tracer.set_cycle(self.current_cycle);
-        self.tracer.trace_irq_acknowledge(irq, vector);
-        vector
+        let acknowledge = self.pic.acknowledge_with_line();
+
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::interrupt(
+                    trace_id::controller::PC98_PIC,
+                    TraceInterruptKind::Maskable,
+                    acknowledge.line.map(u16::from),
+                    TraceInterruptAction::Acknowledge,
+                    Some(u32::from(acknowledge.vector)),
+                ),
+            );
+        }
+        acknowledge.vector
     }
 
     fn has_nmi(&self) -> bool {
@@ -2808,27 +3009,479 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
 
     fn signal_fpu_error(&mut self) {
         // PC-98: FERR# is routed to IRQ 8 (slave PIC IR0).
-        self.pic.set_irq(8);
+        self.raise_pic_irq(8);
     }
 
     fn cpu_should_yield(&self) -> bool {
-        self.sasi.take_yield_requested()
+        T::ENABLED && self.tracer.yield_requested()
+            || self.sasi.take_yield_requested()
             || self.ide.take_yield_requested()
             || self.fdd640k_hle.take_yield_requested()
             || self.bios.take_yield_requested()
     }
 }
 
+impl<T: TraceSink> Pc9801Bus<T> {
+    /// Reads one word while preserving PC-98 wide-access behavior and trace kind.
+    fn read_word_for_cpu<const FETCH: bool>(&mut self, address: u32) -> u16 {
+        let trace_kind = if FETCH {
+            TraceAccessKind::Fetch
+        } else {
+            TraceAccessKind::Read
+        };
+        if address.wrapping_add(1) < 0x80000 {
+            let a = address as usize;
+            let value =
+                self.memory.state.ram[a] as u16 | ((self.memory.state.ram[a + 1] as u16) << 8);
+            trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Word, value);
+            return value;
+        }
+        let address = self.a20_mask(address);
+        if let Some(ga) = self.ga1280a.as_mut()
+            && let Some(value) = ga.flat_aperture_read_word(address)
+        {
+            trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Word, value);
+            return value;
+        }
+        if self.machine_model.has_pegc()
+            && ((0xF00000..=0xF7FFFE).contains(&address)
+                || (0xFFF00000..=0xFFF7FFFE).contains(&address))
+        {
+            let value = if self.pegc.is_upper_vram_enabled() {
+                let vram = self.memory.state.pegc_vram.as_ref().unwrap();
+                let offset = (address & 0x7FFFF) as usize;
+                vram[offset] as u16 | ((vram[offset + 1] as u16) << 8)
+            } else {
+                0xFFFF
+            };
+            trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Word, value);
+            return value;
+        }
+        if address >= 0x100000 {
+            let base = (address - 0x100000) as usize;
+            if base + 1 < self.memory.extended_ram.len() {
+                let value = self.memory.extended_ram[base] as u16
+                    | ((self.memory.extended_ram[base + 1] as u16) << 8);
+                trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Word, value);
+                return value;
+            }
+        }
+        let pegc_active = self.pegc.is_256_color_active();
+        if pegc_active && (0xA8000..=0xB7FFF).contains(&address) {
+            self.pending_wait_cycles += self.vram_wait;
+            if self.pegc.is_plane_mode() {
+                let mut offset = address - 0xA8000;
+                if self.pegc.state.screen_mode == device::pegc::PegcScreenMode::TwoScreen
+                    && self.access_page_index() != 0
+                {
+                    offset += 0x8000;
+                }
+                let vram = self.memory.state.pegc_vram.as_ref().unwrap().as_slice();
+                let value = self.pegc.plane_read_word(offset, vram);
+                trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Word, value);
+                return value;
+            }
+            let vram = self.memory.state.pegc_vram.as_ref().unwrap().as_slice();
+            let window = if address < 0xB0000 { 0 } else { 1 };
+            let offset = if address < 0xB0000 {
+                address - 0xA8000
+            } else {
+                address - 0xB0000
+            };
+            let value = self.pegc.packed_read_word(window, offset, vram);
+            trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Word, value);
+            return value;
+        }
+        if pegc_active && (0xE0000..=0xE7FFF).contains(&address) {
+            self.pending_wait_cycles += self.vram_wait;
+            let value = self.pegc.mmio_read_word(address - 0xE0000);
+            trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Word, value);
+            return value;
+        }
+        let ems_b_bank = self.b_bank_ems
+            && self.vram_ems_bank & 0x02 != 0
+            && ((0xB0000..=0xBFFFF).contains(&address)
+                || (0xB0000..=0xBFFFF).contains(&(address + 1)));
+        let in_grcg_range = !ems_b_bank
+            && !pegc_active
+            && ((0xA8000..=0xBFFFF).contains(&address) || (0xE0000..=0xE7FFF).contains(&address))
+            && ((0xA8000..=0xBFFFF).contains(&(address + 1))
+                || (0xE0000..=0xE7FFF).contains(&(address + 1)));
+        if self.grcg.is_active() && in_grcg_range {
+            if self.is_egc_effective() {
+                let value = self.egc_read_word(address);
+                trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Word, value);
+                return value;
+            }
+            let value = self.grcg_read_word(address);
+            trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Word, value);
+            return value;
+        }
+        if let Some(ga) = self.ga1280a.as_mut()
+            && let Some(value) = ga.mapped_register_read_word(address)
+        {
+            trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Word, value);
+            return value;
+        }
+        if in_grcg_range {
+            self.pending_wait_cycles += self.vram_wait;
+        } else if (0xA0000..=0xA3FFF).contains(&address)
+            && (0xA0000..=0xA3FFF).contains(&(address + 1))
+        {
+            self.pending_wait_cycles += self.tram_wait;
+        }
+        let low = self.read_byte_with_access_page(address) as u16;
+        let high = self.read_byte_with_access_page(address.wrapping_add(1)) as u16;
+        let value = low | (high << 8);
+        trace_access!(T, self, MAIN_MEMORY, (trace_kind), address, Word, value);
+        value
+    }
+
+    /// Reads one doubleword as PC-98 bus transactions with the requested trace kind.
+    fn read_dword_for_cpu<const FETCH: bool>(&mut self, address: u32) -> u32 {
+        let trace_kind = if FETCH {
+            TraceAccessKind::Fetch
+        } else {
+            TraceAccessKind::Read
+        };
+        if address.wrapping_add(3) < 0x80000 {
+            let a = address as usize;
+            let value = self.memory.state.ram[a] as u32
+                | ((self.memory.state.ram[a + 1] as u32) << 8)
+                | ((self.memory.state.ram[a + 2] as u32) << 16)
+                | ((self.memory.state.ram[a + 3] as u32) << 24);
+            if T::ENABLED {
+                self.trace_dword_words(trace_kind, address, value);
+            }
+            return value;
+        }
+        let address_masked = self.a20_mask(address);
+        if let Some(ga) = self.ga1280a.as_mut()
+            && let Some(value) = ga.flat_aperture_read_dword(address_masked)
+        {
+            trace_access!(
+                T,
+                self,
+                MAIN_MEMORY,
+                (trace_kind),
+                address_masked,
+                Word,
+                value as u16
+            );
+            trace_access!(
+                T,
+                self,
+                MAIN_MEMORY,
+                (trace_kind),
+                address_masked.wrapping_add(2),
+                Word,
+                (value >> 16) as u16
+            );
+            return value;
+        }
+        let pegc_active = self.pegc.is_256_color_active();
+        let has_pegc = self.machine_model.has_pegc();
+
+        match address_masked {
+            0xA8000..=0xB7FFC if pegc_active && self.pegc.is_plane_mode() => {
+                self.pending_wait_cycles += self.vram_wait;
+                let mut offset = address_masked - 0xA8000;
+                if self.pegc.state.screen_mode == device::pegc::PegcScreenMode::TwoScreen
+                    && self.access_page_index() != 0
+                {
+                    offset += 0x8000;
+                }
+                let vram = self.memory.state.pegc_vram.as_ref().unwrap().as_slice();
+                let value = self.pegc.plane_read_dword(offset, vram);
+                trace_access!(
+                    T,
+                    self,
+                    MAIN_MEMORY,
+                    (trace_kind),
+                    address_masked,
+                    Word,
+                    value as u16
+                );
+                trace_access!(
+                    T,
+                    self,
+                    MAIN_MEMORY,
+                    (trace_kind),
+                    address_masked.wrapping_add(2),
+                    Word,
+                    (value >> 16) as u16
+                );
+                value
+            }
+            0xE0000..=0xE7FFC if pegc_active => {
+                self.pending_wait_cycles += self.vram_wait;
+                let value = self.pegc.mmio_read_dword(address_masked - 0xE0000);
+                trace_access!(
+                    T,
+                    self,
+                    MAIN_MEMORY,
+                    (trace_kind),
+                    address_masked,
+                    Word,
+                    value as u16
+                );
+                trace_access!(
+                    T,
+                    self,
+                    MAIN_MEMORY,
+                    (trace_kind),
+                    address_masked.wrapping_add(2),
+                    Word,
+                    (value >> 16) as u16
+                );
+                value
+            }
+            0xF00000..=0xF7FFFC | 0xFFF00000..=0xFFF7FFFC if has_pegc => {
+                let value = if self.pegc.is_upper_vram_enabled() {
+                    let vram = self.memory.state.pegc_vram.as_ref().unwrap();
+                    let offset = (address_masked & 0x7FFFF) as usize;
+                    vram[offset] as u32
+                        | ((vram[offset + 1] as u32) << 8)
+                        | ((vram[offset + 2] as u32) << 16)
+                        | ((vram[offset + 3] as u32) << 24)
+                } else {
+                    0xFFFF_FFFF
+                };
+                trace_access!(
+                    T,
+                    self,
+                    MAIN_MEMORY,
+                    (trace_kind),
+                    address_masked,
+                    Word,
+                    value as u16
+                );
+                trace_access!(
+                    T,
+                    self,
+                    MAIN_MEMORY,
+                    (trace_kind),
+                    address_masked.wrapping_add(2),
+                    Word,
+                    (value >> 16) as u16
+                );
+                value
+            }
+            _ => {
+                if address_masked >= 0x100000 {
+                    let base = (address_masked - 0x100000) as usize;
+                    if base + 3 < self.memory.extended_ram.len() {
+                        let value = self.memory.extended_ram[base] as u32
+                            | ((self.memory.extended_ram[base + 1] as u32) << 8)
+                            | ((self.memory.extended_ram[base + 2] as u32) << 16)
+                            | ((self.memory.extended_ram[base + 3] as u32) << 24);
+                        if T::ENABLED {
+                            self.trace_dword_words(trace_kind, address_masked, value);
+                        }
+                        return value;
+                    }
+                }
+                let low = self.read_word_for_cpu::<FETCH>(address) as u32;
+                let high = self.read_word_for_cpu::<FETCH>(address.wrapping_add(2)) as u32;
+                low | (high << 16)
+            }
+        }
+    }
+
+    /// Emits the two 16-bit transactions used for a PC-98 doubleword access.
+    fn trace_dword_words(&mut self, kind: TraceAccessKind, address: u32, value: u32) {
+        trace_access!(T, self, MAIN_MEMORY, (kind), address, Word, value as u16);
+        trace_access!(
+            T,
+            self,
+            MAIN_MEMORY,
+            (kind),
+            address.wrapping_add(2),
+            Word,
+            (value >> 16) as u16
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use common::{Bus, CpuMode, MachineModel};
+    use common::{
+        Bus, CpuMode, MachineModel, TraceAccess, TraceAccessKind, TraceAccessWidth, TraceContext,
+        TraceEvent, TraceInterrupt, TraceInterruptAction, TraceSink,
+    };
     use device::disk::{HddFormat, HddGeometry, HddImage};
 
-    use super::{NoTracing, Pc9801Bus};
+    use super::{NoTrace, Pc9801Bus};
+    use crate::scheduler::Event98;
 
     const GAINIT_WINDOW_BASE: u32 = 0xC0000;
     const GAINIT_WINDOW_BLOCK_SIZE: u32 = 0x1000;
     const GAINIT_WINDOW_BLOCK_COUNT: usize = 32;
+
+    #[derive(Default)]
+    struct AccessTrace {
+        kinds: Vec<TraceAccessKind>,
+        accesses: Vec<TraceAccess>,
+        scheduled_contexts: Vec<TraceContext>,
+        interrupts: Vec<TraceInterrupt>,
+    }
+
+    impl TraceSink for AccessTrace {
+        fn trace(&mut self, context: TraceContext, event: TraceEvent<'_>) {
+            match event {
+                TraceEvent::Access(access) => {
+                    self.kinds.push(access.kind);
+                    self.accesses.push(access);
+                }
+                TraceEvent::Scheduled { .. } => self.scheduled_contexts.push(context),
+                TraceEvent::Interrupt(interrupt) => self.interrupts.push(interrupt),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn opcode_fetch_is_distinct_from_data_read() {
+        let mut bus = Pc9801Bus::new_with_trace_sink(
+            MachineModel::PC9801VM,
+            CpuMode::Low,
+            48_000,
+            AccessTrace::default(),
+        );
+
+        Bus::read_byte(&mut bus, 0);
+        Bus::fetch_opcode_byte(&mut bus, 1);
+
+        assert_eq!(
+            bus.tracer().kinds,
+            [TraceAccessKind::Read, TraceAccessKind::Fetch]
+        );
+    }
+
+    #[test]
+    fn wide_opcode_fetches_keep_pc98_bus_transaction_width() {
+        let mut bus = Pc9801Bus::new_with_trace_sink(
+            MachineModel::PC9801RA,
+            CpuMode::High,
+            48_000,
+            AccessTrace::default(),
+        );
+
+        Bus::fetch_opcode_word(&mut bus, 0);
+        Bus::fetch_opcode_dword(&mut bus, 4);
+
+        assert_eq!(bus.tracer().accesses.len(), 3);
+        assert_eq!(bus.tracer().accesses[0].kind, TraceAccessKind::Fetch);
+        assert_eq!(bus.tracer().accesses[0].width, TraceAccessWidth::Word);
+        assert!(
+            bus.tracer().accesses[1..]
+                .iter()
+                .all(|access| access.kind == TraceAccessKind::Fetch)
+        );
+        assert!(
+            bus.tracer().accesses[1..]
+                .iter()
+                .all(|access| access.width == TraceAccessWidth::Word)
+        );
+        assert_eq!(bus.tracer().accesses[1].address, 4);
+        assert_eq!(bus.tracer().accesses[2].address, 6);
+    }
+
+    /// Confirms optimized doubleword traces use the address after A20 masking.
+    #[test]
+    fn a20_masked_dword_accesses_trace_bus_addresses() {
+        let aliased_address = 0x30_0000;
+        let bus_address = 0x20_0000;
+        let value = 0x1234_ABCD;
+
+        let mut bus = Pc9801Bus::new_with_trace_sink(
+            MachineModel::PC9801RA,
+            CpuMode::High,
+            48_000,
+            AccessTrace::default(),
+        );
+
+        Bus::write_dword(&mut bus, aliased_address, value);
+        assert_eq!(Bus::read_dword(&mut bus, bus_address), value);
+        assert_eq!(Bus::fetch_opcode_dword(&mut bus, aliased_address), value);
+
+        assert_eq!(bus.tracer().accesses.len(), 6);
+        for accesses in bus.tracer().accesses.chunks_exact(2) {
+            assert_eq!(accesses[0].address, u64::from(bus_address));
+            assert_eq!(accesses[1].address, u64::from(bus_address + 2));
+            assert!(
+                accesses
+                    .iter()
+                    .all(|access| access.width == TraceAccessWidth::Word)
+            );
+        }
+        assert_eq!(
+            bus.tracer().kinds,
+            [
+                TraceAccessKind::Write,
+                TraceAccessKind::Write,
+                TraceAccessKind::Read,
+                TraceAccessKind::Read,
+                TraceAccessKind::Fetch,
+                TraceAccessKind::Fetch,
+            ]
+        );
+    }
+
+    #[test]
+    fn scheduler_context_has_explicit_source_and_clock() {
+        let mut bus = Pc9801Bus::new_with_trace_sink(
+            MachineModel::PC9801VM,
+            CpuMode::Low,
+            48_000,
+            AccessTrace::default(),
+        );
+        bus.scheduler.schedule(Event98::GdcDrawingComplete, 17);
+        bus.next_event_cycle = 17;
+
+        Bus::set_current_cycle(&mut bus, 17);
+
+        assert_eq!(bus.tracer().scheduled_contexts.len(), 1);
+        assert_eq!(
+            bus.tracer().scheduled_contexts[0],
+            TraceContext::scheduler_main(17, Some(u64::from(bus.cpu_clock_hz())))
+        );
+    }
+
+    #[test]
+    fn keyboard_and_serial_irq_traces_only_include_transitions() {
+        let mut bus = Pc9801Bus::new_with_trace_sink(
+            MachineModel::PC9801VM,
+            CpuMode::Low,
+            48_000,
+            AccessTrace::default(),
+        );
+
+        bus.push_keyboard_scancode(0x1C);
+        bus.push_keyboard_scancode(0x9C);
+        bus.push_serial_byte(0x41);
+        bus.push_serial_byte(0x42);
+        bus.clear_pic_irq(1);
+        bus.clear_pic_irq(1);
+        bus.clear_pic_irq(4);
+        bus.clear_pic_irq(4);
+
+        let transitions: Vec<_> = bus
+            .tracer()
+            .interrupts
+            .iter()
+            .map(|interrupt| (interrupt.line, interrupt.action))
+            .collect();
+        assert_eq!(
+            transitions,
+            [
+                (Some(1), TraceInterruptAction::Assert),
+                (Some(4), TraceInterruptAction::Assert),
+                (Some(1), TraceInterruptAction::Clear),
+                (Some(4), TraceInterruptAction::Clear),
+            ]
+        );
+    }
 
     fn gainit_window_block_occupied(
         block_index: usize,
@@ -2920,7 +3573,7 @@ mod tests {
 
     #[test]
     fn gainit_window_probe_selects_c000_on_clean_bus() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
         assert_eq!(
             gainit_choose_window_segment(4, |address| bus.read_word(address)),
@@ -2966,7 +3619,7 @@ mod tests {
 
     #[test]
     fn gainit_window_probe_treats_ems_page_frame_as_occupied() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
         bus.memory.enable_ems_page_frame();
 
         assert_eq!(
@@ -2978,7 +3631,7 @@ mod tests {
 
     #[test]
     fn gainit_window_probe_treats_umb_region_as_occupied_for_128k_window() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
 
         assert_eq!(
             gainit_choose_window_segment(32, |address| bus.read_word(address)),
@@ -2996,7 +3649,7 @@ mod tests {
 
     #[test]
     fn umb_region_overrides_hle_expansion_rom_overlay_reads() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AP, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::Low, 48000);
         let geometry = HddGeometry {
             cylinders: 1,
             heads: 1,
@@ -3025,7 +3678,7 @@ mod tests {
 
     #[test]
     fn render_display_frame_uses_active_display_page_for_graphics() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
         // Enable global display (mode1 bit 7), 16-color/analog palette (mode2 bit 0),
         // and graphics display.
@@ -3093,7 +3746,7 @@ mod tests {
 
     #[test]
     fn e_plane_read_charges_vram_wait() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
         bus.set_graphics_extension_enabled(true);
 
         bus.pending_wait_cycles = 0;
@@ -3106,7 +3759,7 @@ mod tests {
 
     #[test]
     fn e_plane_write_charges_vram_wait() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
         bus.set_graphics_extension_enabled(true);
 
         bus.pending_wait_cycles = 0;
@@ -3119,7 +3772,7 @@ mod tests {
 
     #[test]
     fn access_page_selects_vram_bank_for_cpu_writes() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
         // Write to page 0 (default).
         bus.write_byte(0xA8000, 0xAA);
@@ -3137,7 +3790,7 @@ mod tests {
 
     #[test]
     fn access_page_selects_vram_bank_for_cpu_reads() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
         let page1_base = super::GRAPHICS_PAGE_SIZE_BYTES;
         bus.memory.state.graphics_vram[0] = 0x11;
@@ -3154,7 +3807,7 @@ mod tests {
 
     #[test]
     fn access_page_selects_e_plane_bank() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
         bus.display_control.state.mode2 |= 0x01;
         bus.set_graphics_extension_enabled(true);
 
@@ -3174,13 +3827,13 @@ mod tests {
 
     #[test]
     fn ram_window_default_identity() {
-        let bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
+        let bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         assert_eq!(bus.ram_window, 0x08);
     }
 
     #[test]
     fn ram_window_remaps_to_extended_ram() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         // Set RAM window to 0x10 -> physical base 0x100000 (1 MB).
         bus.ram_window = 0x10;
         // Write via remapped window.
@@ -3193,18 +3846,18 @@ mod tests {
         assert_eq!(bus.memory.state.ram[0x80000], 0x00);
     }
 
-    fn create_pc9821_bus() -> Pc9801Bus<NoTracing> {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
+    fn create_pc9821_bus() -> Pc9801Bus<NoTrace> {
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
         bus.display_control.state.mode2 |= 0x01 | 0x08;
         bus.set_graphics_extension_enabled(true);
         bus
     }
 
-    fn enable_pegc(bus: &mut Pc9801Bus<NoTracing>) {
+    fn enable_pegc(bus: &mut Pc9801Bus<NoTrace>) {
         bus.io_write_byte(0x6A, 0x21);
     }
 
-    fn disable_pegc(bus: &mut Pc9801Bus<NoTracing>) {
+    fn disable_pegc(bus: &mut Pc9801Bus<NoTrace>) {
         bus.io_write_byte(0x6A, 0x20);
     }
 
@@ -3242,7 +3895,7 @@ mod tests {
 
     #[test]
     fn pegc_port_6a_ignored_on_non_9821() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.io_write_byte(0x6A, 0x21);
         assert!(!bus.pegc.is_256_color_active());
     }
@@ -3420,7 +4073,7 @@ mod tests {
 
     #[test]
     fn pegc_port_6a_0x21_blocked_without_mode2_bit3() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
         bus.display_control.state.mode2 |= 0x01;
         bus.set_graphics_extension_enabled(true);
         bus.io_write_byte(0x6A, 0x21);

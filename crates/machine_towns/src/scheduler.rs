@@ -34,6 +34,44 @@ pub(crate) enum EventTowns {
     ScsiTask,
 }
 
+#[cfg(test)]
+mod trace_identifier_tests {
+    use super::*;
+
+    #[test]
+    fn trace_identifiers_match_every_event_variant() {
+        assert_eq!(
+            EventTowns::ALL.len(),
+            common::trace_id::scheduled::towns::ALL.len()
+        );
+        for (event, identifier) in EventTowns::ALL
+            .iter()
+            .zip(common::trace_id::scheduled::towns::ALL)
+        {
+            assert_eq!(event.trace_name(), *identifier);
+        }
+    }
+}
+
+impl EventTowns {
+    pub(crate) const fn trace_name(self) -> &'static str {
+        use common::trace_id::scheduled::towns;
+        match self {
+            Self::TimerChannel0 => towns::TIMER_CHANNEL0,
+            Self::TimerChannel1 => towns::TIMER_CHANNEL1,
+            Self::KeyboardReady => towns::KEYBOARD_READY,
+            Self::VsyncStart => towns::VIDEO_VSYNC_START,
+            Self::VsyncEnd => towns::VIDEO_VSYNC_END,
+            Self::CdTask => towns::CD_TASK,
+            Self::FmTimerA => towns::FM_TIMER_A,
+            Self::FmTimerB => towns::FM_TIMER_B,
+            Self::SpriteFinish => towns::SPRITE_FINISH,
+            Self::FdcTask => towns::FDC_TASK,
+            Self::ScsiTask => towns::SCSI_TASK,
+        }
+    }
+}
+
 impl EventTowns {
     const ALL: [EventTowns; EVENT_TOWNS_KIND_COUNT] = [
         EventTowns::TimerChannel0,

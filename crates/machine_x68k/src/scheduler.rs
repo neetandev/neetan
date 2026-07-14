@@ -40,6 +40,25 @@ pub(crate) enum EventX68k {
     SccMouse,
 }
 
+#[cfg(test)]
+mod trace_identifier_tests {
+    use super::*;
+
+    #[test]
+    fn trace_identifiers_match_every_event_variant() {
+        assert_eq!(
+            EventX68k::ALL.len(),
+            common::trace_id::scheduled::x68k::ALL.len()
+        );
+        for (event, identifier) in EventX68k::ALL
+            .iter()
+            .zip(common::trace_id::scheduled::x68k::ALL)
+        {
+            assert_eq!(event.trace_name(), *identifier);
+        }
+    }
+}
+
 impl EventX68k {
     const ALL: [EventX68k; EVENT_X68K_KIND_COUNT] = [
         EventX68k::Crtc,
@@ -60,6 +79,26 @@ impl EventX68k {
 
     const fn from_index(index: usize) -> Self {
         Self::ALL[index]
+    }
+
+    pub(crate) const fn trace_name(self) -> &'static str {
+        use common::trace_id::scheduled::x68k;
+        match self {
+            Self::Crtc => x68k::CRTC,
+            Self::Mfp => x68k::MFP,
+            Self::Rtc => x68k::RTC,
+            Self::Keyboard => x68k::KEYBOARD,
+            Self::Dmac => x68k::DMAC,
+            Self::Fdc => x68k::FDC,
+            Self::FdcInterrupt => x68k::FDC_INTERRUPT,
+            Self::OpmTimerA => x68k::OPM_TIMER_A,
+            Self::OpmTimerB => x68k::OPM_TIMER_B,
+            Self::Adpcm => x68k::ADPCM,
+            Self::Hdc => x68k::HDC,
+            Self::Spc => x68k::SPC,
+            Self::Midi => x68k::MIDI,
+            Self::SccMouse => x68k::SCC_MOUSE,
+        }
     }
 }
 

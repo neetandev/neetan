@@ -42,6 +42,48 @@ pub(crate) enum Event88 {
     BeepToggle,
 }
 
+#[cfg(test)]
+mod trace_identifier_tests {
+    use super::*;
+
+    #[test]
+    fn trace_identifiers_match_every_event_variant() {
+        assert_eq!(
+            Event88::ALL.len(),
+            common::trace_id::scheduled::pc88::ALL.len()
+        );
+        for (event, identifier) in Event88::ALL
+            .iter()
+            .zip(common::trace_id::scheduled::pc88::ALL)
+        {
+            assert_eq!(event.trace_name(), *identifier);
+        }
+    }
+}
+
+impl Event88 {
+    pub(crate) const fn trace_name(self) -> &'static str {
+        use common::trace_id::scheduled::pc88;
+        match self {
+            Self::ClockTimer => pc88::CLOCK_TIMER,
+            Self::CrtcVline => pc88::CRTC_VLINE,
+            Self::CrtcBusRequestEnd => pc88::CRTC_BUS_REQUEST_END,
+            Self::CrtcVsync => pc88::CRTC_VSYNC,
+            Self::CrtcDisplayStart => pc88::CRTC_DISPLAY_START,
+            Self::FmTimerA => pc88::FM_TIMER_A,
+            Self::FmTimerB => pc88::FM_TIMER_B,
+            Self::FdcPhaseComplete => pc88::FDC_PHASE_COMPLETE,
+            Self::FdcDrqByte => pc88::FDC_DRQ,
+            Self::FdcDataLost => pc88::FDC_DATA_LOST,
+            Self::FdcResult => pc88::FDC_RESULT,
+            Self::FdcIndexPulse => pc88::FDC_INDEX,
+            Self::FdcSeekComplete => pc88::FDC_SEEK_COMPLETE,
+            Self::FdcTcClear => pc88::FDC_TC_CLEAR,
+            Self::BeepToggle => pc88::BEEPER_TOGGLE,
+        }
+    }
+}
+
 impl Event88 {
     const ALL: [Event88; EVENT88_KIND_COUNT] = [
         Event88::ClockTimer,

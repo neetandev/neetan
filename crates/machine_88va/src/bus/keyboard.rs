@@ -181,7 +181,7 @@ const fn va_keycode_matrix_cell(keycode: u8) -> Option<(usize, usize)> {
     })
 }
 
-impl Pc88VaBus {
+impl<T: common::TraceSink> Pc88VaBus<T> {
     /// Reports a host key event. `code` is a VA keycode (the value the keycode
     /// interface returns at port 0x1C1), with bit 7 set for a release. The keycode
     /// is queued for the FIFO (raising master IRQ1) used by V3-mode software, and

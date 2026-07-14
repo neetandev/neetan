@@ -1,6 +1,6 @@
-use common::{Bus, CpuMode, MachineModel};
+use common::{Bus, CpuMode, MachineModel, NoTrace};
 use device::ga1280a::Ga1280aPlaneMode;
-use machine_98::{NoTracing, Pc9801Bus};
+use machine_98::Pc9801Bus;
 
 const GA_GAPORT: u16 = 0x00D8;
 const OPCODE_PIXEL_READ: u16 = 0x20E8;
@@ -15,7 +15,7 @@ fn ga_port(selector: u8, offset: u8) -> u16 {
     (u16::from(selector) << 8) | (GA_GAPORT + u16::from(offset))
 }
 
-fn setup_bus() -> Pc9801Bus<NoTracing> {
+fn setup_bus() -> Pc9801Bus<NoTrace> {
     let mut bus = Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48000);
     bus.install_ga1280a();
     bus.io_write_word(ga_port(0x03, 0), 0xFFFF);
@@ -25,30 +25,30 @@ fn setup_bus() -> Pc9801Bus<NoTracing> {
     bus
 }
 
-fn write_palette(bus: &mut Pc9801Bus<NoTracing>, index: u8, red: u8, green: u8, blue: u8) {
+fn write_palette(bus: &mut Pc9801Bus<NoTrace>, index: u8, red: u8, green: u8, blue: u8) {
     bus.io_write_byte(ga_port(0x18, 0), index);
     bus.io_write_byte(ga_port(0x1A, 0), red);
     bus.io_write_byte(ga_port(0x1A, 0), green);
     bus.io_write_byte(ga_port(0x1A, 0), blue);
 }
 
-fn assert_pixel(bus: &Pc9801Bus<NoTracing>, x: u32, y: u32, expected: [u8; 4]) {
+fn assert_pixel(bus: &Pc9801Bus<NoTrace>, x: u32, y: u32, expected: [u8; 4]) {
     let (width, _) = bus.display_dimensions();
     let offset = ((y * width + x) * 4) as usize;
     assert_eq!(&bus.display_framebuffer()[offset..offset + 4], &expected);
 }
 
-fn set_normal_mix(bus: &mut Pc9801Bus<NoTracing>) {
+fn set_normal_mix(bus: &mut Pc9801Bus<NoTrace>) {
     bus.io_write_byte(ga_port(0x14, 0), MIX_SOURCE);
     bus.io_write_word(ga_port(0x1E, 2), POP1_NORMAL_WRITE);
 }
 
-fn set_xor_mix(bus: &mut Pc9801Bus<NoTracing>) {
+fn set_xor_mix(bus: &mut Pc9801Bus<NoTrace>) {
     bus.io_write_byte(ga_port(0x14, 0), 0x06);
     bus.io_write_word(ga_port(0x1E, 2), 0x0000);
 }
 
-fn fill_rect(bus: &mut Pc9801Bus<NoTracing>, x: u16, y: u16, width: u16, height: u16, color: u16) {
+fn fill_rect(bus: &mut Pc9801Bus<NoTrace>, x: u16, y: u16, width: u16, height: u16, color: u16) {
     bus.io_write_word(ga_port(0x09, 0), color);
     bus.io_write_word(ga_port(0x0A, 2), x);
     bus.io_write_word(ga_port(0x0B, 2), y);
@@ -57,7 +57,7 @@ fn fill_rect(bus: &mut Pc9801Bus<NoTracing>, x: u16, y: u16, width: u16, height:
     bus.io_write_word(ga_port(0x1F, 2), OPCODE_SOLID_RECTANGLE);
 }
 
-fn read_pixel(bus: &mut Pc9801Bus<NoTracing>, x: u16, y: u16) -> u16 {
+fn read_pixel(bus: &mut Pc9801Bus<NoTrace>, x: u16, y: u16) -> u16 {
     bus.io_write_word(ga_port(0x08, 2), x);
     bus.io_write_word(ga_port(0x09, 2), y);
     bus.io_write_word(ga_port(0x04, 2), 6);
@@ -99,7 +99,7 @@ fn full_pattern_words(width: u16, height: u16) -> Vec<u16> {
 }
 
 fn save_scanline_plane_words(
-    bus: &mut Pc9801Bus<NoTracing>,
+    bus: &mut Pc9801Bus<NoTrace>,
     x: u16,
     y: u16,
     width: u16,
@@ -120,7 +120,7 @@ fn save_scanline_plane_words(
 }
 
 fn restore_opaque_pattern_plane_words(
-    bus: &mut Pc9801Bus<NoTracing>,
+    bus: &mut Pc9801Bus<NoTrace>,
     x: u16,
     y: u16,
     width: u16,
@@ -149,7 +149,7 @@ fn restore_opaque_pattern_plane_words(
     }
 }
 
-fn write_line_registers(bus: &mut Pc9801Bus<NoTracing>, sx: i16, sy: i16, ex: i16, ey: i16) -> u8 {
+fn write_line_registers(bus: &mut Pc9801Bus<NoTrace>, sx: i16, sy: i16, ex: i16, ey: i16) -> u8 {
     let dx = (ex - sx).unsigned_abs();
     let dy = (ey - sy).unsigned_abs();
     let major = dx.max(dy);
@@ -177,7 +177,7 @@ fn write_line_registers(bus: &mut Pc9801Bus<NoTracing>, sx: i16, sy: i16, ex: i1
     direction
 }
 
-fn set_ga1280_plane_mode(bus: &mut Pc9801Bus<NoTracing>, plane_mode: Ga1280aPlaneMode) {
+fn set_ga1280_plane_mode(bus: &mut Pc9801Bus<NoTrace>, plane_mode: Ga1280aPlaneMode) {
     bus.io_write_byte(ga_port(0x18, 1), 2);
     match plane_mode {
         Ga1280aPlaneMode::Indexed8 => bus.io_write_byte(ga_port(0x18, 0), 0x48),

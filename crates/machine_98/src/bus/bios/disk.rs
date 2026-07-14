@@ -3,9 +3,9 @@
 use common::{Cpu, MachineModel, SegmentRegister};
 
 use super::super::Pc9801Bus;
-use crate::Tracing;
+use crate::TraceSink;
 
-impl<T: Tracing> Pc9801Bus<T> {
+impl<T: TraceSink> Pc9801Bus<T> {
     pub(super) fn hle_int1bh(&mut self, cpu: &mut impl Cpu) {
         let function = cpu.ah() & 0x0F;
         let da = cpu.al();
@@ -21,40 +21,13 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn int1bh_fdd(&mut self, cpu: &mut impl Cpu, function: u8) {
-        let function_code = cpu.ah();
-        let device_select = cpu.al();
-        let initial_bx = cpu.bx();
-        let initial_cx = cpu.cx();
-        let initial_dx = cpu.dx();
-        let initial_es = cpu.es();
-        let initial_bp = cpu.bp();
-
         let result_ah = self.int1bh_fdd_dispatch(cpu, function);
-
-        self.tracer.trace_fdd640k_hle(
-            function_code,
-            device_select,
-            result_ah,
-            initial_bx,
-            initial_cx,
-            initial_dx,
-            initial_es,
-            initial_bp,
-        );
         self.write_result_ah_cf(cpu, result_ah);
     }
 
     fn int1bh_fdd_dispatch(&mut self, cpu: &mut impl Cpu, function: u8) -> u8 {
         let drive = (cpu.al() & 0x03) as usize;
         let ah = cpu.ah();
-        self.tracer.trace_int1bh_fdd_params(
-            cpu.ah(),
-            cpu.al(),
-            cpu.cl(),
-            cpu.dh(),
-            cpu.dl(),
-            cpu.ch(),
-        );
 
         let devtype = cpu.al() & 0xF0;
         if self.machine_model == MachineModel::PC9801F && !matches!(devtype, 0x50 | 0x70 | 0x90) {
@@ -128,45 +101,15 @@ impl<T: Tracing> Pc9801Bus<T> {
                 };
                 let sector_count = size / sector_size;
                 if !self.floppy.has_drive(drive) {
-                    self.tracer.trace_int1bh_fdd_write(
-                        drive,
-                        c,
-                        h,
-                        r,
-                        n_val,
-                        sector_count,
-                        buf_addr,
-                        0x60,
-                    );
                     return 0x60;
                 }
                 if self.floppy.is_write_protected(drive) {
-                    self.tracer.trace_int1bh_fdd_write(
-                        drive,
-                        c,
-                        h,
-                        r,
-                        n_val,
-                        sector_count,
-                        buf_addr,
-                        0x70,
-                    );
                     return 0x70;
                 }
                 let mut h = h;
                 let mut hd = (h ^ (cpu.al() >> 2)) & 1;
                 // Segment wrap check.
                 if Self::fdd_buffer_segment_wraps(buf_off, size) {
-                    self.tracer.trace_int1bh_fdd_write(
-                        drive,
-                        c,
-                        h,
-                        r,
-                        n_val,
-                        sector_count,
-                        buf_addr,
-                        0x20,
-                    );
                     return 0x20;
                 }
                 if ah & 0x10 != 0 {
@@ -217,18 +160,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 // If no sector was written at all, the starting sector
                 // didn't exist - return 0xE0. Otherwise the FDC reached
                 // EOT and reports success for whatever was transferred.
-                let result = if offset == 0 { 0xE0 } else { 0x00 };
-                self.tracer.trace_int1bh_fdd_write(
-                    drive,
-                    c,
-                    h,
-                    r,
-                    n_val,
-                    sector_count,
-                    buf_addr,
-                    result,
-                );
-                result
+                if offset == 0 { 0xE0 } else { 0x00 }
             }
             0x02 | 0x06 => {
                 // Read sectors (0x06 = normal read, 0x02 = diagnostic read).
@@ -294,44 +226,14 @@ impl<T: Tracing> Pc9801Bus<T> {
                             }
                             offset += data.len() as u32;
                         } else {
-                            self.tracer.trace_int1bh_fdd_read(
-                                drive,
-                                c,
-                                h,
-                                current_r,
-                                n_val,
-                                sector_count,
-                                buf_addr,
-                                0xE0,
-                            );
                             // Diagnostic read returns 0x00 on error.
                             return if is_diagnostic { 0x00 } else { 0xE0 };
                         }
                     } else {
-                        self.tracer.trace_int1bh_fdd_read(
-                            drive,
-                            c,
-                            h,
-                            current_r,
-                            n_val,
-                            sector_count,
-                            buf_addr,
-                            0xE0,
-                        );
                         return if is_diagnostic { 0x00 } else { 0xE0 };
                     }
                     current_r += 1;
                 }
-                self.tracer.trace_int1bh_fdd_read(
-                    drive,
-                    c,
-                    h,
-                    r,
-                    n_val,
-                    sector_count,
-                    buf_addr,
-                    0x00,
-                );
                 0x00
             }
             0x07 => {
@@ -441,7 +343,6 @@ impl<T: Tracing> Pc9801Bus<T> {
         let cx = cpu.cx();
         let dx = cpu.dx();
         let bp = cpu.bp();
-        let es = cpu.es();
 
         let function_code = (ax >> 8) as u8;
         let drive_select = ax as u8;
@@ -514,9 +415,6 @@ impl<T: Tracing> Pc9801Bus<T> {
             _ => 0x40,
         };
 
-        self.tracer
-            .trace_sasi_hle(function_code, drive_select, result_ah, bx, cx, dx, es, bp);
-
         self.write_result_ah_cf(cpu, result_ah);
     }
 
@@ -526,7 +424,6 @@ impl<T: Tracing> Pc9801Bus<T> {
         let cx = cpu.cx();
         let dx = cpu.dx();
         let bp = cpu.bp();
-        let es = cpu.es();
 
         let function_code = (ax >> 8) as u8;
         let drive_select = ax as u8;
@@ -611,9 +508,6 @@ impl<T: Tracing> Pc9801Bus<T> {
                 _ => 0x40,
             },
         };
-
-        self.tracer
-            .trace_sasi_hle(function_code, drive_select, result_ah, bx, cx, dx, es, bp);
 
         self.write_result_ah_cf(cpu, result_ah);
     }

@@ -5,7 +5,7 @@
 //! slice is kept tight, and tighter still while a PPI mailbox handshake is in
 //! flight, so the two cores make progress together.
 
-use common::{Bus, Cpu, CpuZ80};
+use common::{Bus, Cpu, CpuZ80, NoTrace, TraceSink};
 
 use crate::bus::{Pc88VaBus, SYNC_SLICE, SubBusView, TIGHT_SLICE};
 
@@ -13,27 +13,18 @@ const RESET_CS: u16 = 0xF000;
 const RESET_IP: u16 = 0xFFF0;
 
 /// A PC-88VA2 machine: the V30 main CPU, the Z80 floppy sub-CPU, and the VA bus.
-pub struct Pc88VaMachine {
+pub struct Pc88VaMachine<T: TraceSink = NoTrace> {
     /// The V30 main CPU.
     pub cpu: cpu::V30,
     /// The Z80 floppy sub-CPU (PC80S31K).
     pub sub_cpu: cpu::Z80,
     /// The VA system bus, owning memory and devices.
-    pub bus: Pc88VaBus,
+    pub bus: Pc88VaBus<T>,
 }
 
-impl Pc88VaMachine {
-    /// Builds a reset V30 for the PC-88VA reset vector.
-    pub fn reset_cpu() -> cpu::V30 {
-        let mut cpu = cpu::V30::new();
-        cpu.reset();
-        cpu.set_ip(RESET_IP);
-        cpu.set_cs(RESET_CS);
-        cpu
-    }
-
+impl<T: TraceSink> Pc88VaMachine<T> {
     /// Builds a machine around configured CPUs and bus.
-    pub fn new(cpu: cpu::V30, sub_cpu: cpu::Z80, bus: Pc88VaBus) -> Self {
+    pub fn new(cpu: cpu::V30, sub_cpu: cpu::Z80, bus: Pc88VaBus<T>) -> Self {
         Self { cpu, sub_cpu, bus }
     }
 
@@ -52,6 +43,15 @@ impl Pc88VaMachine {
     /// `budget` when an instruction completes past the boundary).
     pub fn run_for(&mut self, budget: u64) -> u64 {
         let start = self.bus.current_cycle();
+        if T::ENABLED && self.bus.tracer().yield_requested() {
+            return 0;
+        }
+        if T::ENABLED {
+            self.run_sub_for_main_units(0);
+            if self.bus.tracer().yield_requested() {
+                return 0;
+            }
+        }
         let target = start + budget;
         while self.bus.current_cycle() < target {
             let current = self.bus.current_cycle();
@@ -71,11 +71,18 @@ impl Pc88VaMachine {
             let slice_end = current + slice;
 
             self.run_main_until(slice_end);
+            let elapsed = self.bus.current_cycle() - current;
+            if T::ENABLED && self.bus.tracer().yield_requested() {
+                self.bus.sub_clock_credit = self.bus.sub_clock_credit.saturating_add(elapsed);
+                break;
+            }
 
             // Run the sub CPU for the same elapsed wall-clock, converted to its
             // T-state domain by the clock ratio.
-            let elapsed = self.bus.current_cycle() - current;
             self.run_sub_for_main_units(elapsed);
+            if T::ENABLED && self.bus.tracer().yield_requested() {
+                break;
+            }
         }
         self.bus.current_cycle() - start
     }
@@ -99,9 +106,6 @@ impl Pc88VaMachine {
     /// Runs the sub CPU for `main_units` of elapsed main-clock time, converting to
     /// sub T-states and carrying the remainder for an exact long-run ratio.
     fn run_sub_for_main_units(&mut self, main_units: u64) {
-        if main_units == 0 {
-            return;
-        }
         let shift = self.bus.sub_to_main_shift;
         let available = main_units + self.bus.sub_clock_credit;
         let tstates = available >> shift;
@@ -110,7 +114,11 @@ impl Pc88VaMachine {
             return;
         }
         let mut view = SubBusView { bus: &mut self.bus };
-        self.sub_cpu.run_for(tstates, &mut view);
+        let ran = self.sub_cpu.run_for(tstates, &mut view);
+        if T::ENABLED && ran < tstates {
+            let remaining = (tstates - ran).checked_shl(shift).unwrap_or(u64::MAX);
+            self.bus.sub_clock_credit = self.bus.sub_clock_credit.saturating_add(remaining);
+        }
     }
 
     /// Mounts a floppy image (read and parsed from `path`) into a drive.
@@ -140,7 +148,23 @@ impl Pc88VaMachine {
     }
 }
 
-impl common::Machine for Pc88VaMachine {
+impl Pc88VaMachine<NoTrace> {
+    /// Builds a reset V30 for the PC-88VA reset vector.
+    pub fn reset_cpu() -> cpu::V30 {
+        reset_cpu()
+    }
+}
+
+/// Builds a reset V30 for the PC-88VA reset vector.
+pub fn reset_cpu() -> cpu::V30 {
+    let mut cpu = cpu::V30::new();
+    cpu.reset();
+    cpu.set_ip(RESET_IP);
+    cpu.set_cs(RESET_CS);
+    cpu
+}
+
+impl<T: TraceSink> common::Machine for Pc88VaMachine<T> {
     fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
         self.bus.set_host_date_time_provider(provider);
     }
@@ -210,4 +234,124 @@ impl common::Machine for Pc88VaMachine {
     }
 
     fn eject_cdrom(&mut self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use common::{TraceAccessKind, TraceEvent, TraceSink};
+
+    use super::{Pc88VaMachine, reset_cpu};
+    use crate::{bus::Pc88VaBus, config::Pc88VaModel, rom::LoadedRoms};
+
+    #[derive(Default)]
+    struct YieldOnScheduled {
+        saw_scheduled: bool,
+        fetch_after_scheduled: bool,
+    }
+
+    impl TraceSink for YieldOnScheduled {
+        fn trace(&mut self, _context: common::TraceContext, event: TraceEvent<'_>) {
+            match event {
+                TraceEvent::Scheduled { .. } => self.saw_scheduled = true,
+                TraceEvent::Access(access)
+                    if self.saw_scheduled && access.kind == TraceAccessKind::Fetch =>
+                {
+                    self.fetch_after_scheduled = true;
+                }
+                _ => {}
+            }
+        }
+
+        fn yield_requested(&self) -> bool {
+            self.saw_scheduled
+        }
+    }
+
+    #[derive(Default)]
+    struct YieldOnMainFetch {
+        armed: bool,
+        yield_requested: bool,
+    }
+
+    impl YieldOnMainFetch {
+        /// Arms a one-shot yield on the next main-CPU fetch.
+        fn arm(&mut self) {
+            self.armed = true;
+        }
+
+        /// Clears the one-shot yield request.
+        fn resume(&mut self) {
+            self.armed = false;
+            self.yield_requested = false;
+        }
+    }
+
+    impl TraceSink for YieldOnMainFetch {
+        fn trace(&mut self, context: common::TraceContext, event: TraceEvent<'_>) {
+            if self.armed
+                && context.source == common::trace_source::CPU_MAIN
+                && matches!(
+                    event,
+                    TraceEvent::Access(access) if access.kind == TraceAccessKind::Fetch
+                )
+            {
+                self.yield_requested = true;
+            }
+        }
+
+        fn yield_requested(&self) -> bool {
+            self.yield_requested
+        }
+    }
+
+    #[test]
+    fn scheduled_trace_yield_prevents_a_later_fetch() {
+        let model = Pc88VaModel::PC88VA2;
+        let roms = LoadedRoms {
+            rom00: vec![0; 0x8_0000],
+            rom08: vec![0; 0x2_0000],
+            rom1: vec![0; 0x2_0000],
+            font: vec![0; 0x5_0000],
+            dictionary: vec![0; 0x8_0000],
+            subsys: vec![0; 0x2000],
+        };
+        let bus = Pc88VaBus::new_with_trace_sink(model, roms, 48_000, YieldOnScheduled::default());
+        let sub_cpu = cpu::Z80::new(bus.clock_config().sub_clock_hz);
+        let mut machine = Pc88VaMachine::new(reset_cpu(), sub_cpu, bus);
+
+        machine.run_for(100_000);
+
+        assert!(machine.bus.tracer().saw_scheduled);
+        assert!(!machine.bus.tracer().fetch_after_scheduled);
+    }
+
+    #[test]
+    fn main_trace_yield_preserves_sub_cpu_clock_debt() {
+        let model = Pc88VaModel::PC88VA2;
+        let roms = LoadedRoms {
+            rom00: vec![0; 0x8_0000],
+            rom08: vec![0; 0x2_0000],
+            rom1: vec![0; 0x2_0000],
+            font: vec![0; 0x5_0000],
+            dictionary: vec![0; 0x8_0000],
+            subsys: vec![0; 0x2000],
+        };
+        let bus = Pc88VaBus::new_with_trace_sink(model, roms, 48_000, YieldOnMainFetch::default());
+        let sub_cpu = cpu::Z80::new(bus.clock_config().sub_clock_hz);
+        let mut machine = Pc88VaMachine::new(reset_cpu(), sub_cpu, bus);
+        machine.bus.tracer_mut().arm();
+
+        machine.run_for(100);
+
+        let shift = machine.bus.sub_to_main_shift;
+        let pending_tstates = machine.bus.sub_clock_credit >> shift;
+        let sub_cycle_before_resume = machine.bus.sub_cycle;
+        assert!(pending_tstates > 0);
+
+        machine.bus.tracer_mut().resume();
+        assert_eq!(machine.run_for(0), 0);
+
+        assert!(machine.bus.sub_cycle >= sub_cycle_before_resume + pending_tstates);
+        assert!(machine.bus.sub_clock_credit < 1 << shift);
+    }
 }

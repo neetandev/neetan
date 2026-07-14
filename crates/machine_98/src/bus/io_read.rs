@@ -1,8 +1,10 @@
-use common::{debug, warn};
+use common::{
+    TraceAccessKind, TraceAccessWidth, TraceAddressSpace, TraceContext, TraceEvent, debug, warn,
+};
 use device::ga1280a::is_ga1280a_port;
 
 use crate::{
-    Pc9801Bus, Tracing,
+    Pc9801Bus, TraceSink,
     bus::{
         FDC_1MB_INPUT_REGISTER, FDC_640K_INPUT_REGISTER, FDC_MEDIA_READ_FIXED_BITS, IO_WAIT_CYCLES,
         MODE_DETECT_NORMAL, SYSTEM_STATUS_DEFAULT,
@@ -10,7 +12,7 @@ use crate::{
     scheduler::Event98,
 };
 
-impl<T: Tracing> Pc9801Bus<T> {
+impl<T: TraceSink> Pc9801Bus<T> {
     fn next_gdc_frame_event_cycle(&self) -> Option<u64> {
         let vsync_cycle = self.scheduler.state.fire_cycles[Event98::GdcVsync as usize];
         let display_start_cycle =
@@ -29,17 +31,34 @@ impl<T: Tracing> Pc9801Bus<T> {
     #[inline]
     pub(super) fn io_read_byte_impl(&mut self, port: u16) -> u8 {
         self.pending_wait_cycles += IO_WAIT_CYCLES;
-        self.tracer.set_cycle(self.current_cycle);
+
         if is_ga1280a_port(port) {
             self.pending_wait_cycles += self.cbus_wait_cycles();
             let value = self
                 .ga1280a
                 .as_mut()
-                .and_then(|ga| ga.try_handle_io_read_byte(port))
-                .unwrap_or(0xFF);
-            self.tracer.trace_io_read(port, value);
+                .and_then(|ga| ga.try_handle_io_read_byte(port));
+            let handled = value.is_some();
+            let value = value.unwrap_or(0xFF);
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::main_cpu(
+                        self.current_cycle,
+                        Some(u64::from(self.clocks.cpu_clock_hz)),
+                    ),
+                    TraceEvent::access(
+                        TraceAddressSpace::MAIN_IO,
+                        TraceAccessKind::Read,
+                        u64::from(port),
+                        TraceAccessWidth::Byte,
+                        Some(u64::from(value)),
+                        handled,
+                    ),
+                );
+            }
             return value;
         }
+        let mut handled = true;
         let value = match port {
             // GAINIT probes the seven alternative GA SW1 base addresses
             // (xxD0/D4/DC/E0/E4/E8/EC + 1) at selector 0x1D to detect a board
@@ -84,10 +103,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x30 => {
                 let (data, clear_irq, retrigger_irq) = self.serial.read_data();
                 if clear_irq {
-                    self.pic.clear_irq(4);
+                    self.clear_pic_irq(4);
                 }
                 if retrigger_irq {
-                    self.pic.set_irq(4);
+                    self.raise_pic_irq(4);
                 }
                 data
             }
@@ -141,12 +160,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x41 => {
                 let (data, clear_irq, retrigger_irq) = self.keyboard.read_data();
                 if clear_irq {
-                    self.pic.clear_irq(1);
-                    self.tracer.trace_irq_clear(1);
+                    self.clear_pic_irq(1);
                 }
                 if retrigger_irq {
-                    self.pic.set_irq(1);
-                    self.tracer.trace_irq_raise(1);
+                    self.raise_pic_irq(1);
                 }
                 if clear_irq || retrigger_irq {
                     self.keyboard_chained_raw_code = Some(data);
@@ -634,7 +651,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x064E if self.machine_model.has_ide() => {
                 let (status, clear_irq) = self.ide.read_status();
                 if clear_irq {
-                    self.pic.clear_irq(9);
+                    self.clear_pic_irq(9);
                 }
                 status
             }
@@ -881,12 +898,27 @@ impl<T: Tracing> Pc9801Bus<T> {
             0xC0E0..=0xFCE2 => 0xFF,
 
             _ => {
-                self.tracer.trace_io_unhandled_read(port);
+                handled = false;
                 warn!("Unhandled I/O read: port={port:#06X}");
                 0xFF
             }
         };
-        self.tracer.trace_io_read(port, value);
+        if T::ENABLED {
+            self.tracer.trace(
+                TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.clocks.cpu_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Read,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
         value
     }
 
@@ -907,24 +939,33 @@ impl<T: Tracing> Pc9801Bus<T> {
 
 #[cfg(test)]
 mod tests {
-    use common::{Bus, CpuMode, MachineModel, Tracing};
+    use common::{
+        Bus, CpuMode, MachineModel, TraceAccessKind, TraceAddressSpace, TraceContext, TraceEvent,
+        TraceSink,
+    };
 
-    use crate::bus::{NoTracing, Pc9801Bus};
+    use crate::bus::{NoTrace, Pc9801Bus};
 
     #[derive(Default)]
     struct UnhandledTrace {
         reads: Vec<u16>,
     }
 
-    impl Tracing for UnhandledTrace {
-        fn trace_io_unhandled_read(&mut self, port: u16) {
-            self.reads.push(port);
+    impl TraceSink for UnhandledTrace {
+        fn trace(&mut self, _context: TraceContext, event: TraceEvent<'_>) {
+            if let TraceEvent::Access(access) = event
+                && access.space == TraceAddressSpace::MAIN_IO
+                && access.kind == TraceAccessKind::Read
+                && !access.handled
+            {
+                self.reads.push(access.address as u16);
+            }
         }
     }
 
     #[test]
     fn port_7c_read_returns_grcg_mode_register() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
 
         bus.grcg.write_mode(0xCA);
         let value = bus.io_read_byte(0x7C);
@@ -937,7 +978,7 @@ mod tests {
 
     #[test]
     fn port_a6_read_returns_access_page() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
         assert_eq!(bus.io_read_byte(0xA6), 0x00);
 
@@ -951,13 +992,13 @@ mod tests {
 
     #[test]
     fn port_0cc4_returns_ff() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         assert_eq!(bus.io_read_byte(0x0CC4), 0xFF);
     }
 
     #[test]
     fn sound_ports_0288_and_0388_do_not_alias_low_bank() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.install_soundboard_86(None, true);
 
         // Primary base 0x0188 works: reg 0xFF returns chip ID 0x01.
@@ -971,7 +1012,12 @@ mod tests {
 
     #[test]
     fn pc9801f_fdd320_ppi_shim_reads_are_handled() {
-        let mut bus = Pc9801Bus::<UnhandledTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+        let mut bus = Pc9801Bus::new_with_trace_sink(
+            MachineModel::PC9801F,
+            CpuMode::High,
+            48000,
+            UnhandledTrace::default(),
+        );
 
         assert_eq!(bus.io_read_byte(0x0051), 0x00);
         assert_eq!(bus.io_read_byte(0x0055), 0x00);
@@ -982,11 +1028,28 @@ mod tests {
 
     #[test]
     fn fdd320_ppi_reads_are_not_exposed_on_later_models() {
-        let mut bus =
-            Pc9801Bus::<UnhandledTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+        let mut bus = Pc9801Bus::new_with_trace_sink(
+            MachineModel::PC9801VM,
+            CpuMode::High,
+            48000,
+            UnhandledTrace::default(),
+        );
 
         assert_eq!(bus.io_read_byte(0x0055), 0xFF);
 
         assert_eq!(bus.tracer().reads, vec![0x0055]);
+    }
+
+    #[test]
+    fn absent_ga_ports_are_traced_as_unhandled() {
+        let mut bus = Pc9801Bus::new_with_trace_sink(
+            MachineModel::PC9801VX,
+            CpuMode::High,
+            48000,
+            UnhandledTrace::default(),
+        );
+
+        assert_eq!(bus.io_read_byte(0x01D8), 0xFF);
+        assert_eq!(bus.tracer().reads, vec![0x01D8]);
     }
 }

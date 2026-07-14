@@ -1,5 +1,5 @@
-use common::{Bus, CpuMode, MachineModel};
-use machine_98::{NoTracing, Pc9801Bus};
+use common::{Bus, CpuMode, MachineModel, NoTrace};
+use machine_98::Pc9801Bus;
 
 const OUTPUT_SAMPLE_RATE: u32 = 48_000;
 
@@ -23,8 +23,8 @@ const ALL_PORTS: &[u16] = &[
     PIT_CONTROL,
 ];
 
-fn setup_14_bus(model: MachineModel) -> Pc9801Bus<NoTracing> {
-    let mut bus = Pc9801Bus::<NoTracing>::new(model, CpuMode::High, OUTPUT_SAMPLE_RATE);
+fn setup_14_bus(model: MachineModel) -> Pc9801Bus<NoTrace> {
+    let mut bus = Pc9801Bus::<NoTrace>::new(model, CpuMode::High, OUTPUT_SAMPLE_RATE);
     bus.install_soundboard_14();
     bus
 }

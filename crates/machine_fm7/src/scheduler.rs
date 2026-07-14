@@ -47,6 +47,51 @@ pub(crate) enum EventFm7 {
     MouseTimeout,
 }
 
+#[cfg(test)]
+mod trace_identifier_tests {
+    use super::*;
+
+    #[test]
+    fn trace_identifiers_match_every_event_variant() {
+        assert_eq!(
+            EventFm7::ALL.len(),
+            common::trace_id::scheduled::fm7::ALL.len()
+        );
+        for (event, identifier) in EventFm7::ALL
+            .iter()
+            .zip(common::trace_id::scheduled::fm7::ALL)
+        {
+            assert_eq!(event.trace_name(), *identifier);
+        }
+    }
+}
+
+impl EventFm7 {
+    pub(crate) const fn trace_name(self) -> &'static str {
+        use common::trace_id::scheduled::fm7;
+        match self {
+            Self::VBlank => fm7::VIDEO_VBLANK,
+            Self::Scanline => fm7::VIDEO_SCANLINE,
+            Self::TimerIrq => fm7::TIMER_IRQ,
+            Self::SubDisplayNmi => fm7::SUB_DISPLAY_NMI,
+            Self::FdcMotorOn => fm7::FDC_MOTOR_ON,
+            Self::FdcMotorOff => fm7::FDC_MOTOR_OFF,
+            Self::FdcSeekComplete => fm7::FDC_SEEK_COMPLETE,
+            Self::BeepOneShotOff => fm7::BEEPER_ONE_SHOT_OFF,
+            Self::SubBusyClearDelay => fm7::SUB_BUSY_CLEAR,
+            Self::SubBusyDelayDisarm => fm7::SUB_BUSY_DISARM,
+            Self::KeyboardLatch => fm7::KEYBOARD_LATCH,
+            Self::KeyboardRepeat => fm7::KEYBOARD_REPEAT,
+            Self::EncoderAck => fm7::KEYBOARD_ENCODER_ACK,
+            Self::AluBusyClear => fm7::ALU_BUSY_CLEAR,
+            Self::OpnTimerA => fm7::OPN_TIMER_A,
+            Self::OpnTimerB => fm7::OPN_TIMER_B,
+            Self::RtcSecond => fm7::RTC_SECOND,
+            Self::MouseTimeout => fm7::MOUSE_TIMEOUT,
+        }
+    }
+}
+
 /// Number of distinct FM-7 scheduler event kinds.
 const EVENT_COUNT: usize = 18;
 

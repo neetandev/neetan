@@ -26,7 +26,7 @@ use device::{
 use software_renderer::SoftwareRenderer;
 
 use crate::{
-    ClockConfig, Pc9801Bus, Tracing,
+    ClockConfig, Pc9801Bus, TraceSink,
     bus::{
         BootDevice, DMA_ACCESS_CTRL_20BIT, GRCG_WAIT_CYCLES, KEYBOARD_ROM_OFFSET_F,
         KEYBOARD_ROM_OFFSET_VM, MOUSE_TIMER_DEFAULT_SETTING, MOUSE_TIMER_IRQ_LINE,
@@ -160,15 +160,17 @@ const KEYBOARD_TABLES: [[u8; 0x60]; 8] = [
     ],
 ];
 
-impl<T: Tracing> Pc9801Bus<T> {
-    /// Creates a new bus configured for the given machine model and CPU mode.
+impl<T: TraceSink> Pc9801Bus<T> {
+    /// Creates a traced bus configured for the given machine model and CPU mode.
     ///
     /// `cpu_mode` selects between Low and High CPU clock for PC-9801 models.
     /// PC-9821 models ignore this value.
-    pub fn new(machine_model: MachineModel, cpu_mode: CpuMode, sample_rate: u32) -> Self
-    where
-        T: Default,
-    {
+    pub fn new_with_trace_sink(
+        machine_model: MachineModel,
+        cpu_mode: CpuMode,
+        sample_rate: u32,
+        tracer: T,
+    ) -> Self {
         let clocks = ClockConfig {
             cpu_clock_hz: machine_model.cpu_clock_hz(cpu_mode),
             pit_clock_hz: machine_model.pit_clock_hz(),
@@ -236,6 +238,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             software_renderer: Box::new(SoftwareRenderer::new(&[])),
             display_width: SoftwareRenderer::WIDTH as u32,
             display_height: 400,
+            presented_frames: 0,
             dma_access_ctrl: match machine_model {
                 MachineModel::PC9801F | MachineModel::PC9801VM | MachineModel::PC9801VX => {
                     DMA_ACCESS_CTRL_20BIT
@@ -267,7 +270,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             tram_wait: TRAM_WAIT_CYCLES,
             vram_wait: VRAM_WAIT_CYCLES,
             grcg_wait: GRCG_WAIT_CYCLES,
-            tracer: T::default(),
+            tracer,
             fdd_seek_cylinder: [0; 4],
             fdd_read_id_index: [0; 4],
             hle_cr0: 0,
@@ -928,7 +931,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.mouse_ppi.state.mouse_connected = true;
         self.mouse_timer_setting = MOUSE_TIMER_DEFAULT_SETTING;
         self.scheduler.cancel(Event98::MouseTimer);
-        self.pic.clear_irq(MOUSE_TIMER_IRQ_LINE);
+        self.clear_pic_irq(MOUSE_TIMER_IRQ_LINE);
 
         // FDC 1MB + 640K: post-Recalibrate state.
         self.floppy.initialize_boot_state(self.clocks.pit_clock_hz);
@@ -983,5 +986,12 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         // Ensure E-plane mapping is consistent with display mode.
         self.update_plane_e_mapping();
+    }
+}
+
+impl Pc9801Bus<common::NoTrace> {
+    /// Creates an untraced bus configured for a machine model and CPU mode.
+    pub fn new(machine_model: MachineModel, cpu_mode: CpuMode, sample_rate: u32) -> Self {
+        Self::new_with_trace_sink(machine_model, cpu_mode, sample_rate, common::NoTrace)
     }
 }

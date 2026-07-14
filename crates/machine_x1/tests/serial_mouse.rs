@@ -50,13 +50,13 @@ fn mouse_report_is_delivered_through_sio_channel_1() {
     // The receive interrupt is pending and vectors through channel B with the
     // status folded in (rx-available -> affect 2 -> bits 3:1 = 0b010).
     assert!(bus.has_irq());
-    assert_eq!(bus.acknowledge_irq(), 0x34);
+    assert_eq!(bus.acknowledge_irq().1, 0x34);
 
     // The three report bytes clock out of the channel 1 data port: status
     // (left button, no overflow), dx, dy.
-    assert_eq!(bus.io_read(SIO_CH1_DATA), 0x01);
-    assert_eq!(bus.io_read(SIO_CH1_DATA), 5);
-    assert_eq!(bus.io_read(SIO_CH1_DATA), (-3i8) as u8);
+    assert_eq!(bus.io_read(SIO_CH1_DATA).0, 0x01);
+    assert_eq!(bus.io_read(SIO_CH1_DATA).0, 5);
+    assert_eq!(bus.io_read(SIO_CH1_DATA).0, (-3i8) as u8);
 }
 
 #[test]
@@ -70,9 +70,9 @@ fn reading_the_report_clears_the_receive_interrupt() {
     assert!(bus.has_irq());
 
     // Draining all three bytes clears the receive interrupt.
-    let _ = bus.io_read(SIO_CH1_DATA);
-    let _ = bus.io_read(SIO_CH1_DATA);
-    let _ = bus.io_read(SIO_CH1_DATA);
+    let _ = bus.io_read(SIO_CH1_DATA).0;
+    let _ = bus.io_read(SIO_CH1_DATA).0;
+    let _ = bus.io_read(SIO_CH1_DATA).0;
     assert!(!bus.has_irq());
 }
 
@@ -91,8 +91,8 @@ fn each_rts_edge_refreshes_the_report() {
     bus.set_mouse_input(20, 0, 0x00);
     pulse_mouse_rts(bus);
 
-    let _status = bus.io_read(SIO_CH1_DATA);
-    assert_eq!(bus.io_read(SIO_CH1_DATA), 20);
+    let _status = bus.io_read(SIO_CH1_DATA).0;
+    assert_eq!(bus.io_read(SIO_CH1_DATA).0, 20);
 }
 
 #[test]
@@ -105,18 +105,18 @@ fn rs232c_receive_via_io() {
     bus.io_write(SIO_CH0_CONTROL, 0xC1);
 
     // No data yet: RR0 reports no received character.
-    assert_eq!(bus.io_read(SIO_CH0_CONTROL) & RR0_RX_AVAILABLE, 0);
+    assert_eq!(bus.io_read(SIO_CH0_CONTROL).0 & RR0_RX_AVAILABLE, 0);
 
     // Inject a byte as if it arrived on the serial line.
     bus.push_rs232c_received_byte(0x41);
     assert_eq!(
-        bus.io_read(SIO_CH0_CONTROL) & RR0_RX_AVAILABLE,
+        bus.io_read(SIO_CH0_CONTROL).0 & RR0_RX_AVAILABLE,
         RR0_RX_AVAILABLE
     );
-    assert_eq!(bus.io_read(SIO_CH0_DATA), 0x41);
+    assert_eq!(bus.io_read(SIO_CH0_DATA).0, 0x41);
 
     // The FIFO drained: RR0 clears the received-character bit again.
-    assert_eq!(bus.io_read(SIO_CH0_CONTROL) & RR0_RX_AVAILABLE, 0);
+    assert_eq!(bus.io_read(SIO_CH0_CONTROL).0 & RR0_RX_AVAILABLE, 0);
 }
 
 #[test]
@@ -136,10 +136,10 @@ fn rs232c_receive_interrupt_vectors_through_channel_a() {
 
     // Channel A receive available: affect = 4 | 2 = 6, so bits 3:1 = 0b110 = 0x0C.
     assert!(bus.has_irq());
-    assert_eq!(bus.acknowledge_irq(), 0x0C);
+    assert_eq!(bus.acknowledge_irq().1, 0x0C);
 
     // Reading the byte clears the receive interrupt.
-    assert_eq!(bus.io_read(SIO_CH0_DATA), 0x55);
+    assert_eq!(bus.io_read(SIO_CH0_DATA).0, 0x55);
     assert!(!bus.has_irq());
 }
 
@@ -148,6 +148,6 @@ fn base_x1_has_no_sio() {
     // The base X1 has no SIO: the channel ports read back as open bus.
     let mut machine = build_machine(X1Model::X1);
     let bus = &mut machine.bus;
-    assert_eq!(bus.io_read(SIO_CH1_DATA), 0xFF);
-    assert_eq!(bus.io_read(SIO_CH1_CONTROL), 0xFF);
+    assert_eq!(bus.io_read(SIO_CH1_DATA).0, 0xFF);
+    assert_eq!(bus.io_read(SIO_CH1_CONTROL).0, 0xFF);
 }

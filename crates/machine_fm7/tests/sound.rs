@@ -24,7 +24,7 @@ fn read_psg_register(bus: &mut Fm7Bus, register: u8) -> u8 {
     bus.write_byte(0xFD0D, 3);
     bus.write_byte(0xFD0E, register);
     bus.write_byte(0xFD0D, 1);
-    bus.read_byte(0xFD0E)
+    bus.read_byte(0xFD0E).0
 }
 
 /// Whether any sample in the written prefix is non-zero.

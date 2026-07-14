@@ -180,7 +180,7 @@ fn opn_compatible_programming_via_port_44() {
     machine.bus.set_current_cycle(400_000);
 
     // The status read at 0x44 must respond (the busy bit is clear once idle).
-    let status = machine.bus.io_read(0x44);
+    let status = machine.bus.io_read(0x44).0;
     assert_eq!(status & 0x80, 0, "OPN status busy bit is clear when idle");
 
     let mut output = vec![0.0f32; 1024 * 2];

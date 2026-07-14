@@ -1,6 +1,6 @@
 //! Bus construction, ROM application, and power-on reset state.
 
-use common::{BeeperKind, Tracing};
+use common::{BeeperKind, MonitorTiming, NoTrace, TraceSink};
 use device::{
     beeper::Beeper,
     cdrom_pc88::Pc88Cdrom,
@@ -19,7 +19,7 @@ use software_renderer::Pc88Renderer;
 use super::sub_mem::SubMemory;
 use crate::{
     bus::Pc8801Bus,
-    config::{BootMode, ClockConfig, ClockSelect, MonitorTiming, Pc8801Model},
+    config::{BootMode, ClockConfig, ClockSelect, Pc8801Model},
     memory::Pc8801Memory,
     rom::LoadedRoms,
     scheduler::{Event88, Pc8801Scheduler},
@@ -39,12 +39,17 @@ const DEFAULT_EIGHT_MHZ_FAST: bool = false;
 /// Fixed beeper tone frequency (the PC-88 1-bit speaker is a ~2400 Hz square wave).
 const BEEP_FREQUENCY_HZ: u32 = 2400;
 
-impl<T: Tracing + Default> Pc8801Bus<T> {
-    /// Creates a bus in its power-on reset state with empty ROM arrays.
+impl<T: TraceSink> Pc8801Bus<T> {
+    /// Creates a traced bus in its power-on reset state with empty ROM arrays.
     ///
     /// Bank-control registers reset to zero, which maps the N88-BASIC ROM at
     /// 0x0000-0x7FFF (MMODE and RMODE clear), with the dictionary ROM disabled.
-    pub fn new(model: Pc8801Model, clock_select: ClockSelect, sample_rate: u32) -> Self {
+    pub fn new_with_trace_sink(
+        model: Pc8801Model,
+        clock_select: ClockSelect,
+        sample_rate: u32,
+        tracer: T,
+    ) -> Self {
         let clocks = ClockConfig {
             main_clock_hz: clock_select.main_clock_hz(model),
             sub_clock_hz: model.sub_clock_hz(),
@@ -143,6 +148,7 @@ impl<T: Tracing + Default> Pc8801Bus<T> {
             gvram_access_limit_write,
             display_width: 640,
             display_height: 200,
+            presented_frames: 0,
             kanji1: Vec::new(),
             kanji2: Vec::new(),
             sub_mem: SubMemory::new(),
@@ -160,12 +166,19 @@ impl<T: Tracing + Default> Pc8801Bus<T> {
             drq_byte_cycles,
             clocks,
             model,
-            tracer: T::default(),
+            tracer,
         }
     }
 }
 
-impl<T: Tracing> Pc8801Bus<T> {
+impl Pc8801Bus<NoTrace> {
+    /// Creates an untraced bus in its power-on reset state.
+    pub fn new(model: Pc8801Model, clock_select: ClockSelect, sample_rate: u32) -> Self {
+        Self::new_with_trace_sink(model, clock_select, sample_rate, NoTrace)
+    }
+}
+
+impl<T: TraceSink> Pc8801Bus<T> {
     /// Applies a loaded and validated ROM set to the bus.
     pub fn load_roms(&mut self, roms: &LoadedRoms) {
         self.memory.load_n88_rom(&roms.n88);

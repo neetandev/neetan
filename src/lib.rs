@@ -41,12 +41,7 @@ mod image_selector;
 mod keyboard;
 
 #[cfg(feature = "tracing")]
-mod tracing;
-
-#[cfg(feature = "tracing")]
-type Tracer = crate::tracing::Tracing;
-#[cfg(not(feature = "tracing"))]
-type Tracer = machine_98::NoTracing;
+pub mod tracing;
 
 pub const COMPANY_NAME: &str = "neetan";
 pub const GAME_NAME: &str = "neetan";
@@ -1231,16 +1226,34 @@ fn host_date_time() -> HostDateTime {
 }
 
 pub fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+    initialize_machine_with_tracer(config, sample_rate, common::NoTrace)
+}
+
+/// Builds a machine using an externally controlled application trace sink.
+#[cfg(feature = "tracing")]
+pub fn initialize_machine_with_trace_sink(
+    config: &EmulatorConfig,
+    sample_rate: u32,
+    tracer: tracing::ApplicationTraceSink,
+) -> Result<Box<dyn Machine>> {
+    initialize_machine_with_tracer(config, sample_rate, tracer)
+}
+
+fn initialize_machine_with_tracer<T: common::TraceSink + 'static>(
+    config: &EmulatorConfig,
+    sample_rate: u32,
+    tracer: T,
+) -> Result<Box<dyn Machine>> {
     let mut machine = match config.target {
-        Target::Pc98 => initialize_pc98_machine(config, sample_rate),
-        Target::Pc88 => initialize_pc88_machine(config, sample_rate),
-        Target::Pc88Va => initialize_pc88va_machine(config, sample_rate),
-        Target::Pc60 => initialize_pc60_machine(config, sample_rate),
-        Target::Towns => initialize_towns_machine(config, sample_rate),
-        Target::X1 => initialize_x1_machine(config, sample_rate),
-        Target::Fm7 => initialize_fm7_machine(config, sample_rate),
-        Target::X68k => initialize_x68k_machine(config),
-        Target::At => initialize_at_machine(config, sample_rate),
+        Target::Pc98 => initialize_pc98_machine(config, sample_rate, tracer),
+        Target::Pc88 => initialize_pc88_machine(config, sample_rate, tracer),
+        Target::Pc88Va => initialize_pc88va_machine(config, sample_rate, tracer),
+        Target::Pc60 => initialize_pc60_machine(config, sample_rate, tracer),
+        Target::Towns => initialize_towns_machine(config, sample_rate, tracer),
+        Target::X1 => initialize_x1_machine(config, sample_rate, tracer),
+        Target::Fm7 => initialize_fm7_machine(config, sample_rate, tracer),
+        Target::X68k => initialize_x68k_machine(config, tracer),
+        Target::At => initialize_at_machine(config, sample_rate, tracer),
     }?;
     configure_machine(machine.as_mut(), config)?;
     Ok(machine)
@@ -1349,13 +1362,17 @@ fn configure_sc55(
     }
 }
 
-fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+fn initialize_pc98_machine<T: common::TraceSink + 'static>(
+    config: &EmulatorConfig,
+    sample_rate: u32,
+    tracer: T,
+) -> Result<Box<dyn Machine>> {
     let model = config.machine;
 
     info!("Selected machine model {model}");
 
-    let mut bus: machine_98::Pc9801Bus<Tracer> =
-        machine_98::Pc9801Bus::new(model, config.cpu_mode, sample_rate);
+    let mut bus: machine_98::Pc9801Bus<T> =
+        machine_98::Pc9801Bus::new_with_trace_sink(model, config.cpu_mode, sample_rate, tracer);
     bus.set_boot_device(config.boot_device);
 
     // EMS / XMS configuration gated by machine capability
@@ -1556,7 +1573,11 @@ fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
     Ok(machine)
 }
 
-fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+fn initialize_pc88_machine<T: common::TraceSink + 'static>(
+    config: &EmulatorConfig,
+    sample_rate: u32,
+    tracer: T,
+) -> Result<Box<dyn Machine>> {
     let model = machine_88::Pc8801Model::PC8801MC;
     info!("Selected machine model {model}");
 
@@ -1592,8 +1613,8 @@ fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
         CpuMode::High => machine_88::ClockSelect::EightMhz,
     };
 
-    let mut bus: machine_88::Pc8801Bus =
-        machine_88::Pc8801Bus::new(model, clock_select, sample_rate);
+    let mut bus: machine_88::Pc8801Bus<T> =
+        machine_88::Pc8801Bus::new_with_trace_sink(model, clock_select, sample_rate, tracer);
     bus.set_boot_mode(boot_mode);
     bus.set_monitor_timing(config.monitor);
     bus.set_memory_wait(config.pc88_memory_wait);
@@ -1619,9 +1640,10 @@ fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
     )))
 }
 
-fn initialize_pc88va_machine(
+fn initialize_pc88va_machine<T: common::TraceSink + 'static>(
     config: &EmulatorConfig,
     sample_rate: u32,
+    tracer: T,
 ) -> Result<Box<dyn Machine>> {
     let model = config.pc88va_model;
     info!("Selected machine model {model}");
@@ -1641,16 +1663,21 @@ fn initialize_pc88va_machine(
         warn!("CD-ROM options are ignored for the PC-88VA target");
     }
 
-    let bus: machine_88va::Pc88VaBus = machine_88va::Pc88VaBus::new(model, roms, sample_rate);
+    let bus: machine_88va::Pc88VaBus<T> =
+        machine_88va::Pc88VaBus::new_with_trace_sink(model, roms, sample_rate, tracer);
     let sub_cpu = cpu::Z80::new(bus.clock_config().sub_clock_hz);
     Ok(Box::new(machine_88va::Pc88VaMachine::new(
-        machine_88va::Pc88VaMachine::reset_cpu(),
+        machine_88va::reset_cpu(),
         sub_cpu,
         bus,
     )))
 }
 
-fn initialize_pc60_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+fn initialize_pc60_machine<T: common::TraceSink + 'static>(
+    config: &EmulatorConfig,
+    sample_rate: u32,
+    tracer: T,
+) -> Result<Box<dyn Machine>> {
     let model = config.pc60_model;
     info!("Selected machine model {model}");
 
@@ -1667,7 +1694,8 @@ fn initialize_pc60_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
         ))
     })?;
 
-    let mut bus: machine_60::Pc6000Bus<Tracer> = machine_60::Pc6000Bus::new(model, sample_rate);
+    let mut bus: machine_60::Pc6000Bus<T> =
+        machine_60::Pc6000Bus::new_with_trace_sink(model, sample_rate, tracer);
     bus.load_roms(&roms);
 
     if let Some(cart_path) = config.cartridge.as_ref() {
@@ -1691,9 +1719,10 @@ fn initialize_pc60_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
     Ok(Box::new(machine))
 }
 
-fn initialize_towns_machine(
+fn initialize_towns_machine<T: common::TraceSink + 'static>(
     config: &EmulatorConfig,
     _sample_rate: u32,
+    tracer: T,
 ) -> Result<Box<dyn Machine>> {
     let model = config.towns_model;
     info!("Selected machine model {model}");
@@ -1724,23 +1753,40 @@ fn initialize_towns_machine(
     };
 
     match model {
-        machine_towns::TownsModel::FmTowns => {
-            build_towns_machine::<{ cpu::CPU_MODEL_386_SX }>(config, model, roms, boot_device)
-        }
+        machine_towns::TownsModel::FmTowns => build_towns_machine::<{ cpu::CPU_MODEL_386_SX }, T>(
+            config,
+            model,
+            roms,
+            boot_device,
+            tracer,
+        ),
         machine_towns::TownsModel::FmTownsIICx => {
-            build_towns_machine::<{ cpu::CPU_MODEL_386_DX }>(config, model, roms, boot_device)
+            build_towns_machine::<{ cpu::CPU_MODEL_386_DX }, T>(
+                config,
+                model,
+                roms,
+                boot_device,
+                tracer,
+            )
         }
         machine_towns::TownsModel::FmTownsIIMx => {
-            build_towns_machine::<{ cpu::CPU_MODEL_486_DX }>(config, model, roms, boot_device)
+            build_towns_machine::<{ cpu::CPU_MODEL_486_DX }, T>(
+                config,
+                model,
+                roms,
+                boot_device,
+                tracer,
+            )
         }
     }
 }
 
-fn build_towns_machine<const CPU_MODEL: u8>(
+fn build_towns_machine<const CPU_MODEL: u8, T: common::TraceSink + 'static>(
     config: &EmulatorConfig,
     model: machine_towns::TownsModel,
     roms: machine_towns::LoadedRoms,
     boot_device: machine_towns::TownsBootDevice,
+    tracer: T,
 ) -> Result<Box<dyn Machine>> {
     let cpu_name = match CPU_MODEL {
         cpu::CPU_MODEL_386_DX => "i386DX",
@@ -1753,11 +1799,12 @@ fn build_towns_machine<const CPU_MODEL: u8>(
         model.cpu_clock_hz(config.cpu_mode) / 1_000_000,
     );
 
-    let bus: machine_towns::TownsBus<Tracer> = machine_towns::TownsBus::new(
+    let bus: machine_towns::TownsBus<T> = machine_towns::TownsBus::new_with_trace_sink(
         model,
         config.cpu_mode,
         roms,
         audio_engine::SAMPLE_RATE as u32,
+        tracer,
     );
     let mut cpu = cpu::I386::<CPU_MODEL, { cpu::ADDRESS_WIDTH_32 }>::new();
     cpu.reset();
@@ -1769,7 +1816,11 @@ fn build_towns_machine<const CPU_MODEL: u8>(
     Ok(Box::new(machine))
 }
 
-fn initialize_at_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+fn initialize_at_machine<T: common::TraceSink + 'static>(
+    config: &EmulatorConfig,
+    sample_rate: u32,
+    tracer: T,
+) -> Result<Box<dyn Machine>> {
     let model = config.at_model;
     let cpu_clock_hz = model.cpu_clock_hz(config.cpu_mode);
     info!(
@@ -1795,8 +1846,13 @@ fn initialize_at_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Bo
         warn!("{message}");
     }
 
-    let bus: machine_at::AtBus<Tracer> =
-        machine_at::AtBus::new(cpu_clock_hz, model.ram_size(), roms, sample_rate);
+    let bus: machine_at::AtBus<T> = machine_at::AtBus::new_with_trace_sink(
+        cpu_clock_hz,
+        model.ram_size(),
+        roms,
+        sample_rate,
+        tracer,
+    );
     let mut cpu = cpu::I386::<{ cpu::CPU_MODEL_486_DX }, { cpu::ADDRESS_WIDTH_32 }>::new();
     cpu.reset();
     let mut machine = machine_at::AtMachine::new(cpu, bus);
@@ -1829,7 +1885,11 @@ fn resolve_at_boot_device(
     }
 }
 
-fn initialize_x1_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+fn initialize_x1_machine<T: common::TraceSink + 'static>(
+    config: &EmulatorConfig,
+    sample_rate: u32,
+    tracer: T,
+) -> Result<Box<dyn Machine>> {
     let model = config.x1_model;
     info!("Selected machine model {model}");
     if model.is_turbo() {
@@ -1849,7 +1909,8 @@ fn initialize_x1_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Bo
         ))
     })?;
 
-    let mut bus: machine_x1::X1Bus<Tracer> = machine_x1::X1Bus::new(model, sample_rate);
+    let mut bus: machine_x1::X1Bus<T> =
+        machine_x1::X1Bus::new_with_trace_sink(model, sample_rate, tracer);
     bus.set_monitor_timing(config.monitor);
     bus.set_keyboard_mode(config.x1_keyboard);
     bus.load_roms(&roms);
@@ -1863,7 +1924,11 @@ fn initialize_x1_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Bo
 /// Builds an FM-7 / FM-77AV machine: loads the ROM set, resolves the shared
 /// boot mode to an FM-7 mode, wires the two MC6809 cores (main and sub) and the
 /// bus, and returns the boxed machine.
-fn initialize_fm7_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+fn initialize_fm7_machine<T: common::TraceSink + 'static>(
+    config: &EmulatorConfig,
+    sample_rate: u32,
+    tracer: T,
+) -> Result<Box<dyn Machine>> {
     let model = config.fm7_model;
     info!("Selected machine model {model}");
 
@@ -1889,8 +1954,8 @@ fn initialize_fm7_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<B
         .map_err(StringError)?
         .unwrap_or(machine_fm7::BootMode::Basic);
 
-    let mut bus: machine_fm7::Fm7Bus<Tracer> =
-        machine_fm7::Fm7Bus::new(model, boot_mode, sample_rate);
+    let mut bus: machine_fm7::Fm7Bus<T> =
+        machine_fm7::Fm7Bus::new_with_trace_sink(model, boot_mode, sample_rate, tracer);
     bus.load_roms(&roms);
 
     let main_cpu = cpu::M6809::new(bus.cpu_clock_hz());
@@ -1902,7 +1967,10 @@ fn initialize_fm7_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<B
     Ok(Box::new(machine))
 }
 
-fn initialize_x68k_machine(config: &EmulatorConfig) -> Result<Box<dyn Machine>> {
+fn initialize_x68k_machine<T: common::TraceSink + 'static>(
+    config: &EmulatorConfig,
+    tracer: T,
+) -> Result<Box<dyn Machine>> {
     let model = config.x68k_model;
     info!("Selected machine model {model}");
     let rom_directory = config.x68k_roms.as_ref().ok_or_else(|| {
@@ -1923,11 +1991,12 @@ fn initialize_x68k_machine(config: &EmulatorConfig) -> Result<Box<dyn Machine>> 
         "{model} configured at {:.3} MHz",
         f64::from(model.cpu_clock_hz(config.cpu_mode)) / 1_000_000.0
     );
-    let bus: machine_x68k::X68kBus<Tracer> = machine_x68k::X68kBus::new(
+    let bus: machine_x68k::X68kBus<T> = machine_x68k::X68kBus::new_with_trace_sink(
         model,
         config.cpu_mode,
         roms,
         audio_engine::SAMPLE_RATE as u32,
+        tracer,
     )
     .map_err(StringError)?;
     let machine = machine_x68k::X68kMachine::from_bus(model, config.cpu_mode, bus);
@@ -1944,7 +2013,7 @@ fn selector_font_rom_data(config: &EmulatorConfig, machine: &dyn Machine) -> Vec
 }
 
 fn expand_selector_font_rom(raw_font_rom: &[u8]) -> Vec<u8> {
-    let mut bus: machine_98::Pc9801Bus<machine_98::NoTracing> = machine_98::Pc9801Bus::new(
+    let mut bus: machine_98::Pc9801Bus<common::NoTrace> = machine_98::Pc9801Bus::new(
         MachineModel::PC9801VM,
         CpuMode::High,
         audio_engine::SAMPLE_RATE as u32,

@@ -17,7 +17,7 @@ fn timer_event_sets_pending_irq_when_unmasked() {
     bus.write_byte(0xFD02, 0x04);
     assert!(bus.has_irq(), "unmasking exposes the pending timer IRQ");
 
-    let status = bus.read_byte(0xFD03);
+    let status = bus.read_byte(0xFD03).0;
     assert_eq!(status & 0x04, 0x00);
     assert!(!bus.has_irq(), "reading FD03 acknowledges the timer");
 }

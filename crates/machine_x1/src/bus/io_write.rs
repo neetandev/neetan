@@ -4,13 +4,13 @@
 //! (and also captures writes below `0x4000` while the VRAM multi-plane latch is
 //! set); the remaining device blocks live below `0x4000`.
 
-use common::Tracing;
+use common::TraceSink;
 
 use super::{SUB_CPU_PSG_WAIT_CYCLES, X1Bus, ppi_link::PpiEffect};
 
-impl<T: Tracing> X1Bus<T> {
-    /// Writes a byte to an I/O port.
-    pub fn io_write(&mut self, port: u16, value: u8) {
+impl<T: TraceSink> X1Bus<T> {
+    /// Writes a byte and reports whether the hardware decoded the port.
+    pub fn io_write(&mut self, port: u16, value: u8) -> bool {
         match self.model {
             crate::config::X1Model::X1 | crate::config::X1Model::X1Turbo => {
                 self.io_write_common(port, value)
@@ -18,47 +18,53 @@ impl<T: Tracing> X1Bus<T> {
         }
     }
 
-    fn io_write_common(&mut self, port: u16, value: u8) {
+    fn io_write_common(&mut self, port: u16, value: u8) -> bool {
         if self.video.is_bitmap_write(port) {
             self.charge_vram_access_wait();
             self.video.write_bitmap(port, value);
-            return;
+            return true;
         }
 
-        match port & 0xF000 {
+        let handled = match port & 0xF000 {
             0x0000 => self.io_write_low(port, value),
             0x1000 => self.io_write_devices(port, value),
-            0x2000 => self.video.write_attr(port, value),
+            0x2000 => {
+                self.video.write_attr(port, value);
+                true
+            }
             0x3000 => {
                 if self.model.has_kanji() && (port & 0x0800) != 0 {
                     self.video.write_kvram(port, value);
                 } else {
                     self.video.write_text(port, value);
                 }
+                true
             }
-            _ => {}
-        }
+            _ => false,
+        };
         if matches!(port & 0xFF00, 0x1900 | 0x1B00 | 0x1C00) {
             self.add_wait_cycles(SUB_CPU_PSG_WAIT_CYCLES);
         }
+        handled
     }
 
     /// Writes the 0x0000-0x0FFF block (ROM/CG window, bank register and FDC).
-    fn io_write_low(&mut self, port: u16, value: u8) {
+    fn io_write_low(&mut self, port: u16, value: u8) -> bool {
         match port {
-            0x0700..=0x0707 if self.model.has_fm() => self.fm_write(port, value),
+            0x0700..=0x0707 if self.model.has_fm() => return self.fm_write(port, value),
             0x0B00 if self.model.is_turbo() => self.memory.set_ex_bank(value),
             0x0E80..=0x0E82 if self.model.has_kanji() => self.kanji_write(port & 0x03, value),
             0x0E00..=0x0E02 => {} // cartridge ROM address latch; no cartridge here
             0x0FF8..=0x0FFF => self.fdc_write(port, value),
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
     /// Writes the CZ-8BS1 FM sound board block (`0x0700-0x0707`): the OPM address
     /// port `0x0700`, the OPM data port `0x0701`, and the paired sound-board CTC
     /// at `0x0704-0x0707`.
-    fn fm_write(&mut self, port: u16, value: u8) {
+    fn fm_write(&mut self, port: u16, value: u8) -> bool {
         let now = self.current_cycle;
         match port {
             0x0700 => {
@@ -76,12 +82,13 @@ impl<T: Tracing> X1Bus<T> {
                 self.sound_ctc.write((port - 0x0704) as usize, value, now);
                 self.sync_sound_ctc_schedule();
             }
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
     /// Writes the 0x1000-0x1FFF device block.
-    fn io_write_devices(&mut self, port: u16, value: u8) {
+    fn io_write_devices(&mut self, port: u16, value: u8) -> bool {
         match port & 0xFF00 {
             0x1000 => self.video.set_palette_blue(value),
             0x1100 => self.video.set_palette_red(value),
@@ -109,7 +116,7 @@ impl<T: Tracing> X1Bus<T> {
                     self.crtc.write_data(value);
                     self.on_crtc_register_write(register);
                 }
-                _ => {}
+                _ => return false,
             },
             0x1900 => self.sub.write_mailbox(value),
             0x1A00 => {
@@ -120,16 +127,22 @@ impl<T: Tracing> X1Bus<T> {
             0x1C00 => self.psg.address_w(value),
             0x1D00 => self.memory.select_rom(),
             0x1E00 => self.memory.select_ram(),
-            0x1F00 => self.io_write_1f00(port, value),
-            _ => {}
+            0x1F00 => return self.io_write_1f00(port, value),
+            _ => return false,
         }
+        true
     }
 
     /// Writes the 0x1F00-0x1FFF sub-block (CTC, and on turbo the DMA and SIO).
-    fn io_write_1f00(&mut self, port: u16, value: u8) {
+    fn io_write_1f00(&mut self, port: u16, value: u8) -> bool {
         let low = port & 0x00FF;
         match low {
-            0xA0..=0xA3 | 0xA8..=0xAB => self.ctc_write(port, value),
+            0xA0..=0xA3 | 0xA8..=0xAB => {
+                if self.ctc_port_channel(port).is_none() {
+                    return false;
+                }
+                self.ctc_write(port, value);
+            }
             0xD0 if self.model.is_turbo() => self.video.write_mode1(value),
             0xE0 if self.model.is_turbo() => self.video.write_mode2(value),
             0x80..=0x8F if self.model.has_dma() => {
@@ -149,8 +162,9 @@ impl<T: Tracing> X1Bus<T> {
                 }
                 self.sync_interrupts();
             }
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
     fn apply_ppi_effect(&mut self, effect: PpiEffect) {

@@ -4,7 +4,7 @@
 //! through the PIC. The serial mouse attached to COM1 is exercised separately
 //! in `serial_gameport.rs`.
 
-use common::{Bus, NoTracing};
+use common::{Bus, NoTrace};
 use machine_at::{AtBus, LoadedRoms};
 
 // COM1 UART register ports.
@@ -38,16 +38,16 @@ const MSR_DCD: u8 = 0x80;
 const IER_ETBEI: u8 = 0x02;
 
 /// Builds a bus with placeholder ROMs and a 1.152 MHz clock.
-fn bus() -> AtBus<NoTracing> {
+fn bus() -> AtBus<NoTrace> {
     let roms = LoadedRoms {
         system_bios: vec![0xFF; 0x1_0000],
         vga_bios: vec![0xFF; 0x8000],
     };
-    AtBus::<NoTracing>::new(1_152_000, 16 << 20, roms, 48_000)
+    AtBus::<NoTrace>::new(1_152_000, 16 << 20, roms, 48_000)
 }
 
 /// Initializes the master PIC and unmasks only IRQ 4 (COM1).
-fn initialize_pic_for_com1(bus: &mut AtBus<NoTracing>) {
+fn initialize_pic_for_com1(bus: &mut AtBus<NoTrace>) {
     bus.io_write_byte(0x20, 0x11);
     bus.io_write_byte(0x21, 0x08);
     bus.io_write_byte(0x21, 0x04);

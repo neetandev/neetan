@@ -1,6 +1,6 @@
 //! Disk sub-CPU (PC80S31K) I/O writes.
 
-use common::Tracing;
+use common::TraceSink;
 
 use super::Pc8801Bus;
 
@@ -8,9 +8,9 @@ use super::Pc8801Bus;
 /// always asserts drive ready when the motor is driven).
 const FDC_FORCED_READY: u8 = 0x40;
 
-impl<T: Tracing> Pc8801Bus<T> {
-    /// Writes a disk sub-CPU I/O port (`port & 0xFF`). Public for tests and tooling.
-    pub fn sub_io_write(&mut self, port: u16, value: u8) {
+impl<T: TraceSink> Pc8801Bus<T> {
+    /// Writes a disk sub-CPU port and reports whether it was decoded.
+    pub fn sub_io_write(&mut self, port: u16, value: u8) -> bool {
         match port & 0xFF {
             // Interrupt acknowledge latch: no-op (no vector latch).
             0xF0 => {}
@@ -38,7 +38,8 @@ impl<T: Tracing> Pc8801Bus<T> {
                 let changed = self.ppi_sub.write((port & 0x03) as u8, value);
                 self.on_ppi_sub_change(changed);
             }
-            _ => {}
+            _ => return false,
         }
+        true
     }
 }

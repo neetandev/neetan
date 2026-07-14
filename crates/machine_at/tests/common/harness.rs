@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use common::{Bus, Cpu, CpuMode, HostDateTime, Machine, NoTracing, Tracing};
+use common::{Bus, Cpu, CpuMode, HostDateTime, Machine, NoTrace, TraceSink};
 use device::vga::{
     VGA_PORT_ATC_WRITE, VGA_PORT_CRTC_DATA_COLOR, VGA_PORT_CRTC_DATA_MONO,
     VGA_PORT_CRTC_INDEX_COLOR, VGA_PORT_CRTC_INDEX_MONO, VGA_PORT_DAC_DATA, VGA_PORT_DAC_MASK,
@@ -59,17 +59,18 @@ pub fn roms_with_bios(system_bios: Vec<u8>) -> LoadedRoms {
 }
 
 /// Builds a machine of the given model over the parked-CPU synthetic ROM set.
-pub fn machine_for_model(model: AtModel) -> AtMachine<NoTracing> {
+pub fn machine_for_model(model: AtModel) -> AtMachine<NoTrace> {
     machine_with_roms(model, synthetic_roms())
 }
 
 /// Builds a machine of the given model over a caller-supplied ROM set.
-pub fn machine_with_roms<T: Tracing + Default>(model: AtModel, roms: LoadedRoms) -> AtMachine<T> {
-    let mut bus = AtBus::<T>::new(
+pub fn machine_with_roms<T: TraceSink + Default>(model: AtModel, roms: LoadedRoms) -> AtMachine<T> {
+    let mut bus = AtBus::new_with_trace_sink(
         model.cpu_clock_hz(CpuMode::High),
         model.ram_size(),
         roms,
         48_000,
+        T::default(),
     );
     bus.set_host_date_time_provider(fixed_clock);
     let mut cpu = cpu::I386::<{ cpu::CPU_MODEL_486_DX }, { cpu::ADDRESS_WIDTH_32 }>::new();
@@ -78,7 +79,7 @@ pub fn machine_with_roms<T: Tracing + Default>(model: AtModel, roms: LoadedRoms)
 }
 
 /// Runs the machine for the given number of emulated milliseconds.
-pub fn run_millis<T: Tracing>(machine: &mut AtMachine<T>, millis: u64) {
+pub fn run_millis<T: TraceSink>(machine: &mut AtMachine<T>, millis: u64) {
     let cycles = machine.bus.cpu_clock_hz() as u64 * millis / 1000;
     let slice = 1_000_000u64;
     let mut ran = 0u64;
@@ -109,7 +110,7 @@ const EXTENDED_CRTC: [(u8, u8); 4] = [(0x32, 0x28), (0x34, 0x08), (0x36, 0x43), 
 impl ModeVector {
     /// Applies the register file to the bus VGA through the real I/O ports,
     /// KEY unlock included, leaving the adapter ready to scan out the mode.
-    pub fn apply(&self, bus: &mut AtBus<NoTracing>) {
+    pub fn apply(&self, bus: &mut AtBus<NoTrace>) {
         bus.io_write_byte(VGA_PORT_STATUS0_MISC_WRITE, self.misc);
         let color = self.misc & 0x01 != 0;
         let (crtc_index_port, crtc_data_port, mode_control_port, status_port) = if color {
@@ -186,7 +187,7 @@ const CS4031_CONFIG_DATA: u16 = 0x0023;
 /// Routes the A0000 and B0000 blocks to the VGA instead of internal DRAM, the
 /// way the BIOS programs the chipset so text and graphics writes reach the
 /// adapter. Clears the CS4031 A/B shadow register (index 0x18).
-pub fn route_vga_window(bus: &mut AtBus<NoTracing>) {
+pub fn route_vga_window(bus: &mut AtBus<NoTrace>) {
     bus.io_write_byte(CS4031_CONFIG_ADDRESS, device::cs4031::CS4031_REG_SHADOW_AB);
     bus.io_write_byte(CS4031_CONFIG_DATA, 0x00);
 }
@@ -194,14 +195,14 @@ pub fn route_vga_window(bus: &mut AtBus<NoTracing>) {
 /// Writes a run of bytes into VGA display memory through the CPU window, so the
 /// current sequencer/graphics-controller write path applies exactly as it would
 /// for a CPU store.
-pub fn write_vram(bus: &mut AtBus<NoTracing>, physical: u32, bytes: &[u8]) {
+pub fn write_vram(bus: &mut AtBus<NoTrace>, physical: u32, bytes: &[u8]) {
     for (offset, byte) in bytes.iter().enumerate() {
         bus.write_byte(physical + offset as u32, *byte);
     }
 }
 
 /// Fills `count` bytes of VGA display memory with `value`.
-pub fn fill_vram(bus: &mut AtBus<NoTracing>, physical: u32, value: u8, count: u32) {
+pub fn fill_vram(bus: &mut AtBus<NoTrace>, physical: u32, value: u8, count: u32) {
     for offset in 0..count {
         bus.write_byte(physical + offset, value);
     }
@@ -209,7 +210,7 @@ pub fn fill_vram(bus: &mut AtBus<NoTracing>, physical: u32, value: u8, count: u3
 
 /// Fills `count` bytes with an incrementing ramp starting at `start` (color =
 /// running index, wrapping at 256), mirroring the exerciser position ramp.
-pub fn fill_vram_ramp(bus: &mut AtBus<NoTracing>, physical: u32, start: u8, count: u32) {
+pub fn fill_vram_ramp(bus: &mut AtBus<NoTrace>, physical: u32, start: u8, count: u32) {
     let mut value = start;
     for offset in 0..count {
         bus.write_byte(physical + offset, value);
@@ -218,7 +219,7 @@ pub fn fill_vram_ramp(bus: &mut AtBus<NoTracing>, physical: u32, start: u8, coun
 }
 
 /// Advances the machine long enough to render at least one settled frame.
-pub fn render_frame<T: Tracing>(machine: &mut AtMachine<T>) {
+pub fn render_frame<T: TraceSink>(machine: &mut AtMachine<T>) {
     run_millis(machine, 50);
 }
 
@@ -233,7 +234,7 @@ pub const fn pen6(red: u8, green: u8, blue: u8) -> u32 {
 }
 
 /// Reads one framebuffer pixel as packed RGBA.
-pub fn pixel_rgba<T: Tracing>(machine: &AtMachine<T>, x: u32, y: u32) -> u32 {
+pub fn pixel_rgba<T: TraceSink>(machine: &AtMachine<T>, x: u32, y: u32) -> u32 {
     let (width, _) = machine.display_dimensions();
     let offset = ((y * width + x) as usize) * 4;
     u32::from_le_bytes(
@@ -245,7 +246,12 @@ pub fn pixel_rgba<T: Tracing>(machine: &AtMachine<T>, x: u32, y: u32) -> u32 {
 
 /// Samples a pixel in mode-logical coordinates (handles dot and scan doubling
 /// by scaling to the rendered dimensions).
-pub fn mode_pixel<T: Tracing>(machine: &AtMachine<T>, logical: (u32, u32), x: u32, y: u32) -> u32 {
+pub fn mode_pixel<T: TraceSink>(
+    machine: &AtMachine<T>,
+    logical: (u32, u32),
+    x: u32,
+    y: u32,
+) -> u32 {
     let (width, height) = machine.display_dimensions();
     let scale_x = width / logical.0;
     let scale_y = height / logical.1;
@@ -253,7 +259,7 @@ pub fn mode_pixel<T: Tracing>(machine: &AtMachine<T>, logical: (u32, u32), x: u3
 }
 
 /// Lowercase hexadecimal BLAKE3 digest of the active framebuffer region.
-pub fn framebuffer_hash<T: Tracing>(machine: &AtMachine<T>) -> String {
+pub fn framebuffer_hash<T: TraceSink>(machine: &AtMachine<T>) -> String {
     let (width, height) = machine.display_dimensions();
     let bytes = &machine.display_framebuffer()[..(width * height * 4) as usize];
     let mut hasher = blake3::Hasher::new();

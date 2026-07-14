@@ -10,7 +10,7 @@
 //! Registers live at `0x0FF8-0x0FFB`; `0x0FFC` is the drive/side/motor control
 //! latch. On the turbo, reads of `0x0FFC`/`0x0FFD` select FM / MFM density.
 
-use common::Tracing;
+use common::TraceSink;
 use device::floppy::{FloppyImage, MountedFloppy};
 
 use super::{OPEN_BUS, X1Bus};
@@ -34,7 +34,7 @@ const CONTROL_DRIVE_MASK: u8 = 0x03;
 const CONTROL_SIDE: u8 = 0x10;
 const CONTROL_MOTOR: u8 = 0x80;
 
-impl<T: Tracing> X1Bus<T> {
+impl<T: TraceSink> X1Bus<T> {
     /// Reads an FDC port (`0x0FF8-0x0FFF`).
     pub(super) fn fdc_read(&mut self, port: u16) -> u8 {
         let now = self.current_cycle;

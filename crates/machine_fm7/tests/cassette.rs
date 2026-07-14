@@ -36,7 +36,7 @@ fn ear_bit_tracks_the_waveform_while_the_motor_runs() {
 
     // Motor on positions the head at the start of the high run.
     bus.write_byte(0xFD00, CASSETTE_MOTOR_BIT);
-    let value = bus.read_byte(0xFD02);
+    let value = bus.read_byte(0xFD02).0;
     assert_eq!(value & EAR_BIT, EAR_BIT);
     assert_eq!(value & PRINTER_IDLE_BITS, PRINTER_IDLE_BITS);
 
@@ -44,7 +44,7 @@ fn ear_bit_tracks_the_waveform_while_the_motor_runs() {
     let samples_into_low = 0x7FFF + 0x2000;
     let cycles = samples_into_low * u64::from(bus.cpu_clock_hz()) / T77_SAMPLE_RATE_HZ;
     run_bus_cycles(&mut bus, cycles);
-    assert_eq!(bus.read_byte(0xFD02) & EAR_BIT, 0);
+    assert_eq!(bus.read_byte(0xFD02).0 & EAR_BIT, 0);
 }
 
 #[test]
@@ -57,12 +57,12 @@ fn stopping_the_motor_holds_the_head_position() {
     let samples_into_low = 0x7FFF + 0x2000;
     let cycles = samples_into_low * u64::from(bus.cpu_clock_hz()) / T77_SAMPLE_RATE_HZ;
     run_bus_cycles(&mut bus, cycles);
-    assert_eq!(bus.read_byte(0xFD02) & EAR_BIT, 0);
+    assert_eq!(bus.read_byte(0xFD02).0 & EAR_BIT, 0);
 
     // Motor off holds the head; the EAR level stays in the low run.
     bus.write_byte(0xFD00, 0x00);
     run_bus_cycles(&mut bus, cycles);
-    assert_eq!(bus.read_byte(0xFD02) & EAR_BIT, 0);
+    assert_eq!(bus.read_byte(0xFD02).0 & EAR_BIT, 0);
 }
 
 #[test]
@@ -71,5 +71,5 @@ fn mic_and_printer_writes_are_accepted_without_side_effects() {
     // MIC (bit 0), motor (bit 1), printer strobe (bit 6) and select (bit 7).
     bus.write_byte(0xFD00, 0xC3);
     // With no tape the EAR line idles low and the printer status reads ready.
-    assert_eq!(bus.read_byte(0xFD02), PRINTER_IDLE_BITS);
+    assert_eq!(bus.read_byte(0xFD02).0, PRINTER_IDLE_BITS);
 }

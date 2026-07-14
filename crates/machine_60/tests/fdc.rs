@@ -61,7 +61,7 @@ fn drain_and_result(bus: &mut Pc6000Bus, sectors: usize) -> Vec<u8> {
     for _ in 0..(sectors * SECTOR_SIZE) {
         read_ready_byte(bus);
     }
-    (0..7).map(|_| bus.io_read(0xDD)).collect()
+    (0..7).map(|_| bus.io_read(0xDD).0).collect()
 }
 
 /// D88 deleted-data address-mark flag.
@@ -83,8 +83,8 @@ fn read_ready_byte(bus: &mut Pc6000Bus) -> u8 {
             .expect("an event while waiting for RQM");
         bus.set_current_cycle(fire);
         bus.process_events();
-        if bus.io_read(0xDC) & MSR_RQM != 0 {
-            return bus.io_read(0xDD);
+        if bus.io_read(0xDC).0 & MSR_RQM != 0 {
+            return bus.io_read(0xDD).0;
         }
     }
     panic!("FDC did not release a PIO byte");
@@ -100,7 +100,7 @@ fn pio_read_streams_a_sector() {
         assert_eq!(read_ready_byte(bus), expected as u8);
     }
 
-    let result: Vec<u8> = (0..7).map(|_| bus.io_read(0xDD)).collect();
+    let result: Vec<u8> = (0..7).map(|_| bus.io_read(0xDD).0).collect();
     assert_eq!(result[0] & 0xC0, 0x00, "normal termination");
     assert_eq!(result[5], 1, "result reports the last sector read");
 }
@@ -121,7 +121,7 @@ fn pio_read_continues_across_two_sectors() {
         assert_eq!(read_ready_byte(bus), 0x80u8.wrapping_add(offset as u8));
     }
 
-    let result: Vec<u8> = (0..7).map(|_| bus.io_read(0xDD)).collect();
+    let result: Vec<u8> = (0..7).map(|_| bus.io_read(0xDD).0).collect();
     assert_eq!(result[5], 2, "result reports sector 2 at EOT");
 }
 
@@ -139,13 +139,13 @@ fn pio_write_round_trips_through_the_image() {
             let fire = bus.next_event_cycle().expect("a write event");
             bus.set_current_cycle(fire);
             bus.process_events();
-            if bus.io_read(0xDC) & MSR_RQM != 0 {
+            if bus.io_read(0xDC).0 & MSR_RQM != 0 {
                 bus.io_write(0xDD, 0xA0u8.wrapping_add(value as u8));
                 break;
             }
         }
     }
-    let _result: Vec<u8> = (0..7).map(|_| bus.io_read(0xDD)).collect();
+    let _result: Vec<u8> = (0..7).map(|_| bus.io_read(0xDD).0).collect();
 
     issue_read(bus, 1);
     for value in 0..SECTOR_SIZE {
@@ -161,7 +161,7 @@ fn empty_drive_read_reports_a_missing_address_mark() {
 
     specify_non_dma(bus);
     issue_read(bus, 1);
-    let result: Vec<u8> = (0..7).map(|_| bus.io_read(0xDD)).collect();
+    let result: Vec<u8> = (0..7).map(|_| bus.io_read(0xDD).0).collect();
     assert_eq!(result[0] & 0xC0, 0x40, "abnormal termination");
     assert_eq!(result[1] & 0x01, 0x01, "ST1 missing address mark");
 }
@@ -190,7 +190,7 @@ fn read_data_over_deleted_sector_raises_the_control_mark() {
     for expected in 0..SECTOR_SIZE {
         assert_eq!(read_ready_byte(bus), expected as u8);
     }
-    let result: Vec<u8> = (0..7).map(|_| bus.io_read(0xDD)).collect();
+    let result: Vec<u8> = (0..7).map(|_| bus.io_read(0xDD).0).collect();
     assert_eq!(result[0] & 0xC0, 0x00, "normal termination");
     assert_eq!(
         result[2] & ST2_CONTROL_MARK,
@@ -233,7 +233,7 @@ fn skip_flag_skips_a_deleted_mismatch() {
     for offset in 0..SECTOR_SIZE {
         assert_eq!(read_ready_byte(bus), 0x80u8.wrapping_add(offset as u8));
     }
-    let result: Vec<u8> = (0..7).map(|_| bus.io_read(0xDD)).collect();
+    let result: Vec<u8> = (0..7).map(|_| bus.io_read(0xDD).0).collect();
     assert_eq!(result[0] & 0xC0, 0x00, "normal termination");
     assert_eq!(
         result[2] & ST2_CONTROL_MARK,
@@ -273,7 +273,7 @@ fn read_track_returns_every_sector_in_physical_order() {
     for offset in 0..SECTOR_SIZE {
         assert_eq!(read_ready_byte(bus), 0x90u8.wrapping_add(offset as u8));
     }
-    let result: Vec<u8> = (0..7).map(|_| bus.io_read(0xDD)).collect();
+    let result: Vec<u8> = (0..7).map(|_| bus.io_read(0xDD).0).collect();
     assert_eq!(result[0] & 0xC0, 0x00, "normal termination");
     assert_eq!(
         result[5], 1,
@@ -289,7 +289,7 @@ fn external_interface_select_returns_open_bus_then_built_in() {
     // Selecting the external intelligent unit (port 0xB1 bit 2) masks the
     // built-in data port.
     bus.io_write(0xB1, 0x04);
-    assert_eq!(bus.io_read(0xDC), 0xFF, "external select reads open bus");
+    assert_eq!(bus.io_read(0xDC).0, 0xFF, "external select reads open bus");
 
     // Returning to the built-in interface restores normal PIO operation.
     bus.io_write(0xB1, 0x00);

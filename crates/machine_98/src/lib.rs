@@ -13,8 +13,7 @@ mod memory;
 mod rom;
 mod scheduler;
 
-use common::MachineModel;
-pub use common::{DosBootStage, NoTracing, Tracing};
+use common::{MachineModel, NoTrace, TraceSink};
 use device::{
     beeper::BeeperState, cgrom::CgromState, display_control::DisplayControlState, egc::EgcState,
     fdd320_ppi::Fdd320PpiState, ga1280a::Ga1280aState, grcg::GrcgState,

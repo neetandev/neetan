@@ -56,6 +56,15 @@ pub struct I8214PicState {
     pub interrupt_disabled: bool,
 }
 
+/// Result of an interrupt acknowledge cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct I8214Acknowledge {
+    /// Accepted controller level, or none when no request was eligible.
+    pub level: Option<u8>,
+    /// IM2 vector low byte returned to the processor.
+    pub vector: u8,
+}
+
 /// uPB8214 eight-level priority interrupt controller.
 pub struct I8214Pic {
     /// Embedded state for save/restore.
@@ -152,18 +161,22 @@ impl I8214Pic {
         self.eligible() != 0
     }
 
-    /// Accepts the highest-priority (lowest-level) eligible request, clears it,
-    /// latches the controller disabled, and returns the IM2 vector low byte
-    /// (`level * 2`). Returns 0 when no request is eligible.
-    pub fn acknowledge(&mut self) -> u8 {
+    /// Accepts an interrupt and reports its controller level and vector.
+    pub fn acknowledge(&mut self) -> I8214Acknowledge {
         let eligible = self.eligible();
         if eligible == 0 {
-            return 0;
+            return I8214Acknowledge {
+                level: None,
+                vector: 0,
+            };
         }
         let level = eligible.trailing_zeros() as u8;
         self.state.request &= !(1 << level);
         self.state.interrupt_disabled = true;
-        level * 2
+        I8214Acknowledge {
+            level: Some(level),
+            vector: level * 2,
+        }
     }
 }
 
@@ -185,18 +198,18 @@ mod tests {
         pic.set_request(LEVEL_VRTC);
         assert!(pic.has_pending_irq());
         // VRTC (level 1) outranks CLOCK (level 2).
-        assert_eq!(pic.acknowledge(), LEVEL_VRTC * 2);
+        assert_eq!(pic.acknowledge().vector, LEVEL_VRTC * 2);
     }
 
     #[test]
     fn vector_is_level_times_two() {
         let mut pic = enabled_all();
         pic.set_request(LEVEL_CLOCK);
-        assert_eq!(pic.acknowledge(), 0x04);
+        assert_eq!(pic.acknowledge().vector, 0x04);
 
         pic.write_priority(PRIORITY_ALL);
         pic.set_request(LEVEL_RXRDY);
-        assert_eq!(pic.acknowledge(), 0x00);
+        assert_eq!(pic.acknowledge().vector, 0x00);
     }
 
     #[test]
@@ -211,7 +224,7 @@ mod tests {
         // Request stays latched; unmasking reveals it.
         pic.write_mask(MASK_BIT_CLOCK);
         assert!(pic.has_pending_irq());
-        assert_eq!(pic.acknowledge(), LEVEL_CLOCK * 2);
+        assert_eq!(pic.acknowledge().vector, LEVEL_CLOCK * 2);
     }
 
     #[test]
@@ -222,7 +235,7 @@ mod tests {
         pic.set_request(LEVEL_RXRDY);
         pic.set_request(LEVEL_VRTC);
         // Only RXRDY (bit 2 of the port value) is unmasked.
-        assert_eq!(pic.acknowledge(), LEVEL_RXRDY * 2);
+        assert_eq!(pic.acknowledge().vector, LEVEL_RXRDY * 2);
     }
 
     #[test]
@@ -242,7 +255,7 @@ mod tests {
     fn acknowledge_latches_disabled_until_priority_rewrite() {
         let mut pic = enabled_all();
         pic.set_request(LEVEL_CLOCK);
-        assert_eq!(pic.acknowledge(), LEVEL_CLOCK * 2);
+        assert_eq!(pic.acknowledge().vector, LEVEL_CLOCK * 2);
 
         // A fresh request cannot be delivered while disabled.
         pic.set_request(LEVEL_CLOCK);
@@ -260,6 +273,6 @@ mod tests {
         pic.write_mask(0);
         pic.set_request(LEVEL_INT4);
         assert!(pic.has_pending_irq());
-        assert_eq!(pic.acknowledge(), LEVEL_INT4 * 2);
+        assert_eq!(pic.acknowledge().vector, LEVEL_INT4 * 2);
     }
 }

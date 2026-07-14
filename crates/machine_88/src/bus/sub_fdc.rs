@@ -7,7 +7,10 @@
 //! this layer resolves sectors, paces bytes at the data rate via
 //! `Event88::FdcDrqByte`, and finalizes commands.
 
-use common::Tracing;
+use common::{
+    TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField, TraceSink, TraceValue,
+    trace_id,
+};
 use device::{
     floppy::D88MediaType,
     upd765a_fdc::{
@@ -23,7 +26,7 @@ use crate::scheduler::Event88;
 /// expects before issuing Sense Interrupt Status.
 const SEEK_INTERRUPT_DELAY_CYCLES: u64 = 2000;
 
-impl<T: Tracing> Pc8801Bus<T> {
+impl<T: TraceSink> Pc8801Bus<T> {
     /// Reads an FDC data byte (port 0xFB), then advances the PIO read sequence.
     pub(crate) fn read_fdc_data(&mut self) -> u8 {
         let value = self.fdc.read_data();
@@ -52,12 +55,17 @@ impl<T: Tracing> Pc8801Bus<T> {
                 self.schedule_drq_byte();
             }
         } else {
-            self.on_fdc_action(action);
+            let context = TraceContext::sub_cpu(
+                self.current_cycle,
+                self.sub_cycle,
+                Some(u64::from(self.sub_clock_hz())),
+            );
+            self.on_fdc_action(action, context);
         }
     }
 
     /// Dispatches the action returned by the FDC after a command is assembled.
-    fn on_fdc_action(&mut self, action: FdcAction) {
+    fn on_fdc_action(&mut self, action: FdcAction, context: TraceContext) {
         match action {
             FdcAction::None => {}
             FdcAction::ScheduleSeekInterrupt => {
@@ -70,7 +78,7 @@ impl<T: Tracing> Pc8801Bus<T> {
                 );
                 self.update_next_event_cycle();
             }
-            FdcAction::StartReadData => self.start_pio_read(),
+            FdcAction::StartReadData => self.start_pio_read(context),
             FdcAction::StartWriteData => self.start_pio_write(),
             FdcAction::StartReadId => self.handle_read_id(),
             FdcAction::StartFormatTrack => self.start_pio_format(),
@@ -81,7 +89,10 @@ impl<T: Tracing> Pc8801Bus<T> {
     /// Releases the next PIO byte slot at a data-rate DRQ tick.
     pub(crate) fn on_fdc_drq_byte(&mut self, _fire_cycle: u64) {
         if self.fdc.pio_active() && self.fdc.state.exec_reading && self.fdc.pio_sector_done() {
-            self.advance_pio_read();
+            self.advance_pio_read(TraceContext::scheduler_main(
+                self.current_cycle,
+                Some(u64::from(self.cpu_clock_hz())),
+            ));
         }
         self.fdc.pio_release_byte();
     }
@@ -125,7 +136,7 @@ impl<T: Tracing> Pc8801Bus<T> {
         }
     }
 
-    fn start_pio_read(&mut self) {
+    fn start_pio_read(&mut self, context: TraceContext) {
         let drive = self.fdc.current_drive();
         if !self.floppy.has_drive(drive) {
             self.complete_no_disk();
@@ -135,7 +146,7 @@ impl<T: Tracing> Pc8801Bus<T> {
             self.fdc.complete_error(0, ST1_MISSING_ADDRESS_MARK, 0);
             return;
         }
-        if !self.load_current_read_sector(drive) {
+        if !self.load_current_read_sector(drive, context) {
             self.fdc.complete_error(0, ST1_MISSING_ADDRESS_MARK, 0);
             return;
         }
@@ -143,7 +154,7 @@ impl<T: Tracing> Pc8801Bus<T> {
     }
 
     /// Loads the sector named by the current FDC C/H/R/N into the PIO FIFO.
-    fn load_current_read_sector(&mut self, drive: usize) -> bool {
+    fn load_current_read_sector(&mut self, drive: usize, context: TraceContext) -> bool {
         let track_index = self.fdc.current_track_index();
         let (c, h, r, n) = (
             self.fdc.state.c,
@@ -153,7 +164,46 @@ impl<T: Tracing> Pc8801Bus<T> {
         );
         match self.floppy.read_sector_data(drive, track_index, c, h, r, n) {
             Some(data) => {
-                self.tracer.trace_fdc_read(drive, track_index, c, h, r, n);
+                if T::ENABLED
+                    && self.tracer.interested(TraceEventKey::Device {
+                        device: trace_id::device::PC88_FDC,
+                        action: trace_id::action::READ,
+                    })
+                {
+                    self.tracer.trace(
+                        context,
+                        TraceEvent::Device(TraceDeviceEvent {
+                            device: trace_id::device::PC88_FDC,
+                            action: trace_id::action::READ,
+                            fields: &[
+                                TraceField {
+                                    name: trace_id::field::DRIVE,
+                                    value: TraceValue::Unsigned(drive as u64),
+                                },
+                                TraceField {
+                                    name: trace_id::field::TRACK_INDEX,
+                                    value: TraceValue::Unsigned(track_index as u64),
+                                },
+                                TraceField {
+                                    name: trace_id::field::CYLINDER,
+                                    value: TraceValue::Unsigned(u64::from(c)),
+                                },
+                                TraceField {
+                                    name: trace_id::field::HEAD,
+                                    value: TraceValue::Unsigned(u64::from(h)),
+                                },
+                                TraceField {
+                                    name: trace_id::field::RECORD,
+                                    value: TraceValue::Unsigned(u64::from(r)),
+                                },
+                                TraceField {
+                                    name: trace_id::field::SIZE_CODE,
+                                    value: TraceValue::Unsigned(u64::from(n)),
+                                },
+                            ],
+                        }),
+                    );
+                }
                 let data = data.to_vec();
                 self.fdc.begin_pio_read(&data);
                 true
@@ -163,13 +213,13 @@ impl<T: Tracing> Pc8801Bus<T> {
     }
 
     /// Handles a drained read sector: continue to the next sector or finish at EOT.
-    fn advance_pio_read(&mut self) {
+    fn advance_pio_read(&mut self, context: TraceContext) {
         if self.fdc.advance_sector() {
             self.fdc.complete_success();
             return;
         }
         let drive = self.fdc.current_drive();
-        if !self.load_current_read_sector(drive) {
+        if !self.load_current_read_sector(drive, context) {
             self.fdc.complete_error(0, ST1_MISSING_ADDRESS_MARK, 0);
         }
     }
@@ -344,6 +394,22 @@ mod tests {
     const SECTOR_SIZE: usize = 256;
     const SIZE_CODE_256: u8 = 1;
 
+    #[derive(Default)]
+    struct DeviceContextTrace {
+        contexts: Vec<TraceContext>,
+    }
+
+    impl TraceSink for DeviceContextTrace {
+        fn trace(&mut self, context: TraceContext, event: TraceEvent<'_>) {
+            if let TraceEvent::Device(device) = event
+                && device.device == trace_id::device::PC88_FDC
+                && device.action == trace_id::action::READ
+            {
+                self.contexts.push(context);
+            }
+        }
+    }
+
     fn sector(record: u8, sector_count: u16, first_value: u8) -> D88Sector {
         D88Sector {
             cylinder: 0,
@@ -385,22 +451,22 @@ mod tests {
         ))
     }
 
-    fn read_ready_pio_byte(bus: &mut Pc8801Bus<common::NoTracing>) -> u8 {
+    fn read_ready_pio_byte<T: TraceSink>(bus: &mut Pc8801Bus<T>) -> u8 {
         for _ in 0..1024 {
             let event_cycle = bus.next_event_cycle().expect("event while waiting for RQM");
             bus.set_current_cycle(event_cycle);
-            if bus.sub_io_read(0xFA) & 0x80 != 0 {
-                return bus.sub_io_read(0xFB);
+            if bus.sub_io_read(0xFA).0 & 0x80 != 0 {
+                return bus.sub_io_read(0xFB).0;
             }
         }
         panic!("FDC did not release a PIO byte");
     }
 
-    fn write_ready_pio_byte(bus: &mut Pc8801Bus<common::NoTracing>, value: u8) {
+    fn write_ready_pio_byte<T: TraceSink>(bus: &mut Pc8801Bus<T>, value: u8) {
         for _ in 0..1024 {
             let event_cycle = bus.next_event_cycle().expect("event while waiting for RQM");
             bus.set_current_cycle(event_cycle);
-            if bus.sub_io_read(0xFA) & 0x80 != 0 {
+            if bus.sub_io_read(0xFA).0 & 0x80 != 0 {
                 bus.sub_io_write(0xFB, value);
                 return;
             }
@@ -410,11 +476,8 @@ mod tests {
 
     #[test]
     fn pio_read_drq_wakes_the_disk_sub_cpu() {
-        let mut bus = Pc8801Bus::<common::NoTracing>::new(
-            Pc8801Model::PC8801MC,
-            ClockSelect::FourMhz,
-            48_000,
-        );
+        let mut bus =
+            Pc8801Bus::<common::NoTrace>::new(Pc8801Model::PC8801MC, ClockSelect::FourMhz, 48_000);
         bus.insert_floppy(0, single_sector_image(), None);
         bus.sub_io_write(0xF4, 0x00);
 
@@ -427,14 +490,14 @@ mod tests {
         let drq_cycle = bus.next_event_cycle().expect("DRQ event");
         bus.set_current_cycle(drq_cycle);
 
-        assert_ne!(bus.sub_io_read(0xFA) & 0x80, 0, "RQM is set");
+        assert_ne!(bus.sub_io_read(0xFA).0 & 0x80, 0, "RQM is set");
         assert!(bus.sub_irq_pending(), "DRQ asserts the disk sub-CPU IRQ");
         bus.acknowledge_sub_irq();
         assert!(
             bus.sub_irq_pending(),
             "PIO byte-ready IRQ remains asserted until the byte is consumed"
         );
-        assert_eq!(bus.sub_io_read(0xFB), 0x00, "first sector byte");
+        assert_eq!(bus.sub_io_read(0xFB).0, 0x00, "first sector byte");
         assert!(
             !bus.sub_irq_pending(),
             "PIO byte-ready IRQ clears after the byte is consumed"
@@ -443,11 +506,8 @@ mod tests {
 
     #[test]
     fn pio_read_terminal_count_after_sector_completes_current_sector() {
-        let mut bus = Pc8801Bus::<common::NoTracing>::new(
-            Pc8801Model::PC8801MC,
-            ClockSelect::FourMhz,
-            48_000,
-        );
+        let mut bus =
+            Pc8801Bus::<common::NoTrace>::new(Pc8801Model::PC8801MC, ClockSelect::FourMhz, 48_000);
         bus.insert_floppy(0, two_sector_image(), None);
         bus.sub_io_write(0xF4, 0x00);
 
@@ -464,17 +524,52 @@ mod tests {
 
         bus.sub_io_read(0xF8);
         assert!(matches!(bus.fdc.state.phase, FdcPhase::Result));
-        let result_bytes: Vec<u8> = (0..7).map(|_| bus.sub_io_read(0xFB)).collect();
+        let result_bytes: Vec<u8> = (0..7).map(|_| bus.sub_io_read(0xFB).0).collect();
         assert_eq!(result_bytes[5], 1);
     }
 
     #[test]
-    fn pio_format_track_completes_after_streamed_id_bytes() {
-        let mut bus = Pc8801Bus::<common::NoTracing>::new(
+    fn read_trace_uses_initiating_clock_context() {
+        let mut bus = Pc8801Bus::new_with_trace_sink(
             Pc8801Model::PC8801MC,
             ClockSelect::FourMhz,
             48_000,
+            DeviceContextTrace::default(),
         );
+        bus.insert_floppy(0, two_sector_image(), None);
+        bus.sub_io_write(0xF4, 0x00);
+        bus.current_cycle = 37;
+        bus.sub_cycle = 19;
+        let main_clock_hz = u64::from(bus.cpu_clock_hz());
+        let sub_clock_hz = u64::from(bus.sub_clock_hz());
+
+        bus.sub_io_write(0xFB, 0x46);
+        for byte in [0x00, 0x00, 0x00, 0x01, SIZE_CODE_256, 0x02, 0x1B, 0xFF] {
+            bus.sub_io_write(0xFB, byte);
+        }
+
+        assert_eq!(
+            bus.tracer().contexts,
+            [TraceContext::sub_cpu(37, 19, Some(sub_clock_hz))]
+        );
+
+        for _ in 0..SECTOR_SIZE {
+            read_ready_pio_byte(&mut bus);
+        }
+        read_ready_pio_byte(&mut bus);
+
+        assert_eq!(bus.tracer().contexts.len(), 2);
+        let scheduler_context = bus.tracer().contexts[1];
+        assert_eq!(
+            scheduler_context,
+            TraceContext::scheduler_main(scheduler_context.tick, Some(main_clock_hz))
+        );
+    }
+
+    #[test]
+    fn pio_format_track_completes_after_streamed_id_bytes() {
+        let mut bus =
+            Pc8801Bus::<common::NoTrace>::new(Pc8801Model::PC8801MC, ClockSelect::FourMhz, 48_000);
         bus.insert_floppy(0, single_sector_image(), None);
         bus.sub_io_write(0xF4, 0x00);
 
@@ -498,18 +593,15 @@ mod tests {
         assert!(matches!(bus.fdc.state.phase, FdcPhase::Result));
         assert!(!bus.fdc.pio_active());
         assert_eq!(bus.floppy.sector_count(0, 0), 2);
-        let result_bytes: Vec<u8> = (0..7).map(|_| bus.sub_io_read(0xFB)).collect();
+        let result_bytes: Vec<u8> = (0..7).map(|_| bus.sub_io_read(0xFB).0).collect();
         assert_eq!(result_bytes[1], 0x00);
         assert_eq!(result_bytes[2], 0x00);
     }
 
     #[test]
     fn pio_format_track_rejects_density_mismatch_before_streaming_ids() {
-        let mut bus = Pc8801Bus::<common::NoTracing>::new(
-            Pc8801Model::PC8801MC,
-            ClockSelect::FourMhz,
-            48_000,
-        );
+        let mut bus =
+            Pc8801Bus::<common::NoTrace>::new(Pc8801Model::PC8801MC, ClockSelect::FourMhz, 48_000);
         bus.insert_floppy(
             0,
             single_sector_image_with_media(D88MediaType::Disk2HD),
@@ -526,7 +618,7 @@ mod tests {
         assert!(!bus.fdc.pio_active());
         assert_eq!(bus.floppy.sector_count(0, 0), 1);
         assert!(!bus.floppy.is_drive_dirty(0));
-        let result_bytes: Vec<u8> = (0..7).map(|_| bus.sub_io_read(0xFB)).collect();
+        let result_bytes: Vec<u8> = (0..7).map(|_| bus.sub_io_read(0xFB).0).collect();
         assert_eq!(result_bytes[0] & 0xC0, 0x40);
         assert_eq!(
             result_bytes[1] & ST1_MISSING_ADDRESS_MARK,
@@ -536,11 +628,8 @@ mod tests {
 
     #[test]
     fn pio_format_track_accepts_matching_2hd_mode() {
-        let mut bus = Pc8801Bus::<common::NoTracing>::new(
-            Pc8801Model::PC8801MC,
-            ClockSelect::FourMhz,
-            48_000,
-        );
+        let mut bus =
+            Pc8801Bus::<common::NoTrace>::new(Pc8801Model::PC8801MC, ClockSelect::FourMhz, 48_000);
         bus.insert_floppy(
             0,
             single_sector_image_with_media(D88MediaType::Disk2HD),
@@ -569,7 +658,7 @@ mod tests {
         assert!(!bus.fdc.pio_active());
         assert_eq!(bus.floppy.sector_count(0, 0), 2);
         assert!(bus.floppy.is_drive_dirty(0));
-        let result_bytes: Vec<u8> = (0..7).map(|_| bus.sub_io_read(0xFB)).collect();
+        let result_bytes: Vec<u8> = (0..7).map(|_| bus.sub_io_read(0xFB).0).collect();
         assert_eq!(result_bytes[1], 0x00);
         assert_eq!(result_bytes[2], 0x00);
     }

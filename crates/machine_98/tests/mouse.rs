@@ -1,14 +1,14 @@
-use common::{Bus, CpuMode, MachineModel};
-use machine_98::{NoTracing, Pc9801Bus};
+use common::{Bus, CpuMode, MachineModel, NoTrace};
+use machine_98::Pc9801Bus;
 
-fn make_bus() -> Pc9801Bus<NoTracing> {
-    Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000)
+fn make_bus() -> Pc9801Bus<NoTrace> {
+    Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000)
 }
 
 /// Injects a mouse delta and flushes it into the accumulators by calling
 /// sync_frame twice: once with the delta, once with zero to transfer
 /// remaining into accumulator.
-fn inject_and_flush_delta(bus: &mut Pc9801Bus<NoTracing>, dx: i16, dy: i16) {
+fn inject_and_flush_delta(bus: &mut Pc9801Bus<NoTrace>, dx: i16, dy: i16) {
     bus.push_mouse_delta(dx, dy);
     bus.push_mouse_delta(0, 0);
 }

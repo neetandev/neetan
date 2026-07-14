@@ -31,15 +31,15 @@ fn kanji_port_reads_the_mapped_rom_byte() {
     let bus = &mut machine.bus;
 
     latch_address(bus, 0x0E00);
-    assert_eq!(bus.io_read(KANJI_DATA_LOW), 0xAB);
+    assert_eq!(bus.io_read(KANJI_DATA_LOW).0, 0xAB);
     // The high port returns the right half of the same row.
-    assert_eq!(bus.io_read(KANJI_DATA_HIGH), 0xCD);
+    assert_eq!(bus.io_read(KANJI_DATA_HIGH).0, 0xCD);
 }
 
 #[test]
 fn base_x1_has_no_kanji_port() {
     let mut machine = build_machine_with_synthetic_roms(X1Model::X1, |_| {});
     let bus = &mut machine.bus;
-    assert_eq!(bus.io_read(KANJI_DATA_LOW), 0xFF);
-    assert_eq!(bus.io_read(KANJI_DATA_HIGH), 0xFF);
+    assert_eq!(bus.io_read(KANJI_DATA_LOW).0, 0xFF);
+    assert_eq!(bus.io_read(KANJI_DATA_HIGH).0, 0xFF);
 }

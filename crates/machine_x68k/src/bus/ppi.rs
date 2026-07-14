@@ -1,6 +1,6 @@
 //! PPI glue: joystick port reads and ADPCM control on port C.
 
-use common::{JoystickState, Tracing};
+use common::{JoystickState, TraceSink};
 use device::i8255::I8255Write;
 
 use super::X68kBus;
@@ -58,7 +58,7 @@ fn encode_joystick(state: JoystickState) -> u8 {
     value
 }
 
-impl<T: Tracing> X68kBus<T> {
+impl<T: TraceSink> X68kBus<T> {
     /// Updates the pad state feeding the PPI joystick port at `index`.
     pub fn set_joystick(&mut self, index: usize, state: JoystickState) {
         if let Some(port) = self.joystick_ports.get_mut(index) {

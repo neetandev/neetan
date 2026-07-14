@@ -9,7 +9,11 @@ mod sound;
 mod sub_io;
 mod video;
 
-use common::{BeeperKind, HostDateTimeProvider, NoTracing, Tracing};
+use common::{
+    BeeperKind, HostDateTimeProvider, NoTrace, TraceAccessKind, TraceAccessWidth,
+    TraceAddressSpace, TraceContext, TraceEvent, TraceInterruptAction, TracePresentation,
+    TraceSink, trace_id,
+};
 use device::{
     ay8910::Ay8910,
     beeper::Beeper,
@@ -129,9 +133,6 @@ const SUB_MISC_ALU_IDLE_BIT: u8 = 0x10;
 /// `0xD430` read bit 2 reporting the vertical sync pulse; cleared outside it.
 const SUB_MISC_VSYNC_BIT: u8 = 0x04;
 
-/// Trace source id for the sub CANCEL IRQ line.
-const IRQ_TRACE_SUB_CANCEL: u8 = 2;
-
 /// Period of the periodic display NMI delivered to the sub CPU, in microseconds.
 const SUB_DISPLAY_NMI_PERIOD_MICROS: u64 = 20_000;
 /// Period of the keyboard latch tick draining the keycode FIFO, in microseconds.
@@ -163,7 +164,7 @@ const IO_WAIT_PERIOD_ACCESSES: u8 = 2;
 const IO_WAIT_PERIOD_MMR_LONG_ACCESSES: u8 = 3;
 
 /// FM-7 / FM-77AV system bus.
-pub struct Fm7Bus<T: Tracing = NoTracing> {
+pub struct Fm7Bus<T: TraceSink = NoTrace> {
     model: Fm7Model,
     clocks: ClockConfig,
     boot_mode: BootMode,
@@ -269,6 +270,13 @@ pub struct Fm7Bus<T: Tracing = NoTracing> {
     tracer: T,
 }
 
+impl Fm7Bus<NoTrace> {
+    /// Creates an untraced bus for `model`, booting according to `boot_mode`.
+    pub fn new(model: Fm7Model, boot_mode: BootMode, sample_rate: u32) -> Self {
+        Self::new_with_trace_sink(model, boot_mode, sample_rate, NoTrace)
+    }
+}
+
 /// A borrowed view onto the sub CPU VRAM planes for the graphics ALU. It
 /// resolves an in-plane byte offset and plane index to physical storage through
 /// the display page/scroll decode and enforces the `0xFD37` per-plane access
@@ -304,12 +312,14 @@ impl AluMemory for AluVramView<'_> {
     }
 }
 
-impl<T: Tracing> Fm7Bus<T> {
-    /// Creates a bus for `model`, booting according to `boot_mode`.
-    pub fn new(model: Fm7Model, boot_mode: BootMode, sample_rate: u32) -> Self
-    where
-        T: Default,
-    {
+impl<T: TraceSink> Fm7Bus<T> {
+    /// Creates a traced bus for `model`, booting according to `boot_mode`.
+    pub fn new_with_trace_sink(
+        model: Fm7Model,
+        boot_mode: BootMode,
+        sample_rate: u32,
+        tracer: T,
+    ) -> Self {
         let clocks = ClockConfig {
             main_clock_hz: model.main_clock_hz(),
             sample_rate,
@@ -384,7 +394,7 @@ impl<T: Tracing> Fm7Bus<T> {
             frame_number: 0,
             scanline: 0,
             frame_start_cycle: 0,
-            tracer: T::default(),
+            tracer,
         };
         bus.schedule_timer();
         bus.schedule_sub_display_nmi();
@@ -462,52 +472,61 @@ impl<T: Tracing> Fm7Bus<T> {
         self.kanji.install_rom(roms.kanji.as_deref());
     }
 
-    /// Reads a byte as the main CPU would see it, including MMIO side effects.
+    /// Reads a main CPU byte and reports whether its address was decoded.
     ///
     /// The shared-RAM window is only readable while the sub CPU is halted;
     /// otherwise it floats to open bus.
-    pub fn read_byte(&mut self, address: u16) -> u8 {
+    pub fn read_byte(&mut self, address: u16) -> (u8, bool) {
         self.charge_main_access_wait(address);
         match address {
             MAIN_IO_START..=MAIN_IO_END => self.main_io_read((address & MAIN_IO_PORT_MASK) as u8),
             SHARED_WINDOW_START..=SHARED_WINDOW_END => {
-                if self.sub_halted {
+                let value = if self.sub_halted {
                     self.sub_memory
                         .shared_ram_byte((address & SHARED_WINDOW_INDEX_MASK) as u8)
                 } else {
                     OPEN_BUS
-                }
+                };
+                (value, true)
             }
-            _ => match self.memory.direct_vram_target(address) {
-                Some(sub_address) if self.sub_halted => self.read_sub_space_byte(sub_address),
-                Some(_) => OPEN_BUS,
-                None => self.memory.read(address),
-            },
+            _ => {
+                let value = match self.memory.direct_vram_target(address) {
+                    Some(sub_address) if self.sub_halted => self.read_sub_space_byte(sub_address).0,
+                    Some(_) => OPEN_BUS,
+                    None => self.memory.read(address),
+                };
+                (value, true)
+            }
         }
     }
 
-    /// Writes a byte as the main CPU would see it, including MMIO side effects.
+    /// Writes a main CPU byte and reports whether its address was decoded.
     ///
     /// The shared-RAM window is only writable while the sub CPU is halted;
     /// otherwise the write is dropped.
-    pub fn write_byte(&mut self, address: u16, value: u8) {
+    pub fn write_byte(&mut self, address: u16, value: u8) -> bool {
         self.charge_main_access_wait(address);
         match address {
             MAIN_IO_START..=MAIN_IO_END => {
-                self.main_io_write((address & MAIN_IO_PORT_MASK) as u8, value);
+                self.main_io_write((address & MAIN_IO_PORT_MASK) as u8, value)
             }
             SHARED_WINDOW_START..=SHARED_WINDOW_END => {
                 if self.sub_halted {
                     self.sub_memory
                         .set_shared_ram_byte((address & SHARED_WINDOW_INDEX_MASK) as u8, value);
                 }
+                true
             }
             _ => match self.memory.direct_vram_target(address) {
                 Some(sub_address) if self.sub_halted => {
                     self.write_sub_space_byte(sub_address, value);
+                    true
                 }
-                Some(_) => {}
-                None => self.memory.write(address, value),
+                Some(_) => true,
+                None => {
+                    self.memory.write(address, value);
+                    true
+                }
             },
         }
     }
@@ -559,15 +578,12 @@ impl<T: Tracing> Fm7Bus<T> {
         }
     }
 
-    /// Reads a byte from the display sub CPU address space: VRAM (gated by the
-    /// per-plane access mask and translated through the page/scroll decode), sub
-    /// I/O, and the sub RAM/ROM regions. Shared by the sub CPU bus view and the
-    /// main CPU direct-VRAM window.
-    pub(crate) fn read_sub_space_byte(&mut self, address: u16) -> u8 {
+    /// Reads the sub address space and reports whether it was decoded.
+    pub(crate) fn read_sub_space_byte(&mut self, address: u16) -> (u8, bool) {
         match address {
             SUB_IO_START..=SUB_IO_END => {
                 if self.sub_memory.hidden_ram_mapped(address) {
-                    self.sub_memory.read(address)
+                    (self.sub_memory.read(address), true)
                 } else {
                     self.sub_io_read((address & 0x00FF) as u8)
                 }
@@ -579,38 +595,42 @@ impl<T: Tracing> Fm7Bus<T> {
                 let plane = ((address >> VRAM_PLANE_SHIFT) & VRAM_PLANE_MASK) as u8;
                 if self.video.vram_read_allowed(plane) {
                     let index = self.video.translate_vram_address(address);
-                    self.sub_memory.vram_byte(index)
+                    (self.sub_memory.vram_byte(index), true)
                 } else {
-                    OPEN_BUS
+                    (OPEN_BUS, true)
                 }
             }
-            _ => self.sub_memory.read(address),
+            _ => (self.sub_memory.read(address), true),
         }
     }
 
-    /// Writes a byte to the display sub CPU address space, mirroring the decode of
-    /// [`Fm7Bus::read_sub_space_byte`].
-    pub(crate) fn write_sub_space_byte(&mut self, address: u16, value: u8) {
+    /// Writes the sub address space and reports whether it was decoded.
+    pub(crate) fn write_sub_space_byte(&mut self, address: u16, value: u8) -> bool {
         match address {
             SUB_IO_START..=SUB_IO_END => {
                 if self.sub_memory.hidden_ram_mapped(address) {
                     self.sub_memory.write(address, value);
+                    true
                 } else {
-                    self.sub_io_write((address & 0x00FF) as u8, value);
+                    self.sub_io_write((address & 0x00FF) as u8, value)
                 }
             }
             SUB_VRAM_START..=SUB_VRAM_END => {
                 if self.alu_enabled() {
                     self.alu_access_vram(address);
-                    return;
+                    return true;
                 }
                 let plane = ((address >> VRAM_PLANE_SHIFT) & VRAM_PLANE_MASK) as u8;
                 if self.video.vram_write_allowed(plane) {
                     let index = self.video.translate_vram_address(address);
                     self.sub_memory.set_vram_byte(index, value);
                 }
+                true
             }
-            _ => self.sub_memory.write(address, value),
+            _ => {
+                self.sub_memory.write(address, value);
+                true
+            }
         }
     }
 
@@ -629,9 +649,28 @@ impl<T: Tracing> Fm7Bus<T> {
         self.poll_sub_beep_request();
         let due = self.scheduler.pop_due_events(self.current_cycle);
         for event in due.iter() {
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::scheduler_main(
+                        self.current_cycle,
+                        Some(u64::from(self.cpu_clock_hz())),
+                    ),
+                    TraceEvent::Scheduled {
+                        event: event.kind.trace_name(),
+                        fire_tick: event.fire_cycle,
+                    },
+                );
+            }
             match event.kind {
                 EventFm7::TimerIrq => {
-                    self.interrupts.set_timer_pending(true, &mut self.tracer);
+                    self.interrupts.set_timer_pending(
+                        true,
+                        TraceContext::main_cpu(
+                            self.current_cycle,
+                            Some(u64::from(self.cpu_clock_hz())),
+                        ),
+                        &mut self.tracer,
+                    );
                     self.schedule_timer();
                 }
                 EventFm7::SubDisplayNmi => {
@@ -652,12 +691,20 @@ impl<T: Tracing> Fm7Bus<T> {
                 }
                 EventFm7::KeyboardLatch => {
                     if self.keyboard.latch_next() {
-                        self.interrupts.set_keyboard_pending(true, &mut self.tracer);
+                        self.interrupts.set_keyboard_pending(
+                            true,
+                            TraceContext::main_cpu(
+                                self.current_cycle,
+                                Some(u64::from(self.cpu_clock_hz())),
+                            ),
+                            &mut self.tracer,
+                        );
                     }
                     self.schedule_keyboard_latch();
                 }
                 EventFm7::VBlank => {
                     self.present_latched_frame();
+                    self.trace_presentation();
                     self.frame_number = self.frame_number.wrapping_add(1);
                     self.frame_start_cycle = event.fire_cycle;
                     self.video.commit_frame_palette();
@@ -725,8 +772,11 @@ impl<T: Tracing> Fm7Bus<T> {
             self.keyboard
                 .push(scancode, pressed, self.keycode_table_set());
         }
-        self.interrupts
-            .set_break(self.keyboard.break_pressed(), &mut self.tracer);
+        self.interrupts.set_break(
+            self.keyboard.break_pressed(),
+            TraceContext::main_cpu(self.current_cycle, Some(u64::from(self.cpu_clock_hz()))),
+            &mut self.tracer,
+        );
         if self.model.has_mmr() {
             self.update_auto_repeat(scancode, pressed);
         }
@@ -742,12 +792,19 @@ impl<T: Tracing> Fm7Bus<T> {
 
     /// Forces the timer pending latch for tests and simple device plumbing.
     pub fn set_timer_pending(&mut self, pending: bool) {
-        self.interrupts.set_timer_pending(pending, &mut self.tracer);
+        self.interrupts.set_timer_pending(
+            pending,
+            TraceContext::main_cpu(self.current_cycle, Some(u64::from(self.cpu_clock_hz()))),
+            &mut self.tracer,
+        );
     }
 
     /// Acknowledges the timer pending latch.
     pub fn ack_timer(&mut self) {
-        self.interrupts.ack_timer(&mut self.tracer);
+        self.interrupts.ack_timer(
+            TraceContext::main_cpu(self.current_cycle, Some(u64::from(self.cpu_clock_hz()))),
+            &mut self.tracer,
+        );
     }
 
     /// The timer IRQ period in active main-clock cycles.
@@ -841,6 +898,24 @@ impl<T: Tracing> Fm7Bus<T> {
         let (width, height) = self.renderer.present_latched_frame();
         self.display_width = width;
         self.display_height = height;
+    }
+
+    fn trace_presentation(&mut self) {
+        if !T::ENABLED {
+            return;
+        }
+        self.tracer.trace(
+            TraceContext::presentation_main(
+                self.current_cycle,
+                Some(u64::from(self.cpu_clock_hz())),
+            ),
+            TraceEvent::Presentation(TracePresentation {
+                display: trace_id::display::MAIN,
+                frame: self.frame_number.saturating_add(1),
+                width: self.display_width,
+                height: self.display_height,
+            }),
+        );
     }
 
     /// Generates audio samples into `output` for the main-clock cycles elapsed
@@ -958,7 +1033,10 @@ impl<T: Tracing> Fm7Bus<T> {
 
     /// Raises the main ATTENTION FIRQ on behalf of the sub CPU.
     pub(crate) fn raise_sub_attention(&mut self) {
-        self.interrupts.raise_sub_attention(&mut self.tracer);
+        self.interrupts.raise_sub_attention(
+            TraceContext::main_cpu(self.current_cycle, Some(u64::from(self.cpu_clock_hz()))),
+            &mut self.tracer,
+        );
     }
 
     /// Writes the FM-77AV sub misc register (`0xD430`). Bit 7 masks the periodic
@@ -1318,40 +1396,114 @@ impl<T: Tracing> Fm7Bus<T> {
 }
 
 /// Ephemeral `common::Bus` adapter for the main 6809.
-pub struct MainBusView<'a, T: Tracing = NoTracing> {
+pub struct MainBusView<'a, T: TraceSink = NoTrace> {
     /// Shared FM-7 bus.
     pub bus: &'a mut Fm7Bus<T>,
 }
 
-impl<T: Tracing> common::Bus for MainBusView<'_, T> {
+impl<T: TraceSink> common::Bus for MainBusView<'_, T> {
     fn read_byte(&mut self, address: u32) -> u8 {
         let address = address as u16;
-        let value = self.bus.read_byte(address);
-        if is_main_io(address) {
-            self.bus.tracer.trace_io_read(address, value);
-        } else {
-            self.bus.tracer.trace_mem_read(u32::from(address), value);
+        let (value, handled) = self.bus.read_byte(address);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Read,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
         }
         value
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
         let address = address as u16;
-        self.bus.write_byte(address, value);
-        if is_main_io(address) {
-            self.bus.tracer.trace_io_write(address, value);
-        } else {
-            self.bus.tracer.trace_mem_write(u32::from(address), value);
+        let handled = self.bus.write_byte(address, value);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Write,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
         }
     }
 
+    fn fetch_opcode_byte(&mut self, address: u32) -> u8 {
+        let address = address as u16;
+        let (value, handled) = self.bus.read_byte(address);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Fetch,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
+        value
+    }
+
     fn io_read_byte(&mut self, port: u16) -> u8 {
-        self.bus.tracer.trace_io_unhandled_read(port);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Read,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(OPEN_BUS)),
+                    false,
+                ),
+            );
+        }
         0xFF
     }
 
     fn io_write_byte(&mut self, port: u16, value: u8) {
-        self.bus.tracer.trace_io_unhandled_write(port, value);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Write,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    false,
+                ),
+            );
+        }
     }
 
     fn drain_wait_cycles(&mut self) -> i64 {
@@ -1364,7 +1516,20 @@ impl<T: Tracing> common::Bus for MainBusView<'_, T> {
 
     fn acknowledge_irq(&mut self) -> u8 {
         let value = self.bus.acknowledge_irq();
-        self.bus.tracer.trace_irq_acknowledge(0, value);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::maskable_interrupt(
+                    trace_id::controller::FM7_MAIN_IRQ,
+                    0,
+                    TraceInterruptAction::Acknowledge,
+                    None,
+                ),
+            );
+        }
         value
     }
 
@@ -1374,13 +1539,33 @@ impl<T: Tracing> common::Bus for MainBusView<'_, T> {
 
     fn acknowledge_nmi(&mut self) {}
 
+    fn acknowledge_firq(&mut self) {
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::maskable_interrupt(
+                    trace_id::controller::FM7_MAIN_FIRQ,
+                    0,
+                    TraceInterruptAction::Acknowledge,
+                    None,
+                ),
+            );
+        }
+    }
+
     fn current_cycle(&self) -> u64 {
         self.bus.current_cycle
     }
 
     fn set_current_cycle(&mut self, cycle: u64) {
         self.bus.current_cycle = cycle;
-        self.bus.tracer.set_cycle(cycle);
+    }
+
+    fn cpu_should_yield(&self) -> bool {
+        T::ENABLED && self.bus.tracer.yield_requested()
     }
 }
 
@@ -1388,40 +1573,119 @@ impl<T: Tracing> common::Bus for MainBusView<'_, T> {
 ///
 /// The sub CPU runs in its own clock domain (`sub_cycle`) so it never perturbs the
 /// scheduler timebase driven by the main CPU.
-pub struct SubBusView<'a, T: Tracing = NoTracing> {
+pub struct SubBusView<'a, T: TraceSink = NoTrace> {
     /// Shared FM-7 bus.
     pub bus: &'a mut Fm7Bus<T>,
 }
 
-impl<T: Tracing> common::Bus for SubBusView<'_, T> {
+impl<T: TraceSink> common::Bus for SubBusView<'_, T> {
     fn read_byte(&mut self, address: u32) -> u8 {
         let address = address as u16;
-        let value = self.bus.read_sub_space_byte(address);
-        if is_sub_io(address) {
-            self.bus.tracer.trace_io_read(address, value);
-        } else {
-            self.bus.tracer.trace_mem_read(u32::from(address), value);
+        let (value, handled) = self.bus.read_sub_space_byte(address);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.sub_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::SUB_MEMORY,
+                    TraceAccessKind::Read,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
         }
         value
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
         let address = address as u16;
-        self.bus.write_sub_space_byte(address, value);
-        if is_sub_io(address) {
-            self.bus.tracer.trace_io_write(address, value);
-        } else {
-            self.bus.tracer.trace_mem_write(u32::from(address), value);
+        let handled = self.bus.write_sub_space_byte(address, value);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.sub_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::SUB_MEMORY,
+                    TraceAccessKind::Write,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
         }
     }
 
+    fn fetch_opcode_byte(&mut self, address: u32) -> u8 {
+        let address = address as u16;
+        let (value, handled) = self.bus.read_sub_space_byte(address);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.sub_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::SUB_MEMORY,
+                    TraceAccessKind::Fetch,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
+        value
+    }
+
     fn io_read_byte(&mut self, port: u16) -> u8 {
-        self.bus.tracer.trace_io_unhandled_read(port);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.sub_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::SUB_IO,
+                    TraceAccessKind::Read,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(OPEN_BUS)),
+                    false,
+                ),
+            );
+        }
         OPEN_BUS
     }
 
     fn io_write_byte(&mut self, port: u16, value: u8) {
-        self.bus.tracer.trace_io_unhandled_write(port, value);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.sub_clock_hz)),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::SUB_IO,
+                    TraceAccessKind::Write,
+                    u64::from(port),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    false,
+                ),
+            );
+        }
     }
 
     fn has_irq(&self) -> bool {
@@ -1430,9 +1694,21 @@ impl<T: Tracing> common::Bus for SubBusView<'_, T> {
 
     fn acknowledge_irq(&mut self) -> u8 {
         let value = self.bus.acknowledge_sub_irq();
-        self.bus
-            .tracer
-            .trace_irq_acknowledge(IRQ_TRACE_SUB_CANCEL, value);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.sub_clock_hz)),
+                ),
+                TraceEvent::maskable_interrupt(
+                    trace_id::controller::FM7_SUB_IRQ,
+                    0,
+                    TraceInterruptAction::Acknowledge,
+                    None,
+                ),
+            );
+        }
         value
     }
 
@@ -1442,6 +1718,40 @@ impl<T: Tracing> common::Bus for SubBusView<'_, T> {
 
     fn acknowledge_nmi(&mut self) {
         self.bus.acknowledge_sub_nmi();
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.sub_clock_hz)),
+                ),
+                TraceEvent::interrupt(
+                    trace_id::controller::FM7_SUB_NMI,
+                    common::TraceInterruptKind::NonMaskable,
+                    None,
+                    TraceInterruptAction::Acknowledge,
+                    None,
+                ),
+            );
+        }
+    }
+
+    fn acknowledge_firq(&mut self) {
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.sub_clock_hz)),
+                ),
+                TraceEvent::maskable_interrupt(
+                    trace_id::controller::FM7_SUB_FIRQ,
+                    0,
+                    TraceInterruptAction::Acknowledge,
+                    None,
+                ),
+            );
+        }
     }
 
     #[allow(clippy::misnamed_getters)]
@@ -1451,21 +1761,60 @@ impl<T: Tracing> common::Bus for SubBusView<'_, T> {
 
     fn set_current_cycle(&mut self, cycle: u64) {
         self.bus.sub_cycle = cycle;
-        self.bus.tracer.set_cycle(cycle);
     }
-}
 
-/// Whether `address` is in the main CPU memory-mapped I/O page.
-fn is_main_io(address: u16) -> bool {
-    matches!(address, MAIN_IO_START..=MAIN_IO_END)
-}
-
-/// Whether `address` is in the sub CPU memory-mapped I/O region.
-fn is_sub_io(address: u16) -> bool {
-    matches!(address, SUB_IO_START..=SUB_IO_END)
+    fn cpu_should_yield(&self) -> bool {
+        T::ENABLED && self.bus.tracer.yield_requested()
+    }
 }
 
 /// Whether an access receives the averaged I/O wait-state charge.
 fn charges_io_wait(address: u16) -> bool {
     matches!(address, MAIN_IO_START..=MAIN_IO_END | VECTOR_WAIT_START..=VECTOR_WAIT_END)
+}
+
+#[cfg(test)]
+mod tests {
+    use common::{Bus, TraceAccess};
+
+    use super::*;
+
+    #[derive(Default)]
+    struct AccessTrace {
+        accesses: Vec<TraceAccess>,
+    }
+
+    impl TraceSink for AccessTrace {
+        fn trace(&mut self, _context: TraceContext, event: TraceEvent<'_>) {
+            if let TraceEvent::Access(access) = event {
+                self.accesses.push(access);
+            }
+        }
+    }
+
+    /// Confirms unused main and sub CPU ports retain their open-bus values.
+    #[test]
+    fn unused_cpu_ports_trace_open_bus_values() {
+        let mut bus = Fm7Bus::new_with_trace_sink(
+            Fm7Model::Fm7,
+            BootMode::Basic,
+            48_000,
+            AccessTrace::default(),
+        );
+
+        let main_value = Bus::io_read_byte(&mut MainBusView { bus: &mut bus }, 0x1234);
+        let sub_value = Bus::io_read_byte(&mut SubBusView { bus: &mut bus }, 0x5678);
+
+        assert_eq!(main_value, OPEN_BUS);
+        assert_eq!(sub_value, OPEN_BUS);
+        assert_eq!(bus.tracer().accesses.len(), 2);
+        assert_eq!(bus.tracer().accesses[0].space, TraceAddressSpace::MAIN_IO);
+        assert_eq!(bus.tracer().accesses[1].space, TraceAddressSpace::SUB_IO);
+        assert!(bus.tracer().accesses.iter().all(|access| {
+            access.kind == TraceAccessKind::Read
+                && access.width == TraceAccessWidth::Byte
+                && access.value == Some(u64::from(OPEN_BUS))
+                && !access.handled
+        }));
+    }
 }

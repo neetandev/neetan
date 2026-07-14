@@ -16,7 +16,7 @@ fn swap_nibbles(value: u8) -> u8 {
     value.rotate_left(4)
 }
 
-impl Pc88VaBus {
+impl<T: common::TraceSink> Pc88VaBus<T> {
     /// Reacts to a host-side (main I/O 0xFE/0xFF) PPI register change.
     pub(crate) fn on_ppi_main_change(&mut self, changed: I8255Write) {
         match changed {

@@ -7,7 +7,7 @@
 //! channel 1 or 16-bit channel 5), and terminal count raises IRQ 5. The MPU-401
 //! intelligent-mode timer runs on the `MpuTimer` event and raises IRQ 9.
 
-use common::{StackVec, Tracing};
+use common::{StackVec, TraceSink};
 use device::sound_blaster_16::{
     DMA_BATCH_SIZE, SoundboardSb16Action, SoundboardSb16Timer, dma_format_bytes_per_sample,
     dma_format_is_16bit,
@@ -18,7 +18,7 @@ use crate::{
     scheduler::EventAt,
 };
 
-impl<T: Tracing> AtBus<T> {
+impl<T: TraceSink> AtBus<T> {
     /// Reads a Sound Blaster 16 or OPL3 register (ports 0x220-0x22F, 0x388-0x38B).
     pub(super) fn sound_io_read(&mut self, port: u16) -> u8 {
         match port {

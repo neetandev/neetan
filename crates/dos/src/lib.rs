@@ -32,8 +32,8 @@ use std::collections::BTreeMap;
 
 pub use common::{
     AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
-    ConsoleIo, CpuAccess, CursorAccess, DiskIo, DosBootStage, DriveIo, HardwareCursorState,
-    MemoryAccess, SegmentRegister, Tracing,
+    ConsoleIo, CpuAccess, CursorAccess, DiskIo, DriveIo, HardwareCursorState, MemoryAccess,
+    SegmentRegister,
 };
 
 use crate::memory::memory_manager::MemoryManager;
@@ -521,14 +521,7 @@ impl NeetanDos {
 
     /// Performs the DOS boot sequence: writes data structures into emulated RAM,
     /// mounts drives, parses CONFIG.SYS, and creates the COMMAND.COM process.
-    pub fn boot(
-        &mut self,
-        cpu: &mut dyn CpuAccess,
-        memory: &mut dyn MemoryAccess,
-        device: &mut (impl DiskIo + CdromIo),
-        tracer: &mut impl Tracing,
-    ) {
-        tracer.trace_dos_boot(DosBootStage::Start, cpu, memory);
+    pub fn boot(&mut self, memory: &mut dyn MemoryAccess, device: &mut (impl DiskIo + CdromIo)) {
         self.write_dos_data_structures(memory);
         self.write_iosys_work_area(memory);
 
@@ -537,10 +530,8 @@ impl NeetanDos {
         Self::install_error_retriever_stub(memory);
         Self::install_cdrom_device_stubs(memory);
 
-        tracer.trace_dos_boot(DosBootStage::DosDataStructuresReady, cpu, memory);
         let drives = Self::discover_drives(memory, device);
         self.write_drive_structures(memory, &drives);
-        tracer.trace_dos_boot(DosBootStage::DrivesReady, cpu, memory);
 
         // Boot to the first physical drive that has media, otherwise Z:.
         if let Some(first) = drives.iter().find(|d| !d.is_virtual)
@@ -558,17 +549,14 @@ impl NeetanDos {
         let cfg = self.try_parse_config_sys(memory, device, &drives);
         self.apply_config(&cfg, memory);
         self.write_device_chain(memory);
-        tracer.trace_dos_boot(DosBootStage::ConfigApplied, cpu, memory);
 
         // Set up CD-ROM drive Q: if the machine has a CD-ROM.
         if device.cdrom_present() {
             self.write_cdrom_drive(memory);
         }
-        tracer.trace_dos_boot(DosBootStage::CdromReady, cpu, memory);
 
         let root_shell_boot = self.build_root_shell_boot_config(&cfg);
         self.write_initial_mcb_and_process(memory, &root_shell_boot);
-        tracer.trace_dos_boot(DosBootStage::InitialProcessReady, cpu, memory);
 
         // Initialize EMS/XMS memory manager if extended RAM is available.
         let ext_mem_size = memory.extended_memory_size();
@@ -589,13 +577,11 @@ impl NeetanDos {
             mm.set_hmamin_kb(self.state.xms_hmamin_kb);
             self.state.memory_manager = Some(mm);
         }
-        tracer.trace_dos_boot(DosBootStage::MemoryManagerReady, cpu, memory);
 
         self.install_native_config_drivers(&cfg, memory, device);
 
         // Load AUTOEXEC.BAT if present on any mounted drive.
         let autoexec_lines = self.try_load_autoexec_bat(memory, device, &drives);
-        tracer.trace_dos_boot(DosBootStage::AutoexecReady, cpu, memory);
 
         let psp = self.state.current_psp;
         self.root_command_com_psp = psp;
@@ -605,8 +591,6 @@ impl NeetanDos {
         } else {
             self.shells.insert(psp, shell::Shell::new(psp));
         }
-        tracer.trace_dos_boot(DosBootStage::ShellReady, cpu, memory);
-        tracer.trace_dos_boot(DosBootStage::End, cpu, memory);
     }
 
     /// Install default INT 24h critical-error stub (MOV AL,3 / IRET).
@@ -1141,7 +1125,6 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
         device: &mut (impl DiskIo + CdromIo),
         cursor: &mut impl CursorAccess,
-        tracer: &mut impl Tracing,
     ) -> bool {
         let hardware = cursor.read();
         let iosys = read_iosys_cursor(memory);
@@ -1152,8 +1135,7 @@ impl NeetanDos {
         }
         self.last_cursor = read_iosys_cursor(memory);
 
-        tracer.trace_dos_dispatch(vector, cpu, memory);
-        let result = self.dispatch_inner(vector, cpu, memory, device, tracer);
+        let result = self.dispatch_inner(vector, cpu, memory, device);
 
         let iosys = read_iosys_cursor(memory);
         cursor.write(iosys);
@@ -1167,44 +1149,36 @@ impl NeetanDos {
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
         device: &mut (impl DiskIo + CdromIo),
-        tracer: &mut impl Tracing,
     ) -> bool {
         match vector {
             0x20 => {
-                tracer.trace_int20h(cpu, memory);
                 self.int20h(cpu, memory);
                 true
             }
             0x21 => {
-                tracer.trace_int21h(cpu, memory);
-                self.int21h(cpu, memory, device, tracer);
+                self.int21h(cpu, memory, device);
                 true
             }
             0x22 => false,
             0x23 => false,
             0x24 => false,
             0x25 => {
-                tracer.trace_int25h(cpu, memory);
                 self.int25h(cpu, memory, device);
                 true
             }
             0x26 => {
-                tracer.trace_int26h(cpu, memory);
                 self.int26h(cpu, memory, device);
                 true
             }
             0x27 => {
-                tracer.trace_int27h(cpu, memory);
                 self.int27h(cpu, memory);
                 true
             }
             0x28 => {
-                tracer.trace_int28h(cpu, memory);
                 self.int28h(cpu, memory);
                 true
             }
             0x29 => {
-                tracer.trace_int29h(cpu, memory);
                 self.int29h(cpu, memory);
                 true
             }
@@ -1214,7 +1188,6 @@ impl NeetanDos {
                 true
             }
             0x2F => {
-                tracer.trace_int2fh(cpu, memory);
                 self.int2fh(cpu, memory, device);
                 true
             }
@@ -1224,7 +1197,6 @@ impl NeetanDos {
                 true
             }
             0x67 => {
-                tracer.trace_int67h(cpu, memory);
                 self.int67h(cpu, memory);
                 true
             }
@@ -1233,7 +1205,6 @@ impl NeetanDos {
                 true
             }
             0xDC => {
-                tracer.trace_intdch(cpu, memory);
                 self.intdch(cpu, memory);
                 true
             }
@@ -1246,9 +1217,7 @@ impl NeetanDos {
                 true
             }
             0xFE => {
-                tracer.trace_xms_entry(cpu, memory);
                 self.xms_entry(cpu, memory);
-                tracer.trace_xms_exit(cpu, memory);
                 true
             }
             _ => false,

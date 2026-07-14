@@ -1,23 +1,23 @@
-use common::{Bus, CpuMode, MachineModel};
-use machine_98::{NoTracing, Pc9801Bus};
+use common::{Bus, CpuMode, MachineModel, NoTrace};
+use machine_98::Pc9801Bus;
 
 const VRAM_B: u32 = 0xA8000;
 const VRAM_R: u32 = 0xB0000;
 const VRAM_G: u32 = 0xB8000;
 const VRAM_E: u32 = 0xE0000;
 
-fn setup_egc(bus: &mut Pc9801Bus<NoTracing>) {
+fn setup_egc(bus: &mut Pc9801Bus<NoTrace>) {
     bus.io_write_byte(0x6A, 0x01); // analog mode (mode2 bit 0)
     bus.io_write_byte(0x6A, 0x07); // EGC permission (mode2 bit 3)
     bus.io_write_byte(0x6A, 0x05); // EGC request (mode2 bit 2)
     bus.io_write_byte(0x7C, 0x80); // GRCG enable
 }
 
-fn disable_grcg(bus: &mut Pc9801Bus<NoTracing>) {
+fn disable_grcg(bus: &mut Pc9801Bus<NoTrace>) {
     bus.io_write_byte(0x7C, 0x00);
 }
 
-fn write_egc_register(bus: &mut Pc9801Bus<NoTracing>, reg_offset: u16, value: u16) {
+fn write_egc_register(bus: &mut Pc9801Bus<NoTrace>, reg_offset: u16, value: u16) {
     let port = 0x04A0 + reg_offset;
     bus.io_write_byte(port, value as u8);
     bus.io_write_byte(port + 1, (value >> 8) as u8);
@@ -25,7 +25,7 @@ fn write_egc_register(bus: &mut Pc9801Bus<NoTracing>, reg_offset: u16, value: u1
 
 #[test]
 fn egc_not_active_without_mode_bits() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
 
     bus.io_write_byte(0x6A, 0x01); // analog mode for E-plane access
 
@@ -42,7 +42,7 @@ fn egc_not_active_without_mode_bits() {
 
 #[test]
 fn egc_register_write_blocked_when_not_effective() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
 
     // Write EGC registers without enabling EGC - should be ignored.
     write_egc_register(&mut bus, 0x00, 0x1234);
@@ -73,7 +73,7 @@ fn egc_register_write_blocked_when_not_effective() {
 
 #[test]
 fn egc_cpu_broadcast_write_byte() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
     setup_egc(&mut bus);
 
     // ope=0 (default) -> CPU broadcast mode.
@@ -89,7 +89,7 @@ fn egc_cpu_broadcast_write_byte() {
 
 #[test]
 fn egc_cpu_broadcast_write_word() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
     setup_egc(&mut bus);
 
     bus.write_word(VRAM_B, 0xBEEF);
@@ -108,7 +108,7 @@ fn egc_cpu_broadcast_write_word() {
 
 #[test]
 fn egc_foreground_color_fill() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
     setup_egc(&mut bus);
 
     write_egc_register(&mut bus, 0x06, 5); // fg=5 -> planes 0,2 = 0xFFFF
@@ -132,7 +132,7 @@ fn egc_foreground_color_fill() {
 
 #[test]
 fn egc_write_with_mask() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
 
     // Pre-fill all planes with 0xFF using direct writes.
     bus.io_write_byte(0x6A, 0x01); // analog mode for E-plane
@@ -168,7 +168,7 @@ fn egc_write_with_mask() {
 
 #[test]
 fn egc_plane_write_enable() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
 
     // Pre-fill all planes with 0xAA.
     bus.io_write_byte(0x6A, 0x01);
@@ -209,7 +209,7 @@ fn egc_plane_write_enable() {
 
 #[test]
 fn egc_supersedes_grcg() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
     setup_egc(&mut bus);
 
     // Set GRCG tiles to distinctive values.
@@ -232,7 +232,7 @@ fn egc_supersedes_grcg() {
 
 #[test]
 fn egc_e_plane_vram_access() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
     setup_egc(&mut bus);
 
     // ope=0 (CPU broadcast): write through E-plane address.
@@ -249,7 +249,7 @@ fn egc_e_plane_vram_access() {
 
 #[test]
 fn egc_register_write_via_io_ports() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
 
     // Pre-fill plane G (index 2) with 0xAA.
     bus.io_write_byte(0x6A, 0x01);
@@ -289,12 +289,12 @@ fn egc_register_write_via_io_ports() {
 }
 
 // Helper: write word to EGC register using atomic io_write_word.
-fn write_egc_register_word(bus: &mut Pc9801Bus<NoTracing>, reg_offset: u16, value: u16) {
+fn write_egc_register_word(bus: &mut Pc9801Bus<NoTrace>, reg_offset: u16, value: u16) {
     bus.io_write_word(0x04A0 + reg_offset, value);
 }
 
 // Helper: pre-fill one word in all 4 planes via direct writes (EGC/GRCG disabled).
-fn prefill_planes_word(bus: &mut Pc9801Bus<NoTracing>, offset: u32, values: [u16; 4]) {
+fn prefill_planes_word(bus: &mut Pc9801Bus<NoTrace>, offset: u32, values: [u16; 4]) {
     let bases = [VRAM_B, VRAM_R, VRAM_G, VRAM_E];
     for (i, &base) in bases.iter().enumerate() {
         bus.write_byte(base + offset, values[i] as u8);
@@ -302,7 +302,7 @@ fn prefill_planes_word(bus: &mut Pc9801Bus<NoTracing>, offset: u32, values: [u16
     }
 }
 
-fn read_plane_word(bus: &Pc9801Bus<NoTracing>, plane_base: u32, offset: u32) -> u16 {
+fn read_plane_word(bus: &Pc9801Bus<NoTrace>, plane_base: u32, offset: u32) -> u16 {
     let lo = bus.read_byte_direct(plane_base + offset) as u16;
     let hi = bus.read_byte_direct(plane_base + offset + 1) as u16;
     lo | (hi << 8)
@@ -310,7 +310,7 @@ fn read_plane_word(bus: &Pc9801Bus<NoTracing>, plane_base: u32, offset: u32) -> 
 
 #[test]
 fn egc_aligned_word_block_copy_no_shift() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Write source data at offset 0.
@@ -343,7 +343,7 @@ fn egc_aligned_word_block_copy_no_shift() {
 
 #[test]
 fn egc_descending_block_copy() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Source at offset 4, destination at offset 2 (copying backwards).
@@ -389,7 +389,7 @@ fn egc_descending_block_copy() {
 
 #[test]
 fn egc_byte_level_copy() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Source byte at offset 0, destination at offset 2.
@@ -422,7 +422,7 @@ fn egc_byte_level_copy() {
 
 #[test]
 fn egc_misaligned_word_access() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Pre-fill destination at odd offset with zeros.
@@ -454,7 +454,7 @@ fn egc_misaligned_word_access() {
 
 #[test]
 fn egc_rop_and_c0() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::High, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Source: 0xAAAA on all planes. Destination: 0xF0F0 on all planes.
@@ -485,7 +485,7 @@ fn egc_rop_and_c0() {
 
 #[test]
 fn egc_rop_or_not_fc() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     prefill_planes_word(&mut bus, 0, [0x00FF; 4]);
@@ -515,7 +515,7 @@ fn egc_rop_or_not_fc() {
 
 #[test]
 fn egc_rop_invert_source_0f() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     prefill_planes_word(&mut bus, 0, [0xAAAA; 4]);
@@ -544,7 +544,7 @@ fn egc_rop_invert_source_0f() {
 
 #[test]
 fn egc_rop_with_cpu_source() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     prefill_planes_word(&mut bus, 0, [0xFF00; 4]);
@@ -572,7 +572,7 @@ fn egc_rop_with_cpu_source() {
 
 #[test]
 fn egc_compare_read_byte_full_match() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // FGC color 5 -> B=0xFF, R=0x00, G=0xFF, E=0x00
@@ -593,7 +593,7 @@ fn egc_compare_read_byte_full_match() {
 
 #[test]
 fn egc_compare_read_byte_no_match() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // FGC color 5 expects B=0xFF, R=0x00, G=0xFF, E=0x00.
@@ -615,7 +615,7 @@ fn egc_compare_read_byte_no_match() {
 
 #[test]
 fn egc_compare_read_byte_partial_match() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // FGC=5: B=0xFF, R=0x00, G=0xFF, E=0x00
@@ -638,7 +638,7 @@ fn egc_compare_read_byte_partial_match() {
 
 #[test]
 fn egc_compare_read_word() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // FGC=5: B=0xFFFF, R=0x0000, G=0xFFFF, E=0x0000
@@ -656,7 +656,7 @@ fn egc_compare_read_word() {
 
 #[test]
 fn egc_pattern_load_on_read() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Source at offset 0 with distinctive data per plane.
@@ -687,7 +687,7 @@ fn egc_pattern_load_on_read() {
 
 #[test]
 fn egc_pattern_load_on_write() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Put distinctive data at offset 0 (will be loaded as pattern on write).
@@ -714,7 +714,7 @@ fn egc_pattern_load_on_write() {
 
 #[test]
 fn egc_mixed_fgc_bgc_pattern() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Source data (any values - ROP 0xAA ignores source/destination).
@@ -753,7 +753,7 @@ fn egc_mixed_fgc_bgc_pattern() {
 
 #[test]
 fn egc_mask_write_blocked_when_fgbg_nonzero() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Pre-fill with 0xFF.
@@ -792,7 +792,7 @@ fn egc_mask_write_blocked_when_fgbg_nonzero() {
 
 #[test]
 fn egc_zero_mask_no_vram_write() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     for &base in &[VRAM_B, VRAM_R, VRAM_G, VRAM_E] {
@@ -818,7 +818,7 @@ fn egc_zero_mask_no_vram_write() {
 
 #[test]
 fn egc_srcmask_partial_length() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Fill destination with 0xFF.
@@ -855,7 +855,7 @@ fn egc_srcmask_partial_length() {
 
 #[test]
 fn egc_compare_read_bgc_source() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // BGC color 0xA -> B=0x0000, R=0xFFFF, G=0x0000, E=0xFFFF
@@ -886,7 +886,7 @@ fn egc_compare_read_bgc_source() {
 
 #[test]
 fn egc_compare_read_patreg_source() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Source at offset 0: distinctive data to load into patreg.
@@ -909,7 +909,7 @@ fn egc_compare_read_patreg_source() {
 
 #[test]
 fn egc_compare_read_fgc_vs_bgc() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Fill VRAM matching color 5: B=0xFF, R=0x00, G=0xFF, E=0x00
@@ -943,7 +943,7 @@ fn egc_compare_read_fgc_vs_bgc() {
 
 #[test]
 fn egc_multi_word_blit_no_shift() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Source: 2 words at offsets 0 and 2.
@@ -979,7 +979,7 @@ fn egc_multi_word_blit_no_shift() {
 
 #[test]
 fn egc_shift_right_ascending() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Source: 2 words at offsets 0 and 2. Dest: 2 words at offsets 4 and 6.
@@ -1013,7 +1013,7 @@ fn egc_shift_right_ascending() {
 
 #[test]
 fn egc_shift_left_ascending() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Source: 2 words. Dest: 2 words.
@@ -1047,7 +1047,7 @@ fn egc_shift_left_ascending() {
 
 #[test]
 fn egc_shift_descending_no_shift() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Source at offset 4, destination at offset 2.
@@ -1073,7 +1073,7 @@ fn egc_shift_descending_no_shift() {
 
 #[test]
 fn egc_rop_xor_src_dst() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     prefill_planes_word(&mut bus, 0, [0xAAAA; 4]); // source
@@ -1099,7 +1099,7 @@ fn egc_rop_xor_src_dst() {
 
 #[test]
 fn egc_rop_pattern_and_source() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Source at offset 0 (will be read from VRAM).
@@ -1131,7 +1131,7 @@ fn egc_rop_pattern_and_source() {
 
 #[test]
 fn egc_rop_ope_nd_pattern_only() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Source at offset 0.
@@ -1165,7 +1165,7 @@ fn egc_rop_ope_nd_pattern_only() {
 
 #[test]
 fn egc_rop_ope_np_no_pattern() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Source at offset 0: 0xF0F0 all planes.
@@ -1192,7 +1192,7 @@ fn egc_rop_ope_np_no_pattern() {
 
 #[test]
 fn egc_cpu_source_shift() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     prefill_planes_word(&mut bus, 0, [0; 4]);
@@ -1215,7 +1215,7 @@ fn egc_cpu_source_shift() {
 
 #[test]
 fn egc_ope_word_pattern_source_patreg() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Source to load as patreg at offset 0.
@@ -1246,7 +1246,7 @@ fn egc_ope_word_pattern_source_patreg() {
 
 #[test]
 fn egc_aligned_word_partial_mask() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Pre-fill with 0xAAAA.
@@ -1272,7 +1272,7 @@ fn egc_aligned_word_partial_mask() {
 
 #[test]
 fn egc_sub_byte_leng() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
     // Source at offset 0, dest at offset 2.

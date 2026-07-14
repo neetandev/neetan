@@ -1,5 +1,5 @@
-use common::{Bus, CpuMode, MachineModel};
-use machine_98::{NoTracing, Pc9801Bus};
+use common::{Bus, CpuMode, MachineModel, NoTrace};
+use machine_98::Pc9801Bus;
 
 const GA_GAPORT: u16 = 0x00D8;
 const WINDOW_BASE: u32 = 0xC0000;
@@ -10,7 +10,7 @@ fn ga_port(selector: u8, offset: u8) -> u16 {
     (u16::from(selector) << 8) | (GA_GAPORT + u16::from(offset))
 }
 
-fn setup_bus() -> Pc9801Bus<NoTracing> {
+fn setup_bus() -> Pc9801Bus<NoTrace> {
     let mut bus = Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48000);
     bus.install_ga1280a();
     bus.io_write_word(ga_port(0x16, 0), 0x20C1);
@@ -21,14 +21,14 @@ fn setup_bus() -> Pc9801Bus<NoTracing> {
     bus
 }
 
-fn write_palette(bus: &mut Pc9801Bus<NoTracing>, index: u8, red: u8, green: u8, blue: u8) {
+fn write_palette(bus: &mut Pc9801Bus<NoTrace>, index: u8, red: u8, green: u8, blue: u8) {
     bus.io_write_byte(ga_port(0x18, 0), index);
     bus.io_write_byte(ga_port(0x1A, 0), red);
     bus.io_write_byte(ga_port(0x1A, 0), green);
     bus.io_write_byte(ga_port(0x1A, 0), blue);
 }
 
-fn write_indexed_pixel(bus: &mut Pc9801Bus<NoTracing>, x: u32, y: u32, palette_index: u8) {
+fn write_indexed_pixel(bus: &mut Pc9801Bus<NoTrace>, x: u32, y: u32, palette_index: u8) {
     bus.io_write_word(ga_port(0x01, 0), y as u16);
     bus.io_write_word(ga_port(0x03, 0), 0x00FF);
     bus.io_write_word(ga_port(0x05, 0), 0xFFFF);
@@ -38,7 +38,7 @@ fn write_indexed_pixel(bus: &mut Pc9801Bus<NoTracing>, x: u32, y: u32, palette_i
     bus.io_write_byte(ga_port(0x0E, 0), 0);
 }
 
-fn read_indexed_pixel(bus: &mut Pc9801Bus<NoTracing>, x: u32, y: u32) -> u8 {
+fn read_indexed_pixel(bus: &mut Pc9801Bus<NoTrace>, x: u32, y: u32) -> u8 {
     bus.io_write_word(ga_port(0x02, 0), y as u16);
     let address = WINDOW_BASE + x / 8;
     let bit = 0x80 >> (x & 7);
@@ -54,7 +54,7 @@ fn read_indexed_pixel(bus: &mut Pc9801Bus<NoTracing>, x: u32, y: u32) -> u8 {
     palette_index
 }
 
-fn write_cursor_colors(bus: &mut Pc9801Bus<NoTracing>, background: [u8; 3], foreground: [u8; 3]) {
+fn write_cursor_colors(bus: &mut Pc9801Bus<NoTrace>, background: [u8; 3], foreground: [u8; 3]) {
     bus.io_write_byte(ga_port(0x18, 1), 1);
     bus.io_write_byte(ga_port(0x18, 0), 0);
     for value in background.into_iter().chain(foreground) {
@@ -64,7 +64,7 @@ fn write_cursor_colors(bus: &mut Pc9801Bus<NoTracing>, background: [u8; 3], fore
 }
 
 fn write_cursor_pattern(
-    bus: &mut Pc9801Bus<NoTracing>,
+    bus: &mut Pc9801Bus<NoTrace>,
     and_pattern: &[u8; CURSOR_MASK_BYTES],
     xor_pattern: &[u8; CURSOR_MASK_BYTES],
 ) {
@@ -75,7 +75,7 @@ fn write_cursor_pattern(
     bus.io_write_byte(ga_port(0x18, 1), 0);
 }
 
-fn write_cursor_position(bus: &mut Pc9801Bus<NoTracing>, x: i32, y: i32) {
+fn write_cursor_position(bus: &mut Pc9801Bus<NoTrace>, x: i32, y: i32) {
     write_cursor_position_raw(
         bus,
         (x + CURSOR_POSITION_BIAS) as u16,
@@ -83,7 +83,7 @@ fn write_cursor_position(bus: &mut Pc9801Bus<NoTracing>, x: i32, y: i32) {
     );
 }
 
-fn write_cursor_position_raw(bus: &mut Pc9801Bus<NoTracing>, raw_x: u16, raw_y: u16) {
+fn write_cursor_position_raw(bus: &mut Pc9801Bus<NoTrace>, raw_x: u16, raw_y: u16) {
     bus.io_write_byte(ga_port(0x18, 1), 3);
     bus.io_write_byte(ga_port(0x18, 0), raw_x as u8);
     bus.io_write_byte(ga_port(0x1A, 0), (raw_x >> 8) as u8);
@@ -92,7 +92,7 @@ fn write_cursor_position_raw(bus: &mut Pc9801Bus<NoTracing>, raw_x: u16, raw_y: 
     bus.io_write_byte(ga_port(0x18, 1), 0);
 }
 
-fn assert_pixel(bus: &Pc9801Bus<NoTracing>, x: u32, y: u32, expected: [u8; 4]) {
+fn assert_pixel(bus: &Pc9801Bus<NoTrace>, x: u32, y: u32, expected: [u8; 4]) {
     let (width, _) = bus.display_dimensions();
     let offset = ((y * width + x) * 4) as usize;
     assert_eq!(&bus.display_framebuffer()[offset..offset + 4], &expected);

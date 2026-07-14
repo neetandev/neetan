@@ -1,7 +1,7 @@
 //! YM2151 OPM register access, timer scheduling, IRQ routing, and audio
 //! mixing.
 
-use common::Tracing;
+use common::TraceSink;
 use device::opn_fm::FmTimerAction;
 
 use super::X68kBus;
@@ -19,7 +19,7 @@ const OPM_CT_FDC_FORCED_READY: u8 = 0x01;
 /// CT output bit selecting the MSM6258 4 MHz master clock.
 const OPM_CT_ADPCM_CLOCK_LOW: u8 = 0x02;
 
-impl<T: Tracing> X68kBus<T> {
+impl<T: TraceSink> X68kBus<T> {
     /// Reads an OPM register byte at an odd address.
     pub(super) fn read_opm_register(&mut self, address: u32) -> u8 {
         if address & 3 == OPM_DATA_PORT_OFFSET {

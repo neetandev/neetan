@@ -1,6 +1,6 @@
 //! PC/AT machine: an i486 main CPU on the full 32-bit memory map.
 
-use common::{Bus, Cpu, Machine, NoTracing, StartupCapabilities, Tracing};
+use common::{Bus, Cpu, Machine, NoTrace, StartupCapabilities, TraceSink};
 
 use crate::{bus::AtBus, config::AtBootDevice};
 
@@ -9,14 +9,14 @@ use crate::{bus::AtBus, config::AtBootDevice};
 const TIGHT_SLICE: u64 = 64;
 
 /// An IBM PC/AT machine: the i486 main CPU and the AT bus.
-pub struct AtMachine<T: Tracing = NoTracing> {
+pub struct AtMachine<T: TraceSink = NoTrace> {
     /// The main CPU, on the 32-bit physical address map.
     pub cpu: cpu::I386<{ cpu::CPU_MODEL_486_DX }, { cpu::ADDRESS_WIDTH_32 }>,
     /// The system bus, owning memory and devices.
     pub bus: AtBus<T>,
 }
 
-impl<T: Tracing> AtMachine<T> {
+impl<T: TraceSink> AtMachine<T> {
     /// Builds a machine around a configured CPU and bus.
     pub fn new(
         cpu: cpu::I386<{ cpu::CPU_MODEL_486_DX }, { cpu::ADDRESS_WIDTH_32 }>,
@@ -38,6 +38,9 @@ impl<T: Tracing> AtMachine<T> {
     /// the chipset, RAM and CMOS intact (the AMI warm-boot path relies on this).
     fn run_for_impl(&mut self, budget: u64) -> u64 {
         let start = self.bus.current_cycle();
+        if T::ENABLED && self.bus.tracer().yield_requested() {
+            return 0;
+        }
         let target = start + budget;
         while self.bus.current_cycle() < target {
             let current = self.bus.current_cycle();
@@ -49,6 +52,9 @@ impl<T: Tracing> AtMachine<T> {
             };
 
             let ran = self.cpu.run_for(slice_end - current, &mut self.bus);
+            if T::ENABLED && self.bus.tracer().yield_requested() {
+                break;
+            }
 
             if self.bus.reset_pending() {
                 if self.bus.take_cpu_reset() {
@@ -65,7 +71,7 @@ impl<T: Tracing> AtMachine<T> {
     }
 }
 
-impl<T: Tracing> Machine for AtMachine<T> {
+impl<T: TraceSink> Machine for AtMachine<T> {
     fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
         self.bus.set_host_date_time_provider(provider);
     }

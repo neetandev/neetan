@@ -55,6 +55,55 @@ pub(crate) enum EventX1 {
     FmTimerB,
 }
 
+#[cfg(test)]
+mod trace_identifier_tests {
+    use super::*;
+
+    #[test]
+    fn trace_identifiers_match_every_event_variant() {
+        assert_eq!(
+            EventX1::ALL.len(),
+            common::trace_id::scheduled::x1::ALL.len()
+        );
+        for (event, identifier) in EventX1::ALL
+            .iter()
+            .zip(common::trace_id::scheduled::x1::ALL)
+        {
+            assert_eq!(event.trace_name(), *identifier);
+        }
+    }
+}
+
+impl EventX1 {
+    pub(crate) const fn trace_name(self) -> &'static str {
+        use common::trace_id::scheduled::x1;
+        match self {
+            Self::VBlank => x1::VIDEO_VBLANK,
+            Self::VSync => x1::VIDEO_VSYNC,
+            Self::Scanline => x1::VIDEO_SCANLINE,
+            Self::CtcChannel0 => x1::CTC_CHANNEL0,
+            Self::CtcChannel1 => x1::CTC_CHANNEL1,
+            Self::CtcChannel2 => x1::CTC_CHANNEL2,
+            Self::CtcChannel3 => x1::CTC_CHANNEL3,
+            Self::DmaTick => x1::DMA_TICK,
+            Self::FdcSeekComplete => x1::FDC_SEEK_COMPLETE,
+            Self::KeyScan => x1::KEYBOARD_SCAN,
+            Self::CassetteByte => x1::CASSETTE_BYTE,
+            Self::SubPoll => x1::SUB_POLL,
+            Self::SioTxCh0 => x1::SIO_TX0,
+            Self::SioRxCh0 => x1::SIO_RX0,
+            Self::SioTxCh1 => x1::SIO_TX1,
+            Self::SioRxCh1 => x1::SIO_RX1,
+            Self::SoundCtcChannel0 => x1::SOUND_CTC_CHANNEL0,
+            Self::SoundCtcChannel1 => x1::SOUND_CTC_CHANNEL1,
+            Self::SoundCtcChannel2 => x1::SOUND_CTC_CHANNEL2,
+            Self::SoundCtcChannel3 => x1::SOUND_CTC_CHANNEL3,
+            Self::FmTimerA => x1::FM_TIMER_A,
+            Self::FmTimerB => x1::FM_TIMER_B,
+        }
+    }
+}
+
 const EVENT_COUNT: usize = 22;
 
 impl EventX1 {

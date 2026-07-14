@@ -2,7 +2,7 @@
 //! device and writes a RAM marker, and the host checks the machine carried the
 //! program through.
 
-use common::{Bus, Tracing};
+use common::{Bus, TraceSink};
 use machine_at::AtModel;
 
 #[path = "common/harness.rs"]
@@ -15,10 +15,15 @@ struct PostRecorder {
     codes: Vec<u8>,
 }
 
-impl Tracing for PostRecorder {
-    fn trace_io_write(&mut self, port: u16, value: u8) {
-        if port == 0x80 {
-            self.codes.push(value);
+impl TraceSink for PostRecorder {
+    fn trace(&mut self, _context: common::TraceContext, event: common::TraceEvent<'_>) {
+        if let common::TraceEvent::Access(access) = event
+            && access.space == common::TraceAddressSpace::MAIN_IO
+            && access.kind == common::TraceAccessKind::Write
+            && access.address == 0x80
+            && let Some(value) = access.value
+        {
+            self.codes.push(value as u8);
         }
     }
 }

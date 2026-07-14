@@ -7,7 +7,7 @@
 //! the `UartRx` event. A rising edge on DTR or RTS is a power-on reset, to which
 //! the mouse answers with its `M` identification byte.
 
-use common::Tracing;
+use common::TraceSink;
 use device::ins8250_uart::UartWriteEffect;
 
 use crate::{
@@ -54,7 +54,7 @@ fn encode_ms_packet(delta_x: i32, delta_y: i32, left: bool, right: bool) -> [u8;
     [byte0, byte1, byte2]
 }
 
-impl<T: Tracing> AtBus<T> {
+impl<T: TraceSink> AtBus<T> {
     /// Reads a COM1 UART register (ports 0x3F8-0x3FF).
     pub(super) fn serial_io_read(&mut self, port: u16) -> u8 {
         let register = (port - 0x03F8) as u8;

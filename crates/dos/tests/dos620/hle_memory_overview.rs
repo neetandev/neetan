@@ -12,7 +12,7 @@ fn find_line<'a>(lines: &'a [String], prefix: &str) -> &'a str {
 
 #[test]
 fn host_memory_overview_is_unavailable_without_hle_dos() {
-    let mut bus: machine_98::Pc9801Bus<machine_98::NoTracing> =
+    let mut bus: machine_98::Pc9801Bus<common::NoTrace> =
         machine_98::Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48_000);
     assert!(
         bus.debug_memory_overview_lines().is_none(),

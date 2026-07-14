@@ -1,7 +1,7 @@
 use std::f64::consts::PI;
 
-use common::{Bus, CpuMode, MachineModel};
-use machine_98::{NoTracing, Pc9801Bus};
+use common::{Bus, CpuMode, MachineModel, NoTrace};
+use machine_98::Pc9801Bus;
 use resampler::{Complex32, Forward, Radix, RadixFFT};
 
 const OUTPUT_SAMPLE_RATE: u32 = 48_000;
@@ -33,53 +33,53 @@ const RAM_BASE: u32 = 0x10000;
 const SKIP: usize = 256;
 const FFT_SIZE: usize = 4096;
 
-fn setup_sb16_bus() -> Pc9801Bus<NoTracing> {
+fn setup_sb16_bus() -> Pc9801Bus<NoTrace> {
     let mut bus =
-        Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, OUTPUT_SAMPLE_RATE);
+        Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::High, OUTPUT_SAMPLE_RATE);
     bus.install_sound_blaster_16();
     bus
 }
 
-fn dsp_reset(bus: &mut Pc9801Bus<NoTracing>) {
+fn dsp_reset(bus: &mut Pc9801Bus<NoTrace>) {
     bus.io_write_byte(SB16_DSP_RESET, 0x01);
     bus.io_write_byte(SB16_DSP_RESET, 0x00);
     let ready = bus.io_read_byte(SB16_DSP_READ);
     assert_eq!(ready, 0xAA, "DSP did not return ready byte after reset");
 }
 
-fn dsp_write(bus: &mut Pc9801Bus<NoTracing>, value: u8) {
+fn dsp_write(bus: &mut Pc9801Bus<NoTrace>, value: u8) {
     bus.io_write_byte(SB16_DSP_WRITE, value);
 }
 
-fn dsp_set_sample_rate(bus: &mut Pc9801Bus<NoTracing>, rate: u16) {
+fn dsp_set_sample_rate(bus: &mut Pc9801Bus<NoTrace>, rate: u16) {
     dsp_write(bus, 0x41); // Set output sample rate
     dsp_write(bus, (rate >> 8) as u8);
     dsp_write(bus, (rate & 0xFF) as u8);
 }
 
-fn dsp_speaker_on(bus: &mut Pc9801Bus<NoTracing>) {
+fn dsp_speaker_on(bus: &mut Pc9801Bus<NoTrace>) {
     dsp_write(bus, 0xD1);
 }
 
-fn mixer_write(bus: &mut Pc9801Bus<NoTracing>, register: u8, value: u8) {
+fn mixer_write(bus: &mut Pc9801Bus<NoTrace>, register: u8, value: u8) {
     bus.io_write_byte(SB16_MIXER_ADDR, register);
     bus.io_write_byte(SB16_MIXER_DATA, value);
 }
 
-fn mixer_read(bus: &mut Pc9801Bus<NoTracing>, register: u8) -> u8 {
+fn mixer_read(bus: &mut Pc9801Bus<NoTrace>, register: u8) -> u8 {
     bus.io_write_byte(SB16_MIXER_ADDR, register);
     bus.io_read_byte(SB16_MIXER_DATA)
 }
 
 /// Writes PCM data into bus RAM starting at `address`.
-fn write_pcm_to_ram(bus: &mut Pc9801Bus<NoTracing>, address: u32, data: &[u8]) {
+fn write_pcm_to_ram(bus: &mut Pc9801Bus<NoTrace>, address: u32, data: &[u8]) {
     for (i, &byte) in data.iter().enumerate() {
         bus.write_byte(address + i as u32, byte);
     }
 }
 
 /// Sets up DMA channel 3 to read `count` bytes from the given physical address.
-fn setup_dma_channel_3(bus: &mut Pc9801Bus<NoTracing>, address: u32, count: u16) {
+fn setup_dma_channel_3(bus: &mut Pc9801Bus<NoTrace>, address: u32, count: u16) {
     let page = ((address >> 16) & 0xFF) as u8;
     let addr_lo = (address & 0xFF) as u8;
     let addr_hi = ((address >> 8) & 0xFF) as u8;
@@ -105,7 +105,7 @@ fn setup_dma_channel_3(bus: &mut Pc9801Bus<NoTracing>, address: u32, count: u16)
 }
 
 /// Advances the bus clock in steps, processing DMA events along the way.
-fn advance_clock_with_events(bus: &mut Pc9801Bus<NoTracing>, target_cycle: u64) {
+fn advance_clock_with_events(bus: &mut Pc9801Bus<NoTrace>, target_cycle: u64) {
     let step = CPU_CLOCK_HZ as u64 / 1000; // ~1ms steps
     let mut cycle = bus.current_cycle();
     while cycle < target_cycle {
@@ -766,7 +766,7 @@ const SB16_OPL3_DATA_LO: u16 = 0x21D2;
 /// This validates that C-bus I/O wait cycles are applied to the SB16
 /// ports. Without them the polling loop on fast machines (66 MHz)
 /// outruns the timer and detection fails.
-fn opl3_timer_detection(bus: &mut Pc9801Bus<NoTracing>) {
+fn opl3_timer_detection(bus: &mut Pc9801Bus<NoTrace>) {
     // Reset timers and clear status.
     bus.io_write_byte(SB16_OPL3_ADDR_LO, 0x04);
     bus.io_write_byte(SB16_OPL3_DATA_LO, 0x60);
@@ -823,12 +823,12 @@ fn sb16_opl3_timer_detection_20mhz() {
 #[test]
 fn sb16_opl3_timer_detection_66mhz() {
     let mut bus =
-        Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AP, CpuMode::Low, OUTPUT_SAMPLE_RATE);
+        Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::Low, OUTPUT_SAMPLE_RATE);
     bus.install_sound_blaster_16();
     opl3_timer_detection(&mut bus);
 }
 
-fn setup_dma_channel_3_write(bus: &mut Pc9801Bus<NoTracing>, address: u32, count: u16) {
+fn setup_dma_channel_3_write(bus: &mut Pc9801Bus<NoTrace>, address: u32, count: u16) {
     let page = ((address >> 16) & 0xFF) as u8;
     let addr_lo = (address & 0xFF) as u8;
     let addr_hi = ((address >> 8) & 0xFF) as u8;
@@ -847,13 +847,13 @@ fn setup_dma_channel_3_write(bus: &mut Pc9801Bus<NoTracing>, address: u32, count
     bus.io_write_byte(DMA_SINGLE_MASK, 0x03);
 }
 
-fn dsp_set_input_sample_rate(bus: &mut Pc9801Bus<NoTracing>, rate: u16) {
+fn dsp_set_input_sample_rate(bus: &mut Pc9801Bus<NoTrace>, rate: u16) {
     dsp_write(bus, 0x42);
     dsp_write(bus, (rate >> 8) as u8);
     dsp_write(bus, (rate & 0xFF) as u8);
 }
 
-fn read_ram_byte(bus: &mut Pc9801Bus<NoTracing>, address: u32) -> u8 {
+fn read_ram_byte(bus: &mut Pc9801Bus<NoTrace>, address: u32) -> u8 {
     bus.read_byte(address)
 }
 
@@ -1011,7 +1011,7 @@ fn sb16_opl3_bank1_data_read_returns_open_bus() {
 #[test]
 fn sb16_opl3_bank1_status_read_without_sb16_returns_open_bus() {
     let mut bus =
-        Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, OUTPUT_SAMPLE_RATE);
+        Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::High, OUTPUT_SAMPLE_RATE);
     assert_eq!(bus.io_read_byte(SB16_OPL3_BANK1_STATUS), 0xFF);
 }
 

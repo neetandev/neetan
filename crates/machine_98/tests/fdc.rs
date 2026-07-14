@@ -1,6 +1,6 @@
-use common::{Bus, CpuMode, MachineModel};
+use common::{Bus, CpuMode, MachineModel, NoTrace};
 use device::floppy::FloppyImage;
-use machine_98::{NoTracing, Pc9801Bus};
+use machine_98::Pc9801Bus;
 
 /// Builds a minimal D88 2HD image with sectors on track 0 (head 0).
 fn build_test_d88(sectors: &[(u8, u8, u8, u8, &[u8])], write_protected: bool) -> Vec<u8> {
@@ -39,7 +39,7 @@ fn build_test_d88(sectors: &[(u8, u8, u8, u8, &[u8])], write_protected: bool) ->
 }
 
 /// Sets up DMA channel 2 to read from memory at `mem_addr` (memory -> FDC).
-fn setup_dma_for_write(bus: &mut Pc9801Bus<NoTracing>, mem_addr: u32, byte_count: u16) {
+fn setup_dma_for_write(bus: &mut Pc9801Bus<NoTrace>, mem_addr: u32, byte_count: u16) {
     let addr_low = (mem_addr & 0xFF) as u8;
     let addr_high = ((mem_addr >> 8) & 0xFF) as u8;
     let page = ((mem_addr >> 16) & 0x0F) as u8;
@@ -59,7 +59,7 @@ fn setup_dma_for_write(bus: &mut Pc9801Bus<NoTracing>, mem_addr: u32, byte_count
 }
 
 /// Issues a WRITE DATA command to the 1MB FDC via port 0x92.
-fn issue_write_data(bus: &mut Pc9801Bus<NoTracing>, c: u8, h: u8, r: u8, n: u8, eot: u8) {
+fn issue_write_data(bus: &mut Pc9801Bus<NoTrace>, c: u8, h: u8, r: u8, n: u8, eot: u8) {
     let hd_us = h << 2; // Head in bit 2, drive 0
     bus.io_write_byte(0x92, 0x45); // WRITE DATA: MF=1, cmd=0x05
     bus.io_write_byte(0x92, hd_us);
@@ -73,7 +73,7 @@ fn issue_write_data(bus: &mut Pc9801Bus<NoTracing>, c: u8, h: u8, r: u8, n: u8, 
 }
 
 /// Reads 7 FDC result bytes from port 0x92.
-fn read_fdc_results(bus: &mut Pc9801Bus<NoTracing>) -> [u8; 7] {
+fn read_fdc_results(bus: &mut Pc9801Bus<NoTrace>) -> [u8; 7] {
     let mut result = [0u8; 7];
     for byte in &mut result {
         *byte = bus.io_read_byte(0x92);
@@ -82,7 +82,7 @@ fn read_fdc_results(bus: &mut Pc9801Bus<NoTracing>) -> [u8; 7] {
 }
 
 /// Issues a SENSE DRIVE STATUS command to the 1MB FDC and returns ST3.
-fn issue_sense_drive_status(bus: &mut Pc9801Bus<NoTracing>, drive: u8, head: u8) -> u8 {
+fn issue_sense_drive_status(bus: &mut Pc9801Bus<NoTrace>, drive: u8, head: u8) -> u8 {
     let hd_us = (head << 2) | drive;
     bus.io_write_byte(0x92, 0x04); // Sense Drive Status command
     bus.io_write_byte(0x92, hd_us);
@@ -95,7 +95,7 @@ fn fdc_sense_drive_status_two_side_with_disk() {
     let d88_bytes = build_test_d88(&[(0, 0, 1, 3, &sector_data)], false);
     let disk = FloppyImage::from_d88_bytes(&d88_bytes).expect("floppy image parse failed");
 
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
     bus.insert_floppy(0, disk, None);
 
     let st3 = issue_sense_drive_status(&mut bus, 0, 0);
@@ -111,7 +111,7 @@ fn fdc_sense_drive_status_two_side_with_disk() {
 
 #[test]
 fn fdc_sense_drive_status_two_side_no_disk() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
     let st3 = issue_sense_drive_status(&mut bus, 0, 0);
 
@@ -133,7 +133,7 @@ fn fdc_sense_drive_status_after_eject_reinsert() {
     let d88_bytes = build_test_d88(&[(0, 0, 1, 3, &sector_data)], false);
     let disk = FloppyImage::from_d88_bytes(&d88_bytes).expect("floppy image parse failed");
 
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
     bus.insert_floppy(0, disk, None);
 
     let st3 = issue_sense_drive_status(&mut bus, 0, 0);
@@ -163,7 +163,7 @@ fn fdc_write_data_single_sector() {
     let d88_bytes = build_test_d88(&[(0, 0, 1, 3, &sector_data)], false);
     let disk = FloppyImage::from_d88_bytes(&d88_bytes).expect("floppy image parse failed");
 
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
     bus.insert_floppy(0, disk, None);
 
     // Write 0xAA pattern to RAM at physical address 0x10000.
@@ -210,7 +210,7 @@ fn fdc_write_data_write_protected() {
     let d88_bytes = build_test_d88(&[(0, 0, 1, 3, &sector_data)], true);
     let disk = FloppyImage::from_d88_bytes(&d88_bytes).expect("floppy image parse failed");
 
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
     bus.insert_floppy(0, disk, None);
 
     for i in 0..1024u32 {
@@ -245,7 +245,7 @@ fn fdc_write_data_write_protected() {
 
 #[test]
 fn fdc_write_data_no_disk() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
     for i in 0..1024u32 {
         bus.write_byte(0x10000 + i, 0xAA);
@@ -276,7 +276,7 @@ fn fdc_write_data_updates_dirty_flag() {
     let d88_bytes = build_test_d88(&[(0, 0, 1, 3, &sector_data)], false);
     let disk = FloppyImage::from_d88_bytes(&d88_bytes).expect("floppy image parse failed");
 
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
     bus.insert_floppy(0, disk, None);
 
     assert!(

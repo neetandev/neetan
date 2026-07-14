@@ -7,7 +7,7 @@
 //! masks, and any port-C change arms the interleave resync window so the peer CPU
 //! runs promptly enough to advance the handshake.
 
-use common::Tracing;
+use common::TraceSink;
 use device::i8255::I8255Write;
 
 use super::{Pc8801Bus, SYNC_SLICE};
@@ -17,7 +17,7 @@ fn swap_nibbles(value: u8) -> u8 {
     value.rotate_left(4)
 }
 
-impl<T: Tracing> Pc8801Bus<T> {
+impl<T: TraceSink> Pc8801Bus<T> {
     /// Reacts to a host-side (main I/O 0xFE/0xFF) PPI register change.
     pub(crate) fn on_ppi_main_change(&mut self, changed: I8255Write) {
         match changed {

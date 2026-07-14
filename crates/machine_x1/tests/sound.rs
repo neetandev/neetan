@@ -16,7 +16,7 @@ fn psg_register_round_trips_through_the_latch() {
     let mut machine = build_machine(X1Model::X1);
     write_psg(&mut machine.bus, 0x08, 0x0F); // channel A amplitude
     machine.bus.io_write(0x1C00, 0x08);
-    assert_eq!(machine.bus.io_read(0x1B00), 0x0F);
+    assert_eq!(machine.bus.io_read(0x1B00).0, 0x0F);
 }
 
 #[test]
@@ -87,7 +87,7 @@ fn opm_timer_a_sets_pollable_status_flag() {
     write_opm(bus, 0x14, 0x05);
 
     assert_eq!(
-        bus.io_read(0x0701) & 0x01,
+        bus.io_read(0x0701).0 & 0x01,
         0x00,
         "timer A flag should be clear before overflow"
     );
@@ -96,7 +96,7 @@ fn opm_timer_a_sets_pollable_status_flag() {
     run_bus_cycles(bus, 10_000);
 
     assert_eq!(
-        bus.io_read(0x0701) & 0x01,
+        bus.io_read(0x0701).0 & 0x01,
         0x01,
         "timer A overflow should set the pollable status flag"
     );
@@ -106,14 +106,14 @@ fn opm_timer_a_sets_pollable_status_flag() {
 fn fm_detection_reads_zero_on_turbo() {
     let mut machine = build_machine(X1Model::X1Turbo);
     // The CZ-8BS1 detection port reads back 0x00 when the board is present.
-    assert_eq!(machine.bus.io_read(0x0700), 0x00);
+    assert_eq!(machine.bus.io_read(0x0700).0, 0x00);
 }
 
 #[test]
 fn base_x1_has_no_fm_board() {
     let mut machine = build_machine(X1Model::X1);
     // The base X1 does not decode the FM board ports; the address reads open bus.
-    assert_eq!(machine.bus.io_read(0x0700), 0xFF);
+    assert_eq!(machine.bus.io_read(0x0700).0, 0xFF);
 
     // OPM register writes are a no-op and leave the audio path PSG-only (silent
     // with no PSG programmed).

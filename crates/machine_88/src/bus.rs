@@ -12,7 +12,11 @@ mod sub_io_read;
 mod sub_io_write;
 mod sub_mem;
 
-use common::{HostDateTimeProvider, JoystickState, NoTracing, Tracing};
+use common::{
+    HostDateTimeProvider, JoystickState, MonitorTiming, NoTrace, TraceAccessKind, TraceAccessWidth,
+    TraceAddressSpace, TraceContext, TraceEvent, TraceInterruptAction, TracePresentation,
+    TraceSink, trace_id,
+};
 use device::{
     beeper::Beeper,
     cdrom::CdImage,
@@ -35,9 +39,7 @@ use software_renderer::{
 use sub_mem::SubMemory;
 
 use crate::{
-    config::{
-        BootMode, ClockConfig, EightMhzWaitMode, MemoryWaitSwitch, MonitorTiming, Pc8801Model,
-    },
+    config::{BootMode, ClockConfig, EightMhzWaitMode, MemoryWaitSwitch, Pc8801Model},
     memory::{GvramSelect, Pc8801Memory, Pc8801MemoryTarget},
     scheduler::{Event88, Pc8801Scheduler},
 };
@@ -161,7 +163,7 @@ pub(crate) const TIGHT_SLICE: u64 = 16;
 /// 6-byte BCD buffer the uPD4990A expects:
 /// `[year, month<<4|day_of_week, day, hour, minute, second]`.
 /// PC-8801 system bus shared by the main and sub CPUs.
-pub struct Pc8801Bus<T: Tracing = NoTracing> {
+pub struct Pc8801Bus<T: TraceSink = NoTrace> {
     pub(crate) memory: Pc8801Memory,
     pub(crate) scheduler: Pc8801Scheduler,
     /// Main-CPU priority interrupt controller (i8214), ports 0xE4/0xE6.
@@ -274,6 +276,8 @@ pub struct Pc8801Bus<T: Tracing = NoTracing> {
     pub(crate) display_width: u32,
     /// Active display height in pixels.
     pub(crate) display_height: u32,
+    /// Number assigned to the next published frame.
+    pub(crate) presented_frames: u64,
     /// Level-1 kanji ROM. Supplies the built-in 8x8 ANK font at offset 0x1000.
     kanji1: Vec<u8>,
     /// MA level-2 kanji ROM, loaded and hash-validated. Read through the
@@ -313,7 +317,7 @@ pub struct Pc8801Bus<T: Tracing = NoTracing> {
     tracer: T,
 }
 
-impl<T: Tracing> Pc8801Bus<T> {
+impl<T: TraceSink> Pc8801Bus<T> {
     /// Returns the main CPU clock frequency in Hz.
     pub fn cpu_clock_hz(&self) -> u32 {
         self.clocks.main_clock_hz
@@ -391,12 +395,12 @@ impl<T: Tracing> Pc8801Bus<T> {
     }
 
     /// Writes to a main-CPU I/O port. Intended for tests and tooling.
-    pub fn io_write(&mut self, port: u16, value: u8) {
-        self.main_io_write(port, value);
+    pub fn io_write(&mut self, port: u16, value: u8) -> bool {
+        self.main_io_write(port, value)
     }
 
     /// Reads a main-CPU I/O port. Intended for tests and tooling.
-    pub fn io_read(&mut self, port: u16) -> u8 {
+    pub fn io_read(&mut self, port: u16) -> (u8, bool) {
         self.main_io_read(port)
     }
 
@@ -572,7 +576,7 @@ impl<T: Tracing> Pc8801Bus<T> {
     /// Advances the cycle clock, processing any events that have come due.
     pub fn set_current_cycle(&mut self, cycle: u64) {
         self.current_cycle = cycle;
-        self.tracer.set_cycle(cycle);
+
         if cycle >= self.next_event_cycle {
             self.process_events();
         }
@@ -693,6 +697,18 @@ impl<T: Tracing> Pc8801Bus<T> {
         let due = self.scheduler.pop_due_events(self.current_cycle);
         for index in 0..due.len() {
             let event = due[index];
+            if T::ENABLED {
+                self.tracer.trace(
+                    TraceContext::scheduler_main(
+                        self.current_cycle,
+                        Some(u64::from(self.cpu_clock_hz())),
+                    ),
+                    TraceEvent::Scheduled {
+                        event: event.kind.trace_name(),
+                        fire_tick: event.fire_cycle,
+                    },
+                );
+            }
             match event.kind {
                 Event88::ClockTimer => {
                     self.pic.set_request(LEVEL_CLOCK);
@@ -797,6 +813,7 @@ impl<T: Tracing> Pc8801Bus<T> {
         self.crtc.update_blink();
 
         self.render_frame();
+        self.trace_presentation();
 
         let vblank_lines = u64::from(self.crtc.vretrace) * u64::from(self.crtc.char_height);
         let vblank_period = vblank_lines * self.crtc_line_period;
@@ -1028,6 +1045,25 @@ impl<T: Tracing> Pc8801Bus<T> {
         }
     }
 
+    fn trace_presentation(&mut self) {
+        if !T::ENABLED {
+            return;
+        }
+        self.presented_frames = self.presented_frames.saturating_add(1);
+        self.tracer.trace(
+            TraceContext::presentation_main(
+                self.current_cycle,
+                Some(u64::from(self.cpu_clock_hz())),
+            ),
+            TraceEvent::Presentation(TracePresentation {
+                display: trace_id::display::MAIN,
+                frame: self.presented_frames,
+                width: self.display_width,
+                height: self.display_height,
+            }),
+        );
+    }
+
     fn render_frame(&mut self) {
         let color_mode = self.port30 & PORT30_COLOR == 0;
         let width_40col = self.port30 & PORT30_WIDTH40 == 0;
@@ -1100,8 +1136,8 @@ impl<T: Tracing> Pc8801Bus<T> {
         renderer.render(&inputs);
     }
 
-    fn main_io_read(&mut self, port: u16) -> u8 {
-        match port & 0xFF {
+    fn main_io_read(&mut self, port: u16) -> (u8, bool) {
+        let value = match port & 0xFF {
             0x00..=0x0F => self.keyboard_read(port),
             0x20 => self.serial_read_data(),
             0x21 => self.serial.read_status(),
@@ -1136,8 +1172,9 @@ impl<T: Tracing> Pc8801Bus<T> {
             0xEC => self.kanji_read(&self.kanji2, self.kanji2_addr, true),
             0xED => self.kanji_read(&self.kanji2, self.kanji2_addr, false),
             0xFC..=0xFF => self.ppi_main.read((port & 0x03) as u8),
-            _ => OPEN_BUS,
-        }
+            _ => return (OPEN_BUS, false),
+        };
+        (value, true)
     }
 
     /// Reads a kanji ROM byte through the I/O window. Each latched code selects a
@@ -1311,7 +1348,7 @@ impl<T: Tracing> Pc8801Bus<T> {
         clock_bit | 0x10
     }
 
-    fn main_io_write(&mut self, port: u16, value: u8) {
+    fn main_io_write(&mut self, port: u16, value: u8) -> bool {
         match port & 0xFF {
             0x10 => {
                 self.port10 = value;
@@ -1442,22 +1479,39 @@ impl<T: Tracing> Pc8801Bus<T> {
                 let changed = self.ppi_main.write((port & 0x03) as u8, value);
                 self.on_ppi_main_change(changed);
             }
-            _ => {}
+            _ => return false,
         }
+        true
     }
 }
 
 /// Main-CPU view over the bus: implements `common::Bus` with the main memory and
 /// I/O maps. Built per run slice; never coexists with the sub-CPU view.
-pub(crate) struct MainBusView<'a, T: Tracing> {
+pub(crate) struct MainBusView<'a, T: TraceSink> {
     pub(crate) bus: &'a mut Pc8801Bus<T>,
 }
 
-impl<T: Tracing> common::Bus for MainBusView<'_, T> {
+impl<T: TraceSink> common::Bus for MainBusView<'_, T> {
     fn read_byte(&mut self, address: u32) -> u8 {
         let address = address as u16;
         let (value, target) = self.bus.memory.read_byte_with_access(address);
         self.bus.memory_wait_cycles += self.bus.access_wait(target, true);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Read,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
         value
     }
 
@@ -1465,7 +1519,22 @@ impl<T: Tracing> common::Bus for MainBusView<'_, T> {
         let address = address as u16;
         let target = self.bus.memory.write_byte_with_access(address, value);
         self.bus.memory_wait_cycles += self.bus.access_wait(target, false);
-        self.bus.tracer.trace_mem_write(u32::from(address), value);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Write,
+                    u64::from(u32::from(address)),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
     }
 
     fn fetch_opcode_byte(&mut self, address: u32) -> u8 {
@@ -1473,18 +1542,64 @@ impl<T: Tracing> common::Bus for MainBusView<'_, T> {
         let (value, target) = self.bus.memory.read_byte_with_access(address);
         self.bus.memory_wait_cycles += self.bus.access_wait(target, true);
         self.bus.memory_wait_cycles += self.bus.m1_wait(address);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_MEMORY,
+                    TraceAccessKind::Fetch,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
         value
     }
 
     fn io_read_byte(&mut self, port: u16) -> u8 {
-        let value = self.bus.main_io_read(port);
-        self.bus.tracer.trace_io_read(port & 0xFF, value);
+        let (value, handled) = self.bus.main_io_read(port);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Read,
+                    u64::from(port & 0xFF),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
         value
     }
 
     fn io_write_byte(&mut self, port: u16, value: u8) {
-        self.bus.tracer.trace_io_write(port & 0xFF, value);
-        self.bus.main_io_write(port, value);
+        let handled = self.bus.main_io_write(port, value);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::MAIN_IO,
+                    TraceAccessKind::Write,
+                    u64::from(port & 0xFF),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
     }
 
     fn has_irq(&self) -> bool {
@@ -1492,9 +1607,23 @@ impl<T: Tracing> common::Bus for MainBusView<'_, T> {
     }
 
     fn acknowledge_irq(&mut self) -> u8 {
-        let vector = self.bus.pic.acknowledge();
-        self.bus.tracer.trace_irq_acknowledge(0, vector);
-        vector
+        let acknowledge = self.bus.pic.acknowledge();
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::main_cpu(
+                    self.bus.current_cycle,
+                    Some(u64::from(self.bus.cpu_clock_hz())),
+                ),
+                TraceEvent::interrupt(
+                    trace_id::controller::PC88_I8214,
+                    common::TraceInterruptKind::Maskable,
+                    acknowledge.level.map(u16::from),
+                    TraceInterruptAction::Acknowledge,
+                    Some(u32::from(acknowledge.vector)),
+                ),
+            );
+        }
+        acknowledge.vector
     }
 
     fn has_nmi(&self) -> bool {
@@ -1514,9 +1643,13 @@ impl<T: Tracing> common::Bus for MainBusView<'_, T> {
     fn drain_wait_cycles(&mut self) -> i64 {
         core::mem::take(&mut self.bus.memory_wait_cycles)
     }
+
+    fn cpu_should_yield(&self) -> bool {
+        T::ENABLED && self.bus.tracer.yield_requested()
+    }
 }
 
-impl<T: Tracing> Pc8801Bus<T> {
+impl<T: TraceSink> Pc8801Bus<T> {
     /// Whether the disk sub-CPU has a pending FDC interrupt.
     pub(crate) fn sub_irq_pending(&self) -> bool {
         self.fdc.state.interrupt_pending || self.fdc.pio_byte_ready()
@@ -1565,28 +1698,120 @@ impl<T: Tracing> Pc8801Bus<T> {
 /// Sub-CPU (PC80S31K) view over the bus: implements `common::Bus` with the disk
 /// unit's memory and I/O maps. Built per run slice; never coexists with the
 /// main-CPU view.
-pub(crate) struct SubBusView<'a, T: Tracing> {
+pub(crate) struct SubBusView<'a, T: TraceSink> {
     pub(crate) bus: &'a mut Pc8801Bus<T>,
 }
 
-impl<T: Tracing> common::Bus for SubBusView<'_, T> {
+impl<T: TraceSink> common::Bus for SubBusView<'_, T> {
     fn read_byte(&mut self, address: u32) -> u8 {
-        self.bus.sub_mem.read(address as u16)
+        let address = address as u16;
+        let value = self.bus.sub_mem.read(address);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.sub_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::SUB_MEMORY,
+                    TraceAccessKind::Read,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
+        value
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
-        self.bus.sub_mem.write(address as u16, value);
+        let address = address as u16;
+        self.bus.sub_mem.write(address, value);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.sub_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::SUB_MEMORY,
+                    TraceAccessKind::Write,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
+    }
+
+    fn fetch_opcode_byte(&mut self, address: u32) -> u8 {
+        let address = address as u16;
+        let value = self.bus.sub_mem.read(address);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.sub_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::SUB_MEMORY,
+                    TraceAccessKind::Fetch,
+                    u64::from(address),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    true,
+                ),
+            );
+        }
+        value
     }
 
     fn io_read_byte(&mut self, port: u16) -> u8 {
-        let value = self.bus.sub_io_read(port);
-        self.bus.tracer.trace_io_read(0x100 | (port & 0xFF), value);
+        let (value, handled) = self.bus.sub_io_read(port);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.sub_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::SUB_IO,
+                    TraceAccessKind::Read,
+                    u64::from(port & 0xFF),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
         value
     }
 
     fn io_write_byte(&mut self, port: u16, value: u8) {
-        self.bus.tracer.trace_io_write(0x100 | (port & 0xFF), value);
-        self.bus.sub_io_write(port, value);
+        let handled = self.bus.sub_io_write(port, value);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.sub_clock_hz())),
+                ),
+                TraceEvent::access(
+                    TraceAddressSpace::SUB_IO,
+                    TraceAccessKind::Write,
+                    u64::from(port & 0xFF),
+                    TraceAccessWidth::Byte,
+                    Some(u64::from(value)),
+                    handled,
+                ),
+            );
+        }
     }
 
     fn has_irq(&self) -> bool {
@@ -1595,7 +1820,21 @@ impl<T: Tracing> common::Bus for SubBusView<'_, T> {
 
     fn acknowledge_irq(&mut self) -> u8 {
         let vector = self.bus.acknowledge_sub_irq();
-        self.bus.tracer.trace_irq_acknowledge(1, vector);
+        if T::ENABLED {
+            self.bus.tracer.trace(
+                TraceContext::sub_cpu(
+                    self.bus.current_cycle,
+                    self.bus.sub_cycle,
+                    Some(u64::from(self.bus.sub_clock_hz())),
+                ),
+                TraceEvent::maskable_interrupt(
+                    trace_id::controller::PC88_SUB_FDC,
+                    0,
+                    TraceInterruptAction::Acknowledge,
+                    Some(u32::from(vector)),
+                ),
+            );
+        }
         vector
     }
 
@@ -1619,12 +1858,95 @@ impl<T: Tracing> common::Bus for SubBusView<'_, T> {
     fn drain_wait_cycles(&mut self) -> i64 {
         0
     }
+
+    fn cpu_should_yield(&self) -> bool {
+        T::ENABLED && self.bus.tracer.yield_requested()
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use common::{TraceAccess, TraceInterrupt, trace_clock, trace_source};
+
     use super::*;
     use crate::config::ClockSelect;
+
+    #[derive(Default)]
+    struct ContextTrace {
+        contexts: Vec<TraceContext>,
+        accesses: Vec<TraceAccess>,
+        interrupts: Vec<TraceInterrupt>,
+    }
+
+    impl TraceSink for ContextTrace {
+        fn trace(&mut self, context: TraceContext, event: TraceEvent<'_>) {
+            match event {
+                TraceEvent::Access(access) => {
+                    self.contexts.push(context);
+                    self.accesses.push(access);
+                }
+                TraceEvent::Interrupt(interrupt) => self.interrupts.push(interrupt),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn main_and_sub_fetches_use_distinct_clock_domains() {
+        let mut bus = Pc8801Bus::new_with_trace_sink(
+            Pc8801Model::PC8801MC,
+            ClockSelect::FourMhz,
+            48_000,
+            ContextTrace::default(),
+        );
+        {
+            let mut main = MainBusView { bus: &mut bus };
+            common::Bus::fetch_opcode_byte(&mut main, 0x1234);
+        }
+        {
+            let mut sub = SubBusView { bus: &mut bus };
+            common::Bus::fetch_opcode_byte(&mut sub, 0x0042);
+        }
+
+        let trace = bus.tracer();
+        assert_eq!(trace.contexts[0].source, trace_source::CPU_MAIN);
+        assert_eq!(trace.contexts[1].source, trace_source::CPU_SUB);
+        assert_eq!(trace.contexts[1].clock_domain, trace_clock::CPU_SUB);
+        assert_eq!(trace.accesses[0].kind, TraceAccessKind::Fetch);
+        assert_eq!(trace.accesses[1].address, 0x0042);
+    }
+
+    #[test]
+    fn traces_use_live_io_decode_and_interrupt_level() {
+        let mut bus = Pc8801Bus::new_with_trace_sink(
+            Pc8801Model::PC8801MC,
+            ClockSelect::FourMhz,
+            48_000,
+            ContextTrace::default(),
+        );
+        {
+            let mut main = MainBusView { bus: &mut bus };
+            common::Bus::io_read_byte(&mut main, 0x30);
+            common::Bus::io_read_byte(&mut main, 0xAA);
+        }
+        {
+            let mut sub = SubBusView { bus: &mut bus };
+            common::Bus::io_read_byte(&mut sub, 0xFA);
+            common::Bus::io_read_byte(&mut sub, 0x01);
+        }
+        bus.pic.write_priority(8);
+        bus.pic.set_request(LEVEL_INT4);
+        {
+            let mut main = MainBusView { bus: &mut bus };
+            common::Bus::acknowledge_irq(&mut main);
+        }
+
+        assert!(bus.tracer().accesses[0].handled);
+        assert!(!bus.tracer().accesses[1].handled);
+        assert!(bus.tracer().accesses[2].handled);
+        assert!(!bus.tracer().accesses[3].handled);
+        assert_eq!(bus.tracer().interrupts[0].line, Some(u16::from(LEVEL_INT4)));
+    }
 
     fn bus_4mhz() -> Pc8801Bus {
         Pc8801Bus::new(Pc8801Model::PC8801MC, ClockSelect::FourMhz, 48_000)
@@ -1875,24 +2197,24 @@ mod tests {
     fn phase_ports_have_reference_readback_defaults() {
         let mut bus = bus_4mhz();
 
-        assert_eq!(bus.io_read(0x00), 0xFF);
-        assert_eq!(bus.io_read(0x0D), 0xFF);
-        assert_eq!(bus.io_read(0x0E), 0x7F);
-        assert_eq!(bus.io_read(0x0F), 0xFF);
+        assert_eq!(bus.io_read(0x00).0, 0xFF);
+        assert_eq!(bus.io_read(0x0D).0, 0xFF);
+        assert_eq!(bus.io_read(0x0E).0, 0x7F);
+        assert_eq!(bus.io_read(0x0F).0, 0xFF);
         bus.keyboard_rows[2] = 0b1111_1101;
-        assert_eq!(bus.io_read(0x02), 0b1111_1101);
+        assert_eq!(bus.io_read(0x02).0, 0b1111_1101);
 
-        assert_eq!(bus.io_read(0x30), 0xFB);
-        assert_eq!(bus.io_read(0x31), 0x79);
+        assert_eq!(bus.io_read(0x30).0, 0xFB);
+        assert_eq!(bus.io_read(0x31).0, 0x79);
 
         bus.io_write(0x32, 0x95);
-        assert_eq!(bus.io_read(0x32), 0x95);
+        assert_eq!(bus.io_read(0x32).0, 0x95);
 
         // No disk is mounted, so the BOOT line (bit 3) is asserted: the reset code
         // boots the N88-BASIC ROM rather than the disk system.
-        assert_eq!(bus.io_read(0x40) & 0xDF, 0xCF);
+        assert_eq!(bus.io_read(0x40).0 & 0xDF, 0xCF);
         bus.vrtc_active = true;
-        assert_eq!(bus.io_read(0x40), 0xEF);
+        assert_eq!(bus.io_read(0x40).0, 0xEF);
     }
 
     #[test]
@@ -1905,7 +2227,7 @@ mod tests {
             (BootMode::N80SR, 0x01),
         ] {
             bus.set_boot_mode(boot_mode);
-            assert_eq!(bus.io_read(0x30) & 0x03, expected, "{boot_mode}");
+            assert_eq!(bus.io_read(0x30).0 & 0x03, expected, "{boot_mode}");
         }
     }
 
@@ -1913,16 +2235,16 @@ mod tests {
     fn n80_port33_controls_compatible_misc_bits() {
         let mut bus = bus_4mhz();
 
-        assert_eq!(bus.io_read(0x33), OPEN_BUS);
+        assert_eq!(bus.io_read(0x33).0, OPEN_BUS);
 
         bus.set_boot_mode(BootMode::N80);
-        assert_eq!(bus.io_read(0x33), 0x00);
+        assert_eq!(bus.io_read(0x33).0, 0x00);
         bus.io_write(0x32, 0x40);
-        assert_eq!(bus.io_read(0x32), OPEN_BUS);
+        assert_eq!(bus.io_read(0x32).0, OPEN_BUS);
         assert_eq!(bus.memory.state.misc_ctrl & MISC_CTRL_GVAM, 0x00);
 
         bus.io_write(0x33, N80_CTRL_GVAM | N80_CTRL_SINTM | 0x04 | 0x01 | 0x20);
-        assert_eq!(bus.io_read(0x33), N80_CTRL_GVAM | N80_CTRL_SINTM | 0x04);
+        assert_eq!(bus.io_read(0x33).0, N80_CTRL_GVAM | N80_CTRL_SINTM | 0x04);
         assert_eq!(bus.memory.state.misc_ctrl & MISC_CTRL_GVAM, MISC_CTRL_GVAM);
         assert_eq!(
             bus.memory.state.misc_ctrl & MISC_CTRL_SINTM,
@@ -1930,7 +2252,7 @@ mod tests {
         );
 
         bus.io_write(0x33, 0x00);
-        assert_eq!(bus.io_read(0x33), 0x00);
+        assert_eq!(bus.io_read(0x33).0, 0x00);
         assert_eq!(bus.memory.state.misc_ctrl & MISC_CTRL_GVAM, 0x00);
         assert_eq!(bus.memory.state.misc_ctrl & MISC_CTRL_SINTM, 0x00);
     }
@@ -1941,8 +2263,8 @@ mod tests {
 
         bus.set_boot_mode(BootMode::N80SR);
 
-        assert_eq!(bus.io_read(0x33) & N80_CTRL_N80SR, N80_CTRL_N80SR);
-        assert_eq!(bus.io_read(0x31) & 0xC0, 0xC0);
+        assert_eq!(bus.io_read(0x33).0 & N80_CTRL_N80SR, N80_CTRL_N80SR);
+        assert_eq!(bus.io_read(0x31).0 & 0xC0, 0xC0);
         bus.io_write(0x53, 0x0F);
         assert_eq!(bus.layer_disable(), 0x00);
     }
@@ -1952,35 +2274,35 @@ mod tests {
         let mut bus = bus_4mhz();
 
         bus.io_write(0x5C, 0);
-        assert_eq!(bus.io_read(0x5C), 0xF9);
+        assert_eq!(bus.io_read(0x5C).0, 0xF9);
         bus.io_write(0x5D, 0);
-        assert_eq!(bus.io_read(0x5C), 0xFA);
+        assert_eq!(bus.io_read(0x5C).0, 0xFA);
         bus.io_write(0x5E, 0);
-        assert_eq!(bus.io_read(0x5C), 0xFC);
+        assert_eq!(bus.io_read(0x5C).0, 0xFC);
         bus.io_write(0x5F, 0);
-        assert_eq!(bus.io_read(0x5C), 0xF8);
+        assert_eq!(bus.io_read(0x5C).0, 0xF8);
 
-        assert_eq!(bus.io_read(0x6E), 0x90);
+        assert_eq!(bus.io_read(0x6E).0, 0x90);
         bus.io_write(0x6F, 0x0D);
-        assert_eq!(bus.io_read(0x6F), 0xFD);
+        assert_eq!(bus.io_read(0x6F).0, 0xFD);
 
         bus.io_write(0x70, 0xF3);
         bus.io_write(0x71, 0x01);
-        assert_eq!(bus.io_read(0x70), 0xF3);
-        assert_eq!(bus.io_read(0x71), 0x01);
+        assert_eq!(bus.io_read(0x70).0, 0xF3);
+        assert_eq!(bus.io_read(0x71).0, 0x01);
 
-        assert_eq!(bus.io_read(0xE2), 0xFF);
+        assert_eq!(bus.io_read(0xE2).0, 0xFF);
         bus.io_write(0xE2, 0x11);
         bus.io_write(0xE3, 0x02);
-        assert_eq!(bus.io_read(0xE2), 0xEE);
-        assert_eq!(bus.io_read(0xE3), 0xF2);
+        assert_eq!(bus.io_read(0xE2).0, 0xEE);
+        assert_eq!(bus.io_read(0xE3).0, 0xF2);
     }
 
     #[test]
     fn cpu_clock_port_reflects_fast_clock_position() {
         let mut bus = bus_8mhz();
 
-        assert_eq!(bus.io_read(0x6E), 0x10);
+        assert_eq!(bus.io_read(0x6E).0, 0x10);
     }
 
     #[test]
@@ -1989,10 +2311,10 @@ mod tests {
 
         // 'A' sits at matrix row 2, column 1.
         bus.set_key(2, 1, true);
-        assert_eq!(bus.io_read(0x02), 0b1111_1101);
+        assert_eq!(bus.io_read(0x02).0, 0b1111_1101);
 
         bus.set_key(2, 1, false);
-        assert_eq!(bus.io_read(0x02), 0xFF);
+        assert_eq!(bus.io_read(0x02).0, 0xFF);
     }
 
     #[test]
@@ -2002,7 +2324,7 @@ mod tests {
 
         // Select SSG port B (register 0x0F) and read it through OPN data port.
         bus.io_write(0x44, 0x0F);
-        let port_b = bus.io_read(0x45);
+        let port_b = bus.io_read(0x45).0;
         assert_eq!(port_b & 0x01, 0, "left button reads active low");
         assert_eq!(port_b & 0x02, 0x02, "right button stays released");
     }
@@ -2023,7 +2345,7 @@ mod tests {
         for expected_value in expected {
             strobe ^= PORT40_MOUSE_STROBE;
             bus.io_write(0x40, strobe);
-            assert_eq!(bus.io_read(0x45), expected_value);
+            assert_eq!(bus.io_read(0x45).0, expected_value);
         }
     }
 
@@ -2037,7 +2359,7 @@ mod tests {
         });
 
         bus.io_write(0x44, 0x0E); // select SSG port A
-        let port_a = bus.io_read(0x45);
+        let port_a = bus.io_read(0x45).0;
         assert_eq!(port_a & 0x01, 0, "up reads active low");
         assert_eq!(port_a & 0x08, 0, "right reads active low");
         assert_eq!(port_a & 0x02, 0x02, "down stays released");
@@ -2054,7 +2376,7 @@ mod tests {
         });
 
         bus.io_write(0x44, 0x0F); // select SSG port B
-        let port_b = bus.io_read(0x45);
+        let port_b = bus.io_read(0x45).0;
         assert_eq!(port_b & 0x01, 0, "trigger 1 reads active low");
         assert_eq!(port_b & 0x02, 0x02, "trigger 2 stays released");
     }
@@ -2069,7 +2391,7 @@ mod tests {
         });
         bus.io_write(0x44, 0x0E);
         assert_eq!(
-            bus.io_read(0x45) & 0x04,
+            bus.io_read(0x45).0 & 0x04,
             0,
             "joystick left visible before any strobe"
         );
@@ -2077,7 +2399,11 @@ mod tests {
         // A mouse strobe sequence takes over port A with the movement nibble.
         bus.set_mouse_delta(0x12, 0x34);
         bus.io_write(0x40, PORT40_MOUSE_STROBE);
-        assert_eq!(bus.io_read(0x45), 0xFE, "mouse owns port A while strobing");
+        assert_eq!(
+            bus.io_read(0x45).0,
+            0xFE,
+            "mouse owns port A while strobing"
+        );
 
         // Once the strobe times out, the joystick reclaims port A.
         bus.set_current_cycle(bus.mouse_timeout_cycles + 10);
@@ -2086,7 +2412,7 @@ mod tests {
             ..JoystickState::default()
         });
         assert_eq!(
-            bus.io_read(0x45) & 0x04,
+            bus.io_read(0x45).0 & 0x04,
             0,
             "joystick reclaims port A after timeout"
         );
@@ -2174,9 +2500,9 @@ mod tests {
 
         // The transfer finished, so the controller is in the status phase and
         // reports GOOD on the data port.
-        assert_eq!(bus.io_read(0x91), 0x00, "SCSI status should be GOOD");
+        assert_eq!(bus.io_read(0x91).0, 0x00, "SCSI status should be GOOD");
 
         // Port 0x99 identifies the board as a CD-ROM-equipped MC.
-        assert_eq!(bus.io_read(0x99), 0xCD);
+        assert_eq!(bus.io_read(0x99).0, 0xCD);
     }
 }

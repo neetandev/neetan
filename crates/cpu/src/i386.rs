@@ -501,7 +501,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
         loop {
             let addr = cs_base.wrapping_add(eip) & 0xFFFFFF;
-            let byte = bus.read_byte(addr);
+            let byte = bus.fetch_opcode_byte(addr);
             match byte {
                 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x66 | 0x67 | 0xF0 | 0xF2 | 0xF3 => {
                     length += 1;
@@ -516,12 +516,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         }
 
         let opcode_addr = cs_base.wrapping_add(eip) & 0xFFFFFF;
-        let opcode = bus.read_byte(opcode_addr);
+        let opcode = bus.fetch_opcode_byte(opcode_addr);
         length += 1;
 
         if opcode == 0x0F {
             let opcode2_addr = (opcode_addr.wrapping_add(1)) & 0xFFFFFF;
-            let opcode2 = bus.read_byte(opcode2_addr);
+            let opcode2 = bus.fetch_opcode_byte(opcode2_addr);
             length += 1;
             if Self::opcode_0f_has_modrm(opcode2) {
                 length += 1;
@@ -583,7 +583,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.prefetch_valid = false;
             self.prefetch_byte
         } else {
-            bus.read_byte(addr)
+            bus.fetch_opcode_byte(addr)
         };
         if CPU_MODEL == CPU_MODEL_386_SX {
             self.sx_code_fetch_bytes += 1;
@@ -595,7 +595,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let next_addr = addr.wrapping_add(1);
         if likely(next_addr & 0xFFF != 0) {
             self.prefetch_addr = next_addr;
-            self.prefetch_byte = bus.read_byte(next_addr);
+            self.prefetch_byte = bus.fetch_opcode_byte(next_addr);
             self.prefetch_valid = true;
         } else {
             self.prefetch_valid = false;
@@ -636,7 +636,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 let Ok(addr) = self.fetch_physical_address(linear, bus) else {
                     return 0;
                 };
-                let value = bus.read_word(addr);
+                let value = bus.fetch_opcode_word(addr);
                 if CPU_MODEL == CPU_MODEL_386_SX {
                     self.sx_code_fetch_bytes += 2;
                 }
@@ -658,7 +658,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 let Ok(addr) = self.fetch_physical_address(linear, bus) else {
                     return 0;
                 };
-                let value = bus.read_dword(addr);
+                let value = bus.fetch_opcode_dword(addr);
                 if CPU_MODEL == CPU_MODEL_386_SX {
                     self.sx_code_fetch_bytes += 4;
                 }
@@ -3322,7 +3322,91 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> common::Cpu for I386<CPU_MODE
 
 #[cfg(test)]
 mod timing_tests {
+    use common::Bus;
+
     use super::*;
+
+    #[derive(Default)]
+    struct FetchBus {
+        data_reads: usize,
+        byte_fetches: usize,
+        word_fetches: usize,
+        dword_fetches: usize,
+        current_cycle: u64,
+    }
+
+    impl Bus for FetchBus {
+        fn read_byte(&mut self, _address: u32) -> u8 {
+            self.data_reads += 1;
+            0
+        }
+
+        fn read_word(&mut self, _address: u32) -> u16 {
+            self.data_reads += 1;
+            0
+        }
+
+        fn read_dword(&mut self, _address: u32) -> u32 {
+            self.data_reads += 1;
+            0
+        }
+
+        fn write_byte(&mut self, _address: u32, _value: u8) {}
+
+        fn io_read_byte(&mut self, _port: u16) -> u8 {
+            0
+        }
+
+        fn io_write_byte(&mut self, _port: u16, _value: u8) {}
+
+        fn fetch_opcode_byte(&mut self, address: u32) -> u8 {
+            self.byte_fetches += 1;
+            address as u8
+        }
+
+        fn fetch_opcode_word(&mut self, _address: u32) -> u16 {
+            self.word_fetches += 1;
+            0xABCD
+        }
+
+        fn fetch_opcode_dword(&mut self, _address: u32) -> u32 {
+            self.dword_fetches += 1;
+            0x1234_5678
+        }
+
+        fn has_irq(&self) -> bool {
+            false
+        }
+
+        fn acknowledge_irq(&mut self) -> u8 {
+            0
+        }
+
+        fn has_nmi(&self) -> bool {
+            false
+        }
+
+        fn acknowledge_nmi(&mut self) {}
+
+        fn current_cycle(&self) -> u64 {
+            self.current_cycle
+        }
+
+        fn set_current_cycle(&mut self, cycle: u64) {
+            self.current_cycle = cycle;
+        }
+    }
+
+    fn fetch_test_cpu() -> I386<{ CPU_MODEL_386_DX }, { ADDRESS_WIDTH_32 }> {
+        let mut cpu = I386::new();
+        cpu.state.ip = 0;
+        cpu.state.ip_upper = 0;
+        cpu.state.seg_bases[SegReg32::CS as usize] = 0;
+        cpu.state.seg_limits[SegReg32::CS as usize] = u32::MAX;
+        cpu.fetch_page_valid = false;
+        cpu.prefetch_valid = false;
+        cpu
+    }
 
     /// The 386SX-only execute-cycle override must never change the 386DX or
     /// 486DX result: for non-SX models `timing_sx(a, b, tsx)` equals
@@ -3335,5 +3419,34 @@ mod timing_tests {
             assert_eq!(Dx::timing_sx(t386, t486, tsx), Dx::timing(t386, t486));
             assert_eq!(M486::timing_sx(t386, t486, tsx), M486::timing(t386, t486));
         }
+    }
+
+    #[test]
+    fn wide_instruction_operands_use_fetch_bus_methods() {
+        let mut cpu = fetch_test_cpu();
+        let mut bus = FetchBus::default();
+
+        assert_eq!(cpu.fetchword(&mut bus), 0xABCD);
+        assert_eq!(bus.word_fetches, 1);
+        assert_eq!(bus.data_reads, 0);
+
+        cpu.state.ip = 0;
+        cpu.fetch_page_valid = false;
+        assert_eq!(cpu.fetchdword(&mut bus), 0x1234_5678);
+        assert_eq!(bus.dword_fetches, 1);
+        assert_eq!(bus.data_reads, 0);
+    }
+
+    #[test]
+    fn page_crossing_instruction_operand_uses_byte_fetches() {
+        let mut cpu = fetch_test_cpu();
+        cpu.state.ip = 0x0FFF;
+        let mut bus = FetchBus::default();
+
+        cpu.fetchword(&mut bus);
+
+        assert!(bus.byte_fetches >= 2);
+        assert_eq!(bus.word_fetches, 0);
+        assert_eq!(bus.data_reads, 0);
     }
 }

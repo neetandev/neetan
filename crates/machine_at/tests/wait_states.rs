@@ -2,16 +2,16 @@
 //! configured penalty, and the penalties scale with the core clock so device
 //! wall-clock timing stays consistent across the two variants.
 
-use common::{Bus, NoTracing};
+use common::{Bus, NoTrace};
 use machine_at::{AtBus, AtModel, LoadedRoms};
 
 /// Builds a bus for `model` with placeholder ROMs.
-fn bus_for(model: AtModel) -> AtBus<NoTracing> {
+fn bus_for(model: AtModel) -> AtBus<NoTrace> {
     let roms = LoadedRoms {
         system_bios: vec![0xFF; 0x1_0000],
         vga_bios: vec![0xFF; 0x8000],
     };
-    AtBus::<NoTracing>::new(
+    AtBus::<NoTrace>::new(
         model.cpu_clock_hz(common::CpuMode::High),
         model.ram_size(),
         roms,

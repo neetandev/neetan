@@ -6,12 +6,12 @@ use common::Bus;
 use machine_at::{AT_KEY_CURSOR_UP, AT_KEY_DELETE, AT_KEY_RIGHT_ALT, AtBus, LoadedRoms};
 
 /// Builds a bus with dummy ROM images and translation enabled.
-fn test_bus() -> AtBus<common::NoTracing> {
+fn test_bus() -> AtBus<common::NoTrace> {
     let roms = LoadedRoms {
         system_bios: vec![0u8; 0x1_0000],
         vga_bios: vec![0u8; 0x8000],
     };
-    let mut bus = AtBus::<common::NoTracing>::new(66_000_000, 16 * 1024 * 1024, roms, 48_000);
+    let mut bus = AtBus::<common::NoTrace>::new(66_000_000, 16 * 1024 * 1024, roms, 48_000);
     // Command byte: translation on, IRQ1 on.
     bus.io_write_byte(0x64, 0x60);
     bus.io_write_byte(0x60, 0x41);
@@ -20,7 +20,7 @@ fn test_bus() -> AtBus<common::NoTracing> {
 
 /// Advances the bus far enough to deliver every pending keyboard byte and
 /// drains the delivered set-1 bytes from the data port.
-fn drain_keyboard_bytes(bus: &mut AtBus<common::NoTracing>) -> Vec<u8> {
+fn drain_keyboard_bytes(bus: &mut AtBus<common::NoTrace>) -> Vec<u8> {
     let mut bytes = Vec::new();
     for _ in 0..16 {
         let next = bus.current_cycle() + 66_000_000 / 1_000;

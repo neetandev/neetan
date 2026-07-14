@@ -7,12 +7,12 @@
 //! still while a PPI mailbox handshake is in flight, so the two cores make
 //! progress together.
 
-use common::{CpuZ80, NoTracing, Tracing};
+use common::{CpuZ80, NoTrace, TraceSink};
 
 use crate::bus::{MainBusView, Pc8801Bus, SYNC_SLICE, SubBusView, TIGHT_SLICE};
 
 /// PC-8801 machine: the main Z80 and the disk sub-CPU sharing one bus.
-pub struct Pc8801Machine<T: Tracing = NoTracing> {
+pub struct Pc8801Machine<T: TraceSink = NoTrace> {
     /// Main CPU.
     pub main_cpu: cpu::Z80,
     /// Disk sub-CPU (PC80S31K).
@@ -21,7 +21,7 @@ pub struct Pc8801Machine<T: Tracing = NoTracing> {
     pub bus: Pc8801Bus<T>,
 }
 
-impl<T: Tracing> Pc8801Machine<T> {
+impl<T: TraceSink> Pc8801Machine<T> {
     /// Creates a new machine from the given CPUs and bus.
     pub fn new(main_cpu: cpu::Z80, sub_cpu: cpu::Z80, bus: Pc8801Bus<T>) -> Self {
         Self {
@@ -36,6 +36,15 @@ impl<T: Tracing> Pc8801Machine<T> {
     /// instruction completes past the boundary).
     pub fn run_for(&mut self, budget: u64) -> u64 {
         let start = self.bus.current_cycle();
+        if T::ENABLED && self.bus.tracer().yield_requested() {
+            return 0;
+        }
+        if T::ENABLED {
+            self.run_sub_for_main_units(0);
+            if self.bus.tracer().yield_requested() {
+                return 0;
+            }
+        }
         let target = start + budget;
         while self.bus.current_cycle() < target {
             let current = self.bus.current_cycle();
@@ -48,11 +57,18 @@ impl<T: Tracing> Pc8801Machine<T> {
             let slice_end = current + slice;
 
             self.run_main_until(slice_end);
+            let elapsed = self.bus.current_cycle() - current;
+            if T::ENABLED && self.bus.tracer().yield_requested() {
+                self.bus.sub_clock_credit = self.bus.sub_clock_credit.saturating_add(elapsed);
+                break;
+            }
 
             // Run the sub CPU for the same elapsed wall-clock, converted to its
             // T-state domain by the clock ratio.
-            let elapsed = self.bus.current_cycle() - current;
             self.run_sub_for_main_units(elapsed);
+            if T::ENABLED && self.bus.tracer().yield_requested() {
+                break;
+            }
         }
         self.bus.current_cycle() - start
     }
@@ -88,9 +104,6 @@ impl<T: Tracing> Pc8801Machine<T> {
     /// Runs the sub CPU for `main_units` of elapsed main-clock time, converting to
     /// sub T-states and carrying the remainder for an exact long-run ratio.
     fn run_sub_for_main_units(&mut self, main_units: u64) {
-        if main_units == 0 {
-            return;
-        }
         let shift = self.bus.sub_to_main_shift;
         let available = main_units + self.bus.sub_clock_credit;
         let tstates = available >> shift;
@@ -99,11 +112,15 @@ impl<T: Tracing> Pc8801Machine<T> {
             return;
         }
         let mut view = SubBusView { bus: &mut self.bus };
-        self.sub_cpu.run_for(tstates, &mut view);
+        let ran = self.sub_cpu.run_for(tstates, &mut view);
+        if T::ENABLED && ran < tstates {
+            let remaining = (tstates - ran).checked_shl(shift).unwrap_or(u64::MAX);
+            self.bus.sub_clock_credit = self.bus.sub_clock_credit.saturating_add(remaining);
+        }
     }
 }
 
-impl<T: Tracing> common::Machine for Pc8801Machine<T> {
+impl<T: TraceSink> common::Machine for Pc8801Machine<T> {
     fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
         self.bus.set_host_date_time_provider(provider);
     }
@@ -188,7 +205,7 @@ impl<T: Tracing> common::Machine for Pc8801Machine<T> {
     }
 }
 
-fn insert_cdrom_impl<T: Tracing>(
+fn insert_cdrom_impl<T: TraceSink>(
     bus: &mut Pc8801Bus<T>,
     path: &std::path::Path,
 ) -> Result<String, String> {
@@ -204,7 +221,7 @@ fn insert_cdrom_impl<T: Tracing>(
     }
 }
 
-fn insert_cdrom_cue<T: Tracing>(
+fn insert_cdrom_cue<T: TraceSink>(
     bus: &mut Pc8801Bus<T>,
     path: &std::path::Path,
 ) -> Result<String, String> {
@@ -232,7 +249,7 @@ fn insert_cdrom_cue<T: Tracing>(
     Ok(description)
 }
 
-fn insert_cdrom_ccd<T: Tracing>(
+fn insert_cdrom_ccd<T: TraceSink>(
     bus: &mut Pc8801Bus<T>,
     path: &std::path::Path,
 ) -> Result<String, String> {
@@ -269,6 +286,8 @@ fn insert_cdrom_ccd<T: Tracing>(
 
 #[cfg(test)]
 mod tests {
+    use common::{TraceAccessKind, TraceEvent, TraceSink};
+
     use crate::{
         bus::Pc8801Bus,
         config::{ClockSelect, Pc8801Model},
@@ -316,11 +335,11 @@ mod tests {
 
         // Matrix row 3, column 2 encodes to (3 << 3) | 2 = 0x1A.
         machine.push_keyboard_scancode(0x1A);
-        assert_eq!(machine.bus.io_read(0x03), 0b1111_1011);
+        assert_eq!(machine.bus.io_read(0x03).0, 0b1111_1011);
 
         // Bit 7 set marks a release.
         machine.push_keyboard_scancode(0x1A | 0x80);
-        assert_eq!(machine.bus.io_read(0x03), 0xFF);
+        assert_eq!(machine.bus.io_read(0x03).0, 0xFF);
     }
 
     #[test]
@@ -344,5 +363,113 @@ mod tests {
             machine.main_cpu.state.pc, start_pc,
             "the CPU executes when the bus is free"
         );
+    }
+
+    #[derive(Default)]
+    struct YieldOnScheduled {
+        saw_scheduled: bool,
+        fetch_after_scheduled: bool,
+    }
+
+    impl TraceSink for YieldOnScheduled {
+        fn trace(&mut self, _context: common::TraceContext, event: TraceEvent<'_>) {
+            match event {
+                TraceEvent::Scheduled { .. } => self.saw_scheduled = true,
+                TraceEvent::Access(access)
+                    if self.saw_scheduled && access.kind == TraceAccessKind::Fetch =>
+                {
+                    self.fetch_after_scheduled = true;
+                }
+                _ => {}
+            }
+        }
+
+        fn yield_requested(&self) -> bool {
+            self.saw_scheduled
+        }
+    }
+
+    #[derive(Default)]
+    struct YieldOnMainFetch {
+        armed: bool,
+        yield_requested: bool,
+    }
+
+    impl YieldOnMainFetch {
+        /// Arms a one-shot yield on the next main-CPU fetch.
+        fn arm(&mut self) {
+            self.armed = true;
+        }
+
+        /// Clears the one-shot yield request.
+        fn resume(&mut self) {
+            self.armed = false;
+            self.yield_requested = false;
+        }
+    }
+
+    impl TraceSink for YieldOnMainFetch {
+        fn trace(&mut self, context: common::TraceContext, event: TraceEvent<'_>) {
+            if self.armed
+                && context.source == common::trace_source::CPU_MAIN
+                && matches!(
+                    event,
+                    TraceEvent::Access(access) if access.kind == TraceAccessKind::Fetch
+                )
+            {
+                self.yield_requested = true;
+            }
+        }
+
+        fn yield_requested(&self) -> bool {
+            self.yield_requested
+        }
+    }
+
+    #[test]
+    fn scheduled_trace_yield_prevents_a_later_fetch() {
+        let model = Pc8801Model::PC8801MC;
+        let bus = Pc8801Bus::new_with_trace_sink(
+            model,
+            ClockSelect::FourMhz,
+            48_000,
+            YieldOnScheduled::default(),
+        );
+        let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+        let sub_cpu = cpu::Z80::new(bus.sub_clock_hz());
+        let mut machine = Pc8801Machine::new(main_cpu, sub_cpu, bus);
+
+        machine.run_for(100_000);
+
+        assert!(machine.bus.tracer().saw_scheduled);
+        assert!(!machine.bus.tracer().fetch_after_scheduled);
+    }
+
+    #[test]
+    fn main_trace_yield_preserves_sub_cpu_clock_debt() {
+        let model = Pc8801Model::PC8801MC;
+        let bus = Pc8801Bus::new_with_trace_sink(
+            model,
+            ClockSelect::FourMhz,
+            48_000,
+            YieldOnMainFetch::default(),
+        );
+        let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+        let sub_cpu = cpu::Z80::new(bus.sub_clock_hz());
+        let mut machine = Pc8801Machine::new(main_cpu, sub_cpu, bus);
+        machine.bus.tracer_mut().arm();
+
+        machine.run_for(100);
+
+        let shift = machine.bus.sub_to_main_shift;
+        let pending_tstates = machine.bus.sub_clock_credit >> shift;
+        let sub_cycle_before_resume = machine.bus.sub_cycle;
+        assert!(pending_tstates > 0);
+
+        machine.bus.tracer_mut().resume();
+        assert_eq!(machine.run_for(0), 0);
+
+        assert!(machine.bus.sub_cycle >= sub_cycle_before_resume + pending_tstates);
+        assert!(machine.bus.sub_clock_credit < 1 << shift);
     }
 }

@@ -1,16 +1,16 @@
 use common::{Bus, Cpu, likely, unlikely};
 
-use crate::{NoTracing, Pc98CpuState, Pc98MachineState, Pc9801Bus, Tracing};
+use crate::{NoTrace, Pc98CpuState, Pc98MachineState, Pc9801Bus, TraceSink};
 
 /// Generic PC-9801 machine: a CPU wired to the shared PC-9801 bus.
-pub struct Pc98Machine<C: Cpu, T: Tracing = NoTracing> {
+pub struct Pc98Machine<C: Cpu, T: TraceSink = NoTrace> {
     /// The CPU.
     pub cpu: C,
     /// The system bus.
     pub bus: Pc9801Bus<T>,
 }
 
-impl<C: Cpu, T: Tracing> Pc98Machine<C, T> {
+impl<C: Cpu, T: TraceSink> Pc98Machine<C, T> {
     /// Creates a new machine from the given CPU and bus.
     pub fn new(cpu: C, bus: Pc9801Bus<T>) -> Self {
         Self { cpu, bus }
@@ -22,12 +22,18 @@ impl<C: Cpu, T: Tracing> Pc98Machine<C, T> {
     /// so that timer interrupts can fire and wake the CPU.
     pub fn run_for(&mut self, budget: u64) -> u64 {
         let mut total = 0u64;
+        if T::ENABLED && self.bus.tracer().yield_requested() {
+            return 0;
+        }
         while likely(total < budget) {
             self.bus
                 .set_cpu_protected_mode_enabled(self.cpu.cr0() & 1 != 0);
             let remaining = budget - total;
             let ran = self.cpu.run_for(remaining, &mut self.bus);
             total += ran;
+            if unlikely(T::ENABLED && self.bus.tracer().yield_requested()) {
+                break;
+            }
             self.bus
                 .set_cpu_protected_mode_enabled(self.cpu.cr0() & 1 != 0);
 
@@ -150,7 +156,7 @@ pub type Pc9821As = Pc98Machine<cpu::I386<{ cpu::CPU_MODEL_486_DX }>>;
 /// PC-9821AP machine type (486DX2 CPU at 66 MHz, IDE, PEGC).
 pub type Pc9821Ap = Pc98Machine<cpu::I386<{ cpu::CPU_MODEL_486_DX }>>;
 
-impl<T: Tracing> Pc98Machine<cpu::I8086, T> {
+impl<T: TraceSink> Pc98Machine<cpu::I8086, T> {
     /// Captures the full machine state.
     pub fn save_state(&self) -> Pc98MachineState {
         self.bus
@@ -167,7 +173,7 @@ impl<T: Tracing> Pc98Machine<cpu::I8086, T> {
     }
 }
 
-impl<T: Tracing> Pc98Machine<cpu::VX0, T> {
+impl<T: TraceSink> Pc98Machine<cpu::VX0, T> {
     /// Captures the full machine state.
     pub fn save_state(&self) -> Pc98MachineState {
         self.bus
@@ -184,7 +190,7 @@ impl<T: Tracing> Pc98Machine<cpu::VX0, T> {
     }
 }
 
-impl<T: Tracing> Pc98Machine<cpu::I286, T> {
+impl<T: TraceSink> Pc98Machine<cpu::I286, T> {
     /// Captures the full machine state.
     pub fn save_state(&self) -> Pc98MachineState {
         self.bus
@@ -201,7 +207,7 @@ impl<T: Tracing> Pc98Machine<cpu::I286, T> {
     }
 }
 
-impl<const CPU_MODEL: u8, T: Tracing> Pc98Machine<cpu::I386<CPU_MODEL>, T> {
+impl<const CPU_MODEL: u8, T: TraceSink> Pc98Machine<cpu::I386<CPU_MODEL>, T> {
     /// Captures the full machine state.
     pub fn save_state(&self) -> Pc98MachineState {
         self.bus
@@ -218,7 +224,7 @@ impl<const CPU_MODEL: u8, T: Tracing> Pc98Machine<cpu::I386<CPU_MODEL>, T> {
     }
 }
 
-fn insert_floppy_impl<T: Tracing>(
+fn insert_floppy_impl<T: TraceSink>(
     bus: &mut Pc9801Bus<T>,
     drive: usize,
     path: &std::path::Path,
@@ -232,7 +238,7 @@ fn insert_floppy_impl<T: Tracing>(
     Ok(description)
 }
 
-fn insert_cdrom_impl<T: Tracing>(
+fn insert_cdrom_impl<T: TraceSink>(
     bus: &mut Pc9801Bus<T>,
     path: &std::path::Path,
 ) -> Result<String, String> {
@@ -278,7 +284,7 @@ fn validate_hdd_for_model(
     Ok(())
 }
 
-impl<C: Cpu, T: Tracing> common::Machine for Pc98Machine<C, T> {
+impl<C: Cpu, T: TraceSink> common::Machine for Pc98Machine<C, T> {
     fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
         self.bus.set_host_date_time_provider(provider);
     }

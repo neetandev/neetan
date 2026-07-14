@@ -1,9 +1,12 @@
-use common::StackVec;
+use common::{
+    StackVec, TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField, TraceValue,
+    trace_id,
+};
 use device::upd765a_fdc::{FdcCommand, ST0_NOT_READY, ST1_MISSING_ADDRESS_MARK, ST1_NOT_WRITABLE};
 
-use crate::{Pc9801Bus, Tracing, bus::INTERRUPT_DELAY_CYCLES, scheduler::Event98};
+use crate::{Pc9801Bus, TraceSink, bus::INTERRUPT_DELAY_CYCLES, scheduler::Event98};
 
-impl<T: Tracing> Pc9801Bus<T> {
+impl<T: TraceSink> Pc9801Bus<T> {
     pub(super) fn handle_fdc_execution(&mut self) {
         let command = self.floppy.active_fdc().state.active_command;
         match command {
@@ -21,14 +24,49 @@ impl<T: Tracing> Pc9801Bus<T> {
         let track_index = self.floppy.active_fdc().current_track_index();
         {
             let fdc = self.floppy.active_fdc();
-            self.tracer.trace_fdc_read(
-                drive,
-                track_index,
-                fdc.state.c,
-                fdc.state.h,
-                fdc.state.r,
-                fdc.state.n,
-            );
+            if T::ENABLED
+                && self.tracer.interested(TraceEventKey::Device {
+                    device: trace_id::device::PC98_FDC,
+                    action: trace_id::action::READ,
+                })
+            {
+                self.tracer.trace(
+                    TraceContext::main_cpu(
+                        self.current_cycle,
+                        Some(u64::from(self.clocks.cpu_clock_hz)),
+                    ),
+                    TraceEvent::Device(TraceDeviceEvent {
+                        device: trace_id::device::PC98_FDC,
+                        action: trace_id::action::READ,
+                        fields: &[
+                            TraceField {
+                                name: trace_id::field::DRIVE,
+                                value: TraceValue::Unsigned(drive as u64),
+                            },
+                            TraceField {
+                                name: trace_id::field::TRACK_INDEX,
+                                value: TraceValue::Unsigned(track_index as u64),
+                            },
+                            TraceField {
+                                name: trace_id::field::CYLINDER,
+                                value: TraceValue::Unsigned(u64::from(fdc.state.c)),
+                            },
+                            TraceField {
+                                name: trace_id::field::HEAD,
+                                value: TraceValue::Unsigned(u64::from(fdc.state.h)),
+                            },
+                            TraceField {
+                                name: trace_id::field::RECORD,
+                                value: TraceValue::Unsigned(u64::from(fdc.state.r)),
+                            },
+                            TraceField {
+                                name: trace_id::field::SIZE_CODE,
+                                value: TraceValue::Unsigned(u64::from(fdc.state.n)),
+                            },
+                        ],
+                    }),
+                );
+            }
         }
 
         if !self.floppy.has_drive(drive) {
@@ -270,8 +308,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     pub(super) fn handle_fdc_interrupt(&mut self) {
         let irq = self.floppy.irq_line();
         if self.floppy.active_fdc_mut().take_interrupt_pending() {
-            self.pic.set_irq(irq);
-            self.tracer.trace_irq_raise(irq);
+            self.raise_pic_irq(irq);
         }
     }
 }

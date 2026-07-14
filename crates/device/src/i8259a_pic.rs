@@ -102,6 +102,15 @@ enum PendingIrq {
     Slave(u8),
 }
 
+/// Result of acknowledging the dual i8259A controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct I8259aAcknowledge {
+    /// Global IRQ line, or `None` for a spurious acknowledgement.
+    pub line: Option<u8>,
+    /// Interrupt vector returned to the processor.
+    pub vector: u8,
+}
+
 /// Dual i8259A PIC (master + slave) for the PC-98.
 pub struct I8259aPic {
     /// Embedded state for save/restore.
@@ -283,26 +292,40 @@ impl I8259aPic {
         self.chips[chip_index].imr
     }
 
-    /// Sets an IRQ line (edge-triggered). IRQ 0-7 go to master, 8-15 to slave.
-    pub fn set_irq(&mut self, irq: u8) {
+    /// Sets an edge-triggered IRQ and reports whether its request state changed.
+    pub fn set_irq(&mut self, irq: u8) -> bool {
         let bit = 1u8 << (irq & 7);
-        if irq & 8 == 0 {
+        let changed = if irq & 8 == 0 {
+            let changed = self.chips[0].irr & bit == 0;
             self.chips[0].irr |= bit;
+            changed
         } else {
+            let changed = self.chips[1].irr & bit == 0;
             self.chips[1].irr |= bit;
+            changed
+        };
+        if changed {
+            self.invalidate_irq_cache();
         }
-        self.invalidate_irq_cache();
+        changed
     }
 
-    /// Clears an IRQ line.
-    pub fn clear_irq(&mut self, irq: u8) {
+    /// Clears an IRQ line and reports whether its request state changed.
+    pub fn clear_irq(&mut self, irq: u8) -> bool {
         let bit = 1u8 << (irq & 7);
-        if irq & 8 == 0 {
+        let changed = if irq & 8 == 0 {
+            let changed = self.chips[0].irr & bit != 0;
             self.chips[0].irr &= !bit;
+            changed
         } else {
+            let changed = self.chips[1].irr & bit != 0;
             self.chips[1].irr &= !bit;
+            changed
+        };
+        if changed {
+            self.invalidate_irq_cache();
         }
-        self.invalidate_irq_cache();
+        changed
     }
 
     /// Returns true if a pending unmasked IRQ exists that is not blocked
@@ -316,14 +339,16 @@ impl I8259aPic {
         result
     }
 
-    /// Acknowledges the highest-priority pending IRQ: sets ISR, clears IRR,
-    /// and returns the interrupt vector number.
-    pub fn acknowledge(&mut self) -> u8 {
+    /// Acknowledges the highest-priority pending IRQ and reports its source.
+    pub fn acknowledge_with_line(&mut self) -> I8259aAcknowledge {
         self.invalidate_irq_cache();
         let Some(pending) = self.find_pending_irq() else {
             // Spurious interrupt - IRQ was deasserted between INTR and INTA.
             // Real 8259A returns the lowest-priority master vector (base + 7).
-            return (self.chips[0].icw[1] & 0xF8) | 7;
+            return I8259aAcknowledge {
+                line: None,
+                vector: (self.chips[0].icw[1] & 0xF8) | 7,
+            };
         };
 
         match pending {
@@ -331,7 +356,10 @@ impl I8259aPic {
                 let bit = 1u8 << num;
                 self.chips[0].isr |= bit;
                 self.chips[0].irr &= !bit;
-                (self.chips[0].icw[1] & 0xF8) | num
+                I8259aAcknowledge {
+                    line: Some(num),
+                    vector: (self.chips[0].icw[1] & 0xF8) | num,
+                }
             }
             PendingIrq::Slave(num) => {
                 let slave_bit = 1u8 << (self.chips[1].icw[2] & 7);
@@ -340,9 +368,17 @@ impl I8259aPic {
                 let bit = 1u8 << num;
                 self.chips[1].isr |= bit;
                 self.chips[1].irr &= !bit;
-                (self.chips[1].icw[1] & 0xF8) | num
+                I8259aAcknowledge {
+                    line: Some(8 + num),
+                    vector: (self.chips[1].icw[1] & 0xF8) | num,
+                }
             }
         }
+    }
+
+    /// Acknowledges the highest-priority pending IRQ and returns its vector.
+    pub fn acknowledge(&mut self) -> u8 {
+        self.acknowledge_with_line().vector
     }
 
     /// Priority resolution.

@@ -111,7 +111,7 @@ pub fn fire_next_event(bus: &mut Pc6000Bus) -> Option<u8> {
     let next = bus.next_event_cycle()?;
     bus.set_current_cycle(next);
     bus.process_events();
-    bus.has_irq().then(|| bus.acknowledge_irq())
+    bus.has_irq().then(|| bus.acknowledge_irq().vector)
 }
 
 /// Builds a 256-byte sector whose data ramps from `first_value`.

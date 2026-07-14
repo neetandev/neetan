@@ -14,7 +14,7 @@ fn read_port_a(bus: &mut Fm7Bus) -> u8 {
     bus.write_byte(0xFD0D, 3);
     bus.write_byte(0xFD0E, PSG_PORT_A);
     bus.write_byte(0xFD0D, 1);
-    bus.read_byte(0xFD0E)
+    bus.read_byte(0xFD0E).0
 }
 
 #[test]

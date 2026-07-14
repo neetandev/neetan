@@ -1,6 +1,6 @@
 //! FM Towns I/O port read dispatch.
 
-use common::Tracing;
+use common::TraceSink;
 
 use super::{DMA_EXTENDED, DMA_MAIN, FAST_MODE_LAMP_VRAM_WAIT_LIMIT, TownsBus};
 use crate::config::TownsModel;
@@ -13,10 +13,11 @@ const HSYNC_ACTIVE_NANOS: u64 = 30_000;
 /// Nanoseconds in one second.
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
-impl<T: Tracing> TownsBus<T> {
+impl<T: TraceSink> TownsBus<T> {
     /// Reads a byte from an I/O port.
-    pub(crate) fn io_read(&mut self, port: u16) -> u8 {
-        match port {
+    pub(crate) fn io_read(&mut self, port: u16) -> (u8, bool) {
+        let mut handled = true;
+        let value = match port {
             // Master PIC (0x0000 command/status, 0x0002 mask).
             0x0000 => self.pic.read_port0(0),
             0x0002 => self.pic.read_port2(0),
@@ -238,10 +239,11 @@ impl<T: Tracing> TownsBus<T> {
             0x0A06 => self.rs232c_int_reason(),
 
             _ => {
-                self.tracer.trace_io_unhandled_read(port);
+                handled = false;
                 0xFF
             }
-        }
+        };
+        (value, handled)
     }
 
     /// Derives the raster sync state at the current cycle: `(in_vsync, in_hsync)`.

@@ -4,8 +4,9 @@ use device::i8253_pit::{PIT_FLAG_I, WriteResult};
 
 use super::Pc88VaBus;
 
-impl Pc88VaBus {
-    pub(crate) fn io_write(&mut self, port: u16, value: u8) {
+impl<T: common::TraceSink> Pc88VaBus<T> {
+    /// Writes an I/O byte and reports whether the hardware decoded the port.
+    pub(crate) fn io_write(&mut self, port: u16, value: u8) -> bool {
         match port {
             // 8259 PIC: master at 0x188/0x18A, slave at 0x184/0x186.
             0x184 => self.pic.write_port0(1, value),
@@ -107,9 +108,12 @@ impl Pc88VaBus {
             }
 
             _ => {
-                self.memory.io_write_byte(port, value);
+                if !self.memory.io_write_byte(port, value) {
+                    return false;
+                }
             }
         }
+        true
     }
 
     fn write_pit_counter(&mut self, channel: usize, value: u8) {

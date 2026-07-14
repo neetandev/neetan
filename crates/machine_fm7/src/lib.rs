@@ -11,7 +11,7 @@ mod memory;
 mod rom;
 mod scheduler;
 
-pub use bus::{Fm7Bus, SubBusView};
+pub use bus::{Fm7Bus, MainBusView, SubBusView};
 pub use config::{BootMode, ClockConfig, Fm7Model};
 pub use machine::Fm7Machine;
 pub use rom::{LoadedRoms, RomError, load_rom_set};

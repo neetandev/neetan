@@ -28,13 +28,13 @@ fn window_aliases_sub_shared_ram_only_while_halted() {
 
     // A sub-side write is visible through the main window at the aliased offset.
     machine.bus.sub_poke_byte(0xD390, 0x5A);
-    assert_eq!(machine.bus.read_byte(0xFC90), 0x5A);
+    assert_eq!(machine.bus.read_byte(0xFC90).0, 0x5A);
 
     // Releasing HALT closes the window: reads float and writes are dropped.
     machine.bus.write_byte(0xFD05, 0x00);
     machine.run_for(400);
     assert!(!machine.bus.is_sub_halted());
-    assert_eq!(machine.bus.read_byte(0xFC80), 0xFF);
+    assert_eq!(machine.bus.read_byte(0xFC80).0, 0xFF);
     machine.bus.write_byte(0xFC80, 0x99);
     assert_eq!(machine.bus.sub_peek_byte(0xD380), 0xAB);
 }

@@ -35,7 +35,14 @@ pub use jis::{
 };
 pub use stack_vec::StackVec;
 pub use text_extractor::TextExtractor;
-pub use trace::{DosBootStage, NoTracing, Tracing};
+pub use trace::{
+    NoTrace, OwnedTraceCall, OwnedTraceDeviceEvent, OwnedTraceEvent, OwnedTraceField,
+    OwnedTraceValue, TRACE_SCHEMA_VERSION, TraceAccess, TraceAccessKind, TraceAccessWidth,
+    TraceAddressSpace, TraceAddressSpaceClass, TraceCall, TraceCallInterface, TraceCallPhase,
+    TraceContext, TraceDeviceEvent, TraceEvent, TraceEventClass, TraceEventKey, TraceField,
+    TraceInterest, TraceInterrupt, TraceInterruptAction, TraceInterruptKind, TracePresentation,
+    TraceRate, TraceSink, TraceValue, trace_clock, trace_id, trace_source,
+};
 
 /// Built-in V98-format PC-98 font ROM used when no external font ROM is configured.
 pub static BUILTIN_FONT_ROM: &[u8] = include_bytes!("../../../utils/font/font.rom");
@@ -857,6 +864,11 @@ pub trait Bus {
     /// Must only be called when [`has_irq`](Bus::has_irq) returns `true`.
     fn acknowledge_irq(&mut self) -> u8;
 
+    /// Acknowledges an accepted MC6809 fast interrupt.
+    ///
+    /// Other processor families do not use this hook. The default is a no-op.
+    fn acknowledge_firq(&mut self) {}
+
     /// Returns `true` if a non-maskable interrupt is pending.
     ///
     /// NMIs are edge-triggered and cannot be masked by the CPU's IF flag.
@@ -979,6 +991,26 @@ pub trait Bus {
         self.read_byte(address)
     }
 
+    /// Fetches a 16-bit instruction-stream access.
+    ///
+    /// The default composes two byte fetches. Buses that perform a wider
+    /// emulated access may override this method.
+    fn fetch_opcode_word(&mut self, address: u32) -> u16 {
+        let low = self.fetch_opcode_byte(address) as u16;
+        let high = self.fetch_opcode_byte(address.wrapping_add(1)) as u16;
+        low | (high << 8)
+    }
+
+    /// Fetches a 32-bit instruction-stream access.
+    ///
+    /// The default composes two word fetches. Buses that perform a wider
+    /// emulated access may override this method.
+    fn fetch_opcode_dword(&mut self, address: u32) -> u32 {
+        let low = self.fetch_opcode_word(address) as u32;
+        let high = self.fetch_opcode_word(address.wrapping_add(2)) as u32;
+        low | (high << 16)
+    }
+
     /// Returns `true` if a CPU reset has been requested by hardware.
     fn reset_pending(&self) -> bool {
         false
@@ -993,10 +1025,9 @@ pub trait Bus {
 
     /// Returns `true` if the bus requests the CPU to yield execution.
     ///
-    /// Certain HLE (High-Level Emulation) traps need access to CPU register
-    /// state that is not available through `io_write_byte`. When this returns
-    /// `true`, the CPU breaks out of its execution loop so the machine
-    /// loop can service the request with full CPU + bus access.
+    /// HLE traps, automation targets, and trace matches may require control at
+    /// an instruction boundary. When this returns `true`, the CPU breaks out of
+    /// its execution loop so the machine loop can service the request.
     fn cpu_should_yield(&self) -> bool {
         false
     }

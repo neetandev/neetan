@@ -48,6 +48,25 @@ pub(crate) enum EventAt {
     UartRx,
 }
 
+#[cfg(test)]
+mod trace_identifier_tests {
+    use super::*;
+
+    #[test]
+    fn trace_identifiers_match_every_event_variant() {
+        assert_eq!(
+            EventAt::ALL.len(),
+            common::trace_id::scheduled::at::ALL.len()
+        );
+        for (event, identifier) in EventAt::ALL
+            .iter()
+            .zip(common::trace_id::scheduled::at::ALL)
+        {
+            assert_eq!(event.trace_name(), *identifier);
+        }
+    }
+}
+
 impl EventAt {
     const ALL: [EventAt; EVENT_AT_KIND_COUNT] = [
         EventAt::PitChannel0,
@@ -72,6 +91,30 @@ impl EventAt {
 
     const fn from_index(index: usize) -> Self {
         Self::ALL[index]
+    }
+
+    pub(crate) const fn trace_name(self) -> &'static str {
+        use common::trace_id::scheduled::at;
+        match self {
+            Self::PitChannel0 => at::PIT_CHANNEL0,
+            Self::PitChannel0Low => at::PIT_CHANNEL0_LOW,
+            Self::RtcUpdate => at::RTC_UPDATE,
+            Self::RtcPeriodic => at::RTC_PERIODIC,
+            Self::KbcDeliver => at::KBC_DELIVER,
+            Self::KeyboardTypematic => at::KEYBOARD_TYPEMATIC,
+            Self::VgaFrame => at::VGA_FRAME,
+            Self::FdcExecution => at::FDC_EXECUTION,
+            Self::FdcInterrupt => at::FDC_INTERRUPT,
+            Self::IdeExecution => at::IDE_EXECUTION,
+            Self::IdeInterrupt => at::IDE_INTERRUPT,
+            Self::IdeSecondaryExecution => at::IDE_SECONDARY_EXECUTION,
+            Self::IdeSecondaryInterrupt => at::IDE_SECONDARY_INTERRUPT,
+            Self::Sb16OplTimerA => at::SB16_OPL_TIMER_A,
+            Self::Sb16OplTimerB => at::SB16_OPL_TIMER_B,
+            Self::Sb16DspDma => at::SB16_DSP_DMA,
+            Self::MpuTimer => at::MPU_TIMER,
+            Self::UartRx => at::UART_RX,
+        }
     }
 }
 

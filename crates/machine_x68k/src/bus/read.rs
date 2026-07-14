@@ -1,12 +1,12 @@
 //! Validated read path: typed reads, per-region byte reads, and the IOC.
 
-use common::{M68000AccessSize, M68000BusAccess, M68000BusError, M68000CycleKind, Tracing};
+use common::{M68000AccessSize, M68000BusAccess, M68000BusError, M68000CycleKind, TraceSink};
 use device::{mc68901_mfp::MC68901_CLOCK_HZ, rp5c15_rtc::RP5C15_CLOCK_HZ};
 
 use super::{X68kBus, X68kRegion, is_register_region};
 use crate::clock::cycle_to_tick;
 
-impl<T: Tracing> X68kBus<T> {
+impl<T: TraceSink> X68kBus<T> {
     /// Performs a validated typed read.
     pub(super) fn read_checked(&mut self, access: M68000BusAccess) -> Result<u16, M68000BusError> {
         if access.cycle_kind == M68000CycleKind::ResetVector

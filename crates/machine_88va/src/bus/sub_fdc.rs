@@ -21,7 +21,7 @@ use crate::scheduler::Event88Va;
 /// expects before issuing Sense Interrupt Status.
 const SEEK_INTERRUPT_DELAY_CYCLES: u64 = 2000;
 
-impl Pc88VaBus {
+impl<T: common::TraceSink> Pc88VaBus<T> {
     /// Reads an FDC data byte (port 0xFB), then advances the PIO read sequence.
     pub(crate) fn read_fdc_data(&mut self) -> u8 {
         let value = self.fdc.read_data();
@@ -530,8 +530,8 @@ mod tests {
         for _ in 0..1024 {
             let event_cycle = bus.next_event_cycle().expect("event while waiting for RQM");
             bus.set_current_cycle(event_cycle);
-            if bus.sub_io_read(0xFA) & 0x80 != 0 {
-                return bus.sub_io_read(0xFB);
+            if bus.sub_io_read(0xFA).0 & 0x80 != 0 {
+                return bus.sub_io_read(0xFB).0;
             }
         }
         panic!("FDC did not release a PIO byte");
@@ -541,7 +541,7 @@ mod tests {
         for _ in 0..1024 {
             let event_cycle = bus.next_event_cycle().expect("event while waiting for RQM");
             bus.set_current_cycle(event_cycle);
-            if bus.sub_io_read(0xFA) & 0x80 != 0 {
+            if bus.sub_io_read(0xFA).0 & 0x80 != 0 {
                 bus.sub_io_write(0xFB, value);
                 return;
             }
@@ -564,14 +564,14 @@ mod tests {
         let drq_cycle = bus.next_event_cycle().expect("DRQ event");
         bus.set_current_cycle(drq_cycle);
 
-        assert_ne!(bus.sub_io_read(0xFA) & 0x80, 0, "RQM is set");
+        assert_ne!(bus.sub_io_read(0xFA).0 & 0x80, 0, "RQM is set");
         assert!(bus.sub_irq_pending(), "DRQ asserts the disk sub-CPU IRQ");
         bus.acknowledge_sub_irq();
         assert!(
             bus.sub_irq_pending(),
             "PIO byte-ready IRQ remains asserted until the byte is consumed"
         );
-        assert_eq!(bus.sub_io_read(0xFB), 0x00, "first sector byte");
+        assert_eq!(bus.sub_io_read(0xFB).0, 0x00, "first sector byte");
         assert!(
             !bus.sub_irq_pending(),
             "PIO byte-ready IRQ clears after the byte is consumed"
@@ -597,7 +597,7 @@ mod tests {
 
         bus.sub_io_read(0xF8);
         assert!(matches!(bus.fdc.state.phase, FdcPhase::Result));
-        let result_bytes: Vec<u8> = (0..7).map(|_| bus.sub_io_read(0xFB)).collect();
+        let result_bytes: Vec<u8> = (0..7).map(|_| bus.sub_io_read(0xFB).0).collect();
         assert_eq!(result_bytes[5], 1);
     }
 
@@ -627,7 +627,7 @@ mod tests {
         assert!(matches!(bus.fdc.state.phase, FdcPhase::Result));
         assert!(!bus.fdc.pio_active());
         assert_eq!(bus.floppy.sector_count(0, 0), 2);
-        let result_bytes: Vec<u8> = (0..7).map(|_| bus.sub_io_read(0xFB)).collect();
+        let result_bytes: Vec<u8> = (0..7).map(|_| bus.sub_io_read(0xFB).0).collect();
         assert_eq!(result_bytes[1], 0x00);
         assert_eq!(result_bytes[2], 0x00);
     }
@@ -651,7 +651,7 @@ mod tests {
         assert!(!bus.fdc.pio_active());
         assert_eq!(bus.floppy.sector_count(0, 0), 1);
         assert!(!bus.floppy.is_drive_dirty(0));
-        let result_bytes: Vec<u8> = (0..7).map(|_| bus.sub_io_read(0xFB)).collect();
+        let result_bytes: Vec<u8> = (0..7).map(|_| bus.sub_io_read(0xFB).0).collect();
         assert_eq!(result_bytes[0] & 0xC0, 0x40);
         assert_eq!(
             result_bytes[1] & ST1_MISSING_ADDRESS_MARK,
@@ -690,7 +690,7 @@ mod tests {
         assert!(!bus.fdc.pio_active());
         assert_eq!(bus.floppy.sector_count(0, 0), 2);
         assert!(bus.floppy.is_drive_dirty(0));
-        let result_bytes: Vec<u8> = (0..7).map(|_| bus.sub_io_read(0xFB)).collect();
+        let result_bytes: Vec<u8> = (0..7).map(|_| bus.sub_io_read(0xFB).0).collect();
         assert_eq!(result_bytes[1], 0x00);
         assert_eq!(result_bytes[2], 0x00);
     }
@@ -778,7 +778,7 @@ mod tests {
     fn read_result(bus: &mut Pc88VaBus) -> [u8; 7] {
         let mut result = [0u8; 7];
         for byte in result.iter_mut() {
-            *byte = bus.io_read(0x1BA);
+            *byte = bus.io_read(0x1BA).0;
         }
         result
     }
@@ -905,8 +905,8 @@ mod tests {
 
         // The ISR's SENSE INTERRUPT STATUS returns seek-end ST0 and PCN 0.
         bus.io_write(0x1BA, 0x08);
-        let st0 = bus.io_read(0x1BA);
-        let pcn = bus.io_read(0x1BA);
+        let st0 = bus.io_read(0x1BA).0;
+        let pcn = bus.io_read(0x1BA).0;
         assert_eq!(st0 & 0x20, 0x20, "ST0 seek-end set");
         assert_eq!(pcn, 0, "recalibrated to track 0");
     }

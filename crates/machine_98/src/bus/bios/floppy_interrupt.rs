@@ -3,9 +3,9 @@
 use common::{Cpu, MachineModel};
 
 use super::super::Pc9801Bus;
-use crate::Tracing;
+use crate::TraceSink;
 
-impl<T: Tracing> Pc9801Bus<T> {
+impl<T: TraceSink> Pc9801Bus<T> {
     pub(super) fn hle_int12h(&mut self, _cpu: &mut impl Cpu) {
         // ISR-aware EOI: always EOI slave, only EOI master if slave ISR is clear.
         self.pic.write_port0(1, 0x20);

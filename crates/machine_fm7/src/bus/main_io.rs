@@ -1,6 +1,6 @@
 //! Main CPU `0xFDxx` memory-mapped I/O decode.
 
-use common::Tracing;
+use common::TraceSink;
 
 use crate::bus::Fm7Bus;
 
@@ -92,9 +92,6 @@ const PORT_DIGITAL_PALETTE_FIRST: u8 = 0x38;
 /// `0xFD3F` last digital palette register.
 const PORT_DIGITAL_PALETTE_LAST: u8 = 0x3F;
 
-/// Base address of the main CPU I/O page.
-const MAIN_IO_PAGE: u16 = 0xFD00;
-
 /// Base `0xFD00` read value with keyboard-high and speed bits clear.
 const SYSTEM_BASE: u8 = 0x7E;
 /// `0xFD00` read bit reporting fast CPU clock.
@@ -114,10 +111,11 @@ const SUB_CANCEL_BIT: u8 = 0x40;
 /// Open-bus value for unhandled reads.
 const OPEN_BUS: u8 = 0xFF;
 
-impl<T: Tracing> Fm7Bus<T> {
+impl<T: TraceSink> Fm7Bus<T> {
     /// Reads a byte from the main CPU `0xFDxx` I/O page.
-    pub(crate) fn main_io_read(&mut self, port: u8) -> u8 {
-        match port {
+    pub(crate) fn main_io_read(&mut self, port: u8) -> (u8, bool) {
+        let mut handled = true;
+        let value = match port {
             PORT_SYSTEM => {
                 let mut value = SYSTEM_BASE;
                 if self.clock_fast {
@@ -130,14 +128,32 @@ impl<T: Tracing> Fm7Bus<T> {
             }
             PORT_KEYBOARD_LOW => {
                 let value = self.keyboard.read_low();
-                self.interrupts
-                    .set_keyboard_pending(false, &mut self.tracer);
+                self.interrupts.set_keyboard_pending(
+                    false,
+                    common::TraceContext::main_cpu(
+                        self.current_cycle,
+                        Some(u64::from(self.cpu_clock_hz())),
+                    ),
+                    &mut self.tracer,
+                );
                 value
             }
             PORT_CASSETTE_PRINTER_IRQ_MASK => self.read_cassette_printer_status(),
-            PORT_IRQ_STATUS_BEEPER => self.interrupts.read_status(&mut self.tracer),
+            PORT_IRQ_STATUS_BEEPER => self.interrupts.read_status(
+                common::TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.cpu_clock_hz())),
+                ),
+                &mut self.tracer,
+            ),
             PORT_FIRQ_STATUS => {
-                let status = self.interrupts.read_firq_status(&mut self.tracer);
+                let status = self.interrupts.read_firq_status(
+                    common::TraceContext::main_cpu(
+                        self.current_cycle,
+                        Some(u64::from(self.cpu_clock_hz())),
+                    ),
+                    &mut self.tracer,
+                );
                 (status & !SUB_BUSY_BIT) | self.sub_busy_bit()
             }
             PORT_SUB_CONTROL => SUB_STATUS_BASE | self.sub_busy_bit(),
@@ -155,19 +171,28 @@ impl<T: Tracing> Fm7Bus<T> {
             _ => match self.av_io_read(port) {
                 Some(value) => value,
                 None => {
-                    self.tracer.trace_io_unhandled_read(full_port(port));
+                    handled = false;
                     OPEN_BUS
                 }
             },
-        }
+        };
+        (value, handled)
     }
 
     /// Writes a byte to the main CPU `0xFDxx` I/O page.
-    pub(crate) fn main_io_write(&mut self, port: u8, value: u8) {
+    pub(crate) fn main_io_write(&mut self, port: u8, value: u8) -> bool {
+        let mut handled = true;
         match port {
             PORT_SYSTEM => self.write_system_port(value),
             PORT_KEYBOARD_LOW => {}
-            PORT_CASSETTE_PRINTER_IRQ_MASK => self.interrupts.write_mask(value, &mut self.tracer),
+            PORT_CASSETTE_PRINTER_IRQ_MASK => self.interrupts.write_mask(
+                value,
+                common::TraceContext::main_cpu(
+                    self.current_cycle,
+                    Some(u64::from(self.cpu_clock_hz())),
+                ),
+                &mut self.tracer,
+            ),
             PORT_IRQ_STATUS_BEEPER => self.write_beeper_control(value),
             PORT_FIRQ_STATUS => {}
             PORT_SUB_CONTROL => {
@@ -189,10 +214,11 @@ impl<T: Tracing> Fm7Bus<T> {
             }
             _ => {
                 if !self.av_io_write(port, value) {
-                    self.tracer.trace_io_unhandled_write(full_port(port), value);
+                    handled = false;
                 }
             }
         }
+        handled
     }
 
     /// Bit 7 reporting the sub CPU busy / halted state to `0xFD04`/`0xFD05`.
@@ -285,9 +311,4 @@ impl<T: Tracing> Fm7Bus<T> {
         }
         value
     }
-}
-
-/// Expands a low `0xFDxx` port byte into its full address.
-fn full_port(port: u8) -> u16 {
-    MAIN_IO_PAGE | u16::from(port)
 }
