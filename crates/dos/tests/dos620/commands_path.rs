@@ -1,18 +1,18 @@
 use crate::harness::*;
 
-fn submit(machine: &mut machine::Pc9801Ra, command: &[u8]) {
+fn submit(machine: &mut machine_98::Pc9801Ra, command: &[u8]) {
     type_string_long(machine, command);
     run_until_prompt(machine);
 }
 
-fn assert_screen_contains(machine: &machine::Pc9801Ra, text: &str, message: &str) {
+fn assert_screen_contains(machine: &machine_98::Pc9801Ra, text: &str, message: &str) {
     assert!(
         find_row_containing(&machine.bus, text).is_some(),
         "{message}"
     );
 }
 
-fn switch_to_a(machine: &mut machine::Pc9801Ra) {
+fn switch_to_a(machine: &mut machine_98::Pc9801Ra) {
     submit(machine, b"A:\r");
 }
 

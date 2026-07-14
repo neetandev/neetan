@@ -12,8 +12,8 @@ fn find_line<'a>(lines: &'a [String], prefix: &str) -> &'a str {
 
 #[test]
 fn host_memory_overview_is_unavailable_without_hle_dos() {
-    let mut bus: machine::Pc9801Bus<machine::NoTracing> =
-        machine::Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48_000);
+    let mut bus: machine_98::Pc9801Bus<machine_98::NoTracing> =
+        machine_98::Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48_000);
     assert!(
         bus.debug_memory_overview_lines().is_none(),
         "overview should be unavailable before HLE DOS is active"

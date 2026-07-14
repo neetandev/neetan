@@ -39,7 +39,7 @@ fn ascii_to_vram_chars(s: &[u8]) -> Vec<u16> {
     s.iter().map(|&b| b as u16).collect()
 }
 
-fn current_shell_psp(machine: &mut machine::Pc9801Ra) -> u16 {
+fn current_shell_psp(machine: &mut machine_98::Pc9801Ra) -> u16 {
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x62,                         // MOV AH, 62h

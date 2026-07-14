@@ -1,14 +1,14 @@
 use std::path::{Path, PathBuf};
 
 use common::{Context, CpuMode, MachineModel, MonitorTiming, StringError, bail, info, warn};
-use machine60::Pc6000Model;
-use machine88::{EightMhzWaitMode, MemoryWaitSwitch, Pc8801Model};
-use machine88va::Pc88VaModel;
-use machineat::AtModel;
-use machinefm7::Fm7Model;
-use machinetowns::{TownsModel, TownsPadType};
-use machinex1::{X1KeyboardMode, X1Model};
-use machinex68k::X68kModel;
+use machine_60::Pc6000Model;
+use machine_88::{EightMhzWaitMode, MemoryWaitSwitch, Pc8801Model};
+use machine_88va::Pc88VaModel;
+use machine_at::AtModel;
+use machine_fm7::Fm7Model;
+use machine_towns::{TownsModel, TownsPadType};
+use machine_x1::{X1KeyboardMode, X1Model};
+use machine_x68k::X68kModel;
 
 use crate::keyboard::{
     KeyMap, parse_key_binding, parse_key_binding_at, parse_key_binding_pc60,
@@ -750,7 +750,7 @@ fn parse_args_from(
             }
             "--boot-device" => {
                 let val = value(&flag)?;
-                config.boot_device = val.parse::<machine::BootDevice>().map_err(StringError)?;
+                config.boot_device = val.parse::<machine_98::BootDevice>().map_err(StringError)?;
             }
             "--enable-extractor" => config.enable_extractor = true,
             other => bail!("unknown argument: {other}"),
@@ -800,21 +800,21 @@ pub enum Target {
     /// PC-9800 series (the `machine` crate).
     #[default]
     Pc98,
-    /// PC-8801 series (the `machine88` crate).
+    /// PC-8801 series (the `machine_88` crate).
     Pc88,
-    /// PC-88VA series (the `machine88va` crate).
+    /// PC-88VA series (the `machine_88va` crate).
     Pc88Va,
-    /// PC-6000/PC-6600 series (the `machine60` crate).
+    /// PC-6000/PC-6600 series (the `machine_60` crate).
     Pc60,
-    /// FM Towns series (the `machinetowns` crate).
+    /// FM Towns series (the `machine_towns` crate).
     Towns,
-    /// Sharp X1 series (the `machinex1` crate).
+    /// Sharp X1 series (the `machine_x1` crate).
     X1,
-    /// Fujitsu FM-7 series (the `machinefm7` crate).
+    /// Fujitsu FM-7 series (the `machine_fm7` crate).
     Fm7,
-    /// Sharp X68000 series (the `machinex68k` crate).
+    /// Sharp X68000 series (the `machine_x68k` crate).
     X68k,
-    /// IBM PC/AT series (the `machineat` crate).
+    /// IBM PC/AT series (the `machine_at` crate).
     At,
 }
 
@@ -846,14 +846,14 @@ pub enum BootMode {
 impl BootMode {
     /// Maps this value to a PC-88 boot mode, erroring when the value belongs to
     /// another machine family.
-    pub(crate) fn to_pc88(self) -> Result<machine88::BootMode, String> {
+    pub(crate) fn to_pc88(self) -> Result<machine_88::BootMode, String> {
         match self {
-            BootMode::Pc88V1S => Ok(machine88::BootMode::V1S),
-            BootMode::Pc88V1H => Ok(machine88::BootMode::V1H),
-            BootMode::Pc88V2 => Ok(machine88::BootMode::V2),
-            BootMode::Pc88N => Ok(machine88::BootMode::N),
-            BootMode::Pc88N80 => Ok(machine88::BootMode::N80),
-            BootMode::Pc88N80Sr => Ok(machine88::BootMode::N80SR),
+            BootMode::Pc88V1S => Ok(machine_88::BootMode::V1S),
+            BootMode::Pc88V1H => Ok(machine_88::BootMode::V1H),
+            BootMode::Pc88V2 => Ok(machine_88::BootMode::V2),
+            BootMode::Pc88N => Ok(machine_88::BootMode::N),
+            BootMode::Pc88N80 => Ok(machine_88::BootMode::N80),
+            BootMode::Pc88N80Sr => Ok(machine_88::BootMode::N80SR),
             BootMode::Fm7Basic | BootMode::Fm7Dos => Err(format!(
                 "boot mode '{self}' is not supported by the PC-8801, expected v1s, v1h, v2, n, n80 or n80sr"
             )),
@@ -862,10 +862,10 @@ impl BootMode {
 
     /// Maps this value to an FM-7 boot mode, erroring when the value belongs to
     /// another machine family.
-    pub(crate) fn to_fm7(self) -> Result<machinefm7::BootMode, String> {
+    pub(crate) fn to_fm7(self) -> Result<machine_fm7::BootMode, String> {
         match self {
-            BootMode::Fm7Basic => Ok(machinefm7::BootMode::Basic),
-            BootMode::Fm7Dos => Ok(machinefm7::BootMode::Dos),
+            BootMode::Fm7Basic => Ok(machine_fm7::BootMode::Basic),
+            BootMode::Fm7Dos => Ok(machine_fm7::BootMode::Dos),
             BootMode::Pc88V1S
             | BootMode::Pc88V1H
             | BootMode::Pc88V2
@@ -940,7 +940,7 @@ pub struct EmulatorConfig {
     pub mt32_roms: Option<PathBuf>,
     pub sc55_roms: Option<PathBuf>,
     pub midi: MidiDevice,
-    pub boot_device: machine::BootDevice,
+    pub boot_device: machine_98::BootDevice,
     pub key_map: KeyMap,
     pub ems: bool,
     pub xms: bool,
@@ -1010,7 +1010,7 @@ impl Default for EmulatorConfig {
             mt32_roms: None,
             sc55_roms: None,
             midi: MidiDevice::default(),
-            boot_device: machine::BootDevice::Auto,
+            boot_device: machine_98::BootDevice::Auto,
             key_map: KeyMap::new(),
             ems: true,
             xms: true,
@@ -1200,7 +1200,7 @@ fn apply_config_file(
                 Ok(device) => config.midi = device,
                 Err(_) => warn!("Unknown MIDI device in config: {val}"),
             },
-            "boot-device" => match val.parse::<machine::BootDevice>() {
+            "boot-device" => match val.parse::<machine_98::BootDevice>() {
                 Ok(device) => config.boot_device = device,
                 Err(_) => warn!("Unknown boot device in config: {val}"),
             },
@@ -1246,8 +1246,8 @@ fn apply_derived_defaults(config: &mut EmulatorConfig, explicit: ExplicitSetting
     let boot_mode = config
         .boot_mode
         .and_then(|mode| mode.to_pc88().ok())
-        .unwrap_or(machine88::BootMode::V2);
-    if !(matches!(boot_mode, machine88::BootMode::V1S) || boot_mode.is_n_family()) {
+        .unwrap_or(machine_88::BootMode::V2);
+    if !(matches!(boot_mode, machine_88::BootMode::V1S) || boot_mode.is_n_family()) {
         return;
     }
     if !explicit.cpu_mode {
@@ -1272,7 +1272,7 @@ fn apply_machine_selection(config: &mut EmulatorConfig, value: &str) -> Result<(
         config.target = Target::Pc88;
         return Ok(());
     }
-    if let Ok(model) = value.parse::<machine88va::Pc88VaModel>() {
+    if let Ok(model) = value.parse::<machine_88va::Pc88VaModel>() {
         if config.target != Target::Pc88Va {
             config.key_map = KeyMap::new_pc88va();
         }
@@ -1304,7 +1304,7 @@ fn apply_machine_selection(config: &mut EmulatorConfig, value: &str) -> Result<(
         config.fm7_model = model;
         return Ok(());
     }
-    if let Ok(model) = value.parse::<machinetowns::TownsModel>() {
+    if let Ok(model) = value.parse::<machine_towns::TownsModel>() {
         if config.target != Target::Towns {
             config.key_map = KeyMap::new_towns();
         }

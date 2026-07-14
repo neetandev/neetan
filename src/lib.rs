@@ -46,7 +46,7 @@ mod tracing;
 #[cfg(feature = "tracing")]
 type Tracer = crate::tracing::Tracing;
 #[cfg(not(feature = "tracing"))]
-type Tracer = machine::NoTracing;
+type Tracer = machine_98::NoTracing;
 
 pub const COMPANY_NAME: &str = "neetan";
 pub const GAME_NAME: &str = "neetan";
@@ -1354,8 +1354,8 @@ fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
 
     info!("Selected machine model {model}");
 
-    let mut bus: machine::Pc9801Bus<Tracer> =
-        machine::Pc9801Bus::new(model, config.cpu_mode, sample_rate);
+    let mut bus: machine_98::Pc9801Bus<Tracer> =
+        machine_98::Pc9801Bus::new(model, config.cpu_mode, sample_rate);
     bus.set_boot_device(config.boot_device);
 
     // EMS / XMS configuration gated by machine capability
@@ -1403,7 +1403,7 @@ fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
     }
 
     let loaded_roms = match config.pc98_roms {
-        Some(ref rom_dir) => Some(machine::load_rom_set(model, rom_dir).map_err(|error| {
+        Some(ref rom_dir) => Some(machine_98::load_rom_set(model, rom_dir).map_err(|error| {
             StringError(format!(
                 "Failed to load PC-98 ROM set from {}: {error}",
                 rom_dir.display()
@@ -1443,14 +1443,14 @@ fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
             info!("Loaded BIOS ROM ({} bytes) for {}", bios_rom.len(), model);
             bus.load_bios_rom(bios_rom);
         } else {
-            let set = machine::required_mame_set(model).unwrap_or("(none)");
+            let set = machine_98::required_mame_set(model).unwrap_or("(none)");
             bail!(
                 "could not assemble the BIOS for {} from {}: install the MAME `{}` ROM set \
                  (required chip digests: {})",
                 model,
                 rom_dir.display(),
                 set,
-                machine::accepted_bios_digests(model).join(", "),
+                machine_98::accepted_bios_digests(model).join(", "),
             );
         }
     } else {
@@ -1529,11 +1529,11 @@ fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
     }
 
     let machine: Box<dyn Machine> = match model.cpu_type() {
-        common::CpuType::I8086 => Box::new(machine::Machine::new(cpu::I8086::new(), bus)),
-        common::CpuType::V30 => Box::new(machine::Machine::new(cpu::V30::new(), bus)),
-        common::CpuType::I286 => Box::new(machine::Machine::new(cpu::I286::new(), bus)),
+        common::CpuType::I8086 => Box::new(machine_98::Pc98Machine::new(cpu::I8086::new(), bus)),
+        common::CpuType::V30 => Box::new(machine_98::Pc98Machine::new(cpu::V30::new(), bus)),
+        common::CpuType::I286 => Box::new(machine_98::Pc98Machine::new(cpu::I286::new(), bus)),
         common::CpuType::I386 => match model {
-            MachineModel::PC9801RS => Box::new(machine::Machine::new(
+            MachineModel::PC9801RS => Box::new(machine_98::Pc98Machine::new(
                 cpu::I386::<{ cpu::CPU_MODEL_386_SX }>::new(),
                 bus,
             )),
@@ -1542,12 +1542,12 @@ fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
             | MachineModel::PC9801VX
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
-            | MachineModel::PC9821AP => Box::new(machine::Machine::new(
+            | MachineModel::PC9821AP => Box::new(machine_98::Pc98Machine::new(
                 cpu::I386::<{ cpu::CPU_MODEL_386_DX }>::new(),
                 bus,
             )),
         },
-        common::CpuType::I486DX => Box::new(machine::Machine::new(
+        common::CpuType::I486DX => Box::new(machine_98::Pc98Machine::new(
             cpu::I386::<{ cpu::CPU_MODEL_486_DX }>::new(),
             bus,
         )),
@@ -1557,14 +1557,14 @@ fn initialize_pc98_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
 }
 
 fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
-    let model = machine88::Pc8801Model::PC8801MC;
+    let model = machine_88::Pc8801Model::PC8801MC;
     info!("Selected machine model {model}");
 
     let rom_dir = config.pc88_roms.as_ref().ok_or_else(|| {
         StringError("PC-8801MC requires a ROM directory (--pc88-roms <DIR>)".into())
     })?;
 
-    let roms = machine88::load_rom_set(rom_dir).map_err(|error| {
+    let roms = machine_88::load_rom_set(rom_dir).map_err(|error| {
         StringError(format!(
             "Failed to load PC-8801MC ROM set from {}: {error}",
             rom_dir.display()
@@ -1578,7 +1578,7 @@ fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
         .map(|mode| mode.to_pc88())
         .transpose()
         .map_err(StringError)?
-        .unwrap_or(machine88::BootMode::V2);
+        .unwrap_or(machine_88::BootMode::V2);
 
     roms.validate_for_boot_mode(boot_mode).map_err(|error| {
         StringError(format!(
@@ -1588,11 +1588,12 @@ fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
     })?;
 
     let clock_select = match config.cpu_mode {
-        CpuMode::Low => machine88::ClockSelect::FourMhz,
-        CpuMode::High => machine88::ClockSelect::EightMhz,
+        CpuMode::Low => machine_88::ClockSelect::FourMhz,
+        CpuMode::High => machine_88::ClockSelect::EightMhz,
     };
 
-    let mut bus: machine88::Pc8801Bus = machine88::Pc8801Bus::new(model, clock_select, sample_rate);
+    let mut bus: machine_88::Pc8801Bus =
+        machine_88::Pc8801Bus::new(model, clock_select, sample_rate);
     bus.set_boot_mode(boot_mode);
     bus.set_monitor_timing(config.monitor);
     bus.set_memory_wait(config.pc88_memory_wait);
@@ -1613,7 +1614,7 @@ fn initialize_pc88_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
 
     let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
     let sub_cpu = cpu::Z80::new(bus.sub_clock_hz());
-    Ok(Box::new(machine88::Pc8801Machine::new(
+    Ok(Box::new(machine_88::Pc8801Machine::new(
         main_cpu, sub_cpu, bus,
     )))
 }
@@ -1629,7 +1630,7 @@ fn initialize_pc88va_machine(
         StringError("PC-88VA requires a ROM directory (--pc88va-roms <DIR>)".into())
     })?;
 
-    let roms = machine88va::load_rom_set(rom_dir).map_err(|error| {
+    let roms = machine_88va::load_rom_set(rom_dir).map_err(|error| {
         StringError(format!(
             "Failed to load PC-88VA ROM set from {}: {error}",
             rom_dir.display()
@@ -1640,10 +1641,10 @@ fn initialize_pc88va_machine(
         warn!("CD-ROM options are ignored for the PC-88VA target");
     }
 
-    let bus: machine88va::Pc88VaBus = machine88va::Pc88VaBus::new(model, roms, sample_rate);
+    let bus: machine_88va::Pc88VaBus = machine_88va::Pc88VaBus::new(model, roms, sample_rate);
     let sub_cpu = cpu::Z80::new(bus.clock_config().sub_clock_hz);
-    Ok(Box::new(machine88va::Pc88VaMachine::new(
-        machine88va::Pc88VaMachine::reset_cpu(),
+    Ok(Box::new(machine_88va::Pc88VaMachine::new(
+        machine_88va::Pc88VaMachine::reset_cpu(),
         sub_cpu,
         bus,
     )))
@@ -1659,14 +1660,14 @@ fn initialize_pc60_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
         ))
     })?;
 
-    let roms = machine60::load_rom_set(model, rom_dir).map_err(|error| {
+    let roms = machine_60::load_rom_set(model, rom_dir).map_err(|error| {
         StringError(format!(
             "Failed to load {model} ROM set from {}: {error}",
             rom_dir.display()
         ))
     })?;
 
-    let mut bus: machine60::Pc6000Bus<Tracer> = machine60::Pc6000Bus::new(model, sample_rate);
+    let mut bus: machine_60::Pc6000Bus<Tracer> = machine_60::Pc6000Bus::new(model, sample_rate);
     bus.load_roms(&roms);
 
     if let Some(cart_path) = config.cartridge.as_ref() {
@@ -1685,7 +1686,7 @@ fn initialize_pc60_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<
     }
 
     let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
-    let machine = machine60::Pc6000Machine::new(main_cpu, bus);
+    let machine = machine_60::Pc6000Machine::new(main_cpu, bus);
 
     Ok(Box::new(machine))
 }
@@ -1701,7 +1702,7 @@ fn initialize_towns_machine(
         StringError("FM Towns requires a ROM directory (--towns-roms <DIR>)".into())
     })?;
 
-    let roms = machinetowns::load_rom_set(model, rom_dir).map_err(|error| {
+    let roms = machine_towns::load_rom_set(model, rom_dir).map_err(|error| {
         StringError(format!(
             "Failed to load FM Towns ROM set from {}: {error}",
             rom_dir.display()
@@ -1709,25 +1710,27 @@ fn initialize_towns_machine(
     })?;
 
     let boot_device = match config.boot_device {
-        machine::BootDevice::Auto => machinetowns::TownsBootDevice::Auto,
-        machine::BootDevice::Fdd1 | machine::BootDevice::Fdd2 => {
-            machinetowns::TownsBootDevice::Floppy
+        machine_98::BootDevice::Auto => machine_towns::TownsBootDevice::Auto,
+        machine_98::BootDevice::Fdd1 | machine_98::BootDevice::Fdd2 => {
+            machine_towns::TownsBootDevice::Floppy
         }
-        machine::BootDevice::Hdd1 | machine::BootDevice::Hdd2 => machinetowns::TownsBootDevice::Hdd,
-        machine::BootDevice::Dos => {
+        machine_98::BootDevice::Hdd1 | machine_98::BootDevice::Hdd2 => {
+            machine_towns::TownsBootDevice::Hdd
+        }
+        machine_98::BootDevice::Dos => {
             warn!("'dos' boot is not available for the FM Towns; using the default boot device");
-            machinetowns::TownsBootDevice::Auto
+            machine_towns::TownsBootDevice::Auto
         }
     };
 
     match model {
-        machinetowns::TownsModel::FmTowns => {
+        machine_towns::TownsModel::FmTowns => {
             build_towns_machine::<{ cpu::CPU_MODEL_386_SX }>(config, model, roms, boot_device)
         }
-        machinetowns::TownsModel::FmTownsIICx => {
+        machine_towns::TownsModel::FmTownsIICx => {
             build_towns_machine::<{ cpu::CPU_MODEL_386_DX }>(config, model, roms, boot_device)
         }
-        machinetowns::TownsModel::FmTownsIIMx => {
+        machine_towns::TownsModel::FmTownsIIMx => {
             build_towns_machine::<{ cpu::CPU_MODEL_486_DX }>(config, model, roms, boot_device)
         }
     }
@@ -1735,9 +1738,9 @@ fn initialize_towns_machine(
 
 fn build_towns_machine<const CPU_MODEL: u8>(
     config: &EmulatorConfig,
-    model: machinetowns::TownsModel,
-    roms: machinetowns::LoadedRoms,
-    boot_device: machinetowns::TownsBootDevice,
+    model: machine_towns::TownsModel,
+    roms: machine_towns::LoadedRoms,
+    boot_device: machine_towns::TownsBootDevice,
 ) -> Result<Box<dyn Machine>> {
     let cpu_name = match CPU_MODEL {
         cpu::CPU_MODEL_386_DX => "i386DX",
@@ -1750,7 +1753,7 @@ fn build_towns_machine<const CPU_MODEL: u8>(
         model.cpu_clock_hz(config.cpu_mode) / 1_000_000,
     );
 
-    let bus: machinetowns::TownsBus<Tracer> = machinetowns::TownsBus::new(
+    let bus: machine_towns::TownsBus<Tracer> = machine_towns::TownsBus::new(
         model,
         config.cpu_mode,
         roms,
@@ -1758,7 +1761,7 @@ fn build_towns_machine<const CPU_MODEL: u8>(
     );
     let mut cpu = cpu::I386::<CPU_MODEL, { cpu::ADDRESS_WIDTH_32 }>::new();
     cpu.reset();
-    let mut machine = machinetowns::TownsMachine::new(cpu, bus);
+    let mut machine = machine_towns::TownsMachine::new(cpu, bus);
     machine.set_boot_device(boot_device);
     machine.set_pad_type(config.towns_pad);
     machine.set_cdrom_compatibility_timing(config.cdrom_compat);
@@ -1780,7 +1783,7 @@ fn initialize_at_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Bo
         .as_ref()
         .ok_or_else(|| StringError("PC/AT requires a ROM directory (--at-roms <DIR>)".into()))?;
 
-    let roms = machineat::load_rom_set(rom_dir).map_err(|error| {
+    let roms = machine_at::load_rom_set(rom_dir).map_err(|error| {
         StringError(format!(
             "Failed to load PC/AT ROM set from {}: {error}",
             rom_dir.display()
@@ -1792,11 +1795,11 @@ fn initialize_at_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Bo
         warn!("{message}");
     }
 
-    let bus: machineat::AtBus<Tracer> =
-        machineat::AtBus::new(cpu_clock_hz, model.ram_size(), roms, sample_rate);
+    let bus: machine_at::AtBus<Tracer> =
+        machine_at::AtBus::new(cpu_clock_hz, model.ram_size(), roms, sample_rate);
     let mut cpu = cpu::I386::<{ cpu::CPU_MODEL_486_DX }, { cpu::ADDRESS_WIDTH_32 }>::new();
     cpu.reset();
-    let mut machine = machineat::AtMachine::new(cpu, bus);
+    let mut machine = machine_at::AtMachine::new(cpu, bus);
     machine.set_boot_device(boot_device);
 
     Ok(Box::new(machine))
@@ -1804,23 +1807,23 @@ fn initialize_at_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Bo
 
 /// Converts the shared boot selection into the two orders exposed by the AMI BIOS.
 fn resolve_at_boot_device(
-    device: machine::BootDevice,
-) -> (machineat::AtBootDevice, Option<&'static str>) {
+    device: machine_98::BootDevice,
+) -> (machine_at::AtBootDevice, Option<&'static str>) {
     match device {
-        machine::BootDevice::Auto | machine::BootDevice::Fdd1 => {
-            (machineat::AtBootDevice::FloppyFirst, None)
+        machine_98::BootDevice::Auto | machine_98::BootDevice::Fdd1 => {
+            (machine_at::AtBootDevice::FloppyFirst, None)
         }
-        machine::BootDevice::Fdd2 => (
-            machineat::AtBootDevice::FloppyFirst,
+        machine_98::BootDevice::Fdd2 => (
+            machine_at::AtBootDevice::FloppyFirst,
             Some("The PC/AT BIOS cannot select drive B: for boot. Using A: then C:"),
         ),
-        machine::BootDevice::Hdd1 => (machineat::AtBootDevice::HddFirst, None),
-        machine::BootDevice::Hdd2 => (
-            machineat::AtBootDevice::HddFirst,
+        machine_98::BootDevice::Hdd1 => (machine_at::AtBootDevice::HddFirst, None),
+        machine_98::BootDevice::Hdd2 => (
+            machine_at::AtBootDevice::HddFirst,
             Some("The PC/AT BIOS cannot select the second HDD for boot. Using C: then A:"),
         ),
-        machine::BootDevice::Dos => (
-            machineat::AtBootDevice::FloppyFirst,
+        machine_98::BootDevice::Dos => (
+            machine_at::AtBootDevice::FloppyFirst,
             Some("'dos' boot is not available for the PC/AT. Using A: then C:"),
         ),
     }
@@ -1839,20 +1842,20 @@ fn initialize_x1_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Bo
         ))
     })?;
 
-    let roms = machinex1::load_rom_set(model, rom_dir).map_err(|error| {
+    let roms = machine_x1::load_rom_set(model, rom_dir).map_err(|error| {
         StringError(format!(
             "Failed to load {model} ROM set from {}: {error}",
             rom_dir.display()
         ))
     })?;
 
-    let mut bus: machinex1::X1Bus<Tracer> = machinex1::X1Bus::new(model, sample_rate);
+    let mut bus: machine_x1::X1Bus<Tracer> = machine_x1::X1Bus::new(model, sample_rate);
     bus.set_monitor_timing(config.monitor);
     bus.set_keyboard_mode(config.x1_keyboard);
     bus.load_roms(&roms);
 
     let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
-    let machine = machinex1::X1Machine::new(main_cpu, bus);
+    let machine = machine_x1::X1Machine::new(main_cpu, bus);
 
     Ok(Box::new(machine))
 }
@@ -1870,7 +1873,7 @@ fn initialize_fm7_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<B
         ))
     })?;
 
-    let roms = machinefm7::load_rom_set(model, rom_dir).map_err(|error| {
+    let roms = machine_fm7::load_rom_set(model, rom_dir).map_err(|error| {
         StringError(format!(
             "Failed to load {model} ROM set from {}: {error}",
             rom_dir.display()
@@ -1884,15 +1887,15 @@ fn initialize_fm7_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<B
         .map(|mode| mode.to_fm7())
         .transpose()
         .map_err(StringError)?
-        .unwrap_or(machinefm7::BootMode::Basic);
+        .unwrap_or(machine_fm7::BootMode::Basic);
 
-    let mut bus: machinefm7::Fm7Bus<Tracer> =
-        machinefm7::Fm7Bus::new(model, boot_mode, sample_rate);
+    let mut bus: machine_fm7::Fm7Bus<Tracer> =
+        machine_fm7::Fm7Bus::new(model, boot_mode, sample_rate);
     bus.load_roms(&roms);
 
     let main_cpu = cpu::M6809::new(bus.cpu_clock_hz());
     let sub_cpu = cpu::M6809::new(model.sub_clock_hz());
-    let machine = machinefm7::Fm7Machine::new(main_cpu, sub_cpu, bus);
+    let machine = machine_fm7::Fm7Machine::new(main_cpu, sub_cpu, bus);
 
     info!("FM-7 configured: model {model}, boot mode {boot_mode}");
 
@@ -1907,7 +1910,7 @@ fn initialize_x68k_machine(config: &EmulatorConfig) -> Result<Box<dyn Machine>> 
             "{model} requires a ROM directory (--x68k-roms <DIR>)"
         ))
     })?;
-    let roms = machinex68k::load_rom_set(model, rom_directory).map_err(|error| {
+    let roms = machine_x68k::load_rom_set(model, rom_directory).map_err(|error| {
         StringError(format!(
             "Failed to load {model} ROM set from {}: {error}",
             rom_directory.display()
@@ -1920,14 +1923,14 @@ fn initialize_x68k_machine(config: &EmulatorConfig) -> Result<Box<dyn Machine>> 
         "{model} configured at {:.3} MHz",
         f64::from(model.cpu_clock_hz(config.cpu_mode)) / 1_000_000.0
     );
-    let bus: machinex68k::X68kBus<Tracer> = machinex68k::X68kBus::new(
+    let bus: machine_x68k::X68kBus<Tracer> = machine_x68k::X68kBus::new(
         model,
         config.cpu_mode,
         roms,
         audio_engine::SAMPLE_RATE as u32,
     )
     .map_err(StringError)?;
-    let machine = machinex68k::X68kMachine::from_bus(model, config.cpu_mode, bus);
+    let machine = machine_x68k::X68kMachine::from_bus(model, config.cpu_mode, bus);
 
     Ok(Box::new(machine))
 }
@@ -1941,7 +1944,7 @@ fn selector_font_rom_data(config: &EmulatorConfig, machine: &dyn Machine) -> Vec
 }
 
 fn expand_selector_font_rom(raw_font_rom: &[u8]) -> Vec<u8> {
-    let mut bus: machine::Pc9801Bus<machine::NoTracing> = machine::Pc9801Bus::new(
+    let mut bus: machine_98::Pc9801Bus<machine_98::NoTracing> = machine_98::Pc9801Bus::new(
         MachineModel::PC9801VM,
         CpuMode::High,
         audio_engine::SAMPLE_RATE as u32,
@@ -1962,8 +1965,8 @@ mod tests {
 
     #[test]
     fn pc_at_boot_devices_resolve_to_supported_bios_orders() {
-        use machine::BootDevice;
-        use machineat::AtBootDevice;
+        use machine_98::BootDevice;
+        use machine_at::AtBootDevice;
 
         let cases = [
             (BootDevice::Auto, AtBootDevice::FloppyFirst, false),

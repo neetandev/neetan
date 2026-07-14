@@ -6,7 +6,7 @@ const TEXT_CHAR_BASE: u32 = 0xA0000;
 const TEXT_ATTR_BASE: u32 = 0xA2000;
 const COLUMNS: u32 = 80;
 
-fn write_ascii_text(machine: &mut machine::Pc9801Ra, row: u32, col: u32, text: &str) {
+fn write_ascii_text(machine: &mut machine_98::Pc9801Ra, row: u32, col: u32, text: &str) {
     for (index, byte) in text.bytes().enumerate() {
         let offset = (row * COLUMNS + col + index as u32) * 2;
         harness::write_bytes(&mut machine.bus, TEXT_CHAR_BASE + offset, &[byte, 0x00]);
@@ -14,18 +14,18 @@ fn write_ascii_text(machine: &mut machine::Pc9801Ra, row: u32, col: u32, text: &
     }
 }
 
-fn set_cursor(machine: &mut machine::Pc9801Ra, row: u8, col: u8) {
+fn set_cursor(machine: &mut machine_98::Pc9801Ra, row: u8, col: u8) {
     harness::set_cursor_position(&mut machine.bus, row, col);
 }
 
-fn cursor(machine: &machine::Pc9801Ra) -> (u8, u8) {
+fn cursor(machine: &machine_98::Pc9801Ra) -> (u8, u8) {
     (
         machine.bus.read_byte_direct(IOSYS_CURSOR_Y),
         machine.bus.read_byte_direct(IOSYS_CURSOR_X),
     )
 }
 
-fn emit_int29_bytes(machine: &mut machine::Pc9801Ra, bytes: &[u8]) {
+fn emit_int29_bytes(machine: &mut machine_98::Pc9801Ra, bytes: &[u8]) {
     let mut code = Vec::with_capacity(bytes.len() * 4 + 2);
     for &byte in bytes {
         code.extend_from_slice(&[0xB0, byte, 0xCD, 0x29]);

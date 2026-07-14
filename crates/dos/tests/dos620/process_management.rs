@@ -114,7 +114,7 @@ fn create_test_floppy_with_two_programs(
 /// EXECs the given filename, reads flags and return code via INT 21h/4Dh,
 /// and asserts CF=0 and AX matches `expected_return_ax`.
 fn exec_file_and_check_return_code(
-    machine: &mut machine::Pc9801Ra,
+    machine: &mut machine_98::Pc9801Ra,
     filename: &[u8],
     expected_return_ax: u16,
 ) {
@@ -680,7 +680,7 @@ struct McbInfo {
     block_type: u8,
 }
 
-fn walk_mcb_chain(bus: &machine::Pc9801Bus, first_mcb: u16) -> Vec<McbInfo> {
+fn walk_mcb_chain(bus: &machine_98::Pc9801Bus, first_mcb: u16) -> Vec<McbInfo> {
     let mut blocks = Vec::new();
     let mut current = first_mcb;
     for _ in 0..4096 {

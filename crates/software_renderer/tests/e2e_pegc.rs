@@ -4,7 +4,7 @@
 //! chain: CPU -> bus I/O -> PEGC state -> compose -> framebuffer bytes.
 
 use common::{BUILTIN_FONT_ROM, Bus, Cpu, CpuMode, MachineModel};
-use machine::{Pc9801Bus, Pc9821Ap};
+use machine_98::{Pc9801Bus, Pc9821Ap};
 
 const DEBUG_PEGC_ROM: &[u8] = include_bytes!("../../../utils/debug/debug_pegc.rom");
 

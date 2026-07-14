@@ -8,7 +8,7 @@
 //! the standard 16-color analog palette programmed by the ROM.
 
 use common::{BUILTIN_FONT_ROM, Bus, Cpu, CpuMode, MachineModel};
-use machine::{Pc9801Bus, Pc9801Vx};
+use machine_98::{Pc9801Bus, Pc9801Vx};
 
 const DEBUG_EGC_ROM: &[u8] = include_bytes!("../../../utils/debug/debug_egc.rom");
 

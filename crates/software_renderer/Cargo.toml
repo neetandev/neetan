@@ -18,4 +18,4 @@ software_renderer = { path = ".", features = ["std"] }
 common.workspace = true
 cpu.workspace = true
 device.workspace = true
-machine.workspace = true
+machine_98.workspace = true

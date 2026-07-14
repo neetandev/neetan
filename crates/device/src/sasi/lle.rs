@@ -43,7 +43,7 @@ pub enum SasiAction {
     /// No action needed.
     None,
     /// Schedule a completion event (status phase + optional interrupt) after
-    /// a delay. The bus should schedule `EventKind::SasiExecution`.
+    /// a delay. The bus should schedule `Event98::SasiExecution`.
     ScheduleCompletion,
     /// DMA is now ready for transfer. The bus should check the DMA channel.
     DmaReady,

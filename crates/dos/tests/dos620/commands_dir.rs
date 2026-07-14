@@ -17,7 +17,7 @@ fn dir_lists_standard_2hd_floppy_without_bpb() {
     );
 }
 
-fn row_containing(machine: &machine::Pc9801Ra, needle: &str) -> usize {
+fn row_containing(machine: &machine_98::Pc9801Ra, needle: &str) -> usize {
     find_row_containing(&machine.bus, needle)
         .unwrap_or_else(|| panic!("expected to find row containing {needle:?}"))
 }
