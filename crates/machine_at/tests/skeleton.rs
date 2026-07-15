@@ -1,7 +1,7 @@
 //! Skeleton test: the machine fetches and executes the first BIOS
 //! instructions from the 486 reset vector at 0xFFFFFFF0.
 
-use common::{Cpu, Machine};
+use common::Cpu;
 use machine_at::{AtBus, AtMachine, LoadedRoms};
 
 /// Builds a 64 KiB BIOS whose reset-vector entry point runs a short program:

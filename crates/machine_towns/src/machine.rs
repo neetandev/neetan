@@ -114,22 +114,23 @@ impl<const CPU_MODEL: u8, T: TraceSink> TownsMachine<CPU_MODEL, T> {
     /// The CPU advances the bus clock per instruction, so scheduled events fire
     /// mid-slice; a halted CPU fast-forwards to the next event so an interrupt
     /// can wake it.
-    fn run_for_impl(&mut self, budget: u64) -> u64 {
-        let start = self.bus.current_cycle;
+    pub fn run_for(&mut self, budget: u64) -> u64 {
+        let start_cycle = self.bus.current_cycle();
         if T::ENABLED && self.bus.tracer().yield_requested() {
             return 0;
         }
-        let target = start + budget;
-        while self.bus.current_cycle < target {
-            let current = self.bus.current_cycle;
+        let target_cycle = start_cycle.saturating_add(budget);
+
+        while self.bus.current_cycle() < target_cycle {
+            let current_cycle = self.bus.current_cycle();
             let slice_end = if self.cpu.halted() {
-                let next = self.bus.next_event_cycle().unwrap_or(target);
-                next.clamp(current + 1, target)
+                let next_event_cycle = self.bus.next_event_cycle().unwrap_or(target_cycle);
+                next_event_cycle.clamp(current_cycle + 1, target_cycle)
             } else {
-                (current + TIGHT_SLICE).min(target)
+                current_cycle.saturating_add(TIGHT_SLICE).min(target_cycle)
             };
 
-            let ran = self.cpu.run_for(slice_end - current, &mut self.bus);
+            let ran_cycles = self.cpu.run_for(slice_end - current_cycle, &mut self.bus);
             if T::ENABLED && self.bus.tracer().yield_requested() {
                 break;
             }
@@ -150,11 +151,12 @@ impl<const CPU_MODEL: u8, T: TraceSink> TownsMachine<CPU_MODEL, T> {
 
             // A halted or fully idle CPU consumes nothing: advance time to the
             // slice end so scheduled events fire and can wake the core.
-            if ran == 0 && self.bus.current_cycle < slice_end {
+            if ran_cycles == 0 && self.bus.current_cycle() < slice_end {
                 self.bus.set_current_cycle(slice_end);
             }
         }
-        self.bus.current_cycle - start
+
+        self.bus.current_cycle() - start_cycle
     }
 }
 
@@ -177,7 +179,7 @@ impl<const CPU_MODEL: u8, T: TraceSink> Machine for TownsMachine<CPU_MODEL, T> {
     }
 
     fn run_for(&mut self, budget: u64) -> u64 {
-        self.run_for_impl(budget)
+        TownsMachine::run_for(self, budget)
     }
 
     fn shutdown_requested(&self) -> bool {

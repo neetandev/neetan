@@ -1,4 +1,4 @@
-use common::{Bus, Cpu, likely, unlikely};
+use common::{Bus, Cpu, unlikely};
 
 use crate::{NoTrace, Pc98CpuState, Pc98MachineState, Pc9801Bus, TraceSink};
 
@@ -21,16 +21,24 @@ impl<C: Cpu, T: TraceSink> Pc98Machine<C, T> {
     /// When the CPU halts, advances time to the next scheduled event
     /// so that timer interrupts can fire and wake the CPU.
     pub fn run_for(&mut self, budget: u64) -> u64 {
-        let mut total = 0u64;
+        let start_cycle = self.bus.current_cycle();
         if T::ENABLED && self.bus.tracer().yield_requested() {
             return 0;
         }
-        while likely(total < budget) {
+        let target_cycle = start_cycle.saturating_add(budget);
+
+        while self.bus.current_cycle() < target_cycle {
+            let current_cycle = self.bus.current_cycle();
+            let slice_end = if self.cpu.halted() {
+                let next_event_cycle = self.bus.next_event_cycle().unwrap_or(target_cycle);
+                next_event_cycle.clamp(current_cycle + 1, target_cycle)
+            } else {
+                target_cycle
+            };
+
             self.bus
                 .set_cpu_protected_mode_enabled(self.cpu.cr0() & 1 != 0);
-            let remaining = budget - total;
-            let ran = self.cpu.run_for(remaining, &mut self.bus);
-            total += ran;
+            let ran_cycles = self.cpu.run_for(slice_end - current_cycle, &mut self.bus);
             if unlikely(T::ENABLED && self.bus.tracer().yield_requested()) {
                 break;
             }
@@ -86,52 +94,12 @@ impl<C: Cpu, T: TraceSink> Pc98Machine<C, T> {
                 continue;
             }
 
-            // CPU cores may complete the current instruction and return more
-            // cycles than the requested budget slice. In that case this
-            // invocation is done; do not enter HLT event-advance logic with a
-            // wrapped `budget - total`.
-            if unlikely(total >= budget) {
-                break;
-            }
-
-            if unlikely(self.cpu.halted()) {
-                let current = self.bus.current_cycle();
-                let remaining = budget.saturating_sub(total);
-
-                if let Some(event_cycle) = self.bus.next_event_cycle() {
-                    if event_cycle <= current {
-                        // Event already due: process it and retry.
-                        self.bus.set_current_cycle(current);
-                        continue;
-                    } else if event_cycle <= current + remaining {
-                        // Event within budget: advance to it and try to wake CPU.
-                        let idle = event_cycle - current;
-                        self.bus.set_current_cycle(event_cycle);
-                        total += idle;
-                        self.bus
-                            .set_cpu_protected_mode_enabled(self.cpu.cr0() & 1 != 0);
-                        let retry = self.cpu.run_for(1, &mut self.bus);
-                        if retry == 0 && self.cpu.halted() {
-                            continue;
-                        }
-                        total += retry;
-                    } else {
-                        // Event beyond budget: advance time to end of budget
-                        // (CPU idle) so successive calls make progress.
-                        self.bus.set_current_cycle(current + remaining);
-                        total += remaining;
-                        break;
-                    }
-                } else {
-                    // No events scheduled: advance time to end of budget.
-                    self.bus.set_current_cycle(current + remaining);
-                    total += remaining;
-                    break;
-                }
+            if ran_cycles == 0 && self.bus.current_cycle() < slice_end {
+                self.bus.set_current_cycle(slice_end);
             }
         }
 
-        total
+        self.bus.current_cycle() - start_cycle
     }
 }
 

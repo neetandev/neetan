@@ -59,7 +59,7 @@ impl<T: TraceSink> Fm7Machine<T> {
 
     /// Runs the main CPU for up to `budget` main-clock cycles.
     pub fn run_for(&mut self, budget: u64) -> u64 {
-        let start = self.bus.current_cycle();
+        let start_cycle = self.bus.current_cycle();
         if T::ENABLED && self.bus.tracer().yield_requested() {
             return 0;
         }
@@ -75,26 +75,32 @@ impl<T: TraceSink> Fm7Machine<T> {
                 return 0;
             }
         }
-        let target = start + budget;
+        let target_cycle = start_cycle.saturating_add(budget);
 
-        while self.bus.current_cycle() < target {
-            let current = self.bus.current_cycle();
-            let next = self.bus.next_event_cycle().unwrap_or(target).min(target);
-            let cap = if self.bus.handshake_active() {
+        while self.bus.current_cycle() < target_cycle {
+            let current_cycle = self.bus.current_cycle();
+            let next_event_cycle = self
+                .bus
+                .next_event_cycle()
+                .unwrap_or(target_cycle)
+                .min(target_cycle);
+            let slice_cap = if self.bus.handshake_active() {
                 HANDSHAKE_SLICE_CYCLES
             } else {
                 DEFAULT_SLICE_CYCLES
             };
-            let slice_end = current.saturating_add(cap).min(next);
+            let slice_end = current_cycle
+                .saturating_add(slice_cap)
+                .min(next_event_cycle);
 
             self.sync_main_firq();
-            let slice = slice_end.saturating_sub(current).max(1);
-            let ran = {
+            let slice_cycles = slice_end.saturating_sub(current_cycle).max(1);
+            let ran_cycles = {
                 let mut view = MainBusView { bus: &mut self.bus };
-                self.main_cpu.run_for(slice, &mut view)
+                self.main_cpu.run_for(slice_cycles, &mut view)
             };
             let trace_yield_requested = T::ENABLED && self.bus.tracer().yield_requested();
-            if !trace_yield_requested && ran == 0 && self.bus.current_cycle() < slice_end {
+            if !trace_yield_requested && ran_cycles == 0 && self.bus.current_cycle() < slice_end {
                 self.bus.set_current_cycle(slice_end);
             }
 
@@ -102,8 +108,8 @@ impl<T: TraceSink> Fm7Machine<T> {
                 self.sub_cycle_target = self.bus.sub_cycle();
             }
 
-            let elapsed = self.bus.current_cycle().saturating_sub(current);
-            self.account_sub_for_main_units(elapsed);
+            let elapsed_cycles = self.bus.current_cycle().saturating_sub(current_cycle);
+            self.account_sub_for_main_cycles(elapsed_cycles);
             if trace_yield_requested {
                 break;
             }
@@ -115,7 +121,7 @@ impl<T: TraceSink> Fm7Machine<T> {
                 break;
             }
 
-            if self.bus.current_cycle() >= next {
+            if self.bus.current_cycle() >= next_event_cycle {
                 self.bus.process_events();
                 if T::ENABLED && self.bus.tracer().yield_requested() {
                     break;
@@ -123,7 +129,7 @@ impl<T: TraceSink> Fm7Machine<T> {
             }
         }
 
-        self.bus.current_cycle() - start
+        self.bus.current_cycle() - start_cycle
     }
 
     /// Mirrors the bus FIRQ level into the main CPU's internal latch.
@@ -145,9 +151,9 @@ impl<T: TraceSink> Fm7Machine<T> {
     }
 
     /// Adds the sub CPU cycles owed for elapsed main-clock time.
-    fn account_sub_for_main_units(&mut self, main_units: u64) {
-        let owed = self.bus.sub_cycles_for_main_units(main_units);
-        self.sub_cycle_target = self.sub_cycle_target.saturating_add(owed);
+    fn account_sub_for_main_cycles(&mut self, main_cycles: u64) {
+        let owed_cycles = self.bus.sub_cycles_for_main_units(main_cycles);
+        self.sub_cycle_target = self.sub_cycle_target.saturating_add(owed_cycles);
     }
 
     /// Runs or idles the sub CPU to its accumulated cycle target.

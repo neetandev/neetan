@@ -26,40 +26,40 @@ impl<T: TraceSink> Pc6000Machine<T> {
     /// event so timer and frame interrupts fire promptly; a halted CPU idles
     /// forward to the next event to keep the scheduler clock moving.
     pub fn run_for(&mut self, budget: u64) -> u64 {
-        let start = self.bus.current_cycle();
+        let start_cycle = self.bus.current_cycle();
         if T::ENABLED && self.bus.tracer().yield_requested() {
             return 0;
         }
-        let target = start + budget;
+        let target_cycle = start_cycle.saturating_add(budget);
 
-        while self.bus.current_cycle() < target {
-            let current = self.bus.current_cycle();
-            let next = self
+        while self.bus.current_cycle() < target_cycle {
+            let current_cycle = self.bus.current_cycle();
+            let slice_end = self
                 .bus
                 .scheduler
                 .next_event_cycle()
-                .unwrap_or(target)
-                .min(target);
+                .unwrap_or(target_cycle)
+                .min(target_cycle);
 
             if self.bus.cpu_stalled() {
                 // The video circuit holds the bus; the CPU idles to the next
                 // event (the bus-request release) without executing.
-                self.bus.set_current_cycle(next);
+                self.bus.set_current_cycle(slice_end);
             } else {
-                let slice = next.saturating_sub(current).max(1);
-                let ran = {
+                let slice_cycles = slice_end.saturating_sub(current_cycle).max(1);
+                let ran_cycles = {
                     let mut view = MainBusView { bus: &mut self.bus };
-                    self.main_cpu.run_for(slice, &mut view)
+                    self.main_cpu.run_for(slice_cycles, &mut view)
                 };
                 if T::ENABLED && self.bus.tracer().yield_requested() {
                     break;
                 }
-                if ran == 0 && self.bus.current_cycle() < next {
-                    self.bus.set_current_cycle(next);
+                if ran_cycles == 0 && self.bus.current_cycle() < slice_end {
+                    self.bus.set_current_cycle(slice_end);
                 }
             }
 
-            if self.bus.current_cycle() >= next {
+            if self.bus.current_cycle() >= slice_end {
                 self.bus.process_events();
                 if T::ENABLED && self.bus.tracer().yield_requested() {
                     break;
@@ -67,7 +67,7 @@ impl<T: TraceSink> Pc6000Machine<T> {
             }
         }
 
-        self.bus.current_cycle() - start
+        self.bus.current_cycle() - start_cycle
     }
 }
 
