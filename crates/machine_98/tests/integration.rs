@@ -1,6 +1,90 @@
 use common::{Bus, Cpu, CpuMode, Machine as _, MachineModel};
 use machine_98::{Pc9801Bus, Pc9801Ra, Pc9801Vm, Pc9801Vx};
 
+fn halted_timer_machine() -> Pc9801Vm {
+    let mut machine = Pc9801Vm::new(
+        cpu::V30::new(),
+        Pc9801Bus::new(MachineModel::PC9801VM, CpuMode::High, 48_000),
+    );
+
+    machine.bus.io_write_byte(0x00, 0x11);
+    machine.bus.io_write_byte(0x02, 0x08);
+    machine.bus.io_write_byte(0x02, 0x80);
+    machine.bus.io_write_byte(0x02, 0x1D);
+    machine.bus.io_write_byte(0x02, 0x00);
+
+    machine.bus.write_word(0x08 * 4, 0x1000);
+    machine.bus.write_word(0x08 * 4 + 2, 0x0000);
+
+    let handler = [
+        0xFE, 0x06, 0x00, 0x05, // INC byte [0x0500]
+        0xB0, 0x20, // MOV AL, 0x20
+        0xE6, 0x00, // OUT 0x00, AL
+        0xCF, // IRET
+    ];
+    for (offset, value) in handler.into_iter().enumerate() {
+        machine.bus.write_byte(0x01000 + offset as u32, value);
+    }
+
+    let main_code = [
+        0xFB, // STI
+        0xF4, // HLT
+        0xFE, 0x06, 0x01, 0x05, // INC byte [0x0501]
+        0xF4, // HLT
+    ];
+    for (offset, value) in main_code.into_iter().enumerate() {
+        machine.bus.write_byte(0x00100 + offset as u32, value);
+    }
+
+    machine.bus.write_byte(0x00500, 0);
+    machine.bus.write_byte(0x00501, 0);
+    machine.bus.io_write_byte(0x77, 0x34);
+    machine.bus.io_write_byte(0x71, 0x64);
+    machine.bus.io_write_byte(0x71, 0x00);
+
+    machine.cpu.load_state(&{
+        let mut state = cpu::V30State::default();
+        state.set_sp(0x1000);
+        state.ip = 0x0100;
+        state
+    });
+    machine.run_for(100);
+    assert!(machine.cpu.halted());
+    machine
+}
+
+#[test]
+fn event_at_budget_boundary_wakes_cpu_on_next_run() {
+    let mut machine = halted_timer_machine();
+    let start_cycle = machine.bus.current_cycle();
+    let event_cycle = machine.bus.next_event_cycle().unwrap();
+    let instruction_pointer = machine.cpu.ip();
+
+    let ran_cycles = machine.run_for(event_cycle - start_cycle);
+
+    assert_eq!(ran_cycles, event_cycle - start_cycle);
+    assert_eq!(machine.bus.current_cycle(), event_cycle);
+    assert_eq!(machine.cpu.ip(), instruction_pointer);
+    assert!(machine.cpu.halted());
+    assert!(machine.bus.has_irq_pending());
+
+    machine.run_for(1);
+
+    assert_ne!(machine.cpu.ip(), instruction_pointer);
+}
+
+#[test]
+fn event_before_budget_boundary_resumes_cpu_in_same_run() {
+    let mut machine = halted_timer_machine();
+    let start_cycle = machine.bus.current_cycle();
+    let event_cycle = machine.bus.next_event_cycle().unwrap();
+
+    machine.run_for(event_cycle - start_cycle + 128);
+
+    assert_eq!(machine.bus.read_byte(0x00500), 1);
+    assert_eq!(machine.bus.read_byte(0x00501), 1);
+}
+
 #[test]
 fn pit_timer_interrupt_fires() {
     let mut machine = Pc9801Vm::new(

@@ -25,39 +25,39 @@ impl<T: TraceSink> X1Machine<T> {
     /// cycles actually advanced. Execution is sliced to the next scheduled event
     /// so periodic interrupts fire promptly.
     pub fn run_for(&mut self, budget: u64) -> u64 {
-        let start = self.bus.current_cycle();
+        let start_cycle = self.bus.current_cycle();
         if T::ENABLED && self.bus.tracer().yield_requested() {
             return 0;
         }
-        let target = start + budget;
+        let target_cycle = start_cycle.saturating_add(budget);
 
         // Bound continuous-mode DMA stalls to this run so a long floppy transfer
         // is sliced across audio steps rather than overrunning one in a single
         // instruction.
-        self.bus.set_dma_stall_deadline(target);
+        self.bus.set_dma_stall_deadline(target_cycle);
 
-        while self.bus.current_cycle() < target {
-            let current = self.bus.current_cycle();
-            let next = self
+        while self.bus.current_cycle() < target_cycle {
+            let current_cycle = self.bus.current_cycle();
+            let slice_end = self
                 .bus
                 .scheduler
                 .next_event_cycle()
-                .unwrap_or(target)
-                .min(target);
+                .unwrap_or(target_cycle)
+                .min(target_cycle);
 
-            let slice = next.saturating_sub(current).max(1);
-            let ran = {
+            let slice_cycles = slice_end.saturating_sub(current_cycle).max(1);
+            let ran_cycles = {
                 let mut view = MainBusView { bus: &mut self.bus };
-                self.main_cpu.run_for(slice, &mut view)
+                self.main_cpu.run_for(slice_cycles, &mut view)
             };
             if T::ENABLED && self.bus.tracer().yield_requested() {
                 break;
             }
-            if ran == 0 && self.bus.current_cycle() < next {
-                self.bus.set_current_cycle(next);
+            if ran_cycles == 0 && self.bus.current_cycle() < slice_end {
+                self.bus.set_current_cycle(slice_end);
             }
 
-            if self.bus.current_cycle() >= next {
+            if self.bus.current_cycle() >= slice_end {
                 self.bus.process_events();
                 if T::ENABLED && self.bus.tracer().yield_requested() {
                     break;
@@ -65,7 +65,7 @@ impl<T: TraceSink> X1Machine<T> {
             }
         }
 
-        self.bus.current_cycle() - start
+        self.bus.current_cycle() - start_cycle
     }
 }
 

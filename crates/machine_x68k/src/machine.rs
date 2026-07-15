@@ -74,28 +74,36 @@ impl<T: TraceSink> X68kMachine<T> {
 
     /// Advances the CPU by approximately `budget` input cycles.
     pub fn run_for(&mut self, budget: u64) -> u64 {
-        if budget == 0 || T::ENABLED && self.bus.tracer().yield_requested() {
+        let start_cycle = self.bus.current_cycle();
+        if T::ENABLED && self.bus.tracer().yield_requested() {
             return 0;
         }
-        let start = self.bus.current_cycle();
-        let target = start.saturating_add(budget);
-        while self.bus.current_cycle() < target {
-            let current = self.bus.current_cycle();
-            let deadline = self.bus.next_event_cycle().unwrap_or(target).min(target);
-            let slice = deadline.saturating_sub(current).max(1);
-            let ran = self.cpu.run_for(slice, &mut self.bus);
+        let target_cycle = start_cycle.saturating_add(budget);
+
+        while self.bus.current_cycle() < target_cycle {
+            let current_cycle = self.bus.current_cycle();
+            let slice_end = self
+                .bus
+                .next_event_cycle()
+                .unwrap_or(target_cycle)
+                .min(target_cycle);
+            let slice_cycles = slice_end.saturating_sub(current_cycle).max(1);
+            let ran_cycles = self.cpu.run_for(slice_cycles, &mut self.bus);
             if T::ENABLED && self.bus.tracer().yield_requested() {
                 break;
             }
-            if ran == 0 && self.bus.current_cycle() == current {
-                self.bus.set_current_cycle(current + slice);
+            if ran_cycles == 0 && self.bus.current_cycle() < slice_end {
+                self.bus.set_current_cycle(slice_end);
             }
-            self.bus.process_due_events();
+            if self.bus.current_cycle() >= slice_end {
+                self.bus.process_due_events();
+            }
             if T::ENABLED && self.bus.tracer().yield_requested() {
                 break;
             }
         }
-        self.bus.current_cycle() - start
+
+        self.bus.current_cycle() - start_cycle
     }
 }
 

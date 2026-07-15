@@ -35,87 +35,96 @@ impl<T: TraceSink> Pc8801Machine<T> {
     /// the cycles actually advanced (which may slightly exceed `budget` when an
     /// instruction completes past the boundary).
     pub fn run_for(&mut self, budget: u64) -> u64 {
-        let start = self.bus.current_cycle();
+        let start_cycle = self.bus.current_cycle();
         if T::ENABLED && self.bus.tracer().yield_requested() {
             return 0;
         }
         if T::ENABLED {
-            self.run_sub_for_main_units(0);
+            self.run_sub_for_main_cycles(0);
             if self.bus.tracer().yield_requested() {
                 return 0;
             }
         }
-        let target = start + budget;
-        while self.bus.current_cycle() < target {
-            let current = self.bus.current_cycle();
-            let slice_cap = if current < self.bus.resync_until {
+        let target_cycle = start_cycle.saturating_add(budget);
+
+        while self.bus.current_cycle() < target_cycle {
+            let current_cycle = self.bus.current_cycle();
+            let slice_cap = if current_cycle < self.bus.resync_until {
                 SYNC_SLICE
             } else {
                 TIGHT_SLICE
             };
-            let slice = (target - current).min(slice_cap).max(1);
-            let slice_end = current + slice;
+            let slice_cycles = (target_cycle - current_cycle).min(slice_cap).max(1);
+            let slice_end = current_cycle + slice_cycles;
 
             self.run_main_until(slice_end);
-            let elapsed = self.bus.current_cycle() - current;
+            let elapsed_cycles = self.bus.current_cycle() - current_cycle;
             if T::ENABLED && self.bus.tracer().yield_requested() {
-                self.bus.sub_clock_credit = self.bus.sub_clock_credit.saturating_add(elapsed);
+                self.bus.sub_clock_credit =
+                    self.bus.sub_clock_credit.saturating_add(elapsed_cycles);
                 break;
             }
 
             // Run the sub CPU for the same elapsed wall-clock, converted to its
             // T-state domain by the clock ratio.
-            self.run_sub_for_main_units(elapsed);
+            self.run_sub_for_main_cycles(elapsed_cycles);
             if T::ENABLED && self.bus.tracer().yield_requested() {
                 break;
             }
         }
-        self.bus.current_cycle() - start
+
+        self.bus.current_cycle() - start_cycle
     }
 
     /// Advances the main CPU to at least `slice_end`, honoring the V1S/N text-DMA
     /// BUSREQ lockout and guaranteeing forward progress when the CPU is halted.
     fn run_main_until(&mut self, slice_end: u64) {
-        let current = self.bus.current_cycle();
-        if current >= slice_end {
+        let current_cycle = self.bus.current_cycle();
+        if current_cycle >= slice_end {
             return;
         }
 
         // The text DMA holds the bus (V1S/N display lockout): the main CPU cannot
         // execute, so advance time so its scheduled events still fire.
         if self.bus.busreq_active() {
-            let until = self.bus.busreq_until().min(slice_end).max(current + 1);
-            self.bus.set_current_cycle(until);
+            let stall_end = self
+                .bus
+                .busreq_until()
+                .min(slice_end)
+                .max(current_cycle + 1);
+            self.bus.set_current_cycle(stall_end);
             return;
         }
 
-        let ran = {
+        let ran_cycles = {
             let mut view = MainBusView { bus: &mut self.bus };
-            self.main_cpu.run_for(slice_end - current, &mut view)
+            self.main_cpu.run_for(slice_end - current_cycle, &mut view)
         };
 
         // A halted (or fully waited) CPU consumes nothing: advance to the slice
         // end as idle so the sub CPU still runs and interrupts can wake the core.
-        if ran == 0 && self.bus.current_cycle() < slice_end {
+        if ran_cycles == 0 && self.bus.current_cycle() < slice_end {
             self.bus.set_current_cycle(slice_end);
         }
     }
 
-    /// Runs the sub CPU for `main_units` of elapsed main-clock time, converting to
+    /// Runs the sub CPU for `main_cycles` of elapsed main-clock time, converting to
     /// sub T-states and carrying the remainder for an exact long-run ratio.
-    fn run_sub_for_main_units(&mut self, main_units: u64) {
+    fn run_sub_for_main_cycles(&mut self, main_cycles: u64) {
         let shift = self.bus.sub_to_main_shift;
-        let available = main_units + self.bus.sub_clock_credit;
-        let tstates = available >> shift;
-        self.bus.sub_clock_credit = available - (tstates << shift);
-        if tstates == 0 {
+        let available_cycles = main_cycles + self.bus.sub_clock_credit;
+        let sub_cycles = available_cycles >> shift;
+        self.bus.sub_clock_credit = available_cycles - (sub_cycles << shift);
+        if sub_cycles == 0 {
             return;
         }
         let mut view = SubBusView { bus: &mut self.bus };
-        let ran = self.sub_cpu.run_for(tstates, &mut view);
-        if T::ENABLED && ran < tstates {
-            let remaining = (tstates - ran).checked_shl(shift).unwrap_or(u64::MAX);
-            self.bus.sub_clock_credit = self.bus.sub_clock_credit.saturating_add(remaining);
+        let ran_cycles = self.sub_cpu.run_for(sub_cycles, &mut view);
+        if T::ENABLED && ran_cycles < sub_cycles {
+            let remaining_cycles = (sub_cycles - ran_cycles)
+                .checked_shl(shift)
+                .unwrap_or(u64::MAX);
+            self.bus.sub_clock_credit = self.bus.sub_clock_credit.saturating_add(remaining_cycles);
         }
     }
 }
