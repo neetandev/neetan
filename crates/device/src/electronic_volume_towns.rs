@@ -2,7 +2,7 @@
 //!
 //! Two chips sit between the analog sources and the line output, each with
 //! four channels behind a data/command port pair. The second chip's channels 0
-//! and 1 attenuate the CD-DA left/right signal; the remaining channels (line
+//! and 1 attenuate the CD-DA left/right signal. The remaining channels (line
 //! in, microphone, modem) are stored and read back only.
 
 /// One attenuator channel.
@@ -46,14 +46,21 @@ impl ElectronicVolumeChannel {
 }
 
 /// One electronic-volume chip: four channels behind a data/command port pair.
-pub(crate) struct ElectronicVolume {
+pub struct ElectronicVolume {
     channels: [ElectronicVolumeChannel; 4],
     /// Channel addressed by the data port, set through the command port.
     channel_latch: u8,
 }
 
+impl Default for ElectronicVolume {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ElectronicVolume {
-    pub(crate) fn new() -> Self {
+    /// Creates a reset electronic-volume controller.
+    pub fn new() -> Self {
         Self {
             channels: [ElectronicVolumeChannel::new(); 4],
             channel_latch: 0,
@@ -61,18 +68,18 @@ impl ElectronicVolume {
     }
 
     /// Writes the data port: the addressed channel's attenuation setting.
-    pub(crate) fn write_data(&mut self, value: u8) {
+    pub fn write_data(&mut self, value: u8) {
         self.channels[usize::from(self.channel_latch)].volume = value & 0x3F;
     }
 
     /// Reads the data port back.
-    pub(crate) fn read_data(&self) -> u8 {
+    pub fn read_data(&self) -> u8 {
         self.channels[usize::from(self.channel_latch)].volume
     }
 
     /// Writes the command port: selects the addressed channel and sets its
     /// enable (bit 2), C0 (bit 3), and C32 (bit 4) controls.
-    pub(crate) fn write_command(&mut self, value: u8) {
+    pub fn write_command(&mut self, value: u8) {
         self.channel_latch = value & 0x03;
         let channel = &mut self.channels[usize::from(self.channel_latch)];
         channel.enabled = value & 0x04 != 0;
@@ -81,7 +88,7 @@ impl ElectronicVolume {
     }
 
     /// Reads the command port back.
-    pub(crate) fn read_command(&self) -> u8 {
+    pub fn read_command(&self) -> u8 {
         let channel = &self.channels[usize::from(self.channel_latch)];
         let mut value = self.channel_latch;
         if channel.enabled {
@@ -97,7 +104,7 @@ impl ElectronicVolume {
     }
 
     /// The linear transmission ratio of `channel`.
-    pub(crate) fn channel_ratio(&self, channel: usize) -> f32 {
+    pub fn channel_ratio(&self, channel: usize) -> f32 {
         self.channels[channel].ratio()
     }
 }

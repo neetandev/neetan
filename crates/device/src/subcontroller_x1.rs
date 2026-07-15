@@ -18,7 +18,38 @@ use keytables::{
     KEYCODE_KANA_SHIFT_B, KEYCODE_NORMAL, KEYCODE_SHIFT,
 };
 
-use crate::config::X1KeyboardMode;
+/// Position of the X1 turbo keyboard mode switch.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum X1KeyboardMode {
+    /// Standard kana layout with an inactive game-key command.
+    #[default]
+    ModeA,
+    /// Alternate kana layout with a live game-key matrix.
+    ModeB,
+}
+
+impl std::fmt::Display for X1KeyboardMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ModeA => formatter.write_str("A"),
+            Self::ModeB => formatter.write_str("B"),
+        }
+    }
+}
+
+impl std::str::FromStr for X1KeyboardMode {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text.to_ascii_uppercase().as_str() {
+            "A" => Ok(Self::ModeA),
+            "B" => Ok(Self::ModeB),
+            _ => Err(format!(
+                "unknown X1 keyboard mode '{text}', expected A or B"
+            )),
+        }
+    }
+}
 
 mod alloc_free_collections {
     /// Small FIFO of pending key events (matches the 8-entry hardware buffer).

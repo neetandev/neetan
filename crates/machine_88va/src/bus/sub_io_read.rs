@@ -20,7 +20,7 @@ impl<T: common::TraceSink> Pc88VaBus<T> {
             0xFA => self.fdc.read_status(),
             0xFB => self.read_fdc_data(),
             // PPI mailbox (disk side): 0xFC=A, 0xFD=B, 0xFE=C, 0xFF=control.
-            0xFC..=0xFF => self.ppi_sub.read((port & 0x03) as u8),
+            0xFC..=0xFF => self.ppi_link.read_sub((port & 0x03) as u8),
             _ => return (SUB_OPEN_BUS, false),
         };
         (value, true)

@@ -18,54 +18,15 @@ const SCC_A_CONTROL_OFFSET: u32 = 5;
 /// Offset of the channel A data port within the SCC window.
 const SCC_A_DATA_OFFSET: u32 = 7;
 
-/// Mouse status bit reporting the left button held.
-const MOUSE_STATUS_LEFT: u8 = 0x01;
-/// Mouse status bit reporting the right button held.
-const MOUSE_STATUS_RIGHT: u8 = 0x02;
-/// Mouse status bit reporting a positive X delta overflow.
-const MOUSE_STATUS_X_OVERFLOW: u8 = 0x10;
-/// Mouse status bit reporting a negative X delta underflow.
-const MOUSE_STATUS_X_UNDERFLOW: u8 = 0x20;
-/// Mouse status bit reporting a positive Y delta overflow.
-const MOUSE_STATUS_Y_OVERFLOW: u8 = 0x40;
-/// Mouse status bit reporting a negative Y delta underflow.
-const MOUSE_STATUS_Y_UNDERFLOW: u8 = 0x80;
-
-/// Host mouse input accumulated between MSCTRL polls.
-#[derive(Debug, Default)]
-pub(super) struct MouseState {
-    /// Accumulated X movement since the last packet.
-    delta_x: i32,
-    /// Accumulated Y movement since the last packet.
-    delta_y: i32,
-    /// Left button held.
-    left: bool,
-    /// Right button held.
-    right: bool,
-}
-
-/// Clamps an accumulated delta into a packet byte plus its overflow bits.
-fn clamp_delta(delta: i32, overflow_bit: u8, underflow_bit: u8) -> (u8, u8) {
-    if delta > 127 {
-        (127, overflow_bit)
-    } else if delta < -128 {
-        (0x80, underflow_bit)
-    } else {
-        (delta as u8, 0)
-    }
-}
-
 impl<T: TraceSink> X68kBus<T> {
     /// Accumulates host mouse movement for the next packet.
     pub fn push_mouse_delta(&mut self, delta_x: i16, delta_y: i16) {
-        self.mouse.delta_x = self.mouse.delta_x.saturating_add(i32::from(delta_x));
-        self.mouse.delta_y = self.mouse.delta_y.saturating_add(i32::from(delta_y));
+        self.mouse.push_delta(delta_x, delta_y);
     }
 
     /// Updates the held mouse buttons.
     pub fn set_mouse_buttons(&mut self, left: bool, right: bool) {
-        self.mouse.left = left;
-        self.mouse.right = right;
+        self.mouse.set_buttons(left, right);
     }
 
     /// Reads an SCC register byte at an odd address.
@@ -102,27 +63,9 @@ impl<T: TraceSink> X68kBus<T> {
 
     /// Builds a mouse packet from the accumulated input and latches it.
     fn latch_mouse_packet(&mut self) {
-        let (delta_x, x_status) = clamp_delta(
-            self.mouse.delta_x,
-            MOUSE_STATUS_X_OVERFLOW,
-            MOUSE_STATUS_X_UNDERFLOW,
-        );
-        let (delta_y, y_status) = clamp_delta(
-            self.mouse.delta_y,
-            MOUSE_STATUS_Y_OVERFLOW,
-            MOUSE_STATUS_Y_UNDERFLOW,
-        );
-        let mut status = x_status | y_status;
-        if self.mouse.left {
-            status |= MOUSE_STATUS_LEFT;
-        }
-        if self.mouse.right {
-            status |= MOUSE_STATUS_RIGHT;
-        }
-        self.mouse.delta_x = 0;
-        self.mouse.delta_y = 0;
+        let packet = self.mouse.take_packet();
         let tick = cycle_to_tick(self.current_cycle, SCC_CLOCK_HZ, self.cpu_clock_hz);
-        self.scc.load_mouse_packet([status, delta_x, delta_y], tick);
+        self.scc.load_mouse_packet(packet, tick);
     }
 }
 

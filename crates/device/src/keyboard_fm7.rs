@@ -12,7 +12,7 @@
 //! (`0xD431`/`0xD432`, LEDs, programmable repeat, RTC) lives in the [`encoder`]
 //! submodule and is driven from the bus.
 
-pub(crate) mod encoder;
+pub mod encoder;
 mod keytables;
 
 use keytables::{FM16BETA_TABLES, KeycodeTables, SCANCODE_COUNT, STANDARD_TABLES};
@@ -20,7 +20,7 @@ use keytables::{FM16BETA_TABLES, KeycodeTables, SCANCODE_COUNT, STANDARD_TABLES}
 /// Translated keycode table set selected by the FM-77AV encoder scancode mode.
 /// The base FM-7 always uses the standard set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum KeycodeTableSet {
+pub enum KeycodeTableSet {
     /// Standard F-BASIC keycodes.
     Standard,
     /// FM-16beta compatible keycodes.
@@ -114,7 +114,7 @@ impl KeyFifo {
 
 /// Base FM-7 keyboard state: modifiers, the pending-keycode FIFO, and the read
 /// latch with its interrupt line.
-pub(crate) struct Fm7Keyboard {
+pub struct Fm7Keyboard {
     shift_left: bool,
     shift_right: bool,
     ctrl: bool,
@@ -133,7 +133,7 @@ pub(crate) struct Fm7Keyboard {
 
 impl Fm7Keyboard {
     /// Creates a keyboard with all keys released and no pending codes.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             shift_left: false,
             shift_right: false,
@@ -154,7 +154,7 @@ impl Fm7Keyboard {
     /// state; other keys enqueue their keycode on press, translated through
     /// `table_set`. The translated modes emit make codes only, so a release
     /// enqueues nothing.
-    pub(crate) fn push(&mut self, scancode: u8, pressed: bool, table_set: KeycodeTableSet) {
+    pub fn push(&mut self, scancode: u8, pressed: bool, table_set: KeycodeTableSet) {
         if Self::is_modifier(scancode) {
             self.set_modifier(scancode, pressed);
             return;
@@ -179,7 +179,7 @@ impl Fm7Keyboard {
     /// modifiers included, enqueues its physical scancode on press and the
     /// scancode with [`SCAN_RELEASE_BIT`] set on release. Modifier state still
     /// tracks so a later switch back to a translated mode starts consistent.
-    pub(crate) fn push_scan(&mut self, scancode: u8, pressed: bool) {
+    pub fn push_scan(&mut self, scancode: u8, pressed: bool) {
         if scancode == 0 {
             return;
         }
@@ -271,7 +271,7 @@ impl Fm7Keyboard {
 
     /// Moves the next pending keycode into the read latch and asserts the
     /// interrupt line. Returns whether a keycode was latched.
-    pub(crate) fn latch_next(&mut self) -> bool {
+    pub fn latch_next(&mut self) -> bool {
         match self.fifo.pop() {
             Some(code) => {
                 self.keycode = code;
@@ -283,36 +283,36 @@ impl Fm7Keyboard {
     }
 
     /// Whether the latched keycode's ninth bit is set (`0xFD00`/`0xD400` bit 7).
-    pub(crate) fn keycode_high(&self) -> bool {
+    pub fn keycode_high(&self) -> bool {
         self.keycode & KEYCODE_HIGH_BIT != 0
     }
 
     /// Reads the low byte of the latched keycode and clears the interrupt line,
     /// matching a main `0xFD01` or sub `0xD401` read.
-    pub(crate) fn read_low(&mut self) -> u8 {
+    pub fn read_low(&mut self) -> u8 {
         self.interrupt_asserted = false;
         self.keycode as u8
     }
 
     /// Whether the keycode interrupt line is currently asserted.
-    pub(crate) fn interrupt_asserted(&self) -> bool {
+    pub fn interrupt_asserted(&self) -> bool {
         self.interrupt_asserted
     }
 
     /// Whether the BREAK key is currently held.
-    pub(crate) fn break_pressed(&self) -> bool {
+    pub fn break_pressed(&self) -> bool {
         self.break_pressed
     }
 
     /// Whether `scancode` is a key the FM-77AV encoder may auto-repeat: a
     /// non-modifier key within the repeatable range.
-    pub(crate) fn is_repeatable(scancode: u8) -> bool {
+    pub fn is_repeatable(scancode: u8) -> bool {
         !Self::is_modifier(scancode) && encoder::is_repeatable_scancode(scancode)
     }
 
     /// Re-enqueues the translated keycode for `scancode`, used by the FM-77AV
     /// encoder to generate an auto-repeat keystroke.
-    pub(crate) fn enqueue_repeat(&mut self, scancode: u8, table_set: KeycodeTableSet) {
+    pub fn enqueue_repeat(&mut self, scancode: u8, table_set: KeycodeTableSet) {
         let code = self.translate(scancode, table_set);
         if code != 0 {
             self.fifo.push(code);

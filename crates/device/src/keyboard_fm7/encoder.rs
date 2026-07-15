@@ -8,7 +8,7 @@
 //!
 //! The handshake is polled rather than interrupt driven. Each command byte the
 //! host writes lowers the ACK bit; the bus re-raises it a short delay later
-//! (modelled with the [`crate::scheduler::EventFm7::EncoderAck`] event). Response
+//! (modelled with a machine scheduler acknowledgement event). Response
 //! bytes are queued and drained one at a time while the RXRDY bit reports data is
 //! waiting.
 //!
@@ -114,7 +114,7 @@ const RTC_CENTURY_1900: u16 = 1900;
 /// Scancode reporting mode selected through the `0x00`/`0x01` commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub(crate) enum ScancodeMode {
+pub enum ScancodeMode {
     /// Standard F-BASIC keycodes (the power-on default).
     Standard = 0,
     /// FM-16beta compatible codes.
@@ -125,7 +125,7 @@ pub(crate) enum ScancodeMode {
 
 /// Follow-up work the bus must perform after a command byte is accepted.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct EncoderAction {
+pub struct EncoderAction {
     /// The encoder lowered ACK and needs it re-raised after the handshake delay.
     pub schedule_ack: bool,
     /// A calendar-clock set completed; the one-second cadence must re-anchor so
@@ -201,7 +201,7 @@ impl ByteFifo {
 
 /// FM-77AV keyboard encoder: the command handshake, configuration state, and the
 /// embedded real-time clock.
-pub(crate) struct KeyboardEncoder {
+pub struct KeyboardEncoder {
     /// Whether response data is waiting to be read (drives status bit 7).
     receive_ready: bool,
     /// Whether the encoder has acknowledged the last byte and can accept another
@@ -255,7 +255,7 @@ impl KeyboardEncoder {
     /// Creates an encoder in its power-on state: ready to accept a command, no
     /// response pending, standard scancode mode, LEDs off, and default repeat
     /// timing.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             receive_ready: false,
             command_acknowledged: true,
@@ -285,7 +285,7 @@ impl KeyboardEncoder {
     /// Reads the status register (`0xD432`). Both meaningful bits are active low:
     /// bit 7 clears while response data is waiting, bit 0 clears while the encoder
     /// is still busy with the previous byte.
-    pub(crate) fn read_status(&self) -> u8 {
+    pub fn read_status(&self) -> u8 {
         let mut status = STATUS_IDLE;
         if self.receive_ready {
             status &= !STATUS_RECEIVE_READY_BIT;
@@ -298,7 +298,7 @@ impl KeyboardEncoder {
 
     /// Reads the data register (`0xD431`), draining one response byte. The last
     /// byte is held when the queue empties, matching the hardware latch.
-    pub(crate) fn read_data(&mut self) -> u8 {
+    pub fn read_data(&mut self) -> u8 {
         if let Some(byte) = self.response_fifo.pop() {
             self.data_register = byte;
         }
@@ -309,7 +309,7 @@ impl KeyboardEncoder {
     /// Accepts a command byte written to the data register (`0xD431`) and returns
     /// the follow-up work for the bus. A byte written while the encoder is busy
     /// (ACK low) is ignored, as on hardware.
-    pub(crate) fn write_data(&mut self, byte: u8) -> EncoderAction {
+    pub fn write_data(&mut self, byte: u8) -> EncoderAction {
         if !self.command_acknowledged {
             return EncoderAction::default();
         }
@@ -327,7 +327,7 @@ impl KeyboardEncoder {
     }
 
     /// Re-raises the ACK bit once the handshake delay elapses.
-    pub(crate) fn acknowledge(&mut self) {
+    pub fn acknowledge(&mut self) {
         self.command_acknowledged = true;
     }
 
@@ -530,7 +530,7 @@ impl KeyboardEncoder {
 
     /// Seeds the calendar clock from a host time in canonical 24-hour form.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn seed_from_host(
+    pub fn seed_from_host(
         &mut self,
         year: u16,
         month: u8,
@@ -551,7 +551,7 @@ impl KeyboardEncoder {
 
     /// Advances the calendar clock by one second, carrying into the minute, hour,
     /// day, day-of-week, month, and year as needed.
-    pub(crate) fn advance_one_second(&mut self) {
+    pub fn advance_one_second(&mut self) {
         self.rtc_second += 1;
         if self.rtc_second < 60 {
             return;
@@ -582,12 +582,12 @@ impl KeyboardEncoder {
     }
 
     /// Lights or clears the INSERT LED (driven by the sub `0xD40D` register).
-    pub(crate) fn set_insert_led(&mut self, on: bool) {
+    pub fn set_insert_led(&mut self, on: bool) {
         self.insert_led_on = on;
     }
 
     /// The combined LED status: bit 0 INSERT, bit 1 KANA, bit 2 CAPS.
-    pub(crate) fn led_status(&self) -> u8 {
+    pub fn led_status(&self) -> u8 {
         let mut status = 0;
         if self.insert_led_on {
             status |= LED_STATUS_INSERT_BIT;
@@ -602,39 +602,39 @@ impl KeyboardEncoder {
     }
 
     /// The selected scancode reporting mode.
-    pub(crate) fn scancode_mode(&self) -> ScancodeMode {
+    pub fn scancode_mode(&self) -> ScancodeMode {
         self.scancode_mode
     }
 
     /// Whether auto-repeat should generate keystrokes: enabled and not in the raw
     /// scancode mode, which suppresses repeat.
-    pub(crate) fn auto_repeat_active(&self) -> bool {
+    pub fn auto_repeat_active(&self) -> bool {
         self.repeat_enabled && self.scancode_mode != ScancodeMode::Scan
     }
 
     /// The configured delay before the first auto-repeat, in milliseconds.
-    pub(crate) fn repeat_delay_ms(&self) -> u64 {
+    pub fn repeat_delay_ms(&self) -> u64 {
         self.repeat_delay_ms
     }
 
     /// The configured interval between auto-repeats, in milliseconds.
-    pub(crate) fn repeat_interval_ms(&self) -> u64 {
+    pub fn repeat_interval_ms(&self) -> u64 {
         self.repeat_interval_ms
     }
 
     /// Records `scancode` as the key now repeating.
-    pub(crate) fn arm_repeat(&mut self, scancode: u8) {
+    pub fn arm_repeat(&mut self, scancode: u8) {
         self.repeat_scancode = Some(scancode);
     }
 
     /// The scancode currently repeating, if any.
-    pub(crate) fn repeat_scancode(&self) -> Option<u8> {
+    pub fn repeat_scancode(&self) -> Option<u8> {
         self.repeat_scancode
     }
 
     /// Cancels auto-repeat when `scancode` matches the repeating key, returning
     /// whether it was cancelled.
-    pub(crate) fn cancel_repeat_if(&mut self, scancode: u8) -> bool {
+    pub fn cancel_repeat_if(&mut self, scancode: u8) -> bool {
         if self.repeat_scancode == Some(scancode) {
             self.repeat_scancode = None;
             true
@@ -651,7 +651,7 @@ impl Default for KeyboardEncoder {
 }
 
 /// Whether `scancode` is eligible for auto-repeat: below the modifier/BREAK range.
-pub(crate) fn is_repeatable_scancode(scancode: u8) -> bool {
+pub fn is_repeatable_scancode(scancode: u8) -> bool {
     scancode < REPEAT_SCANCODE_LIMIT
 }
 

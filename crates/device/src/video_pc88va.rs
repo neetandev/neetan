@@ -6,7 +6,7 @@
 //! byte at a time through low/high port pairs. Reads are defined only for the
 //! handful of ports the hardware exposes; everything else is write-only.
 
-use software_renderer::va::{FramebufferVa, adjust_color12};
+use common::FramebufferVa;
 
 const PALETTE_BASE: u16 = 0x300;
 const PALETTE_ENTRIES: usize = 32;
@@ -19,34 +19,72 @@ fn set_high(register: &mut u16, value: u8) {
     *register = (*register & 0x00FF) | (u16::from(value) << 8);
 }
 
+fn adjust_color12(mut color: u16) -> u16 {
+    if color & 0xF000 != 0 {
+        color |= 0x0C00;
+    }
+    if color & 0x03C0 != 0 {
+        color |= 0x0020;
+    }
+    if color & 0x001E != 0 {
+        color |= 0x0001;
+    }
+    color
+}
+
 /// VIDEOVA register state.
-pub(crate) struct VideoVa {
-    pub(crate) txtmode8: u8,
-    pub(crate) txtmode: u8,
-    pub(crate) grmode: u16,
-    pub(crate) grres: u16,
-    pub(crate) colcomp: u16,
-    pub(crate) rgbcomp: u16,
-    pub(crate) mskmode: u16,
-    pub(crate) palmode: u16,
-    pub(crate) dropcol: u16,
-    pub(crate) pagemsk: u16,
-    pub(crate) xpar_g0: u16,
-    pub(crate) xpar_g1: u16,
-    pub(crate) xpar_txtspr: u16,
-    pub(crate) mskleft: u16,
-    pub(crate) mskrit: u16,
-    pub(crate) msktop: u16,
-    pub(crate) mskbot: u16,
-    pub(crate) palette: [u16; PALETTE_ENTRIES],
+pub struct VideoVa {
+    /// Text mode register at port 0x030.
+    pub txtmode8: u8,
+    /// Text mode register at port 0x148.
+    pub txtmode: u8,
+    /// Graphics display mode.
+    pub grmode: u16,
+    /// Graphics resolution.
+    pub grres: u16,
+    /// Palette screen composition.
+    pub colcomp: u16,
+    /// Direct-color screen composition.
+    pub rgbcomp: u16,
+    /// Screen mask mode.
+    pub mskmode: u16,
+    /// Palette mode.
+    pub palmode: u16,
+    /// Backdrop color.
+    pub dropcol: u16,
+    /// Page and plane mask.
+    pub pagemsk: u16,
+    /// Graphic screen 0 transparent color.
+    pub xpar_g0: u16,
+    /// Graphic screen 1 transparent color.
+    pub xpar_g1: u16,
+    /// Text and sprite transparent color.
+    pub xpar_txtspr: u16,
+    /// Left mask bound.
+    pub mskleft: u16,
+    /// Right mask bound.
+    pub mskrit: u16,
+    /// Top mask bound.
+    pub msktop: u16,
+    /// Bottom mask bound.
+    pub mskbot: u16,
+    /// Color palette entries.
+    pub palette: [u16; PALETTE_ENTRIES],
     /// The four graphics framebuffer descriptors.
-    pub(crate) framebuffer: [FramebufferVa; 4],
+    pub framebuffer: [FramebufferVa; 4],
     /// Frame counter for the palette blink machinery.
-    pub(crate) blinkcnt: u16,
+    pub blinkcnt: u16,
+}
+
+impl Default for VideoVa {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl VideoVa {
-    pub(crate) fn new() -> Self {
+    /// Creates a reset video register file.
+    pub fn new() -> Self {
         Self {
             txtmode8: 0,
             txtmode: 0,
@@ -77,12 +115,12 @@ impl VideoVa {
     }
 
     /// Advances the palette-blink counter once per frame.
-    pub(crate) fn tick_blink(&mut self) {
+    pub fn tick_blink(&mut self) {
         self.blinkcnt = self.blinkcnt.wrapping_add(1);
     }
 
     /// Reads a video register. Only the hardware-readable ports return a value.
-    pub(crate) fn read(&self, port: u16) -> Option<u8> {
+    pub fn read(&self, port: u16) -> Option<u8> {
         let value = match port {
             0x100 => self.grmode as u8,
             0x101 => (self.grmode >> 8) as u8,
@@ -97,7 +135,7 @@ impl VideoVa {
     }
 
     /// Writes a video register byte. Returns `true` if the port was handled.
-    pub(crate) fn write(&mut self, port: u16, value: u8) -> bool {
+    pub fn write(&mut self, port: u16, value: u8) -> bool {
         match port {
             0x030 => self.txtmode8 = value,
             0x100 => set_low(&mut self.grmode, value),

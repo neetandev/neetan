@@ -4,24 +4,30 @@
 /// Horizontal sync mode, selected by the CRT type (the interlace variant is
 /// added with the video controller).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HsyncMode {
+pub enum HsyncMode {
+    /// 24.8 kHz horizontal sync.
     Khz24_8,
+    /// 15.98 kHz horizontal sync.
     Khz15_98,
 }
 
-/// Which half of the frame loop the next [`TspFrame`](crate::scheduler::Event88Va)
-/// event advances.
+/// Which half of the frame loop the next TSP frame event advances.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FramePhase {
+pub enum FramePhase {
+    /// Start the display interval.
     DisplayStart,
+    /// Start the vertical-sync interval.
     Vsync,
 }
 
 /// Step of the system-port-4 VSYNC / IRQ chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Sysp4Phase {
+pub enum Sysp4Phase {
+    /// End the system-port sync interval.
     End,
+    /// Start the system-port sync interval.
     Start,
+    /// Assert the system-port interrupt.
     Int,
 }
 
@@ -53,15 +59,25 @@ const STATUS_VB: u8 = 0x40;
 
 /// A text-VRAM write a TSP command produces, applied by the bus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TspMemEffect {
+pub enum TspMemEffect {
     /// Set or clear a sprite's enable bit (word 0, bit 9) at `offset`.
-    SpriteEnable { offset: u16, enable: bool },
+    SpriteEnable {
+        /// Byte offset of the sprite descriptor.
+        offset: u16,
+        /// New sprite enable state.
+        enable: bool,
+    },
     /// Write a byte into the sprite table at `offset` (SPRDEF stream).
-    WriteByte { offset: u16, value: u8 },
+    WriteByte {
+        /// Byte offset within the sprite table.
+        offset: u16,
+        /// Value to store.
+        value: u8,
+    },
 }
 
 /// TSP timing and command state.
-pub(crate) struct TspState {
+pub struct TspState {
     status: u8,
     command: Command,
     recvdatacnt: u8,
@@ -70,62 +86,71 @@ pub(crate) struct TspState {
     syncparam: [u8; 14],
 
     /// Display phase duration in CPU cycles (frame start to VSYNC).
-    pub(crate) dispclock: u64,
+    pub dispclock: u64,
     /// VSYNC phase duration in CPU cycles.
-    pub(crate) vsyncclock: u64,
+    pub vsyncclock: u64,
     /// System-port-4 VSYNC window offset from frame start, in CPU cycles.
-    pub(crate) sysp4vsyncextension: u64,
+    pub sysp4vsyncextension: u64,
     /// System-port-4 display duration in CPU cycles.
-    pub(crate) sysp4dispclock: u64,
+    pub sysp4dispclock: u64,
 
     /// TSP VSYNC status (port 0x142 bit 6 when non-zero).
-    pub(crate) vsync: u8,
+    pub vsync: u8,
     /// System-port-4 VSYNC status (port 0x040 bit 5).
-    pub(crate) sysp4vsync: u8,
+    pub sysp4vsync: u8,
 
-    pub(crate) frame_phase: FramePhase,
-    pub(crate) sysp4_phase: Sysp4Phase,
+    /// Next frame timing phase.
+    pub frame_phase: FramePhase,
+    /// Next system-port-4 timing phase.
+    pub sysp4_phase: Sysp4Phase,
 
     /// Text-table base offset within text VRAM (DSPON).
-    pub(crate) texttable: u16,
+    pub texttable: u16,
     /// Attribute byte offset relative to a character code (DSPDEF).
-    pub(crate) attroffset: u16,
+    pub attroffset: u16,
     /// Scanlines per text row (DSPDEF, stored as the programmed value + 1).
-    pub(crate) lineheight: u8,
+    pub lineheight: u8,
     /// Horizontal-line raster position (DSPDEF).
-    pub(crate) hlinepos: u8,
+    pub hlinepos: u8,
     /// Blink-rate reload value (DSPDEF, bits 5-7 of the rate byte).
-    pub(crate) blink: u8,
+    pub blink: u8,
     /// Text display enabled (DSPON).
-    pub(crate) dspon: bool,
+    pub dspon: bool,
     /// Blink countdown, reloaded from `blink` each cycle.
-    pub(crate) blinkcnt: u8,
+    pub blinkcnt: u8,
     /// Blink phase counter, incremented when `blinkcnt` reaches zero.
-    pub(crate) blinkcnt2: u8,
+    pub blinkcnt2: u8,
     /// Cursor sprite number (CURDEF).
-    pub(crate) curn: u8,
+    pub curn: u8,
     /// Cursor blink enable (CURDEF).
-    pub(crate) be: bool,
+    pub be: bool,
     /// Sprite-table base offset within text VRAM (SPRON).
-    pub(crate) sprtable: u16,
+    pub sprtable: u16,
     /// Maximum sprites per raster minus one (SPRON `hspn`).
-    pub(crate) hspn: u8,
+    pub hspn: u8,
     /// Sprite 2x vertical magnification (SPRON `mg`).
-    pub(crate) mg: bool,
+    pub mg: bool,
     /// Sprite grouping mode (SPRON `gr`).
-    pub(crate) gr: bool,
+    pub gr: bool,
     /// Sprite display enabled (SPRON / SPROFF).
-    pub(crate) spron: bool,
+    pub spron: bool,
     /// Next write offset for a SPRDEF stream, relative to `sprtable`.
     sprdef_offset: u16,
     /// Text 2x vertical magnification (SYNC parameter 0).
-    pub(crate) textmg: bool,
+    pub textmg: bool,
     /// Programmed screen line count (SYNC parameters 0x0a/0x0b).
-    pub(crate) screenlines: u16,
+    pub screenlines: u16,
+}
+
+impl Default for TspState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TspState {
-    pub(crate) fn new() -> Self {
+    /// Creates reset TSP timing and command state.
+    pub fn new() -> Self {
         Self {
             status: 0,
             command: Command::None,
@@ -163,12 +188,12 @@ impl TspState {
     }
 
     /// SYNC parameter 0, selecting the 200-line text doubling case.
-    pub(crate) fn sync_param0(&self) -> u8 {
+    pub fn sync_param0(&self) -> u8 {
         self.syncparam[0]
     }
 
     /// Advances the text blink counters once per frame (`screenvsyncva`).
-    pub(crate) fn tick_blink(&mut self) {
+    pub fn tick_blink(&mut self) {
         self.blinkcnt = self.blinkcnt.wrapping_sub(1);
         if self.blinkcnt == 0 {
             self.blinkcnt = self.blink;
@@ -177,14 +202,14 @@ impl TspState {
     }
 
     /// Status read (port 0x142): the busy flag plus the VSYNC (VB) bit.
-    pub(crate) fn read_status(&self) -> u8 {
+    pub fn read_status(&self) -> u8 {
         let vb = if self.vsync != 0 { STATUS_VB } else { 0 };
         self.status | vb
     }
 
     /// Command write (port 0x142): latches the command and arms its parameter
     /// count. Commands without parameters complete immediately.
-    pub(crate) fn write_command(&mut self, command: u8) -> Option<TspMemEffect> {
+    pub fn write_command(&mut self, command: u8) -> Option<TspMemEffect> {
         self.paramindex = 0;
         self.status |= STATUS_BUSY;
         match command {
@@ -232,7 +257,7 @@ impl TspState {
 
     /// Parameter write (port 0x146): fills the parameter buffer and executes the
     /// command once the last byte arrives, or streams a SPRDEF byte.
-    pub(crate) fn write_parameter(&mut self, value: u8) -> Option<TspMemEffect> {
+    pub fn write_parameter(&mut self, value: u8) -> Option<TspMemEffect> {
         match self.command {
             Command::SprdefBegin => {
                 self.sprdef_offset = u16::from(value);
@@ -312,7 +337,7 @@ impl TspState {
     /// Recomputes the frame timing from the SYNC parameters and the CPU clock.
     /// With no SYNC programmed (`vad == 0 && had == 0`) the reset default of
     /// 24.8 kHz / 400 lines applies.
-    pub(crate) fn update_clock(&mut self, main_clock_hz: u32, hsyncmode: HsyncMode) {
+    pub fn update_clock(&mut self, main_clock_hz: u32, hsyncmode: HsyncMode) {
         let parameters = &self.syncparam;
         let mut lbl = u64::from(parameters[2] & 0x3F);
         let mut lbr = u64::from(parameters[3] & 0x3F);

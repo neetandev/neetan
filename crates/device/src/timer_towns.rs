@@ -12,7 +12,7 @@
 
 /// Base counter input clock (channels 0-3 and 5). Also the beep tone clock:
 /// the buzzer frequency is this divided by channel 2's reload value.
-pub(crate) const TIMER_CLOCK_HZ: u32 = 307_200;
+pub const TIMER_CLOCK_HZ: u32 = 307_200;
 
 /// The timer channel whose reload value sets the beep (buzzer) frequency.
 const CHANNEL_BEEP: usize = 2;
@@ -70,7 +70,7 @@ struct TimerChannel {
 
 /// Snapshot of the timer state.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TownsTimerState {
+pub struct TownsTimerState {
     channels: [TimerChannel; 6],
     /// Latched OUT flags for channel 0 and 1.
     timer_out: [bool; 2],
@@ -81,13 +81,19 @@ pub(crate) struct TownsTimerState {
 }
 
 /// FM Towns interval timer.
-pub(crate) struct TownsTimer {
+pub struct TownsTimer {
     state: TownsTimerState,
+}
+
+impl Default for TownsTimer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TownsTimer {
     /// Creates a timer in its reset state.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             state: TownsTimerState {
                 channels: [TimerChannel::default(); 6],
@@ -100,7 +106,7 @@ impl TownsTimer {
 
     /// Handles a control-word write to a timer block. `block` is 0 for channels
     /// 0-2 (port 0x0046) or 1 for channels 3-5 (port 0x0056).
-    pub(crate) fn write_control(&mut self, block: usize, value: u8) {
+    pub fn write_control(&mut self, block: usize, value: u8) {
         let channel = block * 3 + ((value >> CONTROL_CHANNEL_SHIFT) & 0x03) as usize;
         if channel >= self.state.channels.len() {
             return;
@@ -121,7 +127,7 @@ impl TownsTimer {
     /// Handles a counter write for a global channel index (0-5). Returns `true`
     /// when the channel finished (re)loading, so the caller can reschedule its
     /// interrupt event.
-    pub(crate) fn write_counter(&mut self, channel: usize, value: u8, current_cycle: u64) -> bool {
+    pub fn write_counter(&mut self, channel: usize, value: u8, current_cycle: u64) -> bool {
         if channel >= self.state.channels.len() {
             return false;
         }
@@ -156,12 +162,7 @@ impl TownsTimer {
     }
 
     /// Reads a counter byte for a global channel index (0-5).
-    pub(crate) fn read_counter(
-        &mut self,
-        channel: usize,
-        current_cycle: u64,
-        cpu_clock_hz: u32,
-    ) -> u8 {
+    pub fn read_counter(&mut self, channel: usize, current_cycle: u64, cpu_clock_hz: u32) -> u8 {
         if channel >= self.state.channels.len() {
             return 0xFF;
         }
@@ -183,7 +184,7 @@ impl TownsTimer {
     }
 
     /// Handles a write to the interval-control register (0x0060).
-    pub(crate) fn write_interval_control(&mut self, value: u8) {
+    pub fn write_interval_control(&mut self, value: u8) {
         self.state.timer_enable[0] = value & INTERVAL_TIMER0_ENABLE != 0;
         self.state.timer_enable[1] = value & INTERVAL_TIMER1_ENABLE != 0;
         self.state.sound_enable = value & INTERVAL_SOUND_ENABLE != 0;
@@ -193,7 +194,7 @@ impl TownsTimer {
     }
 
     /// Reads the interval-status register (0x0060).
-    pub(crate) fn read_interval_status(&self) -> u8 {
+    pub fn read_interval_status(&self) -> u8 {
         let mut status = 0;
         if self.state.timer_out[0] {
             status |= STATUS_TIMER0_OUT;
@@ -215,32 +216,32 @@ impl TownsTimer {
 
     /// Latches the OUT flag for an interrupt-capable channel (0 or 1) when its
     /// scheduled edge fires.
-    pub(crate) fn latch_channel_out(&mut self, channel: usize) {
+    pub fn latch_channel_out(&mut self, channel: usize) {
         if channel < self.state.timer_out.len() {
             self.state.timer_out[channel] = true;
         }
     }
 
     /// Clears channel 1's OUT flag (on any access to its counter register).
-    pub(crate) fn clear_timer1_out(&mut self) {
+    pub fn clear_timer1_out(&mut self) {
         self.state.timer_out[1] = false;
     }
 
     /// Whether the timer is currently asserting IRQ 0.
-    pub(crate) fn irq_active(&self) -> bool {
+    pub fn irq_active(&self) -> bool {
         (self.state.timer_out[0] && self.state.timer_enable[0])
             || (self.state.timer_out[1] && self.state.timer_enable[1])
     }
 
     /// Whether the SOUND (beep) output is enabled.
-    pub(crate) fn sound_enabled(&self) -> bool {
+    pub fn sound_enabled(&self) -> bool {
         self.state.sound_enable
     }
 
     /// Channel 2's reload value, which sets the beep tone frequency
     /// ([`TIMER_CLOCK_HZ`] divided by this). A reload below 2 is treated as
     /// silence, matching the hardware's minimum divisor.
-    pub(crate) fn beep_reload(&self) -> u16 {
+    pub fn beep_reload(&self) -> u16 {
         let reload = self.state.channels[CHANNEL_BEEP].initial_count;
         if reload < 2 { 0 } else { reload }
     }
@@ -248,7 +249,7 @@ impl TownsTimer {
     /// The period, in CPU cycles, of an interrupt-capable channel's next edge,
     /// or `None` if the channel is not producing interrupt edges. Channel 0 is
     /// periodic in mode 3; channel 1 is one-shot in mode 0.
-    pub(crate) fn interrupt_period_cycles(&self, channel: usize, cpu_clock_hz: u32) -> Option<u64> {
+    pub fn interrupt_period_cycles(&self, channel: usize, cpu_clock_hz: u32) -> Option<u64> {
         let state = self.state.channels.get(channel)?;
         if !state.counting {
             return None;

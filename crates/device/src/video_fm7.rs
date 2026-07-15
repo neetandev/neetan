@@ -2,8 +2,6 @@
 //! and the sub-monitor ROM, plus the [`VideoState`] display registers driven by
 //! both CPUs and consumed by the software renderer.
 
-use crate::rom::LoadedRoms;
-
 /// Number of digital palette registers (`0xFD38-0xFD3F`).
 const DIGITAL_PALETTE_ENTRIES: usize = 8;
 /// Mask selecting the three colour bits stored in a palette register.
@@ -50,7 +48,7 @@ const PAGE_OFFSET_BYTES: usize = VRAM_PAGE_SIZE;
 /// Display registers shared between the main CPU (`0xFD37`, `0xFD38-0xFD3F`,
 /// `0xFD30-0xFD34`) and the sub CPU (`0xD408`, `0xD40E`/`0xD40F`, `0xD430`), read by the
 /// software renderer.
-pub(crate) struct VideoState {
+pub struct VideoState {
     /// Live digital palette; each entry stores a three-bit colour code.
     digital_palette: [u8; DIGITAL_PALETTE_ENTRIES],
     /// Palette snapshot committed at frame start and fed to the renderer.
@@ -82,9 +80,15 @@ pub(crate) struct VideoState {
     fine_offset_enabled: bool,
 }
 
+impl Default for VideoState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VideoState {
     /// Creates display state with the identity palettes and the CRT disabled.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let mut digital_palette = [0u8; DIGITAL_PALETTE_ENTRIES];
         for (index, entry) in digital_palette.iter_mut().enumerate() {
             *entry = index as u8;
@@ -111,64 +115,64 @@ impl VideoState {
     }
 
     /// Sets the FM-77AV 320x200 mode latch (`0xFD12` bit 6).
-    pub(crate) fn set_mode320(&mut self, enabled: bool) {
+    pub fn set_mode320(&mut self, enabled: bool) {
         self.mode320 = enabled;
     }
 
     /// Whether the FM-77AV 320x200 mode latch is set.
-    pub(crate) fn mode320(&self) -> bool {
+    pub fn mode320(&self) -> bool {
         self.mode320
     }
 
     /// Visible pixels per scanline for the current mode, used by the ALU line
     /// generator to convert coordinates into VRAM byte addresses.
-    pub(crate) fn pixel_width(&self) -> u32 {
+    pub fn pixel_width(&self) -> u32 {
         if self.mode320 { 320 } else { 640 }
     }
 
     /// Sets the FM-77AV displayed VRAM page (`0xD430` bit 6).
-    pub(crate) fn set_display_page(&mut self, page: bool) {
+    pub fn set_display_page(&mut self, page: bool) {
         self.display_page = page;
     }
 
     /// The FM-77AV displayed VRAM page fed to the renderer.
-    pub(crate) fn display_page(&self) -> bool {
+    pub fn display_page(&self) -> bool {
         self.display_page
     }
 
     /// Sets the FM-77AV draw page (`0xD430` bit 5) that CPU/sub VRAM accesses hit.
-    pub(crate) fn set_active_page(&mut self, page: bool) {
+    pub fn set_active_page(&mut self, page: bool) {
         self.active_page = page;
     }
 
     /// Sets the FM-77AV fine-scroll enable (`0xD430` bit 2).
-    pub(crate) fn set_fine_offset_enabled(&mut self, enabled: bool) {
+    pub fn set_fine_offset_enabled(&mut self, enabled: bool) {
         self.fine_offset_enabled = enabled;
     }
 
     /// Writes the analog palette index high nibble (`0xFD30`), bits 8-11.
-    pub(crate) fn write_analog_index_high(&mut self, value: u8) {
+    pub fn write_analog_index_high(&mut self, value: u8) {
         self.analog_index =
             (self.analog_index & 0x00FF) | (u16::from(value & ANALOG_CHANNEL_MASK) << 8);
     }
 
     /// Writes the analog palette index low byte (`0xFD31`), bits 0-7.
-    pub(crate) fn write_analog_index_low(&mut self, value: u8) {
+    pub fn write_analog_index_low(&mut self, value: u8) {
         self.analog_index = (self.analog_index & 0x0F00) | u16::from(value);
     }
 
     /// Writes the blue component (`0xFD32`) of the selected analog palette entry.
-    pub(crate) fn write_analog_blue(&mut self, value: u8) {
+    pub fn write_analog_blue(&mut self, value: u8) {
         self.write_analog_channel(value, ANALOG_BLUE_SHIFT);
     }
 
     /// Writes the red component (`0xFD33`) of the selected analog palette entry.
-    pub(crate) fn write_analog_red(&mut self, value: u8) {
+    pub fn write_analog_red(&mut self, value: u8) {
         self.write_analog_channel(value, ANALOG_RED_SHIFT);
     }
 
     /// Writes the green component (`0xFD34`) of the selected analog palette entry.
-    pub(crate) fn write_analog_green(&mut self, value: u8) {
+    pub fn write_analog_green(&mut self, value: u8) {
         self.write_analog_channel(value, ANALOG_GREEN_SHIFT);
     }
 
@@ -181,48 +185,48 @@ impl VideoState {
     }
 
     /// Copies the live analog palette into the frame snapshot at frame start.
-    pub(crate) fn commit_frame_analog_palette(&mut self) {
+    pub fn commit_frame_analog_palette(&mut self) {
         self.frame_analog_palette = self.analog_palette;
     }
 
     /// The analog palette snapshot fed to the renderer.
-    pub(crate) fn frame_analog_palette(&self) -> &[u16] {
+    pub fn frame_analog_palette(&self) -> &[u16] {
         &self.frame_analog_palette
     }
 
     /// Writes the `0xFD37` multipage register: low nibble access mask, high nibble
     /// display mask.
-    pub(crate) fn write_multipage(&mut self, value: u8) {
+    pub fn write_multipage(&mut self, value: u8) {
         self.access_mask = value & MULTIPAGE_ACCESS_MASK;
         self.display_mask = (value >> MULTIPAGE_DISPLAY_SHIFT) & MULTIPAGE_DISPLAY_MASK;
     }
 
     /// Writes a digital palette register (`0xFD38-0xFD3F`), keeping the colour bits.
-    pub(crate) fn write_digital_palette(&mut self, index: u8, value: u8) {
+    pub fn write_digital_palette(&mut self, index: u8, value: u8) {
         self.digital_palette[usize::from(index) % DIGITAL_PALETTE_ENTRIES] =
             value & PALETTE_COLOR_MASK;
     }
 
     /// Reads a digital palette register, returning the stored colour with the
     /// unused upper bits forced high.
-    pub(crate) fn read_digital_palette(&self, index: u8) -> u8 {
+    pub fn read_digital_palette(&self, index: u8) -> u8 {
         self.digital_palette[usize::from(index) % DIGITAL_PALETTE_ENTRIES] | PALETTE_READ_FILL
     }
 
     /// Sets the CRT enable flag (`0xD408`).
-    pub(crate) fn set_crt_enabled(&mut self, enabled: bool) {
+    pub fn set_crt_enabled(&mut self, enabled: bool) {
         self.crt_enabled = enabled;
     }
 
     /// Whether the CRT output is enabled.
-    pub(crate) fn crt_enabled(&self) -> bool {
+    pub fn crt_enabled(&self) -> bool {
         self.crt_enabled
     }
 
     /// Writes the high byte of the active draw page's display offset (`0xD40E`).
     /// The commit is immediate, matching the hardware: the byte lands in the
     /// live offset without the mask (the low byte already carries it).
-    pub(crate) fn write_display_offset_high(&mut self, value: u8) {
+    pub fn write_display_offset_high(&mut self, value: u8) {
         let page = usize::from(self.active_page);
         self.display_offsets[page] =
             (self.display_offsets[page] & 0x00FF) | (u16::from(value) << 8);
@@ -230,7 +234,7 @@ impl VideoState {
 
     /// Writes the low byte of the active draw page's display offset (`0xD40F`).
     /// The commit is immediate and re-applies the fine/coarse granularity mask.
-    pub(crate) fn write_display_offset_low(&mut self, value: u8) {
+    pub fn write_display_offset_low(&mut self, value: u8) {
         let page = usize::from(self.active_page);
         let mask = if self.fine_offset_enabled {
             OFFSET_MASK_FINE
@@ -242,22 +246,22 @@ impl VideoState {
     }
 
     /// Copies the live palette into the frame snapshot at frame start.
-    pub(crate) fn commit_frame_palette(&mut self) {
+    pub fn commit_frame_palette(&mut self) {
         self.frame_digital_palette = self.digital_palette;
     }
 
     /// The palette snapshot fed to the renderer.
-    pub(crate) fn frame_digital_palette(&self) -> [u8; DIGITAL_PALETTE_ENTRIES] {
+    pub fn frame_digital_palette(&self) -> [u8; DIGITAL_PALETTE_ENTRIES] {
         self.frame_digital_palette
     }
 
     /// The per-plane display mask fed to the renderer.
-    pub(crate) fn display_mask(&self) -> u8 {
+    pub fn display_mask(&self) -> u8 {
         self.display_mask
     }
 
     /// The committed display offset of the given page, fed to the renderer.
-    pub(crate) fn display_offset(&self, page: bool) -> u16 {
+    pub fn display_offset(&self, page: bool) -> u16 {
         self.display_offsets[usize::from(page)]
     }
 
@@ -292,7 +296,7 @@ impl VideoState {
     /// applying the active draw page's scroll offset, the mode-dependent plane
     /// masking, and the draw-page base. On the FM-7 (640 mode, page 0, coarse
     /// scroll) this reduces to plane selection plus a wrapped in-plane offset.
-    pub(crate) fn translate_vram_address(&self, address: u16) -> usize {
+    pub fn translate_vram_address(&self, address: u16) -> usize {
         let scroll = self.display_offsets[usize::from(self.active_page)];
         let in_plane = address.wrapping_add(scroll) & self.plane_mask();
         let plane = address & self.plane_stride();
@@ -300,12 +304,12 @@ impl VideoState {
     }
 
     /// Whether the sub CPU may read the given VRAM plane (`0`=B, `1`=R, `2`=G).
-    pub(crate) fn vram_read_allowed(&self, plane: u8) -> bool {
+    pub fn vram_read_allowed(&self, plane: u8) -> bool {
         self.access_mask & (1 << plane) == 0
     }
 
     /// Whether the sub CPU may write the given VRAM plane (`0`=B, `1`=R, `2`=G).
-    pub(crate) fn vram_write_allowed(&self, plane: u8) -> bool {
+    pub fn vram_write_allowed(&self, plane: u8) -> bool {
         self.access_mask & (1 << plane) == 0
     }
 }
@@ -378,7 +382,7 @@ const SUB_MONITOR_ROM_START: u16 = 0xD800;
 const OPEN_BUS: u8 = 0xFF;
 
 /// Backing storage for the display sub CPU address space.
-pub(crate) struct SubMemory {
+pub struct SubMemory {
     vram: [u8; VRAM_SIZE],
     console_ram: [u8; CONSOLE_RAM_SIZE],
     work_ram: [u8; WORK_RAM_SIZE],
@@ -404,9 +408,15 @@ pub(crate) struct SubMemory {
     av_layout: bool,
 }
 
+impl Default for SubMemory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SubMemory {
     /// Creates zero-filled sub memory with no ROM installed yet.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             vram: [0; VRAM_SIZE],
             console_ram: [0; CONSOLE_RAM_SIZE],
@@ -425,37 +435,43 @@ impl SubMemory {
 
     /// Installs the sub-monitor ROM images from the loaded ROM set. The FM-7
     /// carries only the type-C monitor; the FM-77AV adds the A/B/CG banks.
-    pub(crate) fn install_roms(&mut self, roms: &LoadedRoms) {
-        copy_prefix(&roms.subsys_c, &mut self.sub_monitor_rom_c);
-        if let Some(rom) = roms.subsys_a.as_deref() {
+    pub fn install_roms(
+        &mut self,
+        subsystem_c: &[u8],
+        subsystem_a: Option<&[u8]>,
+        subsystem_b: Option<&[u8]>,
+        subsystem_cg: Option<&[u8]>,
+    ) {
+        copy_prefix(subsystem_c, &mut self.sub_monitor_rom_c);
+        if let Some(rom) = subsystem_a {
             copy_prefix(rom, &mut self.sub_monitor_rom_a);
         }
-        if let Some(rom) = roms.subsys_b.as_deref() {
+        if let Some(rom) = subsystem_b {
             copy_prefix(rom, &mut self.sub_monitor_rom_b);
         }
-        if let Some(rom) = roms.subsyscg.as_deref() {
+        if let Some(rom) = subsystem_cg {
             copy_prefix(rom, &mut self.sub_monitor_rom_cg);
             self.av_layout = true;
         }
     }
 
     /// Selects the CG ROM window bank (`0xD430` bits 1-0).
-    pub(crate) fn set_cg_window_bank(&mut self, bank: u8) {
+    pub fn set_cg_window_bank(&mut self, bank: u8) {
         self.cg_window_bank = bank;
     }
 
     /// Whether `address` falls into the FM-77AV hidden RAM behind the I/O page.
-    pub(crate) fn hidden_ram_mapped(&self, address: u16) -> bool {
+    pub fn hidden_ram_mapped(&self, address: u16) -> bool {
         self.av_layout && (HIDDEN_RAM_START..=HIDDEN_RAM_END).contains(&address)
     }
 
     /// Selects the active sub-monitor bank (`0xFD13`).
-    pub(crate) fn set_sub_monitor_bank(&mut self, bank: u8) {
+    pub fn set_sub_monitor_bank(&mut self, bank: u8) {
         self.sub_monitor_bank = bank & SUB_MONITOR_BANK_MASK;
     }
 
     /// The active sub-monitor bank.
-    pub(crate) fn sub_monitor_bank(&self) -> u8 {
+    pub fn sub_monitor_bank(&self) -> u8 {
         self.sub_monitor_bank
     }
 
@@ -490,7 +506,7 @@ impl SubMemory {
 
     /// Reads a byte from the non-MMIO sub address space. The MMIO window returns
     /// open bus here because the bus routes it to the sub I/O decode instead.
-    pub(crate) fn read(&self, address: u16) -> u8 {
+    pub fn read(&self, address: u16) -> u8 {
         match address {
             VRAM_START..=VRAM_END => self.vram[usize::from(address - VRAM_START)],
             CONSOLE_RAM_START..=CONSOLE_RAM_END => {
@@ -514,7 +530,7 @@ impl SubMemory {
 
     /// Writes a byte to the non-MMIO sub address space. Writes to the MMIO window
     /// and the sub-monitor ROM are dropped.
-    pub(crate) fn write(&mut self, address: u16, value: u8) {
+    pub fn write(&mut self, address: u16, value: u8) {
         match address {
             VRAM_START..=VRAM_END => self.vram[usize::from(address - VRAM_START)] = value,
             CONSOLE_RAM_START..=CONSOLE_RAM_END => {
@@ -536,34 +552,34 @@ impl SubMemory {
     }
 
     /// Borrows the whole VRAM blob (both pages) for the renderer.
-    pub(crate) fn vram(&self) -> &[u8] {
+    pub fn vram(&self) -> &[u8] {
         &self.vram
     }
 
     /// Reads a VRAM byte by its already-translated index into the blob. The 96
     /// KiB size is not a power of two, so the index wraps by modulo.
-    pub(crate) fn vram_byte(&self, index: usize) -> u8 {
+    pub fn vram_byte(&self, index: usize) -> u8 {
         self.vram[index % VRAM_SIZE]
     }
 
     /// Writes a VRAM byte by its already-translated index into the blob.
-    pub(crate) fn set_vram_byte(&mut self, index: usize, value: u8) {
+    pub fn set_vram_byte(&mut self, index: usize, value: u8) {
         self.vram[index % VRAM_SIZE] = value;
     }
 
     /// Reads a shared-RAM byte by its window index (`0-127`).
-    pub(crate) fn shared_ram_byte(&self, index: u8) -> u8 {
+    pub fn shared_ram_byte(&self, index: u8) -> u8 {
         self.shared_ram[usize::from(index) & (SHARED_RAM_SIZE - 1)]
     }
 
     /// Writes a shared-RAM byte by its window index (`0-127`).
-    pub(crate) fn set_shared_ram_byte(&mut self, index: u8, value: u8) {
+    pub fn set_shared_ram_byte(&mut self, index: u8, value: u8) {
         self.shared_ram[usize::from(index) & (SHARED_RAM_SIZE - 1)] = value;
     }
 
     /// Overwrites a byte anywhere in the sub address space, ROM included, for test
     /// program loading.
-    pub(crate) fn force_write(&mut self, address: u16, value: u8) {
+    pub fn force_write(&mut self, address: u16, value: u8) {
         match address {
             SUB_MONITOR_ROM_START..=u16::MAX => {
                 self.sub_monitor_rom_c[usize::from(address - SUB_MONITOR_ROM_START)] = value;

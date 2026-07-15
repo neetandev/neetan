@@ -4,7 +4,7 @@
 //! the FM Towns JIS scancode). The controller expands each event into the real
 //! two-byte serial packet: a flag byte (bit 7 set, bit 4 = release, bit 3 =
 //! Ctrl, bit 2 = Shift, JIS type in bits 5-6) followed by the scancode byte.
-//! Bytes queue in a receive FIFO; the controller raises IRQ 1 while data is
+//! Bytes queue in a receive FIFO. The controller raises IRQ 1 while data is
 //! available and interrupts are enabled.
 
 use std::collections::VecDeque;
@@ -29,7 +29,7 @@ const SCANCODE_SHIFT: u8 = 0x53;
 const KEYBOARD_ID: [u8; 2] = [0xB0, 0x7F];
 
 /// Serial keyboard controller.
-pub(crate) struct TownsKeyboard {
+pub struct TownsKeyboard {
     /// Serial bytes waiting to be read by the guest.
     fifo: VecDeque<u8>,
     /// Interrupt-enable flag (I/O 0x0604 bit 0).
@@ -42,9 +42,15 @@ pub(crate) struct TownsKeyboard {
     ctrl_held: bool,
 }
 
+impl Default for TownsKeyboard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TownsKeyboard {
     /// Creates a keyboard controller with an empty FIFO and interrupts disabled.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             fifo: VecDeque::with_capacity(FIFO_CAPACITY),
             irq_enabled: false,
@@ -56,7 +62,7 @@ impl TownsKeyboard {
 
     /// Queues a key event forwarded from the host, expanding it into the two-byte
     /// serial packet. NULL (scancode 0) events are ignored.
-    pub(crate) fn push_scancode(&mut self, code: u8) {
+    pub fn push_scancode(&mut self, code: u8) {
         let release = code & 0x80 != 0;
         let scancode = code & 0x7F;
         if scancode == 0 {
@@ -95,24 +101,24 @@ impl TownsKeyboard {
 
     /// Reads the data port (0x0600): pops one byte and keeps the interrupt
     /// pending while more bytes remain.
-    pub(crate) fn read_data(&mut self) -> u8 {
+    pub fn read_data(&mut self) -> u8 {
         let byte = self.fifo.pop_front().unwrap_or(0);
         self.interrupt_pending = !self.fifo.is_empty();
         byte
     }
 
     /// Reads the status port (0x0602): bit 0 set means a byte is available.
-    pub(crate) fn read_status(&self) -> u8 {
+    pub fn read_status(&self) -> u8 {
         if self.fifo.is_empty() { 0 } else { 1 }
     }
 
     /// Reads the IRQ-status port (0x0604): bit 0 reflects the pending interrupt.
-    pub(crate) fn read_irq(&self) -> u8 {
+    pub fn read_irq(&self) -> u8 {
         if self.interrupt_pending { 1 } else { 0 }
     }
 
     /// Writes the IRQ-control port (0x0604): bit 0 enables the interrupt.
-    pub(crate) fn write_irq(&mut self, value: u8) {
+    pub fn write_irq(&mut self, value: u8) {
         self.irq_enabled = value & 0x01 != 0;
         if self.irq_enabled && !self.fifo.is_empty() {
             self.interrupt_pending = true;
@@ -122,7 +128,7 @@ impl TownsKeyboard {
     /// Accepts a command byte on the data or status/command port. A reset /
     /// identify command (0xA0-0xA2) queues the keyboard-ID reply the SYSROM
     /// expects; other commands (LED, key-repeat rate) are not modeled.
-    pub(crate) fn write_command(&mut self, value: u8) {
+    pub fn write_command(&mut self, value: u8) {
         if (0xA0..=0xA2).contains(&value) {
             for byte in KEYBOARD_ID {
                 self.push_byte(byte);
@@ -132,7 +138,7 @@ impl TownsKeyboard {
     }
 
     /// The current IRQ 1 line level (pending and enabled).
-    pub(crate) fn irq_line(&self) -> bool {
+    pub fn irq_line(&self) -> bool {
         self.irq_enabled && self.interrupt_pending
     }
 }

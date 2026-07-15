@@ -4,27 +4,33 @@
 /// SYSPORTVA register/latch state.
 pub struct SysPortVa {
     /// Port 0x1C9 read: bit7,6,0 fixed 1, bit5 SPEED, bits4:1 DIP sw5-2.
-    pub(crate) a: u8,
+    pub a: u8,
     /// Port 0x1CD latch (RS-232C / sysport control bits).
-    pub(crate) c: u8,
+    pub c: u8,
     /// Port 0x010 write latch (RTC C0-C2/data, printer data).
-    pub(crate) port010: u8,
+    pub port010: u8,
     /// Port 0x032 latch (interrupt-mask register; bit7 = FM IRQ mask).
-    pub(crate) port032: u8,
+    pub port032: u8,
     /// Port 0x040 write latch (RTC STB/CLK, mouse strobe).
-    pub(crate) port040: u8,
+    pub port040: u8,
     /// Port 0x190 latch (system port 5, audio control).
-    pub(crate) port190: u8,
+    pub port190: u8,
     /// System operation mode word, read at 0x150/0x151, written via 0x1C6.
-    pub(crate) modesw: u16,
+    pub modesw: u16,
     /// DIP-switch configuration. Bit0 selects the CRT mode (1 = 24 kHz,
     /// 0 = 15 kHz) until the video controller takes over.
-    pub(crate) dipsw: u8,
+    pub dipsw: u8,
+}
+
+impl Default for SysPortVa {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SysPortVa {
     /// Creates the reset-state system ports.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let mut sysport = Self {
             a: 0,
             c: 0,
@@ -49,7 +55,7 @@ impl SysPortVa {
     }
 
     /// True when the configured CRT mode is 24.8 kHz (DIP bit0 set).
-    pub(crate) fn crt_mode_24khz(&self) -> bool {
+    pub fn crt_mode_24khz(&self) -> bool {
         self.dipsw & 0x01 != 0
     }
 }

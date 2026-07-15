@@ -6,11 +6,9 @@
 //! [`MainBusView`] / [`SubBusView`] adapters that implement `common::Bus`.
 
 mod init;
-mod ppi_link;
 mod sub_fdc;
 mod sub_io_read;
 mod sub_io_write;
-mod sub_mem;
 
 use common::{
     HostDateTimeProvider, JoystickState, MonitorTiming, NoTrace, TraceAccessKind, TraceAccessWidth,
@@ -23,10 +21,10 @@ use device::{
     cdrom_pc88::Pc88Cdrom,
     i8214_pic::{I8214Pic, LEVEL_CLOCK, LEVEL_INT4, LEVEL_RXRDY, LEVEL_VRTC},
     i8251_serial::I8251Serial,
-    i8255::I8255,
     i8257_dma::{I8257Dma, TEXT_CHANNEL},
     opn_fm::FmTimerAction,
     palette_pc88::{BACKGROUND_PEN, Pc88Palette},
+    pc80s31k::{Pc80s31kMemory, Pc80s31kPpiLink},
     soundboard_ii::SoundboardII,
     upd765a_fdc::{FloppyController, UPD765_PLATFORM_STANDARD, Upd765aFdc},
     upd3301_crtc::{STATUS_DISPLAY_ENABLE, STATUS_UNDERRUN, Upd3301},
@@ -36,7 +34,6 @@ use software_renderer::{
     GraphicsMode88, Pc88Renderer, RenderInputs88,
     pc88::{PC88_MAX_HEIGHT, PC88_WIDTH},
 };
-use sub_mem::SubMemory;
 
 use crate::{
     config::{BootMode, ClockConfig, EightMhzWaitMode, MemoryWaitSwitch, Pc8801Model},
@@ -284,7 +281,7 @@ pub struct Pc8801Bus<T: TraceSink = NoTrace> {
     /// 0xEC/0xED I/O window.
     kanji2: Vec<u8>,
     /// Disk sub-CPU (PC80S31K) 64 KiB memory: disk.rom + RAM.
-    pub(crate) sub_mem: SubMemory,
+    pub(crate) sub_mem: Pc80s31kMemory,
     /// Sub-CPU cycle position in sub-clock (4 MHz) T-states.
     pub(crate) sub_cycle: u64,
     /// Right-shift converting sub T-states to main-clock units (0 at 4 MHz main,
@@ -297,10 +294,8 @@ pub struct Pc8801Bus<T: TraceSink = NoTrace> {
     pub(crate) fdc: Upd765aFdc<UPD765_PLATFORM_STANDARD>,
     /// Floppy drive store (reused for mounting and sector access).
     pub(crate) floppy: FloppyController,
-    /// PPI mailbox, host side (main I/O 0xFC-0xFF).
-    pub(crate) ppi_main: I8255,
-    /// PPI mailbox, disk side (sub I/O 0xFC-0xFF).
-    pub(crate) ppi_sub: I8255,
+    /// Linked main and disk-side PPI mailbox.
+    pub(crate) ppi_link: Pc80s31kPpiLink,
     /// Port 0xF4 drive-mode latch (per-drive 2D/2DD/2HD selection).
     pub(crate) drive_mode: u8,
     /// Port 0xF8 motor state (bits 0/1 per drive).
@@ -318,6 +313,11 @@ pub struct Pc8801Bus<T: TraceSink = NoTrace> {
 }
 
 impl<T: TraceSink> Pc8801Bus<T> {
+    /// Arms tight interleave after a PC80S31K mailbox handshake change.
+    pub(crate) fn arm_ppi_resync(&mut self) {
+        self.resync_until = self.current_cycle + SYNC_SLICE;
+    }
+
     /// Returns the main CPU clock frequency in Hz.
     pub fn cpu_clock_hz(&self) -> u32 {
         self.clocks.main_clock_hz
@@ -1171,7 +1171,7 @@ impl<T: TraceSink> Pc8801Bus<T> {
             0xE9 => self.kanji_read(&self.kanji1, self.kanji1_addr, false),
             0xEC => self.kanji_read(&self.kanji2, self.kanji2_addr, true),
             0xED => self.kanji_read(&self.kanji2, self.kanji2_addr, false),
-            0xFC..=0xFF => self.ppi_main.read((port & 0x03) as u8),
+            0xFC..=0xFF => self.ppi_link.read_main((port & 0x03) as u8),
             _ => return (OPEN_BUS, false),
         };
         (value, true)
@@ -1468,16 +1468,15 @@ impl<T: TraceSink> Pc8801Bus<T> {
             0xF0 => self.memory.state.dic_bank = value,
             0xF1 => self.memory.state.dic_ctrl = value,
             0xFC => {
-                self.ppi_main.write(0, value);
-                self.ppi_sub.set_port_b(value);
+                self.ppi_link.write_main(0, value);
             }
             0xFD => {
-                self.ppi_main.write(1, value);
-                self.ppi_sub.set_port_a(value);
+                self.ppi_link.write_main(1, value);
             }
             0xFE | 0xFF => {
-                let changed = self.ppi_main.write((port & 0x03) as u8, value);
-                self.on_ppi_main_change(changed);
+                if self.ppi_link.write_main((port & 0x03) as u8, value) {
+                    self.arm_ppi_resync();
+                }
             }
             _ => return false,
         }
@@ -1954,6 +1953,32 @@ mod tests {
 
     fn bus_8mhz() -> Pc8801Bus {
         Pc8801Bus::new(Pc8801Model::PC8801MC, ClockSelect::EightMhz, 48_000)
+    }
+
+    #[test]
+    fn pc80s31k_mailbox_crosses_data_ports() {
+        let mut bus = bus_4mhz();
+
+        bus.io_write(0xFC, 0x5A);
+        assert_eq!(bus.sub_io_read(0xFD).0, 0x5A);
+
+        bus.sub_io_write(0xFC, 0xA5);
+        assert_eq!(bus.io_read(0xFD).0, 0xA5);
+    }
+
+    #[test]
+    fn pc80s31k_port_c_strobes_cross_nibbles_and_arm_resync() {
+        let mut bus = bus_4mhz();
+
+        bus.current_cycle = 100;
+        bus.io_write(0xFF, (4 << 1) | 1);
+        assert_eq!(bus.sub_io_read(0xFE).0 & 0x0F, 0x01);
+        assert_eq!(bus.resync_until, bus.current_cycle + SYNC_SLICE);
+
+        bus.current_cycle = 200;
+        bus.sub_io_write(0xFF, 0x01);
+        assert_eq!(bus.io_read(0xFE).0 & 0xF0, 0x10);
+        assert_eq!(bus.resync_until, bus.current_cycle + SYNC_SLICE);
     }
 
     #[test]

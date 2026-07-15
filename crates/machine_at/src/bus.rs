@@ -26,6 +26,7 @@ use device::{
     ide::{AtAtapiController, AtIdeController},
     ins8250_uart::Ins8250Uart,
     mc146818_rtc::Mc146818Rtc,
+    mouse_serial::SerialMouse,
     mpu401::Mpu401,
     sound_blaster_16::{SB16_PLATFORM_ISA_AT, SoundBlaster16},
     upd765a_fdc::{UPD765_PLATFORM_ISA_AT, Upd765aFdc},
@@ -36,7 +37,6 @@ pub use keyboard::{
     AT_KEY_END, AT_KEY_HOME, AT_KEY_INSERT, AT_KEY_KEYPAD_DIVIDE, AT_KEY_KEYPAD_ENTER,
     AT_KEY_PAGE_DOWN, AT_KEY_PAGE_UP, AT_KEY_RIGHT_ALT, AT_KEY_RIGHT_CTRL,
 };
-use serial::SerialMouse;
 use software_renderer::{
     RenderInputsVga, VGA_FALLBACK_HEIGHT, VGA_FALLBACK_WIDTH, VgaRenderMode, VgaRenderer,
 };

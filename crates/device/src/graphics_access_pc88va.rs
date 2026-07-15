@@ -47,15 +47,22 @@ impl Default for MultiPlane {
 }
 
 /// The graphics access controller.
-pub(crate) struct GraphicsAccessVa {
+pub struct GraphicsAccessVa {
     /// `true` when the GMSP bit selects single-plane access (port `0x153` bit 4).
     single_plane: bool,
     single: SinglePlane,
     multi: MultiPlane,
 }
 
+impl Default for GraphicsAccessVa {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GraphicsAccessVa {
-    pub(crate) fn new() -> Self {
+    /// Creates a reset graphics access controller.
+    pub fn new() -> Self {
         Self {
             single_plane: false,
             single: SinglePlane::default(),
@@ -64,7 +71,7 @@ impl GraphicsAccessVa {
     }
 
     /// Resets the controller.
-    pub(crate) fn reset(&mut self) {
+    pub fn reset(&mut self) {
         let single_plane = self.single_plane;
         self.single = SinglePlane::default();
         self.multi = MultiPlane::default();
@@ -72,7 +79,7 @@ impl GraphicsAccessVa {
     }
 
     /// Updates the GMSP selection from a port `0x153` write.
-    pub(crate) fn set_single_plane(&mut self, single_plane: bool) {
+    pub fn set_single_plane(&mut self, single_plane: bool) {
         self.single_plane = single_plane;
     }
 
@@ -139,7 +146,7 @@ impl GraphicsAccessVa {
     }
 
     /// Writes one byte through the controller.
-    pub(crate) fn gvram_write(&mut self, grph: &mut [u8], address: u32, value: u8) {
+    pub fn gvram_write(&mut self, grph: &mut [u8], address: u32, value: u8) {
         if self.single_plane {
             if address & 1 != 0 {
                 let out = self.write_value_single(grph, address & !1, u16::from(value) << 8);
@@ -183,7 +190,7 @@ impl GraphicsAccessVa {
     }
 
     /// Reads one byte through the controller.
-    pub(crate) fn gvram_read(&mut self, grph: &[u8], address: u32) -> u8 {
+    pub fn gvram_read(&mut self, grph: &[u8], address: u32) -> u8 {
         if self.single_plane || self.multi.access_mode == 0 {
             return grph.get(address as usize).copied().unwrap_or(0);
         }
@@ -219,7 +226,7 @@ impl GraphicsAccessVa {
     }
 
     /// Writes a controller register (ports `0x510-0x5A2`).
-    pub(crate) fn io_write(&mut self, port: u16, value: u8) {
+    pub fn io_write(&mut self, port: u16, value: u8) {
         match port {
             0x510 => self.multi.access_mode = value & 0x01,
             0x512 => self.multi.access_block = value & 0x01,
@@ -276,7 +283,7 @@ impl GraphicsAccessVa {
     }
 
     /// Reads a controller register (ports `0x510-0x5A2`).
-    pub(crate) fn io_read(&self, port: u16) -> u8 {
+    pub fn io_read(&self, port: u16) -> u8 {
         let multi_active = !self.single_plane;
         let single_active = self.single_plane;
         match port {

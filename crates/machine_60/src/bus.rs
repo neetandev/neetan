@@ -4,7 +4,6 @@ mod fdc;
 mod io_read;
 mod io_write;
 mod ppi_link;
-mod sub_hle;
 
 use std::path::PathBuf;
 
@@ -18,6 +17,7 @@ use device::{
     floppy::FloppyImage,
     i8251_serial::I8251Serial,
     opn_fm::{FmTimerAction, OpnFm, Ym2203},
+    subcontroller_pc6000::SubHle,
     upd765a_fdc::{FloppyController, UPD765_PLATFORM_STANDARD, Upd765aFdc},
     upd7752::Upd7752,
 };
@@ -27,7 +27,6 @@ use software_renderer::{
     PC60_MK2_HEIGHT, PC60_MK2_WIDTH, Pc60RenderModel, RenderInputs60, RenderInputsSr, render_pc60,
     render_sr,
 };
-use sub_hle::SubHle;
 
 use crate::{
     config::{ClockConfig, Pc6000Model},

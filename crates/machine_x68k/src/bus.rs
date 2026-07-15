@@ -29,6 +29,7 @@ use device::{
     i8255::I8255,
     keyboard_x68k::{KEYBOARD_X68K_TICKS_PER_SECOND, KeyboardX68k},
     mc68901_mfp::{MC68901_CLOCK_HZ, Mc68901Mfp},
+    mouse_x68k::MouseX68k,
     msm6258::Msm6258,
     opn_fm::{OpnFm, Ym2151},
     rp5c15_rtc::{RP5C15_CLOCK_HZ, Rp5c15Rtc},
@@ -44,11 +45,7 @@ use software_renderer::x68k::X68kRenderer;
 
 use crate::{
     InterruptSource, IocSource, LoadedRoms, X68kModel,
-    bus::{
-        dmac::DMAC_CLOCK_HZ,
-        scc::{MouseState, SCC_CLOCK_HZ},
-        sound::OPM_CLOCK_HZ,
-    },
+    bus::{dmac::DMAC_CLOCK_HZ, scc::SCC_CLOCK_HZ, sound::OPM_CLOCK_HZ},
     clock::{cycle_to_tick, tick_to_cycle},
     interrupt::InterruptRouter,
     scheduler::{EventX68k, X68kScheduler},
@@ -235,7 +232,7 @@ pub struct X68kBus<T: TraceSink = NoTrace> {
     ppi: I8255,
     joystick_ports: [JoystickState; 2],
     scc: Z8530,
-    mouse: MouseState,
+    mouse: MouseX68k,
     printer_data: u8,
     printer_strobe: u8,
     mfp: Mc68901Mfp,
@@ -351,7 +348,7 @@ impl<T: TraceSink> X68kBus<T> {
             ppi: x68k_ppi(),
             joystick_ports: [JoystickState::default(); 2],
             scc: Z8530::new(),
-            mouse: MouseState::default(),
+            mouse: MouseX68k::new(),
             printer_data: 0,
             printer_strobe: 1,
             mfp: Mc68901Mfp::new(),
@@ -596,7 +593,7 @@ impl<T: TraceSink> X68kBus<T> {
         self.ppi = x68k_ppi();
         self.joystick_ports = [JoystickState::default(); 2];
         self.scc.reset();
-        self.mouse = MouseState::default();
+        self.mouse = MouseX68k::new();
         self.printer_data = 0;
         self.printer_strobe = 1;
         self.mfp.reset();

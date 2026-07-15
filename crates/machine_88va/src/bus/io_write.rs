@@ -95,16 +95,15 @@ impl<T: common::TraceSink> Pc88VaBus<T> {
 
             // PPI mailbox, host side: A->sub port B, B->sub port A, C/control resync.
             0xFC => {
-                self.ppi_main.write(0, value);
-                self.ppi_sub.set_port_b(value);
+                self.ppi_link.write_main(0, value);
             }
             0xFD => {
-                self.ppi_main.write(1, value);
-                self.ppi_sub.set_port_a(value);
+                self.ppi_link.write_main(1, value);
             }
             0xFE | 0xFF => {
-                let changed = self.ppi_main.write((port & 0x03) as u8, value);
-                self.on_ppi_main_change(changed);
+                if self.ppi_link.write_main((port & 0x03) as u8, value) {
+                    self.arm_ppi_resync();
+                }
             }
 
             _ => {

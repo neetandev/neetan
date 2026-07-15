@@ -12,6 +12,7 @@ default = []
 std = []
 
 [dependencies]
+common.workspace = true
 
 [dev-dependencies]
 software_renderer = { path = ".", features = ["std"] }

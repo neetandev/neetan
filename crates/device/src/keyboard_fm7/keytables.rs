@@ -1,4 +1,4 @@
-//! FM-7 keyboard translation tables.
+//! Fujitsu FM-7 keyboard translation tables.
 //!
 //! Each table maps an FM-7 physical scancode (`0x00..=0x66`) to the 9-bit F-BASIC
 //! keycode for one modifier combination. A `0x0000` entry means the key produces

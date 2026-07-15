@@ -9,6 +9,8 @@
 
 use alloc::{boxed::Box, vec};
 
+use common::FramebufferVa;
+
 use super::VA_SURFACE_WIDTH;
 
 /// Number of graphic screens.
@@ -16,42 +18,6 @@ pub(super) const GRAPHIC_SCREENS: usize = 2;
 /// Raster scratch length: the visible width plus the overshoot a partial first
 /// word and 320-dot doubling can produce.
 const RASTER_LEN: usize = VA_SURFACE_WIDTH + 64;
-
-/// A graphics framebuffer descriptor (`_FRAMEBUFFER`).
-#[derive(Clone, Copy, Default)]
-pub struct FramebufferVa {
-    /// Frame start address in GVRAM.
-    pub frame_start: u32,
-    /// Frame buffer width in bytes.
-    pub frame_width: u16,
-    /// Frame buffer line count (`0xFFFF` marks the no-wrap screen 1).
-    pub frame_lines: u16,
-    /// Dot address (bit/byte offset within the first word).
-    pub dot: u16,
-    /// Horizontal offset (`0xFFFF` marks the no-wrap screen 1).
-    pub offset_x: u16,
-    /// Vertical offset.
-    pub offset_y: u16,
-    /// Display start address in GVRAM.
-    pub display_start: u32,
-    /// Sub-screen height in scanlines.
-    pub display_height: u16,
-    /// Sub-screen position (first scanline).
-    pub display_position: u16,
-}
-
-impl FramebufferVa {
-    /// The reset state for framebuffer 1 (the no-wrap screen-1 sentinels).
-    pub fn reset_screen1() -> Self {
-        Self {
-            frame_start: 0xFFFF_FFFF,
-            frame_lines: 0xFFFF,
-            offset_x: 0xFFFF,
-            offset_y: 0xFFFF,
-            ..Self::default()
-        }
-    }
-}
 
 #[derive(Clone, Copy, Default)]
 struct ScreenWalk {

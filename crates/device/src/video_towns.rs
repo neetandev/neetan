@@ -5,7 +5,7 @@
 //! palettes and the FMR digital palette, and derives the display geometry that
 //! the software renderer consumes.
 
-use software_renderer::{HighResCursor, TownsLayer, towns_color_to_rgba};
+use common::{HighResCursor, TownsLayer};
 
 /// CRTC register indices (I/O 0x0440 selects one, 0x0442/0x0443 read/write it).
 const REG_HST: usize = 0x04;
@@ -89,13 +89,20 @@ const HR_V_SCROLL_MASK_PAGE: usize = 0x0007_FFFF;
 
 /// Resolved CRTC geometry and palettes for a frame, everything the renderer
 /// needs except the VRAM borrow (supplied by the bus).
-pub(crate) struct ResolvedVideo {
+pub struct ResolvedVideo {
+    /// Whether one layer spans all VRAM.
     pub single_page: bool,
+    /// Front layer in two-page mode.
     pub priority_page: usize,
+    /// Resolved display layers.
     pub layers: [TownsLayer; 2],
+    /// Converted 16-color palettes.
     pub palette_16: [[u32; 16]; 2],
+    /// Converted 256-color palette.
     pub palette_256: [u32; 256],
+    /// Display width.
     pub width: u32,
+    /// Display height.
     pub height: u32,
     /// Whether the high-resolution CRTC is driving this frame (selects the
     /// high-res VRAM interleave and enables the hardware mouse-cursor overlay).
@@ -149,8 +156,12 @@ impl TownsColor {
     }
 }
 
+fn towns_color_to_rgba(red: u8, green: u8, blue: u8) -> u32 {
+    u32::from(red) | (u32::from(green) << 8) | (u32::from(blue) << 16) | 0xFF00_0000
+}
+
 /// FM Towns CRTC, video-out, and palette register file.
-pub(crate) struct TownsVideo {
+pub struct TownsVideo {
     crtc_registers: [u16; 32],
     crtc_addr_latch: usize,
     sifter: [u8; 4],
@@ -181,7 +192,8 @@ pub(crate) struct TownsVideo {
 }
 
 impl TownsVideo {
-    pub(crate) fn new(high_res_available: bool) -> Self {
+    /// Creates the video controller for a machine with the selected capability.
+    pub fn new(high_res_available: bool) -> Self {
         Self {
             crtc_registers: DEFAULT_CRTC,
             crtc_addr_latch: 0,
@@ -213,15 +225,18 @@ impl TownsVideo {
         }
     }
 
-    pub(crate) fn write_crtc_address(&mut self, value: u8) {
+    /// Writes the standard CRTC address latch.
+    pub fn write_crtc_address(&mut self, value: u8) {
         self.crtc_addr_latch = usize::from(value & 0x1F);
     }
 
-    pub(crate) fn read_crtc_address(&self) -> u8 {
+    /// Reads the standard CRTC address latch.
+    pub fn read_crtc_address(&self) -> u8 {
         self.crtc_addr_latch as u8
     }
 
-    pub(crate) fn write_crtc_data_low(&mut self, value: u8) {
+    /// Writes the low byte of the selected standard CRTC register.
+    pub fn write_crtc_data_low(&mut self, value: u8) {
         let register = &mut self.crtc_registers[self.crtc_addr_latch];
         *register = (*register & 0xFF00) | u16::from(value);
         if self.crtc_addr_latch == REG_CR0 {
@@ -229,7 +244,8 @@ impl TownsVideo {
         }
     }
 
-    pub(crate) fn write_crtc_data_high(&mut self, value: u8) {
+    /// Writes the high byte of the selected standard CRTC register.
+    pub fn write_crtc_data_high(&mut self, value: u8) {
         let register = &mut self.crtc_registers[self.crtc_addr_latch];
         *register = (*register & 0x00FF) | (u16::from(value) << 8);
         if self.crtc_addr_latch == REG_CR0 {
@@ -247,11 +263,13 @@ impl TownsVideo {
         }
     }
 
-    pub(crate) fn read_crtc_data_low(&self) -> u8 {
+    /// Reads the low byte of the selected standard CRTC register.
+    pub fn read_crtc_data_low(&self) -> u8 {
         self.crtc_registers[self.crtc_addr_latch] as u8
     }
 
-    pub(crate) fn read_crtc_data_high(&self, hsync: bool, vertical_display: (bool, bool)) -> u8 {
+    /// Reads the high byte or live field status of the selected CRTC register.
+    pub fn read_crtc_data_high(&self, hsync: bool, vertical_display: (bool, bool)) -> u8 {
         if self.crtc_addr_latch == REG_FR {
             self.field_status(hsync, vertical_display)
         } else {
@@ -292,11 +310,7 @@ impl TownsVideo {
     /// The per-layer vertical display state at `into_frame` cycles past the
     /// vertical-sync start. The frame spans VST half-rasters; each layer
     /// displays while the raster position lies inside its VDS..VDE window.
-    pub(crate) fn vertical_display_active(
-        &self,
-        into_frame: u64,
-        frame_cycles: u64,
-    ) -> (bool, bool) {
+    pub fn vertical_display_active(&self, into_frame: u64, frame_cycles: u64) -> (bool, bool) {
         let vertical_total = u64::from(self.crtc_registers[REG_VST].max(1));
         let position = (into_frame.min(frame_cycles) * vertical_total / frame_cycles.max(1)) as u16;
         let in_window = |start: u16, end: u16| start < end && (start..end).contains(&position);
@@ -306,15 +320,18 @@ impl TownsVideo {
         )
     }
 
-    pub(crate) fn write_video_out_address(&mut self, value: u8) {
+    /// Writes the video-out address latch.
+    pub fn write_video_out_address(&mut self, value: u8) {
         self.sifter_addr_latch = usize::from(value & 3);
     }
 
-    pub(crate) fn read_video_out_address(&self) -> u8 {
+    /// Reads the video-out address latch.
+    pub fn read_video_out_address(&self) -> u8 {
         self.sifter_addr_latch as u8
     }
 
-    pub(crate) fn write_video_out_data(&mut self, value: u8) {
+    /// Writes the selected video-out register.
+    pub fn write_video_out_data(&mut self, value: u8) {
         self.sifter[self.sifter_addr_latch] = value;
         if self.sifter_addr_latch == 0 {
             if self.single_page() {
@@ -327,23 +344,26 @@ impl TownsVideo {
         }
     }
 
-    pub(crate) fn read_video_out_data(&self) -> u8 {
+    /// Reads the selected video-out register.
+    pub fn read_video_out_data(&self) -> u8 {
         self.sifter[self.sifter_addr_latch]
     }
 
     /// Reads the DPMD / sprite-status register (0x044C). The DPMD flag
     /// self-clears on read; sprite status is added in the sprite phase.
-    pub(crate) fn read_dpmd(&mut self) -> u8 {
+    pub fn read_dpmd(&mut self) -> u8 {
         let data = if self.dpmd { 0x80 } else { 0x00 };
         self.dpmd = false;
         data
     }
 
-    pub(crate) fn write_palette_code(&mut self, value: u8) {
+    /// Writes the analog palette entry latch.
+    pub fn write_palette_code(&mut self, value: u8) {
         self.palette_code_latch = value;
     }
 
-    pub(crate) fn read_palette_code(&self) -> u8 {
+    /// Reads the analog palette entry latch.
+    pub fn read_palette_code(&self) -> u8 {
         self.palette_code_latch
     }
 
@@ -356,19 +376,23 @@ impl TownsVideo {
         }
     }
 
-    pub(crate) fn read_palette_blue(&self) -> u8 {
+    /// Reads the blue component of the selected analog palette entry.
+    pub fn read_palette_blue(&self) -> u8 {
         self.read_color16_component(|color| color.blue)
     }
 
-    pub(crate) fn read_palette_red(&self) -> u8 {
+    /// Reads the red component of the selected analog palette entry.
+    pub fn read_palette_red(&self) -> u8 {
         self.read_color16_component(|color| color.red)
     }
 
-    pub(crate) fn read_palette_green(&self) -> u8 {
+    /// Reads the green component of the selected analog palette entry.
+    pub fn read_palette_green(&self) -> u8 {
         self.read_color16_component(|color| color.green)
     }
 
-    pub(crate) fn write_palette_blue(&mut self, value: u8) {
+    /// Writes the blue component of the selected analog palette entry.
+    pub fn write_palette_blue(&mut self, value: u8) {
         match self.palette_select() {
             0 => self.set_color16(0, |color| color.blue = quantize4(value)),
             2 => self.set_color16(1, |color| color.blue = quantize4(value)),
@@ -376,7 +400,8 @@ impl TownsVideo {
         }
     }
 
-    pub(crate) fn write_palette_red(&mut self, value: u8) {
+    /// Writes the red component of the selected analog palette entry.
+    pub fn write_palette_red(&mut self, value: u8) {
         match self.palette_select() {
             0 => self.set_color16(0, |color| color.red = quantize4(value)),
             2 => self.set_color16(1, |color| color.red = quantize4(value)),
@@ -384,7 +409,8 @@ impl TownsVideo {
         }
     }
 
-    pub(crate) fn write_palette_green(&mut self, value: u8) {
+    /// Writes the green component of the selected analog palette entry.
+    pub fn write_palette_green(&mut self, value: u8) {
         match self.palette_select() {
             0 => self.set_color16(0, |color| color.green = quantize4(value)),
             2 => self.set_color16(1, |color| color.green = quantize4(value)),
@@ -392,16 +418,19 @@ impl TownsVideo {
         }
     }
 
-    pub(crate) fn write_digital_palette(&mut self, index: usize, value: u8) {
+    /// Writes an FMR digital palette entry.
+    pub fn write_digital_palette(&mut self, index: usize, value: u8) {
         self.fmr_digital_palette[index & 7] = value & 0x0F;
         self.dpmd = true;
     }
 
-    pub(crate) fn read_digital_palette(&self, index: usize) -> u8 {
+    /// Reads an FMR digital palette entry.
+    pub fn read_digital_palette(&self, index: usize) -> u8 {
         self.fmr_digital_palette[index & 7]
     }
 
-    pub(crate) fn write_show_page_fda0(&mut self, value: u8) {
+    /// Writes the FMR page visibility register.
+    pub fn write_show_page_fda0(&mut self, value: u8) {
         if self.single_page() {
             self.show_page_fda0[0] = (value >> 2) & 3 != 0;
             self.show_page_fda0[1] = self.show_page_fda0[0];
@@ -412,28 +441,28 @@ impl TownsVideo {
     }
 
     /// Clears the pending VSYNC interrupt (write to 0x05CA).
-    pub(crate) fn clear_vsync_irq(&mut self) {
+    pub fn clear_vsync_irq(&mut self) {
         self.vsync_irq = false;
     }
 
     /// Whether the VSYNC interrupt latch is currently asserted.
-    pub(crate) fn vsync_irq_pending(&self) -> bool {
+    pub fn vsync_irq_pending(&self) -> bool {
         self.vsync_irq
     }
 
     /// Raises the VSYNC interrupt latch and marks the vertical-sync interval.
-    pub(crate) fn enter_vsync(&mut self) {
+    pub fn enter_vsync(&mut self) {
         self.vsync_irq = true;
         self.vsync_active = true;
     }
 
     /// Leaves the vertical-sync interval.
-    pub(crate) fn leave_vsync(&mut self) {
+    pub fn leave_vsync(&mut self) {
         self.vsync_active = false;
     }
 
     /// The number of CPU cycles in one display frame for VSYNC scheduling.
-    pub(crate) fn frame_cycles(&self, cpu_clock_hz: u32) -> u64 {
+    pub fn frame_cycles(&self, cpu_clock_hz: u32) -> u64 {
         let refresh_hz = self.refresh_rate_hz().max(1.0);
         (f64::from(cpu_clock_hz) / refresh_hz) as u64
     }
@@ -672,7 +701,7 @@ impl TownsVideo {
 
     /// Whether the current screen mode accepts sprites: two-page mode with page
     /// 1 in 16 bpp direct color at 512 bytes per line.
-    pub(crate) fn screen_mode_accepts_sprite(&self) -> bool {
+    pub fn screen_mode_accepts_sprite(&self) -> bool {
         !self.single_page()
             && self.page_bits_per_pixel(1) == 16
             && self.page_bytes_per_line(1) == 512
@@ -741,22 +770,24 @@ impl TownsVideo {
 
     /// Reads the high-res presence port (0x0470): 0x7F when the high-res CRTC is
     /// available (MX), 0x80 otherwise.
-    pub(crate) fn read_high_res_id(&self) -> u8 {
+    pub fn read_high_res_id(&self) -> u8 {
         if self.high_res_available { 0x7F } else { 0x80 }
     }
 
     /// Reads the VRAM-size port (0x0471): 0x01 on the high-res-capable MX.
-    pub(crate) fn read_vram_size(&self) -> u8 {
+    pub fn read_vram_size(&self) -> u8 {
         if self.high_res_available { 0x01 } else { 0x00 }
     }
 
-    pub(crate) fn write_high_res_addr_low(&mut self, value: u8) {
+    /// Writes the low byte of the high-resolution register latch.
+    pub fn write_high_res_addr_low(&mut self, value: u8) {
         if self.high_res_available {
             self.high_res_addr_latch = (self.high_res_addr_latch & 0xFF00) | u16::from(value);
         }
     }
 
-    pub(crate) fn write_high_res_addr_high(&mut self, value: u8) {
+    /// Writes the high byte of the high-resolution register latch.
+    pub fn write_high_res_addr_high(&mut self, value: u8) {
         if self.high_res_available {
             self.high_res_addr_latch =
                 (self.high_res_addr_latch & 0x00FF) | (u16::from(value) << 8);
@@ -764,13 +795,14 @@ impl TownsVideo {
     }
 
     /// Latches the full 16-bit high-res register index (0x0472 word access).
-    pub(crate) fn write_high_res_addr_word(&mut self, value: u16) {
+    pub fn write_high_res_addr_word(&mut self, value: u16) {
         if self.high_res_available {
             self.high_res_addr_latch = value;
         }
     }
 
-    pub(crate) fn read_high_res_addr_low(&self) -> u8 {
+    /// Reads the low byte of the high-resolution register latch.
+    pub fn read_high_res_addr_low(&self) -> u8 {
         if self.high_res_available {
             self.high_res_addr_latch as u8
         } else {
@@ -778,7 +810,8 @@ impl TownsVideo {
         }
     }
 
-    pub(crate) fn read_high_res_addr_high(&self) -> u8 {
+    /// Reads the high byte of the high-resolution register latch.
+    pub fn read_high_res_addr_high(&self) -> u8 {
         if self.high_res_available {
             (self.high_res_addr_latch >> 8) as u8
         } else {
@@ -788,7 +821,7 @@ impl TownsVideo {
 
     /// Writes one byte lane (0-3) of the selected high-res register (data ports
     /// 0x0474-0x0477) and applies the per-lane side effects.
-    pub(crate) fn write_high_res_data(&mut self, lane: u8, value: u8) {
+    pub fn write_high_res_data(&mut self, lane: u8, value: u8) {
         if !self.high_res_available {
             return;
         }
@@ -823,7 +856,7 @@ impl TownsVideo {
     }
 
     /// Low 16 bits of the selected register (0x0474 word access, lanes 0-1).
-    pub(crate) fn write_high_res_data_low_word(&mut self, value: u16) {
+    pub fn write_high_res_data_low_word(&mut self, value: u16) {
         if !self.high_res_available {
             return;
         }
@@ -857,7 +890,7 @@ impl TownsVideo {
     /// High 16 bits of the selected register (0x0476 word access, lanes 2-3).
     /// A PALCOL write here advances the palette index, matching the hardware's
     /// auto-increment on the completing 32-bit access.
-    pub(crate) fn write_high_res_data_high_word(&mut self, value: u16) {
+    pub fn write_high_res_data_high_word(&mut self, value: u16) {
         if !self.high_res_available {
             return;
         }
@@ -949,7 +982,7 @@ impl TownsVideo {
     }
 
     /// Reads one byte lane (0-3) of the selected high-res register (0x0474-0x0477).
-    pub(crate) fn read_high_res_data(&self, lane: u8) -> u8 {
+    pub fn read_high_res_data(&self, lane: u8) -> u8 {
         if !self.high_res_available {
             return 0xFF;
         }
@@ -1114,7 +1147,7 @@ impl TownsVideo {
 
     /// Resolves the current CRTC state into renderer geometry: the two layers,
     /// single-page flag, priority page, and the overall display dimensions.
-    pub(crate) fn resolve(
+    pub fn resolve(
         &self,
         fmr_display_planes: u8,
         fmr_display_page_offset: usize,

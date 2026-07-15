@@ -32,7 +32,7 @@ fn keycode_for(id: u8) -> u8 {
 
 /// Keyboard sub-controller state.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct SubHle {
+pub struct SubHle {
     current_keycode: u8,
     pending_keycode: u8,
     last_scanned: u8,
@@ -40,12 +40,12 @@ pub(crate) struct SubHle {
 
 impl SubHle {
     /// Creates an idle sub-controller.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
     /// Records a host key event.
-    pub(crate) fn push_scancode(&mut self, code: u8) {
+    pub fn push_scancode(&mut self, code: u8) {
         self.pending_keycode = if code & RELEASE_FLAG != 0 {
             0
         } else {
@@ -55,7 +55,7 @@ impl SubHle {
 
     /// Runs one keyboard scan. If the held key changed, latches the new code
     /// and returns the interrupt vector to raise.
-    pub(crate) fn scan(&mut self) -> Option<u8> {
+    pub fn scan(&mut self) -> Option<u8> {
         if self.pending_keycode == self.last_scanned {
             return None;
         }
@@ -72,12 +72,12 @@ impl SubHle {
     /// Latches a demodulated cassette byte into the shared port A latch. The
     /// keyboard transition state is left untouched: cassette and keyboard share
     /// the latch, and the host scans only while the tape is stopped.
-    pub(crate) fn set_cassette_byte(&mut self, byte: u8) {
+    pub fn set_cassette_byte(&mut self, byte: u8) {
         self.current_keycode = byte;
     }
 
     /// The currently latched keycode (read through PPI port A).
-    pub(crate) fn current_keycode(&self) -> u8 {
+    pub fn current_keycode(&self) -> u8 {
         self.current_keycode
     }
 }
