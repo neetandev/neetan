@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use common::TraceSink;
 use device::{
     floppy::{FloppyImage, MountedFloppy},
-    mb8877_fdc::{Mb8877Config, Mb8877Fdc},
+    mb8877_fdc::{MB8877_PLATFORM_FM7, Mb8877Fdc},
 };
 
 use super::{Fm7Bus, OPEN_BUS};
@@ -62,8 +62,8 @@ const MOTOR_SPIN_UP_MICROS: u64 = 300_000;
 const MOTOR_SPIN_DOWN_MICROS: u64 = 50_000;
 
 /// Builds the MB8877 controller with the FM-7 wiring.
-pub(super) fn new_fdc(cpu_clock_hz: u32) -> Mb8877Fdc {
-    let mut fdc = Mb8877Fdc::new(cpu_clock_hz, Mb8877Config::fm7());
+pub(super) fn new_fdc(cpu_clock_hz: u32) -> Mb8877Fdc<MB8877_PLATFORM_FM7> {
+    let mut fdc = Mb8877Fdc::new(cpu_clock_hz);
     // The real WD1793 always asserts its interrupt line on command completion;
     // the FM-7 gates delivery to the CPU with the `0xFD02` bit 4 mask instead. So
     // the chip output stays enabled and `0xFD1F` bit 6 reports the raw line.

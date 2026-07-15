@@ -1,15 +1,13 @@
-//! Integration tests for the uPD72065 FDC wrapper.
+//! Integration tests for the uPD72065 FDC specialization.
 
-use device::{
-    upd765a_fdc::{
-        FdcAction, FdcCommand, FdcPhase, ST0_ABNORMAL_TERMINATION, ST0_EQUIPMENT_CHECK,
-        ST0_SEEK_END,
-    },
-    upd72065_fdc::Upd72065Fdc,
+use device::upd765a_fdc::{
+    FdcAction, FdcCommand, FdcPhase, ST0_SEEK_END, UPD765_PLATFORM_X68K, Upd765aFdc,
 };
 
+type X68kUpd765aFdc = Upd765aFdc<UPD765_PLATFORM_X68K>;
+
 /// Issues a READ DATA command up to the start of the execution phase.
-fn issue_read_data(fdc: &mut Upd72065Fdc) -> FdcAction {
+fn issue_read_data(fdc: &mut X68kUpd765aFdc) -> FdcAction {
     fdc.write_data(0x06);
     let mut action = FdcAction::None;
     for parameter in [0x00u8, 0, 0, 1, 3, 8, 0x74, 0xFF] {
@@ -19,7 +17,7 @@ fn issue_read_data(fdc: &mut Upd72065Fdc) -> FdcAction {
 }
 
 /// Issues a SCAN command and returns the final action.
-fn issue_scan(fdc: &mut Upd72065Fdc, command: u8, eot: u8, stp: u8) -> FdcAction {
+fn issue_scan(fdc: &mut X68kUpd765aFdc, command: u8, eot: u8, stp: u8) -> FdcAction {
     fdc.write_data(command);
     let mut action = FdcAction::None;
     for parameter in [0x00u8, 0, 0, 1, 0, eot, 0x74, stp] {
@@ -30,7 +28,7 @@ fn issue_scan(fdc: &mut Upd72065Fdc, command: u8, eot: u8, stp: u8) -> FdcAction
 
 #[test]
 fn auxiliary_reset_aborts_command() {
-    let mut fdc = Upd72065Fdc::new();
+    let mut fdc = X68kUpd765aFdc::new();
     fdc.set_drive_ready_mask(0x01);
     fdc.state.drive_cylinder[0] = 42;
 
@@ -46,7 +44,7 @@ fn auxiliary_reset_aborts_command() {
 
 #[test]
 fn standby_set_and_reset_gate_command_writes() {
-    let mut fdc = Upd72065Fdc::new();
+    let mut fdc = X68kUpd765aFdc::new();
     assert!(!fdc.standby());
 
     fdc.write_auxiliary_command(0x35);
@@ -62,7 +60,7 @@ fn standby_set_and_reset_gate_command_writes() {
 
 #[test]
 fn unknown_auxiliary_commands_are_ignored() {
-    let mut fdc = Upd72065Fdc::new();
+    let mut fdc = X68kUpd765aFdc::new();
     fdc.write_auxiliary_command(0x00);
     fdc.write_auxiliary_command(0xFF);
     assert!(!fdc.standby());
@@ -71,7 +69,7 @@ fn unknown_auxiliary_commands_are_ignored() {
 
 #[test]
 fn scan_equal_hit_reports_satisfied_sector() {
-    let mut fdc = Upd72065Fdc::new();
+    let mut fdc = X68kUpd765aFdc::new();
     assert_eq!(issue_scan(&mut fdc, 0x11, 8, 1), FdcAction::StartScan);
     assert!(fdc.is_scan_equal());
 
@@ -84,7 +82,7 @@ fn scan_equal_hit_reports_satisfied_sector() {
 
 #[test]
 fn scan_low_or_equal_and_high_or_equal_verdicts() {
-    let mut fdc = Upd72065Fdc::new();
+    let mut fdc = X68kUpd765aFdc::new();
     issue_scan(&mut fdc, 0x19, 8, 1);
     assert!(!fdc.is_scan_equal());
     fdc.begin_scan_sector(&[0x10, 0x30]);
@@ -93,7 +91,7 @@ fn scan_low_or_equal_and_high_or_equal_verdicts() {
     assert!(fdc.scan_sector_satisfied(), "disk <= host holds");
 
     // Read the result away so a new command can start.
-    fdc.core_mut().complete_success();
+    fdc.complete_success();
     while fdc.state.phase == FdcPhase::Result {
         fdc.read_data();
     }
@@ -110,14 +108,14 @@ fn scan_low_or_equal_and_high_or_equal_verdicts() {
 
 #[test]
 fn scan_step_two_reports_alternate_stepping() {
-    let mut fdc = Upd72065Fdc::new();
+    let mut fdc = X68kUpd765aFdc::new();
     issue_scan(&mut fdc, 0x11, 7, 2);
     assert_eq!(fdc.scan_step(), 2);
 }
 
 #[test]
 fn recalibrate_reaches_track_zero_within_255_steps() {
-    let mut fdc = Upd72065Fdc::new();
+    let mut fdc = X68kUpd765aFdc::new();
     fdc.state.drive_cylinder[0] = 200;
 
     fdc.write_data(0x07);
@@ -127,24 +125,19 @@ fn recalibrate_reaches_track_zero_within_255_steps() {
 }
 
 #[test]
-fn recalibrate_over_255_sets_equipment_check() {
-    let mut fdc = Upd72065Fdc::new();
-    // Seek beyond the limit first (SEEK accepts any cylinder byte).
+fn recalibrate_at_255_steps_reaches_track_zero() {
+    let mut fdc = X68kUpd765aFdc::new();
     fdc.state.drive_cylinder[0] = 255;
-    fdc.state.recalibrate_step_limit = 100;
 
     fdc.write_data(0x07);
     fdc.write_data(0x00);
-    assert_eq!(fdc.state.drive_cylinder[0], 155);
-    assert_eq!(
-        fdc.state.drive_st0[0],
-        ST0_ABNORMAL_TERMINATION | ST0_SEEK_END | ST0_EQUIPMENT_CHECK
-    );
+    assert_eq!(fdc.state.drive_cylinder[0], 0);
+    assert_eq!(fdc.state.drive_st0[0], ST0_SEEK_END);
 }
 
 #[test]
 fn dma_execution_fifo_serves_bytes_without_ndm() {
-    let mut fdc = Upd72065Fdc::new();
+    let mut fdc = X68kUpd765aFdc::new();
     fdc.set_drive_ready_mask(0x01);
     issue_read_data(&mut fdc);
 
@@ -157,7 +150,7 @@ fn dma_execution_fifo_serves_bytes_without_ndm() {
 
 #[test]
 fn ready_mask_reflects_motor_and_media() {
-    let mut fdc = Upd72065Fdc::new();
+    let mut fdc = X68kUpd765aFdc::new();
     fdc.set_drive_ready_mask(0x02);
     assert_eq!(fdc.state.drive_has_disk, 0x02);
     fdc.set_drive_write_protected_mask(0x01);

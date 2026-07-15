@@ -19,7 +19,7 @@ use device::{
     beeper::Beeper,
     cassette::CassetteDeck,
     mb61vh010_alu::{AluMemory, Mb61vh010Alu},
-    mb8877_fdc::Mb8877Fdc,
+    mb8877_fdc::{MB8877_PLATFORM_FM7, Mb8877Fdc},
     mouse_fm7::MouseFm7,
     soundboard_fm7::Fm7Opn,
 };
@@ -244,7 +244,7 @@ pub struct Fm7Bus<T: TraceSink = NoTrace> {
     /// Joystick pad state encoded for PSG parallel port A, active low.
     joystick_port_a: u8,
     /// MB8877 floppy disk controller at `0xFD18-0xFD1F`.
-    fdc: Mb8877Fdc,
+    fdc: Mb8877Fdc<MB8877_PLATFORM_FM7>,
     /// Selected head/side latched by `0xFD1C` (only bit 0 is meaningful).
     fdc_side: u8,
     /// Selected drive index latched by `0xFD1D` (two bits).

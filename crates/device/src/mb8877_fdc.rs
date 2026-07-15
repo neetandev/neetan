@@ -8,13 +8,11 @@
 //! [`Mb8877Fdc::run_task`]. Sector data moves either over DMA (the bus performs
 //! the block transfer requested by [`Mb8877Outcome`]) or over a CPU-polled PIO
 //! path ([`Mb8877Fdc::read_data_pio`] / [`Mb8877Fdc::write_data_pio`] with the
-//! DRQ handshake), selected by [`TransferMode`] in [`Mb8877Config`].
+//! DRQ handshake), selected by the `PLATFORM` const generic.
 //!
 //! Command decode and status assembly follow the WD1793 model. Machine-specific
-//! register polarities (IRQ mask, side select) and the composite drive-status
-//! register are carried by [`Mb8877Config`] so that different hosts (e.g. the FM
-//! Towns, whose polarities are inverted from its databook) do not leak their
-//! quirks into one another.
+//! transfer behavior, timing, and composite drive-status register are selected
+//! at compile time so host quirks do not leak into one another.
 
 use crate::floppy::MountedFloppy;
 
@@ -66,7 +64,7 @@ const CMD_UNKNOWN_FE: u8 = 0xFE;
 const MAX_TRACK: i32 = 82;
 
 // Force-interrupt acknowledge delay, in nanoseconds. The per-step seek and the
-// sector-access delays are machine-specific and live in [`Mb8877Config`].
+// sector-access delays are machine-specific and selected by `PLATFORM`.
 const FORCE_IRQ_DELAY_NS: u64 = 20_000;
 
 // Index-hole synthesis for Type I / Type IV status reads. One revolution is
@@ -120,7 +118,7 @@ impl CommandType {
 }
 
 /// A DMA transfer the bus must perform on the controller's behalf. Only produced
-/// in [`TransferMode::Dma`]; the PIO path stages bytes internally instead.
+/// by the FM Towns specialization; the PIO platforms stage bytes internally.
 #[derive(Debug, Default)]
 pub struct Mb8877Outcome {
     /// Bytes to push to memory over DMA (read sector/address/track).
@@ -129,41 +127,12 @@ pub struct Mb8877Outcome {
     pub dma_write_len: Option<usize>,
 }
 
-/// How sector data moves between the controller and the host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransferMode {
-    /// The bus performs a block DMA transfer requested by [`Mb8877Outcome`].
-    Dma,
-    /// The CPU polls DRQ and moves one byte at a time through the data register.
-    Pio,
-}
-
-/// Machine-specific configuration for the controller.
-///
-/// Different hosts wire the same WD1793 with different register polarities. The
-/// FM Towns, for instance, inverts the IRQ-mask and side-select bits relative to
-/// its databook and reports a composite 3-mode drive-status register. Carrying
-/// these as data keeps host quirks from leaking between machines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Mb8877Config {
-    /// When true, a set IRQ-mask bit enables interrupts; when false, a clear bit
-    /// enables them.
-    pub irq_mask_active_high: bool,
-    /// When true, a clear side-select bit selects side one (inverted); when
-    /// false, a set bit selects side one.
-    pub side_select_active_low: bool,
-    /// When true, the drive-status register reports the 3-mode and two-drives
-    /// indicator bits (an FM Towns composite register).
-    pub three_mode_drive_status: bool,
-    /// Whether sector data moves over DMA or the CPU-polled PIO path.
-    pub transfer: TransferMode,
-    /// Per-step head-seek delay in nanoseconds (Type I commands).
-    pub seek_step_delay_ns: u64,
-    /// Command-to-data-ready delay in nanoseconds for a sector access, standing
-    /// in for the head-settle plus rotational latency until the target record
-    /// passes under the head.
-    pub sector_delay_ns: u64,
-}
+/// FM Towns host platform selector for [`Mb8877Fdc`].
+pub const MB8877_PLATFORM_FM_TOWNS: u8 = 0;
+/// Sharp X1 host platform selector for [`Mb8877Fdc`].
+pub const MB8877_PLATFORM_X1: u8 = 1;
+/// Fujitsu FM-7 host platform selector for [`Mb8877Fdc`].
+pub const MB8877_PLATFORM_FM7: u8 = 2;
 
 /// Sharp X1 per-step head seek delay: the WD1793-family default step rate.
 const X1_SEEK_STEP_DELAY_NS: u64 = 6_000_000;
@@ -180,58 +149,21 @@ const FM7_SEEK_STEP_DELAY_NS: u64 = 6_000_000;
 /// until the addressed record passes under the head of the 300 rpm 2D drive.
 const FM7_SECTOR_DELAY_NS: u64 = 15_000_000;
 
-impl Mb8877Config {
-    /// The FM Towns wiring: inverted IRQ-mask/side-select polarities, the
-    /// composite 3-mode drive-status register, and DMA transfers.
-    pub const fn towns() -> Self {
-        Self {
-            irq_mask_active_high: true,
-            side_select_active_low: false,
-            three_mode_drive_status: true,
-            transfer: TransferMode::Dma,
-            seek_step_delay_ns: 300_000,
-            sector_delay_ns: 200_000,
-        }
+const fn seek_step_delay_ns(platform: u8) -> u64 {
+    match platform {
+        MB8877_PLATFORM_FM_TOWNS => 300_000,
+        MB8877_PLATFORM_X1 => X1_SEEK_STEP_DELAY_NS,
+        MB8877_PLATFORM_FM7 => FM7_SEEK_STEP_DELAY_NS,
+        _ => panic!("unsupported MB8877 platform"),
     }
+}
 
-    /// The base Sharp X1 wiring: neutral polarities and CPU-polled PIO transfers.
-    pub const fn x1() -> Self {
-        Self {
-            irq_mask_active_high: true,
-            side_select_active_low: false,
-            three_mode_drive_status: false,
-            transfer: TransferMode::Pio,
-            seek_step_delay_ns: X1_SEEK_STEP_DELAY_NS,
-            sector_delay_ns: X1_SECTOR_DELAY_NS,
-        }
-    }
-
-    /// The Fujitsu FM-7 wiring: neutral polarities and CPU-polled PIO transfers.
-    /// The base FM-7 has no DMA on the floppy path, so the CPU polls the `0xFD1F`
-    /// DRQ/IRQ status and moves each byte through the data register.
-    pub const fn fm7() -> Self {
-        Self {
-            irq_mask_active_high: true,
-            side_select_active_low: false,
-            three_mode_drive_status: false,
-            transfer: TransferMode::Pio,
-            seek_step_delay_ns: FM7_SEEK_STEP_DELAY_NS,
-            sector_delay_ns: FM7_SECTOR_DELAY_NS,
-        }
-    }
-
-    /// The X1 turbo wiring: neutral polarities and per-byte transfers over the
-    /// data register. The DRQ line feeds both the CPU-polled path and the Z80
-    /// DMA ready input; the DMA moves each byte through the data register.
-    pub const fn x1_turbo() -> Self {
-        Self {
-            irq_mask_active_high: true,
-            side_select_active_low: false,
-            three_mode_drive_status: false,
-            transfer: TransferMode::Pio,
-            seek_step_delay_ns: X1_SEEK_STEP_DELAY_NS,
-            sector_delay_ns: X1_SECTOR_DELAY_NS,
-        }
+const fn sector_delay_ns(platform: u8) -> u64 {
+    match platform {
+        MB8877_PLATFORM_FM_TOWNS => 200_000,
+        MB8877_PLATFORM_X1 => X1_SECTOR_DELAY_NS,
+        MB8877_PLATFORM_FM7 => FM7_SECTOR_DELAY_NS,
+        _ => panic!("unsupported MB8877 platform"),
     }
 }
 
@@ -246,9 +178,8 @@ enum PendingTransfer {
     WriteTrack,
 }
 
-/// MB8877 floppy disk controller (WD1793 family).
-pub struct Mb8877Fdc {
-    config: Mb8877Config,
+/// MB8877 floppy disk controller specialized for a host platform.
+pub struct Mb8877Fdc<const PLATFORM: u8> {
     drives: [Option<MountedFloppy>; DRIVE_COUNT],
 
     // Registers.
@@ -297,11 +228,12 @@ fn ns_to_cycles(ns: u64, cpu_clock_hz: u32) -> u64 {
     ns.saturating_mul(u64::from(cpu_clock_hz)) / 1_000_000_000
 }
 
-impl Mb8877Fdc {
+impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
     /// Creates a controller with all drives empty.
-    pub fn new(cpu_clock_hz: u32, config: Mb8877Config) -> Self {
+    pub fn new(cpu_clock_hz: u32) -> Self {
+        let seek_step_delay_ns = seek_step_delay_ns(PLATFORM);
+        let sector_delay_ns = sector_delay_ns(PLATFORM);
         Self {
-            config,
             drives: [None, None, None, None],
             command: 0,
             track_reg: 0,
@@ -331,8 +263,8 @@ impl Mb8877Fdc {
             pio_write_expected: 0,
             pio_next_byte_cycle: 0,
             cpu_clock_hz,
-            seek_step_delay_cycles: ns_to_cycles(config.seek_step_delay_ns, cpu_clock_hz).max(1),
-            sector_delay_cycles: ns_to_cycles(config.sector_delay_ns, cpu_clock_hz).max(1),
+            seek_step_delay_cycles: ns_to_cycles(seek_step_delay_ns, cpu_clock_hz).max(1),
+            sector_delay_cycles: ns_to_cycles(sector_delay_ns, cpu_clock_hz).max(1),
             force_irq_delay_cycles: ns_to_cycles(FORCE_IRQ_DELAY_NS, cpu_clock_hz).max(1),
         }
     }
@@ -626,7 +558,7 @@ impl Mb8877Fdc {
     /// optionally the 3-mode indicator bits).
     pub fn read_drive_status(&self) -> u8 {
         let mut value = 0;
-        if self.config.three_mode_drive_status {
+        if PLATFORM == MB8877_PLATFORM_FM_TOWNS {
             value |= DRIVE_STATUS_THREE_MODE | DRIVE_STATUS_TWO_DRIVES;
         }
         if self.disk_changed[self.drive_select] {
@@ -642,10 +574,10 @@ impl Mb8877Fdc {
     /// motor), applying the host's IRQ-mask and side-select polarities.
     pub fn write_drive_control(&mut self, value: u8) {
         let irq_bit = value & CONTROL_IRQ_ENABLE != 0;
-        self.irq_enable = irq_bit == self.config.irq_mask_active_high;
+        self.irq_enable = irq_bit;
         self.double_density = value & CONTROL_DOUBLE_DENSITY != 0;
         let side_bit = value & CONTROL_SIDE_ONE != 0;
-        self.side = u8::from(side_bit != self.config.side_select_active_low);
+        self.side = u8::from(side_bit);
         self.motor_on = value & CONTROL_MOTOR != 0;
     }
 
@@ -803,18 +735,17 @@ impl Mb8877Fdc {
         now: u64,
     ) -> Mb8877Outcome {
         self.pending = pending;
-        match self.config.transfer {
-            TransferMode::Dma => Mb8877Outcome {
+        if PLATFORM == MB8877_PLATFORM_FM_TOWNS {
+            Mb8877Outcome {
                 dma_read: Some(bytes),
                 dma_write_len: None,
-            },
-            TransferMode::Pio => {
-                self.pio_read_buffer = bytes;
-                self.pio_read_index = 0;
-                self.drq = false;
-                self.pio_next_byte_cycle = now.saturating_add(self.pio_byte_period_cycles());
-                Mb8877Outcome::default()
             }
+        } else {
+            self.pio_read_buffer = bytes;
+            self.pio_read_index = 0;
+            self.drq = false;
+            self.pio_next_byte_cycle = now.saturating_add(self.pio_byte_period_cycles());
+            Mb8877Outcome::default()
         }
     }
 
@@ -828,18 +759,17 @@ impl Mb8877Fdc {
         now: u64,
     ) -> Mb8877Outcome {
         self.pending = pending;
-        match self.config.transfer {
-            TransferMode::Dma => Mb8877Outcome {
+        if PLATFORM == MB8877_PLATFORM_FM_TOWNS {
+            Mb8877Outcome {
                 dma_read: None,
                 dma_write_len: Some(length),
-            },
-            TransferMode::Pio => {
-                self.pio_write_accum = Vec::with_capacity(length);
-                self.pio_write_expected = length;
-                self.drq = false;
-                self.pio_next_byte_cycle = now.saturating_add(self.pio_byte_period_cycles());
-                Mb8877Outcome::default()
             }
+        } else {
+            self.pio_write_accum = Vec::with_capacity(length);
+            self.pio_write_expected = length;
+            self.drq = false;
+            self.pio_next_byte_cycle = now.saturating_add(self.pio_byte_period_cycles());
+            Mb8877Outcome::default()
         }
     }
 
@@ -1128,8 +1058,8 @@ mod tests {
 
     const CPU_CLOCK_HZ: u32 = 4_000_000;
 
-    fn x1_read_fdc() -> Mb8877Fdc {
-        let mut fdc = Mb8877Fdc::new(CPU_CLOCK_HZ, Mb8877Config::x1());
+    fn x1_read_fdc() -> Mb8877Fdc<MB8877_PLATFORM_X1> {
+        let mut fdc = Mb8877Fdc::new(CPU_CLOCK_HZ);
         // Put the controller in the state a Read Sector command leaves it in so
         // the status register mirrors DRQ for the PIO poll loop.
         fdc.command_type = CommandType::ReadSector;

@@ -7,11 +7,10 @@
 
 use common::{StackVec, TraceSink};
 use device::{
-    at_fdc::DorEffect,
     floppy::FloppyImage,
     upd765a_fdc::{
-        FdcAction, FdcCommand, ST0_NOT_READY, ST1_MISSING_ADDRESS_MARK, ST1_NOT_WRITABLE,
-        ST2_SCAN_EQUAL_HIT, ST2_SCAN_NOT_SATISFIED,
+        DorEffect, FdcAction, FdcCommand, ST0_NOT_READY, ST1_MISSING_ADDRESS_MARK,
+        ST1_NOT_WRITABLE, ST2_SCAN_EQUAL_HIT, ST2_SCAN_NOT_SATISFIED,
     },
 };
 

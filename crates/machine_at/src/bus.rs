@@ -17,7 +17,6 @@ use common::{
 };
 use device::{
     at_dma::AtDma,
-    at_fdc::AtFdc,
     beeper::Beeper,
     cs4031::Cs4031,
     gameport::GamePort,
@@ -29,6 +28,7 @@ use device::{
     mc146818_rtc::Mc146818Rtc,
     mpu401::Mpu401,
     sound_blaster_16::{SB16_PLATFORM_ISA_AT, SoundBlaster16},
+    upd765a_fdc::{UPD765_PLATFORM_ISA_AT, Upd765aFdc},
     vga::{RetraceStatus, Vga, VgaRenderMode as DeviceVgaRenderMode},
 };
 pub use keyboard::{
@@ -98,7 +98,7 @@ pub struct AtBus<T: TraceSink = NoTrace> {
     /// Dual-8237 DMA front-end.
     pub(crate) dma: AtDma,
     /// AT floppy disk controller with its two drives.
-    pub(crate) fdc: AtFdc,
+    pub(crate) fdc: Upd765aFdc<UPD765_PLATFORM_ISA_AT>,
     /// Whether the next FDC interrupt event delivers the reset polling drain.
     pub(crate) fdc_reset_poll_pending: bool,
     /// IDE primary channel with up to two hard drives.
@@ -182,7 +182,7 @@ impl<T: TraceSink> AtBus<T> {
             pic: I8259aPic::new_zeroed(),
             pit: I8253Pit::new_zeroed(),
             dma: AtDma::new(),
-            fdc: AtFdc::new(),
+            fdc: Upd765aFdc::new(),
             fdc_reset_poll_pending: false,
             ide: AtIdeController::new(),
             ide_secondary: AtAtapiController::new(sample_rate),

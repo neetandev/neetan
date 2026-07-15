@@ -4,7 +4,6 @@
 #![deny(unsafe_code)]
 
 pub mod at_dma;
-pub mod at_fdc;
 pub mod ay8910;
 pub mod beeper;
 pub mod bios;
@@ -79,7 +78,6 @@ pub mod upd3301_crtc;
 pub mod upd4990a_rtc;
 pub mod upd52611_crtc;
 pub mod upd71071_dma;
-pub mod upd72065_fdc;
 pub mod upd7220_gdc;
 pub mod upd765a_fdc;
 pub mod upd7752;

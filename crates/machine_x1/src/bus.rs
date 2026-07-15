@@ -23,7 +23,7 @@ use device::{
     ay8910::Ay8910,
     cassette::{CassetteDeck, CassetteError, load_cassette},
     hd6845_crtc::Hd6845,
-    mb8877_fdc::{Mb8877Config, Mb8877Fdc},
+    mb8877_fdc::{MB8877_PLATFORM_X1, Mb8877Fdc},
     mouse_x1::MouseX1,
     opn_fm::FmTimerAction,
     soundboard_opm::SoundBoardOpm,
@@ -158,7 +158,7 @@ pub struct X1Bus<T: TraceSink = NoTrace> {
     fm: Option<SoundBoardOpm>,
     /// Sound-board Z80 CTC (`ctc_ym`); used only when the FM board is present.
     sound_ctc: Z80Ctc,
-    fdc: Mb8877Fdc,
+    fdc: Mb8877Fdc<MB8877_PLATFORM_X1>,
     dma: Z80Dma,
     sio: Z80Sio,
     mouse: MouseX1,
@@ -252,7 +252,7 @@ impl<T: TraceSink> X1Bus<T> {
                 None
             },
             sound_ctc: Z80Ctc::new(),
-            fdc: Mb8877Fdc::new(clocks.main_clock_hz, fdc_config(model)),
+            fdc: Mb8877Fdc::new(clocks.main_clock_hz),
             dma: Z80Dma::new(),
             sio: Z80Sio::new(),
             mouse: MouseX1::new(),
@@ -1249,17 +1249,6 @@ fn jis_row_address(jis_row: u8) -> u16 {
         0x4000u16.wrapping_add(row.wrapping_sub(0x30).wrapping_mul(0x600))
     } else {
         0x0100u16.wrapping_add(row.wrapping_sub(0x21).wrapping_mul(0x600))
-    }
-}
-
-/// The FDC wiring for `model`. Both machines move sector data one byte at a
-/// time through the data register; on the turbo the DRQ line additionally
-/// feeds the Z80 DMA ready input.
-fn fdc_config(model: X1Model) -> Mb8877Config {
-    if model.has_dma() {
-        Mb8877Config::x1_turbo()
-    } else {
-        Mb8877Config::x1()
     }
 }
 
