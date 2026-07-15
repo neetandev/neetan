@@ -2,7 +2,7 @@ use common::Cpu as _;
 use cpu::{CPU_MODEL_486_DX, I386};
 use softfloat::Fp80;
 
-const RAM_SIZE: usize = 2 * 1024 * 1024;
+const RAM_SIZE: usize = 2 << 20;
 const ADDRESS_MASK: u32 = 0x001F_FFFF;
 
 struct TestBus {

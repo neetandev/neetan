@@ -59,12 +59,31 @@ pub(crate) struct Sram {
     data: Box<[u8; SRAM_SIZE]>,
 }
 
+save_state::runtime_state! {
+/// Battery-backed X68000 SRAM bytes.
+#[derive(Clone)]
+pub(crate) struct SramState {
+    data: Box<[u8; SRAM_SIZE]>,
+}}
+
 impl Sram {
     /// Creates the model's power-on SRAM.
     pub(crate) fn new(model: X68kModel, main_ram_size: usize) -> Self {
         Self {
             data: Box::new(initial_sram(model, main_ram_size)),
         }
+    }
+
+    /// Captures all battery-backed bytes.
+    pub(crate) fn capture_state(&self) -> SramState {
+        SramState {
+            data: self.data.clone(),
+        }
+    }
+
+    /// Restores all battery-backed bytes.
+    pub(crate) fn restore_state(&mut self, state: SramState) {
+        self.data = state.data;
     }
 
     /// Reads one SRAM byte.
@@ -94,8 +113,8 @@ mod tests {
 
     #[test]
     fn initial_images_seed_ipl_defaults_and_model_hardware_values() {
-        let original = initial_sram(X68kModel::X68000, 12 * 1024 * 1024);
-        let super_model = initial_sram(X68kModel::X68000Super, 12 * 1024 * 1024);
+        let original = initial_sram(X68kModel::X68000, 12 << 20);
+        let super_model = initial_sram(X68kModel::X68000Super, 12 << 20);
 
         assert_eq!(
             &original[MEMORY_SIZE_OFFSET..MEMORY_SIZE_OFFSET + 4],
@@ -138,7 +157,7 @@ mod tests {
             X68kModel::X68000Super,
             X68kModel::X68000Xvi,
         ] {
-            let sram = initial_sram(model, 12 * 1024 * 1024);
+            let sram = initial_sram(model, 12 << 20);
             assert_eq!(
                 &sram[BOOT_DEVICE_OFFSET..BOOT_DEVICE_OFFSET + 2],
                 &[0, 0],
@@ -151,7 +170,7 @@ mod tests {
     #[test]
     fn internal_scsi_models_seed_their_rom_boot_handle() {
         for model in [X68kModel::X68000Super, X68kModel::X68000Xvi] {
-            let sram = initial_sram(model, 12 * 1024 * 1024);
+            let sram = initial_sram(model, 12 << 20);
             assert_eq!(
                 &sram[ROM_BOOT_HANDLE_OFFSET..ROM_BOOT_HANDLE_OFFSET + 4],
                 &INTERNAL_SCSI_ROM_BOOT_HANDLE.to_be_bytes(),
@@ -167,7 +186,7 @@ mod tests {
 
     #[test]
     fn set_sasi_hdmax_updates_the_boot_scan_count() {
-        let mut sram = Sram::new(X68kModel::X68000, 12 * 1024 * 1024);
+        let mut sram = Sram::new(X68kModel::X68000, 12 << 20);
         sram.set_sasi_hdmax(2);
         assert_eq!(sram.data()[SASI_HDMAX_OFFSET], 2);
         assert_eq!(sram.read(SASI_HDMAX_OFFSET), 2);
@@ -176,7 +195,7 @@ mod tests {
     #[test]
     fn memory_size_field_comes_from_configured_ram_size() {
         for megabytes in [1, 2, 4, 6, 8, 10, 12] {
-            let bytes = megabytes * 1024 * 1024;
+            let bytes = megabytes << 20;
             let sram = initial_sram(X68kModel::X68000, bytes);
             assert_eq!(
                 &sram[MEMORY_SIZE_OFFSET..MEMORY_SIZE_OFFSET + 4],

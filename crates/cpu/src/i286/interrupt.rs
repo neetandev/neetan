@@ -304,7 +304,7 @@ impl I286 {
             return;
         }
         self.finish_state = super::timing::I286FinishState::FaultRestart;
-        self.timing.note_exception_entry();
+        self.state.timing.note_exception_entry();
         if self.is_protected_mode() {
             match self.check_double_fault(vector) {
                 DoubleFaultResult::Shutdown => return,
@@ -329,7 +329,7 @@ impl I286 {
             return;
         }
         self.finish_state = super::timing::I286FinishState::FaultRestart;
-        self.timing.note_exception_entry();
+        self.state.timing.note_exception_entry();
         if self.is_protected_mode() {
             match self.check_double_fault(vector) {
                 DoubleFaultResult::Shutdown => return,

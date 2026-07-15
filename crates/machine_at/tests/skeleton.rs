@@ -21,7 +21,7 @@ fn executes_first_bios_instructions_from_reset_vector() {
         system_bios: reset_vector_bios(),
         vga_bios: vec![0u8; 0x8000],
     };
-    let bus = AtBus::<common::NoTrace>::new(66_000_000, 8 * 1024 * 1024, roms, 48_000);
+    let bus = AtBus::<common::NoTrace>::new(66_000_000, 8 << 20, roms, 48_000);
 
     let mut cpu = cpu::I386::<{ cpu::CPU_MODEL_486_DX }, { cpu::ADDRESS_WIDTH_32 }>::new();
     cpu.reset();

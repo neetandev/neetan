@@ -130,6 +130,7 @@ enum LogicalOp {
     Xor,
 }
 
+save_state::runtime_state! {
 /// FM-77AV MB61VH010 graphics ALU.
 #[derive(Debug, Clone)]
 pub struct Mb61vh010Alu {
@@ -169,7 +170,7 @@ pub struct Mb61vh010Alu {
     line_last_address: u32,
     /// Rolling copy of `line_pattern` consumed as the line advances.
     line_pattern_shift: u16,
-}
+}}
 
 impl Default for Mb61vh010Alu {
     fn default() -> Self {

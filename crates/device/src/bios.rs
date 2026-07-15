@@ -6,6 +6,15 @@
 
 use std::cell::Cell;
 
+save_state::runtime_state! {
+/// Complete BIOS HLE trap state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BiosControllerState {
+    hle_pending: bool,
+    pending_vector: u8,
+    yield_requested: bool,
+}}
+
 /// BIOS HLE trap controller.
 #[derive(Default)]
 pub struct BiosController {
@@ -22,6 +31,22 @@ impl BiosController {
             pending_vector: 0,
             yield_requested: Cell::new(false),
         }
+    }
+
+    /// Captures the complete BIOS trap state.
+    pub fn capture_state(&self) -> BiosControllerState {
+        BiosControllerState {
+            hle_pending: self.hle_pending,
+            pending_vector: self.pending_vector,
+            yield_requested: self.yield_requested.get(),
+        }
+    }
+
+    /// Restores the complete BIOS trap state.
+    pub fn restore_state(&mut self, state: BiosControllerState) {
+        self.hle_pending = state.hle_pending;
+        self.pending_vector = state.pending_vector;
+        self.yield_requested.set(state.yield_requested);
     }
 
     /// Writes a byte to the trap port (0x07F0).

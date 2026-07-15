@@ -97,24 +97,25 @@ impl ClockSelect {
     }
 }
 
+save_state::runtime_state_enum! {
 /// PC-8801 BASIC boot mode (DIP setting). Affects the 0xF000-0xFFFF memory
 /// decode: in V1S and N-family modes that region is always main RAM, while V1H
 /// and V2 allow text VRAM to appear there under port 0x32 bit 4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootMode {
     /// N88-BASIC V1 standard speed.
-    V1S,
+    V1S = 0,
     /// N88-BASIC V1 high speed.
-    V1H,
+    V1H = 1,
     /// N88-BASIC V2.
-    V2,
+    V2 = 2,
     /// Plain N-BASIC.
-    N,
+    N = 3,
     /// N80-BASIC, for PC-8001mkII compatibility.
-    N80,
+    N80 = 4,
     /// N80SR-BASIC, for PC-8001mkIISR compatibility.
-    N80SR,
-}
+    N80SR = 5,
+}}
 
 impl BootMode {
     /// Whether the 0xF000-0xFFFF region is forced to main RAM regardless of the

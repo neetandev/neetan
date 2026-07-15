@@ -32,22 +32,36 @@ pub const UPD765_PLATFORM_X68K: u8 = 1;
 /// IBM PC/AT ISA platform selector for [`Upd765aFdc`].
 pub const UPD765_PLATFORM_ISA_AT: u8 = 2;
 
+save_state::runtime_state! {
+/// Authoritative state of a platform-specialized uPD765 controller.
+#[derive(Clone)]
+pub struct Upd765aMountedState {
+    electronics: Upd765aFdcState,
+    dor: u8,
+    rate: u8,
+    disk_change: [bool; AT_DRIVE_COUNT],
+    reset_held: bool,
+    standby: bool,
+    media: save_state::MediaManifest,
+}}
+
 type StandardUpd765aFdc = Upd765aFdc<UPD765_PLATFORM_STANDARD>;
 #[cfg(test)]
 type X68kUpd765aFdc = Upd765aFdc<UPD765_PLATFORM_X68K>;
 
+save_state::runtime_state_enum! {
 /// FDC command processing phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FdcPhase {
     /// Waiting for a command byte.
-    Idle,
+    Idle = 0,
     /// Collecting parameter bytes for the current command.
-    Command,
+    Command = 1,
     /// Executing a data transfer command (bus handles the transfer).
-    Execution,
+    Execution = 2,
     /// Returning result bytes to the host.
-    Result,
-}
+    Result = 3,
+}}
 
 /// Actions the bus must take after an FDC write_data call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,24 +82,26 @@ pub enum FdcAction {
     StartScan,
 }
 
+save_state::runtime_state_enum! {
 /// The active FDC command during execution phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FdcCommand {
     /// No active command.
-    None,
+    None = 0,
     /// READ DATA (0x06) or READ DELETED DATA (0x0C).
-    ReadData,
+    ReadData = 1,
     /// READ ID (0x0A).
-    ReadId,
+    ReadId = 2,
     /// WRITE DATA (0x05) or WRITE DELETED DATA (0x09).
-    WriteData,
+    WriteData = 3,
     /// FORMAT TRACK / WRITE ID (0x0D).
-    FormatTrack,
+    FormatTrack = 4,
     /// SCAN EQUAL (0x11), SCAN LOW OR EQUAL (0x19), or SCAN HIGH OR EQUAL (0x1D).
-    Scan,
-}
+    Scan = 5,
+}}
 
-/// Snapshot of the µPD765A FDC state.
+save_state::runtime_state! {
+/// Authoritative uPD765A FDC state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Upd765aFdcState {
     /// Current command processing phase.
@@ -179,6 +195,24 @@ pub struct Upd765aFdcState {
     pub exec_dma: bool,
     /// Whether the current SCAN sector still satisfies its condition.
     pub scan_condition_held: bool,
+}}
+
+impl Upd765aFdcState {
+    /// Validates command, result, and execution buffer positions.
+    pub fn validate_runtime_state(&self) -> Result<(), save_state::StateValidationError> {
+        if self.params_received > self.params_expected
+            || self.params_expected > self.params.len() as u8
+            || self.result_index > self.result_count
+            || self.result_count > self.result.len() as u8
+            || self.exec_index > self.exec_len
+            || self.exec_len > self.exec_buf.len()
+        {
+            return Err(save_state::StateValidationError::new(
+                "floppy controller buffer position is invalid",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// uPD765-compatible FDC specialized for a host platform.
@@ -440,6 +474,78 @@ impl<const PLATFORM: u8> Upd765aFdc<PLATFORM> {
             warned_non_dma: false,
             standby: false,
         }
+    }
+
+    /// Captures controller electronics, AT glue, and mounted media bindings.
+    pub fn capture_mounted_state(
+        &self,
+    ) -> Result<Upd765aMountedState, save_state::StateValidationError> {
+        Ok(Upd765aMountedState {
+            electronics: self.state.clone(),
+            dor: self.dor,
+            rate: match self.rate {
+                FdcDataRate::Rate500Kbps => 0,
+                FdcDataRate::Rate300Kbps => 1,
+                FdcDataRate::Rate250Kbps => 2,
+                FdcDataRate::Rate1Mbps => 3,
+            },
+            disk_change: self.disk_change,
+            reset_held: self.reset_held,
+            standby: self.standby,
+            media: self.mounted_media_manifest()?,
+        })
+    }
+
+    /// Restores controller electronics and AT glue while retaining media contents.
+    pub fn restore_mounted_state(
+        &mut self,
+        state: Upd765aMountedState,
+    ) -> Result<(), save_state::StateValidationError> {
+        state.electronics.validate_runtime_state()?;
+        state
+            .media
+            .verify_current(&self.mounted_media_manifest()?)?;
+        let rate = match state.rate {
+            0 => FdcDataRate::Rate500Kbps,
+            1 => FdcDataRate::Rate300Kbps,
+            2 => FdcDataRate::Rate250Kbps,
+            3 => FdcDataRate::Rate1Mbps,
+            _ => {
+                return Err(save_state::StateValidationError::new(
+                    "floppy data rate is invalid",
+                ));
+            }
+        };
+        self.state = state.electronics;
+        self.dor = state.dor;
+        self.rate = rate;
+        self.disk_change = state.disk_change;
+        self.reset_held = state.reset_held;
+        self.standby = state.standby;
+        Ok(())
+    }
+
+    /// Returns stable identities for mounted floppy slots.
+    pub fn mounted_media_manifest(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = Vec::new();
+        for (drive_index, mounted) in self.drives.iter().enumerate() {
+            let Some(mounted) = mounted else {
+                continue;
+            };
+            bindings.push(save_state::MediaBinding {
+                identifier: save_state::MediaBindingId::new(format!("floppy-{drive_index}"))?,
+                slot: save_state::MediaSlot::new(save_state::MediaKind::Floppy, drive_index as u32),
+                source_path: mounted.source_path().cloned(),
+                media_type: mounted.image().format_name().to_owned(),
+                identity: mounted.identity(),
+                geometry: None,
+                write_protected: mounted.image().write_protected,
+                backend_generation: None,
+            });
+        }
+        save_state::MediaManifest::new(bindings)
     }
 
     /// Returns and clears the interrupt pending flag.
@@ -1174,14 +1280,23 @@ const FDC_IRQ_640K: u8 = 10;
 /// Default port 0xBE value: PORT EXC = 1 (1MB), FDD EXC = 1 (500 kbps).
 const FDC_MEDIA_DEFAULT: u8 = 0x03;
 
-/// PC-98 floppy controller managing both FDC interfaces and up to 4 drives.
-///
-/// The PC-98 has two independent µPD765A FDCs:
-/// - 1MB interface (ports 0x90/0x92/0x94, IRQ 11, DMA ch 2) for 2HD disks
-/// - 640KB interface (ports 0xC8/0xCA/0xCC, IRQ 10, DMA ch 3) for 2DD/2D disks
-///
-/// Port 0xBE controls which interface is active. The controller holds both FDC
-/// instances and the shared floppy drive storage (up to 4 drives).
+save_state::runtime_state! {
+/// Authoritative PC-98 floppy controller electronics state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FloppyControllerState {
+    /// State of the 1 MB interface.
+    pub fdc_1mb: Upd765aFdcState,
+    /// State of the 640 KB interface.
+    pub fdc_640k: Upd765aFdcState,
+    /// Interface currently executing a command.
+    pub active_interface: u8,
+    /// Dual-mode interface control register.
+    pub fdc_media: u8,
+    /// Mounted media identities required by this state.
+    pub media: save_state::MediaManifest,
+}}
+
+/// PC-98 floppy controller with two interfaces and four retained drives.
 pub struct FloppyController {
     /// 1MB FDC (ports 0x90/0x92/0x94).
     fdc_1mb: StandardUpd765aFdc,
@@ -1213,6 +1328,49 @@ impl FloppyController {
             drives: [None, None, None, None],
             fdc_media: FDC_MEDIA_DEFAULT,
         }
+    }
+
+    /// Captures the electronics state and mounted media identities.
+    pub fn capture_state(&self) -> Result<FloppyControllerState, save_state::StateValidationError> {
+        Ok(FloppyControllerState {
+            fdc_1mb: self.fdc_1mb.state.clone(),
+            fdc_640k: self.fdc_640k.state.clone(),
+            active_interface: self.active_interface,
+            fdc_media: self.fdc_media,
+            media: self.media_manifest()?,
+        })
+    }
+
+    /// Restores electronics while retaining the mounted images.
+    pub fn restore_state(
+        &mut self,
+        state: FloppyControllerState,
+    ) -> Result<(), save_state::StateValidationError> {
+        let current_media = self.media_manifest()?;
+        save_state::restore_root(self, state, &current_media)
+    }
+
+    /// Returns stable identities for all mounted floppy slots.
+    pub fn media_manifest(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = Vec::new();
+        for (drive_index, mounted) in self.drives.iter().enumerate() {
+            let Some(mounted) = mounted else {
+                continue;
+            };
+            bindings.push(save_state::MediaBinding {
+                identifier: save_state::MediaBindingId::new(format!("floppy-{drive_index}"))?,
+                slot: save_state::MediaSlot::new(save_state::MediaKind::Floppy, drive_index as u32),
+                source_path: mounted.source_path().cloned(),
+                media_type: mounted.image().format_name().to_owned(),
+                identity: mounted.identity(),
+                geometry: None,
+                write_protected: mounted.image().write_protected,
+                backend_generation: None,
+            });
+        }
+        save_state::MediaManifest::new(bindings)
     }
 
     /// Inserts a floppy disk image into the specified drive (0-3).
@@ -1593,6 +1751,39 @@ impl FloppyController {
         self.fdc_640k.state.command = 0x07;
         self.fdc_640k.state.params[0] = 0x03;
         self.fdc_640k.state.drive_st0 = [0x20, 0x21, 0x22, 0x23];
+    }
+}
+
+impl save_state::ValidateState<save_state::MediaManifest> for FloppyControllerState {
+    fn validate_state(
+        &self,
+        current_media: &save_state::MediaManifest,
+    ) -> Result<(), save_state::StateValidationError> {
+        if self.active_interface > 1 {
+            return Err(save_state::StateValidationError::new(
+                "floppy active interface is out of range",
+            ));
+        }
+        for controller in [&self.fdc_1mb, &self.fdc_640k] {
+            controller.validate_runtime_state()?;
+        }
+        self.media.verify_current(current_media)
+    }
+}
+
+impl save_state::AfterRestore for FloppyController {
+    fn after_restore(&mut self) {}
+}
+
+impl save_state::RestoreTarget for FloppyController {
+    type State = FloppyControllerState;
+    type ValidationContext = save_state::MediaManifest;
+
+    fn replace_state(&mut self, state: Self::State) {
+        self.fdc_1mb.state = state.fdc_1mb;
+        self.fdc_640k.state = state.fdc_640k;
+        self.active_interface = state.active_interface;
+        self.fdc_media = state.fdc_media;
     }
 }
 
@@ -2312,5 +2503,72 @@ mod tests {
         fdc.complete_success();
         assert!(!fdc.pio_active(), "completion clears the PIO arm");
         assert_eq!(fdc.read_data(), 0x00, "result ST0");
+    }
+
+    #[test]
+    fn controller_state_restores_electronics_and_retains_media_writes() {
+        let mut controller = FloppyController::new();
+        controller.insert_drive(0, single_sector_floppy_image(0x11), None);
+        controller.set_active_interface(1);
+        controller.fdc_640k_mut().state.command_byte = 0x46;
+        controller.fdc_640k_mut().state.phase = FdcPhase::Execution;
+        let encoded = save_state::encode_runtime_state(&controller.capture_state().unwrap());
+        let state =
+            save_state::decode_runtime_state::<FloppyControllerState>(&encoded, 1 << 20).unwrap();
+
+        let replacement = [0x7Cu8; 128];
+        assert!(controller.write_sector_data(0, 0, 0, 0, 1, 0, &replacement));
+        controller.set_active_interface(0);
+        controller.fdc_640k_mut().state.command_byte = 0;
+        controller.restore_state(state).unwrap();
+
+        assert_eq!(controller.active_interface, 1);
+        assert_eq!(controller.fdc_640k().state.command_byte, 0x46);
+        assert_eq!(
+            controller.read_sector_data(0, 0, 0, 0, 1, 0).unwrap(),
+            replacement
+        );
+    }
+
+    #[test]
+    fn controller_state_rejects_different_mounted_media() {
+        let mut source = FloppyController::new();
+        source.insert_drive(0, single_sector_floppy_image(0x11), None);
+        let state = source.capture_state().unwrap();
+
+        let mut target = FloppyController::new();
+        target.insert_drive(0, single_sector_floppy_image(0x22), None);
+        assert!(target.restore_state(state).is_err());
+    }
+
+    #[test]
+    fn controller_state_accepts_updated_floppy_at_same_source_path() {
+        let path = std::env::temp_dir().join(format!(
+            "neetan_floppy_state_identity_{}_{}.d88",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let original = single_sector_floppy_image(0x11);
+        std::fs::write(&path, original.to_bytes()).unwrap();
+
+        let mut controller = FloppyController::new();
+        controller.insert_drive(0, original, Some(path.clone()));
+        let state = controller.capture_state().unwrap();
+        controller.insert_drive(0, single_sector_floppy_image(0x7C), Some(path.clone()));
+
+        controller.restore_state(state).unwrap();
+        assert!(
+            controller
+                .read_sector_data(0, 0, 0, 0, 1, 0)
+                .unwrap()
+                .iter()
+                .all(|byte| *byte == 0x7C)
+        );
+
+        controller.eject_drive(0);
+        std::fs::remove_file(path).ok();
     }
 }

@@ -150,6 +150,7 @@ const COUNT_DOWN: u8 = 2;
 /// SCR address count: undefined encoding.
 const COUNT_UNDEFINED: u8 = 3;
 
+save_state::runtime_state! {
 /// One HD63450 channel.
 #[derive(Debug, Clone, Default)]
 struct DmacChannel {
@@ -227,7 +228,7 @@ struct DmacChannel {
     interrupt_pending: bool,
     /// Controller clock at which auto-request work resumes.
     scheduled_clock: Option<u64>,
-}
+}}
 
 impl DmacChannel {
     /// Returns the signed memory address step per unit.
@@ -281,8 +282,9 @@ impl DmacChannel {
     }
 }
 
+save_state::runtime_state! {
 /// Hitachi HD63450 DMA controller.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Hd63450Dmac {
     channels: [DmacChannel; DMAC_CHANNEL_COUNT],
     /// GCR bits 3-2: burst time (span = 16 << value clocks).
@@ -297,6 +299,18 @@ pub struct Hd63450Dmac {
     consumed_clocks: u64,
     /// Channels whose operation completed since the last take (bit mask).
     completion_mask: u8,
+}}
+
+impl Hd63450Dmac {
+    /// Captures every DMA channel and arbitration timing value.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores every DMA channel and arbitration timing value.
+    pub fn restore_state(&mut self, state: Self) {
+        *self = state;
+    }
 }
 
 impl Hd63450Dmac {

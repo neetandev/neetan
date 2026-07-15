@@ -10,7 +10,7 @@ const BDA_BOOT_DEVICE: usize = 0x0584;
 fn cdrom_boot_pc9821() {
     let mut machine = create_machine_pc9821as_cdrom();
     let _cycles = boot_to_halt_hdd!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[BDA_BOOT_DEVICE], 0x82,
@@ -32,7 +32,7 @@ fn cdrom_boot_pc9821() {
 fn cdrom_boot_requires_signature() {
     let mut machine = create_machine_pc9821as_non_bootable_cdrom();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[BDA_BOOT_DEVICE], 0x90,
@@ -46,7 +46,7 @@ fn cdrom_boot_priority_over_ide_hdd() {
     let mut machine = create_machine_pc9821as_cdrom();
     machine.bus.insert_hdd(0, make_halt_boot_ide_hdd(), None);
     let _cycles = boot_to_halt_hdd!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[BDA_BOOT_DEVICE], 0x82,
@@ -60,7 +60,7 @@ fn ide_hdd_boots_when_cdrom_not_bootable() {
     let mut machine = create_machine_pc9821as_non_bootable_cdrom();
     machine.bus.insert_hdd(0, make_halt_boot_ide_hdd(), None);
     let _cycles = boot_to_halt_hdd!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[BDA_BOOT_DEVICE], 0x80,

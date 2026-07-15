@@ -36,12 +36,16 @@ dependencies = [
 [[package]]
 name = "common"
 version = "0.1.0"
+dependencies = [
+ "save_state",
+]
 
 [[package]]
 name = "cpu"
 version = "0.1.0"
 dependencies = [
  "common",
+ "save_state",
  "softfloat",
  "zlib-rs",
 ]
@@ -51,6 +55,7 @@ name = "cpu_68k"
 version = "0.1.0"
 dependencies = [
  "common",
+ "save_state",
  "zlib-rs",
 ]
 
@@ -66,6 +71,7 @@ dependencies = [
  "munt_oxide",
  "nuked_sc55_oxide",
  "resampler",
+ "save_state",
  "ymfm_oxide",
 ]
 
@@ -78,6 +84,7 @@ dependencies = [
  "cpu",
  "device",
  "machine_98",
+ "save_state",
 ]
 
 [[package]]
@@ -88,40 +95,44 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "machine_60"
-version = "0.1.0"
+version = "2026.7.0"
 dependencies = [
  "blake3",
  "common",
  "cpu",
  "device",
+ "save_state",
  "software_renderer",
+ "ymfm_oxide",
 ]
 
 [[package]]
 name = "machine_88"
-version = "0.1.0"
+version = "2026.7.0"
 dependencies = [
  "blake3",
  "common",
  "cpu",
  "device",
+ "save_state",
  "software_renderer",
 ]
 
 [[package]]
 name = "machine_88va"
-version = "0.1.0"
+version = "2026.7.0"
 dependencies = [
  "blake3",
  "common",
  "cpu",
  "device",
+ "save_state",
  "software_renderer",
 ]
 
 [[package]]
 name = "machine_98"
-version = "0.1.0"
+version = "2026.7.0"
 dependencies = [
  "blake3",
  "common",
@@ -129,63 +140,70 @@ dependencies = [
  "device",
  "dos",
  "resampler",
+ "save_state",
  "software_renderer",
 ]
 
 [[package]]
 name = "machine_at"
-version = "0.1.0"
+version = "2026.7.0"
 dependencies = [
  "blake3",
  "common",
  "cpu",
  "device",
  "resampler",
+ "save_state",
  "software_renderer",
 ]
 
 [[package]]
 name = "machine_fm7"
-version = "0.1.0"
+version = "2026.7.0"
 dependencies = [
  "blake3",
  "common",
  "cpu",
  "device",
+ "save_state",
  "software_renderer",
 ]
 
 [[package]]
 name = "machine_towns"
-version = "0.1.0"
+version = "2026.7.0"
 dependencies = [
  "blake3",
  "common",
  "cpu",
  "device",
+ "save_state",
  "software_renderer",
 ]
 
 [[package]]
 name = "machine_x1"
-version = "0.1.0"
+version = "2026.7.0"
 dependencies = [
  "blake3",
  "common",
  "cpu",
  "device",
+ "save_state",
  "software_renderer",
+ "ymfm_oxide",
 ]
 
 [[package]]
 name = "machine_x68k"
-version = "0.1.0"
+version = "2026.7.0"
 dependencies = [
  "blake3",
  "common",
  "cpu_68k",
  "device",
  "dos",
+ "save_state",
  "software_renderer",
 ]
 
@@ -196,6 +214,7 @@ dependencies = [
  "blake3",
  "common",
  "resampler",
+ "save_state",
 ]
 
 [[package]]
@@ -216,6 +235,7 @@ dependencies = [
  "machine_towns",
  "machine_x1",
  "machine_x68k",
+ "save_state",
  "sdl3",
  "sdl3_backend",
  "software_renderer",
@@ -228,6 +248,7 @@ version = "0.1.0"
 dependencies = [
  "common",
  "resampler",
+ "save_state",
 ]
 
 [[package]]
@@ -239,12 +260,22 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 [[package]]
 name = "resampler"
 version = "0.1.0"
+dependencies = [
+ "save_state",
+]
 
 [[package]]
 name = "rpkg-config"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a2d2f3481209a6b42eec2fbb49063fb4e8d35b57023401495d4fe0f85c817f0"
+
+[[package]]
+name = "save_state"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+]
 
 [[package]]
 name = "sdl3"
@@ -299,6 +330,7 @@ dependencies = [
  "cpu",
  "device",
  "machine_98",
+ "save_state",
  "software_renderer",
 ]
 
@@ -319,6 +351,9 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 [[package]]
 name = "ymfm_oxide"
 version = "0.1.0"
+dependencies = [
+ "save_state",
+]
 
 [[package]]
 name = "zlib-rs"

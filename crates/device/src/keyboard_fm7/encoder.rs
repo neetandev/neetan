@@ -111,6 +111,7 @@ const RTC_CENTURY_2000: u16 = 2000;
 /// Century base applied to two-digit years at or above the window split.
 const RTC_CENTURY_1900: u16 = 1900;
 
+save_state::runtime_state_enum! {
 /// Scancode reporting mode selected through the `0x00`/`0x01` commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -121,7 +122,7 @@ pub enum ScancodeMode {
     Fm16Beta = 1,
     /// Raw make/break scancodes.
     Scan = 2,
-}
+}}
 
 /// Follow-up work the bus must perform after a command byte is accepted.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -133,13 +134,15 @@ pub struct EncoderAction {
     pub reanchor_rtc: bool,
 }
 
+save_state::runtime_state! {
 /// Fixed-capacity byte FIFO backing the command and response queues. The oldest
 /// entry is dropped when the ring overflows.
+#[derive(Clone)]
 struct ByteFifo {
     entries: [u8; ENCODER_FIFO_CAPACITY],
     head: usize,
     len: usize,
-}
+}}
 
 impl ByteFifo {
     /// Creates an empty FIFO.
@@ -199,8 +202,10 @@ impl ByteFifo {
     }
 }
 
+save_state::runtime_state! {
 /// FM-77AV keyboard encoder: the command handshake, configuration state, and the
 /// embedded real-time clock.
+#[derive(Clone)]
 pub struct KeyboardEncoder {
     /// Whether response data is waiting to be read (drives status bit 7).
     receive_ready: bool,
@@ -249,6 +254,31 @@ pub struct KeyboardEncoder {
     /// exchanged in twelve-hour plus AM/PM form; when clear, in 24-hour form. The
     /// stored [`Self::rtc_hour`] is always the canonical 24-hour value.
     rtc_twelve_hour: bool,
+}}
+
+impl KeyboardEncoder {
+    /// Validates FIFO indexes, repeat timing, and calendar fields.
+    pub fn validate_runtime_state(&self) -> Result<(), save_state::StateValidationError> {
+        let fifo_valid = |fifo: &ByteFifo| {
+            fifo.head < ENCODER_FIFO_CAPACITY && fifo.len <= ENCODER_FIFO_CAPACITY
+        };
+        if !fifo_valid(&self.command_fifo)
+            || !fifo_valid(&self.response_fifo)
+            || self.repeat_delay_ms == 0
+            || self.repeat_interval_ms == 0
+            || !(1..=12).contains(&self.rtc_month)
+            || !(1..=31).contains(&self.rtc_day)
+            || self.rtc_day_of_week > 6
+            || self.rtc_hour > 23
+            || self.rtc_minute > 59
+            || self.rtc_second > 59
+        {
+            return Err(save_state::StateValidationError::new(
+                "FM-77AV keyboard encoder state is invalid",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl KeyboardEncoder {

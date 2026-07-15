@@ -25,7 +25,7 @@ fn bios_hide_cursor_survives_dos_syscall() {
     ];
     harness::inject_and_run(&mut machine, code);
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.cursor_display,
         "BIOS AH=12h hide must survive intervening HLE DOS syscall dispatch",
@@ -49,7 +49,7 @@ fn bios_cursor_position_survives_dos_syscall() {
     ];
     harness::inject_and_run(&mut machine, code);
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_master.ead, 0xA0,
         "BIOS AH=13h cursor position must survive intervening HLE DOS syscall dispatch",
@@ -73,7 +73,7 @@ fn os_cursor_show_escape_propagates_to_gdc() {
     code.extend_from_slice(&[0xFA, 0xF4]); // CLI; HLT
     harness::inject_and_run(&mut machine, &code);
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_master.cursor_display,
         "OS-level ESC[>5l must reach the hardware via post-dispatch sync",
@@ -97,7 +97,7 @@ fn os_cursor_hide_escape_propagates_to_gdc() {
     code.extend_from_slice(&[0xFA, 0xF4]);
     harness::inject_and_run(&mut machine, &code);
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.cursor_display,
         "OS-level ESC[>5h must reach the hardware via post-dispatch sync",

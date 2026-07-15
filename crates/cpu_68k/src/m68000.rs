@@ -6,11 +6,13 @@
 
 #[cfg(feature = "verification")]
 use alloc::vec::Vec;
+use core::ops::{Deref, DerefMut};
 
 use common::{
     Bus, CpuM68000, M68000AccessSize, M68000BusAccess, M68000BusError, M68000CycleKind,
     M68000FunctionCode,
 };
+use save_state::{StateValidationError, ValidateState};
 
 /// Default Sharp X68000 68000 input clock in Hz.
 pub const M68000_DEFAULT_CLOCK_HZ: u32 = 10_000_000;
@@ -147,74 +149,57 @@ impl Default for M68000State {
     }
 }
 
-/// Motorola 68000 CPU core.
-pub struct M68000 {
-    clock_hz: u32,
-    last_cycles: u64,
-    stopped: bool,
-    m_decode_table: [u32; 0x10000],
-    m_da: [u32; 17],
-    m_ipc: u32,
-    m_pc: u32,
-    m_au: u32,
-    m_at: u32,
-    m_aob: u32,
-    m_dt: u32,
-    m_int_vector: u32,
-    m_sp: usize,
-    m_icount: i32,
-    #[allow(dead_code)]
-    m_bcount: i32,
-    m_count_before_instruction_step: i32,
-    m_t: u32,
-    m_movems: usize,
-    m_isr: u32,
-    m_sr: u32,
-    m_new_sr: u32,
-    m_dbin: u32,
-    m_dbout: u32,
-    m_edb: u32,
-    m_irc: u32,
-    m_ir: u32,
-    m_ird: u32,
-    m_ftu: u32,
-    m_aluo: u32,
-    m_alue: u32,
-    m_alub: u32,
-    m_movemr: u32,
-    m_irdi: u32,
-    m_base_ssw: u32,
-    m_ssw: u32,
-    m_dcr: u32,
-    #[allow(dead_code)]
-    m_virq_state: u32,
-    m_nmi_pending: u32,
-    m_int_level: u32,
-    m_int_next_state: u32,
-    m_inst_state: u32,
-    m_inst_substate: u32,
-    m_next_state: u32,
-    m_post_run: u32,
-    m_post_run_cycles: i32,
-    m_reset_vector_reads_remaining: u32,
-    #[cfg(feature = "verification")]
-    bus_cycles: Vec<M68000BusCycle>,
-}
-
-impl Default for M68000 {
-    fn default() -> Self {
-        Self::new(M68000_DEFAULT_CLOCK_HZ)
+save_state::runtime_state! {
+    /// Complete MC68000 microcoded runtime state at a resumable boundary.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct M68000RuntimeState {
+        stopped: bool,
+        m_da: [u32; 17],
+        m_ipc: u32,
+        m_pc: u32,
+        m_au: u32,
+        m_at: u32,
+        m_aob: u32,
+        m_dt: u32,
+        m_int_vector: u32,
+        m_sp: usize,
+        m_t: u32,
+        m_movems: usize,
+        m_isr: u32,
+        m_sr: u32,
+        m_new_sr: u32,
+        m_dbin: u32,
+        m_dbout: u32,
+        m_edb: u32,
+        m_irc: u32,
+        m_ir: u32,
+        m_ird: u32,
+        m_ftu: u32,
+        m_aluo: u32,
+        m_alue: u32,
+        m_alub: u32,
+        m_movemr: u32,
+        m_irdi: u32,
+        m_base_ssw: u32,
+        m_ssw: u32,
+        m_dcr: u32,
+        m_virq_state: u32,
+        m_nmi_pending: u32,
+        m_int_level: u32,
+        m_int_next_state: u32,
+        m_inst_state: u32,
+        m_inst_substate: u32,
+        m_next_state: u32,
+        m_post_run: u32,
+        m_post_run_cycles: i32,
+        m_reset_vector_reads_remaining: u32,
     }
 }
 
-impl M68000 {
-    /// Creates a new 68000 core with the given input clock.
-    pub fn new(clock_hz: u32) -> Self {
-        let mut cpu = Self {
-            clock_hz,
-            last_cycles: 0,
+impl Default for M68000RuntimeState {
+    fn default() -> Self {
+        Self {
             stopped: false,
-            m_decode_table: [S_ILLEGAL; 0x10000],
             m_da: [0; 17],
             m_ipc: 0,
             m_pc: 0,
@@ -224,9 +209,6 @@ impl M68000 {
             m_dt: 0,
             m_int_vector: 0,
             m_sp: 16,
-            m_icount: 0,
-            m_bcount: 0,
-            m_count_before_instruction_step: 0,
             m_t: 0,
             m_movems: 0,
             m_isr: 0,
@@ -257,6 +239,87 @@ impl M68000 {
             m_post_run: PR_NONE,
             m_post_run_cycles: 0,
             m_reset_vector_reads_remaining: RESET_VECTOR_READ_COUNT,
+        }
+    }
+}
+
+impl ValidateState<()> for M68000RuntimeState {
+    fn validate_state(&self, _context: &()) -> Result<(), StateValidationError> {
+        if !matches!(self.m_sp, 15 | 16) || self.m_movems > 16 {
+            return Err(StateValidationError::new(
+                "MC68000 register selection state is invalid",
+            ));
+        }
+        if self.m_sr & !(SR_SR | SR_CCR) != 0
+            || self.m_sp != if self.m_sr & SR_S != 0 { 16 } else { 15 }
+        {
+            return Err(StateValidationError::new(
+                "MC68000 status register state is invalid",
+            ));
+        }
+        if self.m_int_level > 7
+            || self.m_nmi_pending > 1
+            || self.m_reset_vector_reads_remaining > RESET_VECTOR_READ_COUNT
+        {
+            return Err(StateValidationError::new(
+                "MC68000 interrupt or reset state is invalid",
+            ));
+        }
+        if !matches!(self.m_post_run, PR_NONE | PR_BERR) {
+            return Err(StateValidationError::new(
+                "MC68000 post-run state is invalid",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Motorola 68000 CPU core.
+pub struct M68000 {
+    clock_hz: u32,
+    last_cycles: u64,
+    m_decode_table: [u32; 0x10000],
+    /// Authoritative microcoded execution state.
+    pub state: M68000RuntimeState,
+    m_icount: i32,
+    #[allow(dead_code)]
+    m_bcount: i32,
+    m_count_before_instruction_step: i32,
+    #[cfg(feature = "verification")]
+    bus_cycles: Vec<M68000BusCycle>,
+}
+
+impl Deref for M68000 {
+    type Target = M68000RuntimeState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl DerefMut for M68000 {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+
+impl Default for M68000 {
+    fn default() -> Self {
+        Self::new(M68000_DEFAULT_CLOCK_HZ)
+    }
+}
+
+impl M68000 {
+    /// Creates a new 68000 core with the given input clock.
+    pub fn new(clock_hz: u32) -> Self {
+        let mut cpu = Self {
+            clock_hz,
+            last_cycles: 0,
+            m_decode_table: [S_ILLEGAL; 0x10000],
+            state: M68000RuntimeState::default(),
+            m_icount: 0,
+            m_bcount: 0,
+            m_count_before_instruction_step: 0,
             #[cfg(feature = "verification")]
             bus_cycles: Vec::new(),
         };
@@ -265,13 +328,13 @@ impl M68000 {
         cpu
     }
 
-    /// Loads public CPU state and primes the two-word prefetch queue.
+    /// Loads an architectural test state and primes the prefetch queue.
     pub fn load_state(&mut self, state: M68000State) {
-        self.m_da[..8].copy_from_slice(&state.data);
-        self.m_da[8..15].copy_from_slice(&state.address);
-        self.m_da[15] = state.usp;
-        self.m_da[16] = state.ssp;
-        self.m_sr = u32::from(state.sr) & (SR_SR | SR_CCR);
+        self.state.m_da[..8].copy_from_slice(&state.data);
+        self.state.m_da[8..15].copy_from_slice(&state.address);
+        self.state.m_da[15] = state.usp;
+        self.state.m_da[16] = state.ssp;
+        self.state.m_sr = u32::from(state.sr) & (SR_SR | SR_CCR);
         self.update_user_super();
         self.prime_prefetch(state.pc, state.ir, state.irc);
         self.stopped = false;
@@ -281,35 +344,48 @@ impl M68000 {
     pub fn save_state(&self) -> M68000State {
         let mut data = [0; 8];
         let mut address = [0; 7];
-        data.copy_from_slice(&self.m_da[..8]);
-        address.copy_from_slice(&self.m_da[8..15]);
+        data.copy_from_slice(&self.state.m_da[..8]);
+        address.copy_from_slice(&self.state.m_da[8..15]);
         M68000State {
             data,
             address,
-            usp: self.m_da[15],
-            ssp: self.m_da[16],
-            pc: self.m_pc.wrapping_sub(2) & ADDRESS_MASK,
-            sr: self.m_sr as u16,
-            ir: self.m_ir as u16,
-            irc: self.m_irc as u16,
+            usp: self.state.m_da[15],
+            ssp: self.state.m_da[16],
+            pc: self.state.m_pc.wrapping_sub(2) & ADDRESS_MASK,
+            sr: self.state.m_sr as u16,
+            ir: self.state.m_ir as u16,
+            irc: self.state.m_irc as u16,
         }
+    }
+
+    /// Clones the complete authoritative microcoded runtime state.
+    pub fn capture_state(&self) -> M68000RuntimeState {
+        self.state.clone()
+    }
+
+    /// Validates and replaces the complete microcoded runtime state.
+    pub fn restore_state(
+        &mut self,
+        state: M68000RuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &())
     }
 
     /// Primes MAME's internal prefetch latches for a known instruction boundary.
     pub fn prime_prefetch(&mut self, pc: u32, ir: u16, irc: u16) {
-        self.m_ipc = pc & ADDRESS_MASK;
-        self.m_pc = pc.wrapping_add(2) & ADDRESS_MASK;
-        self.m_au = pc.wrapping_add(4) & ADDRESS_MASK;
-        self.m_ir = u32::from(ir);
-        self.m_ird = u32::from(ir);
-        self.m_irdi = u32::from(ir);
-        self.m_irc = u32::from(irc);
-        self.m_dbin = u32::from(irc);
+        self.state.m_ipc = pc & ADDRESS_MASK;
+        self.state.m_pc = pc.wrapping_add(2) & ADDRESS_MASK;
+        self.state.m_au = pc.wrapping_add(4) & ADDRESS_MASK;
+        self.state.m_ir = u32::from(ir);
+        self.state.m_ird = u32::from(ir);
+        self.state.m_irdi = u32::from(ir);
+        self.state.m_irc = u32::from(irc);
+        self.state.m_dbin = u32::from(irc);
         self.set_ftu_const();
-        self.m_inst_state = self.m_decode_table[self.m_ird as usize];
-        self.m_inst_substate = 0;
-        self.m_next_state = 0;
-        self.m_reset_vector_reads_remaining = 0;
+        self.state.m_inst_state = self.m_decode_table[self.state.m_ird as usize];
+        self.state.m_inst_substate = 0;
+        self.state.m_next_state = 0;
+        self.state.m_reset_vector_reads_remaining = 0;
     }
 
     /// Returns the cycle count consumed by the last `step` call.
@@ -346,7 +422,7 @@ impl M68000 {
 
         self.poll_interrupts(bus);
         if self.stopped {
-            if self.m_int_next_state == 0 {
+            if self.state.m_int_next_state == 0 {
                 self.last_cycles = 0;
                 return 0;
             }
@@ -358,26 +434,28 @@ impl M68000 {
             // The core keeps the state in a 16-bit field: an interrupt dispatch
             // assigns (level << 24) | S_INTERRUPT and relies on truncation,
             // with the level carried separately in the 32-bit m_next_state.
-            self.m_inst_state &= 0xFFFF;
-            if self.m_inst_state == S_DOUBLE_FAULT {
+            self.state.m_inst_state &= 0xFFFF;
+            if self.state.m_inst_state == S_DOUBLE_FAULT {
                 self.stopped = true;
                 break;
             }
-            if self.m_inst_state >= S_FIRST_INSTRUCTION && self.m_inst_substate == 0 {
+            if self.state.m_inst_state >= S_FIRST_INSTRUCTION && self.state.m_inst_substate == 0 {
                 boundary_count += 1;
                 if boundary_count == 2 {
                     break;
                 }
-                self.m_ipc = self.m_pc.wrapping_sub(2) & ADDRESS_MASK;
-                self.m_irdi = self.m_ird;
+                self.state.m_ipc = self.state.m_pc.wrapping_sub(2) & ADDRESS_MASK;
+                self.state.m_irdi = self.state.m_ird;
             }
-            let state = self.m_inst_state;
+            let state = self.state.m_inst_state;
             self.dispatch_full(bus, state);
-            if self.m_post_run != PR_NONE {
+            if self.state.m_post_run != PR_NONE {
                 self.do_post_run();
-            } else if self.m_inst_state == S_ADDRESS_ERROR && self.m_base_ssw & SSW_CRITICAL != 0 {
-                self.m_inst_state = S_DOUBLE_FAULT;
-                self.m_inst_substate = 0;
+            } else if self.state.m_inst_state == S_ADDRESS_ERROR
+                && self.state.m_base_ssw & SSW_CRITICAL != 0
+            {
+                self.state.m_inst_state = S_DOUBLE_FAULT;
+                self.state.m_inst_substate = 0;
             }
         }
         let consumed = (RUN_BUDGET - self.m_icount).max(0) as u64;
@@ -387,19 +465,20 @@ impl M68000 {
 
     fn poll_interrupts(&mut self, bus: &mut impl Bus) {
         let level = bus.m68000_interrupt_level().min(7) as u32;
-        if self.m_int_level != level {
-            if self.m_int_level != 7 && level == 7 {
-                self.m_nmi_pending = 1;
+        if self.state.m_int_level != level {
+            if self.state.m_int_level != 7 && level == 7 {
+                self.state.m_nmi_pending = 1;
             }
-            self.m_int_level = level;
+            self.state.m_int_level = level;
             self.update_interrupt();
         }
     }
 
     fn read_program(&mut self, bus: &mut impl Bus, address: u32, mem_mask: u32) -> u32 {
-        let cycle_kind = if self.m_inst_state == S_RESET && self.m_reset_vector_reads_remaining > 0
+        let cycle_kind = if self.state.m_inst_state == S_RESET
+            && self.state.m_reset_vector_reads_remaining > 0
         {
-            self.m_reset_vector_reads_remaining -= 1;
+            self.state.m_reset_vector_reads_remaining -= 1;
             M68000CycleKind::ResetVector
         } else {
             M68000CycleKind::Normal
@@ -573,7 +652,7 @@ impl M68000 {
     fn function_code(&self, space: u32) -> M68000FunctionCode {
         match space & 3 {
             SSW_PROGRAM => {
-                if self.m_sr & SR_S != 0 {
+                if self.state.m_sr & SR_S != 0 {
                     M68000FunctionCode::SupervisorProgram
                 } else {
                     M68000FunctionCode::UserProgram
@@ -581,7 +660,7 @@ impl M68000 {
             }
             SSW_CPU => M68000FunctionCode::CpuSpace,
             _ => {
-                if self.m_sr & SR_S != 0 {
+                if self.state.m_sr & SR_S != 0 {
                     M68000FunctionCode::SupervisorData
                 } else {
                     M68000FunctionCode::UserData
@@ -595,7 +674,7 @@ impl M68000 {
     /// fault on such a doomed access is discarded: the CPU-generated address
     /// error takes precedence.
     fn address_error_pending(&self, mem_mask: u32) -> bool {
-        mem_mask == 0xFFFF && self.m_aob & 1 != 0
+        mem_mask == 0xFFFF && self.state.m_aob & 1 != 0
     }
 
     fn access_to_be_redone(&self) -> bool {
@@ -603,91 +682,91 @@ impl M68000 {
     }
 
     fn abort_access(&mut self, reason: u32) {
-        self.m_post_run = reason;
-        self.m_post_run_cycles = self.m_icount;
+        self.state.m_post_run = reason;
+        self.state.m_post_run_cycles = self.m_icount;
         self.m_icount = 0;
     }
 
     fn do_post_run(&mut self) {
-        self.m_icount = self.m_post_run_cycles;
-        self.m_post_run_cycles = 0;
-        if self.m_post_run == PR_BERR {
-            self.m_inst_state = if self.m_base_ssw & SSW_CRITICAL != 0 {
+        self.m_icount = self.state.m_post_run_cycles;
+        self.state.m_post_run_cycles = 0;
+        if self.state.m_post_run == PR_BERR {
+            self.state.m_inst_state = if self.state.m_base_ssw & SSW_CRITICAL != 0 {
                 S_DOUBLE_FAULT
             } else {
                 S_BUS_ERROR
             };
-            self.m_inst_substate = 0;
+            self.state.m_inst_substate = 0;
             self.m_icount -= 10;
         }
-        self.m_post_run = PR_NONE;
+        self.state.m_post_run = PR_NONE;
     }
 
     fn start_interrupt_vector_lookup(&mut self) {
-        let level = self.m_next_state >> 24;
+        let level = self.state.m_next_state >> 24;
         if level == 7 {
-            self.m_nmi_pending = 0;
+            self.state.m_nmi_pending = 0;
             self.update_interrupt();
         }
     }
 
     fn end_interrupt_vector_lookup(&mut self) {
-        self.m_int_vector = (self.m_edb & 0xFF) << 2;
-        self.m_int_next_state = 0;
+        self.state.m_int_vector = (self.state.m_edb & 0xFF) << 2;
+        self.state.m_int_next_state = 0;
     }
 
     fn update_user_super(&mut self) {
-        self.m_sp = if self.m_sr & SR_S != 0 { 16 } else { 15 };
+        self.state.m_sp = if self.state.m_sr & SR_S != 0 { 16 } else { 15 };
     }
 
     fn update_interrupt(&mut self) {
-        if self.m_nmi_pending != 0 {
-            self.m_int_next_state = (7 << 24) | S_INTERRUPT;
-        } else if self.m_int_level > ((self.m_sr >> 8) & 7) {
-            self.m_int_next_state = (self.m_int_level << 24) | S_INTERRUPT;
+        if self.state.m_nmi_pending != 0 {
+            self.state.m_int_next_state = (7 << 24) | S_INTERRUPT;
+        } else if self.state.m_int_level > ((self.state.m_sr >> 8) & 7) {
+            self.state.m_int_next_state = (self.state.m_int_level << 24) | S_INTERRUPT;
         } else {
-            self.m_int_next_state = 0;
+            self.state.m_int_next_state = 0;
         }
     }
 
     fn step_movem(&mut self) {
-        let mut register = self.m_movemr.trailing_zeros() as usize;
+        let mut register = self.state.m_movemr.trailing_zeros() as usize;
         if register > 15 {
             register = 0;
         }
-        self.m_movems = self.map_sp(register as u32);
-        self.m_movemr &= !(1u32 << register);
+        self.state.m_movems = self.map_sp(register as u32);
+        self.state.m_movemr &= !(1u32 << register);
     }
 
     fn step_movem_predec(&mut self) {
-        let mut register = self.m_movemr.trailing_zeros() as usize;
+        let mut register = self.state.m_movemr.trailing_zeros() as usize;
         if register > 15 {
             register = 0;
         }
-        self.m_movems = self.map_sp((register ^ 0x0F) as u32);
-        self.m_movemr &= !(1u32 << register);
+        self.state.m_movems = self.map_sp((register ^ 0x0F) as u32);
+        self.state.m_movemr &= !(1u32 << register);
     }
 
     fn map_sp(&self, register: u32) -> usize {
         if register == 15 {
-            self.m_sp
+            self.state.m_sp
         } else {
             register as usize
         }
     }
 
     fn set_ftu_const(&mut self) {
-        match self.m_ird >> 12 {
-            0x4 => self.m_ftu = 0x80,
+        match self.state.m_ird >> 12 {
+            0x4 => self.state.m_ftu = 0x80,
             0x5 | 0xE => {
-                self.m_ftu = (self.m_ird >> 9) & 7;
-                if self.m_ftu == 0 {
-                    self.m_ftu = 8;
+                self.state.m_ftu = (self.state.m_ird >> 9) & 7;
+                if self.state.m_ftu == 0 {
+                    self.state.m_ftu = 8;
                 }
             }
-            0x6 | 0x7 => self.m_ftu = s8(self.m_ird),
-            0x8 | 0xC => self.m_ftu = 0x0F,
-            _ => self.m_ftu = 0,
+            0x6 | 0x7 => self.state.m_ftu = s8(self.state.m_ird),
+            0x8 | 0xC => self.state.m_ftu = 0x0F,
+            _ => self.state.m_ftu = 0,
         }
     }
 
@@ -700,7 +779,7 @@ impl M68000 {
     /// Only the latter is the idle self-loop that may sleep; parking on the
     /// wake pass would leave the CPU stopped after the interrupt dispatched.
     fn debugger_wait_hook(&mut self) {
-        if self.m_next_state == 0 {
+        if self.state.m_next_state == 0 {
             self.stopped = true;
         }
     }
@@ -713,40 +792,40 @@ impl M68000 {
         let a = a & 0xFFFF;
         let b = b & 0xFFFF;
         let r = b.wrapping_add(a);
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if r & 0xFFFF == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x8000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r & 0x10000 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if ((b & a & !r) | ((!b) & (!a) & r)) & 0x8000 != 0 {
-            self.m_isr |= SR_V;
+            self.state.m_isr |= SR_V;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_add8(&mut self, a: u32, b: u32) {
         let a = a & 0xFF;
         let b = b & 0xFF;
         let r = b.wrapping_add(a);
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if r & 0xFF == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x80 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r & 0x100 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if ((b & a & !r) | ((!b) & (!a) & r)) & 0x80 != 0 {
-            self.m_isr |= SR_V;
+            self.state.m_isr |= SR_V;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_addc(&mut self, a: u32, b: u32) {
@@ -754,21 +833,21 @@ impl M68000 {
         let b = b & 0xFFFF;
         let r = b
             .wrapping_add(a)
-            .wrapping_add(u32::from(self.m_isr & SR_C != 0));
-        self.m_isr = 0;
+            .wrapping_add(u32::from(self.state.m_isr & SR_C != 0));
+        self.state.m_isr = 0;
         if r & 0xFFFF == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x8000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r & 0x10000 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if ((b & a & !r) | ((!b) & (!a) & r)) & 0x8000 != 0 {
-            self.m_isr |= SR_V;
+            self.state.m_isr |= SR_V;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_addx(&mut self, a: u32, b: u32) {
@@ -776,21 +855,21 @@ impl M68000 {
         let b = b & 0xFFFF;
         let r = b
             .wrapping_add(a)
-            .wrapping_add(u32::from(self.m_sr & SR_X != 0));
-        self.m_isr = 0;
+            .wrapping_add(u32::from(self.state.m_sr & SR_X != 0));
+        self.state.m_isr = 0;
         if r & 0xFFFF == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x8000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r & 0x10000 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if ((b & a & !r) | ((!b) & (!a) & r)) & 0x8000 != 0 {
-            self.m_isr |= SR_V;
+            self.state.m_isr |= SR_V;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_addx8(&mut self, a: u32, b: u32) {
@@ -798,79 +877,81 @@ impl M68000 {
         let b = b & 0xFF;
         let r = b
             .wrapping_add(a)
-            .wrapping_add(u32::from(self.m_sr & SR_X != 0));
-        self.m_isr = 0;
+            .wrapping_add(u32::from(self.state.m_sr & SR_X != 0));
+        self.state.m_isr = 0;
         if r & 0xFF == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x80 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r & 0x100 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if ((b & a & !r) | ((!b) & (!a) & r)) & 0x80 != 0 {
-            self.m_isr |= SR_V;
+            self.state.m_isr |= SR_V;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_and(&mut self, a: u32, b: u32) {
         let r = (b & a) & 0xFFFF;
-        self.m_isr = self.m_sr & SR_X;
+        self.state.m_isr = self.state.m_sr & SR_X;
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x8000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_andx(&mut self, a: u32, b: u32) {
         self.alu_and(a, b);
-        self.m_isr = (self.m_isr & !SR_C) | if self.m_sr & SR_X != 0 { SR_C } else { 0 };
+        self.state.m_isr =
+            (self.state.m_isr & !SR_C) | if self.state.m_sr & SR_X != 0 { SR_C } else { 0 };
     }
 
     fn alu_and8(&mut self, a: u32, b: u32) {
         let r = (b & a) & 0xFFFF;
-        self.m_isr = self.m_sr & SR_X;
+        self.state.m_isr = self.state.m_sr & SR_X;
         if r & 0xFF == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x80 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_and8x(&mut self, a: u32, b: u32) {
         self.alu_and8(a, b);
-        self.m_isr = (self.m_isr & !SR_C) | if self.m_sr & SR_X != 0 { SR_C } else { 0 };
+        self.state.m_isr =
+            (self.state.m_isr & !SR_C) | if self.state.m_sr & SR_X != 0 { SR_C } else { 0 };
     }
 
     fn alu_or(&mut self, a: u32, b: u32) {
         let r = (b | a) & 0xFFFF;
-        self.m_isr = self.m_sr & SR_X;
+        self.state.m_isr = self.state.m_sr & SR_X;
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x8000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_or8(&mut self, a: u32, b: u32) {
         let r = (b | a) & 0xFF;
-        self.m_isr = self.m_sr & SR_X;
+        self.state.m_isr = self.state.m_sr & SR_X;
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x80 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_eor(&mut self, a: u32, b: u32) {
@@ -883,14 +964,14 @@ impl M68000 {
 
     fn alu_ext(&mut self, a: u32) {
         let r = s8(a) & 0xFFFF;
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x8000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_not(&mut self, a: u32) {
@@ -905,40 +986,40 @@ impl M68000 {
         let a = a & 0xFFFF;
         let b = b & 0xFFFF;
         let r = b.wrapping_sub(a);
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if r & 0xFFFF == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x8000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r & 0x10000 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if ((b & !a & !r) | ((!b) & a & r)) & 0x8000 != 0 {
-            self.m_isr |= SR_V;
+            self.state.m_isr |= SR_V;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_sub8(&mut self, a: u32, b: u32) {
         let a = a & 0xFF;
         let b = b & 0xFF;
         let r = b.wrapping_sub(a);
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if r & 0xFF == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x80 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r & 0x100 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if ((b & !a & !r) | ((!b) & a & r)) & 0x80 != 0 {
-            self.m_isr |= SR_V;
+            self.state.m_isr |= SR_V;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_subc(&mut self, a: u32, b: u32) {
@@ -946,21 +1027,21 @@ impl M68000 {
         let b = b & 0xFFFF;
         let r = b
             .wrapping_sub(a)
-            .wrapping_sub(u32::from(self.m_isr & SR_C != 0));
-        self.m_isr = 0;
+            .wrapping_sub(u32::from(self.state.m_isr & SR_C != 0));
+        self.state.m_isr = 0;
         if r & 0xFFFF == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x8000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r & 0x10000 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if ((b & !a & !r) | ((!b) & a & r)) & 0x8000 != 0 {
-            self.m_isr |= SR_V;
+            self.state.m_isr |= SR_V;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_subx(&mut self, a: u32, b: u32) {
@@ -968,21 +1049,21 @@ impl M68000 {
         let b = b & 0xFFFF;
         let r = b
             .wrapping_sub(a)
-            .wrapping_sub(u32::from(self.m_sr & SR_X != 0));
-        self.m_isr = 0;
+            .wrapping_sub(u32::from(self.state.m_sr & SR_X != 0));
+        self.state.m_isr = 0;
         if r & 0xFFFF == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x8000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r & 0x10000 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if ((b & !a & !r) | ((!b) & a & r)) & 0x8000 != 0 {
-            self.m_isr |= SR_V;
+            self.state.m_isr |= SR_V;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_subx8(&mut self, a: u32, b: u32) {
@@ -990,27 +1071,27 @@ impl M68000 {
         let b = b & 0xFF;
         let r = b
             .wrapping_sub(a)
-            .wrapping_sub(u32::from(self.m_sr & SR_X != 0));
-        self.m_isr = 0;
+            .wrapping_sub(u32::from(self.state.m_sr & SR_X != 0));
+        self.state.m_isr = 0;
         if r & 0xFF == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x80 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r & 0x100 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if ((b & !a & !r) | ((!b) & a & r)) & 0x80 != 0 {
-            self.m_isr |= SR_V;
+            self.state.m_isr |= SR_V;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_abcd8(&mut self, a: u32, b: u32) {
         let a = a & 0xFF;
         let b = b & 0xFF;
-        let carry = u32::from(self.m_sr & SR_X != 0);
+        let carry = u32::from(self.state.m_sr & SR_X != 0);
         let half = (b & 0x0F).wrapping_add(a & 0x0F).wrapping_add(carry);
         let low_correction = half > 9;
         let r1 = b.wrapping_add(a).wrapping_add(carry);
@@ -1018,26 +1099,26 @@ impl M68000 {
         if r > 0x9F {
             r = r.wrapping_add(0x60);
         }
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if r & 0xFF == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x80 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r & 0x300 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if r & 0x80 != 0 && r1 & 0x80 == 0 {
-            self.m_isr |= SR_V;
+            self.state.m_isr |= SR_V;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_sbcd8(&mut self, a: u32, b: u32) {
         let a = a & 0xFF;
         let b = b & 0xFF;
-        let carry = u32::from(self.m_sr & SR_X != 0);
+        let carry = u32::from(self.state.m_sr & SR_X != 0);
         let half = (b & 0x0F).wrapping_sub(a & 0x0F).wrapping_sub(carry);
         let low_correction = half & 0x10 != 0;
         let r1 = b.wrapping_sub(a).wrapping_sub(carry);
@@ -1045,103 +1126,103 @@ impl M68000 {
         if r1 & 0x100 != 0 {
             r = r.wrapping_sub(0x60);
         }
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if r & 0xFF == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x80 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r & 0x300 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if r & 0x80 == 0 && r1 & 0x80 != 0 {
-            self.m_isr |= SR_V;
+            self.state.m_isr |= SR_V;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_sla0(&mut self, a: u32) {
         let a = a & 0xFFFF;
-        let r = (a << 17) | (self.m_alue << 1);
-        self.m_isr = self.m_sr & SR_X;
+        let r = (a << 17) | (self.state.m_alue << 1);
+        self.state.m_isr = self.state.m_sr & SR_X;
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x8000_0000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if a & 0x8000 != 0 {
-            self.m_isr |= SR_C;
+            self.state.m_isr |= SR_C;
         }
-        self.m_alue = r & 0xFFFF;
-        self.m_aluo = (r >> 16) & 0xFFFF;
+        self.state.m_alue = r & 0xFFFF;
+        self.state.m_aluo = (r >> 16) & 0xFFFF;
     }
 
     fn alu_sla1(&mut self, a: u32) {
         let a = a & 0xFFFF;
-        let r = (a << 17) | (self.m_alue << 1) | 1;
-        self.m_isr = self.m_sr & SR_X;
+        let r = (a << 17) | (self.state.m_alue << 1) | 1;
+        self.state.m_isr = self.state.m_sr & SR_X;
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x8000_0000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if a & 0x8000 != 0 {
-            self.m_isr |= SR_C;
+            self.state.m_isr |= SR_C;
         }
-        self.m_alue = r & 0xFFFF;
-        self.m_aluo = (r >> 16) & 0xFFFF;
+        self.state.m_alue = r & 0xFFFF;
+        self.state.m_aluo = (r >> 16) & 0xFFFF;
     }
 
     fn alu_over(&mut self, a: u32) {
-        self.m_isr = SR_V | SR_N;
-        self.m_aluo = s8(a) & 0xFFFF;
+        self.state.m_isr = SR_V | SR_N;
+        self.state.m_aluo = s8(a) & 0xFFFF;
     }
 
     fn alu_asl(&mut self, a: u32) {
         let a = a & 0xFFFF;
         let r = (a << 1) & 0xFFFF;
-        self.m_isr = self.m_sr & SR_V;
+        self.state.m_isr = self.state.m_sr & SR_V;
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x8000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if a & 0x8000 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if (r ^ a) & 0x8000 != 0 {
-            self.m_isr |= SR_V;
+            self.state.m_isr |= SR_V;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_asl8(&mut self, a: u32) {
         let a = a & 0xFF;
         let r = (a << 1) & 0xFF;
-        self.m_isr = self.m_sr & SR_V;
+        self.state.m_isr = self.state.m_sr & SR_V;
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x80 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if a & 0x80 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if (r ^ a) & 0x80 != 0 {
-            self.m_isr |= SR_V;
+            self.state.m_isr |= SR_V;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_asl32(&mut self, a: u32) {
-        let old_high = self.m_alue & 0xFFFF;
+        let old_high = self.state.m_alue & 0xFFFF;
         let r = (old_high << 17) | ((a & 0xFFFF) << 1);
-        self.m_isr = self.m_sr & SR_V;
+        self.state.m_isr = self.state.m_sr & SR_V;
         self.finish_shift32(
             r,
             old_high & 0x8000 != 0,
@@ -1153,89 +1234,89 @@ impl M68000 {
     fn alu_asr(&mut self, a: u32) {
         let a = a & 0xFFFF;
         let mut r = a >> 1;
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if a & 0x8000 != 0 {
             r |= 0x8000;
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if a & 1 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_asr8(&mut self, a: u32) {
         let a = a & 0xFF;
         let mut r = a >> 1;
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if a & 0x80 != 0 {
             r |= 0x80;
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if a & 1 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_asr32(&mut self, a: u32) {
-        let high = self.m_alue & 0xFFFF;
+        let high = self.state.m_alue & 0xFFFF;
         let mut r = (high << 15) | ((a & 0xFFFF) >> 1);
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if high & 0x8000 != 0 {
             r |= 0x8000_0000;
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if a & 1 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
-        self.m_aluo = r & 0xFFFF;
-        self.m_alue = (r >> 16) & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
+        self.state.m_alue = (r >> 16) & 0xFFFF;
     }
 
     fn alu_lsl(&mut self, a: u32) {
         let a = a & 0xFFFF;
         let r = (a << 1) & 0xFFFF;
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x8000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if a & 0x8000 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_lsl8(&mut self, a: u32) {
         let a = a & 0xFF;
         let r = (a << 1) & 0xFF;
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x80 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if a & 0x80 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_lsl32(&mut self, a: u32) {
-        let old_high = self.m_alue & 0xFFFF;
+        let old_high = self.state.m_alue & 0xFFFF;
         let r = (old_high << 17) | ((a & 0xFFFF) << 1);
         self.finish_shift32(r, old_high & 0x8000 != 0, false, false);
     }
@@ -1243,326 +1324,337 @@ impl M68000 {
     fn alu_lsr(&mut self, a: u32) {
         let a = a & 0xFFFF;
         let r = a >> 1;
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if a & 1 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_lsr8(&mut self, a: u32) {
         let a = a & 0xFF;
         let r = a >> 1;
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if a & 1 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_lsr32(&mut self, a: u32) {
-        let r = ((self.m_alue & 0xFFFF) << 15) | ((a & 0xFFFF) >> 1);
-        self.m_isr = 0;
+        let r = ((self.state.m_alue & 0xFFFF) << 15) | ((a & 0xFFFF) >> 1);
+        self.state.m_isr = 0;
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if a & 1 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
-        self.m_aluo = r & 0xFFFF;
-        self.m_alue = (r >> 16) & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
+        self.state.m_alue = (r >> 16) & 0xFFFF;
     }
 
     fn alu_rol(&mut self, a: u32) {
         let a = a & 0xFFFF;
         let mut r = (a << 1) & 0xFFFF;
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if a & 0x8000 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
             r |= 1;
         }
         if r & 0x8000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_rol8(&mut self, a: u32) {
         let a = a & 0xFF;
         let mut r = (a << 1) & 0xFF;
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if a & 0x80 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
             r |= 1;
         }
         if r & 0x80 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_rol32(&mut self, a: u32) {
-        let high = self.m_alue & 0xFFFF;
+        let high = self.state.m_alue & 0xFFFF;
         let mut r = (high << 17) | ((a & 0xFFFF) << 1);
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if high & 0x8000 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
             r |= 1;
         }
         if r & 0x8000_0000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
-        self.m_aluo = r & 0xFFFF;
-        self.m_alue = (r >> 16) & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
+        self.state.m_alue = (r >> 16) & 0xFFFF;
     }
 
     fn alu_ror(&mut self, a: u32) {
         let a = a & 0xFFFF;
         let mut r = a >> 1;
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if a & 1 != 0 {
-            self.m_isr |= SR_X | SR_C | SR_N;
+            self.state.m_isr |= SR_X | SR_C | SR_N;
             r |= 0x8000;
         }
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_ror8(&mut self, a: u32) {
         let a = a & 0xFF;
         let mut r = a >> 1;
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if a & 1 != 0 {
-            self.m_isr |= SR_X | SR_C | SR_N;
+            self.state.m_isr |= SR_X | SR_C | SR_N;
             r |= 0x80;
         }
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_ror32(&mut self, a: u32) {
-        let mut r = ((self.m_alue & 0xFFFF) << 15) | ((a & 0xFFFF) >> 1);
-        self.m_isr = 0;
+        let mut r = ((self.state.m_alue & 0xFFFF) << 15) | ((a & 0xFFFF) >> 1);
+        self.state.m_isr = 0;
         if a & 1 != 0 {
-            self.m_isr |= SR_X | SR_C | SR_N;
+            self.state.m_isr |= SR_X | SR_C | SR_N;
             r |= 0x8000_0000;
         }
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
-        self.m_aluo = r & 0xFFFF;
-        self.m_alue = (r >> 16) & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
+        self.state.m_alue = (r >> 16) & 0xFFFF;
     }
 
     fn alu_roxl(&mut self, a: u32) {
         let a = a & 0xFFFF;
-        let r = ((a << 1) | u32::from(self.m_sr & SR_X != 0)) & 0xFFFF;
-        self.m_isr = 0;
+        let r = ((a << 1) | u32::from(self.state.m_sr & SR_X != 0)) & 0xFFFF;
+        self.state.m_isr = 0;
         if a & 0x8000 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if r & 0x8000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_roxl8(&mut self, a: u32) {
         let a = a & 0xFF;
-        let r = ((a << 1) | u32::from(self.m_sr & SR_X != 0)) & 0xFF;
-        self.m_isr = 0;
+        let r = ((a << 1) | u32::from(self.state.m_sr & SR_X != 0)) & 0xFF;
+        self.state.m_isr = 0;
         if a & 0x80 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if r & 0x80 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_roxl32(&mut self, a: u32) {
-        let high = self.m_alue & 0xFFFF;
-        let r = (high << 17) | ((a & 0xFFFF) << 1) | u32::from(self.m_sr & SR_X != 0);
-        self.m_isr = 0;
+        let high = self.state.m_alue & 0xFFFF;
+        let r = (high << 17) | ((a & 0xFFFF) << 1) | u32::from(self.state.m_sr & SR_X != 0);
+        self.state.m_isr = 0;
         if high & 0x8000 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if r & 0x8000_0000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
-        self.m_aluo = r & 0xFFFF;
-        self.m_alue = (r >> 16) & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
+        self.state.m_alue = (r >> 16) & 0xFFFF;
     }
 
     fn alu_roxr(&mut self, a: u32) {
         let a = a & 0xFFFF;
-        let r = (a >> 1) | if self.m_sr & SR_X != 0 { 0x8000 } else { 0 };
-        self.m_isr = 0;
+        let r = (a >> 1)
+            | if self.state.m_sr & SR_X != 0 {
+                0x8000
+            } else {
+                0
+            };
+        self.state.m_isr = 0;
         if a & 1 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if r & 0x8000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_roxr8(&mut self, a: u32) {
         let a = a & 0xFF;
-        let r = (a >> 1) | if self.m_sr & SR_X != 0 { 0x80 } else { 0 };
-        self.m_isr = 0;
+        let r = (a >> 1) | if self.state.m_sr & SR_X != 0 { 0x80 } else { 0 };
+        self.state.m_isr = 0;
         if a & 1 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if r & 0x80 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
-        self.m_aluo = r & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
     }
 
     fn alu_roxr32(&mut self, a: u32) {
         let a = a & 0xFFFF;
-        let r = ((self.m_alue & 0xFFFF) << 15)
+        let r = ((self.state.m_alue & 0xFFFF) << 15)
             | (a >> 1)
-            | if self.m_sr & SR_X != 0 {
+            | if self.state.m_sr & SR_X != 0 {
                 0x8000_0000
             } else {
                 0
             };
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if a & 1 != 0 {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if r & 0x8000_0000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
-        self.m_aluo = r & 0xFFFF;
-        self.m_alue = (r >> 16) & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
+        self.state.m_alue = (r >> 16) & 0xFFFF;
     }
 
     fn alu_roxr32ms(&mut self, a: u32) {
-        let carry_in =
-            ((self.m_isr & (SR_N | SR_V)) == SR_N) || ((self.m_isr & (SR_N | SR_V)) == SR_V);
+        let carry_in = ((self.state.m_isr & (SR_N | SR_V)) == SR_N)
+            || ((self.state.m_isr & (SR_N | SR_V)) == SR_V);
         let r = ((a & 0xFFFF) << 15)
-            | ((self.m_alue & 0xFFFF) >> 1)
+            | ((self.state.m_alue & 0xFFFF) >> 1)
             | if carry_in { 0x8000_0000 } else { 0 };
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if a & 1 != 0 {
-            self.m_isr |= SR_X;
+            self.state.m_isr |= SR_X;
         }
         if r & 0x8000_0000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r & 0xFFFF_0000 == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
-        self.m_aluo = (r >> 16) & 0xFFFF;
-        self.m_alue = r & 0xFFFF;
+        self.state.m_aluo = (r >> 16) & 0xFFFF;
+        self.state.m_alue = r & 0xFFFF;
     }
 
     fn alu_roxr32mu(&mut self, a: u32) {
         let r = ((a & 0xFFFF) << 15)
-            | ((self.m_alue & 0xFFFF) >> 1)
-            | if self.m_isr & SR_C != 0 {
+            | ((self.state.m_alue & 0xFFFF) >> 1)
+            | if self.state.m_isr & SR_C != 0 {
                 0x8000_0000
             } else {
                 0
             };
-        self.m_isr = 0;
+        self.state.m_isr = 0;
         if a & 1 != 0 {
-            self.m_isr |= SR_X;
+            self.state.m_isr |= SR_X;
         }
         if r & 0x8000_0000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if r & 0xFFFF_0000 == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
-        self.m_aluo = (r >> 16) & 0xFFFF;
-        self.m_alue = r & 0xFFFF;
+        self.state.m_aluo = (r >> 16) & 0xFFFF;
+        self.state.m_alue = r & 0xFFFF;
     }
 
     fn finish_shift32(&mut self, r: u32, carry: bool, overflow: bool, preserve_v: bool) {
-        self.m_isr = if preserve_v { self.m_sr & SR_V } else { 0 };
+        self.state.m_isr = if preserve_v {
+            self.state.m_sr & SR_V
+        } else {
+            0
+        };
         if r == 0 {
-            self.m_isr |= SR_Z;
+            self.state.m_isr |= SR_Z;
         }
         if r & 0x8000_0000 != 0 {
-            self.m_isr |= SR_N;
+            self.state.m_isr |= SR_N;
         }
         if carry {
-            self.m_isr |= SR_X | SR_C;
+            self.state.m_isr |= SR_X | SR_C;
         }
         if overflow {
-            self.m_isr |= SR_V;
+            self.state.m_isr |= SR_V;
         }
-        self.m_aluo = r & 0xFFFF;
-        self.m_alue = (r >> 16) & 0xFFFF;
+        self.state.m_aluo = r & 0xFFFF;
+        self.state.m_alue = (r >> 16) & 0xFFFF;
     }
 
     fn sr_z(&mut self) {
-        self.m_sr = (self.m_sr & !SR_Z) | (self.m_isr & SR_Z);
+        self.state.m_sr = (self.state.m_sr & !SR_Z) | (self.state.m_isr & SR_Z);
     }
 
     fn sr_nz_u(&mut self) {
-        self.m_sr = (self.m_sr & !SR_N & (self.m_isr | !SR_Z)) | (self.m_isr & SR_N);
+        self.state.m_sr =
+            (self.state.m_sr & !SR_N & (self.state.m_isr | !SR_Z)) | (self.state.m_isr & SR_N);
     }
 
     fn sr_nzvc(&mut self) {
-        self.m_sr =
-            (self.m_sr & !(SR_N | SR_Z | SR_V | SR_C)) | (self.m_isr & (SR_N | SR_Z | SR_V | SR_C));
+        self.state.m_sr = (self.state.m_sr & !(SR_N | SR_Z | SR_V | SR_C))
+            | (self.state.m_isr & (SR_N | SR_Z | SR_V | SR_C));
     }
 
     fn sr_nzvc_u(&mut self) {
-        self.m_sr = (self.m_sr & !(SR_N | SR_V | SR_C) & (self.m_isr | !SR_Z))
-            | (self.m_isr & (SR_N | SR_V | SR_C));
+        self.state.m_sr = (self.state.m_sr & !(SR_N | SR_V | SR_C) & (self.state.m_isr | !SR_Z))
+            | (self.state.m_isr & (SR_N | SR_V | SR_C));
     }
 
     fn sr_xnzvc(&mut self) {
-        self.m_sr = (self.m_sr & !(SR_X | SR_N | SR_Z | SR_V | SR_C))
-            | (self.m_isr & (SR_X | SR_N | SR_Z | SR_V | SR_C));
+        self.state.m_sr = (self.state.m_sr & !(SR_X | SR_N | SR_Z | SR_V | SR_C))
+            | (self.state.m_isr & (SR_X | SR_N | SR_Z | SR_V | SR_C));
     }
 
     fn sr_xnzvc_u(&mut self) {
-        self.m_sr = (self.m_sr & !(SR_X | SR_N | SR_V | SR_C) & (self.m_isr | !SR_Z))
-            | (self.m_isr & (SR_X | SR_N | SR_V | SR_C));
+        self.state.m_sr =
+            (self.state.m_sr & !(SR_X | SR_N | SR_V | SR_C) & (self.state.m_isr | !SR_Z))
+                | (self.state.m_isr & (SR_X | SR_N | SR_V | SR_C));
     }
 }
 
@@ -1597,12 +1689,12 @@ impl CpuM68000 for M68000 {
     }
 
     fn reset(&mut self) {
-        self.m_inst_state = S_RESET;
-        self.m_inst_substate = 0;
+        self.state.m_inst_state = S_RESET;
+        self.state.m_inst_substate = 0;
         self.m_count_before_instruction_step = 0;
-        self.m_post_run = PR_NONE;
-        self.m_post_run_cycles = 0;
-        self.m_reset_vector_reads_remaining = RESET_VECTOR_READ_COUNT;
+        self.state.m_post_run = PR_NONE;
+        self.state.m_post_run_cycles = 0;
+        self.state.m_reset_vector_reads_remaining = RESET_VECTOR_READ_COUNT;
         self.stopped = false;
         self.update_user_super();
     }
@@ -1620,61 +1712,81 @@ impl CpuM68000 for M68000 {
     }
 
     fn pc(&self) -> u32 {
-        self.m_ipc & ADDRESS_MASK
+        self.state.m_ipc & ADDRESS_MASK
     }
 
     fn set_pc(&mut self, value: u32) {
-        self.m_ipc = value & ADDRESS_MASK;
+        self.state.m_ipc = value & ADDRESS_MASK;
     }
 
     fn d(&self, index: usize) -> u32 {
-        self.m_da[index]
+        self.state.m_da[index]
     }
 
     fn set_d(&mut self, index: usize, value: u32) {
-        self.m_da[index] = value;
+        self.state.m_da[index] = value;
     }
 
     fn a(&self, index: usize) -> u32 {
         if index == 7 {
-            self.m_da[self.m_sp]
+            self.state.m_da[self.state.m_sp]
         } else {
-            self.m_da[8 + index]
+            self.state.m_da[8 + index]
         }
     }
 
     fn set_a(&mut self, index: usize, value: u32) {
         if index == 7 {
-            self.m_da[self.m_sp] = value;
+            self.state.m_da[self.state.m_sp] = value;
         } else {
-            self.m_da[8 + index] = value;
+            self.state.m_da[8 + index] = value;
         }
     }
 
     fn usp(&self) -> u32 {
-        self.m_da[15]
+        self.state.m_da[15]
     }
 
     fn set_usp(&mut self, value: u32) {
-        self.m_da[15] = value;
+        self.state.m_da[15] = value;
     }
 
     fn ssp(&self) -> u32 {
-        self.m_da[16]
+        self.state.m_da[16]
     }
 
     fn set_ssp(&mut self, value: u32) {
-        self.m_da[16] = value;
+        self.state.m_da[16] = value;
     }
 
     fn sr(&self) -> u16 {
-        self.m_sr as u16
+        self.state.m_sr as u16
     }
 
     fn set_sr(&mut self, value: u16) {
-        self.m_sr = u32::from(value) & (SR_SR | SR_CCR);
+        self.state.m_sr = u32::from(value) & (SR_SR | SR_CCR);
         self.update_user_super();
         self.update_interrupt();
+    }
+}
+
+impl save_state::AfterRestore for M68000 {
+    fn after_restore(&mut self) {
+        self.last_cycles = 0;
+        self.m_icount = 0;
+        self.m_bcount = 0;
+        self.m_count_before_instruction_step = 0;
+        #[cfg(feature = "verification")]
+        self.bus_cycles.clear();
+    }
+}
+
+impl save_state::RestoreTarget for M68000 {
+    type State = M68000RuntimeState;
+    type ValidationContext = ();
+
+    fn replace_state(&mut self, state: Self::State) {
+        self.state = state;
     }
 }
 
@@ -1731,6 +1843,22 @@ fn s8(value: u32) -> u32 {
 #[inline]
 fn s16(value: u32) -> u32 {
     (value as u16 as i16 as i32) as u32
+}
+
+#[cfg(test)]
+mod savestate_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_runtime_state_is_rejected_transactionally() {
+        let mut cpu = M68000::default();
+        let before = cpu.capture_state();
+        let mut invalid = before.clone();
+        invalid.m_int_level = 8;
+
+        assert!(cpu.restore_state(invalid).is_err());
+        assert_eq!(cpu.capture_state(), before);
+    }
 }
 
 include!("m68000_generated.rs");

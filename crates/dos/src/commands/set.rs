@@ -20,9 +20,13 @@ impl Command for Set {
     }
 }
 
-struct RunningSet {
+#[derive(Clone)]
+/// Serializable state of an executing SET command.
+pub(crate) struct RunningSet {
     args: Vec<u8>,
 }
+
+state_struct_codec!(RunningSet { args });
 
 impl RunningCommand for RunningSet {
     fn step(

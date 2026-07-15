@@ -10,7 +10,7 @@ mod p6t;
 mod t77;
 mod tap;
 
-use std::fmt;
+use std::{fmt, path::Path};
 
 /// Baud rate assumed for raw images that carry no rate metadata.
 const DEFAULT_BAUD: u32 = 1200;
@@ -200,12 +200,119 @@ pub struct CassetteDeck {
     sample_fraction: u64,
     last_update_cycle: u64,
     media: Option<Media>,
+    source_path: Option<save_state::MediaSourcePath>,
 }
+
+save_state::runtime_state! {
+/// Mutable cassette transport state without mounted media bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CassetteDeckState {
+    transport: u8,
+    motor: bool,
+    byte_position: usize,
+    sample_position: u64,
+    sample_fraction: u64,
+    last_update_cycle: u64,
+    media_kind: u8,
+}}
 
 impl CassetteDeck {
     /// Creates an empty, stopped deck.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Captures transport progress while retaining mounted media as a resource.
+    pub fn capture_state(&self) -> CassetteDeckState {
+        CassetteDeckState {
+            transport: self.transport as u8,
+            motor: self.motor,
+            byte_position: self.byte_position,
+            sample_position: self.sample_position,
+            sample_fraction: self.sample_fraction,
+            last_update_cycle: self.last_update_cycle,
+            media_kind: match self.media {
+                None => 0,
+                Some(Media::Bytes(_)) => 1,
+                Some(Media::Samples(_)) => 2,
+            },
+        }
+    }
+
+    /// Restores transport progress against the currently mounted media.
+    pub fn restore_state(
+        &mut self,
+        state: CassetteDeckState,
+    ) -> Result<(), save_state::StateValidationError> {
+        let transport = match state.transport {
+            0 => Transport::Stopped,
+            1 => Transport::Playing,
+            2 => Transport::FastForward,
+            3 => Transport::Rewind,
+            4 => Transport::Recording,
+            _ => {
+                return Err(save_state::StateValidationError::new(
+                    "cassette transport is invalid",
+                ));
+            }
+        };
+        let media_kind = match self.media {
+            None => 0,
+            Some(Media::Bytes(_)) => 1,
+            Some(Media::Samples(_)) => 2,
+        };
+        if state.media_kind != media_kind {
+            return Err(save_state::StateValidationError::new(
+                "cassette media kind differs",
+            ));
+        }
+        match self.media.as_ref() {
+            Some(Media::Bytes(tape)) if state.byte_position > tape.len() => {
+                return Err(save_state::StateValidationError::new(
+                    "cassette byte position exceeds the mounted tape",
+                ));
+            }
+            Some(Media::Samples(signal)) if state.sample_position > signal.bit_count as u64 => {
+                return Err(save_state::StateValidationError::new(
+                    "cassette sample position exceeds the mounted tape",
+                ));
+            }
+            _ => {}
+        }
+        self.transport = transport;
+        self.motor = state.motor;
+        self.byte_position = state.byte_position;
+        self.sample_position = state.sample_position;
+        self.sample_fraction = state.sample_fraction;
+        self.last_update_cycle = state.last_update_cycle;
+        Ok(())
+    }
+
+    /// Returns the exact identity of the mounted cassette media.
+    pub fn media_identity(&self) -> Option<save_state::ResourceIdentity> {
+        let mut bytes = Vec::new();
+        match self.media.as_ref()? {
+            Media::Bytes(tape) => {
+                bytes.extend_from_slice(b"cassette-bytes-v1");
+                for block in &tape.blocks {
+                    bytes.extend_from_slice(&block.baud.to_le_bytes());
+                    bytes.extend_from_slice(&(block.bytes.len() as u64).to_le_bytes());
+                    bytes.extend_from_slice(&block.bytes);
+                }
+            }
+            Media::Samples(signal) => {
+                bytes.extend_from_slice(b"cassette-samples-v1");
+                bytes.extend_from_slice(&signal.sample_rate.to_le_bytes());
+                bytes.extend_from_slice(&(signal.bit_count as u64).to_le_bytes());
+                bytes.extend_from_slice(&signal.samples);
+            }
+        }
+        Some(save_state::ResourceIdentity::from_bytes(&bytes))
+    }
+
+    /// Returns the normalized configured source path, when file-backed.
+    pub const fn media_source_path(&self) -> Option<&save_state::MediaSourcePath> {
+        self.source_path.as_ref()
     }
 
     /// Loads a byte-oriented tape, leaving the deck stopped at the start.
@@ -226,8 +333,21 @@ impl CassetteDeck {
         }
     }
 
+    /// Loads parsed media and records its configured source path.
+    pub fn insert_media_from_path(&mut self, media: CassetteMedia, path: &Path) {
+        self.insert_media(media);
+        self.source_path = Some(save_state::MediaSourcePath::from_path(path));
+    }
+
+    /// Loads a byte-oriented tape and records its configured source path.
+    pub fn insert_from_path(&mut self, tape: NormalizedTape, path: &Path) {
+        self.insert(tape);
+        self.source_path = Some(save_state::MediaSourcePath::from_path(path));
+    }
+
     fn load(&mut self, media: Media) {
         self.media = Some(media);
+        self.source_path = None;
         self.byte_position = 0;
         self.sample_position = 0;
         self.sample_fraction = 0;
@@ -238,6 +358,7 @@ impl CassetteDeck {
     /// Removes the loaded tape.
     pub fn eject(&mut self) {
         self.media = None;
+        self.source_path = None;
         self.byte_position = 0;
         self.sample_position = 0;
         self.sample_fraction = 0;
@@ -510,6 +631,22 @@ mod tests {
         let mut deck = CassetteDeck::new();
         assert_eq!(deck.read_byte(), CassetteRead::EndOfTape);
         assert!(!deck.has_tape());
+    }
+
+    #[test]
+    fn file_backed_media_retains_its_normalized_source_path() {
+        let mut deck = CassetteDeck::new();
+        deck.insert_from_path(
+            NormalizedTape::from_raw(vec![0xAA]),
+            std::path::Path::new("games/../media/program.p6"),
+        );
+
+        assert_eq!(
+            deck.media_source_path().unwrap(),
+            &save_state::MediaSourcePath::from_path(std::path::Path::new("media/program.p6"))
+        );
+        deck.eject();
+        assert!(deck.media_source_path().is_none());
     }
 
     fn old_tap(sample_rate: u32, samples: &[u8]) -> Vec<u8> {

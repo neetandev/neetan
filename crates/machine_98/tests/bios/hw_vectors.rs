@@ -46,7 +46,7 @@ macro_rules! test_master_hwint {
                 $vector
             );
 
-            let state = machine.save_state();
+            let state = machine.inspection_state();
             assert_eq!(
                 state.pic.chips[0].isr, 0,
                 "Master PIC ISR should be clear after INT {:#04X} (ISR={:#04X})",
@@ -69,7 +69,7 @@ macro_rules! test_slave_hwint {
                 $vector
             );
 
-            let state = machine.save_state();
+            let state = machine.inspection_state();
             assert_eq!(
                 state.pic.chips[0].isr, 0,
                 "Master PIC ISR should be clear after INT {:#04X} (ISR={:#04X})",

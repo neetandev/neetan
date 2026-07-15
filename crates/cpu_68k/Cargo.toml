@@ -12,4 +12,5 @@ verification = ["zlib-rs"]
 
 [dependencies]
 common.workspace = true
+save_state.workspace = true
 zlib-rs = { workspace = true, optional = true }

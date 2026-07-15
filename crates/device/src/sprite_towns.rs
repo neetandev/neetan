@@ -71,6 +71,20 @@ enum SpriteCallback {
     Finish,
 }
 
+save_state::runtime_state! {
+/// Authoritative FM Towns sprite transfer and register state.
+#[derive(Clone)]
+pub struct TownsSpriteRuntimeState {
+    address_latch: usize,
+    registers: [u8; NUM_REGS],
+    internal_page: bool,
+    busy: bool,
+    first_index_capture: usize,
+    callback: u8,
+    clear_cycles: u64,
+    per_sprite_cycles: u64,
+}}
+
 /// FM Towns sprite controller.
 pub struct TownsSprite {
     address_latch: usize,
@@ -100,6 +114,57 @@ impl TownsSprite {
             clear_cycles: (SCREEN_CLEAR_NANOS * cpu_clock_hz / NANOS_PER_SECOND).max(1),
             per_sprite_cycles: (PER_SPRITE_NANOS * cpu_clock_hz / NANOS_PER_SECOND).max(1),
         }
+    }
+
+    /// Captures registers and the in-flight transfer phase.
+    pub fn capture_state(&self) -> TownsSpriteRuntimeState {
+        TownsSpriteRuntimeState {
+            address_latch: self.address_latch,
+            registers: self.reg,
+            internal_page: self.internal_page,
+            busy: self.busy,
+            first_index_capture: self.first_index_capture,
+            callback: match self.callback {
+                SpriteCallback::Idle => 0,
+                SpriteCallback::Vsync => 1,
+                SpriteCallback::Finish => 2,
+            },
+            clear_cycles: self.clear_cycles,
+            per_sprite_cycles: self.per_sprite_cycles,
+        }
+    }
+
+    /// Restores registers and the in-flight transfer phase.
+    pub fn restore_state(
+        &mut self,
+        state: TownsSpriteRuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        let callback = match state.callback {
+            0 => SpriteCallback::Idle,
+            1 => SpriteCallback::Vsync,
+            2 => SpriteCallback::Finish,
+            _ => {
+                return Err(save_state::StateValidationError::new(
+                    "FM Towns sprite callback is invalid",
+                ));
+            }
+        };
+        if state.address_latch >= NUM_REGS
+            || state.first_index_capture >= 1024
+            || state.clear_cycles != self.clear_cycles
+            || state.per_sprite_cycles != self.per_sprite_cycles
+        {
+            return Err(save_state::StateValidationError::new(
+                "FM Towns sprite state is invalid",
+            ));
+        }
+        self.address_latch = state.address_latch;
+        self.reg = state.registers;
+        self.internal_page = state.internal_page;
+        self.busy = state.busy;
+        self.first_index_capture = state.first_index_capture;
+        self.callback = callback;
+        Ok(())
     }
 
     /// Writes the register index latch (I/O 0x0450).

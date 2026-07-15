@@ -21,6 +21,8 @@ impl Command for Format {
     }
 }
 
+#[derive(Clone)]
+/// Authoritative FORMAT confirmation and disk progress.
 struct FormatState {
     drive_index: u8,
     da_ua: u8,
@@ -35,6 +37,21 @@ struct FormatState {
     quick: bool,
     verify: bool,
 }
+
+state_struct_codec!(FormatState {
+    drive_index,
+    da_ua,
+    heads,
+    sectors_per_track,
+    sector_size,
+    total_sectors,
+    total_tracks,
+    current_track,
+    partition_offset,
+    is_hdd,
+    quick,
+    verify,
+});
 
 struct BpbParams {
     bytes_per_sector: u16,
@@ -116,22 +133,22 @@ fn hdd_bpb_params(sector_size: u16, partition_sectors: u32) -> BpbParams {
     let volume_bytes = partition_sectors as u64 * sector_size as u64;
     let sectors_per_cluster: u8 = if sector_size == 256 {
         // SASI 256-byte sectors: target 2 KB clusters
-        if volume_bytes <= 64 * 1024 * 1024 {
+        if volume_bytes <= (64 << 20) {
             8
-        } else if volume_bytes <= 128 * 1024 * 1024 {
+        } else if volume_bytes <= (128 << 20) {
             16
-        } else if volume_bytes <= 256 * 1024 * 1024 {
+        } else if volume_bytes <= (256 << 20) {
             32
         } else {
             64
         }
     } else {
         // IDE 512-byte sectors: target 2 KB clusters for small volumes
-        if volume_bytes <= 64 * 1024 * 1024 {
+        if volume_bytes <= (64 << 20) {
             4
-        } else if volume_bytes <= 128 * 1024 * 1024 {
+        } else if volume_bytes <= (128 << 20) {
             8
-        } else if volume_bytes <= 256 * 1024 * 1024 {
+        } else if volume_bytes <= (256 << 20) {
             16
         } else {
             32
@@ -176,6 +193,7 @@ fn hdd_bpb_params(sector_size: u16, partition_sectors: u32) -> BpbParams {
 
 const KB_BUF_COUNT: u32 = 0x0528;
 
+#[derive(Clone)]
 enum FormatPhase {
     Init,
     Confirm(FormatState),
@@ -188,10 +206,70 @@ enum FormatPhase {
     Summary(FormatState),
 }
 
-struct RunningFormat {
+impl save_state::StateEncode for FormatPhase {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        let (tag, state) = match self {
+            Self::Init => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                return;
+            }
+            Self::Confirm(state) => (1u8, state),
+            Self::FormatTrack(state) => (2u8, state),
+            Self::WritePartitionTable(state) => (3u8, state),
+            Self::WriteBootSector(state) => (4u8, state),
+            Self::WriteFat(state) => (5u8, state),
+            Self::WriteRootDir(state) => (6u8, state),
+            Self::VerifyTrack(state) => (7u8, state),
+            Self::Summary(state) => (8u8, state),
+        };
+        save_state::StateEncode::encode_state(&tag, output);
+        save_state::StateEncode::encode_state(state, output);
+    }
+}
+
+impl save_state::StateDecode for FormatPhase {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Init),
+            1 => Ok(Self::Confirm(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            2 => Ok(Self::FormatTrack(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            3 => Ok(Self::WritePartitionTable(
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            4 => Ok(Self::WriteBootSector(
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            5 => Ok(Self::WriteFat(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            6 => Ok(Self::WriteRootDir(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            7 => Ok(Self::VerifyTrack(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            8 => Ok(Self::Summary(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
+/// Serializable state of an executing FORMAT command.
+pub(crate) struct RunningFormat {
     args: Vec<u8>,
     phase: FormatPhase,
 }
+
+state_struct_codec!(RunningFormat { args, phase });
 
 impl RunningFormat {
     fn step_init(

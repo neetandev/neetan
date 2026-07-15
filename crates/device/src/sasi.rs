@@ -13,7 +13,7 @@ mod x68k_hdc;
 use std::{cell::Cell, path::PathBuf};
 
 pub use lle::{SasiAction, SasiPhase};
-pub use x68k_hdc::{X68K_SASI_DRIVE_COUNT, X68kSasiHdc};
+pub use x68k_hdc::{X68K_SASI_DRIVE_COUNT, X68kSasiHdc, X68kSasiHdcState};
 
 use crate::disk::{HddGeometry, HddImage, MountedHdd};
 pub use crate::disk_hle::{buffer_address, drive_index, sector_position, transfer_size};
@@ -23,6 +23,17 @@ pub const ROM_SIZE: usize = 4096;
 
 /// 4096-byte expansion ROM image.
 static ROM_IMAGE: &[u8; ROM_SIZE] = include_bytes!("../../../utils/sasi/sasi.rom");
+
+save_state::runtime_state! {
+/// Authoritative PC-98 SASI electronics and media binding state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SasiControllerState {
+    lle: lle::ControllerState,
+    hle_pending: bool,
+    yield_requested: bool,
+    rom_installed: bool,
+    media: save_state::MediaManifest,
+}}
 
 /// Offset of drive-0 full-height parameter table inside the expansion ROM.
 const PARAM_TABLE_D0_FULL_OFFSET: usize = 0x0200;
@@ -61,6 +72,67 @@ impl SasiController {
             rom: None,
             drives: [None, None],
         }
+    }
+
+    /// Captures SASI electronics and stable mounted image identities.
+    pub fn capture_state(&self) -> Result<SasiControllerState, save_state::StateValidationError> {
+        Ok(SasiControllerState {
+            lle: self.lle_controller.capture_state(),
+            hle_pending: self.hle_pending,
+            yield_requested: self.yield_requested.get(),
+            rom_installed: self.rom.is_some(),
+            media: self.media_manifest()?,
+        })
+    }
+
+    /// Restores SASI electronics while retaining hard disk contents.
+    pub fn restore_state(
+        &mut self,
+        state: SasiControllerState,
+    ) -> Result<(), save_state::StateValidationError> {
+        lle::Controller::validate_state(&state.lle)?;
+        state.media.verify_current(&self.media_manifest()?)?;
+        if state.rom_installed != self.rom.is_some() {
+            return Err(save_state::StateValidationError::new(
+                "SASI expansion ROM installation differs",
+            ));
+        }
+        self.lle_controller.restore_state(state.lle);
+        self.hle_pending = state.hle_pending;
+        self.yield_requested.set(state.yield_requested);
+        Ok(())
+    }
+
+    /// Returns stable bindings for mounted SASI hard disks.
+    pub fn media_manifest(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = Vec::new();
+        for (drive_index, mounted) in self.drives.iter().enumerate() {
+            let Some(mounted) = mounted else {
+                continue;
+            };
+            let geometry = mounted.geometry();
+            bindings.push(save_state::MediaBinding {
+                identifier: save_state::MediaBindingId::new(format!("sasi-{drive_index}"))?,
+                slot: save_state::MediaSlot::new(
+                    save_state::MediaKind::HardDisk,
+                    drive_index as u32,
+                ),
+                source_path: mounted.source_path().cloned(),
+                media_type: mounted.image().format_name().to_owned(),
+                identity: mounted.identity(),
+                geometry: Some(save_state::MediaGeometry::new(
+                    u32::from(geometry.cylinders),
+                    u32::from(geometry.heads),
+                    u32::from(geometry.sectors_per_track),
+                    u32::from(geometry.sector_size),
+                )?),
+                write_protected: false,
+                backend_generation: None,
+            });
+        }
+        save_state::MediaManifest::new(bindings)
     }
 
     /// Inserts a hard disk image into the specified drive (0-1).
@@ -458,5 +530,38 @@ mod tests {
         assert_eq!(&raw[offset..offset + 256], &pattern[..]);
 
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn state_restores_electronics_and_retains_hard_disk_writes() {
+        let mut controller = SasiController::new();
+        controller.insert_drive(0, make_test_drive(), None);
+        assert_eq!(controller.write_data(1), SasiAction::None);
+        assert_eq!(controller.write_data(0x08), SasiAction::None);
+        let encoded = save_state::encode_runtime_state(&controller.capture_state().unwrap());
+        let state =
+            save_state::decode_runtime_state::<SasiControllerState>(&encoded, 1 << 20).unwrap();
+
+        let replacement = [0x6Du8; 256];
+        assert!(controller.write_sector_raw(0, 4, &replacement));
+        controller.write_control(0x08);
+        controller.write_control(0x00);
+        controller.restore_state(state).unwrap();
+
+        assert_eq!(controller.phase(), SasiPhase::Command);
+        assert_eq!(controller.read_sector(0, 4).unwrap(), replacement);
+    }
+
+    #[test]
+    fn state_rejects_a_different_hard_disk() {
+        let mut source = SasiController::new();
+        source.insert_drive(0, make_test_drive(), None);
+        let state = source.capture_state().unwrap();
+
+        let mut different_image = make_test_drive();
+        assert!(different_image.write_sector(0, &[0xA5; 256]));
+        let mut target = SasiController::new();
+        target.insert_drive(0, different_image, None);
+        assert!(target.restore_state(state).is_err());
     }
 }

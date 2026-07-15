@@ -68,6 +68,47 @@ pub(crate) const SYNC_SLICE: u64 = 4;
 /// Default fine interleave slice (main-clock units) when the link is idle.
 pub(crate) const TIGHT_SLICE: u64 = 16;
 
+save_state::runtime_state! {
+/// Complete authoritative PC-88VA bus state.
+#[derive(Clone)]
+pub(crate) struct Pc88VaBusState {
+    memory: crate::memory::Pc88VaMemoryState,
+    scheduler: common::SchedulerState,
+    pic: device::i8259a_pic::I8259aPicState,
+    pit: device::i8253_pit::I8253PitState,
+    rtc: device::upd4990a_rtc::Upd4990aState,
+    system_port: device::system_port_pc88va::SysPortVa,
+    tsp: device::tsp_pc88va::TspState,
+    video: device::video_pc88va::VideoVa,
+    graphics_access: device::graphics_access_pc88va::GraphicsAccessVa,
+    sgp: device::sgp_pc88va::SgpState,
+    soundboard: device::soundboard_ii::SoundboardIIState,
+    mouse: device::mouse_pc88va::MouseVa,
+    joystick_port_a: u8,
+    joystick_port_b: u8,
+    joystick_selected: bool,
+    keyboard: device::keyboard_pc88va::KeyboardVa,
+    cgrom: device::cgrom_pc88va::CgromVa,
+    renderer: software_renderer::va::VaRendererRuntimeState,
+    display_width: u32,
+    display_height: u32,
+    presented_frames: u64,
+    sub_memory: device::pc80s31k::Pc80s31kMemoryState,
+    current_cycle: u64,
+    sub_cycle: u64,
+    sub_clock_credit: u64,
+    fdc: device::upd765a_fdc::Upd765aFdcState,
+    floppy: device::upd765a_fdc::FloppyControllerState,
+    ppi_link: device::pc80s31k::Pc80s31kPpiLinkState,
+    drive_mode: u8,
+    motor_on: u8,
+    terminal_count_active: bool,
+    resynchronize_until: u64,
+    fdc_dma_mode: bool,
+    dma: device::upd71071_dma::Upd71071State,
+    timer3_control: u8,
+}}
+
 /// The PC-88VA2 system bus seen by the V30.
 pub struct Pc88VaBus<T: TraceSink = NoTrace> {
     tracer: T,
@@ -153,6 +194,7 @@ pub struct Pc88VaBus<T: TraceSink = NoTrace> {
     /// General-purpose timer 3 (TCU) control latch (port 0x1A8): bit 7 MINTEN
     /// enables the periodic slave IRQ 13, bits 0-1 select the 120/60/30/15 Hz rate.
     pub(crate) timer3_ctrl: u8,
+    rom_bindings: Vec<save_state::ResourceBinding>,
 }
 
 impl Pc88VaBus<NoTrace> {
@@ -175,6 +217,21 @@ impl<T: TraceSink> Pc88VaBus<T> {
         sample_rate: u32,
         tracer: T,
     ) -> Self {
+        let rom_bindings = [
+            ("rom-00", roms.rom00.as_slice()),
+            ("rom-08", roms.rom08.as_slice()),
+            ("rom-1", roms.rom1.as_slice()),
+            ("font", roms.font.as_slice()),
+            ("dictionary", roms.dictionary.as_slice()),
+            ("subsystem", roms.subsys.as_slice()),
+        ]
+        .into_iter()
+        .map(|(identifier, bytes)| save_state::ResourceBinding {
+            identifier: save_state::ResourceBindingId::new(format!("rom:{identifier}"))
+                .expect("static resource identifier"),
+            identity: save_state::ResourceIdentity::from_bytes(bytes),
+        })
+        .collect();
         let clocks = ClockConfig {
             main_clock_hz: model.main_clock_hz(),
             sub_clock_hz: model.sub_clock_hz(),
@@ -183,6 +240,7 @@ impl<T: TraceSink> Pc88VaBus<T> {
         let subsys = roms.subsys.clone();
         let mut bus =
             Self::from_parts_with_trace_sink(Pc88VaMemory::new(model, roms), clocks, tracer);
+        bus.rom_bindings = rom_bindings;
         bus.load_disk_rom(&subsys);
         bus
     }
@@ -200,6 +258,116 @@ impl<T: TraceSink> Pc88VaBus<T> {
     /// The machine's clock configuration.
     pub fn clock_config(&self) -> ClockConfig {
         self.clocks
+    }
+
+    pub(crate) fn save_state_resources(
+        &self,
+    ) -> Result<save_state::ResourceManifest, save_state::StateValidationError> {
+        save_state::ResourceManifest::new(self.rom_bindings.clone())
+    }
+
+    pub(crate) fn save_state_media(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        self.floppy.media_manifest()
+    }
+
+    pub(crate) fn capture_runtime_state(
+        &self,
+    ) -> Result<Pc88VaBusState, save_state::SaveStateError> {
+        Ok(Pc88VaBusState {
+            memory: self.memory.capture_state(),
+            scheduler: self.scheduler.capture_state(),
+            pic: self.pic.capture_state(),
+            pit: self.pit.state.clone(),
+            rtc: self.rtc.state.clone(),
+            system_port: self.sysport.clone(),
+            tsp: self.tsp.clone(),
+            video: self.video.clone(),
+            graphics_access: self.gactrlva.clone(),
+            sgp: self.sgp.clone(),
+            soundboard: self.soundboard.capture_state(),
+            mouse: self.mouse.clone(),
+            joystick_port_a: self.joystick_port_a,
+            joystick_port_b: self.joystick_port_b,
+            joystick_selected: self.joystick_selected,
+            keyboard: self.keyboard.clone(),
+            cgrom: self.cgrom.clone(),
+            renderer: self.renderer.capture_state(),
+            display_width: self.display_width,
+            display_height: self.display_height,
+            presented_frames: self.presented_frames,
+            sub_memory: self.sub_mem.capture_state(),
+            current_cycle: self.current_cycle,
+            sub_cycle: self.sub_cycle,
+            sub_clock_credit: self.sub_clock_credit,
+            fdc: self.fdc.state.clone(),
+            floppy: self.floppy.capture_state()?,
+            ppi_link: self.ppi_link.capture_state(),
+            drive_mode: self.drive_mode,
+            motor_on: self.motor_on,
+            terminal_count_active: self.tc_active,
+            resynchronize_until: self.resync_until,
+            fdc_dma_mode: self.fdc_dma_mode,
+            dma: self.dmac.state.clone(),
+            timer3_control: self.timer3_ctrl,
+        })
+    }
+
+    pub(crate) fn restore_runtime_state(
+        &mut self,
+        state: Pc88VaBusState,
+    ) -> Result<(), save_state::SaveStateError> {
+        if state.sub_clock_credit >= (1u64 << self.sub_to_main_shift)
+            || state.display_width > software_renderer::va::VA_SURFACE_WIDTH as u32
+            || state.display_height > software_renderer::va::VA_SURFACE_HEIGHT as u32
+            || state.dma.selected_channel >= 4
+        {
+            return Err(save_state::StateValidationError::new(
+                "PC-88VA machine state invariant is invalid",
+            )
+            .into());
+        }
+        state.fdc.validate_runtime_state()?;
+        state.mouse.validate_runtime_state()?;
+        state.tsp.validate_runtime_state()?;
+        self.memory.restore_state(state.memory)?;
+        self.scheduler.restore_state(state.scheduler)?;
+        self.renderer.restore_state(state.renderer)?;
+        self.pic.restore_state(state.pic)?;
+        self.soundboard.restore_state(state.soundboard)?;
+        self.sub_mem.restore_state(state.sub_memory)?;
+        self.floppy.restore_state(state.floppy)?;
+        self.pit.state = state.pit;
+        self.rtc.state = state.rtc;
+        self.sysport = state.system_port;
+        self.tsp = state.tsp;
+        self.video = state.video;
+        self.gactrlva = state.graphics_access;
+        self.sgp = state.sgp;
+        self.mouse = state.mouse;
+        self.joystick_port_a = state.joystick_port_a;
+        self.joystick_port_b = state.joystick_port_b;
+        self.joystick_selected = state.joystick_selected;
+        self.keyboard = state.keyboard;
+        self.cgrom = state.cgrom;
+        self.display_width = state.display_width;
+        self.display_height = state.display_height;
+        self.presented_frames = state.presented_frames;
+        self.current_cycle = state.current_cycle;
+        self.sub_cycle = state.sub_cycle;
+        self.sub_clock_credit = state.sub_clock_credit;
+        self.fdc.state = state.fdc;
+        self.ppi_link.restore_state(state.ppi_link);
+        self.drive_mode = state.drive_mode;
+        self.motor_on = state.motor_on;
+        self.tc_active = state.terminal_count_active;
+        self.resync_until = state.resynchronize_until;
+        self.fdc_dma_mode = state.fdc_dma_mode;
+        self.dmac.state = state.dma;
+        self.timer3_ctrl = state.timer3_control;
+        self.update_next_event_cycle();
+        Ok(())
     }
 
     /// Overrides the host local-time source (BCD), used by tests.

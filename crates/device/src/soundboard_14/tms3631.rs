@@ -60,6 +60,7 @@ const PHASE_MUL: u32 = 4;
 /// Number of channels on the chip.
 pub const CHANNEL_COUNT: usize = 8;
 
+save_state::runtime_state! {
 /// Per-channel phase state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ChannelState {
@@ -67,7 +68,15 @@ pub struct ChannelState {
     pub increment: u32,
     /// Current 32-bit phase accumulator.
     pub phase: u32,
-}
+}}
+
+save_state::runtime_state! {
+/// Complete mutable TMS3631 synthesis state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tms3631State {
+    channels: [ChannelState; CHANNEL_COUNT],
+    enable: u8,
+}}
 
 /// Precomputed per-sample-rate tables.
 #[derive(Debug, Clone)]
@@ -162,6 +171,20 @@ impl Tms3631 {
             enable: 0,
             config: Tms3631Config::new(sample_rate),
         }
+    }
+
+    /// Captures oscillator phases and the enable mask.
+    pub fn capture_state(&self) -> Tms3631State {
+        Tms3631State {
+            channels: self.channels,
+            enable: self.enable,
+        }
+    }
+
+    /// Restores oscillator phases without rebuilding them from keys.
+    pub fn restore_state(&mut self, state: Tms3631State) {
+        self.channels = state.channels;
+        self.enable = state.enable;
     }
 
     /// Resets all channel phases and the enable mask.

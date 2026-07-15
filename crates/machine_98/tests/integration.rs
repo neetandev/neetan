@@ -46,6 +46,7 @@ fn halted_timer_machine() -> Pc9801Vm {
         let mut state = cpu::V30State::default();
         state.set_sp(0x1000);
         state.ip = 0x0100;
+        state.initialize_cold_frontend();
         state
     });
     machine.run_for(100);
@@ -140,6 +141,7 @@ fn pit_timer_interrupt_fires() {
         let mut s = cpu::V30State::default();
         s.set_sp(0x1000);
         s.ip = 0x0100;
+        s.initialize_cold_frontend();
         s
     });
 
@@ -208,6 +210,7 @@ fn pit_timer_multiple_interrupts() {
         let mut s = cpu::V30State::default();
         s.set_sp(0x1000);
         s.ip = 0x0100;
+        s.initialize_cold_frontend();
         s
     });
 
@@ -309,6 +312,7 @@ fn pit_timer_eoi_in_handler_allows_repeated_refire() {
                 let mut s = cpu::V30State::default();
                 s.set_sp(0x1000);
                 s.ip = 0x0100;
+                s.initialize_cold_frontend();
                 s
             })
         },

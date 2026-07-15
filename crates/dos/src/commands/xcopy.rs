@@ -26,6 +26,8 @@ impl Command for Xcopy {
 
 const KB_BUF_COUNT: u32 = 0x0528;
 
+#[derive(Clone)]
+/// Authoritative XCOPY traversal and prompt state.
 struct XcopyState {
     src_drive: u8,
     src_directory: ReadDirectory,
@@ -40,6 +42,21 @@ struct XcopyState {
     dir_stack: Vec<(ReadDirectory, u16)>,
 }
 
+state_struct_codec!(XcopyState {
+    src_drive,
+    src_directory,
+    src_pattern,
+    src_search_index,
+    dst_drive,
+    dst_dir_cluster,
+    files_copied,
+    recursive,
+    copy_empty_dirs,
+    prompt_each,
+    dir_stack,
+});
+
+#[derive(Clone)]
 enum SourceFileCursor {
     Fat(FatFileCursor),
     Iso {
@@ -48,6 +65,39 @@ enum SourceFileCursor {
     },
 }
 
+impl save_state::StateEncode for SourceFileCursor {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Fat(cursor) => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                save_state::StateEncode::encode_state(cursor, output);
+            }
+            Self::Iso { entry, position } => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(entry, output);
+                save_state::StateEncode::encode_state(position, output);
+            }
+        }
+    }
+}
+
+impl save_state::StateDecode for SourceFileCursor {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Fat(save_state::StateDecode::decode_state(decoder)?)),
+            1 => Ok(Self::Iso {
+                entry: save_state::StateDecode::decode_state(decoder)?,
+                position: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
+/// Authoritative progress of one XCOPY file transfer.
 struct FileCopyState {
     src_drive: u8,
     src_cursor: SourceFileCursor,
@@ -55,6 +105,14 @@ struct FileCopyState {
     dst_file: PendingFatFile,
 }
 
+state_struct_codec!(FileCopyState {
+    src_drive,
+    src_cursor,
+    src_entry,
+    dst_file,
+});
+
+#[derive(Clone)]
 enum XcopyPhase {
     Init,
     FindNext(XcopyState),
@@ -66,10 +124,87 @@ enum XcopyPhase {
     Summary(u32),
 }
 
-struct RunningXcopy {
+impl save_state::StateEncode for XcopyPhase {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Init => save_state::StateEncode::encode_state(&0u8, output),
+            Self::FindNext(state) => encode_phase(1, state, output),
+            Self::PromptFile(state, entry) => {
+                encode_phase(2, state, output);
+                save_state::StateEncode::encode_state(entry, output);
+            }
+            Self::ReadChunk(state, file) => {
+                encode_phase(3, state, output);
+                save_state::StateEncode::encode_state(file, output);
+            }
+            Self::WriteChunk(state, file, data) => {
+                encode_phase(4, state, output);
+                save_state::StateEncode::encode_state(file, output);
+                save_state::StateEncode::encode_state(data, output);
+            }
+            Self::FinishFile(state, file) => {
+                encode_phase(5, state, output);
+                save_state::StateEncode::encode_state(file, output);
+            }
+            Self::ScanSubdirs(state) => encode_phase(6, state, output),
+            Self::Summary(count) => {
+                save_state::StateEncode::encode_state(&7u8, output);
+                save_state::StateEncode::encode_state(count, output);
+            }
+        }
+    }
+}
+
+fn encode_phase(tag: u8, state: &XcopyState, output: &mut Vec<u8>) {
+    save_state::StateEncode::encode_state(&tag, output);
+    save_state::StateEncode::encode_state(state, output);
+}
+
+impl save_state::StateDecode for XcopyPhase {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Init),
+            1 => Ok(Self::FindNext(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            2 => Ok(Self::PromptFile(
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            3 => Ok(Self::ReadChunk(
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            4 => Ok(Self::WriteChunk(
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            5 => Ok(Self::FinishFile(
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            6 => Ok(Self::ScanSubdirs(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            7 => Ok(Self::Summary(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
+/// Serializable state of an executing XCOPY command.
+pub(crate) struct RunningXcopy {
     args: Vec<u8>,
     phase: XcopyPhase,
 }
+
+state_struct_codec!(RunningXcopy { args, phase });
 
 impl RunningXcopy {
     fn step_init(

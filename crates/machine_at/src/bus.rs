@@ -77,6 +77,62 @@ pub(crate) const OPEN_BUS_BYTE: u8 = 0xFF;
 /// Number of 64-bit words needed to hold one bit per 16-bit I/O port.
 const PORT_BITMAP_WORDS: usize = 1024;
 
+#[cfg(feature = "mt32")]
+type AtMt32State = device::mt32::MuntActorState;
+#[cfg(not(feature = "mt32"))]
+save_state::runtime_state! {
+/// Empty MT-32 state used when MT-32 support is not compiled in.
+#[derive(Clone)]
+struct AtMt32State {}
+}
+
+#[cfg(feature = "sc55")]
+type AtSc55State = device::sc55::Sc55ActorState;
+#[cfg(not(feature = "sc55"))]
+save_state::runtime_state! {
+/// Empty SC-55 state used when SC-55 support is not compiled in.
+#[derive(Clone)]
+struct AtSc55State {}
+}
+
+save_state::runtime_state! {
+/// Complete authoritative PC/AT bus state.
+#[derive(Clone)]
+pub(crate) struct AtBusState {
+    memory: crate::memory::AtMemoryState,
+    current_cycle: u64,
+    scheduler: crate::scheduler::AtSchedulerState,
+    chipset: device::cs4031::Cs4031State,
+    pic: device::i8259a_pic::I8259aPicState,
+    pit: device::i8253_pit::I8253PitState,
+    dma: device::at_dma::AtDmaState,
+    fdc: device::upd765a_fdc::Upd765aMountedState,
+    fdc_reset_poll_pending: bool,
+    ide: device::ide::AtIdeControllerState,
+    ide_secondary: device::ide::AtAtapiControllerState,
+    rtc: device::mc146818_rtc::Mc146818RtcState,
+    kbc: device::i8042_kbc::I8042KbcState,
+    vga: device::vga::Vga,
+    renderer: software_renderer::vga::VgaRendererRuntimeState,
+    display_width: u32,
+    display_height: u32,
+    presented_frames: u64,
+    last_vsync_start_cycle: u64,
+    beeper: device::beeper::BeeperState,
+    sound_blaster_16: device::sound_blaster_16::SoundBlaster16RuntimeState,
+    mpu401: device::mpu401::Mpu401State,
+    uart_com1: device::ins8250_uart::Ins8250UartState,
+    serial_mouse: device::mouse_serial::SerialMouseState,
+    gameport: device::gameport::GamePort,
+    mt32: Option<AtMt32State>,
+    sc55: Option<AtSc55State>,
+    timer2_gate: bool,
+    fpu_busy_latch: bool,
+    cpu_reset_pending: bool,
+    pending_wait_cycles: i64,
+    last_post_code: u8,
+}}
+
 /// PC/AT system bus.
 pub struct AtBus<T: TraceSink = NoTrace> {
     /// Physical memory and the shadow/A20 decode.
@@ -219,6 +275,197 @@ impl<T: TraceSink> AtBus<T> {
         bus.schedule_next_vga_frame();
         bus
     }
+
+    /// Returns stable identities for installed ROM resources.
+    pub(crate) fn save_state_resources(
+        &self,
+    ) -> Result<save_state::ResourceManifest, save_state::StateValidationError> {
+        save_state::ResourceManifest::new(self.memory.resource_bindings()?)
+    }
+
+    /// Returns stable identities for every mounted medium.
+    pub(crate) fn save_state_media(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = Vec::new();
+        bindings.extend_from_slice(self.fdc.mounted_media_manifest()?.bindings());
+        bindings.extend_from_slice(self.ide.media_manifest()?.bindings());
+        bindings.extend_from_slice(self.ide_secondary.media_manifest()?.bindings());
+        save_state::MediaManifest::new(bindings)
+    }
+
+    /// Captures the complete PC/AT bus at a machine safe point.
+    pub(crate) fn capture_runtime_state(
+        &mut self,
+    ) -> Result<AtBusState, save_state::SaveStateError> {
+        Ok(AtBusState {
+            memory: self.memory.capture_state(),
+            current_cycle: self.current_cycle,
+            scheduler: self.scheduler.capture_state(),
+            chipset: self.chipset.capture_state(),
+            pic: self.pic.capture_state(),
+            pit: self.pit.state.clone(),
+            dma: self.dma.capture_state(),
+            fdc: self.fdc.capture_mounted_state()?,
+            fdc_reset_poll_pending: self.fdc_reset_poll_pending,
+            ide: self.ide.capture_state()?,
+            ide_secondary: self.ide_secondary.capture_state()?,
+            rtc: self.rtc.capture_state(),
+            kbc: self.kbc.capture_state(),
+            vga: self.vga.capture_state(),
+            renderer: self.renderer.capture_state(),
+            display_width: self.display_width,
+            display_height: self.display_height,
+            presented_frames: self.presented_frames,
+            last_vsync_start_cycle: self.last_vsync_start_cycle,
+            beeper: self.beeper.capture_state(),
+            sound_blaster_16: self.sound_blaster_16.capture_state(),
+            mpu401: self.mpu401.capture_state(),
+            uart_com1: self.uart_com1.capture_state(),
+            serial_mouse: self.serial_mouse.capture_state(),
+            gameport: self.gameport.capture_state(),
+            #[cfg(feature = "mt32")]
+            mt32: self
+                .mt32
+                .as_mut()
+                .map(device::mt32::Mt32::capture_state)
+                .transpose()
+                .map_err(|error| save_state::SaveStateError::WorkerFailure(error.to_string()))?,
+            #[cfg(not(feature = "mt32"))]
+            mt32: None,
+            #[cfg(feature = "sc55")]
+            sc55: self
+                .sc55
+                .as_mut()
+                .map(device::sc55::Sc55::capture_state)
+                .transpose()
+                .map_err(|error| save_state::SaveStateError::WorkerFailure(error.to_string()))?,
+            #[cfg(not(feature = "sc55"))]
+            sc55: None,
+            timer2_gate: self.timer2_gate,
+            fpu_busy_latch: self.fpu_busy_latch,
+            cpu_reset_pending: self.cpu_reset_pending,
+            pending_wait_cycles: self.pending_wait_cycles,
+            last_post_code: self.last_post_code,
+        })
+    }
+
+    /// Restores the complete PC/AT bus while retaining host resources.
+    pub(crate) fn restore_runtime_state(
+        &mut self,
+        state: AtBusState,
+    ) -> Result<(), save_state::SaveStateError> {
+        #[cfg(feature = "mt32")]
+        let mt32_configuration_differs = state.mt32.is_some() != self.mt32.is_some();
+        #[cfg(not(feature = "mt32"))]
+        let mt32_configuration_differs = false;
+        #[cfg(feature = "sc55")]
+        let sc55_configuration_differs = state.sc55.is_some() != self.sc55.is_some();
+        #[cfg(not(feature = "sc55"))]
+        let sc55_configuration_differs = false;
+        if mt32_configuration_differs || sc55_configuration_differs {
+            return Err(
+                save_state::StateValidationError::new("PC/AT MIDI configuration differs").into(),
+            );
+        }
+
+        #[cfg(feature = "mt32")]
+        let mut mt32_prepared = false;
+        #[cfg(feature = "mt32")]
+        if let (Some(module), Some(saved)) = (&mut self.mt32, state.mt32.clone()) {
+            module
+                .prepare_restore(saved)
+                .map_err(|error| save_state::SaveStateError::WorkerFailure(error.to_string()))?;
+            mt32_prepared = true;
+        }
+        #[cfg(feature = "sc55")]
+        let mut sc55_prepared = false;
+        #[cfg(feature = "sc55")]
+        if let (Some(module), Some(saved)) = (&mut self.sc55, state.sc55.clone()) {
+            if let Err(error) = module.prepare_restore(saved) {
+                #[cfg(feature = "mt32")]
+                if mt32_prepared && let Some(module) = &mut self.mt32 {
+                    let _ = module.abort_restore();
+                }
+                return Err(save_state::SaveStateError::WorkerFailure(error.to_string()));
+            }
+            sc55_prepared = true;
+        }
+
+        let restore_result = (|| -> Result<(), save_state::SaveStateError> {
+            self.memory.restore_state(state.memory)?;
+            self.scheduler.restore_state(state.scheduler)?;
+            self.chipset.restore_state(state.chipset)?;
+            self.pic.restore_state(state.pic)?;
+            self.dma.restore_state(state.dma)?;
+            self.fdc.restore_mounted_state(state.fdc)?;
+            self.ide.restore_state(state.ide)?;
+            self.ide_secondary.restore_state(state.ide_secondary)?;
+            self.rtc.restore_state(state.rtc)?;
+            self.kbc.restore_state(state.kbc)?;
+            self.vga.restore_state(state.vga)?;
+            self.renderer.restore_state(state.renderer)?;
+            self.beeper.restore_state(state.beeper)?;
+            self.sound_blaster_16
+                .restore_state(state.sound_blaster_16)?;
+            self.mpu401.restore_state(state.mpu401)?;
+            self.uart_com1.restore_state(state.uart_com1)?;
+            self.gameport.restore_state(state.gameport)?;
+
+            self.current_cycle = state.current_cycle;
+            self.pit.state = state.pit;
+            self.fdc_reset_poll_pending = state.fdc_reset_poll_pending;
+            self.display_width = state.display_width;
+            self.display_height = state.display_height;
+            self.presented_frames = state.presented_frames;
+            self.last_vsync_start_cycle = state.last_vsync_start_cycle;
+            self.serial_mouse.restore_state(state.serial_mouse);
+            self.timer2_gate = state.timer2_gate;
+            self.fpu_busy_latch = state.fpu_busy_latch;
+            self.cpu_reset_pending = state.cpu_reset_pending;
+            self.pending_wait_cycles = state.pending_wait_cycles;
+            self.last_post_code = state.last_post_code;
+            self.memory.refresh_uma(&self.chipset);
+            self.memory.set_a20(self.chipset.a20_enabled());
+            self.next_event_cycle = self.scheduler.next_event_cycle().unwrap_or(u64::MAX);
+            Ok(())
+        })();
+
+        #[cfg(any(feature = "mt32", feature = "sc55"))]
+        if let Err(error) = restore_result {
+            #[cfg(feature = "mt32")]
+            if mt32_prepared && let Some(module) = &mut self.mt32 {
+                let _ = module.abort_restore();
+            }
+            #[cfg(feature = "sc55")]
+            if sc55_prepared && let Some(module) = &mut self.sc55 {
+                let _ = module.abort_restore();
+            }
+            return Err(error);
+        }
+        #[cfg(not(any(feature = "mt32", feature = "sc55")))]
+        restore_result?;
+
+        #[cfg(feature = "mt32")]
+        if mt32_prepared
+            && let Some(module) = &mut self.mt32
+            && let Err(error) = module.commit_restore()
+        {
+            #[cfg(feature = "sc55")]
+            if sc55_prepared && let Some(module) = &mut self.sc55 {
+                let _ = module.abort_restore();
+            }
+            return Err(save_state::SaveStateError::WorkerFailure(error.to_string()));
+        }
+        #[cfg(feature = "sc55")]
+        if sc55_prepared
+            && let Some(module) = &mut self.sc55
+            && let Err(error) = module.commit_restore()
+        {
+            return Err(save_state::SaveStateError::WorkerFailure(error.to_string()));
+        }
+        Ok(())
+    }
 }
 
 impl AtBus<NoTrace> {
@@ -297,11 +544,12 @@ impl<T: TraceSink> AtBus<T> {
 
     /// Sets the analog game-port axes at `index` and marks the stick present.
     ///
-    /// The host forwards this only while a real gamepad is connected, so it
-    /// doubles as the presence signal for the port.
-    pub fn set_joystick_axes(&mut self, index: usize, x: i16, y: i16) {
-        self.gameport.set_present(index, true);
-        self.gameport.set_axes(index, x, y);
+    /// `None` disconnects the controller from the analog game port.
+    pub fn set_joystick_axes(&mut self, index: usize, axes: Option<(i16, i16)>) {
+        self.gameport.set_present(index, axes.is_some());
+        if let Some((x, y)) = axes {
+            self.gameport.set_axes(index, x, y);
+        }
     }
 
     /// Returns the configured CPU clock in hertz.
@@ -353,12 +601,12 @@ impl<T: TraceSink> AtBus<T> {
         self.ide_secondary.generate_cd_audio_samples(volume, output);
 
         #[cfg(feature = "mt32")]
-        if let Some(ref mt32) = self.mt32 {
-            mt32.exchange(volume, output, |buf| self.mpu401.flush_midi_into(buf));
+        if let Some(ref mut mt32) = self.mt32 {
+            mt32.exchange(volume, output, |buffer| self.mpu401.flush_midi_into(buffer));
         }
         #[cfg(feature = "sc55")]
-        if let Some(ref sc55) = self.sc55 {
-            sc55.exchange(volume, output, |buf| self.mpu401.flush_midi_into(buf));
+        if let Some(ref mut sc55) = self.sc55 {
+            sc55.exchange(volume, output, |buffer| self.mpu401.flush_midi_into(buffer));
         }
 
         output.len()

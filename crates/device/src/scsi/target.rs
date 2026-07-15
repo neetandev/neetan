@@ -16,6 +16,84 @@ pub enum ScsiTarget {
 }
 
 impl ScsiTarget {
+    /// Returns the stable save-state kind tag for this target.
+    pub fn state_kind(&self) -> u8 {
+        match self {
+            ScsiTarget::Disk(_) => 1,
+            ScsiTarget::Cdrom(_) => 2,
+        }
+    }
+
+    /// Captures a disk target's command sense latch.
+    pub fn capture_disk_state(&self) -> Option<crate::scsi::command::SenseData> {
+        match self {
+            ScsiTarget::Disk(disk) => Some(disk.capture_state()),
+            ScsiTarget::Cdrom(_) => None,
+        }
+    }
+
+    /// Restores a disk target's command sense latch.
+    pub fn restore_disk_state(
+        &mut self,
+        state: crate::scsi::command::SenseData,
+    ) -> Result<(), save_state::StateValidationError> {
+        match self {
+            ScsiTarget::Disk(disk) => {
+                disk.restore_state(state);
+                Ok(())
+            }
+            ScsiTarget::Cdrom(_) => Err(save_state::StateValidationError::new(
+                "SCSI target type differs",
+            )),
+        }
+    }
+
+    /// Captures a CD-ROM target's electronics and playback state.
+    pub fn capture_cdrom_state(&self) -> Option<crate::scsi::cdrom::ScsiCdromState> {
+        match self {
+            ScsiTarget::Disk(_) => None,
+            ScsiTarget::Cdrom(cdrom) => Some(cdrom.capture_state()),
+        }
+    }
+
+    /// Validates a CD-ROM target state against retained media.
+    pub fn validate_cdrom_state(
+        &self,
+        state: &crate::scsi::cdrom::ScsiCdromState,
+    ) -> Result<(), save_state::StateValidationError> {
+        match self {
+            ScsiTarget::Disk(_) => Err(save_state::StateValidationError::new(
+                "SCSI target type differs",
+            )),
+            ScsiTarget::Cdrom(cdrom) => cdrom.validate_state(state),
+        }
+    }
+
+    /// Restores a CD-ROM target's electronics and playback state.
+    pub fn restore_cdrom_state(
+        &mut self,
+        state: crate::scsi::cdrom::ScsiCdromState,
+    ) -> Result<(), save_state::StateValidationError> {
+        match self {
+            ScsiTarget::Disk(_) => Err(save_state::StateValidationError::new(
+                "SCSI target type differs",
+            )),
+            ScsiTarget::Cdrom(cdrom) => cdrom.restore_state(state),
+        }
+    }
+
+    /// Returns a mounted-media binding for a disk target.
+    pub fn disk_media_binding(
+        &self,
+        identifier: impl Into<String>,
+        drive_index: u32,
+    ) -> Result<Option<save_state::MediaBinding>, save_state::StateValidationError> {
+        match self {
+            ScsiTarget::Disk(disk) => disk.media_binding(identifier, drive_index).map(Some),
+            ScsiTarget::Cdrom(_) => Ok(None),
+        }
+    }
+
     /// The data-phase direction a command requires.
     pub fn direction(&self, cdb: &[u8]) -> Direction {
         match self {

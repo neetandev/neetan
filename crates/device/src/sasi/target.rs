@@ -129,6 +129,21 @@ pub(super) struct SasiTargetEngine {
     error_code: u8,
 }
 
+save_state::runtime_state! {
+/// Mutable SASI target command and transfer state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SasiTargetEngineState {
+    unit: u8,
+    sector: u32,
+    blocks_remaining: u16,
+    data_buffer: [u8; SASI_BLOCK_SIZE],
+    data_position: usize,
+    data_size: usize,
+    sense_data: [u8; 4],
+    status: u8,
+    error_code: u8,
+}}
+
 impl SasiTargetEngine {
     /// Creates an idle engine with the given host adapter behavior.
     pub(super) fn new(profile: SasiTargetProfile) -> Self {
@@ -144,6 +159,43 @@ impl SasiTargetEngine {
             status: 0,
             error_code: 0,
         }
+    }
+
+    pub(super) fn capture_state(&self) -> SasiTargetEngineState {
+        SasiTargetEngineState {
+            unit: self.unit,
+            sector: self.sector,
+            blocks_remaining: self.blocks_remaining,
+            data_buffer: self.data_buffer,
+            data_position: self.data_position,
+            data_size: self.data_size,
+            sense_data: self.sense_data,
+            status: self.status,
+            error_code: self.error_code,
+        }
+    }
+
+    pub(super) fn restore_state(&mut self, state: SasiTargetEngineState) {
+        self.unit = state.unit;
+        self.sector = state.sector;
+        self.blocks_remaining = state.blocks_remaining;
+        self.data_buffer = state.data_buffer;
+        self.data_position = state.data_position;
+        self.data_size = state.data_size;
+        self.sense_data = state.sense_data;
+        self.status = state.status;
+        self.error_code = state.error_code;
+    }
+
+    pub(super) fn validate_state(
+        state: &SasiTargetEngineState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.data_position > state.data_size || state.data_size > SASI_BLOCK_SIZE {
+            return Err(save_state::StateValidationError::new(
+                "SASI target buffer position is invalid",
+            ));
+        }
+        Ok(())
     }
 
     /// Returns the currently selected unit (drive) number.

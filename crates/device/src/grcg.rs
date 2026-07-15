@@ -26,7 +26,8 @@ pub const GRCG_CHIP_V1: u8 = 1;
 /// GRCG version 2 with EGC support (PC-9801VX and later).
 pub const GRCG_CHIP_EGC: u8 = 3;
 
-/// Snapshot of the GRCG state.
+save_state::runtime_state! {
+/// Authoritative GRCG state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrcgState {
     /// Mode register (write-only via port 0x7C).
@@ -41,13 +42,15 @@ pub struct GrcgState {
     /// GDC-through-GRCG routing flags. Only set when chip >= 2.
     /// Bit 2: RMW mode for GDC drawing. Bit 3: GDC drawing routes through GRCG/EGC.
     pub gdc_with_grcg: u8,
-}
+}}
 
 /// GRCG controller.
 pub struct Grcg {
     /// Embedded state for save/restore.
     pub state: GrcgState,
 }
+
+impl_simple_state_accessors!(Grcg, GrcgState);
 
 impl Default for Grcg {
     fn default() -> Self {

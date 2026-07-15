@@ -34,7 +34,6 @@ use biu::{
 pub use biu::{V30BusPhase, V30QueueOpTrace, V30TaCycle};
 use common::Cpu as _;
 pub use flags::V30Flags;
-use rep::RepState;
 pub use state::V30State;
 
 use crate::{SegReg16, WordReg};
@@ -53,11 +52,18 @@ pub type V20 = VX0<V20_BUS>;
 /// Type alias for the V30 of the VX0 core.
 pub type V30 = VX0<V30_BUS>;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Terminal fetch behavior for the current V20/V30 instruction.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum FinishState {
+    #[default]
     Normal,
     NoTerminalFetch,
 }
+
+state_enum_codec!(FinishState {
+    FinishState::Normal = 0,
+    FinishState::NoTerminalFetch = 1,
+});
 
 /// NEC V20/V30 CPU emulator. The bus mode is selected by the const-generic
 /// `MODEL`: see [`V20_BUS`] and [`V30_BUS`].
@@ -68,54 +74,9 @@ pub struct VX0<const BUS: u8 = V30_BUS> {
     /// Embedded state for save/restore.
     pub state: V30State,
 
-    prev_ip: u16,
-    opcode_start_ip: u16,
-    seg_prefix: bool,
-    prefix_seg: SegReg16,
-
-    halted: bool,
-    pending_irq: u8,
-    no_interrupt: u8,
-    inhibit_all: u8,
-
-    rep_state: RepState,
-    finish_state: FinishState,
-
     cycles_remaining: i64,
     run_start_cycle: u64,
     run_budget: u64,
-
-    ea: u32,
-    eo: u16,
-    effective_address_segment: SegReg16,
-
-    instruction_queue: [u8; MAX_QUEUE_SIZE],
-    instruction_queue_len: usize,
-    instruction_preload: Option<u8>,
-    instruction_entry_queue_bytes: u8,
-    prefetch_ip: u16,
-    queue_op: QueueOp,
-    last_queue_op: QueueOp,
-    last_queue_byte: u8,
-
-    t_cycle: TCycle,
-    ta_cycle: TaCycle,
-    bus_status: BusStatus,
-    bus_status_latch: BusStatus,
-    pl_status: BusStatus,
-    bus_pending: BusPendingType,
-    fetch_state: FetchState,
-    transfer_size: TransferSize,
-    operand_size: OperandSize,
-    transfer_n: u32,
-    final_transfer: bool,
-    address_bus: u32,
-    address_latch: u32,
-    data_bus: u16,
-    /// Byte High Enable signal mirror (V30 16-bit bus only). When asserted,
-    /// the active byte transfer uses the high half of the data bus
-    /// (D15-D8). Always false for V20 8-bit bus.
-    bhe: bool,
 }
 
 impl<const MODEL: u8> Deref for VX0<MODEL> {
@@ -143,45 +104,9 @@ impl<const MODEL: u8> VX0<MODEL> {
     pub fn new() -> Self {
         let mut cpu = Self {
             state: V30State::default(),
-            prev_ip: 0,
-            opcode_start_ip: 0,
-            seg_prefix: false,
-            prefix_seg: SegReg16::DS,
-            halted: false,
-            pending_irq: 0,
-            no_interrupt: 0,
-            inhibit_all: 0,
-            rep_state: RepState::new(),
-            finish_state: FinishState::Normal,
             cycles_remaining: 0,
             run_start_cycle: 0,
             run_budget: 0,
-            ea: 0,
-            eo: 0,
-            effective_address_segment: SegReg16::DS,
-            instruction_queue: [0; MAX_QUEUE_SIZE],
-            instruction_queue_len: 0,
-            instruction_preload: None,
-            instruction_entry_queue_bytes: 0,
-            prefetch_ip: 0,
-            queue_op: QueueOp::Idle,
-            last_queue_op: QueueOp::Idle,
-            last_queue_byte: 0,
-            t_cycle: TCycle::Ti,
-            ta_cycle: TaCycle::Td,
-            bus_status: BusStatus::Passive,
-            bus_status_latch: BusStatus::Passive,
-            pl_status: BusStatus::Passive,
-            bus_pending: BusPendingType::None,
-            fetch_state: FetchState::Normal,
-            transfer_size: TransferSize::Byte,
-            operand_size: OperandSize::Operand8,
-            transfer_n: 1,
-            final_transfer: false,
-            address_bus: 0,
-            address_latch: 0,
-            data_bus: 0,
-            bhe: false,
         };
         cpu.reset();
         cpu
@@ -520,17 +445,22 @@ impl<const MODEL: u8> VX0<MODEL> {
         self.bus_pending = BusPendingType::None;
     }
 
-    /// Load registers from a snapshot.
+    /// Loads complete CPU state without resetting execution or BIU latches.
     pub fn load_state(&mut self, state: &V30State) {
         self.state = state.clone();
-        self.halted = false;
-        self.pending_irq = 0;
-        self.no_interrupt = 0;
-        self.inhibit_all = 0;
-        self.rep_state.active = false;
-        self.rep_state.restart_ip = 0;
-        self.seg_prefix = false;
-        self.flush_prefetch_queue();
+    }
+
+    /// Clones the authoritative state at a resumable execution boundary.
+    pub fn capture_state(&self) -> V30State {
+        self.state.clone()
+    }
+
+    /// Validates and replaces the authoritative state transactionally.
+    pub fn restore_state(
+        &mut self,
+        state: V30State,
+    ) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &MODEL)
     }
 
     pub(crate) fn push(&mut self, bus: &mut impl common::Bus, value: u16) {
@@ -878,5 +808,22 @@ impl<const MODEL: u8> common::Cpu for VX0<MODEL> {
             common::SegmentRegister::SS => u32::from(self.state.ss()) << 4,
             common::SegmentRegister::DS => u32::from(self.state.ds()) << 4,
         }
+    }
+}
+
+impl<const MODEL: u8> save_state::AfterRestore for VX0<MODEL> {
+    fn after_restore(&mut self) {
+        self.cycles_remaining = 0;
+        self.run_start_cycle = 0;
+        self.run_budget = 0;
+    }
+}
+
+impl<const MODEL: u8> save_state::RestoreTarget for VX0<MODEL> {
+    type State = V30State;
+    type ValidationContext = u8;
+
+    fn replace_state(&mut self, state: Self::State) {
+        self.state = state;
     }
 }

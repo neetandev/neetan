@@ -206,6 +206,7 @@ fn build_state(scenario: &Scenario) -> V30State {
     state.set_ss(scenario.ss);
     state.ip = scenario.ip;
     state.set_compressed_flags(scenario.flags);
+    state.initialize_cold_frontend();
     state
 }
 

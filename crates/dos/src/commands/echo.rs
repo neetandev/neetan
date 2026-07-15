@@ -19,9 +19,13 @@ impl Command for Echo {
     }
 }
 
-struct RunningEcho {
+#[derive(Clone)]
+/// Serializable state of an executing ECHO command.
+pub(crate) struct RunningEcho {
     text: Vec<u8>,
 }
+
+state_struct_codec!(RunningEcho { text });
 
 fn print_help(io: &mut IoAccess) {
     io.println(b"Displays messages.");

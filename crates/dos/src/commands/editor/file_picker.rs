@@ -3,20 +3,27 @@ use crate::{DosState, DriveIo, MemoryAccess, dos, filesystem, filesystem::fat_di
 
 pub(crate) const VISIBLE_ROWS: usize = 18;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PickerFocus {
-    Path,
-    List,
+save_state::runtime_state_enum! {
+    /// Focused control in the editor file picker.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum PickerFocus {
+        Path = 0,
+        List = 1,
+    }
+}
+
+save_state::runtime_state_enum! {
+    /// Kind of one editor file-picker entry.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) enum FilePickerEntryKind {
+        Parent = 0,
+        Directory = 1,
+        File = 2,
+    }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum FilePickerEntryKind {
-    Parent,
-    Directory,
-    File,
-}
-
-#[derive(Debug, Clone)]
+/// One retained entry in the editor file picker.
 pub(crate) struct FilePickerEntry {
     pub(crate) kind: FilePickerEntryKind,
     pub(crate) display_name: Vec<u8>,
@@ -24,7 +31,15 @@ pub(crate) struct FilePickerEntry {
     pub(crate) size: u32,
 }
 
+state_struct_codec!(FilePickerEntry {
+    kind,
+    display_name,
+    full_path,
+    size,
+});
+
 #[derive(Debug, Clone)]
+/// Authoritative path, focus, and selection state of the file picker.
 pub(crate) struct FilePickerState {
     pub(crate) directory_path: Vec<u8>,
     pub(crate) path_field: ByteField,
@@ -33,6 +48,15 @@ pub(crate) struct FilePickerState {
     pub(crate) selected: usize,
     pub(crate) scroll: usize,
 }
+
+state_struct_codec!(FilePickerState {
+    directory_path,
+    path_field,
+    focus,
+    entries,
+    selected,
+    scroll,
+});
 
 impl FilePickerState {
     pub(crate) fn new(directory_path: Vec<u8>, focus: PickerFocus) -> Self {

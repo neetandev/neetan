@@ -182,6 +182,7 @@ pub enum I286RepState {
     Suspended,
 }
 
+/// Prefetch placement selected for a demand window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum I286DemandPrefetchPolicy {
     None,
@@ -198,12 +199,95 @@ pub(crate) enum I286DemandPrefetchPolicy {
     AfterTurnaroundPrefetchThenGap,
 }
 
+/// Prefetch behavior selected after an 80286 queue flush.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum I286FlushPrefetchPolicy {
     #[default]
     InitialColdStart,
     DemandDriven,
 }
+
+state_enum_codec!(I286BusPhase {
+    I286BusPhase::Ti = 0,
+    I286BusPhase::Ts = 1,
+    I286BusPhase::Tc = 2,
+});
+
+state_enum_codec!(I286PendingBusRequest {
+    I286PendingBusRequest::None = 0,
+    I286PendingBusRequest::CodeFetchByte = 1,
+    I286PendingBusRequest::CodeFetchWord = 2,
+    I286PendingBusRequest::MemoryReadByte = 3,
+    I286PendingBusRequest::MemoryReadWord = 4,
+    I286PendingBusRequest::MemoryWriteByte = 5,
+    I286PendingBusRequest::MemoryWriteWord = 6,
+    I286PendingBusRequest::MemoryWriteWordSplit = 7,
+    I286PendingBusRequest::IoReadByte = 8,
+    I286PendingBusRequest::IoReadWord = 9,
+    I286PendingBusRequest::IoWriteByte = 10,
+    I286PendingBusRequest::IoWriteWord = 11,
+    I286PendingBusRequest::Halt = 12,
+});
+
+state_enum_codec!(I286AuStage {
+    I286AuStage::Idle = 0,
+    I286AuStage::DecodeDisplacement = 1,
+    I286AuStage::CalculateAddress = 2,
+    I286AuStage::AddressReady = 3,
+});
+
+state_enum_codec!(I286EuStage {
+    I286EuStage::Idle = 0,
+    I286EuStage::Prefix = 1,
+    I286EuStage::Decode = 2,
+    I286EuStage::Execute = 3,
+    I286EuStage::WriteBack = 4,
+    I286EuStage::Halted = 5,
+});
+
+state_enum_codec!(I286FlushState {
+    I286FlushState::None = 0,
+    I286FlushState::ControlTransfer = 1,
+    I286FlushState::Halted = 2,
+});
+
+state_enum_codec!(I286FinishState {
+    I286FinishState::Linear = 0,
+    I286FinishState::ControlTransferRestart = 1,
+    I286FinishState::FaultRestart = 2,
+    I286FinishState::RepSteadyState = 3,
+    I286FinishState::RepSuspended = 4,
+    I286FinishState::RepComplete = 5,
+    I286FinishState::TerminalWriteback = 6,
+    I286FinishState::PrefixOnly = 7,
+    I286FinishState::Halted = 8,
+});
+
+state_enum_codec!(I286RepState {
+    I286RepState::None = 0,
+    I286RepState::Startup = 1,
+    I286RepState::Iterating = 2,
+    I286RepState::Suspended = 3,
+});
+
+state_enum_codec!(I286DemandPrefetchPolicy {
+    I286DemandPrefetchPolicy::None = 0,
+    I286DemandPrefetchPolicy::BeforeNoTurnaround = 1,
+    I286DemandPrefetchPolicy::BeforeAndAfterTurnaround = 2,
+    I286DemandPrefetchPolicy::BeforeAndAfterTurnaroundThenGap = 3,
+    I286DemandPrefetchPolicy::BeforePrefetchGapThenPrefetch = 4,
+    I286DemandPrefetchPolicy::BeforeTurnaround = 5,
+    I286DemandPrefetchPolicy::AfterTurnaround = 6,
+    I286DemandPrefetchPolicy::AfterTurnaroundThenPrefetch = 7,
+    I286DemandPrefetchPolicy::AfterTurnaroundAuThenGapThenPrefetch = 8,
+    I286DemandPrefetchPolicy::AfterTurnaroundAuThenPrefetchThenGap = 9,
+    I286DemandPrefetchPolicy::AfterTurnaroundPrefetchThenGap = 10,
+});
+
+state_enum_codec!(I286FlushPrefetchPolicy {
+    I286FlushPrefetchPolicy::InitialColdStart = 0,
+    I286FlushPrefetchPolicy::DemandDriven = 1,
+});
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct I286ControlTransferTimingTemplate {
@@ -301,59 +385,84 @@ pub struct I286CycleTraceEntry {
     pub bus_status: I286TraceBusStatus,
 }
 
-/// Timing milestones useful while fitting the model against 286 traces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct I286TimingMilestones {
-    /// Cycle on which the cold-start prefetch window reached four bytes.
-    pub cold_start_prefetch_complete_cycle: Option<u64>,
-    /// Cycle on which the first opcode byte became available to the EU.
-    pub first_opcode_available_cycle: Option<u64>,
-    /// Cycle on which the current instruction retired.
-    pub instruction_retire_cycle: Option<u64>,
-    /// Cycle on which the timing model emitted the terminal HALT marker.
-    pub terminal_halt_cycle: Option<u64>,
-    /// Cycle on which exception dispatch entered the vector path.
-    pub exception_entry_cycle: Option<u64>,
+save_state::runtime_state! {
+    /// Timing milestones useful while fitting the model against 286 traces.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct I286TimingMilestones {
+        /// Cycle on which the cold-start prefetch window reached four bytes.
+        pub cold_start_prefetch_complete_cycle: Option<u64>,
+        /// Cycle on which the first opcode byte became available to the EU.
+        pub first_opcode_available_cycle: Option<u64>,
+        /// Cycle on which the current instruction retired.
+        pub instruction_retire_cycle: Option<u64>,
+        /// Cycle on which the timing model emitted the terminal HALT marker.
+        pub terminal_halt_cycle: Option<u64>,
+        /// Cycle on which exception dispatch entered the vector path.
+        pub exception_entry_cycle: Option<u64>,
+    }
 }
 
-#[derive(Debug)]
-pub(crate) struct I286Timing {
-    cycle_counter: u64,
-    pending_cycle_debt: i32,
-    borrowed_internal_cycles: i32,
-    prefetch_queue_fill: u8,
-    decoded_queue_fill: u8,
-    writeback_after_read_pending: bool,
-    suppress_next_memory_read_window: bool,
-    suppress_next_demand_prefetch: bool,
-    suppress_next_internal_prefetch_window: bool,
-    passivize_next_demand_prefetch: bool,
-    passivize_next_code_fetch: bool,
-    suppress_next_read_writeback_gap: bool,
-    prefetch_offset: u16,
-    cold_start_fetches_emitted: u8,
-    pending_au_demand_cycles: u8,
-    data_bus_value: u16,
-    bus_phase: I286BusPhase,
-    pending_bus_request: I286PendingBusRequest,
-    au_stage: I286AuStage,
-    eu_stage: I286EuStage,
-    flush_state: I286FlushState,
-    rep_state: I286RepState,
-    lock_active: bool,
-    lock_prefix_passive_cycles_pending: bool,
-    lock_prefix_after_prefix: bool,
-    lock_prefix_followed_by_prefix: bool,
-    prefix_count: u8,
-    last_demand_prefetch_fetches: u8,
-    demand_prefetch_policy: I286DemandPrefetchPolicy,
-    demand_prefetch_limit: Option<u8>,
-    flush_prefetch_policy: I286FlushPrefetchPolicy,
-    control_transfer_restart_modeled: bool,
-    instruction_start_segment: u16,
-    instruction_start_offset: u16,
-    consumed_code_bytes: u8,
-    milestones: I286TimingMilestones,
+save_state::runtime_state! {
+    /// Complete authoritative state of the 80286 timing model.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) struct I286Timing {
+        cycle_counter: u64,
+        pending_cycle_debt: i32,
+        borrowed_internal_cycles: i32,
+        prefetch_queue_fill: u8,
+        decoded_queue_fill: u8,
+        writeback_after_read_pending: bool,
+        suppress_next_memory_read_window: bool,
+        suppress_next_demand_prefetch: bool,
+        suppress_next_internal_prefetch_window: bool,
+        passivize_next_demand_prefetch: bool,
+        passivize_next_code_fetch: bool,
+        suppress_next_read_writeback_gap: bool,
+        prefetch_offset: u16,
+        cold_start_fetches_emitted: u8,
+        pending_au_demand_cycles: u8,
+        data_bus_value: u16,
+        bus_phase: I286BusPhase,
+        pending_bus_request: I286PendingBusRequest,
+        au_stage: I286AuStage,
+        eu_stage: I286EuStage,
+        flush_state: I286FlushState,
+        rep_state: I286RepState,
+        lock_active: bool,
+        lock_prefix_passive_cycles_pending: bool,
+        lock_prefix_after_prefix: bool,
+        lock_prefix_followed_by_prefix: bool,
+        prefix_count: u8,
+        last_demand_prefetch_fetches: u8,
+        demand_prefetch_policy: I286DemandPrefetchPolicy,
+        demand_prefetch_limit: Option<u8>,
+        flush_prefetch_policy: I286FlushPrefetchPolicy,
+        control_transfer_restart_modeled: bool,
+        instruction_start_segment: u16,
+        instruction_start_offset: u16,
+        consumed_code_bytes: u8,
+        milestones: I286TimingMilestones,
+    }
+}
+
+impl Default for I286Timing {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl save_state::ValidateState for I286Timing {
+    fn validate_state(&self, _context: &()) -> Result<(), save_state::StateValidationError> {
+        if self.prefetch_queue_fill > PREFETCH_QUEUE_CAPACITY
+            || self.decoded_queue_fill > DECODED_QUEUE_CAPACITY
+            || self.cold_start_fetches_emitted > COLD_START_PREFETCH_FETCHES
+        {
+            return Err(save_state::StateValidationError::new(
+                "80286 frontend queue state is invalid",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl I286Timing {

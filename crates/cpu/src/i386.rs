@@ -141,67 +141,9 @@ pub struct I386<
 > {
     /// Embedded state for save/restore.
     pub state: I386State,
-
-    prev_ip: u16,
-    prev_ip_upper: u32,
-    seg_prefix: bool,
-    prefix_seg: SegReg32,
-    operand_size_override: bool,
-    address_size_override: bool,
-    lock_prefix: bool,
-
-    halted: bool,
-    fault_pending: bool,
-    supervisor_override: bool,
-    pending_irq: u8,
-    no_interrupt: u8,
-    inhibit_all: u8,
-    preserve_resume_flag: bool,
-
-    rep_ip: u16,
-    rep_ip_upper: u32,
-    rep_restart_ip: u16,
-    rep_restart_ip_upper: u32,
-    rep_seg_prefix: bool,
-    rep_prefix_seg: SegReg32,
-    rep_opcode: u8,
-    rep_type: u8,
-    rep_operand_size_override: bool,
-    rep_address_size_override: bool,
-    rep_active: bool,
-    rep_completed: bool,
-
     cycles_remaining: i64,
     run_start_cycle: u64,
     run_budget: u64,
-
-    ea: u32,
-    eo: u16,
-    eo32: u32,
-    ea_seg: SegReg32,
-
-    fetch_page_valid: bool,
-    fetch_page_tag: u32,
-    fetch_page_phys: u32,
-    fetch_page_user: bool,
-
-    prefetch_valid: bool,
-    prefetch_addr: u32,
-    prefetch_byte: u8,
-
-    tlb_valid: [bool; 64],
-    tlb_tag: [u32; 64],
-    tlb_phys: [u32; 64],
-    tlb_writable: [bool; 64],
-    tlb_user: [bool; 64],
-    tlb_dirty: [bool; 64],
-
-    debug_trap_pending: bool,
-    trap_level: u8,
-    prev_exception_class: u8,
-    shutdown: bool,
-
-    sx_code_fetch_bytes: u32,
 }
 
 impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> Deref for I386<CPU_MODEL, ADDRESS_WIDTH> {
@@ -228,57 +170,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     pub fn new() -> Self {
         let mut cpu = Self {
             state: I386State::default(),
-            prev_ip: 0,
-            seg_prefix: false,
-            prefix_seg: SegReg32::DS,
-            operand_size_override: false,
-            address_size_override: false,
-            lock_prefix: false,
-            halted: false,
-            fault_pending: false,
-            supervisor_override: false,
-            pending_irq: 0,
-            no_interrupt: 0,
-            inhibit_all: 0,
-            preserve_resume_flag: false,
-            rep_ip: 0,
-            rep_ip_upper: 0,
-            rep_restart_ip: 0,
-            rep_restart_ip_upper: 0,
-            rep_seg_prefix: false,
-            rep_prefix_seg: SegReg32::DS,
-            rep_opcode: 0,
-            rep_type: 0,
-            rep_operand_size_override: false,
-            rep_address_size_override: false,
-            rep_active: false,
-            rep_completed: false,
             cycles_remaining: 0,
             run_start_cycle: 0,
             run_budget: 0,
-            ea: 0,
-            eo: 0,
-            eo32: 0,
-            ea_seg: SegReg32::DS,
-            fetch_page_valid: false,
-            fetch_page_tag: 0,
-            fetch_page_phys: 0,
-            fetch_page_user: false,
-            prefetch_valid: false,
-            prefetch_addr: 0,
-            prefetch_byte: 0,
-            tlb_valid: [false; 64],
-            tlb_tag: [0; 64],
-            tlb_phys: [0; 64],
-            tlb_writable: [false; 64],
-            tlb_user: [false; 64],
-            tlb_dirty: [false; 64],
-            debug_trap_pending: false,
-            trap_level: 0,
-            prev_exception_class: 0,
-            shutdown: false,
-            prev_ip_upper: 0,
-            sx_code_fetch_bytes: 0,
         };
         cpu.reset();
         cpu
@@ -3317,6 +3211,27 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> common::Cpu for I386<CPU_MODE
             common::SegmentRegister::DS => SegReg32::DS,
         };
         self.state.seg_bases[seg32 as usize]
+    }
+}
+
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> save_state::AfterRestore
+    for I386<CPU_MODEL, ADDRESS_WIDTH>
+{
+    fn after_restore(&mut self) {
+        self.cycles_remaining = 0;
+        self.run_start_cycle = 0;
+        self.run_budget = 0;
+    }
+}
+
+impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> save_state::RestoreTarget
+    for I386<CPU_MODEL, ADDRESS_WIDTH>
+{
+    type State = I386State;
+    type ValidationContext = (u8, u8);
+
+    fn replace_state(&mut self, state: Self::State) {
+        self.state = state;
     }
 }
 

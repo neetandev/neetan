@@ -43,16 +43,18 @@ const REG_PALETTE1: u32 = 0x14;
 const REG_PALETTE2: u32 = 0x18;
 const REG_PATTERN: u32 = 0x20;
 
+save_state::runtime_state_enum! {
 /// Screen mode for PEGC 256-color display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PegcScreenMode {
     /// 640x400, 2-screen mode (two 256 KB pages).
-    TwoScreen,
+    TwoScreen = 0,
     /// 640x480, 1-screen mode (single 512 KB page).
-    OneScreen,
-}
+    OneScreen = 1,
+}}
 
-/// Snapshot of the PEGC state for save/restore.
+save_state::runtime_state! {
+/// Authoritative PEGC state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PegcState {
     /// Master 256-color mode enable (port 0x6A commands 0x20/0x21).
@@ -86,7 +88,7 @@ pub struct PegcState {
     /// Background palette color (MMIO E0118h).
     pub palette_color_2: u8,
     /// Pattern register raw bytes (MMIO E0120h-E019Fh, 128 bytes).
-    pub pattern_data: Box<[u8; 128]>,
+    pub pattern_data: Box<[u8]>,
     /// Buffered plane-mode source pixels.
     pub last_vram_data: [u8; 64],
     /// Number of valid buffered source pixels.
@@ -108,16 +110,18 @@ pub struct PegcState {
     /// Whether an increment shifted VRAM-source leading padding write was skipped.
     pub leading_shifted_padding_write_skipped: bool,
     /// 256-color palette: 256 entries of [green, red, blue], 8-bit components.
-    pub palette_256: Box<[[u8; 3]; 256]>,
+    pub palette_256: Box<[[u8; 3]]>,
     /// Currently selected palette index (port 0xA8 in PEGC mode).
     pub palette_index: u8,
-}
+}}
 
 /// PEGC controller.
 pub struct Pegc {
     /// Embedded state for save/restore.
     pub state: PegcState,
 }
+
+impl_simple_state_accessors!(Pegc, PegcState);
 
 impl Default for Pegc {
     fn default() -> Self {
@@ -145,7 +149,7 @@ impl Pegc {
                 shift_write: 0,
                 palette_color_1: 0,
                 palette_color_2: 0,
-                pattern_data: Box::new([0u8; 128]),
+                pattern_data: vec![0u8; 128].into_boxed_slice(),
                 last_vram_data: [0u8; 64],
                 last_data_length: 0,
                 remain: 0,
@@ -156,7 +160,7 @@ impl Pegc {
                 shifted_padding_pixels: 0,
                 last_plane_read_offset: 0,
                 leading_shifted_padding_write_skipped: false,
-                palette_256: Box::new([[0u8; 3]; 256]),
+                palette_256: vec![[0u8; 3]; 256].into_boxed_slice(),
                 palette_index: 0,
             },
         }

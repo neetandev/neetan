@@ -2,7 +2,7 @@
 
 use ymfm_oxide::Ym2151;
 
-use crate::opn_fm::{FmTimerAction, OpnFm};
+use crate::opn_fm::{FmTimerAction, OpnFm, OpnFmState};
 
 /// YM2151 input clock on the CZ-8BS1 board: 4 MHz (internal FM sample clock
 /// 4 MHz / 64).
@@ -19,6 +19,19 @@ impl SoundBoardOpm {
         Self {
             core: OpnFm::<Ym2151>::new(cpu_clock_hz, sample_rate, YM2151_CLOCK_HZ),
         }
+    }
+
+    /// Captures the complete OPM and resampler state.
+    pub fn capture_state(&self) -> OpnFmState<ymfm_oxide::Ym2151, ymfm_oxide::YmfmOutput2> {
+        self.core.capture_state()
+    }
+
+    /// Restores the complete OPM and resampler state.
+    pub fn restore_state(
+        &mut self,
+        state: OpnFmState<ymfm_oxide::Ym2151, ymfm_oxide::YmfmOutput2>,
+    ) -> Result<(), save_state::StateValidationError> {
+        self.core.restore_state(state)
     }
 
     /// Advances the chip clock to `current_cycle`.

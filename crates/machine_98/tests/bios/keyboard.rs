@@ -15,7 +15,7 @@ const KEYBOARD_BUDGET: u64 = 500_000;
 fn int09h_vector_f() {
     let mut machine = create_machine_f();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x09);
     assert!(
@@ -28,7 +28,7 @@ fn int09h_vector_f() {
 fn int09h_vector_vm() {
     let mut machine = create_machine_vm();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x09);
     assert!(
@@ -41,7 +41,7 @@ fn int09h_vector_vm() {
 fn int09h_vector_vx() {
     let mut machine = create_machine_vx();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x09);
     assert!(
@@ -54,7 +54,7 @@ fn int09h_vector_vx() {
 fn int09h_vector_ra() {
     let mut machine = create_machine_ra();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x09);
     assert!(
@@ -74,7 +74,7 @@ fn int09h_vector_ra() {
 fn key_press_sets_status_bit_f() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_f(&[0x1C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[KB_STATUS_START + 3] & 0x10,
@@ -87,7 +87,7 @@ fn key_press_sets_status_bit_f() {
 fn key_press_sets_status_bit_vm() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_vm(&[0x1C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[KB_STATUS_START + 3] & 0x10,
@@ -100,7 +100,7 @@ fn key_press_sets_status_bit_vm() {
 fn key_press_sets_status_bit_vx() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_vx(&[0x1C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[KB_STATUS_START + 3] & 0x10,
@@ -113,7 +113,7 @@ fn key_press_sets_status_bit_vx() {
 fn key_press_sets_status_bit_ra() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_ra(&[0x1C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[KB_STATUS_START + 3] & 0x10,
@@ -130,7 +130,7 @@ fn key_press_sets_status_bit_ra() {
 fn key_release_clears_status_bit_f() {
     let code = make_sti_hlt_code(2);
     let machine = boot_inject_run_f(&[0x1C, 0x9C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_STATUS_START + 3] & 0x10,
@@ -143,7 +143,7 @@ fn key_release_clears_status_bit_f() {
 fn key_release_clears_status_bit_vm() {
     let code = make_sti_hlt_code(2);
     let machine = boot_inject_run_vm(&[0x1C, 0x9C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_STATUS_START + 3] & 0x10,
@@ -156,7 +156,7 @@ fn key_release_clears_status_bit_vm() {
 fn key_release_clears_status_bit_vx() {
     let code = make_sti_hlt_code(2);
     let machine = boot_inject_run_vx(&[0x1C, 0x9C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_STATUS_START + 3] & 0x10,
@@ -169,7 +169,7 @@ fn key_release_clears_status_bit_vx() {
 fn key_release_clears_status_bit_ra() {
     let code = make_sti_hlt_code(2);
     let machine = boot_inject_run_ra(&[0x1C, 0x9C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_STATUS_START + 3] & 0x10,
@@ -189,7 +189,7 @@ fn key_release_clears_status_bit_ra() {
 fn shift_press_sets_shift_state_f() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_f(&[0x70], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[KB_SHIFT_STATE] & 0x01,
@@ -207,7 +207,7 @@ fn shift_press_sets_shift_state_f() {
 fn shift_press_sets_shift_state_vm() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_vm(&[0x70], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[KB_SHIFT_STATE] & 0x01,
@@ -225,7 +225,7 @@ fn shift_press_sets_shift_state_vm() {
 fn shift_press_sets_shift_state_vx() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_vx(&[0x70], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[KB_SHIFT_STATE] & 0x01,
@@ -243,7 +243,7 @@ fn shift_press_sets_shift_state_vx() {
 fn shift_press_sets_shift_state_ra() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_ra(&[0x70], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[KB_SHIFT_STATE] & 0x01,
@@ -265,7 +265,7 @@ fn shift_press_sets_shift_state_ra() {
 fn shift_release_clears_shift_state_f() {
     let code = make_sti_hlt_code(2);
     let machine = boot_inject_run_f(&[0x70, 0xF0], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_SHIFT_STATE] & 0x01,
@@ -283,7 +283,7 @@ fn shift_release_clears_shift_state_f() {
 fn shift_release_clears_shift_state_vm() {
     let code = make_sti_hlt_code(2);
     let machine = boot_inject_run_vm(&[0x70, 0xF0], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_SHIFT_STATE] & 0x01,
@@ -301,7 +301,7 @@ fn shift_release_clears_shift_state_vm() {
 fn shift_release_clears_shift_state_vx() {
     let code = make_sti_hlt_code(2);
     let machine = boot_inject_run_vx(&[0x70, 0xF0], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_SHIFT_STATE] & 0x01,
@@ -319,7 +319,7 @@ fn shift_release_clears_shift_state_vx() {
 fn shift_release_clears_shift_state_ra() {
     let code = make_sti_hlt_code(2);
     let machine = boot_inject_run_ra(&[0x70, 0xF0], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_SHIFT_STATE] & 0x01,
@@ -343,7 +343,7 @@ fn shift_release_clears_shift_state_ra() {
 fn ctrl_press_sets_shift_state_f() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_f(&[0x74], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[KB_SHIFT_STATE] & 0x10,
@@ -356,7 +356,7 @@ fn ctrl_press_sets_shift_state_f() {
 fn ctrl_press_sets_shift_state_vm() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_vm(&[0x74], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[KB_SHIFT_STATE] & 0x10,
@@ -369,7 +369,7 @@ fn ctrl_press_sets_shift_state_vm() {
 fn ctrl_press_sets_shift_state_vx() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_vx(&[0x74], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[KB_SHIFT_STATE] & 0x10,
@@ -382,7 +382,7 @@ fn ctrl_press_sets_shift_state_vx() {
 fn ctrl_press_sets_shift_state_ra() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_ra(&[0x74], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[KB_SHIFT_STATE] & 0x10,
@@ -399,7 +399,7 @@ fn ctrl_press_sets_shift_state_ra() {
 fn key_press_buffers_code_f() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_f(&[0x1C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 1,
@@ -423,7 +423,7 @@ fn key_press_buffers_code_f() {
 fn key_press_buffers_code_vm() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_vm(&[0x1C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 1,
@@ -447,7 +447,7 @@ fn key_press_buffers_code_vm() {
 fn key_press_buffers_code_vx() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_vx(&[0x1C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 1,
@@ -471,7 +471,7 @@ fn key_press_buffers_code_vx() {
 fn key_press_buffers_code_ra() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_ra(&[0x1C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 1,
@@ -499,7 +499,7 @@ fn key_press_buffers_code_ra() {
 fn modifier_press_does_not_buffer_f() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_f(&[0x70], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 0,
@@ -516,7 +516,7 @@ fn modifier_press_does_not_buffer_f() {
 fn modifier_press_does_not_buffer_vm() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_vm(&[0x70], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 0,
@@ -533,7 +533,7 @@ fn modifier_press_does_not_buffer_vm() {
 fn modifier_press_does_not_buffer_vx() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_vx(&[0x70], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 0,
@@ -550,7 +550,7 @@ fn modifier_press_does_not_buffer_vx() {
 fn modifier_press_does_not_buffer_ra() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_ra(&[0x70], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 0,
@@ -571,7 +571,7 @@ fn modifier_press_does_not_buffer_ra() {
 fn key_release_does_not_buffer_f() {
     let code = make_sti_hlt_code(2);
     let machine = boot_inject_run_f(&[0x1C, 0x9C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 1,
@@ -583,7 +583,7 @@ fn key_release_does_not_buffer_f() {
 fn key_release_does_not_buffer_vm() {
     let code = make_sti_hlt_code(2);
     let machine = boot_inject_run_vm(&[0x1C, 0x9C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 1,
@@ -595,7 +595,7 @@ fn key_release_does_not_buffer_vm() {
 fn key_release_does_not_buffer_vx() {
     let code = make_sti_hlt_code(2);
     let machine = boot_inject_run_vx(&[0x1C, 0x9C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 1,
@@ -607,7 +607,7 @@ fn key_release_does_not_buffer_vx() {
 fn key_release_does_not_buffer_ra() {
     let code = make_sti_hlt_code(2);
     let machine = boot_inject_run_ra(&[0x1C, 0x9C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 1,
@@ -623,7 +623,7 @@ fn key_release_does_not_buffer_ra() {
 fn multiple_keys_buffer_correctly_f() {
     let code = make_sti_hlt_code(2);
     let machine = boot_inject_run_f(&[0x1C, 0x1E], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 2,
@@ -640,7 +640,7 @@ fn multiple_keys_buffer_correctly_f() {
 fn multiple_keys_buffer_correctly_vm() {
     let code = make_sti_hlt_code(2);
     let machine = boot_inject_run_vm(&[0x1C, 0x1E], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 2,
@@ -657,7 +657,7 @@ fn multiple_keys_buffer_correctly_vm() {
 fn multiple_keys_buffer_correctly_vx() {
     let code = make_sti_hlt_code(2);
     let machine = boot_inject_run_vx(&[0x1C, 0x1E], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 2,
@@ -674,7 +674,7 @@ fn multiple_keys_buffer_correctly_vx() {
 fn multiple_keys_buffer_correctly_ra() {
     let code = make_sti_hlt_code(2);
     let machine = boot_inject_run_ra(&[0x1C, 0x1E], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 2,
@@ -695,7 +695,7 @@ fn multiple_keys_buffer_correctly_ra() {
 fn keyboard_sends_eoi_f() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_f(&[0x1C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[0].isr & 0x02,
@@ -708,7 +708,7 @@ fn keyboard_sends_eoi_f() {
 fn keyboard_sends_eoi_vm() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_vm(&[0x1C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[0].isr & 0x02,
@@ -721,7 +721,7 @@ fn keyboard_sends_eoi_vm() {
 fn keyboard_sends_eoi_vx() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_vx(&[0x1C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[0].isr & 0x02,
@@ -734,7 +734,7 @@ fn keyboard_sends_eoi_vx() {
 fn keyboard_sends_eoi_ra() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_ra(&[0x1C], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[0].isr & 0x02,
@@ -753,7 +753,7 @@ fn keyboard_sends_eoi_ra() {
 fn shift_does_not_update_msw6_in_text_vram_f() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_f(&[0x70], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.text_vram[0x3FF6] & 0xE0,
         0,
@@ -765,7 +765,7 @@ fn shift_does_not_update_msw6_in_text_vram_f() {
 fn shift_does_not_update_msw6_in_text_vram_vm() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_vm(&[0x70], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.text_vram[0x3FF6] & 0xE0,
         0,
@@ -777,7 +777,7 @@ fn shift_does_not_update_msw6_in_text_vram_vm() {
 fn shift_does_not_update_msw6_in_text_vram_vx() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_vx(&[0x70], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.text_vram[0x3FF6] & 0xE0,
         0,
@@ -789,7 +789,7 @@ fn shift_does_not_update_msw6_in_text_vram_vx() {
 fn shift_does_not_update_msw6_in_text_vram_ra() {
     let code = make_sti_hlt_code(1);
     let machine = boot_inject_run_ra(&[0x70], &code, KEYBOARD_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.text_vram[0x3FF6] & 0xE0,
         0,

@@ -15,13 +15,15 @@ use std::collections::VecDeque;
 /// Number of 88-compatible matrix rows, read at ports 0x00-0x0E.
 const MATRIX_ROWS: usize = 16;
 
+save_state::runtime_state! {
 /// HLE keyboard: the always-on 88-compatible scan matrix plus the keycode FIFO.
+#[derive(Clone)]
 pub struct KeyboardVa {
     fifo: VecDeque<u8>,
     /// Active-low key matrix, read row by row at ports 0x00-0x0E. A pressed key
     /// clears its column bit; an idle matrix reads all ones.
     matrix: [u8; MATRIX_ROWS],
-}
+}}
 
 impl Default for KeyboardVa {
     fn default() -> Self {

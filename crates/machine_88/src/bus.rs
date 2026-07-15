@@ -156,6 +156,65 @@ pub(crate) const SYNC_SLICE: u64 = 4;
 /// Default fine interleave slice (main-clock units) when the link is idle.
 pub(crate) const TIGHT_SLICE: u64 = 16;
 
+save_state::runtime_state! {
+/// Complete authoritative PC-8801 bus state.
+#[derive(Clone)]
+pub(crate) struct Pc8801BusState {
+    memory: crate::memory::Pc8801MemoryState,
+    scheduler: common::SchedulerState,
+    pic: device::i8214_pic::I8214PicState,
+    crtc: device::upd3301_crtc::Upd3301State,
+    dma: device::i8257_dma::I8257DmaState,
+    palette: device::palette_pc88::Pc88PaletteState,
+    renderer: software_renderer::pc88::Pc88RendererRuntimeState,
+    soundboard: device::soundboard_ii::SoundboardIIState,
+    cdrom: device::cdrom_pc88::Pc88CdromState,
+    beeper: device::beeper::BeeperState,
+    rtc: device::upd4990a_rtc::Upd4990aState,
+    serial: device::i8251_serial::I8251SerialState,
+    port10: u8,
+    kanji1_address: u16,
+    kanji2_address: u16,
+    current_cycle: u64,
+    vertical_retrace_active: bool,
+    crtc_current_row: u32,
+    high_resolution: bool,
+    port30: u8,
+    port40: u8,
+    baud_rate: u8,
+    layer_disable: u8,
+    keyboard_rows: [u8; 16],
+    mouse_x: i32,
+    mouse_y: i32,
+    mouse_latch_x: i32,
+    mouse_latch_y: i32,
+    mouse_data: u16,
+    mouse_phase: u8,
+    mouse_strobe_level: bool,
+    mouse_strobe_cycle: u64,
+    mouse_buttons: u8,
+    mouse_strobe_seen: bool,
+    joystick_port_a: u8,
+    joystick_port_b: u8,
+    bus_request_clocks: u64,
+    bus_request_until: u64,
+    memory_wait_cycles: i64,
+    graphics_vram_access_count: i64,
+    display_width: u32,
+    display_height: u32,
+    presented_frames: u64,
+    sub_memory: device::pc80s31k::Pc80s31kMemoryState,
+    sub_cycle: u64,
+    sub_clock_credit: u64,
+    fdc: device::upd765a_fdc::Upd765aFdcState,
+    floppy: device::upd765a_fdc::FloppyControllerState,
+    ppi_link: device::pc80s31k::Pc80s31kPpiLinkState,
+    drive_mode: u8,
+    motor_on: u8,
+    terminal_count_active: bool,
+    resynchronize_until: u64,
+}}
+
 /// Default host local-time source: returns the current system time as the
 /// 6-byte BCD buffer the uPD4990A expects:
 /// `[year, month<<4|day_of_week, day, hour, minute, second]`.
@@ -280,6 +339,7 @@ pub struct Pc8801Bus<T: TraceSink = NoTrace> {
     /// MA level-2 kanji ROM, loaded and hash-validated. Read through the
     /// 0xEC/0xED I/O window.
     kanji2: Vec<u8>,
+    rom_bindings: Vec<save_state::ResourceBinding>,
     /// Disk sub-CPU (PC80S31K) 64 KiB memory: disk.rom + RAM.
     pub(crate) sub_mem: Pc80s31kMemory,
     /// Sub-CPU cycle position in sub-clock (4 MHz) T-states.
@@ -392,6 +452,164 @@ impl<T: TraceSink> Pc8801Bus<T> {
     /// Returns the configured machine model.
     pub fn model(&self) -> Pc8801Model {
         self.model
+    }
+
+    pub(crate) fn save_state_resources(
+        &self,
+    ) -> Result<save_state::ResourceManifest, save_state::StateValidationError> {
+        save_state::ResourceManifest::new(self.rom_bindings.clone())
+    }
+
+    pub(crate) fn save_state_media(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = self.floppy.media_manifest()?.bindings().to_vec();
+        if let Some(identity) = self.cdrom.media_identity() {
+            bindings.push(save_state::MediaBinding {
+                identifier: save_state::MediaBindingId::new("cdrom-0")?,
+                slot: save_state::MediaSlot::new(save_state::MediaKind::CdRom, 0),
+                source_path: self.cdrom.media_source_path().cloned(),
+                media_type: "cdrom".to_owned(),
+                identity,
+                geometry: None,
+                write_protected: true,
+                backend_generation: None,
+            });
+        }
+        save_state::MediaManifest::new(bindings)
+    }
+
+    pub(crate) fn capture_runtime_state(
+        &self,
+    ) -> Result<Pc8801BusState, save_state::SaveStateError> {
+        Ok(Pc8801BusState {
+            memory: self.memory.capture_state(),
+            scheduler: self.scheduler.capture_state(),
+            pic: self.pic.state.clone(),
+            crtc: self.crtc.state.clone(),
+            dma: self.dma.state.clone(),
+            palette: self.palette.state.clone(),
+            renderer: self.renderer.capture_state(),
+            soundboard: self.soundboard_ii.capture_state(),
+            cdrom: self.cdrom.capture_state(),
+            beeper: self.beeper.capture_state(),
+            rtc: self.rtc.state.clone(),
+            serial: self.serial.state.clone(),
+            port10: self.port10,
+            kanji1_address: self.kanji1_addr,
+            kanji2_address: self.kanji2_addr,
+            current_cycle: self.current_cycle,
+            vertical_retrace_active: self.vrtc_active,
+            crtc_current_row: self.crtc_current_row,
+            high_resolution: self.hireso,
+            port30: self.port30,
+            port40: self.port40,
+            baud_rate: self.baud_rate,
+            layer_disable: self.layer_disable,
+            keyboard_rows: self.keyboard_rows,
+            mouse_x: self.mouse_x,
+            mouse_y: self.mouse_y,
+            mouse_latch_x: self.mouse_latch_x,
+            mouse_latch_y: self.mouse_latch_y,
+            mouse_data: self.mouse_data,
+            mouse_phase: self.mouse_phase,
+            mouse_strobe_level: self.mouse_strobe_level,
+            mouse_strobe_cycle: self.mouse_strobe_cycle,
+            mouse_buttons: self.mouse_buttons,
+            mouse_strobe_seen: self.mouse_strobe_seen,
+            joystick_port_a: self.joystick_port_a,
+            joystick_port_b: self.joystick_port_b,
+            bus_request_clocks: self.busreq_clocks,
+            bus_request_until: self.busreq_until,
+            memory_wait_cycles: self.memory_wait_cycles,
+            graphics_vram_access_count: self.gvram_access_count,
+            display_width: self.display_width,
+            display_height: self.display_height,
+            presented_frames: self.presented_frames,
+            sub_memory: self.sub_mem.capture_state(),
+            sub_cycle: self.sub_cycle,
+            sub_clock_credit: self.sub_clock_credit,
+            fdc: self.fdc.state.clone(),
+            floppy: self.floppy.capture_state()?,
+            ppi_link: self.ppi_link.capture_state(),
+            drive_mode: self.drive_mode,
+            motor_on: self.motor_on,
+            terminal_count_active: self.tc_active,
+            resynchronize_until: self.resync_until,
+        })
+    }
+
+    pub(crate) fn restore_runtime_state(
+        &mut self,
+        state: Pc8801BusState,
+    ) -> Result<(), save_state::SaveStateError> {
+        if state.mouse_phase > 3
+            || state.crtc_current_row >= device::upd3301_crtc::MAX_ROWS as u32
+            || !(1..=PC88_WIDTH as u32).contains(&state.display_width)
+            || !(1..=PC88_MAX_HEIGHT as u32).contains(&state.display_height)
+            || state.sub_clock_credit >= (1u64 << self.sub_to_main_shift)
+        {
+            return Err(save_state::StateValidationError::new(
+                "PC-88 machine state invariant is invalid",
+            )
+            .into());
+        }
+        state.fdc.validate_runtime_state()?;
+        self.memory.restore_state(state.memory)?;
+        self.scheduler.restore_state(state.scheduler)?;
+        self.renderer.restore_state(state.renderer)?;
+        self.soundboard_ii.restore_state(state.soundboard)?;
+        self.cdrom.restore_state(state.cdrom)?;
+        self.beeper.restore_state(state.beeper)?;
+        self.sub_mem.restore_state(state.sub_memory)?;
+        self.floppy.restore_state(state.floppy)?;
+        self.pic.state = state.pic;
+        self.crtc.state = state.crtc;
+        self.dma.state = state.dma;
+        self.palette.state = state.palette;
+        self.rtc.state = state.rtc;
+        self.serial.state = state.serial;
+        self.port10 = state.port10;
+        self.kanji1_addr = state.kanji1_address;
+        self.kanji2_addr = state.kanji2_address;
+        self.current_cycle = state.current_cycle;
+        self.vrtc_active = state.vertical_retrace_active;
+        self.crtc_current_row = state.crtc_current_row;
+        self.hireso = state.high_resolution;
+        self.port30 = state.port30;
+        self.port40 = state.port40;
+        self.baud_rate = state.baud_rate;
+        self.layer_disable = state.layer_disable;
+        self.keyboard_rows = state.keyboard_rows;
+        self.mouse_x = state.mouse_x;
+        self.mouse_y = state.mouse_y;
+        self.mouse_latch_x = state.mouse_latch_x;
+        self.mouse_latch_y = state.mouse_latch_y;
+        self.mouse_data = state.mouse_data;
+        self.mouse_phase = state.mouse_phase;
+        self.mouse_strobe_level = state.mouse_strobe_level;
+        self.mouse_strobe_cycle = state.mouse_strobe_cycle;
+        self.mouse_buttons = state.mouse_buttons;
+        self.mouse_strobe_seen = state.mouse_strobe_seen;
+        self.joystick_port_a = state.joystick_port_a;
+        self.joystick_port_b = state.joystick_port_b;
+        self.busreq_clocks = state.bus_request_clocks;
+        self.busreq_until = state.bus_request_until;
+        self.memory_wait_cycles = state.memory_wait_cycles;
+        self.gvram_access_count = state.graphics_vram_access_count;
+        self.display_width = state.display_width;
+        self.display_height = state.display_height;
+        self.presented_frames = state.presented_frames;
+        self.sub_cycle = state.sub_cycle;
+        self.sub_clock_credit = state.sub_clock_credit;
+        self.fdc.state = state.fdc;
+        self.ppi_link.restore_state(state.ppi_link);
+        self.drive_mode = state.drive_mode;
+        self.motor_on = state.motor_on;
+        self.tc_active = state.terminal_count_active;
+        self.resync_until = state.resynchronize_until;
+        self.update_next_event_cycle();
+        Ok(())
     }
 
     /// Writes to a main-CPU I/O port. Intended for tests and tooling.

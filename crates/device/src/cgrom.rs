@@ -79,7 +79,8 @@ pub struct CgWindow {
     pub writable: bool,
 }
 
-/// Snapshot of the CGROM controller state.
+save_state::runtime_state! {
+/// Authoritative CGROM controller state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CgromState {
     /// Character code register (set via ports 0xA1/0xA3).
@@ -91,13 +92,15 @@ pub struct CgromState {
     /// When true, all CG addresses are writable (VX+ CG RAM).
     /// When false, only user-definable characters are writable (VM CG ROM).
     pub cg_ram: bool,
-}
+}}
 
 /// CGROM address controller.
 pub struct Cgrom {
     /// Embedded state for save/restore.
     pub state: CgromState,
 }
+
+impl_simple_state_accessors!(Cgrom, CgromState);
 
 impl Default for Cgrom {
     fn default() -> Self {

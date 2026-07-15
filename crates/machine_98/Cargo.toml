@@ -1,6 +1,6 @@
 [package]
 name = "machine_98"
-version = "0.1.0"
+version.workspace = true
 publish = false
 authors.workspace = true
 edition.workspace = true
@@ -17,6 +17,7 @@ common = { workspace = true, features = ["std"] }
 cpu.workspace = true
 device.workspace = true
 dos.workspace = true
+save_state.workspace = true
 software_renderer.workspace = true
 
 [dev-dependencies]

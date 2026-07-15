@@ -9,14 +9,15 @@
 
 use std::collections::VecDeque;
 
+save_state::runtime_state_enum! {
 /// OPL timer outputs exposed by the Sound Blaster 16.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SoundboardSb16Timer {
     /// OPL timer A.
-    OplTimerA,
+    OplTimerA = 0,
     /// OPL timer B.
-    OplTimerB,
-}
+    OplTimerB = 1,
+}}
 
 /// Host bus platform selector for [`SoundBlaster16`] (const generic parameter).
 ///
@@ -31,7 +32,7 @@ pub const SB16_PLATFORM_PC98: u8 = 0;
 /// DMA channels.
 pub const SB16_PLATFORM_ISA_AT: u8 = 1;
 
-use resampler::{Attenuation, Latency, ResamplerFir};
+use resampler::{Attenuation, Latency, ResamplerFir, ResamplerFirState};
 use ymfm_oxide::{Ymf262, YmfmOutput4, YmfmTimerUpdate};
 
 use crate::soundboard_26k::FmSampleRemainder;
@@ -115,7 +116,8 @@ fn mixer_volume_scale(register_value: u8) -> f32 {
     normalized * normalized
 }
 
-/// DSP state snapshot.
+save_state::runtime_state! {
+/// Authoritative Sound Blaster DSP state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sb16DspState {
     /// Whether the DSP is in reset.
@@ -161,14 +163,14 @@ pub struct Sb16DspState {
     /// 16-bit IRQ pending flag.
     pub irq_pending_16bit: bool,
     /// PCM data ring buffer.
-    pub pcm_buffer: Box<[u8; DMA_RING_BUF_SIZE]>,
+    pub pcm_buffer: Box<[u8]>,
     /// Write position in ring buffer.
     pub pcm_write_pos: usize,
     /// Read position in ring buffer.
     pub pcm_read_pos: usize,
     /// Number of buffered bytes.
     pub pcm_buffered: usize,
-}
+}}
 
 impl Default for Sb16DspState {
     fn default() -> Self {
@@ -194,7 +196,7 @@ impl Default for Sb16DspState {
             dma_is_recording: false,
             irq_pending_8bit: false,
             irq_pending_16bit: false,
-            pcm_buffer: Box::new([0u8; DMA_RING_BUF_SIZE]),
+            pcm_buffer: vec![0u8; DMA_RING_BUF_SIZE].into_boxed_slice(),
             pcm_write_pos: 0,
             pcm_read_pos: 0,
             pcm_buffered: 0,
@@ -202,25 +204,27 @@ impl Default for Sb16DspState {
     }
 }
 
-/// CT1745 mixer state snapshot.
+save_state::runtime_state! {
+/// Authoritative CT1745 mixer state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sb16MixerState {
     /// Latched mixer register address.
     pub address: u8,
     /// Raw register values.
-    pub registers: Box<[u8; 256]>,
-}
+    pub registers: Box<[u8]>,
+}}
 
 impl Default for Sb16MixerState {
     fn default() -> Self {
         Self {
             address: 0,
-            registers: Box::new(mixer_default_registers()),
+            registers: mixer_default_registers().to_vec().into_boxed_slice(),
         }
     }
 }
 
-/// Top-level SB16 sound board state snapshot.
+save_state::runtime_state! {
+/// Authoritative Sound Blaster register and DSP state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SoundBlaster16State {
     /// I/O base address (default 0xD2).
@@ -247,7 +251,7 @@ pub struct SoundBlaster16State {
     pub dsp: Sb16DspState,
     /// Mixer state.
     pub mixer: Sb16MixerState,
-}
+}}
 
 impl Default for SoundBlaster16State {
     fn default() -> Self {
@@ -300,6 +304,72 @@ pub enum SoundboardSb16Action {
     /// Cancel DMA transfer scheduling.
     StopDma,
 }
+
+impl save_state::StateEncode for SoundboardSb16Action {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        let (tag, value, fire_cycle) = match *self {
+            Self::ScheduleTimer { kind, fire_cycle } => (0, kind as u8, fire_cycle),
+            Self::CancelTimer { kind } => (1, kind as u8, 0),
+            Self::AssertIrq { irq } => (2, irq, 0),
+            Self::DeassertIrq { irq } => (3, irq, 0),
+            Self::StartDma { channel } => (4, channel, 0),
+            Self::StopDma => (5, 0, 0),
+        };
+        save_state::StateEncode::encode_state(&tag, output);
+        save_state::StateEncode::encode_state(&value, output);
+        save_state::StateEncode::encode_state(&fire_cycle, output);
+    }
+}
+
+impl save_state::StateDecode for SoundboardSb16Action {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        let tag = <u8 as save_state::StateDecode>::decode_state(decoder)?;
+        let value = <u8 as save_state::StateDecode>::decode_state(decoder)?;
+        let fire_cycle = <u64 as save_state::StateDecode>::decode_state(decoder)?;
+        match tag {
+            0 => Ok(Self::ScheduleTimer {
+                kind: match value {
+                    0 => SoundboardSb16Timer::OplTimerA,
+                    1 => SoundboardSb16Timer::OplTimerB,
+                    _ => return Err(save_state::StateDecodeError::InvalidTag),
+                },
+                fire_cycle,
+            }),
+            1 => Ok(Self::CancelTimer {
+                kind: match value {
+                    0 => SoundboardSb16Timer::OplTimerA,
+                    1 => SoundboardSb16Timer::OplTimerB,
+                    _ => return Err(save_state::StateDecodeError::InvalidTag),
+                },
+            }),
+            2 => Ok(Self::AssertIrq { irq: value }),
+            3 => Ok(Self::DeassertIrq { irq: value }),
+            4 => Ok(Self::StartDma { channel: value }),
+            5 => Ok(Self::StopDma),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+save_state::runtime_state! {
+/// Complete Sound Blaster 16 synthesis and streaming state.
+#[derive(Clone)]
+pub struct SoundBlaster16RuntimeState {
+    board: SoundBlaster16State,
+    opl3: Ymf262,
+    opl3_action_cycle: u64,
+    opl3_native_rate: u32,
+    opl3_pending_native: Vec<YmfmOutput4>,
+    opl3_resampler: ResamplerFirState,
+    pcm_resampler: ResamplerFirState,
+    pcm_resampler_rate: u32,
+    sample_rate: u32,
+    cpu_clock_hz: u32,
+    pending_dsp_actions: Vec<SoundboardSb16Action>,
+    pcm_rate_dirty: bool,
+}}
 
 fn dsp_params_needed(cmd: u8) -> u8 {
     match cmd {
@@ -354,6 +424,7 @@ pub struct SoundBlaster16<const PLATFORM: u8> {
     opl3_resample_input: Vec<f32>,
     opl3_resample_output: Vec<f32>,
     pcm_resampler: ResamplerFir,
+    pcm_resampler_rate: u32,
     pcm_resample_input: Vec<f32>,
     pcm_resample_output: Vec<f32>,
     sample_rate: u32,
@@ -410,6 +481,7 @@ impl<const PLATFORM: u8> SoundBlaster16<PLATFORM> {
             opl3_resample_input: vec![0.0; 4096 * 2],
             opl3_resample_output: vec![0.0; opl3_resample_output_size],
             pcm_resampler,
+            pcm_resampler_rate: DEFAULT_SAMPLE_RATE,
             pcm_resample_input: vec![0.0; 4096 * 2],
             pcm_resample_output: vec![0.0; pcm_resample_output_size],
             sample_rate,
@@ -421,6 +493,82 @@ impl<const PLATFORM: u8> SoundBlaster16<PLATFORM> {
         board.apply_mixer_irq_config();
         board.apply_mixer_dma_config();
         board
+    }
+
+    /// Captures complete OPL3, DSP, mixer, and resampler history.
+    pub fn capture_state(&self) -> SoundBlaster16RuntimeState {
+        SoundBlaster16RuntimeState {
+            board: self.state.clone(),
+            opl3: self.opl3.capture_state(),
+            opl3_action_cycle: self.opl3_action_cycle,
+            opl3_native_rate: self.opl3_native_rate,
+            opl3_pending_native: self.opl3_pending_native.clone(),
+            opl3_resampler: self.opl3_resampler.capture_state(),
+            pcm_resampler: self.pcm_resampler.capture_state(),
+            pcm_resampler_rate: self.pcm_resampler_rate,
+            sample_rate: self.sample_rate,
+            cpu_clock_hz: self.cpu_clock_hz,
+            pending_dsp_actions: self.pending_dsp_actions.clone(),
+            pcm_rate_dirty: self.pcm_rate_dirty,
+        }
+    }
+
+    /// Restores complete audio state without resetting the OPL3 or DSP.
+    pub fn restore_state(
+        &mut self,
+        state: SoundBlaster16RuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.sample_rate != self.sample_rate
+            || state.cpu_clock_hz != self.cpu_clock_hz
+            || state.opl3_native_rate != self.opl3_native_rate
+            || state.pcm_resampler_rate == 0
+            || state.board.dsp.pcm_buffer.len() != DMA_RING_BUF_SIZE
+            || state.board.mixer.registers.len() != 256
+            || state.board.dsp.pcm_write_pos >= DMA_RING_BUF_SIZE
+            || state.board.dsp.pcm_read_pos >= DMA_RING_BUF_SIZE
+            || state.board.dsp.pcm_buffered > DMA_RING_BUF_SIZE
+            || state.board.dsp.input_buffer.len() > 3
+            || !state.board.sample_remainder.0.is_finite()
+        {
+            return Err(save_state::StateValidationError::new(
+                "Sound Blaster 16 state is invalid or incompatible",
+            ));
+        }
+        save_state::ValidateState::validate_state(&state.opl3, &())?;
+        self.opl3_resampler.validate_state(&state.opl3_resampler)?;
+        let mut prepared_pcm_resampler = ResamplerFir::new_from_hz(
+            2,
+            state.pcm_resampler_rate,
+            self.sample_rate,
+            RESAMPLER_LATENCY,
+            RESAMPLER_ATTENUATION,
+        );
+        prepared_pcm_resampler.restore_state(state.pcm_resampler)?;
+
+        self.opl3.restore_state(state.opl3)?;
+        self.opl3_resampler.restore_state(state.opl3_resampler)?;
+        self.state = state.board;
+        self.opl3_action_cycle = state.opl3_action_cycle;
+        self.opl3_pending_native = state.opl3_pending_native;
+        self.pcm_resampler = prepared_pcm_resampler;
+        self.pcm_resampler_rate = state.pcm_resampler_rate;
+        self.pending_dsp_actions = state.pending_dsp_actions;
+        self.pcm_rate_dirty = state.pcm_rate_dirty;
+        self.action_buffer.clear();
+        self.opl3_native_buffer.clear();
+        self.opl3_native_buffer
+            .resize(4096, YmfmOutput4 { data: [0; 4] });
+        self.opl3_resample_input.clear();
+        self.opl3_resample_input.resize(4096 * 2, 0.0);
+        self.opl3_resample_output.clear();
+        self.opl3_resample_output
+            .resize(self.opl3_resampler.buffer_size_output(), 0.0);
+        self.pcm_resample_input.clear();
+        self.pcm_resample_input.resize(4096 * 2, 0.0);
+        self.pcm_resample_output.clear();
+        self.pcm_resample_output
+            .resize(self.pcm_resampler.buffer_size_output(), 0.0);
+        Ok(())
     }
 
     /// Returns the I/O base port.
@@ -862,7 +1010,10 @@ impl<const PLATFORM: u8> SoundBlaster16<PLATFORM> {
         match addr {
             0x00 => {
                 // Reset mixer
-                *self.state.mixer.registers = mixer_default_registers();
+                self.state
+                    .mixer
+                    .registers
+                    .copy_from_slice(&mixer_default_registers());
                 if PLATFORM == SB16_PLATFORM_ISA_AT {
                     self.state.mixer.registers[0x80] = AT_MIXER_IRQ_5;
                     self.state.mixer.registers[0x81] = AT_MIXER_DMA_1_AND_5;
@@ -1188,6 +1339,7 @@ impl<const PLATFORM: u8> SoundBlaster16<PLATFORM> {
                 RESAMPLER_LATENCY,
                 RESAMPLER_ATTENUATION,
             );
+            self.pcm_resampler_rate = pcm_rate;
             self.pcm_resample_output
                 .resize(self.pcm_resampler.buffer_size_output(), 0.0);
         }
@@ -1462,6 +1614,7 @@ impl<const PLATFORM: u8> SoundBlaster16<PLATFORM> {
             RESAMPLER_LATENCY,
             RESAMPLER_ATTENUATION,
         );
+        self.pcm_resampler_rate = pcm_rate;
         self.pcm_resample_output
             .resize(self.pcm_resampler.buffer_size_output(), 0.0);
         self.sample_rate = sample_rate;

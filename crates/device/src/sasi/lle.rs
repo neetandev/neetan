@@ -13,29 +13,33 @@
 //! a state machine: Free -> Command -> Read/Write -> Status -> Message ->
 //! Free, delegating drive-side command handling to the shared target engine.
 
-use super::target::{PC98_TARGET_PROFILE, SasiCommandStart, SasiTargetEngine, SasiTransferStep};
+use super::target::{
+    PC98_TARGET_PROFILE, SasiCommandStart, SasiTargetEngine, SasiTargetEngineState,
+    SasiTransferStep,
+};
 use crate::disk::MountedHdd;
 
-/// SASI controller phase (state machine).
+save_state::runtime_state_enum! {
+/// SASI controller phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SasiPhase {
     /// Bus idle, waiting for device selection.
-    Free,
+    Free = 0,
     /// Receiving 6-byte command.
-    Command,
+    Command = 1,
     /// Processing vendor command 0xC2 (accepts 10 bytes then completes).
-    VendorC2,
+    VendorC2 = 2,
     /// Returning 4-byte sense data.
-    Sense,
+    Sense = 3,
     /// Transferring sector data from disk to host (DMA read).
-    Read,
+    Read = 4,
     /// Transferring sector data from host to disk (DMA write).
-    Write,
+    Write = 5,
     /// Returning status byte.
-    Status,
+    Status = 6,
     /// Returning message byte (final phase before returning to Free).
-    Message,
-}
+    Message = 7,
+}}
 
 /// Actions the bus must perform after a SASI controller method call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +86,22 @@ pub(super) struct Controller {
     pending_pio_write: Option<(u8, u32)>,
 }
 
+save_state::runtime_state! {
+/// Mutable SASI host adapter electronics state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ControllerState {
+    engine: SasiTargetEngineState,
+    phase: SasiPhase,
+    command: [u8; 6],
+    command_position: u8,
+    sense_position: u8,
+    vendor_position: u8,
+    vendor_expected: u8,
+    output_control: u8,
+    interrupt_pending: u8,
+    pending_pio_write: Option<(u8, u32)>,
+}}
+
 impl Default for Controller {
     fn default() -> Self {
         Self::new()
@@ -103,6 +123,48 @@ impl Controller {
             interrupt_pending: 0,
             pending_pio_write: None,
         }
+    }
+
+    pub(super) fn capture_state(&self) -> ControllerState {
+        ControllerState {
+            engine: self.engine.capture_state(),
+            phase: self.phase,
+            command: self.command,
+            command_position: self.command_position,
+            sense_position: self.sense_position,
+            vendor_position: self.vendor_position,
+            vendor_expected: self.vendor_expected,
+            output_control: self.output_control,
+            interrupt_pending: self.interrupt_pending,
+            pending_pio_write: self.pending_pio_write,
+        }
+    }
+
+    pub(super) fn restore_state(&mut self, state: ControllerState) {
+        self.engine.restore_state(state.engine);
+        self.phase = state.phase;
+        self.command = state.command;
+        self.command_position = state.command_position;
+        self.sense_position = state.sense_position;
+        self.vendor_position = state.vendor_position;
+        self.vendor_expected = state.vendor_expected;
+        self.output_control = state.output_control;
+        self.interrupt_pending = state.interrupt_pending;
+        self.pending_pio_write = state.pending_pio_write;
+    }
+
+    pub(super) fn validate_state(
+        state: &ControllerState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.command_position as usize > state.command.len()
+            || state.sense_position > 4
+            || state.vendor_position > state.vendor_expected
+        {
+            return Err(save_state::StateValidationError::new(
+                "SASI host adapter parser position is invalid",
+            ));
+        }
+        SasiTargetEngine::validate_state(&state.engine)
     }
 
     /// Returns the current phase.

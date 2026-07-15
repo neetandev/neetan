@@ -81,6 +81,7 @@ fn undefined_register_form_lea_les_lds_does_not_panic() {
     state.set_ss(0x2000);
     state.set_sp(0x1000);
     state.ip = 0x0100;
+    state.initialize_cold_frontend();
     cpu.load_state(&state);
 
     for _ in 0..4 {

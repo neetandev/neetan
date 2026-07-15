@@ -24,21 +24,65 @@ impl Command for More {
 const LINES_PER_PAGE: u16 = 24;
 const KB_BUF_COUNT: u32 = 0x0528;
 
+#[derive(Clone)]
+/// Authoritative MORE input data and output offset.
 struct ReadState {
     data: Vec<u8>,
     offset: usize,
 }
 
+state_struct_codec!(ReadState { data, offset });
+
+#[derive(Clone)]
 enum MorePhase {
     Init,
     Outputting { read: ReadState, lines_shown: u16 },
     WaitKey(ReadState),
 }
 
-struct RunningMore {
+impl save_state::StateEncode for MorePhase {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Init => save_state::StateEncode::encode_state(&0u8, output),
+            Self::Outputting { read, lines_shown } => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(read, output);
+                save_state::StateEncode::encode_state(lines_shown, output);
+            }
+            Self::WaitKey(read) => {
+                save_state::StateEncode::encode_state(&2u8, output);
+                save_state::StateEncode::encode_state(read, output);
+            }
+        }
+    }
+}
+
+impl save_state::StateDecode for MorePhase {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Init),
+            1 => Ok(Self::Outputting {
+                read: save_state::StateDecode::decode_state(decoder)?,
+                lines_shown: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            2 => Ok(Self::WaitKey(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
+/// Serializable state of an executing MORE command.
+pub(crate) struct RunningMore {
     args: Vec<u8>,
     phase: MorePhase,
 }
+
+state_struct_codec!(RunningMore { args, phase });
 
 impl RunningMore {
     fn do_output(

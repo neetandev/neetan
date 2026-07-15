@@ -27,6 +27,7 @@ const D88_STATUS_DATA_CRC_ERROR: u8 = 0xB0;
 const D88_STATUS_NO_ADDRESS_MARK: u8 = 0xE0;
 const D88_STATUS_NO_DATA_ADDRESS_MARK: u8 = 0xF0;
 
+save_state::runtime_state! {
 /// How the current read sector should terminate once its data has drained.
 #[derive(Clone, Copy, Default)]
 struct FdcSectorEnd {
@@ -38,7 +39,7 @@ struct FdcSectorEnd {
     abnormal: bool,
     /// Whether the command must end after this sector even before EOT.
     terminate: bool,
-}
+}}
 
 /// Outcome of loading the sector named by the current command.
 enum ReadLoad {
@@ -50,6 +51,7 @@ enum ReadLoad {
     Done,
 }
 
+save_state::runtime_state! {
 /// Read-path bookkeeping for deleted-mark / CRC handling and READ TRACK.
 #[derive(Clone, Default)]
 pub(crate) struct FdcReadState {
@@ -71,6 +73,24 @@ pub(crate) struct FdcReadState {
     dma_pages: Vec<Vec<u8>>,
     /// Next byte exposed from each completed DMA page.
     dma_read_indices: Vec<usize>,
+}}
+
+impl FdcReadState {
+    pub(crate) fn validate_runtime_state(&self) -> Result<(), save_state::StateValidationError> {
+        if self.dma_transfer_index > self.dma_data.len()
+            || self.dma_pages.len() != self.dma_read_indices.len()
+            || self
+                .dma_pages
+                .iter()
+                .zip(&self.dma_read_indices)
+                .any(|(page, index)| *index > page.len())
+        {
+            return Err(save_state::StateValidationError::new(
+                "PC-6000 FDC read progress is invalid",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl<T: TraceSink> Pc6000Bus<T> {

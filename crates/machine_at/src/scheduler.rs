@@ -1,6 +1,6 @@
 //! Event-driven scheduler for the PC/AT.
 
-use common::StackVec;
+use common::{SchedulerState, StackVec};
 
 /// Number of distinct PC/AT event kinds.
 const EVENT_AT_KIND_COUNT: usize = 18;
@@ -140,11 +140,7 @@ pub(crate) struct ScheduledEventAt {
 ///
 /// Uses a flat array indexed by [`EventAt`] discriminant; each slot holds
 /// `Some(fire_cycle)` when scheduled. At most one event per kind is active.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AtSchedulerState {
-    /// Fire cycle for each event kind, indexed by discriminant.
-    pub(crate) fire_cycles: [Option<u64>; EVENT_AT_KIND_COUNT],
-}
+pub(crate) type AtSchedulerState = SchedulerState;
 
 /// Event-driven scheduler for timed PC/AT peripheral events.
 pub(crate) struct AtScheduler {
@@ -162,26 +158,39 @@ impl AtScheduler {
     /// Creates a new empty scheduler.
     pub(crate) fn new() -> Self {
         Self {
-            state: AtSchedulerState {
-                fire_cycles: [None; EVENT_AT_KIND_COUNT],
-            },
+            state: SchedulerState::new(EVENT_AT_KIND_COUNT),
         }
+    }
+
+    /// Captures every pending event deadline.
+    pub(crate) fn capture_state(&self) -> AtSchedulerState {
+        self.state.clone()
+    }
+
+    /// Restores pending event deadlines after validating event indexes.
+    pub(crate) fn restore_state(
+        &mut self,
+        state: AtSchedulerState,
+    ) -> Result<(), save_state::StateValidationError> {
+        save_state::ValidateState::validate_state(&state, &EVENT_AT_KIND_COUNT)?;
+        self.state = state;
+        Ok(())
     }
 
     /// Schedules an event to fire at `fire_cycle`, replacing any existing event
     /// of the same kind.
     pub(crate) fn schedule(&mut self, kind: EventAt, fire_cycle: u64) {
-        self.state.fire_cycles[kind as usize] = Some(fire_cycle);
+        self.state.schedule(kind as usize, fire_cycle);
     }
 
     /// Cancels any scheduled event of the given kind.
     pub(crate) fn cancel(&mut self, kind: EventAt) {
-        self.state.fire_cycles[kind as usize] = None;
+        self.state.cancel(kind as usize);
     }
 
     /// Returns the cycle of the earliest scheduled event, if any.
     pub(crate) fn next_event_cycle(&self) -> Option<u64> {
-        self.state.fire_cycles.iter().filter_map(|&c| c).min()
+        self.state.next_event_cycle()
     }
 
     /// Removes and returns all events due at or before `current_cycle`.
@@ -189,19 +198,14 @@ impl AtScheduler {
         &mut self,
         current_cycle: u64,
     ) -> StackVec<ScheduledEventAt, EVENT_AT_KIND_COUNT> {
+        let indexes = self.state.pop_due::<EVENT_AT_KIND_COUNT>(current_cycle);
         let mut due = StackVec::new();
-        for (index, slot) in self.state.fire_cycles.iter_mut().enumerate() {
-            if let Some(fire_cycle) = *slot
-                && fire_cycle <= current_cycle
-            {
-                due.push(ScheduledEventAt {
-                    fire_cycle,
-                    kind: EventAt::from_index(index),
-                });
-                *slot = None;
-            }
+        for event in indexes.iter() {
+            due.push(ScheduledEventAt {
+                fire_cycle: event.fire_cycle,
+                kind: EventAt::from_index(event.index),
+            });
         }
-        due.sort_by_key(|event: &ScheduledEventAt| event.fire_cycle);
         due
     }
 }

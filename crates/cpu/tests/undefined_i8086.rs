@@ -89,6 +89,7 @@ fn setup_state(cs: u16, ip: u16) -> I8086State {
     state.set_es(0x4000);
     state.set_sp(0x0100);
     state.ip = ip;
+    state.initialize_cold_frontend();
     state
 }
 
@@ -268,6 +269,7 @@ fn i8086_pop_rm_overlap_matches_undefined_corpus_final_state() {
     state.set_di(0x5009);
     state.ip = 0xF8C0;
     state.set_compressed_flags(0xF082);
+    state.initialize_cold_frontend();
 
     bus.write_byte(0x35A8F, 0x56);
     bus.write_byte(0x35A90, 0x56);

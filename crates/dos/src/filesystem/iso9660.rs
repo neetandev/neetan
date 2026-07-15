@@ -5,18 +5,31 @@ const PVD_LBA: u32 = 16;
 const PVD_ROOT_RECORD_OFFSET: usize = 156;
 
 #[derive(Debug, Clone)]
+/// Mounted ISO-9660 volume geometry used by HLE DOS.
 pub(crate) struct IsoVolume {
     pub volume_label: Vec<u8>,
     pub root_directory: IsoDirectory,
 }
 
+state_struct_codec!(IsoVolume {
+    volume_label,
+    root_directory,
+});
+
 #[derive(Debug, Clone)]
+/// Parsed ISO-9660 directory location and size.
 pub(crate) struct IsoDirectory {
     pub start_lba: u32,
     pub data_length: u32,
 }
 
+state_struct_codec!(IsoDirectory {
+    start_lba,
+    data_length,
+});
+
 #[derive(Debug, Clone)]
+/// Parsed ISO-9660 directory entry returned to HLE DOS.
 pub(crate) struct IsoDirEntry {
     pub name: [u8; 11],
     pub attribute: u8,
@@ -26,6 +39,16 @@ pub(crate) struct IsoDirEntry {
     pub file_size: u32,
     pub directory: Option<IsoDirectory>,
 }
+
+state_struct_codec!(IsoDirEntry {
+    name,
+    attribute,
+    time,
+    date,
+    start_lba,
+    file_size,
+    directory,
+});
 
 impl IsoVolume {
     pub(crate) fn mount(cdrom: &dyn CdromIo) -> Result<Self, u16> {

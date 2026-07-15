@@ -151,6 +151,7 @@ pub enum QueueType {
     Subsequent,
 }
 
+/// V20/V30 prefetch-queue operation in the active bus cycle.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum QueueOp {
     #[default]
@@ -159,6 +160,86 @@ pub enum QueueOp {
     Flush,
     Subsequent,
 }
+
+state_enum_codec!(TCycle {
+    TCycle::Tinit = 0,
+    TCycle::Ti = 1,
+    TCycle::T1 = 2,
+    TCycle::T2 = 3,
+    TCycle::T3 = 4,
+    TCycle::Tw = 5,
+    TCycle::T4 = 6,
+});
+
+state_enum_codec!(TaCycle {
+    TaCycle::Tr = 0,
+    TaCycle::Ts = 1,
+    TaCycle::T0 = 2,
+    TaCycle::Td = 3,
+    TaCycle::Ta = 4,
+});
+
+state_enum_codec!(BusStatus {
+    BusStatus::IoRead = 0,
+    BusStatus::IoWrite = 1,
+    BusStatus::CodeFetch = 2,
+    BusStatus::MemRead = 3,
+    BusStatus::MemWrite = 4,
+    BusStatus::Passive = 5,
+});
+
+impl save_state::StateEncode for FetchState {
+    fn encode_state(&self, output: &mut ::alloc::vec::Vec<u8>) {
+        match self {
+            Self::Normal => save_state::StateEncode::encode_state(&0u8, output),
+            Self::PausedFull => save_state::StateEncode::encode_state(&1u8, output),
+            Self::Delayed(cycles) => {
+                save_state::StateEncode::encode_state(&2u8, output);
+                save_state::StateEncode::encode_state(cycles, output);
+            }
+            Self::Suspended => save_state::StateEncode::encode_state(&3u8, output),
+        }
+    }
+}
+
+impl save_state::StateDecode for FetchState {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Normal),
+            1 => Ok(Self::PausedFull),
+            2 => Ok(Self::Delayed(
+                <u8 as save_state::StateDecode>::decode_state(decoder)?,
+            )),
+            3 => Ok(Self::Suspended),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+state_enum_codec!(BusPendingType {
+    BusPendingType::None = 0,
+    BusPendingType::EuEarly = 1,
+    BusPendingType::EuLate = 2,
+});
+
+state_enum_codec!(TransferSize {
+    TransferSize::Byte = 0,
+    TransferSize::Word = 1,
+});
+
+state_enum_codec!(OperandSize {
+    OperandSize::Operand8 = 0,
+    OperandSize::Operand16 = 1,
+});
+
+state_enum_codec!(QueueOp {
+    QueueOp::Idle = 0,
+    QueueOp::First = 1,
+    QueueOp::Flush = 2,
+    QueueOp::Subsequent = 3,
+});
 
 /// Coarse T-state phase exposed in the cycle trace.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
@@ -212,9 +293,9 @@ impl<const MODEL: u8> VX0<MODEL> {
     pub(super) fn queue_pop(&mut self) -> u8 {
         debug_assert!(self.instruction_queue_len > 0, "queue underrun");
         let value = self.instruction_queue[0];
-        if self.instruction_queue_len > 1 {
-            self.instruction_queue
-                .copy_within(1..self.instruction_queue_len, 0);
+        let queue_length = self.instruction_queue_len;
+        if queue_length > 1 {
+            self.instruction_queue.copy_within(1..queue_length, 0);
         }
         self.instruction_queue_len -= 1;
         value
@@ -226,7 +307,8 @@ impl<const MODEL: u8> VX0<MODEL> {
             self.instruction_queue_len < queue_size_for(MODEL),
             "queue overrun"
         );
-        self.instruction_queue[self.instruction_queue_len] = byte;
+        let queue_length = self.instruction_queue_len;
+        self.instruction_queue[queue_length] = byte;
         self.instruction_queue_len += 1;
         1
     }

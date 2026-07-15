@@ -25,12 +25,25 @@ pub enum GraphicModeX68k {
     Colors16Virtual1024,
 }
 
+save_state::runtime_state! {
 /// X68000 video-controller registers and palettes.
 #[derive(Debug, Clone)]
 pub struct VideoControllerX68k {
     graphics_palette: [u16; X68K_PALETTE_ENTRIES],
     text_palette: [u16; X68K_PALETTE_ENTRIES],
     registers: [u16; 3],
+}}
+
+impl VideoControllerX68k {
+    /// Captures complete video controller and palette state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores complete video controller and palette state.
+    pub fn restore_state(&mut self, state: Self) {
+        *self = state;
+    }
 }
 
 impl Default for VideoControllerX68k {

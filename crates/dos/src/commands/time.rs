@@ -19,9 +19,13 @@ impl Command for Time {
     }
 }
 
-struct RunningTime {
+#[derive(Clone)]
+/// Serializable state of an executing TIME command.
+pub(crate) struct RunningTime {
     args: Vec<u8>,
 }
+
+state_struct_codec!(RunningTime { args });
 
 impl RunningCommand for RunningTime {
     fn step(

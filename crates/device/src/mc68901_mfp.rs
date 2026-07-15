@@ -60,6 +60,8 @@ impl Mc68901Interrupt {
     }
 }
 
+save_state::runtime_state! {
+/// Authoritative progress of one MFP timer.
 #[derive(Debug, Clone, Copy)]
 struct Timer {
     control: u8,
@@ -67,7 +69,7 @@ struct Timer {
     counter: u16,
     prescale_remainder: u64,
     output: bool,
-}
+}}
 
 impl Timer {
     const fn new() -> Self {
@@ -149,6 +151,7 @@ impl Timer {
     }
 }
 
+save_state::runtime_state! {
 /// Motorola MC68901 MFP.
 #[derive(Debug, Clone)]
 pub struct Mc68901Mfp {
@@ -171,6 +174,18 @@ pub struct Mc68901Mfp {
     transmit_in_flight: Option<(u8, u64)>,
     transmitted_data: Option<u8>,
     current_tick: u64,
+}}
+
+impl Mc68901Mfp {
+    /// Captures complete MFP interrupt, timer, and serial state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores complete MFP interrupt, timer, and serial state.
+    pub fn restore_state(&mut self, state: Self) {
+        *self = state;
+    }
 }
 
 impl Default for Mc68901Mfp {

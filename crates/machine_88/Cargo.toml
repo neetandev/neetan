@@ -1,6 +1,6 @@
 [package]
 name = "machine_88"
-version = "0.1.0"
+version.workspace = true
 publish = false
 authors.workspace = true
 edition.workspace = true
@@ -13,3 +13,4 @@ cpu.workspace = true
 device.workspace = true
 software_renderer = { workspace = true, features = ["std"] }
 blake3.workspace = true
+save_state = { workspace = true, features = ["std"] }

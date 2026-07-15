@@ -23,18 +23,21 @@ const DEFAULT_SUR: u8 = 0x00;
 /// Default SDR value: no scroll lower limit.
 const DEFAULT_SDR: u8 = 0x00;
 
-/// Snapshot of the uPD52611 CRTC state.
+save_state::runtime_state! {
+/// Authoritative uPD52611 CRTC state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Upd52611CrtcState {
     /// CRTC registers [PL, BL, CL, SSL, SUR, SDR] (write-only via ports 0x70-0x7A).
     pub regs: [u8; 6],
-}
+}}
 
 /// NEC uPD52611 CRTC controller.
 pub struct Upd52611Crtc {
     /// Embedded state for save/restore.
     pub state: Upd52611CrtcState,
 }
+
+impl_simple_state_accessors!(Upd52611Crtc, Upd52611CrtcState);
 
 impl Default for Upd52611Crtc {
     fn default() -> Self {

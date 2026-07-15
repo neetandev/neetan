@@ -19,9 +19,13 @@ impl Command for Ver {
     }
 }
 
-struct RunningVer {
+#[derive(Clone)]
+/// Serializable state of an executing VER command.
+pub(crate) struct RunningVer {
     args: Vec<u8>,
 }
+
+state_struct_codec!(RunningVer { args });
 
 impl RunningCommand for RunningVer {
     fn step(

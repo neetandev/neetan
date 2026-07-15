@@ -3,6 +3,17 @@
 /// Identification byte sent after a serial mouse reset.
 pub const SERIAL_MOUSE_IDENTIFICATION: u8 = b'M';
 
+save_state::runtime_state! {
+/// Authoritative Microsoft serial mouse input state.
+#[derive(Clone)]
+pub struct SerialMouseState {
+    delta_x: i32,
+    delta_y: i32,
+    left: bool,
+    right: bool,
+    dirty: bool,
+}}
+
 /// Microsoft serial mouse state accumulated from the host.
 #[derive(Debug, Default)]
 pub struct SerialMouse {
@@ -17,6 +28,26 @@ impl SerialMouse {
     /// Builds a mouse with no pending movement.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Captures pending movement and button state.
+    pub fn capture_state(&self) -> SerialMouseState {
+        SerialMouseState {
+            delta_x: self.delta_x,
+            delta_y: self.delta_y,
+            left: self.left,
+            right: self.right,
+            dirty: self.dirty,
+        }
+    }
+
+    /// Restores pending movement and button state.
+    pub fn restore_state(&mut self, state: SerialMouseState) {
+        self.delta_x = state.delta_x;
+        self.delta_y = state.delta_y;
+        self.left = state.left;
+        self.right = state.right;
+        self.dirty = state.dirty;
     }
 
     /// Accumulates relative host movement.

@@ -73,7 +73,7 @@ fn game_port_reports_axes_and_buttons() {
     let mut bus = bus();
     // A connected gamepad forwards analog axes (marking the stick present)
     // and its buttons.
-    bus.set_joystick_axes(0, 0, 0);
+    bus.set_joystick_axes(0, Some((0, 0)));
     bus.set_joystick(
         0,
         JoystickState {
@@ -96,4 +96,23 @@ fn game_port_reports_axes_and_buttons() {
     assert_eq!(settled & 0x0F, 0);
     assert_eq!(settled & 0x10, 0);
     assert_ne!(settled & 0x20, 0);
+}
+
+#[test]
+fn disconnecting_gamepad_clears_analog_port_presence() {
+    let mut bus = bus();
+    bus.set_joystick_axes(0, Some((0, 0)));
+    bus.set_joystick(
+        0,
+        JoystickState {
+            trigger1: true,
+            ..JoystickState::default()
+        },
+    );
+    bus.set_joystick_axes(0, None);
+
+    bus.io_write_byte(GAME_PORT, 0);
+    let settled_cycle = bus.current_cycle() + 5000;
+    advance(&mut bus, settled_cycle);
+    assert_eq!(bus.io_read_byte(GAME_PORT), 0xF0);
 }

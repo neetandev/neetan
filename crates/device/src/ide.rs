@@ -17,8 +17,8 @@ mod lle;
 
 use std::{cell::Cell, path::PathBuf};
 
-pub use at::AtIdeController;
-pub use at_atapi::AtAtapiController;
+pub use at::{AtIdeController, AtIdeControllerState};
+pub use at_atapi::{AtAtapiController, AtAtapiControllerState};
 pub use lle::{IdeAction, IdePhase};
 
 pub use crate::disk_hle::{buffer_address, drive_index, sector_position, transfer_size};
@@ -26,7 +26,7 @@ use crate::{
     cd_audio::CdAudioPlayer,
     cdrom::CdImage,
     disk::{HddGeometry, HddImage, MountedHdd},
-    scsi::cdrom::ScsiCdrom,
+    scsi::cdrom::{ScsiCdrom, ScsiCdromState},
 };
 
 /// Size of the expansion ROM window mapped at 0xD8000.
@@ -34,6 +34,20 @@ pub const ROM_SIZE: usize = 8192;
 
 /// 8192-byte expansion ROM image.
 static ROM_IMAGE: &[u8; ROM_SIZE] = include_bytes!("../../../utils/ide/ide.rom");
+
+save_state::runtime_state! {
+/// Authoritative PC-98 IDE and ATAPI electronics state.
+#[derive(Clone)]
+pub struct IdeControllerState {
+    lle: lle::Controller,
+    hle_pending: bool,
+    yield_requested: bool,
+    rom_installed: bool,
+    optical: ScsiCdromState,
+    atapi: atapi::AtapiState,
+    work_area_mapped: bool,
+    media: save_state::MediaManifest,
+}}
 
 /// PC-98 IDE (ATA) controller with ATAPI CD-ROM support.
 #[derive(Debug)]
@@ -70,6 +84,87 @@ impl IdeController {
             atapi_state: atapi::AtapiState::new(),
             work_area_mapped: false,
         }
+    }
+
+    /// Captures IDE, ATAPI, CD audio, and mounted media bindings.
+    pub fn capture_state(&self) -> Result<IdeControllerState, save_state::StateValidationError> {
+        Ok(IdeControllerState {
+            lle: self.lle_controller.clone(),
+            hle_pending: self.hle_pending,
+            yield_requested: self.yield_requested.get(),
+            rom_installed: self.rom.is_some(),
+            optical: self.optical.capture_state(),
+            atapi: self.atapi_state.clone(),
+            work_area_mapped: self.work_area_mapped,
+            media: self.media_manifest()?,
+        })
+    }
+
+    /// Restores controller electronics while retaining HDD and CD contents.
+    pub fn restore_state(
+        &mut self,
+        state: IdeControllerState,
+    ) -> Result<(), save_state::StateValidationError> {
+        state.lle.validate_state()?;
+        state.atapi.validate_state()?;
+        self.optical.validate_state(&state.optical)?;
+        state.media.verify_current(&self.media_manifest()?)?;
+        if state.rom_installed != self.rom.is_some() {
+            return Err(save_state::StateValidationError::new(
+                "IDE expansion ROM installation differs",
+            ));
+        }
+        self.optical.restore_state(state.optical)?;
+        self.lle_controller = state.lle;
+        self.hle_pending = state.hle_pending;
+        self.yield_requested.set(state.yield_requested);
+        self.atapi_state = state.atapi;
+        self.work_area_mapped = state.work_area_mapped;
+        Ok(())
+    }
+
+    /// Returns stable bindings for all mounted IDE media.
+    pub fn media_manifest(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = Vec::new();
+        for (drive_index, mounted) in self.drives.iter().enumerate() {
+            let Some(mounted) = mounted else {
+                continue;
+            };
+            let geometry = mounted.geometry();
+            bindings.push(save_state::MediaBinding {
+                identifier: save_state::MediaBindingId::new(format!("ide-{drive_index}"))?,
+                slot: save_state::MediaSlot::new(
+                    save_state::MediaKind::HardDisk,
+                    drive_index as u32,
+                ),
+                source_path: mounted.source_path().cloned(),
+                media_type: mounted.image().format_name().to_owned(),
+                identity: mounted.identity(),
+                geometry: Some(save_state::MediaGeometry::new(
+                    u32::from(geometry.cylinders),
+                    u32::from(geometry.heads),
+                    u32::from(geometry.sectors_per_track),
+                    u32::from(geometry.sector_size),
+                )?),
+                write_protected: false,
+                backend_generation: None,
+            });
+        }
+        if let Some(media) = self.optical.media() {
+            bindings.push(save_state::MediaBinding {
+                identifier: save_state::MediaBindingId::new("ide-cdrom")?,
+                slot: save_state::MediaSlot::new(save_state::MediaKind::CdRom, 0),
+                source_path: media.source_path().cloned(),
+                media_type: "CD-ROM".to_owned(),
+                identity: media.identity(),
+                geometry: None,
+                write_protected: true,
+                backend_generation: None,
+            });
+        }
+        save_state::MediaManifest::new(bindings)
     }
 
     /// Inserts a hard disk image into the specified drive (0-1) on channel 0.
@@ -1421,5 +1516,44 @@ mod tests {
                 assert_eq!(action, IdeAction::ScheduleCompletion);
             }
         }
+    }
+
+    #[test]
+    fn state_restores_electronics_and_retains_ide_media_writes() {
+        let mut controller = IdeController::new(44100);
+        controller.insert_drive(0, make_test_drive(), None);
+        controller.insert_cdrom(make_test_cdimage());
+        controller.write_bank(1, 0x01);
+        controller.write_work_area_port(0x81);
+        controller.play_cd_audio(4, 12);
+        let mut warmup = [0.0f32; 73];
+        controller.generate_cd_audio_samples(1.0, &mut warmup);
+        let encoded = save_state::encode_runtime_state(&controller.capture_state().unwrap());
+        let state =
+            save_state::decode_runtime_state::<IdeControllerState>(&encoded, 1 << 20).unwrap();
+
+        let replacement = [0x3Eu8; 512];
+        assert!(controller.write_sector_raw(0, 3, &replacement));
+        controller.write_bank(1, 0x00);
+        controller.write_work_area_port(0x80);
+        controller.restore_state(state).unwrap();
+
+        assert_eq!(controller.read_bank(1), 0x01);
+        assert_eq!(controller.read_work_area_port(), 0x81);
+        assert_eq!(controller.read_sector(0, 3).unwrap(), replacement);
+        assert_eq!(
+            controller.cd_audio_player().state(),
+            crate::cd_audio::CdAudioState::Playing
+        );
+    }
+
+    #[test]
+    fn state_rejects_missing_cdrom_resource() {
+        let mut source = IdeController::new(44100);
+        source.insert_cdrom(make_test_cdimage());
+        let state = source.capture_state().unwrap();
+
+        source.eject_cdrom();
+        assert!(source.restore_state(state).is_err());
     }
 }

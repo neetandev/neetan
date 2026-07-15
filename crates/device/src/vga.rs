@@ -132,7 +132,9 @@ const KEY_PREFIX_VALUE: u8 = 0x03;
 /// Value whose write to the mode control port completes the KEY sequence.
 const KEY_COMPLETE_VALUE: u8 = 0xA0;
 
-/// Tseng Labs ET4000AX display adapter state.
+save_state::runtime_state! {
+/// Authoritative Tseng Labs ET4000AX display adapter state.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Vga {
     /// Miscellaneous output register (bit 0 selects color I/O decode).
     pub misc_output: u8,
@@ -195,7 +197,7 @@ pub struct Vga {
     pub frame_counter: u32,
     /// Display memory, dword-interleaved across the four planes.
     pub vram: Box<[u8]>,
-}
+}}
 
 impl Default for Vga {
     fn default() -> Self {
@@ -248,6 +250,28 @@ impl Vga {
             frame_counter: 0,
             vram: vec![0; VGA_VRAM_SIZE].into_boxed_slice(),
         }
+    }
+
+    /// Captures all VGA registers, latches, palette, timing, and VRAM.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores all VGA state after validating fixed storage dimensions.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        if state.vram.len() != self.vram.len()
+            || state.seq_index as usize >= state.seq.len()
+            || state.crtc_index as usize >= state.crtc.len()
+            || state.gc_index as usize >= state.gc.len()
+            || usize::from(state.atc_index & 0x1F) >= state.atc.len()
+            || state.dac_cycle > 2
+        {
+            return Err(save_state::StateValidationError::new(
+                "VGA register index or VRAM size is invalid",
+            ));
+        }
+        *self = state;
+        Ok(())
     }
 
     /// Returns the display memory slice for the renderer.

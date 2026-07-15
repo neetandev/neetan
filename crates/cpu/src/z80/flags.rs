@@ -1,7 +1,9 @@
-/// Z80 flags register state.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Z80Flags {
-    bits: u8,
+save_state::runtime_state! {
+    /// Z80 flags register state.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct Z80Flags {
+        bits: u8,
+    }
 }
 
 impl Z80Flags {

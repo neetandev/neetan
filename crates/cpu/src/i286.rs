@@ -26,12 +26,12 @@ use common::Cpu as _;
 pub use flags::I286Flags;
 pub use modrm::EaClass;
 pub use state::I286State;
+use timing::I286ColdStartPrefetchPolicy;
 pub use timing::{
     I286AuStage, I286BusPhase, I286CycleState, I286CycleTraceEntry, I286EuStage, I286FinishState,
     I286FlushState, I286PendingBusRequest, I286RepState, I286TimingMilestones, I286TraceBusStatus,
     I286WarmStartConfig,
 };
-use timing::{I286ColdStartPrefetchPolicy, I286Timing};
 
 use crate::{SegReg16, WordReg};
 
@@ -199,36 +199,9 @@ pub struct I286 {
     /// Embedded state for save/restore.
     pub state: I286State,
 
-    prev_ip: u16,
-    seg_prefix: bool,
-    prefix_seg: SegReg16,
-
-    halted: bool,
-    pending_irq: u8,
-    no_interrupt: u8,
-    inhibit_all: u8,
-
-    rep_ip: u16,
-    rep_restart_ip: u16,
-    rep_seg_prefix: bool,
-    rep_prefix_seg: SegReg16,
-    rep_opcode: u8,
-    rep_type: u8,
-    rep_active: bool,
-
     cycles_remaining: i64,
     run_start_cycle: u64,
     run_budget: u64,
-
-    ea: u32,
-    eo: u16,
-    ea_seg: SegReg16,
-    pub(crate) ea_class: EaClass,
-    pub(crate) finish_state: I286FinishState,
-
-    trap_level: u8,
-    shutdown: bool,
-    timing: I286Timing,
 }
 
 impl Deref for I286 {
@@ -255,31 +228,9 @@ impl I286 {
     pub fn new() -> Self {
         let mut cpu = Self {
             state: I286State::default(),
-            prev_ip: 0,
-            seg_prefix: false,
-            prefix_seg: SegReg16::DS,
-            halted: false,
-            pending_irq: 0,
-            no_interrupt: 0,
-            inhibit_all: 0,
-            rep_ip: 0,
-            rep_restart_ip: 0,
-            rep_seg_prefix: false,
-            rep_prefix_seg: SegReg16::DS,
-            rep_opcode: 0,
-            rep_type: 0,
-            rep_active: false,
             cycles_remaining: 0,
             run_start_cycle: 0,
             run_budget: 0,
-            ea: 0,
-            eo: 0,
-            ea_seg: SegReg16::DS,
-            ea_class: EaClass::Register,
-            finish_state: I286FinishState::Linear,
-            trap_level: 0,
-            shutdown: false,
-            timing: I286Timing::new(),
         };
         cpu.reset();
         cpu
@@ -287,38 +238,39 @@ impl I286 {
 
     #[inline(always)]
     fn sync_timing_cycles(&mut self) {
-        self.cycles_remaining -= i64::from(self.timing.take_cycle_debt());
+        self.cycles_remaining -= i64::from(self.state.timing.take_cycle_debt());
     }
 
     #[inline(always)]
     fn clk(&mut self, cycles: i32) {
-        self.timing.advance_internal_cycles(cycles);
+        self.state.timing.advance_internal_cycles(cycles);
         self.sync_timing_cycles();
     }
 
     #[inline(always)]
     fn clk_visible(&mut self, cycles: u8) {
-        self.timing.advance_visible_internal_cycles(cycles);
+        self.state.timing.advance_visible_internal_cycles(cycles);
         self.sync_timing_cycles();
     }
 
     #[inline(always)]
     fn clk_prefix(&mut self, bus: &mut impl common::Bus) {
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing
+        self.state
+            .timing
             .advance_prefix_overlap_prefetch(bus, code_segment_base);
         self.sync_timing_cycles();
     }
 
     #[inline(always)]
     fn clk_prefix_passive(&mut self) {
-        self.timing.advance_prefix_overlap_passive();
+        self.state.timing.advance_prefix_overlap_passive();
         self.sync_timing_cycles();
     }
 
     #[inline(always)]
     fn clk_prefix_single_passive(&mut self) {
-        self.timing.advance_prefix_overlap_single_passive();
+        self.state.timing.advance_prefix_overlap_single_passive();
         self.sync_timing_cycles();
     }
 
@@ -339,18 +291,19 @@ impl I286 {
                 && self.lock_prefix_followed_by_xlat(bus, next_opcode));
 
         if prefetches_during_lock_prefix {
-            self.timing
+            self.state
+                .timing
                 .advance_lock_prefix_prefetch(bus, code_segment_base)
         } else if suppress_lock_prefix_cycle {
-            self.timing.clear_lock_prefix_pending_cycle();
+            self.state.timing.clear_lock_prefix_pending_cycle();
         } else {
-            self.timing.advance_lock_prefix_passive_cycle()
+            self.state.timing.advance_lock_prefix_passive_cycle()
         };
 
         if self.consumed_opcode_lookahead(next_opcode).is_les_or_lds()
             && prefix_count_before_lock & 1 == 1
         {
-            self.timing.suppress_next_demand_prefetch();
+            self.state.timing.suppress_next_demand_prefetch();
         }
         self.sync_timing_cycles();
     }
@@ -416,7 +369,7 @@ impl I286 {
     ) -> bool {
         let lookahead = self.consumed_opcode_lookahead(opcode);
         if !lookahead.is_segment_override() {
-            if lookahead.is_fpu_escape() && self.timing.lock_prefix_after_prefix() {
+            if lookahead.is_fpu_escape() && self.state.timing.lock_prefix_after_prefix() {
                 let modrm = self.code_byte_at(bus, lookahead.operand_offset);
                 if modrm >= 0xC0 {
                     return false;
@@ -433,18 +386,19 @@ impl I286 {
             let group_ff = self.group_ff_lookahead(bus, lookahead.operand_offset);
             return matches!(group_ff.register_field(), 0 | 1)
                 || group_ff.lock_prefetches_indirect_control_transfer()
-                || (!self.timing.lock_prefix_after_prefix()
-                    && group_ff.lock_prefetches_push(self.timing.lock_prefix_after_prefix()));
+                || (!self.state.timing.lock_prefix_after_prefix()
+                    && group_ff
+                        .lock_prefetches_push(self.state.timing.lock_prefix_after_prefix()));
         }
 
         let final_lookahead = self.next_non_segment_opcode_lookahead(bus);
 
         if final_lookahead.is_xlat() {
-            return !self.timing.lock_prefix_after_prefix();
+            return !self.state.timing.lock_prefix_after_prefix();
         }
 
         if final_lookahead.is_string() {
-            return !self.timing.lock_prefix_after_prefix();
+            return !self.state.timing.lock_prefix_after_prefix();
         }
 
         if final_lookahead.is_short_jump() {
@@ -456,7 +410,7 @@ impl I286 {
         }
 
         if final_lookahead.is_leave() {
-            return self.timing.prefix_count_at_most(3);
+            return self.state.timing.prefix_count_at_most(3);
         }
 
         if !final_lookahead.is_group_ff() {
@@ -470,7 +424,7 @@ impl I286 {
         }
 
         if register_field == 4 && group_ff.is_register_form() {
-            return !self.timing.lock_prefix_after_prefix();
+            return !self.state.timing.lock_prefix_after_prefix();
         }
 
         if matches!(register_field, 6 | 7) {
@@ -507,7 +461,7 @@ impl I286 {
         lookahead: I286OpcodeLookahead,
         bus: &mut impl common::Bus,
     ) -> bool {
-        if !self.timing.lock_active() || !self.timing.lock_prefix_after_prefix() {
+        if !self.state.timing.lock_active() || !self.state.timing.lock_prefix_after_prefix() {
             return false;
         }
 
@@ -520,9 +474,9 @@ impl I286 {
     }
 
     fn segment_prefix_skips_prefetch_after_lock(&self, lookahead: I286OpcodeLookahead) -> bool {
-        if !self.timing.lock_active()
-            || !self.timing.lock_prefix_after_prefix()
-            || !self.timing.lock_prefix_followed_by_prefix()
+        if !self.state.timing.lock_active()
+            || !self.state.timing.lock_prefix_after_prefix()
+            || !self.state.timing.lock_prefix_followed_by_prefix()
         {
             return false;
         }
@@ -542,7 +496,8 @@ impl I286 {
         if lookahead.is_leave()
             || lookahead.is_xlat()
             || (lookahead.is_short_jump()
-                && (!self.timing.lock_active() || self.timing.lock_prefix_after_prefix()))
+                && (!self.state.timing.lock_active()
+                    || self.state.timing.lock_prefix_after_prefix()))
             || self.segment_prefix_single_passivizes_ff_indirect_control_transfer_prefetch(
                 lookahead, bus,
             )
@@ -560,8 +515,9 @@ impl I286 {
     #[inline(always)]
     fn clk_prefetch(&mut self, bus: &mut impl common::Bus, cycles: i32) {
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing.note_execution_cycles();
-        self.timing
+        self.state.timing.note_execution_cycles();
+        self.state
+            .timing
             .advance_internal_cycles_with_prefetch(bus, code_segment_base, cycles);
         self.sync_timing_cycles();
     }
@@ -569,8 +525,9 @@ impl I286 {
     #[inline(always)]
     fn clk_forced_prefetch(&mut self, bus: &mut impl common::Bus) {
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing.note_execution_cycles();
-        self.timing
+        self.state.timing.note_execution_cycles();
+        self.state
+            .timing
             .advance_forced_prefetch_fetch(bus, code_segment_base);
         self.sync_timing_cycles();
     }
@@ -584,9 +541,11 @@ impl I286 {
     ) {
         self.finish_state = I286FinishState::ControlTransferRestart;
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing
+        self.state
+            .timing
             .arm_control_transfer_restart(instruction_pointer);
-        self.timing
+        self.state
+            .timing
             .advance_control_transfer_restart(bus, code_segment_base, timing);
         self.sync_timing_cycles();
     }
@@ -600,9 +559,11 @@ impl I286 {
     ) {
         self.finish_state = I286FinishState::ControlTransferRestart;
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing
+        self.state
+            .timing
             .arm_control_transfer_restart_without_gap_credit(instruction_pointer);
-        self.timing
+        self.state
+            .timing
             .advance_control_transfer_restart(bus, code_segment_base, timing);
         self.sync_timing_cycles();
     }
@@ -665,7 +626,7 @@ impl I286 {
             self.seg_bases[SegReg16::CS as usize].wrapping_add(self.ip as u32) & ADDRESS_MASK;
         let value = bus.read_byte(addr);
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing.note_code_byte_consumed(
+        self.state.timing.note_code_byte_consumed(
             bus,
             code_segment_base,
             self.ip,
@@ -714,8 +675,12 @@ impl I286 {
     #[inline(always)]
     fn read_io_byte(&mut self, bus: &mut impl common::Bus, port: u16) -> u8 {
         let value = bus.io_read_byte(port);
-        self.timing
-            .note_io_read_byte(bus, self.seg_bases[SegReg16::CS as usize], port, value);
+        self.state.timing.note_io_read_byte(
+            bus,
+            self.seg_bases[SegReg16::CS as usize],
+            port,
+            value,
+        );
         self.sync_timing_cycles();
         value
     }
@@ -723,8 +688,12 @@ impl I286 {
     #[inline(always)]
     fn read_io_word(&mut self, bus: &mut impl common::Bus, port: u16) -> u16 {
         let value = bus.io_read_word(port);
-        self.timing
-            .note_io_read_word(bus, self.seg_bases[SegReg16::CS as usize], port, value);
+        self.state.timing.note_io_read_word(
+            bus,
+            self.seg_bases[SegReg16::CS as usize],
+            port,
+            value,
+        );
         self.sync_timing_cycles();
         value
     }
@@ -732,16 +701,24 @@ impl I286 {
     #[inline(always)]
     fn write_io_byte(&mut self, bus: &mut impl common::Bus, port: u16, value: u8) {
         bus.io_write_byte(port, value);
-        self.timing
-            .note_io_write_byte(bus, self.seg_bases[SegReg16::CS as usize], port, value);
+        self.state.timing.note_io_write_byte(
+            bus,
+            self.seg_bases[SegReg16::CS as usize],
+            port,
+            value,
+        );
         self.sync_timing_cycles();
     }
 
     #[inline(always)]
     fn write_io_word(&mut self, bus: &mut impl common::Bus, port: u16, value: u16) {
         bus.io_write_word(port, value);
-        self.timing
-            .note_io_write_word(bus, self.seg_bases[SegReg16::CS as usize], port, value);
+        self.state.timing.note_io_write_word(
+            bus,
+            self.seg_bases[SegReg16::CS as usize],
+            port,
+            value,
+        );
         self.sync_timing_cycles();
     }
 
@@ -1070,7 +1047,7 @@ impl I286 {
         }
         let address = self.seg_addr(delta);
         let value = bus.read_byte(address);
-        self.timing.note_memory_read_byte(
+        self.state.timing.note_memory_read_byte(
             bus,
             self.seg_bases[SegReg16::CS as usize],
             address,
@@ -1088,7 +1065,7 @@ impl I286 {
         }
         let address = self.seg_addr(delta);
         bus.write_byte(address, value);
-        self.timing.note_memory_write_byte(
+        self.state.timing.note_memory_write_byte(
             bus,
             self.seg_bases[SegReg16::CS as usize],
             address,
@@ -1110,7 +1087,7 @@ impl I286 {
         let low = bus.read_byte(low_address) as u16;
         let high = bus.read_byte(high_address) as u16;
         let value = low | (high << 8);
-        self.timing.note_memory_read_word(
+        self.state.timing.note_memory_read_word(
             bus,
             self.seg_bases[SegReg16::CS as usize],
             low_address,
@@ -1139,7 +1116,7 @@ impl I286 {
         let high_address = self.seg_addr(1);
         bus.write_byte(low_address, value as u8);
         bus.write_byte(high_address, (value >> 8) as u8);
-        self.timing.note_memory_write_word(
+        self.state.timing.note_memory_write_word(
             bus,
             self.seg_bases[SegReg16::CS as usize],
             low_address,
@@ -1158,7 +1135,7 @@ impl I286 {
         let base = self.seg_base(seg);
         let address = base.wrapping_add(offset as u32) & ADDRESS_MASK;
         let value = bus.read_byte(address);
-        self.timing.note_memory_read_byte(
+        self.state.timing.note_memory_read_byte(
             bus,
             self.seg_bases[SegReg16::CS as usize],
             address,
@@ -1183,7 +1160,7 @@ impl I286 {
         let base = self.seg_base(seg);
         let address = base.wrapping_add(offset as u32) & ADDRESS_MASK;
         bus.write_byte(address, value);
-        self.timing.note_memory_write_byte(
+        self.state.timing.note_memory_write_byte(
             bus,
             self.seg_bases[SegReg16::CS as usize],
             address,
@@ -1204,7 +1181,7 @@ impl I286 {
         let low = bus.read_byte(low_address) as u16;
         let high = bus.read_byte(high_address) as u16;
         let value = low | (high << 8);
-        self.timing.note_memory_read_word(
+        self.state.timing.note_memory_read_word(
             bus,
             self.seg_bases[SegReg16::CS as usize],
             low_address,
@@ -1232,7 +1209,7 @@ impl I286 {
         let high_address = base.wrapping_add(offset.wrapping_add(1) as u32) & ADDRESS_MASK;
         bus.write_byte(low_address, value as u8);
         bus.write_byte(high_address, (value >> 8) as u8);
-        self.timing.note_memory_write_word(
+        self.state.timing.note_memory_write_word(
             bus,
             self.seg_bases[SegReg16::CS as usize],
             low_address,
@@ -1253,14 +1230,14 @@ impl I286 {
         let high_address = base.wrapping_add(sp.wrapping_add(1) as u32) & ADDRESS_MASK;
         bus.write_byte(low_address, value as u8);
         bus.write_byte(high_address, (value >> 8) as u8);
-        self.timing.note_memory_write_word(
+        self.state.timing.note_memory_write_word(
             bus,
             self.seg_bases[SegReg16::CS as usize],
             low_address,
             high_address,
             value,
         );
-        self.timing.borrow_internal_cycles(2);
+        self.state.timing.borrow_internal_cycles(2);
         self.sync_timing_cycles();
     }
 
@@ -1275,14 +1252,14 @@ impl I286 {
         let low = bus.read_byte(low_address) as u16;
         let high = bus.read_byte(high_address) as u16;
         let value = low | (high << 8);
-        self.timing.note_memory_read_word(
+        self.state.timing.note_memory_read_word(
             bus,
             self.seg_bases[SegReg16::CS as usize],
             low_address,
             high_address,
             value,
         );
-        self.timing.borrow_internal_cycles(2);
+        self.state.timing.borrow_internal_cycles(2);
         self.sync_timing_cycles();
         self.regs.set_word(WordReg::SP, sp.wrapping_add(2));
         value
@@ -1809,8 +1786,11 @@ impl I286 {
 
     fn execute_one(&mut self, bus: &mut impl common::Bus) {
         self.prev_ip = self.ip;
-        self.timing
-            .begin_instruction(self.sregs[SegReg16::CS as usize], self.ip, self.rep_active);
+        self.state.timing.begin_instruction(
+            self.sregs[SegReg16::CS as usize],
+            self.ip,
+            self.rep_active,
+        );
 
         if self.pending_irq != 0 {
             self.check_interrupts(bus);
@@ -1836,7 +1816,7 @@ impl I286 {
                     0x26 => {
                         self.seg_prefix = true;
                         self.prefix_seg = SegReg16::ES;
-                        self.timing.note_prefix();
+                        self.state.timing.note_prefix();
                         prefix_count = prefix_count.saturating_add(1);
                         self.clk_segment_override_prefix(bus);
                         opcode = self.fetch(bus);
@@ -1844,7 +1824,7 @@ impl I286 {
                     0x2E => {
                         self.seg_prefix = true;
                         self.prefix_seg = SegReg16::CS;
-                        self.timing.note_prefix();
+                        self.state.timing.note_prefix();
                         prefix_count = prefix_count.saturating_add(1);
                         self.clk_segment_override_prefix(bus);
                         opcode = self.fetch(bus);
@@ -1852,7 +1832,7 @@ impl I286 {
                     0x36 => {
                         self.seg_prefix = true;
                         self.prefix_seg = SegReg16::SS;
-                        self.timing.note_prefix();
+                        self.state.timing.note_prefix();
                         prefix_count = prefix_count.saturating_add(1);
                         self.clk_segment_override_prefix(bus);
                         opcode = self.fetch(bus);
@@ -1860,17 +1840,17 @@ impl I286 {
                     0x3E => {
                         self.seg_prefix = true;
                         self.prefix_seg = SegReg16::DS;
-                        self.timing.note_prefix();
+                        self.state.timing.note_prefix();
                         prefix_count = prefix_count.saturating_add(1);
                         self.clk_segment_override_prefix(bus);
                         opcode = self.fetch(bus);
                     }
                     0xF0 => {
                         let prefix_count_before_lock = prefix_count;
-                        self.timing.note_lock_prefix(prefix_count_before_lock);
+                        self.state.timing.note_lock_prefix(prefix_count_before_lock);
                         prefix_count = prefix_count.saturating_add(1);
                         opcode = self.fetch(bus);
-                        self.timing.note_lock_prefix_followed_by_prefix(
+                        self.state.timing.note_lock_prefix_followed_by_prefix(
                             Self::segment_override_prefix(opcode),
                         );
                         let prefetches_during_lock_prefix =
@@ -1890,8 +1870,12 @@ impl I286 {
             }
         }
 
-        self.timing
-            .finish_instruction(self.ip, self.halted, self.shutdown, self.finish_state);
+        self.state.timing.finish_instruction(
+            self.ip,
+            self.halted,
+            self.shutdown,
+            self.finish_state,
+        );
     }
 
     /// Executes exactly one logical instruction (should only be used in tests).
@@ -1922,7 +1906,7 @@ impl I286 {
         decoded_entries: u8,
         pending_flush: I286FlushState,
     ) {
-        self.timing.install_front_end_state(
+        self.state.timing.install_front_end_state(
             self.ip,
             prefetch_bytes,
             decoded_entries,
@@ -1985,7 +1969,8 @@ impl common::Cpu for I286 {
         self.finish_state = I286FinishState::Linear;
         self.trap_level = 0;
         self.shutdown = false;
-        self.timing
+        self.state
+            .timing
             .reset(self.sregs[SegReg16::CS as usize], self.ip);
     }
 
@@ -2001,7 +1986,8 @@ impl common::Cpu for I286 {
         self.sregs[SegReg16::CS as usize] = cs;
         self.set_real_segment_cache(SegReg16::CS, cs);
         self.ip = ip;
-        self.timing
+        self.state
+            .timing
             .reset(self.sregs[SegReg16::CS as usize], self.ip);
     }
 
@@ -2140,5 +2126,22 @@ impl common::Cpu for I286 {
             common::SegmentRegister::DS => SegReg16::DS,
         };
         self.state.seg_bases[seg16 as usize]
+    }
+}
+
+impl save_state::AfterRestore for I286 {
+    fn after_restore(&mut self) {
+        self.cycles_remaining = 0;
+        self.run_start_cycle = 0;
+        self.run_budget = 0;
+    }
+}
+
+impl save_state::RestoreTarget for I286 {
+    type State = I286State;
+    type ValidationContext = ();
+
+    fn replace_state(&mut self, state: Self::State) {
+        self.state = state;
     }
 }

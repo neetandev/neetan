@@ -81,6 +81,8 @@ pub struct CdImage {
     /// Raw 96-byte/sector P-W interleaved subchannel data, when available.
     /// Indexed by absolute LBA; layout matches a CloneCD .sub file.
     subchannel: Option<Vec<u8>>,
+    identity: save_state::ResourceIdentity,
+    source_path: Option<save_state::MediaSourcePath>,
 }
 
 /// Errors that can occur when parsing or reading CD-ROM images.
@@ -420,6 +422,70 @@ pub fn extract_bin_filenames(cue_content: &str) -> Result<Vec<String>, CdError> 
 }
 
 impl CdImage {
+    /// Returns the cached logical identity of this disc source.
+    pub const fn identity(&self) -> save_state::ResourceIdentity {
+        self.identity
+    }
+
+    /// Returns the normalized configured source path, when file-backed.
+    pub const fn source_path(&self) -> Option<&save_state::MediaSourcePath> {
+        self.source_path.as_ref()
+    }
+
+    fn identity_structure(&self) -> Vec<u8> {
+        let mut layout = Vec::with_capacity(self.tracks.len() * 25 + 13);
+        layout.extend_from_slice(&self.total_sectors.to_le_bytes());
+        layout.extend_from_slice(&(self.data.len() as u64).to_le_bytes());
+        layout.push(u8::from(self.subchannel.is_some()));
+        for track in &self.tracks {
+            layout.push(track.number);
+            layout.push(match track.track_type {
+                TrackType::Data => 0,
+                TrackType::Audio => 1,
+            });
+            layout.push(match track.sector_layout {
+                SectorLayout::Cooked => 0,
+                SectorLayout::RawMode1 => 1,
+                SectorLayout::RawMode2 => 2,
+                SectorLayout::Audio => 3,
+            });
+            layout.extend_from_slice(&track.sector_size.to_le_bytes());
+            layout.extend_from_slice(&track.start_lba.to_le_bytes());
+            layout.extend_from_slice(&track.pregap_lba.to_le_bytes());
+            layout.extend_from_slice(&track.sector_count.to_le_bytes());
+            layout.extend_from_slice(&track.file_offset.to_le_bytes());
+        }
+        layout
+    }
+
+    fn identity_byte_length(&self) -> u64 {
+        self.data.len() as u64
+            + self
+                .subchannel
+                .as_ref()
+                .map_or(0, |subchannel| subchannel.len() as u64)
+    }
+
+    fn assign_anonymous_identity(&mut self) {
+        self.source_path = None;
+        self.identity = crate::media_identity::anonymous_identity(
+            "neetan-cdrom-source-v1",
+            self.identity_byte_length(),
+            &self.identity_structure(),
+        );
+    }
+
+    fn assign_source_identity(&mut self, path: &std::path::Path) {
+        let source_path = save_state::MediaSourcePath::from_path(path);
+        self.identity = crate::media_identity::path_identity(
+            "neetan-cdrom-source-v1",
+            &source_path,
+            self.identity_byte_length(),
+            &self.identity_structure(),
+        );
+        self.source_path = Some(source_path);
+    }
+
     /// Parses a CUE sheet and loads the associated BIN data into a `CdImage`.
     ///
     /// The `cue_content` is the text of the CUE file. The `bin_data` is the
@@ -457,6 +523,7 @@ impl CdImage {
             }
             image.subchannel = Some(sub);
         }
+        image.assign_anonymous_identity();
         Ok(image)
     }
 
@@ -523,12 +590,16 @@ impl CdImage {
             next_disc_lba = start_lba + sector_count;
         }
 
-        Ok(CdImage {
+        let mut image = CdImage {
             tracks,
             data,
             total_sectors: next_disc_lba,
             subchannel: None,
-        })
+            identity: save_state::ResourceIdentity::new([0; 32], 0),
+            source_path: None,
+        };
+        image.assign_anonymous_identity();
+        Ok(image)
     }
 
     /// Returns `true` if interleaved subchannel data is attached to this image.
@@ -685,8 +756,9 @@ fn load_cd_image_cue(path: &std::path::Path) -> Result<(CdImage, String), String
             .map_err(|error| format!("Failed to read {}: {error}", bin_path.display()))?;
         bin_files.push(bin_data);
     }
-    let image = CdImage::from_cue_files(&cue_content, bin_files)
+    let mut image = CdImage::from_cue_files(&cue_content, bin_files)
         .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
+    image.assign_source_identity(path);
     let description = format!(
         "{} ({} tracks, {} sectors)",
         bin_filenames[0],
@@ -711,8 +783,9 @@ fn load_cd_image_ccd(path: &std::path::Path) -> Result<(CdImage, String), String
         }
     };
     let has_sub = sub_data.is_some();
-    let image = CdImage::from_ccd(&ccd_content, img_data, sub_data)
+    let mut image = CdImage::from_ccd(&ccd_content, img_data, sub_data)
         .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
+    image.assign_source_identity(path);
     let img_name = img_path
         .file_name()
         .and_then(|name| name.to_str())
@@ -730,6 +803,30 @@ fn load_cd_image_ccd(path: &std::path::Path) -> Result<(CdImage, String), String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_identity_uses_layout_without_hashing_disc_content() {
+        let cue = r#"FILE "test.bin" BINARY
+  TRACK 01 MODE1/2048
+    INDEX 01 00:00:00
+"#;
+        let mut first = CdImage::from_cue(cue, vec![0x11; 2048 * 300]).unwrap();
+        let mut second = CdImage::from_cue(cue, vec![0x22; 2048 * 300]).unwrap();
+        first.assign_source_identity(std::path::Path::new("media/disc.cue"));
+        second.assign_source_identity(std::path::Path::new("./media/disc.cue"));
+
+        assert_eq!(first.identity(), second.identity());
+        assert_eq!(first.clone().identity(), first.identity());
+        assert_eq!(
+            first.source_path(),
+            Some(&save_state::MediaSourcePath::from_path(
+                std::path::Path::new("media/disc.cue")
+            ))
+        );
+
+        second.assign_source_identity(std::path::Path::new("media/other.cue"));
+        assert_ne!(first.identity(), second.identity());
+    }
 
     #[test]
     fn msf_to_lba_conversion() {

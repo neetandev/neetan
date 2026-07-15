@@ -20,15 +20,33 @@ use std::{
 };
 
 use common::info;
+use save_state::{ResourceBinding, ResourceBindingId, ResourceIdentity};
 
 use crate::{
     rom_info::{self, PairType, RomInfo, RomType},
     state::{MuntState, SAMPLE_RATE},
 };
 
+const MAX_PARSED_MIDI_MESSAGES: usize = 32768;
+const MAX_PARSED_SYSEX_BYTES: usize = 65536;
+
+#[derive(Clone, Copy)]
+enum ParsedMidiMessage {
+    Short(u32),
+    Sysex { start: usize, length: usize },
+}
+
+struct ParsedMidiScratch<'a> {
+    messages: &'a mut Vec<ParsedMidiMessage>,
+    sysex: &'a mut Vec<u8>,
+}
+
 pub(crate) struct MuntContext {
     state: MuntState,
     sample_rate: u32,
+    resource_bindings: Vec<ResourceBinding>,
+    parsed_messages: Vec<ParsedMidiMessage>,
+    parsed_sysex: Vec<u8>,
 }
 
 impl MuntContext {
@@ -105,6 +123,17 @@ impl MuntContext {
         let (pcm_data, pcm_info) =
             pcm_rom.ok_or(MuntContextError::NoRomsFound(rom_directory.to_path_buf()))?;
 
+        let resource_bindings = vec![
+            ResourceBinding {
+                identifier: ResourceBindingId::new("mt32-control-rom").unwrap(),
+                identity: ResourceIdentity::from_bytes(&control_data),
+            },
+            ResourceBinding {
+                identifier: ResourceBindingId::new("mt32-pcm-rom").unwrap(),
+                identity: ResourceIdentity::from_bytes(&pcm_data),
+            },
+        ];
+
         info!(
             "MT-32 ROMs identified: {} + {}",
             control_info.description, pcm_info.description
@@ -127,45 +156,66 @@ impl MuntContext {
 
         info!("MT-32 synth opened successfully (munt_oxide, {sample_rate} Hz)");
 
-        Ok(Self { state, sample_rate })
+        Ok(Self {
+            state,
+            sample_rate,
+            resource_bindings,
+            parsed_messages: Vec::with_capacity(MAX_PARSED_MIDI_MESSAGES),
+            parsed_sysex: Vec::with_capacity(MAX_PARSED_SYSEX_BYTES),
+        })
     }
 
     pub(crate) fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
 
+    pub(crate) fn resource_bindings(&self) -> &[ResourceBinding] {
+        &self.resource_bindings
+    }
+
     pub(crate) fn parse_stream(&mut self, data: &[u8]) {
         if data.is_empty() {
             return;
         }
-        let state = &mut self.state;
-        // We can't pass closures that capture &mut state to parse_stream since
-        // parse_stream also needs &mut state.midi_stream_parser.
-        // Instead, collect parsed events and process them after, preserving stream order.
-        enum ParsedMidiMessage {
-            Short(u32),
-            Sysex(Vec<u8>),
-        }
-        let messages = core::cell::RefCell::new(Vec::new());
-        state.midi_stream_parser.parse_stream(
+        self.parsed_messages.clear();
+        self.parsed_sysex.clear();
+        let scratch = core::cell::RefCell::new(ParsedMidiScratch {
+            messages: &mut self.parsed_messages,
+            sysex: &mut self.parsed_sysex,
+        });
+        self.state.midi_stream_parser.parse_stream(
             data,
-            &mut |msg| {
-                messages.borrow_mut().push(ParsedMidiMessage::Short(msg));
+            &mut |message| {
+                let mut scratch = scratch.borrow_mut();
+                if scratch.messages.len() < MAX_PARSED_MIDI_MESSAGES {
+                    scratch.messages.push(ParsedMidiMessage::Short(message));
+                }
             },
             &mut |sysex| {
-                messages
-                    .borrow_mut()
-                    .push(ParsedMidiMessage::Sysex(sysex.to_vec()));
+                let mut scratch = scratch.borrow_mut();
+                if scratch.messages.len() >= MAX_PARSED_MIDI_MESSAGES
+                    || sysex.len() > MAX_PARSED_SYSEX_BYTES - scratch.sysex.len()
+                {
+                    return;
+                }
+                let start = scratch.sysex.len();
+                scratch.sysex.extend_from_slice(sysex);
+                scratch.messages.push(ParsedMidiMessage::Sysex {
+                    start,
+                    length: sysex.len(),
+                });
             },
             &mut |_realtime| {},
         );
-        for message in messages.into_inner() {
+        let state = &mut self.state;
+        for &message in &self.parsed_messages {
             match message {
-                ParsedMidiMessage::Short(msg) => {
-                    let _ = crate::synth::play_msg(state, msg);
+                ParsedMidiMessage::Short(message) => {
+                    let _ = crate::synth::play_msg(state, message);
                 }
-                ParsedMidiMessage::Sysex(sysex) => {
-                    let _ = crate::synth::play_sysex(state, &sysex);
+                ParsedMidiMessage::Sysex { start, length } => {
+                    let _ =
+                        crate::synth::play_sysex(state, &self.parsed_sysex[start..start + length]);
                 }
             }
         }
@@ -173,6 +223,19 @@ impl MuntContext {
 
     pub(crate) fn render(&mut self, output: &mut [f32], num_frames: u32) {
         crate::synth::render(&mut self.state, output, num_frames);
+    }
+
+    pub(crate) fn capture_state(&self) -> MuntState {
+        self.state.clone()
+    }
+
+    pub(crate) fn attach_resources(&self, state: &mut MuntState) {
+        state.attach_resources(&self.state);
+    }
+
+    pub(crate) fn restore_state(&mut self, mut state: MuntState) {
+        state.attach_resources(&self.state);
+        self.state = state;
     }
 }
 

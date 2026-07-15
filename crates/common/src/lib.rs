@@ -21,6 +21,7 @@ pub mod error;
 mod jis;
 #[cfg(feature = "std")]
 pub mod log;
+mod scheduler;
 mod stack_vec;
 mod text_extractor;
 mod trace;
@@ -35,6 +36,8 @@ pub use jis::{
     JisChar, char_to_jis, is_shift_jis_lead_byte, is_shift_jis_trail_byte, jis_slice_to_string,
     jis_to_char, jis_to_shift_jis, shift_jis_pair_to_jis, str_to_jis,
 };
+pub use save_state::{MachineStateBlob, SaveStateError};
+pub use scheduler::{ScheduledEventIndex, SchedulerState};
 pub use stack_vec::StackVec;
 pub use text_extractor::TextExtractor;
 pub use trace::{
@@ -1652,6 +1655,16 @@ pub struct StartupCapabilities {
 
 /// Abstract machine that can be stepped by a host loop.
 pub trait Machine {
+    /// Captures a bounded canonical machine-state payload at a safe point.
+    fn capture_state(&mut self) -> Result<MachineStateBlob, SaveStateError> {
+        Err(SaveStateError::Unsupported)
+    }
+
+    /// Validates and transactionally restores a canonical machine-state payload.
+    fn restore_state(&mut self, _blob: &MachineStateBlob) -> Result<(), SaveStateError> {
+        Err(SaveStateError::Unsupported)
+    }
+
     /// Returns the CPU clock frequency in Hz.
     fn cpu_clock_hz(&self) -> f64;
 
@@ -1703,9 +1716,9 @@ pub trait Machine {
 
     /// Updates the analog joystick axes for the controller at `index`.
     ///
-    /// `x`/`y` are the raw stick magnitudes (-32768..32767). Only machines with
-    /// an analog game port consume these; the default is a no-op.
-    fn set_joystick_axes(&mut self, _index: usize, _x: i16, _y: i16) {}
+    /// The tuple contains raw stick magnitudes in the range -32768..32767.
+    /// `None` disconnects the analog controller. The default is a no-op.
+    fn set_joystick_axes(&mut self, _index: usize, _axes: Option<(i16, i16)>) {}
 
     /// Fills `output` with interleaved stereo audio samples (`[L, R, L, R, …]`)
     /// for the current frame, returning the number of `f32` values written
@@ -1842,7 +1855,7 @@ pub const fn unlikely(b: bool) -> bool {
 mod tests {
     use super::{
         Bus, CpuMode, M68000AccessSize, M68000BusAccess, M68000CycleKind, M68000FunctionCode,
-        Machine, MachineModel,
+        Machine, MachineModel, SaveStateError,
     };
 
     /// A machine that implements only the required [`Machine`] methods,
@@ -1917,6 +1930,11 @@ mod tests {
         machine.push_mouse_delta(1, -1);
         machine.set_mouse_buttons(true, false, false);
         assert!(machine.cd_audio_status().is_none());
+        let machine_object: &mut dyn Machine = &mut machine;
+        assert_eq!(
+            machine_object.capture_state(),
+            Err(SaveStateError::Unsupported)
+        );
     }
 
     /// A byte-oriented bus that logs every byte access and interrupt

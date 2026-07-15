@@ -18,6 +18,7 @@ const RESET_16_HZ: u8 = 0x04;
 /// Reset-register bit suppressing the 1 Hz ALARM output component.
 const RESET_1_HZ: u8 = 0x08;
 
+save_state::runtime_state! {
 /// Ricoh RP5C15 real-time clock.
 #[derive(Debug, Clone)]
 pub struct Rp5c15Rtc {
@@ -31,6 +32,18 @@ pub struct Rp5c15Rtc {
     subsecond_ticks: u64,
     stopped_second_pending: bool,
     seeded: bool,
+}}
+
+impl Rp5c15Rtc {
+    /// Captures complete calendar and oscillator phase state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores complete calendar and oscillator phase state.
+    pub fn restore_state(&mut self, state: Self) {
+        *self = state;
+    }
 }
 
 impl Default for Rp5c15Rtc {

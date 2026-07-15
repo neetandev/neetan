@@ -24,9 +24,13 @@ impl Command for Md {
     }
 }
 
-struct RunningMd {
+#[derive(Clone)]
+/// Serializable state of an executing MD command.
+pub(crate) struct RunningMd {
     args: Vec<u8>,
 }
+
+state_struct_codec!(RunningMd { args });
 
 impl RunningCommand for RunningMd {
     fn step(

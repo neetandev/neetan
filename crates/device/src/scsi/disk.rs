@@ -30,6 +30,40 @@ impl ScsiDisk {
         }
     }
 
+    /// Captures the command sense latch.
+    pub fn capture_state(&self) -> SenseData {
+        self.sense
+    }
+
+    /// Restores the command sense latch.
+    pub fn restore_state(&mut self, state: SenseData) {
+        self.sense = state;
+    }
+
+    /// Returns a stable mounted-media binding for this target.
+    pub fn media_binding(
+        &self,
+        identifier: impl Into<String>,
+        drive_index: u32,
+    ) -> Result<save_state::MediaBinding, save_state::StateValidationError> {
+        let geometry = self.drive.geometry();
+        Ok(save_state::MediaBinding {
+            identifier: save_state::MediaBindingId::new(identifier)?,
+            slot: save_state::MediaSlot::new(save_state::MediaKind::HardDisk, drive_index),
+            source_path: self.drive.source_path().cloned(),
+            media_type: self.drive.image().format_name().to_owned(),
+            identity: self.drive.identity(),
+            geometry: Some(save_state::MediaGeometry::new(
+                u32::from(geometry.cylinders),
+                u32::from(geometry.heads),
+                u32::from(geometry.sectors_per_track),
+                u32::from(geometry.sector_size),
+            )?),
+            write_protected: false,
+            backend_generation: None,
+        })
+    }
+
     /// Flushes pending writes to the backing file.
     pub fn flush(&mut self) {
         self.drive.flush();

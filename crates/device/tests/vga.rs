@@ -514,3 +514,23 @@ fn frame_timing_follows_the_crtc() {
     assert!(status.vertical_retrace);
     assert!(status.display_disabled);
 }
+
+#[test]
+fn encoded_state_round_trips_registers_latches_palette_and_vram() {
+    let mut vga = Vga::new();
+    write_seq(&mut vga, 0x02, 0x0F);
+    write_gc(&mut vga, 0x08, 0xA5);
+    vga.io_write(VGA_PORT_DAC_WRITE_INDEX, 7);
+    vga.io_write(VGA_PORT_DAC_DATA, 1);
+    vga.io_write(VGA_PORT_DAC_DATA, 2);
+    vga.io_write(VGA_PORT_DAC_DATA, 3);
+    vga.mem_write(0xA0000, 0x5A);
+    let expected = vga.capture_state();
+    let encoded = save_state::encode_runtime_state(&expected);
+    let decoded = save_state::decode_runtime_state::<Vga>(&encoded, 1 << 20).unwrap();
+
+    write_seq(&mut vga, 0x02, 0);
+    vga.mem_write(0xA0000, 0);
+    vga.restore_state(decoded).unwrap();
+    assert!(vga == expected);
+}

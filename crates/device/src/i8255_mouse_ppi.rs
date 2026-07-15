@@ -67,7 +67,8 @@ const BUTTONS_DEFAULT: u8 = 0xE0;
 /// Minimum elapsed cycles before interpolation kicks in (NP21W threshold).
 const INTERPOLATION_THRESHOLD: u64 = 2000;
 
-/// Snapshot of the mouse PPI state.
+save_state::runtime_state! {
+/// Authoritative mouse PPI state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I8255MousePpiState {
     /// PPI mode register (port 0x7FDF bit 7 = 1 writes).
@@ -100,7 +101,7 @@ pub struct I8255MousePpiState {
     pub last_interpolation_cycle: u64,
     /// Whether a mouse is connected.
     pub mouse_connected: bool,
-}
+}}
 
 /// i8255 Mouse PPI controller.
 pub struct I8255MousePpi {
@@ -110,6 +111,8 @@ pub struct I8255MousePpi {
     /// Not saved/restored -- derived from clock config.
     move_clock: u32,
 }
+
+impl_simple_state_accessors!(I8255MousePpi, I8255MousePpiState);
 
 impl Default for I8255MousePpi {
     fn default() -> Self {

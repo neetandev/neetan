@@ -7,12 +7,24 @@
 //! behind the same CDB interface as [`crate::scsi::ScsiDisk`].
 
 use crate::{
-    cd_audio::{CdAudioPlayer, CdAudioState},
+    cd_audio::{CdAudioPlayer, CdAudioPlayerState, CdAudioState},
     cdrom::{CdImage, TrackType},
     scsi::command::{
         Direction, SenseData, asc, cdb_lun, opcode, read_write_lba_length, sense_key, status,
     },
 };
+
+save_state::runtime_state! {
+/// Complete SCSI CD-ROM electronics state and retained media identity.
+#[derive(Clone)]
+pub struct ScsiCdromState {
+    audio: CdAudioPlayerState,
+    sense: SenseData,
+    media_loaded: bool,
+    media_changed: bool,
+    prevent_removal: bool,
+    media_identity: Option<save_state::ResourceIdentity>,
+}}
 
 /// CD-ROM sector size for data reads.
 pub(crate) const CDROM_SECTOR_SIZE: usize = 2048;
@@ -485,6 +497,46 @@ impl ScsiCdrom {
             media_changed: false,
             prevent_removal: false,
         }
+    }
+
+    /// Captures target electronics, audio history, and disc identity.
+    pub fn capture_state(&self) -> ScsiCdromState {
+        ScsiCdromState {
+            audio: self.audio.capture_state(),
+            sense: self.sense,
+            media_loaded: self.media_loaded,
+            media_changed: self.media_changed,
+            prevent_removal: self.prevent_removal,
+            media_identity: self.media.as_ref().map(CdImage::identity),
+        }
+    }
+
+    /// Validates target state against the retained disc and output stream.
+    pub fn validate_state(
+        &self,
+        state: &ScsiCdromState,
+    ) -> Result<(), save_state::StateValidationError> {
+        let current_identity = self.media.as_ref().map(CdImage::identity);
+        if state.media_identity != current_identity || state.media_loaded != self.media.is_some() {
+            return Err(save_state::StateValidationError::new(
+                "SCSI CD-ROM media identity differs",
+            ));
+        }
+        self.audio.validate_state(&state.audio)
+    }
+
+    /// Restores target electronics while retaining the inserted disc.
+    pub fn restore_state(
+        &mut self,
+        state: ScsiCdromState,
+    ) -> Result<(), save_state::StateValidationError> {
+        self.validate_state(&state)?;
+        self.audio.restore_state(state.audio)?;
+        self.sense = state.sense;
+        self.media_loaded = state.media_loaded;
+        self.media_changed = state.media_changed;
+        self.prevent_removal = state.prevent_removal;
+        Ok(())
     }
 
     /// Inserts a disc, raising a unit attention for the media change.

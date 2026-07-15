@@ -43,10 +43,12 @@ impl<T: TraceSink> X68kBus<T> {
         self.schedule_events();
     }
 
-    /// Drains captured MIDI transmit bytes into `out`.
-    pub fn flush_midi_into(&mut self, out: &mut Vec<u8>) {
+    /// Copies captured MIDI into `target` and returns the number of bytes written.
+    pub fn flush_midi_into(&mut self, target: &mut [u8]) -> usize {
         if let Some(chip) = self.midi_card.as_mut() {
-            chip.flush_midi_into(out);
+            chip.flush_midi_into(target)
+        } else {
+            0
         }
     }
 
@@ -150,9 +152,9 @@ mod tests {
 
     /// Drains the captured transmit bytes.
     fn captured(bus: &mut X68kBus) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bus.flush_midi_into(&mut bytes);
-        bytes
+        let mut bytes = [0; 32768];
+        let length = bus.flush_midi_into(&mut bytes);
+        bytes[..length].to_vec()
     }
 
     #[test]
@@ -219,15 +221,16 @@ mod tests {
         for value in stream {
             write_register(&mut bus, BANKED_6_ADDRESS, value);
         }
-        let mut received = Vec::new();
+        let mut received = [0; 4];
+        let mut received_length = 0;
         for (index, expected) in stream.into_iter().enumerate() {
             let count = index as u64 + 1;
             run_events_until(&mut bus, start + MIDI_BYTE_CYCLES * count - 1);
-            bus.flush_midi_into(&mut received);
-            assert_eq!(received.len(), index, "byte {index} must not be early");
+            received_length += bus.flush_midi_into(&mut received[received_length..]);
+            assert_eq!(received_length, index, "byte {index} must not be early");
             run_events_until(&mut bus, start + MIDI_BYTE_CYCLES * count);
-            bus.flush_midi_into(&mut received);
-            assert_eq!(received.len(), index + 1);
+            received_length += bus.flush_midi_into(&mut received[received_length..]);
+            assert_eq!(received_length, index + 1);
             assert_eq!(received[index], expected);
         }
     }
@@ -381,8 +384,8 @@ mod tests {
             crate::bus::test_support::machine(X68kModel::X68000, CpuMode::High, loaded);
         machine.install_midi_card();
         machine.run_for(MIDI_BYTE_CYCLES * (stream.len() as u64 + 4));
-        let mut received = Vec::new();
-        machine.flush_midi_into(&mut received);
-        assert_eq!(received, stream);
+        let mut received = [0; 11];
+        let length = machine.flush_midi_into(&mut received);
+        assert_eq!(received[..length], stream);
     }
 }

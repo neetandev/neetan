@@ -53,7 +53,9 @@ pub const MODE1_ANK16: u8 = 0x40;
 /// Kanji-underline (KSEN) mode: extra text rasters and the underline transfer.
 pub const MODE1_KANJI_UNDERLINE: u8 = 0x80;
 
+save_state::runtime_state! {
 /// X1 video memory and registers.
+#[derive(Clone)]
 pub struct X1Video {
     text_vram: [u8; TEXT_VRAM_SIZE],
     attr_vram: [u8; ATTR_VRAM_SIZE],
@@ -73,7 +75,7 @@ pub struct X1Video {
     /// color forced transparent, bits 4-5 force CG palette entries 0/1 black.
     mode2: u8,
     vram_mode: bool,
-}
+}}
 
 impl Default for X1Video {
     fn default() -> Self {
@@ -99,6 +101,16 @@ impl X1Video {
             mode2: 0,
             vram_mode: false,
         }
+    }
+
+    /// Captures all X1 video memory, registers, and access latches.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores all X1 video memory, registers, and access latches.
+    pub fn restore_state(&mut self, state: Self) {
+        *self = state;
     }
 
     /// Whether an I/O write to `addr` targets the bitmap VRAM window.

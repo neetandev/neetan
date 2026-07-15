@@ -24,20 +24,24 @@ impl Command for Dir {
 
 const KB_BUF_COUNT: u32 = 0x0528;
 
-#[derive(Clone, Copy, PartialEq)]
-enum SortOrder {
-    None,
-    Name,
-    Extension,
-    Size,
-    Date,
-    NameDesc,
-    ExtensionDesc,
-    SizeDesc,
-    DateDesc,
+save_state::runtime_state_enum! {
+    /// Requested ordering of directory entries.
+    #[derive(Clone, Copy, PartialEq)]
+    enum SortOrder {
+        None = 0,
+        Name = 1,
+        Extension = 2,
+        Size = 3,
+        Date = 4,
+        NameDesc = 5,
+        ExtensionDesc = 6,
+        SizeDesc = 7,
+        DateDesc = 8,
+    }
 }
 
 #[derive(Clone, Copy)]
+/// Parsed DIR attribute inclusion and exclusion filters.
 struct AttrFilter {
     show_hidden: bool,
     show_system: bool,
@@ -45,6 +49,14 @@ struct AttrFilter {
     show_read_only: bool,
     dirs_only: bool,
 }
+
+state_struct_codec!(AttrFilter {
+    show_hidden,
+    show_system,
+    show_dirs,
+    show_read_only,
+    dirs_only,
+});
 
 impl Default for AttrFilter {
     fn default() -> Self {
@@ -58,6 +70,8 @@ impl Default for AttrFilter {
     }
 }
 
+#[derive(Clone)]
+/// Authoritative DIR traversal, sorting, and output state.
 struct DirState {
     drive_index: u8,
     directory: ReadDirectory,
@@ -78,6 +92,27 @@ struct DirState {
     current_path: Vec<u8>,
 }
 
+state_struct_codec!(DirState {
+    drive_index,
+    directory,
+    pattern,
+    wide,
+    bare,
+    paged,
+    recursive,
+    sort_order,
+    attr_filter,
+    total_files,
+    total_bytes,
+    lines_shown,
+    wide_col,
+    entries,
+    entry_index,
+    dir_stack,
+    current_path,
+});
+
+#[derive(Clone)]
 enum DirPhase {
     Init,
     CollectEntries(DirState),
@@ -88,10 +123,62 @@ enum DirPhase {
     NextSubdir(DirState),
 }
 
-struct RunningDir {
+impl save_state::StateEncode for DirPhase {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        let (tag, state) = match self {
+            Self::Init => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                return;
+            }
+            Self::CollectEntries(state) => (1u8, state),
+            Self::Header(state) => (2u8, state),
+            Self::Listing(state) => (3u8, state),
+            Self::WaitKey(state) => (4u8, state),
+            Self::Footer(state) => (5u8, state),
+            Self::NextSubdir(state) => (6u8, state),
+        };
+        save_state::StateEncode::encode_state(&tag, output);
+        save_state::StateEncode::encode_state(state, output);
+    }
+}
+
+impl save_state::StateDecode for DirPhase {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Init),
+            1 => Ok(Self::CollectEntries(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            2 => Ok(Self::Header(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            3 => Ok(Self::Listing(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            4 => Ok(Self::WaitKey(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            5 => Ok(Self::Footer(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            6 => Ok(Self::NextSubdir(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
+/// Serializable state of an executing DIR command.
+pub(crate) struct RunningDir {
     args: Vec<u8>,
     phase: DirPhase,
 }
+
+state_struct_codec!(RunningDir { args, phase });
 
 impl RunningDir {
     fn step_init(

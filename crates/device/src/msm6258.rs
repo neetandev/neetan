@@ -72,18 +72,19 @@ pub enum Msm6258Command {
     Unchanged,
 }
 
+save_state::runtime_state_enum! {
 /// Sampling-clock divider selected by the X68000 PPI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Msm6258Divider {
     /// Divide the master clock by 1024.
-    Divide1024,
+    Divide1024 = 0,
     /// Divide the master clock by 768.
-    Divide768,
+    Divide768 = 1,
     /// Divide the master clock by 512.
-    Divide512,
+    Divide512 = 2,
     /// Reserved selection that inhibits sample pacing.
-    Inhibited,
-}
+    Inhibited = 3,
+}}
 
 impl Msm6258Divider {
     /// Decodes the two PPI divider bits.
@@ -107,11 +108,32 @@ impl Msm6258Divider {
     }
 }
 
+save_state::runtime_state! {
+/// Pending stereo-pan envelope progress.
 #[derive(Debug, Clone, Copy)]
 struct PanEnvelope {
     position: u16,
     enabled: bool,
-}
+}}
+
+save_state::runtime_state! {
+/// Complete MSM6258 voice and resampling state.
+#[derive(Clone)]
+pub struct Msm6258State {
+    playing: bool,
+    pending_byte: Option<u8>,
+    predictor_index: u8,
+    held_sample: i32,
+    clock_low: bool,
+    divider: Msm6258Divider,
+    last_valid_divider: Msm6258Divider,
+    left_pan: PanEnvelope,
+    right_pan: PanEnvelope,
+    native_buffer: Vec<f32>,
+    resampler: resampler::ResamplerFirState,
+    resample_output: Vec<f32>,
+    sample_rate: u32,
+}}
 
 impl PanEnvelope {
     const fn disabled() -> Self {
@@ -187,6 +209,54 @@ impl Msm6258 {
             resample_output: vec![0.0; resample_output_size],
             sample_rate,
         }
+    }
+
+    /// Captures voice, queued samples, filter history, and audio phase.
+    pub fn capture_state(&self) -> Msm6258State {
+        Msm6258State {
+            playing: self.playing,
+            pending_byte: self.pending_byte,
+            predictor_index: self.predictor_index,
+            held_sample: self.held_sample,
+            clock_low: self.clock_low,
+            divider: self.divider,
+            last_valid_divider: self.last_valid_divider,
+            left_pan: self.left_pan,
+            right_pan: self.right_pan,
+            native_buffer: self.native_buffer.clone(),
+            resampler: self.resampler.capture_state(),
+            resample_output: self.resample_output.clone(),
+            sample_rate: self.sample_rate,
+        }
+    }
+
+    /// Restores voice, queued samples, filter history, and audio phase.
+    pub fn restore_state(
+        &mut self,
+        state: Msm6258State,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.sample_rate != self.sample_rate
+            || state.native_buffer.len() > 1 << 20
+            || state.resample_output.len() != self.resample_output.len()
+            || state.predictor_index > 48
+        {
+            return Err(save_state::StateValidationError::new(
+                "MSM6258 state is invalid",
+            ));
+        }
+        self.resampler.restore_state(state.resampler)?;
+        self.playing = state.playing;
+        self.pending_byte = state.pending_byte;
+        self.predictor_index = state.predictor_index;
+        self.held_sample = state.held_sample;
+        self.clock_low = state.clock_low;
+        self.divider = state.divider;
+        self.last_valid_divider = state.last_valid_divider;
+        self.left_pan = state.left_pan;
+        self.right_pan = state.right_pan;
+        self.native_buffer = state.native_buffer;
+        self.resample_output = state.resample_output;
+        Ok(())
     }
 
     /// Resets the chip to its power-on state.

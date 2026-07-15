@@ -104,7 +104,8 @@ pub enum Direction {
     Out,
 }
 
-/// SCSI sense data (fixed-format, the fields we report).
+save_state::runtime_state! {
+/// SCSI fixed-format sense data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SenseData {
     /// Sense key.
@@ -113,7 +114,7 @@ pub struct SenseData {
     pub asc: u8,
     /// Additional sense code qualifier.
     pub ascq: u8,
-}
+}}
 
 impl SenseData {
     /// No-sense (all clear) sense data.

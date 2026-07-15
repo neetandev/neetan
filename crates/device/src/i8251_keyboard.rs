@@ -72,7 +72,8 @@ const DEFAULT_DATA: u8 = 0xFF;
 /// Maximum number of buffered keyboard scan codes.
 const RX_FIFO_CAPACITY: usize = 16;
 
-/// Snapshot of the i8251A keyboard controller state.
+save_state::runtime_state! {
+/// Authoritative i8251A keyboard controller state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I8251KeyboardState {
     /// Mode word (set after reset, default `DEFAULT_MODE` = 0x5E for async 8-bit odd parity
@@ -90,13 +91,15 @@ pub struct I8251KeyboardState {
     pub rx_fifo: VecDeque<u8>,
     /// Next write to port 0x43 is a mode word (true after reset).
     pub expect_mode: bool,
-}
+}}
 
 /// i8251A keyboard controller.
 pub struct I8251Keyboard {
     /// Embedded state for save/restore.
     pub state: I8251KeyboardState,
 }
+
+impl_simple_state_accessors!(I8251Keyboard, I8251KeyboardState);
 
 impl Deref for I8251Keyboard {
     type Target = I8251KeyboardState;

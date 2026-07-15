@@ -78,7 +78,9 @@ pub use sys::{
 const YM2608_ADPCM_A_ROM_SIZE: usize = 8192;
 static SILENT_ADPCM_MEMORY: [u8; 1] = [0];
 
-/// Yamaha YM2203 (OPN) emulator.
+save_state::runtime_state! {
+/// Yamaha YM2203 authoritative state and emulator.
+#[derive(Clone)]
 pub struct Ym2203 {
     fm: FmEngine<OpnRegisters>,
     ssg: SsgEngine,
@@ -88,7 +90,7 @@ pub struct Ym2203 {
     fm_samples_per_output: u32,
     last_fm: [i32; 1],
     io_input: [u8; 2],
-}
+}}
 
 impl Ym2203 {
     /// Creates a new YM2203 instance.
@@ -110,6 +112,16 @@ impl Ym2203 {
         };
         chip.update_prescale(prescale);
         chip
+    }
+
+    /// Captures the complete chip state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores the complete chip state.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &())
     }
 
     /// Sets the value read back from an SSG parallel I/O port when that port is
@@ -354,10 +366,30 @@ const STATUS_ADPCM_B_EOS: u8 = 0x04;
 const STATUS_ADPCM_B_BRDY: u8 = 0x08;
 const STATUS_ADPCM_B_PLAYING: u8 = 0x20;
 
+save_state::runtime_state! {
+/// Complete mutable state of a YM2608 chip.
+#[derive(Clone)]
+pub struct Ym2608State {
+    fm: FmEngine<OpnaRegisters>,
+    ssg: SsgEngine,
+    ssg_resampler: SsgResampler,
+    adpcm_a: AdpcmAEngine,
+    adpcm_b: AdpcmBEngine,
+    adpcm_b_ram: Option<Vec<u8>>,
+    fidelity: YmfmOpnFidelity,
+    address: u16,
+    fm_samples_per_output: u32,
+    last_fm: [i32; 2],
+    irq_enable: u8,
+    flag_control: u8,
+    adpcm_a_rom_identity: save_state::ResourceIdentity,
+}}
+
 /// Yamaha YM2608 (OPNA) emulator.
 ///
 /// The YM2608 adds stereo FM (6 channels), ADPCM-A rhythm, and ADPCM-B sample
 /// playback over the YM2203.
+#[derive(Clone)]
 pub struct Ym2608 {
     fm: FmEngine<OpnaRegisters>,
     ssg: SsgEngine,
@@ -396,6 +428,34 @@ impl Ym2608 {
         };
         chip.update_prescale(prescale);
         chip
+    }
+
+    /// Captures mutable chip state and the retained rhythm ROM identity.
+    pub fn capture_state(&self) -> Ym2608State {
+        Ym2608State {
+            fm: self.fm.clone(),
+            ssg: self.ssg.clone(),
+            ssg_resampler: self.ssg_resampler.clone(),
+            adpcm_a: self.adpcm_a.clone(),
+            adpcm_b: self.adpcm_b.clone(),
+            adpcm_b_ram: self.adpcm_b_ram.clone(),
+            fidelity: self.fidelity,
+            address: self.address,
+            fm_samples_per_output: self.fm_samples_per_output,
+            last_fm: self.last_fm,
+            irq_enable: self.irq_enable,
+            flag_control: self.flag_control,
+            adpcm_a_rom_identity: save_state::ResourceIdentity::from_bytes(&self.adpcm_a_rom),
+        }
+    }
+
+    /// Restores mutable state while retaining the rhythm ROM.
+    pub fn restore_state(
+        &mut self,
+        state: Ym2608State,
+    ) -> Result<(), save_state::StateValidationError> {
+        let identity = save_state::ResourceIdentity::from_bytes(&self.adpcm_a_rom);
+        save_state::restore_root(self, state, &identity)
     }
 
     /// Resets the chip to its initial power-on state.
@@ -788,20 +848,15 @@ impl Ym2608 {
     }
 }
 
-/// Yamaha YMF276 (OPN2L) emulator, the low-power distortion-free member of the
-/// OPN2 family.
-///
-/// Six-channel stereo FM synthesis built on the same register core as the
-/// YM2608 (OPNA), but without SSG or ADPCM. Channel 6 can be switched to an
-/// 8-bit DAC. Unlike the YM2612/YM3438, the YMF276 drives an external DAC and so
-/// has none of the YM2612 "ladder" crossover distortion: the six channels are
-/// summed and scaled cleanly.
+save_state::runtime_state! {
+/// Yamaha YMF276 authoritative state and emulator.
+#[derive(Clone)]
 pub struct Ymf276 {
     fm: FmEngine<OpnaRegisters>,
     address: u16,
     dac_data: u16,
     dac_enable: bool,
-}
+}}
 
 impl Ymf276 {
     /// Creates a new YMF276 instance.
@@ -812,6 +867,16 @@ impl Ymf276 {
             dac_data: 0,
             dac_enable: false,
         }
+    }
+
+    /// Captures the complete chip state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores the complete chip state.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &())
     }
 
     /// Resets the chip to its initial power-on state.
@@ -959,13 +1024,13 @@ const Y8950_STATUS_ADPCM_B_PLAYING: u8 = 0x01;
 const Y8950_STATUS_ADPCM_B_BRDY: u8 = 0x08;
 const Y8950_STATUS_ADPCM_B_EOS: u8 = 0x10;
 
-/// Yamaha YM3526 (OPL) emulator.
-///
-/// 9-channel FM synthesis chip. Produces mono output.
+save_state::runtime_state! {
+/// Yamaha YM3526 authoritative state and emulator.
+#[derive(Clone)]
 pub struct Ym3526 {
     fm: FmEngine<OplRegisters>,
     address: u8,
-}
+}}
 
 impl Ym3526 {
     /// Creates a new YM3526 instance.
@@ -974,6 +1039,16 @@ impl Ym3526 {
             fm: FmEngine::new(),
             address: 0,
         }
+    }
+
+    /// Captures the complete chip state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores the complete chip state.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &())
     }
 
     /// Resets the chip to its initial power-on state.
@@ -1038,10 +1113,9 @@ impl Ym3526 {
     }
 }
 
-/// Yamaha Y8950 (OPL + ADPCM-B) emulator.
-///
-/// 9-channel FM synthesis chip with ADPCM-B sample playback.
-/// Produces mono output.
+save_state::runtime_state! {
+/// Yamaha Y8950 authoritative state and emulator.
+#[derive(Clone)]
 pub struct Y8950 {
     fm: FmEngine<OplRegisters>,
     adpcm_b: AdpcmBEngine,
@@ -1050,7 +1124,7 @@ pub struct Y8950 {
     io_ddr: u8,
     io_input: [u8; 2],
     io_output: [Option<u8>; 2],
-}
+}}
 
 impl Y8950 {
     /// Creates a new Y8950 instance.
@@ -1064,6 +1138,16 @@ impl Y8950 {
             io_input: [0; 2],
             io_output: [None; 2],
         }
+    }
+
+    /// Captures the complete chip and ADPCM memory state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores the complete chip and ADPCM memory state.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &())
     }
 
     /// Resets the chip to its initial power-on state.
@@ -1250,14 +1334,13 @@ impl Y8950 {
     }
 }
 
-/// Yamaha YM3812 (OPL2) emulator.
-///
-/// 9-channel FM synthesis chip with enhanced waveform support.
-/// Produces mono output.
+save_state::runtime_state! {
+/// Yamaha YM3812 authoritative state and emulator.
+#[derive(Clone)]
 pub struct Ym3812 {
     fm: FmEngine<Opl2Registers>,
     address: u8,
-}
+}}
 
 impl Ym3812 {
     /// Creates a new YM3812 instance.
@@ -1266,6 +1349,16 @@ impl Ym3812 {
             fm: FmEngine::new(),
             address: 0,
         }
+    }
+
+    /// Captures the complete chip state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores the complete chip state.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &())
     }
 
     /// Resets the chip to its initial power-on state.
@@ -1330,14 +1423,13 @@ impl Ym3812 {
     }
 }
 
-/// Yamaha YMF262 (OPL3) emulator.
-///
-/// 18-channel FM synthesis chip with stereo output and 4-operator mode.
-/// Produces 4-channel output: `[out0, out1, out2, out3]`.
+save_state::runtime_state! {
+/// Yamaha YMF262 authoritative state and emulator.
+#[derive(Clone)]
 pub struct Ymf262 {
     fm: FmEngine<Opl3Registers>,
     address: u16,
-}
+}}
 
 impl Ymf262 {
     /// Creates a new YMF262 instance.
@@ -1346,6 +1438,16 @@ impl Ymf262 {
             fm: FmEngine::new(),
             address: 0,
         }
+    }
+
+    /// Captures the complete chip state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores the complete chip state.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &())
     }
 
     /// Resets the chip to its initial power-on state.
@@ -1459,16 +1561,15 @@ impl Default for Ymf262 {
     }
 }
 
-/// Yamaha YM2151 (OPM) emulator.
-///
-/// 8-channel 4-operator stereo FM synthesis chip with a hardware LFO and a
-/// noise generator on operator 32. Produces stereo output: `[left, right]`.
+save_state::runtime_state! {
+/// Yamaha YM2151 authoritative state and emulator.
+#[derive(Clone)]
 pub struct Ym2151 {
     fm: FmEngine<OpmRegisters>,
     address: u8,
     ct_state: u8,
     ct_update: Option<u8>,
-}
+}}
 
 impl Ym2151 {
     /// Creates a new YM2151 instance.
@@ -1479,6 +1580,16 @@ impl Ym2151 {
             ct_state: 0,
             ct_update: None,
         }
+    }
+
+    /// Captures the complete chip state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores the complete chip state.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &())
     }
 
     /// Resets the chip to its initial power-on state.
@@ -1580,5 +1691,252 @@ impl Ym2151 {
 impl Default for Ym2151 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl save_state::ValidateState<save_state::ResourceIdentity> for Ym2608State {
+    fn validate_state(
+        &self,
+        current_rom_identity: &save_state::ResourceIdentity,
+    ) -> Result<(), save_state::StateValidationError> {
+        if &self.adpcm_a_rom_identity != current_rom_identity {
+            return Err(save_state::StateValidationError::new(
+                "YM2608 rhythm ROM identity differs",
+            ));
+        }
+        if self.fm.operators.len() != OpnaRegisters::OPERATORS
+            || self.fm.channels.len() != OpnaRegisters::CHANNELS
+            || self.adpcm_b_ram.as_ref().is_some_and(Vec::is_empty)
+        {
+            return Err(save_state::StateValidationError::new(
+                "YM2608 state topology is invalid",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl save_state::AfterRestore for Ym2608 {
+    fn after_restore(&mut self) {}
+}
+
+impl save_state::RestoreTarget for Ym2608 {
+    type State = Ym2608State;
+    type ValidationContext = save_state::ResourceIdentity;
+
+    fn replace_state(&mut self, state: Self::State) {
+        self.fm = state.fm;
+        self.ssg = state.ssg;
+        self.ssg_resampler = state.ssg_resampler;
+        self.adpcm_a = state.adpcm_a;
+        self.adpcm_b = state.adpcm_b;
+        self.adpcm_b_ram = state.adpcm_b_ram;
+        self.fidelity = state.fidelity;
+        self.address = state.address;
+        self.fm_samples_per_output = state.fm_samples_per_output;
+        self.last_fm = state.last_fm;
+        self.irq_enable = state.irq_enable;
+        self.flag_control = state.flag_control;
+    }
+}
+
+impl save_state::ValidateState for Ym2203 {
+    fn validate_state(&self, _context: &()) -> Result<(), save_state::StateValidationError> {
+        if self.fm.operators.len() != OpnRegisters::OPERATORS
+            || self.fm.channels.len() != OpnRegisters::CHANNELS
+        {
+            return Err(save_state::StateValidationError::new(
+                "YM2203 engine topology is invalid",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl save_state::AfterRestore for Ym2203 {
+    fn after_restore(&mut self) {}
+}
+
+impl save_state::RestoreTarget for Ym2203 {
+    type State = Self;
+    type ValidationContext = ();
+
+    fn replace_state(&mut self, state: Self::State) {
+        *self = state;
+    }
+}
+
+impl save_state::ValidateState for Ymf262 {
+    fn validate_state(&self, _context: &()) -> Result<(), save_state::StateValidationError> {
+        if self.fm.operators.len() != Opl3Registers::OPERATORS
+            || self.fm.channels.len() != Opl3Registers::CHANNELS
+        {
+            return Err(save_state::StateValidationError::new(
+                "YMF262 engine topology is invalid",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl save_state::AfterRestore for Ymf262 {
+    fn after_restore(&mut self) {}
+}
+
+impl save_state::RestoreTarget for Ymf262 {
+    type State = Self;
+    type ValidationContext = ();
+
+    fn replace_state(&mut self, state: Self::State) {
+        *self = state;
+    }
+}
+
+/// Adds validated direct save-state replacement to a complete YMFM chip.
+///
+/// Use this for chips whose object is entirely authoritative and whose only
+/// decoded invariant is the fixed operator and channel topology.
+macro_rules! impl_direct_chip_restore {
+    ($chip:ty, $registers:ty, $name:literal) => {
+        impl save_state::ValidateState for $chip {
+            fn validate_state(
+                &self,
+                _context: &(),
+            ) -> Result<(), save_state::StateValidationError> {
+                if self.fm.operators.len() != <$registers>::OPERATORS
+                    || self.fm.channels.len() != <$registers>::CHANNELS
+                {
+                    return Err(save_state::StateValidationError::new(concat!(
+                        $name,
+                        " engine topology is invalid"
+                    )));
+                }
+                Ok(())
+            }
+        }
+
+        impl save_state::AfterRestore for $chip {
+            fn after_restore(&mut self) {}
+        }
+
+        impl save_state::RestoreTarget for $chip {
+            type State = Self;
+            type ValidationContext = ();
+
+            fn replace_state(&mut self, state: Self::State) {
+                *self = state;
+            }
+        }
+    };
+}
+
+impl_direct_chip_restore!(Ymf276, OpnaRegisters, "YMF276");
+impl_direct_chip_restore!(Ym2151, OpmRegisters, "YM2151");
+impl_direct_chip_restore!(Ym3526, OplRegisters, "YM3526");
+impl_direct_chip_restore!(Ym3812, Opl2Registers, "YM3812");
+impl_direct_chip_restore!(Y8950, OplRegisters, "Y8950");
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    #[test]
+    fn ym2203_state_replays_exact_samples() {
+        let mut chip = Ym2203::new();
+        chip.reset();
+        chip.write_address(0xA0);
+        chip.write_data(0x34);
+        chip.write_address(0xA4);
+        chip.write_data(0x22);
+        chip.write_address(0x28);
+        chip.write_data(0xF0);
+        chip.generate(&mut [YmfmOutput4 { data: [0; 4] }; 37]);
+
+        let encoded = save_state::encode_runtime_state(&chip.capture_state());
+        let decoded = save_state::decode_runtime_state::<Ym2203>(&encoded, 1 << 20).unwrap();
+        let mut restored = Ym2203::new();
+        restored.restore_state(decoded).unwrap();
+
+        let mut expected = [YmfmOutput4 { data: [0; 4] }; 64];
+        let mut actual = [YmfmOutput4 { data: [0; 4] }; 64];
+        chip.generate(&mut expected);
+        restored.generate(&mut actual);
+        assert!(
+            expected
+                .iter()
+                .zip(actual)
+                .all(|(left, right)| left.data == right.data)
+        );
+    }
+
+    #[test]
+    fn ym2608_state_replays_exact_samples_and_retains_rom() {
+        let rhythm_rom = [0x5Au8; YM2608_ADPCM_A_ROM_SIZE];
+        let mut chip = Ym2608::new();
+        chip.set_adpcm_a_rom(&rhythm_rom);
+        chip.reset();
+        chip.write_address(0xA0);
+        chip.write_data(0x41);
+        chip.write_address(0xA4);
+        chip.write_data(0x24);
+        chip.write_address(0x28);
+        chip.write_data(0xF0);
+        chip.generate(&mut [YmfmOutput3 { data: [0; 3] }; 41]);
+
+        let encoded = save_state::encode_runtime_state(&chip.capture_state());
+        let decoded = save_state::decode_runtime_state::<Ym2608State>(&encoded, 1 << 20).unwrap();
+        let mut restored = Ym2608::new();
+        restored.set_adpcm_a_rom(&rhythm_rom);
+        restored.restore_state(decoded).unwrap();
+
+        let mut expected = [YmfmOutput3 { data: [0; 3] }; 64];
+        let mut actual = [YmfmOutput3 { data: [0; 3] }; 64];
+        chip.generate(&mut expected);
+        restored.generate(&mut actual);
+        assert!(
+            expected
+                .iter()
+                .zip(actual)
+                .all(|(left, right)| left.data == right.data)
+        );
+    }
+
+    #[test]
+    fn ym2608_rejects_a_different_retained_rom() {
+        let mut chip = Ym2608::new();
+        chip.set_adpcm_a_rom(&[0x11; YM2608_ADPCM_A_ROM_SIZE]);
+        let state = chip.capture_state();
+        let mut restored = Ym2608::new();
+        restored.set_adpcm_a_rom(&[0x22; YM2608_ADPCM_A_ROM_SIZE]);
+        assert!(restored.restore_state(state).is_err());
+    }
+
+    #[test]
+    fn ymf262_state_replays_exact_samples() {
+        let mut chip = Ymf262::new();
+        chip.reset();
+        chip.write_address(0x20);
+        chip.write_data(0x01);
+        chip.write_address(0xA0);
+        chip.write_data(0x80);
+        chip.write_address(0xB0);
+        chip.write_data(0x31);
+        chip.generate(&mut [YmfmOutput4 { data: [0; 4] }; 29]);
+
+        let encoded = save_state::encode_runtime_state(&chip.capture_state());
+        let decoded = save_state::decode_runtime_state::<Ymf262>(&encoded, 1 << 20).unwrap();
+        let mut restored = Ymf262::new();
+        restored.restore_state(decoded).unwrap();
+
+        let mut expected = [YmfmOutput4 { data: [0; 4] }; 64];
+        let mut actual = [YmfmOutput4 { data: [0; 4] }; 64];
+        chip.generate(&mut expected);
+        restored.generate(&mut actual);
+        assert!(
+            expected
+                .iter()
+                .zip(actual)
+                .all(|(left, right)| left.data == right.data)
+        );
     }
 }

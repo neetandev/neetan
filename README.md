@@ -266,9 +266,18 @@ global config) unless `game.cfg` or CLI args override it.
 | Right Ctrl + 1     | Open floppy selector for drive 1 |
 | Right Ctrl + 2     | Open floppy selector for drive 2 |
 | Right Ctrl + 3     | Open CD-ROM selector             |
+| Right Ctrl + 5     | Capture quick save               |
+| Right Ctrl + 9     | Restore quick save               |
 
 Right Ctrl is reserved as the emulator's shortcut modifier. The emulated machine uses
 Left Ctrl.
+
+The quick save is one runtime snapshot kept only in memory.
+Right Ctrl + 5 replaces the previous snapshot and Right Ctrl + 9 restores it.
+Quick load switches removable drives back to the floppy, CD-ROM and cassette images
+mounted when the snapshot was captured. Guest writes to writable media remain persistent.
+The snapshot is not written to disk and is lost when Neetan exits. Save normally inside
+the emulated software because quick saves do not replace disk or application saves.
 
 ### How do I rebind my keys?
 

@@ -24,9 +24,9 @@ impl I286 {
     ) -> u8 {
         self.seg_prefix = true;
         self.prefix_seg = prefix_seg;
-        self.timing.note_prefix();
+        self.state.timing.note_prefix();
         let next = self.peek_rep_opcode(bus);
-        if !Self::string_opcode(next) || self.timing.prefix_count_is_odd() {
+        if !Self::string_opcode(next) || self.state.timing.prefix_count_is_odd() {
             self.clk_prefix(bus);
         } else {
             self.clk_visible(1);
@@ -36,7 +36,7 @@ impl I286 {
 
     fn start_rep(&mut self, rep_type: RepType, bus: &mut impl common::Bus) {
         self.rep_restart_ip = self.prev_ip;
-        self.timing.note_rep_startup();
+        self.state.timing.note_rep_startup();
         let mut next = self.fetch(bus);
         let mut rep_prefix_seen = false;
 
@@ -61,7 +61,7 @@ impl I286 {
                 }
                 0xF0 => {
                     rep_prefix_seen = true;
-                    self.timing.note_lock_prefix(0);
+                    self.state.timing.note_lock_prefix(0);
                     next = self.fetch(bus);
                     self.clk_lock_prefix(bus, next, 0, true);
                 }
@@ -76,7 +76,7 @@ impl I286 {
             } else {
                 timing.rep_startup_cycles
             };
-            if rep_prefix_seen || self.timing.prefix_count_is_odd() {
+            if rep_prefix_seen || self.state.timing.prefix_count_is_odd() {
                 startup = startup.saturating_sub(1);
             }
             self.clk_visible(startup);
@@ -96,7 +96,7 @@ impl I286 {
         let is_cmps_scas = matches!(next, 0xA6 | 0xA7 | 0xAE | 0xAF);
 
         loop {
-            self.timing.note_rep_iteration();
+            self.state.timing.note_rep_iteration();
             self.finish_state = I286FinishState::RepSteadyState;
 
             let di_before = self.regs.word(WordReg::DI);
@@ -155,7 +155,7 @@ impl I286 {
 
             if self.cycles_remaining <= 0 || interrupt_pending {
                 // Save state for resume.
-                self.timing.note_rep_suspend();
+                self.state.timing.note_rep_suspend();
                 self.finish_state = I286FinishState::RepSuspended;
                 self.rep_active = true;
                 self.rep_ip = self.ip;
@@ -179,7 +179,7 @@ impl I286 {
         if complete_cycles != 0 {
             self.clk_visible(complete_cycles);
         }
-        self.timing.note_rep_complete();
+        self.state.timing.note_rep_complete();
         self.finish_state = I286FinishState::RepComplete;
     }
 
@@ -194,7 +194,7 @@ impl I286 {
             RepType::RepE
         };
         self.rep_active = false;
-        self.timing.note_rep_iteration();
+        self.state.timing.note_rep_iteration();
         self.finish_state = I286FinishState::RepSteadyState;
         self.do_rep(rep_type, next, bus);
     }

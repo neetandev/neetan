@@ -51,9 +51,11 @@ const CLICK_CONTROL_CLKM_1MHZ: u8 = 0x02;
 /// Immediate-load request bit shared by the timer high bytes and the click
 /// counter value register.
 const TIMER_LOAD_REQUEST: u8 = 0x80;
+const MIDI_CAPTURE_CAPACITY: usize = 32768;
 
+save_state::runtime_state! {
 /// Yamaha YM3802 MIDI controller with a transmit-only serial connection.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Ym3802 {
     current_tick: u64,
     group: u8,
@@ -78,19 +80,43 @@ pub struct Ym3802 {
     external_io_output: u8,
     capture_enabled: bool,
     captured: Vec<u8>,
-}
+}}
 
+save_state::runtime_state! {
 /// A byte inside the serial shifter and its completion deadline.
 #[derive(Debug, Clone, Copy)]
 struct InFlightByte {
     value: u8,
     completion_tick: u64,
+}}
+
+impl Ym3802 {
+    /// Captures complete MIDI serializer, timer, FIFO, and capture state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores complete MIDI serializer, timer, FIFO, and capture state.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        if state.transmit_fifo.len() > TRANSMIT_FIFO_DEPTH
+            || state.captured.len() > MIDI_CAPTURE_CAPACITY
+        {
+            return Err(save_state::StateValidationError::new(
+                "YM3802 queue length is invalid",
+            ));
+        }
+        *self = state;
+        Ok(())
+    }
 }
 
 impl Ym3802 {
     /// Creates a chip in its power-on state.
     pub fn new() -> Self {
-        Self::default()
+        let mut chip = Self::default();
+        chip.transmit_fifo.reserve_exact(TRANSMIT_FIFO_DEPTH);
+        chip.captured.reserve_exact(MIDI_CAPTURE_CAPACITY);
+        chip
     }
 
     /// Applies a hardware reset from the RESET pin or the initial-clear bit.
@@ -158,7 +184,7 @@ impl Ym3802 {
                 && in_flight.completion_tick == deadline
             {
                 self.transmit_in_flight = None;
-                if self.capture_enabled {
+                if self.capture_enabled && self.captured.len() < MIDI_CAPTURE_CAPACITY {
                     self.captured.push(in_flight.value);
                 }
                 self.load_transmit_byte();
@@ -206,9 +232,14 @@ impl Ym3802 {
         self.capture_enabled = true;
     }
 
-    /// Drains captured transmit bytes into `out`.
-    pub fn flush_midi_into(&mut self, out: &mut Vec<u8>) {
-        out.append(&mut self.captured);
+    /// Copies captured MIDI into `target` and returns the number of bytes written.
+    pub fn flush_midi_into(&mut self, target: &mut [u8]) -> usize {
+        let copy_length = target.len().min(self.captured.len());
+        target[..copy_length].copy_from_slice(&self.captured[..copy_length]);
+        let remaining = self.captured.len() - copy_length;
+        self.captured.copy_within(copy_length.., 0);
+        self.captured.truncate(remaining);
+        copy_length
     }
 
     /// Reads a group-banked register at offsets 4 through 7.
@@ -466,8 +497,9 @@ mod tests {
     }
 
     fn captured(chip: &mut Ym3802) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        chip.flush_midi_into(&mut bytes);
+        let mut bytes = vec![0; MIDI_CAPTURE_CAPACITY];
+        let length = chip.flush_midi_into(&mut bytes);
+        bytes.truncate(length);
         bytes
     }
 
@@ -759,8 +791,7 @@ mod tests {
         enable_transmitter_at_midi_rate(&mut chip, 0);
         queue_byte(&mut chip, 0x90, 0);
         chip.advance_to(320);
-        let mut bytes = Vec::new();
-        chip.flush_midi_into(&mut bytes);
-        assert!(bytes.is_empty());
+        let mut bytes = [0; 1];
+        assert_eq!(chip.flush_midi_into(&mut bytes), 0);
     }
 }

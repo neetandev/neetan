@@ -285,12 +285,27 @@ pub struct MountedFloppy {
     image: FloppyImage,
     backend: Option<DiskBackend>,
     dirty: bool,
+    identity: save_state::ResourceIdentity,
+    source_path: Option<save_state::MediaSourcePath>,
 }
 
 impl MountedFloppy {
     /// Constructs a new mount. If `path` is `None` or the file cannot be
     /// opened for write, writes only land in memory.
     pub fn new(image: FloppyImage, path: Option<PathBuf>) -> Self {
+        let structure = [floppy_format_tag(image.format)];
+        let source_path = path.as_deref().map(save_state::MediaSourcePath::from_path);
+        let identity = match source_path.as_ref() {
+            Some(source_path) => crate::media_identity::path_identity(
+                "neetan-floppy-source-v1",
+                source_path,
+                0,
+                &structure,
+            ),
+            None => {
+                crate::media_identity::anonymous_identity("neetan-floppy-source-v1", 0, &structure)
+            }
+        };
         let backend = path.and_then(|p| match DiskBackend::open(p.clone()) {
             Ok(b) => Some(b),
             Err(err) => {
@@ -305,12 +320,24 @@ impl MountedFloppy {
             image,
             backend,
             dirty: false,
+            identity,
+            source_path,
         }
     }
 
     /// Returns a read-only reference to the parsed image.
     pub fn image(&self) -> &FloppyImage {
         &self.image
+    }
+
+    /// Returns the stable identity recorded when the image was mounted.
+    pub const fn identity(&self) -> save_state::ResourceIdentity {
+        self.identity
+    }
+
+    /// Returns the normalized configured source path, when file-backed.
+    pub const fn source_path(&self) -> Option<&save_state::MediaSourcePath> {
+        self.source_path.as_ref()
     }
 
     /// Returns whether the in-memory image has unwritten changes.
@@ -434,6 +461,21 @@ impl MountedFloppy {
     /// Flushes any pending writes and drops the backend handle.
     pub fn eject(mut self) {
         self.flush();
+    }
+}
+
+const fn floppy_format_tag(format: FloppyFormat) -> u8 {
+    match format {
+        FloppyFormat::D88 => 0,
+        FloppyFormat::D77 => 1,
+        FloppyFormat::Hdm => 2,
+        FloppyFormat::NfdR0 => 3,
+        FloppyFormat::NfdR1 => 4,
+        FloppyFormat::TwoD => 5,
+        FloppyFormat::Dim => 6,
+        FloppyFormat::Xdf => 7,
+        FloppyFormat::Img => 8,
+        FloppyFormat::IbmXdf => 9,
     }
 }
 
@@ -605,6 +647,7 @@ mod tests {
 
         let image = FloppyImage::from_d88_bytes(&original).unwrap();
         let mut mounted = MountedFloppy::new(image, Some(path.clone()));
+        let identity = mounted.identity();
 
         // Re-format track 0 with two sectors instead of one.
         mounted.format_track(0, &[(0, 0, 1, 1), (0, 0, 2, 1)], 1, 0xE5);
@@ -621,6 +664,13 @@ mod tests {
         assert_eq!(reparsed.sector_count(0), 2);
         let s2 = reparsed.find_sector(0, 0, 2, 1).unwrap();
         assert!(s2.data.iter().all(|&b| b == 0x55));
+        let remounted = MountedFloppy::new(reparsed, Some(path.clone()));
+        assert_eq!(remounted.identity(), identity);
+        assert_eq!(
+            remounted.source_path(),
+            Some(&save_state::MediaSourcePath::from_path(&path))
+        );
+        drop(remounted);
 
         std::fs::remove_file(&path).ok();
     }

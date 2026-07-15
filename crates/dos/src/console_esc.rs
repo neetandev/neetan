@@ -4,20 +4,24 @@ use common::{is_shift_jis_lead_byte, is_shift_jis_trail_byte, shift_jis_pair_to_
 
 use crate::{MemoryAccess, console::Console, tables};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) enum EscState {
-    #[default]
-    Normal,
-    GotEsc,
-    GotCsi,
-    GotCsiQuestion,
-    GotCsiGreater,
-    GotEscRightParen,
-    GotEscEqual,
-    GotEscEqualRow,
+save_state::runtime_state_enum! {
+    /// Current phase of the DOS console escape-sequence parser.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(crate) enum EscState {
+        #[default]
+        Normal = 0,
+        GotEsc = 1,
+        GotCsi = 2,
+        GotCsiQuestion = 3,
+        GotCsiGreater = 4,
+        GotEscRightParen = 5,
+        GotEscEqual = 6,
+        GotEscEqualRow = 7,
+    }
 }
 
 #[derive(Clone, Debug)]
+/// Authoritative parameters and phase of the console escape parser.
 pub(crate) struct EscParser {
     pub state: EscState,
     pub params: [u16; 8],
@@ -37,6 +41,14 @@ impl Default for EscParser {
         }
     }
 }
+
+state_struct_codec!(EscParser {
+    state,
+    params,
+    param_count,
+    current_param,
+    has_digit,
+});
 
 impl EscParser {
     fn reset(&mut self) {

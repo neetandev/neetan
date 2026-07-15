@@ -3,6 +3,7 @@
 use crate::{DiskIo, filesystem::fat_bpb::Bpb};
 
 /// A mounted FAT12 or FAT16 volume.
+#[derive(Clone)]
 pub(crate) struct FatVolume {
     pub drive_da: u8,
     pub partition_offset: u32,
@@ -18,7 +19,40 @@ pub(crate) struct FatVolume {
     sector_ratio: u32,
 }
 
+state_struct_codec!(FatVolume {
+    drive_da,
+    partition_offset,
+    bpb,
+    first_root_sector,
+    first_data_sector,
+    data_cluster_count,
+    is_fat16,
+    fat_cache,
+    fat_dirty,
+    sector_ratio,
+});
+
 impl FatVolume {
+    pub(crate) fn validate_state(&self) -> Result<(), save_state::StateValidationError> {
+        let expected_fat_length = usize::from(self.bpb.sectors_per_fat)
+            .checked_mul(usize::from(self.bpb.bytes_per_sector))
+            .ok_or_else(|| save_state::StateValidationError::new("HLE DOS FAT size overflow"))?;
+        if self.sector_ratio == 0
+            || self.bpb.bytes_per_sector == 0
+            || self.bpb.sectors_per_cluster == 0
+            || self.fat_cache.len() != expected_fat_length
+            || self.first_root_sector != self.bpb.first_root_sector()
+            || self.first_data_sector != self.bpb.first_data_sector()
+            || self.data_cluster_count != self.bpb.data_cluster_count()
+            || self.is_fat16 != self.bpb.is_fat16()
+        {
+            return Err(save_state::StateValidationError::new(
+                "HLE DOS FAT volume state is invalid",
+            ));
+        }
+        Ok(())
+    }
+
     /// Mounts a FAT volume by reading the boot sector and loading the FAT.
     ///
     /// `partition_offset` is in physical sectors.  The BPB may declare a

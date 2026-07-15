@@ -5,6 +5,63 @@
 //! dispatch calls from the machine bus and delegates to per-interrupt
 //! handler modules.
 
+extern crate alloc;
+
+/// Adds a field-order save-state codec to an existing DOS state struct.
+///
+/// Every listed field is authoritative and is reconstructed from the payload.
+/// The list order is the DOS state schema and must match construction order.
+macro_rules! state_struct_codec {
+    ($state_type:ty { $($field:ident),+ $(,)? }) => {
+        impl save_state::StateEncode for $state_type {
+            fn encode_state(&self, output: &mut Vec<u8>) {
+                $(save_state::StateEncode::encode_state(&self.$field, output);)+
+            }
+        }
+
+        impl save_state::StateDecode for $state_type {
+            fn decode_state(
+                decoder: &mut save_state::StateDecoder<'_>,
+            ) -> Result<Self, save_state::StateDecodeError> {
+                Ok(Self {
+                    $($field: save_state::StateDecode::decode_state(decoder)?,)+
+                })
+            }
+        }
+    };
+}
+
+/// Adds a DOS state codec while reconstructing retained host resources.
+///
+/// Fields in `state` are encoded. Fields in `resources` are deliberately
+/// omitted and rebuilt from the supplied expressions before restore
+/// preparation reattaches any active host resource.
+macro_rules! state_struct_codec_with_resources {
+    (
+        $state_type:ty {
+            state { $($state_field:ident),+ $(,)? }
+            resources { $($resource_field:ident: $resource_value:expr),+ $(,)? }
+        }
+    ) => {
+        impl save_state::StateEncode for $state_type {
+            fn encode_state(&self, output: &mut Vec<u8>) {
+                $(save_state::StateEncode::encode_state(&self.$state_field, output);)+
+            }
+        }
+
+        impl save_state::StateDecode for $state_type {
+            fn decode_state(
+                decoder: &mut save_state::StateDecoder<'_>,
+            ) -> Result<Self, save_state::StateDecodeError> {
+                Ok(Self {
+                    $($state_field: save_state::StateDecode::decode_state(decoder)?,)+
+                    $($resource_field: $resource_value,)+
+                })
+            }
+        }
+    };
+}
+
 mod cdrom;
 mod commands;
 mod config;
@@ -58,6 +115,7 @@ enum DriveClass {
 ///
 /// Split from `NeetanDos` so `RunningCommand::step()` can borrow this mutably
 /// while `Shell` holds the `Box<dyn RunningCommand>`.
+#[derive(Clone)]
 pub(crate) struct DosState {
     /// Linear address of SYSVARS (List of Lists) in emulated RAM.
     pub(crate) sysvars_base: u32,
@@ -139,13 +197,65 @@ pub(crate) struct DosState {
     pub(crate) memory_manager: Option<MemoryManager>,
 }
 
+state_struct_codec_with_resources!(DosState {
+    state {
+        sysvars_base,
+        indos_addr,
+        boot_drive,
+        version,
+        current_psp,
+        current_drive,
+        dta_segment,
+        dta_offset,
+        dta_address,
+        ctrl_break,
+        switch_char,
+        allocation_strategy,
+        umb_link,
+        last_return_code,
+        last_termination_type,
+        dbcs_table_addr,
+        fat_volumes,
+        sft2_base,
+        virtual_drive,
+        process_stack,
+        country_code,
+        mscdex,
+        sft2_count,
+        buffered_input,
+        flush_input_function,
+        open_iso_files,
+        read_find_directory,
+        fn_key_map,
+        pending_key_bytes,
+        interim_console_flag,
+        ems_enabled,
+        xms_enabled,
+        xms_32_enabled,
+        xms_hmamin_kb,
+        memory_manager,
+    }
+    resources {
+        host_date_time_provider: default_host_local_time,
+    }
+});
+
+#[derive(Clone)]
+/// Pending DOS buffered-console input request.
 pub(crate) struct BufferedInputState {
     pub buffer_addr: u32,
     pub max_chars: u8,
     pub current_pos: u8,
 }
 
+state_struct_codec!(BufferedInputState {
+    buffer_addr,
+    max_chars,
+    current_pos,
+});
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Guest code entry point selected by the HLE DOS bootstrap.
 pub struct BootEntryPoint {
     pub segment: u16,
     pub offset: u16,
@@ -162,6 +272,14 @@ impl BootEntryPoint {
     }
 }
 
+state_struct_codec!(BootEntryPoint {
+    segment,
+    offset,
+    flags,
+});
+
+#[derive(Clone)]
+/// Native DOS driver awaiting completion of its initialization call.
 pub(crate) struct LoadedNativeDriver {
     pub display_name: Vec<u8>,
     pub segment: u16,
@@ -169,6 +287,14 @@ pub(crate) struct LoadedNativeDriver {
     pub request_offset: u16,
     pub request_high: bool,
 }
+
+state_struct_codec!(LoadedNativeDriver {
+    display_name,
+    segment,
+    request_segment,
+    request_offset,
+    request_high,
+});
 
 fn from_bcd(value: u8) -> u8 {
     (value >> 4) * 10 + (value & 0x0F)
@@ -346,6 +472,7 @@ impl IoAccess<'_> {
 /// Holds all DOS state: memory management, file handles, process info, etc.
 /// Created when no bootable media is found, then called via `dispatch()` on
 /// each DOS interrupt.
+#[derive(Clone)]
 pub struct NeetanDos {
     /// DOS state accessible to commands.
     pub(crate) state: DosState,
@@ -364,6 +491,16 @@ pub struct NeetanDos {
     /// between syscalls so `dispatch` can propagate the real change.
     last_cursor: HardwareCursorState,
 }
+
+state_struct_codec!(NeetanDos {
+    state,
+    console,
+    root_command_com_psp,
+    boot_entry_point,
+    pending_native_drivers,
+    shells,
+    last_cursor,
+});
 
 struct RootShellBootConfig {
     command_path: Vec<u8>,
@@ -448,6 +585,69 @@ impl NeetanDos {
                 col: 0,
             },
         }
+    }
+
+    /// Prepares retained host resources before a restored DOS replaces the live instance.
+    pub fn prepare_restore(
+        &mut self,
+        host_date_time_provider: common::HostDateTimeProvider,
+    ) -> Result<(), save_state::StateValidationError> {
+        self.state.host_date_time_provider = host_date_time_provider;
+        for shell in self.shells.values_mut() {
+            shell.prepare_restore()?;
+        }
+        Ok(())
+    }
+
+    /// Returns the active built-in shell command, if any.
+    pub fn active_command_name(&self) -> Option<&'static str> {
+        self.shells
+            .values()
+            .find_map(shell::Shell::active_command_name)
+    }
+
+    /// Validates guest-visible DOS state against the active HLE configuration.
+    pub fn validate_state(
+        &self,
+        ems_enabled: bool,
+        xms_enabled: bool,
+        xms_32_enabled: bool,
+        xms_hmamin_kb: u16,
+    ) -> Result<(), save_state::StateValidationError> {
+        let state = &self.state;
+        if state.version != (6, 20)
+            || !(1..=26).contains(&state.boot_drive)
+            || state.current_drive >= 26
+            || state.dta_address
+                != (u32::from(state.dta_segment) << 4).wrapping_add(u32::from(state.dta_offset))
+            || state.fat_volumes.len() != 26
+            || state.open_iso_files.len() != tables::SFT_TOTAL_COUNT as usize
+            || state.fn_key_map.len() != 386
+            || state.pending_key_bytes.len() > 4096
+            || state.process_stack.len() > 1024
+            || self.console.esc_parser.param_count > self.console.esc_parser.params.len()
+            || state.ems_enabled != ems_enabled
+            || state.xms_enabled != xms_enabled
+            || state.xms_32_enabled != xms_32_enabled
+            || state.xms_hmamin_kb != xms_hmamin_kb
+            || self.last_cursor.row >= 25
+            || self.last_cursor.col >= 80
+            || self
+                .shells
+                .iter()
+                .any(|(owner_psp, shell)| *owner_psp != shell.owner_psp)
+        {
+            return Err(save_state::StateValidationError::new(
+                "HLE DOS runtime state is invalid",
+            ));
+        }
+        for volume in state.fat_volumes.iter().flatten() {
+            volume.validate_state()?;
+        }
+        if let Some(memory_manager) = &state.memory_manager {
+            memory_manager.validate_state()?;
+        }
+        Ok(())
     }
 
     /// Returns the COMMAND.COM PSP segment.

@@ -38,6 +38,7 @@ use std::{
 };
 
 use common::info;
+use save_state::{ResourceBinding, ResourceBindingId, ResourceIdentity};
 
 use crate::{
     Sc55State, mcu, mcu_interrupt, mcu_timer, pcm,
@@ -319,6 +320,7 @@ fn load_optional_waverom(
 pub(crate) struct Sc55Context {
     state: Sc55State,
     native_sample_rate: u32,
+    resource_bindings: Vec<ResourceBinding>,
 }
 
 impl Sc55Context {
@@ -333,6 +335,21 @@ impl Sc55Context {
         );
 
         let native_sample_rate = load_roms(&mut state, rom_directory, romset)?;
+        let resource_bindings = ROMS[romset as usize]
+            .iter()
+            .enumerate()
+            .filter(|(_, filename)| !filename.is_empty())
+            .filter(|(_, filename)| rom_directory.join(filename).exists())
+            .map(|(index, filename)| {
+                let path = rom_directory.join(filename);
+                fs::read(&path)
+                    .map(|bytes| ResourceBinding {
+                        identifier: ResourceBindingId::new(format!("sc55-rom-{index}")).unwrap(),
+                        identity: ResourceIdentity::from_bytes(&bytes),
+                    })
+                    .map_err(|source| Sc55ContextError::RomReadError { path, source })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         mcu::mcu_init(&mut state);
         mcu::mcu_patch_rom(&mut state);
@@ -351,6 +368,7 @@ impl Sc55Context {
         Ok(Self {
             state,
             native_sample_rate,
+            resource_bindings,
         })
     }
 
@@ -405,6 +423,23 @@ impl Sc55Context {
 
     pub(crate) fn sample_rate(&self) -> u32 {
         self.native_sample_rate
+    }
+
+    pub(crate) fn resource_bindings(&self) -> &[ResourceBinding] {
+        &self.resource_bindings
+    }
+
+    pub(crate) fn capture_state(&self) -> Sc55State {
+        self.state.clone()
+    }
+
+    pub(crate) fn attach_resources(&self, state: &mut Sc55State) {
+        state.attach_resources(&self.state);
+    }
+
+    pub(crate) fn restore_state(&mut self, mut state: Sc55State) {
+        state.attach_resources(&self.state);
+        self.state = state;
     }
 }
 

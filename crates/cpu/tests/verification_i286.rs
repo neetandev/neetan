@@ -16,7 +16,7 @@ use cpu::{I286, I286State};
 use metadata_json::{Metadata, load_metadata};
 use verification_common::{load_moo_tests, load_revocation_list};
 
-const RAM_SIZE: usize = 16 * 1024 * 1024;
+const RAM_SIZE: usize = 16 << 20;
 const ADDRESS_MASK: u32 = 0x00FF_FFFF;
 const REG_ORDER: [&str; 14] = [
     "ax", "bx", "cx", "dx", "cs", "ss", "ds", "es", "sp", "bp", "si", "di", "ip", "flags",
@@ -271,6 +271,7 @@ fn run_test_file(stem: &str, local_revoked_hashes: &[&str]) {
             s.ip = initial_reg_value(&test.initial.regs, "ip");
             s.set_compressed_flags(initial_reg_value(&test.initial.regs, "flags"));
             s.msw = 0xFFF0;
+            s.initialize_real_mode_caches();
             s
         };
 

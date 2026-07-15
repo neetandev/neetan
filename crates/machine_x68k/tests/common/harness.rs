@@ -212,7 +212,7 @@ pub fn patterned_sasi_hdf() -> HddImage {
 /// Builds a flat SCSI .hdf image of `megabytes` MiB with the same
 /// LBA-stamped sector pattern over 512-byte sectors.
 pub fn patterned_scsi_hdf(megabytes: usize) -> HddImage {
-    let mut data = vec![0u8; megabytes * 1024 * 1024];
+    let mut data = vec![0u8; megabytes << 20];
     for (lba, sector) in data.chunks_exact_mut(512).enumerate() {
         sector[..4].copy_from_slice(&(lba as u32).to_le_bytes());
         sector[4..].fill((lba as u8) ^ 0xA5);

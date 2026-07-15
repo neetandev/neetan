@@ -68,6 +68,30 @@ struct TimerChannel {
     last_load_cycle: u64,
 }
 
+save_state::runtime_state! {
+/// Authoritative progress of one FM Towns interval-timer channel.
+#[derive(Clone)]
+struct TimerChannelRuntimeState {
+    initial_count: u16,
+    mode: u8,
+    access: u8,
+    counting: bool,
+    load_high: bool,
+    read_high: bool,
+    load_scratch: u16,
+    last_load_cycle: u64,
+}}
+
+save_state::runtime_state! {
+/// Authoritative FM Towns interval timer state.
+#[derive(Clone)]
+pub struct TownsTimerRuntimeState {
+    channels: [TimerChannelRuntimeState; 6],
+    timer_out: [bool; 2],
+    timer_enable: [bool; 2],
+    sound_enable: bool,
+}}
+
 /// Snapshot of the timer state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TownsTimerState {
@@ -102,6 +126,57 @@ impl TownsTimer {
                 sound_enable: false,
             },
         }
+    }
+
+    /// Captures every counter phase and interrupt latch.
+    pub fn capture_state(&self) -> TownsTimerRuntimeState {
+        TownsTimerRuntimeState {
+            channels: self.state.channels.map(|channel| TimerChannelRuntimeState {
+                initial_count: channel.initial_count,
+                mode: channel.mode,
+                access: channel.access,
+                counting: channel.counting,
+                load_high: channel.load_high,
+                read_high: channel.read_high,
+                load_scratch: channel.load_scratch,
+                last_load_cycle: channel.last_load_cycle,
+            }),
+            timer_out: self.state.timer_out,
+            timer_enable: self.state.timer_enable,
+            sound_enable: self.state.sound_enable,
+        }
+    }
+
+    /// Restores every counter phase and interrupt latch.
+    pub fn restore_state(
+        &mut self,
+        state: TownsTimerRuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state
+            .channels
+            .iter()
+            .any(|channel| channel.mode > 7 || channel.access > ACCESS_LOW_THEN_HIGH)
+        {
+            return Err(save_state::StateValidationError::new(
+                "FM Towns timer mode is invalid",
+            ));
+        }
+        self.state = TownsTimerState {
+            channels: state.channels.map(|channel| TimerChannel {
+                initial_count: channel.initial_count,
+                mode: channel.mode,
+                access: channel.access,
+                counting: channel.counting,
+                load_high: channel.load_high,
+                read_high: channel.read_high,
+                load_scratch: channel.load_scratch,
+                last_load_cycle: channel.last_load_cycle,
+            }),
+            timer_out: state.timer_out,
+            timer_enable: state.timer_enable,
+            sound_enable: state.sound_enable,
+        };
+        Ok(())
     }
 
     /// Handles a control-word write to a timer block. `block` is 0 for channels

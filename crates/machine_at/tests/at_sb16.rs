@@ -30,7 +30,7 @@ fn build_bus() -> AtBus {
         system_bios: vec![0u8; 0x1_0000],
         vga_bios: vec![0u8; 0x8000],
     };
-    AtBus::new(CPU_CLOCK_HZ, 16 * 1024 * 1024, roms, OUTPUT_SAMPLE_RATE)
+    AtBus::new(CPU_CLOCK_HZ, 16 << 20, roms, OUTPUT_SAMPLE_RATE)
 }
 
 fn dsp_reset(bus: &mut AtBus) {

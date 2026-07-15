@@ -11,7 +11,7 @@
 //! over the IDE interface (see [`crate::ide`]).
 
 use crate::{
-    cd_audio::{CdAudioPlayer, CdAudioState},
+    cd_audio::{CdAudioPlayer, CdAudioPlayerState, CdAudioState},
     cdrom::{CdImage, TrackType},
 };
 
@@ -100,6 +100,36 @@ enum AudioStatus {
     Paused,
 }
 
+save_state::runtime_state! {
+/// Mutable PC-88 CD-ROM electronics and audio state.
+#[derive(Clone)]
+pub struct Pc88CdromState {
+    media_identity: Option<save_state::ResourceIdentity>,
+    audio: CdAudioPlayerState,
+    phase: u8,
+    request: bool,
+    select_line: bool,
+    command: [u8; 16],
+    command_length: usize,
+    command_position: usize,
+    data: Vec<u8>,
+    data_position: usize,
+    data_out_remaining: usize,
+    status_code: u8,
+    sense_key: u8,
+    sense_asc: u8,
+    sense_ascq: u8,
+    drive_enable: bool,
+    dma_enable: bool,
+    clock_heartbeat: bool,
+    cdda_gain: f32,
+    audio_status: u8,
+    audio_play_mode: u8,
+    current_frame: u32,
+    end_frame: u32,
+    last_frame: u32,
+}}
+
 /// PC-8801-31 CD-ROM interface and PC-8801-30 SCSI CD-ROM drive.
 pub struct Pc88Cdrom {
     image: Option<CdImage>,
@@ -185,6 +215,110 @@ impl Pc88Cdrom {
     /// Whether a disc image is loaded.
     pub fn has_disc(&self) -> bool {
         self.image.is_some()
+    }
+
+    /// Returns the identity of the mounted disc.
+    pub fn media_identity(&self) -> Option<save_state::ResourceIdentity> {
+        self.image.as_ref().map(CdImage::identity)
+    }
+
+    /// Returns the normalized configured path of the mounted disc.
+    pub fn media_source_path(&self) -> Option<&save_state::MediaSourcePath> {
+        self.image.as_ref().and_then(CdImage::source_path)
+    }
+
+    /// Captures the controller without copying mounted disc data.
+    pub fn capture_state(&self) -> Pc88CdromState {
+        Pc88CdromState {
+            media_identity: self.media_identity(),
+            audio: self.audio.capture_state(),
+            phase: self.phase as u8,
+            request: self.request,
+            select_line: self.select_line,
+            command: self.command,
+            command_length: self.command_length,
+            command_position: self.command_position,
+            data: self.data.clone(),
+            data_position: self.data_position,
+            data_out_remaining: self.data_out_remaining,
+            status_code: self.status_code,
+            sense_key: self.sense_key,
+            sense_asc: self.sense_asc,
+            sense_ascq: self.sense_ascq,
+            drive_enable: self.drive_enable,
+            dma_enable: self.dma_enable,
+            clock_heartbeat: self.clock_heartbeat,
+            cdda_gain: self.cdda_gain,
+            audio_status: self.audio_status as u8,
+            audio_play_mode: self.audio_play_mode,
+            current_frame: self.current_frame,
+            end_frame: self.end_frame,
+            last_frame: self.last_frame,
+        }
+    }
+
+    /// Restores controller electronics while retaining the mounted disc.
+    pub fn restore_state(
+        &mut self,
+        state: Pc88CdromState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.media_identity != self.media_identity()
+            || state.command_length > state.command.len()
+            || state.command_position > state.command_length
+            || state.data_position > state.data.len()
+            || !state.cdda_gain.is_finite()
+        {
+            return Err(save_state::StateValidationError::new(
+                "PC-88 CD-ROM state is invalid",
+            ));
+        }
+        let phase = match state.phase {
+            0 => Phase::BusFree,
+            1 => Phase::Command,
+            2 => Phase::DataIn,
+            3 => Phase::DataOut,
+            4 => Phase::Status,
+            5 => Phase::MessageIn,
+            _ => {
+                return Err(save_state::StateValidationError::new(
+                    "PC-88 CD-ROM phase is invalid",
+                ));
+            }
+        };
+        let audio_status = match state.audio_status {
+            0 => AudioStatus::Off,
+            1 => AudioStatus::Playing,
+            2 => AudioStatus::Paused,
+            _ => {
+                return Err(save_state::StateValidationError::new(
+                    "PC-88 CD-ROM audio status is invalid",
+                ));
+            }
+        };
+        self.audio.restore_state(state.audio)?;
+        self.phase = phase;
+        self.request = state.request;
+        self.select_line = state.select_line;
+        self.command = state.command;
+        self.command_length = state.command_length;
+        self.command_position = state.command_position;
+        self.data = state.data;
+        self.data_position = state.data_position;
+        self.data_out_remaining = state.data_out_remaining;
+        self.status_code = state.status_code;
+        self.sense_key = state.sense_key;
+        self.sense_asc = state.sense_asc;
+        self.sense_ascq = state.sense_ascq;
+        self.drive_enable = state.drive_enable;
+        self.dma_enable = state.dma_enable;
+        self.clock_heartbeat = state.clock_heartbeat;
+        self.cdda_gain = state.cdda_gain;
+        self.audio_status = audio_status;
+        self.audio_play_mode = state.audio_play_mode;
+        self.current_frame = state.current_frame;
+        self.end_frame = state.end_frame;
+        self.last_frame = state.last_frame;
+        Ok(())
     }
 
     /// Updates the audio output sample rate.

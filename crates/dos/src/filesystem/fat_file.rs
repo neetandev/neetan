@@ -6,6 +6,8 @@ use crate::{
     },
 };
 
+#[derive(Clone)]
+/// Authoritative FAT cluster-chain and byte-offset cursor.
 pub(crate) struct FatFileCursor {
     start_cluster: u16,
     file_size: u32,
@@ -13,6 +15,14 @@ pub(crate) struct FatFileCursor {
     cached_cluster_index: u32,
     cached_cluster: u16,
 }
+
+state_struct_codec!(FatFileCursor {
+    start_cluster,
+    file_size,
+    position,
+    cached_cluster_index,
+    cached_cluster,
+});
 
 impl FatFileCursor {
     pub(crate) fn new(entry: &DirEntry) -> Self {

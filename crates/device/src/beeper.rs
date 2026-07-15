@@ -36,9 +36,11 @@ fn poly_blep(t: f64, dt: f64) -> f64 {
     }
 }
 
+save_state::runtime_state! {
 /// Fractional sample remainder for drift-free sample count accumulation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SampleRemainder(pub f64);
+}
 
 impl Eq for SampleRemainder {}
 
@@ -48,7 +50,8 @@ impl Default for SampleRemainder {
     }
 }
 
-/// The beeper state.
+save_state::runtime_state! {
+/// Authoritative beeper state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BeeperState {
     /// Whether the buzzer is enabled (PPI port C bit 3 inverted: 0 = sound on).
@@ -61,18 +64,29 @@ pub struct BeeperState {
     pub frame_start_cycle: u64,
     /// Fractional sample remainder carried across frames.
     pub sample_remainder: SampleRemainder,
-}
+    pre_frame_buzzer: bool,
+    pre_frame_pit_reload: u16,
+    pre_frame_pit_last_load: u64,
+    buzzer_transitions: Vec<BuzzerTransition>,
+    pit_transitions: Vec<PitTransition>,
+}}
 
+save_state::runtime_state! {
+/// One timestamped beeper gate transition.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct BuzzerTransition {
     cycle: u64,
     enabled: bool,
-}
+}}
 
+save_state::runtime_state! {
+/// One timestamped PIT reload transition observed by the beeper.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PitTransition {
     cycle: u64,
     reload: u16,
     last_load_cycle: u64,
-}
+}}
 
 /// PC-98 beeper device.
 pub struct Beeper {
@@ -80,14 +94,6 @@ pub struct Beeper {
     pub state: BeeperState,
     /// Hardware architecture variant. Set at construction; not part of save state.
     kind: BeeperKind,
-    /// Buzzer state at the start of the current frame (before any transitions).
-    pre_frame_buzzer: bool,
-    /// PIT reload at the start of the current frame.
-    pre_frame_pit_reload: u16,
-    /// PIT last load cycle at the start of the current frame.
-    pre_frame_pit_last_load: u64,
-    buzzer_transitions: Vec<BuzzerTransition>,
-    pit_transitions: Vec<PitTransition>,
 }
 
 impl Deref for Beeper {
@@ -121,14 +127,27 @@ impl Beeper {
                 pit_last_load_cycle: 0,
                 frame_start_cycle: 0,
                 sample_remainder: SampleRemainder::default(),
+                pre_frame_buzzer: false,
+                pre_frame_pit_reload: pit_reload,
+                pre_frame_pit_last_load: 0,
+                buzzer_transitions: Vec::new(),
+                pit_transitions: Vec::new(),
             },
             kind,
-            pre_frame_buzzer: false,
-            pre_frame_pit_reload: pit_reload,
-            pre_frame_pit_last_load: 0,
-            buzzer_transitions: Vec::new(),
-            pit_transitions: Vec::new(),
         }
+    }
+
+    /// Captures the complete beeper history.
+    pub fn capture_state(&self) -> BeeperState {
+        self.state.clone()
+    }
+
+    /// Restores the complete beeper history.
+    pub fn restore_state(
+        &mut self,
+        state: BeeperState,
+    ) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &())
     }
 
     /// Returns the hardware architecture variant of this beeper.
@@ -139,7 +158,8 @@ impl Beeper {
     /// Records a buzzer gate change. Called when PPI port C bit 3 changes.
     pub fn set_buzzer_enabled(&mut self, enabled: bool, cycle: u64) {
         if enabled != self.state.buzzer_enabled {
-            self.buzzer_transitions
+            self.state
+                .buzzer_transitions
                 .push(BuzzerTransition { cycle, enabled });
             self.state.buzzer_enabled = enabled;
         }
@@ -154,7 +174,7 @@ impl Beeper {
         if matches!(self.kind, BeeperKind::Fixed { .. }) {
             return;
         }
-        self.pit_transitions.push(PitTransition {
+        self.state.pit_transitions.push(PitTransition {
             cycle: last_load_cycle,
             reload,
             last_load_cycle,
@@ -245,9 +265,9 @@ impl Beeper {
         let amplitude = volume * BEEPER_BASE_AMPLITUDE;
         let pit_ratio = f64::from(pit_clock_hz) / f64::from(cpu_clock_hz);
 
-        let mut current_buzzer = self.pre_frame_buzzer;
-        let mut current_reload = self.pre_frame_pit_reload;
-        let mut current_last_load = self.pre_frame_pit_last_load;
+        let mut current_buzzer = self.state.pre_frame_buzzer;
+        let mut current_reload = self.state.pre_frame_pit_reload;
+        let mut current_last_load = self.state.pre_frame_pit_last_load;
 
         let mut buz_idx = 0;
         let mut pit_idx = 0;
@@ -262,18 +282,18 @@ impl Beeper {
         for i in 0..frame_count {
             let cycle = frame_start + ((i as u64 * frame_cycles) / frame_count as u64);
 
-            while buz_idx < self.buzzer_transitions.len()
-                && self.buzzer_transitions[buz_idx].cycle <= cycle
+            while buz_idx < self.state.buzzer_transitions.len()
+                && self.state.buzzer_transitions[buz_idx].cycle <= cycle
             {
-                current_buzzer = self.buzzer_transitions[buz_idx].enabled;
+                current_buzzer = self.state.buzzer_transitions[buz_idx].enabled;
                 buz_idx += 1;
             }
 
-            while pit_idx < self.pit_transitions.len()
-                && self.pit_transitions[pit_idx].cycle <= cycle
+            while pit_idx < self.state.pit_transitions.len()
+                && self.state.pit_transitions[pit_idx].cycle <= cycle
             {
-                current_reload = self.pit_transitions[pit_idx].reload;
-                current_last_load = self.pit_transitions[pit_idx].last_load_cycle;
+                current_reload = self.state.pit_transitions[pit_idx].reload;
+                current_last_load = self.state.pit_transitions[pit_idx].last_load_cycle;
                 pit_idx += 1;
                 dt = if current_reload > 0 {
                     (pit_ratio * cycles_per_sample) / f64::from(current_reload)
@@ -313,11 +333,72 @@ impl Beeper {
     }
 
     fn finish_frame(&mut self, frame_end_cycle: u64) {
-        self.buzzer_transitions.clear();
-        self.pit_transitions.clear();
+        self.state.buzzer_transitions.clear();
+        self.state.pit_transitions.clear();
         self.state.frame_start_cycle = frame_end_cycle;
-        self.pre_frame_buzzer = self.state.buzzer_enabled;
-        self.pre_frame_pit_reload = self.state.pit_reload;
-        self.pre_frame_pit_last_load = self.state.pit_last_load_cycle;
+        self.state.pre_frame_buzzer = self.state.buzzer_enabled;
+        self.state.pre_frame_pit_reload = self.state.pit_reload;
+        self.state.pre_frame_pit_last_load = self.state.pit_last_load_cycle;
+    }
+}
+
+impl save_state::ValidateState for BeeperState {
+    fn validate_state(&self, _context: &()) -> Result<(), save_state::StateValidationError> {
+        let buzzer_ordered = self
+            .buzzer_transitions
+            .windows(2)
+            .all(|pair| pair[0].cycle <= pair[1].cycle);
+        let pit_ordered = self
+            .pit_transitions
+            .windows(2)
+            .all(|pair| pair[0].cycle <= pair[1].cycle);
+        if !buzzer_ordered || !pit_ordered || !self.sample_remainder.0.is_finite() {
+            return Err(save_state::StateValidationError::new(
+                "beeper streaming history is invalid",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl save_state::AfterRestore for Beeper {
+    fn after_restore(&mut self) {}
+}
+
+impl save_state::RestoreTarget for Beeper {
+    type State = BeeperState;
+    type ValidationContext = ();
+
+    fn replace_state(&mut self, state: Self::State) {
+        self.state = state;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encoded_state_preserves_mid_frame_transitions() {
+        let mut original = Beeper::new(BeeperKind::PitDriven, 2_457_600);
+        original.set_pit_reload(998, 100);
+        original.set_buzzer_enabled(true, 180);
+        original.set_pit_reload(1200, 310);
+        original.set_buzzer_enabled(false, 470);
+        let encoded = save_state::encode_runtime_state(&original.capture_state());
+        let decoded = save_state::decode_runtime_state::<BeeperState>(&encoded, 1 << 16).unwrap();
+        let mut restored = Beeper::new(BeeperKind::PitDriven, 2_457_600);
+        restored.restore_state(decoded).unwrap();
+
+        let mut expected = [0.0f32; 128];
+        let mut actual = [0.0f32; 128];
+        original.generate_samples(1000, 8_000_000, 2_457_600, 48_000, 1.0, &mut expected);
+        restored.generate_samples(1000, 8_000_000, 2_457_600, 48_000, 1.0, &mut actual);
+        assert!(
+            expected
+                .iter()
+                .zip(actual)
+                .all(|(left, right)| left.to_bits() == right.to_bits())
+        );
     }
 }

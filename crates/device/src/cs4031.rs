@@ -32,6 +32,24 @@ const ROMCS_RESET_VALUE: u8 = 0x60;
 /// then the D0000, E0000 and F0000 64 KiB blocks).
 pub const CS4031_UMA_REGION_COUNT: usize = 7;
 
+save_state::runtime_state! {
+/// Authoritative CS4031 register and glue state.
+#[derive(Clone)]
+pub struct Cs4031State {
+    registers: [u8; 0x20],
+    index: u8,
+    index_valid: bool,
+    port_b: u8,
+    nmi_enabled: bool,
+    sysctrl_reset_latch: bool,
+    fast_gate_a20: bool,
+    ext_gate_a20: bool,
+    emu_gate_a20: bool,
+    kbrst_level: bool,
+    keybc_d1_written: bool,
+    keybc_data_blocked: bool,
+}}
+
 /// Source a UMA region read resolves to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegionReadSource {
@@ -144,6 +162,49 @@ impl Cs4031 {
             keybc_d1_written: false,
             keybc_data_blocked: false,
         }
+    }
+
+    /// Captures all CS4031 registers and edge-detection latches.
+    pub fn capture_state(&self) -> Cs4031State {
+        Cs4031State {
+            registers: self.registers,
+            index: self.index,
+            index_valid: self.index_valid,
+            port_b: self.port_b,
+            nmi_enabled: self.nmi_enabled,
+            sysctrl_reset_latch: self.sysctrl_reset_latch,
+            fast_gate_a20: self.fast_gate_a20,
+            ext_gate_a20: self.ext_gate_a20,
+            emu_gate_a20: self.emu_gate_a20,
+            kbrst_level: self.kbrst_level,
+            keybc_d1_written: self.keybc_d1_written,
+            keybc_data_blocked: self.keybc_data_blocked,
+        }
+    }
+
+    /// Restores all CS4031 registers and edge-detection latches.
+    pub fn restore_state(
+        &mut self,
+        state: Cs4031State,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.index_valid && state.index >= 0x20 {
+            return Err(save_state::StateValidationError::new(
+                "CS4031 selected register is invalid",
+            ));
+        }
+        self.registers = state.registers;
+        self.index = state.index;
+        self.index_valid = state.index_valid;
+        self.port_b = state.port_b;
+        self.nmi_enabled = state.nmi_enabled;
+        self.sysctrl_reset_latch = state.sysctrl_reset_latch;
+        self.fast_gate_a20 = state.fast_gate_a20;
+        self.ext_gate_a20 = state.ext_gate_a20;
+        self.emu_gate_a20 = state.emu_gate_a20;
+        self.kbrst_level = state.kbrst_level;
+        self.keybc_d1_written = state.keybc_d1_written;
+        self.keybc_data_blocked = state.keybc_data_blocked;
+        Ok(())
     }
 
     /// Selects a configuration register (port 0x22 write).

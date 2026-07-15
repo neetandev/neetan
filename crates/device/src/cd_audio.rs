@@ -5,7 +5,7 @@
 //! audio sector is 2352 bytes containing 588 interleaved 16-bit signed
 //! little-endian stereo samples at 44100 Hz.
 
-use resampler::{Attenuation, Latency, ResamplerFir};
+use resampler::{Attenuation, Latency, ResamplerFir, ResamplerFirState};
 
 use crate::cdrom::CdImage;
 
@@ -22,17 +22,19 @@ const SAMPLES_PER_SECTOR: usize = SECTOR_BYTES / 4;
 const RESAMPLER_LATENCY: Latency = Latency::Sample32;
 const RESAMPLER_ATTENUATION: Attenuation = Attenuation::Db90;
 
+save_state::runtime_state_enum! {
 /// Playback state of the CD audio engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CdAudioState {
     /// No audio is playing.
-    Stopped,
+    Stopped = 0,
     /// Audio is actively being generated.
-    Playing,
+    Playing = 1,
     /// Audio was playing and has been paused.
-    Paused,
-}
+    Paused = 2,
+}}
 
+save_state::runtime_state! {
 /// Per-output-channel mapping and volume.
 #[derive(Debug, Clone)]
 pub struct AudioChannelControl {
@@ -40,7 +42,25 @@ pub struct AudioChannelControl {
     pub input_channel: [u8; 4],
     /// Volume for each output slot (0-255).
     pub volume: [u8; 4],
-}
+}}
+
+save_state::runtime_state! {
+/// Complete CD audio playback and resampler state.
+#[derive(Clone)]
+pub struct CdAudioPlayerState {
+    state: CdAudioState,
+    start_lba: u32,
+    end_lba: u32,
+    current_lba: u32,
+    sector_buffer: Vec<f32>,
+    buffer_position: usize,
+    channels: AudioChannelControl,
+    resampler: ResamplerFirState,
+    resample_output: Vec<f32>,
+    resample_output_position: usize,
+    resample_output_available: usize,
+    output_sample_rate: u32,
+}}
 
 impl Default for AudioChannelControl {
     fn default() -> Self {
@@ -98,6 +118,63 @@ impl CdAudioPlayer {
             resample_output_available: 0,
             output_sample_rate,
         }
+    }
+
+    /// Captures playback position and every pending audio sample.
+    pub fn capture_state(&self) -> CdAudioPlayerState {
+        CdAudioPlayerState {
+            state: self.state,
+            start_lba: self.start_lba,
+            end_lba: self.end_lba,
+            current_lba: self.current_lba,
+            sector_buffer: self.sector_buffer.clone(),
+            buffer_position: self.buffer_position,
+            channels: self.channels.clone(),
+            resampler: self.resampler.capture_state(),
+            resample_output: self.resample_output.clone(),
+            resample_output_position: self.resample_output_position,
+            resample_output_available: self.resample_output_available,
+            output_sample_rate: self.output_sample_rate,
+        }
+    }
+
+    /// Validates playback history against the configured output stream.
+    pub fn validate_state(
+        &self,
+        state: &CdAudioPlayerState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.output_sample_rate != self.output_sample_rate
+            || state.buffer_position > state.sector_buffer.len()
+            || state.resample_output_position > state.resample_output_available
+            || state.resample_output_available > state.resample_output.len()
+            || state.current_lba < state.start_lba
+            || state.current_lba > state.end_lba.saturating_add(1)
+        {
+            return Err(save_state::StateValidationError::new(
+                "CD audio playback position is invalid",
+            ));
+        }
+        self.resampler.validate_state(&state.resampler)
+    }
+
+    /// Restores playback without reloading or advancing a disc sector.
+    pub fn restore_state(
+        &mut self,
+        state: CdAudioPlayerState,
+    ) -> Result<(), save_state::StateValidationError> {
+        self.validate_state(&state)?;
+        self.resampler.restore_state(state.resampler)?;
+        self.state = state.state;
+        self.start_lba = state.start_lba;
+        self.end_lba = state.end_lba;
+        self.current_lba = state.current_lba;
+        self.sector_buffer = state.sector_buffer;
+        self.buffer_position = state.buffer_position;
+        self.channels = state.channels;
+        self.resample_output = state.resample_output;
+        self.resample_output_position = state.resample_output_position;
+        self.resample_output_available = state.resample_output_available;
+        Ok(())
     }
 
     /// Begins playback from `start_lba` for `sector_count` sectors.

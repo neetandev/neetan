@@ -234,6 +234,7 @@ fn boot_and_run_fdd_f(
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -254,10 +255,9 @@ fn boot_and_run_fdd_vm(
     }
     write_bytes(&mut machine.bus, TEST_CODE, code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -278,10 +278,8 @@ fn boot_and_run_fdd_vx(
     }
     write_bytes(&mut machine.bus, TEST_CODE, code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
@@ -329,6 +327,7 @@ fn boot_and_run_sasi_f(
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -348,10 +347,9 @@ fn boot_and_run_sasi_vm(
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, TEST_CODE, code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -371,10 +369,8 @@ fn boot_and_run_sasi_vx(
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, TEST_CODE, code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
@@ -422,7 +418,7 @@ fn assert_result_ah(ram: &[u8; 0xA0000], expected: u8, label: &str) {
 fn int1bh_vector_f() {
     let mut machine = create_machine_f();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1B);
     assert!(
         segment >= 0xFD80,
@@ -434,7 +430,7 @@ fn int1bh_vector_f() {
 fn int1bh_vector_vm() {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1B);
     assert!(
         segment >= 0xFD80,
@@ -446,7 +442,7 @@ fn int1bh_vector_vm() {
 fn int1bh_vector_vx() {
     let mut machine = create_machine_vx();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1B);
     assert!(
         segment >= 0xFD80,
@@ -458,7 +454,7 @@ fn int1bh_vector_vx() {
 fn int1bh_vector_ra() {
     let mut machine = create_machine_ra();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1B);
     assert!(
         segment >= 0xFD80,
@@ -474,7 +470,7 @@ fn int1bh_vector_ra() {
 fn int1bh_fdd_noop_valid_da_f() {
     let code = make_int1bh_simple(0x00, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_f(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD no-op valid DA");
 }
 
@@ -482,7 +478,7 @@ fn int1bh_fdd_noop_valid_da_f() {
 fn int1bh_fdd_noop_valid_da_vm() {
     let code = make_int1bh_simple(0x00, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD no-op valid DA");
 }
 
@@ -490,7 +486,7 @@ fn int1bh_fdd_noop_valid_da_vm() {
 fn int1bh_fdd_noop_valid_da_vx() {
     let code = make_int1bh_simple(0x00, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_vx(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD no-op valid DA");
 }
 
@@ -498,7 +494,7 @@ fn int1bh_fdd_noop_valid_da_vx() {
 fn int1bh_fdd_noop_valid_da_ra() {
     let code = make_int1bh_simple(0x00, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_ra(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD no-op valid DA");
 }
 
@@ -510,7 +506,7 @@ fn int1bh_fdd_noop_valid_da_ra() {
 fn int1bh_fdd_noop_invalid_da_f() {
     let code = make_int1bh_simple(0x00, DA_INVALID);
     let (machine, _) = boot_and_run_f(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x40, "FDD no-op invalid DA");
 }
 
@@ -518,7 +514,7 @@ fn int1bh_fdd_noop_invalid_da_f() {
 fn int1bh_fdd_noop_invalid_da_vm() {
     let code = make_int1bh_simple(0x00, DA_INVALID);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x40, "FDD no-op invalid DA");
 }
 
@@ -526,7 +522,7 @@ fn int1bh_fdd_noop_invalid_da_vm() {
 fn int1bh_fdd_noop_invalid_da_vx() {
     let code = make_int1bh_simple(0x00, DA_INVALID);
     let (machine, _) = boot_and_run_vx(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x40, "FDD no-op invalid DA");
 }
 
@@ -534,7 +530,7 @@ fn int1bh_fdd_noop_invalid_da_vx() {
 fn int1bh_fdd_noop_invalid_da_ra() {
     let code = make_int1bh_simple(0x00, DA_INVALID);
     let (machine, _) = boot_and_run_ra(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x40, "FDD no-op invalid DA");
 }
 
@@ -546,7 +542,7 @@ fn int1bh_fdd_noop_invalid_da_ra() {
 fn int1bh_fdd_initialize_f() {
     let code = make_int1bh_simple(0x03, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_f(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD initialize");
 }
 
@@ -554,7 +550,7 @@ fn int1bh_fdd_initialize_f() {
 fn int1bh_fdd_initialize_vm() {
     let code = make_int1bh_simple(0x03, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD initialize");
 }
 
@@ -562,7 +558,7 @@ fn int1bh_fdd_initialize_vm() {
 fn int1bh_fdd_initialize_vx() {
     let code = make_int1bh_simple(0x03, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_vx(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD initialize");
 }
 
@@ -570,7 +566,7 @@ fn int1bh_fdd_initialize_vx() {
 fn int1bh_fdd_initialize_ra() {
     let code = make_int1bh_simple(0x03, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_ra(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD initialize");
 }
 
@@ -582,7 +578,7 @@ fn int1bh_fdd_initialize_ra() {
 fn int1bh_fdd_set_density_f() {
     let code = make_int1bh_simple(0x4E, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_f(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD set density");
 }
 
@@ -590,7 +586,7 @@ fn int1bh_fdd_set_density_f() {
 fn int1bh_fdd_set_density_vm() {
     let code = make_int1bh_simple(0x4E, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD set density");
 }
 
@@ -598,7 +594,7 @@ fn int1bh_fdd_set_density_vm() {
 fn int1bh_fdd_set_density_vx() {
     let code = make_int1bh_simple(0x4E, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_vx(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD set density");
 }
 
@@ -606,7 +602,7 @@ fn int1bh_fdd_set_density_vx() {
 fn int1bh_fdd_set_density_ra() {
     let code = make_int1bh_simple(0x4E, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_ra(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD set density");
 }
 
@@ -622,7 +618,7 @@ fn int1bh_fdd_recalibrate_with_disk_f() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD recalibrate with disk");
 }
 
@@ -634,7 +630,7 @@ fn int1bh_fdd_recalibrate_with_disk_vm() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD recalibrate with disk");
 }
 
@@ -646,7 +642,7 @@ fn int1bh_fdd_recalibrate_with_disk_vx() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD recalibrate with disk");
 }
 
@@ -658,7 +654,7 @@ fn int1bh_fdd_recalibrate_with_disk_ra() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD recalibrate with disk");
 }
 
@@ -670,7 +666,7 @@ fn int1bh_fdd_recalibrate_with_disk_ra() {
 fn int1bh_fdd_recalibrate_no_disk_f() {
     let code = make_int1bh_simple(0x07, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_f(&code, None, INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD recalibrate no disk");
 }
 
@@ -678,7 +674,7 @@ fn int1bh_fdd_recalibrate_no_disk_f() {
 fn int1bh_fdd_recalibrate_no_disk_vm() {
     let code = make_int1bh_simple(0x07, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_vm(&code, None, INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD recalibrate no disk");
 }
 
@@ -686,7 +682,7 @@ fn int1bh_fdd_recalibrate_no_disk_vm() {
 fn int1bh_fdd_recalibrate_no_disk_vx() {
     let code = make_int1bh_simple(0x07, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_vx(&code, None, INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD recalibrate no disk");
 }
 
@@ -694,7 +690,7 @@ fn int1bh_fdd_recalibrate_no_disk_vx() {
 fn int1bh_fdd_recalibrate_no_disk_ra() {
     let code = make_int1bh_simple(0x07, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_ra(&code, None, INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD recalibrate no disk");
 }
 
@@ -710,7 +706,7 @@ fn int1bh_fdd_sense_with_disk_f() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "FDD sense with disk");
 }
 
@@ -722,7 +718,7 @@ fn int1bh_fdd_sense_with_disk_vm() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "FDD sense with disk");
 }
 
@@ -734,7 +730,7 @@ fn int1bh_fdd_sense_with_disk_vx() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "FDD sense with disk");
 }
 
@@ -746,7 +742,7 @@ fn int1bh_fdd_sense_with_disk_ra() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "FDD sense with disk");
 }
 
@@ -758,7 +754,7 @@ fn int1bh_fdd_sense_with_disk_ra() {
 fn int1bh_fdd_sense_no_disk_f() {
     let code = make_int1bh_simple(0x04, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_f(&code, None, INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "FDD sense no disk");
 }
 
@@ -766,7 +762,7 @@ fn int1bh_fdd_sense_no_disk_f() {
 fn int1bh_fdd_sense_no_disk_vm() {
     let code = make_int1bh_simple(0x04, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_vm(&code, None, INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "FDD sense no disk");
 }
 
@@ -774,7 +770,7 @@ fn int1bh_fdd_sense_no_disk_vm() {
 fn int1bh_fdd_sense_no_disk_vx() {
     let code = make_int1bh_simple(0x04, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_vx(&code, None, INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "FDD sense no disk");
 }
 
@@ -782,7 +778,7 @@ fn int1bh_fdd_sense_no_disk_vx() {
 fn int1bh_fdd_sense_no_disk_ra() {
     let code = make_int1bh_simple(0x04, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_ra(&code, None, INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "FDD sense no disk");
 }
 
@@ -798,7 +794,7 @@ fn int1bh_fdd_sense_write_protected_f() {
         Some((0, make_standard_2hd_disk(true))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x11, "FDD sense write protected");
 }
 
@@ -810,7 +806,7 @@ fn int1bh_fdd_sense_write_protected_vm() {
         Some((0, make_standard_2hd_disk(true))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x11, "FDD sense write protected");
 }
 
@@ -822,7 +818,7 @@ fn int1bh_fdd_sense_write_protected_vx() {
         Some((0, make_standard_2hd_disk(true))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x11, "FDD sense write protected");
 }
 
@@ -834,7 +830,7 @@ fn int1bh_fdd_sense_write_protected_ra() {
         Some((0, make_standard_2hd_disk(true))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x11, "FDD sense write protected");
 }
 
@@ -860,7 +856,7 @@ fn int1bh_fdd_diagnostic_read_f() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD diagnostic read");
     assert_eq!(
         state.memory.ram[DATA_BUFFER as usize], 0x00,
@@ -886,7 +882,7 @@ fn int1bh_fdd_diagnostic_read_vm() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD diagnostic read");
     assert_eq!(
         state.memory.ram[DATA_BUFFER as usize], 0x00,
@@ -933,7 +929,7 @@ fn int1bh_fdd_read_single_sector_f() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_fdd_read_single_sector(&state.memory.ram);
 }
 
@@ -956,7 +952,7 @@ fn int1bh_fdd_read_single_sector_vm() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_fdd_read_single_sector(&state.memory.ram);
 }
 
@@ -978,7 +974,7 @@ fn int1bh_fdd_read_single_sector_vx() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_fdd_read_single_sector(&state.memory.ram);
 }
 
@@ -1000,7 +996,7 @@ fn int1bh_fdd_read_single_sector_ra() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_fdd_read_single_sector(&state.memory.ram);
 }
 
@@ -1040,7 +1036,7 @@ fn int1bh_fdd_read_multiple_sectors_f() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_fdd_read_multiple_sectors(&state.memory.ram);
 }
 
@@ -1062,7 +1058,7 @@ fn int1bh_fdd_read_multiple_sectors_vm() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_fdd_read_multiple_sectors(&state.memory.ram);
 }
 
@@ -1084,7 +1080,7 @@ fn int1bh_fdd_read_multiple_sectors_vx() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_fdd_read_multiple_sectors(&state.memory.ram);
 }
 
@@ -1106,7 +1102,7 @@ fn int1bh_fdd_read_multiple_sectors_ra() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_fdd_read_multiple_sectors(&state.memory.ram);
 }
 
@@ -1128,7 +1124,7 @@ fn int1bh_fdd_read_no_disk_f() {
         DATA_BUFFER as u16,
     );
     let machine = boot_and_run_fdd_f(&code, None, INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "FDD read no disk");
 }
 
@@ -1146,7 +1142,7 @@ fn int1bh_fdd_read_no_disk_vm() {
         DATA_BUFFER as u16,
     );
     let machine = boot_and_run_fdd_vm(&code, None, INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "FDD read no disk");
 }
 
@@ -1164,7 +1160,7 @@ fn int1bh_fdd_read_no_disk_vx() {
         DATA_BUFFER as u16,
     );
     let machine = boot_and_run_fdd_vx(&code, None, INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "FDD read no disk");
 }
 
@@ -1182,7 +1178,7 @@ fn int1bh_fdd_read_no_disk_ra() {
         DATA_BUFFER as u16,
     );
     let machine = boot_and_run_fdd_ra(&code, None, INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "FDD read no disk");
 }
 
@@ -1204,7 +1200,7 @@ fn int1bh_fdd_read_invalid_da_f() {
         DATA_BUFFER as u16,
     );
     let (machine, _) = boot_and_run_f(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x40, "FDD read invalid DA");
 }
 
@@ -1222,7 +1218,7 @@ fn int1bh_fdd_read_invalid_da_vm() {
         DATA_BUFFER as u16,
     );
     let (machine, _) = boot_and_run_vm(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x40, "FDD read invalid DA");
 }
 
@@ -1240,7 +1236,7 @@ fn int1bh_fdd_read_invalid_da_vx() {
         DATA_BUFFER as u16,
     );
     let (machine, _) = boot_and_run_vx(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x40, "FDD read invalid DA");
 }
 
@@ -1258,7 +1254,7 @@ fn int1bh_fdd_read_invalid_da_ra() {
         DATA_BUFFER as u16,
     );
     let (machine, _) = boot_and_run_ra(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x40, "FDD read invalid DA");
 }
 
@@ -1285,7 +1281,7 @@ fn int1bh_fdd_read_sector_not_found_f() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0xE0, "FDD read sector not found");
 }
 
@@ -1308,7 +1304,7 @@ fn int1bh_fdd_read_sector_not_found_vm() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0xE0, "FDD read sector not found");
 }
 
@@ -1330,7 +1326,7 @@ fn int1bh_fdd_read_sector_not_found_vx() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0xE0, "FDD read sector not found");
 }
 
@@ -1352,7 +1348,7 @@ fn int1bh_fdd_read_sector_not_found_ra() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0xE0, "FDD read sector not found");
 }
 
@@ -1395,7 +1391,7 @@ fn int1bh_fdd_write_single_sector_f() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD write single sector");
 
     let disk = machine.bus.floppy_disk(0).expect("disk should be inserted");
@@ -1416,7 +1412,7 @@ fn int1bh_fdd_write_single_sector_vm() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD write single sector");
 
     let disk = machine.bus.floppy_disk(0).expect("disk should be inserted");
@@ -1437,7 +1433,7 @@ fn int1bh_fdd_write_single_sector_vx() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD write single sector");
 
     let disk = machine.bus.floppy_disk(0).expect("disk should be inserted");
@@ -1458,7 +1454,7 @@ fn int1bh_fdd_write_single_sector_ra() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD write single sector");
 
     let disk = machine.bus.floppy_disk(0).expect("disk should be inserted");
@@ -1493,7 +1489,7 @@ fn int1bh_fdd_write_protected_f() {
         Some((0, make_standard_2hd_disk(true))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x70, "FDD write protected");
 }
 
@@ -1515,7 +1511,7 @@ fn int1bh_fdd_write_protected_vm() {
         Some((0, make_standard_2hd_disk(true))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x70, "FDD write protected");
 }
 
@@ -1537,7 +1533,7 @@ fn int1bh_fdd_write_protected_vx() {
         Some((0, make_standard_2hd_disk(true))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x70, "FDD write protected");
 }
 
@@ -1559,7 +1555,7 @@ fn int1bh_fdd_write_protected_ra() {
         Some((0, make_standard_2hd_disk(true))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x70, "FDD write protected");
 }
 
@@ -1585,7 +1581,7 @@ fn int1bh_fdd_verify_f() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD verify");
 }
 
@@ -1607,7 +1603,7 @@ fn int1bh_fdd_verify_vm() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD verify");
 }
 
@@ -1629,7 +1625,7 @@ fn int1bh_fdd_verify_vx() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD verify");
 }
 
@@ -1651,7 +1647,7 @@ fn int1bh_fdd_verify_ra() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD verify");
 }
 
@@ -1712,7 +1708,7 @@ fn int1bh_fdd_read_id_f() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_fdd_read_id(&state.memory.ram);
 }
 
@@ -1724,7 +1720,7 @@ fn int1bh_fdd_read_id_vm() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_fdd_read_id(&state.memory.ram);
 }
 
@@ -1736,7 +1732,7 @@ fn int1bh_fdd_read_id_vx() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_fdd_read_id(&state.memory.ram);
 }
 
@@ -1748,7 +1744,7 @@ fn int1bh_fdd_read_id_ra() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_fdd_read_id(&state.memory.ram);
 }
 
@@ -1760,7 +1756,7 @@ fn int1bh_fdd_read_id_sequence_advances_record_ra() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     for call in 0..4usize {
         let result = RESULT as usize + call * 6;
@@ -1795,7 +1791,7 @@ fn int1bh_fdd_write_sector_not_found_vx() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0xE0, "FDD write sector not found");
 }
 
@@ -1835,7 +1831,7 @@ fn int1bh_fdd_format_preserves_n_zero_vx() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD format N=0");
 
     let disk = machine.bus.floppy_disk(0).expect("disk should be inserted");
@@ -1885,7 +1881,7 @@ fn int1bh_fdd_format_uses_chrn_n_vx() {
         Some((0, make_standard_2hd_disk(false))),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD format CHRN N=3");
 
     let disk = machine.bus.floppy_disk(0).expect("disk should be inserted");
@@ -1947,7 +1943,7 @@ fn int1bh_fdd_write_multi_track_vx() {
         Some((0, make_two_head_disk())),
         INT1BH_BUDGET,
     );
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD write multi-track");
 
     let disk = machine.bus.floppy_disk(0).expect("disk should be inserted");
@@ -1981,7 +1977,7 @@ fn int1bh_fdd_write_single_head_without_mt_vx() {
         DATA_BUFFER as u16,
     );
     let machine = boot_and_run_fdd_vx(&code, Some((0, make_two_head_disk())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(
         &state.memory.ram,
         0x00,
@@ -1998,7 +1994,7 @@ fn int1bh_fdd_write_single_head_without_mt_vx() {
 fn int1bh_sasi_initialize_f() {
     let code = make_int1bh_simple(0x03, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI initialize");
     let disk_equip = read_ram_u16(&state.memory.ram, DISK_EQUIP);
     assert_ne!(
@@ -2012,7 +2008,7 @@ fn int1bh_sasi_initialize_f() {
 fn int1bh_sasi_initialize_vm() {
     let code = make_int1bh_simple(0x03, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI initialize");
     let disk_equip = read_ram_u16(&state.memory.ram, DISK_EQUIP);
     assert_ne!(
@@ -2026,7 +2022,7 @@ fn int1bh_sasi_initialize_vm() {
 fn int1bh_sasi_initialize_vx() {
     let code = make_int1bh_simple(0x03, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_vx(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI initialize");
     let disk_equip = read_ram_u16(&state.memory.ram, DISK_EQUIP);
     assert_ne!(
@@ -2040,7 +2036,7 @@ fn int1bh_sasi_initialize_vx() {
 fn int1bh_sasi_initialize_ra() {
     let code = make_int1bh_simple(0x03, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_ra(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI initialize");
     let disk_equip = read_ram_u16(&state.memory.ram, DISK_EQUIP);
     assert_ne!(
@@ -2058,7 +2054,7 @@ fn int1bh_sasi_initialize_ra() {
 fn int1bh_sasi_verify_f() {
     let code = make_int1bh_simple(0x01, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI verify");
 }
 
@@ -2066,7 +2062,7 @@ fn int1bh_sasi_verify_f() {
 fn int1bh_sasi_verify_vm() {
     let code = make_int1bh_simple(0x01, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI verify");
 }
 
@@ -2074,7 +2070,7 @@ fn int1bh_sasi_verify_vm() {
 fn int1bh_sasi_verify_vx() {
     let code = make_int1bh_simple(0x01, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_vx(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI verify");
 }
 
@@ -2082,7 +2078,7 @@ fn int1bh_sasi_verify_vx() {
 fn int1bh_sasi_verify_ra() {
     let code = make_int1bh_simple(0x01, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_ra(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI verify");
 }
 
@@ -2094,7 +2090,7 @@ fn int1bh_sasi_verify_ra() {
 fn int1bh_sasi_sense_f() {
     let code = make_int1bh_simple(0x04, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     // 5 MB drive = type index 0, legacy sense code 0x00.
     assert_result_ah(&state.memory.ram, 0x00, "SASI sense legacy");
 }
@@ -2103,7 +2099,7 @@ fn int1bh_sasi_sense_f() {
 fn int1bh_sasi_sense_vm() {
     let code = make_int1bh_simple(0x04, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     // 5 MB drive = type index 0, legacy sense code 0x00.
     assert_result_ah(&state.memory.ram, 0x00, "SASI sense legacy");
 }
@@ -2112,7 +2108,7 @@ fn int1bh_sasi_sense_vm() {
 fn int1bh_sasi_sense_vx() {
     let code = make_int1bh_simple(0x04, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_vx(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI sense legacy");
 }
 
@@ -2120,7 +2116,7 @@ fn int1bh_sasi_sense_vx() {
 fn int1bh_sasi_sense_ra() {
     let code = make_int1bh_simple(0x04, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_ra(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI sense legacy");
 }
 
@@ -2148,7 +2144,7 @@ fn assert_sasi_sense_new(ram: &[u8; 0xA0000]) {
 fn int1bh_sasi_sense_new_f() {
     let code = make_int1bh_sasi_sense_new(DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_sasi_sense_new(&state.memory.ram);
 }
 
@@ -2156,7 +2152,7 @@ fn int1bh_sasi_sense_new_f() {
 fn int1bh_sasi_sense_new_vm() {
     let code = make_int1bh_sasi_sense_new(DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_sasi_sense_new(&state.memory.ram);
 }
 
@@ -2164,7 +2160,7 @@ fn int1bh_sasi_sense_new_vm() {
 fn int1bh_sasi_sense_new_vx() {
     let code = make_int1bh_sasi_sense_new(DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_vx(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_sasi_sense_new(&state.memory.ram);
 }
 
@@ -2172,7 +2168,7 @@ fn int1bh_sasi_sense_new_vx() {
 fn int1bh_sasi_sense_new_ra() {
     let code = make_int1bh_sasi_sense_new(DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_ra(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_sasi_sense_new(&state.memory.ram);
 }
 
@@ -2185,7 +2181,7 @@ fn int1bh_sasi_sense_no_drive_f() {
     // Drive 1 (0x81) not present, only drive 0 inserted.
     let code = make_int1bh_simple(0x04, 0x81);
     let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "SASI sense no drive");
 }
 
@@ -2194,7 +2190,7 @@ fn int1bh_sasi_sense_no_drive_vm() {
     // Drive 1 (0x81) not present, only drive 0 inserted.
     let code = make_int1bh_simple(0x04, 0x81);
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "SASI sense no drive");
 }
 
@@ -2202,7 +2198,7 @@ fn int1bh_sasi_sense_no_drive_vm() {
 fn int1bh_sasi_sense_no_drive_vx() {
     let code = make_int1bh_simple(0x04, 0x81);
     let machine = boot_and_run_sasi_vx(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "SASI sense no drive");
 }
 
@@ -2210,7 +2206,7 @@ fn int1bh_sasi_sense_no_drive_vx() {
 fn int1bh_sasi_sense_no_drive_ra() {
     let code = make_int1bh_simple(0x04, 0x81);
     let machine = boot_and_run_sasi_ra(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "SASI sense no drive");
 }
 
@@ -2248,7 +2244,7 @@ fn int1bh_sasi_read_chs_f() {
         DATA_BUFFER as u16,
     );
     let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_sasi_read_chs(&state.memory.ram);
 }
 
@@ -2265,7 +2261,7 @@ fn int1bh_sasi_read_chs_vm() {
         DATA_BUFFER as u16,
     );
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_sasi_read_chs(&state.memory.ram);
 }
 
@@ -2281,7 +2277,7 @@ fn int1bh_sasi_read_chs_vx() {
         DATA_BUFFER as u16,
     );
     let machine = boot_and_run_sasi_vx(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_sasi_read_chs(&state.memory.ram);
 }
 
@@ -2297,7 +2293,7 @@ fn int1bh_sasi_read_chs_ra() {
         DATA_BUFFER as u16,
     );
     let machine = boot_and_run_sasi_ra(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_sasi_read_chs(&state.memory.ram);
 }
 
@@ -2335,7 +2331,7 @@ fn int1bh_sasi_read_lba_f() {
         DATA_BUFFER as u16,
     );
     let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_sasi_read_lba(&state.memory.ram);
 }
 
@@ -2352,7 +2348,7 @@ fn int1bh_sasi_read_lba_vm() {
         DATA_BUFFER as u16,
     );
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_sasi_read_lba(&state.memory.ram);
 }
 
@@ -2368,7 +2364,7 @@ fn int1bh_sasi_read_lba_vx() {
         DATA_BUFFER as u16,
     );
     let machine = boot_and_run_sasi_vx(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_sasi_read_lba(&state.memory.ram);
 }
 
@@ -2384,7 +2380,7 @@ fn int1bh_sasi_read_lba_ra() {
         DATA_BUFFER as u16,
     );
     let machine = boot_and_run_sasi_ra(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_sasi_read_lba(&state.memory.ram);
 }
 
@@ -2397,7 +2393,7 @@ fn int1bh_sasi_read_no_drive_f() {
     // Drive 1 (0x81) not present.
     let code = make_int1bh_sasi_rw(0x06, 0x81, 256, 0, 0, 0x0000, DATA_BUFFER as u16);
     let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "SASI read no drive");
 }
 
@@ -2406,7 +2402,7 @@ fn int1bh_sasi_read_no_drive_vm() {
     // Drive 1 (0x81) not present.
     let code = make_int1bh_sasi_rw(0x06, 0x81, 256, 0, 0, 0x0000, DATA_BUFFER as u16);
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "SASI read no drive");
 }
 
@@ -2414,7 +2410,7 @@ fn int1bh_sasi_read_no_drive_vm() {
 fn int1bh_sasi_read_no_drive_vx() {
     let code = make_int1bh_sasi_rw(0x06, 0x81, 256, 0, 0, 0x0000, DATA_BUFFER as u16);
     let machine = boot_and_run_sasi_vx(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "SASI read no drive");
 }
 
@@ -2422,7 +2418,7 @@ fn int1bh_sasi_read_no_drive_vx() {
 fn int1bh_sasi_read_no_drive_ra() {
     let code = make_int1bh_sasi_rw(0x06, 0x81, 256, 0, 0, 0x0000, DATA_BUFFER as u16);
     let machine = boot_and_run_sasi_ra(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "SASI read no drive");
 }
 
@@ -2517,7 +2513,7 @@ fn assert_sasi_write_and_readback(ram: &[u8; 0xA0000]) {
 fn int1bh_sasi_write_chs_f() {
     let code = make_sasi_write_and_readback_code();
     let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_sasi_write_and_readback(&state.memory.ram);
 }
 
@@ -2525,7 +2521,7 @@ fn int1bh_sasi_write_chs_f() {
 fn int1bh_sasi_write_chs_vm() {
     let code = make_sasi_write_and_readback_code();
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_sasi_write_and_readback(&state.memory.ram);
 }
 
@@ -2533,7 +2529,7 @@ fn int1bh_sasi_write_chs_vm() {
 fn int1bh_sasi_write_chs_vx() {
     let code = make_sasi_write_and_readback_code();
     let machine = boot_and_run_sasi_vx(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_sasi_write_and_readback(&state.memory.ram);
 }
 
@@ -2541,7 +2537,7 @@ fn int1bh_sasi_write_chs_vx() {
 fn int1bh_sasi_write_chs_ra() {
     let code = make_sasi_write_and_readback_code();
     let machine = boot_and_run_sasi_ra(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_sasi_write_and_readback(&state.memory.ram);
 }
 
@@ -2553,7 +2549,7 @@ fn int1bh_sasi_write_chs_ra() {
 fn int1bh_sasi_retract_f() {
     let code = make_int1bh_simple(0x07, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI retract");
 }
 
@@ -2561,7 +2557,7 @@ fn int1bh_sasi_retract_f() {
 fn int1bh_sasi_retract_vm() {
     let code = make_int1bh_simple(0x07, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI retract");
 }
 
@@ -2569,7 +2565,7 @@ fn int1bh_sasi_retract_vm() {
 fn int1bh_sasi_retract_vx() {
     let code = make_int1bh_simple(0x07, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_vx(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI retract");
 }
 
@@ -2577,7 +2573,7 @@ fn int1bh_sasi_retract_vx() {
 fn int1bh_sasi_retract_ra() {
     let code = make_int1bh_simple(0x07, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_ra(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI retract");
 }
 
@@ -2589,7 +2585,7 @@ fn int1bh_sasi_retract_ra() {
 fn int1bh_sasi_mode_set_f() {
     let code = make_int1bh_simple(0x0E, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI mode set");
 }
 
@@ -2597,7 +2593,7 @@ fn int1bh_sasi_mode_set_f() {
 fn int1bh_sasi_mode_set_vm() {
     let code = make_int1bh_simple(0x0E, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI mode set");
 }
 
@@ -2605,7 +2601,7 @@ fn int1bh_sasi_mode_set_vm() {
 fn int1bh_sasi_mode_set_vx() {
     let code = make_int1bh_simple(0x0E, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_vx(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI mode set");
 }
 
@@ -2613,7 +2609,7 @@ fn int1bh_sasi_mode_set_vx() {
 fn int1bh_sasi_mode_set_ra() {
     let code = make_int1bh_simple(0x0E, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_ra(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI mode set");
 }
 
@@ -2634,7 +2630,7 @@ fn int1bh_sasi_format_f() {
         0x0000,
     );
     let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI format");
 }
 
@@ -2651,7 +2647,7 @@ fn int1bh_sasi_format_vm() {
         0x0000,
     );
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI format");
 }
 
@@ -2659,7 +2655,7 @@ fn int1bh_sasi_format_vm() {
 fn int1bh_sasi_format_vx() {
     let code = make_int1bh_sasi_rw(0x0D, DA_SASI_CHS_DRIVE0, 0, 0x0001, 0x0000, 0x0000, 0x0000);
     let machine = boot_and_run_sasi_vx(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI format");
 }
 
@@ -2667,7 +2663,7 @@ fn int1bh_sasi_format_vx() {
 fn int1bh_sasi_format_ra() {
     let code = make_int1bh_sasi_rw(0x0D, DA_SASI_CHS_DRIVE0, 0, 0x0001, 0x0000, 0x0000, 0x0000);
     let machine = boot_and_run_sasi_ra(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI format");
 }
 
@@ -2684,7 +2680,7 @@ fn int1bh_fdd_640kb_sense_f() {
     let disk = make_standard_2hd_disk(false);
     let code = make_int1bh_simple(0x04, DA_FDD_640KB_DRIVE0);
     let machine = boot_and_run_fdd_f(&code, Some((0, disk)), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "DA=0x01 (640KB) sense");
 }
 
@@ -2693,7 +2689,7 @@ fn int1bh_fdd_640kb_sense_vm() {
     let disk = make_standard_2hd_disk(false);
     let code = make_int1bh_simple(0x04, DA_FDD_640KB_DRIVE0);
     let machine = boot_and_run_fdd_vm(&code, Some((0, disk)), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "DA=0x70 (640KB) sense");
 }
 
@@ -2702,7 +2698,7 @@ fn int1bh_fdd_640kb_sense_vx() {
     let disk = make_standard_2hd_disk(false);
     let code = make_int1bh_simple(0x04, DA_FDD_640KB_DRIVE0);
     let machine = boot_and_run_fdd_vx(&code, Some((0, disk)), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "DA=0x70 (640KB) sense");
 }
 
@@ -2711,7 +2707,7 @@ fn int1bh_fdd_640kb_sense_ra() {
     let disk = make_standard_2hd_disk(false);
     let code = make_int1bh_simple(0x04, DA_FDD_640KB_DRIVE0);
     let machine = boot_and_run_fdd_ra(&code, Some((0, disk)), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "DA=0x70 (640KB) sense");
 }
 
@@ -2723,7 +2719,7 @@ fn int1bh_fdd_640kb_sense_ra() {
 fn int1bh_fdd_init_updates_disk_equip_1mb_f() {
     let code = make_int1bh_simple(0x03, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_f(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let disk_equip = read_ram_u16(&state.memory.ram, DISK_EQUIP);
     // 1MB FDD init writes drive_equipped bits into the low nibble of DISK_EQUIP.
     assert_ne!(
@@ -2737,7 +2733,7 @@ fn int1bh_fdd_init_updates_disk_equip_1mb_f() {
 fn int1bh_fdd_init_updates_disk_equip_1mb_vm() {
     let code = make_int1bh_simple(0x03, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let disk_equip = read_ram_u16(&state.memory.ram, DISK_EQUIP);
     // 1MB FDD init writes drive_equipped bits into the low nibble of DISK_EQUIP.
     assert_ne!(
@@ -2751,7 +2747,7 @@ fn int1bh_fdd_init_updates_disk_equip_1mb_vm() {
 fn int1bh_fdd_init_updates_disk_equip_1mb_vx() {
     let code = make_int1bh_simple(0x03, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_vx(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let disk_equip = read_ram_u16(&state.memory.ram, DISK_EQUIP);
     assert_ne!(
         disk_equip & 0x000F,
@@ -2764,7 +2760,7 @@ fn int1bh_fdd_init_updates_disk_equip_1mb_vx() {
 fn int1bh_fdd_init_updates_disk_equip_1mb_ra() {
     let code = make_int1bh_simple(0x03, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_ra(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let disk_equip = read_ram_u16(&state.memory.ram, DISK_EQUIP);
     assert_ne!(
         disk_equip & 0x000F,
@@ -2849,28 +2845,28 @@ fn assert_seek_then_read(ram: &[u8; 0xA0000]) {
 fn int1bh_fdd_seek_then_read_uses_stored_cylinder_f() {
     let code = make_seek_then_read_code(1, 1, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_f(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
-    assert_seek_then_read(&machine.save_state().memory.ram);
+    assert_seek_then_read(&machine.inspection_state().memory.ram);
 }
 
 #[test]
 fn int1bh_fdd_seek_then_read_uses_stored_cylinder_vm() {
     let code = make_seek_then_read_code(1, 1, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_vm(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
-    assert_seek_then_read(&machine.save_state().memory.ram);
+    assert_seek_then_read(&machine.inspection_state().memory.ram);
 }
 
 #[test]
 fn int1bh_fdd_seek_then_read_uses_stored_cylinder_vx() {
     let code = make_seek_then_read_code(1, 1, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_vx(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
-    assert_seek_then_read(&machine.save_state().memory.ram);
+    assert_seek_then_read(&machine.inspection_state().memory.ram);
 }
 
 #[test]
 fn int1bh_fdd_seek_then_read_uses_stored_cylinder_ra() {
     let code = make_seek_then_read_code(1, 1, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_ra(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
-    assert_seek_then_read(&machine.save_state().memory.ram);
+    assert_seek_then_read(&machine.inspection_state().memory.ram);
 }
 
 /// Verify that READ with implicit seek (AH=0x56, bit 4 set) stores CL
@@ -2895,7 +2891,7 @@ fn make_read_with_seek_code(cylinder: u8, da: u8) -> Vec<u8> {
 fn int1bh_fdd_read_with_seek_reads_correct_track_f() {
     let code = make_read_with_seek_code(1, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_f(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "READ with seek");
     assert_eq!(
         state.memory.ram[DATA_BUFFER as usize], 0xBB,
@@ -2907,7 +2903,7 @@ fn int1bh_fdd_read_with_seek_reads_correct_track_f() {
 fn int1bh_fdd_read_with_seek_reads_correct_track_vm() {
     let code = make_read_with_seek_code(1, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_vm(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "READ with seek");
     assert_eq!(
         state.memory.ram[DATA_BUFFER as usize], 0xBB,
@@ -2919,7 +2915,7 @@ fn int1bh_fdd_read_with_seek_reads_correct_track_vm() {
 fn int1bh_fdd_read_with_seek_reads_correct_track_vx() {
     let code = make_read_with_seek_code(1, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_vx(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "READ with seek");
     assert_eq!(
         state.memory.ram[DATA_BUFFER as usize], 0xBB,
@@ -2931,7 +2927,7 @@ fn int1bh_fdd_read_with_seek_reads_correct_track_vx() {
 fn int1bh_fdd_read_with_seek_reads_correct_track_ra() {
     let code = make_read_with_seek_code(1, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_ra(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "READ with seek");
     assert_eq!(
         state.memory.ram[DATA_BUFFER as usize], 0xBB,
@@ -2976,11 +2972,12 @@ fn int1bh_fdd_seek_per_drive_isolation_f() {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_result_ah(&state.memory.ram, 0x00, "Drive isolation read");
     assert_eq!(
@@ -3000,15 +2997,14 @@ fn int1bh_fdd_seek_per_drive_isolation_vm() {
     let code = make_seek_per_drive_code();
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_result_ah(&state.memory.ram, 0x00, "Drive isolation read");
     assert_eq!(
@@ -3021,7 +3017,7 @@ fn int1bh_fdd_seek_per_drive_isolation_vm() {
 fn assert_fdd_da_accepted(da: u8, label: &str) {
     let code = make_int1bh_simple(0x00, da);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, label);
 }
 
@@ -3093,7 +3089,7 @@ fn make_seek_then_write_readback_code( write_cyl: u8) -> Vec<u8> {
 fn int1bh_fdd_write_uses_seek_cylinder_f() {
     let code = make_seek_then_write_readback_code(1);
     let machine = boot_and_run_fdd_f(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "WRITE with seek cylinder");
     assert_eq!(
         state.memory.ram[DATA_BUFFER as usize], 0xCC,
@@ -3105,7 +3101,7 @@ fn int1bh_fdd_write_uses_seek_cylinder_f() {
 fn int1bh_fdd_write_uses_seek_cylinder_vm() {
     let code = make_seek_then_write_readback_code(1);
     let machine = boot_and_run_fdd_vm(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "WRITE with seek cylinder");
     assert_eq!(
         state.memory.ram[DATA_BUFFER as usize], 0xCC,
@@ -3117,7 +3113,7 @@ fn int1bh_fdd_write_uses_seek_cylinder_vm() {
 fn int1bh_fdd_write_uses_seek_cylinder_vx() {
     let code = make_seek_then_write_readback_code(1);
     let machine = boot_and_run_fdd_vx(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "WRITE with seek cylinder");
     assert_eq!(
         state.memory.ram[DATA_BUFFER as usize], 0xCC,
@@ -3129,7 +3125,7 @@ fn int1bh_fdd_write_uses_seek_cylinder_vx() {
 fn int1bh_fdd_write_uses_seek_cylinder_ra() {
     let code = make_seek_then_write_readback_code(1);
     let machine = boot_and_run_fdd_ra(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "WRITE with seek cylinder");
     assert_eq!(
         state.memory.ram[DATA_BUFFER as usize], 0xCC,
@@ -3174,15 +3170,13 @@ fn int1bh_fdd_write_single_sector_drive1_vx() {
         .insert_floppy(1, make_standard_2hd_disk(false), None);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "FDD write single sector drive 1");
 
     let disk = machine
@@ -3259,7 +3253,7 @@ fn make_int1bh_ide_sense_new(al: u8) -> Vec<u8> {
 fn int1bh_ide_initialize_pc9821() {
     let code = make_int1bh_simple(0x03, DA_IDE_CHS_DRIVE0);
     let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "IDE init");
     let disk_equip = read_ram_u16(&state.memory.ram, DISK_EQUIP);
     assert_eq!(
@@ -3273,7 +3267,7 @@ fn int1bh_ide_initialize_pc9821() {
 fn int1bh_ide_verify_pc9821() {
     let code = make_int1bh_simple(0x01, DA_IDE_CHS_DRIVE0);
     let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "IDE verify");
 }
 
@@ -3281,7 +3275,7 @@ fn int1bh_ide_verify_pc9821() {
 fn int1bh_ide_sense_pc9821() {
     let code = make_int1bh_simple(0x04, DA_IDE_CHS_DRIVE0);
     let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x0F, "IDE sense");
 }
 
@@ -3289,7 +3283,7 @@ fn int1bh_ide_sense_pc9821() {
 fn int1bh_ide_sense_new_pc9821() {
     let code = make_int1bh_ide_sense_new(DA_IDE_CHS_DRIVE0);
     let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x0F, "IDE new sense");
     let bx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(bx, 0x0200, "BX should be sector size (512)");
@@ -3366,7 +3360,7 @@ fn int1bh_ide_read_uses_segment_base_in_protected_mode_pc9821() {
 fn int1bh_ide_sense_no_drive_pc9821() {
     let code = make_int1bh_simple(0x04, 0x81);
     let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "IDE sense no drive");
 }
 
@@ -3382,7 +3376,7 @@ fn int1bh_ide_read_chs_pc9821() {
         DATA_BUFFER as u16,
     );
     let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "IDE read CHS");
     assert_eq!(
         state.memory.ram[DATA_BUFFER as usize], 0x00,
@@ -3399,7 +3393,7 @@ fn int1bh_ide_read_chs_pc9821() {
 fn int1bh_ide_read_no_drive_pc9821() {
     let code = make_int1bh_sasi_rw(0x06, 0x81, 512, 0, 0, 0x0000, DATA_BUFFER as u16);
     let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x60, "IDE read no drive");
 }
 
@@ -3500,7 +3494,7 @@ fn make_ide_write_and_readback_code() -> Vec<u8> {
 fn int1bh_ide_write_chs_pc9821() {
     let code = make_ide_write_and_readback_code();
     let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let write_ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let write_ah = (write_ax >> 8) as u8;
     assert_eq!(
@@ -3526,7 +3520,7 @@ fn int1bh_ide_write_chs_pc9821() {
 fn int1bh_ide_retract_pc9821() {
     let code = make_int1bh_simple(0x07, DA_IDE_CHS_DRIVE0);
     let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "IDE retract");
 }
 
@@ -3534,7 +3528,7 @@ fn int1bh_ide_retract_pc9821() {
 fn int1bh_ide_mode_set_pc9821() {
     let code = make_int1bh_simple(0x0E, DA_IDE_CHS_DRIVE0);
     let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "IDE mode set");
 }
 
@@ -3542,7 +3536,7 @@ fn int1bh_ide_mode_set_pc9821() {
 fn int1bh_ide_format_pc9821() {
     let code = make_int1bh_sasi_rw(0x0D, DA_IDE_CHS_DRIVE0, 0, 0x0001, 0x0000, 0x0000, 0x0000);
     let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "IDE format");
 }
 
@@ -3554,7 +3548,7 @@ fn int1bh_ide_mode_set_high_nibble_pc9821() {
     // AH=0x8E: lower nibble 0x0E = mode set. Must succeed like AH=0x0E.
     let code = make_int1bh_simple(0x8E, DA_IDE_CHS_DRIVE0);
     let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "IDE mode set AH=0x8E");
 }
 
@@ -3563,7 +3557,7 @@ fn int1bh_ide_verify_high_nibble_pc9821() {
     // AH=0x21: lower nibble 0x01 = verify. Must succeed like AH=0x01.
     let code = make_int1bh_simple(0x21, DA_IDE_CHS_DRIVE0);
     let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "IDE verify AH=0x21");
 }
 
@@ -3572,7 +3566,7 @@ fn int1bh_sasi_mode_set_high_nibble_ra() {
     // AH=0x8E: lower nibble 0x0E = mode set. Must succeed like AH=0x0E.
     let code = make_int1bh_simple(0x8E, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_ra(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI mode set AH=0x8E");
 }
 
@@ -3581,6 +3575,6 @@ fn int1bh_sasi_verify_high_nibble_ra() {
     // AH=0x21: lower nibble 0x01 = verify. Must succeed like AH=0x01.
     let code = make_int1bh_simple(0x21, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_ra(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI verify AH=0x21");
 }

@@ -100,7 +100,8 @@ pub enum UartWriteEffect {
     },
 }
 
-/// Saveable INS8250 register state.
+save_state::runtime_state! {
+/// Authoritative INS8250 register and receive queue state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ins8250UartState {
     /// Baud rate divisor latch (DLL/DLM).
@@ -123,7 +124,9 @@ pub struct Ins8250UartState {
     pub data_ready: bool,
     /// Latched transmitter-empty interrupt.
     pub thre_interrupt: bool,
-}
+    pending: VecDeque<u8>,
+    rx_release_cycle: Option<u64>,
+}}
 
 /// INS8250 / 16450 UART.
 pub struct Ins8250Uart {
@@ -131,10 +134,6 @@ pub struct Ins8250Uart {
     pub state: Ins8250UartState,
     /// Core clock in hertz, for converting the baud rate to cycles.
     cpu_clock_hz: u32,
-    /// Bytes waiting to be released into the receiver (mouse packet queue).
-    pending: VecDeque<u8>,
-    /// Absolute cycle of the next pending byte release.
-    rx_release_cycle: Option<u64>,
 }
 
 impl Ins8250Uart {
@@ -152,11 +151,30 @@ impl Ins8250Uart {
                 rbr: 0,
                 data_ready: false,
                 thre_interrupt: false,
+                pending: VecDeque::new(),
+                rx_release_cycle: None,
             },
             cpu_clock_hz,
-            pending: VecDeque::new(),
-            rx_release_cycle: None,
         }
+    }
+
+    /// Captures registers, pacing deadline, and queued received bytes.
+    pub fn capture_state(&self) -> Ins8250UartState {
+        self.state.clone()
+    }
+
+    /// Restores UART state while retaining the configured core clock.
+    pub fn restore_state(
+        &mut self,
+        state: Ins8250UartState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.divisor == 0 && state.rx_release_cycle.is_some() {
+            return Err(save_state::StateValidationError::new(
+                "UART receive deadline has no configured divisor",
+            ));
+        }
+        self.state = state;
+        Ok(())
     }
 
     /// Returns the UART to the power-on state.
@@ -224,10 +242,10 @@ impl Ins8250Uart {
             return;
         }
         for &byte in bytes {
-            self.pending.push_back(byte);
+            self.state.pending.push_back(byte);
         }
-        if self.rx_release_cycle.is_none() {
-            self.rx_release_cycle = Some(now.saturating_add(self.byte_duration_cycles()));
+        if self.state.rx_release_cycle.is_none() {
+            self.state.rx_release_cycle = Some(now.saturating_add(self.byte_duration_cycles()));
         }
     }
 
@@ -239,18 +257,18 @@ impl Ins8250Uart {
 
     /// Releases every pending byte whose frame finished by `now`.
     pub fn advance_to(&mut self, now: u64) {
-        while let Some(due) = self.rx_release_cycle {
+        while let Some(due) = self.state.rx_release_cycle {
             if due > now {
                 break;
             }
-            if let Some(byte) = self.pending.pop_front() {
+            if let Some(byte) = self.state.pending.pop_front() {
                 if self.state.data_ready {
                     self.state.lsr_errors |= LSR_OE;
                 }
                 self.state.rbr = byte;
                 self.state.data_ready = true;
             }
-            self.rx_release_cycle = if self.pending.is_empty() {
+            self.state.rx_release_cycle = if self.state.pending.is_empty() {
                 None
             } else {
                 Some(due.saturating_add(self.byte_duration_cycles()))
@@ -260,7 +278,7 @@ impl Ins8250Uart {
 
     /// Cycle of the next pending byte release, if any.
     pub fn next_event_cycle(&self) -> Option<u64> {
-        self.rx_release_cycle
+        self.state.rx_release_cycle
     }
 
     /// Programmed baud rate.

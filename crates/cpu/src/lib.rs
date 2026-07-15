@@ -81,6 +81,37 @@
 #![warn(clippy::unnecessary_wraps)]
 #![cfg_attr(not(test), no_std)]
 
+extern crate alloc;
+
+/// Adds stable `u8` save-state tags to an existing fieldless CPU enum.
+///
+/// Use this only for CPU enums that cannot be declared by
+/// `save_state::runtime_state_enum!`. Tags are part of the CPU state schema and
+/// must remain explicit and permanent.
+macro_rules! state_enum_codec {
+    ($type:ty { $($variant:path = $tag:literal),+ $(,)? }) => {
+        impl save_state::StateEncode for $type {
+            fn encode_state(&self, output: &mut ::alloc::vec::Vec<u8>) {
+                let tag: u8 = match self {
+                    $($variant => $tag,)+
+                };
+                save_state::StateEncode::encode_state(&tag, output);
+            }
+        }
+
+        impl save_state::StateDecode for $type {
+            fn decode_state(
+                decoder: &mut save_state::StateDecoder<'_>,
+            ) -> Result<Self, save_state::StateDecodeError> {
+                match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+                    $($tag => Ok($variant),)+
+                    _ => Err(save_state::StateDecodeError::InvalidTag),
+                }
+            }
+        }
+    };
+}
+
 mod i286;
 mod i386;
 mod i8086;
@@ -285,7 +316,7 @@ pub enum ByteReg {
 }
 
 /// i386 segment registers (6 segments including FS/GS).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SegReg32 {
     /// Extra segment.
@@ -295,12 +326,22 @@ pub enum SegReg32 {
     /// Stack segment.
     SS = 2,
     /// Data segment.
+    #[default]
     DS = 3,
     /// Additional data segment F.
     FS = 4,
     /// Additional data segment G.
     GS = 5,
 }
+
+state_enum_codec!(SegReg32 {
+    SegReg32::ES = 0,
+    SegReg32::CS = 1,
+    SegReg32::SS = 2,
+    SegReg32::DS = 3,
+    SegReg32::FS = 4,
+    SegReg32::GS = 5,
+});
 
 impl SegReg32 {
     /// Returns the segment register for the given 3-bit index.
@@ -318,7 +359,7 @@ impl SegReg32 {
 }
 
 /// 8086/i286/V30 segment registers (4 segments).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SegReg16 {
     /// Extra segment.
@@ -328,8 +369,16 @@ pub enum SegReg16 {
     /// Stack segment.
     SS = 2,
     /// Data segment.
+    #[default]
     DS = 3,
 }
+
+state_enum_codec!(SegReg16 {
+    SegReg16::ES = 0,
+    SegReg16::CS = 1,
+    SegReg16::SS = 2,
+    SegReg16::DS = 3,
+});
 
 impl SegReg16 {
     /// Returns the segment register for the given 2-bit index.
@@ -344,10 +393,12 @@ impl SegReg16 {
     }
 }
 
-/// 32-bit register file holding eight general-purpose dword registers.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RegisterFile32 {
-    d: [u32; 8],
+save_state::runtime_state! {
+    /// 32-bit register file holding eight general-purpose dword registers.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct RegisterFile32 {
+        d: [u32; 8],
+    }
 }
 
 impl Default for RegisterFile32 {
@@ -410,10 +461,12 @@ impl RegisterFile32 {
     }
 }
 
-/// 16-bit register file holding eight general-purpose word registers.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RegisterFile16 {
-    w: [u16; 8],
+save_state::runtime_state! {
+    /// 16-bit register file holding eight general-purpose word registers.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct RegisterFile16 {
+        w: [u16; 8],
+    }
 }
 
 impl Default for RegisterFile16 {

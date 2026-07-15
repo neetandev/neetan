@@ -27,6 +27,14 @@ const WORD_CONTROLLER: usize = 1;
 /// Cascade channel (controller 1 channel 0) that couples the controllers.
 const CASCADE_LOCAL_CHANNEL: usize = 0;
 
+save_state::runtime_state! {
+/// Authoritative state of the cascaded AT DMA controllers.
+#[derive(Clone)]
+pub struct AtDmaState {
+    controllers: [crate::i8237_dma::I8237DmaState; 2],
+    pages: [u8; AT_DMA_PAGE_COUNT],
+}}
+
 /// PC/AT dual-8237 DMA front-end with the AT page-register file.
 pub struct AtDma {
     /// The two cascaded controllers: `[0]` = 8-bit ch0-3, `[1]` = 16-bit ch4-7.
@@ -48,6 +56,29 @@ impl AtDma {
             controllers: [I8237Dma::new(), I8237Dma::new()],
             pages: [0; AT_DMA_PAGE_COUNT],
         }
+    }
+
+    /// Captures both controllers and the page register file.
+    pub fn capture_state(&self) -> AtDmaState {
+        AtDmaState {
+            controllers: [
+                self.controllers[0].state.clone(),
+                self.controllers[1].state.clone(),
+            ],
+            pages: self.pages,
+        }
+    }
+
+    /// Restores both controllers and the page register file.
+    pub fn restore_state(
+        &mut self,
+        state: AtDmaState,
+    ) -> Result<(), save_state::StateValidationError> {
+        let [byte_controller, word_controller] = state.controllers;
+        self.controllers[0].state = byte_controller;
+        self.controllers[1].state = word_controller;
+        self.pages = state.pages;
+        Ok(())
     }
 
     /// Reads a DMA-related I/O port (0x00-0x0F, 0x80-0x8F, 0xC0-0xDF).

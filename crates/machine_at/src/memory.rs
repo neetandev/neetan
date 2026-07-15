@@ -31,6 +31,13 @@ const UMA_REGION_COUNT: usize = 7;
 /// Value returned by an open-bus read.
 const OPEN_BUS: u8 = 0xFF;
 
+save_state::runtime_state! {
+/// Authoritative PC/AT RAM and memory-controller state.
+#[derive(Clone)]
+pub(crate) struct AtMemoryState {
+    ram: Vec<u8>,
+}}
+
 /// Read resolution for a UMA region, precomputed from the chipset registers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UmaRead {
@@ -87,6 +94,43 @@ impl AtMemory {
             a20_mask: !0,
             ram_size,
         }
+    }
+
+    /// Captures writable physical memory without ROM or derived decode tables.
+    pub(crate) fn capture_state(&self) -> AtMemoryState {
+        AtMemoryState {
+            ram: self.ram.clone(),
+        }
+    }
+
+    /// Restores writable physical memory after validating its configured size.
+    pub(crate) fn restore_state(
+        &mut self,
+        state: AtMemoryState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.ram.len() != self.ram.len() {
+            return Err(save_state::StateValidationError::new(
+                "PC/AT RAM size differs",
+            ));
+        }
+        self.ram = state.ram;
+        Ok(())
+    }
+
+    /// Returns stable identities for the system and display ROMs.
+    pub(crate) fn resource_bindings(
+        &self,
+    ) -> Result<Vec<save_state::ResourceBinding>, save_state::StateValidationError> {
+        Ok(vec![
+            save_state::ResourceBinding {
+                identifier: save_state::ResourceBindingId::new("rom:system-bios")?,
+                identity: save_state::ResourceIdentity::from_bytes(&self.bios),
+            },
+            save_state::ResourceBinding {
+                identifier: save_state::ResourceBindingId::new("rom:vga-bios")?,
+                identity: save_state::ResourceIdentity::from_bytes(&self.vga_bios),
+            },
+        ])
     }
 
     /// Recomputes the UMA read/write tables from the chipset registers.
@@ -294,7 +338,7 @@ mod tests {
         vga_bios[0] = 0x55; // option ROM signature bytes
         vga_bios[1] = 0xAA;
         vga_bios[0x7FFF] = 0x99; // marker at the last ROM byte
-        let mut memory = AtMemory::new(8 * 1024 * 1024, bios, vga_bios);
+        let mut memory = AtMemory::new(8 << 20, bios, vga_bios);
         memory.refresh_uma(&Cs4031::new());
         memory
     }

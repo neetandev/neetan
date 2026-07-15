@@ -28,11 +28,20 @@ impl Command for B3sum {
 
 const ISO_CHUNK_SIZE: usize = 2048;
 
+#[derive(Clone)]
+/// Authoritative B3SUM enumeration and hashing state.
 struct B3sumState {
     arguments: Vec<ArgumentState>,
     current_argument: usize,
 }
 
+state_struct_codec!(B3sumState {
+    arguments,
+    current_argument,
+});
+
+#[derive(Clone)]
+/// Parsed B3SUM argument and its pending matches.
 struct ArgumentState {
     display_path: Vec<u8>,
     wildcard_prefix: Vec<u8>,
@@ -44,6 +53,18 @@ struct ArgumentState {
     matched_any: bool,
 }
 
+state_struct_codec!(ArgumentState {
+    display_path,
+    wildcard_prefix,
+    drive_index,
+    directory,
+    pattern,
+    has_wildcard,
+    search_index,
+    matched_any,
+});
+
+#[derive(Clone)]
 enum HashSourceCursor {
     Fat(FatFileCursor),
     Iso {
@@ -52,6 +73,38 @@ enum HashSourceCursor {
     },
 }
 
+impl save_state::StateEncode for HashSourceCursor {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Fat(cursor) => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                save_state::StateEncode::encode_state(cursor, output);
+            }
+            Self::Iso { entry, position } => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(entry, output);
+                save_state::StateEncode::encode_state(position, output);
+            }
+        }
+    }
+}
+
+impl save_state::StateDecode for HashSourceCursor {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Fat(save_state::StateDecode::decode_state(decoder)?)),
+            1 => Ok(Self::Iso {
+                entry: save_state::StateDecode::decode_state(decoder)?,
+                position: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
 struct FileHashState {
     drive_index: u8,
     cursor: HashSourceCursor,
@@ -59,16 +112,105 @@ struct FileHashState {
     hasher: Hasher,
 }
 
+impl save_state::StateEncode for FileHashState {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        save_state::StateEncode::encode_state(&self.drive_index, output);
+        save_state::StateEncode::encode_state(&self.cursor, output);
+        save_state::StateEncode::encode_state(&self.display_path, output);
+        let state = self.hasher.capture_state();
+        save_state::StateEncode::encode_state(&state.chunk_chaining_value, output);
+        save_state::StateEncode::encode_state(&state.chunk_counter, output);
+        save_state::StateEncode::encode_state(&state.block, output);
+        save_state::StateEncode::encode_state(&state.block_len, output);
+        save_state::StateEncode::encode_state(&state.blocks_compressed, output);
+        save_state::StateEncode::encode_state(&state.chunk_flags, output);
+        save_state::StateEncode::encode_state(&state.key_words, output);
+        save_state::StateEncode::encode_state(&state.chaining_value_stack, output);
+        save_state::StateEncode::encode_state(&state.chaining_value_stack_len, output);
+        save_state::StateEncode::encode_state(&state.flags, output);
+    }
+}
+
+impl save_state::StateDecode for FileHashState {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        let drive_index = save_state::StateDecode::decode_state(decoder)?;
+        let cursor = save_state::StateDecode::decode_state(decoder)?;
+        let display_path = save_state::StateDecode::decode_state(decoder)?;
+        let hasher_state = blake3::HasherState {
+            chunk_chaining_value: save_state::StateDecode::decode_state(decoder)?,
+            chunk_counter: save_state::StateDecode::decode_state(decoder)?,
+            block: save_state::StateDecode::decode_state(decoder)?,
+            block_len: save_state::StateDecode::decode_state(decoder)?,
+            blocks_compressed: save_state::StateDecode::decode_state(decoder)?,
+            chunk_flags: save_state::StateDecode::decode_state(decoder)?,
+            key_words: save_state::StateDecode::decode_state(decoder)?,
+            chaining_value_stack: save_state::StateDecode::decode_state(decoder)?,
+            chaining_value_stack_len: save_state::StateDecode::decode_state(decoder)?,
+            flags: save_state::StateDecode::decode_state(decoder)?,
+        };
+        let hasher =
+            Hasher::from_state(hasher_state).ok_or(save_state::StateDecodeError::InvalidTag)?;
+        Ok(Self {
+            drive_index,
+            cursor,
+            display_path,
+            hasher,
+        })
+    }
+}
+
+#[derive(Clone)]
 enum B3sumPhase {
     Init,
     FindNext(B3sumState),
     Hashing(B3sumState, Box<FileHashState>),
 }
 
-struct RunningB3sum {
+impl save_state::StateEncode for B3sumPhase {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Init => save_state::StateEncode::encode_state(&0u8, output),
+            Self::FindNext(state) => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(state, output);
+            }
+            Self::Hashing(state, file) => {
+                save_state::StateEncode::encode_state(&2u8, output);
+                save_state::StateEncode::encode_state(state, output);
+                save_state::StateEncode::encode_state(file, output);
+            }
+        }
+    }
+}
+
+impl save_state::StateDecode for B3sumPhase {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Init),
+            1 => Ok(Self::FindNext(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            2 => Ok(Self::Hashing(
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
+/// Serializable state of an executing B3SUM command.
+pub(crate) struct RunningB3sum {
     args: Vec<u8>,
     phase: B3sumPhase,
 }
+
+state_struct_codec!(RunningB3sum { args, phase });
 
 impl RunningB3sum {
     fn step_init(

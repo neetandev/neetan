@@ -43,7 +43,9 @@ const COMMAND_LOAD_CURSOR: u8 = 4;
 const COMMAND_RESET_INTERRUPT: u8 = 5;
 const COMMAND_RESET_COUNTERS: u8 = 6;
 
+save_state::runtime_state! {
 /// Snapshot of the uPD3301 state for save/restore.
+#[derive(Clone)]
 pub struct Upd3301State {
     /// Displayed columns per row (2..=80).
     pub columns: u8,
@@ -101,7 +103,7 @@ pub struct Upd3301State {
     attrib_data: u8,
     /// Running attribute mask assembled during expansion.
     attrib_mask: u8,
-}
+}}
 
 /// uPD3301 character display controller.
 pub struct Upd3301 {

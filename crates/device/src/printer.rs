@@ -8,7 +8,8 @@
 
 use std::io::Write;
 
-/// Snapshot of the printer state for save/restore.
+save_state::runtime_state! {
+/// Authoritative printer electronics state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrinterState {
     /// Last byte written to port 0x40 (data latch).
@@ -17,7 +18,7 @@ pub struct PrinterState {
     pub port_c: u8,
     /// Whether a printer output is attached.
     pub attached: bool,
-}
+}}
 
 /// Centronics printer device.
 pub struct Printer {
@@ -43,6 +44,25 @@ impl Printer {
             },
             output: None,
         }
+    }
+
+    /// Captures the printer electronics state.
+    pub fn capture_state(&self) -> PrinterState {
+        self.state.clone()
+    }
+
+    /// Restores electronics while retaining the output file resource.
+    pub fn restore_state(
+        &mut self,
+        state: PrinterState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.attached != self.output.is_some() {
+            return Err(save_state::StateValidationError::new(
+                "printer attachment differs",
+            ));
+        }
+        self.state = state;
+        Ok(())
     }
 
     /// Attaches a file handle for printer output.

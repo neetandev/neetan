@@ -249,6 +249,26 @@ pub struct HardwareCursorState {
     pub col: u8,
 }
 
+impl save_state::StateEncode for HardwareCursorState {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        save_state::StateEncode::encode_state(&self.visible, output);
+        save_state::StateEncode::encode_state(&self.row, output);
+        save_state::StateEncode::encode_state(&self.col, output);
+    }
+}
+
+impl save_state::StateDecode for HardwareCursorState {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        Ok(Self {
+            visible: save_state::StateDecode::decode_state(decoder)?,
+            row: save_state::StateDecode::decode_state(decoder)?,
+            col: save_state::StateDecode::decode_state(decoder)?,
+        })
+    }
+}
+
 /// Read/write access to the BIOS-owned hardware text cursor state.
 ///
 /// Used by the HLE DOS to reconcile its IOSYS cursor tracking with whatever

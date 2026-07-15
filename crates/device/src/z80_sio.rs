@@ -42,6 +42,7 @@ const WR1_RX_INT_MODE_MASK: u8 = 0x18;
 /// WR5: request-to-send output.
 const WR5_RTS: u8 = 0x02;
 
+save_state::runtime_state! {
 /// One SIO channel.
 #[derive(Debug, Clone)]
 struct SioChannel {
@@ -54,7 +55,7 @@ struct SioChannel {
     error_interrupt: bool,
     rts_low: bool,
     rts_falling_edge: bool,
-}
+}}
 
 impl SioChannel {
     fn new() -> Self {
@@ -84,11 +85,12 @@ impl SioChannel {
     }
 }
 
+save_state::runtime_state! {
 /// Zilog Z80 SIO device.
 #[derive(Debug, Clone)]
 pub struct Z80Sio {
     channels: [SioChannel; CHANNEL_COUNT],
-}
+}}
 
 impl Default for Z80Sio {
     fn default() -> Self {
@@ -102,6 +104,22 @@ impl Z80Sio {
         Self {
             channels: [SioChannel::new(), SioChannel::new()],
         }
+    }
+
+    /// Captures both serial channels and their pending interrupts.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores both serial channels and their pending interrupts.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        if state.channels.iter().any(|channel| channel.pointer >= 8) {
+            return Err(save_state::StateValidationError::new(
+                "Z80 SIO register pointer is invalid",
+            ));
+        }
+        *self = state;
+        Ok(())
     }
 
     /// Resets both channels and clears pending interrupts.

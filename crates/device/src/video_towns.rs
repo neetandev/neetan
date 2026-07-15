@@ -150,6 +150,50 @@ struct TownsColor {
     blue: u8,
 }
 
+save_state::runtime_state! {
+/// Authoritative FM Towns hardware mouse cursor definition state.
+#[derive(Clone)]
+struct TownsMouseCursorState {
+    x: u32,
+    y: u32,
+    origin_x: u32,
+    origin_y: u32,
+    defining: bool,
+    defined: bool,
+    pattern_count: u32,
+    and_pattern: [u8; 512],
+    or_pattern: [u8; 512],
+}}
+
+save_state::runtime_state! {
+/// Authoritative FM Towns CRTC, palette, and cursor state.
+#[derive(Clone)]
+pub struct TownsVideoRuntimeState {
+    crtc_registers: [u16; 32],
+    crtc_addr_latch: usize,
+    sifter: [u8; 4],
+    sifter_addr_latch: usize,
+    show_page_0448: [bool; 2],
+    show_page_fda0: [bool; 2],
+    palette_code_latch: u8,
+    palette_16: [[[u8; 3]; 16]; 2],
+    palette_256: [[u8; 3]; 256],
+    fmr_digital_palette: [u8; 8],
+    dpmd: bool,
+    vsync_irq: bool,
+    vsync_active: bool,
+    high_res_available: bool,
+    high_res_enabled: bool,
+    high_res_reg: Box<[u32; HIGH_RES_REG_COUNT]>,
+    high_res_addr_latch: u16,
+    high_res_reg4_bit0: bool,
+    high_res_reg4_bit1: bool,
+    high_res_palette_16: [[[u8; 3]; 16]; 2],
+    high_res_palette_256: [[u8; 3]; 256],
+    high_res_palette_code_latch: u8,
+    high_res_mouse: TownsMouseCursorState,
+}}
+
 impl TownsColor {
     fn to_rgba(self) -> u32 {
         towns_color_to_rgba(self.red, self.green, self.blue)
@@ -223,6 +267,100 @@ impl TownsVideo {
             high_res_palette_code_latch: 0,
             high_res_mouse: TownsMouseCursor::default(),
         }
+    }
+
+    /// Captures CRTC registers, palettes, sync latches, and the cursor stream.
+    pub fn capture_state(&self) -> TownsVideoRuntimeState {
+        let color = |entry: TownsColor| [entry.red, entry.green, entry.blue];
+        TownsVideoRuntimeState {
+            crtc_registers: self.crtc_registers,
+            crtc_addr_latch: self.crtc_addr_latch,
+            sifter: self.sifter,
+            sifter_addr_latch: self.sifter_addr_latch,
+            show_page_0448: self.show_page_0448,
+            show_page_fda0: self.show_page_fda0,
+            palette_code_latch: self.palette_code_latch,
+            palette_16: self.palette_16.map(|palette| palette.map(color)),
+            palette_256: self.palette_256.map(color),
+            fmr_digital_palette: self.fmr_digital_palette,
+            dpmd: self.dpmd,
+            vsync_irq: self.vsync_irq,
+            vsync_active: self.vsync_active,
+            high_res_available: self.high_res_available,
+            high_res_enabled: self.high_res_enabled,
+            high_res_reg: self.high_res_reg.clone(),
+            high_res_addr_latch: self.high_res_addr_latch,
+            high_res_reg4_bit0: self.high_res_reg4_bit0,
+            high_res_reg4_bit1: self.high_res_reg4_bit1,
+            high_res_palette_16: self.high_res_palette_16.map(|palette| palette.map(color)),
+            high_res_palette_256: self.high_res_palette_256.map(color),
+            high_res_palette_code_latch: self.high_res_palette_code_latch,
+            high_res_mouse: TownsMouseCursorState {
+                x: self.high_res_mouse.x,
+                y: self.high_res_mouse.y,
+                origin_x: self.high_res_mouse.origin_x,
+                origin_y: self.high_res_mouse.origin_y,
+                defining: self.high_res_mouse.defining,
+                defined: self.high_res_mouse.defined,
+                pattern_count: self.high_res_mouse.pattern_count,
+                and_pattern: self.high_res_mouse.and_pattern,
+                or_pattern: self.high_res_mouse.or_pattern,
+            },
+        }
+    }
+
+    /// Restores CRTC registers, palettes, sync latches, and the cursor stream.
+    pub fn restore_state(
+        &mut self,
+        state: TownsVideoRuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.crtc_addr_latch >= state.crtc_registers.len()
+            || state.sifter_addr_latch >= state.sifter.len()
+            || state.high_res_available != self.high_res_available
+            || state.high_res_mouse.pattern_count > 1024
+        {
+            return Err(save_state::StateValidationError::new(
+                "FM Towns video state is invalid",
+            ));
+        }
+        let color = |entry: [u8; 3]| TownsColor {
+            red: entry[0],
+            green: entry[1],
+            blue: entry[2],
+        };
+        self.crtc_registers = state.crtc_registers;
+        self.crtc_addr_latch = state.crtc_addr_latch;
+        self.sifter = state.sifter;
+        self.sifter_addr_latch = state.sifter_addr_latch;
+        self.show_page_0448 = state.show_page_0448;
+        self.show_page_fda0 = state.show_page_fda0;
+        self.palette_code_latch = state.palette_code_latch;
+        self.palette_16 = state.palette_16.map(|palette| palette.map(color));
+        self.palette_256 = state.palette_256.map(color);
+        self.fmr_digital_palette = state.fmr_digital_palette;
+        self.dpmd = state.dpmd;
+        self.vsync_irq = state.vsync_irq;
+        self.vsync_active = state.vsync_active;
+        self.high_res_enabled = state.high_res_enabled;
+        self.high_res_reg = state.high_res_reg;
+        self.high_res_addr_latch = state.high_res_addr_latch;
+        self.high_res_reg4_bit0 = state.high_res_reg4_bit0;
+        self.high_res_reg4_bit1 = state.high_res_reg4_bit1;
+        self.high_res_palette_16 = state.high_res_palette_16.map(|palette| palette.map(color));
+        self.high_res_palette_256 = state.high_res_palette_256.map(color);
+        self.high_res_palette_code_latch = state.high_res_palette_code_latch;
+        self.high_res_mouse = TownsMouseCursor {
+            x: state.high_res_mouse.x,
+            y: state.high_res_mouse.y,
+            origin_x: state.high_res_mouse.origin_x,
+            origin_y: state.high_res_mouse.origin_y,
+            defining: state.high_res_mouse.defining,
+            defined: state.high_res_mouse.defined,
+            pattern_count: state.high_res_mouse.pattern_count,
+            and_pattern: state.high_res_mouse.and_pattern,
+            or_pattern: state.high_res_mouse.or_pattern,
+        };
+        Ok(())
     }
 
     /// Writes the standard CRTC address latch.

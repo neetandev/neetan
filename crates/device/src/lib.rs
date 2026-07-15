@@ -3,6 +3,29 @@
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
+extern crate alloc;
+
+/// Adds direct capture and restore accessors to a state-backed device.
+///
+/// Use this only when the device's `state` field is its complete authoritative
+/// state and replacement needs no validation, resource rebinding, or derived
+/// data rebuild.
+macro_rules! impl_simple_state_accessors {
+    ($device:ty, $state:ty) => {
+        impl $device {
+            /// Captures the complete device state.
+            pub fn capture_state(&self) -> $state {
+                self.state.clone()
+            }
+
+            /// Restores the complete device state.
+            pub fn restore_state(&mut self, state: $state) {
+                self.state = state;
+            }
+        }
+    };
+}
+
 pub mod at_dma;
 pub mod ay8910;
 pub mod beeper;
@@ -55,6 +78,7 @@ pub mod mb61vh010_alu;
 pub mod mb8877_fdc;
 pub mod mc146818_rtc;
 pub mod mc68901_mfp;
+mod media_identity;
 pub mod mouse_fm7;
 pub mod mouse_pc88va;
 pub mod mouse_serial;

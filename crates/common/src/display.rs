@@ -56,6 +56,7 @@ pub struct HighResCursor {
     pub or_pattern: [u8; 512],
 }
 
+save_state::runtime_state! {
 /// PC-88VA graphics framebuffer descriptor.
 #[derive(Clone, Copy, Default)]
 pub struct FramebufferVa {
@@ -77,7 +78,7 @@ pub struct FramebufferVa {
     pub display_height: u16,
     /// Sub-screen first scanline.
     pub display_position: u16,
-}
+}}
 
 impl FramebufferVa {
     /// Returns the reset state for the no-wrap screen 1 descriptor.

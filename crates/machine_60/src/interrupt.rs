@@ -52,6 +52,7 @@ const TIMER_VECTOR_DEFAULT: u8 = 0x06;
 /// Fixed acknowledge vector for the uPD7752 voice source on the pre-SR machines.
 const VOICE_VECTOR_DEFAULT: u8 = 0x20;
 
+save_state::runtime_state! {
 /// Prioritized interrupt controller. On the SR generation every source draws
 /// its acknowledge vector from a programmable table (ports 0xB8-0xBF); the
 /// earlier machines use fixed and dynamically latched vectors.
@@ -62,7 +63,7 @@ pub struct InterruptController {
     timer_vector: u8,
     programmable: bool,
     sr_vectors: [u8; SOURCE_COUNT],
-}
+}}
 
 impl InterruptController {
     /// Creates a controller with no interrupts pending. `programmable` selects
@@ -75,6 +76,16 @@ impl InterruptController {
             programmable,
             sr_vectors: [0; SOURCE_COUNT],
         }
+    }
+
+    pub(crate) fn validate_runtime_state(&self) -> Result<(), save_state::StateValidationError> {
+        const VALID_SOURCES: u8 = (1u8 << IrqSource::ALL.len()) - 1;
+        if self.pending & !VALID_SOURCES != 0 {
+            return Err(save_state::StateValidationError::new(
+                "PC-6000 interrupt state is invalid",
+            ));
+        }
+        Ok(())
     }
 
     /// Raises an interrupt source.

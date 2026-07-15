@@ -181,6 +181,9 @@ fn opm_key_code_to_phase_step(block_freq: u32, delta: i32) -> u32 {
     PHASE_STEP[eff_freq as usize] >> (block ^ 7)
 }
 
+save_state::runtime_state! {
+/// Authoritative OPM register, noise, and timer state.
+#[derive(Clone)]
 pub(crate) struct OpmRegisters {
     lfo_counter: u32,
     noise_lfsr: u32,
@@ -191,7 +194,7 @@ pub(crate) struct OpmRegisters {
     // LFO waveforms; AM in the low 8 bits, PM in the upper 8.
     lfo_waveform: [[i16; LFO_WAVEFORM_LENGTH]; 4],
     waveform: [u16; WAVEFORM_LENGTH],
-}
+}}
 
 impl OpmRegisters {
     fn byte(&self, offset: u32, start: i32, count: i32, extra_offset: u32) -> u32 {

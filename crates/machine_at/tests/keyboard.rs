@@ -11,7 +11,7 @@ fn test_bus() -> AtBus<common::NoTrace> {
         system_bios: vec![0u8; 0x1_0000],
         vga_bios: vec![0u8; 0x8000],
     };
-    let mut bus = AtBus::<common::NoTrace>::new(66_000_000, 16 * 1024 * 1024, roms, 48_000);
+    let mut bus = AtBus::<common::NoTrace>::new(66_000_000, 16 << 20, roms, 48_000);
     // Command byte: translation on, IRQ1 on.
     bus.io_write_byte(0x64, 0x60);
     bus.io_write_byte(0x60, 0x41);

@@ -94,7 +94,7 @@ fn direct_iosys_cursor_write_survives_dos_dispatch() {
         "'A' must be drawn at the IOSYS cursor (row 20, col 40), got {code_at_cell:#06X}"
     );
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_master.ead,
         (20 * TEXT_VRAM_COLUMNS + 41) as u32,

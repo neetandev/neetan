@@ -1,10 +1,13 @@
 use common::is_shift_jis_lead_byte;
 
 #[derive(Debug, Clone)]
+/// Authoritative byte-oriented editor input field state.
 pub(crate) struct ByteField {
     bytes: Vec<u8>,
     pub(crate) cursor: usize,
 }
+
+state_struct_codec!(ByteField { bytes, cursor });
 
 impl ByteField {
     pub(crate) fn new(bytes: Vec<u8>) -> Self {

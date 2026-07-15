@@ -15,14 +15,15 @@ enum CgSource {
     Tofu,
 }
 
+save_state::runtime_state! {
 /// CGROM access-window registers.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct CgromVa {
     /// Hardware character code (ports 0x14C/0x14D).
     cgaddr: u16,
     /// Raster row (bits 0-3) and font-half selector (bit 5), port 0x14F.
     cgrow: u8,
-}
+}}
 
 impl CgromVa {
     /// Writes the character-code low byte (port 0x14C).

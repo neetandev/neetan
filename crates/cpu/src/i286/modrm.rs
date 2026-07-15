@@ -29,6 +29,17 @@ pub enum EaClass {
     Disp16Double,
 }
 
+state_enum_codec!(EaClass {
+    EaClass::Register = 0,
+    EaClass::Direct = 1,
+    EaClass::SingleRegister = 2,
+    EaClass::DoubleRegister = 3,
+    EaClass::Disp8Single = 4,
+    EaClass::Disp8Double = 5,
+    EaClass::Disp16Single = 6,
+    EaClass::Disp16Double = 7,
+});
+
 impl EaClass {
     /// Classifies the addressing mode encoded by the ModR/M byte.
     #[inline(always)]
@@ -193,7 +204,7 @@ impl I286 {
         self.ea_class = EaClass::from_modrm(modrm);
         let mode = modrm_mode(modrm);
         let rm = modrm_rm(modrm);
-        self.timing.note_au_calculation();
+        self.state.timing.note_au_calculation();
 
         match mode {
             0 => match rm {
@@ -246,8 +257,9 @@ impl I286 {
                     self.ea_seg = self.default_seg(SegReg16::DS);
                 }
                 6 => {
-                    self.timing.note_au_displacement();
-                    self.timing
+                    self.state.timing.note_au_displacement();
+                    self.state
+                        .timing
                         .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeTurnaround);
                     self.eo = self.fetchword(bus);
                     self.ea =
@@ -263,8 +275,9 @@ impl I286 {
                 _ => unreachable!(),
             },
             1 => {
-                self.timing.note_au_displacement();
-                self.timing
+                self.state.timing.note_au_displacement();
+                self.state
+                    .timing
                     .note_demand_prefetch_policy(I286DemandPrefetchPolicy::AfterTurnaround);
                 let disp = self.fetch(bus) as i8 as u16;
                 let seg = if rm == 2 || rm == 3 || rm == 6 {
@@ -276,12 +289,13 @@ impl I286 {
                 self.ea = self.default_base(seg).wrapping_add(self.eo as u32) & ADDRESS_MASK;
                 self.ea_seg = self.default_seg(seg);
                 if rm <= 3 {
-                    self.timing.note_au_demand_cycles(1);
+                    self.state.timing.note_au_demand_cycles(1);
                 }
             }
             2 => {
-                self.timing.note_au_displacement();
-                self.timing
+                self.state.timing.note_au_displacement();
+                self.state
+                    .timing
                     .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeTurnaround);
                 let disp = self.fetchword(bus);
                 let seg = if rm == 2 || rm == 3 || rm == 6 {
@@ -293,18 +307,19 @@ impl I286 {
                 self.ea = self.default_base(seg).wrapping_add(self.eo as u32) & ADDRESS_MASK;
                 self.ea_seg = self.default_seg(seg);
                 if rm <= 3 {
-                    self.timing.note_au_demand_cycles(1);
+                    self.state.timing.note_au_demand_cycles(1);
                 }
             }
             _ => unreachable!(),
         }
 
         if mode == 0 && rm != 6 {
-            self.timing
+            self.state
+                .timing
                 .note_demand_prefetch_policy(I286DemandPrefetchPolicy::None);
         }
 
-        self.timing.note_au_ready();
+        self.state.timing.note_au_ready();
     }
 
     #[inline(always)]
@@ -340,7 +355,7 @@ impl I286 {
         } else {
             self.calc_ea(modrm, bus);
             let value = self.seg_read_byte_at(bus, 0);
-            self.timing.note_au_idle();
+            self.state.timing.note_au_idle();
             value
         }
     }
@@ -351,7 +366,7 @@ impl I286 {
         } else {
             self.calc_ea(modrm, bus);
             let value = self.seg_read_word(bus);
-            self.timing.note_au_idle();
+            self.state.timing.note_au_idle();
             value
         }
     }
@@ -362,7 +377,7 @@ impl I286 {
             self.regs.set_byte(reg, value);
         } else {
             self.seg_write_byte_at(bus, 0, value);
-            self.timing.note_au_idle();
+            self.state.timing.note_au_idle();
         }
     }
 
@@ -372,7 +387,7 @@ impl I286 {
             self.regs.set_word(reg, value);
         } else {
             self.seg_write_word(bus, value);
-            self.timing.note_au_idle();
+            self.state.timing.note_au_idle();
         }
     }
 
@@ -383,7 +398,7 @@ impl I286 {
         } else {
             self.calc_ea(modrm, bus);
             self.seg_write_byte_at(bus, 0, value);
-            self.timing.note_au_idle();
+            self.state.timing.note_au_idle();
         }
     }
 
@@ -394,7 +409,7 @@ impl I286 {
         } else {
             self.calc_ea(modrm, bus);
             self.seg_write_word(bus, value);
-            self.timing.note_au_idle();
+            self.state.timing.note_au_idle();
         }
     }
 }

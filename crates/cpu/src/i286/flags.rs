@@ -14,31 +14,33 @@ const PARITY_TABLE: [bool; 256] = {
     table
 };
 
-/// i286 CPU flags register state.
-#[derive(Debug, Clone)]
-pub struct I286Flags {
-    /// Lazily computed sign flag value (negative means SF=1).
-    pub sign_val: i32,
-    /// Lazily computed zero flag value (zero means ZF=1).
-    pub zero_val: u32,
-    /// Lazily computed carry flag value (non-zero means CF=1).
-    pub carry_val: u32,
-    /// Lazily computed overflow flag value (non-zero means OF=1).
-    pub overflow_val: u32,
-    /// Lazily computed auxiliary carry flag value (non-zero means AF=1).
-    pub aux_val: u32,
-    /// Lazily computed parity flag value (low byte used for lookup).
-    pub parity_val: u32,
-    /// Trap flag.
-    pub tf: bool,
-    /// Interrupt enable flag.
-    pub if_flag: bool,
-    /// Direction flag.
-    pub df: bool,
-    /// I/O Privilege Level (bits 12-13 of FLAGS).
-    pub iopl: u8,
-    /// Nested Task flag (bit 14 of FLAGS).
-    pub nt: bool,
+save_state::runtime_state! {
+    /// i286 CPU flags register state.
+    #[derive(Debug, Clone)]
+    pub struct I286Flags {
+        /// Lazily computed sign flag value (negative means SF=1).
+        pub sign_val: i32,
+        /// Lazily computed zero flag value (zero means ZF=1).
+        pub zero_val: u32,
+        /// Lazily computed carry flag value (non-zero means CF=1).
+        pub carry_val: u32,
+        /// Lazily computed overflow flag value (non-zero means OF=1).
+        pub overflow_val: u32,
+        /// Lazily computed auxiliary carry flag value (non-zero means AF=1).
+        pub aux_val: u32,
+        /// Lazily computed parity flag value (low byte used for lookup).
+        pub parity_val: u32,
+        /// Trap flag.
+        pub tf: bool,
+        /// Interrupt enable flag.
+        pub if_flag: bool,
+        /// Direction flag.
+        pub df: bool,
+        /// I/O Privilege Level (bits 12-13 of FLAGS).
+        pub iopl: u8,
+        /// Nested Task flag (bit 14 of FLAGS).
+        pub nt: bool,
+    }
 }
 
 impl I286Flags {

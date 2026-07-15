@@ -21,20 +21,55 @@ impl Command for TypeCmd {
     }
 }
 
+#[derive(Clone)]
+/// Authoritative TYPE file data and output offset.
 struct ReadState {
     data: Vec<u8>,
     offset: usize,
 }
 
+state_struct_codec!(ReadState { data, offset });
+
+#[derive(Clone)]
 enum TypePhase {
     Init,
     Outputting(ReadState),
 }
 
-struct RunningType {
+impl save_state::StateEncode for TypePhase {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Init => save_state::StateEncode::encode_state(&0u8, output),
+            Self::Outputting(read) => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(read, output);
+            }
+        }
+    }
+}
+
+impl save_state::StateDecode for TypePhase {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Init),
+            1 => Ok(Self::Outputting(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
+/// Serializable state of an executing TYPE command.
+pub(crate) struct RunningType {
     args: Vec<u8>,
     phase: TypePhase,
 }
+
+state_struct_codec!(RunningType { args, phase });
 
 impl RunningType {
     fn do_output(

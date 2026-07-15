@@ -13,7 +13,7 @@ use cpu::{CPU_MODEL_386_DX, I386};
 const ROM_BYTES: &[u8] = include_bytes!("test386/test386.bin");
 const EE_REFERENCE: &str = include_str!("test386/upstream/test386-EE-reference.txt");
 
-const RAM_SIZE: usize = 16 * 1024 * 1024;
+const RAM_SIZE: usize = 16 << 20;
 const ADDRESS_MASK: u32 = 0x00FF_FFFF;
 const ROM_BASE: usize = 0x000F_0000;
 

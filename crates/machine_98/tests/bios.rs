@@ -428,10 +428,9 @@ fn make_sti_hlt_code(num_interrupts: usize) -> Vec<u8> {
 fn run_vm(machine: &mut Pc9801Vm, code: &[u8], budget: u64) -> u64 {
     write_bytes(&mut machine.bus, 0x100, code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: 0x0100,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = 0x0100;
+        s.initialize_cold_frontend();
         s.set_sp(0x1000);
         s
     });
@@ -445,6 +444,7 @@ fn run_f(machine: &mut Pc9801F, code: &[u8], budget: u64) -> u64 {
             ip: 0x0100,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x1000);
         s
     });
@@ -459,10 +459,9 @@ fn boot_and_run_vm(main_code: &[u8], callback: &[u8], budget: u64) -> (Pc9801Vm,
         write_bytes(&mut machine.bus, TEST_CALLBACK, callback);
     }
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -482,6 +481,7 @@ fn boot_and_run_f(main_code: &[u8], callback: &[u8], budget: u64) -> (Pc9801F, u
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -497,10 +497,8 @@ fn boot_and_run_vx(main_code: &[u8], callback: &[u8], budget: u64) -> (Pc9801Vx,
         write_bytes(&mut machine.bus, TEST_CALLBACK, callback);
     }
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
@@ -535,10 +533,9 @@ fn boot_inject_run_vm(scancodes: &[u8], code: &[u8], budget: u64) -> Pc9801Vm {
     }
     write_bytes(&mut machine.bus, TEST_CODE, code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -558,6 +555,7 @@ fn boot_inject_run_f(scancodes: &[u8], code: &[u8], budget: u64) -> Pc9801F {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -573,10 +571,8 @@ fn boot_inject_run_vx(scancodes: &[u8], code: &[u8], budget: u64) -> Pc9801Vx {
     }
     write_bytes(&mut machine.bus, TEST_CODE, code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });

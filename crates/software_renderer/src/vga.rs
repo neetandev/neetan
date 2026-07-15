@@ -158,6 +158,16 @@ pub(super) struct LinePosition {
     below_split: bool,
 }
 
+save_state::runtime_state! {
+/// Authoritative persistent VGA renderer buffers.
+#[derive(Clone)]
+pub struct VgaRendererRuntimeState {
+    framebuffer: Box<[u8]>,
+    line_buffer: [u32; LINE_BUFFER_DOTS],
+    last_width: u32,
+    last_height: u32,
+}}
+
 /// CPU-side renderer for the VGA scan-out.
 pub struct VgaRenderer {
     /// Packed RGBA framebuffer sized for the maximum surface.
@@ -190,6 +200,38 @@ impl VgaRenderer {
         };
         renderer.fill_region(VGA_FALLBACK_WIDTH, VGA_FALLBACK_HEIGHT, BACKDROP);
         renderer
+    }
+
+    /// Captures the presented frame and partially composed scanline.
+    pub fn capture_state(&self) -> VgaRendererRuntimeState {
+        VgaRendererRuntimeState {
+            framebuffer: self.framebuffer.clone(),
+            line_buffer: self.line_buffer,
+            last_width: self.last_width,
+            last_height: self.last_height,
+        }
+    }
+
+    /// Restores persistent buffers while retaining host SIMD dispatch.
+    pub fn restore_state(
+        &mut self,
+        state: VgaRendererRuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.framebuffer.len() != self.framebuffer.len()
+            || state.last_width == 0
+            || state.last_height == 0
+            || state.last_width > VGA_SURFACE_WIDTH as u32
+            || state.last_height > VGA_SURFACE_HEIGHT as u32
+        {
+            return Err(save_state::StateValidationError::new(
+                "VGA renderer dimensions are invalid",
+            ));
+        }
+        self.framebuffer = state.framebuffer;
+        self.line_buffer = state.line_buffer;
+        self.last_width = state.last_width;
+        self.last_height = state.last_height;
+        Ok(())
     }
 
     /// Enables or disables the SIMD dispatch for the packed 256-color path.

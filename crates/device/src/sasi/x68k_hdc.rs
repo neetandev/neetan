@@ -15,6 +15,22 @@ use super::target::{
 };
 use crate::disk::{HddImage, MountedHdd};
 
+save_state::runtime_state! {
+/// Complete X68000 SASI protocol and mounted-media identity state.
+#[derive(Debug, Clone)]
+pub struct X68kSasiHdcState {
+    engine: super::target::SasiTargetEngineState,
+    phase: u8,
+    phase_first: usize,
+    phase_second: u8,
+    selected_id: usize,
+    command: [u8; 6],
+    interrupt_pulse: bool,
+    data_phase_ready_at: Option<u64>,
+    data_phase_delay_ticks: u64,
+    media: save_state::MediaManifest,
+}}
+
 /// Bus status bit: message phase.
 const STATUS_MESSAGE: u8 = 0x10;
 /// Bus status bit: control (command/status/message) rather than data.
@@ -95,6 +111,111 @@ impl X68kSasiHdc {
             data_phase_ready_at: None,
             data_phase_delay_ticks: device_clock_hz * DATA_PHASE_DELAY_MICROSECONDS / 1_000_000,
         }
+    }
+
+    /// Captures controller protocol, transfer progress, and media identities.
+    pub fn capture_state(&self) -> Result<X68kSasiHdcState, save_state::StateValidationError> {
+        let (phase, phase_first, phase_second) = match self.phase {
+            HdcPhase::BusFree => (0, 0, 0),
+            HdcPhase::Selected => (1, 0, 0),
+            HdcPhase::Command { received } => (2, received, 0),
+            HdcPhase::DataIn => (3, 0, 0),
+            HdcPhase::SenseIn { position } => (4, position, 0),
+            HdcPhase::DataOut => (5, 0, 0),
+            HdcPhase::ParameterOut { received, expected } => (6, usize::from(received), expected),
+            HdcPhase::StatusIn => (7, 0, 0),
+            HdcPhase::MessageIn => (8, 0, 0),
+        };
+        Ok(X68kSasiHdcState {
+            engine: self.engine.capture_state(),
+            phase,
+            phase_first,
+            phase_second,
+            selected_id: self.selected_id,
+            command: self.command,
+            interrupt_pulse: self.interrupt_pulse,
+            data_phase_ready_at: self.data_phase_ready_at,
+            data_phase_delay_ticks: self.data_phase_delay_ticks,
+            media: self.media_manifest()?,
+        })
+    }
+
+    /// Restores controller protocol and transfer progress while retaining media.
+    pub fn restore_state(
+        &mut self,
+        state: X68kSasiHdcState,
+    ) -> Result<(), save_state::StateValidationError> {
+        super::target::SasiTargetEngine::validate_state(&state.engine)?;
+        state.media.verify_current(&self.media_manifest()?)?;
+        if state.selected_id >= X68K_SASI_DRIVE_COUNT
+            || state.data_phase_delay_ticks != self.data_phase_delay_ticks
+        {
+            return Err(save_state::StateValidationError::new(
+                "X68000 SASI controller state is invalid",
+            ));
+        }
+        let phase = match state.phase {
+            0 => HdcPhase::BusFree,
+            1 => HdcPhase::Selected,
+            2 if state.phase_first <= state.command.len() => HdcPhase::Command {
+                received: state.phase_first,
+            },
+            3 => HdcPhase::DataIn,
+            4 if state.phase_first < 4 => HdcPhase::SenseIn {
+                position: state.phase_first,
+            },
+            5 => HdcPhase::DataOut,
+            6 if state.phase_first <= usize::from(state.phase_second) => HdcPhase::ParameterOut {
+                received: state.phase_first as u8,
+                expected: state.phase_second,
+            },
+            7 => HdcPhase::StatusIn,
+            8 => HdcPhase::MessageIn,
+            _ => {
+                return Err(save_state::StateValidationError::new(
+                    "X68000 SASI protocol phase is invalid",
+                ));
+            }
+        };
+        self.engine.restore_state(state.engine);
+        self.phase = phase;
+        self.selected_id = state.selected_id;
+        self.command = state.command;
+        self.interrupt_pulse = state.interrupt_pulse;
+        self.data_phase_ready_at = state.data_phase_ready_at;
+        Ok(())
+    }
+
+    /// Returns stable bindings for mounted X68000 SASI disks.
+    pub fn media_manifest(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = Vec::new();
+        for (drive_index, mounted) in self.drives.iter().enumerate() {
+            let Some(mounted) = mounted else {
+                continue;
+            };
+            let geometry = mounted.geometry();
+            bindings.push(save_state::MediaBinding {
+                identifier: save_state::MediaBindingId::new(format!("x68k-sasi-{drive_index}"))?,
+                slot: save_state::MediaSlot::new(
+                    save_state::MediaKind::HardDisk,
+                    drive_index as u32,
+                ),
+                source_path: mounted.source_path().cloned(),
+                media_type: mounted.image().format_name().to_owned(),
+                identity: mounted.identity(),
+                geometry: Some(save_state::MediaGeometry::new(
+                    u32::from(geometry.cylinders),
+                    u32::from(geometry.heads),
+                    u32::from(geometry.sectors_per_track),
+                    u32::from(geometry.sector_size),
+                )?),
+                write_protected: false,
+                backend_generation: None,
+            });
+        }
+        save_state::MediaManifest::new(bindings)
     }
 
     /// Attaches a hard disk image at the given SASI ID (0 or 1).

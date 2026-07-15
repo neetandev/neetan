@@ -67,7 +67,8 @@ const BUF_START_INC: usize = 0;
 /// Descending direction buffer start offset (func 1, 3, 5).
 const BUF_START_DEC: usize = 4096 / 8 + 3;
 
-/// Snapshot of the EGC state (for save/restore).
+save_state::runtime_state! {
+/// Authoritative EGC state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EgcState {
     /// Reg 0 (0x04A0): plane write enable (active-low, bits 0-3).
@@ -117,8 +118,8 @@ pub struct EgcState {
     /// Buffer output pointer offset.
     pub outptr: usize,
     /// Shift buffer (4 planes interleaved at stride 4).
-    pub buf: Box<[u8; BUF_SIZE]>,
-}
+    pub buf: Box<[u8]>,
+}}
 
 impl Default for EgcState {
     fn default() -> Self {
@@ -146,7 +147,7 @@ impl Default for EgcState {
             srcmask: 0xFFFF,
             inptr: BUF_START_INC,
             outptr: BUF_START_INC,
-            buf: Box::new([0; BUF_SIZE]),
+            buf: vec![0; BUF_SIZE].into_boxed_slice(),
         }
     }
 }
@@ -158,6 +159,8 @@ pub struct Egc {
     // Transient shift output (not saved, but instead recomputed from buf on each operation).
     src: [u16; 4],
 }
+
+impl_simple_state_accessors!(Egc, EgcState);
 
 impl Default for Egc {
     fn default() -> Self {

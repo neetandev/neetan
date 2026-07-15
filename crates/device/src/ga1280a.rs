@@ -74,7 +74,7 @@ const CONVENTIONAL_WINDOW_BYTES: u32 = 0x3_0000;
 const FLAT_APERTURE_BASE: u32 = 0x00F0_0000;
 const FLAT_APERTURE_BYTES: u32 = 0x1_0000;
 
-const GA1280_VRAM_BYTES: usize = 2 * 1024 * 1024;
+const GA1280_VRAM_BYTES: usize = 2 << 20;
 
 const DEFAULT_REFRESH_HZ: u32 = 60;
 const DEFAULT_ACTIVE_LINES: u32 = 480;
@@ -164,20 +164,21 @@ pub enum Ga1280aScreenMode {
     Mode22 = 22,
 }
 
+save_state::runtime_state_enum! {
 /// Decoded host-window size from WBA1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ga1280aWindowSize {
     /// Host window is disabled or the size code is unknown.
-    Disabled,
+    Disabled = 0,
     /// 16 KB window.
-    K16,
+    K16 = 1,
     /// 32 KB window.
-    K32,
+    K32 = 2,
     /// 64 KB window.
-    K64,
+    K64 = 3,
     /// 128 KB window.
-    K128,
-}
+    K128 = 4,
+}}
 
 impl Ga1280aWindowSize {
     /// Returns the window byte length.
@@ -192,16 +193,17 @@ impl Ga1280aWindowSize {
     }
 }
 
+save_state::runtime_state_enum! {
 /// Active framebuffer interpretation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ga1280aPlaneMode {
     /// 8 one-bit planes, interpreted through the RAMDAC palette.
-    Indexed8,
+    Indexed8 = 0,
     /// 16 one-bit planes, interpreted as fixed RGB565.
-    DirectColor16,
+    DirectColor16 = 1,
     /// 24 one-bit planes, interpreted as fixed RGB888.
-    FullColor24,
-}
+    FullColor24 = 2,
+}}
 
 /// RAMDAC hardware cursor inputs for a GA-1280A frame.
 pub struct Ga1280aCursorRenderSnapshot<'a> {
@@ -245,7 +247,8 @@ pub struct Ga1280aRenderSnapshot<'a> {
     pub cursor: Ga1280aCursorRenderSnapshot<'a>,
 }
 
-/// Stateful pixel stream consumed after the `45E8h` image-restore command.
+save_state::runtime_state! {
+/// Stateful pixel stream consumed after an image-restore command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ga1280aImageRestoreState {
     /// Destination left X.
@@ -272,7 +275,7 @@ pub struct Ga1280aImageRestoreState {
     pub direction: u8,
     /// Optional foreground ROP used by HGA image-transfer commands.
     pub rop: Option<u8>,
-}
+}}
 
 impl Ga1280aImageRestoreState {
     fn new(
@@ -301,7 +304,8 @@ impl Ga1280aImageRestoreState {
     }
 }
 
-/// Stateful pixel stream produced by the `20E8h` pixel-read command.
+save_state::runtime_state! {
+/// Stateful pixel stream produced by a pixel-read command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ga1280aPixelReadState {
     /// Source left X.
@@ -316,7 +320,7 @@ pub struct Ga1280aPixelReadState {
     pub row: u32,
     /// Current 16-pixel chunk within the row.
     pub column: u32,
-}
+}}
 
 impl Ga1280aPixelReadState {
     fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
@@ -331,7 +335,8 @@ impl Ga1280aPixelReadState {
     }
 }
 
-/// Stateful monochrome pattern stream consumed after text POP2 commands.
+save_state::runtime_state! {
+/// Stateful monochrome pattern expansion stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ga1280aPatternExpandState {
     /// Destination left X.
@@ -360,7 +365,7 @@ pub struct Ga1280aPatternExpandState {
     pub background_mix: u8,
     /// Whether every source bit draws foreground or background.
     pub opaque: bool,
-}
+}}
 
 /// Active POP2 streaming operation. At most one of the three streams can be
 /// active at a time on real hardware, so they share one slot.
@@ -376,7 +381,48 @@ pub enum Ga1280aStreamState {
     PatternExpand(Ga1280aPatternExpandState),
 }
 
-/// Serializable GA board state.
+impl save_state::StateEncode for Ga1280aStreamState {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Inactive => save_state::StateEncode::encode_state(&0u8, output),
+            Self::ImageRestore(state) => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(state, output);
+            }
+            Self::PixelRead(state) => {
+                save_state::StateEncode::encode_state(&2u8, output);
+                save_state::StateEncode::encode_state(state, output);
+            }
+            Self::PatternExpand(state) => {
+                save_state::StateEncode::encode_state(&3u8, output);
+                save_state::StateEncode::encode_state(state, output);
+            }
+        }
+    }
+}
+
+impl save_state::StateDecode for Ga1280aStreamState {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Inactive),
+            1 => Ok(Self::ImageRestore(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            2 => Ok(Self::PixelRead(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            3 => Ok(Self::PatternExpand(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+save_state::runtime_state! {
+/// Authoritative GA board state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ga1280aState {
     /// Low base port, normally `00D8h`.
@@ -460,7 +506,7 @@ pub struct Ga1280aState {
     /// RAMDAC RGB stream phase.
     pub palette_rgb_phase: u8,
     /// RAMDAC palette, stored as RGB triples.
-    pub palette: Box<[[u8; 3]; 256]>,
+    pub palette: Box<[[u8; 3]]>,
     /// RAMDAC mask register.
     pub vdac_mask: u8,
     /// RAMDAC register select/bank register.
@@ -490,7 +536,7 @@ pub struct Ga1280aState {
     /// Current CRTC index.
     pub crtc_index: u8,
     /// CRTC register storage.
-    pub crtc_registers: Box<[u16; 128]>,
+    pub crtc_registers: Box<[u16]>,
     /// Active visible width in pixels.
     pub active_width: u32,
     /// Active visible height in pixels.
@@ -570,7 +616,7 @@ pub struct Ga1280aState {
     pub full_color_helper_step: u8,
     /// Active POP2 streaming operation.
     pub stream: Ga1280aStreamState,
-}
+}}
 
 impl Ga1280aState {
     fn new() -> Self {
@@ -615,7 +661,7 @@ impl Ga1280aState {
             palette_index_write: 0,
             palette_index_read: 0,
             palette_rgb_phase: 0,
-            palette: Box::new([[0; 3]; 256]),
+            palette: vec![[0; 3]; 256].into_boxed_slice(),
             vdac_mask: 0,
             vdac_rs: 0,
             cursor_color_index: 0,
@@ -630,7 +676,7 @@ impl Ga1280aState {
             system_register: 0,
             system_auxiliary_register: 0,
             crtc_index: 0,
-            crtc_registers: Box::new([0; 128]),
+            crtc_registers: vec![0; 128].into_boxed_slice(),
             active_width: DEFAULT_WIDTH,
             active_height: DEFAULT_HEIGHT,
             plane_mode: Ga1280aPlaneMode::Indexed8,
@@ -720,6 +766,20 @@ impl Ga1280a {
             state: Ga1280aState::new(),
             line_points: Vec::new(),
         }
+    }
+
+    /// Captures all accelerator, VRAM, palette, cursor, and stream state.
+    pub fn capture_state(&self) -> Ga1280aState {
+        self.state.clone()
+    }
+
+    /// Restores exact accelerator state and clears render scratch data.
+    pub fn restore_state(
+        &mut self,
+        state: Ga1280aState,
+    ) -> Result<(), save_state::StateValidationError> {
+        let gaport = self.state.gaport;
+        save_state::restore_root(self, state, &gaport)
     }
 
     /// Creates a board from a previously saved state.
@@ -1729,6 +1789,48 @@ impl Ga1280a {
             self.state.palette_index_read = self.state.palette_index_read.wrapping_add(1);
         }
         value
+    }
+}
+
+impl save_state::ValidateState<u16> for Ga1280aState {
+    fn validate_state(&self, gaport: &u16) -> Result<(), save_state::StateValidationError> {
+        if self.gaport != *gaport
+            || self.palette.len() != 256
+            || self.crtc_registers.len() != 128
+            || self.vram.len() != GA1280_VRAM_BYTES
+            || self.active_width == 0
+            || self.active_width > GA1280_MAX_VISIBLE_WIDTH
+            || self.active_height == 0
+            || self.active_height > GA1280_MAX_VISIBLE_HEIGHT
+            || self.tile_pattern_count as usize > self.tile_pattern.len()
+            || self.tile_write_index as usize >= self.tile_pattern.len()
+            || self.tile_read_index as usize >= self.tile_pattern.len()
+            || self.rop_pattern_index as usize >= self.rop_pattern.len()
+            || self.palette_rgb_phase > 2
+            || self.cursor_color_rgb_phase > 2
+            || self.cursor_pattern_index as usize
+                > self.cursor_xor_pattern.len() + self.cursor_and_pattern.len()
+        {
+            return Err(save_state::StateValidationError::new(
+                "GA-1280A dimensions or stream position is invalid",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl save_state::AfterRestore for Ga1280a {
+    fn after_restore(&mut self) {
+        self.line_points.clear();
+    }
+}
+
+impl save_state::RestoreTarget for Ga1280a {
+    type State = Ga1280aState;
+    type ValidationContext = u16;
+
+    fn replace_state(&mut self, state: Self::State) {
+        self.state = state;
     }
 }
 

@@ -151,6 +151,16 @@ pub struct Fm7Renderer {
     framebuffer: Box<[u8]>,
 }
 
+save_state::runtime_state! {
+/// Partially latched FM-7 frame state.
+#[derive(Clone)]
+pub struct Fm7RendererState {
+    line_colors: Box<[u8]>,
+    line_indices: Box<[u16]>,
+    line_is_4096: Box<[bool]>,
+    frame_analog_palette: Box<[u16]>,
+}}
+
 impl Default for Fm7Renderer {
     fn default() -> Self {
         Self::new()
@@ -172,6 +182,38 @@ impl Fm7Renderer {
     /// The last composited framebuffer (packed RGBA).
     pub fn framebuffer(&self) -> &[u8] {
         &self.framebuffer
+    }
+
+    /// Captures the partially latched frame without the derived framebuffer.
+    pub fn capture_state(&self) -> Fm7RendererState {
+        Fm7RendererState {
+            line_colors: self.line_colors.clone(),
+            line_indices: self.line_indices.clone(),
+            line_is_4096: self.line_is_4096.clone(),
+            frame_analog_palette: self.frame_analog_palette.clone(),
+        }
+    }
+
+    /// Restores the partially latched frame and rebuilds the framebuffer.
+    pub fn restore_state(
+        &mut self,
+        state: Fm7RendererState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.line_colors.len() != LAYER_PIXELS
+            || state.line_indices.len() != MODE320_LAYER_PIXELS
+            || state.line_is_4096.len() != FM7_SURFACE_HEIGHT
+            || state.frame_analog_palette.len() != ANALOG_PALETTE_ENTRIES
+        {
+            return Err(save_state::StateValidationError::new(
+                "FM-7 renderer state is invalid",
+            ));
+        }
+        self.line_colors = state.line_colors;
+        self.line_indices = state.line_indices;
+        self.line_is_4096 = state.line_is_4096;
+        self.frame_analog_palette = state.frame_analog_palette;
+        self.present_latched_frame();
+        Ok(())
     }
 
     /// Clears the scanline-latched buffers for the next frame.

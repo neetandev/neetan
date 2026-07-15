@@ -30,6 +30,8 @@ fn status_to_result(status: u16) -> Result<(), u16> {
     }
 }
 
+#[derive(Clone)]
+/// Authoritative MSCDEX installation and request state.
 pub(crate) struct MscdexState {
     /// Device driver name (8 bytes, space-padded).
     pub device_name: Vec<u8>,
@@ -38,6 +40,12 @@ pub(crate) struct MscdexState {
     /// Device open reference count.
     pub open_count: u16,
 }
+
+state_struct_codec!(MscdexState {
+    device_name,
+    drive_letter,
+    open_count,
+});
 
 impl MscdexState {
     pub(crate) fn new() -> Self {

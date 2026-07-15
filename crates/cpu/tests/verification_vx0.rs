@@ -143,6 +143,7 @@ fn build_state(regs: &HashMap<String, u16>) -> V30State {
     s.set_ds(get("ds"));
     s.ip = get("ip");
     s.set_compressed_flags(get("flags"));
+    s.initialize_cold_frontend();
     s
 }
 

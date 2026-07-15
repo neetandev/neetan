@@ -6,7 +6,7 @@
 //! wave RAM is the loop terminator: it rewinds the channel to its loop start and
 //! (when it sits at the end of a 4 KB bank) latches a bank interrupt.
 
-use resampler::{Attenuation, Latency, ResamplerFir};
+use resampler::{Attenuation, Latency, ResamplerFir, ResamplerFirState};
 
 /// Native output rate: the 8 MHz master clock divided by 384.
 const NATIVE_SAMPLE_RATE: u32 = 20833;
@@ -55,6 +55,38 @@ struct PcmChannel {
     /// `position >> ADDRESS_FRACTION_BITS`.
     position: u32,
 }
+
+save_state::runtime_state! {
+/// Authoritative playback progress of one RF5C68 PCM channel.
+#[derive(Clone)]
+struct PcmChannelRuntimeState {
+    envelope: u8,
+    pan: u8,
+    start_page: u8,
+    frequency_delta: u16,
+    loop_start: u16,
+    position: u32,
+}}
+
+save_state::runtime_state! {
+/// Authoritative RF5C68 channels, wave RAM, and streaming audio state.
+#[derive(Clone)]
+pub struct Rf5c68RuntimeState {
+    channels: [PcmChannelRuntimeState; CHANNEL_COUNT],
+    wave_ram: Box<[u8; WAVE_RAM_SIZE]>,
+    channel_select: u8,
+    wave_bank: usize,
+    enabled: bool,
+    channel_on_off: u8,
+    interrupt_pending: u8,
+    interrupt_mask: u8,
+    sample_rate: u32,
+    resampler: ResamplerFirState,
+    input_buffer: Vec<f32>,
+    resample_output: Vec<f32>,
+    sample_remainder: f64,
+    last_generate_cycle: u64,
+}}
 
 impl PcmChannel {
     fn new() -> Self {
@@ -134,6 +166,72 @@ impl Rf5c68 {
             sample_remainder: 0.0,
             last_generate_cycle: 0,
         }
+    }
+
+    /// Captures channels, wave RAM, and the exact resampler phase.
+    pub fn capture_state(&self) -> Rf5c68RuntimeState {
+        Rf5c68RuntimeState {
+            channels: self.channels.map(|channel| PcmChannelRuntimeState {
+                envelope: channel.envelope,
+                pan: channel.pan,
+                start_page: channel.start_page,
+                frequency_delta: channel.frequency_delta,
+                loop_start: channel.loop_start,
+                position: channel.position,
+            }),
+            wave_ram: self.wave_ram.clone(),
+            channel_select: self.channel_select,
+            wave_bank: self.wave_bank,
+            enabled: self.enabled,
+            channel_on_off: self.channel_on_off,
+            interrupt_pending: self.interrupt_pending,
+            interrupt_mask: self.interrupt_mask,
+            sample_rate: self.sample_rate,
+            resampler: self.resampler.capture_state(),
+            input_buffer: self.input_buffer.clone(),
+            resample_output: self.resample_output.clone(),
+            sample_remainder: self.sample_remainder,
+            last_generate_cycle: self.last_generate_cycle,
+        }
+    }
+
+    /// Restores channels, wave RAM, and the exact resampler phase.
+    pub fn restore_state(
+        &mut self,
+        state: Rf5c68RuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.sample_rate != self.sample_rate
+            || state.channel_select as usize >= CHANNEL_COUNT
+            || state.wave_bank >= WAVE_RAM_SIZE
+            || state.resample_output.len() != self.resampler.buffer_size_output()
+            || !state.sample_remainder.is_finite()
+            || !(0.0..1.0).contains(&state.sample_remainder)
+        {
+            return Err(save_state::StateValidationError::new(
+                "RF5C68 runtime state is invalid",
+            ));
+        }
+        self.resampler.restore_state(state.resampler)?;
+        self.channels = state.channels.map(|channel| PcmChannel {
+            envelope: channel.envelope,
+            pan: channel.pan,
+            start_page: channel.start_page,
+            frequency_delta: channel.frequency_delta,
+            loop_start: channel.loop_start,
+            position: channel.position,
+        });
+        self.wave_ram = state.wave_ram;
+        self.channel_select = state.channel_select;
+        self.wave_bank = state.wave_bank;
+        self.enabled = state.enabled;
+        self.channel_on_off = state.channel_on_off;
+        self.interrupt_pending = state.interrupt_pending;
+        self.interrupt_mask = state.interrupt_mask;
+        self.input_buffer = state.input_buffer;
+        self.resample_output = state.resample_output;
+        self.sample_remainder = state.sample_remainder;
+        self.last_generate_cycle = state.last_generate_cycle;
+        Ok(())
     }
 
     /// Resets the chip to its power-on state, preserving wave RAM contents.

@@ -128,6 +128,26 @@ const INITIATOR_RESET_VECTOR_OFFSET: usize = 0x1FFE;
 /// Value returned by reads of unfitted or write-only physical banks.
 const OPEN_BUS: u8 = 0xFF;
 
+save_state::runtime_state! {
+/// Authoritative FM-7 memory contents and banking state.
+#[derive(Clone)]
+pub(crate) struct Fm7MemoryState {
+    lower_ram: Box<[u8]>,
+    upper_ram: Box<[u8]>,
+    bios_work: [u8; BIOS_WORK_SIZE],
+    vector_ram: [u8; VECTOR_RAM_SIZE],
+    basic_rom_mapped: bool,
+    av_ram_page0: Vec<u8>,
+    boot_ram: [u8; BOOT_RAM_SIZE],
+    mmr_page_registers: [u8; MMR_PAGE_REGISTER_COUNT],
+    mmr_current_segment: u8,
+    mmr_window_offset: u8,
+    mmr_enabled: bool,
+    window_enabled: bool,
+    boot_ram_write: bool,
+    initiator_enabled: bool,
+}}
+
 /// Main CPU memory visible in the base 64 KiB address space, plus the FM-77AV
 /// MMR paging state and initiator boot RAM.
 pub(crate) struct Fm7Memory {
@@ -196,6 +216,62 @@ impl Fm7Memory {
             boot_ram_write: true,
             initiator_enabled: has_av,
         }
+    }
+
+    /// Captures writable memory and banking state without ROM bytes.
+    pub(crate) fn capture_state(&self) -> Fm7MemoryState {
+        Fm7MemoryState {
+            lower_ram: self.lower_ram.to_vec().into_boxed_slice(),
+            upper_ram: self.upper_ram.to_vec().into_boxed_slice(),
+            bios_work: self.bios_work,
+            vector_ram: self.vector_ram,
+            basic_rom_mapped: self.basic_rom_mapped,
+            av_ram_page0: self.av_ram_page0.clone(),
+            boot_ram: self.boot_ram,
+            mmr_page_registers: self.mmr_page_registers,
+            mmr_current_segment: self.mmr_current_segment,
+            mmr_window_offset: self.mmr_window_offset,
+            mmr_enabled: self.mmr_enabled,
+            window_enabled: self.window_enabled,
+            boot_ram_write: self.boot_ram_write,
+            initiator_enabled: self.initiator_enabled,
+        }
+    }
+
+    /// Restores writable memory without changing installed ROM bytes.
+    pub(crate) fn restore_state(
+        &mut self,
+        state: Fm7MemoryState,
+    ) -> Result<(), save_state::StateValidationError> {
+        let expected_av_ram = if self.model.has_boot_ram() {
+            AV_RAM_PAGE0_SIZE
+        } else {
+            0
+        };
+        if state.lower_ram.len() != LOWER_RAM_SIZE
+            || state.upper_ram.len() != UPPER_RAM_SIZE
+            || state.av_ram_page0.len() != expected_av_ram
+            || state.mmr_current_segment & !MMR_SEGMENT_MASK != 0
+        {
+            return Err(save_state::StateValidationError::new(
+                "FM-7 memory state is invalid",
+            ));
+        }
+        self.lower_ram.copy_from_slice(&state.lower_ram);
+        self.upper_ram.copy_from_slice(&state.upper_ram);
+        self.bios_work = state.bios_work;
+        self.vector_ram = state.vector_ram;
+        self.basic_rom_mapped = state.basic_rom_mapped;
+        self.av_ram_page0 = state.av_ram_page0;
+        self.boot_ram = state.boot_ram;
+        self.mmr_page_registers = state.mmr_page_registers;
+        self.mmr_current_segment = state.mmr_current_segment;
+        self.mmr_window_offset = state.mmr_window_offset;
+        self.mmr_enabled = state.mmr_enabled;
+        self.window_enabled = state.window_enabled;
+        self.boot_ram_write = state.boot_ram_write;
+        self.initiator_enabled = state.initiator_enabled;
+        Ok(())
     }
 
     /// Creates memory initialized from the loaded ROM set.

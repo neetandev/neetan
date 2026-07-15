@@ -19,9 +19,13 @@ impl Command for Cls {
     }
 }
 
-struct RunningCls {
+#[derive(Clone)]
+/// Serializable state of an executing CLS command.
+pub(crate) struct RunningCls {
     args: Vec<u8>,
 }
+
+state_struct_codec!(RunningCls { args });
 
 impl RunningCommand for RunningCls {
     fn step(

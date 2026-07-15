@@ -167,6 +167,35 @@ const CMOS_DRIVE_ASSIGN_SLOTS: usize = 16;
 const CMOS_DRIVE_TYPE_SCSI: u8 = 0x02;
 /// Marker for an unassigned drive-assignment slot.
 const CMOS_DRIVE_TYPE_FREE: u8 = 0xFF;
+
+save_state::runtime_state! {
+/// Authoritative FM Towns memory contents and banking state.
+#[derive(Clone)]
+pub(crate) struct TownsMemoryState {
+    ram: Box<[u8]>,
+    vram: Box<[u8]>,
+    sprite_ram: Box<[u8]>,
+    cmos: Box<[u8]>,
+    fmr_vram: bool,
+    system_rom_shadow: bool,
+    dic_rom_mapped: bool,
+    dic_rom_bank: u8,
+    native_vram_mask: [u8; 4],
+    vram_mask_active: bool,
+    vram_mask_latch: u8,
+    fmr_vram_mask: u8,
+    fmr_display_planes: u8,
+    fmr_display_page_offset: u32,
+    fmr_write_page_offset: u32,
+    kanji_jis_high: u8,
+    kanji_jis_low: u8,
+    kanji_row: u8,
+    ank_font_overlay: bool,
+    tvram_written: bool,
+    vsync_active: bool,
+    hsync_active: bool,
+    high_res_available: bool,
+}}
 /// CMOS byte index of the drive-assignment block checksum (I/O 0x33CE). The
 /// checksummed block sums to a constant modulo 256, so a change to the table is
 /// balanced by adjusting this byte.
@@ -308,6 +337,101 @@ impl TownsMemory {
         };
         memory.reset_banking();
         memory
+    }
+
+    /// Captures writable memory, banking, masks, and display latches.
+    pub(crate) fn capture_state(&self) -> TownsMemoryState {
+        TownsMemoryState {
+            ram: self.ram.clone(),
+            vram: self.vram.clone(),
+            sprite_ram: self.sprite_ram.clone(),
+            cmos: self.cmos.clone(),
+            fmr_vram: self.fmr_vram,
+            system_rom_shadow: self.system_rom_shadow,
+            dic_rom_mapped: self.dic_rom_mapped,
+            dic_rom_bank: self.dic_rom_bank,
+            native_vram_mask: self.native_vram_mask,
+            vram_mask_active: self.vram_mask_active,
+            vram_mask_latch: self.vram_mask_latch,
+            fmr_vram_mask: self.fmr_vram_mask,
+            fmr_display_planes: self.fmr_display_planes,
+            fmr_display_page_offset: self.fmr_display_page_offset,
+            fmr_write_page_offset: self.fmr_write_page_offset,
+            kanji_jis_high: self.kanji_jis_high,
+            kanji_jis_low: self.kanji_jis_low,
+            kanji_row: self.kanji_row,
+            ank_font_overlay: self.ank_font_overlay,
+            tvram_written: self.tvram_written,
+            vsync_active: self.vsync_active,
+            hsync_active: self.hsync_active,
+            high_res_available: self.high_res_available,
+        }
+    }
+
+    /// Restores writable memory, banking, masks, and display latches.
+    pub(crate) fn restore_state(
+        &mut self,
+        state: TownsMemoryState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.ram.len() != self.ram.len()
+            || state.vram.len() != self.vram.len()
+            || state.sprite_ram.len() != self.sprite_ram.len()
+            || state.cmos.len() != self.cmos.len()
+            || state.high_res_available != self.high_res_available
+            || state.vram_mask_latch > 1
+            || !matches!(state.fmr_display_page_offset, 0 | FMR_PAGE_OFFSET)
+            || !matches!(state.fmr_write_page_offset, 0 | FMR_PAGE_OFFSET)
+        {
+            return Err(save_state::StateValidationError::new(
+                "FM Towns memory state is invalid",
+            ));
+        }
+        self.ram = state.ram;
+        self.vram = state.vram;
+        self.sprite_ram = state.sprite_ram;
+        self.cmos = state.cmos;
+        self.fmr_vram = state.fmr_vram;
+        self.system_rom_shadow = state.system_rom_shadow;
+        self.dic_rom_mapped = state.dic_rom_mapped;
+        self.dic_rom_bank = state.dic_rom_bank;
+        self.native_vram_mask = state.native_vram_mask;
+        self.vram_mask_active = state.vram_mask_active;
+        self.vram_mask_latch = state.vram_mask_latch;
+        self.fmr_vram_mask = state.fmr_vram_mask;
+        self.fmr_display_planes = state.fmr_display_planes;
+        self.fmr_display_page_offset = state.fmr_display_page_offset;
+        self.fmr_write_page_offset = state.fmr_write_page_offset;
+        self.kanji_jis_high = state.kanji_jis_high;
+        self.kanji_jis_low = state.kanji_jis_low;
+        self.kanji_row = state.kanji_row;
+        self.ank_font_overlay = state.ank_font_overlay;
+        self.tvram_written = state.tvram_written;
+        self.vsync_active = state.vsync_active;
+        self.hsync_active = state.hsync_active;
+        Ok(())
+    }
+
+    /// Returns stable identities for every immutable ROM resource.
+    pub(crate) fn resource_bindings(
+        &self,
+    ) -> Result<Vec<save_state::ResourceBinding>, save_state::StateValidationError> {
+        let resources = [
+            ("rom:system", self.system_rom.as_ref()),
+            ("rom:dos", self.os_rom.as_ref()),
+            ("rom:dictionary", self.dic_rom.as_ref()),
+            ("rom:font", self.font_rom.as_ref()),
+            ("rom:f20", self.font20_rom.as_ref()),
+            ("rom:serial", self.serial_rom.as_ref()),
+        ];
+        resources
+            .into_iter()
+            .map(|(identifier, bytes)| {
+                Ok(save_state::ResourceBinding {
+                    identifier: save_state::ResourceBindingId::new(identifier)?,
+                    identity: save_state::ResourceIdentity::from_bytes(bytes),
+                })
+            })
+            .collect()
     }
 
     /// Restores the power-on banking configuration.

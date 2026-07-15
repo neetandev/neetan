@@ -796,7 +796,7 @@ mod tests {
     };
 
     fn mock_memory_with_conventional_chain(free_paragraphs: u16) -> MockMemory {
-        let mut memory = MockMemory::with_extended_memory(0x100000, 4 * 1024 * 1024);
+        let mut memory = MockMemory::with_extended_memory(0x100000, 4 << 20);
         memory::write_mcb(
             &mut memory,
             tables::FIRST_MCB_SEGMENT,
@@ -810,13 +810,7 @@ mod tests {
 
     fn dos_with_umb(memory: &mut dyn MemoryAccess) -> NeetanDos {
         let mut dos = NeetanDos::new();
-        dos.state.memory_manager = Some(MemoryManager::new(
-            4 * 1024 * 1024,
-            true,
-            true,
-            false,
-            memory,
-        ));
+        dos.state.memory_manager = Some(MemoryManager::new(4 << 20, true, true, false, memory));
         dos
     }
 
@@ -957,7 +951,7 @@ mod tests {
             b"DEVICE=C:\\DOS\\HIMEM.SYS\nDEVICEHIGH=C:\\DOS\\EMM386.EXE RAM\nDEVICE=A:\\VEM486.EXE /X\n",
         );
         let mut dos = NeetanDos::new();
-        let memory = MockMemory::with_extended_memory(0x100000, 4 * 1024 * 1024);
+        let memory = MockMemory::with_extended_memory(0x100000, 4 << 20);
         let mut disk = PanickingDriveIo;
 
         let images = dos.collect_native_driver_images(&cfg, &memory, &mut disk);

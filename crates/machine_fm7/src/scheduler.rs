@@ -3,7 +3,7 @@
 //! A single monotonic cycle counter (in main-clock units) lives on the bus; this
 //! scheduler tracks the fire cycle of each event kind in a flat array.
 
-use common::StackVec;
+use common::{SchedulerState, StackVec};
 
 /// Kinds of scheduled events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,30 +140,45 @@ pub(crate) struct ScheduledEventFm7 {
 
 /// Tracks the next fire cycle of each event kind.
 pub(crate) struct Fm7Scheduler {
-    fire_cycles: [Option<u64>; EVENT_COUNT],
+    state: SchedulerState,
 }
 
 impl Fm7Scheduler {
     /// Creates a scheduler with no events pending.
     pub(crate) fn new() -> Self {
         Self {
-            fire_cycles: [None; EVENT_COUNT],
+            state: SchedulerState::new(EVENT_COUNT),
         }
+    }
+
+    /// Captures all pending events.
+    pub(crate) fn capture_state(&self) -> SchedulerState {
+        self.state.clone()
+    }
+
+    /// Restores all pending events.
+    pub(crate) fn restore_state(
+        &mut self,
+        state: SchedulerState,
+    ) -> Result<(), save_state::StateValidationError> {
+        save_state::ValidateState::validate_state(&state, &EVENT_COUNT)?;
+        self.state = state;
+        Ok(())
     }
 
     /// Schedules `kind` to fire at `fire_cycle`, replacing any prior schedule.
     pub(crate) fn schedule(&mut self, kind: EventFm7, fire_cycle: u64) {
-        self.fire_cycles[kind.index()] = Some(fire_cycle);
+        self.state.schedule(kind.index(), fire_cycle);
     }
 
     /// Cancels any pending schedule for `kind`.
     pub(crate) fn cancel(&mut self, kind: EventFm7) {
-        self.fire_cycles[kind.index()] = None;
+        self.state.cancel(kind.index());
     }
 
     /// Returns the earliest scheduled fire cycle, if any event is pending.
     pub(crate) fn next_event_cycle(&self) -> Option<u64> {
-        self.fire_cycles.iter().flatten().copied().min()
+        self.state.next_event_cycle()
     }
 
     /// Removes and returns all events due at or before `current_cycle`, ordered
@@ -172,19 +187,14 @@ impl Fm7Scheduler {
         &mut self,
         current_cycle: u64,
     ) -> StackVec<ScheduledEventFm7, EVENT_COUNT> {
+        let indexes = self.state.pop_due::<EVENT_COUNT>(current_cycle);
         let mut due = StackVec::new();
-        for (index, slot) in self.fire_cycles.iter_mut().enumerate() {
-            if let Some(fire_cycle) = *slot
-                && fire_cycle <= current_cycle
-            {
-                due.push(ScheduledEventFm7 {
-                    fire_cycle,
-                    kind: EventFm7::from_index(index),
-                });
-                *slot = None;
-            }
+        for event in indexes.iter() {
+            due.push(ScheduledEventFm7 {
+                fire_cycle: event.fire_cycle,
+                kind: EventFm7::from_index(event.index),
+            });
         }
-        due.sort_by_key(|event: &ScheduledEventFm7| event.fire_cycle);
         due
     }
 }

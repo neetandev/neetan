@@ -5,6 +5,8 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
+use save_state::{AfterRestore, StateValidationError};
+
 use crate::{
     Complex32, Forward, Inverse, Radix, RadixFFT, SampleRate,
     error::ResampleError,
@@ -38,15 +40,34 @@ static FFT_CACHE: LazyLock<Mutex<HashMap<u64, FftCacheData>>> =
 /// `ResamplerFft` uses the overlap-add FFT method with Kaiser windowing to convert audio
 /// between different sample rates. The field channels specifies the
 /// number of audio channels (e.g., 1 for mono, 2 for stereo).
+// savestate: authoritative
 pub struct ResamplerFft {
+    state: ResamplerFftState,
+    resources: ResamplerFftResources,
+    derived: ResamplerFftDerived,
+}
+
+save_state::runtime_state! {
+    /// Authoritative streaming history of an overlap-add FFT resampler.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct ResamplerFftState {
+        saved_frames: usize,
+        overlaps: Vec<f32>,
+    }
+}
+
+struct ResamplerFftResources {
     channels: usize,
-    fft_resampler: FftResampler,
+    sample_rate_input: SampleRate,
+    sample_rate_output: SampleRate,
     chunk_size_input: usize,
     chunk_size_output: usize,
     fft_size_input: usize,
     fft_size_output: usize,
-    saved_frames: usize,
-    overlaps: Vec<f32>,
+}
+
+struct ResamplerFftDerived {
+    fft_resampler: FftResampler,
     input_scratch: Vec<f32>,
     output_scratch: Vec<f32>,
 }
@@ -54,11 +75,11 @@ pub struct ResamplerFft {
 impl fmt::Debug for ResamplerFft {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ResamplerFft")
-            .field("channels", &self.channels)
-            .field("chunk_size_input", &self.chunk_size_input)
-            .field("chunk_size_output", &self.chunk_size_output)
-            .field("fft_size_input", &self.fft_size_input)
-            .field("fft_size_output", &self.fft_size_output)
+            .field("channels", &self.resources.channels)
+            .field("chunk_size_input", &self.resources.chunk_size_input)
+            .field("chunk_size_output", &self.resources.chunk_size_output)
+            .field("fft_size_input", &self.resources.fft_size_input)
+            .field("fft_size_output", &self.resources.fft_size_output)
             .finish_non_exhaustive()
     }
 }
@@ -81,49 +102,51 @@ impl ResamplerFft {
         let (fft_size_input, factors_in, fft_size_output, factors_out) =
             config.scale_for_throughput();
 
-        let overlaps: Vec<f32> = vec![0.0; fft_size_output * channels];
-
         let chunk_size_input = fft_size_input * channels;
         let chunk_size_output = fft_size_output * channels;
 
-        let needed_input_buffer_size = chunk_size_input + fft_size_input;
-        let needed_buffer_size_output = chunk_size_output + fft_size_output;
-        let input_scratch: Vec<f32> = vec![0.0; needed_input_buffer_size * channels];
-        let output_scratch: Vec<f32> = vec![0.0; needed_buffer_size_output * channels];
-
-        let saved_frames = 0;
-
-        let fft_resampler = FftResampler::new(
-            u32::from(sample_rate_input),
-            u32::from(sample_rate_output),
-            fft_size_input,
-            factors_in,
-            fft_size_output,
-            factors_out,
-        );
-
-        ResamplerFft {
+        let resources = ResamplerFftResources {
             channels,
+            sample_rate_input,
+            sample_rate_output,
             chunk_size_input,
             chunk_size_output,
             fft_size_input,
             fft_size_output,
-            overlaps,
-            input_scratch,
-            output_scratch,
-            saved_frames,
-            fft_resampler,
+        };
+
+        let needed_input_buffer_size = chunk_size_input + fft_size_input;
+        let needed_buffer_size_output = chunk_size_output + fft_size_output;
+
+        ResamplerFft {
+            state: ResamplerFftState {
+                saved_frames: 0,
+                overlaps: vec![0.0; fft_size_output * channels],
+            },
+            resources,
+            derived: ResamplerFftDerived {
+                fft_resampler: FftResampler::new(
+                    u32::from(sample_rate_input),
+                    u32::from(sample_rate_output),
+                    fft_size_input,
+                    factors_in,
+                    fft_size_output,
+                    factors_out,
+                ),
+                input_scratch: vec![0.0; needed_input_buffer_size * channels],
+                output_scratch: vec![0.0; needed_buffer_size_output * channels],
+            },
         }
     }
 
     /// Returns the size used to store input scratch for 1 channel
     fn input_scratch_ch_size(&self) -> usize {
-        self.chunk_size_input + self.fft_size_input
+        self.resources.chunk_size_input + self.resources.fft_size_input
     }
 
     /// Returns the size used to store output scratch for 1 channel
     fn output_scratch_ch_size(&self) -> usize {
-        self.chunk_size_input + self.fft_size_input
+        self.resources.chunk_size_input + self.resources.fft_size_input
     }
 
     /// Returns the required input buffer size in total f32 values (including all channels).
@@ -131,7 +154,7 @@ impl ResamplerFft {
     /// For example, with a stereo resampler (CHANNEL=2), this returns the total number
     /// of f32 values needed in the interleaved input buffer [L0, R0, L1, R1, ...].
     pub fn chunk_size_input(&self) -> usize {
-        self.chunk_size_input
+        self.resources.chunk_size_input
     }
 
     /// Returns the required output buffer size in total f32 values (including all channels).
@@ -139,7 +162,7 @@ impl ResamplerFft {
     /// For example, with a stereo resampler (CHANNEL=2), this returns the total number
     /// of f32 values needed in the interleaved output buffer [L0, R0, L1, R1, ...].
     pub fn chunk_size_output(&self) -> usize {
-        self.chunk_size_output
+        self.resources.chunk_size_output
     }
 
     /// Returns the algorithmic delay (latency) of the resampler in input samples.
@@ -147,7 +170,7 @@ impl ResamplerFft {
     /// This delay is inherent to the FFT-based overlap-add process and equals
     /// half the FFT input size due to the windowing operation.
     pub fn delay(&self) -> usize {
-        self.fft_size_input / 2
+        self.resources.fft_size_input / 2
     }
 
     /// Processes one chunk of audio, resampling from input to output sample rate.
@@ -178,8 +201,8 @@ impl ResamplerFft {
     /// }
     /// ```
     pub fn resample(&mut self, input: &[f32], output: &mut [f32]) -> Result<(), ResampleError> {
-        let expected_input_len = self.chunk_size_input;
-        let min_output_len = self.chunk_size_output;
+        let expected_input_len = self.resources.chunk_size_input;
+        let min_output_len = self.resources.chunk_size_output;
 
         if input.len() < expected_input_len {
             return Err(ResampleError::InvalidInputBufferSize);
@@ -192,49 +215,117 @@ impl ResamplerFft {
         let in_scratch_ch_len = self.input_scratch_ch_size();
         let out_scratch_ch_len = self.output_scratch_ch_size();
         // Deinterleave input into per-channel scratch buffers.
-        (0..self.fft_size_input).for_each(|frame_index| {
-            (0..self.channels).for_each(|channel| {
-                self.input_scratch[channel * in_scratch_ch_len + frame_index] =
-                    input[frame_index * self.channels + channel];
+        (0..self.resources.fft_size_input).for_each(|frame_index| {
+            (0..self.resources.channels).for_each(|channel| {
+                self.derived.input_scratch[channel * in_scratch_ch_len + frame_index] =
+                    input[frame_index * self.resources.channels + channel];
             });
         });
 
         let (subchunks_to_process, output_scratch_offset) = (
-            self.chunk_size_input / (self.fft_size_input * self.channels),
-            self.saved_frames,
+            self.resources.chunk_size_input
+                / (self.resources.fft_size_input * self.resources.channels),
+            self.state.saved_frames,
         );
 
         // Resample between input and output scratch buffers.
-        for channel in 0..self.channels {
+        for channel in 0..self.resources.channels {
             let start = channel * in_scratch_ch_len;
             let end = start + in_scratch_ch_len;
-            for (input_chunk, output_chunk) in self.input_scratch[start..end]
-                .chunks(self.fft_size_input)
+            for (input_chunk, output_chunk) in self.derived.input_scratch[start..end]
+                .chunks(self.resources.fft_size_input)
                 .take(subchunks_to_process)
                 .zip(
-                    self.output_scratch[channel * out_scratch_ch_len + output_scratch_offset..]
-                        .chunks_mut(self.fft_size_output),
+                    self.derived.output_scratch
+                        [channel * out_scratch_ch_len + output_scratch_offset..]
+                        .chunks_mut(self.resources.fft_size_output),
                 )
             {
-                let start = self.fft_size_output * channel;
-                let end = start + self.fft_size_output;
-                self.fft_resampler.resample(
+                let start = self.resources.fft_size_output * channel;
+                let end = start + self.resources.fft_size_output;
+                self.derived.fft_resampler.resample(
                     input_chunk,
                     output_chunk,
-                    &mut self.overlaps[start..end],
+                    &mut self.state.overlaps[start..end],
                 );
             }
         }
 
         // Deinterleave output from per-channel scratch buffers.
-        (0..self.fft_size_output).for_each(|frame_index| {
-            (0..self.channels).for_each(|channel| {
-                output[frame_index * self.channels + channel] =
-                    self.output_scratch[channel * out_scratch_ch_len + frame_index];
+        (0..self.resources.fft_size_output).for_each(|frame_index| {
+            (0..self.resources.channels).for_each(|channel| {
+                output[frame_index * self.resources.channels + channel] =
+                    self.derived.output_scratch[channel * out_scratch_ch_len + frame_index];
             });
         });
 
         Ok(())
+    }
+
+    /// Clones the complete overlap history without copying FFT plans or scratch buffers.
+    pub fn capture_state(&self) -> ResamplerFftState {
+        self.state.clone()
+    }
+
+    /// Replaces overlap history and rebuilds scratch data after validation.
+    pub fn restore_state(&mut self, state: ResamplerFftState) -> Result<(), StateValidationError> {
+        state.validate(&self.resources)?;
+        self.state = state;
+        self.after_restore();
+        Ok(())
+    }
+
+    fn rebuild_derived(resources: &ResamplerFftResources) -> ResamplerFftDerived {
+        let config = ConversionConfig::from_sample_rates(
+            resources.sample_rate_input,
+            resources.sample_rate_output,
+        );
+        let (fft_size_input, factors_input, fft_size_output, factors_output) =
+            config.scale_for_throughput();
+        debug_assert_eq!(fft_size_input, resources.fft_size_input);
+        debug_assert_eq!(fft_size_output, resources.fft_size_output);
+
+        let needed_input_buffer_size = resources.chunk_size_input + resources.fft_size_input;
+        let needed_output_buffer_size = resources.chunk_size_output + resources.fft_size_output;
+        ResamplerFftDerived {
+            fft_resampler: FftResampler::new(
+                u32::from(resources.sample_rate_input),
+                u32::from(resources.sample_rate_output),
+                fft_size_input,
+                factors_input,
+                fft_size_output,
+                factors_output,
+            ),
+            input_scratch: vec![0.0; needed_input_buffer_size * resources.channels],
+            output_scratch: vec![0.0; needed_output_buffer_size * resources.channels],
+        }
+    }
+}
+
+impl ResamplerFftState {
+    fn validate(&self, resources: &ResamplerFftResources) -> Result<(), StateValidationError> {
+        if self.overlaps.len() != resources.fft_size_output * resources.channels {
+            return Err(StateValidationError::new(
+                "FFT overlap history length differs",
+            ));
+        }
+        if self.saved_frames != 0 {
+            return Err(StateValidationError::new(
+                "FFT saved frame count is unsupported",
+            ));
+        }
+        if self.overlaps.iter().any(|sample| !sample.is_finite()) {
+            return Err(StateValidationError::new(
+                "FFT overlap history contains a non-finite sample",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl AfterRestore for ResamplerFft {
+    fn after_restore(&mut self) {
+        self.derived = Self::rebuild_derived(&self.resources);
     }
 }
 
@@ -548,5 +639,42 @@ mod tests {
                 i / 2
             );
         }
+    }
+
+    #[test]
+    fn overlap_state_replay_is_bit_exact() {
+        fn assert_runtime_state<State: save_state::RuntimeState>() {}
+        assert_runtime_state::<ResamplerFftState>();
+
+        let mut resampler = ResamplerFft::new(2, SampleRate::Hz48000, SampleRate::Hz44100);
+        let first_input: Vec<f32> = (0..resampler.chunk_size_input())
+            .map(|index| (index as f32 * 0.019).sin())
+            .collect();
+        let mut warm_output = vec![0.0; resampler.chunk_size_output()];
+        resampler.resample(&first_input, &mut warm_output).unwrap();
+        let captured = resampler.capture_state();
+        let encoded = save_state::encode_runtime_state(&captured);
+        let decoded: ResamplerFftState = save_state::decode_runtime_state(
+            &encoded,
+            resampler.resources.fft_size_output * resampler.resources.channels,
+        )
+        .unwrap();
+
+        let replay_input: Vec<f32> = (0..resampler.chunk_size_input())
+            .map(|index| (index as f32 * 0.027).cos())
+            .collect();
+        let mut first_output = vec![0.0; resampler.chunk_size_output()];
+        resampler
+            .resample(&replay_input, &mut first_output)
+            .unwrap();
+
+        resampler.resample(&first_input, &mut warm_output).unwrap();
+        resampler.restore_state(decoded).unwrap();
+        let mut replay_output = vec![0.0; resampler.chunk_size_output()];
+        resampler
+            .resample(&replay_input, &mut replay_output)
+            .unwrap();
+
+        assert_eq!(first_output, replay_output);
     }
 }

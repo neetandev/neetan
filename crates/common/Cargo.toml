@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [features]
 default = []
-std = []
+std = ["save_state/std"]
 
 [dependencies]
+save_state.workspace = true

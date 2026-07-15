@@ -11,6 +11,33 @@ pub(crate) enum TextUnit {
     Raw(u8),
 }
 
+impl save_state::StateEncode for TextUnit {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Char(character) => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                save_state::StateEncode::encode_state(character, output);
+            }
+            Self::Raw(byte) => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(byte, output);
+            }
+        }
+    }
+}
+
+impl save_state::StateDecode for TextUnit {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Char(save_state::StateDecode::decode_state(decoder)?)),
+            1 => Ok(Self::Raw(save_state::StateDecode::decode_state(decoder)?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
 impl TextUnit {
     pub(crate) fn display_width(self) -> usize {
         match self {
@@ -43,11 +70,15 @@ impl TextUnit {
 }
 
 #[derive(Debug, Clone)]
+/// One logical editor line in its internal character representation.
 pub(crate) struct Line {
     pub(crate) units: Vec<TextUnit>,
 }
 
+state_struct_codec!(Line { units });
+
 #[derive(Debug, Clone)]
+/// Authoritative editor text contents and line-ending style.
 pub(crate) struct TextBuffer {
     pub(crate) path: Vec<u8>,
     pub(crate) lines: Vec<Line>,
@@ -60,6 +91,19 @@ pub(crate) struct TextBuffer {
     pub(crate) read_only: bool,
     pending_lead: Option<u8>,
 }
+
+state_struct_codec!(TextBuffer {
+    path,
+    lines,
+    cursor_line,
+    cursor_index,
+    viewport_top,
+    horizontal_scroll,
+    insert_mode,
+    modified,
+    read_only,
+    pending_lead,
+});
 
 impl TextBuffer {
     pub(crate) fn new(path: Vec<u8>, read_only: bool) -> Self {

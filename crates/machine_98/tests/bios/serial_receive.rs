@@ -48,6 +48,7 @@ fn boot_inject_run_f(serial_bytes: &[u8], code: &[u8]) -> machine_98::Pc9801F {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -63,10 +64,9 @@ fn boot_inject_run_vm(serial_bytes: &[u8], code: &[u8]) -> machine_98::Pc9801Vm 
     }
     write_bytes(&mut machine.bus, TEST_CODE, code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -82,10 +82,8 @@ fn boot_inject_run_vx(serial_bytes: &[u8], code: &[u8]) -> machine_98::Pc9801Vx 
     }
     write_bytes(&mut machine.bus, TEST_CODE, code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
@@ -120,7 +118,7 @@ fn boot_inject_run_ra(serial_bytes: &[u8], code: &[u8]) -> machine_98::Pc9801Ra 
 fn int0ch_vector_f() {
     let mut machine = create_machine_f();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x0C);
     assert!(
@@ -133,7 +131,7 @@ fn int0ch_vector_f() {
 fn int0ch_vector_vm() {
     let mut machine = create_machine_vm();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x0C);
     assert!(
@@ -146,7 +144,7 @@ fn int0ch_vector_vm() {
 fn int0ch_vector_vx() {
     let mut machine = create_machine_vx();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x0C);
     assert!(
@@ -159,7 +157,7 @@ fn int0ch_vector_vx() {
 fn int0ch_vector_ra() {
     let mut machine = create_machine_ra();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x0C);
     assert!(
@@ -176,7 +174,7 @@ fn int0ch_vector_ra() {
 fn serial_receive_single_byte_f() {
     let code = make_serial_init_code(1);
     let machine = boot_inject_run_f(&[0x41], &code);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let count = read_ram_u16(&state.memory.ram, RS_BUF + R_CNT);
     assert_eq!(
@@ -199,7 +197,7 @@ fn serial_receive_single_byte_f() {
 fn serial_receive_single_byte_vm() {
     let code = make_serial_init_code(1);
     let machine = boot_inject_run_vm(&[0x41], &code);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let count = read_ram_u16(&state.memory.ram, RS_BUF + R_CNT);
     assert_eq!(
@@ -222,7 +220,7 @@ fn serial_receive_single_byte_vm() {
 fn serial_receive_single_byte_vx() {
     let code = make_serial_init_code(1);
     let machine = boot_inject_run_vx(&[0x41], &code);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let count = read_ram_u16(&state.memory.ram, RS_BUF + R_CNT);
     assert_eq!(
@@ -245,7 +243,7 @@ fn serial_receive_single_byte_vx() {
 fn serial_receive_single_byte_ra() {
     let code = make_serial_init_code(1);
     let machine = boot_inject_run_ra(&[0x41], &code);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let count = read_ram_u16(&state.memory.ram, RS_BUF + R_CNT);
     assert_eq!(
@@ -272,7 +270,7 @@ fn serial_receive_single_byte_ra() {
 fn serial_receive_multiple_bytes_f() {
     let code = make_serial_init_code(2);
     let machine = boot_inject_run_f(&[0x41, 0x42], &code);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let count = read_ram_u16(&state.memory.ram, RS_BUF + R_CNT);
     assert_eq!(
@@ -292,7 +290,7 @@ fn serial_receive_multiple_bytes_f() {
 fn serial_receive_multiple_bytes_vm() {
     let code = make_serial_init_code(2);
     let machine = boot_inject_run_vm(&[0x41, 0x42], &code);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let count = read_ram_u16(&state.memory.ram, RS_BUF + R_CNT);
     assert_eq!(
@@ -312,7 +310,7 @@ fn serial_receive_multiple_bytes_vm() {
 fn serial_receive_multiple_bytes_vx() {
     let code = make_serial_init_code(2);
     let machine = boot_inject_run_vx(&[0x41, 0x42], &code);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let count = read_ram_u16(&state.memory.ram, RS_BUF + R_CNT);
     assert_eq!(
@@ -332,7 +330,7 @@ fn serial_receive_multiple_bytes_vx() {
 fn serial_receive_multiple_bytes_ra() {
     let code = make_serial_init_code(2);
     let machine = boot_inject_run_ra(&[0x41, 0x42], &code);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let count = read_ram_u16(&state.memory.ram, RS_BUF + R_CNT);
     assert_eq!(
@@ -356,7 +354,7 @@ fn serial_receive_multiple_bytes_ra() {
 fn serial_receive_sends_eoi_f() {
     let code = make_serial_init_code(1);
     let machine = boot_inject_run_f(&[0x41], &code);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[0].isr & 0x10,
@@ -369,7 +367,7 @@ fn serial_receive_sends_eoi_f() {
 fn serial_receive_sends_eoi_vm() {
     let code = make_serial_init_code(1);
     let machine = boot_inject_run_vm(&[0x41], &code);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[0].isr & 0x10,
@@ -382,7 +380,7 @@ fn serial_receive_sends_eoi_vm() {
 fn serial_receive_sends_eoi_vx() {
     let code = make_serial_init_code(1);
     let machine = boot_inject_run_vx(&[0x41], &code);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[0].isr & 0x10,
@@ -395,7 +393,7 @@ fn serial_receive_sends_eoi_vx() {
 fn serial_receive_sends_eoi_ra() {
     let code = make_serial_init_code(1);
     let machine = boot_inject_run_ra(&[0x41], &code);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[0].isr & 0x10,
@@ -421,11 +419,12 @@ fn serial_receive_so_not_buffered_f() {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(SERIAL_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let count = read_ram_u16(&state.memory.ram, RS_BUF + R_CNT);
     assert_eq!(
         count, 0,
@@ -447,15 +446,14 @@ fn serial_receive_so_not_buffered_vm() {
     let code = make_serial_init_code(1);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(SERIAL_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let count = read_ram_u16(&state.memory.ram, RS_BUF + R_CNT);
     assert_eq!(
         count, 0,
@@ -481,11 +479,12 @@ fn serial_receive_si_clears_shift_out_f() {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(SERIAL_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let count = read_ram_u16(&state.memory.ram, RS_BUF + R_CNT);
     assert_eq!(
         count, 0,
@@ -507,15 +506,14 @@ fn serial_receive_si_clears_shift_out_vm() {
     let code = make_serial_init_code(1);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(SERIAL_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let count = read_ram_u16(&state.memory.ram, RS_BUF + R_CNT);
     assert_eq!(
         count, 0,
@@ -541,11 +539,12 @@ fn serial_receive_so_sets_bit7_on_data_f() {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(SERIAL_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let entry = read_ram_u16(&state.memory.ram, DATA_BUF_START);
     assert_eq!(
         (entry >> 8) as u8,
@@ -563,15 +562,14 @@ fn serial_receive_so_sets_bit7_on_data_vm() {
     let code = make_serial_init_code(1);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(SERIAL_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let entry = read_ram_u16(&state.memory.ram, DATA_BUF_START);
     assert_eq!(
         (entry >> 8) as u8,
@@ -593,11 +591,12 @@ fn serial_receive_si_clears_bit7_on_data_f() {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(SERIAL_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let entry = read_ram_u16(&state.memory.ram, DATA_BUF_START);
     assert_eq!(
         (entry >> 8) as u8,
@@ -615,15 +614,14 @@ fn serial_receive_si_clears_bit7_on_data_vm() {
     let code = make_serial_init_code(1);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(SERIAL_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let entry = read_ram_u16(&state.memory.ram, DATA_BUF_START);
     assert_eq!(
         (entry >> 8) as u8,

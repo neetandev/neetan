@@ -1,6 +1,7 @@
 use super::{STATUS_DATA_READY, STATUS_FIFO_EMPTY, STATUS_FIFO_FULL};
 
-/// Read FIFO state for the GDC (16-byte circular buffer).
+save_state::runtime_state! {
+/// Authoritative read FIFO state for the GDC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FifoState {
     /// FIFO buffer.
@@ -9,7 +10,7 @@ pub struct FifoState {
     pub count: u8,
     /// Current read position.
     pub read_pos: u8,
-}
+}}
 
 impl Default for FifoState {
     fn default() -> Self {

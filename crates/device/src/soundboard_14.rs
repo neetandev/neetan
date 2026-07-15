@@ -8,14 +8,15 @@
 
 pub mod tms3631;
 
-use tms3631::Tms3631;
+use tms3631::{Tms3631, Tms3631State};
 
+save_state::runtime_state_enum! {
 /// Timers exposed by the PC-9801-14 board.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Soundboard14Timer {
     /// Counter 2 terminal count.
-    Timer,
-}
+    Timer = 0,
+}}
 
 /// Default IRQ line: strap SW defaults to INT5 which maps to IRQ 12.
 const DEFAULT_IRQ_LINE: u8 = 12;
@@ -56,7 +57,55 @@ pub enum Soundboard14Action {
     },
 }
 
-/// Port C handshake decoder state.
+impl save_state::StateEncode for Soundboard14Action {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::ScheduleTimer { kind, fire_cycle } => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                save_state::StateEncode::encode_state(kind, output);
+                save_state::StateEncode::encode_state(fire_cycle, output);
+            }
+            Self::CancelTimer { kind } => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(kind, output);
+            }
+            Self::AssertIrq { irq } => {
+                save_state::StateEncode::encode_state(&2u8, output);
+                save_state::StateEncode::encode_state(irq, output);
+            }
+            Self::DeassertIrq { irq } => {
+                save_state::StateEncode::encode_state(&3u8, output);
+                save_state::StateEncode::encode_state(irq, output);
+            }
+        }
+    }
+}
+
+impl save_state::StateDecode for Soundboard14Action {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::ScheduleTimer {
+                kind: save_state::StateDecode::decode_state(decoder)?,
+                fire_cycle: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            1 => Ok(Self::CancelTimer {
+                kind: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            2 => Ok(Self::AssertIrq {
+                irq: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            3 => Ok(Self::DeassertIrq {
+                irq: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+save_state::runtime_state! {
+/// Authoritative Port C handshake state.
 ///
 /// Port C on the 8255A PPI carries bit 7 = CE, bit 6 = WCLK, bits 5:0 = key
 /// data. The TMS3631 latches one channel per WCLK pulse, starting from CH1
@@ -69,9 +118,10 @@ pub struct PortCState {
     pub channel: u8,
     /// Handshake-armed flag (latched on CE rising edge).
     pub sync: bool,
-}
+}}
 
-/// 8253 counter #2 state (the only channel exposed on this board).
+save_state::runtime_state! {
+/// Authoritative board PIT state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Pit8253State {
     /// Control-word register (from 0x018E writes). 0 means no mode loaded.
@@ -86,9 +136,10 @@ pub struct Pit8253State {
     pub start_cycle: u64,
     /// Current CPU-clock frequency (needed to convert PIT ticks to cycles).
     pub cpu_clock_hz: u32,
-}
+}}
 
-/// Snapshot of PC-9801-14 state.
+save_state::runtime_state! {
+/// Register and timer state of the PC-9801-14 board.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Soundboard14State {
     /// 8255A Port A (envelope 1 latch; otherwise unused).
@@ -107,7 +158,17 @@ pub struct Soundboard14State {
     pub irq_line: u8,
     /// Whether the IRQ output is currently asserted.
     pub irq_asserted: bool,
-}
+}}
+
+save_state::runtime_state! {
+/// Complete PC-9801-14 synthesis and pending-action state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Soundboard14RuntimeState {
+    board: Soundboard14State,
+    chip: Tms3631State,
+    cpu_clock_hz: u32,
+    pending_actions: Vec<Soundboard14Action>,
+}}
 
 impl Default for Soundboard14State {
     fn default() -> Self {
@@ -150,6 +211,36 @@ impl Soundboard14 {
             pending_actions: Vec::new(),
             action_buffer: Vec::new(),
         }
+    }
+
+    /// Captures phases, registers, timing, and pending actions.
+    pub fn capture_state(&self) -> Soundboard14RuntimeState {
+        Soundboard14RuntimeState {
+            board: self.state.clone(),
+            chip: self.chip.capture_state(),
+            cpu_clock_hz: self.cpu_clock_hz,
+            pending_actions: self.pending_actions.clone(),
+        }
+    }
+
+    /// Restores synthesis state without resetting the TMS3631.
+    pub fn restore_state(
+        &mut self,
+        state: Soundboard14RuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.cpu_clock_hz != self.cpu_clock_hz
+            || state.board.pit.cpu_clock_hz != self.cpu_clock_hz
+            || state.board.port_c.channel >= tms3631::CHANNEL_COUNT as u8
+        {
+            return Err(save_state::StateValidationError::new(
+                "PC-9801-14 configuration or channel state differs",
+            ));
+        }
+        self.state = state.board;
+        self.chip.restore_state(state.chip);
+        self.pending_actions = state.pending_actions;
+        self.action_buffer.clear();
+        Ok(())
     }
 
     /// Returns the configured IRQ line number.

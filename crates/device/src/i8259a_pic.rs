@@ -71,7 +71,8 @@ const OCW3_SMM: u8 = 0x20;
 /// OCW3 enable special mask mode (bit 6): must be 1 to update SMM.
 const OCW3_ESMM: u8 = 0x40;
 
-/// Snapshot of a single i8259A PIC chip.
+save_state::runtime_state! {
+/// Authoritative state of a single i8259A PIC chip.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I8259aPicChipState {
     /// Initialization command words (ICW1-ICW4).
@@ -88,14 +89,15 @@ pub struct I8259aPicChipState {
     pub pry: u8,
     /// ICW write sequence index.
     pub write_icw: u8,
-}
+}}
 
-/// Snapshot of the dual i8259A PIC.
+save_state::runtime_state! {
+/// Authoritative state of the dual i8259A PIC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I8259aPicState {
     /// Master (index 0) and slave (index 1) chip snapshots.
     pub chips: [I8259aPicChipState; 2],
-}
+}}
 
 enum PendingIrq {
     Master(u8),
@@ -165,6 +167,30 @@ impl I8259aPic {
             },
             irq_cache: Cell::new(None),
         }
+    }
+
+    /// Captures both controller chips.
+    pub fn capture_state(&self) -> I8259aPicState {
+        self.state.clone()
+    }
+
+    /// Restores both chips and invalidates the derived IRQ cache.
+    pub fn restore_state(
+        &mut self,
+        state: I8259aPicState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state
+            .chips
+            .iter()
+            .any(|chip| chip.pry > 7 || chip.write_icw > 4)
+        {
+            return Err(save_state::StateValidationError::new(
+                "i8259A priority or initialization position is invalid",
+            ));
+        }
+        self.state = state;
+        self.invalidate_irq_cache();
+        Ok(())
     }
 
     /// Creates a new PIC pair with all registers zeroed.

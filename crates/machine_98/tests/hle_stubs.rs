@@ -234,10 +234,9 @@ fn hle_int1ah_dos_chain_vm() {
     let code = make_printer_status_test();
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -267,10 +266,8 @@ fn hle_int1ah_dos_chain_vx() {
     let code = make_printer_status_test();
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });

@@ -30,13 +30,14 @@ fn keycode_for(id: u8) -> u8 {
     }
 }
 
+save_state::runtime_state! {
 /// Keyboard sub-controller state.
 #[derive(Debug, Clone, Default)]
 pub struct SubHle {
     current_keycode: u8,
     pending_keycode: u8,
     last_scanned: u8,
-}
+}}
 
 impl SubHle {
     /// Creates an idle sub-controller.

@@ -208,6 +208,7 @@ fn build_initial_state(test: &MooTest) -> V30State {
     state.set_es(get("es"));
     state.ip = get("ip");
     state.set_compressed_flags(get("flags"));
+    state.initialize_cold_frontend();
     state
 }
 

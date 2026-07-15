@@ -21,6 +21,7 @@ pub struct CrtcChangeX68k {
     pub display: bool,
 }
 
+save_state::runtime_state! {
 /// CRTC output signal state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CrtcSignalsX68k {
@@ -30,7 +31,7 @@ pub struct CrtcSignalsX68k {
     pub vertical_display: bool,
     /// Active-low raster interrupt output.
     pub raster_interrupt: bool,
-}
+}}
 
 /// Current CRTC beam position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +98,7 @@ pub enum GvramModeX68k {
     Colors16Virtual1024,
 }
 
+save_state::runtime_state! {
 /// Sharp X68000 CRTC.
 #[derive(Debug, Clone)]
 pub struct CrtcX68k {
@@ -110,6 +112,18 @@ pub struct CrtcX68k {
     frame_count: u64,
     odd_field: bool,
     signals: CrtcSignalsX68k,
+}}
+
+impl CrtcX68k {
+    /// Captures complete CRTC register and beam timing state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores complete CRTC register and beam timing state.
+    pub fn restore_state(&mut self, state: Self) {
+        *self = state;
+    }
 }
 
 impl Default for CrtcX68k {

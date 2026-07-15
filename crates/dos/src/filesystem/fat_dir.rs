@@ -28,6 +28,17 @@ pub(crate) struct DirEntry {
     pub dir_offset: u16,
 }
 
+state_struct_codec!(DirEntry {
+    name,
+    attribute,
+    time,
+    date,
+    start_cluster,
+    file_size,
+    dir_sector,
+    dir_offset,
+});
+
 impl DirEntry {
     /// Serializes the entry back to a 32-byte buffer.
     pub fn to_bytes(&self) -> [u8; 32] {

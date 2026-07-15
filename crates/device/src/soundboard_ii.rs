@@ -13,6 +13,16 @@ const YM2608_CLOCK_HZ: u32 = 7_987_200;
 /// Idle joystick/mouse readback (active-low: nothing pressed).
 const JOYSTICK_IDLE: u8 = 0xFF;
 
+save_state::runtime_state! {
+/// Complete mutable Sound Board II state.
+#[derive(Clone)]
+pub struct SoundboardIIState {
+    core: crate::opn_fm::OpnFmState<ymfm_oxide::Ym2608State, ymfm_oxide::YmfmOutput3>,
+    address_low: u8,
+    joyport_a: u8,
+    joyport_b: u8,
+}}
+
 /// PC-8801 Sound Board II: YM2608 (OPNA) FM + SSG + ADPCM with resampling.
 pub struct SoundboardII {
     core: OpnFm<Ym2608>,
@@ -122,6 +132,28 @@ impl SoundboardII {
     ) {
         self.core
             .generate_samples(current_cycle, cpu_clock_hz, volume, output);
+    }
+
+    /// Captures the chip, resampler, timer, and port state.
+    pub fn capture_state(&self) -> SoundboardIIState {
+        SoundboardIIState {
+            core: self.core.capture_state(),
+            address_low: self.address_low,
+            joyport_a: self.joyport_a,
+            joyport_b: self.joyport_b,
+        }
+    }
+
+    /// Restores the chip, resampler, timer, and port state.
+    pub fn restore_state(
+        &mut self,
+        state: SoundboardIIState,
+    ) -> Result<(), save_state::StateValidationError> {
+        self.core.restore_state(state.core)?;
+        self.address_low = state.address_low;
+        self.joyport_a = state.joyport_a;
+        self.joyport_b = state.joyport_b;
+        Ok(())
     }
 }
 

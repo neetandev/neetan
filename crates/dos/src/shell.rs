@@ -21,6 +21,37 @@ pub(crate) enum RedirectSpec {
     Append(Vec<u8>),
 }
 
+impl save_state::StateEncode for RedirectSpec {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Overwrite(path) => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                save_state::StateEncode::encode_state(path, output);
+            }
+            Self::Append(path) => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(path, output);
+            }
+        }
+    }
+}
+
+impl save_state::StateDecode for RedirectSpec {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Overwrite(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            1 => Ok(Self::Append(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
 impl RedirectSpec {
     pub(crate) fn filename(&self) -> &[u8] {
         match self {
@@ -29,22 +60,41 @@ impl RedirectSpec {
     }
 }
 
+#[derive(Clone)]
+/// Parsed shell command with redirection and pipeline metadata.
 struct ParsedCommand {
     command: Vec<u8>,
     output_redirect: Option<RedirectSpec>,
     input_file: Option<Vec<u8>>,
 }
 
+state_struct_codec!(ParsedCommand {
+    command,
+    output_redirect,
+    input_file,
+});
+
+#[derive(Clone)]
+/// Shell command waiting for its pipeline input or dispatch turn.
 struct PendingCommand {
     parsed: ParsedCommand,
 }
 
+state_struct_codec!(PendingCommand { parsed });
+
 /// An external program (.COM or .EXE) to be EXECed from the shell.
+#[derive(Clone)]
 pub(crate) struct PendingExec {
     pub path: Vec<u8>,
     pub args: Vec<u8>,
     pub output_redirect: Option<RedirectSpec>,
 }
+
+state_struct_codec!(PendingExec {
+    path,
+    args,
+    output_redirect,
+});
 
 const SCAN_INSERT: u8 = 0x38;
 const SCAN_DELETE: u8 = 0x39;
@@ -55,6 +105,8 @@ const SCAN_DOWN: u8 = 0x3D;
 const SCAN_HOME: u8 = 0x3E;
 const SCAN_END: u8 = 0x3F;
 
+#[derive(Clone)]
+/// Authoritative shell command-line editing state.
 pub(crate) struct LineEditor {
     buffer: Vec<u8>,
     cursor: usize,
@@ -62,6 +114,14 @@ pub(crate) struct LineEditor {
     insert_mode: bool,
     saved_line: Option<Vec<u8>>,
 }
+
+state_struct_codec!(LineEditor {
+    buffer,
+    cursor,
+    prompt_col,
+    insert_mode,
+    saved_line,
+});
 
 impl LineEditor {
     fn new(prompt_col: u8) -> Self {
@@ -75,6 +135,7 @@ impl LineEditor {
     }
 }
 
+#[derive(Clone)]
 pub(crate) enum ShellPhase {
     ShowPrompt,
     ReadingInput(LineEditor),
@@ -83,6 +144,49 @@ pub(crate) enum ShellPhase {
     ExecutingBatch(Box<batch::BatchState>),
 }
 
+impl save_state::StateEncode for ShellPhase {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::ShowPrompt => save_state::StateEncode::encode_state(&0u8, output),
+            Self::ReadingInput(editor) => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(editor, output);
+            }
+            Self::ExecutingCommand(command) => {
+                save_state::StateEncode::encode_state(&2u8, output);
+                save_state::StateEncode::encode_state(command, output);
+            }
+            Self::WaitingForChild => save_state::StateEncode::encode_state(&3u8, output),
+            Self::ExecutingBatch(batch) => {
+                save_state::StateEncode::encode_state(&4u8, output);
+                save_state::StateEncode::encode_state(batch, output);
+            }
+        }
+    }
+}
+
+impl save_state::StateDecode for ShellPhase {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::ShowPrompt),
+            1 => Ok(Self::ReadingInput(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            2 => Ok(Self::ExecutingCommand(
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            3 => Ok(Self::WaitingForChild),
+            4 => Ok(Self::ExecutingBatch(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+/// Complete authoritative state of one COMMAND.COM shell session.
 pub(crate) struct Shell {
     pub(crate) phase: ShellPhase,
     history: History,
@@ -107,10 +211,65 @@ pub(crate) struct Shell {
     pub(crate) pending_terminate: Option<u8>,
 }
 
+impl Clone for Shell {
+    fn clone(&self) -> Self {
+        Self {
+            phase: self.phase.clone(),
+            history: self.history.clone(),
+            commands: Self::build_commands(),
+            echo_on: self.echo_on,
+            last_exit_code: self.last_exit_code,
+            boot_banner_shown: self.boot_banner_shown,
+            pending_commands: self.pending_commands.clone(),
+            current_redirect: self.current_redirect.clone(),
+            redirect_buffer: self.redirect_buffer.clone(),
+            pipe_input: self.pipe_input.clone(),
+            startup_command: self.startup_command.clone(),
+            terminate_after_command: self.terminate_after_command,
+            allow_exit: self.allow_exit,
+            owner_psp: self.owner_psp,
+            pending_exec: self.pending_exec.clone(),
+            child_output_redirect: self.child_output_redirect.clone(),
+            pending_terminate: self.pending_terminate,
+        }
+    }
+}
+
+state_struct_codec_with_resources!(Shell {
+    state {
+        phase,
+        history,
+        echo_on,
+        last_exit_code,
+        boot_banner_shown,
+        pending_commands,
+        current_redirect,
+        redirect_buffer,
+        pipe_input,
+        startup_command,
+        terminate_after_command,
+        allow_exit,
+        owner_psp,
+        pending_exec,
+        child_output_redirect,
+        pending_terminate,
+    }
+    resources {
+        commands: Self::build_commands(),
+    }
+});
+
+#[derive(Clone)]
+/// Parent output handles retained while a child process runs.
 pub(crate) struct ChildOutputRedirect {
     pub saved_stdout_sft: u8,
     pub redirect_handle: u16,
 }
+
+state_struct_codec!(ChildOutputRedirect {
+    saved_stdout_sft,
+    redirect_handle,
+});
 
 impl Shell {
     fn build_commands() -> Vec<Box<dyn Command>> {
@@ -140,6 +299,30 @@ impl Shell {
             Box::new(commands::type_cmd::TypeCmd),
             Box::new(commands::xcopy::Xcopy),
         ]
+    }
+
+    /// Prepares retained host resources for restored shell progress.
+    pub(crate) fn prepare_restore(&mut self) -> Result<(), save_state::StateValidationError> {
+        match &mut self.phase {
+            ShellPhase::ExecutingCommand(command) => commands::prepare_restore(command),
+            ShellPhase::ExecutingBatch(batch) => batch.prepare_restore(),
+            ShellPhase::ShowPrompt | ShellPhase::ReadingInput(_) | ShellPhase::WaitingForChild => {
+                Ok(())
+            }
+        }
+    }
+
+    /// Returns the command currently owned by this shell.
+    pub(crate) fn active_command_name(&self) -> Option<&'static str> {
+        match &self.phase {
+            ShellPhase::ExecutingCommand(command) => {
+                Some(commands::running_command_name(command.as_ref()))
+            }
+            ShellPhase::ExecutingBatch(batch) => batch.active_command_name(),
+            ShellPhase::ShowPrompt | ShellPhase::ReadingInput(_) | ShellPhase::WaitingForChild => {
+                None
+            }
+        }
     }
 
     pub(crate) fn new(command_com_psp: u16) -> Self {

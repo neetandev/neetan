@@ -9,6 +9,8 @@ use crate::{MemoryAccess, memory, tables::*};
 
 pub(crate) const EXTENDED_RAM_BASE: u32 = 0x100000;
 
+#[derive(Clone)]
+/// Decoded parameters of an active EMS memory move.
 pub(crate) struct EmsMoveParams {
     pub region_length: u32,
     pub src_type: u8,
@@ -20,6 +22,17 @@ pub(crate) struct EmsMoveParams {
     pub dst_offset: u16,
     pub dst_seg_page: u16,
 }
+state_struct_codec!(EmsMoveParams {
+    region_length,
+    src_type,
+    src_handle,
+    src_offset,
+    src_seg_page,
+    dst_type,
+    dst_handle,
+    dst_offset,
+    dst_seg_page,
+});
 const EMS_PAGE_FRAME_BASE: u32 = 0xC0000;
 const EMS_PAGE_SIZE: u32 = 0x4000;
 const PAGE_SIZE_4K: u32 = 0x1000;
@@ -37,12 +50,20 @@ enum EmsTransferRegion {
 }
 
 #[derive(Clone, Copy)]
+/// Saved EMS page-map context for an alter-map call.
 pub(crate) struct EmsPageMapCallContext {
     pub(crate) segphys_mode: u8,
     pub(crate) handle: u16,
     pub(crate) old_len: u8,
     pub(crate) old_map_addr: u32,
 }
+
+state_struct_codec!(EmsPageMapCallContext {
+    segphys_mode,
+    handle,
+    old_len,
+    old_map_addr,
+});
 
 fn physical_page_for_segment(segment: u16) -> Option<usize> {
     match segment {
@@ -55,18 +76,34 @@ fn physical_page_for_segment(segment: u16) -> Option<usize> {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// One logical-to-physical EMS page mapping.
 pub(crate) struct EmsMapping {
     pub(crate) handle: u16,
     pub(crate) logical_page: u16,
     pub(crate) allocation_offset: u32,
 }
 
+state_struct_codec!(EmsMapping {
+    handle,
+    logical_page,
+    allocation_offset,
+});
+
+#[derive(Clone)]
+/// Authoritative allocation and mapping state of one EMS handle.
 struct EmsHandle {
     active: bool,
     pages: Vec<Allocation>,
     name: [u8; 8],
     save_context: Option<[Option<EmsMapping>; PHYSICAL_PAGES]>,
 }
+
+state_struct_codec!(EmsHandle {
+    active,
+    pages,
+    name,
+    save_context,
+});
 
 impl EmsHandle {
     fn new_inactive() -> Self {
@@ -79,12 +116,21 @@ impl EmsHandle {
     }
 }
 
+#[derive(Clone)]
+/// Authoritative allocation and lock state of one XMS handle.
 struct XmsHandle {
     active: bool,
     allocation: Option<Allocation>,
     size_kb: u32,
     lock_count: u8,
 }
+
+state_struct_codec!(XmsHandle {
+    active,
+    allocation,
+    size_kb,
+    lock_count,
+});
 
 impl XmsHandle {
     fn new_inactive() -> Self {
@@ -97,6 +143,8 @@ impl XmsHandle {
     }
 }
 
+#[derive(Clone)]
+/// Complete authoritative EMS, XMS, HMA, and UMB manager state.
 pub(crate) struct MemoryManager {
     allocator: BestFitAllocator,
     extended_memory_size: u32,
@@ -133,7 +181,47 @@ pub(crate) struct MemoryManager {
     ems_page_map_call_stack: Vec<EmsPageMapCallContext>,
 }
 
+state_struct_codec!(MemoryManager {
+    allocator,
+    extended_memory_size,
+    allocator_base_offset,
+    hma_exists,
+    ems_enabled,
+    ems_handles,
+    ems_page_mapping,
+    xms_enabled,
+    xms_32_enabled,
+    xms_handles,
+    hma_allocated,
+    umb_enabled,
+    umb_first_mcb_segment,
+    a20_global_enabled,
+    a20_local_enable_count,
+    hmamin_kb,
+    ems_os_access_key,
+    ems_os_functions_enabled,
+    ems_os_next_access_key,
+    ems_alt_map_context_save_area,
+    ems_page_map_call_stack,
+});
+
 impl MemoryManager {
+    pub(crate) fn validate_state(&self) -> Result<(), save_state::StateValidationError> {
+        if self.ems_handles.len() != MAX_EMS_HANDLES
+            || self.xms_handles.len() != MAX_XMS_HANDLES
+            || self.ems_page_map_call_stack.len() > 64
+            || self.ems_page_mapping.iter().flatten().any(|mapping| {
+                mapping.handle as usize >= self.ems_handles.len()
+                    || !self.ems_handles[mapping.handle as usize].active
+            })
+        {
+            return Err(save_state::StateValidationError::new(
+                "HLE DOS memory manager state is invalid",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn new(
         extended_memory_size: u32,
         ems_enabled: bool,

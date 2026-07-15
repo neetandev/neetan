@@ -8,11 +8,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Allocated region returned by the DOS best-fit allocator.
 pub(crate) struct Allocation {
     offset: u32,
     allocation_id: u32,
     generation: u32,
 }
+
+state_struct_codec!(Allocation {
+    offset,
+    allocation_id,
+    generation,
+});
 
 impl Allocation {
     #[inline(always)]
@@ -28,21 +35,33 @@ pub(crate) const ALIGN_MASK: u64 = (ALIGN_SIZE as u64) - 1;
 const BLOCK_SIZE_MIN: u32 = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One free interval in the DOS best-fit allocator.
 struct FreeRegion {
     size: u32,
 }
 
+state_struct_codec!(FreeRegion { size });
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One live interval in the DOS best-fit allocator.
 struct ActiveAllocation {
     offset: u32,
     size: u32,
 }
 
+state_struct_codec!(ActiveAllocation { offset, size });
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Occupancy state of one allocator slot.
 struct AllocationSlot {
     allocation: Option<ActiveAllocation>,
     generation: u32,
 }
+
+state_struct_codec!(AllocationSlot {
+    allocation,
+    generation,
+});
 
 impl AllocationSlot {
     fn new() -> Self {
@@ -53,7 +72,8 @@ impl AllocationSlot {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
+/// Authoritative free and allocated region state for one DOS memory pool.
 pub(crate) struct BestFitAllocator {
     size: u32,
     free_by_offset: BTreeMap<u32, FreeRegion>,
@@ -63,6 +83,16 @@ pub(crate) struct BestFitAllocator {
     active_count: u32,
     total_free_size: u32,
 }
+
+state_struct_codec!(BestFitAllocator {
+    size,
+    free_by_offset,
+    free_by_size,
+    active_allocations,
+    reusable_allocation_ids,
+    active_count,
+    total_free_size,
+});
 
 impl BestFitAllocator {
     pub(crate) fn new(size: u32) -> Self {

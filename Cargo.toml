@@ -7,6 +7,7 @@ authors = ["Nils Hasenbanck <nils@hasenbanck.de>"]
 edition = "2024"
 license = "BSD-3-Clause"
 rust-version = "1.95"
+version = "2026.7.0"
 
 [workspace.dependencies]
 # Internal dependencies
@@ -27,6 +28,7 @@ machine_towns = { path = "crates/machine_towns" }
 machine_x68k = { path = "crates/machine_x68k" }
 machine_x1 = { path = "crates/machine_x1" }
 resampler = { path = "crates/resampler" }
+save_state = { path = "crates/save_state" }
 sdl3 = { path = "crates/sdl3" }
 sdl3_backend = { path = "crates/sdl3_backend" }
 software_renderer = { path = "crates/software_renderer" }
@@ -42,7 +44,7 @@ zlib-rs = { version = "0.6", default-features = false, features = ["rust-allocat
 
 [package]
 name = "neetan"
-version = "2026.7.0"
+version.workspace = true
 publish = false
 authors.workspace = true
 edition.workspace = true
@@ -73,6 +75,7 @@ machine_towns = { workspace = true }
 machine_x68k = { workspace = true }
 machine_x1 = { workspace = true }
 dos = { workspace = true }
+save_state = { workspace = true }
 sdl3 = { workspace = true }
 sdl3_backend = { workspace = true }
 software_renderer = { workspace = true }

@@ -79,6 +79,7 @@ pub(crate) const SM_DEV_TIMER: usize = 0x1E;
 pub(crate) const SM_DEV_TIMER_CTRL: usize = 0x1F;
 
 #[derive(Default, Clone, Copy)]
+/// Complete authoritative state of the SC-55 sub-MCU.
 pub(crate) struct SubMcuState {
     pub pc: u16,
     pub a: u8,
@@ -89,6 +90,17 @@ pub(crate) struct SubMcuState {
     pub cycles: u64,
     pub sleep: u8,
 }
+
+crate::impl_state_codec!(SubMcuState {
+    pc,
+    a,
+    x,
+    y,
+    s,
+    sr,
+    cycles,
+    sleep,
+});
 
 fn sm_read(state: &mut Sc55State, address: u16) -> u8 {
     let address = address & 0x1FFF;

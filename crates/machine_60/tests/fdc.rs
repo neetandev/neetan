@@ -1,6 +1,7 @@
 //! Built-in uPD765A FDC tests, driven over the PIO data port. The PC-6601 and
 //! PC-6601SR share the same non-intelligent interface.
 
+use common::Machine;
 use device::floppy::{D88MediaType, D88Sector};
 use machine_60::{Pc6000Bus, Pc6000Machine, Pc6000Model};
 
@@ -103,6 +104,33 @@ fn pio_read_streams_a_sector() {
     let result: Vec<u8> = (0..7).map(|_| bus.io_read(0xDD).0).collect();
     assert_eq!(result[0] & 0xC0, 0x00, "normal termination");
     assert_eq!(result[5], 1, "result reports the last sector read");
+}
+
+#[test]
+fn save_state_replays_a_partial_pio_sector() {
+    let mut machine = machine_with_disk(Pc6000Model::Pc6601, vec![make_sector(1, 1, 0x20)]);
+    issue_read(&mut machine.bus, 1);
+    for _ in 0..37 {
+        read_ready_byte(&mut machine.bus);
+    }
+    let snapshot = machine.capture_state().unwrap();
+
+    let expected: Vec<u8> = (37..SECTOR_SIZE)
+        .map(|_| read_ready_byte(&mut machine.bus))
+        .collect();
+    let expected_result: Vec<u8> = (0..7).map(|_| machine.bus.io_read(0xDD).0).collect();
+    let expected_state = machine.capture_state().unwrap();
+
+    machine.restore_state(&snapshot).unwrap();
+    let replayed: Vec<u8> = (37..SECTOR_SIZE)
+        .map(|_| read_ready_byte(&mut machine.bus))
+        .collect();
+    let replayed_result: Vec<u8> = (0..7).map(|_| machine.bus.io_read(0xDD).0).collect();
+    let replayed_state = machine.capture_state().unwrap();
+
+    assert_eq!(replayed, expected);
+    assert_eq!(replayed_result, expected_result);
+    assert_eq!(replayed_state.payload(), expected_state.payload());
 }
 
 #[test]

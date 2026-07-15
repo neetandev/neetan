@@ -4,7 +4,7 @@
 
 use std::{
     fs,
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::PathBuf,
 };
 
@@ -36,6 +36,7 @@ impl Command for Copy {
 const KB_BUF_COUNT: u32 = 0x0528;
 const HOST_CHUNK_BYTES: usize = 4096;
 
+#[derive(Clone)]
 enum ArgKind {
     Dos(Vec<u8>),
     Host(PathBuf),
@@ -50,18 +51,56 @@ fn parse_arg(token: &[u8]) -> ArgKind {
     }
 }
 
+#[derive(Clone)]
+/// Parsed DOS wildcard source and destination specification.
 struct DosPatternSpec {
     drive: u8,
     directory: ReadDirectory,
     pattern: [u8; 11],
 }
 
+state_struct_codec!(DosPatternSpec {
+    drive,
+    directory,
+    pattern,
+});
+
+#[derive(Clone)]
 enum WorkItem {
     EnumerateDos(EnumerateDos),
     EnumerateHost(EnumerateHost),
     File(FileJob),
 }
 
+impl save_state::StateEncode for WorkItem {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::EnumerateDos(state) => encode_tagged(0, state, output),
+            Self::EnumerateHost(state) => encode_tagged(1, state, output),
+            Self::File(state) => encode_tagged(2, state, output),
+        }
+    }
+}
+
+impl save_state::StateDecode for WorkItem {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::EnumerateDos(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            1 => Ok(Self::EnumerateHost(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            2 => Ok(Self::File(save_state::StateDecode::decode_state(decoder)?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
+/// Progress while enumerating DOS files for COPY.
 struct EnumerateDos {
     src_drive: u8,
     src_directory: ReadDirectory,
@@ -69,10 +108,21 @@ struct EnumerateDos {
     search_index: u16,
 }
 
+state_struct_codec!(EnumerateDos {
+    src_drive,
+    src_directory,
+    dst,
+    search_index,
+});
+
+#[derive(Clone)]
+/// Progress while enumerating host files for COPY.
 struct EnumerateHost {
     src_path: PathBuf,
     dst: DirHandle,
 }
+
+state_struct_codec!(EnumerateHost { src_path, dst });
 
 #[derive(Clone)]
 enum DirHandle {
@@ -80,17 +130,87 @@ enum DirHandle {
     Host { path: PathBuf },
 }
 
+impl save_state::StateEncode for DirHandle {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Dos { drive, dir_cluster } => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                save_state::StateEncode::encode_state(drive, output);
+                save_state::StateEncode::encode_state(dir_cluster, output);
+            }
+            Self::Host { path } => encode_tagged(1, path, output),
+        }
+    }
+}
+
+impl save_state::StateDecode for DirHandle {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Dos {
+                drive: save_state::StateDecode::decode_state(decoder)?,
+                dir_cluster: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            1 => Ok(Self::Host {
+                path: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
+/// One source and destination pair queued by COPY.
 struct FileJob {
     display_name: Vec<u8>,
     src: FileSource,
     dst: FileDest,
 }
 
+state_struct_codec!(FileJob {
+    display_name,
+    src,
+    dst,
+});
+
+#[derive(Clone)]
 enum FileSource {
     Dos { drive: u8, entry: ReadDirEntry },
     Host { path: PathBuf },
 }
 
+impl save_state::StateEncode for FileSource {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Dos { drive, entry } => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                save_state::StateEncode::encode_state(drive, output);
+                save_state::StateEncode::encode_state(entry, output);
+            }
+            Self::Host { path } => encode_tagged(1, path, output),
+        }
+    }
+}
+
+impl save_state::StateDecode for FileSource {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Dos {
+                drive: save_state::StateDecode::decode_state(decoder)?,
+                entry: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            1 => Ok(Self::Host {
+                path: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
 enum FileDest {
     Dos {
         drive: u8,
@@ -105,6 +225,53 @@ enum FileDest {
     },
 }
 
+impl save_state::StateEncode for FileDest {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Dos {
+                drive,
+                dir_cluster,
+                fcb_name,
+                attribute,
+                time,
+                date,
+            } => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                save_state::StateEncode::encode_state(drive, output);
+                save_state::StateEncode::encode_state(dir_cluster, output);
+                save_state::StateEncode::encode_state(fcb_name, output);
+                save_state::StateEncode::encode_state(attribute, output);
+                save_state::StateEncode::encode_state(time, output);
+                save_state::StateEncode::encode_state(date, output);
+            }
+            Self::Host { path } => encode_tagged(1, path, output),
+        }
+    }
+}
+
+impl save_state::StateDecode for FileDest {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Dos {
+                drive: save_state::StateDecode::decode_state(decoder)?,
+                dir_cluster: save_state::StateDecode::decode_state(decoder)?,
+                fcb_name: save_state::StateDecode::decode_state(decoder)?,
+                attribute: save_state::StateDecode::decode_state(decoder)?,
+                time: save_state::StateDecode::decode_state(decoder)?,
+                date: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            1 => Ok(Self::Host {
+                path: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
+/// Authoritative COPY command phase and work queue.
 struct CopyState {
     work_stack: Vec<WorkItem>,
     // Used for the wildcard/concat path (no recursion involved).
@@ -115,12 +282,30 @@ struct CopyState {
     overwrite_all: bool,
 }
 
+state_struct_codec!(CopyState {
+    work_stack,
+    wildcard,
+    concat_remaining,
+    files_copied,
+    verify,
+    overwrite_all,
+});
+
+#[derive(Clone)]
+/// Wildcard expansion context retained by COPY.
 struct WildcardSpec {
     spec: DosPatternSpec,
     search_index: u16,
     dst: WildcardDest,
 }
 
+state_struct_codec!(WildcardSpec {
+    spec,
+    search_index,
+    dst,
+});
+
+#[derive(Clone)]
 enum WildcardDest {
     /// Destination resolved to an existing directory; each match uses its own name inside it.
     DosDir {
@@ -141,6 +326,52 @@ enum WildcardDest {
     },
 }
 
+impl save_state::StateEncode for WildcardDest {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::DosDir { drive, dir_cluster } => {
+                encode_drive_directory(0, *drive, *dir_cluster, output)
+            }
+            Self::HostDir { path } => encode_tagged(1, path, output),
+            Self::DosFile {
+                drive,
+                dir_cluster,
+                fcb_name,
+            } => {
+                encode_drive_directory(2, *drive, *dir_cluster, output);
+                save_state::StateEncode::encode_state(fcb_name, output);
+            }
+            Self::HostFile { path } => encode_tagged(3, path, output),
+        }
+    }
+}
+
+impl save_state::StateDecode for WildcardDest {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::DosDir {
+                drive: save_state::StateDecode::decode_state(decoder)?,
+                dir_cluster: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            1 => Ok(Self::HostDir {
+                path: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            2 => Ok(Self::DosFile {
+                drive: save_state::StateDecode::decode_state(decoder)?,
+                dir_cluster: save_state::StateDecode::decode_state(decoder)?,
+                fcb_name: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            3 => Ok(Self::HostFile {
+                path: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
 enum ResolvedDosDestination {
     Dir {
         drive: u8,
@@ -153,17 +384,201 @@ enum ResolvedDosDestination {
     },
 }
 
+struct HostReadFile {
+    path: PathBuf,
+    position: u64,
+    identity: [u8; 32],
+    file: Option<fs::File>,
+}
+
+impl HostReadFile {
+    fn open(path: PathBuf) -> std::io::Result<Self> {
+        let mut file = fs::File::open(&path)?;
+        let identity = hash_file(&mut file)?;
+        file.seek(SeekFrom::Start(0))?;
+        Ok(Self {
+            path,
+            position: 0,
+            identity,
+            file: Some(file),
+        })
+    }
+
+    fn prepare_restore(&mut self) -> Result<(), save_state::StateValidationError> {
+        let mut file = fs::File::open(&self.path).map_err(|_| {
+            save_state::StateValidationError::new("HLE DOS host source is unavailable")
+        })?;
+        if hash_file(&mut file).map_err(|_| {
+            save_state::StateValidationError::new("HLE DOS host source cannot be read")
+        })? != self.identity
+        {
+            return Err(save_state::StateValidationError::new(
+                "HLE DOS host source identity differs",
+            ));
+        }
+        file.seek(SeekFrom::Start(self.position)).map_err(|_| {
+            save_state::StateValidationError::new("HLE DOS host source position is invalid")
+        })?;
+        self.file = Some(file);
+        Ok(())
+    }
+
+    fn file(&self) -> &fs::File {
+        self.file.as_ref().expect("prepared HLE DOS host source")
+    }
+}
+
+impl Clone for HostReadFile {
+    fn clone(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            position: self.position,
+            identity: self.identity,
+            file: None,
+        }
+    }
+}
+
+impl Read for HostReadFile {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self
+            .file
+            .as_mut()
+            .expect("prepared HLE DOS host source")
+            .read(buffer)?;
+        self.position += read as u64;
+        Ok(read)
+    }
+}
+
+impl save_state::StateEncode for HostReadFile {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        save_state::StateEncode::encode_state(&self.path, output);
+        save_state::StateEncode::encode_state(&self.position, output);
+        save_state::StateEncode::encode_state(&self.identity, output);
+    }
+}
+
+impl save_state::StateDecode for HostReadFile {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        Ok(Self {
+            path: save_state::StateDecode::decode_state(decoder)?,
+            position: save_state::StateDecode::decode_state(decoder)?,
+            identity: save_state::StateDecode::decode_state(decoder)?,
+            file: None,
+        })
+    }
+}
+
+/// Rebindable host destination and committed write position.
+struct HostWriteFile {
+    path: PathBuf,
+    position: u64,
+    file: Option<fs::File>,
+}
+
+impl HostWriteFile {
+    fn create(path: PathBuf) -> std::io::Result<Self> {
+        let file = fs::File::create(&path)?;
+        Ok(Self {
+            path,
+            position: 0,
+            file: Some(file),
+        })
+    }
+
+    fn prepare_restore(&mut self) -> Result<(), save_state::StateValidationError> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(&self.path)
+            .map_err(|_| {
+                save_state::StateValidationError::new("HLE DOS host destination is unavailable")
+            })?;
+        if file
+            .metadata()
+            .map_or(true, |metadata| metadata.len() < self.position)
+        {
+            return Err(save_state::StateValidationError::new(
+                "HLE DOS host destination is shorter than the saved position",
+            ));
+        }
+        file.seek(SeekFrom::Start(self.position)).map_err(|_| {
+            save_state::StateValidationError::new("HLE DOS host destination position is invalid")
+        })?;
+        self.file = Some(file);
+        Ok(())
+    }
+}
+
+impl Clone for HostWriteFile {
+    fn clone(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            position: self.position,
+            file: None,
+        }
+    }
+}
+
+impl Write for HostWriteFile {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let written = self
+            .file
+            .as_mut()
+            .expect("prepared HLE DOS host destination")
+            .write(buffer)?;
+        self.position += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file
+            .as_mut()
+            .expect("prepared HLE DOS host destination")
+            .flush()
+    }
+}
+
+state_struct_codec_with_resources!(HostWriteFile {
+    state { path, position }
+    resources { file: None }
+});
+
+fn hash_file(file: &mut fs::File) -> std::io::Result<[u8; 32]> {
+    let original_position = file.stream_position()?;
+    file.seek(SeekFrom::Start(0))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    file.seek(SeekFrom::Start(original_position))?;
+    let mut identity = [0u8; 32];
+    hasher.finalize(&mut identity);
+    Ok(identity)
+}
+
+#[derive(Clone)]
+/// Authoritative progress of the current COPY file transfer.
 struct ActiveTransfer {
     display_name: Vec<u8>,
     src: TransferSrc,
     dst: TransferDst,
 }
 
+#[derive(Clone)]
 enum TransferSrc {
     Dos { drive: u8, cursor: SourceFileCursor },
-    Host { file: fs::File },
+    Host { file: HostReadFile },
 }
 
+#[derive(Clone)]
 enum SourceFileCursor {
     Fat(FatFileCursor),
     Iso {
@@ -172,11 +587,97 @@ enum SourceFileCursor {
     },
 }
 
-enum TransferDst {
-    Dos(PendingFatFile),
-    Host(fs::File),
+impl save_state::StateEncode for SourceFileCursor {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Fat(cursor) => encode_tagged(0, cursor, output),
+            Self::Iso { entry, position } => {
+                encode_tagged(1, entry, output);
+                save_state::StateEncode::encode_state(position, output);
+            }
+        }
+    }
 }
 
+impl save_state::StateDecode for SourceFileCursor {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Fat(save_state::StateDecode::decode_state(decoder)?)),
+            1 => Ok(Self::Iso {
+                entry: save_state::StateDecode::decode_state(decoder)?,
+                position: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
+enum TransferDst {
+    Dos(PendingFatFile),
+    Host(HostWriteFile),
+}
+
+impl save_state::StateEncode for TransferSrc {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Dos { drive, cursor } => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                save_state::StateEncode::encode_state(drive, output);
+                save_state::StateEncode::encode_state(cursor, output);
+            }
+            Self::Host { file } => encode_tagged(1, file, output),
+        }
+    }
+}
+
+impl save_state::StateDecode for TransferSrc {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Dos {
+                drive: save_state::StateDecode::decode_state(decoder)?,
+                cursor: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            1 => Ok(Self::Host {
+                file: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+impl save_state::StateEncode for TransferDst {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Dos(file) => encode_tagged(0, file, output),
+            Self::Host(file) => encode_tagged(1, file, output),
+        }
+    }
+}
+
+impl save_state::StateDecode for TransferDst {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Dos(save_state::StateDecode::decode_state(decoder)?)),
+            1 => Ok(Self::Host(save_state::StateDecode::decode_state(decoder)?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+state_struct_codec!(ActiveTransfer {
+    display_name,
+    src,
+    dst,
+});
+
+#[derive(Clone)]
 enum CopyPhase {
     Init,
     NextItem(CopyState),
@@ -192,10 +693,129 @@ enum CopyPhase {
     Summary(u32),
 }
 
-struct RunningCopy {
+impl save_state::StateEncode for CopyPhase {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Init => save_state::StateEncode::encode_state(&0u8, output),
+            Self::NextItem(state) => encode_tagged(1, state, output),
+            Self::EnumerateDosStep(state, enumeration) => {
+                encode_tagged(2, state, output);
+                save_state::StateEncode::encode_state(enumeration, output);
+            }
+            Self::ConfirmOverwrite(state, file) => {
+                encode_tagged(3, state, output);
+                save_state::StateEncode::encode_state(file, output);
+            }
+            Self::ReadChunk(state, transfer) => encode_copy_transfer(4, state, transfer, output),
+            Self::WriteChunk(state, transfer, data) => {
+                encode_copy_transfer(5, state, transfer, output);
+                save_state::StateEncode::encode_state(data, output);
+            }
+            Self::VerifyChunk(state, transfer, cluster, data) => {
+                encode_copy_transfer(6, state, transfer, output);
+                save_state::StateEncode::encode_state(cluster, output);
+                save_state::StateEncode::encode_state(data, output);
+            }
+            Self::FinishFile(state, transfer) => encode_copy_transfer(7, state, transfer, output),
+            Self::ConcatNextSource(state, transfer) => {
+                encode_copy_transfer(8, state, transfer, output);
+            }
+            Self::ConcatRead(state, transfer) => encode_copy_transfer(9, state, transfer, output),
+            Self::ConcatWrite(state, transfer, data) => {
+                encode_copy_transfer(10, state, transfer, output);
+                save_state::StateEncode::encode_state(data, output);
+            }
+            Self::Summary(count) => encode_tagged(11, count, output),
+        }
+    }
+}
+
+impl save_state::StateDecode for CopyPhase {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Init),
+            1 => Ok(Self::NextItem(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            2 => Ok(Self::EnumerateDosStep(
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            3 => Ok(Self::ConfirmOverwrite(
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            4 => Ok(Self::ReadChunk(
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            5 => Ok(Self::WriteChunk(
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            6 => Ok(Self::VerifyChunk(
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            7 => Ok(Self::FinishFile(
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            8 => Ok(Self::ConcatNextSource(
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            9 => Ok(Self::ConcatRead(
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            10 => Ok(Self::ConcatWrite(
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            11 => Ok(Self::Summary(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+fn encode_tagged<State: save_state::StateEncode>(tag: u8, state: &State, output: &mut Vec<u8>) {
+    save_state::StateEncode::encode_state(&tag, output);
+    save_state::StateEncode::encode_state(state, output);
+}
+
+fn encode_drive_directory(tag: u8, drive: u8, directory: u16, output: &mut Vec<u8>) {
+    save_state::StateEncode::encode_state(&tag, output);
+    save_state::StateEncode::encode_state(&drive, output);
+    save_state::StateEncode::encode_state(&directory, output);
+}
+
+fn encode_copy_transfer(
+    tag: u8,
+    state: &CopyState,
+    transfer: &ActiveTransfer,
+    output: &mut Vec<u8>,
+) {
+    encode_tagged(tag, state, output);
+    save_state::StateEncode::encode_state(transfer, output);
+}
+
+#[derive(Clone)]
+/// Serializable state of an executing COPY command.
+pub(crate) struct RunningCopy {
     args: Vec<u8>,
     phase: CopyPhase,
 }
+
+state_struct_codec!(RunningCopy { args, phase });
 
 impl RunningCommand for RunningCopy {
     fn step(
@@ -237,6 +857,32 @@ impl RunningCommand for RunningCopy {
 }
 
 impl RunningCopy {
+    pub(crate) fn prepare_restore(&mut self) -> Result<(), save_state::StateValidationError> {
+        let transfer = match &mut self.phase {
+            CopyPhase::ReadChunk(_, transfer)
+            | CopyPhase::WriteChunk(_, transfer, _)
+            | CopyPhase::VerifyChunk(_, transfer, _, _)
+            | CopyPhase::FinishFile(_, transfer)
+            | CopyPhase::ConcatNextSource(_, transfer)
+            | CopyPhase::ConcatRead(_, transfer)
+            | CopyPhase::ConcatWrite(_, transfer, _) => Some(transfer),
+            CopyPhase::Init
+            | CopyPhase::NextItem(_)
+            | CopyPhase::EnumerateDosStep(_, _)
+            | CopyPhase::ConfirmOverwrite(_, _)
+            | CopyPhase::Summary(_) => None,
+        };
+        if let Some(transfer) = transfer {
+            if let TransferSrc::Host { file } = &mut transfer.src {
+                file.prepare_restore()?;
+            }
+            if let TransferDst::Host(file) = &mut transfer.dst {
+                file.prepare_restore()?;
+            }
+        }
+        Ok(())
+    }
+
     fn step_init(
         &mut self,
         state: &mut DosState,
@@ -925,7 +1571,7 @@ fn transfer_is_empty(transfer: &ActiveTransfer) -> bool {
             SourceFileCursor::Fat(c) => c.remaining() == 0,
             SourceFileCursor::Iso { entry, position } => *position >= entry.file_size,
         },
-        TransferSrc::Host { file } => match file.metadata() {
+        TransferSrc::Host { file } => match file.file().metadata() {
             Ok(m) => m.len() == 0,
             Err(_) => false,
         },
@@ -947,7 +1593,7 @@ fn build_transfer(job: FileJob) -> Result<ActiveTransfer, &'static [u8]> {
             TransferSrc::Dos { drive, cursor }
         }
         FileSource::Host { path } => {
-            let file = fs::File::open(&path).map_err(|_| &b"Read error\r\n"[..])?;
+            let file = HostReadFile::open(path).map_err(|_| &b"Read error\r\n"[..])?;
             TransferSrc::Host { file }
         }
     };
@@ -974,7 +1620,7 @@ fn build_transfer(job: FileJob) -> Result<ActiveTransfer, &'static [u8]> {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|_| &b"Write error\r\n"[..])?;
             }
-            let file = fs::File::create(&path).map_err(|_| &b"Write error\r\n"[..])?;
+            let file = HostWriteFile::create(path).map_err(|_| &b"Write error\r\n"[..])?;
             TransferDst::Host(file)
         }
     };

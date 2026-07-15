@@ -301,7 +301,9 @@ fn opl_write<const REVISION: u32>(
     false
 }
 
-///  OPL Registers (Revision 1 - YM3526)
+save_state::runtime_state! {
+/// OPL registers for the YM3526.
+#[derive(Clone)]
 pub(crate) struct OplRegisters {
     lfo_am_counter: u16,
     lfo_pm_counter: u16,
@@ -309,7 +311,7 @@ pub(crate) struct OplRegisters {
     lfo_am: u8,
     regdata: [u8; 0x100],
     waveform: [[u16; WAVEFORM_LENGTH]; 1],
-}
+}}
 
 impl FmRegisters for OplRegisters {
     const OUTPUTS: usize = 1;
@@ -528,7 +530,9 @@ impl FmRegisters for OplRegisters {
     }
 }
 
-///  OPL2 Registers (Revision 2 - YM3812)
+save_state::runtime_state! {
+/// OPL2 registers for the YM3812.
+#[derive(Clone)]
 pub(crate) struct Opl2Registers {
     lfo_am_counter: u16,
     lfo_pm_counter: u16,
@@ -536,7 +540,7 @@ pub(crate) struct Opl2Registers {
     lfo_am: u8,
     regdata: [u8; 0x100],
     waveform: [[u16; WAVEFORM_LENGTH]; 4],
-}
+}}
 
 impl FmRegisters for Opl2Registers {
     const OUTPUTS: usize = 1;
@@ -774,7 +778,9 @@ impl FmRegisters for Opl2Registers {
     }
 }
 
-///  OPL3 Registers (Revision 3 - YMF262)
+save_state::runtime_state! {
+/// OPL3 registers for the YMF262.
+#[derive(Clone)]
 pub(crate) struct Opl3Registers {
     lfo_am_counter: u16,
     lfo_pm_counter: u16,
@@ -782,7 +788,7 @@ pub(crate) struct Opl3Registers {
     lfo_am: u8,
     regdata: [u8; 0x200],
     waveform: [[u16; WAVEFORM_LENGTH]; 8],
-}
+}}
 
 impl Opl3Registers {
     pub(crate) fn newflag(&self) -> u32 {

@@ -25,6 +25,7 @@ pub(crate) const fn memaddr(x: u32) -> u32 {
 // the packed structs use manual from_bytes/to_bytes for raw byte access.
 
 #[derive(Clone, Default)]
+/// Wave-generator parameters retained by one partial.
 pub(crate) struct WGParam {
     pub(crate) pitch_coarse: u8,                 // 0-96 (C1,C#1-C9)
     pub(crate) pitch_fine: u8,                   // 0-100 (-50 to +50 (cents - confirmed by Mok))
@@ -65,6 +66,7 @@ impl WGParam {
 }
 
 #[derive(Clone, Default)]
+/// Pitch-envelope parameters retained by one partial.
 pub(crate) struct PitchEnvParam {
     pub(crate) depth: u8,            // 0-10
     pub(crate) velo_sensitivity: u8, // 0-100
@@ -100,6 +102,7 @@ impl PitchEnvParam {
 }
 
 #[derive(Clone, Default)]
+/// Pitch LFO parameters retained by one partial.
 pub(crate) struct PitchLFOParam {
     pub(crate) rate: u8,            // 0-100
     pub(crate) depth: u8,           // 0-100
@@ -125,6 +128,7 @@ impl PitchLFOParam {
 }
 
 #[derive(Clone, Default)]
+/// Time-variant filter parameters retained by one partial.
 pub(crate) struct TVFParam {
     pub(crate) cutoff: u8,               // 0-100
     pub(crate) resonance: u8,            // 0-30
@@ -178,6 +182,7 @@ impl TVFParam {
 }
 
 #[derive(Clone, Default)]
+/// Time-variant amplifier parameters retained by one partial.
 pub(crate) struct TVAParam {
     pub(crate) level: u8,                     // 0-100
     pub(crate) velo_sensitivity: u8,          // 0-100
@@ -228,6 +233,7 @@ impl TVAParam {
 }
 
 #[derive(Clone, Default)]
+/// Complete synthesis parameters for one partial.
 pub(crate) struct PartialParam {
     pub(crate) wg: WGParam,
     pub(crate) pitch_env: PitchEnvParam,
@@ -498,6 +504,7 @@ impl SystemParam {
 // The C++ code treats this as raw memory that sysex messages can write to at arbitrary
 // byte offsets. We preserve this design for faithful sysex handling.
 #[derive(Clone)]
+/// Mutable MT-32 parameter memory image.
 pub(crate) struct MemParams {
     pub(crate) raw: Vec<u8>,
 }
@@ -661,6 +668,7 @@ pub(crate) struct PCMWaveEntry {
 
 // This is basically a per-partial, pre-processed combination of timbre and patch/rhythm settings
 #[derive(Clone, Default)]
+/// Register-derived synthesis parameters cached for one partial.
 pub(crate) struct PatchCache {
     pub(crate) play_partial: bool,
     pub(crate) pcm_partial: bool,
@@ -679,3 +687,80 @@ pub(crate) struct PatchCache {
 
     pub(crate) src_partial: PartialParam,
 }
+
+crate::impl_state_codec!(WGParam {
+    pitch_coarse,
+    pitch_fine,
+    pitch_keyfollow,
+    pitch_bender_enabled,
+    waveform,
+    pcm_wave,
+    pulse_width,
+    pulse_width_velo_sensitivity,
+});
+
+crate::impl_state_codec!(PitchEnvParam {
+    depth,
+    velo_sensitivity,
+    time_keyfollow,
+    time,
+    level,
+});
+
+crate::impl_state_codec!(PitchLFOParam {
+    rate,
+    depth,
+    mod_sensitivity,
+});
+
+crate::impl_state_codec!(TVFParam {
+    cutoff,
+    resonance,
+    keyfollow,
+    bias_point,
+    bias_level,
+    env_depth,
+    env_velo_sensitivity,
+    env_depth_keyfollow,
+    env_time_keyfollow,
+    env_time,
+    env_level,
+});
+
+crate::impl_state_codec!(TVAParam {
+    level,
+    velo_sensitivity,
+    bias_point1,
+    bias_level1,
+    bias_point2,
+    bias_level2,
+    env_time_keyfollow,
+    env_time_velo_sensitivity,
+    env_time,
+    env_level,
+});
+
+crate::impl_state_codec!(PartialParam {
+    wg,
+    pitch_env,
+    pitch_lfo,
+    tvf,
+    tva,
+});
+
+crate::impl_state_codec!(MemParams { raw });
+
+crate::impl_state_codec!(PatchCache {
+    play_partial,
+    pcm_partial,
+    pcm,
+    waveform,
+    structure_mix,
+    structure_position,
+    structure_pair,
+    dirty,
+    partial_count,
+    sustain,
+    reverb,
+    src_partial,
+});

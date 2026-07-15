@@ -136,7 +136,8 @@ const DIPSW2_DEFAULT: u8 = DIPSW2_SYSTEM_SPEC
     | DIPSW2_UNUSED_7
     | DIPSW2_GDC_CLOCK_2_5MHZ;
 
-/// Snapshot of the system PPI state.
+save_state::runtime_state! {
+/// Authoritative state of the system PPI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I8255SystemPpiState {
     /// Port B - system configuration status (read-only via port 0x42).
@@ -194,13 +195,15 @@ pub struct I8255SystemPpiState {
     /// `true` = standard-resolution display (bit 3 set).
     /// Ref: undoc98 `io_syste.txt`
     pub crtt: bool,
-}
+}}
 
 /// i8255 System PPI controller.
 pub struct I8255SystemPpi {
     /// Embedded state for save/restore.
     pub state: I8255SystemPpiState,
 }
+
+impl_simple_state_accessors!(I8255SystemPpi, I8255SystemPpiState);
 
 impl Default for I8255SystemPpi {
     fn default() -> Self {

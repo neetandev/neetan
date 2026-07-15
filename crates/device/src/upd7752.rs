@@ -177,7 +177,9 @@ fn from_fixed(value: i32) -> i32 {
     value >> 16
 }
 
+save_state::runtime_state! {
 /// uPD7752 voice synthesizer with audio output.
+#[derive(Clone)]
 pub struct Upd7752 {
     status: u8,
     /// Last byte written to the mode port (read back on the mode port).
@@ -218,7 +220,7 @@ pub struct Upd7752 {
     sample_rate: u32,
     /// Queued mono output samples, normalized to roughly [-1.0, 1.0].
     output: VecDeque<f32>,
-}
+}}
 
 impl Upd7752 {
     /// Creates an idle synthesizer that resamples to `sample_rate`.
@@ -244,6 +246,25 @@ impl Upd7752 {
         };
         chip.reset_voice_state();
         chip
+    }
+
+    /// Captures synthesis, parser, filter, and queued audio state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores synthesis, parser, filter, and queued audio state.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        if state.sample_rate != self.sample_rate
+            || state.param_index > FRAME_PARAM_COUNT
+            || !FRAME_SIZE.contains(&state.frame_size)
+        {
+            return Err(save_state::StateValidationError::new(
+                "uPD7752 state is invalid",
+            ));
+        }
+        *self = state;
+        Ok(())
     }
 
     /// Reads one of the four chip registers (`offset` is the low two port bits).

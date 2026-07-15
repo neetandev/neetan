@@ -158,6 +158,69 @@ const IO_WAIT_PERIOD_ACCESSES: u8 = 2;
 /// a three-access and a two-access period, averaging one wait per 2.5 accesses.
 const IO_WAIT_PERIOD_MMR_LONG_ACCESSES: u8 = 3;
 
+save_state::runtime_state! {
+/// Complete authoritative FM-7 family bus state.
+#[derive(Clone)]
+pub(crate) struct Fm7BusState {
+    memory: crate::memory::Fm7MemoryState,
+    interrupts: crate::interrupt::MainInterrupts,
+    keyboard: device::keyboard_fm7::Fm7Keyboard,
+    encoder: device::keyboard_fm7::encoder::KeyboardEncoder,
+    scheduler: common::SchedulerState,
+    current_cycle: u64,
+    wait_cycles: i64,
+    clock_fast: bool,
+    clock_reanchor_pending: bool,
+    io_wait_counter: u8,
+    io_wait_long_phase: bool,
+    sub_memory: device::video_fm7::SubMemoryState,
+    sub_cycle: u64,
+    sub_clock_credit: u64,
+    sub_clock_hz: u32,
+    cycle_steal_enabled: bool,
+    vram_access_flag: bool,
+    sub_halt_requested: bool,
+    sub_halted: bool,
+    sub_busy: bool,
+    busy_clear_pending: bool,
+    cancel_request: bool,
+    sub_nmi_pending: bool,
+    sub_nmi_masked: bool,
+    sub_beep_requested: bool,
+    sub_reset_pending: bool,
+    psg: device::ay8910::Ay8910,
+    psg_command: u8,
+    psg_data_latch: u8,
+    opn: Option<device::soundboard_fm7::Fm7OpnState>,
+    opn_command: u8,
+    opn_data_latch: u8,
+    opn_address_latch: u8,
+    opn_port_b: u8,
+    mouse: device::mouse_fm7::MouseFm7,
+    mouse_selected: bool,
+    opn_mouse_enabled: bool,
+    audio_frame_start_cycle: u64,
+    beeper: device::beeper::BeeperState,
+    beeper_continuous_gate: bool,
+    beeper_one_shot_active: bool,
+    joystick_port_a: u8,
+    fdc: device::mb8877_fdc::Mb8877FdcState,
+    fdc_side: u8,
+    fdc_drive_select: u8,
+    fdc_motor_on: bool,
+    fdc_motor_requested: bool,
+    cassette: device::cassette::CassetteDeckState,
+    kanji: device::kanji_rom_fm7::KanjiRomState,
+    video: device::video_fm7::VideoState,
+    alu: device::mb61vh010_alu::Mb61vh010Alu,
+    renderer: software_renderer::fm7::Fm7RendererState,
+    display_width: u32,
+    display_height: u32,
+    frame_number: u64,
+    scanline: u16,
+    frame_start_cycle: u64,
+}}
+
 /// FM-7 / FM-77AV system bus.
 pub struct Fm7Bus<T: TraceSink = NoTrace> {
     model: Fm7Model,
@@ -262,6 +325,7 @@ pub struct Fm7Bus<T: TraceSink = NoTrace> {
     scanline: u16,
     /// Cycle at which the current frame began, anchoring beam-position reads.
     frame_start_cycle: u64,
+    rom_bindings: Vec<save_state::ResourceBinding>,
     tracer: T,
 }
 
@@ -389,6 +453,7 @@ impl<T: TraceSink> Fm7Bus<T> {
             frame_number: 0,
             scanline: 0,
             frame_start_cycle: 0,
+            rom_bindings: Vec::new(),
             tracer,
         };
         bus.schedule_timer();
@@ -415,6 +480,184 @@ impl<T: TraceSink> Fm7Bus<T> {
     /// The clock configuration.
     pub fn clocks(&self) -> ClockConfig {
         self.clocks
+    }
+
+    pub(crate) fn save_state_resources(
+        &self,
+    ) -> Result<save_state::ResourceManifest, save_state::StateValidationError> {
+        save_state::ResourceManifest::new(self.rom_bindings.clone())
+    }
+
+    pub(crate) fn save_state_media(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = self.fdc.media_manifest()?.bindings().to_vec();
+        if let Some(identity) = self.cassette.media_identity() {
+            bindings.push(save_state::MediaBinding {
+                identifier: save_state::MediaBindingId::new("cassette-0")?,
+                slot: save_state::MediaSlot::new(save_state::MediaKind::Cassette, 0),
+                source_path: self.cassette.media_source_path().cloned(),
+                media_type: "cassette".to_owned(),
+                identity,
+                geometry: None,
+                write_protected: true,
+                backend_generation: None,
+            });
+        }
+        save_state::MediaManifest::new(bindings)
+    }
+
+    pub(crate) fn capture_runtime_state(&self) -> Result<Fm7BusState, save_state::SaveStateError> {
+        Ok(Fm7BusState {
+            memory: self.memory.capture_state(),
+            interrupts: self.interrupts.clone(),
+            keyboard: self.keyboard.clone(),
+            encoder: self.encoder.clone(),
+            scheduler: self.scheduler.capture_state(),
+            current_cycle: self.current_cycle,
+            wait_cycles: self.wait_cycles,
+            clock_fast: self.clock_fast,
+            clock_reanchor_pending: self.clock_reanchor_pending,
+            io_wait_counter: self.io_wait_counter,
+            io_wait_long_phase: self.io_wait_long_phase,
+            sub_memory: self.sub_memory.capture_state(),
+            sub_cycle: self.sub_cycle,
+            sub_clock_credit: self.sub_clock_credit,
+            sub_clock_hz: self.sub_clock_hz,
+            cycle_steal_enabled: self.cycle_steal_enabled,
+            vram_access_flag: self.vram_access_flag,
+            sub_halt_requested: self.sub_halt_requested,
+            sub_halted: self.sub_halted,
+            sub_busy: self.sub_busy,
+            busy_clear_pending: self.busy_clear_pending,
+            cancel_request: self.cancel_request,
+            sub_nmi_pending: self.sub_nmi_pending,
+            sub_nmi_masked: self.sub_nmi_masked,
+            sub_beep_requested: self.sub_beep_requested,
+            sub_reset_pending: self.sub_reset_pending,
+            psg: self.psg.capture_state(),
+            psg_command: self.psg_command,
+            psg_data_latch: self.psg_data_latch,
+            opn: self.opn.as_ref().map(Fm7Opn::capture_state),
+            opn_command: self.opn_command,
+            opn_data_latch: self.opn_data_latch,
+            opn_address_latch: self.opn_address_latch,
+            opn_port_b: self.opn_port_b,
+            mouse: self.mouse.clone(),
+            mouse_selected: self.mouse_selected,
+            opn_mouse_enabled: self.opn_mouse_enabled,
+            audio_frame_start_cycle: self.audio_frame_start_cycle,
+            beeper: self.beeper.capture_state(),
+            beeper_continuous_gate: self.beeper_continuous_gate,
+            beeper_one_shot_active: self.beeper_one_shot_active,
+            joystick_port_a: self.joystick_port_a,
+            fdc: self.fdc.capture_state()?,
+            fdc_side: self.fdc_side,
+            fdc_drive_select: self.fdc_drive_select,
+            fdc_motor_on: self.fdc_motor_on,
+            fdc_motor_requested: self.fdc_motor_requested,
+            cassette: self.cassette.capture_state(),
+            kanji: self.kanji.capture_state(),
+            video: self.video.clone(),
+            alu: self.alu.clone(),
+            renderer: self.renderer.capture_state(),
+            display_width: self.display_width,
+            display_height: self.display_height,
+            frame_number: self.frame_number,
+            scanline: self.scanline,
+            frame_start_cycle: self.frame_start_cycle,
+        })
+    }
+
+    pub(crate) fn restore_runtime_state(
+        &mut self,
+        state: Fm7BusState,
+    ) -> Result<(), save_state::SaveStateError> {
+        if state.io_wait_counter > IO_WAIT_PERIOD_MMR_LONG_ACCESSES
+            || state.sub_clock_hz == 0
+            || state.sub_clock_credit >= u64::from(self.clocks.main_clock_hz)
+            || state.psg_command > 3
+            || !matches!(state.opn_command, 0 | 1 | 2 | 3 | 4 | 9)
+            || state.fdc_side > 1
+            || state.fdc_drive_select >= self.model.drive_count()
+            || state.scanline >= TOTAL_SCANLINES as u16
+            || state.display_width != DISPLAY_WIDTH
+            || state.display_height != DISPLAY_HEIGHT
+        {
+            return Err(save_state::StateValidationError::new(
+                "FM-7 machine state invariant is invalid",
+            )
+            .into());
+        }
+        state.keyboard.validate_runtime_state()?;
+        state.encoder.validate_runtime_state()?;
+        match (&mut self.opn, state.opn) {
+            (Some(sound), Some(state)) => sound.restore_state(state)?,
+            (None, None) => {}
+            _ => {
+                return Err(save_state::StateValidationError::new(
+                    "FM-7 sound configuration differs",
+                )
+                .into());
+            }
+        }
+        self.memory.restore_state(state.memory)?;
+        self.sub_memory.restore_state(state.sub_memory)?;
+        self.scheduler.restore_state(state.scheduler)?;
+        self.psg.restore_state(state.psg)?;
+        self.beeper.restore_state(state.beeper)?;
+        self.fdc.restore_state(state.fdc)?;
+        self.cassette.restore_state(state.cassette)?;
+        self.renderer.restore_state(state.renderer)?;
+        self.interrupts = state.interrupts;
+        self.keyboard = state.keyboard;
+        self.encoder = state.encoder;
+        self.current_cycle = state.current_cycle;
+        self.wait_cycles = state.wait_cycles;
+        self.clock_fast = state.clock_fast;
+        self.clock_reanchor_pending = state.clock_reanchor_pending;
+        self.io_wait_counter = state.io_wait_counter;
+        self.io_wait_long_phase = state.io_wait_long_phase;
+        self.sub_cycle = state.sub_cycle;
+        self.sub_clock_credit = state.sub_clock_credit;
+        self.sub_clock_hz = state.sub_clock_hz;
+        self.cycle_steal_enabled = state.cycle_steal_enabled;
+        self.vram_access_flag = state.vram_access_flag;
+        self.sub_halt_requested = state.sub_halt_requested;
+        self.sub_halted = state.sub_halted;
+        self.sub_busy = state.sub_busy;
+        self.busy_clear_pending = state.busy_clear_pending;
+        self.cancel_request = state.cancel_request;
+        self.sub_nmi_pending = state.sub_nmi_pending;
+        self.sub_nmi_masked = state.sub_nmi_masked;
+        self.sub_beep_requested = state.sub_beep_requested;
+        self.sub_reset_pending = state.sub_reset_pending;
+        self.psg_command = state.psg_command;
+        self.psg_data_latch = state.psg_data_latch;
+        self.opn_command = state.opn_command;
+        self.opn_data_latch = state.opn_data_latch;
+        self.opn_address_latch = state.opn_address_latch;
+        self.opn_port_b = state.opn_port_b;
+        self.mouse = state.mouse;
+        self.mouse_selected = state.mouse_selected;
+        self.opn_mouse_enabled = state.opn_mouse_enabled;
+        self.audio_frame_start_cycle = state.audio_frame_start_cycle;
+        self.beeper_continuous_gate = state.beeper_continuous_gate;
+        self.beeper_one_shot_active = state.beeper_one_shot_active;
+        self.joystick_port_a = state.joystick_port_a;
+        self.fdc_side = state.fdc_side;
+        self.fdc_drive_select = state.fdc_drive_select;
+        self.fdc_motor_on = state.fdc_motor_on;
+        self.fdc_motor_requested = state.fdc_motor_requested;
+        self.kanji.restore_state(state.kanji);
+        self.video = state.video;
+        self.alu = state.alu;
+        self.display_width = state.display_width;
+        self.display_height = state.display_height;
+        self.frame_number = state.frame_number;
+        self.scanline = state.scanline;
+        self.frame_start_cycle = state.frame_start_cycle;
+        Ok(())
     }
 
     /// Main CPU clock in Hz.
@@ -462,6 +705,26 @@ impl<T: TraceSink> Fm7Bus<T> {
     /// Installs the loaded ROM set into the main and sub memory maps.
     pub fn load_roms(&mut self, roms: &LoadedRoms) {
         debug_assert_eq!(roms.model, self.model);
+        self.rom_bindings.clear();
+        for (identifier, bytes) in [
+            ("f-basic", Some(roms.fbasic.as_slice())),
+            ("subsystem-c", Some(roms.subsys_c.as_slice())),
+            ("kanji", roms.kanji.as_deref()),
+            ("boot-basic", roms.boot_bas.as_deref()),
+            ("boot-dos", roms.boot_dos.as_deref()),
+            ("initiator", roms.initiate.as_deref()),
+            ("subsystem-a", roms.subsys_a.as_deref()),
+            ("subsystem-b", roms.subsys_b.as_deref()),
+            ("subsystem-cg", roms.subsyscg.as_deref()),
+        ] {
+            if let Some(bytes) = bytes {
+                self.rom_bindings.push(save_state::ResourceBinding {
+                    identifier: save_state::ResourceBindingId::new(format!("rom:{identifier}"))
+                        .expect("static resource identifier"),
+                    identity: save_state::ResourceIdentity::from_bytes(bytes),
+                });
+            }
+        }
         self.memory = Fm7Memory::new(roms, self.boot_mode);
         self.sub_memory.install_roms(
             &roms.subsys_c,

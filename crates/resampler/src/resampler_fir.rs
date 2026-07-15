@@ -6,6 +6,8 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
+use save_state::{AfterRestore, StateValidationError};
+
 use crate::{
     ResampleError, SampleRate,
     window::{WindowType, calculate_cutoff_kaiser, make_sincs_for_kaiser},
@@ -171,36 +173,48 @@ static FIR_CACHE: LazyLock<Mutex<HashMap<FirCacheKey, FirCacheData>>> =
 /// configured at construction time using the [`Latency`] enum to balance quality versus delay.
 ///
 /// The stopband attenuation can also be configured via the [`Attenuation`] enum.
+// savestate: authoritative
 pub struct ResamplerFir {
+    state: ResamplerFirState,
+    resources: ResamplerFirResources,
+    derived: ResamplerFirDerived,
+}
+
+save_state::runtime_state! {
+    /// Authoritative streaming history of a polyphase FIR resampler.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct ResamplerFirState {
+        input_buffers: Box<[f32]>,
+        read_position: usize,
+        available_frames: usize,
+        position: f64,
+    }
+}
+
+struct ResamplerFirResources {
     /// Number of audio channels.
     channels: usize,
-    /// Polyphase coefficient table stored contiguously: all phases × taps in a single allocation.
+    /// Polyphase coefficient table stored contiguously: all phases x taps in a single allocation.
     /// Layout: [phase0_tap0..N, phase1_tap0..N, ..., phase1023_tap0..N]
     coeffs: Arc<AlignedMemory>,
-    /// Per-channel double-sized input buffers for efficient buffer management.
-    /// Size = BUFFER_SIZE (2x INPUT_CAPACITY) to minimize copy operations.
-    input_buffers: Box<[f32]>,
-    /// Read position in the input buffer (where we start reading from).
-    read_position: usize,
-    /// Number of valid frames available for processing (from read_position).
-    available_frames: usize,
-    /// Current fractional position within available frames.
-    position: f64,
     /// Resampling ratio (input_rate / output_rate).
     ratio: f64,
     /// Number of taps per phase.
     taps: usize,
     /// Number of polyphase branches.
     phases: usize,
+}
+
+struct ResamplerFirDerived {
     convolve_function: ConvolveFn,
 }
 
 impl fmt::Debug for ResamplerFir {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ResamplerFir")
-            .field("channels", &self.channels)
-            .field("taps", &self.taps)
-            .field("phases", &self.phases)
+            .field("channels", &self.resources.channels)
+            .field("taps", &self.resources.taps)
+            .field("phases", &self.resources.phases)
             .finish_non_exhaustive()
     }
 }
@@ -380,19 +394,25 @@ impl ResamplerFir {
         };
 
         ResamplerFir {
-            channels,
-            coeffs,
-            input_buffers,
-            read_position: 0,
-            available_frames: 0,
-            position: 0.0,
-            ratio,
-            taps,
-            phases: PHASES,
-            #[cfg(target_arch = "x86_64")]
-            convolve_function,
-            #[cfg(not(target_arch = "x86_64"))]
-            convolve_function: crate::fir::convolve_interp,
+            state: ResamplerFirState {
+                input_buffers,
+                read_position: 0,
+                available_frames: 0,
+                position: 0.0,
+            },
+            resources: ResamplerFirResources {
+                channels,
+                coeffs,
+                ratio,
+                taps,
+                phases: PHASES,
+            },
+            derived: ResamplerFirDerived {
+                #[cfg(target_arch = "x86_64")]
+                convolve_function,
+                #[cfg(not(target_arch = "x86_64"))]
+                convolve_function: crate::fir::convolve_interp,
+            },
         }
     }
 
@@ -438,11 +458,11 @@ impl ResamplerFir {
     pub fn buffer_size_output(&self) -> usize {
         // Conservative upper bound: assume buffer could be maximally filled.
         let max_total_frames = INPUT_CAPACITY;
-        let max_usable_frames = (max_total_frames - self.taps) as f64;
+        let max_usable_frames = (max_total_frames - self.resources.taps) as f64;
 
-        let max_output_frames = (max_usable_frames / self.ratio).ceil() as usize + 2;
+        let max_output_frames = (max_usable_frames / self.resources.ratio).ceil() as usize + 2;
 
-        max_output_frames * self.channels
+        max_output_frames * self.resources.channels
     }
 
     /// Process audio samples, resampling from input to output sample rate.
@@ -492,39 +512,39 @@ impl ResamplerFir {
         input: &[f32],
         output: &mut [f32],
     ) -> Result<(usize, usize), ResampleError> {
-        if !input.len().is_multiple_of(self.channels) {
+        if !input.len().is_multiple_of(self.resources.channels) {
             return Err(ResampleError::InvalidInputBufferSize);
         }
-        if !output.len().is_multiple_of(self.channels) {
+        if !output.len().is_multiple_of(self.resources.channels) {
             return Err(ResampleError::InvalidOutputBufferSize);
         }
 
-        let input_frames = input.len() / self.channels;
-        let output_capacity = output.len() / self.channels;
+        let input_frames = input.len() / self.resources.channels;
+        let output_capacity = output.len() / self.resources.channels;
 
-        let write_position = self.read_position + self.available_frames;
+        let write_position = self.state.read_position + self.state.available_frames;
         let remaining_capacity = BUFFER_SIZE.saturating_sub(write_position);
         let frames_to_copy = input_frames
             .min(remaining_capacity)
-            .min(INPUT_CAPACITY - self.available_frames);
+            .min(INPUT_CAPACITY - self.state.available_frames);
 
         // Deinterleave and copy input frames into double-sized buffers.
         for frame_idx in 0..frames_to_copy {
-            for channel in 0..self.channels {
-                let channel_buf = &mut self.input_buffers[BUFFER_SIZE * channel..];
+            for channel in 0..self.resources.channels {
+                let channel_buf = &mut self.state.input_buffers[BUFFER_SIZE * channel..];
                 channel_buf[write_position + frame_idx] =
-                    input[frame_idx * self.channels + channel];
+                    input[frame_idx * self.resources.channels + channel];
             }
         }
-        self.available_frames += frames_to_copy;
+        self.state.available_frames += frames_to_copy;
 
         let mut output_frame_count = 0;
 
         loop {
-            let input_offset = self.position.floor() as usize;
+            let input_offset = self.state.position.floor() as usize;
 
             // Check if we have enough input samples (need `taps` samples for convolution).
-            if input_offset + self.taps > self.available_frames {
+            if input_offset + self.resources.taps > self.state.available_frames {
                 break;
             }
 
@@ -532,64 +552,69 @@ impl ResamplerFir {
                 break;
             }
 
-            let position_fract = self.position.fract();
+            let position_fract = self.state.position.fract();
 
-            let phase_f = (position_fract * self.phases as f64).min((self.phases - 1) as f64);
+            let phase_f = (position_fract * self.resources.phases as f64)
+                .min((self.resources.phases - 1) as f64);
             let phase1 = phase_f as usize;
-            let phase2 = (phase1 + 1).min(self.phases - 1);
+            let phase2 = (phase1 + 1).min(self.resources.phases - 1);
             let frac = (phase_f - phase1 as f64) as f32;
 
-            for channel in 0..self.channels {
+            for channel in 0..self.resources.channels {
                 // Perform N-tap convolution with linear interpolation between phases.
-                let actual_pos = self.read_position + input_offset;
-                let channel_buf = &self.input_buffers[BUFFER_SIZE * channel..];
-                let input_slice = &channel_buf[actual_pos..actual_pos + self.taps];
+                let actual_pos = self.state.read_position + input_offset;
+                let channel_buf = &self.state.input_buffers[BUFFER_SIZE * channel..];
+                let input_slice = &channel_buf[actual_pos..actual_pos + self.resources.taps];
 
-                let phase1_start = phase1 * self.taps;
-                let coeffs_phase1 = &self.coeffs[phase1_start..phase1_start + self.taps];
-                let phase2_start = phase2 * self.taps;
-                let coeffs_phase2 = &self.coeffs[phase2_start..phase2_start + self.taps];
+                let phase1_start = phase1 * self.resources.taps;
+                let coeffs_phase1 =
+                    &self.resources.coeffs[phase1_start..phase1_start + self.resources.taps];
+                let phase2_start = phase2 * self.resources.taps;
+                let coeffs_phase2 =
+                    &self.resources.coeffs[phase2_start..phase2_start + self.resources.taps];
 
-                let sample = (self.convolve_function)(
+                let sample = (self.derived.convolve_function)(
                     input_slice,
                     coeffs_phase1,
                     coeffs_phase2,
                     frac,
-                    self.taps,
+                    self.resources.taps,
                 );
-                output[output_frame_count * self.channels + channel] = sample;
+                output[output_frame_count * self.resources.channels + channel] = sample;
             }
 
             output_frame_count += 1;
-            self.position += self.ratio;
+            self.state.position += self.resources.ratio;
         }
 
         // Update buffer state: consume processed frames.
         // Cap to available_frames: when ratio > taps, position can advance past the buffer end
         // after the last valid output iteration. The excess is preserved as a lookahead offset.
 
-        let consumed_frames = (self.position.floor() as usize).min(self.available_frames);
+        let consumed_frames =
+            (self.state.position.floor() as usize).min(self.state.available_frames);
 
-        self.read_position += consumed_frames;
-        self.available_frames -= consumed_frames;
-        self.position -= consumed_frames as f64;
+        self.state.read_position += consumed_frames;
+        self.state.available_frames -= consumed_frames;
+        self.state.position -= consumed_frames as f64;
 
         // Double-buffer optimization: only copy when read_position exceeds threshold.
-        if self.read_position > INPUT_CAPACITY {
+        if self.state.read_position > INPUT_CAPACITY {
             // Copy remaining valid data to the beginning of the buffer.
-            for channel in 0..self.channels {
-                let channel_buf = &mut self.input_buffers[BUFFER_SIZE * channel..];
+            for channel in 0..self.resources.channels {
+                let channel_buf = &mut self.state.input_buffers[BUFFER_SIZE * channel..];
                 channel_buf.copy_within(
-                    self.read_position..self.read_position + self.available_frames,
+                    self.state.read_position
+                        ..self.state.read_position + self.state.available_frames,
                     0,
                 );
             }
-            self.read_position = 0;
+            self.state.read_position = 0;
         }
 
         Ok((
-            frames_to_copy * self.channels,
-            output_frame_count * self.channels,
+            frames_to_copy * self.resources.channels,
+            output_frame_count * self.resources.channels,
         ))
     }
 
@@ -601,7 +626,7 @@ impl ResamplerFir {
     /// - `Latency::_32`: 32 samples (64 taps / 2)
     /// - `Latency::_64`: 64 samples (128 taps / 2)
     pub fn delay(&self) -> usize {
-        self.taps / 2
+        self.resources.taps / 2
     }
 
     /// Resets the resampler state, clearing all internal buffers.
@@ -609,10 +634,62 @@ impl ResamplerFir {
     /// Call this when starting to process a new audio stream to avoid
     /// discontinuities from previous audio data.
     pub fn reset(&mut self) {
-        self.read_position = 0;
-        self.available_frames = 0;
-        self.position = 0.0;
+        self.state.input_buffers.fill(0.0);
+        self.state.read_position = 0;
+        self.state.available_frames = 0;
+        self.state.position = 0.0;
     }
+
+    /// Clones the complete streaming history without copying coefficients.
+    pub fn capture_state(&self) -> ResamplerFirState {
+        self.state.clone()
+    }
+
+    /// Validates streaming history against the retained filter configuration.
+    pub fn validate_state(&self, state: &ResamplerFirState) -> Result<(), StateValidationError> {
+        state.validate(&self.resources)
+    }
+
+    /// Replaces streaming history after validating it against retained resources.
+    pub fn restore_state(&mut self, state: ResamplerFirState) -> Result<(), StateValidationError> {
+        state.validate(&self.resources)?;
+        self.state = state;
+        self.after_restore();
+        Ok(())
+    }
+}
+
+impl ResamplerFirState {
+    fn validate(&self, resources: &ResamplerFirResources) -> Result<(), StateValidationError> {
+        let expected_samples = BUFFER_SIZE * resources.channels;
+        if self.input_buffers.len() != expected_samples {
+            return Err(StateValidationError::new(
+                "FIR input history length differs",
+            ));
+        }
+        if self.read_position > INPUT_CAPACITY {
+            return Err(StateValidationError::new(
+                "FIR read position is out of range",
+            ));
+        }
+        if self.available_frames > INPUT_CAPACITY
+            || self.read_position + self.available_frames > BUFFER_SIZE
+        {
+            return Err(StateValidationError::new(
+                "FIR available frame range is out of bounds",
+            ));
+        }
+        if !self.position.is_finite() || self.position < 0.0 {
+            return Err(StateValidationError::new(
+                "FIR fractional position is invalid",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl AfterRestore for ResamplerFir {
+    fn after_restore(&mut self) {}
 }
 
 #[cfg(test)]
@@ -817,6 +894,51 @@ mod tests {
         let mut output = vec![0.0f32; resampler.buffer_size_output()];
         let result = resampler.resample(&input, &mut output);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn streaming_state_replay_is_bit_exact() {
+        fn assert_runtime_state<State: save_state::RuntimeState>() {}
+        assert_runtime_state::<ResamplerFirState>();
+
+        let mut resampler = ResamplerFir::new(
+            2,
+            SampleRate::Hz48000,
+            SampleRate::Hz44100,
+            Latency::Sample32,
+            Attenuation::Db90,
+        );
+        let first_input: Vec<f32> = (0..622).map(|index| (index as f32 * 0.017).sin()).collect();
+        let mut warm_output = vec![0.0; 64];
+        resampler.resample(&first_input, &mut warm_output).unwrap();
+        let captured = resampler.capture_state();
+        let encoded = save_state::encode_runtime_state(&captured);
+        let decoded: ResamplerFirState =
+            save_state::decode_runtime_state(&encoded, BUFFER_SIZE * 2).unwrap();
+
+        let replay_input: Vec<f32> = (0..346).map(|index| (index as f32 * 0.031).cos()).collect();
+        let mut first_output = vec![0.0; resampler.buffer_size_output()];
+        let first_counts = resampler
+            .resample(&replay_input, &mut first_output)
+            .unwrap();
+
+        let disturbance = vec![0.25; 512];
+        let mut disturbance_output = vec![0.0; resampler.buffer_size_output()];
+        resampler
+            .resample(&disturbance, &mut disturbance_output)
+            .unwrap();
+        resampler.restore_state(decoded).unwrap();
+
+        let mut replay_output = vec![0.0; resampler.buffer_size_output()];
+        let replay_counts = resampler
+            .resample(&replay_input, &mut replay_output)
+            .unwrap();
+
+        assert_eq!(first_counts, replay_counts);
+        assert_eq!(
+            &first_output[..first_counts.1],
+            &replay_output[..replay_counts.1]
+        );
     }
 
     #[test]

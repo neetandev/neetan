@@ -134,6 +134,13 @@ pub struct VaRendererState {
     pub framebuffer: Box<[u8]>,
 }
 
+save_state::runtime_state! {
+/// Save-state portion of the PC-88VA renderer.
+#[derive(Clone)]
+pub struct VaRendererRuntimeState {
+    framebuffer: Box<[u8]>,
+}}
+
 /// CPU-side renderer for the PC-88VA display.
 pub struct VaRenderer {
     /// Embedded state for save/restore.
@@ -168,6 +175,27 @@ impl VaRenderer {
     /// Returns the packed RGBA framebuffer.
     pub fn framebuffer(&self) -> &[u8] {
         &self.state.framebuffer
+    }
+
+    /// Captures the presented framebuffer without the immutable font.
+    pub fn capture_state(&self) -> VaRendererRuntimeState {
+        VaRendererRuntimeState {
+            framebuffer: self.state.framebuffer.clone(),
+        }
+    }
+
+    /// Restores the presented framebuffer without changing the font.
+    pub fn restore_state(
+        &mut self,
+        state: VaRendererRuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.framebuffer.len() != VA_FRAMEBUFFER_BYTES {
+            return Err(save_state::StateValidationError::new(
+                "PC-88VA renderer state is invalid",
+            ));
+        }
+        self.state.framebuffer = state.framebuffer;
+        Ok(())
     }
 
     /// Renders one frame and returns the `(width, height)` of the valid region.

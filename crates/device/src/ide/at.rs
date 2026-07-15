@@ -13,6 +13,14 @@ use crate::disk::{HddGeometry, HddImage, MountedHdd};
 /// Number of drives on the primary channel.
 const DRIVE_COUNT: usize = 2;
 
+save_state::runtime_state! {
+/// Authoritative AT primary IDE channel state.
+#[derive(Clone)]
+pub struct AtIdeControllerState {
+    controller: lle::Controller,
+    media: save_state::MediaManifest,
+}}
+
 /// AT primary-channel IDE controller with up to two hard drives.
 #[derive(Debug)]
 pub struct AtIdeController {
@@ -33,6 +41,57 @@ impl AtIdeController {
             controller: lle::Controller::new(),
             drives: [None, None],
         }
+    }
+
+    /// Captures the task file, active transfer, and mounted media bindings.
+    pub fn capture_state(&self) -> Result<AtIdeControllerState, save_state::StateValidationError> {
+        Ok(AtIdeControllerState {
+            controller: self.controller.clone(),
+            media: self.media_manifest()?,
+        })
+    }
+
+    /// Restores controller electronics while retaining mounted disk contents.
+    pub fn restore_state(
+        &mut self,
+        state: AtIdeControllerState,
+    ) -> Result<(), save_state::StateValidationError> {
+        state.controller.validate_state()?;
+        state.media.verify_current(&self.media_manifest()?)?;
+        self.controller = state.controller;
+        Ok(())
+    }
+
+    /// Returns stable bindings for mounted hard disks.
+    pub fn media_manifest(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = Vec::new();
+        for (drive_index, mounted) in self.drives.iter().enumerate() {
+            let Some(mounted) = mounted else {
+                continue;
+            };
+            let geometry = mounted.geometry();
+            bindings.push(save_state::MediaBinding {
+                identifier: save_state::MediaBindingId::new(format!("ide-{drive_index}"))?,
+                slot: save_state::MediaSlot::new(
+                    save_state::MediaKind::HardDisk,
+                    drive_index as u32,
+                ),
+                source_path: mounted.source_path().cloned(),
+                media_type: mounted.image().format_name().to_owned(),
+                identity: mounted.identity(),
+                geometry: Some(save_state::MediaGeometry::new(
+                    u32::from(geometry.cylinders),
+                    u32::from(geometry.heads),
+                    u32::from(geometry.sectors_per_track),
+                    u32::from(geometry.sector_size),
+                )?),
+                write_protected: false,
+                backend_generation: None,
+            });
+        }
+        save_state::MediaManifest::new(bindings)
     }
 
     /// Inserts a hard disk image into the specified drive (0-1).

@@ -61,14 +61,13 @@ fn midi_bytes_captured_verbatim_and_in_order() {
     }
     machine.run_for(MIDI_BYTE_CYCLES * (stream.len() as u64 + 1));
 
-    let mut drained = Vec::new();
-    machine.flush_midi_into(&mut drained);
-    assert_eq!(drained, stream);
+    let mut drained = [0; 8];
+    let length = machine.flush_midi_into(&mut drained);
+    assert_eq!(drained[..length], stream);
 
     // Draining again yields nothing.
-    let mut again = Vec::new();
-    machine.flush_midi_into(&mut again);
-    assert!(again.is_empty());
+    let mut again = [0; 1];
+    assert_eq!(machine.flush_midi_into(&mut again), 0);
 }
 
 #[test]
@@ -80,17 +79,14 @@ fn transmission_is_paced_at_the_midi_byte_rate() {
         write_byte(&mut machine, BANKED_6_ADDRESS, byte);
     }
 
-    let mut drained = Vec::new();
+    let mut drained = [0; 3];
+    let mut length = 0;
     machine.run_for(MIDI_BYTE_CYCLES * 2 - 100);
-    machine.flush_midi_into(&mut drained);
-    assert_eq!(
-        drained.len(),
-        1,
-        "only the first byte fits the elapsed time"
-    );
+    length += machine.flush_midi_into(&mut drained[length..]);
+    assert_eq!(length, 1, "only the first byte fits the elapsed time");
     machine.run_for(MIDI_BYTE_CYCLES * 2);
-    machine.flush_midi_into(&mut drained);
-    assert_eq!(drained, [0xF8, 0xFE, 0xFA]);
+    length += machine.flush_midi_into(&mut drained[length..]);
+    assert_eq!(drained[..length], [0xF8, 0xFE, 0xFA]);
 }
 
 #[test]
@@ -124,7 +120,6 @@ fn transmit_empty_interrupt_reaches_the_cpu_interface() {
 #[test]
 fn no_bytes_are_captured_without_an_installed_card() {
     let mut machine = machine(X68kModel::X68000);
-    let mut drained = Vec::new();
-    machine.flush_midi_into(&mut drained);
-    assert!(drained.is_empty());
+    let mut drained = [0; 1];
+    assert_eq!(machine.flush_midi_into(&mut drained), 0);
 }

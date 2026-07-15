@@ -31,7 +31,7 @@ use device::{
     fdd320_ppi::Fdd320Ppi,
     fdd640k_hle::Fdd640kHle,
     floppy::FloppyImage,
-    ga1280a::{Ga1280a, Ga1280aRenderSnapshot, Ga1280aState, is_ga1280a_port},
+    ga1280a::{Ga1280a, Ga1280aRenderSnapshot, is_ga1280a_port},
     grcg::Grcg,
     i8237_dma::I8237Dma,
     i8251_keyboard::I8251Keyboard,
@@ -305,6 +305,94 @@ pub enum BootDevice {
     Dos,
 }
 
+save_state::runtime_state! {
+/// Complete non-threaded PC-98 bus state.
+#[derive(Clone)]
+pub(crate) struct Pc9801BusState {
+    current_cycle: u64,
+    nmi_enabled: bool,
+    memory: crate::Pc9801MemoryState,
+    pic: device::i8259a_pic::I8259aPicState,
+    scheduler: crate::Pc98SchedulerState,
+    pit: device::i8253_pit::I8253PitState,
+    dma: device::i8237_dma::I8237DmaState,
+    keyboard: device::i8251_keyboard::I8251KeyboardState,
+    keyboard_chained_raw_code: Option<u8>,
+    serial: device::i8251_serial::I8251SerialState,
+    gdc_master: device::upd7220_gdc::GdcState,
+    gdc_slave: device::upd7220_gdc::GdcState,
+    floppy: device::upd765a_fdc::FloppyControllerState,
+    fdd640k_hle: device::fdd640k_hle::Fdd640kHleState,
+    fdd320_ppi: device::fdd320_ppi::Fdd320PpiState,
+    system_ppi: device::i8255_system_ppi::I8255SystemPpiState,
+    printer: device::printer::PrinterState,
+    display_control: device::display_control::DisplayControlState,
+    cgrom: device::cgrom::CgromState,
+    crtc: device::upd52611_crtc::Upd52611CrtcState,
+    grcg: device::grcg::GrcgState,
+    egc: device::egc::EgcState,
+    pegc: device::pegc::PegcState,
+    palette: device::palette::PaletteState,
+    soundboard_14: Option<device::soundboard_14::Soundboard14RuntimeState>,
+    soundboard_26k: Option<device::soundboard_26k::Soundboard26kRuntimeState>,
+    soundboard_86: Option<device::soundboard_86::Soundboard86RuntimeState>,
+    sound_blaster_16: Option<device::sound_blaster_16::SoundBlaster16RuntimeState>,
+    ga1280a: Option<device::ga1280a::Ga1280aState>,
+    beeper: device::beeper::BeeperState,
+    rtc: device::upd4990a_rtc::Upd4990aState,
+    mpu401: device::mpu401::Mpu401State,
+    #[cfg(feature = "mt32")]
+    mt32: Option<device::mt32::MuntActorState>,
+    #[cfg(feature = "sc55")]
+    sc55: Option<device::sc55::Sc55ActorState>,
+    mouse_ppi: device::i8255_mouse_ppi::I8255MousePpiState,
+    mouse_timer_setting: u8,
+    sasi: device::sasi::SasiControllerState,
+    ide: device::ide::IdeControllerState,
+    sdip: device::sdip::SdipState,
+    bios: device::bios::BiosControllerState,
+    bios_interval_timer_active: bool,
+    current_cpu_protected_mode: bool,
+    a20_enabled: bool,
+    reset_pending: bool,
+    shutdown_requested: bool,
+    needs_full_reinit: bool,
+    warm_reset_context: Option<[u16; 4]>,
+    dma_access_ctrl: u8,
+    vram_ems_bank: u8,
+    ram_window: u8,
+    hole_15m_control: u8,
+    protected_memory_max: u8,
+    b_bank_ems: bool,
+    graphics_extension_enabled: bool,
+    pending_wait_cycles: i64,
+    rtc_control_22: u8,
+    key_sense_0ec: u8,
+    external_interrupt_43a: u8,
+    video_ff2_index: u8,
+    wab_index: u8,
+    wab_data: [u8; 8],
+    wab_relay: u8,
+    cpu_mode_534: u8,
+    simm_address_register: u8,
+    simm_data: [u8; 32],
+    memory_bank_063c: u8,
+    cache_control_063f: u8,
+    tram_wait: i64,
+    vram_wait: i64,
+    grcg_wait: i64,
+    fdd_seek_cylinder: [u8; 4],
+    fdd_read_id_index: [usize; 4],
+    hle_cr0: u32,
+    hle_cr3: u32,
+    boot_device: u8,
+    dos: Option<dos::NeetanDos>,
+    ems_enabled: bool,
+    xms_enabled: bool,
+    xms_32_enabled: bool,
+    xms_hmamin_kb: u16,
+}}
+
 impl std::fmt::Display for BootDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -549,6 +637,13 @@ impl<T: TraceSink> Pc9801Bus<T> {
         let mut dos = dos::NeetanDos::new();
         dos.set_host_date_time_provider(self.host_date_time_provider);
         self.dos = Some(dos);
+    }
+
+    /// Returns the active built-in HLE DOS command, if any.
+    pub fn hle_active_command_name(&self) -> Option<&'static str> {
+        self.dos
+            .as_ref()
+            .and_then(dos::NeetanDos::active_command_name)
     }
 
     /// Loads BIOS ROM data (mapped at E8000-FFFFF, up to 96 KB).
@@ -1037,7 +1132,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
     }
 
     /// Returns the installed I-O DATA GA-1280A state, if any.
-    pub fn ga1280a_state(&self) -> Option<&Ga1280aState> {
+    pub fn ga1280a_state(&self) -> Option<&device::ga1280a::Ga1280aState> {
         self.ga1280a.as_ref().map(|ga| &ga.state)
     }
 
@@ -1708,13 +1803,13 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.ide.generate_cd_audio_samples(volume, output);
 
         #[cfg(feature = "mt32")]
-        if let Some(ref mt32) = self.mt32 {
-            mt32.exchange(volume, output, |buf| self.mpu401.flush_midi_into(buf));
+        if let Some(ref mut mt32) = self.mt32 {
+            mt32.exchange(volume, output, |buffer| self.mpu401.flush_midi_into(buffer));
         }
 
         #[cfg(feature = "sc55")]
-        if let Some(ref sc55) = self.sc55 {
-            sc55.exchange(volume, output, |buf| self.mpu401.flush_midi_into(buf));
+        if let Some(ref mut sc55) = self.sc55 {
+            sc55.exchange(volume, output, |buffer| self.mpu401.flush_midi_into(buffer));
         }
 
         beeper_count
@@ -1760,6 +1855,374 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.memory.take_font_rom_dirty()
     }
 
+    /// Reports whether this complete installed bus configuration is supported.
+    pub(crate) fn runtime_state_supported(&self) -> bool {
+        true
+    }
+
+    /// Returns the exact immutable resource identities for this bus.
+    pub(crate) fn save_state_resources(
+        &self,
+    ) -> Result<save_state::ResourceManifest, save_state::StateValidationError> {
+        #[allow(unused_mut)]
+        let mut bindings = self.memory.resource_manifest()?.bindings().to_vec();
+        #[cfg(feature = "mt32")]
+        if let Some(module) = &self.mt32 {
+            bindings.extend_from_slice(module.resource_bindings());
+        }
+        #[cfg(feature = "sc55")]
+        if let Some(module) = &self.sc55 {
+            bindings.extend_from_slice(module.resource_bindings());
+        }
+        save_state::ResourceManifest::new(bindings)
+    }
+
+    /// Returns the complete mounted media identity set for this bus.
+    pub(crate) fn save_state_media(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = Vec::new();
+        bindings.extend_from_slice(self.floppy.media_manifest()?.bindings());
+        bindings.extend_from_slice(self.sasi.media_manifest()?.bindings());
+        bindings.extend_from_slice(self.ide.media_manifest()?.bindings());
+        save_state::MediaManifest::new(bindings)
+    }
+
+    /// Captures the complete supported bus state at a machine safe point.
+    pub(crate) fn capture_runtime_state(
+        &mut self,
+    ) -> Result<Pc9801BusState, save_state::SaveStateError> {
+        if !self.runtime_state_supported() {
+            return Err(save_state::SaveStateError::Unsupported);
+        }
+        Ok(Pc9801BusState {
+            current_cycle: self.current_cycle,
+            nmi_enabled: self.nmi_enabled,
+            memory: self.memory.state.clone(),
+            pic: self.pic.capture_state(),
+            scheduler: self.scheduler.state.clone(),
+            pit: self.pit.state.clone(),
+            dma: self.dma.state.clone(),
+            keyboard: self.keyboard.state.clone(),
+            keyboard_chained_raw_code: self.keyboard_chained_raw_code,
+            serial: self.serial.state.clone(),
+            gdc_master: self.gdc_master.capture_state(),
+            gdc_slave: self.gdc_slave.capture_state(),
+            floppy: self.floppy.capture_state()?,
+            fdd640k_hle: self.fdd640k_hle.capture_state(),
+            fdd320_ppi: self.fdd320_ppi.state.clone(),
+            system_ppi: self.system_ppi.state.clone(),
+            printer: self.printer.capture_state(),
+            display_control: self.display_control.state.clone(),
+            cgrom: self.cgrom.state.clone(),
+            crtc: self.crtc.state.clone(),
+            grcg: self.grcg.state.clone(),
+            egc: self.egc.state.clone(),
+            pegc: self.pegc.state.clone(),
+            palette: self.palette.state.clone(),
+            soundboard_14: self.soundboard_14.as_ref().map(Soundboard14::capture_state),
+            soundboard_26k: self
+                .soundboard_26k
+                .as_ref()
+                .map(Soundboard26k::capture_state),
+            soundboard_86: self.soundboard_86.as_ref().map(Soundboard86::capture_state),
+            sound_blaster_16: self
+                .sound_blaster_16
+                .as_ref()
+                .map(SoundBlaster16::capture_state),
+            ga1280a: self.ga1280a.as_ref().map(Ga1280a::capture_state),
+            beeper: self.beeper.capture_state(),
+            rtc: self.rtc.state.clone(),
+            mpu401: self.mpu401.capture_state(),
+            #[cfg(feature = "mt32")]
+            mt32: self
+                .mt32
+                .as_mut()
+                .map(device::mt32::Mt32::capture_state)
+                .transpose()
+                .map_err(|error| save_state::SaveStateError::WorkerFailure(error.to_string()))?,
+            #[cfg(feature = "sc55")]
+            sc55: self
+                .sc55
+                .as_mut()
+                .map(device::sc55::Sc55::capture_state)
+                .transpose()
+                .map_err(|error| save_state::SaveStateError::WorkerFailure(error.to_string()))?,
+            mouse_ppi: self.mouse_ppi.state.clone(),
+            mouse_timer_setting: self.mouse_timer_setting,
+            sasi: self.sasi.capture_state()?,
+            ide: self.ide.capture_state()?,
+            sdip: self.sdip.state.clone(),
+            bios: self.bios.capture_state(),
+            bios_interval_timer_active: self.bios_interval_timer_active,
+            current_cpu_protected_mode: self.current_cpu_protected_mode,
+            a20_enabled: self.a20_enabled,
+            reset_pending: self.reset_pending,
+            shutdown_requested: self.shutdown_requested,
+            needs_full_reinit: self.needs_full_reinit,
+            warm_reset_context: self.warm_reset_context.map(
+                |(stack_segment, stack_pointer, code_segment, instruction_pointer)| {
+                    [
+                        stack_segment,
+                        stack_pointer,
+                        code_segment,
+                        instruction_pointer,
+                    ]
+                },
+            ),
+            dma_access_ctrl: self.dma_access_ctrl,
+            vram_ems_bank: self.vram_ems_bank,
+            ram_window: self.ram_window,
+            hole_15m_control: self.hole_15m_control,
+            protected_memory_max: self.protected_memory_max,
+            b_bank_ems: self.b_bank_ems,
+            graphics_extension_enabled: self.graphics_extension_enabled,
+            pending_wait_cycles: self.pending_wait_cycles,
+            rtc_control_22: self.rtc_control_22,
+            key_sense_0ec: self.key_sense_0ec,
+            external_interrupt_43a: self.external_interrupt_43a,
+            video_ff2_index: self.video_ff2_index,
+            wab_index: self.wab_index,
+            wab_data: self.wab_data,
+            wab_relay: self.wab_relay,
+            cpu_mode_534: self.cpu_mode_534,
+            simm_address_register: self.simm_address_register,
+            simm_data: self.simm_data,
+            memory_bank_063c: self.memory_bank_063c,
+            cache_control_063f: self.cache_control_063f,
+            tram_wait: self.tram_wait,
+            vram_wait: self.vram_wait,
+            grcg_wait: self.grcg_wait,
+            fdd_seek_cylinder: self.fdd_seek_cylinder,
+            fdd_read_id_index: self.fdd_read_id_index,
+            hle_cr0: self.hle_cr0,
+            hle_cr3: self.hle_cr3,
+            boot_device: self.boot_device as u8,
+            dos: self.dos.clone(),
+            ems_enabled: self.ems_enabled,
+            xms_enabled: self.xms_enabled,
+            xms_32_enabled: self.xms_32_enabled,
+            xms_hmamin_kb: self.xms_hmamin_kb,
+        })
+    }
+
+    /// Restores a complete bus state while retaining host resources.
+    pub(crate) fn restore_runtime_state(
+        &mut self,
+        state: Pc9801BusState,
+    ) -> Result<(), save_state::SaveStateError> {
+        if !self.runtime_state_supported() {
+            return Err(save_state::SaveStateError::Unsupported);
+        }
+        #[cfg(feature = "mt32")]
+        let mt32_configuration_differs = state.mt32.is_some() != self.mt32.is_some();
+        #[cfg(not(feature = "mt32"))]
+        let mt32_configuration_differs = false;
+        #[cfg(feature = "sc55")]
+        let sc55_configuration_differs = state.sc55.is_some() != self.sc55.is_some();
+        #[cfg(not(feature = "sc55"))]
+        let sc55_configuration_differs = false;
+        if state.memory.extended_ram.len() != self.memory.state.extended_ram.len()
+            || state.memory.address_mask != self.memory.state.address_mask
+            || state.memory.pegc_vram.is_some() != self.memory.state.pegc_vram.is_some()
+            || state.memory.shadow_ram.is_some() != self.memory.state.shadow_ram.is_some()
+            || state.soundboard_14.is_some() != self.soundboard_14.is_some()
+            || state.soundboard_26k.is_some() != self.soundboard_26k.is_some()
+            || state.soundboard_86.is_some() != self.soundboard_86.is_some()
+            || state.sound_blaster_16.is_some() != self.sound_blaster_16.is_some()
+            || state.ga1280a.is_some() != self.ga1280a.is_some()
+            || mt32_configuration_differs
+            || sc55_configuration_differs
+            || state.boot_device > BootDevice::Dos as u8
+        {
+            return Err(
+                save_state::StateValidationError::new("PC-98 state configuration differs").into(),
+            );
+        }
+        if let Some(dos) = &state.dos {
+            dos.validate_state(
+                state.ems_enabled,
+                state.xms_enabled,
+                state.xms_32_enabled,
+                state.xms_hmamin_kb,
+            )?;
+        }
+
+        let mut restored_dos = state.dos;
+        if let Some(dos) = restored_dos.as_mut() {
+            dos.prepare_restore(self.host_date_time_provider)?;
+        }
+
+        #[cfg(feature = "mt32")]
+        let mut mt32_prepared = false;
+        #[cfg(feature = "mt32")]
+        if let (Some(module), Some(saved)) = (&mut self.mt32, state.mt32.clone()) {
+            module
+                .prepare_restore(saved)
+                .map_err(|error| save_state::SaveStateError::WorkerFailure(error.to_string()))?;
+            mt32_prepared = true;
+        }
+        #[cfg(feature = "sc55")]
+        let mut sc55_prepared = false;
+        #[cfg(feature = "sc55")]
+        if let (Some(module), Some(saved)) = (&mut self.sc55, state.sc55.clone()) {
+            if let Err(error) = module.prepare_restore(saved) {
+                #[cfg(feature = "mt32")]
+                if mt32_prepared && let Some(module) = &mut self.mt32 {
+                    let _ = module.abort_restore();
+                }
+                return Err(save_state::SaveStateError::WorkerFailure(error.to_string()));
+            }
+            sc55_prepared = true;
+        }
+
+        let restore_result = (|| -> Result<(), save_state::SaveStateError> {
+            self.floppy.restore_state(state.floppy)?;
+            self.sasi.restore_state(state.sasi)?;
+            self.ide.restore_state(state.ide)?;
+            self.pic.restore_state(state.pic)?;
+            self.gdc_master.restore_state(state.gdc_master)?;
+            self.gdc_slave.restore_state(state.gdc_slave)?;
+            self.printer.restore_state(state.printer)?;
+            self.beeper.restore_state(state.beeper)?;
+            self.mpu401.restore_state(state.mpu401)?;
+
+            if let (Some(runtime), Some(saved)) = (&mut self.soundboard_14, state.soundboard_14) {
+                runtime.restore_state(saved)?;
+            }
+            if let (Some(runtime), Some(saved)) = (&mut self.soundboard_26k, state.soundboard_26k) {
+                runtime.restore_state(saved)?;
+            }
+            if let (Some(runtime), Some(saved)) = (&mut self.soundboard_86, state.soundboard_86) {
+                runtime.restore_state(saved)?;
+            }
+            if let (Some(runtime), Some(saved)) =
+                (&mut self.sound_blaster_16, state.sound_blaster_16)
+            {
+                runtime.restore_state(saved)?;
+            }
+            if let (Some(runtime), Some(saved)) = (&mut self.ga1280a, state.ga1280a) {
+                runtime.restore_state(saved)?;
+            }
+
+            self.current_cycle = state.current_cycle;
+            self.nmi_enabled = state.nmi_enabled;
+            self.memory.state = state.memory;
+            self.scheduler.state = state.scheduler;
+            self.pit.state = state.pit;
+            self.dma.state = state.dma;
+            self.keyboard.state = state.keyboard;
+            self.keyboard_chained_raw_code = state.keyboard_chained_raw_code;
+            self.serial.state = state.serial;
+            self.fdd640k_hle.restore_state(state.fdd640k_hle);
+            self.fdd320_ppi.state = state.fdd320_ppi;
+            self.system_ppi.state = state.system_ppi;
+            self.display_control.state = state.display_control;
+            self.cgrom.state = state.cgrom;
+            self.crtc.state = state.crtc;
+            self.grcg.state = state.grcg;
+            self.egc.state = state.egc;
+            self.pegc.state = state.pegc;
+            self.palette.state = state.palette;
+            self.rtc.state = state.rtc;
+            self.mouse_ppi.state = state.mouse_ppi;
+            self.mouse_timer_setting = state.mouse_timer_setting;
+            self.sdip.state = state.sdip;
+            self.bios.restore_state(state.bios);
+            self.bios_interval_timer_active = state.bios_interval_timer_active;
+            self.current_cpu_protected_mode = state.current_cpu_protected_mode;
+            self.a20_enabled = state.a20_enabled;
+            self.reset_pending = state.reset_pending;
+            self.shutdown_requested = state.shutdown_requested;
+            self.needs_full_reinit = state.needs_full_reinit;
+            self.warm_reset_context = state
+                .warm_reset_context
+                .map(|context| (context[0], context[1], context[2], context[3]));
+            self.dma_access_ctrl = state.dma_access_ctrl;
+            self.vram_ems_bank = state.vram_ems_bank;
+            self.ram_window = state.ram_window;
+            self.hole_15m_control = state.hole_15m_control;
+            self.protected_memory_max = state.protected_memory_max;
+            self.b_bank_ems = state.b_bank_ems;
+            self.graphics_extension_enabled = state.graphics_extension_enabled;
+            self.pending_wait_cycles = state.pending_wait_cycles;
+            self.rtc_control_22 = state.rtc_control_22;
+            self.key_sense_0ec = state.key_sense_0ec;
+            self.external_interrupt_43a = state.external_interrupt_43a;
+            self.video_ff2_index = state.video_ff2_index;
+            self.wab_index = state.wab_index;
+            self.wab_data = state.wab_data;
+            self.wab_relay = state.wab_relay;
+            self.cpu_mode_534 = state.cpu_mode_534;
+            self.simm_address_register = state.simm_address_register;
+            self.simm_data = state.simm_data;
+            self.memory_bank_063c = state.memory_bank_063c;
+            self.cache_control_063f = state.cache_control_063f;
+            self.tram_wait = state.tram_wait;
+            self.vram_wait = state.vram_wait;
+            self.grcg_wait = state.grcg_wait;
+            self.fdd_seek_cylinder = state.fdd_seek_cylinder;
+            self.fdd_read_id_index = state.fdd_read_id_index;
+            self.hle_cr0 = state.hle_cr0;
+            self.hle_cr3 = state.hle_cr3;
+            self.boot_device = match state.boot_device {
+                0 => BootDevice::Auto,
+                1 => BootDevice::Fdd1,
+                2 => BootDevice::Fdd2,
+                3 => BootDevice::Hdd1,
+                4 => BootDevice::Hdd2,
+                5 => BootDevice::Dos,
+                _ => unreachable!(),
+            };
+            self.ems_enabled = state.ems_enabled;
+            self.xms_enabled = state.xms_enabled;
+            self.xms_32_enabled = state.xms_32_enabled;
+            self.xms_hmamin_kb = state.xms_hmamin_kb;
+            self.dos = restored_dos;
+
+            self.pic.invalidate_irq_cache();
+            self.memory.state.font_rom_dirty = true;
+            self.mouse_ppi.set_cpu_clock(self.clocks.cpu_clock_hz);
+            self.update_plane_e_mapping();
+            self.update_next_event_cycle();
+            self.render_display_frame();
+            self.render_ga1280a_frame();
+            Ok(())
+        })();
+
+        if let Err(error) = restore_result {
+            #[cfg(feature = "mt32")]
+            if mt32_prepared && let Some(module) = &mut self.mt32 {
+                let _ = module.abort_restore();
+            }
+            #[cfg(feature = "sc55")]
+            if sc55_prepared && let Some(module) = &mut self.sc55 {
+                let _ = module.abort_restore();
+            }
+            return Err(error);
+        }
+
+        #[cfg(feature = "mt32")]
+        if mt32_prepared
+            && let Some(module) = &mut self.mt32
+            && let Err(error) = module.commit_restore()
+        {
+            #[cfg(feature = "sc55")]
+            if sc55_prepared && let Some(module) = &mut self.sc55 {
+                let _ = module.abort_restore();
+            }
+            return Err(save_state::SaveStateError::WorkerFailure(error.to_string()));
+        }
+        #[cfg(feature = "sc55")]
+        if sc55_prepared
+            && let Some(module) = &mut self.sc55
+            && let Err(error) = module.commit_restore()
+        {
+            return Err(save_state::SaveStateError::WorkerFailure(error.to_string()));
+        }
+        Ok(())
+    }
+
     fn a20_mask(&self, address: u32) -> u32 {
         if self.a20_enabled {
             address
@@ -1768,8 +2231,11 @@ impl<T: TraceSink> Pc9801Bus<T> {
         }
     }
 
-    pub(crate) fn save_state(&self, cpu: crate::Pc98CpuState) -> crate::Pc98MachineState {
-        crate::Pc98MachineState {
+    pub(crate) fn inspection_state(
+        &self,
+        cpu: crate::Pc98InspectionCpuState,
+    ) -> crate::Pc98InspectionState {
+        crate::Pc98InspectionState {
             cpu,
             machine_model: self.machine_model,
             memory: self.memory.state.clone(),
@@ -1815,87 +2281,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
             grcg_wait: self.grcg_wait,
             bios_interval_timer_active: self.bios_interval_timer_active,
         }
-    }
-
-    pub(crate) fn load_peripherals(&mut self, state: &crate::Pc98MachineState) {
-        self.machine_model = state.machine_model;
-        self.memory.state = state.memory.clone();
-        self.pic.state = state.pic.clone();
-        self.pic.invalidate_irq_cache();
-        self.scheduler.state = state.scheduler.clone();
-        self.current_cycle = state.current_cycle;
-        self.next_event_cycle = state.next_event_cycle;
-        self.nmi_enabled = state.nmi_enabled;
-        self.clocks = state.clocks;
-        self.pit.state = state.pit.clone();
-        self.gdc_master.state = state.gdc_master.clone();
-        self.gdc_slave.state = state.gdc_slave.clone();
-        self.keyboard.state = state.keyboard.clone();
-        self.keyboard_chained_raw_code = None;
-        self.serial.state = state.serial.clone();
-        self.a20_enabled = state.a20_enabled;
-        self.floppy.fdc_1mb_mut().state = state.fdc_1mb.clone();
-        self.floppy.fdc_640k_mut().state = state.fdc_640k.clone();
-        self.floppy.set_fdc_media(state.fdc_media);
-        self.fdd320_ppi.state = state.fdd320_ppi.clone();
-        self.vram_ems_bank = state.vram_ems_bank;
-        self.ram_window = state.ram_window;
-        self.system_ppi.state = state.system_ppi.clone();
-        self.printer.state = state.printer.clone();
-        self.cgrom.state = state.cgrom.clone();
-        self.grcg.state = state.grcg.clone();
-        self.egc.state = state.egc.clone();
-        self.display_control.state = state.display_control.clone();
-        self.crtc.state = state.crtc.clone();
-        self.palette.state = state.palette.clone();
-        if let (Some(sb14), Some(saved)) = (&mut self.soundboard_14, &state.soundboard_14) {
-            sb14.load_state(
-                saved,
-                self.clocks.cpu_clock_hz,
-                state.clocks.sample_rate,
-                state.current_cycle,
-            );
-        }
-        if let (Some(sb26k), Some(saved)) = (&mut self.soundboard_26k, &state.soundboard_26k) {
-            sb26k.load_state(
-                saved,
-                self.clocks.cpu_clock_hz,
-                state.clocks.sample_rate,
-                state.current_cycle,
-            );
-        }
-        if let (Some(sb86), Some(saved)) = (&mut self.soundboard_86, &state.soundboard_86) {
-            sb86.load_state(
-                saved,
-                self.clocks.cpu_clock_hz,
-                state.clocks.sample_rate,
-                state.current_cycle,
-                None,
-            );
-        }
-        if let (Some(sb16), Some(saved)) = (&mut self.sound_blaster_16, &state.sound_blaster_16) {
-            sb16.load_state(
-                saved,
-                self.clocks.cpu_clock_hz,
-                state.clocks.sample_rate,
-                state.current_cycle,
-            );
-        }
-        self.ga1280a = state.ga1280a.clone().map(Ga1280a::from_state);
-        self.render_ga1280a_frame();
-        self.beeper.state = state.beeper.clone();
-        self.mouse_ppi.state = state.mouse_ppi.clone();
-        self.mouse_ppi.set_cpu_clock(self.clocks.cpu_clock_hz);
-        self.mouse_timer_setting = state.mouse_timer_setting;
-        self.hole_15m_control = state.hole_15m_control;
-        self.protected_memory_max = state.protected_memory_max;
-        self.b_bank_ems = state.b_bank_ems;
-        self.tram_wait = state.tram_wait;
-        self.vram_wait = state.vram_wait;
-        self.grcg_wait = state.grcg_wait;
-        self.bios_interval_timer_active = state.bios_interval_timer_active;
-        self.reset_pending = false;
-        self.shutdown_requested = false;
     }
 
     fn process_soundboard_86_actions(&mut self) {

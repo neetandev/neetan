@@ -32,6 +32,7 @@ const ADDRESS_MASK: u16 = 0x3FFF;
 const CURSOR_MODE_MASK: u8 = 0x60;
 const CURSOR_MODE_OFF: u8 = 0x20;
 
+save_state::runtime_state! {
 /// Snapshot of the HD6845 CRTC state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hd6845State {
@@ -39,7 +40,7 @@ pub struct Hd6845State {
     pub regs: [u8; REGISTER_COUNT],
     /// Latched register index selected through the address port.
     pub address: u8,
-}
+}}
 
 /// HD6845 CRT controller.
 pub struct Hd6845 {
