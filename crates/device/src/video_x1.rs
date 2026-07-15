@@ -41,20 +41,20 @@ const PLANE_GREEN_OFFSET: usize = 0x8000;
 /// page interleave and bit 3 selects the displayed CG page.
 ///
 /// CRTC character clock x1.5 (and PCG glyph-row halving in text rendering).
-pub(crate) const MODE1_CHAR_CLOCK_15: u8 = 0x01;
+pub const MODE1_CHAR_CLOCK_15: u8 = 0x01;
 /// CG addressing uses a 0x400-byte line stride (16 rows) instead of 0x800 (8).
-pub(crate) const MODE1_CG_STRIDE_400: u8 = 0x04;
+pub const MODE1_CG_STRIDE_400: u8 = 0x04;
 /// CPU bitmap VRAM window bank: adds 0xC000 to all three plane offsets.
-pub(crate) const MODE1_VRAM_BANK: u8 = 0x10;
+pub const MODE1_VRAM_BANK: u8 = 0x10;
 /// PCG/CG-ROM direct access: PCG defines bypass the beam, reads return fonts.
-pub(crate) const MODE1_PCG_DIRECT: u8 = 0x20;
+pub const MODE1_PCG_DIRECT: u8 = 0x20;
 /// 8x16 ANK font select for the direct-access font reads.
-pub(crate) const MODE1_ANK16: u8 = 0x40;
+pub const MODE1_ANK16: u8 = 0x40;
 /// Kanji-underline (KSEN) mode: extra text rasters and the underline transfer.
-pub(crate) const MODE1_KANJI_UNDERLINE: u8 = 0x80;
+pub const MODE1_KANJI_UNDERLINE: u8 = 0x80;
 
 /// X1 video memory and registers.
-pub(crate) struct X1Video {
+pub struct X1Video {
     text_vram: [u8; TEXT_VRAM_SIZE],
     attr_vram: [u8; ATTR_VRAM_SIZE],
     kvram: [u8; KVRAM_SIZE],
@@ -75,8 +75,15 @@ pub(crate) struct X1Video {
     vram_mode: bool,
 }
 
+impl Default for X1Video {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl X1Video {
-    pub(crate) fn new() -> Self {
+    /// Creates empty X1 display memory and reset video registers.
+    pub fn new() -> Self {
         Self {
             text_vram: [0; TEXT_VRAM_SIZE],
             attr_vram: [0; ATTR_VRAM_SIZE],
@@ -95,22 +102,22 @@ impl X1Video {
     }
 
     /// Whether an I/O write to `addr` targets the bitmap VRAM window.
-    pub(crate) fn is_bitmap_write(&self, addr: u16) -> bool {
+    pub fn is_bitmap_write(&self, addr: u16) -> bool {
         (addr & 0xC000) != 0 || self.vram_mode
     }
 
     /// Whether an I/O read from `addr` targets the bitmap VRAM window.
-    pub(crate) fn is_bitmap_read(&self, addr: u16) -> bool {
+    pub fn is_bitmap_read(&self, addr: u16) -> bool {
         (addr & 0xC000) != 0
     }
 
     /// Latches VRAM (multi-plane fill) mode.
-    pub(crate) fn latch_vram_mode(&mut self) {
+    pub fn latch_vram_mode(&mut self) {
         self.vram_mode = true;
     }
 
     /// Clears the VRAM-mode latch. Called at the start of every I/O read.
-    pub(crate) fn clear_vram_mode(&mut self) {
+    pub fn clear_vram_mode(&mut self) {
         self.vram_mode = false;
     }
 
@@ -125,7 +132,7 @@ impl X1Video {
 
     /// Writes to the bitmap VRAM window, honouring the multi-plane fill mode.
     /// CPU accesses target the bank selected by mode register 1.
-    pub(crate) fn write_bitmap(&mut self, addr: u16, value: u8) {
+    pub fn write_bitmap(&mut self, addr: u16, value: u8) {
         let offset = self.cpu_bitmap_page() + ((addr as usize) & VRAM_ADDRESS_MASK);
         match addr & 0xC000 {
             0x0000 => {
@@ -163,7 +170,7 @@ impl X1Video {
 
     /// Reads from the bitmap VRAM window (plane by `addr & 0xC000`) on the bank
     /// selected by mode register 1.
-    pub(crate) fn read_bitmap(&self, addr: u16) -> u8 {
+    pub fn read_bitmap(&self, addr: u16) -> u8 {
         let offset = self.cpu_bitmap_page() + ((addr as usize) & VRAM_ADDRESS_MASK);
         match addr & 0xC000 {
             0x4000 => self.bitmap[PLANE_BLUE_OFFSET + offset],
@@ -173,44 +180,49 @@ impl X1Video {
         }
     }
 
-    pub(crate) fn read_kvram(&self, addr: u16) -> u8 {
+    /// Reads one kanji attribute VRAM byte.
+    pub fn read_kvram(&self, addr: u16) -> u8 {
         self.kvram[(addr as usize) & TEXT_MASK]
     }
 
-    pub(crate) fn write_kvram(&mut self, addr: u16, value: u8) {
+    /// Writes one kanji attribute VRAM byte.
+    pub fn write_kvram(&mut self, addr: u16, value: u8) {
         self.kvram[(addr as usize) & TEXT_MASK] = value;
     }
 
     /// Writes turbo mode register 1 (`0x1FD0`).
-    pub(crate) fn write_mode1(&mut self, value: u8) {
+    pub fn write_mode1(&mut self, value: u8) {
         self.mode1 = value;
     }
 
     /// Writes turbo mode register 2 (`0x1FE0`).
-    pub(crate) fn write_mode2(&mut self, value: u8) {
+    pub fn write_mode2(&mut self, value: u8) {
         self.mode2 = value;
     }
 
-    pub(crate) fn mode1(&self) -> u8 {
+    /// Reads turbo mode register 1.
+    pub fn mode1(&self) -> u8 {
         self.mode1
     }
 
-    pub(crate) fn mode2(&self) -> u8 {
+    /// Reads turbo mode register 2.
+    pub fn mode2(&self) -> u8 {
         self.mode2
     }
 
     /// Whether the PCG/CG-ROM direct access mode is active.
-    pub(crate) fn pcg_direct(&self) -> bool {
+    pub fn pcg_direct(&self) -> bool {
         self.mode1 & MODE1_PCG_DIRECT != 0
     }
 
-    pub(crate) fn kvram(&self) -> &[u8] {
+    /// Borrows kanji attribute VRAM.
+    pub fn kvram(&self) -> &[u8] {
         &self.kvram
     }
 
     /// Finds the character cell the hi-speed kanji read stages its code in: the
     /// first of a fixed set of cells whose attribute clears the PCG-select bit.
-    pub(crate) fn check_char_address(&self) -> u16 {
+    pub fn check_char_address(&self) -> u16 {
         for cell in [0x7FF, 0x3FF, 0x5FF, 0x1FF] {
             if self.attr_vram[cell] & 0x20 == 0 {
                 return cell as u16;
@@ -219,25 +231,29 @@ impl X1Video {
         0x3FF
     }
 
-    pub(crate) fn read_text(&self, addr: u16) -> u8 {
+    /// Reads one text VRAM byte.
+    pub fn read_text(&self, addr: u16) -> u8 {
         self.text_vram[(addr as usize) & TEXT_MASK]
     }
 
-    pub(crate) fn write_text(&mut self, addr: u16, value: u8) {
+    /// Writes one text VRAM byte.
+    pub fn write_text(&mut self, addr: u16, value: u8) {
         self.text_vram[(addr as usize) & TEXT_MASK] = value;
     }
 
-    pub(crate) fn read_attr(&self, addr: u16) -> u8 {
+    /// Reads one text attribute VRAM byte.
+    pub fn read_attr(&self, addr: u16) -> u8 {
         self.attr_vram[(addr as usize) & TEXT_MASK]
     }
 
-    pub(crate) fn write_attr(&mut self, addr: u16, value: u8) {
+    /// Writes one text attribute VRAM byte.
+    pub fn write_attr(&mut self, addr: u16, value: u8) {
         self.attr_vram[(addr as usize) & TEXT_MASK] = value;
     }
 
     /// Writes a PCG glyph byte. `plane` is 1..=3 (bit plane B/R/G); plane 0 is
     /// the ANK ROM area and is read-only. `code`/`line` come from the beam.
-    pub(crate) fn write_pcg(&mut self, code: u8, line: u8, plane: u8, value: u8) {
+    pub fn write_pcg(&mut self, code: u8, line: u8, plane: u8, value: u8) {
         if plane == 0 || plane > 3 {
             return;
         }
@@ -264,7 +280,7 @@ impl X1Video {
     /// and plane come straight from the I/O port. Lets the turbo define PCG
     /// glyphs without waiting for the CRT beam. `plane` is 1..=3 (bit plane
     /// B/R/G); plane 0 is the read-only ANK area.
-    pub(crate) fn write_pcg_hispeed(&mut self, port: u16, plane: u8, value: u8) {
+    pub fn write_pcg_hispeed(&mut self, port: u16, plane: u8, value: u8) {
         if plane == 0 || plane > 3 {
             return;
         }
@@ -275,7 +291,7 @@ impl X1Video {
 
     /// Hi-speed (turbo) PCG glyph read-back for the colour planes (1..=3),
     /// addressed like [`Self::write_pcg_hispeed`].
-    pub(crate) fn read_pcg_hispeed(&self, port: u16, plane: u8) -> u8 {
+    pub fn read_pcg_hispeed(&self, port: u16, plane: u8) -> u8 {
         if plane == 0 || plane > 3 {
             return 0xFF;
         }
@@ -296,7 +312,7 @@ impl X1Video {
     }
 
     /// Reads a PCG glyph byte (plane 1..=3), or the CG-ROM for plane 0.
-    pub(crate) fn read_pcg(&self, code: u8, line: u8, plane: u8, cg_rom: &[u8]) -> u8 {
+    pub fn read_pcg(&self, code: u8, line: u8, plane: u8, cg_rom: &[u8]) -> u8 {
         if plane == 0 {
             let index = (usize::from(code) * 8 + usize::from(line)) & TEXT_MASK;
             return cg_rom.get(index).copied().unwrap_or(0);
@@ -304,47 +320,58 @@ impl X1Video {
         self.pcg[pcg_offset(code, line, plane)]
     }
 
-    pub(crate) fn set_palette_blue(&mut self, value: u8) {
+    /// Writes the blue palette register.
+    pub fn set_palette_blue(&mut self, value: u8) {
         self.palette_blue = value;
     }
 
-    pub(crate) fn set_palette_red(&mut self, value: u8) {
+    /// Writes the red palette register.
+    pub fn set_palette_red(&mut self, value: u8) {
         self.palette_red = value;
     }
 
-    pub(crate) fn set_palette_green(&mut self, value: u8) {
+    /// Writes the green palette register.
+    pub fn set_palette_green(&mut self, value: u8) {
         self.palette_green = value;
     }
 
-    pub(crate) fn set_priority(&mut self, value: u8) {
+    /// Writes the display priority register.
+    pub fn set_priority(&mut self, value: u8) {
         self.priority = value;
     }
 
-    pub(crate) fn text_vram(&self) -> &[u8] {
+    /// Borrows text VRAM.
+    pub fn text_vram(&self) -> &[u8] {
         &self.text_vram
     }
 
-    pub(crate) fn attr_vram(&self) -> &[u8] {
+    /// Borrows text attribute VRAM.
+    pub fn attr_vram(&self) -> &[u8] {
         &self.attr_vram
     }
 
-    pub(crate) fn pcg(&self) -> &[u8] {
+    /// Borrows programmable character generator memory.
+    pub fn pcg(&self) -> &[u8] {
         &self.pcg
     }
 
-    pub(crate) fn pcg_gaiji(&self) -> &[u8] {
+    /// Borrows the gaiji mirror of programmable character memory.
+    pub fn pcg_gaiji(&self) -> &[u8] {
         &self.pcg_gaiji
     }
 
-    pub(crate) fn bitmap(&self) -> &[u8] {
+    /// Borrows bitmap VRAM.
+    pub fn bitmap(&self) -> &[u8] {
         &self.bitmap
     }
 
-    pub(crate) fn palette_guns(&self) -> [u8; 3] {
+    /// Returns the blue, red, and green palette registers.
+    pub fn palette_guns(&self) -> [u8; 3] {
         [self.palette_blue, self.palette_red, self.palette_green]
     }
 
-    pub(crate) fn priority(&self) -> u8 {
+    /// Reads the display priority register.
+    pub fn priority(&self) -> u8 {
         self.priority
     }
 }

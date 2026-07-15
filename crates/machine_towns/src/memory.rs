@@ -620,8 +620,14 @@ impl TownsMemory {
 
     /// Blits the enabled sprites into VRAM layer 1. Kept here so the mutable VRAM
     /// and the read-only sprite RAM are borrowed as disjoint fields of `self`.
-    pub(crate) fn render_sprites(&mut self, params: &software_renderer::SpriteRenderParams) {
-        software_renderer::render_sprites(&mut self.vram, &self.sprite_ram, params);
+    pub(crate) fn render_sprites(&mut self, params: &device::sprite_towns::TownsSpriteRender) {
+        let renderer_params = software_renderer::SpriteRenderParams {
+            page: params.page,
+            first_index: params.first_index,
+            h_offset: params.horizontal_offset,
+            v_offset: params.vertical_offset,
+        };
+        software_renderer::render_sprites(&mut self.vram, &self.sprite_ram, &renderer_params);
     }
 
     /// The FMR display plane mask (CFF82), applied by the renderer in FMR mode.

@@ -6,9 +6,9 @@ use device::{
     cdrom_pc88::Pc88Cdrom,
     i8214_pic::I8214Pic,
     i8251_serial::I8251Serial,
-    i8255::I8255,
     i8257_dma::I8257Dma,
     palette_pc88::Pc88Palette,
+    pc80s31k::{Pc80s31kMemory, Pc80s31kPpiLink},
     soundboard_ii::SoundboardII,
     upd765a_fdc::{FloppyController, UPD765_PLATFORM_STANDARD, Upd765aFdc},
     upd3301_crtc::Upd3301,
@@ -16,7 +16,6 @@ use device::{
 };
 use software_renderer::Pc88Renderer;
 
-use super::sub_mem::SubMemory;
 use crate::{
     bus::Pc8801Bus,
     config::{BootMode, ClockConfig, ClockSelect, Pc8801Model},
@@ -151,14 +150,13 @@ impl<T: TraceSink> Pc8801Bus<T> {
             presented_frames: 0,
             kanji1: Vec::new(),
             kanji2: Vec::new(),
-            sub_mem: SubMemory::new(),
+            sub_mem: Pc80s31kMemory::new(),
             sub_cycle: 0,
             sub_to_main_shift,
             sub_clock_credit: 0,
             fdc: Upd765aFdc::<UPD765_PLATFORM_STANDARD>::new(),
             floppy: FloppyController::new(),
-            ppi_main: I8255::new(),
-            ppi_sub: I8255::new(),
+            ppi_link: Pc80s31kPpiLink::new(),
             drive_mode: 0,
             motor_on: 0,
             tc_active: false,
@@ -194,6 +192,6 @@ impl<T: TraceSink> Pc8801Bus<T> {
         self.kanji1 = roms.kanji1.clone();
         self.kanji2 = roms.kanji2.clone();
         self.renderer.update_font_rom(&roms.kanji1);
-        self.sub_mem.load_disk_rom(&roms.disk);
+        self.sub_mem.load_rom(&roms.disk);
     }
 }

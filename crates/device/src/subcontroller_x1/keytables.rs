@@ -1,4 +1,4 @@
-//! X1 sub-CPU keyboard translation tables.
+//! Sharp X1 sub-CPU keyboard translation tables.
 //!
 //! Each table maps a host virtual-key code (0x00..0xFF) to the X1 character
 //! code for one modifier combination.

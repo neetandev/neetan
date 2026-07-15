@@ -6,7 +6,18 @@
 //! proportional to the number of sprites, then paints the page. Games poll the
 //! busy flag (I/O 0x044C bit 1) to synchronize.
 
-use software_renderer::SpriteRenderParams;
+/// Renderer-independent parameters captured for one sprite transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TownsSpriteRender {
+    /// Destination sprite page.
+    pub page: usize,
+    /// First sprite attribute index to process.
+    pub first_index: usize,
+    /// Horizontal offset for sprites with the offset attribute.
+    pub horizontal_offset: u32,
+    /// Vertical offset for sprites with the offset attribute.
+    pub vertical_offset: u32,
+}
 
 /// Register indices selected through I/O 0x0450.
 const REG_CONTROL0: usize = 0;
@@ -61,7 +72,7 @@ enum SpriteCallback {
 }
 
 /// FM Towns sprite controller.
-pub(crate) struct TownsSprite {
+pub struct TownsSprite {
     address_latch: usize,
     reg: [u8; NUM_REGS],
     /// Internal render page (the half currently being drawn into).
@@ -77,7 +88,7 @@ pub(crate) struct TownsSprite {
 
 impl TownsSprite {
     /// Creates the controller, deriving the transfer timing from the CPU clock.
-    pub(crate) fn new(cpu_clock_hz: u32) -> Self {
+    pub fn new(cpu_clock_hz: u32) -> Self {
         let cpu_clock_hz = u64::from(cpu_clock_hz);
         Self {
             address_latch: 0,
@@ -92,18 +103,18 @@ impl TownsSprite {
     }
 
     /// Writes the register index latch (I/O 0x0450).
-    pub(crate) fn write_address(&mut self, value: u8) {
+    pub fn write_address(&mut self, value: u8) {
         self.address_latch = usize::from(value & 0x07);
     }
 
     /// Reads back the register index latch (I/O 0x0450).
-    pub(crate) fn read_address(&self) -> u8 {
+    pub fn read_address(&self) -> u8 {
         self.address_latch as u8
     }
 
     /// Writes the currently latched register (I/O 0x0452). Returns `true` when
     /// the write requires an immediate render (SPRITE_ENGINE cleared mid-transfer).
-    pub(crate) fn write_data(&mut self, value: u8) -> bool {
+    pub fn write_data(&mut self, value: u8) -> bool {
         match self.address_latch {
             REG_CONTROL0 => self.reg[REG_CONTROL0] = value,
             REG_CONTROL1 => {
@@ -133,7 +144,7 @@ impl TownsSprite {
     }
 
     /// Reads the currently latched register (I/O 0x0452).
-    pub(crate) fn read_data(&self) -> u8 {
+    pub fn read_data(&self) -> u8 {
         if self.address_latch == REG_DISPLAY_PAGE {
             self.reg[REG_DISPLAY_PAGE] >> DISPLAY_PAGE_READ_SHIFT
         } else {
@@ -142,17 +153,17 @@ impl TownsSprite {
     }
 
     /// Whether the sprite engine is enabled (SPRITE_ENGINE).
-    pub(crate) fn sprite_engine(&self) -> bool {
+    pub fn sprite_engine(&self) -> bool {
         self.reg[REG_CONTROL1] & CONTROL1_SPRITE_ENGINE != 0
     }
 
     /// The sprite busy flag (I/O 0x044C bit 1).
-    pub(crate) fn busy(&self) -> bool {
+    pub fn busy(&self) -> bool {
         self.busy
     }
 
     /// The internal render page (I/O 0x044C bit 0).
-    pub(crate) fn internal_page(&self) -> bool {
+    pub fn internal_page(&self) -> bool {
         self.internal_page
     }
 
@@ -192,7 +203,7 @@ impl TownsSprite {
     }
 
     /// Byte offset of the displayed sprite half within the sprite VRAM layer.
-    pub(crate) fn display_vram_offset(&self) -> usize {
+    pub fn display_vram_offset(&self) -> usize {
         if self.display_page() {
             SPRITE_DISPLAY_PAGE_OFFSET
         } else {
@@ -201,19 +212,19 @@ impl TownsSprite {
     }
 
     /// Builds the render parameters from the captured state.
-    fn render_params(&self) -> SpriteRenderParams {
-        SpriteRenderParams {
+    fn render_params(&self) -> TownsSpriteRender {
+        TownsSpriteRender {
             page: usize::from(self.internal_page),
             first_index: self.first_index_capture,
-            h_offset: self.horizontal_offset(),
-            v_offset: self.vertical_offset(),
+            horizontal_offset: self.horizontal_offset(),
+            vertical_offset: self.vertical_offset(),
         }
     }
 
     /// Advances the state machine at the start of vertical sync. Returns the
     /// delay in CPU cycles until the transfer finishes, or `None` when no
     /// transfer starts this frame.
-    pub(crate) fn on_vsync_start(&mut self) -> Option<u64> {
+    pub fn on_vsync_start(&mut self) -> Option<u64> {
         if self.callback != SpriteCallback::Vsync {
             return None;
         }
@@ -232,7 +243,7 @@ impl TownsSprite {
 
     /// Completes a transfer. Returns the render parameters to paint, or `None`
     /// when the engine has been disabled.
-    pub(crate) fn on_finish(&mut self) -> Option<SpriteRenderParams> {
+    pub fn on_finish(&mut self) -> Option<TownsSpriteRender> {
         self.busy = false;
         if self.sprite_engine() {
             self.first_index_capture = self.first_sprite_index();
@@ -245,7 +256,7 @@ impl TownsSprite {
     }
 
     /// The render parameters for an immediate (SPRITE_ENGINE-cleared) render.
-    pub(crate) fn immediate_render_params(&self) -> SpriteRenderParams {
+    pub fn immediate_render_params(&self) -> TownsSpriteRender {
         self.render_params()
     }
 }

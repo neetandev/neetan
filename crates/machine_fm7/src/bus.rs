@@ -2,12 +2,9 @@
 
 mod cassette;
 mod fdc;
-mod kanji;
-mod keyboard;
 mod main_io;
 mod sound;
 mod sub_io;
-mod video;
 
 use common::{
     BeeperKind, HostDateTimeProvider, NoTrace, TraceAccessKind, TraceAccessWidth,
@@ -18,21 +15,19 @@ use device::{
     ay8910::Ay8910,
     beeper::Beeper,
     cassette::CassetteDeck,
+    kanji_rom_fm7::KanjiRom,
+    keyboard_fm7::{
+        Fm7Keyboard, KeycodeTableSet,
+        encoder::{KeyboardEncoder, ScancodeMode},
+    },
     mb61vh010_alu::{AluMemory, Mb61vh010Alu},
     mb8877_fdc::{MB8877_PLATFORM_FM7, Mb8877Fdc},
     mouse_fm7::MouseFm7,
     soundboard_fm7::Fm7Opn,
+    video_fm7::{SubMemory, VideoState},
 };
 use software_renderer::{Fm7Renderer, RenderInputsFm7};
 
-use self::{
-    kanji::KanjiRom,
-    keyboard::{
-        Fm7Keyboard, KeycodeTableSet,
-        encoder::{KeyboardEncoder, ScancodeMode},
-    },
-    video::{SubMemory, VideoState},
-};
 use crate::{
     config::{
         BEEPER_FREQUENCY_HZ, BEEPER_TICK_CLOCK_HZ, BootMode, ClockConfig, Fm7Model, PSG_CLOCK_HZ,
@@ -468,7 +463,12 @@ impl<T: TraceSink> Fm7Bus<T> {
     pub fn load_roms(&mut self, roms: &LoadedRoms) {
         debug_assert_eq!(roms.model, self.model);
         self.memory = Fm7Memory::new(roms, self.boot_mode);
-        self.sub_memory.install_roms(roms);
+        self.sub_memory.install_roms(
+            &roms.subsys_c,
+            roms.subsys_a.as_deref(),
+            roms.subsys_b.as_deref(),
+            roms.subsyscg.as_deref(),
+        );
         self.kanji.install_rom(roms.kanji.as_deref());
     }
 

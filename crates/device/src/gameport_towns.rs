@@ -6,12 +6,34 @@
 //!
 //! The mouse reports a signed 8-bit X/Y delta as four nibbles clocked out by
 //! toggling the COM line: X-high, X-low, Y-high, Y-low. The pad reports its
-//! directions and buttons active-low; the 6-button pad multiplexes the extra
+//! directions and buttons active-low. The 6-button pad multiplexes the extra
 //! buttons on the COM line.
 
 use common::JoystickState;
 
-use crate::config::TownsPadType;
+/// Digital pad type plugged into game port 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TownsPadType {
+    /// Two-button pad.
+    TwoButton,
+    /// Six-button pad with multiplexed extra buttons.
+    #[default]
+    SixButton,
+}
+
+impl std::str::FromStr for TownsPadType {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text.to_ascii_lowercase().as_str() {
+            "2" | "2button" | "two" => Ok(Self::TwoButton),
+            "6" | "6button" | "six" => Ok(Self::SixButton),
+            _ => Err(format!(
+                "unknown FM Towns pad type '{text}', expected 2 or 6"
+            )),
+        }
+    }
+}
 
 /// Reset-to-first-nibble timeout: an idle gap returns the read state to X-high.
 const MOUSE_RESET_TIMEOUT_NANOS: u64 = 1_000_000;
@@ -259,7 +281,7 @@ impl MousePort {
 }
 
 /// FM Towns game port.
-pub(crate) struct TownsGamePort {
+pub struct TownsGamePort {
     pad: PadPort,
     mouse: MousePort,
     output_latch: u8,
@@ -268,7 +290,7 @@ pub(crate) struct TownsGamePort {
 
 impl TownsGamePort {
     /// Creates the game port for the given CPU clock (used for the mouse timeout).
-    pub(crate) fn new(cpu_clock_hz: u32) -> Self {
+    pub fn new(cpu_clock_hz: u32) -> Self {
         let reset_timeout_cycles =
             (u64::from(cpu_clock_hz) * MOUSE_RESET_TIMEOUT_NANOS / NANOS_PER_SECOND).max(1);
         Self {
@@ -280,32 +302,32 @@ impl TownsGamePort {
     }
 
     /// Reads game port 0 (0x04D0): the pad.
-    pub(crate) fn read_port_a(&self) -> u8 {
+    pub fn read_port_a(&self) -> u8 {
         self.pad.read()
     }
 
     /// Updates the pad direction and button state from the host.
-    pub(crate) fn set_pad(&mut self, state: JoystickState) {
+    pub fn set_pad(&mut self, state: JoystickState) {
         self.pad.state = state;
     }
 
     /// Selects the pad type on game port 0.
-    pub(crate) fn set_pad_type(&mut self, kind: TownsPadType) {
+    pub fn set_pad_type(&mut self, kind: TownsPadType) {
         self.pad.kind = kind;
     }
 
     /// Reads game port 1 (0x04D2): the mouse.
-    pub(crate) fn read_port_b(&mut self, now: u64) -> u8 {
+    pub fn read_port_b(&mut self, now: u64) -> u8 {
         self.mouse.read(now, self.reset_timeout_cycles)
     }
 
     /// Reads the output-port latch (0x04D6).
-    pub(crate) fn read_output(&self) -> u8 {
+    pub fn read_output(&self) -> u8 {
         self.output_latch
     }
 
     /// Writes the output port (0x04D6): COM and trigger lines for both ports.
-    pub(crate) fn write_output(&mut self, now: u64, value: u8) {
+    pub fn write_output(&mut self, now: u64, value: u8) {
         self.output_latch = value;
         let pad_com = value & OUTPUT_PORT0_COM != 0;
         let pad_trigger = (value >> OUTPUT_PORT0_TRIG_SHIFT) & OUTPUT_TRIG_MASK;
@@ -316,13 +338,13 @@ impl TownsGamePort {
     }
 
     /// Accumulates a relative mouse movement from the host.
-    pub(crate) fn push_mouse_delta(&mut self, dx: i16, dy: i16) {
+    pub fn push_mouse_delta(&mut self, dx: i16, dy: i16) {
         self.mouse.accumulator_x -= i32::from(dx);
         self.mouse.accumulator_y -= i32::from(dy);
     }
 
     /// Updates the mouse button state.
-    pub(crate) fn set_mouse_buttons(&mut self, left: bool, right: bool) {
+    pub fn set_mouse_buttons(&mut self, left: bool, right: bool) {
         self.mouse.button_left = left;
         self.mouse.button_right = right;
     }

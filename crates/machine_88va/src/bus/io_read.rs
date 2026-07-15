@@ -72,7 +72,7 @@ impl<T: common::TraceSink> Pc88VaBus<T> {
             0x1CD => self.sysport.c,
 
             // PPI mailbox, host side: 0xFC=A, 0xFD=B, 0xFE=C, 0xFF=control.
-            0xFC..=0xFF => self.ppi_main.read((port & 0x03) as u8),
+            0xFC..=0xFF => self.ppi_link.read_main((port & 0x03) as u8),
 
             _ => match self.memory.io_read_byte(port) {
                 Some(value) => value,

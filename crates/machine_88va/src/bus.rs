@@ -5,48 +5,40 @@
 //! the dispatch matches on the whole port value.
 
 mod cgrom;
-mod gactrlva;
 mod init;
 mod io_read;
 mod io_write;
 mod keyboard;
 mod main_fdc;
-mod mouse;
-mod ppi_link;
 mod sgp;
 mod sound;
 mod sub_fdc;
 mod sub_io_read;
 mod sub_io_write;
-mod sub_mem;
-mod sysport;
-mod tsp;
-mod video;
 
-use cgrom::CgromVa;
 use common::{
     Bus, HostDateTimeProvider, NoTrace, TraceAccessKind, TraceAccessWidth, TraceAddressSpace,
     TraceContext, TraceEvent, TraceInterruptAction, TraceInterruptKind, TracePresentation,
     TraceSink, trace_id,
 };
 use device::{
+    cgrom_pc88va::CgromVa,
+    graphics_access_pc88va::GraphicsAccessVa,
     i8253_pit::I8253Pit,
-    i8255::I8255,
     i8259a_pic::I8259aPic,
+    keyboard_pc88va::KeyboardVa,
+    mouse_pc88va::MouseVa,
+    pc80s31k::{Pc80s31kMemory, Pc80s31kPpiLink},
     soundboard_ii::SoundboardII,
+    system_port_pc88va::SysPortVa,
+    tsp_pc88va::{FramePhase, HsyncMode, Sysp4Phase, TspMemEffect, TspState},
     upd765a_fdc::{FloppyController, UPD765_PLATFORM_STANDARD, Upd765aFdc},
     upd4990a_rtc::Upd4990aRtc,
     upd71071_dma::Upd71071Dma,
+    video_pc88va::VideoVa,
 };
-use gactrlva::GraphicsAccessVa;
-use keyboard::KeyboardVa;
-use mouse::MouseVa;
 use sgp::SgpState;
 use software_renderer::va::{HsyncModeVa, RenderInputsVa, VaRenderer};
-use sub_mem::SubMemory;
-use sysport::SysPortVa;
-use tsp::{FramePhase, HsyncMode, Sysp4Phase, TspMemEffect, TspState};
-use video::VideoVa;
 
 use crate::{
     config::{ClockConfig, Pc88VaModel},
@@ -129,7 +121,7 @@ pub struct Pc88VaBus<T: TraceSink = NoTrace> {
     /// Host BCD local-time source used by the RTC's TIME_READ command.
     pub(crate) host_date_time_provider: HostDateTimeProvider,
     /// Floppy sub-CPU (PC80S31K) 64 KiB memory: ROM, init pattern, and RAM.
-    pub(crate) sub_mem: SubMemory,
+    pub(crate) sub_mem: Pc80s31kMemory,
     /// Sub-CPU T-state position, tracked separately from `current_cycle`.
     pub(crate) sub_cycle: u64,
     /// Right-shift converting elapsed main-clock units to sub-CPU T-states.
@@ -140,10 +132,8 @@ pub struct Pc88VaBus<T: TraceSink = NoTrace> {
     pub(crate) fdc: Upd765aFdc<UPD765_PLATFORM_STANDARD>,
     /// Mounted floppy images.
     pub(crate) floppy: FloppyController,
-    /// PPI mailbox, host side (main I/O 0xFC-0xFF).
-    pub(crate) ppi_main: I8255,
-    /// PPI mailbox, disk side (sub I/O 0xFC-0xFF).
-    pub(crate) ppi_sub: I8255,
+    /// Linked main and disk-side PPI mailbox.
+    pub(crate) ppi_link: Pc80s31kPpiLink,
     /// Per-drive density select latch (sub I/O 0xF4).
     pub(crate) drive_mode: u8,
     /// Motor-control latch (sub I/O 0xF8).
@@ -173,6 +163,11 @@ impl Pc88VaBus<NoTrace> {
 }
 
 impl<T: TraceSink> Pc88VaBus<T> {
+    /// Arms tight interleave after a PC80S31K mailbox handshake change.
+    pub(crate) fn arm_ppi_resync(&mut self) {
+        self.resync_until = self.current_cycle + SYNC_SLICE;
+    }
+
     /// Builds a bus with an explicitly supplied trace sink.
     pub fn new_with_trace_sink(
         model: Pc88VaModel,
@@ -537,7 +532,7 @@ impl<T: TraceSink> Pc88VaBus<T> {
 impl<T: TraceSink> Pc88VaBus<T> {
     /// Loads the floppy sub-CPU ROM (8 KiB) into the sub-CPU memory.
     pub(crate) fn load_disk_rom(&mut self, data: &[u8]) {
-        self.sub_mem.load_disk_rom(data);
+        self.sub_mem.load_rom(data);
     }
 
     /// Whether the floppy sub-CPU has a pending FDC interrupt. When the main-CPU
@@ -987,6 +982,32 @@ pub(crate) mod test_support {
                 _ => {}
             }
         }
+    }
+
+    #[test]
+    fn pc80s31k_mailbox_crosses_data_ports() {
+        let mut bus = test_bus();
+
+        bus.io_write(0xFC, 0x5A);
+        assert_eq!(bus.sub_io_read(0xFD).0, 0x5A);
+
+        bus.sub_io_write(0xFC, 0xA5);
+        assert_eq!(bus.io_read(0xFD).0, 0xA5);
+    }
+
+    #[test]
+    fn pc80s31k_port_c_strobes_cross_nibbles_and_arm_resync() {
+        let mut bus = test_bus();
+
+        bus.current_cycle = 100;
+        bus.io_write(0xFF, (4 << 1) | 1);
+        assert_eq!(bus.sub_io_read(0xFE).0 & 0x0F, 0x01);
+        assert_eq!(bus.resync_until, bus.current_cycle + super::SYNC_SLICE);
+
+        bus.current_cycle = 200;
+        bus.sub_io_write(0xFF, 0x01);
+        assert_eq!(bus.io_read(0xFE).0 & 0xF0, 0x10);
+        assert_eq!(bus.resync_until, bus.current_cycle + super::SYNC_SLICE);
     }
 
     #[test]

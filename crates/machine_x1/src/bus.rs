@@ -11,8 +11,6 @@ mod io_read;
 mod io_wait;
 mod io_write;
 mod ppi_link;
-mod sub_hle;
-mod video;
 
 use common::{
     HostDateTimeProvider, JoystickState, MonitorTiming, NoTrace, TraceAccessKind, TraceAccessWidth,
@@ -27,16 +25,16 @@ use device::{
     mouse_x1::MouseX1,
     opn_fm::FmTimerAction,
     soundboard_opm::SoundBoardOpm,
+    subcontroller_x1::{CassetteAction, SubHle},
+    video_x1::{
+        MODE1_ANK16, MODE1_CG_STRIDE_400, MODE1_CHAR_CLOCK_15, MODE1_KANJI_UNDERLINE, X1Video,
+    },
     z80_ctc::Z80Ctc,
     z80_dma::Z80Dma,
     z80_sio::Z80Sio,
 };
 use ppi_link::PpiLink;
 use software_renderer::x1::{RenderInputsX1, X1DebugLayer, X1Renderer, X1RendererModel};
-use sub_hle::{CassetteAction, SubHle};
-use video::{
-    MODE1_ANK16, MODE1_CG_STRIDE_400, MODE1_CHAR_CLOCK_15, MODE1_KANJI_UNDERLINE, X1Video,
-};
 
 use crate::{
     config::{ClockConfig, X1KeyboardMode, X1Model},

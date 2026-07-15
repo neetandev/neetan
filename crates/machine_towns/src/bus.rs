@@ -6,13 +6,8 @@
 //! decodes the full 16-bit I/O port address, so the dispatch matches on the
 //! whole port value.
 
-mod elevol;
-mod gameport;
 mod io_read;
 mod io_write;
-mod keyboard;
-mod sprite;
-mod video;
 
 use std::path::PathBuf;
 
@@ -25,29 +20,29 @@ use device::{
     beeper::Beeper,
     cdrom_towns::TownsCdController,
     disk::{HddImage, MountedHdd},
+    electronic_volume_towns::ElectronicVolume,
     floppy::{FloppyImage, MountedFloppy},
+    gameport_towns::TownsGamePort,
     i8251_serial::I8251Serial,
     i8259a_pic::I8259aPic,
+    keyboard_towns::TownsKeyboard,
     mb8877_fdc::{MB8877_PLATFORM_FM_TOWNS, Mb8877Fdc},
     msm58321_rtc::Msm58321Rtc,
     opn_fm::{FmTimerAction, OpnFm, Ymf276},
     rf5c68::Rf5c68,
     scsi::{ScsiDmaRequest, TownsScsiController},
+    sprite_towns::TownsSprite,
+    timer_towns::{TIMER_CLOCK_HZ, TownsTimer},
     upd71071_dma::Upd71071Dma,
+    video_towns::TownsVideo,
 };
-use elevol::ElectronicVolume;
-use gameport::TownsGamePort;
-use keyboard::TownsKeyboard;
 use software_renderer::{RenderInputsTowns, TownsRenderer};
-use sprite::TownsSprite;
-use video::TownsVideo;
 
 use crate::{
     config::{ClockConfig, TownsModel},
     memory::TownsMemory,
     rom::LoadedRoms,
     scheduler::{EventTowns, TownsScheduler},
-    timer::{TIMER_CLOCK_HZ, TownsTimer},
 };
 
 /// FM Towns VSYNC interrupt line into the slave PIC (slave IR3 = IRQ 11).

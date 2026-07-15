@@ -1,28 +1,24 @@
 //! PC-88VA2 bus construction and device wiring.
 
 use device::{
+    cgrom_pc88va::CgromVa,
+    graphics_access_pc88va::GraphicsAccessVa,
     i8253_pit::I8253Pit,
-    i8255::I8255,
     i8259a_pic::I8259aPic,
+    keyboard_pc88va::KeyboardVa,
+    mouse_pc88va::MouseVa,
+    pc80s31k::{Pc80s31kMemory, Pc80s31kPpiLink},
     soundboard_ii::SoundboardII,
+    system_port_pc88va::SysPortVa,
+    tsp_pc88va::{FramePhase, Sysp4Phase, TspState},
     upd765a_fdc::{FloppyController, UPD765_PLATFORM_STANDARD, Upd765aFdc},
     upd4990a_rtc::Upd4990aRtc,
     upd71071_dma::Upd71071Dma,
+    video_pc88va::VideoVa,
 };
 use software_renderer::va::VaRenderer;
 
-use super::{
-    Pc88VaBus,
-    cgrom::CgromVa,
-    gactrlva::GraphicsAccessVa,
-    keyboard::KeyboardVa,
-    mouse::MouseVa,
-    sgp::SgpState,
-    sub_mem::SubMemory,
-    sysport::SysPortVa,
-    tsp::{FramePhase, Sysp4Phase, TspState},
-    video::VideoVa,
-};
+use super::{Pc88VaBus, sgp::SgpState};
 use crate::{
     config::ClockConfig,
     memory::Pc88VaMemory,
@@ -75,14 +71,13 @@ impl<T: common::TraceSink> Pc88VaBus<T> {
             display_height: 0,
             presented_frames: 0,
             host_date_time_provider: common::default_host_date_time,
-            sub_mem: SubMemory::new(),
+            sub_mem: Pc80s31kMemory::new(),
             sub_cycle: 0,
             sub_to_main_shift,
             sub_clock_credit: 0,
             fdc: Upd765aFdc::<UPD765_PLATFORM_STANDARD>::new(),
             floppy: FloppyController::new(),
-            ppi_main: I8255::new(),
-            ppi_sub: I8255::new(),
+            ppi_link: Pc80s31kPpiLink::new(),
             drive_mode: 0,
             motor_on: 0,
             tc_active: false,

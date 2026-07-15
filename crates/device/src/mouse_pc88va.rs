@@ -11,7 +11,7 @@ const STATE_YH: u8 = 2;
 const STATE_YL: u8 = 3;
 
 /// Mouse interface state.
-pub(crate) struct MouseVa {
+pub struct MouseVa {
     /// Accumulated horizontal movement since the last latch.
     accum_x: i32,
     /// Accumulated vertical movement since the last latch.
@@ -46,19 +46,19 @@ impl Default for MouseVa {
 
 impl MouseVa {
     /// Accumulates a relative movement reported by the host.
-    pub(crate) fn push_delta(&mut self, delta_x: i16, delta_y: i16) {
+    pub fn push_delta(&mut self, delta_x: i16, delta_y: i16) {
         self.accum_x += i32::from(delta_x);
         self.accum_y += i32::from(delta_y);
     }
 
     /// Sets the button state (left/right; the VA mouse has no middle button).
-    pub(crate) fn set_buttons(&mut self, left: bool, right: bool) {
+    pub fn set_buttons(&mut self, left: bool, right: bool) {
         self.buttons = (if left { 0x20 } else { 0 }) | (if right { 0x80 } else { 0 });
     }
 
     /// Advances the nibble machine on a strobe-level change, latching a fresh
     /// delta when the phase wraps from YL back to XH.
-    pub(crate) fn strobe(&mut self, strobe: u8) {
+    pub fn strobe(&mut self, strobe: u8) {
         if strobe == self.last_strobe {
             return;
         }
@@ -79,7 +79,7 @@ impl MouseVa {
 
     /// The data nibble (register 0x0E) for the current phase. The delta is
     /// negated to match the hardware sign convention.
-    pub(crate) fn data_nibble(&self) -> u8 {
+    pub fn data_nibble(&self) -> u8 {
         let x = (-self.latch_x) as u8;
         let y = (-self.latch_y) as u8;
         match self.state {
@@ -94,7 +94,7 @@ impl MouseVa {
     /// The button bits (register 0x0F): bit0 = left, bit1 = right. The MSX-style
     /// trigger lines are active low, so a pressed button pulls its bit low and an
     /// idle mouse reads both bits high.
-    pub(crate) fn button_bits(&self) -> u8 {
+    pub fn button_bits(&self) -> u8 {
         let mut value = 0x03;
         if self.buttons & 0x20 != 0 {
             value &= !0x01;
@@ -103,40 +103,5 @@ impl MouseVa {
             value &= !0x02;
         }
         value
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::bus::test_support::test_bus;
-
-    /// Latches SSG register 0x0F (the mouse button lines) and reads it back.
-    fn read_buttons(bus: &mut crate::bus::Pc88VaBus) -> u8 {
-        bus.io_write(0x044, 0x0F);
-        bus.io_read(0x045).0
-    }
-
-    #[test]
-    fn mouse_buttons_are_active_low_through_the_ssg_port() {
-        let mut bus = test_bus();
-
-        // Idle: both trigger lines high (MSX active-low convention).
-        assert_eq!(read_buttons(&mut bus), 0xFF);
-
-        // Left button pulls bit 0 low.
-        bus.set_mouse_buttons(true, false);
-        assert_eq!(read_buttons(&mut bus) & 0x03, 0x02);
-
-        // Right button pulls bit 1 low.
-        bus.set_mouse_buttons(false, true);
-        assert_eq!(read_buttons(&mut bus) & 0x03, 0x01);
-
-        // Both buttons pull both bits low.
-        bus.set_mouse_buttons(true, true);
-        assert_eq!(read_buttons(&mut bus) & 0x03, 0x00);
-
-        // Releasing returns to idle.
-        bus.set_mouse_buttons(false, false);
-        assert_eq!(read_buttons(&mut bus), 0xFF);
     }
 }

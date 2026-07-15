@@ -27,16 +27,15 @@ impl<T: TraceSink> Pc8801Bus<T> {
             0xFB => self.write_fdc_data(value),
             // PPI mailbox (disk side): A->peer B, B->peer A, C/control -> resync.
             0xFC => {
-                self.ppi_sub.write(0, value);
-                self.ppi_main.set_port_b(value);
+                self.ppi_link.write_sub(0, value);
             }
             0xFD => {
-                self.ppi_sub.write(1, value);
-                self.ppi_main.set_port_a(value);
+                self.ppi_link.write_sub(1, value);
             }
             0xFE | 0xFF => {
-                let changed = self.ppi_sub.write((port & 0x03) as u8, value);
-                self.on_ppi_sub_change(changed);
+                if self.ppi_link.write_sub((port & 0x03) as u8, value) {
+                    self.arm_ppi_resync();
+                }
             }
             _ => return false,
         }

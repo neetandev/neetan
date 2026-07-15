@@ -15,6 +15,7 @@ extern crate alloc;
 use alloc::string::ToString;
 use alloc::{boxed::Box, format, string::String};
 
+pub mod display;
 mod dos;
 pub mod error;
 mod jis;
@@ -24,6 +25,7 @@ mod stack_vec;
 mod text_extractor;
 mod trace;
 
+pub use display::{FramebufferVa, HighResCursor, TownsLayer};
 pub use dos::{
     AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
     ConsoleIo, CpuAccess, CursorAccess, DiskIo, DriveIo, HardwareCursorState, MemoryAccess,

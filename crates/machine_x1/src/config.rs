@@ -117,42 +117,7 @@ impl std::str::FromStr for X1Model {
     }
 }
 
-/// Position of the X1 turbo keyboard's mode switch.
-///
-/// Mode A is the standard layout; mode B rearranges the kana assignments and
-/// lets games read the key matrix directly through the sub-CPU's game-key
-/// command. The base X1 keyboard has no switch and always behaves like mode A.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum X1KeyboardMode {
-    /// Standard kana layout; the game-key command reads zeros.
-    #[default]
-    ModeA,
-    /// Mode-B kana layout; the game-key command reads the live key matrix.
-    ModeB,
-}
-
-impl std::fmt::Display for X1KeyboardMode {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            X1KeyboardMode::ModeA => formatter.write_str("A"),
-            X1KeyboardMode::ModeB => formatter.write_str("B"),
-        }
-    }
-}
-
-impl std::str::FromStr for X1KeyboardMode {
-    type Err = String;
-
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        match text.to_ascii_uppercase().as_str() {
-            "A" => Ok(X1KeyboardMode::ModeA),
-            "B" => Ok(X1KeyboardMode::ModeB),
-            _ => Err(format!(
-                "unknown X1 keyboard mode '{text}', expected A or B"
-            )),
-        }
-    }
-}
+pub use device::subcontroller_x1::X1KeyboardMode;
 
 /// Immutable clock configuration for an X1 machine variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -14,7 +14,6 @@ mod machine;
 mod memory;
 mod rom;
 mod scheduler;
-mod timer;
 
 pub use bus::TownsBus;
 pub use config::{ClockConfig, TownsBootDevice, TownsModel, TownsPadType};

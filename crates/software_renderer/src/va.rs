@@ -11,8 +11,8 @@ mod text;
 
 use alloc::{boxed::Box, vec};
 
+pub use common::FramebufferVa;
 use compose::{ComposeRegs, RasterLayers, compose_raster};
-pub use graphics::FramebufferVa;
 use graphics::GraphicsWork;
 pub use palette::{adjust_color12, rgb8_to_va_color, va_color_to_rgba};
 use sprite::SpriteWork;

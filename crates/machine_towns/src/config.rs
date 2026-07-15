@@ -121,29 +121,7 @@ impl std::str::FromStr for TownsModel {
     }
 }
 
-/// Digital pad type plugged into game port 0.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TownsPadType {
-    /// 2-button pad.
-    TwoButton,
-    /// 6-button pad (extra buttons multiplexed on the COM line).
-    #[default]
-    SixButton,
-}
-
-impl std::str::FromStr for TownsPadType {
-    type Err = String;
-
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        match text.to_ascii_lowercase().as_str() {
-            "2" | "2button" | "two" => Ok(TownsPadType::TwoButton),
-            "6" | "6button" | "six" => Ok(TownsPadType::SixButton),
-            _ => Err(format!(
-                "unknown FM Towns pad type '{text}', expected 2 or 6"
-            )),
-        }
-    }
-}
+pub use device::gameport_towns::TownsPadType;
 
 /// Immutable clock configuration for an FM Towns machine variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

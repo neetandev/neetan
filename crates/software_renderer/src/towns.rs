@@ -11,6 +11,7 @@ mod sprite;
 
 use alloc::{boxed::Box, vec};
 
+pub use common::{HighResCursor, TownsLayer};
 pub use palette::{towns_color_to_rgba, towns_color15_to_rgba};
 pub use sprite::{SpriteRenderParams, TOWNS_SPRITE_LAYER_VRAM_OFFSET, render_sprites};
 
@@ -27,68 +28,6 @@ pub const TOWNS_FRAMEBUFFER_BYTES: usize =
 
 /// Opaque black backdrop, packed RGBA.
 const BACKDROP: u32 = 0xFF00_0000;
-
-/// A resolved CRTC display layer, as consumed by the renderer.
-#[derive(Clone, Copy, Default)]
-pub struct TownsLayer {
-    /// Whether the layer is shown this frame.
-    pub shown: bool,
-    /// Color depth: 4, 8, or 16 bits per pixel.
-    pub bits_per_pixel: u8,
-    /// Base byte address of the layer's page within VRAM.
-    pub vram_addr: usize,
-    /// Source stride in bytes per scanline.
-    pub bytes_per_line: usize,
-    /// Scroll byte offset added to the page base: the CRTC frame-address
-    /// offset plus the page flip offset (FMR display page for layer 0,
-    /// sprite display buffer for layer 1).
-    pub scroll_offset: usize,
-    /// Horizontal wrap mask within one scanline: `bytes_per_line - 1` when
-    /// that is a power of two, otherwise `usize::MAX` (no wrap).
-    pub h_scroll_mask: usize,
-    /// Vertical wrap mask within the layer's VRAM page.
-    pub v_scroll_mask: usize,
-    /// Byte offset into each scanline where fetching starts.
-    pub vram_h_skip_bytes: usize,
-    /// On-monitor width in pixels.
-    pub width: usize,
-    /// On-monitor height in pixels.
-    pub height: usize,
-    /// On-monitor origin (left).
-    pub origin_x: usize,
-    /// On-monitor origin (top).
-    pub origin_y: usize,
-    /// Horizontal zoom, stored at 2x (2 = 1x, 4 = 2x, 5 = 2.5x).
-    pub zoom_x: u8,
-    /// Vertical zoom, stored at 2x.
-    pub zoom_y: u8,
-    /// 4-bit plane display mask applied to 16-color pixels.
-    pub plane_mask: u8,
-    /// Which 16-color palette bank (0 or 1) this layer uses.
-    pub palette_bank: u8,
-    /// High-res 24bpp component reorder (`00rrggbb`, 2 bits each select the
-    /// source byte for R/G/B). Only consulted in 24bpp mode; `0x06` is the
-    /// identity (no reorder).
-    pub high_res_rgb_swap: u8,
-}
-
-/// The FM Towns MX high-resolution hardware mouse cursor: a 64x64 two-plane
-/// (AND / OR) sprite composited over the finished frame.
-#[derive(Clone, Copy)]
-pub struct HighResCursor {
-    /// Cursor position on the monitor.
-    pub x: u32,
-    /// Cursor position on the monitor.
-    pub y: u32,
-    /// Hot-spot offset subtracted from the position.
-    pub origin_x: u32,
-    /// Hot-spot offset subtracted from the position.
-    pub origin_y: u32,
-    /// AND plane (1 bit per pixel, 8 bytes per row): 0 draws, 1 is transparent.
-    pub and_pattern: [u8; 512],
-    /// OR plane (1 bit per pixel): selects white (1) or black (0) for drawn pixels.
-    pub or_pattern: [u8; 512],
-}
 
 /// Per-frame inputs to the FM Towns renderer.
 pub struct RenderInputsTowns<'a> {
