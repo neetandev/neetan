@@ -876,10 +876,21 @@ impl<const PLATFORM: u8> Upd765aFdc<PLATFORM> {
         !self.state.mt || head == 1
     }
 
-    /// Advances C/H/R to the next sector for the result phase.
-    /// Returns `true` if the command should end (EOT reached without MT continuation).
+    /// Advances C/H/R for the result phase using the selected platform behavior.
+    /// Returns `true` when EOT ends the command without an MT continuation.
     pub fn advance_sector(&mut self) -> bool {
         if self.state.r == self.state.eot {
+            if PLATFORM == UPD765_PLATFORM_STANDARD {
+                self.state.r = 1;
+                if self.state.mt {
+                    self.state.h ^= 1;
+                    if self.state.h == 1 {
+                        return false;
+                    }
+                }
+                self.state.c = self.state.c.wrapping_add(1);
+                return true;
+            }
             if self.state.mt && self.state.h == 0 {
                 self.state.h = 1;
                 self.state.r = 1;
@@ -1633,6 +1644,32 @@ mod tests {
         let fdc = StandardUpd765aFdc::new();
         assert_eq!(fdc.read_status(), MSR_RQM);
         assert_eq!(fdc.state.phase, FdcPhase::Idle);
+    }
+
+    /// The standard uPD765 path advances CHRN after reaching EOT.
+    #[test]
+    fn standard_fdc_advances_result_position_past_eot() {
+        let mut fdc = StandardUpd765aFdc::new();
+        fdc.state.c = 4;
+        fdc.state.h = 0;
+        fdc.state.r = 8;
+        fdc.state.eot = 8;
+
+        assert!(fdc.advance_sector());
+        assert_eq!((fdc.state.c, fdc.state.h, fdc.state.r), (5, 0, 1));
+    }
+
+    /// The X68000 uPD72065 path retains the final CHRN at EOT.
+    #[test]
+    fn x68k_fdc_retains_result_position_at_eot() {
+        let mut fdc = X68kUpd765aFdc::new();
+        fdc.state.c = 4;
+        fdc.state.h = 0;
+        fdc.state.r = 8;
+        fdc.state.eot = 8;
+
+        assert!(fdc.advance_sector());
+        assert_eq!((fdc.state.c, fdc.state.h, fdc.state.r), (4, 0, 8));
     }
 
     #[test]
