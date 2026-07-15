@@ -15,6 +15,6 @@ pub mod towns_spc;
 
 pub use cdrom::ScsiCdrom;
 pub use disk::ScsiDisk;
-pub use mb89352::Mb89352Spc;
+pub use mb89352::{Mb89352Spc, Mb89352SpcState};
 pub use target::ScsiTarget;
-pub use towns_spc::{Phase, ScsiDmaRequest, TownsScsiController};
+pub use towns_spc::{Phase, ScsiDmaRequest, TownsScsiController, TownsScsiControllerState};

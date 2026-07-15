@@ -1,6 +1,6 @@
 //! Event-driven scheduler for PC-98 machines.
 
-use common::StackVec;
+use common::{SchedulerState, StackVec};
 use device::{
     sound_blaster_16::SoundboardSb16Timer, soundboard_14::Soundboard14Timer,
     soundboard_26k::Soundboard26kTimer, soundboard_86::Soundboard86Timer,
@@ -78,6 +78,19 @@ mod trace_identifier_tests {
         {
             assert_eq!(event.trace_name(), *identifier);
         }
+    }
+
+    #[test]
+    fn equal_deadline_events_use_frozen_priority_order() {
+        let mut scheduler = Pc98Scheduler::new();
+        for event in Event98::ALL.into_iter().rev() {
+            scheduler.schedule(event, 42);
+        }
+
+        let due = scheduler.pop_due_events(42);
+        let actual: Vec<_> = due.iter().map(|event| event.kind).collect();
+
+        assert_eq!(actual, Event98::ALL);
     }
 }
 
@@ -187,14 +200,11 @@ pub(crate) struct ScheduledEvent98 {
     pub(crate) kind: Event98,
 }
 
-/// Snapshot of the PC-98 scheduler.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Pc98SchedulerState {
-    /// Fire cycles indexed by event discriminant.
-    pub fire_cycles: [Option<u64>; EVENT98_KIND_COUNT],
-}
+/// Authoritative state of the PC-98 scheduler.
+pub type Pc98SchedulerState = SchedulerState;
 
 /// Event-driven scheduler for PC-98 peripheral events.
+// savestate: authoritative
 pub(crate) struct Pc98Scheduler {
     /// Embedded saveable state.
     pub(crate) state: Pc98SchedulerState,
@@ -210,29 +220,23 @@ impl Pc98Scheduler {
     /// Creates an empty scheduler.
     pub(crate) fn new() -> Self {
         Self {
-            state: Pc98SchedulerState {
-                fire_cycles: [None; EVENT98_KIND_COUNT],
-            },
+            state: SchedulerState::new(EVENT98_KIND_COUNT),
         }
     }
 
     /// Schedules or replaces an event.
     pub(crate) fn schedule(&mut self, kind: Event98, fire_cycle: u64) {
-        self.state.fire_cycles[kind as usize] = Some(fire_cycle);
+        self.state.schedule(kind as usize, fire_cycle);
     }
 
     /// Cancels an event.
     pub(crate) fn cancel(&mut self, kind: Event98) {
-        self.state.fire_cycles[kind as usize] = None;
+        self.state.cancel(kind as usize);
     }
 
     /// Returns the earliest pending event cycle.
     pub(crate) fn next_event_cycle(&self) -> Option<u64> {
-        self.state
-            .fire_cycles
-            .iter()
-            .filter_map(|&cycle| cycle)
-            .min()
+        self.state.next_event_cycle()
     }
 
     /// Removes and returns all due events.
@@ -240,19 +244,14 @@ impl Pc98Scheduler {
         &mut self,
         current_cycle: u64,
     ) -> StackVec<ScheduledEvent98, EVENT98_KIND_COUNT> {
+        let indexes = self.state.pop_due::<EVENT98_KIND_COUNT>(current_cycle);
         let mut due = StackVec::new();
-        for (index, slot) in self.state.fire_cycles.iter_mut().enumerate() {
-            if let Some(fire_cycle) = *slot
-                && fire_cycle <= current_cycle
-            {
-                due.push(ScheduledEvent98 {
-                    fire_cycle,
-                    kind: Event98::from_index(index),
-                });
-                *slot = None;
-            }
+        for event in indexes.iter() {
+            due.push(ScheduledEvent98 {
+                fire_cycle: event.fire_cycle,
+                kind: Event98::from_index(event.index),
+            });
         }
-        due.sort_by_key(|event: &ScheduledEvent98| event.fire_cycle);
         due
     }
 }

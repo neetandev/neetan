@@ -48,6 +48,16 @@ pub struct X1Memory {
     ex_bank: u8,
 }
 
+save_state::runtime_state! {
+/// Authoritative Sharp X1 memory contents and banking state.
+#[derive(Clone)]
+pub(crate) struct X1MemoryState {
+    work_ram: Vec<u8>,
+    turbo_lower_banks: Vec<u8>,
+    rom_selected: bool,
+    extended_bank: u8,
+}}
+
 impl X1Memory {
     /// Creates the memory for `model` with the IPL selected (the reset state).
     pub fn new(model: X1Model) -> Self {
@@ -63,6 +73,33 @@ impl X1Memory {
             is_turbo: model.is_turbo(),
             ex_bank: BANK_SELECT_BASE_MAP,
         }
+    }
+
+    pub(crate) fn capture_state(&self) -> X1MemoryState {
+        X1MemoryState {
+            work_ram: self.work_ram.clone(),
+            turbo_lower_banks: self.turbo_lower_banks.clone(),
+            rom_selected: self.rom_selected,
+            extended_bank: self.ex_bank,
+        }
+    }
+
+    pub(crate) fn restore_state(
+        &mut self,
+        state: X1MemoryState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.work_ram.len() != self.work_ram.len()
+            || state.turbo_lower_banks.len() != self.turbo_lower_banks.len()
+        {
+            return Err(save_state::StateValidationError::new(
+                "X1 memory size differs from the active model",
+            ));
+        }
+        self.work_ram = state.work_ram;
+        self.turbo_lower_banks = state.turbo_lower_banks;
+        self.rom_selected = state.rom_selected;
+        self.ex_bank = state.extended_bank;
+        Ok(())
     }
 
     /// Loads the IPL ROM image, padding the shadow window with 0xFF beyond it.

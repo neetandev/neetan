@@ -102,20 +102,23 @@ pub fn back_bank_cgrom_defaults() -> [u8; BANK_SIZE] {
     BACK_BANK_DEFAULTS
 }
 
-/// Snapshot of the SDIP state for save/restore.
+save_state::runtime_state! {
+/// Authoritative SDIP state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SdipState {
     /// 24-byte storage: `[0..12)` = front bank, `[12..24)` = back bank.
     pub ram: [u8; TOTAL_SIZE],
     /// Currently selected bank (`false` = front, `true` = back).
     pub bank: bool,
-}
+}}
 
 /// Software DIP Switch controller.
 pub struct Sdip {
     /// Embedded state for save/restore.
     pub state: SdipState,
 }
+
+impl_simple_state_accessors!(Sdip, SdipState);
 
 impl Default for Sdip {
     fn default() -> Self {

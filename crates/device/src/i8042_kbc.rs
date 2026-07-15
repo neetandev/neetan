@@ -43,6 +43,32 @@ const KBD_BAT_OK: u8 = 0xAA;
 /// Set-2 break-code prefix.
 const SET2_BREAK_PREFIX: u8 = 0xF0;
 
+save_state::runtime_state! {
+/// Authoritative state of the attached AT keyboard.
+#[derive(Clone)]
+pub struct AtKeyboardState {
+    output: VecDeque<u8>,
+    enabled: bool,
+    expect_parameter_for: Option<u8>,
+    leds: u8,
+    typematic: u8,
+}}
+
+save_state::runtime_state! {
+/// Authoritative 8042 controller and keyboard state.
+#[derive(Clone)]
+pub struct I8042KbcState {
+    status: u8,
+    output_buffer: u8,
+    command_byte: u8,
+    ram: [u8; 32],
+    output_port: u8,
+    input_port: u8,
+    pending_command: Option<u8>,
+    response_queue: VecDeque<(u8, bool)>,
+    keyboard: AtKeyboardState,
+}}
+
 /// Effects of an 8042 access, for the bus to apply.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct KbcEffects {
@@ -85,6 +111,24 @@ impl AtKeyboard {
             leds: 0,
             typematic: 0,
         }
+    }
+
+    fn capture_state(&self) -> AtKeyboardState {
+        AtKeyboardState {
+            output: self.output.clone(),
+            enabled: self.enabled,
+            expect_parameter_for: self.expect_parameter_for,
+            leds: self.leds,
+            typematic: self.typematic,
+        }
+    }
+
+    fn restore_state(&mut self, state: AtKeyboardState) {
+        self.output = state.output;
+        self.enabled = state.enabled;
+        self.expect_parameter_for = state.expect_parameter_for;
+        self.leds = state.leds;
+        self.typematic = state.typematic;
     }
 
     /// Queues a raw set-2 scancode byte from the host.
@@ -179,6 +223,46 @@ impl I8042Kbc {
             response_queue: VecDeque::new(),
             keyboard: AtKeyboard::new(),
         }
+    }
+
+    /// Captures the controller, keyboard, and pending output queues.
+    pub fn capture_state(&self) -> I8042KbcState {
+        I8042KbcState {
+            status: self.status,
+            output_buffer: self.output_buffer,
+            command_byte: self.command_byte,
+            ram: self.ram,
+            output_port: self.output_port,
+            input_port: self.input_port,
+            pending_command: self.pending_command,
+            response_queue: self.response_queue.clone(),
+            keyboard: self.keyboard.capture_state(),
+        }
+    }
+
+    /// Restores the controller, keyboard, and pending output queues.
+    pub fn restore_state(
+        &mut self,
+        state: I8042KbcState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state
+            .pending_command
+            .is_some_and(|command| !matches!(command, 0x60..=0x7F | 0xD1..=0xD4))
+        {
+            return Err(save_state::StateValidationError::new(
+                "8042 pending command is invalid",
+            ));
+        }
+        self.status = state.status;
+        self.output_buffer = state.output_buffer;
+        self.command_byte = state.command_byte;
+        self.ram = state.ram;
+        self.output_port = state.output_port;
+        self.input_port = state.input_port;
+        self.pending_command = state.pending_command;
+        self.response_queue = state.response_queue;
+        self.keyboard.restore_state(state.keyboard);
+        Ok(())
     }
 
     /// Reads the status register (port 0x64).

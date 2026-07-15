@@ -43,6 +43,7 @@ const ALWAYS_ENABLED_LEVELS: u8 = 0b1111_1000;
 /// Maximum priority value (all eight levels eligible).
 const PRIORITY_ALL: u8 = 8;
 
+save_state::runtime_state! {
 /// Snapshot of the i8214 priority interrupt controller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I8214PicState {
@@ -54,7 +55,7 @@ pub struct I8214PicState {
     pub priority_mask: u8,
     /// Interrupt-disable latch: set on acknowledge, cleared by a 0xE4 write.
     pub interrupt_disabled: bool,
-}
+}}
 
 /// Result of an interrupt acknowledge cycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

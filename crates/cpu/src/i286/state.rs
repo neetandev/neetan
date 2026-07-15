@@ -1,52 +1,96 @@
-use super::{I286, flags::I286Flags};
+use save_state::{StateValidationError, ValidateState};
+
+use super::{
+    I286,
+    flags::I286Flags,
+    modrm::EaClass,
+    timing::{I286FinishState, I286Timing},
+};
 use crate::{ByteReg, RegisterFile16, SegReg16, WordReg};
 
-/// Snapshot of all I286 CPU registers and flags.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct I286State {
-    /// General-purpose register file.
-    pub regs: RegisterFile16,
-    /// Segment registers: ES, CS, SS, DS.
-    pub sregs: [u16; 4],
-    /// Instruction pointer.
-    pub ip: u16,
-    /// CPU flags.
-    pub flags: I286Flags,
-    /// Machine Status Word.
-    pub msw: u16,
-    /// Global Descriptor Table Register base (24-bit).
-    pub gdt_base: u32,
-    /// Global Descriptor Table Register limit.
-    pub gdt_limit: u16,
-    /// Interrupt Descriptor Table Register base (24-bit).
-    pub idt_base: u32,
-    /// Interrupt Descriptor Table Register limit.
-    pub idt_limit: u16,
-    /// Cached 24-bit physical base per segment (ES/CS/SS/DS).
-    pub seg_bases: [u32; 4],
-    /// Cached limit per segment (ES/CS/SS/DS).
-    pub seg_limits: [u16; 4],
-    /// Cached access-rights byte per segment (ES/CS/SS/DS).
-    pub seg_rights: [u8; 4],
-    /// Whether the segment register currently holds a valid loaded descriptor.
-    pub seg_valid: [bool; 4],
-    /// LDT selector.
-    pub ldtr: u16,
-    /// LDT cached base.
-    pub ldtr_base: u32,
-    /// LDT cached limit.
-    pub ldtr_limit: u16,
-    /// Task Register selector.
-    pub tr: u16,
-    /// TR cached base.
-    pub tr_base: u32,
-    /// TR cached limit.
-    pub tr_limit: u16,
-    /// TR cached access rights.
-    pub tr_rights: u8,
+save_state::runtime_state! {
+    /// Complete authoritative 80286 state at a resumable boundary.
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    pub struct I286State {
+        /// General-purpose register file.
+        pub regs: RegisterFile16,
+        /// Segment registers: ES, CS, SS, DS.
+        pub sregs: [u16; 4],
+        /// Instruction pointer.
+        pub ip: u16,
+        /// CPU flags.
+        pub flags: I286Flags,
+        /// Machine Status Word.
+        pub msw: u16,
+        /// Global Descriptor Table Register base (24-bit).
+        pub gdt_base: u32,
+        /// Global Descriptor Table Register limit.
+        pub gdt_limit: u16,
+        /// Interrupt Descriptor Table Register base (24-bit).
+        pub idt_base: u32,
+        /// Interrupt Descriptor Table Register limit.
+        pub idt_limit: u16,
+        /// Cached 24-bit physical base per segment (ES/CS/SS/DS).
+        pub seg_bases: [u32; 4],
+        /// Cached limit per segment (ES/CS/SS/DS).
+        pub seg_limits: [u16; 4],
+        /// Cached access-rights byte per segment (ES/CS/SS/DS).
+        pub seg_rights: [u8; 4],
+        /// Whether the segment register currently holds a valid loaded descriptor.
+        pub seg_valid: [bool; 4],
+        /// LDT selector.
+        pub ldtr: u16,
+        /// LDT cached base.
+        pub ldtr_base: u32,
+        /// LDT cached limit.
+        pub ldtr_limit: u16,
+        /// Task Register selector.
+        pub tr: u16,
+        /// TR cached base.
+        pub tr_base: u32,
+        /// TR cached limit.
+        pub tr_limit: u16,
+        /// TR cached access rights.
+        pub tr_rights: u8,
+        pub(super) prev_ip: u16,
+        pub(super) seg_prefix: bool,
+        pub(super) prefix_seg: SegReg16,
+        pub(super) halted: bool,
+        pub(super) pending_irq: u8,
+        pub(super) no_interrupt: u8,
+        pub(super) inhibit_all: u8,
+        pub(super) rep_ip: u16,
+        pub(super) rep_restart_ip: u16,
+        pub(super) rep_seg_prefix: bool,
+        pub(super) rep_prefix_seg: SegReg16,
+        pub(super) rep_opcode: u8,
+        pub(super) rep_type: u8,
+        pub(super) rep_active: bool,
+        pub(super) ea: u32,
+        pub(super) eo: u16,
+        pub(super) ea_seg: SegReg16,
+        pub(crate) ea_class: EaClass,
+        pub(crate) finish_state: I286FinishState,
+        pub(super) trap_level: u8,
+        pub(super) shutdown: bool,
+        pub(super) timing: I286Timing,
+    }
 }
 
 impl I286State {
+    /// Initializes real-mode descriptor caches and a cold frontend.
+    pub fn initialize_real_mode_caches(&mut self) {
+        for &segment in &[SegReg16::ES, SegReg16::CS, SegReg16::SS, SegReg16::DS] {
+            let selector = self.sregs[segment as usize];
+            self.seg_bases[segment as usize] = u32::from(selector) << 4;
+            self.seg_limits[segment as usize] = 0xFFFF;
+            self.seg_rights[segment as usize] = if segment == SegReg16::CS { 0x9B } else { 0x93 };
+            self.seg_valid[segment as usize] = true;
+        }
+        self.timing
+            .reset(self.sregs[SegReg16::CS as usize], self.ip);
+    }
+
     /// Returns the AX register.
     pub fn ax(&self) -> u16 {
         self.regs.word(WordReg::AX)
@@ -177,28 +221,52 @@ impl I286State {
     }
 }
 
+impl ValidateState for I286State {
+    fn validate_state(&self, _context: &()) -> Result<(), StateValidationError> {
+        if self.flags.iopl > 3 {
+            return Err(StateValidationError::new("80286 IOPL is invalid"));
+        }
+        if self.pending_irq & !0x03 != 0 || self.no_interrupt > 1 || self.inhibit_all > 1 {
+            return Err(StateValidationError::new(
+                "80286 interrupt latch is invalid",
+            ));
+        }
+        if self.rep_active && self.rep_type > 1 {
+            return Err(StateValidationError::new(
+                "80286 REP continuation is invalid",
+            ));
+        }
+        if self.gdt_base > 0x00FF_FFFF
+            || self.idt_base > 0x00FF_FFFF
+            || self.ldtr_base > 0x00FF_FFFF
+            || self.tr_base > 0x00FF_FFFF
+            || self.seg_bases.iter().any(|base| *base > 0x00FF_FFFF)
+        {
+            return Err(StateValidationError::new(
+                "80286 physical base is outside the address space",
+            ));
+        }
+        self.timing.validate_state(&())
+    }
+}
+
 impl I286 {
-    /// Loads CPU state from a snapshot, resetting runtime flags.
+    /// Loads complete CPU state without resetting execution or timing latches.
     pub fn load_state(&mut self, state: &I286State) {
         self.state = state.clone();
-        if self.state.seg_valid.iter().all(|&valid| !valid) && self.state.msw & 1 == 0 {
-            for &seg in &[SegReg16::ES, SegReg16::CS, SegReg16::SS, SegReg16::DS] {
-                let selector = self.state.sregs[seg as usize];
-                self.state.seg_bases[seg as usize] = (selector as u32) << 4;
-                self.state.seg_limits[seg as usize] = 0xFFFF;
-                self.state.seg_rights[seg as usize] = if seg == SegReg16::CS { 0x9B } else { 0x93 };
-                self.state.seg_valid[seg as usize] = true;
-            }
-        }
-        self.halted = false;
-        self.pending_irq = 0;
-        self.no_interrupt = 0;
-        self.inhibit_all = 0;
-        self.rep_active = false;
-        self.rep_restart_ip = 0;
-        self.seg_prefix = false;
-        self.timing
-            .reset(self.state.sregs[SegReg16::CS as usize], self.state.ip);
+    }
+
+    /// Clones the authoritative state at a resumable execution boundary.
+    pub fn capture_state(&self) -> I286State {
+        self.state.clone()
+    }
+
+    /// Validates and replaces the authoritative state transactionally.
+    pub fn restore_state(
+        &mut self,
+        state: I286State,
+    ) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &())
     }
 
     /// Returns the AL register value.

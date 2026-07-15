@@ -167,6 +167,7 @@ impl Output {
     }
 }
 
+#[derive(Clone)]
 struct ChunkState {
     chaining_value: [u32; 8],
     chunk_counter: u64,
@@ -268,7 +269,33 @@ fn parent_cv(
     parent_output(left_child_cv, right_child_cv, key_words, flags).chaining_value()
 }
 
+/// Complete incremental hash progress without host resources.
+#[derive(Clone)]
+pub struct HasherState {
+    /// Current chunk chaining value.
+    pub chunk_chaining_value: [u32; 8],
+    /// Current chunk index.
+    pub chunk_counter: u64,
+    /// Partial block bytes.
+    pub block: [u8; BLOCK_LEN],
+    /// Number of valid partial block bytes.
+    pub block_len: u8,
+    /// Number of compressed blocks in the current chunk.
+    pub blocks_compressed: u8,
+    /// Current chunk flags.
+    pub chunk_flags: u32,
+    /// Root key words.
+    pub key_words: [u32; 8],
+    /// Pending subtree chaining values.
+    pub chaining_value_stack: [[u32; 8]; 54],
+    /// Number of valid pending subtree values.
+    pub chaining_value_stack_len: u8,
+    /// Root mode flags.
+    pub flags: u32,
+}
+
 /// An incremental hasher that can accept any number of writes.
+#[derive(Clone)]
 pub struct Hasher {
     chunk_state: ChunkState,
     key_words: [u32; 8],
@@ -316,6 +343,47 @@ impl Hasher {
         let mut context_key_words = [0; 8];
         words_from_little_endian_bytes(&context_key, &mut context_key_words);
         Self::new_internal(context_key_words, DERIVE_KEY_MATERIAL)
+    }
+
+    /// Captures complete incremental hash progress.
+    pub fn capture_state(&self) -> HasherState {
+        HasherState {
+            chunk_chaining_value: self.chunk_state.chaining_value,
+            chunk_counter: self.chunk_state.chunk_counter,
+            block: self.chunk_state.block,
+            block_len: self.chunk_state.block_len,
+            blocks_compressed: self.chunk_state.blocks_compressed,
+            chunk_flags: self.chunk_state.flags,
+            key_words: self.key_words,
+            chaining_value_stack: self.cv_stack,
+            chaining_value_stack_len: self.cv_stack_len,
+            flags: self.flags,
+        }
+    }
+
+    /// Restores validated incremental hash progress.
+    pub fn from_state(state: HasherState) -> Option<Self> {
+        if state.block_len as usize > BLOCK_LEN
+            || state.blocks_compressed as usize >= CHUNK_LEN / BLOCK_LEN
+            || state.chaining_value_stack_len as usize > state.chaining_value_stack.len()
+            || state.chunk_flags != state.flags
+        {
+            return None;
+        }
+        Some(Self {
+            chunk_state: ChunkState {
+                chaining_value: state.chunk_chaining_value,
+                chunk_counter: state.chunk_counter,
+                block: state.block,
+                block_len: state.block_len,
+                blocks_compressed: state.blocks_compressed,
+                flags: state.chunk_flags,
+            },
+            key_words: state.key_words,
+            cv_stack: state.chaining_value_stack,
+            cv_stack_len: state.chaining_value_stack_len,
+            flags: state.flags,
+        })
     }
 
     fn push_stack(&mut self, cv: [u32; 8]) {

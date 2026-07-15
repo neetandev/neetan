@@ -23,7 +23,9 @@ fn axis_discharge_cycles(cpu_clock_hz: u32, value: i32) -> u64 {
     (i64::from(cpu_clock_hz) * micros / 1_000_000).max(0) as u64
 }
 
-/// Standard analog game port.
+save_state::runtime_state! {
+/// Authoritative standard analog game port state.
+#[derive(Clone)]
 pub struct GamePort {
     /// Core clock in hertz, for converting discharge times to cycles.
     cpu_clock_hz: u32,
@@ -37,7 +39,7 @@ pub struct GamePort {
     buttons: [bool; 4],
     /// Whether each of the two sticks is connected.
     present: [bool; 2],
-}
+}}
 
 impl GamePort {
     /// Builds a game port with no stick connected.
@@ -50,6 +52,22 @@ impl GamePort {
             buttons: [false; 4],
             present: [false; 2],
         }
+    }
+
+    /// Captures one-shot timing and input state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores input state while requiring the same core clock.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        if state.cpu_clock_hz != self.cpu_clock_hz {
+            return Err(save_state::StateValidationError::new(
+                "game port core clock differs",
+            ));
+        }
+        *self = state;
+        Ok(())
     }
 
     /// Returns the port to its power-on state, keeping the clock.

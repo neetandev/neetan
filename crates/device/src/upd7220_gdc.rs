@@ -55,7 +55,8 @@ const MASTER_DEFAULT_PITCH: u16 = 80;
 /// Default pitch for the slave (graphics) GDC: 40 words per row.
 const SLAVE_DEFAULT_PITCH: u16 = 40;
 
-/// A single GDC scroll display partition.
+save_state::runtime_state! {
+/// Authoritative GDC scroll display partition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GdcScrollPartition {
     /// SAD: display start address (18-bit for graphics, 13-bit for text).
@@ -66,7 +67,7 @@ pub struct GdcScrollPartition {
     pub im: bool,
     /// WD: wide display mode.
     pub wd: bool,
-}
+}}
 
 /// VRAM write operation produced by drawing commands.
 #[derive(Debug, Clone, Copy)]
@@ -109,7 +110,8 @@ pub enum GdcAction {
     TimingChanged,
 }
 
-/// Snapshot of a µPD7220 GDC.
+save_state::runtime_state! {
+/// Authoritative uPD7220 GDC state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GdcState {
     /// Status register.
@@ -248,7 +250,7 @@ pub struct GdcState {
     pub dma_transfer_length: u32,
     /// Cached data word for multi-byte DMA transfers.
     pub dma_data: u16,
-}
+}}
 
 /// µPD7220 Graphics Display Controller.
 pub struct Gdc {
@@ -415,6 +417,36 @@ impl Gdc {
             },
             draw_buffer: Vec::new(),
         }
+    }
+
+    /// Captures command, FIFO, drawing, DMA, and raster state.
+    pub fn capture_state(&self) -> GdcState {
+        self.state.clone()
+    }
+
+    /// Restores complete GDC state and clears drawing scratch storage.
+    pub fn restore_state(
+        &mut self,
+        state: GdcState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.is_slave != self.state.is_slave
+            || state.fifo.count > state.fifo.buffer.len() as u8
+            || state.fifo.read_pos >= state.fifo.buffer.len() as u8
+            || state.param_index as usize > state.param_buffer.len()
+            || state.params_remaining as usize > state.param_buffer.len()
+            || state.dad > 15
+            || state.drawing_dir > 7
+            || state.bitmap_mod > 3
+            || state.dma_type > 3
+            || state.dma_mod > 3
+        {
+            return Err(save_state::StateValidationError::new(
+                "uPD7220 command or FIFO state is invalid",
+            ));
+        }
+        self.state = state;
+        self.draw_buffer.clear();
+        Ok(())
     }
 
     /// Updates the dot clock and recomputes all timing parameters.

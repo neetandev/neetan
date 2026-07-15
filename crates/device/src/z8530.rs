@@ -81,7 +81,9 @@ pub enum SccWriteEffect {
     MouseRequestEdge,
 }
 
+save_state::runtime_state! {
 /// Zilog Z8530 serial communications controller.
+#[derive(Clone)]
 pub struct Z8530 {
     interrupt_vector: u8,
     vector_mode: u8,
@@ -104,6 +106,18 @@ pub struct Z8530 {
     mouse_read_count: u8,
     mouse_released_count: u8,
     mouse_release_tick: Option<u64>,
+}}
+
+impl Z8530 {
+    /// Captures serial registers, interrupt requests, and mouse transfer progress.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores serial registers, interrupt requests, and mouse transfer progress.
+    pub fn restore_state(&mut self, state: Self) {
+        *self = state;
+    }
 }
 
 impl Z8530 {

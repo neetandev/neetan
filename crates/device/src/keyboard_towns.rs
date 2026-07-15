@@ -28,6 +28,17 @@ const SCANCODE_SHIFT: u8 = 0x53;
 /// Keyboard identity reply bytes returned after a reset/identify command.
 const KEYBOARD_ID: [u8; 2] = [0xB0, 0x7F];
 
+save_state::runtime_state! {
+/// Authoritative FM Towns keyboard FIFO and modifier state.
+#[derive(Clone)]
+pub struct TownsKeyboardState {
+    fifo: VecDeque<u8>,
+    irq_enabled: bool,
+    interrupt_pending: bool,
+    shift_held: bool,
+    ctrl_held: bool,
+}}
+
 /// Serial keyboard controller.
 pub struct TownsKeyboard {
     /// Serial bytes waiting to be read by the guest.
@@ -58,6 +69,35 @@ impl TownsKeyboard {
             shift_held: false,
             ctrl_held: false,
         }
+    }
+
+    /// Captures queued serial bytes and modifier state.
+    pub fn capture_state(&self) -> TownsKeyboardState {
+        TownsKeyboardState {
+            fifo: self.fifo.clone(),
+            irq_enabled: self.irq_enabled,
+            interrupt_pending: self.interrupt_pending,
+            shift_held: self.shift_held,
+            ctrl_held: self.ctrl_held,
+        }
+    }
+
+    /// Restores queued serial bytes and modifier state.
+    pub fn restore_state(
+        &mut self,
+        state: TownsKeyboardState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.fifo.len() > FIFO_CAPACITY {
+            return Err(save_state::StateValidationError::new(
+                "FM Towns keyboard FIFO is too large",
+            ));
+        }
+        self.fifo = state.fifo;
+        self.irq_enabled = state.irq_enabled;
+        self.interrupt_pending = state.interrupt_pending;
+        self.shift_held = state.shift_held;
+        self.ctrl_held = state.ctrl_held;
+        Ok(())
     }
 
     /// Queues a key event forwarded from the host, expanding it into the two-byte

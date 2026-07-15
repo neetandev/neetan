@@ -62,7 +62,7 @@ fn assert_result_ah(ram: &[u8; 0xA0000], expected_ah: u8, label: &str) {
 fn int1ah_vector_f() {
     let mut machine = create_machine_f();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1A);
     assert!(
         segment >= 0xFD80,
@@ -74,7 +74,7 @@ fn int1ah_vector_f() {
 fn int1ah_vector_vm() {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1A);
     assert!(
         segment >= 0xFD80,
@@ -86,7 +86,7 @@ fn int1ah_vector_vm() {
 fn int1ah_vector_vx() {
     let mut machine = create_machine_vx();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1A);
     assert!(
         segment >= 0xFD80,
@@ -98,7 +98,7 @@ fn int1ah_vector_vx() {
 fn int1ah_vector_ra() {
     let mut machine = create_machine_ra();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1A);
     assert!(
         segment >= 0xFD80,
@@ -114,7 +114,7 @@ fn int1ah_vector_ra() {
 fn int1ah_cmt_noop_f() {
     let code = make_int1ah_call_store_ax(0x00);
     let (machine, _) = boot_and_run_f(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=00h no-op");
 }
 
@@ -122,7 +122,7 @@ fn int1ah_cmt_noop_f() {
 fn int1ah_cmt_noop_vm() {
     let code = make_int1ah_call_store_ax(0x00);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=00h no-op");
 }
 
@@ -130,7 +130,7 @@ fn int1ah_cmt_noop_vm() {
 fn int1ah_cmt_noop_vx() {
     let code = make_int1ah_call_store_ax(0x00);
     let (machine, _) = boot_and_run_vx(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=00h no-op");
 }
 
@@ -138,7 +138,7 @@ fn int1ah_cmt_noop_vx() {
 fn int1ah_cmt_noop_ra() {
     let code = make_int1ah_call_store_ax(0x00);
     let (machine, _) = boot_and_run_ra(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=00h no-op");
 }
 
@@ -150,7 +150,7 @@ fn int1ah_cmt_noop_ra() {
 fn int1ah_cmt_motor_off_f() {
     let code = make_int1ah_call_store_ax(0x01);
     let (machine, _) = boot_and_run_f(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=01h motor off");
 }
 
@@ -158,7 +158,7 @@ fn int1ah_cmt_motor_off_f() {
 fn int1ah_cmt_motor_off_vm() {
     let code = make_int1ah_call_store_ax(0x01);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=01h motor off");
 }
 
@@ -166,7 +166,7 @@ fn int1ah_cmt_motor_off_vm() {
 fn int1ah_cmt_motor_off_vx() {
     let code = make_int1ah_call_store_ax(0x01);
     let (machine, _) = boot_and_run_vx(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=01h motor off");
 }
 
@@ -174,7 +174,7 @@ fn int1ah_cmt_motor_off_vx() {
 fn int1ah_cmt_motor_off_ra() {
     let code = make_int1ah_call_store_ax(0x01);
     let (machine, _) = boot_and_run_ra(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=01h motor off");
 }
 
@@ -186,7 +186,7 @@ fn int1ah_cmt_motor_off_ra() {
 fn int1ah_cmt_motor_on_read_f() {
     let code = make_int1ah_call_al_store_ax(0x02, 0x80);
     let (machine, _) = boot_and_run_f(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=02h motor on read");
 }
 
@@ -194,7 +194,7 @@ fn int1ah_cmt_motor_on_read_f() {
 fn int1ah_cmt_motor_on_read_vm() {
     let code = make_int1ah_call_al_store_ax(0x02, 0x80);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=02h motor on read");
 }
 
@@ -202,7 +202,7 @@ fn int1ah_cmt_motor_on_read_vm() {
 fn int1ah_cmt_motor_on_read_vx() {
     let code = make_int1ah_call_al_store_ax(0x02, 0x80);
     let (machine, _) = boot_and_run_vx(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=02h motor on read");
 }
 
@@ -210,7 +210,7 @@ fn int1ah_cmt_motor_on_read_vx() {
 fn int1ah_cmt_motor_on_read_ra() {
     let code = make_int1ah_call_al_store_ax(0x02, 0x80);
     let (machine, _) = boot_and_run_ra(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=02h motor on read");
 }
 
@@ -222,7 +222,7 @@ fn int1ah_cmt_motor_on_read_ra() {
 fn int1ah_cmt_motor_on_write_f() {
     let code = make_int1ah_call_al_store_ax(0x03, 0x80);
     let (machine, _) = boot_and_run_f(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=03h motor on write");
 }
 
@@ -230,7 +230,7 @@ fn int1ah_cmt_motor_on_write_f() {
 fn int1ah_cmt_motor_on_write_vm() {
     let code = make_int1ah_call_al_store_ax(0x03, 0x80);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=03h motor on write");
 }
 
@@ -238,7 +238,7 @@ fn int1ah_cmt_motor_on_write_vm() {
 fn int1ah_cmt_motor_on_write_vx() {
     let code = make_int1ah_call_al_store_ax(0x03, 0x80);
     let (machine, _) = boot_and_run_vx(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=03h motor on write");
 }
 
@@ -246,7 +246,7 @@ fn int1ah_cmt_motor_on_write_vx() {
 fn int1ah_cmt_motor_on_write_ra() {
     let code = make_int1ah_call_al_store_ax(0x03, 0x80);
     let (machine, _) = boot_and_run_ra(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=03h motor on write");
 }
 
@@ -259,7 +259,7 @@ fn int1ah_cmt_motor_on_write_ra() {
 fn int1ah_cmt_data_write_f() {
     let code = make_int1ah_call_al_store_ax(0x04, 0x41);
     let (machine, _) = boot_and_run_f(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=04h data write");
 }
 
@@ -267,7 +267,7 @@ fn int1ah_cmt_data_write_f() {
 fn int1ah_cmt_data_write_vm() {
     let code = make_int1ah_call_al_store_ax(0x04, 0x41);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=04h data write");
 }
 
@@ -275,7 +275,7 @@ fn int1ah_cmt_data_write_vm() {
 fn int1ah_cmt_data_write_vx() {
     let code = make_int1ah_call_al_store_ax(0x04, 0x41);
     let (machine, _) = boot_and_run_vx(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=04h data write");
 }
 
@@ -283,7 +283,7 @@ fn int1ah_cmt_data_write_vx() {
 fn int1ah_cmt_data_write_ra() {
     let code = make_int1ah_call_al_store_ax(0x04, 0x41);
     let (machine, _) = boot_and_run_ra(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x02, "AH=04h data write");
 }
 
@@ -296,7 +296,7 @@ fn int1ah_cmt_data_write_ra() {
 fn int1ah_cmt_data_read_f() {
     let code = make_int1ah_call_al_store_ax(0x05, 0x00);
     let (machine, _) = boot_and_run_f(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x27, "AH=05h data read");
 }
 
@@ -304,7 +304,7 @@ fn int1ah_cmt_data_read_f() {
 fn int1ah_cmt_data_read_vm() {
     let code = make_int1ah_call_al_store_ax(0x05, 0x00);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x27, "AH=05h data read");
 }
 
@@ -312,7 +312,7 @@ fn int1ah_cmt_data_read_vm() {
 fn int1ah_cmt_data_read_vx() {
     let code = make_int1ah_call_al_store_ax(0x05, 0x00);
     let (machine, _) = boot_and_run_vx(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x27, "AH=05h data read");
 }
 
@@ -320,7 +320,7 @@ fn int1ah_cmt_data_read_vx() {
 fn int1ah_cmt_data_read_ra() {
     let code = make_int1ah_call_al_store_ax(0x05, 0x00);
     let (machine, _) = boot_and_run_ra(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x02, "AH=05h data read");
 }
 
@@ -334,7 +334,7 @@ fn int1ah_cmt_data_read_ra() {
 fn int1ah_printer_init_f() {
     let code = make_int1ah_call_store_ax(0x10);
     let (machine, _) = boot_and_run_f(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "AH=10h init");
 }
 
@@ -342,7 +342,7 @@ fn int1ah_printer_init_f() {
 fn int1ah_printer_init_vm() {
     let code = make_int1ah_call_store_ax(0x10);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "AH=10h init");
 }
 
@@ -350,7 +350,7 @@ fn int1ah_printer_init_vm() {
 fn int1ah_printer_init_vx() {
     let code = make_int1ah_call_store_ax(0x10);
     let (machine, _) = boot_and_run_vx(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "AH=10h init");
 }
 
@@ -358,7 +358,7 @@ fn int1ah_printer_init_vx() {
 fn int1ah_printer_init_ra() {
     let code = make_int1ah_call_store_ax(0x10);
     let (machine, _) = boot_and_run_ra(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "AH=10h init");
 }
 
@@ -371,7 +371,7 @@ fn int1ah_printer_init_ra() {
 fn int1ah_printer_print_char_f() {
     let code = make_int1ah_call_al_store_ax(0x11, 0x41);
     let (machine, _) = boot_and_run_f(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "AH=11h print char");
 }
 
@@ -379,7 +379,7 @@ fn int1ah_printer_print_char_f() {
 fn int1ah_printer_print_char_vm() {
     let code = make_int1ah_call_al_store_ax(0x11, 0x41);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "AH=11h print char");
 }
 
@@ -387,7 +387,7 @@ fn int1ah_printer_print_char_vm() {
 fn int1ah_printer_print_char_vx() {
     let code = make_int1ah_call_al_store_ax(0x11, 0x41);
     let (machine, _) = boot_and_run_vx(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "AH=11h print char");
 }
 
@@ -395,7 +395,7 @@ fn int1ah_printer_print_char_vx() {
 fn int1ah_printer_print_char_ra() {
     let code = make_int1ah_call_al_store_ax(0x11, 0x41);
     let (machine, _) = boot_and_run_ra(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "AH=11h print char");
 }
 
@@ -408,7 +408,7 @@ fn int1ah_printer_print_char_ra() {
 fn int1ah_printer_status_f() {
     let code = make_int1ah_call_store_ax(0x12);
     let (machine, _) = boot_and_run_f(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "AH=12h status");
 }
 
@@ -416,7 +416,7 @@ fn int1ah_printer_status_f() {
 fn int1ah_printer_status_vm() {
     let code = make_int1ah_call_store_ax(0x12);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "AH=12h status");
 }
 
@@ -424,7 +424,7 @@ fn int1ah_printer_status_vm() {
 fn int1ah_printer_status_vx() {
     let code = make_int1ah_call_store_ax(0x12);
     let (machine, _) = boot_and_run_vx(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "AH=12h status");
 }
 
@@ -432,7 +432,7 @@ fn int1ah_printer_status_vx() {
 fn int1ah_printer_status_ra() {
     let code = make_int1ah_call_store_ax(0x12);
     let (machine, _) = boot_and_run_ra(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x01, "AH=12h status");
 }
 
@@ -457,7 +457,7 @@ fn assert_printer_buffer(ram: &[u8; 0xA0000], expected_ah: u8, expected_cx: u16)
 fn int1ah_printer_buffer_f() {
     let code = make_int1ah_print_buffer(3);
     let (machine, _) = boot_and_run_f(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=30h buffer (no printer)");
 }
 
@@ -465,7 +465,7 @@ fn int1ah_printer_buffer_f() {
 fn int1ah_printer_buffer_vm() {
     let code = make_int1ah_print_buffer(3);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=30h buffer (no printer)");
 }
 
@@ -473,7 +473,7 @@ fn int1ah_printer_buffer_vm() {
 fn int1ah_printer_buffer_vx() {
     let code = make_int1ah_print_buffer(3);
     let (machine, _) = boot_and_run_vx(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=30h buffer (no printer)");
 }
 
@@ -481,7 +481,7 @@ fn int1ah_printer_buffer_vx() {
 fn int1ah_printer_buffer_ra() {
     let code = make_int1ah_print_buffer(3);
     let (machine, _) = boot_and_run_ra(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "AH=30h buffer (no printer)");
 }
 
@@ -494,7 +494,7 @@ fn int1ah_printer_buffer_ra() {
 fn int1ah_printer_buffer_zero_count_f() {
     let code = make_int1ah_print_buffer(0);
     let (machine, _) = boot_and_run_f(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_buffer(&state.memory.ram, 0x00, 0);
 }
 
@@ -502,7 +502,7 @@ fn int1ah_printer_buffer_zero_count_f() {
 fn int1ah_printer_buffer_zero_count_vm() {
     let code = make_int1ah_print_buffer(0);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_buffer(&state.memory.ram, 0x00, 0);
 }
 
@@ -510,7 +510,7 @@ fn int1ah_printer_buffer_zero_count_vm() {
 fn int1ah_printer_buffer_zero_count_vx() {
     let code = make_int1ah_print_buffer(0);
     let (machine, _) = boot_and_run_vx(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_buffer(&state.memory.ram, 0x00, 0);
 }
 
@@ -518,7 +518,7 @@ fn int1ah_printer_buffer_zero_count_vx() {
 fn int1ah_printer_buffer_zero_count_ra() {
     let code = make_int1ah_print_buffer(0);
     let (machine, _) = boot_and_run_ra(&code, &[], INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_buffer(&state.memory.ram, 0x00, 0);
 }
 
@@ -543,6 +543,7 @@ fn boot_and_run_printer_f(code: &[u8], budget: u64) -> (machine_98::Pc9801F, std
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -557,10 +558,9 @@ fn boot_and_run_printer_vm(code: &[u8], budget: u64) -> (machine_98::Pc9801Vm, s
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, TEST_CODE, code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -575,10 +575,8 @@ fn boot_and_run_printer_vx(code: &[u8], budget: u64) -> (machine_98::Pc9801Vx, s
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, TEST_CODE, code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
@@ -618,7 +616,7 @@ fn assert_printer_init_attached(ram: &[u8; 0xA0000]) {
 fn int1ah_printer_init_attached_f() {
     let code = make_int1ah_call_store_ax(0x10);
     let (machine, _path) = boot_and_run_printer_f(&code, INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_init_attached(&state.memory.ram);
 }
 
@@ -626,7 +624,7 @@ fn int1ah_printer_init_attached_f() {
 fn int1ah_printer_init_attached_vm() {
     let code = make_int1ah_call_store_ax(0x10);
     let (machine, _path) = boot_and_run_printer_vm(&code, INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_init_attached(&state.memory.ram);
 }
 
@@ -634,7 +632,7 @@ fn int1ah_printer_init_attached_vm() {
 fn int1ah_printer_init_attached_vx() {
     let code = make_int1ah_call_store_ax(0x10);
     let (machine, _path) = boot_and_run_printer_vx(&code, INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_init_attached(&state.memory.ram);
 }
 
@@ -642,7 +640,7 @@ fn int1ah_printer_init_attached_vx() {
 fn int1ah_printer_init_attached_ra() {
     let code = make_int1ah_call_store_ax(0x10);
     let (machine, _path) = boot_and_run_printer_ra(&code, INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_init_attached(&state.memory.ram);
 }
 
@@ -660,7 +658,7 @@ fn assert_printer_print_char_attached(ram: &[u8; 0xA0000]) {
 fn int1ah_printer_print_char_attached_f() {
     let code = make_int1ah_call_al_store_ax(0x11, 0x41);
     let (machine, _path) = boot_and_run_printer_f(&code, INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_print_char_attached(&state.memory.ram);
 }
 
@@ -668,7 +666,7 @@ fn int1ah_printer_print_char_attached_f() {
 fn int1ah_printer_print_char_attached_vm() {
     let code = make_int1ah_call_al_store_ax(0x11, 0x41);
     let (machine, _path) = boot_and_run_printer_vm(&code, INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_print_char_attached(&state.memory.ram);
 }
 
@@ -676,7 +674,7 @@ fn int1ah_printer_print_char_attached_vm() {
 fn int1ah_printer_print_char_attached_vx() {
     let code = make_int1ah_call_al_store_ax(0x11, 0x41);
     let (machine, _path) = boot_and_run_printer_vx(&code, INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_print_char_attached(&state.memory.ram);
 }
 
@@ -684,7 +682,7 @@ fn int1ah_printer_print_char_attached_vx() {
 fn int1ah_printer_print_char_attached_ra() {
     let code = make_int1ah_call_al_store_ax(0x11, 0x41);
     let (machine, _path) = boot_and_run_printer_ra(&code, INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_print_char_attached(&state.memory.ram);
 }
 
@@ -702,7 +700,7 @@ fn assert_printer_status_attached(ram: &[u8; 0xA0000]) {
 fn int1ah_printer_status_attached_f() {
     let code = make_int1ah_call_store_ax(0x12);
     let (machine, _path) = boot_and_run_printer_f(&code, INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_status_attached(&state.memory.ram);
 }
 
@@ -710,7 +708,7 @@ fn int1ah_printer_status_attached_f() {
 fn int1ah_printer_status_attached_vm() {
     let code = make_int1ah_call_store_ax(0x12);
     let (machine, _path) = boot_and_run_printer_vm(&code, INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_status_attached(&state.memory.ram);
 }
 
@@ -718,7 +716,7 @@ fn int1ah_printer_status_attached_vm() {
 fn int1ah_printer_status_attached_vx() {
     let code = make_int1ah_call_store_ax(0x12);
     let (machine, _path) = boot_and_run_printer_vx(&code, INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_status_attached(&state.memory.ram);
 }
 
@@ -726,7 +724,7 @@ fn int1ah_printer_status_attached_vx() {
 fn int1ah_printer_status_attached_ra() {
     let code = make_int1ah_call_store_ax(0x12);
     let (machine, _path) = boot_and_run_printer_ra(&code, INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_status_attached(&state.memory.ram);
 }
 
@@ -738,7 +736,7 @@ fn int1ah_printer_status_attached_ra() {
 fn int1ah_printer_buffer_attached_f() {
     let code = make_int1ah_print_buffer(3);
     let (machine, _path) = boot_and_run_printer_f(&code, INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_buffer(&state.memory.ram, 0x00, 0);
 }
 
@@ -746,7 +744,7 @@ fn int1ah_printer_buffer_attached_f() {
 fn int1ah_printer_buffer_attached_vm() {
     let code = make_int1ah_print_buffer(3);
     let (machine, _path) = boot_and_run_printer_vm(&code, INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_buffer(&state.memory.ram, 0x00, 0);
 }
 
@@ -754,7 +752,7 @@ fn int1ah_printer_buffer_attached_vm() {
 fn int1ah_printer_buffer_attached_vx() {
     let code = make_int1ah_print_buffer(3);
     let (machine, _path) = boot_and_run_printer_vx(&code, INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_buffer(&state.memory.ram, 0x00, 0);
 }
 
@@ -762,6 +760,6 @@ fn int1ah_printer_buffer_attached_vx() {
 fn int1ah_printer_buffer_attached_ra() {
     let code = make_int1ah_print_buffer(3);
     let (machine, _path) = boot_and_run_printer_ra(&code, INT1AH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_printer_buffer(&state.memory.ram, 0x00, 0);
 }

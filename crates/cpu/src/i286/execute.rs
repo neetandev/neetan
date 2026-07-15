@@ -243,7 +243,7 @@ impl I286 {
     fn prepare_imul_imm8_memory_operand(&mut self, modrm: u8) {
         self.prepare_sign_extended_immediate_memory_operand(modrm);
 
-        let prefix_count = self.timing.prefix_count();
+        let prefix_count = self.state.timing.prefix_count();
         if prefix_count == 0 {
             return;
         }
@@ -251,23 +251,23 @@ impl I286 {
         match self.ea_class {
             EaClass::Direct => {
                 if prefix_count & 1 == 0 {
-                    self.timing.note_demand_prefetch_policy(
+                    self.state.timing.note_demand_prefetch_policy(
                         I286DemandPrefetchPolicy::BeforePrefetchGapThenPrefetch,
                     );
-                    self.timing.note_demand_prefetch_limit(2);
+                    self.state.timing.note_demand_prefetch_limit(2);
                 } else {
-                    self.timing.note_demand_prefetch_policy(
+                    self.state.timing.note_demand_prefetch_policy(
                         I286DemandPrefetchPolicy::BeforeAndAfterTurnaroundThenGap,
                     );
                 }
             }
             EaClass::Disp16Double => {
-                self.timing.note_demand_prefetch_policy(
+                self.state.timing.note_demand_prefetch_policy(
                     I286DemandPrefetchPolicy::BeforeAndAfterTurnaroundThenGap,
                 );
             }
             EaClass::Disp8Single if prefix_count & 1 == 1 => {
-                self.timing.note_demand_prefetch_policy(
+                self.state.timing.note_demand_prefetch_policy(
                     I286DemandPrefetchPolicy::AfterTurnaroundAuThenGapThenPrefetch,
                 );
             }
@@ -276,9 +276,9 @@ impl I286 {
     }
 
     fn imul_imm8_memory_base_cycles(&self) -> i32 {
-        let prefix_count = self.timing.prefix_count();
+        let prefix_count = self.state.timing.prefix_count();
 
-        if self.timing.lock_active() && self.ea_class == EaClass::DoubleRegister {
+        if self.state.timing.lock_active() && self.ea_class == EaClass::DoubleRegister {
             21
         } else if prefix_count != 0 && self.ea_class == EaClass::Direct {
             if prefix_count & 1 == 0 { 26 } else { 24 }
@@ -296,11 +296,12 @@ impl I286 {
         }
 
         if self.ea_class.is_no_displacement_memory()
-            || self.timing.lock_active()
-                && !self.timing.lock_prefix_followed_by_prefix()
+            || self.state.timing.lock_active()
+                && !self.state.timing.lock_prefix_followed_by_prefix()
                 && self.ea_class.is_disp8()
         {
-            self.timing
+            self.state
+                .timing
                 .borrow_internal_cycles(LOCK_PREFIX_OVERLAP_CREDIT);
         }
     }
@@ -1179,7 +1180,8 @@ impl I286 {
                 final_sp.wrapping_add((index * 2) as u16),
                 value,
             );
-            self.timing
+            self.state
+                .timing
                 .borrow_internal_cycles(STACK_WORD_OVERLAP_CREDIT);
         }
         self.clk(tail_cycles);
@@ -1204,7 +1206,8 @@ impl I286 {
         let mut pending_writes: [Option<(WordReg, u16)>; 8] = [None; 8];
         for (index, (offset, destination)) in POPA_READS.iter().enumerate() {
             let value = self.read_word_seg(bus, SegReg16::SS, sp.wrapping_add(*offset));
-            self.timing
+            self.state
+                .timing
                 .borrow_internal_cycles(STACK_WORD_OVERLAP_CREDIT);
             if let Some(register) = destination {
                 pending_writes[index] = Some((*register, value));
@@ -1226,7 +1229,7 @@ impl I286 {
         self.calc_ea(modrm, bus);
         let ea_pen = if address_is_odd(self.ea) { 8 } else { 0 };
         let low = self.seg_read_word(bus) as i16;
-        self.timing.suppress_next_memory_read_window();
+        self.state.timing.suppress_next_memory_read_window();
         let high = self.seg_read_word_at(bus, 2) as i16;
         if val < low || val > high {
             let sp_pen = self.sp_penalty(3);
@@ -1259,9 +1262,13 @@ impl I286 {
     fn push_imm16(&mut self, bus: &mut impl common::Bus) {
         let tail_cycles = self.stack_push_tail_cycles(3);
         let val = self.fetchword(bus);
-        if self.timing.lock_active() {
+        if self.state.timing.lock_active() {
             self.clk_visible(1);
-        } else if self.timing.prefetch_wrapped_before_instruction_start() {
+        } else if self
+            .state
+            .timing
+            .prefetch_wrapped_before_instruction_start()
+        {
             self.clk_visible(2);
         } else {
             self.clk_forced_prefetch(bus);
@@ -1273,7 +1280,7 @@ impl I286 {
     fn push_imm8(&mut self, bus: &mut impl common::Bus) {
         let tail_cycles = self.stack_push_tail_cycles(3);
         let val = self.fetch(bus) as i8 as u16;
-        if self.timing.lock_active() {
+        if self.state.timing.lock_active() {
             self.clk_forced_prefetch(bus);
         } else {
             self.clk_visible(2);
@@ -1294,7 +1301,7 @@ impl I286 {
             self.prepare_immediate_memory_operand(modrm);
             imm = self.fetchword(bus) as i16 as i32;
             src = self.seg_read_word(bus) as i16 as i32;
-            self.timing.note_au_idle();
+            self.state.timing.note_au_idle();
         }
         let result = src * imm;
         let reg = self.reg_word(modrm);
@@ -1320,7 +1327,7 @@ impl I286 {
             self.prepare_imul_imm8_memory_operand(modrm);
             imm = self.fetch(bus) as i8 as i32;
             src = self.seg_read_word(bus) as i16 as i32;
-            self.timing.note_au_idle();
+            self.state.timing.note_au_idle();
         }
         let result = src * imm;
         let reg = self.reg_word(modrm);
@@ -1396,7 +1403,7 @@ impl I286 {
             self.putback_rm_byte(modrm, reg_val, bus);
             self.clk_modrm_prefetch(bus, modrm, 3, 4);
         } else {
-            self.timing.suppress_next_read_writeback_gap();
+            self.state.timing.suppress_next_read_writeback_gap();
             self.putback_rm_byte(modrm, reg_val, bus);
             self.clk_visible(1);
         }
@@ -1413,7 +1420,7 @@ impl I286 {
             self.clk_modrm_word_prefetch(bus, modrm, 3, 4, 0);
         } else {
             let write_splits = self.word_access_is_split(self.ea_seg, self.eo);
-            self.timing.suppress_next_read_writeback_gap();
+            self.state.timing.suppress_next_read_writeback_gap();
             self.putback_rm_word(modrm, reg_val, bus);
             if !write_splits {
                 self.clk_visible(1);
@@ -1534,9 +1541,11 @@ impl I286 {
         if self.is_protected_mode() {
             self.code_descriptor(segment, offset, super::TaskType::Call, cs, ip, bus);
         } else {
-            let prefix_count = self.timing.prefix_count();
-            let suppress_fallthrough_prefetch =
-                self.timing.lock_prefix_suppresses_fallthrough_prefetch();
+            let prefix_count = self.state.timing.prefix_count();
+            let suppress_fallthrough_prefetch = self
+                .state
+                .timing
+                .lock_prefix_suppresses_fallthrough_prefetch();
             if !suppress_fallthrough_prefetch {
                 self.clk_forced_prefetch(bus);
             }
@@ -1551,15 +1560,17 @@ impl I286 {
                 return;
             }
             self.ip = offset;
-            self.timing.arm_control_transfer_restart(self.ip);
+            self.state.timing.arm_control_transfer_restart(self.ip);
             let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-            self.timing
+            self.state
+                .timing
                 .advance_control_transfer_fetches(bus, code_segment_base, 1);
             self.sync_timing_cycles();
             self.push(bus, ip);
-            self.timing
+            self.state
+                .timing
                 .advance_control_transfer_fetches(bus, code_segment_base, 1);
-            self.timing.complete_control_transfer_restart(2);
+            self.state.timing.complete_control_transfer_restart(2);
             self.sync_timing_cycles();
             return;
         }
@@ -1572,22 +1583,29 @@ impl I286 {
         let return_instruction_pointer = self.ip;
         self.ip = self.ip.wrapping_add(disp);
 
-        self.timing.arm_control_transfer_restart(self.ip);
+        self.state.timing.arm_control_transfer_restart(self.ip);
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        let initial_cycles = if self.timing.lock_active() { 1 } else { 2 };
-        self.timing
+        let initial_cycles = if self.state.timing.lock_active() {
+            1
+        } else {
+            2
+        };
+        self.state
+            .timing
             .advance_control_transfer_internal_cycles(initial_cycles);
-        self.timing
+        self.state
+            .timing
             .advance_control_transfer_fetches(bus, code_segment_base, 1);
 
         let stack_write_even = self.regs.word(WordReg::SP) & 1 == 0;
         self.push(bus, return_instruction_pointer);
 
         if stack_write_even {
-            self.timing
+            self.state
+                .timing
                 .advance_control_transfer_fetches(bus, code_segment_base, 1);
         }
-        self.timing.complete_control_transfer_restart(2);
+        self.state.timing.complete_control_transfer_restart(2);
         self.sync_timing_cycles();
     }
 
@@ -1604,11 +1622,18 @@ impl I286 {
             self.finish_state = I286FinishState::ControlTransferRestart;
             self.code_descriptor(segment, offset, super::TaskType::Jmp, 0, 0, bus);
         } else {
-            let prefix_count = self.timing.prefix_count();
-            let suppress_fallthrough_prefetch =
-                self.timing.lock_prefix_suppresses_fallthrough_prefetch() && prefix_count & 1 == 0;
+            let prefix_count = self.state.timing.prefix_count();
+            let suppress_fallthrough_prefetch = self
+                .state
+                .timing
+                .lock_prefix_suppresses_fallthrough_prefetch()
+                && prefix_count & 1 == 0;
             if !suppress_fallthrough_prefetch {
-                if self.timing.prefetch_wrapped_before_instruction_start() {
+                if self
+                    .state
+                    .timing
+                    .prefetch_wrapped_before_instruction_start()
+                {
                     self.clk_prefetch(bus, 2);
                 } else {
                     self.clk_forced_prefetch(bus);
@@ -1618,13 +1643,14 @@ impl I286 {
                 return;
             }
             self.ip = offset;
-            let timing = if self.timing.lock_active() && prefix_count > 1 && prefix_count & 1 == 0 {
-                LOCK_PREFIXED_FAR_IMMEDIATE_CONTROL_TRANSFER_TIMING
-            } else if !self.timing.lock_active() && prefix_count & 1 == 1 {
-                PREFIXED_FAR_IMMEDIATE_CONTROL_TRANSFER_TIMING
-            } else {
-                FAR_IMMEDIATE_CONTROL_TRANSFER_TIMING
-            };
+            let timing =
+                if self.state.timing.lock_active() && prefix_count > 1 && prefix_count & 1 == 0 {
+                    LOCK_PREFIXED_FAR_IMMEDIATE_CONTROL_TRANSFER_TIMING
+                } else if !self.state.timing.lock_active() && prefix_count & 1 == 1 {
+                    PREFIXED_FAR_IMMEDIATE_CONTROL_TRANSFER_TIMING
+                } else {
+                    FAR_IMMEDIATE_CONTROL_TRANSFER_TIMING
+                };
             self.clk_control_transfer_restart(bus, self.ip, timing);
             return;
         }
@@ -1634,7 +1660,7 @@ impl I286 {
     fn jmp_short(&mut self, bus: &mut impl common::Bus) {
         let disp = self.fetch(bus) as i8 as u16;
         self.ip = self.ip.wrapping_add(disp);
-        let timing = if self.timing.leading_lock_prefix() {
+        let timing = if self.state.timing.leading_lock_prefix() {
             LOCK_SHORT_JMP_CONTROL_TRANSFER_TIMING
         } else {
             NEAR_CONTROL_TRANSFER_TIMING
@@ -1646,19 +1672,22 @@ impl I286 {
         self.finish_state = I286FinishState::ControlTransferRestart;
         self.ip = self.pop(bus);
 
-        self.timing.arm_control_transfer_restart(self.ip);
+        self.state.timing.arm_control_transfer_restart(self.ip);
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing.advance_control_transfer_internal_cycles(3);
-        self.timing
+        self.state
+            .timing
+            .advance_control_transfer_internal_cycles(3);
+        self.state
+            .timing
             .advance_control_transfer_fetches(bus, code_segment_base, 3);
-        self.timing.complete_control_transfer_restart(2);
+        self.state.timing.complete_control_transfer_restart(2);
         self.sync_timing_cycles();
     }
 
     fn ret_near_imm(&mut self, bus: &mut impl common::Bus) {
         self.finish_state = I286FinishState::ControlTransferRestart;
         let imm = self.fetchword(bus);
-        if self.timing.lock_active() {
+        if self.state.timing.lock_active() {
             self.clk_visible(1);
         } else {
             self.clk_visible(2);
@@ -1666,12 +1695,15 @@ impl I286 {
         self.ip = self.pop(bus);
         let sp = self.regs.word(WordReg::SP).wrapping_add(imm);
         self.regs.set_word(WordReg::SP, sp);
-        self.timing.arm_control_transfer_restart(self.ip);
+        self.state.timing.arm_control_transfer_restart(self.ip);
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing.advance_control_transfer_internal_cycles(3);
-        self.timing
+        self.state
+            .timing
+            .advance_control_transfer_internal_cycles(3);
+        self.state
+            .timing
             .advance_control_transfer_fetches(bus, code_segment_base, 3);
-        self.timing.complete_control_transfer_restart(2);
+        self.state.timing.complete_control_transfer_restart(2);
         self.sync_timing_cycles();
     }
 
@@ -1680,7 +1712,7 @@ impl I286 {
         let penalty = self.sp_penalty(2);
 
         if !self.is_protected_mode() {
-            if !self.timing.lock_active() {
+            if !self.state.timing.lock_active() {
                 self.clk_visible(2);
             }
             self.ip = self.pop(bus);
@@ -1688,12 +1720,15 @@ impl I286 {
             if !self.load_segment(SegReg16::CS, cs, bus) {
                 return;
             }
-            self.timing.arm_control_transfer_restart(self.ip);
+            self.state.timing.arm_control_transfer_restart(self.ip);
             let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-            self.timing.advance_control_transfer_internal_cycles(4);
-            self.timing
+            self.state
+                .timing
+                .advance_control_transfer_internal_cycles(4);
+            self.state
+                .timing
                 .advance_control_transfer_fetches(bus, code_segment_base, 3);
-            self.timing.complete_control_transfer_restart(2);
+            self.state.timing.complete_control_transfer_restart(2);
             self.sync_timing_cycles();
             return;
         }
@@ -1760,7 +1795,7 @@ impl I286 {
         let imm = self.fetchword(bus);
 
         if !self.is_protected_mode() {
-            if self.timing.lock_active() {
+            if self.state.timing.lock_active() {
                 self.clk_visible(1);
             } else {
                 self.clk_visible(2);
@@ -1772,12 +1807,15 @@ impl I286 {
             }
             let sp = self.regs.word(WordReg::SP).wrapping_add(imm);
             self.regs.set_word(WordReg::SP, sp);
-            self.timing.arm_control_transfer_restart(self.ip);
+            self.state.timing.arm_control_transfer_restart(self.ip);
             let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-            self.timing.advance_control_transfer_internal_cycles(4);
-            self.timing
+            self.state
+                .timing
+                .advance_control_transfer_internal_cycles(4);
+            self.state
+                .timing
                 .advance_control_transfer_fetches(bus, code_segment_base, 3);
-            self.timing.complete_control_transfer_restart(2);
+            self.state.timing.complete_control_transfer_restart(2);
             self.sync_timing_cycles();
             return;
         }
@@ -1915,26 +1953,34 @@ impl I286 {
     }
 
     fn prepare_moffs_access(&mut self, _offset: u16) {
-        match self.timing.prefix_count() {
+        match self.state.timing.prefix_count() {
             0 => {
-                self.timing.note_au_ready();
-                self.timing
+                self.state.timing.note_au_ready();
+                self.state
+                    .timing
                     .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
             }
             count
-                if self.timing.lock_prefix_suppresses_fallthrough_prefetch() && count & 1 == 0 =>
+                if self
+                    .state
+                    .timing
+                    .lock_prefix_suppresses_fallthrough_prefetch()
+                    && count & 1 == 0 =>
             {
-                self.timing
+                self.state
+                    .timing
                     .borrow_internal_cycles(MOFFS_PREFIX_OVERLAP_CREDIT);
             }
             count if count & 1 == 1 => {
                 self.clk_visible(1);
-                self.timing
+                self.state
+                    .timing
                     .borrow_internal_cycles(MOFFS_PREFIX_OVERLAP_CREDIT);
             }
             _ => {
-                self.timing.note_au_ready();
-                self.timing
+                self.state.timing.note_au_ready();
+                self.state
+                    .timing
                     .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
             }
         }
@@ -1984,7 +2030,7 @@ impl I286 {
         let modrm = self.fetch(bus);
         self.calc_ea(modrm, bus);
         let offset = self.seg_read_word(bus);
-        self.timing.suppress_next_memory_read_window();
+        self.state.timing.suppress_next_memory_read_window();
         let segment = self.seg_read_word_at(bus, 2);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, offset);
@@ -1998,7 +2044,7 @@ impl I286 {
         let modrm = self.fetch(bus);
         self.calc_ea(modrm, bus);
         let offset = self.seg_read_word(bus);
-        self.timing.suppress_next_memory_read_window();
+        self.state.timing.suppress_next_memory_read_window();
         let segment = self.seg_read_word_at(bus, 2);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, offset);
@@ -2029,11 +2075,11 @@ impl I286 {
                 let bp_val = self.regs.word(WordReg::BP).wrapping_sub(2);
                 self.regs.set_word(WordReg::BP, bp_val);
                 let val = self.read_word_seg(bus, SegReg16::SS, bp_val);
-                self.timing.suppress_next_read_writeback_gap();
+                self.state.timing.suppress_next_read_writeback_gap();
                 self.push(bus, val);
             }
             if level > 1 {
-                self.timing.advance_visible_internal_cycles(2);
+                self.state.timing.advance_visible_internal_cycles(2);
                 self.sync_timing_cycles();
             }
             self.push(bus, frame_ptr);
@@ -2091,7 +2137,11 @@ impl I286 {
 
         if !self.is_protected_mode() {
             let sp = self.regs.word(WordReg::SP);
-            let startup_cycles = if self.timing.lock_active() { 1 } else { 3 };
+            let startup_cycles = if self.state.timing.lock_active() {
+                1
+            } else {
+                3
+            };
             self.clk_visible(startup_cycles);
             let flags_val = self.read_word_seg(bus, SegReg16::SS, sp.wrapping_add(4));
             let instruction_pointer = self.read_word_seg(bus, SegReg16::SS, sp);
@@ -2102,7 +2152,7 @@ impl I286 {
             }
             self.ip = instruction_pointer;
             self.flags.load_flags(flags_val, 0, false);
-            let timing = if self.timing.lock_active() {
+            let timing = if self.state.timing.lock_active() {
                 LOCK_IRET_CONTROL_TRANSFER_TIMING
             } else {
                 IRET_CONTROL_TRANSFER_TIMING
@@ -2192,7 +2242,7 @@ impl I286 {
         self.regs.set_word(WordReg::CX, cw);
         if cw != 0 && !self.flags.zf() {
             self.ip = self.ip.wrapping_add(disp);
-            let timing = if self.timing.cycle_state().lock_active {
+            let timing = if self.state.timing.cycle_state().lock_active {
                 LOCK_LOOP_CONTROL_TRANSFER_TIMING
             } else {
                 LOOP_CONTROL_TRANSFER_TIMING
@@ -2209,7 +2259,7 @@ impl I286 {
         self.regs.set_word(WordReg::CX, cw);
         if cw != 0 && self.flags.zf() {
             self.ip = self.ip.wrapping_add(disp);
-            let timing = if self.timing.cycle_state().lock_active {
+            let timing = if self.state.timing.cycle_state().lock_active {
                 LOCK_LOOP_CONTROL_TRANSFER_TIMING
             } else {
                 LOOP_CONTROL_TRANSFER_TIMING
@@ -2226,7 +2276,7 @@ impl I286 {
         self.regs.set_word(WordReg::CX, cw);
         if cw != 0 {
             self.ip = self.ip.wrapping_add(disp);
-            let timing = if self.timing.cycle_state().lock_active {
+            let timing = if self.state.timing.cycle_state().lock_active {
                 LOCK_LOOP_CONTROL_TRANSFER_TIMING
             } else {
                 LOOP_CONTROL_TRANSFER_TIMING
@@ -2241,7 +2291,7 @@ impl I286 {
         let disp = self.fetch(bus) as i8 as u16;
         if self.regs.word(WordReg::CX) == 0 {
             let target = self.ip.wrapping_add(disp);
-            let lock_active = self.timing.cycle_state().lock_active;
+            let lock_active = self.state.timing.cycle_state().lock_active;
             if lock_active {
                 self.clk_prefetch(bus, 3);
             }
@@ -2252,7 +2302,7 @@ impl I286 {
                 LOOP_CONTROL_TRANSFER_TIMING
             };
             self.clk_control_transfer_restart(bus, self.ip, timing);
-        } else if self.timing.cycle_state().lock_active {
+        } else if self.state.timing.cycle_state().lock_active {
             self.clk_prefetch(bus, 6);
         } else {
             self.clk(6);
@@ -2261,7 +2311,7 @@ impl I286 {
 
     fn in_al_imm(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
-        if port != 0 && !self.timing.lock_active() {
+        if port != 0 && !self.state.timing.lock_active() {
             self.clk_visible(1);
         }
         let val = self.read_io_byte(bus, port);
@@ -2271,7 +2321,7 @@ impl I286 {
 
     fn in_aw_imm(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
-        if port != 0 && !self.timing.lock_active() {
+        if port != 0 && !self.state.timing.lock_active() {
             self.clk_visible(1);
         }
         let val = self.read_io_word(bus, port);
@@ -2282,7 +2332,7 @@ impl I286 {
     fn out_imm_al(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
         let val = self.regs.byte(ByteReg::AL);
-        if port != 0 && !self.timing.lock_active() {
+        if port != 0 && !self.state.timing.lock_active() {
             self.clk_visible(1);
         }
         self.write_io_byte(bus, port, val);
@@ -2292,7 +2342,7 @@ impl I286 {
     fn out_imm_aw(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
         let val = self.regs.word(WordReg::AX);
-        if !self.timing.lock_active() {
+        if !self.state.timing.lock_active() {
             self.clk_visible(1);
         }
         self.write_io_word(bus, port, val);
@@ -2424,7 +2474,7 @@ impl I286 {
 
     fn aam(&mut self, bus: &mut impl common::Bus) {
         let base = self.fetch(bus);
-        let cycles = if self.timing.cycle_state().lock_active {
+        let cycles = if self.state.timing.cycle_state().lock_active {
             16
         } else {
             17
@@ -2452,7 +2502,7 @@ impl I286 {
         self.regs.set_byte(ByteReg::AL, result);
         self.regs.set_byte(ByteReg::AH, 0);
         self.flags.set_szpf_byte(result as u32);
-        let cycles = if self.timing.cycle_state().lock_active {
+        let cycles = if self.state.timing.cycle_state().lock_active {
             14
         } else {
             15
@@ -2486,7 +2536,7 @@ impl I286 {
             EaClass::Disp8Single => (16, Some(1)),
             EaClass::Disp8Double => (17, Some(1)),
         };
-        if self.timing.prefix_count_is_odd() {
+        if self.state.timing.prefix_count_is_odd() {
             pre_io_cycles = pre_io_cycles.saturating_sub(1);
             match self.ea_class {
                 EaClass::Disp8Single | EaClass::Disp8Double => {
@@ -2500,19 +2550,26 @@ impl I286 {
                 | EaClass::Disp16Double => {}
             }
         }
-        if self.ea_class.is_register() && self.timing.lock_prefix_suppresses_fallthrough_prefetch()
+        if self.ea_class.is_register()
+            && self
+                .state
+                .timing
+                .lock_prefix_suppresses_fallthrough_prefetch()
         {
             pre_io_cycles = pre_io_cycles.saturating_sub(1);
         }
         if self.ea_class.is_memory()
-            && self.timing.lock_prefix_suppresses_fallthrough_prefetch()
-            && self.timing.prefix_count() == 2
+            && self
+                .state
+                .timing
+                .lock_prefix_suppresses_fallthrough_prefetch()
+            && self.state.timing.prefix_count() == 2
         {
             pre_io_cycles = pre_io_cycles.saturating_sub(2);
             prefetch_lead_cycles = None;
         }
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing.advance_fpu_escape(
+        self.state.timing.advance_fpu_escape(
             bus,
             code_segment_base,
             I286FpuEscapeTiming {
@@ -2565,7 +2622,7 @@ impl I286 {
 
     fn hlt(&mut self) {
         self.halted = true;
-        self.timing.note_halt();
+        self.state.timing.note_halt();
         self.sync_timing_cycles();
     }
 

@@ -10,6 +10,7 @@ const DEFAULT_REPEAT_DELAY_TICKS: u64 = 500_000;
 /// Power-on interval between repeated make codes.
 const DEFAULT_REPEAT_INTERVAL_TICKS: u64 = 110_000;
 
+save_state::runtime_state! {
 /// Sharp X68000 keyboard endpoint.
 #[derive(Debug, Clone)]
 pub struct KeyboardX68k {
@@ -29,6 +30,24 @@ pub struct KeyboardX68k {
     main_display_control_enabled: bool,
     option2_display_control_enabled: bool,
     current_tick: u64,
+}}
+
+impl KeyboardX68k {
+    /// Captures keyboard protocol, queue, and repeat timing state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores keyboard protocol, queue, and repeat timing state.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        if state.output.len() > 256 {
+            return Err(save_state::StateValidationError::new(
+                "X68000 keyboard output queue is invalid",
+            ));
+        }
+        *self = state;
+        Ok(())
+    }
 }
 
 impl Default for KeyboardX68k {

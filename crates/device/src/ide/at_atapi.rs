@@ -13,6 +13,16 @@ use super::{
 };
 use crate::{cd_audio::CdAudioPlayer, cdrom::CdImage, disk::MountedHdd, scsi::cdrom::ScsiCdrom};
 
+save_state::runtime_state! {
+/// Authoritative AT secondary ATAPI channel state.
+#[derive(Clone)]
+pub struct AtAtapiControllerState {
+    controller: lle::Controller,
+    optical: crate::scsi::cdrom::ScsiCdromState,
+    atapi: atapi::AtapiState,
+    media: save_state::MediaManifest,
+}}
+
 /// AT secondary-channel ATAPI CD-ROM controller.
 #[derive(Debug)]
 pub struct AtAtapiController {
@@ -33,6 +43,58 @@ impl AtAtapiController {
             optical: ScsiCdrom::new(output_sample_rate),
             atapi_state: atapi::AtapiState::new(),
         }
+    }
+
+    /// Captures packet transport, CD audio, and mounted disc identity.
+    pub fn capture_state(
+        &self,
+    ) -> Result<AtAtapiControllerState, save_state::StateValidationError> {
+        Ok(AtAtapiControllerState {
+            controller: self.controller.clone(),
+            optical: self.optical.capture_state(),
+            atapi: self.atapi_state.clone(),
+            media: self.media_manifest()?,
+        })
+    }
+
+    /// Restores packet transport and CD audio while retaining disc contents.
+    pub fn restore_state(
+        &mut self,
+        state: AtAtapiControllerState,
+    ) -> Result<(), save_state::StateValidationError> {
+        state.controller.validate_state()?;
+        state.atapi.validate_state()?;
+        self.optical.validate_state(&state.optical)?;
+        state.media.verify_current(&self.media_manifest()?)?;
+        self.optical.restore_state(state.optical)?;
+        self.controller = state.controller;
+        self.atapi_state = state.atapi;
+        Ok(())
+    }
+
+    /// Returns the mounted disc binding.
+    pub fn media_manifest(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let bindings = self
+            .optical
+            .media()
+            .map(|media| {
+                Ok(save_state::MediaBinding {
+                    identifier: save_state::MediaBindingId::new("atapi-0")?,
+                    slot: save_state::MediaSlot::new(save_state::MediaKind::CdRom, 0),
+                    source_path: media.source_path().cloned(),
+                    media_type: "cdrom".to_owned(),
+                    identity: media.identity(),
+                    geometry: None,
+                    write_protected: true,
+                    backend_generation: None,
+                })
+            })
+            .transpose()?
+            .into_iter()
+            .collect();
+        save_state::MediaManifest::new(bindings)
     }
 
     /// Inserts a CD-ROM image and activates the ATAPI drive on channel 1.

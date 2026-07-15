@@ -19,9 +19,13 @@ impl Command for Rem {
     }
 }
 
-struct RunningRem {
+#[derive(Clone)]
+/// Serializable state of an executing REM command.
+pub(crate) struct RunningRem {
     args: Vec<u8>,
 }
+
+state_struct_codec!(RunningRem { args });
 
 impl RunningCommand for RunningRem {
     fn step(

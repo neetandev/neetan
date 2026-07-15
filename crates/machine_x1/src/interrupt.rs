@@ -53,6 +53,7 @@ impl IrqSource {
     ];
 }
 
+save_state::runtime_state! {
 /// Z80 mode-2 daisy-chain interrupt controller.
 ///
 /// Beyond tracking which sources assert, the controller models the Z80
@@ -74,12 +75,22 @@ pub struct InterruptController {
     /// Bitmask of sources whose interrupt has been acknowledged but not yet
     /// dismissed by `RETI`.
     in_service: u8,
-}
+}}
 
 impl InterruptController {
     /// Creates a controller with no interrupt pending.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn validate_runtime_state(&self) -> Result<(), save_state::StateValidationError> {
+        const VALID_SOURCES: u8 = (1u8 << IrqSource::PRIORITY_ORDER.len()) - 1;
+        if self.pending & !VALID_SOURCES != 0 || self.in_service & !VALID_SOURCES != 0 {
+            return Err(save_state::StateValidationError::new(
+                "X1 daisy-chain state is invalid",
+            ));
+        }
+        Ok(())
     }
 
     /// Asserts `source`.

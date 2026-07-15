@@ -46,6 +46,7 @@ const REG_ICRH: u32 = 0x08;
 const REG_ICRL: u32 = 0x09;
 
 #[derive(Clone, Copy, Default)]
+/// Authoritative state of the SC-55 free-running timer.
 pub struct FrtState {
     pub tcr: u8,
     pub tcsr: u8,
@@ -57,6 +58,7 @@ pub struct FrtState {
 }
 
 #[derive(Clone, Copy, Default)]
+/// Authoritative state of the SC-55 MCU timer block.
 pub struct McuTimerState {
     pub tcr: u8,
     pub tcsr: u8,
@@ -65,6 +67,25 @@ pub struct McuTimerState {
     pub tcnt: u8,
     pub status_rd: u8,
 }
+
+crate::impl_state_codec!(FrtState {
+    tcr,
+    tcsr,
+    frc,
+    ocra,
+    ocrb,
+    icr,
+    status_rd,
+});
+
+crate::impl_state_codec!(McuTimerState {
+    tcr,
+    tcsr,
+    tcora,
+    tcorb,
+    tcnt,
+    status_rd,
+});
 
 pub(crate) fn timer_write(state: &mut Sc55State, address: u32, data: u8) {
     let t = (address >> 4).wrapping_sub(1);

@@ -15,20 +15,21 @@
 use super::atapi::{self, AtapiState};
 use crate::disk::{HddGeometry, MountedHdd};
 
-/// IDE controller phase (data transfer state).
+save_state::runtime_state_enum! {
+/// IDE controller phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdePhase {
     /// No data transfer in progress.
-    Idle,
+    Idle = 0,
     /// Host reading data from drive (Read Sector, Identify Device).
-    DataIn,
+    DataIn = 1,
     /// Host writing data to drive (Write Sector).
-    DataOut,
+    DataOut = 2,
     /// Host writing ATAPI 12-byte command packet.
-    PacketCommand,
+    PacketCommand = 3,
     /// Device sending ATAPI response data to host.
-    PacketDataIn,
-}
+    PacketDataIn = 4,
+}}
 
 /// Actions the bus must perform after an IDE controller method call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,8 +64,9 @@ const DEVHEAD_HEAD_MASK: u8 = 0x0F;
 /// Sector size for IDE drives.
 const IDE_SECTOR_SIZE: usize = 512;
 
-/// Per-drive ATA state.
-#[derive(Debug)]
+save_state::runtime_state! {
+/// Authoritative per-drive ATA electronics state.
+#[derive(Debug, Clone)]
 struct IdeDrive {
     status: u8,
     error: u8,
@@ -87,7 +89,7 @@ struct IdeDrive {
     sectors_in_block: u16,
     logical_heads: u8,
     logical_sectors_per_track: u8,
-}
+}}
 
 impl IdeDrive {
     fn new() -> Self {
@@ -147,13 +149,14 @@ impl IdeDrive {
     }
 }
 
-/// Per-channel IDE state.
-#[derive(Debug)]
+save_state::runtime_state! {
+/// Authoritative per-channel IDE state.
+#[derive(Debug, Clone)]
 struct IdeChannel {
     drives: [IdeDrive; 2],
     selected_drive: usize,
     phase: IdePhase,
-}
+}}
 
 impl IdeChannel {
     fn new() -> Self {
@@ -173,14 +176,35 @@ impl IdeChannel {
     }
 }
 
-/// IDE (ATA) controller state with dual-channel bank switching.
-#[derive(Debug)]
+save_state::runtime_state! {
+/// Authoritative dual-channel IDE electronics state.
+#[derive(Debug, Clone)]
 pub(super) struct Controller {
     channels: [IdeChannel; 2],
     active_channel: usize,
     bank: [u8; 2],
     srst_active: bool,
     has_atapi_device: bool,
+}}
+
+impl Controller {
+    pub(super) fn validate_state(&self) -> Result<(), save_state::StateValidationError> {
+        if self.active_channel >= self.channels.len()
+            || self.channels.iter().any(|channel| {
+                channel.selected_drive >= channel.drives.len()
+                    || channel.drives.iter().any(|drive| {
+                        drive.buffer_position > drive.buffer_size
+                            || drive.buffer_size > drive.buffer.len()
+                            || drive.sector_size == 0
+                    })
+            })
+        {
+            return Err(save_state::StateValidationError::new(
+                "IDE controller position is invalid",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for Controller {

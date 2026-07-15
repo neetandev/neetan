@@ -6,6 +6,8 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+extern crate alloc;
+
 mod bus;
 mod config;
 mod machine;
@@ -39,7 +41,7 @@ pub use crate::{
 /// CPU state snapshot, discriminated by CPU type.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Pc98CpuState {
+pub enum Pc98InspectionCpuState {
     /// 8086 CPU state.
     I8086(cpu::I8086State),
     /// V30 CPU state.
@@ -50,11 +52,13 @@ pub enum Pc98CpuState {
     I386(cpu::I386State),
 }
 
-/// Complete machine state snapshot.
+/// Read-only PC-98 compatibility inspection view.
+///
+/// This type is for focused hardware assertions and cannot be restored.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Pc98MachineState {
+pub struct Pc98InspectionState {
     /// CPU register snapshot.
-    pub cpu: Pc98CpuState,
+    pub cpu: Pc98InspectionCpuState,
     /// Machine model.
     pub machine_model: MachineModel,
     /// Memory subsystem snapshot.

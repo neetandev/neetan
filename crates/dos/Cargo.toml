@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 blake3.workspace = true
 common = { workspace = true, features = ["std"] }
+save_state = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 cpu.workspace = true

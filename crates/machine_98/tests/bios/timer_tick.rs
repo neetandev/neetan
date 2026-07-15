@@ -71,7 +71,7 @@ fn make_multi_tick_code(tick_count: u8) -> Vec<u8> {
 fn int08h_vector_f() {
     let mut machine = create_machine_f();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x08);
     assert!(
@@ -84,7 +84,7 @@ fn int08h_vector_f() {
 fn int08h_vector_vm() {
     let mut machine = create_machine_vm();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x08);
     assert!(
@@ -97,7 +97,7 @@ fn int08h_vector_vm() {
 fn int08h_vector_vx() {
     let mut machine = create_machine_vx();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x08);
     assert!(
@@ -110,7 +110,7 @@ fn int08h_vector_vx() {
 fn int08h_vector_ra() {
     let mut machine = create_machine_ra();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x08);
     assert!(
@@ -259,7 +259,7 @@ fn timer_tick_fires_callback_at_zero_ra() {
 fn timer_tick_sends_eoi_f() {
     let code = make_single_tick_code(5);
     let (machine, _cycles) = boot_and_run_f(&code, CALLBACK_IRET, TIMER_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[0].isr & 0x01,
@@ -272,7 +272,7 @@ fn timer_tick_sends_eoi_f() {
 fn timer_tick_sends_eoi_vm() {
     let code = make_single_tick_code(5);
     let (machine, _cycles) = boot_and_run_vm(&code, CALLBACK_IRET, TIMER_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[0].isr & 0x01,
@@ -285,7 +285,7 @@ fn timer_tick_sends_eoi_vm() {
 fn timer_tick_sends_eoi_vx() {
     let code = make_single_tick_code(5);
     let (machine, _cycles) = boot_and_run_vx(&code, CALLBACK_IRET, TIMER_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[0].isr & 0x01,
@@ -298,7 +298,7 @@ fn timer_tick_sends_eoi_vx() {
 fn timer_tick_sends_eoi_ra() {
     let code = make_single_tick_code(5);
     let (machine, _cycles) = boot_and_run_ra(&code, CALLBACK_IRET, TIMER_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[0].isr & 0x01,
@@ -315,7 +315,7 @@ fn timer_tick_sends_eoi_ra() {
 fn timer_tick_reloads_pit_f() {
     let code = make_single_tick_code(5);
     let (machine, _cycles) = boot_and_run_f(&code, CALLBACK_IRET, TIMER_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pit.channels[0].ctrl, 0x36,
@@ -332,7 +332,7 @@ fn timer_tick_reloads_pit_f() {
 fn timer_tick_reloads_pit_vm() {
     let code = make_single_tick_code(5);
     let (machine, _cycles) = boot_and_run_vm(&code, CALLBACK_IRET, TIMER_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pit.channels[0].ctrl, 0x36,
@@ -349,7 +349,7 @@ fn timer_tick_reloads_pit_vm() {
 fn timer_tick_reloads_pit_vx() {
     let code = make_single_tick_code(5);
     let (machine, _cycles) = boot_and_run_vx(&code, CALLBACK_IRET, TIMER_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pit.channels[0].ctrl, 0x36,
@@ -366,7 +366,7 @@ fn timer_tick_reloads_pit_vx() {
 fn timer_tick_reloads_pit_ra() {
     let code = make_single_tick_code(5);
     let (machine, _cycles) = boot_and_run_ra(&code, CALLBACK_IRET, TIMER_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pit.channels[0].ctrl, 0x36,
@@ -422,7 +422,7 @@ fn make_pit_preserve_code(custom_divider: u16) -> Vec<u8> {
 fn int08h_preserves_custom_pit_rate_f() {
     let code = make_pit_preserve_code(0x2800);
     let (machine, _cycles) = boot_and_run_f(&code, CALLBACK_IRET, PIT_PRESERVE_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pit.channels[0].value, 0x2800,
@@ -439,7 +439,7 @@ fn int08h_preserves_custom_pit_rate_f() {
 fn int08h_preserves_custom_pit_rate_vm() {
     let code = make_pit_preserve_code(0x2800);
     let (machine, _cycles) = boot_and_run_vm(&code, CALLBACK_IRET, PIT_PRESERVE_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pit.channels[0].value, 0x2800,
@@ -456,7 +456,7 @@ fn int08h_preserves_custom_pit_rate_vm() {
 fn int08h_preserves_custom_pit_rate_vx() {
     let code = make_pit_preserve_code(0x2800);
     let (machine, _cycles) = boot_and_run_vx(&code, CALLBACK_IRET, PIT_PRESERVE_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pit.channels[0].value, 0x2800,
@@ -544,7 +544,7 @@ fn int08h_masks_irq0_on_expiry_vx() {
 fn int08h_pit_flag_i_after_tick_f() {
     let code = make_single_tick_code(5);
     let (machine, _cycles) = boot_and_run_f(&code, CALLBACK_IRET, TIMER_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.pit.channels[0].flag & 0x20,
@@ -558,7 +558,7 @@ fn int08h_pit_flag_i_after_tick_f() {
 fn int08h_pit_flag_i_after_tick_vm() {
     let code = make_single_tick_code(5);
     let (machine, _cycles) = boot_and_run_vm(&code, CALLBACK_IRET, TIMER_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.pit.channels[0].flag & 0x20,
@@ -572,7 +572,7 @@ fn int08h_pit_flag_i_after_tick_vm() {
 fn int08h_pit_flag_i_after_tick_vx() {
     let code = make_single_tick_code(5);
     let (machine, _cycles) = boot_and_run_vx(&code, CALLBACK_IRET, TIMER_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.pit.channels[0].flag & 0x20,
@@ -586,7 +586,7 @@ fn int08h_pit_flag_i_after_tick_vx() {
 fn int08h_pit_flag_i_after_tick_ra() {
     let code = make_single_tick_code(5);
     let (machine, _cycles) = boot_and_run_ra(&code, CALLBACK_IRET, TIMER_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.pit.channels[0].flag & 0x20,

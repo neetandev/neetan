@@ -36,6 +36,18 @@ impl<T: TraceSink> Fm7Bus<T> {
         Ok(())
     }
 
+    /// Loads a cassette image and records its configured source path.
+    pub fn insert_cassette_from_path(
+        &mut self,
+        extension: &str,
+        image: &[u8],
+        path: &std::path::Path,
+    ) -> Result<(), CassetteError> {
+        let media = load_cassette(extension, image)?;
+        self.cassette.insert_media_from_path(media, path);
+        Ok(())
+    }
+
     /// Removes the loaded cassette from the deck.
     pub fn eject_cassette(&mut self) {
         self.cassette.eject();

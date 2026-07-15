@@ -70,6 +70,16 @@ pub struct Msm58321Rtc {
     pub state: Msm58321State,
 }
 
+save_state::runtime_state! {
+/// Encodable MSM58321 access state.
+#[derive(Clone)]
+pub struct Msm58321RuntimeState {
+    mode: u8,
+    hour_24: bool,
+    register_latch: u8,
+    last_data_write: u8,
+}}
+
 impl Msm58321Rtc {
     /// Creates a controller in its reset state (idle, 24-hour mode).
     pub fn new() -> Self {
@@ -81,6 +91,43 @@ impl Msm58321Rtc {
                 last_data_write: 0,
             },
         }
+    }
+
+    /// Captures the serial access state and register latch.
+    pub fn capture_state(&self) -> Msm58321RuntimeState {
+        Msm58321RuntimeState {
+            mode: match self.state.mode {
+                Msm58321Mode::Idle => 0,
+                Msm58321Mode::Command => 1,
+            },
+            hour_24: self.state.hour_24,
+            register_latch: self.state.register_latch,
+            last_data_write: self.state.last_data_write,
+        }
+    }
+
+    /// Restores the serial access state and register latch.
+    pub fn restore_state(
+        &mut self,
+        state: Msm58321RuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        let mode = match state.mode {
+            0 => Msm58321Mode::Idle,
+            1 => Msm58321Mode::Command,
+            _ => return Err(save_state::StateValidationError::new("RTC mode is invalid")),
+        };
+        if state.register_latch > REG_TEN_YEAR {
+            return Err(save_state::StateValidationError::new(
+                "RTC register latch is invalid",
+            ));
+        }
+        self.state = Msm58321State {
+            mode,
+            hour_24: state.hour_24,
+            register_latch: state.register_latch,
+            last_data_write: state.last_data_write,
+        };
+        Ok(())
     }
 
     /// Handles a write to the data port: latches the byte for the next strobe.

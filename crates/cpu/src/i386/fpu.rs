@@ -20,6 +20,45 @@ pub struct X87State {
     pub fpu_opcode: u16,
 }
 
+impl save_state::StateEncode for X87State {
+    fn encode_state(&self, output: &mut alloc::vec::Vec<u8>) {
+        for register in self.registers {
+            save_state::StateEncode::encode_state(&register.to_le_bytes(), output);
+        }
+        save_state::StateEncode::encode_state(&self.control_word, output);
+        save_state::StateEncode::encode_state(&self.status_word, output);
+        save_state::StateEncode::encode_state(&self.tag_word, output);
+        save_state::StateEncode::encode_state(&self.fip_offset, output);
+        save_state::StateEncode::encode_state(&self.fip_selector, output);
+        save_state::StateEncode::encode_state(&self.fdp_offset, output);
+        save_state::StateEncode::encode_state(&self.fdp_selector, output);
+        save_state::StateEncode::encode_state(&self.fpu_opcode, output);
+    }
+}
+
+impl save_state::StateDecode for X87State {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        let mut registers = [Fp80::ZERO; 8];
+        for register in &mut registers {
+            let bytes = <[u8; 10] as save_state::StateDecode>::decode_state(decoder)?;
+            *register = Fp80::from_le_bytes(bytes);
+        }
+        Ok(Self {
+            registers,
+            control_word: save_state::StateDecode::decode_state(decoder)?,
+            status_word: save_state::StateDecode::decode_state(decoder)?,
+            tag_word: save_state::StateDecode::decode_state(decoder)?,
+            fip_offset: save_state::StateDecode::decode_state(decoder)?,
+            fip_selector: save_state::StateDecode::decode_state(decoder)?,
+            fdp_offset: save_state::StateDecode::decode_state(decoder)?,
+            fdp_selector: save_state::StateDecode::decode_state(decoder)?,
+            fpu_opcode: save_state::StateDecode::decode_state(decoder)?,
+        })
+    }
+}
+
 impl Default for X87State {
     fn default() -> Self {
         Self {

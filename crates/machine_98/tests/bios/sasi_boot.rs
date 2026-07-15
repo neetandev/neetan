@@ -11,7 +11,7 @@ const BDA_BOOT_DEVICE: usize = 0x0584;
 fn sasi_initialization_f() {
     let mut machine = create_machine_f_hdd();
     let _cycles = boot_to_halt_hdd!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let disk_equip = read_ram_u16(&state.memory.ram, BDA_DISK_EQUIP);
     assert_eq!(
@@ -31,7 +31,7 @@ fn sasi_initialization_f() {
 fn sasi_initialization_vm() {
     let mut machine = create_machine_vm_hdd();
     let _cycles = boot_to_halt_hdd!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let disk_equip = read_ram_u16(&state.memory.ram, BDA_DISK_EQUIP);
     assert_eq!(
@@ -51,7 +51,7 @@ fn sasi_initialization_vm() {
 fn sasi_initialization_vx() {
     let mut machine = create_machine_vx_hdd();
     let _cycles = boot_to_halt_hdd!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let disk_equip = read_ram_u16(&state.memory.ram, BDA_DISK_EQUIP);
     assert_eq!(
@@ -71,7 +71,7 @@ fn sasi_initialization_vx() {
 fn sasi_initialization_ra() {
     let mut machine = create_machine_ra_hdd();
     let _cycles = boot_to_halt_hdd!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let disk_equip = read_ram_u16(&state.memory.ram, BDA_DISK_EQUIP);
     assert_eq!(
@@ -91,7 +91,7 @@ fn sasi_initialization_ra() {
 fn sasi_empty_boot_sector_falls_through_to_fdd() {
     let mut machine = create_machine_vm_empty_hdd();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.ram[BDA_BOOT_DEVICE], 0x90,
         "BOOT_DEVICE should be 0x90 for FDD-0 (got {:#04X})",

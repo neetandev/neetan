@@ -45,9 +45,11 @@ const PLANE_STRIDE_320: u16 = 0xE000;
 /// Byte distance from page 0 to page 1 within the VRAM blob (one page).
 const PAGE_OFFSET_BYTES: usize = VRAM_PAGE_SIZE;
 
+save_state::runtime_state! {
 /// Display registers shared between the main CPU (`0xFD37`, `0xFD38-0xFD3F`,
 /// `0xFD30-0xFD34`) and the sub CPU (`0xD408`, `0xD40E`/`0xD40F`, `0xD430`), read by the
 /// software renderer.
+#[derive(Clone)]
 pub struct VideoState {
     /// Live digital palette; each entry stores a three-bit colour code.
     digital_palette: [u8; DIGITAL_PALETTE_ENTRIES],
@@ -78,7 +80,7 @@ pub struct VideoState {
     active_page: bool,
     /// FM-77AV fine-scroll enable (`0xD430` bit 2); selects the fine offset mask.
     fine_offset_enabled: bool,
-}
+}}
 
 impl Default for VideoState {
     fn default() -> Self {
@@ -381,6 +383,19 @@ const SUB_MONITOR_ROM_START: u16 = 0xD800;
 /// Open-bus value returned for reads that do not land in RAM or ROM.
 const OPEN_BUS: u8 = 0xFF;
 
+save_state::runtime_state! {
+/// Mutable sub-CPU memory without monitor or character ROM bytes.
+#[derive(Clone)]
+pub struct SubMemoryState {
+    vram: Box<[u8]>,
+    console_ram: Box<[u8]>,
+    work_ram: Box<[u8]>,
+    shared_ram: Box<[u8]>,
+    hidden_ram: Box<[u8]>,
+    sub_monitor_bank: u8,
+    cg_window_bank: u8,
+}}
+
 /// Backing storage for the display sub CPU address space.
 pub struct SubMemory {
     vram: [u8; VRAM_SIZE],
@@ -431,6 +446,46 @@ impl SubMemory {
             cg_window_bank: 0,
             av_layout: false,
         }
+    }
+
+    /// Captures writable sub-CPU memory and banking state.
+    pub fn capture_state(&self) -> SubMemoryState {
+        SubMemoryState {
+            vram: self.vram.to_vec().into_boxed_slice(),
+            console_ram: self.console_ram.to_vec().into_boxed_slice(),
+            work_ram: self.work_ram.to_vec().into_boxed_slice(),
+            shared_ram: self.shared_ram.to_vec().into_boxed_slice(),
+            hidden_ram: self.hidden_ram.to_vec().into_boxed_slice(),
+            sub_monitor_bank: self.sub_monitor_bank,
+            cg_window_bank: self.cg_window_bank,
+        }
+    }
+
+    /// Restores writable sub-CPU memory without changing ROM bytes.
+    pub fn restore_state(
+        &mut self,
+        state: SubMemoryState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.vram.len() != VRAM_SIZE
+            || state.console_ram.len() != CONSOLE_RAM_SIZE
+            || state.work_ram.len() != WORK_RAM_SIZE
+            || state.shared_ram.len() != SHARED_RAM_SIZE
+            || state.hidden_ram.len() != HIDDEN_RAM_SIZE
+            || state.sub_monitor_bank > 3
+            || state.cg_window_bank > 3
+        {
+            return Err(save_state::StateValidationError::new(
+                "FM-7 sub memory state is invalid",
+            ));
+        }
+        self.vram.copy_from_slice(&state.vram);
+        self.console_ram.copy_from_slice(&state.console_ram);
+        self.work_ram.copy_from_slice(&state.work_ram);
+        self.shared_ram.copy_from_slice(&state.shared_ram);
+        self.hidden_ram.copy_from_slice(&state.hidden_ram);
+        self.sub_monitor_bank = state.sub_monitor_bank;
+        self.cg_window_bank = state.cg_window_bank;
+        Ok(())
     }
 
     /// Installs the sub-monitor ROM images from the loaded ROM set. The FM-7

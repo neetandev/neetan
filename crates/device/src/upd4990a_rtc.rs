@@ -7,7 +7,8 @@
 /// Register length in bytes (64-bit shift register).
 const REG_LEN: usize = 8;
 
-/// Snapshot of the µPD4990A state.
+save_state::runtime_state! {
+/// Authoritative uPD4990A state.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Upd4990aState {
     /// Previous port 0x20 value (for edge detection).
@@ -24,7 +25,7 @@ pub struct Upd4990aState {
     pub cdat: u8,
     /// Whether register shift mode is active.
     pub regsft: bool,
-}
+}}
 
 /// µPD4990A serial real-time clock controller.
 #[derive(Default)]
@@ -32,6 +33,8 @@ pub struct Upd4990aRtc {
     /// Embedded state for save/restore.
     pub state: Upd4990aState,
 }
+
+impl_simple_state_accessors!(Upd4990aRtc, Upd4990aState);
 
 impl Upd4990aRtc {
     /// Creates a new µPD4990A in its reset state.

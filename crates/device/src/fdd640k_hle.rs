@@ -8,6 +8,15 @@
 
 use std::cell::Cell;
 
+save_state::runtime_state! {
+/// Complete 640 KB floppy BIOS HLE trap state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fdd640kHleState {
+    rom_installed: bool,
+    hle_pending: bool,
+    yield_requested: bool,
+}}
+
 /// Size of the 640KB FDD expansion ROM window mapped at 0xD6000.
 pub const ROM_SIZE: usize = 4096;
 
@@ -39,6 +48,22 @@ impl Fdd640kHle {
             hle_pending: false,
             yield_requested: Cell::new(false),
         }
+    }
+
+    /// Captures the complete floppy HLE trap state.
+    pub fn capture_state(&self) -> Fdd640kHleState {
+        Fdd640kHleState {
+            rom_installed: self.rom_installed,
+            hle_pending: self.hle_pending,
+            yield_requested: self.yield_requested.get(),
+        }
+    }
+
+    /// Restores the complete floppy HLE trap state.
+    pub fn restore_state(&mut self, state: Fdd640kHleState) {
+        self.rom_installed = state.rom_installed;
+        self.hle_pending = state.hle_pending;
+        self.yield_requested.set(state.yield_requested);
     }
 
     /// Installs the generated expansion ROM.

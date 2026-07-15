@@ -68,7 +68,7 @@ impl<T: common::TraceSink> Pc88VaBus<T> {
     /// 0x0E/0x0F). Port A carries the mouse readout nibble or the joystick
     /// directions; port B the mouse buttons or the joystick triggers, depending
     /// on which device is currently connected to the shared port.
-    fn update_joyport(&mut self) {
+    pub(crate) fn update_joyport(&mut self) {
         let (port_a, port_b) = if self.joystick_selected {
             (self.joystick_port_a, self.joystick_port_b)
         } else {

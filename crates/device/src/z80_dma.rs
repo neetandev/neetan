@@ -139,6 +139,78 @@ enum Follow {
     ReadMask,
 }
 
+fn follow_to_tag(follow: Follow) -> u8 {
+    follow as u8
+}
+
+fn follow_from_tag(tag: u8) -> Result<Follow, save_state::StateValidationError> {
+    match tag {
+        0 => Ok(Follow::PortAAddressLow),
+        1 => Ok(Follow::PortAAddressHigh),
+        2 => Ok(Follow::BlockLengthLow),
+        3 => Ok(Follow::BlockLengthHigh),
+        4 => Ok(Follow::PortATiming),
+        5 => Ok(Follow::PortBTiming),
+        6 => Ok(Follow::MaskByte),
+        7 => Ok(Follow::MatchByte),
+        8 => Ok(Follow::PortBAddressLow),
+        9 => Ok(Follow::PortBAddressHigh),
+        10 => Ok(Follow::InterruptControl),
+        11 => Ok(Follow::InterruptVector),
+        12 => Ok(Follow::PulseControl),
+        13 => Ok(Follow::ReadMask),
+        _ => Err(save_state::StateValidationError::new(
+            "Z80 DMA follow state is invalid",
+        )),
+    }
+}
+
+save_state::runtime_state! {
+/// Complete Z80 DMA programming and transfer state.
+#[derive(Debug, Clone)]
+pub struct Z80DmaState {
+    transfer_mode: u8,
+    port_a_is_source: bool,
+    port_a_config: u8,
+    port_b_config: u8,
+    port_a_timing: u8,
+    port_b_timing: u8,
+    operating_mode: u8,
+    port_a_address: u16,
+    port_b_address: u16,
+    block_length: u16,
+    mask_byte: u8,
+    match_byte: u8,
+    stop_on_match: bool,
+    interrupt_enable: bool,
+    ready_active_high: bool,
+    check_wait_signal: bool,
+    auto_restart: bool,
+    interrupt_control: u8,
+    interrupt_vector: u8,
+    read_mask: u8,
+    follow_queue: [u8; 8],
+    follow_len: usize,
+    follow_index: usize,
+    read_buffer: [u8; 7],
+    read_len: usize,
+    read_index: usize,
+    address_a: u16,
+    address_b: u16,
+    upcount: i32,
+    block_length_running: i32,
+    status: u8,
+    dma_stop: bool,
+    bus_master: bool,
+    enabled: bool,
+    force_ready: bool,
+    ready_level: bool,
+    request_interrupt: bool,
+    in_service: bool,
+    enable_after_reti: bool,
+    vector: u8,
+}}
+
 /// Zilog Z80 DMA controller (single channel).
 #[derive(Debug, Clone)]
 pub struct Z80Dma {
@@ -251,6 +323,113 @@ impl Z80Dma {
             enable_after_reti: false,
             vector: 0,
         }
+    }
+
+    /// Captures complete programming, FIFO, interrupt, and transfer progress.
+    pub fn capture_state(&self) -> Z80DmaState {
+        Z80DmaState {
+            transfer_mode: self.transfer_mode,
+            port_a_is_source: self.port_a_is_source,
+            port_a_config: self.port_a_config,
+            port_b_config: self.port_b_config,
+            port_a_timing: self.port_a_timing,
+            port_b_timing: self.port_b_timing,
+            operating_mode: self.operating_mode,
+            port_a_address: self.port_a_address,
+            port_b_address: self.port_b_address,
+            block_length: self.block_length,
+            mask_byte: self.mask_byte,
+            match_byte: self.match_byte,
+            stop_on_match: self.stop_on_match,
+            interrupt_enable: self.interrupt_enable,
+            ready_active_high: self.ready_active_high,
+            check_wait_signal: self.check_wait_signal,
+            auto_restart: self.auto_restart,
+            interrupt_control: self.interrupt_control,
+            interrupt_vector: self.interrupt_vector,
+            read_mask: self.read_mask,
+            follow_queue: self.follow_queue.map(follow_to_tag),
+            follow_len: self.follow_len,
+            follow_index: self.follow_index,
+            read_buffer: self.read_buffer,
+            read_len: self.read_len,
+            read_index: self.read_index,
+            address_a: self.address_a,
+            address_b: self.address_b,
+            upcount: self.upcount,
+            block_length_running: self.blocklen,
+            status: self.status,
+            dma_stop: self.dma_stop,
+            bus_master: self.bus_master,
+            enabled: self.enabled,
+            force_ready: self.force_ready,
+            ready_level: self.ready_level,
+            request_interrupt: self.request_interrupt,
+            in_service: self.in_service,
+            enable_after_reti: self.enable_after_reti,
+            vector: self.vector,
+        }
+    }
+
+    /// Restores complete programming, FIFO, interrupt, and transfer progress.
+    pub fn restore_state(
+        &mut self,
+        state: Z80DmaState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.follow_len > state.follow_queue.len()
+            || state.follow_index > state.follow_len
+            || state.read_len > state.read_buffer.len()
+            || state.read_index > state.read_len
+        {
+            return Err(save_state::StateValidationError::new(
+                "Z80 DMA queue length is invalid",
+            ));
+        }
+        let mut follow_queue = [Follow::PortAAddressLow; 8];
+        for (target, tag) in follow_queue.iter_mut().zip(state.follow_queue) {
+            *target = follow_from_tag(tag)?;
+        }
+        self.transfer_mode = state.transfer_mode;
+        self.port_a_is_source = state.port_a_is_source;
+        self.port_a_config = state.port_a_config;
+        self.port_b_config = state.port_b_config;
+        self.port_a_timing = state.port_a_timing;
+        self.port_b_timing = state.port_b_timing;
+        self.operating_mode = state.operating_mode;
+        self.port_a_address = state.port_a_address;
+        self.port_b_address = state.port_b_address;
+        self.block_length = state.block_length;
+        self.mask_byte = state.mask_byte;
+        self.match_byte = state.match_byte;
+        self.stop_on_match = state.stop_on_match;
+        self.interrupt_enable = state.interrupt_enable;
+        self.ready_active_high = state.ready_active_high;
+        self.check_wait_signal = state.check_wait_signal;
+        self.auto_restart = state.auto_restart;
+        self.interrupt_control = state.interrupt_control;
+        self.interrupt_vector = state.interrupt_vector;
+        self.read_mask = state.read_mask;
+        self.follow_queue = follow_queue;
+        self.follow_len = state.follow_len;
+        self.follow_index = state.follow_index;
+        self.read_buffer = state.read_buffer;
+        self.read_len = state.read_len;
+        self.read_index = state.read_index;
+        self.address_a = state.address_a;
+        self.address_b = state.address_b;
+        self.upcount = state.upcount;
+        self.blocklen = state.block_length_running;
+        self.status = state.status;
+        self.dma_stop = state.dma_stop;
+        self.bus_master = state.bus_master;
+        self.enabled = state.enabled;
+        self.force_ready = state.force_ready;
+        self.ready_level = state.ready_level;
+        self.request_interrupt = state.request_interrupt;
+        self.in_service = state.in_service;
+        self.enable_after_reti = state.enable_after_reti;
+        self.vector = state.vector;
+        Ok(())
     }
 
     /// Resets the controller: interrupts off, timing defaults, queues cleared

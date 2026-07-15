@@ -20,9 +20,13 @@ impl Command for Dosmock {
     }
 }
 
-struct RunningDosmock {
+#[derive(Clone)]
+/// Serializable state of an executing DOSMOCK command.
+pub(crate) struct RunningDosmock {
     args: Vec<u8>,
 }
+
+state_struct_codec!(RunningDosmock { args });
 
 impl RunningCommand for RunningDosmock {
     fn step(

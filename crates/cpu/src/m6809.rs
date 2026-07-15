@@ -53,14 +53,7 @@ pub struct M6809 {
     pub state: M6809State,
 
     clock_hz: u32,
-    halted: bool,
-    pending_irq: u8,
     cycles_remaining: i64,
-    run_start_cycle: u64,
-    run_budget: u64,
-    nmi_armed: bool,
-    cwai_waiting: bool,
-    pending_extended_clear: Option<u16>,
 }
 
 impl Deref for M6809 {
@@ -89,27 +82,28 @@ impl M6809 {
         let mut cpu = Self {
             state: M6809State::default(),
             clock_hz,
-            halted: false,
-            pending_irq: 0,
             cycles_remaining: 0,
-            run_start_cycle: 0,
-            run_budget: 0,
-            nmi_armed: false,
-            cwai_waiting: false,
-            pending_extended_clear: None,
         };
         cpu.reset();
         cpu
     }
 
-    /// Loads CPU state from a snapshot, resetting runtime latches.
+    /// Loads complete CPU state without resetting execution latches.
     pub fn load_state(&mut self, state: &M6809State) {
         self.state = state.clone();
-        self.halted = false;
-        self.pending_irq = 0;
-        self.nmi_armed = true;
-        self.cwai_waiting = false;
-        self.pending_extended_clear = None;
+    }
+
+    /// Clones the authoritative state at a resumable execution boundary.
+    pub fn capture_state(&self) -> M6809State {
+        self.state.clone()
+    }
+
+    /// Validates and replaces the authoritative state transactionally.
+    pub fn restore_state(
+        &mut self,
+        state: M6809State,
+    ) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &())
     }
 
     /// Resets the CPU and fetches the reset vector from the bus.
@@ -294,8 +288,6 @@ impl M6809 {
 impl Cpu6809 for M6809 {
     fn run_for(&mut self, cycles_to_run: u64, bus: &mut impl common::Bus) -> u64 {
         let start_cycle = bus.current_cycle();
-        self.run_start_cycle = start_cycle;
-        self.run_budget = cycles_to_run;
         self.cycles_remaining = cycles_to_run as i64;
 
         while self.cycles_remaining > 0 {
@@ -451,5 +443,20 @@ impl Cpu6809 for M6809 {
 
     fn set_cc(&mut self, value: u8) {
         self.flags.expand(value);
+    }
+}
+
+impl save_state::AfterRestore for M6809 {
+    fn after_restore(&mut self) {
+        self.cycles_remaining = 0;
+    }
+}
+
+impl save_state::RestoreTarget for M6809 {
+    type State = M6809State;
+    type ValidationContext = ();
+
+    fn replace_state(&mut self, state: Self::State) {
+        self.state = state;
     }
 }

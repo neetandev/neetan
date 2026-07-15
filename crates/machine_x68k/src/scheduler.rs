@@ -1,6 +1,6 @@
 //! Event-driven scheduler for the X68000.
 
-use common::StackVec;
+use common::{SchedulerState, StackVec};
 
 /// Number of distinct X68000 event kinds.
 const EVENT_X68K_KIND_COUNT: usize = 14;
@@ -117,7 +117,7 @@ pub(crate) struct ScheduledEventX68k {
 /// `Some(fire_cycle)` when an event of that kind is scheduled; at most one
 /// event per kind is active at a time.
 pub(crate) struct X68kScheduler {
-    fire_cycles: [Option<u64>; EVENT_X68K_KIND_COUNT],
+    state: SchedulerState,
 }
 
 impl Default for X68kScheduler {
@@ -130,29 +130,48 @@ impl X68kScheduler {
     /// Creates a new empty scheduler.
     pub(crate) fn new() -> Self {
         Self {
-            fire_cycles: [None; EVENT_X68K_KIND_COUNT],
+            state: SchedulerState::new(EVENT_X68K_KIND_COUNT),
         }
+    }
+
+    /// Captures every scheduled peripheral deadline.
+    pub(crate) fn capture_state(&self) -> SchedulerState {
+        self.state.clone()
+    }
+
+    /// Restores every scheduled peripheral deadline.
+    pub(crate) fn restore_state(
+        &mut self,
+        state: SchedulerState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.fire_cycles.len() != EVENT_X68K_KIND_COUNT {
+            return Err(save_state::StateValidationError::new(
+                "X68000 scheduler event count is invalid",
+            ));
+        }
+        self.state = state;
+        Ok(())
     }
 
     /// Schedules an event to fire at `fire_cycle`, replacing any existing
     /// event of the same kind.
     pub(crate) fn schedule(&mut self, kind: EventX68k, fire_cycle: u64) {
-        self.fire_cycles[kind as usize] = Some(fire_cycle);
+        self.state.schedule(kind as usize, fire_cycle);
     }
 
     /// Cancels any scheduled event of the given kind.
     pub(crate) fn cancel(&mut self, kind: EventX68k) {
-        self.fire_cycles[kind as usize] = None;
+        self.state.cancel(kind as usize);
     }
 
     /// Returns the scheduled cycle for one event kind, if armed.
     pub(crate) fn event_cycle(&self, kind: EventX68k) -> Option<u64> {
-        self.fire_cycles[kind as usize]
+        self.state.fire_cycles[kind as usize]
     }
 
     /// Returns the cycle of the earliest scheduled event, if any.
     pub(crate) fn next_event_cycle(&self) -> Option<u64> {
-        self.fire_cycles.iter().filter_map(|&cycle| cycle).min()
+        self.state.next_event_cycle()
     }
 
     /// Removes and returns all events due at or before `current_cycle`,
@@ -161,19 +180,14 @@ impl X68kScheduler {
         &mut self,
         current_cycle: u64,
     ) -> StackVec<ScheduledEventX68k, EVENT_X68K_KIND_COUNT> {
+        let indexes = self.state.pop_due::<EVENT_X68K_KIND_COUNT>(current_cycle);
         let mut due = StackVec::new();
-        for (index, slot) in self.fire_cycles.iter_mut().enumerate() {
-            if let Some(fire_cycle) = *slot
-                && fire_cycle <= current_cycle
-            {
-                due.push(ScheduledEventX68k {
-                    fire_cycle,
-                    kind: EventX68k::from_index(index),
-                });
-                *slot = None;
-            }
+        for event in indexes.iter() {
+            due.push(ScheduledEventX68k {
+                fire_cycle: event.fire_cycle,
+                kind: EventX68k::from_index(event.index),
+            });
         }
-        due.sort_by_key(|event: &ScheduledEventX68k| event.fire_cycle);
         due
     }
 }

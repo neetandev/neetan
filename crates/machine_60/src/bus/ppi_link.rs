@@ -34,6 +34,15 @@ pub(crate) struct PpiLink {
     crt_enabled: bool,
 }
 
+save_state::runtime_state! {
+/// Authoritative state of the linked PPI handshake lines.
+#[derive(Clone)]
+pub(crate) struct PpiLinkState {
+    ppi: device::i8255::I8255State,
+    port_c_shadow: u8,
+    crt_enabled: bool,
+}}
+
 impl PpiLink {
     /// Creates a PPI in the power-on state (display active).
     pub(crate) fn new() -> Self {
@@ -42,6 +51,20 @@ impl PpiLink {
             port_c_shadow: 0,
             crt_enabled: true,
         }
+    }
+
+    pub(crate) fn capture_state(&self) -> PpiLinkState {
+        PpiLinkState {
+            ppi: self.ppi.state.clone(),
+            port_c_shadow: self.port_c_shadow,
+            crt_enabled: self.crt_enabled,
+        }
+    }
+
+    pub(crate) fn restore_state(&mut self, state: PpiLinkState) {
+        self.ppi.state = state.ppi;
+        self.port_c_shadow = state.port_c_shadow;
+        self.crt_enabled = state.crt_enabled;
     }
 
     /// Whether the CRT display is enabled. While it is, the video circuit steals

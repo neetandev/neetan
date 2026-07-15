@@ -34,16 +34,17 @@ pub const X68K_SPRITE_COUNT: usize = 128;
 /// Number of 16-bit words in the sprite pattern RAM.
 pub const X68K_SPRITE_PATTERN_WORDS: usize = 0x4000;
 
+save_state::runtime_state_enum! {
 /// Vertical scan handling for the scanout buffers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScanModeX68k {
     /// One work row per published row.
-    Progressive,
+    Progressive = 0,
     /// Two consecutive work rows show the same content line.
-    DoubleRead,
+    DoubleRead = 1,
     /// Each field weaves into every other row of a double-height frame.
-    Interlace,
-}
+    Interlace = 2,
+}}
 
 /// Per-frame inputs to the X68000 renderer.
 pub struct RenderInputsX68k<'a> {
@@ -125,6 +126,28 @@ pub struct X68kRenderer {
     rendered_pixels: usize,
 }
 
+save_state::runtime_state! {
+/// Complete X68000 scanout and partial-frame state.
+#[derive(Clone)]
+pub struct X68kRendererState {
+    work: Vec<u8>,
+    published: Vec<u8>,
+    framed: Vec<u8>,
+    sprite_line: Vec<u8>,
+    sprite_line_raster: Option<usize>,
+    width: u32,
+    height: u32,
+    published_height: u32,
+    frame_width: u32,
+    frame_published_height: u32,
+    offset_x: u32,
+    offset_y: u32,
+    framing_active: bool,
+    scan_mode: ScanModeX68k,
+    work_field_odd: bool,
+    rendered_pixels: usize,
+}}
+
 impl Default for X68kRenderer {
     fn default() -> Self {
         Self::new()
@@ -153,6 +176,74 @@ impl X68kRenderer {
             work_field_odd: false,
             rendered_pixels: 0,
         }
+    }
+
+    /// Captures published video and partial raster composition state.
+    pub fn capture_state(&self) -> X68kRendererState {
+        X68kRendererState {
+            work: self.work.clone(),
+            published: self.published.clone(),
+            framed: self.framed.clone(),
+            sprite_line: self.sprite_line.clone(),
+            sprite_line_raster: self.sprite_line_raster,
+            width: self.width,
+            height: self.height,
+            published_height: self.published_height,
+            frame_width: self.frame_width,
+            frame_published_height: self.frame_published_height,
+            offset_x: self.offset_x,
+            offset_y: self.offset_y,
+            framing_active: self.framing_active,
+            scan_mode: self.scan_mode,
+            work_field_odd: self.work_field_odd,
+            rendered_pixels: self.rendered_pixels,
+        }
+    }
+
+    /// Restores published video and partial raster composition state.
+    pub fn restore_state(
+        &mut self,
+        state: X68kRendererState,
+    ) -> Result<(), save_state::StateValidationError> {
+        let work_length = state.width as usize * state.height as usize * X68K_PIXEL_BYTES;
+        let published_length =
+            state.width as usize * state.published_height as usize * X68K_PIXEL_BYTES;
+        let framed_length =
+            state.frame_width as usize * state.frame_published_height as usize * X68K_PIXEL_BYTES;
+        if state.width == 0
+            || state.height == 0
+            || state.width > 2048
+            || state.height > 2048
+            || state.published_height > 4096
+            || state.frame_width > 2048
+            || state.frame_published_height > 4096
+            || state.work.len() != work_length
+            || state.published.len() != published_length
+            || state.sprite_line.len() != state.width as usize
+            || state.rendered_pixels > state.width as usize * state.height as usize
+            || (state.framing_active && state.framed.len() != framed_length)
+        {
+            return Err(save_state::StateValidationError::new(
+                "X68000 renderer state is invalid",
+            ));
+        }
+        self.work = state.work;
+        self.published = state.published;
+        self.framed = state.framed;
+        self.sprite_line = state.sprite_line;
+        self.sprite_line_raster = state.sprite_line_raster;
+        self.width = state.width;
+        self.height = state.height;
+        self.published_height = state.published_height;
+        self.frame_width = state.frame_width;
+        self.frame_published_height = state.frame_published_height;
+        self.offset_x = state.offset_x;
+        self.offset_y = state.offset_y;
+        self.framing_active = state.framing_active;
+        self.scan_mode = state.scan_mode;
+        self.work_field_odd = state.work_field_odd;
+        self.rendered_pixels = state.rendered_pixels;
+        Ok(())
     }
 
     /// Returns the last completed frame.

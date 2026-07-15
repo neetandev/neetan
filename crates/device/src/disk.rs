@@ -528,12 +528,30 @@ pub struct MountedHdd {
     image: HddImage,
     backend: Option<DiskBackend>,
     dirty: bool,
+    identity: save_state::ResourceIdentity,
+    source_path: Option<save_state::MediaSourcePath>,
 }
 
 impl MountedHdd {
     /// Constructs a new mount. If `path` is `None` or the file cannot be
     /// opened for write, writes only land in memory.
     pub fn new(image: HddImage, path: Option<PathBuf>) -> Self {
+        let structure = hdd_identity_structure(&image);
+        let byte_length = image.header_bytes.len() as u64 + image.data.len() as u64;
+        let source_path = path.as_deref().map(save_state::MediaSourcePath::from_path);
+        let identity = match source_path.as_ref() {
+            Some(source_path) => crate::media_identity::path_identity(
+                "neetan-hdd-source-v1",
+                source_path,
+                byte_length,
+                &structure,
+            ),
+            None => crate::media_identity::anonymous_identity(
+                "neetan-hdd-source-v1",
+                byte_length,
+                &structure,
+            ),
+        };
         let backend = path.and_then(|p| match DiskBackend::open(p.clone()) {
             Ok(b) => Some(b),
             Err(err) => {
@@ -548,12 +566,24 @@ impl MountedHdd {
             image,
             backend,
             dirty: false,
+            identity,
+            source_path,
         }
     }
 
     /// Returns a read-only reference to the parsed image.
     pub fn image(&self) -> &HddImage {
         &self.image
+    }
+
+    /// Returns the stable identity recorded when the image was mounted.
+    pub const fn identity(&self) -> save_state::ResourceIdentity {
+        self.identity
+    }
+
+    /// Returns the normalized configured source path, when file-backed.
+    pub const fn source_path(&self) -> Option<&save_state::MediaSourcePath> {
+        self.source_path.as_ref()
     }
 
     /// Returns the disk geometry.
@@ -644,6 +674,23 @@ impl MountedHdd {
     pub fn eject(mut self) {
         self.flush();
     }
+}
+
+fn hdd_identity_structure(image: &HddImage) -> Vec<u8> {
+    let mut structure = Vec::with_capacity(18);
+    structure.push(match image.format {
+        HddFormat::Nhd => 0,
+        HddFormat::Hdi => 1,
+        HddFormat::Thd => 2,
+        HddFormat::Raw => 3,
+        HddFormat::AtFlat => 4,
+    });
+    structure.extend_from_slice(&image.geometry.cylinders.to_le_bytes());
+    structure.push(image.geometry.heads);
+    structure.push(image.geometry.sectors_per_track);
+    structure.extend_from_slice(&image.geometry.sector_size.to_le_bytes());
+    structure.extend_from_slice(&(image.header_bytes.len() as u64).to_le_bytes());
+    structure
 }
 
 #[cfg(test)]
@@ -1090,6 +1137,7 @@ mod tests {
 
         let image = HddImage::from_nhd(&image_bytes).unwrap();
         let mut mounted = MountedHdd::new(image, Some(path.clone()));
+        let identity = mounted.identity();
 
         let pattern = vec![0xAAu8; 512];
         assert!(mounted.write_sector(123, &pattern));
@@ -1098,6 +1146,13 @@ mod tests {
         let raw = std::fs::read(&path).unwrap();
         let offset = NHD_HEADER_SIZE + 123 * 512;
         assert_eq!(&raw[offset..offset + 512], &pattern[..]);
+        let remounted = MountedHdd::new(HddImage::from_nhd(&raw).unwrap(), Some(path.clone()));
+        assert_eq!(remounted.identity(), identity);
+        assert_eq!(
+            remounted.source_path(),
+            Some(&save_state::MediaSourcePath::from_path(&path))
+        );
+        drop(remounted);
 
         std::fs::remove_file(&path).ok();
     }
@@ -1200,7 +1255,7 @@ mod tests {
 
     #[test]
     fn x68k_hdf_scsi_derives_flat_geometry() {
-        let bytes = 20 * 1024 * 1024;
+        let bytes = 20 << 20;
         let image = load_x68k_hdf(vec![0u8; bytes], 512).unwrap();
         assert_eq!(image.geometry.heads, 8);
         assert_eq!(image.geometry.sectors_per_track, 32);

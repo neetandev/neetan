@@ -84,6 +84,42 @@ const PAD_BUTTON_Y: u8 = 0x02;
 const PAD_BUTTON_X: u8 = 0x04;
 const PAD_BUTTON_C: u8 = 0x08;
 
+save_state::runtime_state! {
+/// Authoritative input and handshake state of one FM Towns pad port.
+#[derive(Clone)]
+struct TownsPadPortState {
+    kind: u8,
+    buttons: [bool; 12],
+    com: bool,
+    trigger: u8,
+}}
+
+save_state::runtime_state! {
+/// Authoritative movement and handshake state of one FM Towns mouse port.
+#[derive(Clone)]
+struct TownsMousePortState {
+    com: bool,
+    trigger: u8,
+    state: u8,
+    accumulator_x: i32,
+    accumulator_y: i32,
+    latched_x: u8,
+    latched_y: u8,
+    button_left: bool,
+    button_right: bool,
+    last_access_cycle: u64,
+}}
+
+save_state::runtime_state! {
+/// Authoritative FM Towns pad and relative mouse state.
+#[derive(Clone)]
+pub struct TownsGamePortState {
+    pad: TownsPadPortState,
+    mouse: TownsMousePortState,
+    output_latch: u8,
+    reset_timeout_cycles: u64,
+}}
+
 /// A digital pad on game port 0.
 struct PadPort {
     kind: TownsPadType,
@@ -299,6 +335,108 @@ impl TownsGamePort {
             output_latch: 0,
             reset_timeout_cycles,
         }
+    }
+
+    /// Captures the pad multiplexer and relative mouse nibble phase.
+    pub fn capture_state(&self) -> TownsGamePortState {
+        let input = self.pad.state;
+        TownsGamePortState {
+            pad: TownsPadPortState {
+                kind: match self.pad.kind {
+                    TownsPadType::TwoButton => 0,
+                    TownsPadType::SixButton => 1,
+                },
+                buttons: [
+                    input.up,
+                    input.down,
+                    input.left,
+                    input.right,
+                    input.trigger1,
+                    input.trigger2,
+                    input.button_c,
+                    input.button_x,
+                    input.button_y,
+                    input.button_z,
+                    input.run,
+                    input.select,
+                ],
+                com: self.pad.com,
+                trigger: self.pad.trigger,
+            },
+            mouse: TownsMousePortState {
+                com: self.mouse.com,
+                trigger: self.mouse.trigger,
+                state: self.mouse.state,
+                accumulator_x: self.mouse.accumulator_x,
+                accumulator_y: self.mouse.accumulator_y,
+                latched_x: self.mouse.latched_x,
+                latched_y: self.mouse.latched_y,
+                button_left: self.mouse.button_left,
+                button_right: self.mouse.button_right,
+                last_access_cycle: self.mouse.last_access_cycle,
+            },
+            output_latch: self.output_latch,
+            reset_timeout_cycles: self.reset_timeout_cycles,
+        }
+    }
+
+    /// Restores the pad multiplexer and relative mouse nibble phase.
+    pub fn restore_state(
+        &mut self,
+        state: TownsGamePortState,
+    ) -> Result<(), save_state::StateValidationError> {
+        let kind = match state.pad.kind {
+            0 => TownsPadType::TwoButton,
+            1 => TownsPadType::SixButton,
+            _ => {
+                return Err(save_state::StateValidationError::new(
+                    "FM Towns pad type is invalid",
+                ));
+            }
+        };
+        if state.pad.trigger > 3
+            || state.mouse.trigger > 3
+            || state.mouse.state > MOUSE_STATE_Y_LOW
+            || state.reset_timeout_cycles != self.reset_timeout_cycles
+        {
+            return Err(save_state::StateValidationError::new(
+                "FM Towns game port state is invalid",
+            ));
+        }
+        let buttons = state.pad.buttons;
+        self.pad = PadPort {
+            kind,
+            state: JoystickState {
+                up: buttons[0],
+                down: buttons[1],
+                left: buttons[2],
+                right: buttons[3],
+                trigger1: buttons[4],
+                trigger2: buttons[5],
+                button_c: buttons[6],
+                button_x: buttons[7],
+                button_y: buttons[8],
+                button_z: buttons[9],
+                run: buttons[10],
+                select: buttons[11],
+            },
+            com: state.pad.com,
+            trigger: state.pad.trigger,
+        };
+        self.mouse = MousePort {
+            com: state.mouse.com,
+            trigger: state.mouse.trigger,
+            state: state.mouse.state,
+            accumulator_x: state.mouse.accumulator_x,
+            accumulator_y: state.mouse.accumulator_y,
+            latched_x: state.mouse.latched_x,
+            latched_y: state.mouse.latched_y,
+            button_left: state.mouse.button_left,
+            button_right: state.mouse.button_right,
+            last_access_cycle: state.mouse.last_access_cycle,
+        };
+        self.output_latch = state.output_latch;
+        Ok(())
     }
 
     /// Reads game port 0 (0x04D0): the pad.

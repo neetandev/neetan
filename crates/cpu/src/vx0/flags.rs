@@ -14,29 +14,31 @@ const PARITY_TABLE: [bool; 256] = {
     table
 };
 
-/// V30 CPU flags register state.
-#[derive(Debug, Clone)]
-pub struct V30Flags {
-    /// Lazily computed sign flag value (negative means SF=1).
-    pub sign_val: i32,
-    /// Lazily computed zero flag value (zero means ZF=1).
-    pub zero_val: u32,
-    /// Lazily computed carry flag value (non-zero means CF=1).
-    pub carry_val: u32,
-    /// Lazily computed overflow flag value (non-zero means OF=1).
-    pub overflow_val: u32,
-    /// Lazily computed auxiliary carry flag value (non-zero means AF=1).
-    pub aux_val: u32,
-    /// Lazily computed parity flag value (low byte used for lookup).
-    pub parity_val: u32,
-    /// Trap flag.
-    pub tf: bool,
-    /// Interrupt enable flag.
-    pub if_flag: bool,
-    /// Direction flag.
-    pub df: bool,
-    /// Mode flag (V30-specific: true = native mode, false = 8080 emulation).
-    pub mf: bool,
+save_state::runtime_state! {
+    /// V30 CPU flags register state.
+    #[derive(Debug, Clone)]
+    pub struct V30Flags {
+        /// Lazily computed sign flag value (negative means SF=1).
+        pub sign_val: i32,
+        /// Lazily computed zero flag value (zero means ZF=1).
+        pub zero_val: u32,
+        /// Lazily computed carry flag value (non-zero means CF=1).
+        pub carry_val: u32,
+        /// Lazily computed overflow flag value (non-zero means OF=1).
+        pub overflow_val: u32,
+        /// Lazily computed auxiliary carry flag value (non-zero means AF=1).
+        pub aux_val: u32,
+        /// Lazily computed parity flag value (low byte used for lookup).
+        pub parity_val: u32,
+        /// Trap flag.
+        pub tf: bool,
+        /// Interrupt enable flag.
+        pub if_flag: bool,
+        /// Direction flag.
+        pub df: bool,
+        /// Mode flag (V30-specific: true = native mode, false = 8080 emulation).
+        pub mf: bool,
+    }
 }
 
 impl V30Flags {

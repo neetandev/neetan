@@ -85,7 +85,7 @@ fn hle_bootstrap_2hd_loads_full_ipl_block_not_only_first_sector() {
         );
     }
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.memory.ram[0x0584], 0x90, "2HD boot device");
     assert_eq!(
         state.memory.ram[0x1FC00], 0xFA,
@@ -134,7 +134,7 @@ fn hle_bootstrap_pc9801f_2hd_128_byte_boot_sector_can_read_with_da90h() {
         );
     }
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.memory.ram[0x0584], 0x90, "2HD boot device");
     assert_eq!(machine.cpu.cs(), 0x0060, "stage-two CS");
     assert_eq!(state.memory.ram[0x00600], 0xFA, "sector 1 copied");

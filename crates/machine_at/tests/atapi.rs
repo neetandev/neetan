@@ -13,7 +13,7 @@ fn build_bus() -> AtBus {
         system_bios: vec![0u8; 0x1_0000],
         vga_bios: vec![0u8; 0x8000],
     };
-    AtBus::new(CPU_CLOCK_HZ, 16 * 1024 * 1024, roms, 48_000)
+    AtBus::new(CPU_CLOCK_HZ, 16 << 20, roms, 48_000)
 }
 
 /// Builds a single-data-track CD image whose sector N starts with `[N>>8, N]`.

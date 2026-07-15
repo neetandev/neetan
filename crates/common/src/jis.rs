@@ -13,6 +13,20 @@ use tables::{ANK_TO_UNICODE, JIS_TO_UNICODE, UNICODE_TO_JIS};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct JisChar(u16);
 
+impl save_state::StateEncode for JisChar {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        save_state::StateEncode::encode_state(&self.0, output);
+    }
+}
+
+impl save_state::StateDecode for JisChar {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        Ok(Self(save_state::StateDecode::decode_state(decoder)?))
+    }
+}
+
 impl JisChar {
     /// ANK space character.
     pub const SPACE: Self = Self(0x0020);

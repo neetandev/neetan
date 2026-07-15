@@ -37,7 +37,7 @@ use common::Cpu as _;
 use cpu::{ADDRESS_WIDTH_24, CPU_MODEL_386_SX, I386, I386State};
 use verification_common::{MooCycle, load_moo_tests, load_revocation_list};
 
-const RAM_SIZE: usize = 16 * 1024 * 1024;
+const RAM_SIZE: usize = 16 << 20;
 const ADDRESS_MASK: u32 = 0x00FF_FFFF;
 const REG_ORDER_386: [&str; 20] = [
     "cr0", "cr3", "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "cs", "ds", "es", "fs",

@@ -8,6 +8,14 @@ use crate::{bus::AtBus, config::AtBootDevice};
 /// tight so scheduled timer interrupts are serviced promptly.
 const TIGHT_SLICE: u64 = 64;
 
+save_state::runtime_state! {
+/// Machine-root state for one PC/AT snapshot.
+#[derive(Clone)]
+struct AtRuntimeState {
+    cpu: cpu::I386State,
+    bus: crate::bus::AtBusState,
+}}
+
 /// An IBM PC/AT machine: the i486 main CPU and the AT bus.
 pub struct AtMachine<T: TraceSink = NoTrace> {
     /// The main CPU, on the 32-bit physical address map.
@@ -71,9 +79,59 @@ impl<T: TraceSink> AtMachine<T> {
 
         self.bus.current_cycle() - start_cycle
     }
+
+    fn capture_machine_blob(
+        &mut self,
+    ) -> Result<save_state::MachineStateBlob, save_state::SaveStateError> {
+        let root = AtRuntimeState {
+            cpu: self.cpu.capture_state(),
+            bus: self.bus.capture_runtime_state()?,
+        };
+        save_state::capture_machine_state(
+            root,
+            self.bus.save_state_resources()?,
+            self.bus.save_state_media()?,
+        )
+    }
+
+    fn restore_machine_blob(
+        &mut self,
+        blob: &save_state::MachineStateBlob,
+    ) -> Result<(), save_state::SaveStateError> {
+        let active_resources = self.bus.save_state_resources()?;
+        let active_media = self.bus.save_state_media()?;
+        save_state::restore_machine_state(
+            self,
+            blob,
+            active_resources,
+            active_media,
+            128 << 20,
+            |machine| {
+                Ok(AtRuntimeState {
+                    cpu: machine.cpu.capture_state(),
+                    bus: machine.bus.capture_runtime_state()?,
+                })
+            },
+            |machine, state| {
+                machine.cpu.restore_state(state.cpu)?;
+                machine.bus.restore_runtime_state(state.bus)
+            },
+        )
+    }
 }
 
 impl<T: TraceSink> Machine for AtMachine<T> {
+    fn capture_state(&mut self) -> Result<common::MachineStateBlob, common::SaveStateError> {
+        self.capture_machine_blob()
+    }
+
+    fn restore_state(
+        &mut self,
+        blob: &common::MachineStateBlob,
+    ) -> Result<(), common::SaveStateError> {
+        self.restore_machine_blob(blob)
+    }
+
     fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
         self.bus.set_host_date_time_provider(provider);
     }
@@ -114,8 +172,8 @@ impl<T: TraceSink> Machine for AtMachine<T> {
         self.bus.set_joystick(index, state);
     }
 
-    fn set_joystick_axes(&mut self, index: usize, x: i16, y: i16) {
-        self.bus.set_joystick_axes(index, x, y);
+    fn set_joystick_axes(&mut self, index: usize, axes: Option<(i16, i16)>) {
+        self.bus.set_joystick_axes(index, axes);
     }
 
     fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {

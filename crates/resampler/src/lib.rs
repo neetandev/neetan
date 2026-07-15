@@ -128,7 +128,7 @@ mod window;
 pub use error::ResampleError;
 pub use fft::*;
 pub use resampler_fft::*;
-pub use resampler_fir::{Attenuation, Latency, ResamplerFir};
+pub use resampler_fir::{Attenuation, Latency, ResamplerFir, ResamplerFirState};
 
 /// All sample rates the resampler can operate on.
 #[derive(Debug, Copy, Clone, PartialOrd, PartialEq, Ord, Eq, Hash)]

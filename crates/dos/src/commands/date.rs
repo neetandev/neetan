@@ -19,9 +19,13 @@ impl Command for Date {
     }
 }
 
-struct RunningDate {
+#[derive(Clone)]
+/// Serializable state of an executing DATE command.
+pub(crate) struct RunningDate {
     args: Vec<u8>,
 }
+
+state_struct_codec!(RunningDate { args });
 
 impl RunningCommand for RunningDate {
     fn step(

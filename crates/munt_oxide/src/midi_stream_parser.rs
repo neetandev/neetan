@@ -14,7 +14,9 @@
 //  You should have received a copy of the GNU Lesser General Public License
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::state::{MAX_STREAM_BUFFER_SIZE, MidiStreamParserState};
+#[cfg(test)]
+use crate::state::MAX_STREAM_BUFFER_SIZE;
+use crate::state::MidiStreamParserState;
 
 /// Returns the expected length of a short MIDI message given its status byte.
 pub(crate) fn get_short_message_length(msg: u32) -> u32 {
@@ -91,15 +93,7 @@ impl MidiStreamParserState {
         if (self.stream_buffer_size as usize) < self.stream_buffer.len() {
             return true;
         }
-        if self.stream_buffer.len() < MAX_STREAM_BUFFER_SIZE {
-            let mut new_buffer = vec![0u8; MAX_STREAM_BUFFER_SIZE];
-            if preserve_content {
-                new_buffer[..self.stream_buffer_size as usize]
-                    .copy_from_slice(&self.stream_buffer[..self.stream_buffer_size as usize]);
-            }
-            self.stream_buffer = new_buffer;
-            return true;
-        }
+        let _ = preserve_content;
         false
     }
 
@@ -283,7 +277,7 @@ mod tests {
     fn parse_rust(stream: &[u8]) -> ParseResult {
         let mut state = MidiStreamParserState {
             running_status: 0,
-            stream_buffer: vec![0u8; 1000],
+            stream_buffer: vec![0u8; MAX_STREAM_BUFFER_SIZE],
             stream_buffer_size: 0,
         };
         let mut short_messages = Vec::new();
@@ -305,7 +299,7 @@ mod tests {
     fn parse_rust_fragmented(stream1: &[u8], stream2: &[u8]) -> ParseResult {
         let mut state = MidiStreamParserState {
             running_status: 0,
-            stream_buffer: vec![0u8; 1000],
+            stream_buffer: vec![0u8; MAX_STREAM_BUFFER_SIZE],
             stream_buffer_size: 0,
         };
         let mut short_messages = Vec::new();

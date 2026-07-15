@@ -29,9 +29,12 @@ use crate::{
 //     01,03,05 ----xxxx Tone period (coarse) for channel A,B,C
 //     08,09,0A ---x---- Mode: fixed(0) or variable(1) for channel A,B,C
 //              ----xxxx Amplitude for channel A,B,C
+save_state::runtime_state! {
+/// Authoritative SSG register file.
+#[derive(Clone)]
 pub(crate) struct SsgRegisters {
     regdata: [u8; 0x10],
-}
+}}
 
 impl SsgRegisters {
     pub(crate) fn new() -> Self {
@@ -96,12 +99,18 @@ impl SsgRegisters {
     }
 }
 
+save_state::runtime_state! {
+/// Current three-channel SSG output values.
+#[derive(Clone)]
 pub(crate) struct SsgOutput {
     pub(crate) data: [i32; 3],
-}
+}}
 
 impl SsgOutput {}
 
+save_state::runtime_state! {
+/// Authoritative SSG tone, noise, and envelope progress.
+#[derive(Clone)]
 pub(crate) struct SsgEngine {
     tone_count: [u32; 3],
     tone_state: [u32; 3],
@@ -110,7 +119,7 @@ pub(crate) struct SsgEngine {
     noise_count: u32,
     noise_state: u32,
     regs: SsgRegisters,
-}
+}}
 
 impl SsgEngine {
     pub(crate) fn new() -> Self {

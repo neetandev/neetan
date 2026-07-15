@@ -150,6 +150,7 @@ impl<T: TraceSink> Pc8801Bus<T> {
             presented_frames: 0,
             kanji1: Vec::new(),
             kanji2: Vec::new(),
+            rom_bindings: Vec::new(),
             sub_mem: Pc80s31kMemory::new(),
             sub_cycle: 0,
             sub_to_main_shift,
@@ -179,6 +180,40 @@ impl Pc8801Bus<NoTrace> {
 impl<T: TraceSink> Pc8801Bus<T> {
     /// Applies a loaded and validated ROM set to the bus.
     pub fn load_roms(&mut self, roms: &LoadedRoms) {
+        self.rom_bindings.clear();
+        let extension_identifiers = [
+            "n88-extension-0",
+            "n88-extension-1",
+            "n88-extension-2",
+            "n88-extension-3",
+        ];
+        for (identifier, bytes) in extension_identifiers.into_iter().zip(&roms.n88_ext) {
+            self.rom_bindings.push(save_state::ResourceBinding {
+                identifier: save_state::ResourceBindingId::new(format!("rom:{identifier}"))
+                    .expect("static resource identifier"),
+                identity: save_state::ResourceIdentity::from_bytes(bytes),
+            });
+        }
+        for (identifier, bytes) in [
+            ("n88", Some(roms.n88.as_slice())),
+            ("n-basic", Some(roms.n_basic.as_slice())),
+            ("n80-mkii", roms.n80_mkii.as_deref()),
+            ("n80-mkiisr", roms.n80_mkiisr.as_deref()),
+            ("n80sr", roms.n80sr.as_deref()),
+            ("dictionary", Some(roms.dictionary.as_slice())),
+            ("kanji-1", Some(roms.kanji1.as_slice())),
+            ("kanji-2", Some(roms.kanji2.as_slice())),
+            ("disk", Some(roms.disk.as_slice())),
+            ("cdrom-bios", Some(roms.cdrom_bios.as_slice())),
+        ] {
+            if let Some(bytes) = bytes {
+                self.rom_bindings.push(save_state::ResourceBinding {
+                    identifier: save_state::ResourceBindingId::new(format!("rom:{identifier}"))
+                        .expect("static resource identifier"),
+                    identity: save_state::ResourceIdentity::from_bytes(bytes),
+                });
+            }
+        }
         self.memory.load_n88_rom(&roms.n88);
         for (bank, data) in roms.n88_ext.iter().enumerate() {
             self.memory.load_n88_ext_rom(bank, data);

@@ -1,7 +1,9 @@
 //! PC-88VA2 system ports, calendar strobe latches, and DIP-switch state
 //! (SYSPORTVA).
 
+save_state::runtime_state! {
 /// SYSPORTVA register/latch state.
+#[derive(Clone)]
 pub struct SysPortVa {
     /// Port 0x1C9 read: bit7,6,0 fixed 1, bit5 SPEED, bits4:1 DIP sw5-2.
     pub a: u8,
@@ -20,7 +22,7 @@ pub struct SysPortVa {
     /// DIP-switch configuration. Bit0 selects the CRT mode (1 = 24 kHz,
     /// 0 = 15 kHz) until the video controller takes over.
     pub dipsw: u8,
-}
+}}
 
 impl Default for SysPortVa {
     fn default() -> Self {

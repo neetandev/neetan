@@ -94,6 +94,33 @@ enum PendingTask {
     DataTransfer,
 }
 
+save_state::runtime_state! {
+/// Authoritative FM Towns SCSI protocol and transfer state.
+#[derive(Clone)]
+pub struct TownsScsiControllerState {
+    cpu_clock_hz: u64,
+    target_states: [Option<crate::scsi::command::SenseData>; SCSI_ID_COUNT],
+    phase: u8,
+    busy: bool,
+    req: bool,
+    selected_id: Option<usize>,
+    data_latch: u8,
+    command: Vec<u8>,
+    command_length: usize,
+    status_byte: u8,
+    interrupt: bool,
+    imsk: bool,
+    dmae: bool,
+    previous_control: u8,
+    pending_task: Option<u8>,
+    task_cycle: Option<u64>,
+    data_in_buffer: Vec<u8>,
+    data_in_offset: usize,
+    data_out_expected: usize,
+    data_out_buffer: Vec<u8>,
+    media: save_state::MediaManifest,
+}}
+
 /// DMA work the bus must attempt after servicing the SPC task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScsiDmaRequest {
@@ -161,6 +188,146 @@ impl TownsScsiController {
             data_out_expected: 0,
             data_out_buffer: Vec::new(),
         }
+    }
+
+    /// Captures bus phase, command buffers, deadlines, and target sense state.
+    pub fn capture_state(
+        &self,
+    ) -> Result<TownsScsiControllerState, save_state::StateValidationError> {
+        Ok(TownsScsiControllerState {
+            cpu_clock_hz: self.cpu_clock_hz,
+            target_states: std::array::from_fn(|index| {
+                self.targets[index]
+                    .as_ref()
+                    .and_then(ScsiTarget::capture_disk_state)
+            }),
+            phase: match self.phase {
+                Phase::BusFree => 0,
+                Phase::Selection => 1,
+                Phase::Command => 2,
+                Phase::DataIn => 3,
+                Phase::DataOut => 4,
+                Phase::Status => 5,
+                Phase::StatusToBusFree => 6,
+                Phase::MessageIn => 7,
+            },
+            busy: self.busy,
+            req: self.req,
+            selected_id: self.selected_id,
+            data_latch: self.data_latch,
+            command: self.command.clone(),
+            command_length: self.command_length,
+            status_byte: self.status_byte,
+            interrupt: self.interrupt,
+            imsk: self.imsk,
+            dmae: self.dmae,
+            previous_control: self.previous_control,
+            pending_task: self.pending_task.map(|task| match task {
+                PendingTask::RaiseRequest => 0,
+                PendingTask::DataTransfer => 1,
+            }),
+            task_cycle: self.task_cycle,
+            data_in_buffer: self.data_in_buffer.clone(),
+            data_in_offset: self.data_in_offset,
+            data_out_expected: self.data_out_expected,
+            data_out_buffer: self.data_out_buffer.clone(),
+            media: self.media_manifest()?,
+        })
+    }
+
+    /// Restores protocol state while retaining mounted disk contents.
+    pub fn restore_state(
+        &mut self,
+        state: TownsScsiControllerState,
+    ) -> Result<(), save_state::StateValidationError> {
+        let phase = match state.phase {
+            0 => Phase::BusFree,
+            1 => Phase::Selection,
+            2 => Phase::Command,
+            3 => Phase::DataIn,
+            4 => Phase::DataOut,
+            5 => Phase::Status,
+            6 => Phase::StatusToBusFree,
+            7 => Phase::MessageIn,
+            _ => {
+                return Err(save_state::StateValidationError::new(
+                    "SCSI phase is invalid",
+                ));
+            }
+        };
+        let pending_task = match state.pending_task {
+            None => None,
+            Some(0) => Some(PendingTask::RaiseRequest),
+            Some(1) => Some(PendingTask::DataTransfer),
+            Some(_) => {
+                return Err(save_state::StateValidationError::new(
+                    "SCSI pending task is invalid",
+                ));
+            }
+        };
+        if state.cpu_clock_hz != self.cpu_clock_hz
+            || state
+                .selected_id
+                .is_some_and(|identifier| identifier >= SCSI_ID_COUNT)
+            || state.command_length > 16
+            || state.command.len() > state.command_length.max(16)
+            || state.data_in_offset > state.data_in_buffer.len()
+            || state.data_out_buffer.len() > state.data_out_expected
+            || pending_task.is_some() != state.task_cycle.is_some()
+        {
+            return Err(save_state::StateValidationError::new(
+                "SCSI controller state is invalid",
+            ));
+        }
+        state.media.verify_current(&self.media_manifest()?)?;
+        for (target, saved) in self.targets.iter_mut().zip(state.target_states) {
+            match (target, saved) {
+                (Some(target), Some(saved)) => target.restore_disk_state(saved)?,
+                (None, None) => {}
+                _ => {
+                    return Err(save_state::StateValidationError::new(
+                        "SCSI target configuration differs",
+                    ));
+                }
+            }
+        }
+        self.phase = phase;
+        self.busy = state.busy;
+        self.req = state.req;
+        self.selected_id = state.selected_id;
+        self.data_latch = state.data_latch;
+        self.command = state.command;
+        self.command_length = state.command_length;
+        self.status_byte = state.status_byte;
+        self.interrupt = state.interrupt;
+        self.imsk = state.imsk;
+        self.dmae = state.dmae;
+        self.previous_control = state.previous_control;
+        self.pending_task = pending_task;
+        self.task_cycle = state.task_cycle;
+        self.data_in_buffer = state.data_in_buffer;
+        self.data_in_offset = state.data_in_offset;
+        self.data_out_expected = state.data_out_expected;
+        self.data_out_buffer = state.data_out_buffer;
+        Ok(())
+    }
+
+    /// Returns stable identities for all mounted SCSI disks.
+    pub fn media_manifest(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = Vec::new();
+        for (identifier, target) in self.targets.iter().enumerate() {
+            let Some(target) = target else {
+                continue;
+            };
+            if let Some(binding) =
+                target.disk_media_binding(format!("scsi-{identifier}"), identifier as u32)?
+            {
+                bindings.push(binding);
+            }
+        }
+        save_state::MediaManifest::new(bindings)
     }
 
     /// Attaches a hard disk at the given SCSI ID.

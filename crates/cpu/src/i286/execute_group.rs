@@ -89,8 +89,8 @@ impl I286 {
     /// and the prefix count is odd. The 286 charges an extra AU demand cycle
     /// in this configuration during indirect-pointer/jmp dispatch.
     fn lock_register_form_with_odd_prefix(&self, ea_class: EaClass) -> bool {
-        self.timing.lock_active()
-            && self.timing.prefix_count_is_odd()
+        self.state.timing.lock_active()
+            && self.state.timing.prefix_count_is_odd()
             && ea_class.is_no_displacement_memory()
     }
 
@@ -107,7 +107,7 @@ impl I286 {
     fn divide_word_memory_cycles(&self, memory_cycles: i32) -> i32 {
         let memory_operand_credit = match self.ea_class {
             EaClass::SingleRegister | EaClass::DoubleRegister => 3,
-            EaClass::Disp8Double if self.timing.lock_active() => 3,
+            EaClass::Disp8Double if self.state.timing.lock_active() => 3,
             _ => 0,
         };
         memory_cycles - memory_operand_credit
@@ -117,7 +117,7 @@ impl I286 {
         let memory_operand_credit = match self.ea_class {
             EaClass::SingleRegister => 2,
             EaClass::DoubleRegister => 3,
-            EaClass::Disp8Double if self.timing.lock_active() => 3,
+            EaClass::Disp8Double if self.state.timing.lock_active() => 3,
             EaClass::Disp8Double | EaClass::Disp16Double => 1,
             _ => 0,
         };
@@ -125,60 +125,64 @@ impl I286 {
     }
 
     fn prepare_byte_immediate_memory_operand(&mut self, modrm: u8) {
-        if self.timing.prefix_count_is_nonzero() {
+        if self.state.timing.prefix_count_is_nonzero() {
             if modrm::modrm_is_no_displacement_memory(modrm) {
-                self.timing
+                self.state
+                    .timing
                     .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
-                if self.timing.prefix_count_is_odd() {
-                    self.timing.suppress_next_demand_prefetch();
-                    self.timing
+                if self.state.timing.prefix_count_is_odd() {
+                    self.state.timing.suppress_next_demand_prefetch();
+                    self.state
+                        .timing
                         .borrow_internal_cycles(LOCK_PREFIX_OVERLAP_CREDIT);
-                    self.timing.note_au_demand_cycles(1);
+                    self.state.timing.note_au_demand_cycles(1);
                 } else {
-                    self.timing.note_demand_prefetch_limit(1);
+                    self.state.timing.note_demand_prefetch_limit(1);
                 }
                 return;
             }
             if modrm::modrm_is_direct_memory(modrm) {
-                if self.timing.prefix_count_is_odd() {
-                    self.timing.note_demand_prefetch_limit(1);
-                    self.timing.note_au_demand_cycles(1);
+                if self.state.timing.prefix_count_is_odd() {
+                    self.state.timing.note_demand_prefetch_limit(1);
+                    self.state.timing.note_au_demand_cycles(1);
                 } else {
-                    self.timing
+                    self.state
+                        .timing
                         .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
-                    self.timing.note_demand_prefetch_limit(2);
+                    self.state.timing.note_demand_prefetch_limit(2);
                 }
                 return;
             }
             if modrm::modrm_is_disp8_memory(modrm) {
-                self.timing.note_demand_prefetch_policy(
+                self.state.timing.note_demand_prefetch_policy(
                     I286DemandPrefetchPolicy::AfterTurnaroundThenPrefetch,
                 );
-                self.timing.clear_au_demand_cycles();
+                self.state.timing.clear_au_demand_cycles();
                 let au_cycles = i32::from(modrm::modrm_uses_double_register_base(modrm))
-                    + i32::from(self.timing.prefix_count_is_even());
+                    + i32::from(self.state.timing.prefix_count_is_even());
                 if au_cycles != 0 {
-                    self.timing.note_au_demand_cycles(au_cycles as u8);
+                    self.state.timing.note_au_demand_cycles(au_cycles as u8);
                 }
-                self.timing.note_demand_prefetch_limit(1);
+                self.state.timing.note_demand_prefetch_limit(1);
                 return;
             }
             if modrm::modrm_is_disp16_memory(modrm) {
-                if self.timing.prefix_count_is_odd() {
+                if self.state.timing.prefix_count_is_odd() {
                     let au_cycles = if modrm::modrm_uses_double_register_base(modrm) {
                         2
                     } else {
                         1
                     };
-                    self.timing.note_au_demand_cycles(au_cycles);
-                    self.timing.note_demand_prefetch_limit(1);
+                    self.state.timing.note_au_demand_cycles(au_cycles);
+                    self.state.timing.note_demand_prefetch_limit(1);
                 } else {
-                    self.timing
+                    self.state
+                        .timing
                         .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
                     if modrm::modrm_uses_double_register_base(modrm) {
-                        self.timing.note_au_demand_cycles(1);
+                        self.state.timing.note_au_demand_cycles(1);
                     }
-                    self.timing.note_demand_prefetch_limit(2);
+                    self.state.timing.note_demand_prefetch_limit(2);
                 }
                 return;
             }
@@ -188,14 +192,16 @@ impl I286 {
 
         match modrm {
             _ if modrm::modrm_is_direct_memory(modrm) => {
-                self.timing
+                self.state
+                    .timing
                     .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
-                self.timing.note_demand_prefetch_limit(2);
+                self.state.timing.note_demand_prefetch_limit(2);
             }
             _ if modrm::modrm_is_no_displacement_memory(modrm) => {
-                self.timing
+                self.state
+                    .timing
                     .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
-                self.timing.note_demand_prefetch_limit(1);
+                self.state.timing.note_demand_prefetch_limit(1);
             }
             _ if modrm::modrm_is_disp8_memory(modrm) => {
                 let au_cycles = if modrm::modrm_uses_double_register_base(modrm) {
@@ -203,13 +209,14 @@ impl I286 {
                 } else {
                     1
                 };
-                self.timing.note_au_demand_cycles(au_cycles);
-                self.timing.note_demand_prefetch_limit(1);
+                self.state.timing.note_au_demand_cycles(au_cycles);
+                self.state.timing.note_demand_prefetch_limit(1);
             }
             _ if modrm::modrm_is_disp16_memory(modrm) => {
-                self.timing
+                self.state
+                    .timing
                     .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
-                self.timing.note_demand_prefetch_limit(2);
+                self.state.timing.note_demand_prefetch_limit(2);
             }
             _ => {}
         }
@@ -218,21 +225,22 @@ impl I286 {
     pub(super) fn prepare_immediate_memory_operand(&mut self, modrm: u8) {
         match modrm {
             _ if modrm::modrm_is_direct_memory(modrm) => {
-                self.timing.note_demand_prefetch_limit(2);
+                self.state.timing.note_demand_prefetch_limit(2);
             }
             _ if modrm::modrm_is_no_displacement_memory(modrm) => {
-                self.timing
+                self.state
+                    .timing
                     .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeTurnaround);
-                self.timing.note_demand_prefetch_limit(1);
+                self.state.timing.note_demand_prefetch_limit(1);
             }
-            _ if modrm::modrm_is_disp8_memory(modrm) && self.timing.prefix_count_is_odd() => {
-                self.timing.note_demand_prefetch_policy(
+            _ if modrm::modrm_is_disp8_memory(modrm) && self.state.timing.prefix_count_is_odd() => {
+                self.state.timing.note_demand_prefetch_policy(
                     I286DemandPrefetchPolicy::AfterTurnaroundPrefetchThenGap,
                 );
-                self.timing.note_demand_prefetch_limit(1);
+                self.state.timing.note_demand_prefetch_limit(1);
             }
             _ if modrm::modrm_is_disp8_memory(modrm) || modrm::modrm_is_disp16_memory(modrm) => {
-                self.timing.note_demand_prefetch_limit(2);
+                self.state.timing.note_demand_prefetch_limit(2);
             }
             _ => {}
         }
@@ -241,18 +249,19 @@ impl I286 {
     pub(super) fn prepare_sign_extended_immediate_memory_operand(&mut self, modrm: u8) {
         match modrm {
             _ if modrm::modrm_is_direct_memory(modrm) => {
-                self.timing.note_demand_prefetch_policy(
+                self.state.timing.note_demand_prefetch_policy(
                     I286DemandPrefetchPolicy::BeforeAndAfterTurnaround,
                 );
-                self.timing.note_demand_prefetch_limit(1);
+                self.state.timing.note_demand_prefetch_limit(1);
             }
             _ if modrm::modrm_is_no_displacement_memory(modrm) => {
-                self.timing
+                self.state
+                    .timing
                     .note_demand_prefetch_policy(I286DemandPrefetchPolicy::AfterTurnaround);
-                self.timing.note_demand_prefetch_limit(1);
+                self.state.timing.note_demand_prefetch_limit(1);
             }
-            _ if modrm::modrm_is_disp8_memory(modrm) && self.timing.prefix_count_is_odd() => {
-                self.timing.note_demand_prefetch_policy(
+            _ if modrm::modrm_is_disp8_memory(modrm) && self.state.timing.prefix_count_is_odd() => {
+                self.state.timing.note_demand_prefetch_policy(
                     I286DemandPrefetchPolicy::AfterTurnaroundAuThenPrefetchThenGap,
                 );
                 let au_cycles = if modrm::modrm_uses_double_register_base(modrm) {
@@ -260,8 +269,8 @@ impl I286 {
                 } else {
                     0
                 };
-                self.timing.note_au_demand_cycles(au_cycles);
-                self.timing.note_demand_prefetch_limit(1);
+                self.state.timing.note_au_demand_cycles(au_cycles);
+                self.state.timing.note_demand_prefetch_limit(1);
             }
             _ if modrm::modrm_is_disp8_memory(modrm) => {
                 let au_cycles = if modrm::modrm_uses_double_register_base(modrm) {
@@ -269,111 +278,125 @@ impl I286 {
                 } else {
                     2
                 };
-                self.timing.note_au_demand_cycles(au_cycles);
-                self.timing.note_demand_prefetch_limit(1);
+                self.state.timing.note_au_demand_cycles(au_cycles);
+                self.state.timing.note_demand_prefetch_limit(1);
             }
-            _ if modrm::modrm_is_disp16_memory(modrm) && self.timing.prefix_count_is_nonzero() => {
-                self.timing.note_demand_prefetch_policy(
+            _ if modrm::modrm_is_disp16_memory(modrm)
+                && self.state.timing.prefix_count_is_nonzero() =>
+            {
+                self.state.timing.note_demand_prefetch_policy(
                     I286DemandPrefetchPolicy::BeforeAndAfterTurnaround,
                 );
-                self.timing.note_au_demand_cycles(1);
-                self.timing.note_demand_prefetch_limit(1);
+                self.state.timing.note_au_demand_cycles(1);
+                self.state.timing.note_demand_prefetch_limit(1);
             }
             _ if modrm::modrm_is_disp16_memory(modrm) => {
-                self.timing.note_demand_prefetch_policy(
+                self.state.timing.note_demand_prefetch_policy(
                     I286DemandPrefetchPolicy::BeforeAndAfterTurnaround,
                 );
-                self.timing.note_demand_prefetch_limit(1);
+                self.state.timing.note_demand_prefetch_limit(1);
             }
             _ if modrm::modrm_is_memory(modrm) => {
-                self.timing.note_demand_prefetch_limit(1);
+                self.state.timing.note_demand_prefetch_limit(1);
             }
             _ => {}
         }
     }
 
     fn prepare_immediate_shift_memory_operand(&mut self, modrm: u8, count: u8) {
-        if self.timing.prefix_count_is_zero() {
+        if self.state.timing.prefix_count_is_zero() {
             if modrm::modrm_is_disp16_memory(modrm)
-                && self.timing.prefetch_wrapped_before_instruction_start()
+                && self
+                    .state
+                    .timing
+                    .prefetch_wrapped_before_instruction_start()
             {
-                self.timing
+                self.state
+                    .timing
                     .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
-                self.timing.note_au_demand_cycles(2);
-                self.timing.note_demand_prefetch_limit(2);
+                self.state.timing.note_au_demand_cycles(2);
+                self.state.timing.note_demand_prefetch_limit(2);
                 return;
             }
             self.prepare_byte_immediate_memory_operand(modrm);
             return;
         }
 
-        let prefix_count = self.timing.prefix_count();
+        let prefix_count = self.state.timing.prefix_count();
         let no_displacement = self.ea_class.is_no_displacement_memory();
-        if count & 0x1F == 0 && self.timing.lock_active() && prefix_count == 2 && !no_displacement {
-            self.timing
+        if count & 0x1F == 0
+            && self.state.timing.lock_active()
+            && prefix_count == 2
+            && !no_displacement
+        {
+            self.state
+                .timing
                 .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
-            self.timing.note_demand_prefetch_limit(1);
+            self.state.timing.note_demand_prefetch_limit(1);
             return;
         }
 
         if !no_displacement {
             if (prefix_count & 1 == 0 && self.ea_class.is_disp8())
-                || (self.timing.lock_active() && prefix_count == 2)
+                || (self.state.timing.lock_active() && prefix_count == 2)
             {
-                self.timing.note_demand_prefetch_policy(
+                self.state.timing.note_demand_prefetch_policy(
                     I286DemandPrefetchPolicy::AfterTurnaroundThenPrefetch,
                 );
                 let au_demand_cycles = match self.ea_class {
                     EaClass::Disp8Double => 2,
                     _ => 1,
                 };
-                self.timing.note_au_demand_cycles(au_demand_cycles);
-                self.timing.note_demand_prefetch_limit(1);
+                self.state.timing.note_au_demand_cycles(au_demand_cycles);
+                self.state.timing.note_demand_prefetch_limit(1);
             } else if prefix_count & 1 == 0 {
-                self.timing
+                self.state
+                    .timing
                     .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
-                self.timing.note_demand_prefetch_limit(2);
+                self.state.timing.note_demand_prefetch_limit(2);
             } else {
                 if self.ea_class.is_disp8() {
-                    self.timing.note_demand_prefetch_policy(
+                    self.state.timing.note_demand_prefetch_policy(
                         I286DemandPrefetchPolicy::AfterTurnaroundThenPrefetch,
                     );
                 } else {
-                    self.timing
+                    self.state
+                        .timing
                         .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
                     let au_demand_cycles = match self.ea_class {
                         EaClass::Disp16Double => 2,
                         _ => 1,
                     };
-                    self.timing.note_au_demand_cycles(au_demand_cycles);
+                    self.state.timing.note_au_demand_cycles(au_demand_cycles);
                 }
-                self.timing.note_demand_prefetch_limit(1);
+                self.state.timing.note_demand_prefetch_limit(1);
             }
             return;
         }
 
-        self.timing
+        self.state
+            .timing
             .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
-        self.timing.note_demand_prefetch_limit(1);
-        if self.timing.prefix_count_is_odd() {
-            self.timing.clear_au_demand_cycles();
-            self.timing.suppress_next_demand_prefetch();
-            self.timing.note_au_demand_cycles(1);
+        self.state.timing.note_demand_prefetch_limit(1);
+        if self.state.timing.prefix_count_is_odd() {
+            self.state.timing.clear_au_demand_cycles();
+            self.state.timing.suppress_next_demand_prefetch();
+            self.state.timing.note_au_demand_cycles(1);
         }
     }
 
     fn prepare_far_indirect_pointer_read(&mut self) {
-        if self.ea_class.is_disp8() || self.timing.prefix_count_is_odd() {
-            self.timing.passivize_next_demand_prefetch();
+        if self.ea_class.is_disp8() || self.state.timing.prefix_count_is_odd() {
+            self.state.timing.passivize_next_demand_prefetch();
         }
 
         if self.lock_register_form_with_odd_prefix(self.ea_class) {
-            self.timing.note_au_demand_cycles(1);
+            self.state.timing.note_au_demand_cycles(1);
         }
     }
 
     fn prepare_far_indirect_modrm_fetch(&mut self, bus: &mut impl common::Bus) {
-        if self.timing.prefix_count_at_most(1) {
+        if self.state.timing.prefix_count_at_most(1) {
             return;
         }
 
@@ -386,7 +409,7 @@ impl I286 {
         }
 
         if modrm::modrm_is_no_displacement_memory(modrm) {
-            self.timing.passivize_next_code_fetch();
+            self.state.timing.passivize_next_code_fetch();
         }
     }
 
@@ -396,12 +419,12 @@ impl I286 {
         }
 
         let ea_class = EaClass::from_modrm(modrm);
-        if ea_class.is_disp8() || self.timing.prefix_count_is_odd() {
-            self.timing.passivize_next_demand_prefetch();
+        if ea_class.is_disp8() || self.state.timing.prefix_count_is_odd() {
+            self.state.timing.passivize_next_demand_prefetch();
         }
 
         if self.lock_register_form_with_odd_prefix(ea_class) {
-            self.timing.note_au_demand_cycles(1);
+            self.state.timing.note_au_demand_cycles(1);
         }
     }
 
@@ -419,7 +442,7 @@ impl I286 {
             self.prepare_byte_immediate_memory_operand(modrm);
             src = self.fetch(bus);
             dst = self.seg_read_byte_at(bus, 0);
-            self.timing.note_au_idle();
+            self.state.timing.note_au_idle();
         }
 
         let result = match operation {
@@ -463,7 +486,7 @@ impl I286 {
             self.prepare_immediate_memory_operand(modrm);
             src = self.fetchword(bus);
             dst = self.seg_read_word(bus);
-            self.timing.note_au_idle();
+            self.state.timing.note_au_idle();
         }
 
         let result = match operation {
@@ -512,7 +535,7 @@ impl I286 {
             self.prepare_sign_extended_immediate_memory_operand(modrm);
             src = self.fetch(bus) as i8 as u16;
             dst = self.seg_read_word(bus);
-            self.timing.note_au_idle();
+            self.state.timing.note_au_idle();
         }
 
         let result = match operation {
@@ -562,7 +585,7 @@ impl I286 {
             let count = self.fetch(bus);
             self.prepare_immediate_shift_memory_operand(modrm, count);
             let dst = self.seg_read_byte_at(bus, 0);
-            self.timing.note_au_idle();
+            self.state.timing.note_au_idle();
             (dst, count)
         };
         let result = match modrm::modrm_register(modrm) {
@@ -590,7 +613,8 @@ impl I286 {
                     | EaClass::Disp8Single
                     | EaClass::Disp16Single
             );
-            self.timing
+            self.state
+                .timing
                 .overlap_immediate_shift_writeback_compute(short_ea_path);
             self.clk_modrm_prefetch(bus, modrm, 5 + n, 8 + n);
             self.putback_rm_byte(modrm, result, bus);
@@ -608,7 +632,7 @@ impl I286 {
             let count = self.fetch(bus);
             self.prepare_immediate_shift_memory_operand(modrm, count);
             let dst = self.seg_read_word(bus);
-            self.timing.note_au_idle();
+            self.state.timing.note_au_idle();
             (dst, count)
         };
         let result = match modrm::modrm_register(modrm) {
@@ -637,7 +661,8 @@ impl I286 {
                     | EaClass::Disp8Single
                     | EaClass::Disp16Single
             );
-            self.timing
+            self.state
+                .timing
                 .overlap_immediate_shift_writeback_compute(short_ea_path);
             self.clk_modrm_word_prefetch(bus, modrm, 5 + n, 8 + n, 0);
             self.putback_rm_word(modrm, result, bus);
@@ -712,7 +737,8 @@ impl I286 {
                 self.ea_class,
                 EaClass::SingleRegister | EaClass::DoubleRegister
             );
-            self.timing
+            self.state
+                .timing
                 .overlap_read_modify_write_compute(prefixed_displacement_path);
             self.clk_modrm_prefetch(bus, modrm, 5 + n, self.shift_cl_memory_cycles(n));
             self.putback_rm_byte(modrm, result, bus);
@@ -748,7 +774,8 @@ impl I286 {
                 self.ea_class,
                 EaClass::SingleRegister | EaClass::DoubleRegister
             );
-            self.timing
+            self.state
+                .timing
                 .overlap_read_modify_write_compute(prefixed_displacement_path);
             self.clk_modrm_word_prefetch(bus, modrm, 5 + n, self.shift_cl_memory_cycles(n), 0);
             self.putback_rm_word(modrm, result, bus);
@@ -775,7 +802,7 @@ impl I286 {
                     self.prepare_byte_immediate_memory_operand(modrm);
                     src = self.fetch(bus);
                     dst = self.seg_read_byte_at(bus, 0);
-                    self.timing.note_au_idle();
+                    self.state.timing.note_au_idle();
                 }
                 self.alu_and_byte(dst, src);
                 self.clk_modrm_prefetch(bus, modrm, 3, 6);
@@ -875,7 +902,7 @@ impl I286 {
                     self.prepare_immediate_memory_operand(modrm);
                     src = self.fetchword(bus);
                     dst = self.seg_read_word(bus);
-                    self.timing.note_au_idle();
+                    self.state.timing.note_au_idle();
                 }
                 self.alu_and_word(dst, src);
                 self.clk_modrm_word_prefetch(bus, modrm, 6, 7, 0);
@@ -1021,34 +1048,40 @@ impl I286 {
                         SegReg16::SS,
                         self.regs.word(WordReg::SP).wrapping_sub(2),
                     );
-                    self.timing.arm_control_transfer_restart(self.ip);
+                    self.state.timing.arm_control_transfer_restart(self.ip);
                     let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-                    let initial_cycles =
-                        if !self.timing.lock_active() && self.timing.prefix_count_is_odd() {
-                            0
-                        } else {
-                            1
-                        };
-                    self.timing
+                    let initial_cycles = if !self.state.timing.lock_active()
+                        && self.state.timing.prefix_count_is_odd()
+                    {
+                        0
+                    } else {
+                        1
+                    };
+                    self.state
+                        .timing
                         .advance_control_transfer_internal_cycles(initial_cycles);
-                    self.timing
+                    self.state
+                        .timing
                         .advance_control_transfer_fetches(bus, code_segment_base, 1);
                     self.sync_timing_cycles();
                     self.push(bus, return_ip);
                     if !stack_write_split {
-                        self.timing
-                            .advance_control_transfer_fetches(bus, code_segment_base, 1);
+                        self.state.timing.advance_control_transfer_fetches(
+                            bus,
+                            code_segment_base,
+                            1,
+                        );
                     }
-                    self.timing.complete_control_transfer_restart(2);
+                    self.state.timing.complete_control_transfer_restart(2);
                     self.sync_timing_cycles();
                 } else {
                     let stack_write_split = self.word_access_is_split(
                         SegReg16::SS,
                         self.regs.word(WordReg::SP).wrapping_sub(2),
                     );
-                    self.timing.suppress_next_read_writeback_gap();
+                    self.state.timing.suppress_next_read_writeback_gap();
                     self.push(bus, return_ip);
-                    let timing = match (self.timing.lock_active(), stack_write_split) {
+                    let timing = match (self.state.timing.lock_active(), stack_write_split) {
                         (true, true) => LOCK_SPLIT_STACK_NEAR_INDIRECT_CALL_MEMORY_RESTART_TIMING,
                         (true, false) => LOCK_NEAR_INDIRECT_CALL_MEMORY_RESTART_TIMING,
                         (false, true) => SPLIT_STACK_NEAR_INDIRECT_CALL_MEMORY_RESTART_TIMING,
@@ -1067,7 +1100,7 @@ impl I286 {
                 self.calc_ea(modrm, bus);
                 self.prepare_far_indirect_pointer_read();
                 let offset = self.seg_read_word(bus);
-                self.timing.suppress_next_memory_read_window();
+                self.state.timing.suppress_next_memory_read_window();
                 let segment = self.seg_read_word_at(bus, 2);
                 let cs = self.sregs[SegReg16::CS as usize];
                 let return_ip = self.ip;
@@ -1085,34 +1118,38 @@ impl I286 {
                         return;
                     }
                     self.ip = offset;
-                    self.timing
+                    self.state
+                        .timing
                         .arm_control_transfer_restart_without_gap_credit(self.ip);
                     let code_segment_base = self.seg_bases[SegReg16::CS as usize];
                     let (terminal_fetch_count, restart_tail_cycles) =
-                        self.timing.control_transfer_restart_fetches_and_tail(
+                        self.state.timing.control_transfer_restart_fetches_and_tail(
                             FAR_INDIRECT_CALL_RESTART_TIMING,
                         );
-                    self.timing.suppress_next_read_writeback_gap();
+                    self.state.timing.suppress_next_read_writeback_gap();
                     if !address_is_odd(self.ea) {
                         self.clk_visible(1);
                     }
-                    self.timing.note_au_idle();
-                    self.timing
+                    self.state.timing.note_au_idle();
+                    self.state
+                        .timing
                         .note_demand_prefetch_policy(I286DemandPrefetchPolicy::None);
                     self.push(bus, cs);
-                    self.timing.advance_control_transfer_internal_cycles(
+                    self.state.timing.advance_control_transfer_internal_cycles(
                         FAR_INDIRECT_CALL_RESTART_TIMING.initial_internal_cycles,
                     );
-                    self.timing
+                    self.state
+                        .timing
                         .advance_control_transfer_fetches(bus, code_segment_base, 1);
                     self.sync_timing_cycles();
                     self.push(bus, return_ip);
-                    self.timing.advance_control_transfer_fetches(
+                    self.state.timing.advance_control_transfer_fetches(
                         bus,
                         code_segment_base,
                         terminal_fetch_count,
                     );
-                    self.timing
+                    self.state
+                        .timing
                         .complete_control_transfer_restart(restart_tail_cycles);
                     self.sync_timing_cycles();
                     return;
@@ -1129,25 +1166,25 @@ impl I286 {
                     self.calc_ea(modrm, bus);
                     self.prepare_near_indirect_jmp_read(modrm);
                     let value = self.seg_read_word(bus);
-                    self.timing.note_au_idle();
+                    self.state.timing.note_au_idle();
                     value
                 };
                 self.ip = dst;
                 let timing = if modrm::modrm_is_register(modrm) {
-                    if self.timing.lock_active()
-                        && (self.timing.lock_prefix_after_prefix()
-                            || (self.timing.lock_prefix_followed_by_prefix()
-                                && self.timing.prefix_count_is_odd()))
+                    if self.state.timing.lock_active()
+                        && (self.state.timing.lock_prefix_after_prefix()
+                            || (self.state.timing.lock_prefix_followed_by_prefix()
+                                && self.state.timing.prefix_count_is_odd()))
                     {
                         NEAR_INDIRECT_JMP_REGISTER_RESTART_TIMING
-                    } else if self.timing.lock_active() {
+                    } else if self.state.timing.lock_active() {
                         NEAR_INDIRECT_JMP_RESTART_TIMING
-                    } else if self.timing.prefix_count_is_odd() {
+                    } else if self.state.timing.prefix_count_is_odd() {
                         PREFIXED_NEAR_INDIRECT_JMP_REGISTER_RESTART_TIMING
                     } else {
                         NEAR_INDIRECT_JMP_REGISTER_RESTART_TIMING
                     }
-                } else if self.timing.lock_active() {
+                } else if self.state.timing.lock_active() {
                     LOCK_NEAR_INDIRECT_JMP_MEMORY_RESTART_TIMING
                 } else {
                     NEAR_INDIRECT_JMP_RESTART_TIMING
@@ -1163,7 +1200,7 @@ impl I286 {
                 self.calc_ea(modrm, bus);
                 self.prepare_far_indirect_pointer_read();
                 let offset = self.seg_read_word(bus);
-                self.timing.suppress_next_memory_read_window();
+                self.state.timing.suppress_next_memory_read_window();
                 let segment = self.seg_read_word_at(bus, 2);
                 if self.is_protected_mode() {
                     self.code_descriptor(segment, offset, super::TaskType::Jmp, 0, 0, bus);
@@ -1172,7 +1209,7 @@ impl I286 {
                     if !self.load_segment(SegReg16::CS, segment, bus) {
                         return;
                     }
-                    let timing = if self.timing.lock_active() {
+                    let timing = if self.state.timing.lock_active() {
                         LOCK_FAR_INDIRECT_JMP_RESTART_TIMING
                     } else {
                         FAR_INDIRECT_JMP_RESTART_TIMING
@@ -1185,8 +1222,9 @@ impl I286 {
             }
             6 | 7 => {
                 // PUSH r/m16 (7 is undocumented alias)
-                let needs_register_setup_cycle = self.timing.prefix_count_is_even()
-                    && (!self.timing.lock_active() || !self.timing.lock_prefix_after_prefix());
+                let needs_register_setup_cycle = self.state.timing.prefix_count_is_even()
+                    && (!self.state.timing.lock_active()
+                        || !self.state.timing.lock_prefix_after_prefix());
                 if modrm::modrm_is_register(modrm) && modrm::modrm_rm(modrm) == 4 {
                     if needs_register_setup_cycle {
                         self.clk_visible(1);

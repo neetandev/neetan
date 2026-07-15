@@ -86,6 +86,7 @@ impl<T: common::TraceSink> Pc88VaBus<T> {
             fdc_dma_mode: false,
             dmac: Upd71071Dma::new(),
             timer3_ctrl: 0,
+            rom_bindings: Vec::new(),
         };
 
         // Compute the reset-default frame timing and arm the frame loop. The

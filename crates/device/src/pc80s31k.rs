@@ -2,6 +2,21 @@
 
 use crate::i8255::{I8255, I8255Write};
 
+save_state::runtime_state! {
+/// Mutable RAM owned by a PC80S31K disk subsystem.
+#[derive(Clone)]
+pub struct Pc80s31kMemoryState {
+    ram: Vec<u8>,
+}}
+
+save_state::runtime_state! {
+/// State of the paired PPI mailbox.
+#[derive(Clone)]
+pub struct Pc80s31kPpiLinkState {
+    main: crate::i8255::I8255State,
+    sub: crate::i8255::I8255State,
+}}
+
 /// Disk sub-CPU 64 KiB memory.
 pub struct Pc80s31kMemory {
     memory: Box<[u8; 0x1_0000]>,
@@ -61,6 +76,27 @@ impl Pc80s31kMemory {
             self.memory[usize::from(address)] = value;
         }
     }
+
+    /// Captures writable sub-system RAM without the disk ROM.
+    pub fn capture_state(&self) -> Pc80s31kMemoryState {
+        Pc80s31kMemoryState {
+            ram: self.memory[0x4000..0x8000].to_vec(),
+        }
+    }
+
+    /// Restores writable sub-system RAM without changing the disk ROM.
+    pub fn restore_state(
+        &mut self,
+        state: Pc80s31kMemoryState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.ram.len() != 0x4000 {
+            return Err(save_state::StateValidationError::new(
+                "PC80S31K RAM length is invalid",
+            ));
+        }
+        self.memory[0x4000..0x8000].copy_from_slice(&state.ram);
+        Ok(())
+    }
 }
 
 impl Default for Pc80s31kMemory {
@@ -119,6 +155,20 @@ impl Pc80s31kPpiLink {
             I8255Write::None => {}
         }
         matches!(changed, I8255Write::PortC | I8255Write::Mode)
+    }
+
+    /// Captures both sides of the mailbox.
+    pub fn capture_state(&self) -> Pc80s31kPpiLinkState {
+        Pc80s31kPpiLinkState {
+            main: self.main.state.clone(),
+            sub: self.sub.state.clone(),
+        }
+    }
+
+    /// Restores both sides of the mailbox.
+    pub fn restore_state(&mut self, state: Pc80s31kPpiLinkState) {
+        self.main.state = state.main;
+        self.sub.state = state.sub;
     }
 }
 

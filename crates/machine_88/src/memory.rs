@@ -74,20 +74,21 @@ const ALU_OP_SET: u8 = 0x01;
 const ALU_OP_XOR: u8 = 0x10;
 const ALU_OP_NOOP: u8 = 0x11;
 
+save_state::runtime_state_enum! {
 /// GVRAM access selection driven by ports 0x5C-0x5F (only effective when the
 /// GVAM ALU gate is clear).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum GvramSelect {
     /// 0x5F: 0xC000-0xFFFF maps main RAM (and text VRAM at 0xF000).
     #[default]
-    MainRam,
+    MainRam = 0,
     /// 0x5C: blue plane.
-    Blue,
+    Blue = 1,
     /// 0x5D: red plane.
-    Red,
+    Red = 2,
     /// 0x5E: green plane.
-    Green,
-}
+    Green = 3,
+}}
 
 /// Decoded target of a main-CPU memory access, used to select the memory-wait
 /// timing applied for that access.
@@ -111,7 +112,9 @@ pub(crate) enum Pc8801MemoryTarget {
     DictionaryRom,
 }
 
+save_state::runtime_state! {
 /// Mutable, save-state-relevant portion of the main-CPU memory.
+#[derive(Clone)]
 pub(crate) struct Pc8801MemoryState {
     /// Main RAM (64 KiB).
     pub(crate) ram: Box<[u8; MAIN_RAM_SIZE]>,
@@ -154,7 +157,7 @@ pub(crate) struct Pc8801MemoryState {
     /// is mapped at 0x0000-0x7FFF. Resets to enabled so the MC boots into the
     /// CD-System BIOS.
     pub(crate) cdrom_bank: bool,
-}
+}}
 
 impl Pc8801MemoryState {
     fn new(model: Pc8801Model) -> Self {
@@ -228,6 +231,27 @@ impl Pc8801Memory {
                 .try_into()
                 .unwrap(),
         }
+    }
+
+    /// Captures mutable memory and banking state without ROM bytes.
+    pub(crate) fn capture_state(&self) -> Pc8801MemoryState {
+        self.state.clone()
+    }
+
+    /// Restores mutable memory and banking state without changing ROM bytes.
+    pub(crate) fn restore_state(
+        &mut self,
+        state: Pc8801MemoryState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if usize::from(state.extram_bank) >= EXT_RAM_BANKS
+            || usize::from(state.dic_bank) >= DICTIONARY_ROM_SIZE / DICTIONARY_BANK_SIZE
+        {
+            return Err(save_state::StateValidationError::new(
+                "PC-88 memory banking state is invalid",
+            ));
+        }
+        self.state = state;
+        Ok(())
     }
 
     pub(crate) fn load_n88_rom(&mut self, data: &[u8]) {

@@ -5,18 +5,21 @@
 //! and instead want them to use the 640KB FDC. BIOS writes to this PPI are
 //! accepted as no-ops for compatibility with the real PC-9801F boot probe.
 
-/// Snapshot of the 320KB FDD PPI state.
+save_state::runtime_state! {
+/// Authoritative state of the 320KB FDD PPI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fdd320PpiState {
     /// Alternating status byte returned by port C reads.
     pub status: u8,
-}
+}}
 
 /// PC-9801 320KB FDD PPI compatibility shim.
 pub struct Fdd320Ppi {
     /// Public state for save-state support.
     pub state: Fdd320PpiState,
 }
+
+impl_simple_state_accessors!(Fdd320Ppi, Fdd320PpiState);
 
 impl Default for Fdd320Ppi {
     fn default() -> Self {

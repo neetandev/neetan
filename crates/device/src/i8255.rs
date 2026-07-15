@@ -7,6 +7,7 @@
 //! (which port feeds which on the peer, and the port-C nibble swap) lives in the
 //! wiring layer so this stays system-agnostic.
 
+save_state::runtime_state! {
 /// Snapshot of the 8255 PPI state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I8255State {
@@ -30,7 +31,7 @@ pub struct I8255State {
     pub read_mask_c: u8,
     /// Last mode-set control word.
     pub control: u8,
-}
+}}
 
 /// Intel 8255 PPI.
 #[derive(Debug, Clone)]

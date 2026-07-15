@@ -7,6 +7,16 @@ use common::{Cpu6809, NoTrace, TraceSink};
 
 use crate::bus::{Fm7Bus, MainBusView, SubBusView};
 
+save_state::runtime_state! {
+/// Machine-root state for one FM-7 family snapshot.
+#[derive(Clone)]
+struct Fm7RuntimeState {
+    main_cpu: cpu::M6809State,
+    sub_cpu: cpu::M6809State,
+    bus: crate::bus::Fm7BusState,
+    sub_cycle_target: u64,
+}}
+
 /// Main-clock cycles per interleave slice during normal execution.
 const DEFAULT_SLICE_CYCLES: u64 = 16;
 /// Main-clock cycles per interleave slice while a main/sub handshake is active.
@@ -176,9 +186,66 @@ impl<T: TraceSink> Fm7Machine<T> {
         let mut view = SubBusView { bus: &mut self.bus };
         self.sub_cpu.run_for(budget, &mut view);
     }
+
+    fn capture_machine_blob(
+        &self,
+    ) -> Result<save_state::MachineStateBlob, save_state::SaveStateError> {
+        let root = Fm7RuntimeState {
+            main_cpu: self.main_cpu.capture_state(),
+            sub_cpu: self.sub_cpu.capture_state(),
+            bus: self.bus.capture_runtime_state()?,
+            sub_cycle_target: self.sub_cycle_target,
+        };
+        save_state::capture_machine_state(
+            root,
+            self.bus.save_state_resources()?,
+            self.bus.save_state_media()?,
+        )
+    }
+
+    fn restore_machine_blob(
+        &mut self,
+        blob: &save_state::MachineStateBlob,
+    ) -> Result<(), save_state::SaveStateError> {
+        let active_resources = self.bus.save_state_resources()?;
+        let active_media = self.bus.save_state_media()?;
+        save_state::restore_machine_state(
+            self,
+            blob,
+            active_resources,
+            active_media,
+            64 << 20,
+            |machine| {
+                Ok(Fm7RuntimeState {
+                    main_cpu: machine.main_cpu.capture_state(),
+                    sub_cpu: machine.sub_cpu.capture_state(),
+                    bus: machine.bus.capture_runtime_state()?,
+                    sub_cycle_target: machine.sub_cycle_target,
+                })
+            },
+            |machine, state| {
+                machine.main_cpu.restore_state(state.main_cpu)?;
+                machine.sub_cpu.restore_state(state.sub_cpu)?;
+                machine.bus.restore_runtime_state(state.bus)?;
+                machine.sub_cycle_target = state.sub_cycle_target;
+                Ok(())
+            },
+        )
+    }
 }
 
 impl<T: TraceSink> common::Machine for Fm7Machine<T> {
+    fn capture_state(&mut self) -> Result<common::MachineStateBlob, common::SaveStateError> {
+        self.capture_machine_blob()
+    }
+
+    fn restore_state(
+        &mut self,
+        blob: &common::MachineStateBlob,
+    ) -> Result<(), common::SaveStateError> {
+        self.restore_machine_blob(blob)
+    }
+
     fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
         self.bus.set_host_date_time_provider(provider);
     }
@@ -256,7 +323,7 @@ impl<T: TraceSink> common::Machine for Fm7Machine<T> {
             .and_then(|extension| extension.to_str())
             .unwrap_or_default();
         self.bus
-            .insert_cassette(extension, &image)
+            .insert_cassette_from_path(extension, &image, path)
             .map_err(|error| format!("{}: {error}", path.display()))?;
         Ok(format!("{} ({} bytes)", path.display(), image.len()))
     }

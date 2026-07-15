@@ -24,9 +24,13 @@ impl Command for Cd {
     }
 }
 
-struct RunningCd {
+#[derive(Clone)]
+/// Serializable state of an executing CD command.
+pub(crate) struct RunningCd {
     args: Vec<u8>,
 }
+
+state_struct_codec!(RunningCd { args });
 
 impl RunningCommand for RunningCd {
     fn step(

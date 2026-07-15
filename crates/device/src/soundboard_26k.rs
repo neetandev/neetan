@@ -1,6 +1,6 @@
 //! PC-9801-26K sound board: YM2203 (OPN) FM + SSG synthesis with resampling.
 
-use ymfm_oxide::Ym2203;
+use ymfm_oxide::{Ym2203, YmfmOutput4};
 
 /// Timer outputs exposed by the PC-9801-26K board.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,13 +16,14 @@ pub enum Soundboard26kTimer {
 }
 
 pub use crate::opn_fm::FmSampleRemainder;
-use crate::opn_fm::{FmTimerAction, OpnFm, OpnFmTiming};
+use crate::opn_fm::{FmTimerAction, OpnFm, OpnFmState, OpnFmTiming};
 
 /// YM2203 input clock on the PC-9801-26K board: the 15.9744 MHz system clock
 /// divided by 4.
 const YM2203_CLOCK_HZ: u32 = 3_993_600;
 
-/// Snapshot of the PC-9801-26K sound board state.
+save_state::runtime_state! {
+/// Register and timing state of the PC-9801-26K sound board.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Soundboard26kState {
     /// Address latch (write-only via port 0x0188).
@@ -43,7 +44,15 @@ pub struct Soundboard26kState {
     pub sample_remainder: FmSampleRemainder,
     /// Whether this board uses alternate timer event kinds (dual-board config).
     pub alternate_timers: bool,
-}
+}}
+
+save_state::runtime_state! {
+/// Complete PC-9801-26K chip and streaming state.
+#[derive(Clone)]
+pub struct Soundboard26kRuntimeState {
+    board: Soundboard26kState,
+    core: OpnFmState<Ym2203, YmfmOutput4>,
+}}
 
 impl Default for Soundboard26kState {
     fn default() -> Self {
@@ -111,6 +120,25 @@ impl Soundboard26k {
             core,
             action_buffer: Vec::new(),
         }
+    }
+
+    /// Captures complete board, YM2203, and resampler state.
+    pub fn capture_state(&self) -> Soundboard26kRuntimeState {
+        Soundboard26kRuntimeState {
+            board: self.save_state(),
+            core: self.core.capture_state(),
+        }
+    }
+
+    /// Restores complete board state without recreating the YM2203.
+    pub fn restore_state(
+        &mut self,
+        state: Soundboard26kRuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        self.core.restore_state(state.core)?;
+        self.state = state.board;
+        self.action_buffer.clear();
+        Ok(())
     }
 
     const fn timer_kind(&self, timer_id: u8) -> Soundboard26kTimer {

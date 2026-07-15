@@ -51,7 +51,8 @@ const MODE1_NVMW_PERMIT: u8 = 0x40;
 /// Ref: undoc98 `io_disp.txt` port 0068h
 const MODE1_DISP_ENABLE: u8 = 0x80;
 
-/// Snapshot of the display control state.
+save_state::runtime_state! {
+/// Authoritative display control state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplayControlState {
     /// Video mode register (port 0x68 R/W).
@@ -92,13 +93,15 @@ pub struct DisplayControlState {
     /// 0 = 24.823 kHz (400 lines), 1 = 31.778 kHz (480 lines). PEGC 480-line
     /// output requires this flag in addition to a GDC AL > 400 setup.
     pub crt_31khz_enabled: bool,
-}
+}}
 
 /// Display control register block.
 pub struct DisplayControl {
     /// Embedded state for save/restore.
     pub state: DisplayControlState,
 }
+
+impl_simple_state_accessors!(DisplayControl, DisplayControlState);
 
 impl Default for DisplayControl {
     fn default() -> Self {

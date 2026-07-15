@@ -3,6 +3,8 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+extern crate alloc;
+
 mod bus;
 mod config;
 mod machine;

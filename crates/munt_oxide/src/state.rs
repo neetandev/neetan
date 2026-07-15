@@ -18,6 +18,11 @@
 // `&mut MuntState` instead of scattered `this` pointers. The design mirrors
 // the approach in `nuked_sc55_oxide::state::Sc55State`.
 
+use std::{
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
+
 use crate::{
     enumerations::{DacInputMode, MidiDelayMode, PolyState, ReverbMode},
     structures::{
@@ -31,7 +36,6 @@ pub(crate) const SAMPLE_RATE: u32 = 32000;
 pub(crate) const DEFAULT_MAX_PARTIALS: usize = 32;
 pub(crate) const MAX_PARTS: usize = 9;
 pub(crate) const MAX_SAMPLES_PER_RUN: usize = 4096;
-pub(crate) const SYSEX_BUFFER_SIZE: usize = 1000;
 pub(crate) const MAX_STREAM_BUFFER_SIZE: usize = 32768;
 pub(crate) const DEFAULT_MIDI_EVENT_QUEUE_SIZE: usize = 1024;
 pub(crate) const CONTROL_ROM_SIZE: usize = 64 * 1024;
@@ -47,6 +51,29 @@ pub(crate) const SYSEX_CMD_WSD: u8 = 0x40;
 pub(crate) const SYSEX_CMD_RQD: u8 = 0x41;
 pub(crate) const SYSEX_CMD_DAT: u8 = 0x42;
 pub(crate) const SYSEX_CMD_EOD: u8 = 0x45;
+
+#[derive(Clone)]
+pub(crate) struct ImmutableResource<Resource: Clone>(Arc<Resource>);
+
+impl<Resource: Clone> ImmutableResource<Resource> {
+    pub(crate) fn new(resource: Resource) -> Self {
+        Self(Arc::new(resource))
+    }
+}
+
+impl<Resource: Clone> Deref for ImmutableResource<Resource> {
+    type Target = Resource;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<Resource: Clone> DerefMut for ImmutableResource<Resource> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
 
 /// Coarse LPF delay line length (must be a power of 2).
 pub(crate) const COARSE_LPF_DELAY_LINE_LENGTH: usize = 8;
@@ -86,6 +113,7 @@ pub(crate) enum PairType {
 }
 
 #[derive(Clone, Default)]
+/// Authoritative progress of one LA32 ramp generator.
 pub(crate) struct La32RampState {
     pub(crate) current: u32,
     pub(crate) large_target: u32,
@@ -96,6 +124,7 @@ pub(crate) struct La32RampState {
 }
 
 #[derive(Clone, Default)]
+/// Authoritative progress of one LA32 waveform generator.
 pub(crate) struct La32FloatWaveGeneratorState {
     pub(crate) active: bool,
     pub(crate) sawtooth_waveform: bool,
@@ -115,6 +144,7 @@ pub(crate) struct La32FloatWaveGeneratorState {
 }
 
 #[derive(Clone, Default)]
+/// Authoritative state of one paired LA32 synthesis path.
 pub(crate) struct La32PairState {
     pub(crate) master: La32FloatWaveGeneratorState,
     pub(crate) slave: La32FloatWaveGeneratorState,
@@ -125,6 +155,7 @@ pub(crate) struct La32PairState {
 }
 
 #[derive(Clone, Default)]
+/// Authoritative time-variant amplifier progress.
 pub(crate) struct TvaState {
     pub(crate) playing: bool,
     pub(crate) bias_amp_subtraction: i32,
@@ -135,6 +166,7 @@ pub(crate) struct TvaState {
 }
 
 #[derive(Clone, Default)]
+/// Authoritative time-variant filter progress.
 pub(crate) struct TvfState {
     pub(crate) base_cutoff: u8,
     pub(crate) key_time_subtraction: i32,
@@ -144,6 +176,7 @@ pub(crate) struct TvfState {
 }
 
 #[derive(Clone, Default)]
+/// Authoritative time-variant pitch progress.
 pub(crate) struct TvpState {
     pub(crate) process_timer_increment: i32,
     pub(crate) counter: i32,
@@ -166,6 +199,7 @@ pub(crate) struct TvpState {
 }
 
 #[derive(Clone, Default)]
+/// Complete authoritative state of one active MT-32 partial.
 pub(crate) struct PartialState {
     /// Number of the sample currently being rendered (debug only).
     pub(crate) sample_num: u32,
@@ -215,6 +249,7 @@ pub(crate) struct PartialState {
 }
 
 #[derive(Clone, Default)]
+/// Authoritative voice-allocation state of one MT-32 poly.
 pub(crate) struct PolyStateData {
     /// Index of the owning Part.
     pub(crate) part_index: Option<usize>,
@@ -230,6 +265,7 @@ pub(crate) struct PolyStateData {
 }
 
 #[derive(Clone)]
+/// Authoritative controller and voice state of one MT-32 part.
 pub(crate) struct PartState {
     /// 0=Part 1, .. 7=Part 8, 8=Rhythm.
     pub(crate) part_num: u32,
@@ -289,6 +325,7 @@ impl Default for PartState {
 }
 
 #[derive(Clone, Default)]
+/// Authoritative MT-32 partial-pool allocation state.
 pub(crate) struct PartialManagerState {
     pub(crate) num_reserved_partials_for_part: [u8; MAX_PARTS],
     pub(crate) free_polys: Vec<usize>,
@@ -298,21 +335,29 @@ pub(crate) struct PartialManagerState {
 }
 
 #[derive(Clone, Default)]
+/// One queued MT-32 MIDI event and its timestamp.
 pub(crate) struct MidiEvent {
-    pub(crate) sysex_data: Option<Vec<u8>>,
+    pub(crate) is_sysex: bool,
+    pub(crate) sysex_offset: u32,
+    pub(crate) sysex_length: u32,
     pub(crate) short_message_data: u32,
     pub(crate) timestamp: u32,
 }
 
 #[derive(Clone, Default)]
+/// Authoritative contents and cursors of the MT-32 MIDI event queue.
 pub(crate) struct MidiEventQueueState {
     pub(crate) ring_buffer: Vec<MidiEvent>,
     pub(crate) ring_buffer_mask: u32,
     pub(crate) start_position: u32,
     pub(crate) end_position: u32,
+    pub(crate) sysex_buffer: Vec<u8>,
+    pub(crate) sysex_write_position: u32,
+    pub(crate) sysex_used: u32,
 }
 
 #[derive(Clone)]
+/// Authoritative progress of the MT-32 MIDI byte-stream parser.
 pub(crate) struct MidiStreamParserState {
     pub(crate) running_status: u8,
     pub(crate) stream_buffer: Vec<u8>,
@@ -323,7 +368,7 @@ impl Default for MidiStreamParserState {
     fn default() -> Self {
         Self {
             running_status: 0,
-            stream_buffer: vec![0; SYSEX_BUFFER_SIZE],
+            stream_buffer: vec![0; MAX_STREAM_BUFFER_SIZE],
             stream_buffer_size: 0,
         }
     }
@@ -487,6 +532,7 @@ impl Default for RomData {
 }
 
 #[derive(Clone)]
+/// Mutable state of the MT-32 extension controls.
 pub(crate) struct ExtensionsState {
     pub(crate) master_tune_pitch_delta: i32,
     pub(crate) master_volume_override: u8,
@@ -527,8 +573,8 @@ pub(crate) struct MuntState {
     pub(crate) mt32_default: MemParams,
 
     /// ROM data (loaded at open time).
-    pub(crate) rom: RomData,
-    pub(crate) tables: Tables,
+    pub(crate) rom: ImmutableResource<RomData>,
+    pub(crate) tables: ImmutableResource<Tables>,
 
     /// Parts: indices 0..7 = melodic Part 1..8, index 8 = Rhythm.
     pub(crate) parts: [PartState; MAX_PARTS],
@@ -556,6 +602,7 @@ pub(crate) struct MuntState {
 
     /// MIDI stream parser.
     pub(crate) midi_stream_parser: MidiStreamParserState,
+    pub(crate) midi_sysex_scratch: Option<Vec<u8>>,
 
     /// When a partial needs to be aborted to free it up for use by a new Poly,
     /// the controller will busy-loop waiting for the sound to finish.
@@ -605,8 +652,8 @@ impl Default for MuntState {
             mt32_ram: MemParams::default(),
             mt32_default: MemParams::default(),
 
-            rom: RomData::default(),
-            tables: Tables::new(),
+            rom: ImmutableResource::new(RomData::default()),
+            tables: ImmutableResource::new(Tables::new()),
 
             parts: core::array::from_fn(|_| PartState::default()),
             partials: Vec::new(),
@@ -624,6 +671,7 @@ impl Default for MuntState {
             rendered_sample_count: 0,
 
             midi_stream_parser: MidiStreamParserState::default(),
+            midi_sysex_scratch: Some(vec![0; MAX_STREAM_BUFFER_SIZE]),
 
             aborting_poly_index: None,
 
@@ -649,3 +697,470 @@ impl Default for MuntState {
         }
     }
 }
+
+impl MuntState {
+    pub(crate) fn attach_resources(&mut self, active: &Self) {
+        self.rom = active.rom.clone();
+        self.tables = active.tables.clone();
+    }
+
+    pub(crate) fn validate_for_restore(&self) -> Result<(), String> {
+        if self.mt32_ram.raw.len() != MemParams::SIZE
+            || self.mt32_default.raw.len() != MemParams::SIZE
+        {
+            return Err("MT-32 memory size differs".to_owned());
+        }
+        if self.partial_count as usize != self.partials.len()
+            || self.polys.len() != self.partials.len()
+        {
+            return Err("MT-32 partial pool size is invalid".to_owned());
+        }
+        if self.active_reverb_model >= self.reverb_models.len() {
+            return Err("MT-32 active reverb index is invalid".to_owned());
+        }
+        let queue_length = self.midi_queue.ring_buffer.len();
+        if queue_length == 0
+            || !queue_length.is_power_of_two()
+            || self.midi_queue.ring_buffer_mask as usize != queue_length - 1
+            || self.midi_queue.start_position as usize >= queue_length
+            || self.midi_queue.end_position as usize >= queue_length
+        {
+            return Err("MT-32 MIDI queue is invalid".to_owned());
+        }
+        if self.midi_stream_parser.stream_buffer.len() != MAX_STREAM_BUFFER_SIZE
+            || self.midi_stream_parser.stream_buffer_size as usize
+                > self.midi_stream_parser.stream_buffer.len()
+        {
+            return Err("MT-32 MIDI parser buffer is invalid".to_owned());
+        }
+        if self.midi_queue.sysex_buffer.len() != MAX_STREAM_BUFFER_SIZE
+            || self.midi_queue.sysex_write_position as usize >= MAX_STREAM_BUFFER_SIZE
+            || self.midi_queue.sysex_used as usize > MAX_STREAM_BUFFER_SIZE
+            || self
+                .midi_sysex_scratch
+                .as_ref()
+                .is_none_or(|scratch| scratch.len() != MAX_STREAM_BUFFER_SIZE)
+        {
+            return Err("MT-32 SysEx storage is invalid".to_owned());
+        }
+        let mut queued_sysex_bytes = 0usize;
+        let mut event_position = self.midi_queue.start_position;
+        while event_position != self.midi_queue.end_position {
+            let event = &self.midi_queue.ring_buffer[event_position as usize];
+            if event.is_sysex {
+                if event.sysex_offset as usize >= MAX_STREAM_BUFFER_SIZE
+                    || event.sysex_length as usize > MAX_STREAM_BUFFER_SIZE
+                {
+                    return Err("MT-32 queued SysEx range is invalid".to_owned());
+                }
+                queued_sysex_bytes += event.sysex_length as usize;
+            }
+            event_position = (event_position + 1) & self.midi_queue.ring_buffer_mask;
+        }
+        if queued_sysex_bytes != self.midi_queue.sysex_used as usize {
+            return Err("MT-32 queued SysEx byte count is invalid".to_owned());
+        }
+        if self.renderer.tmp_non_reverb_left.len() < MAX_SAMPLES_PER_RUN
+            || self.renderer.tmp_non_reverb_right.len() < MAX_SAMPLES_PER_RUN
+            || self.renderer.tmp_reverb_dry_left.len() < MAX_SAMPLES_PER_RUN
+            || self.renderer.tmp_reverb_dry_right.len() < MAX_SAMPLES_PER_RUN
+            || self.renderer.tmp_reverb_wet_left.len() < MAX_SAMPLES_PER_RUN
+            || self.renderer.tmp_reverb_wet_right.len() < MAX_SAMPLES_PER_RUN
+            || self.renderer.tmp_partial_left.len() < MAX_SAMPLES_PER_RUN
+            || self.renderer.tmp_partial_right.len() < MAX_SAMPLES_PER_RUN
+        {
+            return Err("MT-32 renderer buffer is invalid".to_owned());
+        }
+        for partial in &self.partials {
+            if partial
+                .pcm_wave_index
+                .is_some_and(|index| index >= self.rom.pcm_waves.len())
+                || partial
+                    .poly_index
+                    .is_some_and(|index| index >= self.polys.len())
+                || partial
+                    .pair_index
+                    .is_some_and(|index| index >= self.partials.len())
+                || partial
+                    .rhythm_temp_index
+                    .is_some_and(|index| index >= DRUM_CACHE_COUNT)
+            {
+                return Err("MT-32 partial reference is invalid".to_owned());
+            }
+        }
+        for poly in &self.polys {
+            if poly.part_index.is_some_and(|index| index >= MAX_PARTS)
+                || poly
+                    .next_index
+                    .is_some_and(|index| index >= self.polys.len())
+                || poly
+                    .partial_indices
+                    .iter()
+                    .flatten()
+                    .any(|&index| index >= self.partials.len())
+            {
+                return Err("MT-32 poly reference is invalid".to_owned());
+            }
+        }
+        for model in &self.reverb_models {
+            validate_reverb_model(model)?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_reverb_ring(ring: &ReverbRingBuffer) -> Result<(), String> {
+    if ring.size as usize != ring.buffer.len() || (ring.size != 0 && ring.index >= ring.size) {
+        return Err("MT-32 reverb ring is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_reverb_model(model: &BReverbModelState) -> Result<(), String> {
+    match model {
+        BReverbModelState::Standard {
+            allpasses,
+            entrance_delay,
+            combs,
+            ..
+        } => {
+            for allpass in allpasses {
+                validate_reverb_ring(&allpass.ring)?;
+            }
+            validate_reverb_ring(&entrance_delay.comb.ring)?;
+            for comb in combs {
+                validate_reverb_ring(&comb.ring)?;
+            }
+        }
+        BReverbModelState::TapDelay { tap_delay_comb, .. } => {
+            validate_reverb_ring(&tap_delay_comb.comb.ring)?;
+        }
+        BReverbModelState::Closed => {}
+    }
+    Ok(())
+}
+
+crate::impl_state_codec!(La32RampState {
+    current,
+    large_target,
+    large_increment,
+    descending,
+    interrupt_countdown,
+    interrupt_raised,
+});
+
+crate::impl_state_codec!(La32FloatWaveGeneratorState {
+    active,
+    sawtooth_waveform,
+    resonance,
+    pulse_width,
+    pcm_wave_address_offset,
+    pcm_wave_length,
+    pcm_wave_looped,
+    pcm_wave_interpolated,
+    wave_pos,
+    last_freq,
+    pcm_position,
+});
+
+crate::impl_state_codec!(La32PairState {
+    master,
+    slave,
+    ring_modulated,
+    mixed,
+    master_output_sample,
+    slave_output_sample,
+});
+
+crate::impl_state_codec!(TvaState {
+    playing,
+    bias_amp_subtraction,
+    velo_amp_subtraction,
+    key_time_subtraction,
+    target,
+    phase,
+});
+
+crate::impl_state_codec!(TvfState {
+    base_cutoff,
+    key_time_subtraction,
+    level_mult,
+    target,
+    phase,
+});
+
+crate::impl_state_codec!(TvpState {
+    process_timer_increment,
+    counter,
+    time_elapsed,
+    phase,
+    base_pitch,
+    target_pitch_offset_without_lfo,
+    current_pitch_offset,
+    lfo_pitch_offset,
+    time_keyfollow_subtraction,
+    pitch_offset_change_per_big_tick,
+    target_pitch_offset_reached_big_tick,
+    shifts,
+    pitch,
+});
+
+crate::impl_state_codec!(PartialState {
+    sample_num,
+    left_pan_value,
+    right_pan_value,
+    owner_part,
+    mix_type,
+    structure_position,
+    pcm_num,
+    pcm_wave_index,
+    pulse_width_val,
+    poly_index,
+    pair_index,
+    rhythm_temp_index,
+    tva,
+    tvp,
+    tvf,
+    amp_ramp,
+    cutoff_modifier_ramp,
+    la32_pair,
+    patch_cache,
+    cache_backup,
+    already_outputed,
+    active,
+});
+
+crate::impl_state_codec!(PolyStateData {
+    part_index,
+    key,
+    velocity,
+    active_partial_count,
+    sustain,
+    state,
+    partial_indices,
+    next_index,
+});
+
+crate::impl_state_codec!(PartState {
+    part_num,
+    hold_pedal,
+    active_partial_count,
+    active_non_releasing_poly_count,
+    patch_cache,
+    active_polys_first,
+    active_polys_last,
+    name,
+    current_instr,
+    volume_override,
+    modulation,
+    expression,
+    pitch_bend,
+    nrpn,
+    rpn,
+    pitch_bender_range,
+    is_rhythm,
+    drum_cache,
+});
+
+crate::impl_state_codec!(PartialManagerState {
+    num_reserved_partials_for_part,
+    free_polys,
+    inactive_partials,
+    inactive_partial_count,
+});
+
+crate::impl_state_codec!(MidiEvent {
+    is_sysex,
+    sysex_offset,
+    sysex_length,
+    short_message_data,
+    timestamp,
+});
+
+crate::impl_state_codec!(MidiEventQueueState {
+    ring_buffer,
+    ring_buffer_mask,
+    start_position,
+    end_position,
+    sysex_buffer,
+    sysex_write_position,
+    sysex_used,
+});
+
+crate::impl_state_codec!(MidiStreamParserState {
+    running_status,
+    stream_buffer,
+    stream_buffer_size,
+});
+
+crate::impl_state_codec!(CoarseLpfState {
+    ring_buffer,
+    ring_buffer_position,
+});
+
+crate::impl_state_codec!(AnalogState {
+    left_channel_lpf,
+    right_channel_lpf,
+    synth_gain,
+    reverb_gain,
+    old_mt32_analog_lpf,
+});
+
+crate::impl_state_codec!(ReverbRingBuffer {
+    buffer,
+    size,
+    index,
+});
+
+crate::impl_state_codec!(ReverbAllpassState { ring });
+
+crate::impl_state_codec!(ReverbCombState {
+    ring,
+    filter_factor,
+    feedback_factor,
+});
+
+crate::impl_state_codec!(ReverbTapDelayCombState { comb, out_l, out_r });
+
+crate::impl_state_codec!(ReverbDelayWithLpfState { comb, amp });
+
+impl save_state::StateEncode for BReverbModelState {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Standard {
+                allpasses,
+                entrance_delay,
+                combs,
+                dry_amp,
+                wet_level,
+                mt32_compatible,
+                mode,
+                opened,
+            } => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                save_state::StateEncode::encode_state(allpasses, output);
+                save_state::StateEncode::encode_state(entrance_delay, output);
+                save_state::StateEncode::encode_state(combs, output);
+                save_state::StateEncode::encode_state(dry_amp, output);
+                save_state::StateEncode::encode_state(wet_level, output);
+                save_state::StateEncode::encode_state(mt32_compatible, output);
+                save_state::StateEncode::encode_state(mode, output);
+                save_state::StateEncode::encode_state(opened, output);
+            }
+            Self::TapDelay {
+                tap_delay_comb,
+                dry_amp,
+                wet_level,
+                mt32_compatible,
+                opened,
+            } => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(tap_delay_comb, output);
+                save_state::StateEncode::encode_state(dry_amp, output);
+                save_state::StateEncode::encode_state(wet_level, output);
+                save_state::StateEncode::encode_state(mt32_compatible, output);
+                save_state::StateEncode::encode_state(opened, output);
+            }
+            Self::Closed => save_state::StateEncode::encode_state(&2u8, output),
+        }
+    }
+}
+
+impl save_state::StateDecode for BReverbModelState {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Standard {
+                allpasses: save_state::StateDecode::decode_state(decoder)?,
+                entrance_delay: save_state::StateDecode::decode_state(decoder)?,
+                combs: save_state::StateDecode::decode_state(decoder)?,
+                dry_amp: save_state::StateDecode::decode_state(decoder)?,
+                wet_level: save_state::StateDecode::decode_state(decoder)?,
+                mt32_compatible: save_state::StateDecode::decode_state(decoder)?,
+                mode: save_state::StateDecode::decode_state(decoder)?,
+                opened: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            1 => Ok(Self::TapDelay {
+                tap_delay_comb: save_state::StateDecode::decode_state(decoder)?,
+                dry_amp: save_state::StateDecode::decode_state(decoder)?,
+                wet_level: save_state::StateDecode::decode_state(decoder)?,
+                mt32_compatible: save_state::StateDecode::decode_state(decoder)?,
+                opened: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            2 => Ok(Self::Closed),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+crate::impl_state_codec!(RendererState {
+    tmp_non_reverb_left,
+    tmp_non_reverb_right,
+    tmp_reverb_dry_left,
+    tmp_reverb_dry_right,
+    tmp_reverb_wet_left,
+    tmp_reverb_wet_right,
+    tmp_partial_left,
+    tmp_partial_right,
+});
+
+crate::impl_state_codec!(MemoryRegionDescriptor {
+    start_addr,
+    entry_size,
+    entries,
+});
+
+crate::impl_state_codec!(ExtensionsState {
+    master_tune_pitch_delta,
+    master_volume_override,
+    nice_amp_ramp,
+    nice_panning,
+    nice_partial_mixing,
+    chan_table,
+    aborting_part_ix,
+});
+
+crate::impl_state_codec!(MemoryRegionDescriptors {
+    patch_temp,
+    rhythm_temp,
+    timbre_temp,
+    patches,
+    timbres,
+    system,
+    reset,
+});
+
+crate::impl_state_codec!(MuntState {
+    opened,
+    activated,
+    mt32_ram,
+    mt32_default,
+    parts,
+    partials,
+    partial_count,
+    polys,
+    partial_manager,
+    reverb_models,
+    active_reverb_model,
+    reverb_overridden,
+    midi_queue,
+    last_received_midi_event_timestamp,
+    rendered_sample_count,
+    midi_stream_parser,
+    midi_sysex_scratch,
+    aborting_poly_index,
+    analog,
+    renderer,
+    midi_delay_mode,
+    dac_input_mode,
+    output_gain,
+    reverb_output_gain,
+    reversed_stereo_enabled,
+    extensions,
+    memory_regions,
+    prng_state,
+} defaults {
+    rom: ImmutableResource::new(RomData::default()),
+    tables: ImmutableResource::new(Tables::new()),
+});

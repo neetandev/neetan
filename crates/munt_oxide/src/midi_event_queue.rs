@@ -21,7 +21,7 @@
 // - add fair emulation of the MIDI interface delays
 // - extend the synth interface with the default implementation of a typical rendering loop.
 
-use crate::state::{MidiEvent, MidiEventQueueState};
+use crate::state::{MAX_STREAM_BUFFER_SIZE, MidiEvent, MidiEventQueueState};
 
 impl MidiEventQueueState {
     /// Must be called once after creating MidiEventQueueState.
@@ -29,12 +29,15 @@ impl MidiEventQueueState {
     pub(crate) fn init(&mut self, ring_buffer_size: u32) {
         self.ring_buffer_mask = ring_buffer_size - 1;
         self.ring_buffer = vec![MidiEvent::default(); ring_buffer_size as usize];
+        self.sysex_buffer = vec![0; MAX_STREAM_BUFFER_SIZE];
         self.reset();
     }
 
     pub(crate) fn reset(&mut self) {
         self.start_position = 0;
         self.end_position = 0;
+        self.sysex_write_position = 0;
+        self.sysex_used = 0;
     }
 
     pub(crate) fn push_short_message(&mut self, short_message_data: u32, timestamp: u32) -> bool {
@@ -43,7 +46,9 @@ impl MidiEventQueueState {
             return false;
         }
         let new_event = &mut self.ring_buffer[self.end_position as usize];
-        new_event.sysex_data = None;
+        new_event.is_sysex = false;
+        new_event.sysex_offset = 0;
+        new_event.sysex_length = 0;
         new_event.short_message_data = short_message_data;
         new_event.timestamp = timestamp;
         self.end_position = new_end_position;
@@ -55,12 +60,41 @@ impl MidiEventQueueState {
         if self.start_position == new_end_position {
             return false;
         }
+        if sysex_data.len() > self.sysex_buffer.len() - self.sysex_used as usize {
+            return false;
+        }
+        let sysex_offset = self.sysex_write_position as usize;
+        let first_length = sysex_data.len().min(self.sysex_buffer.len() - sysex_offset);
+        self.sysex_buffer[sysex_offset..sysex_offset + first_length]
+            .copy_from_slice(&sysex_data[..first_length]);
+        let remaining = sysex_data.len() - first_length;
+        self.sysex_buffer[..remaining].copy_from_slice(&sysex_data[first_length..]);
         let new_event = &mut self.ring_buffer[self.end_position as usize];
-        new_event.sysex_data = Some(sysex_data.to_vec());
+        new_event.is_sysex = true;
+        new_event.sysex_offset = self.sysex_write_position;
+        new_event.sysex_length = sysex_data.len() as u32;
         new_event.short_message_data = sysex_data.len() as u32;
         new_event.timestamp = timestamp;
+        self.sysex_write_position =
+            (self.sysex_write_position + sysex_data.len() as u32) % self.sysex_buffer.len() as u32;
+        self.sysex_used += sysex_data.len() as u32;
         self.end_position = new_end_position;
         true
+    }
+
+    pub(crate) fn copy_front_sysex(&self, target: &mut [u8]) -> Option<usize> {
+        let event = self.peek()?;
+        if !event.is_sysex || target.len() < event.sysex_length as usize {
+            return None;
+        }
+        let sysex_offset = event.sysex_offset as usize;
+        let sysex_length = event.sysex_length as usize;
+        let first_length = sysex_length.min(self.sysex_buffer.len() - sysex_offset);
+        target[..first_length]
+            .copy_from_slice(&self.sysex_buffer[sysex_offset..sysex_offset + first_length]);
+        let remaining = sysex_length - first_length;
+        target[first_length..sysex_length].copy_from_slice(&self.sysex_buffer[..remaining]);
+        Some(sysex_length)
     }
 
     pub(crate) fn peek(&self) -> Option<&MidiEvent> {
@@ -75,8 +109,10 @@ impl MidiEventQueueState {
         if self.is_empty() {
             return;
         }
-        // Reclaim sysex storage by dropping the Vec.
-        self.ring_buffer[self.start_position as usize].sysex_data = None;
+        let event = &self.ring_buffer[self.start_position as usize];
+        if event.is_sysex {
+            self.sysex_used -= event.sysex_length;
+        }
         self.start_position = (self.start_position + 1) & self.ring_buffer_mask;
     }
 
@@ -95,6 +131,9 @@ mod tests {
             ring_buffer_mask: 0,
             start_position: 0,
             end_position: 0,
+            sysex_buffer: Vec::new(),
+            sysex_write_position: 0,
+            sysex_used: 0,
         };
         state.init(size);
         state
@@ -117,7 +156,7 @@ mod tests {
         let event = state.peek().unwrap();
         assert_eq!(event.short_message_data, 0x007F3C90);
         assert_eq!(event.timestamp, 100);
-        assert!(event.sysex_data.is_none());
+        assert!(!event.is_sysex);
 
         state.drop_front();
 
@@ -136,7 +175,10 @@ mod tests {
         assert!(state.push_sysex(&sysex, 300));
 
         let event = state.peek().unwrap();
-        assert_eq!(event.sysex_data.as_ref().unwrap(), &sysex);
+        assert!(event.is_sysex);
+        let mut copied = vec![0; sysex.len()];
+        assert_eq!(state.copy_front_sysex(&mut copied), Some(sysex.len()));
+        assert_eq!(copied, sysex);
         assert_eq!(event.short_message_data, sysex.len() as u32);
         assert_eq!(event.timestamp, 300);
 

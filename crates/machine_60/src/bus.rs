@@ -66,6 +66,51 @@ enum SoundChip {
     Opn(Box<OpnFm<Ym2203>>),
 }
 
+save_state::runtime_state! {
+/// Complete authoritative PC-6000 family bus state.
+#[derive(Clone)]
+pub(crate) struct Pc6000BusState {
+    memory: crate::memory::Pc6000MemoryState,
+    scheduler: common::SchedulerState,
+    interrupt: crate::interrupt::InterruptController,
+    ppi: crate::bus::ppi_link::PpiLinkState,
+    sub: device::subcontroller_pc6000::SubHle,
+    sound_ay: Option<device::ay8910::Ay8910>,
+    sound_opn: Option<device::opn_fm::OpnFmState<ymfm_oxide::Ym2203, ymfm_oxide::YmfmOutput4>>,
+    voice: device::upd7752::Upd7752,
+    serial: device::i8251_serial::I8251SerialState,
+    cassette: device::cassette::CassetteDeckState,
+    cassette_active: bool,
+    fdc: device::upd765a_fdc::Upd765aFdcState,
+    floppy: device::upd765a_fdc::FloppyControllerState,
+    fdc_motor_on: bool,
+    fdc_external_selected: bool,
+    fdc_read: crate::bus::fdc::FdcReadState,
+    memory_wait_cycles: i64,
+    bus_request_active: bool,
+    scanline: u16,
+    current_cycle: u64,
+    timer_enabled: bool,
+    timer_irq_masked: bool,
+    timer_hz_divider: u64,
+    joystick_directions: u8,
+    system_latch: u8,
+    background_color_bank: u8,
+    extended_vram_bank: u8,
+    extended_graphics_bitmap: bool,
+    extended_graphics_two_bpp: bool,
+    extended_graphics_text: bool,
+    sr_text_mode: bool,
+    sr_text_rows: u8,
+    sr_width_80: bool,
+    sr_compatibility: bool,
+    sr_scroll_x: u16,
+    sr_scroll_y: u8,
+    sr_bitmap_x_offset: u8,
+    sr_bitmap_y_offset: u8,
+    presented_frames: u64,
+}}
+
 impl Pc6000Bus<NoTrace> {
     /// Creates an untraced bus for `model` at the given audio sample rate.
     pub fn new(model: Pc6000Model, sample_rate: u32) -> Self {
@@ -190,6 +235,7 @@ pub struct Pc6000Bus<T: TraceSink = NoTrace> {
     sr_scroll_y: u8,
     sr_bitmap_x_offset: u8,
     sr_bitmap_y_offset: u8,
+    rom_bindings: Vec<save_state::ResourceBinding>,
     framebuffer: Vec<u8>,
     presented_frames: u64,
     /// Bus-activity tracer (a no-op by default).
@@ -258,6 +304,7 @@ impl<T: TraceSink> Pc6000Bus<T> {
             sr_scroll_y: 0,
             sr_bitmap_x_offset: 0,
             sr_bitmap_y_offset: 0,
+            rom_bindings: Vec::new(),
             framebuffer: vec![0; width as usize * height as usize * BYTES_PER_PIXEL],
             presented_frames: 0,
             tracer,
@@ -272,6 +319,26 @@ impl<T: TraceSink> Pc6000Bus<T> {
     /// extended CG, voice and kanji ROMs are loaded into the banked map when the
     /// model provides them.
     pub fn load_roms(&mut self, roms: &LoadedRoms) {
+        self.rom_bindings.clear();
+        for (identifier, bytes) in [
+            ("basic", roms.basic.as_deref()),
+            ("system-1", roms.system_rom1.as_deref()),
+            ("system-2", roms.system_rom2.as_deref()),
+            ("sub", roms.sub_rom.as_deref()),
+            ("cg-base", roms.cg_base.as_deref()),
+            ("cg-extended", roms.cg_ext.as_deref()),
+            ("cg-sr", roms.cg_sr.as_deref()),
+            ("kanji", roms.kanji.as_deref()),
+            ("voice", roms.voice.as_deref()),
+        ] {
+            if let Some(bytes) = bytes {
+                self.rom_bindings.push(save_state::ResourceBinding {
+                    identifier: save_state::ResourceBindingId::new(format!("rom:{identifier}"))
+                        .expect("static resource identifier"),
+                    identity: save_state::ResourceIdentity::from_bytes(bytes),
+                });
+            }
+        }
         if self.model.is_sr() {
             let half1 = roms.system_rom1.as_deref().unwrap_or(&[]);
             let half2 = roms.system_rom2.as_deref().unwrap_or(&[]);
@@ -309,6 +376,15 @@ impl<T: TraceSink> Pc6000Bus<T> {
     /// Loads a cartridge image into the cartridge slot.
     pub fn load_cartridge(&mut self, image: &[u8]) {
         self.memory.load_cartridge(image);
+        self.rom_bindings
+            .retain(|binding| binding.identifier.as_str() != "cartridge:0");
+        if !image.is_empty() {
+            self.rom_bindings.push(save_state::ResourceBinding {
+                identifier: save_state::ResourceBindingId::new("cartridge:0")
+                    .expect("static resource identifier"),
+                identity: save_state::ResourceIdentity::from_bytes(image),
+            });
+        }
     }
 
     /// Parses a cassette image (chosen by file extension) and loads it into the
@@ -316,6 +392,18 @@ impl<T: TraceSink> Pc6000Bus<T> {
     pub fn insert_cassette(&mut self, extension: &str, image: &[u8]) -> Result<(), CassetteError> {
         let tape = parse_tape(extension, image)?;
         self.cassette.insert(tape);
+        Ok(())
+    }
+
+    /// Parses and loads a cassette image with its configured source path.
+    pub fn insert_cassette_from_path(
+        &mut self,
+        extension: &str,
+        image: &[u8],
+        path: &std::path::Path,
+    ) -> Result<(), CassetteError> {
+        let tape = parse_tape(extension, image)?;
+        self.cassette.insert_from_path(tape, path);
         Ok(())
     }
 
@@ -350,6 +438,148 @@ impl<T: TraceSink> Pc6000Bus<T> {
     /// The configured machine model.
     pub fn model(&self) -> Pc6000Model {
         self.model
+    }
+
+    pub(crate) fn save_state_resources(
+        &self,
+    ) -> Result<save_state::ResourceManifest, save_state::StateValidationError> {
+        save_state::ResourceManifest::new(self.rom_bindings.clone())
+    }
+
+    pub(crate) fn save_state_media(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = self.floppy.media_manifest()?.bindings().to_vec();
+        if let Some(identity) = self.cassette.media_identity() {
+            bindings.push(save_state::MediaBinding {
+                identifier: save_state::MediaBindingId::new("cassette-0")?,
+                slot: save_state::MediaSlot::new(save_state::MediaKind::Cassette, 0),
+                source_path: self.cassette.media_source_path().cloned(),
+                media_type: "cassette".to_owned(),
+                identity,
+                geometry: None,
+                write_protected: true,
+                backend_generation: None,
+            });
+        }
+        save_state::MediaManifest::new(bindings)
+    }
+
+    pub(crate) fn capture_runtime_state(
+        &self,
+    ) -> Result<Pc6000BusState, save_state::SaveStateError> {
+        let (sound_ay, sound_opn) = match &self.sound {
+            SoundChip::Ay(sound) => (Some(sound.capture_state()), None),
+            SoundChip::Opn(sound) => (None, Some(sound.capture_state())),
+        };
+        Ok(Pc6000BusState {
+            memory: self.memory.capture_state(),
+            scheduler: self.scheduler.capture_state(),
+            interrupt: self.interrupt.clone(),
+            ppi: self.ppi.capture_state(),
+            sub: self.sub.clone(),
+            sound_ay,
+            sound_opn,
+            voice: self.voice.clone(),
+            serial: self.serial.state.clone(),
+            cassette: self.cassette.capture_state(),
+            cassette_active: self.cassette_active,
+            fdc: self.fdc.state.clone(),
+            floppy: self.floppy.capture_state()?,
+            fdc_motor_on: self.fdc_motor_on,
+            fdc_external_selected: self.fdc_external_selected,
+            fdc_read: self.fdc_read.clone(),
+            memory_wait_cycles: self.memory_wait_cycles,
+            bus_request_active: self.busreq_active,
+            scanline: self.scanline,
+            current_cycle: self.current_cycle,
+            timer_enabled: self.timer_enabled,
+            timer_irq_masked: self.timer_irq_masked,
+            timer_hz_divider: self.timer_hz_div,
+            joystick_directions: self.joystick_directions,
+            system_latch: self.system_latch,
+            background_color_bank: self.bgcol_bank,
+            extended_vram_bank: self.ex_vram_bank,
+            extended_graphics_bitmap: self.exgfx_bitmap,
+            extended_graphics_two_bpp: self.exgfx_2bpp,
+            extended_graphics_text: self.exgfx_text,
+            sr_text_mode: self.sr_text_mode,
+            sr_text_rows: self.sr_text_rows,
+            sr_width_80: self.sr_width80,
+            sr_compatibility: self.sr_compat,
+            sr_scroll_x: self.sr_scroll_x,
+            sr_scroll_y: self.sr_scroll_y,
+            sr_bitmap_x_offset: self.sr_bitmap_x_offset,
+            sr_bitmap_y_offset: self.sr_bitmap_y_offset,
+            presented_frames: self.presented_frames,
+        })
+    }
+
+    pub(crate) fn restore_runtime_state(
+        &mut self,
+        state: Pc6000BusState,
+    ) -> Result<(), save_state::SaveStateError> {
+        if state.scanline >= LINES_PER_FRAME as u16
+            || state.timer_hz_divider == 0
+            || !matches!(state.sr_text_rows, 20 | 25)
+            || state.background_color_bank > 7
+        {
+            return Err(
+                save_state::StateValidationError::new("PC-6000 timing state is invalid").into(),
+            );
+        }
+        state.fdc.validate_runtime_state()?;
+        state.fdc_read.validate_runtime_state()?;
+        state.interrupt.validate_runtime_state()?;
+        match (&mut self.sound, state.sound_ay, state.sound_opn) {
+            (SoundChip::Ay(sound), Some(state), None) => sound.restore_state(state)?,
+            (SoundChip::Opn(sound), None, Some(state)) => sound.restore_state(state)?,
+            _ => {
+                return Err(save_state::StateValidationError::new(
+                    "PC-6000 sound configuration differs",
+                )
+                .into());
+            }
+        }
+        self.memory.restore_state(state.memory)?;
+        self.floppy.restore_state(state.floppy)?;
+        self.cassette.restore_state(state.cassette)?;
+        self.scheduler.restore_state(state.scheduler)?;
+        self.interrupt = state.interrupt;
+        self.ppi.restore_state(state.ppi);
+        self.sub = state.sub;
+        self.voice = state.voice;
+        self.serial.state = state.serial;
+        self.cassette_active = state.cassette_active;
+        self.fdc.state = state.fdc;
+        self.fdc_motor_on = state.fdc_motor_on;
+        self.fdc_external_selected = state.fdc_external_selected;
+        self.fdc_read = state.fdc_read;
+        self.memory_wait_cycles = state.memory_wait_cycles;
+        self.busreq_active = state.bus_request_active;
+        self.scanline = state.scanline;
+        self.current_cycle = state.current_cycle;
+        self.timer_enabled = state.timer_enabled;
+        self.timer_irq_masked = state.timer_irq_masked;
+        self.timer_hz_div = state.timer_hz_divider;
+        self.joystick_directions = state.joystick_directions;
+        self.system_latch = state.system_latch;
+        self.bgcol_bank = state.background_color_bank;
+        self.ex_vram_bank = state.extended_vram_bank;
+        self.exgfx_bitmap = state.extended_graphics_bitmap;
+        self.exgfx_2bpp = state.extended_graphics_two_bpp;
+        self.exgfx_text = state.extended_graphics_text;
+        self.sr_text_mode = state.sr_text_mode;
+        self.sr_text_rows = state.sr_text_rows;
+        self.sr_width80 = state.sr_width_80;
+        self.sr_compat = state.sr_compatibility;
+        self.sr_scroll_x = state.sr_scroll_x;
+        self.sr_scroll_y = state.sr_scroll_y;
+        self.sr_bitmap_x_offset = state.sr_bitmap_x_offset;
+        self.sr_bitmap_y_offset = state.sr_bitmap_y_offset;
+        self.presented_frames = state.presented_frames;
+        self.render_frame();
+        Ok(())
     }
 
     /// Main CPU clock frequency in Hz.

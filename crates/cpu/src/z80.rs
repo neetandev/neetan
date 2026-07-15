@@ -36,12 +36,7 @@ pub struct Z80 {
     pub state: Z80State,
 
     clock_hz: u32,
-    halted: bool,
-    pending_irq: u8,
     cycles_remaining: i64,
-    run_start_cycle: u64,
-    run_budget: u64,
-    q_latch: bool,
 }
 
 impl Deref for Z80 {
@@ -70,12 +65,7 @@ impl Z80 {
         let mut cpu = Self {
             state: Z80State::default(),
             clock_hz,
-            halted: false,
-            pending_irq: 0,
             cycles_remaining: 0,
-            run_start_cycle: 0,
-            run_budget: 0,
-            q_latch: false,
         };
         cpu.reset();
         cpu
@@ -216,12 +206,22 @@ impl Z80 {
         self.finish_q();
     }
 
-    /// Loads CPU state from a snapshot, resetting runtime flags.
+    /// Loads complete CPU state without resetting execution latches.
     pub fn load_state(&mut self, state: &Z80State) {
         self.state = state.clone();
-        self.halted = false;
-        self.pending_irq = 0;
-        self.q_latch = false;
+    }
+
+    /// Clones the authoritative state at an instruction boundary.
+    pub fn capture_state(&self) -> Z80State {
+        self.state.clone()
+    }
+
+    /// Validates and replaces the authoritative state transactionally.
+    pub fn restore_state(
+        &mut self,
+        state: Z80State,
+    ) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &())
     }
 
     /// Executes exactly one logical instruction (should only be used in tests).
@@ -245,8 +245,6 @@ impl Z80 {
 impl CpuZ80 for Z80 {
     fn run_for(&mut self, cycles_to_run: u64, bus: &mut impl common::Bus) -> u64 {
         let start_cycle = bus.current_cycle();
-        self.run_start_cycle = start_cycle;
-        self.run_budget = cycles_to_run;
         self.cycles_remaining = cycles_to_run as i64;
 
         while self.cycles_remaining > 0 {
@@ -421,5 +419,20 @@ impl CpuZ80 for Z80 {
 
     fn set_im(&mut self, value: u8) {
         self.state.im = value & 0x03;
+    }
+}
+
+impl save_state::AfterRestore for Z80 {
+    fn after_restore(&mut self) {
+        self.cycles_remaining = 0;
+    }
+}
+
+impl save_state::RestoreTarget for Z80 {
+    type State = Z80State;
+    type ValidationContext = ();
+
+    fn replace_state(&mut self, state: Self::State) {
+        self.state = state;
     }
 }

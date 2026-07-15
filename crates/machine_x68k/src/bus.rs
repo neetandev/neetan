@@ -167,6 +167,80 @@ impl X68kBus<NoTrace> {
 /// Number of CPU main-RAM accesses that share one DRAM refresh wait cycle.
 const CPU_RAM_ACCESSES_PER_REFRESH_CYCLE: u8 = 8;
 
+#[cfg(feature = "mt32")]
+type X68kMt32State = device::mt32::MuntActorState;
+#[cfg(not(feature = "mt32"))]
+save_state::runtime_state! {
+/// Empty MT-32 state used when MT-32 support is not compiled in.
+#[derive(Clone)]
+struct X68kMt32State {}
+}
+
+#[cfg(feature = "sc55")]
+type X68kSc55State = device::sc55::Sc55ActorState;
+#[cfg(not(feature = "sc55"))]
+save_state::runtime_state! {
+/// Empty SC-55 state used when SC-55 support is not compiled in.
+#[derive(Clone)]
+struct X68kSc55State {}
+}
+
+save_state::runtime_state! {
+/// Complete authoritative X68000 bus state.
+#[derive(Clone)]
+pub(crate) struct X68kBusState {
+    ram: Box<[u8]>,
+    graphic_vram: Box<[u16]>,
+    text_vram: Box<[u8]>,
+    sram: crate::sram::SramState,
+    sram_write_enabled: bool,
+    standard_supervisor_area: u8,
+    enhanced_supervisor_area: [u8; 5],
+    contrast: u8,
+    monitor_control: u8,
+    color_latch: u8,
+    key_control: u8,
+    shutdown_sequence: u8,
+    shutdown_requested: bool,
+    interrupts: InterruptRouter,
+    crtc: CrtcX68k,
+    video_controller: VideoControllerX68k,
+    sprite: SpriteX68k,
+    ppi: device::i8255::I8255State,
+    joystick_bits: [u16; 2],
+    scc: Z8530,
+    mouse: MouseX68k,
+    printer_data: u8,
+    printer_strobe: u8,
+    mfp: Mc68901Mfp,
+    rtc: Rp5c15Rtc,
+    keyboard: KeyboardX68k,
+    dmac: Hd63450Dmac,
+    fdc: device::upd765a_fdc::Upd765aFdcState,
+    floppy_media: save_state::MediaManifest,
+    fdd: FddX68k,
+    hdc: device::sasi::X68kSasiHdcState,
+    spc: device::scsi::Mb89352SpcState,
+    spc_irq_line: bool,
+    opm: device::opn_fm::Ym2151RuntimeState,
+    adpcm: device::msm6258::Msm6258State,
+    midi_card: Option<Ym3802>,
+    mt32: Option<X68kMt32State>,
+    sc55: Option<X68kSc55State>,
+    fdc_forced_ready: bool,
+    adpcm_cycle_remainder: u64,
+    renderer: software_renderer::x68k::X68kRendererState,
+    scheduler: common::SchedulerState,
+    crtc_last_cycle: u64,
+    crtc_remainder: u64,
+    wait_cycles: i64,
+    cpu_refresh_access_count: u8,
+    dmac_stall_remainder: u64,
+    dmac_wait_clocks: u64,
+    dmac_refresh_access_count: u8,
+    current_cycle: u64,
+}}
+
 /// Returns the CPU wait penalty of one bus access to the region, in whole
 /// CPU cycles. Main RAM carries only the shared DRAM refresh cycle counted
 /// separately; regions that never complete an access and the expansion MIDI
@@ -202,6 +276,38 @@ const fn cpu_access_wait_cycles(region: X68kRegion) -> u64 {
         | X68kRegion::BuiltinDevice
         | X68kRegion::UserIo
         | X68kRegion::Unmapped => 0,
+    }
+}
+
+fn joystick_to_bits(state: JoystickState) -> u16 {
+    u16::from(state.up)
+        | u16::from(state.down) << 1
+        | u16::from(state.left) << 2
+        | u16::from(state.right) << 3
+        | u16::from(state.trigger1) << 4
+        | u16::from(state.trigger2) << 5
+        | u16::from(state.button_c) << 6
+        | u16::from(state.button_x) << 7
+        | u16::from(state.button_y) << 8
+        | u16::from(state.button_z) << 9
+        | u16::from(state.run) << 10
+        | u16::from(state.select) << 11
+}
+
+fn joystick_from_bits(bits: u16) -> JoystickState {
+    JoystickState {
+        up: bits & 1 != 0,
+        down: bits & 2 != 0,
+        left: bits & 4 != 0,
+        right: bits & 8 != 0,
+        trigger1: bits & 0x10 != 0,
+        trigger2: bits & 0x20 != 0,
+        button_c: bits & 0x40 != 0,
+        button_x: bits & 0x80 != 0,
+        button_y: bits & 0x100 != 0,
+        button_z: bits & 0x200 != 0,
+        run: bits & 0x400 != 0,
+        select: bits & 0x800 != 0,
     }
 }
 
@@ -388,6 +494,293 @@ impl<T: TraceSink> X68kBus<T> {
         bus.initialize_device_pins();
         bus.schedule_events();
         Ok(bus)
+    }
+
+    /// Returns stable identities for all installed ROM resources.
+    pub(crate) fn save_state_resources(
+        &self,
+    ) -> Result<save_state::ResourceManifest, save_state::StateValidationError> {
+        let mut bindings = vec![
+            save_state::ResourceBinding {
+                identifier: save_state::ResourceBindingId::new("x68k-cgrom")?,
+                identity: save_state::ResourceIdentity::from_bytes(&self.cgrom),
+            },
+            save_state::ResourceBinding {
+                identifier: save_state::ResourceBindingId::new("x68k-ipl")?,
+                identity: save_state::ResourceIdentity::from_bytes(&self.ipl),
+            },
+        ];
+        if let Some(internal_scsi) = &self.internal_scsi {
+            bindings.push(save_state::ResourceBinding {
+                identifier: save_state::ResourceBindingId::new("x68k-scsi-rom")?,
+                identity: save_state::ResourceIdentity::from_bytes(internal_scsi),
+            });
+        }
+        #[cfg(feature = "mt32")]
+        if let Some(module) = &self.mt32 {
+            bindings.extend_from_slice(module.resource_bindings());
+        }
+        #[cfg(feature = "sc55")]
+        if let Some(module) = &self.sc55 {
+            bindings.extend_from_slice(module.resource_bindings());
+        }
+        save_state::ResourceManifest::new(bindings)
+    }
+
+    /// Returns stable identities for all mounted storage media.
+    pub(crate) fn save_state_media(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = Vec::new();
+        bindings.extend_from_slice(self.floppy_media_manifest()?.bindings());
+        bindings.extend_from_slice(self.hdc.media_manifest()?.bindings());
+        bindings.extend_from_slice(self.spc.media_manifest()?.bindings());
+        save_state::MediaManifest::new(bindings)
+    }
+
+    /// Captures the complete X68000 bus at a machine safe point.
+    pub(crate) fn capture_runtime_state(
+        &mut self,
+    ) -> Result<X68kBusState, save_state::SaveStateError> {
+        Ok(X68kBusState {
+            ram: self.ram.clone(),
+            graphic_vram: self.graphic_vram.clone(),
+            text_vram: self.text_vram.clone(),
+            sram: self.sram.capture_state(),
+            sram_write_enabled: self.sram_write_enabled,
+            standard_supervisor_area: self.standard_supervisor_area,
+            enhanced_supervisor_area: self.enhanced_supervisor_area,
+            contrast: self.contrast,
+            monitor_control: self.monitor_control,
+            color_latch: self.color_latch,
+            key_control: self.key_control,
+            shutdown_sequence: self.shutdown_sequence,
+            shutdown_requested: self.shutdown_requested,
+            interrupts: self.interrupts.clone(),
+            crtc: self.crtc.capture_state(),
+            video_controller: self.video_controller.capture_state(),
+            sprite: self.sprite.capture_state(),
+            ppi: self.ppi.state.clone(),
+            joystick_bits: self.joystick_ports.map(joystick_to_bits),
+            scc: self.scc.capture_state(),
+            mouse: self.mouse.capture_state(),
+            printer_data: self.printer_data,
+            printer_strobe: self.printer_strobe,
+            mfp: self.mfp.capture_state(),
+            rtc: self.rtc.capture_state(),
+            keyboard: self.keyboard.capture_state(),
+            dmac: self.dmac.capture_state(),
+            fdc: self.fdc.state.clone(),
+            floppy_media: self.floppy_media_manifest()?,
+            fdd: self.fdd.capture_state(),
+            hdc: self.hdc.capture_state()?,
+            spc: self.spc.capture_state()?,
+            spc_irq_line: self.spc_irq_line,
+            opm: self.opm.capture_state(),
+            adpcm: self.adpcm.capture_state(),
+            midi_card: self.midi_card.as_ref().map(Ym3802::capture_state),
+            #[cfg(feature = "mt32")]
+            mt32: self
+                .mt32
+                .as_mut()
+                .map(device::mt32::Mt32::capture_state)
+                .transpose()
+                .map_err(|error| save_state::SaveStateError::WorkerFailure(error.to_string()))?,
+            #[cfg(not(feature = "mt32"))]
+            mt32: None,
+            #[cfg(feature = "sc55")]
+            sc55: self
+                .sc55
+                .as_mut()
+                .map(device::sc55::Sc55::capture_state)
+                .transpose()
+                .map_err(|error| save_state::SaveStateError::WorkerFailure(error.to_string()))?,
+            #[cfg(not(feature = "sc55"))]
+            sc55: None,
+            fdc_forced_ready: self.fdc_forced_ready,
+            adpcm_cycle_remainder: self.adpcm_cycle_remainder,
+            renderer: self.renderer.capture_state(),
+            scheduler: self.scheduler.capture_state(),
+            crtc_last_cycle: self.crtc_last_cycle,
+            crtc_remainder: self.crtc_remainder,
+            wait_cycles: self.wait_cycles,
+            cpu_refresh_access_count: self.cpu_refresh_access_count,
+            dmac_stall_remainder: self.dmac_stall_remainder,
+            dmac_wait_clocks: self.dmac_wait_clocks,
+            dmac_refresh_access_count: self.dmac_refresh_access_count,
+            current_cycle: self.current_cycle,
+        })
+    }
+
+    /// Restores the complete X68000 bus while retaining host resources.
+    pub(crate) fn restore_runtime_state(
+        &mut self,
+        state: X68kBusState,
+    ) -> Result<(), save_state::SaveStateError> {
+        #[cfg(feature = "mt32")]
+        let mt32_configuration_differs = state.mt32.is_some() != self.mt32.is_some();
+        #[cfg(not(feature = "mt32"))]
+        let mt32_configuration_differs = false;
+        #[cfg(feature = "sc55")]
+        let sc55_configuration_differs = state.sc55.is_some() != self.sc55.is_some();
+        #[cfg(not(feature = "sc55"))]
+        let sc55_configuration_differs = false;
+        if mt32_configuration_differs
+            || sc55_configuration_differs
+            || state.midi_card.is_some() != self.midi_card.is_some()
+            || state.ram.len() != self.ram.len()
+            || state.graphic_vram.len() != self.graphic_vram.len()
+            || state.text_vram.len() != self.text_vram.len()
+            || state.cpu_refresh_access_count >= CPU_RAM_ACCESSES_PER_REFRESH_CYCLE
+        {
+            return Err(save_state::StateValidationError::new(
+                "X68000 hardware or memory configuration differs",
+            )
+            .into());
+        }
+        state.fdc.validate_runtime_state()?;
+        state
+            .floppy_media
+            .verify_current(&self.floppy_media_manifest()?)?;
+        state.fdd.validate_state(
+            self.floppy_drives
+                .each_ref()
+                .map(|mounted| mounted.is_some()),
+        )?;
+
+        #[cfg(feature = "mt32")]
+        let mut mt32_prepared = false;
+        #[cfg(feature = "mt32")]
+        if let (Some(module), Some(saved)) = (&mut self.mt32, state.mt32.clone()) {
+            module
+                .prepare_restore(saved)
+                .map_err(|error| save_state::SaveStateError::WorkerFailure(error.to_string()))?;
+            mt32_prepared = true;
+        }
+        #[cfg(feature = "sc55")]
+        let mut sc55_prepared = false;
+        #[cfg(feature = "sc55")]
+        if let (Some(module), Some(saved)) = (&mut self.sc55, state.sc55.clone()) {
+            if let Err(error) = module.prepare_restore(saved) {
+                #[cfg(feature = "mt32")]
+                if mt32_prepared && let Some(module) = &mut self.mt32 {
+                    let _ = module.abort_restore();
+                }
+                return Err(save_state::SaveStateError::WorkerFailure(error.to_string()));
+            }
+            sc55_prepared = true;
+        }
+
+        let restore_result = (|| -> Result<(), save_state::SaveStateError> {
+            self.scheduler.restore_state(state.scheduler)?;
+            self.keyboard.restore_state(state.keyboard)?;
+            self.hdc.restore_state(state.hdc)?;
+            self.spc.restore_state(state.spc)?;
+            self.opm.restore_state(state.opm)?;
+            self.adpcm.restore_state(state.adpcm)?;
+            self.renderer.restore_state(state.renderer)?;
+            if let (Some(card), Some(card_state)) = (&mut self.midi_card, state.midi_card) {
+                card.restore_state(card_state)?;
+            }
+
+            self.ram = state.ram;
+            self.graphic_vram = state.graphic_vram;
+            self.text_vram = state.text_vram;
+            self.sram.restore_state(state.sram);
+            self.sram_write_enabled = state.sram_write_enabled;
+            self.standard_supervisor_area = state.standard_supervisor_area;
+            self.enhanced_supervisor_area = state.enhanced_supervisor_area;
+            self.contrast = state.contrast;
+            self.monitor_control = state.monitor_control;
+            self.color_latch = state.color_latch;
+            self.key_control = state.key_control;
+            self.shutdown_sequence = state.shutdown_sequence;
+            self.shutdown_requested = state.shutdown_requested;
+            self.interrupts = state.interrupts;
+            self.crtc.restore_state(state.crtc);
+            self.video_controller.restore_state(state.video_controller);
+            self.sprite.restore_state(state.sprite)?;
+            self.ppi.state = state.ppi;
+            self.joystick_ports = state.joystick_bits.map(joystick_from_bits);
+            self.scc.restore_state(state.scc);
+            self.mouse.restore_state(state.mouse);
+            self.printer_data = state.printer_data;
+            self.printer_strobe = state.printer_strobe;
+            self.mfp.restore_state(state.mfp);
+            self.rtc.restore_state(state.rtc);
+            self.dmac.restore_state(state.dmac);
+            self.fdc.state = state.fdc;
+            self.fdd.restore_state(state.fdd);
+            self.spc_irq_line = state.spc_irq_line;
+            self.fdc_forced_ready = state.fdc_forced_ready;
+            self.adpcm_cycle_remainder = state.adpcm_cycle_remainder;
+            self.crtc_last_cycle = state.crtc_last_cycle;
+            self.crtc_remainder = state.crtc_remainder;
+            self.wait_cycles = state.wait_cycles;
+            self.cpu_refresh_access_count = state.cpu_refresh_access_count;
+            self.dmac_stall_remainder = state.dmac_stall_remainder;
+            self.dmac_wait_clocks = state.dmac_wait_clocks;
+            self.dmac_refresh_access_count = state.dmac_refresh_access_count;
+            self.current_cycle = state.current_cycle;
+            Ok(())
+        })();
+
+        #[cfg(any(feature = "mt32", feature = "sc55"))]
+        if let Err(error) = restore_result {
+            #[cfg(feature = "mt32")]
+            if mt32_prepared && let Some(module) = &mut self.mt32 {
+                let _ = module.abort_restore();
+            }
+            #[cfg(feature = "sc55")]
+            if sc55_prepared && let Some(module) = &mut self.sc55 {
+                let _ = module.abort_restore();
+            }
+            return Err(error);
+        }
+        #[cfg(not(any(feature = "mt32", feature = "sc55")))]
+        restore_result?;
+
+        #[cfg(feature = "mt32")]
+        if mt32_prepared
+            && let Some(module) = &mut self.mt32
+            && let Err(error) = module.commit_restore()
+        {
+            #[cfg(feature = "sc55")]
+            if sc55_prepared && let Some(module) = &mut self.sc55 {
+                let _ = module.abort_restore();
+            }
+            return Err(save_state::SaveStateError::WorkerFailure(error.to_string()));
+        }
+        #[cfg(feature = "sc55")]
+        if sc55_prepared
+            && let Some(module) = &mut self.sc55
+            && let Err(error) = module.commit_restore()
+        {
+            return Err(save_state::SaveStateError::WorkerFailure(error.to_string()));
+        }
+        Ok(())
+    }
+
+    fn floppy_media_manifest(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = Vec::new();
+        for (drive_index, mounted) in self.floppy_drives.iter().enumerate() {
+            let Some(mounted) = mounted else {
+                continue;
+            };
+            bindings.push(save_state::MediaBinding {
+                identifier: save_state::MediaBindingId::new(format!("x68k-floppy-{drive_index}"))?,
+                slot: save_state::MediaSlot::new(save_state::MediaKind::Floppy, drive_index as u32),
+                source_path: mounted.source_path().cloned(),
+                media_type: mounted.image().format_name().to_owned(),
+                identity: mounted.identity(),
+                geometry: None,
+                write_protected: mounted.image().write_protected,
+                backend_generation: None,
+            });
+        }
+        save_state::MediaManifest::new(bindings)
     }
 
     /// Returns the selected model.

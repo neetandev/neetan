@@ -14,6 +14,18 @@ pub(crate) struct Bpb {
     pub total_sectors_32: u32,
 }
 
+state_struct_codec!(Bpb {
+    bytes_per_sector,
+    sectors_per_cluster,
+    reserved_sectors,
+    num_fats,
+    root_entry_count,
+    total_sectors_16,
+    media_descriptor,
+    sectors_per_fat,
+    total_sectors_32,
+});
+
 impl Bpb {
     /// Parses a BPB from a boot sector (at least 62 bytes required).
     pub fn parse(sector: &[u8]) -> Option<Self> {

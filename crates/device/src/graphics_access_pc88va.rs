@@ -7,15 +7,18 @@
 //! apply the configured raster operation, pattern, plane mask, and compare-read
 //! exactly as the controller does when the CPU touches the GVRAM window.
 
+save_state::runtime_state! {
 /// Single-plane register file.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct SinglePlane {
     write_mode: u8,
     pattern: [u16; 2],
     rop: [u8; 2],
-}
+}}
 
+save_state::runtime_state! {
 /// Multi-plane register file.
+#[derive(Clone)]
 struct MultiPlane {
     access_mode: u8,
     access_block: u8,
@@ -27,7 +30,7 @@ struct MultiPlane {
     pattern_read_pointer: u8,
     pattern_write_pointer: u8,
     rop: [u8; 4],
-}
+}}
 
 impl Default for MultiPlane {
     fn default() -> Self {
@@ -46,13 +49,15 @@ impl Default for MultiPlane {
     }
 }
 
+save_state::runtime_state! {
 /// The graphics access controller.
+#[derive(Clone)]
 pub struct GraphicsAccessVa {
     /// `true` when the GMSP bit selects single-plane access (port `0x153` bit 4).
     single_plane: bool,
     single: SinglePlane,
     multi: MultiPlane,
-}
+}}
 
 impl Default for GraphicsAccessVa {
     fn default() -> Self {

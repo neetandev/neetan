@@ -9,6 +9,8 @@ use crate::{
 // "quiet" value, used to optimize when we can skip doing work
 const EG_QUIET: u32 = 0x380;
 
+save_state::runtime_state_enum! {
+/// Current phase of an FM operator envelope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub(crate) enum EnvelopeState {
@@ -18,23 +20,27 @@ pub(crate) enum EnvelopeState {
     Sustain = 3,
     Release = 4,
     Reverb = 5,
-}
+}}
 
 impl EnvelopeState {
     pub(crate) const STATES: usize = 6;
 }
 
 // Three different keyon sources; actual keyon is an OR over all of these.
+save_state::runtime_state_enum! {
+/// Source of an FM operator key-on request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub(crate) enum KeyonType {
     Normal = 0,
     Rhythm = 1,
     Csm = 2,
-}
+}}
 
 // Data that is computed once at the start of clocking
 // and remains static during subsequent sound generation.
+save_state::runtime_state! {
+/// Cached register-derived parameters for one FM operator.
 #[derive(Clone)]
 pub(crate) struct OpdataCache {
     pub(crate) phase_step: u32, // phase step, or PHASE_STEP_DYNAMIC if PM is active
@@ -46,7 +52,7 @@ pub(crate) struct OpdataCache {
     pub(crate) eg_rate: [u8; EnvelopeState::STATES], // envelope rate, including KSR
     pub(crate) eg_shift: u8,
     pub(crate) waveform_index: u32, // waveform index (OPL only; 0 for OPN)
-}
+}}
 
 impl OpdataCache {
     // Set phase_step to this value to recalculate it each sample;
@@ -166,6 +172,9 @@ pub(crate) trait FmRegisters: Sized {
 
 // An FM operator (or "slot" in FM parlance), which produces an
 // output sine wave modulated by an envelope.
+save_state::runtime_state! {
+/// Authoritative phase and envelope state of one FM operator.
+#[derive(Clone)]
 pub(crate) struct FmOperator {
     choffs: u32,          // channel offset in registers
     opoffs: u32,          // operator offset in registers
@@ -176,7 +185,7 @@ pub(crate) struct FmOperator {
     key_state: u8,    // current key state: on or off (bit 0)
     keyon_live: u8,   // live key on state (bit 0 = direct, bit 1 = rhythm, bit 2 = CSM)
     cache: OpdataCache,
-}
+}}
 
 impl FmOperator {
     pub(crate) fn new(opoffs: u32) -> Self {
@@ -529,12 +538,15 @@ impl FmOperator {
 
 // An FM channel which combines the output of 2 or 4
 // operators into a final result.
+save_state::runtime_state! {
+/// Authoritative routing and feedback state of one FM channel.
+#[derive(Clone)]
 pub(crate) struct FmChannel {
     choffs: u32,
     feedback: [i16; 2],     // feedback memory for operator 1
     feedback_in: i16,       // next input value for op 1 feedback (set in output)
     op: [Option<usize>; 4], // up to 4 operators
-}
+}}
 
 impl FmChannel {
     pub(crate) fn new(choffs: u32) -> Self {
@@ -955,7 +967,10 @@ static S_ALGORITHM_OPS: [u32; 12] = [
 // A set of operators and channels which together form a Yamaha FM core;
 // chips that implement other engines (ADPCM, wavetable, etc) take this
 // output and combine it with the others externally.
-pub(crate) struct FmEngine<R: FmRegisters> {
+save_state::runtime_state! {
+/// Complete authoritative state of a register-specialized FM engine.
+#[derive(Clone)]
+pub(crate) struct FmEngine<R> {
     pub(crate) regs: R,
     env_counter: u32, // envelope counter; low 2 bits are sub-counter
     status: u8,
@@ -971,7 +986,7 @@ pub(crate) struct FmEngine<R: FmRegisters> {
     prepare_count: u32,     // counter to do periodic prepare sweeps
     pub(crate) operators: Vec<FmOperator>,
     pub(crate) channels: Vec<FmChannel>,
-}
+}}
 
 impl<R: FmRegisters> FmEngine<R> {
     pub(crate) fn new() -> Self {

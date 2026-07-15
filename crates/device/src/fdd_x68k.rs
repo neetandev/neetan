@@ -49,6 +49,7 @@ pub struct FddSelectEffects {
     pub motor_changed: bool,
 }
 
+save_state::runtime_state! {
 /// Per-drive state of the X68000 drive control block.
 #[derive(Debug, Clone, Copy, Default)]
 struct FddDrive {
@@ -58,10 +59,11 @@ struct FddDrive {
     led_blink: bool,
     /// Eject button locked.
     eject_prevented: bool,
-}
+}}
 
+save_state::runtime_state! {
 /// X68000 floppy drive control block.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct FddX68k {
     drives: [FddDrive; DRIVE_COUNT],
     /// Drive mask of the last option-control write (status read target).
@@ -74,6 +76,38 @@ pub struct FddX68k {
     selected_unit: usize,
     /// A media insert or eject happened since the last acknowledge.
     status_changed: bool,
+}}
+
+impl FddX68k {
+    /// Captures drive control, motor, and media-change latches.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Validates drive control state against retained mounted media.
+    pub fn validate_state(
+        &self,
+        mounted: [bool; DRIVE_COUNT],
+    ) -> Result<(), save_state::StateValidationError> {
+        if self.selected_unit >= DRIVE_COUNT
+            || self.control_target_mask & !0x0F != 0
+            || self
+                .drives
+                .iter()
+                .zip(mounted)
+                .any(|(drive, present)| drive.inserted != present)
+        {
+            return Err(save_state::StateValidationError::new(
+                "X68000 floppy drive state is invalid",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Restores drive control, motor, and media-change latches.
+    pub fn restore_state(&mut self, state: Self) {
+        *self = state;
+    }
 }
 
 impl FddX68k {

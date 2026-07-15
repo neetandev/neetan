@@ -136,6 +136,7 @@ const ANALOG_LEVEL_SW_3: u16 = 0x3FF;
 const ANALOG_LEVEL_BATTERY: u16 = 0x2A0;
 
 #[derive(Default, Clone)]
+/// Complete authoritative state of the SC-55 main MCU.
 pub struct McuState {
     pub r: [u16; 8],
     pub pc: u16,
@@ -152,6 +153,23 @@ pub struct McuState {
     pub trapa_pending: [u8; 16],
     pub cycles: u64,
 }
+
+crate::impl_state_codec!(McuState {
+    r,
+    pc,
+    sr,
+    cp,
+    dp,
+    ep,
+    tp,
+    br,
+    sleep,
+    ex_ignore,
+    exception_pending,
+    interrupt_pending,
+    trapa_pending,
+    cycles,
+});
 
 pub(crate) fn mcu_get_address(page: u8, address: u16) -> u32 {
     ((page as u32) << 16) + address as u32

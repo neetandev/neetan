@@ -36,6 +36,15 @@ pub(crate) struct PpiLink {
     io_switch_high: bool,
 }
 
+save_state::runtime_state! {
+/// Authoritative state of the linked PPI handshake lines.
+#[derive(Clone)]
+pub(crate) struct PpiLinkState {
+    ppi: device::i8255::I8255State,
+    io_system: u8,
+    io_switch_high: bool,
+}}
+
 impl PpiLink {
     /// Creates a PPI in the power-on state.
     pub(crate) fn new() -> Self {
@@ -44,6 +53,20 @@ impl PpiLink {
             io_sys: 0,
             io_switch_high: false,
         }
+    }
+
+    pub(crate) fn capture_state(&self) -> PpiLinkState {
+        PpiLinkState {
+            ppi: self.ppi.state.clone(),
+            io_system: self.io_sys,
+            io_switch_high: self.io_switch_high,
+        }
+    }
+
+    pub(crate) fn restore_state(&mut self, state: PpiLinkState) {
+        self.ppi.state = state.ppi;
+        self.io_sys = state.io_system;
+        self.io_switch_high = state.io_switch_high;
     }
 
     /// Reads a PPI register. `port_b` is the bus-assembled port B value.

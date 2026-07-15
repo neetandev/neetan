@@ -32,7 +32,9 @@ fn adjust_color12(mut color: u16) -> u16 {
     color
 }
 
+save_state::runtime_state! {
 /// VIDEOVA register state.
+#[derive(Clone)]
 pub struct VideoVa {
     /// Text mode register at port 0x030.
     pub txtmode8: u8,
@@ -74,7 +76,7 @@ pub struct VideoVa {
     pub framebuffer: [FramebufferVa; 4],
     /// Frame counter for the palette blink machinery.
     pub blinkcnt: u16,
-}
+}}
 
 impl Default for VideoVa {
     fn default() -> Self {

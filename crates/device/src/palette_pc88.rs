@@ -14,6 +14,7 @@ pub const PEN_COUNT: usize = 9;
 /// Index of the background/border pen.
 pub const BACKGROUND_PEN: usize = 8;
 
+save_state::runtime_state! {
 /// A single palette pen with 3-bit-per-channel GRB intensity (0..=7).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Pc88Pen {
@@ -23,7 +24,7 @@ pub struct Pc88Pen {
     pub green: u8,
     /// Blue intensity (0..=7).
     pub blue: u8,
-}
+}}
 
 impl Pc88Pen {
     /// Expands the 3-bit channels to 8-bit RGB for the renderer.
@@ -37,12 +38,13 @@ impl Pc88Pen {
     }
 }
 
+save_state::runtime_state! {
 /// Snapshot of the PC-88 palette for save/restore.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pc88PaletteState {
     /// Eight graphics pens plus the background pen at index 8.
     pub pens: [Pc88Pen; PEN_COUNT],
-}
+}}
 
 /// PC-8801 graphics palette.
 pub struct Pc88Palette {

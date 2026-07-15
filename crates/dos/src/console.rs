@@ -16,10 +16,13 @@ fn vram_attr_addr(row: u8, col: u8) -> u32 {
     TEXT_ATTR_BASE + (row as u32 * COLUMNS as u32 + col as u32) * 2
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
+/// Authoritative DOS console escape-processing state.
 pub(crate) struct Console {
     pub(crate) esc_parser: EscParser,
 }
+
+state_struct_codec!(Console { esc_parser });
 
 impl Console {
     pub(crate) fn cursor_row(&self, memory: &dyn MemoryAccess) -> u8 {

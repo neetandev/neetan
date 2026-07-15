@@ -2,10 +2,14 @@
 
 const MAX_ENTRIES: usize = 100;
 
+#[derive(Clone)]
+/// Authoritative shell command history and navigation position.
 pub(crate) struct History {
     entries: Vec<Vec<u8>>,
     position: usize,
 }
+
+state_struct_codec!(History { entries, position });
 
 impl History {
     pub(crate) fn new() -> Self {

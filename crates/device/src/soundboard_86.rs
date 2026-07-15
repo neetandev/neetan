@@ -12,11 +12,11 @@ pub enum Soundboard86Timer {
     /// PCM FIFO IRQ check.
     Pcm86Irq,
 }
-use resampler::{Attenuation, Latency, ResamplerFir};
-use ymfm_oxide::Ym2608;
+use resampler::{Attenuation, Latency, ResamplerFir, ResamplerFirState};
+use ymfm_oxide::{Ym2608, Ym2608State, YmfmOutput3};
 
 use crate::{
-    opn_fm::{EVOLVED_RHYTHM_ROM, FmTimerAction, OpnFm, OpnFmTiming},
+    opn_fm::{EVOLVED_RHYTHM_ROM, FmTimerAction, OpnFm, OpnFmState, OpnFmTiming},
     soundboard_26k::FmSampleRemainder,
 };
 
@@ -62,7 +62,8 @@ const RESAMPLER_ATTENUTATION: Attenuation = Attenuation::Db60;
 
 const REAMPLER_LATENCY: Latency = Latency::Sample64;
 
-/// Snapshot of the PC-9801-86 sound board state.
+save_state::runtime_state! {
+/// Register and timing state of the PC-9801-86 sound board.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Soundboard86State {
     /// Low bank address latch (write via port 0x0188).
@@ -93,7 +94,7 @@ pub struct Soundboard86State {
     pub last_written_data: u8,
     /// PCM86 state.
     pub pcm86: Pcm86State,
-}
+}}
 
 impl Default for Soundboard86State {
     fn default() -> Self {
@@ -115,7 +116,8 @@ impl Default for Soundboard86State {
     }
 }
 
-/// PCM86 DAC state snapshot.
+save_state::runtime_state! {
+/// Authoritative PCM86 register and FIFO position state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pcm86State {
     /// Sound flags register (port 0xA460).
@@ -168,7 +170,36 @@ pub struct Pcm86State {
     pub wavestar_seq_index: u8,
     /// WaveStar port 0xA464 readback value.
     pub wavestar_value: u8,
-}
+}}
+
+save_state::runtime_state! {
+/// Complete PCM86 ring buffer and resampler state.
+#[derive(Clone)]
+struct Pcm86RuntimeState {
+    state: Pcm86State,
+    buffer: Box<[u8]>,
+    resampler: ResamplerFirState,
+    pcm_input_buffer: Vec<f32>,
+    pending_irq_change: Option<bool>,
+    clock_multiple: u64,
+    needs_reschedule: bool,
+    buf_under_flag: i32,
+    last_checkbuf_cycle: u64,
+    last_generate_cycle: u64,
+}}
+
+save_state::runtime_state! {
+/// Complete PC-9801-86 audio device state.
+#[derive(Clone)]
+pub struct Soundboard86RuntimeState {
+    board: Soundboard86State,
+    core: OpnFmState<Ym2608State, YmfmOutput3>,
+    pcm86: Pcm86RuntimeState,
+    cpu_clock_hz: u32,
+    chip_action_cycle: u64,
+    sample_rate: u32,
+    fm_timer_just_fired: bool,
+}}
 
 impl Default for Pcm86State {
     fn default() -> Self {
@@ -258,6 +289,61 @@ impl Pcm86 {
             last_checkbuf_cycle: 0,
             last_generate_cycle: 0,
         }
+    }
+
+    fn capture_state(&self) -> Pcm86RuntimeState {
+        Pcm86RuntimeState {
+            state: self.state.clone(),
+            buffer: self.buffer.to_vec().into_boxed_slice(),
+            resampler: self.pcm_resampler.capture_state(),
+            pcm_input_buffer: self.pcm_input_buffer.clone(),
+            pending_irq_change: self.pending_irq_change,
+            clock_multiple: self.clock_multiple,
+            needs_reschedule: self.needs_reschedule,
+            buf_under_flag: self.buf_under_flag,
+            last_checkbuf_cycle: self.last_checkbuf_cycle,
+            last_generate_cycle: self.last_generate_cycle,
+        }
+    }
+
+    fn validate_state(
+        &self,
+        state: &Pcm86RuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.buffer.len() != PCM86_BUFSIZE
+            || state.clock_multiple != self.clock_multiple
+            || state.state.write_pos > PCM86_BUFMASK
+            || state.state.read_pos > PCM86_BUFMASK
+            || state.state.wavestar_seq_index > WAVESTAR_SEQUENCE.len() as u8
+            || !state.state.sample_remainder.0.is_finite()
+            || !state.state.vir_buf_remainder.0.is_finite()
+            || !state.state.dac_clock_remainder.0.is_finite()
+        {
+            return Err(save_state::StateValidationError::new(
+                "PCM86 streaming state is invalid",
+            ));
+        }
+        self.pcm_resampler.validate_state(&state.resampler)
+    }
+
+    fn restore_state(
+        &mut self,
+        state: Pcm86RuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        self.validate_state(&state)?;
+        self.pcm_resampler.restore_state(state.resampler)?;
+        self.state = state.state;
+        self.buffer.copy_from_slice(&state.buffer);
+        self.pcm_input_buffer = state.pcm_input_buffer;
+        self.pending_irq_change = state.pending_irq_change;
+        self.needs_reschedule = state.needs_reschedule;
+        self.buf_under_flag = state.buf_under_flag;
+        self.last_checkbuf_cycle = state.last_checkbuf_cycle;
+        self.last_generate_cycle = state.last_generate_cycle;
+        self.pcm_resample_output.clear();
+        self.pcm_resample_output
+            .resize(self.pcm_resampler.buffer_size_output(), 0.0);
+        Ok(())
     }
 
     fn pcm_rate(&self) -> u32 {
@@ -892,6 +978,40 @@ impl Soundboard86 {
             fm_timer_just_fired: false,
             action_buffer: Vec::new(),
         }
+    }
+
+    /// Captures complete OPNA, PCM86, and resampler history.
+    pub fn capture_state(&self) -> Soundboard86RuntimeState {
+        Soundboard86RuntimeState {
+            board: self.save_state(),
+            core: self.core.capture_state(),
+            pcm86: self.pcm86.capture_state(),
+            cpu_clock_hz: self.cpu_clock_hz,
+            chip_action_cycle: self.chip_action_cycle,
+            sample_rate: self.sample_rate,
+            fm_timer_just_fired: self.fm_timer_just_fired,
+        }
+    }
+
+    /// Restores complete audio state without recreating either synthesizer.
+    pub fn restore_state(
+        &mut self,
+        state: Soundboard86RuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.cpu_clock_hz != self.cpu_clock_hz || state.sample_rate != self.sample_rate {
+            return Err(save_state::StateValidationError::new(
+                "PC-9801-86 clock configuration differs",
+            ));
+        }
+        self.core.validate_state(&state.core)?;
+        self.pcm86.validate_state(&state.pcm86)?;
+        self.core.restore_state(state.core)?;
+        self.pcm86.restore_state(state.pcm86)?;
+        self.state = state.board;
+        self.chip_action_cycle = state.chip_action_cycle;
+        self.fm_timer_just_fired = state.fm_timer_just_fired;
+        self.action_buffer.clear();
+        Ok(())
     }
 
     /// Returns the low bank address latch value.

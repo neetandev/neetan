@@ -83,7 +83,7 @@ fn write_test_pattern(bus: &mut impl Bus, addr: u32, count: usize) {
 fn int1fh_vector_f() {
     let mut machine = create_machine_f();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1F);
     assert!(
@@ -96,7 +96,7 @@ fn int1fh_vector_f() {
 fn int1fh_vector_vm() {
     let mut machine = create_machine_vm();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1F);
     assert!(
@@ -109,7 +109,7 @@ fn int1fh_vector_vm() {
 fn int1fh_vector_vx() {
     let mut machine = create_machine_vx();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1F);
     assert!(
@@ -122,7 +122,7 @@ fn int1fh_vector_vx() {
 fn int1fh_vector_ra() {
     let mut machine = create_machine_ra();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1F);
     assert!(
@@ -240,10 +240,8 @@ fn int1fh_memcpy_basic_vx() {
     let code = make_memcpy_code(0, 0, 16);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
@@ -310,10 +308,8 @@ fn int1fh_memcpy_with_offsets_vx() {
     let code = make_memcpy_code(4, 8, 8);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
@@ -386,10 +382,8 @@ fn int1fh_memcpy_ignores_src_limit_vx() {
     let code = make_memcpy_code(0x0010, 0, 8);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
@@ -440,10 +434,8 @@ fn int1fh_memcpy_ignores_dst_limit_vx() {
     let code = make_memcpy_code(0, 0x0010, 8);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });

@@ -130,6 +130,7 @@ fn boot_serial_receive_then_query_f(serial_bytes: &[u8], query_code: &[u8]) -> m
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -141,6 +142,7 @@ fn boot_serial_receive_then_query_f(serial_bytes: &[u8], query_code: &[u8]) -> m
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -163,10 +165,9 @@ fn boot_serial_receive_then_query_vm(
     }
     write_bytes(&mut machine.bus, TEST_CODE, &receive_code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -175,10 +176,9 @@ fn boot_serial_receive_then_query_vm(
     // Phase 2: run query code.
     write_bytes(&mut machine.bus, TEST_CODE, query_code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -200,10 +200,8 @@ fn boot_serial_receive_then_query_vx(
     }
     write_bytes(&mut machine.bus, TEST_CODE, &receive_code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
@@ -211,10 +209,8 @@ fn boot_serial_receive_then_query_vx(
 
     write_bytes(&mut machine.bus, TEST_CODE, query_code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
@@ -266,7 +262,7 @@ fn boot_serial_receive_then_query_ra(
 fn int19h_vector_f() {
     let mut machine = create_machine_f();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x19);
     assert!(
         segment >= 0xFD80,
@@ -278,7 +274,7 @@ fn int19h_vector_f() {
 fn int19h_vector_vm() {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x19);
     assert!(
         segment >= 0xFD80,
@@ -290,7 +286,7 @@ fn int19h_vector_vm() {
 fn int19h_vector_vx() {
     let mut machine = create_machine_vx();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x19);
     assert!(
         segment >= 0xFD80,
@@ -302,7 +298,7 @@ fn int19h_vector_vx() {
 fn int19h_vector_ra() {
     let mut machine = create_machine_ra();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x19);
     assert!(
         segment >= 0xFD80,
@@ -318,7 +314,7 @@ fn int19h_vector_ra() {
 fn int19h_init_returns_ok_f() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -332,7 +328,7 @@ fn int19h_init_returns_ok_f() {
 fn int19h_init_returns_ok_vm() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -346,7 +342,7 @@ fn int19h_init_returns_ok_vm() {
 fn int19h_init_returns_ok_vx() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_vx(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -360,7 +356,7 @@ fn int19h_init_returns_ok_vx() {
 fn int19h_init_returns_ok_ra() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_ra(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -443,7 +439,7 @@ fn assert_init_buffer_fields(ram: &[u8; 0xA0000]) {
 fn int19h_init_buffer_fields_f() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_init_buffer_fields(&state.memory.ram);
 }
 
@@ -451,7 +447,7 @@ fn int19h_init_buffer_fields_f() {
 fn int19h_init_buffer_fields_vm() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_init_buffer_fields(&state.memory.ram);
 }
 
@@ -459,7 +455,7 @@ fn int19h_init_buffer_fields_vm() {
 fn int19h_init_buffer_fields_vx() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_vx(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_init_buffer_fields(&state.memory.ram);
 }
 
@@ -467,7 +463,7 @@ fn int19h_init_buffer_fields_vx() {
 fn int19h_init_buffer_fields_ra() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_ra(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_init_buffer_fields(&state.memory.ram);
 }
 
@@ -492,7 +488,7 @@ fn assert_init_clears_header(ram: &[u8; 0xA0000]) {
 fn int19h_init_clears_header_f() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_init_clears_header(&state.memory.ram);
 }
 
@@ -500,7 +496,7 @@ fn int19h_init_clears_header_f() {
 fn int19h_init_clears_header_vm() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_init_clears_header(&state.memory.ram);
 }
 
@@ -508,7 +504,7 @@ fn int19h_init_clears_header_vm() {
 fn int19h_init_clears_header_vx() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_vx(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_init_clears_header(&state.memory.ram);
 }
 
@@ -516,7 +512,7 @@ fn int19h_init_clears_header_vx() {
 fn int19h_init_clears_header_ra() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_ra(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_init_clears_header(&state.memory.ram);
 }
 
@@ -541,7 +537,7 @@ fn assert_bda_pointer(ram: &[u8; 0xA0000]) {
 fn int19h_init_stores_bda_pointer_f() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_bda_pointer(&state.memory.ram);
 }
 
@@ -549,7 +545,7 @@ fn int19h_init_stores_bda_pointer_f() {
 fn int19h_init_stores_bda_pointer_vm() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_bda_pointer(&state.memory.ram);
 }
 
@@ -557,7 +553,7 @@ fn int19h_init_stores_bda_pointer_vm() {
 fn int19h_init_stores_bda_pointer_vx() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_vx(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_bda_pointer(&state.memory.ram);
 }
 
@@ -565,7 +561,7 @@ fn int19h_init_stores_bda_pointer_vx() {
 fn int19h_init_stores_bda_pointer_ra() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_ra(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_bda_pointer(&state.memory.ram);
 }
 
@@ -577,7 +573,7 @@ fn int19h_init_stores_bda_pointer_ra() {
 fn int19h_init_flow_flag_f() {
     let code = make_init_flow_and_store();
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let flag = state.memory.ram[RS_BUF + R_FLAG];
     assert_eq!(
         flag, 0x90,
@@ -589,7 +585,7 @@ fn int19h_init_flow_flag_f() {
 fn int19h_init_flow_flag_vm() {
     let code = make_init_flow_and_store();
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let flag = state.memory.ram[RS_BUF + R_FLAG];
     assert_eq!(
         flag, 0x90,
@@ -601,7 +597,7 @@ fn int19h_init_flow_flag_vm() {
 fn int19h_init_flow_flag_vx() {
     let code = make_init_flow_and_store();
     let (machine, _) = super::boot_and_run_vx(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let flag = state.memory.ram[RS_BUF + R_FLAG];
     assert_eq!(
         flag, 0x90,
@@ -613,7 +609,7 @@ fn int19h_init_flow_flag_vx() {
 fn int19h_init_flow_flag_ra() {
     let code = make_init_flow_and_store();
     let (machine, _) = super::boot_and_run_ra(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let flag = state.memory.ram[RS_BUF + R_FLAG];
     assert_eq!(
         flag, 0x90,
@@ -629,7 +625,7 @@ fn int19h_init_flow_flag_ra() {
 fn int19h_rx_count_not_init_f() {
     let code = make_no_init_call_store(0x02, 0x00);
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -643,7 +639,7 @@ fn int19h_rx_count_not_init_f() {
 fn int19h_rx_count_not_init_vm() {
     let code = make_no_init_call_store(0x02, 0x00);
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -657,7 +653,7 @@ fn int19h_rx_count_not_init_vm() {
 fn int19h_rx_count_not_init_vx() {
     let code = make_no_init_call_store(0x02, 0x00);
     let (machine, _) = super::boot_and_run_vx(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -671,7 +667,7 @@ fn int19h_rx_count_not_init_vx() {
 fn int19h_rx_count_not_init_ra() {
     let code = make_no_init_call_store(0x02, 0x00);
     let (machine, _) = super::boot_and_run_ra(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -689,7 +685,7 @@ fn int19h_rx_count_not_init_ra() {
 fn int19h_rx_count_zero_f() {
     let code = make_init_then_call_store(0x02, 0x00);
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(ax >> 8, 0x00, "AH should be 0x00 (got {:#04X})", ax >> 8);
@@ -700,7 +696,7 @@ fn int19h_rx_count_zero_f() {
 fn int19h_rx_count_zero_vm() {
     let code = make_init_then_call_store(0x02, 0x00);
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(ax >> 8, 0x00, "AH should be 0x00 (got {:#04X})", ax >> 8);
@@ -711,7 +707,7 @@ fn int19h_rx_count_zero_vm() {
 fn int19h_rx_count_zero_vx() {
     let code = make_init_then_call_store(0x02, 0x00);
     let (machine, _) = super::boot_and_run_vx(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(ax >> 8, 0x00, "AH should be 0x00 (got {:#04X})", ax >> 8);
@@ -722,7 +718,7 @@ fn int19h_rx_count_zero_vx() {
 fn int19h_rx_count_zero_ra() {
     let code = make_init_then_call_store(0x02, 0x00);
     let (machine, _) = super::boot_and_run_ra(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(ax >> 8, 0x00, "AH should be 0x00 (got {:#04X})", ax >> 8);
@@ -737,7 +733,7 @@ fn int19h_rx_count_zero_ra() {
 fn int19h_rx_count_after_receive_f() {
     let query = make_query_store(0x02, 0x00);
     let machine = boot_serial_receive_then_query_f(&[0x41, 0x42], &query);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(ax >> 8, 0x00, "AH should be 0x00 (got {:#04X})", ax >> 8);
@@ -748,7 +744,7 @@ fn int19h_rx_count_after_receive_f() {
 fn int19h_rx_count_after_receive_vm() {
     let query = make_query_store(0x02, 0x00);
     let machine = boot_serial_receive_then_query_vm(&[0x41, 0x42], &query);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(ax >> 8, 0x00, "AH should be 0x00 (got {:#04X})", ax >> 8);
@@ -759,7 +755,7 @@ fn int19h_rx_count_after_receive_vm() {
 fn int19h_rx_count_after_receive_vx() {
     let query = make_query_store(0x02, 0x00);
     let machine = boot_serial_receive_then_query_vx(&[0x41, 0x42], &query);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(ax >> 8, 0x00, "AH should be 0x00 (got {:#04X})", ax >> 8);
@@ -770,7 +766,7 @@ fn int19h_rx_count_after_receive_vx() {
 fn int19h_rx_count_after_receive_ra() {
     let query = make_query_store(0x02, 0x00);
     let machine = boot_serial_receive_then_query_ra(&[0x41, 0x42], &query);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(ax >> 8, 0x00, "AH should be 0x00 (got {:#04X})", ax >> 8);
@@ -785,7 +781,7 @@ fn int19h_rx_count_after_receive_ra() {
 fn int19h_send_not_init_f() {
     let code = make_no_init_call_store(0x03, 0x41);
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -799,7 +795,7 @@ fn int19h_send_not_init_f() {
 fn int19h_send_not_init_vm() {
     let code = make_no_init_call_store(0x03, 0x41);
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -813,7 +809,7 @@ fn int19h_send_not_init_vm() {
 fn int19h_send_not_init_vx() {
     let code = make_no_init_call_store(0x03, 0x41);
     let (machine, _) = super::boot_and_run_vx(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -827,7 +823,7 @@ fn int19h_send_not_init_vx() {
 fn int19h_send_not_init_ra() {
     let code = make_no_init_call_store(0x03, 0x41);
     let (machine, _) = super::boot_and_run_ra(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -845,7 +841,7 @@ fn int19h_send_not_init_ra() {
 fn int19h_send_char_f() {
     let code = make_init_then_call_store(0x03, 0x41);
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -859,7 +855,7 @@ fn int19h_send_char_f() {
 fn int19h_send_char_vm() {
     let code = make_init_then_call_store(0x03, 0x41);
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -873,7 +869,7 @@ fn int19h_send_char_vm() {
 fn int19h_send_char_vx() {
     let code = make_init_then_call_store(0x03, 0x41);
     let (machine, _) = super::boot_and_run_vx(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -887,7 +883,7 @@ fn int19h_send_char_vx() {
 fn int19h_send_char_ra() {
     let code = make_init_then_call_store(0x03, 0x41);
     let (machine, _) = super::boot_and_run_ra(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -905,7 +901,7 @@ fn int19h_send_char_ra() {
 fn int19h_recv_not_init_f() {
     let code = make_no_init_call_store(0x04, 0x00);
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -919,7 +915,7 @@ fn int19h_recv_not_init_f() {
 fn int19h_recv_not_init_vm() {
     let code = make_no_init_call_store(0x04, 0x00);
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -933,7 +929,7 @@ fn int19h_recv_not_init_vm() {
 fn int19h_recv_not_init_vx() {
     let code = make_no_init_call_store(0x04, 0x00);
     let (machine, _) = super::boot_and_run_vx(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -947,7 +943,7 @@ fn int19h_recv_not_init_vx() {
 fn int19h_recv_not_init_ra() {
     let code = make_no_init_call_store(0x04, 0x00);
     let (machine, _) = super::boot_and_run_ra(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -965,7 +961,7 @@ fn int19h_recv_not_init_ra() {
 fn int19h_recv_char_f() {
     let query = make_query_store(0x04, 0x00);
     let machine = boot_serial_receive_then_query_f(&[0x41], &query);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(
@@ -996,7 +992,7 @@ fn int19h_recv_char_f() {
 fn int19h_recv_char_vm() {
     let query = make_query_store(0x04, 0x00);
     let machine = boot_serial_receive_then_query_vm(&[0x41], &query);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(
@@ -1027,7 +1023,7 @@ fn int19h_recv_char_vm() {
 fn int19h_recv_char_vx() {
     let query = make_query_store(0x04, 0x00);
     let machine = boot_serial_receive_then_query_vx(&[0x41], &query);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(
@@ -1058,7 +1054,7 @@ fn int19h_recv_char_vx() {
 fn int19h_recv_char_ra() {
     let query = make_query_store(0x04, 0x00);
     let machine = boot_serial_receive_then_query_ra(&[0x41], &query);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(
@@ -1093,7 +1089,7 @@ fn int19h_recv_char_ra() {
 fn int19h_recv_timeout_f() {
     let code = make_init_then_call_store(0x04, 0x00);
     let (machine, _) = super::boot_and_run_f(&code, &[], 200_000_000);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -1107,7 +1103,7 @@ fn int19h_recv_timeout_f() {
 fn int19h_recv_timeout_vm() {
     let code = make_init_then_call_store(0x04, 0x00);
     let (machine, _) = super::boot_and_run_vm(&code, &[], 200_000_000);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -1121,7 +1117,7 @@ fn int19h_recv_timeout_vm() {
 fn int19h_recv_timeout_vx() {
     let code = make_init_then_call_store(0x04, 0x00);
     let (machine, _) = super::boot_and_run_vx(&code, &[], 500_000_000);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -1135,7 +1131,7 @@ fn int19h_recv_timeout_vx() {
 fn int19h_recv_timeout_ra() {
     let code = make_init_then_call_store(0x04, 0x00);
     let (machine, _) = super::boot_and_run_ra(&code, &[], 500_000_000);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -1153,7 +1149,7 @@ fn int19h_recv_timeout_ra() {
 fn int19h_cmd_not_init_f() {
     let code = make_no_init_call_store(0x05, 0x37);
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -1167,7 +1163,7 @@ fn int19h_cmd_not_init_f() {
 fn int19h_cmd_not_init_vm() {
     let code = make_no_init_call_store(0x05, 0x37);
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -1181,7 +1177,7 @@ fn int19h_cmd_not_init_vm() {
 fn int19h_cmd_not_init_vx() {
     let code = make_no_init_call_store(0x05, 0x37);
     let (machine, _) = super::boot_and_run_vx(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -1195,7 +1191,7 @@ fn int19h_cmd_not_init_vx() {
 fn int19h_cmd_not_init_ra() {
     let code = make_no_init_call_store(0x05, 0x37);
     let (machine, _) = super::boot_and_run_ra(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -1213,7 +1209,7 @@ fn int19h_cmd_not_init_ra() {
 fn int19h_cmd_output_f() {
     let code = make_init_then_call_store(0x05, 0x37);
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -1232,7 +1228,7 @@ fn int19h_cmd_output_f() {
 fn int19h_cmd_output_vm() {
     let code = make_init_then_call_store(0x05, 0x37);
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -1251,7 +1247,7 @@ fn int19h_cmd_output_vm() {
 fn int19h_cmd_output_vx() {
     let code = make_init_then_call_store(0x05, 0x37);
     let (machine, _) = super::boot_and_run_vx(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -1270,7 +1266,7 @@ fn int19h_cmd_output_vx() {
 fn int19h_cmd_output_ra() {
     let code = make_init_then_call_store(0x05, 0x37);
     let (machine, _) = super::boot_and_run_ra(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -1293,7 +1289,7 @@ fn int19h_cmd_output_ra() {
 fn int19h_status_not_init_f() {
     let code = make_no_init_call_store(0x06, 0x00);
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -1307,7 +1303,7 @@ fn int19h_status_not_init_f() {
 fn int19h_status_not_init_vm() {
     let code = make_no_init_call_store(0x06, 0x00);
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -1321,7 +1317,7 @@ fn int19h_status_not_init_vm() {
 fn int19h_status_not_init_vx() {
     let code = make_no_init_call_store(0x06, 0x00);
     let (machine, _) = super::boot_and_run_vx(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -1335,7 +1331,7 @@ fn int19h_status_not_init_vx() {
 fn int19h_status_not_init_ra() {
     let code = make_no_init_call_store(0x06, 0x00);
     let (machine, _) = super::boot_and_run_ra(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -1353,7 +1349,7 @@ fn int19h_status_not_init_ra() {
 fn int19h_status_read_f() {
     let code = make_init_then_call_store(0x06, 0x00);
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(
@@ -1380,7 +1376,7 @@ fn int19h_status_read_f() {
 fn int19h_status_read_vm() {
     let code = make_init_then_call_store(0x06, 0x00);
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(
@@ -1407,7 +1403,7 @@ fn int19h_status_read_vm() {
 fn int19h_status_read_vx() {
     let code = make_init_then_call_store(0x06, 0x00);
     let (machine, _) = super::boot_and_run_vx(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(
@@ -1434,7 +1430,7 @@ fn int19h_status_read_vx() {
 fn int19h_status_read_ra() {
     let code = make_init_then_call_store(0x06, 0x00);
     let (machine, _) = super::boot_and_run_ra(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(
@@ -1482,7 +1478,7 @@ fn int19h_init_with_ir_clears_init_flag_f() {
     let mut code = serial_init_preamble_cl(0x00, 0x67);
     code.extend_from_slice(&[0xF4]); // HLT
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let flag = state.memory.ram[RS_BUF + R_FLAG];
     assert_eq!(
         flag & 0x80,
@@ -1497,7 +1493,7 @@ fn int19h_init_with_ir_clears_init_flag_vm() {
     let mut code = serial_init_preamble_cl(0x00, 0x67);
     code.extend_from_slice(&[0xF4]); // HLT
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let flag = state.memory.ram[RS_BUF + R_FLAG];
     assert_eq!(
         flag & 0x80,
@@ -1512,7 +1508,7 @@ fn int19h_init_without_rxe_does_not_unmask_irq4_f() {
     let mut code = serial_init_preamble_cl(0x00, 0x23);
     code.extend_from_slice(&[0xF4]); // HLT
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_ne!(
         state.pic.chips[0].imr & 0x10,
         0,
@@ -1526,7 +1522,7 @@ fn int19h_init_without_rxe_does_not_unmask_irq4_vm() {
     let mut code = serial_init_preamble_cl(0x00, 0x23);
     code.extend_from_slice(&[0xF4]); // HLT
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_ne!(
         state.pic.chips[0].imr & 0x10,
         0,
@@ -1540,7 +1536,7 @@ fn int19h_init_with_rxe_unmasks_irq4_f() {
     let mut code = serial_init_preamble_cl(0x00, 0x27);
     code.extend_from_slice(&[0xF4]); // HLT
     let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.pic.chips[0].imr & 0x10,
         0,
@@ -1554,7 +1550,7 @@ fn int19h_init_with_rxe_unmasks_irq4_vm() {
     let mut code = serial_init_preamble_cl(0x00, 0x27);
     code.extend_from_slice(&[0xF4]); // HLT
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.pic.chips[0].imr & 0x10,
         0,

@@ -19,6 +19,7 @@ pub(crate) struct ExecParams {
 }
 
 /// Saved context of a suspended parent process during nested EXEC.
+#[derive(Clone)]
 pub(crate) struct ProcessContext {
     pub psp_segment: u16,
     /// PSP of the most-recently-EXECed child of this context; zero for the
@@ -42,6 +43,27 @@ pub(crate) struct ProcessContext {
     pub saved_dta_off: u16,
     pub saved_dta_addr: u32,
 }
+
+state_struct_codec!(ProcessContext {
+    psp_segment,
+    child_psp_segment,
+    return_ax,
+    return_bx,
+    return_cx,
+    return_dx,
+    return_ss,
+    return_sp,
+    return_ip,
+    return_cs,
+    return_flags,
+    return_si,
+    return_di,
+    return_ds,
+    return_es,
+    saved_dta_seg,
+    saved_dta_off,
+    saved_dta_addr,
+});
 
 pub(crate) struct SftBases {
     pub primary: u32,

@@ -54,6 +54,7 @@ const DEVICE_CONTROL_HIGH_READ_MASK: u8 = 0x03;
 /// Power-on and master-clear mask value (all four channels masked).
 const MASK_ALL_CHANNELS: u8 = 0x0F;
 
+save_state::runtime_state! {
 /// State of a single DMA channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Upd71071ChannelState {
@@ -69,7 +70,7 @@ pub struct Upd71071ChannelState {
     pub mode: u8,
     /// Terminal-count latch, set when a transfer completes or a ~END is signalled.
     pub terminal_count: bool,
-}
+}}
 
 impl Upd71071ChannelState {
     const fn new() -> Self {
@@ -102,6 +103,7 @@ impl Upd71071ChannelState {
     }
 }
 
+save_state::runtime_state! {
 /// Snapshot of the DMA controller for save/restore.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Upd71071State {
@@ -119,7 +121,7 @@ pub struct Upd71071State {
     pub request: u8,
     /// Channel mask register (bit per channel; 1 = masked).
     pub mask: u8,
-}
+}}
 
 /// uPD71071 DMA controller.
 pub struct Upd71071Dma {

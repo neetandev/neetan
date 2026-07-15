@@ -21,6 +21,24 @@ pub(crate) struct VirtualDrive {
     entries: Vec<VirtualEntry>,
 }
 
+impl Clone for VirtualDrive {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+
+impl save_state::StateEncode for VirtualDrive {
+    fn encode_state(&self, _output: &mut Vec<u8>) {}
+}
+
+impl save_state::StateDecode for VirtualDrive {
+    fn decode_state(
+        _decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        Ok(Self::new())
+    }
+}
+
 impl VirtualDrive {
     pub fn new() -> Self {
         // Date: 1995-01-01, Time: 00:00

@@ -4,6 +4,7 @@ mod harness;
 
 use std::path::PathBuf;
 
+use common::Machine;
 use device::floppy::{D88Disk, D88MediaType, D88Sector, FloppyImage};
 use harness::{build_machine, run_bus_cycles};
 use machine_x1::X1Model;
@@ -58,6 +59,16 @@ fn select_drive(bus: &mut machine_x1::X1Bus) {
     bus.io_read(FDC_CONTROL_MFM); // MFM density
 }
 
+fn read_ready_byte(bus: &mut machine_x1::X1Bus) -> u8 {
+    for _ in 0..4096 {
+        if bus.io_read(FDC_STATUS_COMMAND).0 & STATUS_DRQ != 0 {
+            return bus.io_read(FDC_DATA).0;
+        }
+        run_bus_cycles(bus, 128);
+    }
+    panic!("FDC did not assert DRQ");
+}
+
 #[test]
 fn read_sector_streams_the_data_over_pio() {
     let mut machine = build_machine(X1Model::X1);
@@ -88,6 +99,39 @@ fn read_sector_streams_the_data_over_pio() {
     // The transfer completes: DRQ and BUSY drop once the last byte is read.
     let status = bus.io_read(FDC_STATUS_COMMAND).0;
     assert_eq!(status & (STATUS_DRQ | STATUS_BUSY), 0);
+}
+
+#[test]
+fn save_state_replays_a_partial_pio_sector() {
+    let mut machine = build_machine(X1Model::X1);
+    machine.bus.insert_floppy(
+        0,
+        synthetic_disk(vec![make_sector(1, 1, 0x30)]),
+        PathBuf::from("test.d88"),
+    );
+    select_drive(&mut machine.bus);
+    machine.bus.io_write(FDC_TRACK, 0);
+    machine.bus.io_write(FDC_SECTOR, 1);
+    machine.bus.io_write(FDC_STATUS_COMMAND, CMD_READ_SECTOR);
+    run_bus_cycles(&mut machine.bus, 100_000);
+    for _ in 0..43 {
+        read_ready_byte(&mut machine.bus);
+    }
+    let snapshot = machine.capture_state().unwrap();
+
+    let expected: Vec<u8> = (43..256)
+        .map(|_| read_ready_byte(&mut machine.bus))
+        .collect();
+    let expected_state = machine.capture_state().unwrap();
+
+    machine.restore_state(&snapshot).unwrap();
+    let replayed: Vec<u8> = (43..256)
+        .map(|_| read_ready_byte(&mut machine.bus))
+        .collect();
+    let replayed_state = machine.capture_state().unwrap();
+
+    assert_eq!(replayed, expected);
+    assert_eq!(replayed_state.payload(), expected_state.payload());
 }
 
 #[test]

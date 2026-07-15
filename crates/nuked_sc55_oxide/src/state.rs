@@ -32,6 +32,11 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  */
 
+use std::{
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
+
 use crate::{
     mcu::McuState,
     mcu_timer::{FrtState, McuTimerState},
@@ -47,6 +52,31 @@ pub const SRAM_SIZE: usize = 0x8000;
 pub const NVRAM_SIZE: usize = 0x8000;
 pub const CARDRAM_SIZE: usize = 0x8000;
 
+#[derive(Clone)]
+pub(crate) struct ImmutableResource<Resource: Clone>(Arc<Resource>);
+
+impl<Resource: Clone> ImmutableResource<Resource> {
+    pub(crate) fn new(resource: Resource) -> Self {
+        Self(Arc::new(resource))
+    }
+}
+
+impl<Resource: Clone> Deref for ImmutableResource<Resource> {
+    type Target = Resource;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<Resource: Clone> DerefMut for ImmutableResource<Resource> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+#[derive(Clone)]
+/// Complete SC-55 synthesis state without retained ROM allocations.
 pub struct Sc55State {
     pub mcu: McuState,
     pub dev_register: [u8; 0x80],
@@ -59,15 +89,15 @@ pub struct Sc55State {
     pub mcu_sc155: bool,
     pub uart_write_ptr: u32,
     pub uart_read_ptr: u32,
-    pub uart_buffer: [u8; UART_BUFFER_SIZE],
+    pub uart_buffer: Box<[u8; UART_BUFFER_SIZE]>,
 
-    pub rom1: [u8; ROM1_SIZE],
-    pub rom2: Vec<u8>,
+    pub(crate) rom1: ImmutableResource<[u8; ROM1_SIZE]>,
+    pub(crate) rom2: ImmutableResource<Vec<u8>>,
     pub rom2_mask: i32,
     pub ram: [u8; RAM_SIZE],
-    pub sram: [u8; SRAM_SIZE],
-    pub nvram: [u8; NVRAM_SIZE],
-    pub cardram: [u8; CARDRAM_SIZE],
+    pub sram: Box<[u8; SRAM_SIZE]>,
+    pub nvram: Box<[u8; NVRAM_SIZE]>,
+    pub cardram: Box<[u8; CARDRAM_SIZE]>,
 
     pub ga_int: [i32; 8],
     pub ga_int_enable: i32,
@@ -87,14 +117,14 @@ pub struct Sc55State {
     pub timer_tempreg: u8,
 
     pub pcm: PcmState,
-    pub waverom1: Vec<u8>,
-    pub waverom2: Vec<u8>,
-    pub waverom3: Vec<u8>,
-    pub waverom_card: Vec<u8>,
-    pub waverom_exp: Vec<u8>,
+    pub(crate) waverom1: ImmutableResource<Vec<u8>>,
+    pub(crate) waverom2: ImmutableResource<Vec<u8>>,
+    pub(crate) waverom3: ImmutableResource<Vec<u8>>,
+    pub(crate) waverom_card: ImmutableResource<Vec<u8>>,
+    pub(crate) waverom_exp: ImmutableResource<Vec<u8>>,
 
     pub sm: SubMcuState,
-    pub sm_rom: [u8; 4096],
+    pub(crate) sm_rom: ImmutableResource<[u8; 4096]>,
 
     pub sm_ram: [u8; 128],
     pub sm_shared_ram: [u8; 192],
@@ -138,14 +168,14 @@ impl Default for Sc55State {
             mcu_sc155: false,
             uart_write_ptr: 0,
             uart_read_ptr: 0,
-            uart_buffer: [0; UART_BUFFER_SIZE],
-            rom1: [0; ROM1_SIZE],
-            rom2: vec![0; ROM2_SIZE],
+            uart_buffer: Box::new([0; UART_BUFFER_SIZE]),
+            rom1: ImmutableResource::new([0; ROM1_SIZE]),
+            rom2: ImmutableResource::new(vec![0; ROM2_SIZE]),
             rom2_mask: ROM2_SIZE as i32 - 1,
             ram: [0; RAM_SIZE],
-            sram: [0; SRAM_SIZE],
-            nvram: [0; NVRAM_SIZE],
-            cardram: [0; CARDRAM_SIZE],
+            sram: Box::new([0; SRAM_SIZE]),
+            nvram: Box::new([0; NVRAM_SIZE]),
+            cardram: Box::new([0; CARDRAM_SIZE]),
             ga_int: [0; 8],
             ga_int_enable: 0,
             ga_int_trigger: 0,
@@ -162,13 +192,13 @@ impl Default for Sc55State {
             timer_cycles: 0,
             timer_tempreg: 0,
             pcm: PcmState::default(),
-            waverom1: Vec::new(),
-            waverom2: Vec::new(),
-            waverom3: Vec::new(),
-            waverom_card: Vec::new(),
-            waverom_exp: Vec::new(),
+            waverom1: ImmutableResource::new(Vec::new()),
+            waverom2: ImmutableResource::new(Vec::new()),
+            waverom3: ImmutableResource::new(Vec::new()),
+            waverom_card: ImmutableResource::new(Vec::new()),
+            waverom_exp: ImmutableResource::new(Vec::new()),
             sm: SubMcuState::default(),
-            sm_rom: [0; 4096],
+            sm_rom: ImmutableResource::new([0; 4096]),
             sm_ram: [0; 128],
             sm_shared_ram: [0; 192],
             sm_access: [0; 0x18],
@@ -196,3 +226,102 @@ impl Default for Sc55State {
         }
     }
 }
+
+impl Sc55State {
+    pub(crate) fn attach_resources(&mut self, active: &Self) {
+        self.rom1 = active.rom1.clone();
+        self.rom2 = active.rom2.clone();
+        self.waverom1 = active.waverom1.clone();
+        self.waverom2 = active.waverom2.clone();
+        self.waverom3 = active.waverom3.clone();
+        self.waverom_card = active.waverom_card.clone();
+        self.waverom_exp = active.waverom_exp.clone();
+        self.sm_rom = active.sm_rom.clone();
+    }
+
+    pub(crate) fn validate_for_restore(&self) -> Result<(), String> {
+        if self.uart_write_ptr as usize >= self.uart_buffer.len()
+            || self.uart_read_ptr as usize >= self.uart_buffer.len()
+        {
+            return Err("SC-55 UART position is invalid".to_owned());
+        }
+        if self.pcm.select_channel >= 32
+            || self.pcm.irq_channel >= 32
+            || self.render_frames_written > self.render_frames_requested
+            || self.render_output.len() < self.render_frames_requested as usize * 2
+        {
+            return Err("SC-55 render state is invalid".to_owned());
+        }
+        Ok(())
+    }
+}
+
+crate::impl_state_codec!(Sc55State {
+    mcu,
+    dev_register,
+    romset,
+    mcu_mk1,
+    mcu_cm300,
+    mcu_st,
+    mcu_jv880,
+    mcu_scb55,
+    mcu_sc155,
+    uart_write_ptr,
+    uart_read_ptr,
+    uart_buffer,
+    rom2_mask,
+    ram,
+    sram,
+    nvram,
+    cardram,
+    ga_int,
+    ga_int_enable,
+    ga_int_trigger,
+    sw_pos,
+    io_sd,
+    adf_rd,
+    analog_end_time,
+    ssr_rd,
+    uart_rx_byte,
+    uart_rx_delay,
+    uart_tx_delay,
+    frt,
+    timer,
+    timer_cycles,
+    timer_tempreg,
+    pcm,
+    sm,
+    sm_ram,
+    sm_shared_ram,
+    sm_access,
+    sm_p0_dir,
+    sm_p1_dir,
+    sm_device_mode,
+    sm_cts,
+    sm_timer_cycles,
+    sm_timer_prescaler,
+    sm_timer_counter,
+    sm_uart_rx_gotbyte,
+    sm_uart_rx_byte,
+    sm_uart_rx_delay,
+    operand_type,
+    operand_ea,
+    operand_ep,
+    operand_size,
+    operand_reg,
+    operand_status,
+    operand_data,
+    opcode_extended,
+    render_output,
+    render_frames_written,
+    render_frames_requested,
+} defaults {
+    rom1: ImmutableResource::new([0; ROM1_SIZE]),
+    rom2: ImmutableResource::new(Vec::new()),
+    waverom1: ImmutableResource::new(Vec::new()),
+    waverom2: ImmutableResource::new(Vec::new()),
+    waverom3: ImmutableResource::new(Vec::new()),
+    waverom_card: ImmutableResource::new(Vec::new()),
+    waverom_exp: ImmutableResource::new(Vec::new()),
+    sm_rom: ImmutableResource::new([0; 4096]),
+});

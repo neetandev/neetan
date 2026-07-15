@@ -39,6 +39,7 @@ const RESOLUTION_MASK: u16 = 0x001F;
 /// Writable-bit mask of the background scroll registers.
 const BACKGROUND_SCROLL_MASK: u16 = 0x03FF;
 
+save_state::runtime_state! {
 /// Sharp X68000 CYNTHIA sprite controller.
 #[derive(Debug, Clone)]
 pub struct SpriteX68k {
@@ -50,6 +51,24 @@ pub struct SpriteX68k {
     vertical_back_end: u16,
     resolution: u16,
     pattern: Box<[u16]>,
+}}
+
+impl SpriteX68k {
+    /// Captures complete sprite registers and pattern RAM.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores complete sprite registers and pattern RAM.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        if state.pattern.len() != X68K_SPRITE_PATTERN_WORDS {
+            return Err(save_state::StateValidationError::new(
+                "X68000 sprite pattern RAM size is invalid",
+            ));
+        }
+        *self = state;
+        Ok(())
+    }
 }
 
 impl Default for SpriteX68k {

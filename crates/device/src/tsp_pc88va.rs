@@ -1,50 +1,54 @@
 //! PC-88VA2 Text and Sprite Processor (TSP): the command/parameter protocol and
 //! the display-timing derivation that drives the VSYNC loop.
 
+save_state::runtime_state_enum! {
 /// Horizontal sync mode, selected by the CRT type (the interlace variant is
 /// added with the video controller).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HsyncMode {
     /// 24.8 kHz horizontal sync.
-    Khz24_8,
+    Khz24_8 = 0,
     /// 15.98 kHz horizontal sync.
-    Khz15_98,
-}
+    Khz15_98 = 1,
+}}
 
+save_state::runtime_state_enum! {
 /// Which half of the frame loop the next TSP frame event advances.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FramePhase {
     /// Start the display interval.
-    DisplayStart,
+    DisplayStart = 0,
     /// Start the vertical-sync interval.
-    Vsync,
-}
+    Vsync = 1,
+}}
 
+save_state::runtime_state_enum! {
 /// Step of the system-port-4 VSYNC / IRQ chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sysp4Phase {
     /// End the system-port sync interval.
-    End,
+    End = 0,
     /// Start the system-port sync interval.
-    Start,
+    Start = 1,
     /// Assert the system-port interrupt.
-    Int,
-}
+    Int = 2,
+}}
 
+save_state::runtime_state_enum! {
 /// The command currently collecting parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {
-    None,
-    Sync,
-    Dspon,
-    Dspdef,
-    Curdef,
-    Spron,
+    None = 0,
+    Sync = 1,
+    Dspon = 2,
+    Dspdef = 3,
+    Curdef = 4,
+    Spron = 5,
     /// SPRDEF, awaiting its first parameter (the write offset).
-    SprdefBegin,
+    SprdefBegin = 6,
     /// SPRDEF, streaming bytes into the sprite table until the next command.
-    SprdefStream,
-}
+    SprdefStream = 7,
+}}
 
 const CMD_SYNC: u8 = 0x10;
 const CMD_DSPON: u8 = 0x12;
@@ -76,7 +80,9 @@ pub enum TspMemEffect {
     },
 }
 
+save_state::runtime_state! {
 /// TSP timing and command state.
+#[derive(Clone)]
 pub struct TspState {
     status: u8,
     command: Command,
@@ -140,6 +146,22 @@ pub struct TspState {
     pub textmg: bool,
     /// Programmed screen line count (SYNC parameters 0x0a/0x0b).
     pub screenlines: u16,
+}}
+
+impl TspState {
+    /// Validates command and display timing state.
+    pub fn validate_runtime_state(&self) -> Result<(), save_state::StateValidationError> {
+        if self.paramindex > self.parambuf.len()
+            || self.recvdatacnt > self.parambuf.len() as u8
+            || self.lineheight > 32
+            || self.screenlines > 1024
+        {
+            return Err(save_state::StateValidationError::new(
+                "PC-88VA TSP state is invalid",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for TspState {

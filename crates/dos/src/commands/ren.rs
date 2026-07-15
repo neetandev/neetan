@@ -24,9 +24,13 @@ impl Command for Ren {
     }
 }
 
-struct RunningRen {
+#[derive(Clone)]
+/// Serializable state of an executing REN command.
+pub(crate) struct RunningRen {
     args: Vec<u8>,
 }
+
+state_struct_codec!(RunningRen { args });
 
 impl RunningCommand for RunningRen {
     fn step(

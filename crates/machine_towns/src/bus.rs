@@ -132,6 +132,73 @@ const NANOS_PER_SECOND: u64 = 1_000_000_000;
 const DMA_MAIN: usize = 0;
 const DMA_EXTENDED: usize = 1;
 
+#[cfg(feature = "mt32")]
+type TownsMt32State = device::mt32::MuntActorState;
+#[cfg(not(feature = "mt32"))]
+save_state::runtime_state! {
+/// Empty MT-32 state used when MT-32 support is not compiled in.
+#[derive(Clone)]
+struct TownsMt32State {}
+}
+
+#[cfg(feature = "sc55")]
+type TownsSc55State = device::sc55::Sc55ActorState;
+#[cfg(not(feature = "sc55"))]
+save_state::runtime_state! {
+/// Empty SC-55 state used when SC-55 support is not compiled in.
+#[derive(Clone)]
+struct TownsSc55State {}
+}
+
+save_state::runtime_state! {
+/// Complete authoritative FM Towns bus state.
+#[derive(Clone)]
+pub(crate) struct TownsBusState {
+    memory: crate::memory::TownsMemoryState,
+    current_cycle: u64,
+    scheduler: crate::scheduler::TownsSchedulerState,
+    pic: device::i8259a_pic::I8259aPicState,
+    timer: device::timer_towns::TownsTimerRuntimeState,
+    dmac: [device::upd71071_dma::Upd71071State; 2],
+    rtc: device::msm58321_rtc::Msm58321RuntimeState,
+    keyboard: device::keyboard_towns::TownsKeyboardState,
+    cdc: device::cdrom_towns::TownsCdControllerState,
+    fdc: device::mb8877_fdc::Mb8877FdcState,
+    scsi: device::scsi::TownsScsiControllerState,
+    beeper: device::beeper::BeeperState,
+    buzzer_memio: bool,
+    fm: device::opn_fm::Ymf276RuntimeState,
+    pcm: device::rf5c68::Rf5c68RuntimeState,
+    sound_mute: u8,
+    sound_audio: u8,
+    elevol: [device::electronic_volume_towns::ElectronicVolumeState; 2],
+    main_ram_wait: u8,
+    vram_wait: u8,
+    pending_wait_cycles: i64,
+    gameport: device::gameport_towns::TownsGamePortState,
+    video: device::video_towns::TownsVideoRuntimeState,
+    sprite: device::sprite_towns::TownsSpriteRuntimeState,
+    renderer: software_renderer::towns::TownsRendererRuntimeState,
+    display_width: u32,
+    display_height: u32,
+    presented_frames: u64,
+    model: u8,
+    machine_id: (u8, u8),
+    last_vsync_start_cycle: u64,
+    nmi_mask: u8,
+    rs232c: device::i8251_serial::I8251SerialState,
+    rs232c_int_enable: u8,
+    reset_reason: u8,
+    soft_reset_pending: bool,
+    power_off_requested: bool,
+    serial_rom_bit_count: u8,
+    last_serial_rom_command: u8,
+    memcard_bank: u8,
+    memcard_reg: bool,
+    mt32: Option<TownsMt32State>,
+    sc55: Option<TownsSc55State>,
+}}
+
 /// Default host time source (a fixed timestamp) until the app installs one.
 /// The FM Towns system bus.
 pub struct TownsBus<T: TraceSink = NoTrace> {
@@ -308,6 +375,247 @@ impl<T: TraceSink> TownsBus<T> {
         bus.schedule_next_vsync();
         bus
     }
+
+    /// Returns stable identities for installed ROM resources.
+    pub(crate) fn save_state_resources(
+        &self,
+    ) -> Result<save_state::ResourceManifest, save_state::StateValidationError> {
+        save_state::ResourceManifest::new(self.memory.resource_bindings()?)
+    }
+
+    /// Returns stable identities for every mounted medium.
+    pub(crate) fn save_state_media(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = Vec::new();
+        bindings.extend_from_slice(self.cdc.media_manifest()?.bindings());
+        bindings.extend_from_slice(self.fdc.media_manifest()?.bindings());
+        bindings.extend_from_slice(self.scsi.media_manifest()?.bindings());
+        save_state::MediaManifest::new(bindings)
+    }
+
+    /// Captures the complete FM Towns bus at a machine safe point.
+    pub(crate) fn capture_runtime_state(
+        &mut self,
+    ) -> Result<TownsBusState, save_state::SaveStateError> {
+        Ok(TownsBusState {
+            memory: self.memory.capture_state(),
+            current_cycle: self.current_cycle,
+            scheduler: self.scheduler.capture_state(),
+            pic: self.pic.capture_state(),
+            timer: self.timer.capture_state(),
+            dmac: [self.dmac[0].state.clone(), self.dmac[1].state.clone()],
+            rtc: self.rtc.capture_state(),
+            keyboard: self.keyboard.capture_state(),
+            cdc: self.cdc.capture_state()?,
+            fdc: self.fdc.capture_state()?,
+            scsi: self.scsi.capture_state()?,
+            beeper: self.beeper.capture_state(),
+            buzzer_memio: self.buzzer_memio,
+            fm: self.fm.capture_state(),
+            pcm: self.pcm.capture_state(),
+            sound_mute: self.sound_mute,
+            sound_audio: self.sound_audio,
+            elevol: [
+                self.elevol[0].capture_state(),
+                self.elevol[1].capture_state(),
+            ],
+            main_ram_wait: self.main_ram_wait,
+            vram_wait: self.vram_wait,
+            pending_wait_cycles: self.pending_wait_cycles,
+            gameport: self.gameport.capture_state(),
+            video: self.video.capture_state(),
+            sprite: self.sprite.capture_state(),
+            renderer: self.renderer.capture_state(),
+            display_width: self.display_width,
+            display_height: self.display_height,
+            presented_frames: self.presented_frames,
+            model: match self.model {
+                TownsModel::FmTowns => 0,
+                TownsModel::FmTownsIICx => 1,
+                TownsModel::FmTownsIIMx => 2,
+            },
+            machine_id: self.machine_id,
+            last_vsync_start_cycle: self.last_vsync_start_cycle,
+            nmi_mask: self.nmi_mask,
+            rs232c: self.rs232c.state.clone(),
+            rs232c_int_enable: self.rs232c_int_enable,
+            reset_reason: self.reset_reason,
+            soft_reset_pending: self.soft_reset_pending,
+            power_off_requested: self.power_off_requested,
+            serial_rom_bit_count: self.serial_rom_bit_count,
+            last_serial_rom_command: self.last_serial_rom_command,
+            memcard_bank: self.memcard_bank,
+            memcard_reg: self.memcard_reg,
+            #[cfg(feature = "mt32")]
+            mt32: self
+                .mt32
+                .as_mut()
+                .map(device::mt32::Mt32::capture_state)
+                .transpose()
+                .map_err(|error| save_state::SaveStateError::WorkerFailure(error.to_string()))?,
+            #[cfg(not(feature = "mt32"))]
+            mt32: None,
+            #[cfg(feature = "sc55")]
+            sc55: self
+                .sc55
+                .as_mut()
+                .map(device::sc55::Sc55::capture_state)
+                .transpose()
+                .map_err(|error| save_state::SaveStateError::WorkerFailure(error.to_string()))?,
+            #[cfg(not(feature = "sc55"))]
+            sc55: None,
+        })
+    }
+
+    /// Restores the complete FM Towns bus while retaining host resources.
+    pub(crate) fn restore_runtime_state(
+        &mut self,
+        state: TownsBusState,
+    ) -> Result<(), save_state::SaveStateError> {
+        let model = match state.model {
+            0 => TownsModel::FmTowns,
+            1 => TownsModel::FmTownsIICx,
+            2 => TownsModel::FmTownsIIMx,
+            _ => {
+                return Err(
+                    save_state::StateValidationError::new("FM Towns model is invalid").into(),
+                );
+            }
+        };
+        #[cfg(feature = "mt32")]
+        let mt32_configuration_differs = state.mt32.is_some() != self.mt32.is_some();
+        #[cfg(not(feature = "mt32"))]
+        let mt32_configuration_differs = false;
+        #[cfg(feature = "sc55")]
+        let sc55_configuration_differs = state.sc55.is_some() != self.sc55.is_some();
+        #[cfg(not(feature = "sc55"))]
+        let sc55_configuration_differs = false;
+        if model != self.model
+            || state.machine_id != self.machine_id
+            || mt32_configuration_differs
+            || sc55_configuration_differs
+        {
+            return Err(save_state::StateValidationError::new(
+                "FM Towns machine configuration differs",
+            )
+            .into());
+        }
+        for controller in &state.dmac {
+            if controller.selected_channel >= controller.channels.len() {
+                return Err(save_state::StateValidationError::new(
+                    "FM Towns DMA channel selection is invalid",
+                )
+                .into());
+            }
+        }
+
+        #[cfg(feature = "mt32")]
+        let mut mt32_prepared = false;
+        #[cfg(feature = "mt32")]
+        if let (Some(module), Some(saved)) = (&mut self.mt32, state.mt32.clone()) {
+            module
+                .prepare_restore(saved)
+                .map_err(|error| save_state::SaveStateError::WorkerFailure(error.to_string()))?;
+            mt32_prepared = true;
+        }
+        #[cfg(feature = "sc55")]
+        let mut sc55_prepared = false;
+        #[cfg(feature = "sc55")]
+        if let (Some(module), Some(saved)) = (&mut self.sc55, state.sc55.clone()) {
+            if let Err(error) = module.prepare_restore(saved) {
+                #[cfg(feature = "mt32")]
+                if mt32_prepared && let Some(module) = &mut self.mt32 {
+                    let _ = module.abort_restore();
+                }
+                return Err(save_state::SaveStateError::WorkerFailure(error.to_string()));
+            }
+            sc55_prepared = true;
+        }
+
+        let restore_result = (|| -> Result<(), save_state::SaveStateError> {
+            self.memory.restore_state(state.memory)?;
+            self.scheduler.restore_state(state.scheduler)?;
+            self.pic.restore_state(state.pic)?;
+            self.timer.restore_state(state.timer)?;
+            self.rtc.restore_state(state.rtc)?;
+            self.keyboard.restore_state(state.keyboard)?;
+            self.cdc.restore_state(state.cdc)?;
+            self.fdc.restore_state(state.fdc)?;
+            self.scsi.restore_state(state.scsi)?;
+            self.beeper.restore_state(state.beeper)?;
+            self.fm.restore_state(state.fm)?;
+            self.pcm.restore_state(state.pcm)?;
+            self.elevol[0].restore_state(state.elevol[0].clone())?;
+            self.elevol[1].restore_state(state.elevol[1].clone())?;
+            self.gameport.restore_state(state.gameport)?;
+            self.video.restore_state(state.video)?;
+            self.sprite.restore_state(state.sprite)?;
+            self.renderer.restore_state(state.renderer)?;
+
+            let [main_dma, extended_dma] = state.dmac;
+            self.dmac[0].state = main_dma;
+            self.dmac[1].state = extended_dma;
+            self.current_cycle = state.current_cycle;
+            self.buzzer_memio = state.buzzer_memio;
+            self.sound_mute = state.sound_mute;
+            self.sound_audio = state.sound_audio;
+            self.main_ram_wait = state.main_ram_wait;
+            self.vram_wait = state.vram_wait;
+            self.pending_wait_cycles = state.pending_wait_cycles;
+            self.display_width = state.display_width;
+            self.display_height = state.display_height;
+            self.presented_frames = state.presented_frames;
+            self.last_vsync_start_cycle = state.last_vsync_start_cycle;
+            self.nmi_mask = state.nmi_mask;
+            self.rs232c.state = state.rs232c;
+            self.rs232c_int_enable = state.rs232c_int_enable;
+            self.reset_reason = state.reset_reason;
+            self.soft_reset_pending = state.soft_reset_pending;
+            self.power_off_requested = state.power_off_requested;
+            self.serial_rom_bit_count = state.serial_rom_bit_count;
+            self.last_serial_rom_command = state.last_serial_rom_command;
+            self.memcard_bank = state.memcard_bank;
+            self.memcard_reg = state.memcard_reg;
+            self.next_event_cycle = self.scheduler.next_event_cycle().unwrap_or(u64::MAX);
+            Ok(())
+        })();
+
+        #[cfg(any(feature = "mt32", feature = "sc55"))]
+        if let Err(error) = restore_result {
+            #[cfg(feature = "mt32")]
+            if mt32_prepared && let Some(module) = &mut self.mt32 {
+                let _ = module.abort_restore();
+            }
+            #[cfg(feature = "sc55")]
+            if sc55_prepared && let Some(module) = &mut self.sc55 {
+                let _ = module.abort_restore();
+            }
+            return Err(error);
+        }
+        #[cfg(not(any(feature = "mt32", feature = "sc55")))]
+        restore_result?;
+
+        #[cfg(feature = "mt32")]
+        if mt32_prepared
+            && let Some(module) = &mut self.mt32
+            && let Err(error) = module.commit_restore()
+        {
+            #[cfg(feature = "sc55")]
+            if sc55_prepared && let Some(module) = &mut self.sc55 {
+                let _ = module.abort_restore();
+            }
+            return Err(save_state::SaveStateError::WorkerFailure(error.to_string()));
+        }
+        #[cfg(feature = "sc55")]
+        if sc55_prepared
+            && let Some(module) = &mut self.sc55
+            && let Err(error) = module.commit_restore()
+        {
+            return Err(save_state::SaveStateError::WorkerFailure(error.to_string()));
+        }
+        Ok(())
+    }
 }
 
 impl TownsBus<NoTrace> {
@@ -356,9 +664,9 @@ impl<T: TraceSink> TownsBus<T> {
         self.rs232c.enable_midi_capture();
     }
 
-    /// Drains the RS-232C MIDI transmit buffer into `out`.
-    pub fn flush_midi_into(&mut self, out: &mut Vec<u8>) {
-        self.rs232c.flush_midi_into(out);
+    /// Copies RS-232C MIDI into `target` and returns the number of bytes written.
+    pub fn flush_midi_into(&mut self, target: &mut [u8]) -> usize {
+        self.rs232c.flush_midi_into(target)
     }
 
     /// Injects a byte into the RS-232C receiver as if it arrived on the serial
@@ -1098,12 +1406,12 @@ impl<T: TraceSink> TownsBus<T> {
         // FM Towns RS-MIDI: bytes the guest transmits on the RS-232C port are
         // captured by the USART and forwarded to whichever module is installed.
         #[cfg(feature = "mt32")]
-        if let Some(ref mt32) = self.mt32 {
-            mt32.exchange(volume, output, |buf| self.rs232c.flush_midi_into(buf));
+        if let Some(ref mut mt32) = self.mt32 {
+            mt32.exchange(volume, output, |buffer| self.rs232c.flush_midi_into(buffer));
         }
         #[cfg(feature = "sc55")]
-        if let Some(ref sc55) = self.sc55 {
-            sc55.exchange(volume, output, |buf| self.rs232c.flush_midi_into(buf));
+        if let Some(ref mut sc55) = self.sc55 {
+            sc55.exchange(volume, output, |buffer| self.rs232c.flush_midi_into(buffer));
         }
 
         output.len()

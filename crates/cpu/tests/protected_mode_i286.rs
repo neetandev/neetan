@@ -131,11 +131,8 @@ fn setup_protected_mode(bus: &mut TestBus, ds_limit: u16) -> cpu::I286State {
 
     bus.ram[(PM_CODE_BASE + PM_GP_HANDLER_IP as u32) as usize] = 0xF4; // HLT
 
-    let mut state = cpu::I286State {
-        msw: 0x0001,
-        ip: 0x0000,
-        ..Default::default()
-    };
+    let mut state = cpu::I286State::default();
+    state.msw = 0x0001;
 
     state.set_sp(0xFFF0);
 
@@ -272,6 +269,7 @@ fn i286_invalid_opcode_0x66_triggers_ud() {
     state.ip = ip;
     state.set_ss(0x3000);
     state.set_sp(0x1000);
+    state.initialize_real_mode_caches();
     cpu.load_state(&state);
 
     cpu.step(&mut bus);
@@ -320,6 +318,7 @@ fn i286_invalid_opcode_0x67_triggers_ud() {
     state.ip = ip;
     state.set_ss(0x3000);
     state.set_sp(0x1000);
+    state.initialize_real_mode_caches();
     cpu.load_state(&state);
 
     cpu.step(&mut bus);
@@ -676,6 +675,7 @@ fn i286_real_mode_fault_no_error_code() {
     state.ip = 0x0050;
     state.set_ss(0x3000);
     state.set_sp(0x1000);
+    state.initialize_real_mode_caches();
     cpu.load_state(&state);
 
     // Place invalid opcode to trigger #UD.
@@ -1304,11 +1304,8 @@ fn setup_protected_mode_with_ring3(bus: &mut TestBus) -> cpu::I286State {
     write_word_at(bus, PM_TSS_BASE + 2, 0xFFF0); // SP0
     write_word_at(bus, PM_TSS_BASE + 4, PM_SS_SEL); // SS0
 
-    let mut state = cpu::I286State {
-        msw: 0x0001,
-        ip: 0x0000,
-        ..Default::default()
-    };
+    let mut state = cpu::I286State::default();
+    state.msw = 0x0001;
 
     state.set_sp(0xFFF0);
 
@@ -1981,11 +1978,8 @@ fn setup_protected_mode_extended(bus: &mut TestBus) -> cpu::I286State {
     write_word_at(bus, PM_TSS_BASE + 2, 0xFFF0); // SP0
     write_word_at(bus, PM_TSS_BASE + 4, PM_SS_SEL); // SS0
 
-    let mut state = cpu::I286State {
-        msw: 0x0001,
-        ip: 0x0000,
-        ..Default::default()
-    };
+    let mut state = cpu::I286State::default();
+    state.msw = 0x0001;
 
     state.set_sp(0xFFF0);
     state.set_cs(PM_CS_SEL);

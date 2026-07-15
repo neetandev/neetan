@@ -35,6 +35,19 @@ U16_FIELDS = {
     'aluo', 'alue', 'alub', 'movemr', 'irdi', 'base_ssw', 'ssw',
 }
 U8_FIELDS = {'dcr'}
+WRAPPER_FIELDS = {
+    'bcount', 'count_before_instruction_step', 'decode_table', 'icount',
+}
+
+
+def qualify_runtime_fields(code: str) -> str:
+    def qualify(match: re.Match[str]) -> str:
+        field = match.group(1)
+        if field in WRAPPER_FIELDS:
+            return match.group(0)
+        return f'self.state.m_{field}'
+
+    return re.sub(r'\bself\.m_([A-Za-z0-9_]+)\b', qualify, code)
 
 
 def extract_functions(text: str):
@@ -419,7 +432,7 @@ def generate(sif: str, decode: str) -> str:
     out.append('}')
     out.append('')
     out.append(translate_decode(Path(decode).read_text()))
-    return cleanup_tas('\n'.join(out))
+    return qualify_runtime_fields(cleanup_tas('\n'.join(out)))
 
 
 if __name__ == '__main__':

@@ -107,18 +107,22 @@ impl<T: TraceSink> X68kBus<T> {
         self.adpcm.generate_samples(volume, output);
         self.spc.generate_cd_audio_samples([volume, volume], output);
         #[cfg(feature = "mt32")]
-        if let Some(ref mt32) = self.mt32 {
+        if let Some(ref mut mt32) = self.mt32 {
             mt32.exchange(volume, output, |buffer| {
                 if let Some(chip) = self.midi_card.as_mut() {
-                    chip.flush_midi_into(buffer);
+                    chip.flush_midi_into(buffer)
+                } else {
+                    0
                 }
             });
         }
         #[cfg(feature = "sc55")]
-        if let Some(ref sc55) = self.sc55 {
+        if let Some(ref mut sc55) = self.sc55 {
             sc55.exchange(volume, output, |buffer| {
                 if let Some(chip) = self.midi_card.as_mut() {
-                    chip.flush_midi_into(buffer);
+                    chip.flush_midi_into(buffer)
+                } else {
+                    0
                 }
             });
         }

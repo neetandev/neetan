@@ -72,12 +72,14 @@ const CASE_DISTANCE: u16 = 0x20;
 /// Depth of the pending keycode FIFO. The oldest entry is dropped on overflow.
 const KEY_FIFO_CAPACITY: usize = 16;
 
+save_state::runtime_state! {
 /// Fixed-capacity FIFO of pending keycodes, dropping the oldest on overflow.
+#[derive(Clone)]
 struct KeyFifo {
     entries: [u16; KEY_FIFO_CAPACITY],
     head: usize,
     len: usize,
-}
+}}
 
 impl KeyFifo {
     /// Creates an empty FIFO.
@@ -112,8 +114,10 @@ impl KeyFifo {
     }
 }
 
+save_state::runtime_state! {
 /// Base FM-7 keyboard state: modifiers, the pending-keycode FIFO, and the read
 /// latch with its interrupt line.
+#[derive(Clone)]
 pub struct Fm7Keyboard {
     shift_left: bool,
     shift_right: bool,
@@ -129,6 +133,21 @@ pub struct Fm7Keyboard {
     keycode: u16,
     /// State of the shared interrupt line raised by a latched keycode.
     interrupt_asserted: bool,
+}}
+
+impl Fm7Keyboard {
+    /// Validates FIFO indexes and keycode width.
+    pub fn validate_runtime_state(&self) -> Result<(), save_state::StateValidationError> {
+        if self.fifo.head >= KEY_FIFO_CAPACITY
+            || self.fifo.len > KEY_FIFO_CAPACITY
+            || self.keycode > 0x01FF
+        {
+            return Err(save_state::StateValidationError::new(
+                "FM-7 keyboard state is invalid",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Fm7Keyboard {

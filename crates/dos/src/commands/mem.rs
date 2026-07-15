@@ -20,9 +20,13 @@ impl Command for Mem {
     }
 }
 
-struct RunningMem {
+#[derive(Clone)]
+/// Serializable state of an executing MEM command.
+pub(crate) struct RunningMem {
     args: Vec<u8>,
 }
+
+state_struct_codec!(RunningMem { args });
 
 fn format_row(label: &str, total: u32, used: u32, free: u32) -> String {
     format!(

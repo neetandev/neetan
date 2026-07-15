@@ -178,6 +178,41 @@ enum PendingTransfer {
     WriteTrack,
 }
 
+save_state::runtime_state! {
+/// Authoritative MB8877 electronics state without mounted floppy resources.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mb8877FdcState {
+    command: u8,
+    track_register: u8,
+    sector_register: u8,
+    data_register: u8,
+    status: u8,
+    command_type: u8,
+    busy: bool,
+    pending_type: u8,
+    pending_length: usize,
+    drive_select: usize,
+    side: u8,
+    motor_on: bool,
+    double_density: bool,
+    irq_enable: bool,
+    mode_b: bool,
+    high_speed: bool,
+    select_bits: u8,
+    track_position: [i32; DRIVE_COUNT],
+    last_step_direction: i32,
+    disk_changed: [bool; DRIVE_COUNT],
+    irq_pending: bool,
+    command_task_cycle: Option<u64>,
+    data_request: bool,
+    pio_read_buffer: Vec<u8>,
+    pio_read_index: usize,
+    pio_write_accumulator: Vec<u8>,
+    pio_write_expected: usize,
+    pio_next_byte_cycle: u64,
+    media: save_state::MediaManifest,
+}}
+
 /// MB8877 floppy disk controller specialized for a host platform.
 pub struct Mb8877Fdc<const PLATFORM: u8> {
     drives: [Option<MountedFloppy>; DRIVE_COUNT],
@@ -267,6 +302,150 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
             sector_delay_cycles: ns_to_cycles(sector_delay_ns, cpu_clock_hz).max(1),
             force_irq_delay_cycles: ns_to_cycles(FORCE_IRQ_DELAY_NS, cpu_clock_hz).max(1),
         }
+    }
+
+    /// Captures controller electronics and mounted-media identities.
+    pub fn capture_state(&self) -> Result<Mb8877FdcState, save_state::StateValidationError> {
+        let (pending_type, pending_length) = match self.pending {
+            PendingTransfer::None => (0, 0),
+            PendingTransfer::ReadSector { length } => (1, length),
+            PendingTransfer::WriteSector => (2, 0),
+            PendingTransfer::ReadAddress => (3, 0),
+            PendingTransfer::ReadTrack => (4, 0),
+            PendingTransfer::WriteTrack => (5, 0),
+        };
+        Ok(Mb8877FdcState {
+            command: self.command,
+            track_register: self.track_reg,
+            sector_register: self.sector_reg,
+            data_register: self.data_reg,
+            status: self.status,
+            command_type: self.command_type as u8,
+            busy: self.busy,
+            pending_type,
+            pending_length,
+            drive_select: self.drive_select,
+            side: self.side,
+            motor_on: self.motor_on,
+            double_density: self.double_density,
+            irq_enable: self.irq_enable,
+            mode_b: self.mode_b,
+            high_speed: self.hi_speed,
+            select_bits: self.select_bits,
+            track_position: self.track_pos,
+            last_step_direction: self.last_step_dir,
+            disk_changed: self.disk_changed,
+            irq_pending: self.irq_pending,
+            command_task_cycle: self.command_task_cycle,
+            data_request: self.drq,
+            pio_read_buffer: self.pio_read_buffer.clone(),
+            pio_read_index: self.pio_read_index,
+            pio_write_accumulator: self.pio_write_accum.clone(),
+            pio_write_expected: self.pio_write_expected,
+            pio_next_byte_cycle: self.pio_next_byte_cycle,
+            media: self.media_manifest()?,
+        })
+    }
+
+    /// Restores controller electronics while retaining mounted floppy resources.
+    pub fn restore_state(
+        &mut self,
+        state: Mb8877FdcState,
+    ) -> Result<(), save_state::StateValidationError> {
+        state.media.verify_current(&self.media_manifest()?)?;
+        if state.drive_select >= DRIVE_COUNT
+            || state.side > 1
+            || state.pio_read_index > state.pio_read_buffer.len()
+            || state.pio_write_accumulator.len() > state.pio_write_expected
+        {
+            return Err(save_state::StateValidationError::new(
+                "MB8877 state invariant is invalid",
+            ));
+        }
+        let command_type = match state.command_type {
+            0 => CommandType::Restore,
+            1 => CommandType::Seek,
+            2 => CommandType::Step,
+            3 => CommandType::StepIn,
+            4 => CommandType::StepOut,
+            5 => CommandType::ReadSector,
+            6 => CommandType::WriteSector,
+            7 => CommandType::ReadAddress,
+            8 => CommandType::ForceInterrupt,
+            9 => CommandType::ReadTrack,
+            10 => CommandType::WriteTrack,
+            _ => {
+                return Err(save_state::StateValidationError::new(
+                    "MB8877 command type is invalid",
+                ));
+            }
+        };
+        let pending = match state.pending_type {
+            0 => PendingTransfer::None,
+            1 => PendingTransfer::ReadSector {
+                length: state.pending_length,
+            },
+            2 => PendingTransfer::WriteSector,
+            3 => PendingTransfer::ReadAddress,
+            4 => PendingTransfer::ReadTrack,
+            5 => PendingTransfer::WriteTrack,
+            _ => {
+                return Err(save_state::StateValidationError::new(
+                    "MB8877 pending transfer is invalid",
+                ));
+            }
+        };
+        self.command = state.command;
+        self.track_reg = state.track_register;
+        self.sector_reg = state.sector_register;
+        self.data_reg = state.data_register;
+        self.status = state.status;
+        self.command_type = command_type;
+        self.busy = state.busy;
+        self.pending = pending;
+        self.drive_select = state.drive_select;
+        self.side = state.side;
+        self.motor_on = state.motor_on;
+        self.double_density = state.double_density;
+        self.irq_enable = state.irq_enable;
+        self.mode_b = state.mode_b;
+        self.hi_speed = state.high_speed;
+        self.select_bits = state.select_bits;
+        self.track_pos = state.track_position;
+        self.last_step_dir = state.last_step_direction;
+        self.disk_changed = state.disk_changed;
+        self.irq_pending = state.irq_pending;
+        self.command_task_cycle = state.command_task_cycle;
+        self.drq = state.data_request;
+        self.pio_read_buffer = state.pio_read_buffer;
+        self.pio_read_index = state.pio_read_index;
+        self.pio_write_accum = state.pio_write_accumulator;
+        self.pio_write_expected = state.pio_write_expected;
+        self.pio_next_byte_cycle = state.pio_next_byte_cycle;
+        Ok(())
+    }
+
+    /// Returns stable identities for all mounted floppy slots.
+    pub fn media_manifest(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = Vec::new();
+        for (drive_index, mounted) in self.drives.iter().enumerate() {
+            let Some(mounted) = mounted else {
+                continue;
+            };
+            bindings.push(save_state::MediaBinding {
+                identifier: save_state::MediaBindingId::new(format!("floppy-{drive_index}"))?,
+                slot: save_state::MediaSlot::new(save_state::MediaKind::Floppy, drive_index as u32),
+                source_path: mounted.source_path().cloned(),
+                media_type: mounted.image().format_name().to_owned(),
+                identity: mounted.identity(),
+                geometry: None,
+                write_protected: mounted.image().write_protected,
+                backend_generation: None,
+            });
+        }
+        save_state::MediaManifest::new(bindings)
     }
 
     /// Resets the controller to its power-on register state.

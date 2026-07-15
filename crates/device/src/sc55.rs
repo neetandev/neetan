@@ -4,14 +4,11 @@
 //! The thread is an implementation detail - callers only interact with
 //! [`Sc55::new`] (initialization) and [`Sc55::exchange`] (audio synchronization).
 
-use std::{
-    path::Path,
-    sync::{Arc, Condvar, Mutex},
-    thread::JoinHandle,
-};
+use std::path::Path;
 
-pub use nuked_sc55_oxide::Sc55Error;
-use nuked_sc55_oxide::{Sc55SharedBuffer, Sc55Thread};
+use nuked_sc55_oxide::Sc55Actor;
+pub use nuked_sc55_oxide::{Sc55ActorState, Sc55Error};
+use save_state::ResourceBinding;
 
 /// Roland SC-55 sound module.
 ///
@@ -20,52 +17,55 @@ use nuked_sc55_oxide::{Sc55SharedBuffer, Sc55Thread};
 /// 2. Mixes the rendered audio into the output.
 /// 3. Fills new MIDI data and signals the render thread.
 pub struct Sc55 {
-    shared: Arc<(Mutex<Sc55SharedBuffer>, Condvar)>,
-    join_handle: Option<JoinHandle<()>>,
+    actor: Sc55Actor,
 }
 
 impl Sc55 {
     /// Loads SC-55 ROMs from the given directory and starts the render thread.
     pub fn new(rom_directory: &Path) -> Result<Self, nuked_sc55_oxide::Sc55Error> {
-        let (shared, join_handle) = Sc55Thread::start(rom_directory)?;
         Ok(Self {
-            shared,
-            join_handle: Some(join_handle),
+            actor: Sc55Actor::start(rom_directory)?,
         })
     }
 
     /// Waits for the render thread to finish, mixes audio into `output`,
     /// then fills new MIDI data via `fill` and signals the render thread.
-    pub fn exchange(&self, volume: f32, output: &mut [f32], fill: impl FnOnce(&mut Vec<u8>)) {
-        let (mutex, condvar) = &*self.shared;
-
-        let mut buf = condvar
-            .wait_while(mutex.lock().unwrap(), |buf| {
-                !buf.render_done && !buf.shutdown
-            })
-            .unwrap();
-
-        for (out, &sample) in output.iter_mut().zip(buf.audio.iter()) {
-            *out += sample * volume;
-        }
-
-        fill(&mut buf.midi);
-        buf.render_done = false;
-        buf.midi_ready = true;
-        condvar.notify_one();
+    pub fn exchange(
+        &mut self,
+        volume: f32,
+        output: &mut [f32],
+        fill: impl FnOnce(&mut [u8]) -> usize,
+    ) {
+        self.actor.exchange(volume, output, fill);
     }
-}
 
-impl Drop for Sc55 {
-    fn drop(&mut self) {
-        {
-            let (mutex, condvar) = &*self.shared;
-            let mut buf = mutex.lock().unwrap();
-            buf.shutdown = true;
-            condvar.notify_one();
-        }
-        if let Some(handle) = self.join_handle.take() {
-            let _ = handle.join();
-        }
+    /// Returns exact identities for the loaded SC-55 ROM set.
+    pub fn resource_bindings(&self) -> &[ResourceBinding] {
+        self.actor.resource_bindings()
+    }
+
+    /// Captures the worker and pending frontend buffers at a FIFO barrier.
+    pub fn capture_state(&mut self) -> Result<Sc55ActorState, Sc55Error> {
+        self.actor.capture_state()
+    }
+
+    /// Validates and stages worker state without changing the active synth.
+    pub fn prepare_restore(&mut self, state: Sc55ActorState) -> Result<(), Sc55Error> {
+        self.actor.prepare_restore(state)
+    }
+
+    /// Commits the prepared worker state.
+    pub fn commit_restore(&mut self) -> Result<(), Sc55Error> {
+        self.actor.commit_restore()
+    }
+
+    /// Aborts the prepared worker state.
+    pub fn abort_restore(&mut self) -> Result<(), Sc55Error> {
+        self.actor.abort_restore()
+    }
+
+    /// Resets the module and its streaming state.
+    pub fn reset(&mut self) -> Result<(), Sc55Error> {
+        self.actor.reset()
     }
 }

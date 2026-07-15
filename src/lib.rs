@@ -4,7 +4,10 @@
 
 #![deny(unsafe_code)]
 
-use std::time::{Duration, Instant};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use audio_engine::AudioEngine;
 use common::{
@@ -313,6 +316,8 @@ struct Application {
     config: EmulatorConfig,
     /// The emulated machine.
     machine: Box<dyn Machine>,
+    /// The single in-memory runtime snapshot.
+    runtime_snapshot: Option<save_state::MachineStateBlob>,
     /// The graphics engine.
     graphics_engine: Box<dyn GraphicsEngine>,
     /// Audio engine which outputs using the SDL3 push-based stream. Drives emulation speed.
@@ -387,6 +392,252 @@ struct Application {
     /// Wall-clock instant of the last fast-forward emulation step, used to pace
     /// emulation at a fixed multiple of real time.
     last_emulation_tick: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemovableMediaAction {
+    EjectFloppy { drive: usize },
+    SelectFloppy { drive: usize, index: usize },
+    EjectCdRom,
+    SelectCdRom { index: usize },
+    EjectCassette,
+    SelectCassette,
+}
+
+impl RemovableMediaAction {
+    /// Returns the host-visible slot affected by this action.
+    fn slot(self) -> save_state::MediaSlot {
+        match self {
+            Self::EjectFloppy { drive } | Self::SelectFloppy { drive, .. } => {
+                save_state::MediaSlot::new(save_state::MediaKind::Floppy, drive as u32)
+            }
+            Self::EjectCdRom | Self::SelectCdRom { .. } => {
+                save_state::MediaSlot::new(save_state::MediaKind::CdRom, 0)
+            }
+            Self::EjectCassette | Self::SelectCassette => {
+                save_state::MediaSlot::new(save_state::MediaKind::Cassette, 0)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RemovableMediaSelection {
+    floppy: [Option<usize>; 2],
+    cdrom: Option<usize>,
+    cassette: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemovableMediaRollback {
+    selection: RemovableMediaSelection,
+    slots: Vec<save_state::MediaSlot>,
+}
+
+struct RemovableMediaTransaction<State> {
+    actions: Vec<RemovableMediaAction>,
+    previous_media: RemovableMediaRollback,
+    previous_state: State,
+}
+
+/// Finds a configured image by its normalized logical path.
+fn configured_media_index(
+    entries: &[ImageEntry],
+    expected_path: &save_state::MediaSourcePath,
+) -> Option<usize> {
+    entries
+        .iter()
+        .position(|entry| save_state::MediaSourcePath::from_path(&entry.path) == *expected_path)
+}
+
+/// Plans a complete removable-media reconciliation without changing the machine.
+fn plan_removable_media_actions(
+    mismatch: &save_state::MediaMismatch,
+    fdd1_entries: &[ImageEntry],
+    fdd2_entries: &[ImageEntry],
+    cdrom_entries: &[ImageEntry],
+    cassette_path: Option<&Path>,
+) -> std::result::Result<Vec<RemovableMediaAction>, String> {
+    let mut actions: Vec<RemovableMediaAction> = Vec::new();
+    for entry in mismatch.entries() {
+        let expected = entry.expected();
+        let active = entry.active();
+        let slot = expected.or(active).unwrap().slot;
+        if expected.is_some_and(|binding| binding.slot != slot)
+            || active.is_some_and(|binding| binding.slot != slot)
+        {
+            return Err("save state and active media use different logical slots".to_owned());
+        }
+        if actions.iter().any(|action| action.slot() == slot) {
+            return Err(format!(
+                "multiple media bindings refer to {:?} drive {}",
+                slot.kind,
+                slot.index + 1
+            ));
+        }
+
+        let action = match slot.kind {
+            save_state::MediaKind::Floppy => {
+                let drive = slot.index as usize;
+                let configured_entries = match drive {
+                    0 => fdd1_entries,
+                    1 => fdd2_entries,
+                    _ => return Err(format!("floppy drive {} is not host-selectable", drive + 1)),
+                };
+                match expected {
+                    Some(binding) => {
+                        let expected_path = binding.source_path.as_ref().ok_or_else(|| {
+                            format!("floppy drive {} has no configured source path", drive + 1)
+                        })?;
+                        let index = configured_media_index(configured_entries, expected_path)
+                            .ok_or_else(|| {
+                                format!(
+                                    "expected floppy for drive {} is not configured: {}",
+                                    drive + 1,
+                                    expected_path
+                                )
+                            })?;
+                        RemovableMediaAction::SelectFloppy { drive, index }
+                    }
+                    None => RemovableMediaAction::EjectFloppy { drive },
+                }
+            }
+            save_state::MediaKind::CdRom => {
+                if slot.index != 0 {
+                    return Err(format!(
+                        "CD-ROM drive {} is not host-selectable",
+                        slot.index + 1
+                    ));
+                }
+                match expected {
+                    Some(binding) => {
+                        let expected_path = binding
+                            .source_path
+                            .as_ref()
+                            .ok_or_else(|| "CD-ROM has no configured source path".to_owned())?;
+                        let index = configured_media_index(cdrom_entries, expected_path)
+                            .ok_or_else(|| {
+                                format!("expected CD-ROM is not configured: {expected_path}")
+                            })?;
+                        RemovableMediaAction::SelectCdRom { index }
+                    }
+                    None => RemovableMediaAction::EjectCdRom,
+                }
+            }
+            save_state::MediaKind::HardDisk => {
+                return Err(format!("hard disk drive {} differs", slot.index + 1));
+            }
+            save_state::MediaKind::Cassette => {
+                if slot.index != 0 {
+                    return Err(format!(
+                        "cassette deck {} is not host-selectable",
+                        slot.index + 1
+                    ));
+                }
+                match expected {
+                    Some(binding) => {
+                        let expected_path = binding
+                            .source_path
+                            .as_ref()
+                            .ok_or_else(|| "cassette has no configured source path".to_owned())?;
+                        let configured_path = cassette_path
+                            .ok_or_else(|| "expected cassette is not configured".to_owned())?;
+                        if save_state::MediaSourcePath::from_path(configured_path) != *expected_path
+                        {
+                            return Err(format!(
+                                "expected cassette is not configured: {expected_path}"
+                            ));
+                        }
+                        RemovableMediaAction::SelectCassette
+                    }
+                    None => RemovableMediaAction::EjectCassette,
+                }
+            }
+        };
+        actions.push(action);
+    }
+    Ok(actions)
+}
+
+/// Applies media and machine state together, restoring both on failure.
+fn apply_media_and_state_transactionally<
+    Target,
+    State,
+    ApplyMedia,
+    ApplyState,
+    RestoreMedia,
+    RestoreState,
+>(
+    target: &mut Target,
+    transaction: RemovableMediaTransaction<State>,
+    mut apply_media: ApplyMedia,
+    apply_state: ApplyState,
+    restore_media: RestoreMedia,
+    restore_state: RestoreState,
+) -> std::result::Result<(), String>
+where
+    ApplyMedia: FnMut(&mut Target, RemovableMediaAction) -> std::result::Result<(), String>,
+    ApplyState: FnOnce(&mut Target) -> std::result::Result<(), String>,
+    RestoreMedia: FnOnce(&mut Target, &RemovableMediaRollback) -> std::result::Result<(), String>,
+    RestoreState: FnOnce(&mut Target, &State) -> std::result::Result<(), String>,
+{
+    let RemovableMediaTransaction {
+        actions,
+        previous_media,
+        previous_state,
+    } = transaction;
+    for action in actions {
+        if let Err(error) = apply_media(target, action) {
+            return Err(rollback_media_and_state(
+                target,
+                &previous_media,
+                &previous_state,
+                error,
+                restore_media,
+                restore_state,
+            ));
+        }
+    }
+    if let Err(error) = apply_state(target) {
+        return Err(rollback_media_and_state(
+            target,
+            &previous_media,
+            &previous_state,
+            error,
+            restore_media,
+            restore_state,
+        ));
+    }
+    Ok(())
+}
+
+/// Restores the prior media and machine state and combines rollback failures.
+fn rollback_media_and_state<Target, State, RestoreMedia, RestoreState>(
+    target: &mut Target,
+    previous_media: &RemovableMediaRollback,
+    previous_state: &State,
+    error: String,
+    restore_media: RestoreMedia,
+    restore_state: RestoreState,
+) -> String
+where
+    RestoreMedia: FnOnce(&mut Target, &RemovableMediaRollback) -> std::result::Result<(), String>,
+    RestoreState: FnOnce(&mut Target, &State) -> std::result::Result<(), String>,
+{
+    let media_error = restore_media(target, previous_media).err();
+    let state_error = restore_state(target, previous_state).err();
+    match (media_error, state_error) {
+        (None, None) => error,
+        (Some(rollback_error), None) => {
+            format!("{error}; restoring the previous media also failed: {rollback_error}")
+        }
+        (None, Some(rollback_error)) => {
+            format!("{error}; restoring the previous machine state also failed: {rollback_error}")
+        }
+        (Some(media_error), Some(state_error)) => format!(
+            "{error}; restoring the previous media also failed: {media_error}; restoring the previous machine state also failed: {state_error}"
+        ),
+    }
 }
 
 impl Drop for Application {
@@ -473,6 +724,7 @@ impl Application {
 
         Ok(Self {
             machine,
+            runtime_snapshot: None,
             audio_engine,
             cpu_hz,
             cycle_overshoot: 0,
@@ -616,6 +868,10 @@ impl Application {
                         self.toggle_scaling();
                     } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::P) {
                         self.cycle_composite_phase();
+                    } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::_5) {
+                        self.quick_save();
+                    } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::_9) {
+                        self.quick_load();
                     } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::_1) {
                         self.open_or_toggle_selector(MediaType::Floppy(0));
                     } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::_2) {
@@ -790,13 +1046,8 @@ impl Application {
             self.keyboard_joystick
         };
         self.machine.set_joystick(0, state);
-        // Forward the raw analog magnitudes for machines with an analog game
-        // port. Only while a real gamepad is connected, so it also signals
-        // stick presence to the port.
-        if connected {
-            self.machine
-                .set_joystick_axes(0, self.gamepad_axis_x, self.gamepad_axis_y);
-        }
+        let axes = connected.then_some((self.gamepad_axis_x, self.gamepad_axis_y));
+        self.machine.set_joystick_axes(0, axes);
     }
 
     /// Toggles mouse capture (relative mouse mode) on the given window.
@@ -840,23 +1091,30 @@ impl Application {
         info!("Ejected FDD{}", drive + 1);
     }
 
-    fn select_floppy(&mut self, drive: usize, index: usize) {
+    fn select_floppy(&mut self, drive: usize, index: usize) -> std::result::Result<(), String> {
         let entries = match drive {
             0 => &self.fdd1_entries,
             1 => &self.fdd2_entries,
-            _ => return,
+            _ => return Err(format!("floppy drive {} is not available", drive + 1)),
         };
 
         if index >= entries.len() {
-            return;
+            return Err(format!("floppy image index {index} is not available"));
         }
-
-        self.machine.eject_floppy(drive);
 
         let path = &entries[index].path;
         match self.machine.insert_floppy(drive, path) {
-            Ok(desc) => info!("Selected FDD{}: {desc} from {}", drive + 1, path.display()),
-            Err(error) => error!("Failed to select FDD{}: {error}", drive + 1),
+            Ok(description) => {
+                info!(
+                    "Selected FDD{}: {description} from {}",
+                    drive + 1,
+                    path.display()
+                );
+            }
+            Err(error) => {
+                error!("Failed to select FDD{}: {error}", drive + 1);
+                return Err(error);
+            }
         }
 
         match drive {
@@ -864,6 +1122,7 @@ impl Application {
             1 => self.fdd2_index = Some(index),
             _ => {}
         }
+        Ok(())
     }
 
     fn eject_cdrom(&mut self) {
@@ -872,20 +1131,45 @@ impl Application {
         info!("Ejected CD-ROM");
     }
 
-    fn select_cdrom(&mut self, index: usize) {
+    fn select_cdrom(&mut self, index: usize) -> std::result::Result<(), String> {
         if index >= self.cdrom_entries.len() {
-            return;
+            return Err(format!("CD-ROM image index {index} is not available"));
         }
-
-        self.machine.eject_cdrom();
 
         let path = &self.cdrom_entries[index].path;
         match self.machine.insert_cdrom(path) {
-            Ok(desc) => info!("Selected CD-ROM: {desc} from {}", path.display()),
-            Err(error) => error!("Failed to select CD-ROM: {error}"),
+            Ok(description) => {
+                info!("Selected CD-ROM: {description} from {}", path.display());
+            }
+            Err(error) => {
+                error!("Failed to select CD-ROM: {error}");
+                return Err(error);
+            }
         }
 
         self.cdrom_index = Some(index);
+        Ok(())
+    }
+
+    fn eject_cassette(&mut self) {
+        self.machine.eject_cassette();
+        info!("Ejected cassette");
+    }
+
+    fn select_cassette(&mut self) -> std::result::Result<(), String> {
+        let path = self
+            .config
+            .cassette
+            .clone()
+            .ok_or_else(|| "cassette image is not configured".to_owned())?;
+        match self.machine.insert_cassette(&path) {
+            Ok(description) => info!("Selected cassette: {description}"),
+            Err(error) => {
+                error!("Failed to select cassette: {error}");
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     fn open_or_toggle_selector(&mut self, media_type: MediaType) {
@@ -979,14 +1263,14 @@ impl Application {
                             if cursor == 0 {
                                 self.eject_floppy(*drive);
                             } else {
-                                self.select_floppy(*drive, cursor - 1);
+                                let _ = self.select_floppy(*drive, cursor - 1);
                             }
                         }
                         MediaType::CdRom => {
                             if cursor == 0 {
                                 self.eject_cdrom();
                             } else {
-                                self.select_cdrom(cursor - 1);
+                                let _ = self.select_cdrom(cursor - 1);
                             }
                         }
                     }
@@ -1066,6 +1350,189 @@ impl Application {
         self.keyboard_forwarding_state = KeyboardForwardingState::new();
         self.audio_engine.reset_buffer();
         info!("Hard reset complete");
+    }
+
+    fn quick_save(&mut self) {
+        match self.machine.capture_state() {
+            Ok(snapshot) => {
+                self.runtime_snapshot = Some(snapshot);
+                info!("Quick save captured");
+            }
+            Err(error) => warn!("Quick save failed: {error}"),
+        }
+    }
+
+    /// Returns the current host-selected removable media state.
+    fn removable_media_selection(
+        &self,
+        mismatch: &save_state::MediaMismatch,
+    ) -> RemovableMediaSelection {
+        let cassette = mismatch.entries().iter().find_map(|entry| {
+            let binding = entry.expected().or(entry.active())?;
+            (binding.slot.kind == save_state::MediaKind::Cassette)
+                .then_some(entry.active().is_some())
+        });
+        RemovableMediaSelection {
+            floppy: [self.fdd1_index, self.fdd2_index],
+            cdrom: self.cdrom_index,
+            cassette,
+        }
+    }
+
+    /// Applies one planned removable-media change.
+    fn apply_removable_media_action(
+        &mut self,
+        action: RemovableMediaAction,
+    ) -> std::result::Result<(), String> {
+        match action {
+            RemovableMediaAction::EjectFloppy { drive } => self.eject_floppy(drive),
+            RemovableMediaAction::SelectFloppy { drive, index } => {
+                self.select_floppy(drive, index)?;
+            }
+            RemovableMediaAction::EjectCdRom => self.eject_cdrom(),
+            RemovableMediaAction::SelectCdRom { index } => {
+                self.select_cdrom(index)?;
+            }
+            RemovableMediaAction::EjectCassette => self.eject_cassette(),
+            RemovableMediaAction::SelectCassette => self.select_cassette()?,
+        }
+        Ok(())
+    }
+
+    /// Restores a previously recorded removable-media selection.
+    fn restore_removable_media_selection(
+        &mut self,
+        rollback: &RemovableMediaRollback,
+    ) -> std::result::Result<(), String> {
+        let selection = rollback.selection;
+        for drive in 0..2 {
+            let current = match drive {
+                0 => self.fdd1_index,
+                1 => self.fdd2_index,
+                _ => unreachable!(),
+            };
+            let slot = save_state::MediaSlot::new(save_state::MediaKind::Floppy, drive as u32);
+            if current == selection.floppy[drive] && !rollback.slots.contains(&slot) {
+                continue;
+            }
+            match selection.floppy[drive] {
+                Some(index) => self.select_floppy(drive, index)?,
+                None => self.eject_floppy(drive),
+            }
+        }
+        let cdrom_slot = save_state::MediaSlot::new(save_state::MediaKind::CdRom, 0);
+        if self.cdrom_index != selection.cdrom || rollback.slots.contains(&cdrom_slot) {
+            match selection.cdrom {
+                Some(index) => self.select_cdrom(index)?,
+                None => self.eject_cdrom(),
+            }
+        }
+        let cassette_slot = save_state::MediaSlot::new(save_state::MediaKind::Cassette, 0);
+        if let Some(cassette_mounted) = selection.cassette
+            && rollback.slots.contains(&cassette_slot)
+        {
+            if cassette_mounted {
+                self.select_cassette()?;
+            } else {
+                self.eject_cassette();
+            }
+        }
+        Ok(())
+    }
+
+    /// Plans snapshot media changes and captures their rollback selection.
+    fn removable_media_transaction(
+        &mut self,
+        mismatch: &save_state::MediaMismatch,
+    ) -> std::result::Result<(Vec<RemovableMediaAction>, RemovableMediaRollback), String> {
+        let actions = plan_removable_media_actions(
+            mismatch,
+            &self.fdd1_entries,
+            &self.fdd2_entries,
+            &self.cdrom_entries,
+            self.config.cassette.as_deref(),
+        )?;
+        let previous = RemovableMediaRollback {
+            selection: self.removable_media_selection(mismatch),
+            slots: actions.iter().map(|action| action.slot()).collect(),
+        };
+        Ok((actions, previous))
+    }
+
+    /// Restores one runtime snapshot, including its removable-media set.
+    fn restore_runtime_snapshot(
+        &mut self,
+        snapshot: &save_state::MachineStateBlob,
+    ) -> std::result::Result<(), save_state::SaveStateError> {
+        let mismatch = match self.machine.restore_state(snapshot) {
+            Err(save_state::SaveStateError::MediaMismatch(mismatch)) => mismatch,
+            result => return result,
+        };
+        info!("Quick load is changing removable media: {mismatch}");
+        let rollback_snapshot = self.machine.capture_state()?;
+        let (actions, previous_media) =
+            self.removable_media_transaction(&mismatch)
+                .map_err(|error| {
+                    save_state::SaveStateError::InvalidInvariant(format!(
+                        "quick load media change failed: {mismatch}: {error}"
+                    ))
+                })?;
+        apply_media_and_state_transactionally(
+            self,
+            RemovableMediaTransaction {
+                actions,
+                previous_media,
+                previous_state: rollback_snapshot,
+            },
+            Application::apply_removable_media_action,
+            |application| {
+                application
+                    .machine
+                    .restore_state(snapshot)
+                    .map_err(|error| error.to_string())
+            },
+            Application::restore_removable_media_selection,
+            |application, rollback_snapshot| {
+                application
+                    .machine
+                    .restore_state(rollback_snapshot)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .map_err(|error| {
+            save_state::SaveStateError::InvalidInvariant(format!(
+                "quick load media change failed: {mismatch}: {error}"
+            ))
+        })
+    }
+
+    fn quick_load(&mut self) {
+        let Some(snapshot) = self.runtime_snapshot.take() else {
+            warn!("Quick load ignored because no runtime snapshot exists");
+            return;
+        };
+        let restore_result = self.restore_runtime_snapshot(&snapshot);
+        self.runtime_snapshot = Some(snapshot);
+        match restore_result {
+            Ok(()) => {
+                self.cycle_overshoot = 0;
+                self.mouse_dx = 0.0;
+                self.mouse_dy = 0.0;
+                self.keyboard_forwarding_state = KeyboardForwardingState::new();
+                self.machine.set_mouse_buttons(
+                    self.mouse_left,
+                    self.mouse_right,
+                    self.mouse_middle,
+                );
+                self.update_joystick();
+                self.last_emulation_tick = Instant::now();
+                self.set_fast_forward(false);
+                self.audio_engine.reset_buffer();
+                self.audio_engine.resume();
+                info!("Quick load restored");
+            }
+            Err(error) => warn!("Quick load failed: {error}"),
+        }
     }
 
     fn set_fast_forward(&mut self, enabled: bool) {
@@ -2027,10 +2494,47 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        BUILTIN_FONT_ROM, expand_selector_font_rom,
+        BUILTIN_FONT_ROM, RemovableMediaAction, RemovableMediaRollback, RemovableMediaSelection,
+        RemovableMediaTransaction, apply_media_and_state_transactionally, expand_selector_font_rom,
         image_selector::{ImageEntry, ImageSelector, MediaType},
-        resolve_at_boot_device,
+        plan_removable_media_actions, resolve_at_boot_device,
     };
+
+    fn media_binding(
+        identifier: &str,
+        kind: save_state::MediaKind,
+        index: u32,
+        path: Option<&str>,
+    ) -> save_state::MediaBinding {
+        save_state::MediaBinding {
+            identifier: save_state::MediaBindingId::new(identifier).unwrap(),
+            slot: save_state::MediaSlot::new(kind, index),
+            source_path: path
+                .map(|path| save_state::MediaSourcePath::from_path(std::path::Path::new(path))),
+            media_type: match kind {
+                save_state::MediaKind::Floppy => "floppy",
+                save_state::MediaKind::HardDisk => "hard-disk",
+                save_state::MediaKind::CdRom => "cdrom",
+                save_state::MediaKind::Cassette => "cassette",
+            }
+            .to_owned(),
+            identity: save_state::ResourceIdentity::from_bytes(identifier.as_bytes()),
+            geometry: None,
+            write_protected: kind == save_state::MediaKind::CdRom,
+            backend_generation: None,
+        }
+    }
+
+    fn media_mismatch(
+        expected: Vec<save_state::MediaBinding>,
+        active: Vec<save_state::MediaBinding>,
+    ) -> save_state::MediaMismatch {
+        save_state::MediaManifest::new(expected)
+            .unwrap()
+            .compare_current(&save_state::MediaManifest::new(active).unwrap())
+            .unwrap()
+            .unwrap()
+    }
 
     #[test]
     fn pc_at_boot_devices_resolve_to_supported_bios_orders() {
@@ -2073,5 +2577,290 @@ mod tests {
                 .any(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0),
             "image selector framebuffer must not be blank"
         );
+    }
+
+    #[test]
+    fn removable_media_plan_selects_and_ejects_all_differing_drives() {
+        let mismatch = media_mismatch(
+            vec![
+                media_binding(
+                    "cassette-0",
+                    save_state::MediaKind::Cassette,
+                    0,
+                    Some("media/program.tap"),
+                ),
+                media_binding(
+                    "floppy-0",
+                    save_state::MediaKind::Floppy,
+                    0,
+                    Some("./media/first.d88"),
+                ),
+                media_binding(
+                    "floppy-1",
+                    save_state::MediaKind::Floppy,
+                    1,
+                    Some("media/second.d88"),
+                ),
+            ],
+            vec![
+                media_binding(
+                    "cdrom-0",
+                    save_state::MediaKind::CdRom,
+                    0,
+                    Some("media/disc.cue"),
+                ),
+                media_binding(
+                    "floppy-0",
+                    save_state::MediaKind::Floppy,
+                    0,
+                    Some("media/other.d88"),
+                ),
+            ],
+        );
+        let fdd1_entries = vec![
+            ImageEntry::new(PathBuf::from("media/other.d88")),
+            ImageEntry::new(PathBuf::from("games/../media/first.d88")),
+        ];
+        let fdd2_entries = vec![ImageEntry::new(PathBuf::from("media/second.d88"))];
+        let cdrom_entries = vec![ImageEntry::new(PathBuf::from("media/disc.cue"))];
+
+        let actions = plan_removable_media_actions(
+            &mismatch,
+            &fdd1_entries,
+            &fdd2_entries,
+            &cdrom_entries,
+            Some(std::path::Path::new("games/../media/program.tap")),
+        )
+        .unwrap();
+
+        assert_eq!(
+            actions,
+            vec![
+                RemovableMediaAction::SelectCassette,
+                RemovableMediaAction::EjectCdRom,
+                RemovableMediaAction::SelectFloppy { drive: 0, index: 1 },
+                RemovableMediaAction::SelectFloppy { drive: 1, index: 0 },
+            ]
+        );
+    }
+
+    #[test]
+    fn removable_media_plan_rejects_unconfigured_and_fixed_media() {
+        let unconfigured = media_mismatch(
+            vec![media_binding(
+                "floppy-0",
+                save_state::MediaKind::Floppy,
+                0,
+                Some("missing.d88"),
+            )],
+            Vec::new(),
+        );
+        assert!(
+            plan_removable_media_actions(&unconfigured, &[], &[], &[], None)
+                .unwrap_err()
+                .contains("not configured")
+        );
+
+        let hard_disk = media_mismatch(
+            vec![media_binding(
+                "ide-0",
+                save_state::MediaKind::HardDisk,
+                0,
+                Some("disk.hdd"),
+            )],
+            Vec::new(),
+        );
+        assert!(
+            plan_removable_media_actions(&hard_disk, &[], &[], &[], None)
+                .unwrap_err()
+                .contains("hard disk")
+        );
+
+        let cassette = media_mismatch(
+            vec![media_binding(
+                "cassette-0",
+                save_state::MediaKind::Cassette,
+                0,
+                Some("program.tap"),
+            )],
+            Vec::new(),
+        );
+        assert!(
+            plan_removable_media_actions(&cassette, &[], &[], &[], None)
+                .unwrap_err()
+                .contains("not configured")
+        );
+    }
+
+    #[test]
+    fn failed_media_switch_restores_the_previous_selection() {
+        #[derive(Default)]
+        struct FakeMediaTarget {
+            applied: Vec<RemovableMediaAction>,
+            restored: Option<RemovableMediaRollback>,
+            state: u32,
+        }
+
+        let previous = RemovableMediaRollback {
+            selection: RemovableMediaSelection {
+                floppy: [Some(3), Some(4)],
+                cdrom: Some(2),
+                cassette: Some(true),
+            },
+            slots: vec![
+                save_state::MediaSlot::new(save_state::MediaKind::Floppy, 0),
+                save_state::MediaSlot::new(save_state::MediaKind::Floppy, 1),
+            ],
+        };
+        let actions = vec![
+            RemovableMediaAction::SelectFloppy { drive: 0, index: 0 },
+            RemovableMediaAction::SelectFloppy { drive: 1, index: 1 },
+        ];
+        let mut target = FakeMediaTarget {
+            state: 99,
+            ..FakeMediaTarget::default()
+        };
+        let result = apply_media_and_state_transactionally(
+            &mut target,
+            RemovableMediaTransaction {
+                actions,
+                previous_media: previous.clone(),
+                previous_state: 7,
+            },
+            |target, action| {
+                target.applied.push(action);
+                target.state += 1;
+                if target.applied.len() == 2 {
+                    return Err("second switch failed".into());
+                }
+                Ok(())
+            },
+            |_| Ok(()),
+            |target, selection| {
+                target.restored = Some(selection.clone());
+                Ok(())
+            },
+            |target, state| {
+                target.state = *state;
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, Err("second switch failed".into()));
+        assert_eq!(target.restored, Some(previous));
+        assert_eq!(target.state, 7);
+    }
+
+    #[test]
+    fn successful_media_switch_applies_snapshot_without_rollback() {
+        #[derive(Default)]
+        struct FakeTarget {
+            media: Vec<RemovableMediaAction>,
+            media_restored: bool,
+            state: u32,
+        }
+
+        let mut target = FakeTarget {
+            state: 7,
+            ..Default::default()
+        };
+        let result = apply_media_and_state_transactionally(
+            &mut target,
+            RemovableMediaTransaction {
+                actions: vec![
+                    RemovableMediaAction::SelectFloppy { drive: 0, index: 1 },
+                    RemovableMediaAction::SelectCdRom { index: 2 },
+                ],
+                previous_media: RemovableMediaRollback {
+                    selection: RemovableMediaSelection {
+                        floppy: [Some(0), None],
+                        cdrom: Some(0),
+                        cassette: None,
+                    },
+                    slots: vec![
+                        save_state::MediaSlot::new(save_state::MediaKind::Floppy, 0),
+                        save_state::MediaSlot::new(save_state::MediaKind::CdRom, 0),
+                    ],
+                },
+                previous_state: 7,
+            },
+            |target, action| {
+                target.media.push(action);
+                Ok(())
+            },
+            |target| {
+                target.state = 99;
+                Ok(())
+            },
+            |target, _| {
+                target.media_restored = true;
+                Ok(())
+            },
+            |target, state| {
+                target.state = *state;
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            target.media,
+            vec![
+                RemovableMediaAction::SelectFloppy { drive: 0, index: 1 },
+                RemovableMediaAction::SelectCdRom { index: 2 },
+            ],
+        );
+        assert_eq!(target.state, 99);
+        assert!(!target.media_restored);
+    }
+
+    #[test]
+    fn failed_state_restore_rolls_back_media_and_machine_state() {
+        #[derive(Default)]
+        struct FakeTarget {
+            media_restored: bool,
+            state: u32,
+        }
+
+        let previous = RemovableMediaRollback {
+            selection: RemovableMediaSelection {
+                floppy: [Some(1), None],
+                cdrom: None,
+                cassette: None,
+            },
+            slots: vec![save_state::MediaSlot::new(save_state::MediaKind::Floppy, 0)],
+        };
+        let mut target = FakeTarget {
+            state: 42,
+            ..Default::default()
+        };
+        let result = apply_media_and_state_transactionally(
+            &mut target,
+            RemovableMediaTransaction {
+                actions: vec![RemovableMediaAction::SelectFloppy { drive: 0, index: 0 }],
+                previous_media: previous,
+                previous_state: 7,
+            },
+            |target, _| {
+                target.state = 43;
+                Ok(())
+            },
+            |target| {
+                target.state = 100;
+                Err("snapshot payload is invalid".to_owned())
+            },
+            |target, _| {
+                target.media_restored = true;
+                Ok(())
+            },
+            |target, state| {
+                target.state = *state;
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, Err("snapshot payload is invalid".to_owned()));
+        assert!(target.media_restored);
+        assert_eq!(target.state, 7);
     }
 }

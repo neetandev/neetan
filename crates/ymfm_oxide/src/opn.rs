@@ -363,12 +363,15 @@ fn opn_write<const IS_OPNA: bool>(
     false
 }
 
+save_state::runtime_state! {
+/// Authoritative OPN register and timer state.
+#[derive(Clone)]
 pub(crate) struct OpnRegisters {
     lfo_counter: u32,
     lfo_am: u8,
     regdata: [u8; 0x100],
     waveform: [u16; WAVEFORM_LENGTH],
-}
+}}
 
 impl FmRegisters for OpnRegisters {
     const OUTPUTS: usize = 1;
@@ -576,12 +579,15 @@ impl FmRegisters for OpnRegisters {
     }
 }
 
+save_state::runtime_state! {
+/// Authoritative OPNA register and timer state.
+#[derive(Clone)]
 pub(crate) struct OpnaRegisters {
     lfo_counter: u32,
     lfo_am: u8,
     regdata: [u8; 0x200],
     waveform: [u16; WAVEFORM_LENGTH],
-}
+}}
 
 impl FmRegisters for OpnaRegisters {
     const OUTPUTS: usize = 2;
@@ -798,27 +804,44 @@ impl FmRegisters for OpnaRegisters {
     }
 }
 
-enum ResampleMode {
-    Nop,
-    N1 { multiplier: u32 },
-    OneN { divisor: u32 },
-    TwoNine,
-    TwoThree,
-    FourThree,
-}
+save_state::runtime_state_enum! {
+/// Active SSG resampling operation.
+#[derive(Clone, Copy)]
+enum ResampleModeKind {
+    Nop = 0,
+    N1 = 1,
+    OneN = 2,
+    TwoNine = 3,
+    TwoThree = 4,
+    FourThree = 5,
+}}
 
+save_state::runtime_state! {
+/// One pending SSG resampling operation and its operands.
+#[derive(Clone)]
+struct ResampleMode {
+    kind: ResampleModeKind,
+    factor: u32,
+}}
+
+save_state::runtime_state! {
+/// Authoritative SSG resampler history and pending operation.
+#[derive(Clone)]
 pub(crate) struct SsgResampler {
     mode: ResampleMode,
     sampindex: u32,
     last: SsgOutput,
     mix_to_1: bool,
     first_output: usize,
-}
+}}
 
 impl SsgResampler {
     pub(crate) fn new(mix_to_1: bool, first_output: usize) -> Self {
         Self {
-            mode: ResampleMode::Nop,
+            mode: ResampleMode {
+                kind: ResampleModeKind::Nop,
+                factor: 0,
+            },
             sampindex: 0,
             last: SsgOutput { data: [0; 3] },
             mix_to_1,
@@ -833,29 +856,57 @@ impl SsgResampler {
     pub(crate) fn configure(&mut self, outsamples: u8, srcsamples: u8) {
         let key = outsamples as u32 * 10 + srcsamples as u32;
         self.mode = match key {
-            41 => ResampleMode::N1 { multiplier: 4 },
-            21 => ResampleMode::N1 { multiplier: 2 },
-            43 => ResampleMode::FourThree,
-            11 => ResampleMode::N1 { multiplier: 1 },
-            23 => ResampleMode::TwoThree,
-            13 => ResampleMode::OneN { divisor: 3 },
-            29 => ResampleMode::TwoNine,
-            16 => ResampleMode::OneN { divisor: 6 },
-            0 => ResampleMode::Nop,
-            _ => ResampleMode::Nop,
+            41 => ResampleMode {
+                kind: ResampleModeKind::N1,
+                factor: 4,
+            },
+            21 => ResampleMode {
+                kind: ResampleModeKind::N1,
+                factor: 2,
+            },
+            43 => ResampleMode {
+                kind: ResampleModeKind::FourThree,
+                factor: 0,
+            },
+            11 => ResampleMode {
+                kind: ResampleModeKind::N1,
+                factor: 1,
+            },
+            23 => ResampleMode {
+                kind: ResampleModeKind::TwoThree,
+                factor: 0,
+            },
+            13 => ResampleMode {
+                kind: ResampleModeKind::OneN,
+                factor: 3,
+            },
+            29 => ResampleMode {
+                kind: ResampleModeKind::TwoNine,
+                factor: 0,
+            },
+            16 => ResampleMode {
+                kind: ResampleModeKind::OneN,
+                factor: 6,
+            },
+            0 => ResampleMode {
+                kind: ResampleModeKind::Nop,
+                factor: 0,
+            },
+            _ => ResampleMode {
+                kind: ResampleModeKind::Nop,
+                factor: 0,
+            },
         };
     }
 
     pub(crate) fn resample(&mut self, ssg: &mut SsgEngine, output: &mut [i32], num_outputs: usize) {
-        match self.mode {
-            ResampleMode::Nop => self.resample_nop(num_outputs),
-            ResampleMode::N1 { multiplier } => {
-                self.resample_n_1(ssg, output, num_outputs, multiplier)
-            }
-            ResampleMode::OneN { divisor } => self.resample_1_n(ssg, output, num_outputs, divisor),
-            ResampleMode::TwoNine => self.resample_2_9(ssg, output, num_outputs),
-            ResampleMode::TwoThree => self.resample_2_3(ssg, output, num_outputs),
-            ResampleMode::FourThree => self.resample_4_3(ssg, output, num_outputs),
+        match self.mode.kind {
+            ResampleModeKind::Nop => self.resample_nop(num_outputs),
+            ResampleModeKind::N1 => self.resample_n_1(ssg, output, num_outputs, self.mode.factor),
+            ResampleModeKind::OneN => self.resample_1_n(ssg, output, num_outputs, self.mode.factor),
+            ResampleModeKind::TwoNine => self.resample_2_9(ssg, output, num_outputs),
+            ResampleModeKind::TwoThree => self.resample_2_3(ssg, output, num_outputs),
+            ResampleModeKind::FourThree => self.resample_4_3(ssg, output, num_outputs),
         }
     }
 

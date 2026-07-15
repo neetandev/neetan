@@ -131,7 +131,8 @@ const NEC_COPYRIGHT_OFFSET_VM: usize = 0x0DD8;
 /// V98 font ROM file size in bytes.
 const V98_FONT_ROM_SIZE: usize = 0x46800;
 
-/// Snapshot of the mutable memory state (RAM + VRAM). ROM is excluded.
+save_state::runtime_state! {
+/// Snapshot of mutable memory, bank selection, and character generator data.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Pc9801MemoryState {
     /// Main RAM (640 KB).
@@ -162,7 +163,19 @@ pub struct Pc9801MemoryState {
     pub umb_region: Option<Box<[u8; UMB_REGION_SIZE]>>,
     /// Optional extended-RAM backing address for the UMB window.
     pub umb_region_backing_linear_addr: Option<u32>,
-}
+    /// Active ROM bank selector for the banked BIOS window.
+    pub bios_bank_is_bank1: bool,
+    /// Character generator ROM and writable gaiji data (528 KB).
+    ///
+    /// Layout:
+    /// - `0x00000-0x7FFFF`: Double-byte kanji glyphs, with 16x16 left and right halves interleaved.
+    /// - `0x80000-0x80FFF`: ANK16 half-width 8x16 font, with 256 characters by 16 bytes.
+    /// - `0x81000-0x81FFF`: Chargraph16 semigraphics 2x4 block patterns.
+    /// - `0x82000-0x82FFF`: ANK8 and Chargraph8 interleaved, with 256 characters by 16 bytes.
+    pub font_rom: Box<[u8; FONT_ROM_SIZE]>,
+    /// Whether character generator data needs a host upload.
+    pub font_rom_dirty: bool,
+}}
 
 impl fmt::Debug for Pc9801MemoryState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -262,21 +275,8 @@ pub(crate) struct Pc9801Memory {
     rom: Box<[u8; BIOS_ROM_SIZE]>,
     /// Optional alternate 96 KB ROM bank selected via port 0x43D.
     bios_bank1: Option<Box<[u8; BIOS_ROM_SIZE]>>,
-    /// Active ROM bank selector for E8000-FFFFF (false=bank0, true=bank1).
-    bios_bank_is_bank1: bool,
-    /// Character generator ROM (528 KB).
-    ///
-    /// Layout:
-    /// - `0x00000-0x7FFFF`: Double-byte kanji glyphs (16x16, left/right halves interleaved)
-    /// - `0x80000-0x80FFF`: ANK16 - half-width 8x16 font (256 chars × 16 bytes)
-    /// - `0x81000-0x81FFF`: Chargraph16 - semigraphics 2×4 block patterns (256 × 16 bytes)
-    /// - `0x82000-0x82FFF`: ANK8 + Chargraph8 interleaved (256 × 16 bytes;
-    ///   bytes 0-7 = ANK 6×8 font, bytes 8-15 = chargraph 8×8 pattern)
-    font_rom: Box<[u8; FONT_ROM_SIZE]>,
     /// Optional 16 KB sound ROM (CC000-CFFFF).
     sound_rom: Option<Box<[u8; SOUND_ROM_SIZE]>>,
-    /// Set when gaiji are written via port 0xA9; cleared by the render loop after GPU upload.
-    font_rom_dirty: bool,
 }
 
 impl Deref for Pc9801Memory {
@@ -293,6 +293,29 @@ impl DerefMut for Pc9801Memory {
 }
 
 impl Pc9801Memory {
+    /// Returns identities for immutable PC-98 memory resources.
+    pub(crate) fn resource_manifest(
+        &self,
+    ) -> Result<save_state::ResourceManifest, save_state::StateValidationError> {
+        let mut bindings = vec![save_state::ResourceBinding {
+            identifier: save_state::ResourceBindingId::new("pc98-bios-bank-0")?,
+            identity: save_state::ResourceIdentity::from_bytes(self.rom.as_slice()),
+        }];
+        if let Some(bios_bank) = self.bios_bank1.as_ref() {
+            bindings.push(save_state::ResourceBinding {
+                identifier: save_state::ResourceBindingId::new("pc98-bios-bank-1")?,
+                identity: save_state::ResourceIdentity::from_bytes(bios_bank.as_slice()),
+            });
+        }
+        if let Some(sound_rom) = self.sound_rom.as_ref() {
+            bindings.push(save_state::ResourceBinding {
+                identifier: save_state::ResourceBindingId::new("pc98-sound-rom")?,
+                identity: save_state::ResourceIdentity::from_bytes(sound_rom.as_slice()),
+            });
+        }
+        save_state::ResourceManifest::new(bindings)
+    }
+
     /// Creates a new memory subsystem for the given machine model and extended RAM size.
     ///
     /// The BIOS probes extended RAM by writing test patterns in protected mode;
@@ -345,19 +368,19 @@ impl Pc9801Memory {
                 ems_page_frame_slot_mappings: [None; EMS_PHYSICAL_PAGE_COUNT],
                 umb_region: None,
                 umb_region_backing_linear_addr: None,
+                bios_bank_is_bank1: false,
+                font_rom: vec![0u8; FONT_ROM_SIZE]
+                    .into_boxed_slice()
+                    .try_into()
+                    .unwrap(),
+                font_rom_dirty: false,
             },
             rom: vec![0u8; BIOS_ROM_SIZE]
                 .into_boxed_slice()
                 .try_into()
                 .unwrap(),
             bios_bank1: None,
-            bios_bank_is_bank1: false,
-            font_rom: vec![0u8; FONT_ROM_SIZE]
-                .into_boxed_slice()
-                .try_into()
-                .unwrap(),
             sound_rom: None,
-            font_rom_dirty: false,
         }
     }
 
@@ -365,7 +388,7 @@ impl Pc9801Memory {
     pub(crate) fn load_stub_bios_rom(&mut self) {
         self.rom.copy_from_slice(STUB_BIOS_ROM);
         self.bios_bank1 = None;
-        self.bios_bank_is_bank1 = false;
+        self.state.bios_bank_is_bank1 = false;
     }
 
     /// Installs the NEC copyright marker at the model-specific BIOS offset.

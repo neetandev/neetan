@@ -35,66 +35,13 @@ pub const PC9801F_CPU_CLOCK_8MHZ: u32 = 8_000_000;
 pub struct I8086 {
     /// Embedded state for save/restore.
     pub state: I8086State,
-
-    prev_ip: u16,
-    opcode_start_ip: u16,
-    seg_prefix: bool,
-    prefix_seg: SegReg16,
-
-    halted: bool,
-    pending_irq: u8,
-    no_interrupt: u8,
-    inhibit_all: u8,
-
-    rep_ip: u16,
-    rep_restart_ip: u16,
-    rep_seg_prefix: bool,
-    rep_prefix_seg: SegReg16,
-    rep_prefix: bool,
-    rep_opcode: u8,
-    rep_type: u8,
-    rep_active: bool,
-
     cycles_remaining: i64,
     run_start_cycle: u64,
     run_budget: u64,
-
-    ea: u32,
-    eo: u16,
-    effective_address_segment: SegReg16,
-    modrm_displacement: u16,
-    modrm_has_displacement: bool,
-
-    instruction_queue: [u8; 6],
-    instruction_queue_len: usize,
-    instruction_preload: Option<u8>,
-    instruction_entry_queue_bytes: u8,
-    prefetch_ip: u16,
-    step_finish_cycle: StepFinishCycle,
-    nx: bool,
-    rni: bool,
-    queue_op: QueueOp,
-    last_queue_op: QueueOp,
-
-    // T-state BIU state (ported from MartyPC).
-    t_cycle: TCycle,
-    ta_cycle: TaCycle,
-    bus_status: BusStatus,
-    bus_status_latch: BusStatus,
-    pl_status: BusStatus,
-    bus_pending: BusPendingType,
-    fetch_state: FetchState,
-    transfer_size: TransferSize,
-    operand_size: OperandSize,
-    transfer_n: u32,
-    final_transfer: bool,
-    bhe: bool,
-    address_bus: u32,
-    address_latch: u32,
-    data_bus: u16,
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+/// Terminal fetch behavior for the current 8086 instruction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum StepFinishCycle {
     #[default]
     WithFetchCycle,
@@ -103,6 +50,14 @@ enum StepFinishCycle {
     TerminalWritebackRni,
     TerminalWritebackInlineCommit,
 }
+
+state_enum_codec!(StepFinishCycle {
+    StepFinishCycle::WithFetchCycle = 0,
+    StepFinishCycle::PreloadedOnly = 1,
+    StepFinishCycle::TerminalWritebackFetchCycle = 2,
+    StepFinishCycle::TerminalWritebackRni = 3,
+    StepFinishCycle::TerminalWritebackInlineCommit = 4,
+});
 
 impl Deref for I8086 {
     type Target = I8086State;
@@ -128,55 +83,9 @@ impl I8086 {
     pub fn new() -> Self {
         let mut cpu = Self {
             state: I8086State::default(),
-            prev_ip: 0,
-            opcode_start_ip: 0,
-            seg_prefix: false,
-            prefix_seg: SegReg16::DS,
-            halted: false,
-            pending_irq: 0,
-            no_interrupt: 0,
-            inhibit_all: 0,
-            rep_ip: 0,
-            rep_restart_ip: 0,
-            rep_seg_prefix: false,
-            rep_prefix_seg: SegReg16::DS,
-            rep_prefix: false,
-            rep_opcode: 0,
-            rep_type: 0,
-            rep_active: false,
             cycles_remaining: 0,
             run_start_cycle: 0,
             run_budget: 0,
-            ea: 0,
-            eo: 0,
-            effective_address_segment: SegReg16::DS,
-            modrm_displacement: 0,
-            modrm_has_displacement: false,
-            instruction_queue: [0; 6],
-            instruction_queue_len: 0,
-            instruction_preload: None,
-            instruction_entry_queue_bytes: 0,
-            prefetch_ip: 0,
-            step_finish_cycle: StepFinishCycle::WithFetchCycle,
-            nx: false,
-            rni: false,
-            queue_op: QueueOp::Idle,
-            last_queue_op: QueueOp::Idle,
-            t_cycle: TCycle::Ti,
-            ta_cycle: TaCycle::Td,
-            bus_status: BusStatus::Passive,
-            bus_status_latch: BusStatus::Passive,
-            pl_status: BusStatus::Passive,
-            bus_pending: BusPendingType::None,
-            fetch_state: FetchState::Normal,
-            transfer_size: TransferSize::Byte,
-            operand_size: OperandSize::Operand8,
-            transfer_n: 1,
-            final_transfer: false,
-            bhe: false,
-            address_bus: 0,
-            address_latch: 0,
-            data_bus: 0,
         };
         cpu.reset();
         cpu
@@ -1068,5 +977,22 @@ impl common::Cpu for I8086 {
             common::SegmentRegister::SS => u32::from(self.state.ss()) << 4,
             common::SegmentRegister::DS => u32::from(self.state.ds()) << 4,
         }
+    }
+}
+
+impl save_state::AfterRestore for I8086 {
+    fn after_restore(&mut self) {
+        self.cycles_remaining = 0;
+        self.run_start_cycle = 0;
+        self.run_budget = 0;
+    }
+}
+
+impl save_state::RestoreTarget for I8086 {
+    type State = I8086State;
+    type ValidationContext = ();
+
+    fn replace_state(&mut self, state: Self::State) {
+        self.state = state;
     }
 }

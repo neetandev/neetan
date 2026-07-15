@@ -9,17 +9,19 @@ pub(super) enum RepType {
     RepE,
 }
 
-/// Saved state of an in-progress REP-prefixed string operation. Persists
-/// across `run_for` invocations when the budget runs out mid-loop.
-pub(super) struct RepState {
-    pub(super) ip: u16,
-    pub(super) restart_ip: u16,
-    pub(super) seg_prefix: bool,
-    pub(super) prefix_seg: SegReg16,
-    pub(super) prefix: bool,
-    pub(super) opcode: u8,
-    pub(super) type_: u8,
-    pub(super) active: bool,
+save_state::runtime_state! {
+    /// Saved state of an in-progress REP-prefixed string operation.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(super) struct RepState {
+        pub(super) ip: u16,
+        pub(super) restart_ip: u16,
+        pub(super) seg_prefix: bool,
+        pub(super) prefix_seg: SegReg16,
+        pub(super) prefix: bool,
+        pub(super) opcode: u8,
+        pub(super) type_: u8,
+        pub(super) active: bool,
+    }
 }
 
 impl RepState {

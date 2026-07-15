@@ -31,7 +31,7 @@
 //! USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::{
-    cd_audio::CdAudioPlayer,
+    cd_audio::{CdAudioPlayer, CdAudioPlayerState},
     cdrom::{CdImage, TrackType},
 };
 
@@ -128,6 +128,59 @@ enum CddaState {
     Stopping,
     Ended,
 }
+
+save_state::runtime_state! {
+/// Authoritative FM Towns CD controller and CD audio state.
+#[derive(Clone)]
+pub struct TownsCdControllerState {
+    audio: CdAudioPlayerState,
+    cpu_clock_hz: u32,
+    sirq: bool,
+    dei: bool,
+    stsf: bool,
+    dtsf: bool,
+    dry: bool,
+    enable_sirq: bool,
+    enable_dei: bool,
+    irq_asserted: bool,
+    command_received: bool,
+    command: u8,
+    param_queue: [u8; 8],
+    param_count: usize,
+    status_queue: std::collections::VecDeque<u8>,
+    reading_sector_lba: u32,
+    end_sector_lba: u32,
+    head_position_lba: u32,
+    dma_transfer: bool,
+    cpu_transfer: bool,
+    cpu_transfer_pointer: usize,
+    wait_for_dts_sts: bool,
+    sector_cache: Vec<u8>,
+    disc_changed: bool,
+    lid_closed: bool,
+    lid_locked: bool,
+    can_open_close: bool,
+    delayed_sirq: bool,
+    cdda_state: u8,
+    cdda_start_lba: u32,
+    cdda_end_lba: u32,
+    cdda_start_cycle: u64,
+    cdda_repeat: bool,
+    cdda_paused_lba: u32,
+    command_task_cycle: Option<u64>,
+    cdda_poll_cycle: Option<u64>,
+    delayed_status_irq_cycles: u64,
+    notification_cycles: u64,
+    cddastop_cycles: u64,
+    seek_command_cycles: u64,
+    lostdata_timeout_cycles: u64,
+    status_checkback_cycles: u64,
+    read_sector_cycles: u64,
+    max_seek_cycles: u64,
+    cdda_poll_interval_cycles: u64,
+    sector_read_delay_cycles: u64,
+    media: save_state::MediaManifest,
+}}
 
 /// The outcome of a scheduled task run: an optional sector the bus must push
 /// through DMA channel 3.
@@ -282,6 +335,168 @@ impl TownsCdController {
         };
         controller.reset_mpu();
         controller
+    }
+
+    /// Captures command transport, CD audio, timing, and mounted disc identity.
+    pub fn capture_state(
+        &self,
+    ) -> Result<TownsCdControllerState, save_state::StateValidationError> {
+        Ok(TownsCdControllerState {
+            audio: self.audio.capture_state(),
+            cpu_clock_hz: self.cpu_clock_hz,
+            sirq: self.sirq,
+            dei: self.dei,
+            stsf: self.stsf,
+            dtsf: self.dtsf,
+            dry: self.dry,
+            enable_sirq: self.enable_sirq,
+            enable_dei: self.enable_dei,
+            irq_asserted: self.irq_asserted,
+            command_received: self.command_received,
+            command: self.command,
+            param_queue: self.param_queue,
+            param_count: self.param_count,
+            status_queue: self.status_queue.clone(),
+            reading_sector_lba: self.reading_sector_lba,
+            end_sector_lba: self.end_sector_lba,
+            head_position_lba: self.head_position_lba,
+            dma_transfer: self.dma_transfer,
+            cpu_transfer: self.cpu_transfer,
+            cpu_transfer_pointer: self.cpu_transfer_pointer,
+            wait_for_dts_sts: self.wait_for_dts_sts,
+            sector_cache: self.sector_cache.clone(),
+            disc_changed: self.disc_changed,
+            lid_closed: self.lid_closed,
+            lid_locked: self.lid_locked,
+            can_open_close: self.can_open_close,
+            delayed_sirq: self.delayed_sirq,
+            cdda_state: match self.cdda_state {
+                CddaState::Idle => 0,
+                CddaState::Playing => 1,
+                CddaState::Paused => 2,
+                CddaState::Stopping => 3,
+                CddaState::Ended => 4,
+            },
+            cdda_start_lba: self.cdda_start_lba,
+            cdda_end_lba: self.cdda_end_lba,
+            cdda_start_cycle: self.cdda_start_cycle,
+            cdda_repeat: self.cdda_repeat,
+            cdda_paused_lba: self.cdda_paused_lba,
+            command_task_cycle: self.command_task_cycle,
+            cdda_poll_cycle: self.cdda_poll_cycle,
+            delayed_status_irq_cycles: self.delayed_status_irq_cycles,
+            notification_cycles: self.notification_cycles,
+            cddastop_cycles: self.cddastop_cycles,
+            seek_command_cycles: self.seek_command_cycles,
+            lostdata_timeout_cycles: self.lostdata_timeout_cycles,
+            status_checkback_cycles: self.status_checkback_cycles,
+            read_sector_cycles: self.read_sector_cycles,
+            max_seek_cycles: self.max_seek_cycles,
+            cdda_poll_interval_cycles: self.cdda_poll_interval_cycles,
+            sector_read_delay_cycles: self.sector_read_delay_cycles,
+            media: self.media_manifest()?,
+        })
+    }
+
+    /// Restores command transport and CD audio while retaining disc contents.
+    pub fn restore_state(
+        &mut self,
+        state: TownsCdControllerState,
+    ) -> Result<(), save_state::StateValidationError> {
+        let cdda_state = match state.cdda_state {
+            0 => CddaState::Idle,
+            1 => CddaState::Playing,
+            2 => CddaState::Paused,
+            3 => CddaState::Stopping,
+            4 => CddaState::Ended,
+            _ => {
+                return Err(save_state::StateValidationError::new(
+                    "FM Towns CD audio state is invalid",
+                ));
+            }
+        };
+        if state.cpu_clock_hz != self.cpu_clock_hz
+            || state.param_count > state.param_queue.len()
+            || state.cpu_transfer_pointer > state.sector_cache.len()
+            || state.sector_cache.len() > RAW_BYTES
+        {
+            return Err(save_state::StateValidationError::new(
+                "FM Towns CD controller state is invalid",
+            ));
+        }
+        state.media.verify_current(&self.media_manifest()?)?;
+        self.audio.validate_state(&state.audio)?;
+        self.audio.restore_state(state.audio)?;
+        self.sirq = state.sirq;
+        self.dei = state.dei;
+        self.stsf = state.stsf;
+        self.dtsf = state.dtsf;
+        self.dry = state.dry;
+        self.enable_sirq = state.enable_sirq;
+        self.enable_dei = state.enable_dei;
+        self.irq_asserted = state.irq_asserted;
+        self.command_received = state.command_received;
+        self.command = state.command;
+        self.param_queue = state.param_queue;
+        self.param_count = state.param_count;
+        self.status_queue = state.status_queue;
+        self.reading_sector_lba = state.reading_sector_lba;
+        self.end_sector_lba = state.end_sector_lba;
+        self.head_position_lba = state.head_position_lba;
+        self.dma_transfer = state.dma_transfer;
+        self.cpu_transfer = state.cpu_transfer;
+        self.cpu_transfer_pointer = state.cpu_transfer_pointer;
+        self.wait_for_dts_sts = state.wait_for_dts_sts;
+        self.sector_cache = state.sector_cache;
+        self.disc_changed = state.disc_changed;
+        self.lid_closed = state.lid_closed;
+        self.lid_locked = state.lid_locked;
+        self.can_open_close = state.can_open_close;
+        self.delayed_sirq = state.delayed_sirq;
+        self.cdda_state = cdda_state;
+        self.cdda_start_lba = state.cdda_start_lba;
+        self.cdda_end_lba = state.cdda_end_lba;
+        self.cdda_start_cycle = state.cdda_start_cycle;
+        self.cdda_repeat = state.cdda_repeat;
+        self.cdda_paused_lba = state.cdda_paused_lba;
+        self.command_task_cycle = state.command_task_cycle;
+        self.cdda_poll_cycle = state.cdda_poll_cycle;
+        self.delayed_status_irq_cycles = state.delayed_status_irq_cycles;
+        self.notification_cycles = state.notification_cycles;
+        self.cddastop_cycles = state.cddastop_cycles;
+        self.seek_command_cycles = state.seek_command_cycles;
+        self.lostdata_timeout_cycles = state.lostdata_timeout_cycles;
+        self.status_checkback_cycles = state.status_checkback_cycles;
+        self.read_sector_cycles = state.read_sector_cycles;
+        self.max_seek_cycles = state.max_seek_cycles;
+        self.cdda_poll_interval_cycles = state.cdda_poll_interval_cycles;
+        self.sector_read_delay_cycles = state.sector_read_delay_cycles;
+        Ok(())
+    }
+
+    /// Returns the mounted disc identity.
+    pub fn media_manifest(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let bindings = self
+            .image
+            .as_ref()
+            .map(|image| {
+                Ok(save_state::MediaBinding {
+                    identifier: save_state::MediaBindingId::new("cdrom-0")?,
+                    slot: save_state::MediaSlot::new(save_state::MediaKind::CdRom, 0),
+                    source_path: image.source_path().cloned(),
+                    media_type: "cdrom".to_owned(),
+                    identity: image.identity(),
+                    geometry: None,
+                    write_protected: true,
+                    backend_generation: None,
+                })
+            })
+            .transpose()?
+            .into_iter()
+            .collect();
+        save_state::MediaManifest::new(bindings)
     }
 
     /// Inserts a disc image, raising the media-changed condition.

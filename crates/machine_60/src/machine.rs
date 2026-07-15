@@ -7,6 +7,14 @@ use common::{CpuZ80, NoTrace, TraceSink};
 
 use crate::bus::{MainBusView, Pc6000Bus};
 
+save_state::runtime_state! {
+/// Machine-root state for one PC-6000 family snapshot.
+#[derive(Clone)]
+struct Pc6000RuntimeState {
+    cpu: cpu::Z80State,
+    bus: crate::bus::Pc6000BusState,
+}}
+
 /// PC-6000 machine: the main Z80 sharing one bus.
 pub struct Pc6000Machine<T: TraceSink = NoTrace> {
     /// Main CPU.
@@ -69,9 +77,59 @@ impl<T: TraceSink> Pc6000Machine<T> {
 
         self.bus.current_cycle() - start_cycle
     }
+
+    fn capture_machine_blob(
+        &self,
+    ) -> Result<save_state::MachineStateBlob, save_state::SaveStateError> {
+        let root = Pc6000RuntimeState {
+            cpu: self.main_cpu.capture_state(),
+            bus: self.bus.capture_runtime_state()?,
+        };
+        save_state::capture_machine_state(
+            root,
+            self.bus.save_state_resources()?,
+            self.bus.save_state_media()?,
+        )
+    }
+
+    fn restore_machine_blob(
+        &mut self,
+        blob: &save_state::MachineStateBlob,
+    ) -> Result<(), save_state::SaveStateError> {
+        let active_resources = self.bus.save_state_resources()?;
+        let active_media = self.bus.save_state_media()?;
+        save_state::restore_machine_state(
+            self,
+            blob,
+            active_resources,
+            active_media,
+            64 << 20,
+            |machine| {
+                Ok(Pc6000RuntimeState {
+                    cpu: machine.main_cpu.capture_state(),
+                    bus: machine.bus.capture_runtime_state()?,
+                })
+            },
+            |machine, state| {
+                machine.main_cpu.restore_state(state.cpu)?;
+                machine.bus.restore_runtime_state(state.bus)
+            },
+        )
+    }
 }
 
 impl<T: TraceSink> common::Machine for Pc6000Machine<T> {
+    fn capture_state(&mut self) -> Result<common::MachineStateBlob, common::SaveStateError> {
+        self.capture_machine_blob()
+    }
+
+    fn restore_state(
+        &mut self,
+        blob: &common::MachineStateBlob,
+    ) -> Result<(), common::SaveStateError> {
+        self.restore_machine_blob(blob)
+    }
+
     fn startup_capabilities(&self) -> common::StartupCapabilities {
         common::StartupCapabilities {
             cassette: true,
@@ -138,7 +196,7 @@ impl<T: TraceSink> common::Machine for Pc6000Machine<T> {
             .and_then(|extension| extension.to_str())
             .unwrap_or_default();
         self.bus
-            .insert_cassette(extension, &image)
+            .insert_cassette_from_path(extension, &image, path)
             .map_err(|error| format!("{}: {error}", path.display()))?;
         Ok(format!("{} ({} bytes)", path.display(), image.len()))
     }
@@ -354,5 +412,84 @@ mod tests {
         // The mkII renders a 320x240 image.
         let machine = machine_with_boot(Pc6000Model::Pc6001Mk2, vec![0x00; 0x1000]);
         assert_eq!(machine.display_dimensions(), (320, 240));
+    }
+
+    #[test]
+    fn every_model_replays_from_a_runtime_state() {
+        for model in [
+            Pc6000Model::Pc6001,
+            Pc6000Model::Pc6001Mk2,
+            Pc6000Model::Pc6601,
+            Pc6000Model::Pc6001Mk2Sr,
+            Pc6000Model::Pc6601Sr,
+        ] {
+            let mut machine =
+                machine_with_boot(model, vec![0x00; model.work_ram_size().min(0x8000)]);
+            machine
+                .bus
+                .insert_cassette("p6", &[0x10, 0x20, 0x30])
+                .unwrap();
+            machine.bus.io_write(0xB0, 0x09);
+            for (register, value) in [(0x00, 0x40), (0x01, 0x00), (0x08, 0x0F), (0x07, 0x3E)] {
+                machine.bus.io_write(0xA0, register);
+                machine.bus.io_write(0xA1, value);
+            }
+            machine.run_for(20_000);
+            let initial = machine.capture_state().unwrap();
+
+            machine.push_keyboard_scancode(0x41);
+            machine.run_for(30_000);
+            let mut expected_audio = vec![0.0; 2048];
+            machine.generate_audio_samples(1.0, &mut expected_audio);
+            let expected = machine.capture_state().unwrap();
+
+            machine.restore_state(&initial).unwrap();
+            machine.push_keyboard_scancode(0x41);
+            machine.run_for(30_000);
+            let mut replayed_audio = vec![0.0; 2048];
+            machine.generate_audio_samples(1.0, &mut replayed_audio);
+            let replayed = machine.capture_state().unwrap();
+
+            assert_eq!(replayed.payload(), expected.payload(), "{model}");
+            assert_eq!(replayed_audio, expected_audio, "{model}");
+        }
+    }
+
+    #[test]
+    fn corrupt_state_does_not_mutate_the_running_machine() {
+        let mut machine = machine_with_boot(Pc6000Model::Pc6001, vec![0x00; 0x1000]);
+        machine.run_for(10_000);
+        let valid = machine.capture_state().unwrap();
+        let before = valid.payload().to_vec();
+        let corrupt = valid
+            .with_payload(valid.payload()[..valid.payload().len() / 2].to_vec())
+            .unwrap();
+
+        assert!(machine.restore_state(&corrupt).is_err());
+        assert_eq!(machine.capture_state().unwrap().payload(), before);
+    }
+
+    #[test]
+    fn cassette_identity_mismatch_is_rejected_before_restore() {
+        let mut machine = machine_with_boot(Pc6000Model::Pc6001, vec![0x00; 0x1000]);
+        machine.bus.insert_cassette("p6", &[1, 2, 3]).unwrap();
+        let snapshot = machine.capture_state().unwrap();
+        machine.eject_cassette();
+        let before = machine.capture_state().unwrap();
+
+        assert!(machine.restore_state(&snapshot).is_err());
+        assert_eq!(machine.capture_state().unwrap().payload(), before.payload());
+    }
+
+    #[test]
+    fn rom_and_model_mismatches_are_rejected() {
+        let mut source = machine_with_boot(Pc6000Model::Pc6001, vec![0x00; 0x1000]);
+        let snapshot = source.capture_state().unwrap();
+
+        let mut different_rom = machine_with_boot(Pc6000Model::Pc6001, vec![0xFF; 0x1000]);
+        assert!(different_rom.restore_state(&snapshot).is_err());
+
+        let mut different_model = machine_with_boot(Pc6000Model::Pc6001Mk2, vec![0x00; 0x8000]);
+        assert!(different_model.restore_state(&snapshot).is_err());
     }
 }

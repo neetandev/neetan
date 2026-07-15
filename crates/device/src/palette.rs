@@ -37,7 +37,8 @@ const DEFAULT_ANALOG_PALETTE: [[u8; 3]; 16] = [
     [0xF, 0xF, 0xF], // 15: bright white
 ];
 
-/// Snapshot of the palette state.
+save_state::runtime_state! {
+/// Authoritative palette state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaletteState {
     /// Analog palette index register (write via port 0xA8 in analog mode).
@@ -46,13 +47,15 @@ pub struct PaletteState {
     pub digital: [u8; 4],
     /// 16-color analog palette: 16 entries of [green, red, blue] (4-bit each).
     pub analog: [[u8; 3]; 16],
-}
+}}
 
 /// Palette controller.
 pub struct Palette {
     /// Embedded state for save/restore.
     pub state: PaletteState,
 }
+
+impl_simple_state_accessors!(Palette, PaletteState);
 
 impl Default for Palette {
     fn default() -> Self {

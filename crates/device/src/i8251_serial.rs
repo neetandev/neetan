@@ -43,8 +43,10 @@ const CMD_ER: u8 = 1 << 4;
 
 /// Command register bit: Internal Reset - next write becomes a mode word.
 const CMD_IR: u8 = 1 << 6;
+const MIDI_CAPTURE_CAPACITY: usize = 32768;
 
-/// Snapshot of the i8251A serial controller state.
+save_state::runtime_state! {
+/// Authoritative i8251A serial controller state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I8251SerialState {
     /// Mode word (set after reset).
@@ -57,21 +59,21 @@ pub struct I8251SerialState {
     pub data: u8,
     /// Next write to port 0x32 is a mode word (true after reset or internal reset).
     pub expect_mode: bool,
-}
+    /// Received bytes waiting for the guest.
+    pub rx_fifo: VecDeque<u8>,
+    /// Whether transmitted bytes are captured for MIDI output.
+    pub midi_capture: bool,
+    /// Transmitted bytes not yet accepted by the MIDI consumer.
+    pub midi_tx: Vec<u8>,
+}}
 
 /// i8251A serial controller (RS-232C).
 pub struct I8251Serial {
     /// Embedded state for save/restore.
     pub state: I8251SerialState,
-    /// Receive FIFO for injected data (not part of saveable state).
-    rx_fifo: VecDeque<u8>,
-    /// When true, bytes written to the data register are buffered in `midi_tx`
-    /// so a machine can forward them to a MIDI sound module.
-    /// Off by default, so the PC-98 RS-232C port is unaffected.
-    midi_capture: bool,
-    /// Transmitted bytes captured for MIDI output (not part of saveable state).
-    midi_tx: Vec<u8>,
 }
+
+impl_simple_state_accessors!(I8251Serial, I8251SerialState);
 
 impl Default for I8251Serial {
     fn default() -> Self {
@@ -89,23 +91,27 @@ impl I8251Serial {
                 status: 0x00,
                 data: 0xFF,
                 expect_mode: true,
+                rx_fifo: VecDeque::new(),
+                midi_capture: false,
+                midi_tx: Vec::with_capacity(MIDI_CAPTURE_CAPACITY),
             },
-            rx_fifo: VecDeque::new(),
-            midi_capture: false,
-            midi_tx: Vec::new(),
         }
     }
 
     /// Enables MIDI transmit capture: subsequent writes to the data register
     /// are buffered and can be drained with [`I8251Serial::flush_midi_into`].
     pub fn enable_midi_capture(&mut self) {
-        self.midi_capture = true;
+        self.state.midi_capture = true;
     }
 
-    /// Drains captured transmit bytes into `target` and clears the buffer.
-    pub fn flush_midi_into(&mut self, target: &mut Vec<u8>) {
-        target.extend_from_slice(&self.midi_tx);
-        self.midi_tx.clear();
+    /// Copies captured MIDI into `target` and returns the number of bytes written.
+    pub fn flush_midi_into(&mut self, target: &mut [u8]) -> usize {
+        let copy_length = target.len().min(self.state.midi_tx.len());
+        target[..copy_length].copy_from_slice(&self.state.midi_tx[..copy_length]);
+        let remaining = self.state.midi_tx.len() - copy_length;
+        self.state.midi_tx.copy_within(copy_length.., 0);
+        self.state.midi_tx.truncate(remaining);
+        copy_length
     }
 
     /// Reads the data register (port 0x30).
@@ -115,12 +121,12 @@ impl I8251Serial {
     /// - `clear_irq`: whether IRQ 4 should be cleared,
     /// - `retrigger_irq`: whether IRQ 4 should be re-raised (more buffered data).
     pub fn read_data(&mut self) -> (u8, bool, bool) {
-        let Some(byte) = self.rx_fifo.pop_front() else {
+        let Some(byte) = self.state.rx_fifo.pop_front() else {
             return (self.state.data, false, false);
         };
 
         self.state.data = byte;
-        if self.rx_fifo.is_empty() {
+        if self.state.rx_fifo.is_empty() {
             self.state.status &= !STATUS_RXRDY;
             (byte, true, false)
         } else {
@@ -130,7 +136,7 @@ impl I8251Serial {
 
     /// Pushes a received byte into the FIFO and sets RxRDY.
     pub fn push_received_byte(&mut self, data: u8) {
-        self.rx_fifo.push_back(data);
+        self.state.rx_fifo.push_back(data);
         self.state.data = data;
         self.state.status |= STATUS_RXRDY;
     }
@@ -147,8 +153,8 @@ impl I8251Serial {
     /// No-op with no cable attached (BIOS may send XOFF), unless MIDI capture
     /// is enabled, in which case the byte is buffered for MIDI output.
     pub fn write_data(&mut self, value: u8) {
-        if self.midi_capture {
-            self.midi_tx.push(value);
+        if self.state.midi_capture && self.state.midi_tx.len() < MIDI_CAPTURE_CAPACITY {
+            self.state.midi_tx.push(value);
         }
     }
 
@@ -223,9 +229,8 @@ mod tests {
         let mut serial = I8251Serial::new();
         serial.write_data(0x90);
         serial.write_data(0x40);
-        let mut drained = Vec::new();
-        serial.flush_midi_into(&mut drained);
-        assert!(drained.is_empty());
+        let mut drained = [0; 2];
+        assert_eq!(serial.flush_midi_into(&mut drained), 0);
     }
 
     #[test]
@@ -236,14 +241,13 @@ mod tests {
         for &byte in &bytes {
             serial.write_data(byte);
         }
-        let mut drained = Vec::new();
-        serial.flush_midi_into(&mut drained);
-        assert_eq!(drained, bytes);
+        let mut drained = [0; 6];
+        let length = serial.flush_midi_into(&mut drained);
+        assert_eq!(drained[..length], bytes);
 
         // A second drain returns nothing.
-        let mut again = Vec::new();
-        serial.flush_midi_into(&mut again);
-        assert!(again.is_empty());
+        let mut again = [0; 1];
+        assert_eq!(serial.flush_midi_into(&mut again), 0);
     }
 
     #[test]

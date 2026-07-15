@@ -11,6 +11,15 @@ use common::{CpuZ80, NoTrace, TraceSink};
 
 use crate::bus::{MainBusView, Pc8801Bus, SYNC_SLICE, SubBusView, TIGHT_SLICE};
 
+save_state::runtime_state! {
+/// Machine-root state for one PC-8801 snapshot.
+#[derive(Clone)]
+struct Pc8801RuntimeState {
+    main_cpu: cpu::Z80State,
+    sub_cpu: cpu::Z80State,
+    bus: crate::bus::Pc8801BusState,
+}}
+
 /// PC-8801 machine: the main Z80 and the disk sub-CPU sharing one bus.
 pub struct Pc8801Machine<T: TraceSink = NoTrace> {
     /// Main CPU.
@@ -127,9 +136,62 @@ impl<T: TraceSink> Pc8801Machine<T> {
             self.bus.sub_clock_credit = self.bus.sub_clock_credit.saturating_add(remaining_cycles);
         }
     }
+
+    fn capture_machine_blob(
+        &self,
+    ) -> Result<save_state::MachineStateBlob, save_state::SaveStateError> {
+        let root = Pc8801RuntimeState {
+            main_cpu: self.main_cpu.capture_state(),
+            sub_cpu: self.sub_cpu.capture_state(),
+            bus: self.bus.capture_runtime_state()?,
+        };
+        save_state::capture_machine_state(
+            root,
+            self.bus.save_state_resources()?,
+            self.bus.save_state_media()?,
+        )
+    }
+
+    fn restore_machine_blob(
+        &mut self,
+        blob: &save_state::MachineStateBlob,
+    ) -> Result<(), save_state::SaveStateError> {
+        let active_resources = self.bus.save_state_resources()?;
+        let active_media = self.bus.save_state_media()?;
+        save_state::restore_machine_state(
+            self,
+            blob,
+            active_resources,
+            active_media,
+            64 << 20,
+            |machine| {
+                Ok(Pc8801RuntimeState {
+                    main_cpu: machine.main_cpu.capture_state(),
+                    sub_cpu: machine.sub_cpu.capture_state(),
+                    bus: machine.bus.capture_runtime_state()?,
+                })
+            },
+            |machine, state| {
+                machine.main_cpu.restore_state(state.main_cpu)?;
+                machine.sub_cpu.restore_state(state.sub_cpu)?;
+                machine.bus.restore_runtime_state(state.bus)
+            },
+        )
+    }
 }
 
 impl<T: TraceSink> common::Machine for Pc8801Machine<T> {
+    fn capture_state(&mut self) -> Result<common::MachineStateBlob, common::SaveStateError> {
+        self.capture_machine_blob()
+    }
+
+    fn restore_state(
+        &mut self,
+        blob: &common::MachineStateBlob,
+    ) -> Result<(), common::SaveStateError> {
+        self.restore_machine_blob(blob)
+    }
+
     fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
         self.bus.set_host_date_time_provider(provider);
     }
@@ -218,77 +280,7 @@ fn insert_cdrom_impl<T: TraceSink>(
     bus: &mut Pc8801Bus<T>,
     path: &std::path::Path,
 ) -> Result<String, String> {
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.to_ascii_lowercase());
-
-    if extension.as_deref() == Some("ccd") {
-        insert_cdrom_ccd(bus, path)
-    } else {
-        insert_cdrom_cue(bus, path)
-    }
-}
-
-fn insert_cdrom_cue<T: TraceSink>(
-    bus: &mut Pc8801Bus<T>,
-    path: &std::path::Path,
-) -> Result<String, String> {
-    let cue_content = std::fs::read_to_string(path)
-        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-    let bin_filenames = device::cdrom::extract_bin_filenames(&cue_content)
-        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
-    let base_path = path.parent().unwrap_or(std::path::Path::new("."));
-    let mut bin_files = Vec::with_capacity(bin_filenames.len());
-    for bin_filename in &bin_filenames {
-        let bin_path = base_path.join(bin_filename);
-        let bin_data = std::fs::read(&bin_path)
-            .map_err(|error| format!("Failed to read {}: {error}", bin_path.display()))?;
-        bin_files.push(bin_data);
-    }
-    let image = device::cdrom::CdImage::from_cue_files(&cue_content, bin_files)
-        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
-    let description = format!(
-        "{} ({} tracks, {} sectors)",
-        bin_filenames[0],
-        image.track_count(),
-        image.total_sectors()
-    );
-    bus.insert_cdrom(image);
-    Ok(description)
-}
-
-fn insert_cdrom_ccd<T: TraceSink>(
-    bus: &mut Pc8801Bus<T>,
-    path: &std::path::Path,
-) -> Result<String, String> {
-    let ccd_content = std::fs::read_to_string(path)
-        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-    let img_path = path.with_extension("img");
-    let img_data = std::fs::read(&img_path)
-        .map_err(|error| format!("Failed to read {}: {error}", img_path.display()))?;
-    let sub_path = path.with_extension("sub");
-    let sub_data = match std::fs::read(&sub_path) {
-        Ok(bytes) => Some(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            return Err(format!("Failed to read {}: {error}", sub_path.display()));
-        }
-    };
-    let has_sub = sub_data.is_some();
-    let image = device::cdrom::CdImage::from_ccd(&ccd_content, img_data, sub_data)
-        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
-    let img_name = img_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("image.img");
-    let description = format!(
-        "{} ({} tracks, {} sectors, {})",
-        img_name,
-        image.track_count(),
-        image.total_sectors(),
-        if has_sub { "CCD+SUB" } else { "CCD" }
-    );
+    let (image, description) = device::cdrom::load_cd_image(path)?;
     bus.insert_cdrom(image);
     Ok(description)
 }

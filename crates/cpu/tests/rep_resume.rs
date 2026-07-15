@@ -223,6 +223,7 @@ impl RepCpuHarness for V30Harness {
         state.set_sp(sp);
         // IF=1, MF=1 (V30 native mode).
         state.set_compressed_flags(0x8202);
+        state.initialize_cold_frontend();
         cpu.load_state(&state);
     }
 
@@ -271,6 +272,7 @@ impl RepCpuHarness for I286Harness {
         state.set_ss(ss);
         state.set_sp(sp);
         state.set_compressed_flags(0x0202);
+        state.initialize_real_mode_caches();
         cpu.load_state(&state);
     }
 

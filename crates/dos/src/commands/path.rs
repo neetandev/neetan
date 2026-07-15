@@ -20,9 +20,13 @@ impl Command for PathCommand {
     }
 }
 
-struct RunningPath {
+#[derive(Clone)]
+/// Serializable state of an executing PATH command.
+pub(crate) struct RunningPath {
     args: Vec<u8>,
 }
+
+state_struct_codec!(RunningPath { args });
 
 impl RunningCommand for RunningPath {
     fn step(

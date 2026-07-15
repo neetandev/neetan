@@ -35,6 +35,7 @@
 use crate::{Sc55State, mcu_interrupt::INTERRUPT_SOURCE_IRQ0};
 
 #[derive(Clone)]
+/// Complete authoritative state of the SC-55 PCM engine.
 pub(crate) struct PcmState {
     pub ram1: [[u32; 8]; 32],
     pub ram2: [[u16; 16]; 32],
@@ -53,7 +54,7 @@ pub(crate) struct PcmState {
     pub nfs: u32,
     pub tv_counter: u32,
     pub cycles: u64,
-    pub eram: [u16; 0x4000],
+    pub eram: Box<[u16; 0x4000]>,
     pub accum_l: i32,
     pub accum_r: i32,
     pub rcsum: [i32; 2],
@@ -79,13 +80,37 @@ impl Default for PcmState {
             nfs: 0,
             tv_counter: 0,
             cycles: 0,
-            eram: [0u16; 0x4000],
+            eram: Box::new([0u16; 0x4000]),
             accum_l: 0,
             accum_r: 0,
             rcsum: [0i32; 2],
         }
     }
 }
+
+crate::impl_state_codec!(PcmState {
+    ram1,
+    ram2,
+    select_channel,
+    voice_mask,
+    voice_mask_pending,
+    voice_mask_updating,
+    write_latch,
+    wave_read_address,
+    wave_byte_latch,
+    read_latch,
+    config_reg_3c,
+    config_reg_3d,
+    irq_channel,
+    irq_assert,
+    nfs,
+    tv_counter,
+    cycles,
+    eram,
+    accum_l,
+    accum_r,
+    rcsum,
+});
 
 fn waverom_read(rom: &[u8], index: usize) -> u8 {
     if index < rom.len() { rom[index] } else { 0 }

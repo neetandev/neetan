@@ -35,6 +35,23 @@ const BACKUP_IDENTITY_1: usize = 0x1FC6;
 const BACKUP_WP_START: u32 = 0xB_1FC0;
 const BACKUP_WP_END: u32 = 0xB_2000;
 
+save_state::runtime_state! {
+/// Authoritative PC-88VA memory contents and banking state.
+#[derive(Clone)]
+pub(crate) struct Pc88VaMemoryState {
+    ram: Box<[u8]>,
+    backup: Box<[u8]>,
+    text: Box<[u8]>,
+    graphics: Box<[u8]>,
+    system_memory_bank: u8,
+    rom0_bank: u8,
+    rom1_bank: u8,
+    dma_system_memory_bank: u8,
+    backup_memory_write_protected: bool,
+    graphics_memory_single_plane: u8,
+    timer_clock_select: u8,
+}}
+
 pub(crate) struct Pc88VaMemory {
     ram: Box<[u8]>,
     rom0: Box<[u8]>,
@@ -78,6 +95,54 @@ impl Pc88VaMemory {
         };
         memory.reset();
         memory
+    }
+
+    /// Captures mutable memory and banking state without ROM bytes.
+    pub(crate) fn capture_state(&self) -> Pc88VaMemoryState {
+        Pc88VaMemoryState {
+            ram: self.ram.clone(),
+            backup: self.backup.clone(),
+            text: self.text.clone(),
+            graphics: self.graphics.clone(),
+            system_memory_bank: self.sysm_bank,
+            rom0_bank: self.rom0_bank,
+            rom1_bank: self.rom1_bank,
+            dma_system_memory_bank: self.dma_sysm_bank,
+            backup_memory_write_protected: self.backupmem_wp,
+            graphics_memory_single_plane: self.gmsp,
+            timer_clock_select: self.upd9002_tcks,
+        }
+    }
+
+    /// Restores mutable memory and banking state without changing ROM bytes.
+    pub(crate) fn restore_state(
+        &mut self,
+        state: Pc88VaMemoryState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.ram.len() != self.ram.len()
+            || state.backup.len() != BACKUP_SIZE
+            || state.text.len() != TEXT_VRAM_SIZE
+            || state.graphics.len() != GRAPHICS_VRAM_SIZE
+            || state.rom0_bank & !0x1F != 0
+            || state.rom1_bank & !0x03 != 0
+            || state.timer_clock_select & !0x03 != 0
+        {
+            return Err(save_state::StateValidationError::new(
+                "PC-88VA memory state is invalid",
+            ));
+        }
+        self.ram = state.ram;
+        self.backup = state.backup;
+        self.text = state.text;
+        self.graphics = state.graphics;
+        self.sysm_bank = state.system_memory_bank;
+        self.rom0_bank = state.rom0_bank;
+        self.rom1_bank = state.rom1_bank;
+        self.dma_sysm_bank = state.dma_system_memory_bank;
+        self.backupmem_wp = state.backup_memory_write_protected;
+        self.gmsp = state.graphics_memory_single_plane;
+        self.upd9002_tcks = state.timer_clock_select;
+        Ok(())
     }
 
     fn reset(&mut self) {

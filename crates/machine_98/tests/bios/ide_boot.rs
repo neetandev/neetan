@@ -8,7 +8,7 @@ const BDA_BOOT_DEVICE: usize = 0x0584;
 fn ide_initialization_pc9821() {
     let mut machine = create_machine_pc9821as_hdd();
     let _cycles = boot_to_halt_hdd!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let disk_equip = read_ram_u16(&state.memory.ram, BDA_DISK_EQUIP);
     assert_eq!(
@@ -28,7 +28,7 @@ fn ide_initialization_pc9821() {
 fn ide_empty_boot_sector_falls_through_to_fdd() {
     let mut machine = create_machine_pc9821as_empty_hdd();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.ram[BDA_BOOT_DEVICE], 0x90,
         "BOOT_DEVICE should be 0x90 for FDD-0 (got {:#04X})",

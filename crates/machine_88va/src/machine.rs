@@ -9,6 +9,15 @@ use common::{Bus, Cpu, CpuZ80, NoTrace, TraceSink};
 
 use crate::bus::{Pc88VaBus, SYNC_SLICE, SubBusView, TIGHT_SLICE};
 
+save_state::runtime_state! {
+/// Machine-root state for one PC-88VA snapshot.
+#[derive(Clone)]
+struct Pc88VaRuntimeState {
+    main_cpu: cpu::V30State,
+    sub_cpu: cpu::Z80State,
+    bus: crate::bus::Pc88VaBusState,
+}}
+
 const RESET_CS: u16 = 0xF000;
 const RESET_IP: u16 = 0xFFF0;
 
@@ -155,6 +164,48 @@ impl<T: TraceSink> Pc88VaMachine<T> {
     pub fn flush_floppies(&mut self) {
         self.bus.flush_floppies();
     }
+
+    fn capture_machine_blob(
+        &self,
+    ) -> Result<save_state::MachineStateBlob, save_state::SaveStateError> {
+        let root = Pc88VaRuntimeState {
+            main_cpu: self.cpu.capture_state(),
+            sub_cpu: self.sub_cpu.capture_state(),
+            bus: self.bus.capture_runtime_state()?,
+        };
+        save_state::capture_machine_state(
+            root,
+            self.bus.save_state_resources()?,
+            self.bus.save_state_media()?,
+        )
+    }
+
+    fn restore_machine_blob(
+        &mut self,
+        blob: &save_state::MachineStateBlob,
+    ) -> Result<(), save_state::SaveStateError> {
+        let active_resources = self.bus.save_state_resources()?;
+        let active_media = self.bus.save_state_media()?;
+        save_state::restore_machine_state(
+            self,
+            blob,
+            active_resources,
+            active_media,
+            64 << 20,
+            |machine| {
+                Ok(Pc88VaRuntimeState {
+                    main_cpu: machine.cpu.capture_state(),
+                    sub_cpu: machine.sub_cpu.capture_state(),
+                    bus: machine.bus.capture_runtime_state()?,
+                })
+            },
+            |machine, state| {
+                machine.cpu.restore_state(state.main_cpu)?;
+                machine.sub_cpu.restore_state(state.sub_cpu)?;
+                machine.bus.restore_runtime_state(state.bus)
+            },
+        )
+    }
 }
 
 impl Pc88VaMachine<NoTrace> {
@@ -174,6 +225,17 @@ pub fn reset_cpu() -> cpu::V30 {
 }
 
 impl<T: TraceSink> common::Machine for Pc88VaMachine<T> {
+    fn capture_state(&mut self) -> Result<common::MachineStateBlob, common::SaveStateError> {
+        self.capture_machine_blob()
+    }
+
+    fn restore_state(
+        &mut self,
+        blob: &common::MachineStateBlob,
+    ) -> Result<(), common::SaveStateError> {
+        self.restore_machine_blob(blob)
+    }
+
     fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
         self.bus.set_host_date_time_provider(provider);
     }

@@ -17,13 +17,14 @@ const STATUS_Y_NEGATIVE_OVERFLOW: u8 = 0x80;
 const BUTTON_LEFT: u8 = 0x01;
 const BUTTON_RIGHT: u8 = 0x02;
 
+save_state::runtime_state! {
 /// Sharp X1 mouse.
 #[derive(Debug, Clone, Default)]
 pub struct MouseX1 {
     delta_x: i32,
     delta_y: i32,
     buttons: u8,
-}
+}}
 
 impl MouseX1 {
     /// Creates a mouse at rest.

@@ -25,6 +25,8 @@ impl Command for Del {
     }
 }
 
+#[derive(Clone)]
+/// Authoritative DEL enumeration and confirmation state.
 struct DelState {
     drive_index: u8,
     dir_cluster: u16,
@@ -34,6 +36,16 @@ struct DelState {
     deleted_any: bool,
 }
 
+state_struct_codec!(DelState {
+    drive_index,
+    dir_cluster,
+    fcb_pattern,
+    start_index,
+    prompt,
+    deleted_any,
+});
+
+#[derive(Clone)]
 enum DelPhase {
     Init,
     ConfirmAll(DelState),
@@ -41,10 +53,56 @@ enum DelPhase {
     PromptFile(DelState, fat_dir::DirEntry),
 }
 
-struct RunningDel {
+impl save_state::StateEncode for DelPhase {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Init => save_state::StateEncode::encode_state(&0u8, output),
+            Self::ConfirmAll(state) => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(state, output);
+            }
+            Self::DeleteNext(state) => {
+                save_state::StateEncode::encode_state(&2u8, output);
+                save_state::StateEncode::encode_state(state, output);
+            }
+            Self::PromptFile(state, entry) => {
+                save_state::StateEncode::encode_state(&3u8, output);
+                save_state::StateEncode::encode_state(state, output);
+                save_state::StateEncode::encode_state(entry, output);
+            }
+        }
+    }
+}
+
+impl save_state::StateDecode for DelPhase {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Init),
+            1 => Ok(Self::ConfirmAll(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            2 => Ok(Self::DeleteNext(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            3 => Ok(Self::PromptFile(
+                save_state::StateDecode::decode_state(decoder)?,
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
+/// Serializable state of an executing DEL command.
+pub(crate) struct RunningDel {
     args: Vec<u8>,
     phase: DelPhase,
 }
+
+state_struct_codec!(RunningDel { args, phase });
 
 const KB_BUF_COUNT: u32 = 0x0528;
 

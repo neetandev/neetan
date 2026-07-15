@@ -4,13 +4,15 @@
 //! parallel ports. Port B carries the strobe and button gate lines, while port
 //! A delivers one nibble of the latched movement per strobe edge.
 
+save_state::runtime_state_enum! {
+/// Active nibble in the FM-7 mouse readout sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MousePhase {
-    XHigh,
-    XLow,
-    YHigh,
-    YLow,
-}
+    XHigh = 0,
+    XLow = 1,
+    YHigh = 2,
+    YLow = 3,
+}}
 
 const BUTTON_GATE_MASK: u8 = 0x03;
 const BUTTON_LEFT: u8 = 0x10;
@@ -18,7 +20,9 @@ const BUTTON_RIGHT: u8 = 0x20;
 const READOUT_HIGH_BITS: u8 = 0xC0;
 const DELTA_LIMIT: i32 = 127;
 
+save_state::runtime_state! {
 /// FM-7 joystick-port mouse.
+#[derive(Clone)]
 pub struct MouseFm7 {
     accum_x: i32,
     accum_y: i32,
@@ -29,7 +33,7 @@ pub struct MouseFm7 {
     x_high_latched: bool,
     button_left: bool,
     button_right: bool,
-}
+}}
 
 impl MouseFm7 {
     /// Creates an idle mouse.

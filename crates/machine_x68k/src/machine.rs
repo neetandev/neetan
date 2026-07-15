@@ -8,6 +8,14 @@ use crate::{LoadedRoms, X68kBus, X68kModel};
 /// Default audio sample rate.
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 
+save_state::runtime_state! {
+/// Machine-root state for one X68000 snapshot.
+#[derive(Clone)]
+struct X68kRuntimeState {
+    cpu: cpu_68k::M68000RuntimeState,
+    bus: crate::bus::X68kBusState,
+}}
+
 /// A runnable X68000 machine with an MC68000 and motherboard bus.
 pub struct X68kMachine<T: TraceSink = NoTrace> {
     /// Motorola MC68000 CPU.
@@ -49,9 +57,9 @@ impl<T: TraceSink> X68kMachine<T> {
         self.bus.install_midi_card();
     }
 
-    /// Drains captured MIDI transmit bytes into `out`.
-    pub fn flush_midi_into(&mut self, out: &mut Vec<u8>) {
-        self.bus.flush_midi_into(out);
+    /// Copies captured MIDI into `target` and returns the number of bytes written.
+    pub fn flush_midi_into(&mut self, target: &mut [u8]) -> usize {
+        self.bus.flush_midi_into(target)
     }
 
     /// Installs a Roland MT-32 sound module driven by the CZ-6BM1 card.
@@ -105,6 +113,45 @@ impl<T: TraceSink> X68kMachine<T> {
 
         self.bus.current_cycle() - start_cycle
     }
+
+    fn capture_machine_blob(
+        &mut self,
+    ) -> Result<save_state::MachineStateBlob, save_state::SaveStateError> {
+        let root = X68kRuntimeState {
+            cpu: self.cpu.capture_state(),
+            bus: self.bus.capture_runtime_state()?,
+        };
+        save_state::capture_machine_state(
+            root,
+            self.bus.save_state_resources()?,
+            self.bus.save_state_media()?,
+        )
+    }
+
+    fn restore_machine_blob(
+        &mut self,
+        blob: &save_state::MachineStateBlob,
+    ) -> Result<(), save_state::SaveStateError> {
+        let active_resources = self.bus.save_state_resources()?;
+        let active_media = self.bus.save_state_media()?;
+        save_state::restore_machine_state(
+            self,
+            blob,
+            active_resources,
+            active_media,
+            128 << 20,
+            |machine| {
+                Ok(X68kRuntimeState {
+                    cpu: machine.cpu.capture_state(),
+                    bus: machine.bus.capture_runtime_state()?,
+                })
+            },
+            |machine, state| {
+                machine.cpu.restore_state(state.cpu)?;
+                machine.bus.restore_runtime_state(state.bus)
+            },
+        )
+    }
 }
 
 impl X68kMachine<NoTrace> {
@@ -122,6 +169,17 @@ impl X68kMachine<NoTrace> {
 }
 
 impl<T: TraceSink> Machine for X68kMachine<T> {
+    fn capture_state(&mut self) -> Result<common::MachineStateBlob, common::SaveStateError> {
+        self.capture_machine_blob()
+    }
+
+    fn restore_state(
+        &mut self,
+        blob: &common::MachineStateBlob,
+    ) -> Result<(), common::SaveStateError> {
+        self.restore_machine_blob(blob)
+    }
+
     fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
         self.bus.set_host_date_time_provider(provider);
     }

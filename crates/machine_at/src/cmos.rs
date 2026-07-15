@@ -255,13 +255,13 @@ mod tests {
 
     #[test]
     fn checksum_is_valid() {
-        let cmos = initial_cmos(8 * 1024 * 1024);
+        let cmos = initial_cmos(8 << 20);
         assert_eq!(stored_checksum(&cmos), computed_checksum(&cmos));
     }
 
     #[test]
     fn ami_extended_checksum_is_valid_and_nonzero() {
-        let cmos = initial_cmos(8 * 1024 * 1024);
+        let cmos = initial_cmos(8 << 20);
         let stored = ((cmos[AMI_EXTENDED_CHECKSUM_HIGH] as u16) << 8)
             | cmos[AMI_EXTENDED_CHECKSUM_LOW] as u16;
         assert_ne!(stored, 0);
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn ami_bios_defaults_are_present() {
-        let cmos = initial_cmos(8 * 1024 * 1024);
+        let cmos = initial_cmos(8 << 20);
         assert_eq!(cmos[0x11], 0xAB);
         assert_eq!(cmos[0x13], 0xBC);
         // The defaults block value 0x17 plus the floppy-first boot bit.
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn boot_sequence_toggles_bit_five_and_keeps_the_checksum() {
-        let mut cmos = initial_cmos(8 * 1024 * 1024);
+        let mut cmos = initial_cmos(8 << 20);
         set_boot_sequence(&mut cmos, false);
         assert_eq!(cmos[0x2D], 0x17, "C: then A:");
         assert_eq!(stored_checksum(&cmos), computed_checksum(&cmos));
@@ -300,9 +300,10 @@ mod tests {
     }
 
     #[test]
+
     fn extended_memory_reflects_ram_size() {
         for mib in [2u32, 8, 64] {
-            let cmos = initial_cmos(mib as usize * 1024 * 1024);
+            let cmos = initial_cmos((mib as usize) << 20);
             let extended =
                 u16::from_le_bytes([cmos[EXTENDED_MEMORY_LOW], cmos[EXTENDED_MEMORY_LOW + 1]]);
             let mirror = u16::from_le_bytes([

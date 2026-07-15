@@ -18,6 +18,24 @@ struct ElectronicVolumeChannel {
     attenuated: bool,
 }
 
+save_state::runtime_state! {
+/// Authoritative attenuation state of one electronic-volume channel.
+#[derive(Clone)]
+struct ElectronicVolumeChannelState {
+    volume: u8,
+    enabled: bool,
+    direct: bool,
+    attenuated: bool,
+}}
+
+save_state::runtime_state! {
+/// Authoritative electronic volume controller state.
+#[derive(Clone)]
+pub struct ElectronicVolumeState {
+    channels: [ElectronicVolumeChannelState; 4],
+    channel_latch: u8,
+}}
+
 impl ElectronicVolumeChannel {
     fn new() -> Self {
         Self {
@@ -65,6 +83,39 @@ impl ElectronicVolume {
             channels: [ElectronicVolumeChannel::new(); 4],
             channel_latch: 0,
         }
+    }
+
+    /// Captures all attenuation controls and the address latch.
+    pub fn capture_state(&self) -> ElectronicVolumeState {
+        ElectronicVolumeState {
+            channels: self.channels.map(|channel| ElectronicVolumeChannelState {
+                volume: channel.volume,
+                enabled: channel.enabled,
+                direct: channel.direct,
+                attenuated: channel.attenuated,
+            }),
+            channel_latch: self.channel_latch,
+        }
+    }
+
+    /// Restores all attenuation controls and the address latch.
+    pub fn restore_state(
+        &mut self,
+        state: ElectronicVolumeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.channel_latch >= 4 || state.channels.iter().any(|channel| channel.volume >= 64) {
+            return Err(save_state::StateValidationError::new(
+                "electronic volume state is invalid",
+            ));
+        }
+        self.channels = state.channels.map(|channel| ElectronicVolumeChannel {
+            volume: channel.volume,
+            enabled: channel.enabled,
+            direct: channel.direct,
+            attenuated: channel.attenuated,
+        });
+        self.channel_latch = state.channel_latch;
+        Ok(())
     }
 
     /// Writes the data port: the addressed channel's attenuation setting.

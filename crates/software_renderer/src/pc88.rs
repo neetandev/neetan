@@ -92,6 +92,13 @@ pub struct Pc88RendererState {
     pub framebuffer: Box<[u8]>,
 }
 
+save_state::runtime_state! {
+/// Save-state portion of the PC-88 renderer.
+#[derive(Clone)]
+pub struct Pc88RendererRuntimeState {
+    framebuffer: Box<[u8]>,
+}}
+
 /// Number of pen-index entries in a full-frame scratch layer.
 const LAYER_PIXELS: usize = PC88_WIDTH * PC88_MAX_HEIGHT;
 
@@ -152,5 +159,26 @@ impl Pc88Renderer {
     /// Returns the packed RGBA framebuffer.
     pub fn framebuffer(&self) -> &[u8] {
         &self.state.framebuffer
+    }
+
+    /// Captures the presented framebuffer without the immutable font.
+    pub fn capture_state(&self) -> Pc88RendererRuntimeState {
+        Pc88RendererRuntimeState {
+            framebuffer: self.state.framebuffer.clone(),
+        }
+    }
+
+    /// Restores the presented framebuffer without changing the font.
+    pub fn restore_state(
+        &mut self,
+        state: Pc88RendererRuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.framebuffer.len() != PC88_FRAMEBUFFER_BYTES {
+            return Err(save_state::StateValidationError::new(
+                "PC-88 renderer state is invalid",
+            ));
+        }
+        self.state.framebuffer = state.framebuffer;
+        Ok(())
     }
 }

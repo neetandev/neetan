@@ -10,7 +10,9 @@ const STATE_XL: u8 = 1;
 const STATE_YH: u8 = 2;
 const STATE_YL: u8 = 3;
 
+save_state::runtime_state! {
 /// Mouse interface state.
+#[derive(Clone)]
 pub struct MouseVa {
     /// Accumulated horizontal movement since the last latch.
     accum_x: i32,
@@ -26,6 +28,18 @@ pub struct MouseVa {
     last_strobe: u8,
     /// Button state, np2 convention: bit5 = left, bit7 = right (set = pressed).
     buttons: u8,
+}}
+
+impl MouseVa {
+    /// Validates the mouse nibble phase.
+    pub fn validate_runtime_state(&self) -> Result<(), save_state::StateValidationError> {
+        if self.state > STATE_YL || self.last_strobe > 1 {
+            return Err(save_state::StateValidationError::new(
+                "PC-88VA mouse state is invalid",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for MouseVa {

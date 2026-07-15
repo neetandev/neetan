@@ -60,6 +60,14 @@ pub struct TownsRendererState {
     pub framebuffer: Box<[u8]>,
 }
 
+save_state::runtime_state! {
+/// Authoritative persistent FM Towns renderer buffers.
+#[derive(Clone)]
+pub struct TownsRendererRuntimeState {
+    framebuffer: Box<[u8]>,
+    last_frame_width: usize,
+}}
+
 /// CPU-side renderer for the FM Towns display.
 pub struct TownsRenderer {
     /// Embedded state for save/restore.
@@ -84,6 +92,31 @@ impl TownsRenderer {
             },
             last_frame_width: 0,
         }
+    }
+
+    /// Captures the presented framebuffer and its packed row stride.
+    pub fn capture_state(&self) -> TownsRendererRuntimeState {
+        TownsRendererRuntimeState {
+            framebuffer: self.state.framebuffer.clone(),
+            last_frame_width: self.last_frame_width,
+        }
+    }
+
+    /// Restores the presented framebuffer and its packed row stride.
+    pub fn restore_state(
+        &mut self,
+        state: TownsRendererRuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.framebuffer.len() != self.state.framebuffer.len()
+            || state.last_frame_width > TOWNS_SURFACE_WIDTH
+        {
+            return Err(save_state::StateValidationError::new(
+                "FM Towns renderer state is invalid",
+            ));
+        }
+        self.state.framebuffer = state.framebuffer;
+        self.last_frame_width = state.last_frame_width;
+        Ok(())
     }
 
     /// Returns the packed RGBA framebuffer.

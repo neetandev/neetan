@@ -24,9 +24,13 @@ impl Command for Rd {
     }
 }
 
-struct RunningRd {
+#[derive(Clone)]
+/// Serializable state of an executing RD command.
+pub(crate) struct RunningRd {
     args: Vec<u8>,
 }
+
+state_struct_codec!(RunningRd { args });
 
 impl RunningCommand for RunningRd {
     fn step(

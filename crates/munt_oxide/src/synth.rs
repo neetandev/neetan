@@ -333,8 +333,8 @@ fn init_memory_regions(state: &mut MuntState) {
     // Copy commonParam + one partialParam
     let src_len = common_size + partial_size;
     if max_table_addr + src_len <= CONTROL_ROM_SIZE {
-        state.rom.padded_timbre_max_table[..src_len]
-            .copy_from_slice(&state.rom.control_rom_data[max_table_addr..max_table_addr + src_len]);
+        let source = state.rom.control_rom_data[max_table_addr..max_table_addr + src_len].to_vec();
+        state.rom.padded_timbre_max_table[..src_len].copy_from_slice(&source);
     }
     // Replicate the single partialParam for the remaining 3
     let partial_src_start = max_table_addr + common_size;
@@ -1253,11 +1253,17 @@ fn do_render_streams(state: &mut MuntState, len: u32) {
                 }
             } else {
                 let event_index = state.midi_queue.start_position as usize;
-                let sysex_data = state.midi_queue.ring_buffer[event_index].sysex_data.take();
+                let is_sysex = state.midi_queue.ring_buffer[event_index].is_sysex;
                 let short_msg = state.midi_queue.ring_buffer[event_index].short_message_data;
-                if let Some(data) = &sysex_data {
-                    play_sysex_now(state, data);
+                if is_sysex {
+                    let mut scratch = state
+                        .midi_sysex_scratch
+                        .take()
+                        .expect("MT-32 SysEx scratch must be available between events");
+                    let sysex_length = state.midi_queue.copy_front_sysex(&mut scratch).unwrap_or(0);
+                    play_sysex_now(state, &scratch[..sysex_length]);
                     state.midi_queue.drop_front();
+                    state.midi_sysex_scratch = Some(scratch);
                 } else {
                     play_msg_now(state, short_msg);
                     // If a poly is aborting we don't drop the event from the queue.
@@ -1322,18 +1328,17 @@ fn produce_streams(state: &mut MuntState, offset: usize, len: u32) {
         // Process reverb
         let reverb_enabled = state.active_reverb_model < 4;
         if reverb_enabled {
-            let idx = state.active_reverb_model;
-            let mut reverb_model = std::mem::take(&mut state.reverb_models[idx]);
-            state.renderer.tmp_reverb_wet_left[offset..end].fill(0.0);
-            state.renderer.tmp_reverb_wet_right[offset..end].fill(0.0);
+            let reverb_model = &mut state.reverb_models[state.active_reverb_model];
+            let renderer = &mut state.renderer;
+            renderer.tmp_reverb_wet_left[offset..end].fill(0.0);
+            renderer.tmp_reverb_wet_right[offset..end].fill(0.0);
             reverb_model.process(
-                &state.renderer.tmp_reverb_dry_left[offset..end],
-                &state.renderer.tmp_reverb_dry_right[offset..end],
-                &mut state.renderer.tmp_reverb_wet_left[offset..end],
-                &mut state.renderer.tmp_reverb_wet_right[offset..end],
+                &renderer.tmp_reverb_dry_left[offset..end],
+                &renderer.tmp_reverb_dry_right[offset..end],
+                &mut renderer.tmp_reverb_wet_left[offset..end],
+                &mut renderer.tmp_reverb_wet_right[offset..end],
                 len,
             );
-            state.reverb_models[idx] = reverb_model;
         } else {
             state.renderer.tmp_reverb_wet_left[offset..end].fill(0.0);
             state.renderer.tmp_reverb_wet_right[offset..end].fill(0.0);

@@ -15,6 +15,13 @@ const ADDRESS_MASK: u32 = 0x1_FFFF;
 /// Open-bus value returned when no kanji ROM is fitted.
 const OPEN_BUS: u8 = 0xFF;
 
+save_state::runtime_state! {
+/// Mutable kanji-window address state.
+#[derive(Clone)]
+pub struct KanjiRomState {
+    address: u16,
+}}
+
 /// The kanji ROM window and its 16-bit address latch.
 #[derive(Default)]
 pub struct KanjiRom {
@@ -33,6 +40,18 @@ impl KanjiRom {
     /// Installs the kanji ROM image, or clears it when `rom` is `None`.
     pub fn install_rom(&mut self, rom: Option<&[u8]>) {
         self.rom = rom.map(|bytes| bytes.to_vec().into_boxed_slice());
+    }
+
+    /// Captures the address latch without ROM bytes.
+    pub fn capture_state(&self) -> KanjiRomState {
+        KanjiRomState {
+            address: self.address,
+        }
+    }
+
+    /// Restores the address latch without changing the ROM.
+    pub fn restore_state(&mut self, state: KanjiRomState) {
+        self.address = state.address;
     }
 
     /// Latches the high byte of the character code (`0xFD20`).

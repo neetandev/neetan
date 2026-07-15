@@ -131,31 +131,64 @@ const PHASE_MESSAGE_OUT: u8 = 0x06;
 /// Bus phase code: message in.
 const PHASE_MESSAGE_IN: u8 = 0x07;
 
+save_state::runtime_state_enum! {
 /// Where bytes written by the host currently go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WriteSink {
     /// No outbound transfer active.
-    None,
+    None = 0,
     /// Collecting the CDB.
-    Command,
+    Command = 1,
     /// Collecting a message-out byte (content ignored).
-    MessageOut,
+    MessageOut = 2,
     /// Collecting DATA OUT bytes for the selected target.
-    DataOut,
-}
+    DataOut = 3,
+}}
 
+save_state::runtime_state_enum! {
 /// Where bytes read by the host currently come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReadSource {
     /// No inbound transfer active.
-    None,
+    None = 0,
     /// Streaming the DATA IN payload.
-    DataIn,
+    DataIn = 1,
     /// Presenting the status byte.
-    Status,
+    Status = 2,
     /// Presenting the completion message byte.
-    MessageIn,
-}
+    MessageIn = 3,
+}}
+
+save_state::runtime_state! {
+/// Complete MB89352 protocol, transfer, target, and media state.
+#[derive(Clone)]
+pub struct Mb89352SpcState {
+    bdid: u8,
+    sctl: u8,
+    scmd: u8,
+    ints: u8,
+    psns: u8,
+    ssts: u8,
+    pctl: u8,
+    dreg: u8,
+    temp: u8,
+    transfer_counter: u32,
+    selected_id: Option<usize>,
+    write_sink: WriteSink,
+    read_source: ReadSource,
+    buffer_index: usize,
+    buffer_limit: usize,
+    command_buffer: [u8; 16],
+    data_in_buffer: Vec<u8>,
+    data_out_buffer: Vec<u8>,
+    status_byte: u8,
+    message_byte: u8,
+    pending_status: u8,
+    target_kinds: [u8; SCSI_ID_COUNT],
+    disk_states: [Option<crate::scsi::command::SenseData>; SCSI_ID_COUNT],
+    cdrom_states: [Option<crate::scsi::cdrom::ScsiCdromState>; SCSI_ID_COUNT],
+    media: save_state::MediaManifest,
+}}
 
 /// MB89352 SCSI protocol controller with up to eight attached targets.
 #[derive(Debug)]
@@ -217,6 +250,144 @@ impl Mb89352Spc {
         };
         spc.hard_reset();
         spc
+    }
+
+    /// Captures controller protocol, partial transfers, targets, and media identities.
+    pub fn capture_state(&self) -> Result<Mb89352SpcState, save_state::StateValidationError> {
+        Ok(Mb89352SpcState {
+            bdid: self.bdid,
+            sctl: self.sctl,
+            scmd: self.scmd,
+            ints: self.ints,
+            psns: self.psns,
+            ssts: self.ssts,
+            pctl: self.pctl,
+            dreg: self.dreg,
+            temp: self.temp,
+            transfer_counter: self.transfer_counter,
+            selected_id: self.selected_id,
+            write_sink: self.write_sink,
+            read_source: self.read_source,
+            buffer_index: self.buffer_index,
+            buffer_limit: self.buffer_limit,
+            command_buffer: self.command_buffer,
+            data_in_buffer: self.data_in_buffer.clone(),
+            data_out_buffer: self.data_out_buffer.clone(),
+            status_byte: self.status_byte,
+            message_byte: self.message_byte,
+            pending_status: self.pending_status,
+            target_kinds: std::array::from_fn(|index| {
+                self.targets[index]
+                    .as_ref()
+                    .map_or(0, ScsiTarget::state_kind)
+            }),
+            disk_states: std::array::from_fn(|index| {
+                self.targets[index]
+                    .as_ref()
+                    .and_then(ScsiTarget::capture_disk_state)
+            }),
+            cdrom_states: std::array::from_fn(|index| {
+                self.targets[index]
+                    .as_ref()
+                    .and_then(ScsiTarget::capture_cdrom_state)
+            }),
+            media: self.media_manifest()?,
+        })
+    }
+
+    /// Restores controller protocol and targets while retaining mounted media.
+    pub fn restore_state(
+        &mut self,
+        state: Mb89352SpcState,
+    ) -> Result<(), save_state::StateValidationError> {
+        state.media.verify_current(&self.media_manifest()?)?;
+        if state
+            .selected_id
+            .is_some_and(|identifier| identifier >= SCSI_ID_COUNT)
+            || state.buffer_index > state.buffer_limit
+            || state.buffer_limit
+                > state
+                    .data_in_buffer
+                    .len()
+                    .max(state.data_out_buffer.len())
+                    .max(16)
+            || state.data_in_buffer.len() > (64 << 20)
+            || state.data_out_buffer.len() > (64 << 20)
+        {
+            return Err(save_state::StateValidationError::new(
+                "MB89352 transfer state is invalid",
+            ));
+        }
+        for index in 0..SCSI_ID_COUNT {
+            let current_kind = self.targets[index]
+                .as_ref()
+                .map_or(0, ScsiTarget::state_kind);
+            if current_kind != state.target_kinds[index]
+                || (current_kind == 1) != state.disk_states[index].is_some()
+                || (current_kind == 2) != state.cdrom_states[index].is_some()
+            {
+                return Err(save_state::StateValidationError::new(
+                    "MB89352 target configuration differs",
+                ));
+            }
+            if let (Some(target), Some(cdrom_state)) =
+                (&self.targets[index], &state.cdrom_states[index])
+            {
+                target.validate_cdrom_state(cdrom_state)?;
+            }
+        }
+        for index in 0..SCSI_ID_COUNT {
+            if let (Some(target), Some(disk_state)) =
+                (&mut self.targets[index], state.disk_states[index])
+            {
+                target.restore_disk_state(disk_state)?;
+            }
+            if let (Some(target), Some(cdrom_state)) =
+                (&mut self.targets[index], state.cdrom_states[index].clone())
+            {
+                target.restore_cdrom_state(cdrom_state)?;
+            }
+        }
+        self.bdid = state.bdid;
+        self.sctl = state.sctl;
+        self.scmd = state.scmd;
+        self.ints = state.ints;
+        self.psns = state.psns;
+        self.ssts = state.ssts;
+        self.pctl = state.pctl;
+        self.dreg = state.dreg;
+        self.temp = state.temp;
+        self.transfer_counter = state.transfer_counter;
+        self.selected_id = state.selected_id;
+        self.write_sink = state.write_sink;
+        self.read_source = state.read_source;
+        self.buffer_index = state.buffer_index;
+        self.buffer_limit = state.buffer_limit;
+        self.command_buffer = state.command_buffer;
+        self.data_in_buffer = state.data_in_buffer;
+        self.data_out_buffer = state.data_out_buffer;
+        self.status_byte = state.status_byte;
+        self.message_byte = state.message_byte;
+        self.pending_status = state.pending_status;
+        Ok(())
+    }
+
+    /// Returns stable identities for all mounted SCSI disks.
+    pub fn media_manifest(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = Vec::new();
+        for (identifier, target) in self.targets.iter().enumerate() {
+            let Some(target) = target else {
+                continue;
+            };
+            if let Some(binding) =
+                target.disk_media_binding(format!("x68k-scsi-{identifier}"), identifier as u32)?
+            {
+                bindings.push(binding);
+            }
+        }
+        save_state::MediaManifest::new(bindings)
     }
 
     /// Resets the controller to its power-on state; attached targets stay.

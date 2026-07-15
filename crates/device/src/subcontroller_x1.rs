@@ -51,14 +51,33 @@ impl std::str::FromStr for X1KeyboardMode {
     }
 }
 
+impl save_state::StateEncode for X1KeyboardMode {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        save_state::StateEncode::encode_state(&(*self as u8), output);
+    }
+}
+
+impl save_state::StateDecode for X1KeyboardMode {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::ModeA),
+            1 => Ok(Self::ModeB),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
 mod alloc_free_collections {
+    save_state::runtime_state! {
     /// Small FIFO of pending key events (matches the 8-entry hardware buffer).
     #[derive(Debug, Clone)]
     pub struct KeyFifo {
         entries: [u16; Self::CAPACITY],
         head: usize,
         len: usize,
-    }
+    }}
 
     impl KeyFifo {
         const CAPACITY: usize = 8;
@@ -99,6 +118,10 @@ mod alloc_free_collections {
             self.head = (self.head + 1) % Self::CAPACITY;
             self.len -= 1;
             Some(value)
+        }
+
+        pub(super) fn is_valid(&self) -> bool {
+            self.head < Self::CAPACITY && self.len <= Self::CAPACITY
         }
     }
 }
@@ -174,6 +197,31 @@ pub enum CassetteAction {
     Eject,
 }
 
+impl save_state::StateEncode for CassetteAction {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        save_state::StateEncode::encode_state(&(*self as u8), output);
+    }
+}
+
+impl save_state::StateDecode for CassetteAction {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Stop),
+            1 => Ok(Self::Play),
+            2 => Ok(Self::FastForward),
+            3 => Ok(Self::Rewind),
+            4 => Ok(Self::ApssForward),
+            5 => Ok(Self::ApssBackward),
+            6 => Ok(Self::Record),
+            7 => Ok(Self::Eject),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+save_state::runtime_state! {
 /// In-line uPD1990A calendar/clock state (all fields are plain integers; the
 /// mailbox exchanges BCD).
 #[derive(Debug, Clone, Copy)]
@@ -185,7 +233,7 @@ struct RtcTime {
     hour: u8,
     minute: u8,
     second: u8,
-}
+}}
 
 impl RtcTime {
     fn default_epoch() -> Self {
@@ -265,7 +313,9 @@ fn from_bcd(value: u8) -> u8 {
     ((value >> 4) * 10) + (value & 0x0F)
 }
 
+save_state::runtime_state! {
 /// HLE sub-CPU state.
+#[derive(Clone)]
 pub struct SubHle {
     turbo: bool,
     keyboard_mode: X1KeyboardMode,
@@ -305,7 +355,7 @@ pub struct SubHle {
 
     interrupt_pending: bool,
     interrupt_enabled_line: bool,
-}
+}}
 
 impl SubHle {
     /// Creates a sub-CPU HLE for the given model (turbo enables the game-key
@@ -346,6 +396,32 @@ impl SubHle {
         };
         sub.reset();
         sub
+    }
+
+    /// Captures the complete mailbox, keyboard, RTC, and cassette state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores complete state while retaining immutable model configuration.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        if state.turbo != self.turbo
+            || state.cpu_clock_hz != self.cpu_clock_hz
+            || state.datap >= DATABUF_SIZE
+            || !state.key_buf.is_valid()
+            || !(1..=12).contains(&state.clock.month)
+            || state.clock.day == 0
+            || state.clock.day > RtcTime::days_in_month(state.clock.year, state.clock.month)
+            || state.clock.hour >= 24
+            || state.clock.minute >= 60
+            || state.clock.second >= 60
+        {
+            return Err(save_state::StateValidationError::new(
+                "X1 sub-controller state is invalid",
+            ));
+        }
+        *self = state;
+        Ok(())
     }
 
     /// Resets the mailbox, key buffer and handshake to power-on state.

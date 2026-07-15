@@ -1,12 +1,25 @@
 //! Sharp X68000 mouse packet protocol.
 
+save_state::runtime_state! {
 /// Host mouse input accumulated between controller polls.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MouseX68k {
     delta_x: i32,
     delta_y: i32,
     left: bool,
     right: bool,
+}}
+
+impl MouseX68k {
+    /// Captures accumulated movement and button state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores accumulated movement and button state.
+    pub fn restore_state(&mut self, state: Self) {
+        *self = state;
+    }
 }
 
 impl MouseX68k {

@@ -13,7 +13,7 @@ mod graphics;
 mod palette;
 mod text;
 
-use alloc::{boxed::Box, vec};
+use alloc::{boxed::Box, vec, vec::Vec};
 
 use palette::{FIXED_RGBA, PRI_LUT_SIZE, build_pri_lut};
 
@@ -151,6 +151,18 @@ pub struct X1Renderer {
     framebuffer: Box<[u8]>,
 }
 
+save_state::runtime_state! {
+/// Scanline history required to continue an X1 frame exactly.
+#[derive(Clone)]
+pub struct X1RendererState {
+    text: Vec<u8>,
+    graphics: Vec<u8>,
+    priority_lines: Vec<u8>,
+    raster: u16,
+    frame_vertical_offset: usize,
+    frame_horizontal_scale: usize,
+}}
+
 impl X1Renderer {
     /// Creates a renderer with the given CG-ROM (8x8 ANK font) data.
     pub fn new(cg_rom: &[u8]) -> Self {
@@ -164,6 +176,42 @@ impl X1Renderer {
             frame_hscale: 1,
             framebuffer: vec![0u8; X1_FRAMEBUFFER_BYTES].into_boxed_slice(),
         }
+    }
+
+    /// Captures the partially latched frame without immutable font data.
+    pub fn capture_state(&self) -> X1RendererState {
+        X1RendererState {
+            text: self.text.to_vec(),
+            graphics: self.cg.to_vec(),
+            priority_lines: self.pri_lines.to_vec(),
+            raster: self.raster,
+            frame_vertical_offset: self.frame_vt_ofs,
+            frame_horizontal_scale: self.frame_hscale,
+        }
+    }
+
+    /// Restores the partially latched frame and rebuilds presentation output.
+    pub fn restore_state(
+        &mut self,
+        state: X1RendererState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.text.len() != self.text.len()
+            || state.graphics.len() != self.cg.len()
+            || state.priority_lines.len() != self.pri_lines.len()
+            || state.frame_vertical_offset > X1_MAX_HEIGHT
+            || !matches!(state.frame_horizontal_scale, 1 | 2)
+        {
+            return Err(save_state::StateValidationError::new(
+                "X1 scanline renderer state is invalid",
+            ));
+        }
+        self.text.copy_from_slice(&state.text);
+        self.cg.copy_from_slice(&state.graphics);
+        self.pri_lines.copy_from_slice(&state.priority_lines);
+        self.raster = state.raster;
+        self.frame_vt_ofs = state.frame_vertical_offset;
+        self.frame_hscale = state.frame_horizontal_scale;
+        Ok(())
     }
 
     /// Replaces the CG-ROM font (e.g. after a ROM reload).

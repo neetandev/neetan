@@ -21,6 +21,15 @@ const BOOT_CMOS_HDD: (u8, u8) = (1, 0x10);
 /// so scheduled timer interrupts are serviced promptly.
 const TIGHT_SLICE: u64 = 64;
 
+save_state::runtime_state! {
+/// Machine-root state for one FM Towns snapshot.
+#[derive(Clone)]
+struct TownsRuntimeState {
+    cpu: cpu::I386State,
+    bus: crate::bus::TownsBusState,
+    boot_device: u8,
+}}
+
 /// An FM Towns machine: the i386/i486 main CPU and the Towns bus.
 pub struct TownsMachine<const CPU_MODEL: u8, T: TraceSink = NoTrace> {
     /// The main CPU, on the 32-bit physical address map.
@@ -158,9 +167,85 @@ impl<const CPU_MODEL: u8, T: TraceSink> TownsMachine<CPU_MODEL, T> {
 
         self.bus.current_cycle() - start_cycle
     }
+
+    fn capture_machine_blob(
+        &mut self,
+    ) -> Result<save_state::MachineStateBlob, save_state::SaveStateError> {
+        let root = TownsRuntimeState {
+            cpu: self.cpu.capture_state(),
+            bus: self.bus.capture_runtime_state()?,
+            boot_device: match self.boot_device {
+                TownsBootDevice::Auto => 0,
+                TownsBootDevice::Floppy => 1,
+                TownsBootDevice::Hdd => 2,
+                TownsBootDevice::Cd => 3,
+            },
+        };
+        save_state::capture_machine_state(
+            root,
+            self.bus.save_state_resources()?,
+            self.bus.save_state_media()?,
+        )
+    }
+
+    fn restore_machine_blob(
+        &mut self,
+        blob: &save_state::MachineStateBlob,
+    ) -> Result<(), save_state::SaveStateError> {
+        let active_resources = self.bus.save_state_resources()?;
+        let active_media = self.bus.save_state_media()?;
+        save_state::restore_machine_state(
+            self,
+            blob,
+            active_resources,
+            active_media,
+            128 << 20,
+            |machine| {
+                Ok(TownsRuntimeState {
+                    cpu: machine.cpu.capture_state(),
+                    bus: machine.bus.capture_runtime_state()?,
+                    boot_device: match machine.boot_device {
+                        TownsBootDevice::Auto => 0,
+                        TownsBootDevice::Floppy => 1,
+                        TownsBootDevice::Hdd => 2,
+                        TownsBootDevice::Cd => 3,
+                    },
+                })
+            },
+            |machine, state| {
+                let boot_device = match state.boot_device {
+                    0 => TownsBootDevice::Auto,
+                    1 => TownsBootDevice::Floppy,
+                    2 => TownsBootDevice::Hdd,
+                    3 => TownsBootDevice::Cd,
+                    _ => {
+                        return Err(save_state::StateValidationError::new(
+                            "FM Towns boot device is invalid",
+                        )
+                        .into());
+                    }
+                };
+                machine.cpu.restore_state(state.cpu)?;
+                machine.bus.restore_runtime_state(state.bus)?;
+                machine.boot_device = boot_device;
+                Ok(())
+            },
+        )
+    }
 }
 
 impl<const CPU_MODEL: u8, T: TraceSink> Machine for TownsMachine<CPU_MODEL, T> {
+    fn capture_state(&mut self) -> Result<common::MachineStateBlob, common::SaveStateError> {
+        self.capture_machine_blob()
+    }
+
+    fn restore_state(
+        &mut self,
+        blob: &common::MachineStateBlob,
+    ) -> Result<(), common::SaveStateError> {
+        self.restore_machine_blob(blob)
+    }
+
     fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
         self.bus.set_host_date_time_provider(provider);
     }

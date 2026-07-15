@@ -32,6 +32,7 @@ const PRESCALER_16: u64 = 16;
 /// Prescaler divisor when the 256 bit is set.
 const PRESCALER_256: u64 = 256;
 
+save_state::runtime_state! {
 /// One CTC channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Z80CtcChannel {
@@ -50,7 +51,7 @@ struct Z80CtcChannel {
     zero_cycle: Option<u64>,
     /// Down counter value in counter mode.
     down_counter: u16,
-}
+}}
 
 impl Z80CtcChannel {
     fn new() -> Self {
@@ -92,13 +93,14 @@ impl Z80CtcChannel {
     }
 }
 
+save_state::runtime_state! {
 /// Zilog Z80 CTC device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Z80Ctc {
     channels: [Z80CtcChannel; CHANNEL_COUNT],
     /// Mode-2 interrupt vector base (masked to `0xF8`).
     vector_base: u8,
-}
+}}
 
 impl Default for Z80Ctc {
     fn default() -> Self {
@@ -118,6 +120,26 @@ impl Z80Ctc {
             ],
             vector_base: 0,
         }
+    }
+
+    /// Captures all channels and daisy-chain interrupt state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores all channels and daisy-chain interrupt state.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        if state
+            .channels
+            .iter()
+            .any(|channel| !(1..=0x100).contains(&channel.time_constant))
+        {
+            return Err(save_state::StateValidationError::new(
+                "Z80 CTC time constant is invalid",
+            ));
+        }
+        *self = state;
+        Ok(())
     }
 
     /// Resets every channel and clears pending interrupts.

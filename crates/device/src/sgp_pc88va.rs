@@ -52,18 +52,20 @@ const BPP: [i32; 4] = [1, 4, 8, 16];
 /// END terminator. A full 256 KiB blit is well under this.
 const MAX_STEPS: u64 = 16_000_000;
 
+save_state::runtime_state_enum! {
 /// Current execution state of the engine's micro-program.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum SgpFunc {
     #[default]
-    FetchCommand,
-    ExecBitblt,
-    ExecBitbltHd,
-    ExecCls,
-    ExecLineX,
-    ExecLineY,
-}
+    FetchCommand = 0,
+    ExecBitblt = 1,
+    ExecBitbltHd = 2,
+    ExecCls = 3,
+    ExecLineX = 4,
+    ExecLineY = 5,
+}}
 
+save_state::runtime_state! {
 /// A source or destination block descriptor.
 #[derive(Clone, Copy, Default)]
 struct SgpBlock {
@@ -79,7 +81,7 @@ struct SgpBlock {
     buf: u16,
     xcount: u16,
     ycount: u16,
-}
+}}
 
 impl SgpBlock {
     fn init(&mut self) {
@@ -94,8 +96,9 @@ impl SgpBlock {
     }
 }
 
+save_state::runtime_state! {
 /// The SGP engine state.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SgpState {
     initialpc: u32,
     pc: u32,
@@ -117,7 +120,7 @@ pub struct SgpState {
     lineslopecount: u32,
     /// Accumulated cycle cost of the current run, used to time completion.
     cycles: u64,
-}
+}}
 
 impl SgpState {
     /// Creates an idle SGP command processor.

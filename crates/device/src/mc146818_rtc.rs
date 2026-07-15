@@ -11,6 +11,15 @@ use common::HostDateTime;
 /// CMOS RAM size in bytes.
 pub const CMOS_SIZE: usize = 128;
 
+save_state::runtime_state! {
+/// Authoritative MC146818 calendar and CMOS state.
+#[derive(Clone)]
+pub struct Mc146818RtcState {
+    cmos: [u8; CMOS_SIZE],
+    address: u8,
+    next_update_cycle: u64,
+}}
+
 /// Register index: seconds.
 const REG_SECONDS: usize = 0x00;
 /// Register index: seconds alarm.
@@ -108,6 +117,31 @@ impl Mc146818Rtc {
         };
         rtc.seed_time(seed);
         rtc
+    }
+
+    /// Captures the CMOS bytes, address latch, and update phase.
+    pub fn capture_state(&self) -> Mc146818RtcState {
+        Mc146818RtcState {
+            cmos: self.cmos,
+            address: self.address,
+            next_update_cycle: self.next_update_cycle,
+        }
+    }
+
+    /// Restores the CMOS bytes, address latch, and update phase.
+    pub fn restore_state(
+        &mut self,
+        state: Mc146818RtcState,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.address as usize >= CMOS_SIZE {
+            return Err(save_state::StateValidationError::new(
+                "RTC address latch is invalid",
+            ));
+        }
+        self.cmos = state.cmos;
+        self.address = state.address;
+        self.next_update_cycle = state.next_update_cycle;
+        Ok(())
     }
 
     /// Reseeds the time/calendar registers from a new host date-time value.

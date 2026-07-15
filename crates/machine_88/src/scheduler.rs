@@ -1,6 +1,6 @@
 //! Event-driven scheduler for the PC-8801.
 
-use common::StackVec;
+use common::{SchedulerState, StackVec};
 
 /// Number of distinct PC-88 event kinds.
 const EVENT88_KIND_COUNT: usize = 15;
@@ -122,11 +122,7 @@ pub(crate) struct ScheduledEvent88 {
 /// Uses a flat array indexed by [`Event88`] discriminant. Each slot holds
 /// `Some(fire_cycle)` when an event of that kind is scheduled, or `None`
 /// when it is not. At most one event per kind can be active at a time.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Pc8801SchedulerState {
-    /// Fire cycle for each event kind, indexed by discriminant.
-    fire_cycles: [Option<u64>; EVENT88_KIND_COUNT],
-}
+type Pc8801SchedulerState = SchedulerState;
 
 /// Event-driven scheduler for timed PC-88 peripheral events.
 pub(crate) struct Pc8801Scheduler {
@@ -144,26 +140,39 @@ impl Pc8801Scheduler {
     /// Creates a new empty scheduler.
     pub(crate) fn new() -> Self {
         Self {
-            state: Pc8801SchedulerState {
-                fire_cycles: [None; EVENT88_KIND_COUNT],
-            },
+            state: SchedulerState::new(EVENT88_KIND_COUNT),
         }
+    }
+
+    /// Captures all pending events.
+    pub(crate) fn capture_state(&self) -> SchedulerState {
+        self.state.clone()
+    }
+
+    /// Restores all pending events.
+    pub(crate) fn restore_state(
+        &mut self,
+        state: SchedulerState,
+    ) -> Result<(), save_state::StateValidationError> {
+        save_state::ValidateState::validate_state(&state, &EVENT88_KIND_COUNT)?;
+        self.state = state;
+        Ok(())
     }
 
     /// Schedules an event to fire at `fire_cycle`. Replaces any existing event
     /// of the same kind.
     pub(crate) fn schedule(&mut self, kind: Event88, fire_cycle: u64) {
-        self.state.fire_cycles[kind as usize] = Some(fire_cycle);
+        self.state.schedule(kind as usize, fire_cycle);
     }
 
     /// Cancels any pending event of the given kind.
     pub(crate) fn cancel(&mut self, kind: Event88) {
-        self.state.fire_cycles[kind as usize] = None;
+        self.state.cancel(kind as usize);
     }
 
     /// Returns the cycle of the earliest scheduled event, if any.
     pub(crate) fn next_event_cycle(&self) -> Option<u64> {
-        self.state.fire_cycles.iter().filter_map(|&c| c).min()
+        self.state.next_event_cycle()
     }
 
     /// Removes and returns all events due at or before `current_cycle`.
@@ -171,19 +180,14 @@ impl Pc8801Scheduler {
         &mut self,
         current_cycle: u64,
     ) -> StackVec<ScheduledEvent88, EVENT88_KIND_COUNT> {
+        let indexes = self.state.pop_due::<EVENT88_KIND_COUNT>(current_cycle);
         let mut due = StackVec::new();
-        for (index, slot) in self.state.fire_cycles.iter_mut().enumerate() {
-            if let Some(fire_cycle) = *slot
-                && fire_cycle <= current_cycle
-            {
-                due.push(ScheduledEvent88 {
-                    fire_cycle,
-                    kind: Event88::from_index(index),
-                });
-                *slot = None;
-            }
+        for event in indexes.iter() {
+            due.push(ScheduledEvent88 {
+                fire_cycle: event.fire_cycle,
+                kind: Event88::from_index(event.index),
+            });
         }
-        due.sort_by_key(|event: &ScheduledEvent88| event.fire_cycle);
         due
     }
 }

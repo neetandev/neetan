@@ -115,9 +115,11 @@ impl X1Bus<NoTrace> {
     }
 }
 
+save_state::runtime_state! {
 /// CRTC display parameters latched once per frame (and re-latched when the
 /// timing registers are reprogrammed), so the whole frame renders with one
 /// consistent geometry.
+#[derive(Clone)]
 struct FrameCrtcParams {
     /// Scanlines per character row (R9 + 1).
     ch_height: u16,
@@ -135,7 +137,50 @@ struct FrameCrtcParams {
     hires: bool,
     /// Total scanlines per frame, when the CRTC is programmed sensibly.
     total_lines: Option<u64>,
-}
+}}
+
+save_state::runtime_state! {
+/// Complete authoritative Sharp X1 family bus state.
+#[derive(Clone)]
+pub(crate) struct X1BusState {
+    memory: crate::memory::X1MemoryState,
+    scheduler: common::SchedulerState,
+    interrupt: crate::interrupt::InterruptController,
+    crtc: device::hd6845_crtc::Hd6845State,
+    ctc: device::z80_ctc::Z80Ctc,
+    ppi: crate::bus::ppi_link::PpiLinkState,
+    psg: device::ay8910::Ay8910,
+    fm: Option<device::opn_fm::OpnFmState<ymfm_oxide::Ym2151, ymfm_oxide::YmfmOutput2>>,
+    sound_ctc: device::z80_ctc::Z80Ctc,
+    fdc: device::mb8877_fdc::Mb8877FdcState,
+    dma: device::z80_dma::Z80DmaState,
+    sio: device::z80_sio::Z80Sio,
+    mouse: device::mouse_x1::MouseX1,
+    cassette: device::cassette::CassetteDeckState,
+    sub: device::subcontroller_x1::SubHle,
+    video: device::video_x1::X1Video,
+    renderer: software_renderer::x1::X1RendererState,
+    kanji_address_latch: u16,
+    kanji_glyph_base: usize,
+    kanji_read_flags: u8,
+    kanji_read_row: u8,
+    joystick_player_one: u8,
+    joystick_player_two: u8,
+    wait_cycles: i64,
+    vram_wait_remainder: i64,
+    dma_stall_deadline: u64,
+    current_cycle: u64,
+    frame_start_cycle: u64,
+    frame_number: u32,
+    frame_params: FrameCrtcParams,
+    vblank_anchor_cycle: u64,
+    port_b_vdisp_seen: bool,
+    character_blink: u8,
+    rtc_accumulator: u64,
+    column_40: bool,
+    display_width: u32,
+    display_height: u32,
+}}
 
 /// The Sharp X1 system bus.
 pub struct X1Bus<T: TraceSink = NoTrace> {
@@ -167,6 +212,7 @@ pub struct X1Bus<T: TraceSink = NoTrace> {
     cg_rom: Vec<u8>,
     ank_rom: Vec<u8>,
     kanji_rom: Vec<u8>,
+    rom_bindings: Vec<save_state::ResourceBinding>,
     /// Kanji data-port address latch (`0x0E80` low byte, `0x0E81` high byte).
     kanji_address_latch: u16,
     /// Kanji ROM offset of the glyph latched by an `0x0E82` write.
@@ -261,6 +307,7 @@ impl<T: TraceSink> X1Bus<T> {
             cg_rom: Vec::new(),
             ank_rom: Vec::new(),
             kanji_rom: Vec::new(),
+            rom_bindings: Vec::new(),
             kanji_address_latch: 0,
             kanji_glyph_base: 0,
             kanji_read_flags: 0,
@@ -292,6 +339,21 @@ impl<T: TraceSink> X1Bus<T> {
         self.ank_rom = roms.ank.clone();
         self.kanji_rom = roms.kanji.clone().unwrap_or_default();
         self.renderer.update_font(&roms.cgrom_8x8);
+        self.rom_bindings.clear();
+        for (identifier, bytes) in [
+            ("ipl", Some(roms.ipl.as_slice())),
+            ("cg", Some(roms.cgrom_8x8.as_slice())),
+            ("ank", Some(roms.ank.as_slice())),
+            ("kanji", roms.kanji.as_deref()),
+        ] {
+            if let Some(bytes) = bytes {
+                self.rom_bindings.push(save_state::ResourceBinding {
+                    identifier: save_state::ResourceBindingId::new(format!("rom:{identifier}"))
+                        .expect("static resource identifier"),
+                    identity: save_state::ResourceIdentity::from_bytes(bytes),
+                });
+            }
+        }
     }
 
     /// Selects the attached monitor, reported through the turbo DIP switch.
@@ -322,6 +384,154 @@ impl<T: TraceSink> X1Bus<T> {
     /// The main CPU clock in Hz.
     pub fn cpu_clock_hz(&self) -> u32 {
         self.clocks.main_clock_hz
+    }
+
+    /// Returns the configured X1 model.
+    pub fn model(&self) -> X1Model {
+        self.model
+    }
+
+    pub(crate) fn save_state_resources(
+        &self,
+    ) -> Result<save_state::ResourceManifest, save_state::StateValidationError> {
+        save_state::ResourceManifest::new(self.rom_bindings.clone())
+    }
+
+    pub(crate) fn save_state_media(
+        &self,
+    ) -> Result<save_state::MediaManifest, save_state::StateValidationError> {
+        let mut bindings = self.fdc.media_manifest()?.bindings().to_vec();
+        if let Some(identity) = self.cassette.media_identity() {
+            bindings.push(save_state::MediaBinding {
+                identifier: save_state::MediaBindingId::new("cassette-0")?,
+                slot: save_state::MediaSlot::new(save_state::MediaKind::Cassette, 0),
+                source_path: self.cassette.media_source_path().cloned(),
+                media_type: "cassette".to_owned(),
+                identity,
+                geometry: None,
+                write_protected: true,
+                backend_generation: None,
+            });
+        }
+        save_state::MediaManifest::new(bindings)
+    }
+
+    pub(crate) fn capture_runtime_state(&self) -> Result<X1BusState, save_state::SaveStateError> {
+        Ok(X1BusState {
+            memory: self.memory.capture_state(),
+            scheduler: self.scheduler.capture_state(),
+            interrupt: self.interrupt.clone(),
+            crtc: self.crtc.state.clone(),
+            ctc: self.ctc.capture_state(),
+            ppi: self.ppi.capture_state(),
+            psg: self.psg.capture_state(),
+            fm: self.fm.as_ref().map(SoundBoardOpm::capture_state),
+            sound_ctc: self.sound_ctc.capture_state(),
+            fdc: self.fdc.capture_state()?,
+            dma: self.dma.capture_state(),
+            sio: self.sio.capture_state(),
+            mouse: self.mouse.clone(),
+            cassette: self.cassette.capture_state(),
+            sub: self.sub.capture_state(),
+            video: self.video.capture_state(),
+            renderer: self.renderer.capture_state(),
+            kanji_address_latch: self.kanji_address_latch,
+            kanji_glyph_base: self.kanji_glyph_base,
+            kanji_read_flags: self.kanji_read_flags,
+            kanji_read_row: self.kanji_read_row,
+            joystick_player_one: self.joystick_p1,
+            joystick_player_two: self.joystick_p2,
+            wait_cycles: self.wait_cycles,
+            vram_wait_remainder: self.vram_wait_remainder,
+            dma_stall_deadline: self.dma_stall_deadline,
+            current_cycle: self.current_cycle,
+            frame_start_cycle: self.frame_start_cycle,
+            frame_number: self.frame_number,
+            frame_params: self.frame_params.clone(),
+            vblank_anchor_cycle: self.vblank_anchor_cycle,
+            port_b_vdisp_seen: self.port_b_vdisp_seen,
+            character_blink: self.cblink,
+            rtc_accumulator: self.rtc_accumulator,
+            column_40: self.column40,
+            display_width: self.display_width,
+            display_height: self.display_height,
+        })
+    }
+
+    pub(crate) fn restore_runtime_state(
+        &mut self,
+        state: X1BusState,
+    ) -> Result<(), save_state::SaveStateError> {
+        if state.kanji_read_flags > 3
+            || state.kanji_read_row >= 16
+            || state.vram_wait_remainder < 0
+            || state.vram_wait_remainder >= io_wait::VRAM_WAIT_PERIOD
+            || !(1..=640).contains(&state.display_width)
+            || !(1..=400).contains(&state.display_height)
+            || state.frame_params.ch_height == 0
+            || state.frame_params.ch_height > 32
+            || state.frame_params.hz_total == 0
+            || state.frame_params.hz_total > 256
+            || state.frame_params.st_addr > 0x3FFF
+            || state.frame_params.vt_ofs > 31
+            || state
+                .frame_params
+                .total_lines
+                .is_some_and(|lines| lines == 0 || lines > 1024)
+        {
+            return Err(
+                save_state::StateValidationError::new("X1 state invariant is invalid").into(),
+            );
+        }
+        state.interrupt.validate_runtime_state()?;
+        match (&mut self.fm, state.fm) {
+            (Some(sound), Some(state)) => sound.restore_state(state)?,
+            (None, None) => {}
+            _ => {
+                return Err(save_state::StateValidationError::new(
+                    "X1 FM board configuration differs",
+                )
+                .into());
+            }
+        }
+        self.memory.restore_state(state.memory)?;
+        self.ctc.restore_state(state.ctc)?;
+        self.sound_ctc.restore_state(state.sound_ctc)?;
+        self.fdc.restore_state(state.fdc)?;
+        self.dma.restore_state(state.dma)?;
+        self.sio.restore_state(state.sio)?;
+        self.cassette.restore_state(state.cassette)?;
+        self.sub.restore_state(state.sub)?;
+        self.renderer.restore_state(state.renderer)?;
+        self.psg.restore_state(state.psg)?;
+        self.scheduler.restore_state(state.scheduler)?;
+        self.interrupt = state.interrupt;
+        self.crtc.state = state.crtc;
+        self.ppi.restore_state(state.ppi);
+        self.mouse = state.mouse;
+        self.video.restore_state(state.video);
+        self.kanji_address_latch = state.kanji_address_latch;
+        self.kanji_glyph_base = state.kanji_glyph_base;
+        self.kanji_read_flags = state.kanji_read_flags;
+        self.kanji_read_row = state.kanji_read_row;
+        self.joystick_p1 = state.joystick_player_one;
+        self.joystick_p2 = state.joystick_player_two;
+        self.wait_cycles = state.wait_cycles;
+        self.vram_wait_remainder = state.vram_wait_remainder;
+        self.dma_stall_deadline = state.dma_stall_deadline;
+        self.current_cycle = state.current_cycle;
+        self.frame_start_cycle = state.frame_start_cycle;
+        self.frame_number = state.frame_number;
+        self.frame_params = state.frame_params;
+        self.vblank_anchor_cycle = state.vblank_anchor_cycle;
+        self.port_b_vdisp_seen = state.port_b_vdisp_seen;
+        self.cblink = state.character_blink;
+        self.rtc_accumulator = state.rtc_accumulator;
+        self.column40 = state.column_40;
+        self.display_width = state.display_width;
+        self.display_height = state.display_height;
+        self.sync_interrupts();
+        Ok(())
     }
 
     /// The current monotonic cycle count (main-clock units).
@@ -777,6 +987,20 @@ impl<T: TraceSink> X1Bus<T> {
     pub fn insert_cassette(&mut self, extension: &str, image: &[u8]) -> Result<(), CassetteError> {
         let media = load_cassette(extension, image)?;
         self.cassette.insert_media(media);
+        self.sub.set_tape_playable(true);
+        self.sub.set_tape_end(false);
+        Ok(())
+    }
+
+    /// Parses and loads a cassette image with its configured source path.
+    pub fn insert_cassette_from_path(
+        &mut self,
+        extension: &str,
+        image: &[u8],
+        path: &std::path::Path,
+    ) -> Result<(), CassetteError> {
+        let media = load_cassette(extension, image)?;
+        self.cassette.insert_media_from_path(media, path);
         self.sub.set_tape_playable(true);
         self.sub.set_tape_end(false);
         Ok(())

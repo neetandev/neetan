@@ -15,6 +15,7 @@ pub(crate) mod mbr_partition;
 pub(crate) mod virtual_drive;
 
 #[derive(Debug, Clone, Copy)]
+/// FAT file identity retained by an open DOS handle.
 pub(crate) struct FatHandleMetadata {
     pub drive_index: u8,
     pub name: [u8; 11],
@@ -28,7 +29,21 @@ pub(crate) struct FatHandleMetadata {
     pub dir_offset: u16,
 }
 
+state_struct_codec!(FatHandleMetadata {
+    drive_index,
+    name,
+    attribute,
+    time,
+    date,
+    start_cluster,
+    file_size,
+    position,
+    dir_sector,
+    dir_offset,
+});
+
 #[derive(Debug, Clone, Copy)]
+/// Deferred FAT write data owned by an open DOS handle.
 pub(crate) struct PendingFatFile {
     pub drive_index: u8,
     pub dir_cluster: u16,
@@ -41,26 +56,79 @@ pub(crate) struct PendingFatFile {
     pub position: u32,
 }
 
+state_struct_codec!(PendingFatFile {
+    drive_index,
+    dir_cluster,
+    name,
+    attribute,
+    time,
+    date,
+    start_cluster,
+    file_size,
+    position,
+});
+
 #[derive(Debug, Clone)]
 pub(crate) enum ReadDirectory {
     Fat(u16),
     Iso(iso9660::IsoDirectory),
 }
 
+impl save_state::StateEncode for ReadDirectory {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Fat(cluster) => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                save_state::StateEncode::encode_state(cluster, output);
+            }
+            Self::Iso(directory) => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(directory, output);
+            }
+        }
+    }
+}
+
+impl save_state::StateDecode for ReadDirectory {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Fat(save_state::StateDecode::decode_state(decoder)?)),
+            1 => Ok(Self::Iso(save_state::StateDecode::decode_state(decoder)?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
+/// Parsed path for a pending file read.
 pub(crate) struct ReadFilePath {
     pub drive_index: u8,
     pub directory: ReadDirectory,
     pub name: [u8; 11],
 }
 
+state_struct_codec!(ReadFilePath {
+    drive_index,
+    directory,
+    name,
+});
+
 #[derive(Debug, Clone)]
+/// Parsed path for a pending directory read.
 pub(crate) struct ReadDirPath {
     pub drive_index: u8,
     pub directory: ReadDirectory,
 }
 
+state_struct_codec!(ReadDirPath {
+    drive_index,
+    directory,
+});
+
 #[derive(Debug, Clone)]
+/// Filesystem-neutral directory entry returned to DOS services.
 pub(crate) struct ReadDirEntry {
     pub name: [u8; 11],
     pub attribute: u8,
@@ -70,10 +138,46 @@ pub(crate) struct ReadDirEntry {
     pub source: ReadDirEntrySource,
 }
 
+state_struct_codec!(ReadDirEntry {
+    name,
+    attribute,
+    time,
+    date,
+    file_size,
+    source,
+});
+
 #[derive(Debug, Clone)]
 pub(crate) enum ReadDirEntrySource {
     Fat(fat_dir::DirEntry),
     Iso(iso9660::IsoDirEntry),
+}
+
+impl save_state::StateEncode for ReadDirEntrySource {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Fat(entry) => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                save_state::StateEncode::encode_state(entry, output);
+            }
+            Self::Iso(entry) => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(entry, output);
+            }
+        }
+    }
+}
+
+impl save_state::StateDecode for ReadDirEntrySource {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Fat(save_state::StateDecode::decode_state(decoder)?)),
+            1 => Ok(Self::Iso(save_state::StateDecode::decode_state(decoder)?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
 }
 
 impl ReadDirEntry {

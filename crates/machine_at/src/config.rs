@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn both_models_install_sixteen_mebibytes() {
-        assert_eq!(AtModel::At486Dx50.ram_size(), 16 * 1024 * 1024);
-        assert_eq!(AtModel::At486Dx66.ram_size(), 16 * 1024 * 1024);
+        assert_eq!(AtModel::At486Dx50.ram_size(), 16 << 20);
+        assert_eq!(AtModel::At486Dx66.ram_size(), 16 << 20);
     }
 }

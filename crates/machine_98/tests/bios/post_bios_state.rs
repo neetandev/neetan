@@ -42,7 +42,7 @@ fn report_failures(failures: &[String], machine: &str) {
 fn post_bios_state_vm() {
     let mut machine = super::create_machine_vm();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let mut f: Vec<String> = Vec::new();
 
     // === PIC ===
@@ -519,7 +519,7 @@ fn post_bios_state_vm() {
 fn post_bios_state_f() {
     let mut machine = super::create_machine_f();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let mut f: Vec<String> = Vec::new();
 
     // === PIC ===
@@ -705,7 +705,7 @@ fn post_bios_state_f() {
 fn post_bios_state_vx() {
     let mut machine = super::create_machine_vx();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let mut f: Vec<String> = Vec::new();
 
     // === PIC ===
@@ -993,7 +993,7 @@ fn post_bios_state_vx() {
 fn post_bios_state_ra() {
     let mut machine = super::create_machine_ra();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let mut f: Vec<String> = Vec::new();
 
     // === Clocks ===
@@ -1284,7 +1284,7 @@ fn post_bios_state_ra() {
 fn post_bios_state_pc9821as_ide() {
     let mut machine = super::create_machine_pc9821as_hdd();
     let _cycles = boot_to_halt_hdd!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let mut f: Vec<String> = Vec::new();
 
     // === Clocks ===
@@ -1583,7 +1583,7 @@ macro_rules! boot_2dd_to_halt {
 fn hle_bootstrap_2dd_sets_640kb_boot_device_vm() {
     let mut machine = super::create_machine_vm();
     boot_2dd_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     // Boot device should be 0x70 (640KB FDC) for a 2DD disk.
     assert_eq!(state.memory.ram[0x0584], 0x70, "2DD boot device");
     // DISK_EQUIP: drive 0 should be in 640KB FDD (055Dh bit 4), not 1MB (055Ch bit 0).
@@ -1603,7 +1603,7 @@ fn hle_bootstrap_2dd_sets_640kb_boot_device_vm() {
 fn hle_bootstrap_2dd_sets_640kb_boot_device_vx() {
     let mut machine = super::create_machine_vx();
     boot_2dd_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.memory.ram[0x0584], 0x70, "2DD boot device");
     assert_eq!(
         state.memory.ram[0x055C] & 0x01,
@@ -1621,7 +1621,7 @@ fn hle_bootstrap_2dd_sets_640kb_boot_device_vx() {
 fn hle_bootstrap_2hd_keeps_1mb_boot_device_vx() {
     let mut machine = super::create_machine_vx();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     // 2HD disk (the default halt boot disk) should use DA=0x90 (1MB FDC).
     assert_eq!(state.memory.ram[0x0584], 0x90, "2HD boot device");
     // DISK_EQUIP: drive 0 should remain in 1MB FDD (055Ch bit 0).

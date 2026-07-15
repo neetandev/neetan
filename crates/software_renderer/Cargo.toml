@@ -13,6 +13,7 @@ std = []
 
 [dependencies]
 common.workspace = true
+save_state.workspace = true
 
 [dev-dependencies]
 software_renderer = { path = ".", features = ["std"] }

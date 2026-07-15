@@ -1,22 +1,24 @@
-/// Motorola 6809 condition code register state.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct M6809Flags {
-    /// Entire state flag.
-    pub entire: bool,
-    /// FIRQ mask flag.
-    pub firq_mask: bool,
-    /// Half-carry flag.
-    pub half_carry: bool,
-    /// IRQ mask flag.
-    pub irq_mask: bool,
-    /// Negative flag.
-    pub negative: bool,
-    /// Zero flag.
-    pub zero: bool,
-    /// Overflow flag.
-    pub overflow: bool,
-    /// Carry flag.
-    pub carry: bool,
+save_state::runtime_state! {
+    /// Motorola 6809 condition code register state.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct M6809Flags {
+        /// Entire state flag.
+        pub entire: bool,
+        /// FIRQ mask flag.
+        pub firq_mask: bool,
+        /// Half-carry flag.
+        pub half_carry: bool,
+        /// IRQ mask flag.
+        pub irq_mask: bool,
+        /// Negative flag.
+        pub negative: bool,
+        /// Zero flag.
+        pub zero: bool,
+        /// Overflow flag.
+        pub overflow: bool,
+        /// Carry flag.
+        pub carry: bool,
+    }
 }
 
 impl M6809Flags {

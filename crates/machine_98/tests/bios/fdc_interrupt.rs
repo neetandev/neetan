@@ -49,7 +49,7 @@ const RECALIBRATE_640K_CODE: &[u8] = &[
 fn int13h_vector_f() {
     let mut machine = create_machine_f();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x13);
     assert!(
@@ -62,7 +62,7 @@ fn int13h_vector_f() {
 fn int13h_vector_vm() {
     let mut machine = create_machine_vm();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x13);
     assert!(
@@ -75,7 +75,7 @@ fn int13h_vector_vm() {
 fn int13h_vector_vx() {
     let mut machine = create_machine_vx();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x13);
     assert!(
@@ -88,7 +88,7 @@ fn int13h_vector_vx() {
 fn int13h_vector_ra() {
     let mut machine = create_machine_ra();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x13);
     assert!(
@@ -104,7 +104,7 @@ fn int13h_vector_ra() {
 #[test]
 fn fdc_1mb_recalibrate_sets_intl_flag_f() {
     let (machine, _cycles) = boot_and_run_f(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[DISK_INTL] & 0x01,
@@ -116,7 +116,7 @@ fn fdc_1mb_recalibrate_sets_intl_flag_f() {
 #[test]
 fn fdc_1mb_recalibrate_sets_intl_flag_vm() {
     let (machine, _cycles) = boot_and_run_vm(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[DISK_INTL] & 0x01,
@@ -128,7 +128,7 @@ fn fdc_1mb_recalibrate_sets_intl_flag_vm() {
 #[test]
 fn fdc_1mb_recalibrate_sets_intl_flag_vx() {
     let (machine, _cycles) = boot_and_run_vx(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[DISK_INTL] & 0x01,
@@ -140,7 +140,7 @@ fn fdc_1mb_recalibrate_sets_intl_flag_vx() {
 #[test]
 fn fdc_1mb_recalibrate_sets_intl_flag_ra() {
     let (machine, _cycles) = boot_and_run_ra(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[DISK_INTL] & 0x01,
@@ -156,7 +156,7 @@ fn fdc_1mb_recalibrate_sets_intl_flag_ra() {
 #[test]
 fn fdc_1mb_recalibrate_stores_result_f() {
     let (machine, _cycles) = boot_and_run_f(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(state.memory.ram[DISK_RESULT_1MB], 0x00, "ST0");
     assert_eq!(
@@ -169,7 +169,7 @@ fn fdc_1mb_recalibrate_stores_result_f() {
 #[test]
 fn fdc_1mb_recalibrate_stores_result_vm() {
     let (machine, _cycles) = boot_and_run_vm(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[DISK_RESULT_1MB], 0x20,
@@ -185,7 +185,7 @@ fn fdc_1mb_recalibrate_stores_result_vm() {
 #[test]
 fn fdc_1mb_recalibrate_stores_result_vx() {
     let (machine, _cycles) = boot_and_run_vx(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[DISK_RESULT_1MB], 0x20,
@@ -201,7 +201,7 @@ fn fdc_1mb_recalibrate_stores_result_vx() {
 #[test]
 fn fdc_1mb_recalibrate_stores_result_ra() {
     let (machine, _cycles) = boot_and_run_ra(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[DISK_RESULT_1MB], 0x20,
@@ -221,7 +221,7 @@ fn fdc_1mb_recalibrate_stores_result_ra() {
 #[test]
 fn fdc_1mb_recalibrate_sends_eoi_f() {
     let (machine, _cycles) = boot_and_run_f(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[1].isr & 0x08,
@@ -233,7 +233,7 @@ fn fdc_1mb_recalibrate_sends_eoi_f() {
 #[test]
 fn fdc_1mb_recalibrate_sends_eoi_vm() {
     let (machine, _cycles) = boot_and_run_vm(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[1].isr & 0x08,
@@ -245,7 +245,7 @@ fn fdc_1mb_recalibrate_sends_eoi_vm() {
 #[test]
 fn fdc_1mb_recalibrate_sends_eoi_vx() {
     let (machine, _cycles) = boot_and_run_vx(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[1].isr & 0x08,
@@ -257,7 +257,7 @@ fn fdc_1mb_recalibrate_sends_eoi_vx() {
 #[test]
 fn fdc_1mb_recalibrate_sends_eoi_ra() {
     let (machine, _cycles) = boot_and_run_ra(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[1].isr & 0x08,
@@ -274,7 +274,7 @@ fn fdc_1mb_recalibrate_sends_eoi_ra() {
 fn int12h_vector_f() {
     let mut machine = create_machine_f();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x12);
     assert!(
@@ -287,7 +287,7 @@ fn int12h_vector_f() {
 fn int12h_vector_vm() {
     let mut machine = create_machine_vm();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x12);
     assert!(
@@ -300,7 +300,7 @@ fn int12h_vector_vm() {
 fn int12h_vector_vx() {
     let mut machine = create_machine_vx();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x12);
     assert!(
@@ -313,7 +313,7 @@ fn int12h_vector_vx() {
 fn int12h_vector_ra() {
     let mut machine = create_machine_ra();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x12);
     assert!(
@@ -329,7 +329,7 @@ fn int12h_vector_ra() {
 #[test]
 fn fdc_640k_recalibrate_sets_inth_flag_f() {
     let (machine, _cycles) = boot_and_run_f(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[DISK_INTH] & 0x10,
@@ -341,7 +341,7 @@ fn fdc_640k_recalibrate_sets_inth_flag_f() {
 #[test]
 fn fdc_640k_recalibrate_sets_inth_flag_vm() {
     let (machine, _cycles) = boot_and_run_vm(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[DISK_INTH] & 0x10,
@@ -353,7 +353,7 @@ fn fdc_640k_recalibrate_sets_inth_flag_vm() {
 #[test]
 fn fdc_640k_recalibrate_sets_inth_flag_vx() {
     let (machine, _cycles) = boot_and_run_vx(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[DISK_INTH] & 0x10,
@@ -365,7 +365,7 @@ fn fdc_640k_recalibrate_sets_inth_flag_vx() {
 #[test]
 fn fdc_640k_recalibrate_sets_inth_flag_ra() {
     let (machine, _cycles) = boot_and_run_ra(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.memory.ram[DISK_INTH] & 0x10,
@@ -381,7 +381,7 @@ fn fdc_640k_recalibrate_sets_inth_flag_ra() {
 #[test]
 fn fdc_640k_recalibrate_stores_result_f() {
     let (machine, _cycles) = boot_and_run_f(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(state.memory.ram[DISK_RESULT_640K], 0x00, "ST0");
 }
@@ -389,7 +389,7 @@ fn fdc_640k_recalibrate_stores_result_f() {
 #[test]
 fn fdc_640k_recalibrate_stores_result_vm() {
     let (machine, _cycles) = boot_and_run_vm(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[DISK_RESULT_640K], 0x20,
@@ -400,7 +400,7 @@ fn fdc_640k_recalibrate_stores_result_vm() {
 #[test]
 fn fdc_640k_recalibrate_stores_result_vx() {
     let (machine, _cycles) = boot_and_run_vx(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[DISK_RESULT_640K], 0x20,
@@ -411,7 +411,7 @@ fn fdc_640k_recalibrate_stores_result_vx() {
 #[test]
 fn fdc_640k_recalibrate_stores_result_ra() {
     let (machine, _cycles) = boot_and_run_ra(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[DISK_RESULT_640K], 0x20,
@@ -426,7 +426,7 @@ fn fdc_640k_recalibrate_stores_result_ra() {
 #[test]
 fn fdc_640k_recalibrate_sends_eoi_f() {
     let (machine, _cycles) = boot_and_run_f(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[1].isr & 0x04,
@@ -438,7 +438,7 @@ fn fdc_640k_recalibrate_sends_eoi_f() {
 #[test]
 fn fdc_640k_recalibrate_sends_eoi_vm() {
     let (machine, _cycles) = boot_and_run_vm(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[1].isr & 0x04,
@@ -450,7 +450,7 @@ fn fdc_640k_recalibrate_sends_eoi_vm() {
 #[test]
 fn fdc_640k_recalibrate_sends_eoi_vx() {
     let (machine, _cycles) = boot_and_run_vx(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[1].isr & 0x04,
@@ -462,7 +462,7 @@ fn fdc_640k_recalibrate_sends_eoi_vx() {
 #[test]
 fn fdc_640k_recalibrate_sends_eoi_ra() {
     let (machine, _cycles) = boot_and_run_ra(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[1].isr & 0x04,

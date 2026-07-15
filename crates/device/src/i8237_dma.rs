@@ -61,7 +61,8 @@ const PAGE_HIGH_NIBBLE_MASK: u8 = 0xF0;
 /// 0 = single transfer (stops at TC), 1 = auto-init (reloads base on TC).
 const MODE_AUTO_INIT_BIT: u8 = 0x10;
 
-/// State of a single DMA channel.
+save_state::runtime_state! {
+/// Authoritative state of a single DMA channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I8237DmaChannelState {
     /// Current address register (modified during transfer).
@@ -80,9 +81,10 @@ pub struct I8237DmaChannelState {
     pub mode: u8,
     /// Auto-increment boundary mode (0-3).
     pub bound: u8,
-}
+}}
 
-/// Snapshot of the DMA controller state.
+save_state::runtime_state! {
+/// Authoritative state of the DMA controller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I8237DmaState {
     /// The four DMA channels.
@@ -95,13 +97,15 @@ pub struct I8237DmaState {
     pub mask: u8,
     /// Status register.
     pub status: u8,
-}
+}}
 
 /// i8237A DMA controller.
 pub struct I8237Dma {
     /// Embedded state for save/restore.
     pub state: I8237DmaState,
 }
+
+impl_simple_state_accessors!(I8237Dma, I8237DmaState);
 
 impl Default for I8237Dma {
     fn default() -> Self {

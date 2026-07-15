@@ -25,7 +25,7 @@ const ATTR_SELECTION: u8 = 0x65;
 const ATTR_DIALOG: u8 = 0xA1;
 const ATTR_DIALOG_TEXT: u8 = 0xA1;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct DisplayBuffer {
     bytes: Vec<u8>,
     jis: Vec<JisChar>,
@@ -246,7 +246,7 @@ fn render_overlay(overlay: &Overlay, display: &mut DisplayBuffer, console: &mut 
             console.write_ank_at(16, 29, b"Enter: Choose  Esc: Back", ATTR_DIALOG_TEXT);
         }
         Overlay::CreateDirectory(prompt) => render_text_prompt(
-            prompt.title,
+            prompt.title.as_slice(),
             &prompt.field,
             b"Enter: Create  Esc: Back",
             display,
@@ -254,14 +254,14 @@ fn render_overlay(overlay: &Overlay, display: &mut DisplayBuffer, console: &mut 
         ),
         Overlay::DeleteConfirm(confirm) => render_delete_confirm(confirm, display, console),
         Overlay::NewFile(prompt) => render_text_prompt(
-            prompt.title,
+            prompt.title.as_slice(),
             &prompt.field,
             b"Enter: Create  Esc: Back",
             display,
             console,
         ),
         Overlay::SaveAs(prompt) => render_text_prompt(
-            prompt.title,
+            prompt.title.as_slice(),
             &prompt.field,
             b"Enter: Save  Esc: Back",
             display,

@@ -1,6 +1,92 @@
 use common::{Bus, Cpu, unlikely};
 
-use crate::{NoTrace, Pc98CpuState, Pc98MachineState, Pc9801Bus, TraceSink};
+use crate::{
+    NoTrace, Pc98InspectionCpuState, Pc98InspectionState, Pc9801Bus, TraceSink, bus::Pc9801BusState,
+};
+
+save_state::runtime_state! {
+/// Machine-root state for one PC-98 snapshot.
+#[derive(Clone)]
+struct Pc98RuntimeState<CpuState> {
+    cpu: CpuState,
+    bus: Pc9801BusState,
+}}
+
+/// CPU operations required by the PC-98 root save state.
+pub trait Pc98RuntimeCpu: Cpu {
+    /// Complete authoritative CPU state type.
+    type RuntimeState: save_state::RuntimeState;
+
+    /// Captures complete CPU state.
+    fn capture_runtime_state(&self) -> Self::RuntimeState;
+    /// Validates and restores complete CPU state.
+    fn restore_runtime_state(
+        &mut self,
+        state: Self::RuntimeState,
+    ) -> Result<(), save_state::StateValidationError>;
+}
+
+impl Pc98RuntimeCpu for cpu::I8086 {
+    type RuntimeState = cpu::I8086State;
+
+    fn capture_runtime_state(&self) -> Self::RuntimeState {
+        self.capture_state()
+    }
+
+    fn restore_runtime_state(
+        &mut self,
+        state: Self::RuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        self.restore_state(state)
+    }
+}
+
+impl Pc98RuntimeCpu for cpu::VX0 {
+    type RuntimeState = cpu::V30State;
+
+    fn capture_runtime_state(&self) -> Self::RuntimeState {
+        self.state.clone()
+    }
+
+    fn restore_runtime_state(
+        &mut self,
+        state: Self::RuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        save_state::ValidateState::validate_state(&state, &cpu::V30_BUS)?;
+        self.load_state(&state);
+        Ok(())
+    }
+}
+
+impl Pc98RuntimeCpu for cpu::I286 {
+    type RuntimeState = cpu::I286State;
+
+    fn capture_runtime_state(&self) -> Self::RuntimeState {
+        self.capture_state()
+    }
+
+    fn restore_runtime_state(
+        &mut self,
+        state: Self::RuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        self.restore_state(state)
+    }
+}
+
+impl<const CPU_MODEL: u8> Pc98RuntimeCpu for cpu::I386<CPU_MODEL> {
+    type RuntimeState = cpu::I386State;
+
+    fn capture_runtime_state(&self) -> Self::RuntimeState {
+        self.capture_state()
+    }
+
+    fn restore_runtime_state(
+        &mut self,
+        state: Self::RuntimeState,
+    ) -> Result<(), save_state::StateValidationError> {
+        self.restore_state(state)
+    }
+}
 
 /// Generic PC-9801 machine: a CPU wired to the shared PC-9801 bus.
 pub struct Pc98Machine<C: Cpu, T: TraceSink = NoTrace> {
@@ -125,70 +211,34 @@ pub type Pc9821As = Pc98Machine<cpu::I386<{ cpu::CPU_MODEL_486_DX }>>;
 pub type Pc9821Ap = Pc98Machine<cpu::I386<{ cpu::CPU_MODEL_486_DX }>>;
 
 impl<T: TraceSink> Pc98Machine<cpu::I8086, T> {
-    /// Captures the full machine state.
-    pub fn save_state(&self) -> Pc98MachineState {
+    /// Captures the read-only compatibility inspection view.
+    pub fn inspection_state(&self) -> Pc98InspectionState {
         self.bus
-            .save_state(Pc98CpuState::I8086(self.cpu.state.clone()))
-    }
-
-    /// Restores the machine from a previously saved state.
-    pub fn load_state(&mut self, state: &Pc98MachineState) {
-        assert!(matches!(state.cpu, Pc98CpuState::I8086(_)));
-        if let Pc98CpuState::I8086(ref cpu_state) = state.cpu {
-            self.cpu.load_state(cpu_state);
-        }
-        self.bus.load_peripherals(state);
+            .inspection_state(Pc98InspectionCpuState::I8086(self.cpu.state.clone()))
     }
 }
 
 impl<T: TraceSink> Pc98Machine<cpu::VX0, T> {
-    /// Captures the full machine state.
-    pub fn save_state(&self) -> Pc98MachineState {
+    /// Captures the read-only compatibility inspection view.
+    pub fn inspection_state(&self) -> Pc98InspectionState {
         self.bus
-            .save_state(Pc98CpuState::V30(self.cpu.state.clone()))
-    }
-
-    /// Restores the machine from a previously saved state.
-    pub fn load_state(&mut self, state: &Pc98MachineState) {
-        assert!(matches!(state.cpu, Pc98CpuState::V30(_)));
-        if let Pc98CpuState::V30(ref cpu_state) = state.cpu {
-            self.cpu.load_state(cpu_state);
-        }
-        self.bus.load_peripherals(state);
+            .inspection_state(Pc98InspectionCpuState::V30(self.cpu.state.clone()))
     }
 }
 
 impl<T: TraceSink> Pc98Machine<cpu::I286, T> {
-    /// Captures the full machine state.
-    pub fn save_state(&self) -> Pc98MachineState {
+    /// Captures the read-only compatibility inspection view.
+    pub fn inspection_state(&self) -> Pc98InspectionState {
         self.bus
-            .save_state(Pc98CpuState::I286(self.cpu.state.clone()))
-    }
-
-    /// Restores the machine from a previously saved state.
-    pub fn load_state(&mut self, state: &Pc98MachineState) {
-        assert!(matches!(state.cpu, Pc98CpuState::I286(_)));
-        if let Pc98CpuState::I286(ref cpu_state) = state.cpu {
-            self.cpu.load_state(cpu_state);
-        }
-        self.bus.load_peripherals(state);
+            .inspection_state(Pc98InspectionCpuState::I286(self.cpu.state.clone()))
     }
 }
 
 impl<const CPU_MODEL: u8, T: TraceSink> Pc98Machine<cpu::I386<CPU_MODEL>, T> {
-    /// Captures the full machine state.
-    pub fn save_state(&self) -> Pc98MachineState {
+    /// Captures the read-only compatibility inspection view.
+    pub fn inspection_state(&self) -> Pc98InspectionState {
         self.bus
-            .save_state(Pc98CpuState::I386(self.cpu.state.clone()))
-    }
-
-    /// Restores the machine from a previously saved state.
-    pub fn load_state(&mut self, state: &Pc98MachineState) {
-        assert!(matches!(state.cpu, Pc98CpuState::I386(_)));
-        if let Pc98CpuState::I386(ref cpu_state) = state.cpu {
-            self.cpu.load_state(cpu_state);
-        }
-        self.bus.load_peripherals(state);
+            .inspection_state(Pc98InspectionCpuState::I386(self.cpu.state.clone()))
     }
 }
 
@@ -252,7 +302,69 @@ fn validate_hdd_for_model(
     Ok(())
 }
 
-impl<C: Cpu, T: TraceSink> common::Machine for Pc98Machine<C, T> {
+impl<C: Pc98RuntimeCpu, T: TraceSink> Pc98Machine<C, T> {
+    fn capture_machine_blob(
+        &mut self,
+    ) -> Result<save_state::MachineStateBlob, save_state::SaveStateError> {
+        if !self.bus.runtime_state_supported() {
+            return Err(save_state::SaveStateError::Unsupported);
+        }
+        let root = Pc98RuntimeState {
+            cpu: self.cpu.capture_runtime_state(),
+            bus: self.bus.capture_runtime_state()?,
+        };
+        save_state::capture_machine_state(
+            root,
+            self.bus.save_state_resources()?,
+            self.bus.save_state_media()?,
+        )
+    }
+
+    fn restore_machine_blob(
+        &mut self,
+        blob: &save_state::MachineStateBlob,
+    ) -> Result<(), save_state::SaveStateError> {
+        if !self.bus.runtime_state_supported() {
+            return Err(save_state::SaveStateError::Unsupported);
+        }
+        let active_resources = self.bus.save_state_resources()?;
+        let active_media = self.bus.save_state_media()?;
+        save_state::restore_machine_state(
+            self,
+            blob,
+            active_resources,
+            active_media,
+            512 << 20,
+            |machine| {
+                Ok(Pc98RuntimeState {
+                    cpu: machine.cpu.capture_runtime_state(),
+                    bus: machine.bus.capture_runtime_state()?,
+                })
+            },
+            |machine, state| {
+                machine.cpu.restore_runtime_state(state.cpu)?;
+                machine.bus.restore_runtime_state(state.bus)?;
+                machine
+                    .bus
+                    .set_cpu_protected_mode_enabled(machine.cpu.cr0() & 1 != 0);
+                Ok(())
+            },
+        )
+    }
+}
+
+impl<C: Pc98RuntimeCpu, T: TraceSink> common::Machine for Pc98Machine<C, T> {
+    fn capture_state(&mut self) -> Result<common::MachineStateBlob, common::SaveStateError> {
+        self.capture_machine_blob()
+    }
+
+    fn restore_state(
+        &mut self,
+        blob: &common::MachineStateBlob,
+    ) -> Result<(), common::SaveStateError> {
+        self.restore_machine_blob(blob)
+    }
+
     fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
         self.bus.set_host_date_time_provider(provider);
     }
@@ -389,5 +501,87 @@ impl<C: Cpu, T: TraceSink> common::Machine for Pc98Machine<C, T> {
 
     fn tick_text_extractor(&mut self) {
         self.bus.tick_text_extractor();
+    }
+}
+
+#[cfg(test)]
+mod save_state_tests {
+    use common::{CpuMode, Machine, MachineModel};
+
+    use super::*;
+
+    fn assert_replay<C: Pc98RuntimeCpu>(model: MachineModel, cpu: C) {
+        let bus = Pc9801Bus::new(model, CpuMode::High, 48_000);
+        let mut machine = Pc98Machine::new(cpu, bus);
+        let initial = machine.capture_state().unwrap();
+        machine.run_for(1);
+        let expected = machine.capture_state().unwrap();
+
+        machine.restore_state(&initial).unwrap();
+        machine.run_for(1);
+        let replayed = machine.capture_state().unwrap();
+        assert_eq!(replayed.payload(), expected.payload());
+    }
+
+    #[test]
+    fn every_pc98_model_replays_from_the_machine_root() {
+        assert_replay(MachineModel::PC9801F, cpu::I8086::new());
+        assert_replay(MachineModel::PC9801VM, cpu::V30::new());
+        assert_replay(MachineModel::PC9801VX, cpu::I286::new());
+        assert_replay(
+            MachineModel::PC9801RS,
+            cpu::I386::<{ cpu::CPU_MODEL_386_SX }>::new(),
+        );
+        assert_replay(
+            MachineModel::PC9801RA,
+            cpu::I386::<{ cpu::CPU_MODEL_386_DX }>::new(),
+        );
+        assert_replay(
+            MachineModel::PC9821AS,
+            cpu::I386::<{ cpu::CPU_MODEL_486_DX }>::new(),
+        );
+        assert_replay(
+            MachineModel::PC9821AP,
+            cpu::I386::<{ cpu::CPU_MODEL_486_DX }>::new(),
+        );
+    }
+
+    #[test]
+    fn corrupt_machine_payload_does_not_mutate_the_machine() {
+        let bus = Pc9801Bus::new(MachineModel::PC9801VM, CpuMode::High, 48_000);
+        let mut machine = Pc98Machine::new(cpu::V30::new(), bus);
+        let valid = machine.capture_state().unwrap();
+        let before = valid.payload().to_vec();
+        let mut corrupt_payload = before.clone();
+        corrupt_payload.truncate(corrupt_payload.len() / 2);
+        let corrupt = valid.with_payload(corrupt_payload).unwrap();
+
+        assert!(machine.restore_state(&corrupt).is_err());
+        assert_eq!(machine.capture_state().unwrap().payload(), before);
+    }
+
+    #[test]
+    fn machine_root_restores_directly_from_memory() {
+        let bus = Pc9801Bus::new(MachineModel::PC9801VM, CpuMode::High, 48_000);
+        let mut machine = Pc98Machine::new(cpu::V30::new(), bus);
+        let snapshot = machine.capture_state().unwrap();
+        machine.run_for(257);
+        machine.restore_state(&snapshot).unwrap();
+        assert_eq!(machine.capture_state().unwrap(), snapshot);
+    }
+
+    #[test]
+    fn hle_dos_configuration_replays_from_the_machine_root() {
+        let mut bus = Pc9801Bus::new(MachineModel::PC9801VM, CpuMode::High, 48_000);
+        bus.enable_neetan_dos();
+        let mut machine = Pc98Machine::new(cpu::V30::new(), bus);
+        let initial = machine.capture_state().unwrap();
+        machine.run_for(1);
+        let expected = machine.capture_state().unwrap();
+
+        machine.restore_state(&initial).unwrap();
+        machine.run_for(1);
+        let replayed = machine.capture_state().unwrap();
+        assert_eq!(replayed.payload(), expected.payload());
     }
 }

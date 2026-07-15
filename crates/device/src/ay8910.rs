@@ -27,11 +27,12 @@ fn bitfield(value: u32, start: u32, length: u32) -> u32 {
     (value >> start) & ((1 << length) - 1)
 }
 
-/// The 16-byte AY-3-8910 register file with typed accessors.
+save_state::runtime_state! {
+/// The 16-byte AY-3-8910 register file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AyRegisters {
     regdata: [u8; 0x10],
-}
+}}
 
 impl AyRegisters {
     fn new() -> Self {
@@ -104,7 +105,8 @@ impl AyRegisters {
     }
 }
 
-/// The tone/noise/envelope generator core.
+save_state::runtime_state! {
+/// The tone, noise, and envelope generator core.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AyEngine {
     tone_count: [u32; 3],
@@ -114,7 +116,7 @@ struct AyEngine {
     noise_count: u32,
     noise_state: u32,
     regs: AyRegisters,
-}
+}}
 
 impl AyEngine {
     fn new() -> Self {
@@ -232,7 +234,8 @@ const CLOCK_DIVIDER: u32 = 8;
 /// Sum of the three channel peaks, used to normalize the mixed output.
 const MIX_PEAK: f32 = 3.0 * 16382.0;
 
-/// AY-3-8910 device.
+save_state::runtime_state! {
+/// Authoritative AY-3-8910 device state.
 #[derive(Debug, Clone)]
 pub struct Ay8910 {
     engine: AyEngine,
@@ -242,7 +245,7 @@ pub struct Ay8910 {
     clock_accumulator: f64,
     port_a_input: u8,
     port_b_input: u8,
-}
+}}
 
 impl Default for Ay8910 {
     fn default() -> Self {
@@ -262,6 +265,25 @@ impl Ay8910 {
             port_a_input: 0xFF,
             port_b_input: 0xFF,
         }
+    }
+
+    /// Captures registers, oscillator phases, and sample history.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores complete PSG state.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        if state.address > 15
+            || !state.sample_remainder.is_finite()
+            || !state.clock_accumulator.is_finite()
+        {
+            return Err(save_state::StateValidationError::new(
+                "AY-3-8910 address or sample phase is invalid",
+            ));
+        }
+        *self = state;
+        Ok(())
     }
 
     /// Resets the PSG.

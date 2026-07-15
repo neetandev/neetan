@@ -32,6 +32,7 @@ fn int18h_key_code_read_polls_pending_scancode_when_interrupts_disabled() {
             ip: 0x0100,
             ..Default::default()
         };
+        state.initialize_cold_frontend();
         state.set_sp(0x4000);
         state.set_compressed_flags(0x0002);
         state
@@ -56,7 +57,7 @@ fn int18h_key_code_read_polls_pending_scancode_when_interrupts_disabled() {
         "the test must keep IF clear across the BIOS call"
     );
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.ram[0x0528], 0,
         "the BIOS keyboard buffer entry should have been consumed"

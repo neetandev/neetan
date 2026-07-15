@@ -22,6 +22,12 @@ impl Ga1280a {
 
     /// Returns read-only inputs for renderer-side GA framebuffer composition.
     pub fn render_snapshot(&self) -> Ga1280aRenderSnapshot<'_> {
+        let palette = self
+            .state
+            .palette
+            .as_ref()
+            .try_into()
+            .expect("GA palette must contain 256 entries");
         Ga1280aRenderSnapshot {
             plane_mode: self.state.plane_mode,
             width: self.state.active_width,
@@ -31,7 +37,7 @@ impl Ga1280a {
             stride_bytes: self.packed_stride(),
             display_offset_pixels: u64::from(self.display_start())
                 * u64::from(self.display_pixels_per_crtc_unit()),
-            palette: &self.state.palette,
+            palette,
             visible_mask: self.state.vdac_mask,
             vram: &self.state.vram,
             cursor: Ga1280aCursorRenderSnapshot {

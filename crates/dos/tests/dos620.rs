@@ -118,6 +118,9 @@ mod commands_mem;
 #[path = "dos620/hle_memory_overview.rs"]
 mod hle_memory_overview;
 
+#[path = "dos620/savestate.rs"]
+mod savestate;
+
 #[path = "dos620/multiplex_interrupt.rs"]
 mod multiplex_interrupt;
 

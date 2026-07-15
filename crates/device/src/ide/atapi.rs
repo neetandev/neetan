@@ -52,8 +52,9 @@ const ASCQ_NO_QUALIFIER: u8 = 0x00;
 // ATA status bits used by ATAPI (defined in lle.rs, referenced here for documentation).
 // STATUS_DRDY = 0x40, STATUS_DSC = 0x10, STATUS_DRQ = 0x08, STATUS_ERR/CHK = 0x01
 
-/// ATAPI device state for the CD-ROM drive.
-#[derive(Debug)]
+save_state::runtime_state! {
+/// Authoritative ATAPI packet and transfer state.
+#[derive(Debug, Clone)]
 pub(super) struct AtapiState {
     // Sense data (persistent until cleared by REQUEST SENSE).
     sense_key: u8,
@@ -84,7 +85,7 @@ pub(super) struct AtapiState {
     // by byte_count_limit). When a chunk boundary is reached, the caller
     // fires another interrupt before the host reads the next chunk.
     pub(super) chunk_position: usize,
-}
+}}
 
 impl AtapiState {
     pub(super) fn new() -> Self {
@@ -104,6 +105,20 @@ impl AtapiState {
             byte_count_limit: 0xFFFE,
             chunk_position: 0,
         }
+    }
+
+    pub(super) fn validate_state(&self) -> Result<(), save_state::StateValidationError> {
+        if self.packet_position > self.packet.len()
+            || self.data_position > self.data_size
+            || self.data_size > self.data_buffer.len()
+            || self.data_buffer.len() > MAX_BUFFER_SIZE
+            || self.chunk_position > self.data_size
+        {
+            return Err(save_state::StateValidationError::new(
+                "ATAPI packet or data buffer position is invalid",
+            ));
+        }
+        Ok(())
     }
 
     /// Resets ATAPI state (called on DEVICE RESET command).

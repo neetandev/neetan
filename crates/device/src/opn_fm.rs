@@ -14,9 +14,11 @@
 //! reports the chip IRQ edge, leaving each consumer to map those onto its own
 //! scheduler events and IRQ wiring.
 
-use resampler::{Attenuation, Latency, ResamplerFir};
+use resampler::{Attenuation, Latency, ResamplerFir, ResamplerFirState};
 pub use ymfm_oxide::{Ym2151, Ym2203, Ymf276};
-use ymfm_oxide::{Ym2608, YmfmOpnFidelity, YmfmOutput2, YmfmOutput3, YmfmOutput4, YmfmTimerUpdate};
+use ymfm_oxide::{
+    Ym2608, Ym2608State, YmfmOpnFidelity, YmfmOutput2, YmfmOutput3, YmfmOutput4, YmfmTimerUpdate,
+};
 
 const FIDELITY: YmfmOpnFidelity = YmfmOpnFidelity::Max;
 const RESAMPLER_LATENCY: Latency = Latency::Sample64;
@@ -36,9 +38,11 @@ pub const RHYTHM_ROM_SIZE: usize = 8192;
 pub static EVOLVED_RHYTHM_ROM: &[u8; RHYTHM_ROM_SIZE] =
     include_bytes!("../../../utils/rhythm/rhythm.bin");
 
+save_state::runtime_state! {
 /// Fractional sample remainder for drift-free FM sample-count accumulation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FmSampleRemainder(pub f64);
+}
 
 impl Eq for FmSampleRemainder {}
 
@@ -68,6 +72,42 @@ pub enum FmTimerAction {
     },
 }
 
+impl save_state::StateEncode for FmTimerAction {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Schedule {
+                timer_id,
+                fire_cycle,
+            } => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                save_state::StateEncode::encode_state(timer_id, output);
+                save_state::StateEncode::encode_state(fire_cycle, output);
+            }
+            Self::Cancel { timer_id } => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(timer_id, output);
+            }
+        }
+    }
+}
+
+impl save_state::StateDecode for FmTimerAction {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        let tag = <u8 as save_state::StateDecode>::decode_state(decoder)?;
+        let timer_id = <u8 as save_state::StateDecode>::decode_state(decoder)?;
+        match tag {
+            0 => Ok(Self::Schedule {
+                timer_id,
+                fire_cycle: <u64 as save_state::StateDecode>::decode_state(decoder)?,
+            }),
+            1 => Ok(Self::Cancel { timer_id }),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
 /// A YMFM OPN-family chip driven by [`OpnFm`].
 ///
 /// The hi-bank methods default to no-op / open-bus and are only meaningful on
@@ -75,13 +115,25 @@ pub enum FmTimerAction {
 /// encoding the per-chip output scaling.
 pub trait OpnChip {
     /// Native output sample type produced by `generate`.
-    type Native: Copy;
+    type Native: Copy + save_state::RuntimeState;
+
+    /// Complete mutable chip state.
+    type State: save_state::RuntimeState;
 
     /// Number of output channels written by `mix_sample` (1 mono, 2 stereo).
     const CHANNELS: usize;
 
     /// Creates a reset chip at the driver fidelity.
     fn create() -> Self;
+
+    /// Captures complete mutable chip state.
+    fn capture_state(&self) -> Self::State;
+
+    /// Validates state against retained chip resources.
+    fn validate_state(&self, state: &Self::State) -> Result<(), save_state::StateValidationError>;
+
+    /// Replaces mutable chip state after validation.
+    fn replace_state(&mut self, state: Self::State);
 
     /// Returns a zeroed native sample (used to grow scratch buffers).
     fn native_zero() -> Self::Native;
@@ -149,6 +201,7 @@ pub trait OpnChip {
 
 impl OpnChip for Ym2203 {
     type Native = YmfmOutput4;
+    type State = Self;
     const CHANNELS: usize = 1;
 
     fn create() -> Self {
@@ -156,6 +209,18 @@ impl OpnChip for Ym2203 {
         chip.reset();
         chip.set_fidelity(FIDELITY);
         chip
+    }
+
+    fn capture_state(&self) -> Self::State {
+        Ym2203::capture_state(self)
+    }
+
+    fn validate_state(&self, state: &Self::State) -> Result<(), save_state::StateValidationError> {
+        save_state::ValidateState::validate_state(state, &())
+    }
+
+    fn replace_state(&mut self, state: Self::State) {
+        *self = state;
     }
 
     fn native_zero() -> Self::Native {
@@ -214,6 +279,7 @@ impl OpnChip for Ym2203 {
 
 impl OpnChip for Ym2608 {
     type Native = YmfmOutput3;
+    type State = Ym2608State;
     const CHANNELS: usize = 2;
 
     fn create() -> Self {
@@ -221,6 +287,20 @@ impl OpnChip for Ym2608 {
         chip.reset();
         chip.set_fidelity(FIDELITY);
         chip
+    }
+
+    fn capture_state(&self) -> Self::State {
+        Ym2608::capture_state(self)
+    }
+
+    fn validate_state(&self, state: &Self::State) -> Result<(), save_state::StateValidationError> {
+        let mut probe = self.clone();
+        probe.restore_state(state.clone())
+    }
+
+    fn replace_state(&mut self, state: Self::State) {
+        self.restore_state(state)
+            .expect("validated YM2608 state must restore");
     }
 
     fn native_zero() -> Self::Native {
@@ -290,12 +370,25 @@ impl OpnChip for Ym2608 {
 
 impl OpnChip for Ymf276 {
     type Native = YmfmOutput2;
+    type State = Self;
     const CHANNELS: usize = 2;
 
     fn create() -> Self {
         let mut chip = Ymf276::new();
         chip.reset();
         chip
+    }
+
+    fn capture_state(&self) -> Self::State {
+        Ymf276::capture_state(self)
+    }
+
+    fn validate_state(&self, state: &Self::State) -> Result<(), save_state::StateValidationError> {
+        save_state::ValidateState::validate_state(state, &())
+    }
+
+    fn replace_state(&mut self, state: Self::State) {
+        *self = state;
     }
 
     fn native_zero() -> Self::Native {
@@ -357,12 +450,25 @@ impl OpnChip for Ymf276 {
 
 impl OpnChip for Ym2151 {
     type Native = YmfmOutput2;
+    type State = Self;
     const CHANNELS: usize = 2;
 
     fn create() -> Self {
         let mut chip = Ym2151::new();
         chip.reset();
         chip
+    }
+
+    fn capture_state(&self) -> Self::State {
+        Ym2151::capture_state(self)
+    }
+
+    fn validate_state(&self, state: &Self::State) -> Result<(), save_state::StateValidationError> {
+        save_state::ValidateState::validate_state(state, &())
+    }
+
+    fn replace_state(&mut self, state: Self::State) {
+        *self = state;
     }
 
     fn native_zero() -> Self::Native {
@@ -419,8 +525,32 @@ impl OpnChip for Ym2151 {
     }
 }
 
-/// Generic OPN/OPNA FM audio driver: chip clocking, busy timing, timer/IRQ
-/// coalescing, and resampling.
+save_state::runtime_state! {
+/// Authoritative OPN driver and streaming state.
+#[derive(Clone)]
+pub struct OpnFmState<ChipState, NativeSample> {
+    chip: ChipState,
+    cpu_clock_hz: u32,
+    chip_clock_hz: u32,
+    sample_rate: u32,
+    native_rate: u32,
+    chip_action_cycle: u64,
+    pending_native: Vec<NativeSample>,
+    resampler: ResamplerFirState,
+    sample_remainder: FmSampleRemainder,
+    fm_sync_cursor: u64,
+    busy_end_cycle: u64,
+    audio_frame_start_cycle: u64,
+    irq_asserted: bool,
+    timer_actions: Vec<FmTimerAction>,
+}}
+
+/// Authoritative YMF276 driver and streaming state.
+pub type Ymf276RuntimeState = OpnFmState<Ymf276, YmfmOutput2>;
+/// Authoritative YM2151 driver and streaming state.
+pub type Ym2151RuntimeState = OpnFmState<Ym2151, YmfmOutput2>;
+
+/// Generic OPN audio driver with exact chip and resampler state.
 pub struct OpnFm<C: OpnChip> {
     chip: C,
     cpu_clock_hz: u32,
@@ -475,6 +605,83 @@ impl<C: OpnChip> OpnFm<C> {
             irq_asserted: false,
             timer_actions: Vec::new(),
         }
+    }
+
+    /// Captures chip, timer, pending sample, and resampler history.
+    pub fn capture_state(&self) -> OpnFmState<C::State, C::Native> {
+        OpnFmState {
+            chip: self.chip.capture_state(),
+            cpu_clock_hz: self.cpu_clock_hz,
+            chip_clock_hz: self.chip_clock_hz,
+            sample_rate: self.sample_rate,
+            native_rate: self.native_rate,
+            chip_action_cycle: self.chip_action_cycle,
+            pending_native: self.pending_native.clone(),
+            resampler: self.resampler.capture_state(),
+            sample_remainder: self.sample_remainder,
+            fm_sync_cursor: self.fm_sync_cursor,
+            busy_end_cycle: self.busy_end_cycle,
+            audio_frame_start_cycle: self.audio_frame_start_cycle,
+            irq_asserted: self.irq_asserted,
+            timer_actions: self.timer_actions.clone(),
+        }
+    }
+
+    /// Validates captured state against retained clocks and filter resources.
+    pub fn validate_state(
+        &self,
+        state: &OpnFmState<C::State, C::Native>,
+    ) -> Result<(), save_state::StateValidationError> {
+        if state.cpu_clock_hz != self.cpu_clock_hz
+            || state.chip_clock_hz != self.chip_clock_hz
+            || state.sample_rate != self.sample_rate
+            || state.native_rate != self.native_rate
+        {
+            return Err(save_state::StateValidationError::new(
+                "OPN driver clock configuration differs",
+            ));
+        }
+        if !state.sample_remainder.0.is_finite()
+            || state.timer_actions.iter().any(|action| match action {
+                FmTimerAction::Schedule { timer_id, .. } | FmTimerAction::Cancel { timer_id } => {
+                    *timer_id > 1
+                }
+            })
+        {
+            return Err(save_state::StateValidationError::new(
+                "OPN streaming state is invalid",
+            ));
+        }
+        self.chip.validate_state(&state.chip)?;
+        self.resampler.validate_state(&state.resampler)
+    }
+
+    /// Restores exact streaming state without recreating the chip.
+    pub fn restore_state(
+        &mut self,
+        state: OpnFmState<C::State, C::Native>,
+    ) -> Result<(), save_state::StateValidationError> {
+        self.validate_state(&state)?;
+        self.resampler.restore_state(state.resampler.clone())?;
+        self.chip.replace_state(state.chip);
+        self.chip_action_cycle = state.chip_action_cycle;
+        self.pending_native = state.pending_native;
+        self.sample_remainder = state.sample_remainder;
+        self.fm_sync_cursor = state.fm_sync_cursor;
+        self.busy_end_cycle = state.busy_end_cycle;
+        self.audio_frame_start_cycle = state.audio_frame_start_cycle;
+        self.irq_asserted = state.irq_asserted;
+        self.timer_actions = state.timer_actions;
+        self.native_buffer.clear();
+        self.native_buffer
+            .resize(INITIAL_NATIVE_CAPACITY, C::native_zero());
+        self.resample_input.clear();
+        self.resample_input
+            .resize(INITIAL_NATIVE_CAPACITY * C::CHANNELS, 0.0);
+        self.resample_output.clear();
+        self.resample_output
+            .resize(self.resampler.buffer_size_output(), 0.0);
+        Ok(())
     }
 
     /// Borrows the chip for board-specific configuration (e.g. ADPCM setup).
@@ -932,5 +1139,36 @@ mod tests {
         fm.generate_samples(1_000, 8_000_000, 1.0, &mut empty);
         assert_eq!(fm.timing().fm_sync_cursor, 1_000);
         assert_eq!(fm.timing().audio_frame_start_cycle, 1_000);
+    }
+
+    #[test]
+    fn encoded_state_replays_chip_and_resampler_exactly() {
+        let mut original = OpnFm::<Ym2203>::new(4_000_000, 48_000, 3_993_600);
+        original.write_address(0xA0, 0);
+        original.write_data(0x34, 0);
+        original.write_address(0xA4, 0);
+        original.write_data(0x22, 0);
+        original.write_address(0x28, 0);
+        original.write_data(0xF0, 0);
+        let mut warmup = vec![0.0f32; 137];
+        original.generate_samples(12_003, 4_000_000, 1.0, &mut warmup);
+
+        let encoded = save_state::encode_runtime_state(&original.capture_state());
+        let decoded =
+            save_state::decode_runtime_state::<OpnFmState<Ym2203, YmfmOutput4>>(&encoded, 1 << 20)
+                .unwrap();
+        let mut restored = OpnFm::<Ym2203>::new(4_000_000, 48_000, 3_993_600);
+        restored.restore_state(decoded).unwrap();
+
+        let mut expected = vec![0.0f32; 211];
+        let mut actual = vec![0.0f32; 211];
+        original.generate_samples(19_777, 4_000_000, 1.0, &mut expected);
+        restored.generate_samples(19_777, 4_000_000, 1.0, &mut actual);
+        assert!(
+            expected
+                .iter()
+                .zip(actual)
+                .all(|(left, right)| left.to_bits() == right.to_bits())
+        );
     }
 }

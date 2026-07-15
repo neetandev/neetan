@@ -70,12 +70,14 @@ impl IocSource {
     }
 }
 
-#[derive(Debug, Default)]
+save_state::runtime_state! {
+/// Authoritative X68000 I/O controller interrupt state.
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Ioc {
     pending: u8,
     mask: u8,
     vector_base: u8,
-}
+}}
 
 impl Ioc {
     /// Latches a request edge.
@@ -152,12 +154,14 @@ impl Ioc {
     }
 }
 
-#[derive(Debug, Default)]
+save_state::runtime_state! {
+/// Authoritative interrupt routing and pending-source state.
+#[derive(Debug, Clone, Default)]
 pub(crate) struct InterruptRouter {
     asserted: [bool; 8],
     vectors: [u8; 8],
     pub(crate) ioc: Ioc,
-}
+}}
 
 impl InterruptRouter {
     /// Resets all interrupt inputs.

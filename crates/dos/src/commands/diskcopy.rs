@@ -21,6 +21,8 @@ impl Command for Diskcopy {
     }
 }
 
+#[derive(Clone)]
+/// Authoritative DISKCOPY track transfer and verification state.
 struct DiskcopyState {
     src_drive_index: u8,
     src_da_ua: u8,
@@ -35,8 +37,23 @@ struct DiskcopyState {
     disk_buffer: Vec<u8>,
 }
 
+state_struct_codec!(DiskcopyState {
+    src_drive_index,
+    src_da_ua,
+    dst_drive_index,
+    dst_da_ua,
+    sectors_per_track,
+    sector_size,
+    total_tracks,
+    current_track,
+    same_drive,
+    verify,
+    disk_buffer,
+});
+
 const KB_BUF_COUNT: u32 = 0x0528;
 
+#[derive(Clone)]
 enum DiskcopyPhase {
     Init,
     PromptInsertSource(DiskcopyState),
@@ -48,10 +65,55 @@ enum DiskcopyPhase {
     PromptAnother(DiskcopyState),
 }
 
-struct RunningDiskcopy {
+impl save_state::StateEncode for DiskcopyPhase {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        let (tag, state) = match self {
+            Self::Init => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                return;
+            }
+            Self::PromptInsertSource(state) => (1u8, state),
+            Self::ReadTracks(state) => (2u8, state),
+            Self::PromptInsertDest(state) => (3u8, state),
+            Self::WriteTracks(state) => (4u8, state),
+            Self::VerifyTracks(state) => (5u8, state),
+            Self::Summary(state) => (6u8, state),
+            Self::PromptAnother(state) => (7u8, state),
+        };
+        save_state::StateEncode::encode_state(&tag, output);
+        save_state::StateEncode::encode_state(state, output);
+    }
+}
+
+impl save_state::StateDecode for DiskcopyPhase {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        let state = |decoder: &mut save_state::StateDecoder<'_>| {
+            save_state::StateDecode::decode_state(decoder)
+        };
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Init),
+            1 => Ok(Self::PromptInsertSource(state(decoder)?)),
+            2 => Ok(Self::ReadTracks(state(decoder)?)),
+            3 => Ok(Self::PromptInsertDest(state(decoder)?)),
+            4 => Ok(Self::WriteTracks(state(decoder)?)),
+            5 => Ok(Self::VerifyTracks(state(decoder)?)),
+            6 => Ok(Self::Summary(state(decoder)?)),
+            7 => Ok(Self::PromptAnother(state(decoder)?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
+/// Serializable state of an executing DISKCOPY command.
+pub(crate) struct RunningDiskcopy {
     args: Vec<u8>,
     phase: DiskcopyPhase,
 }
+
+state_struct_codec!(RunningDiskcopy { args, phase });
 
 impl RunningDiskcopy {
     fn step_init(&mut self, io: &mut IoAccess, disk: &mut dyn DiskIo) -> StepResult {

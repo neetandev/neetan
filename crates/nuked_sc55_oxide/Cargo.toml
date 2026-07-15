@@ -8,5 +8,6 @@ rust-version.workspace = true
 license-file = "LICENSE"
 
 [dependencies]
-common.workspace = true
+common = { workspace = true, features = ["std"] }
 resampler.workspace = true
+save_state.workspace = true

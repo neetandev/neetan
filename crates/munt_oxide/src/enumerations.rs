@@ -45,6 +45,7 @@ pub(crate) enum MidiDelayMode {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[repr(i32)]
+/// Playback lifecycle of one allocated poly.
 pub(crate) enum PolyState {
     Playing = 0,
     // This marks keys that have been released on the keyboard, but are being held by the pedal
@@ -56,9 +57,54 @@ pub(crate) enum PolyState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
+/// Selected MT-32 reverb algorithm.
 pub(crate) enum ReverbMode {
     Room = 0,
     Hall = 1,
     Plate = 2,
     TapDelay = 3,
 }
+
+/// Adds stable save-state tags matching an existing MT-32 enum representation.
+///
+/// Use this only for fieldless implementation enums whose numeric values are
+/// already defined by the synth core. Unknown values must remain invalid.
+macro_rules! impl_enum_codec {
+    ($state:ty { $($tag:literal => $variant:path),+ $(,)? }) => {
+        impl save_state::StateEncode for $state {
+            fn encode_state(&self, output: &mut Vec<u8>) {
+                save_state::StateEncode::encode_state(&(*self as i32), output);
+            }
+        }
+
+        impl save_state::StateDecode for $state {
+            fn decode_state(
+                decoder: &mut save_state::StateDecoder<'_>,
+            ) -> Result<Self, save_state::StateDecodeError> {
+                match <i32 as save_state::StateDecode>::decode_state(decoder)? {
+                    $($tag => Ok($variant),)+
+                    _ => Err(save_state::StateDecodeError::InvalidTag),
+                }
+            }
+        }
+    };
+}
+
+impl_enum_codec!(DacInputMode { 0 => DacInputMode::Nice });
+impl_enum_codec!(MidiDelayMode {
+    0 => MidiDelayMode::Immediate,
+    1 => MidiDelayMode::DelayShortMessagesOnly,
+    2 => MidiDelayMode::DelayAll,
+});
+impl_enum_codec!(PolyState {
+    0 => PolyState::Playing,
+    1 => PolyState::Held,
+    2 => PolyState::Releasing,
+    3 => PolyState::Inactive,
+});
+impl_enum_codec!(ReverbMode {
+    0 => ReverbMode::Room,
+    1 => ReverbMode::Hall,
+    2 => ReverbMode::Plate,
+    3 => ReverbMode::TapDelay,
+});

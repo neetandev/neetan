@@ -65,7 +65,8 @@ const BEEP_COUNTER_5_10MHZ: u16 = 1229;
 /// Stored as `0xB6 & 0x3F` = 0x36 (strip SC bits for the ctrl register).
 const CH2_CTRL_WORD: u8 = 0xB6;
 
-/// Snapshot of a single PIT channel.
+save_state::runtime_state! {
+/// Authoritative state of a single PIT channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I8253PitChannelState {
     /// Control word.
@@ -84,20 +85,23 @@ pub struct I8253PitChannelState {
     pub reload_pending: Option<u16>,
     /// Status byte latched by the 8254 read-back command.
     pub status_latch: Option<u8>,
-}
+}}
 
-/// Snapshot of the i8253 PIT (all 3 channels).
+save_state::runtime_state! {
+/// Authoritative state of all three i8253 PIT channels.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I8253PitState {
     /// The three channel snapshots.
     pub channels: [I8253PitChannelState; 3],
-}
+}}
 
 /// i8253 PIT with 3 channels.
 pub struct I8253Pit {
     /// Embedded state for save/restore.
     pub state: I8253PitState,
 }
+
+impl_simple_state_accessors!(I8253Pit, I8253PitState);
 
 impl Deref for I8253Pit {
     type Target = I8253PitState;

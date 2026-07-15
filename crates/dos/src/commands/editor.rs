@@ -37,39 +37,118 @@ impl Command for Editor {
     }
 }
 
+#[derive(Clone)]
 enum EditorPhase {
     Init,
     Active(Box<AppState>),
 }
 
-struct RunningEditor {
+impl save_state::StateEncode for EditorPhase {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Init => save_state::StateEncode::encode_state(&0u8, output),
+            Self::Active(state) => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(state, output);
+            }
+        }
+    }
+}
+
+impl save_state::StateDecode for EditorPhase {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Init),
+            1 => Ok(Self::Active(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+#[derive(Clone)]
+/// Serializable state of an executing EDIT command.
+pub(crate) struct RunningEditor {
     args: Vec<u8>,
     phase: EditorPhase,
 }
 
+state_struct_codec!(RunningEditor { args, phase });
+
+#[derive(Clone)]
+/// Authoritative text editor cursor, selection, and dialog state.
 pub(crate) struct EditorState {
     pub(crate) buffer: TextBuffer,
     pub(crate) require_create_on_first_save: bool,
 }
 
+state_struct_codec!(EditorState {
+    buffer,
+    require_create_on_first_save,
+});
+
+#[derive(Clone)]
 pub(crate) enum AppMode {
     FilePicker(FilePickerState),
     Editor(EditorState),
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum MessageStyle {
-    Neutral,
-    Success,
-    Warning,
-    Error,
+impl save_state::StateEncode for AppMode {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::FilePicker(state) => {
+                save_state::StateEncode::encode_state(&0u8, output);
+                save_state::StateEncode::encode_state(state, output);
+            }
+            Self::Editor(state) => {
+                save_state::StateEncode::encode_state(&1u8, output);
+                save_state::StateEncode::encode_state(state, output);
+            }
+        }
+    }
 }
 
+impl save_state::StateDecode for AppMode {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::FilePicker(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            1 => Ok(Self::Editor(save_state::StateDecode::decode_state(
+                decoder,
+            )?)),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
+}
+
+save_state::runtime_state_enum! {
+    /// Visual style of one editor status message.
+    #[derive(Clone, Copy)]
+    pub(crate) enum MessageStyle {
+        Neutral = 0,
+        Success = 1,
+        Warning = 2,
+        Error = 3,
+    }
+}
+
+#[derive(Clone)]
+/// One styled status line retained by the editor.
 pub(crate) struct MessageLine {
     pub(crate) text: Vec<u8>,
     pub(crate) style: MessageStyle,
 }
 
+state_struct_codec!(MessageLine { text, style });
+
+#[derive(Clone)]
+/// Complete EDIT application state without retained filesystem access.
 struct AppState {
     mode: AppMode,
     overlay: Option<Overlay>,
@@ -78,6 +157,19 @@ struct AppState {
     dirty: bool,
     pending_exit: Option<u8>,
 }
+
+state_struct_codec_with_resources!(AppState {
+    state {
+        mode,
+        overlay,
+        message,
+        dirty,
+        pending_exit,
+    }
+    resources {
+        display: render::DisplayBuffer::new(),
+    }
+});
 
 impl AppState {
     fn new(mode: AppMode) -> Self {

@@ -23,6 +23,13 @@ const SSG_PORT_A: u8 = 0;
 /// SSG parallel I/O port B index, used for the joystick strobe / second pad.
 const SSG_PORT_B: u8 = 1;
 
+save_state::runtime_state! {
+/// Complete mutable FM-7 OPN state.
+#[derive(Clone)]
+pub struct Fm7OpnState {
+    core: crate::opn_fm::OpnFmState<ymfm_oxide::Ym2203, ymfm_oxide::YmfmOutput4>,
+}}
+
 /// FM-7 / FM-77AV built-in YM2203 (OPN) sound source with resampling.
 pub struct Fm7Opn {
     core: OpnFm<Ym2203>,
@@ -98,5 +105,20 @@ impl Fm7Opn {
     ) {
         self.core
             .generate_samples(current_cycle, cpu_clock_hz, volume, output);
+    }
+
+    /// Captures chip, timer, and resampler state.
+    pub fn capture_state(&self) -> Fm7OpnState {
+        Fm7OpnState {
+            core: self.core.capture_state(),
+        }
+    }
+
+    /// Restores chip, timer, and resampler state.
+    pub fn restore_state(
+        &mut self,
+        state: Fm7OpnState,
+    ) -> Result<(), save_state::StateValidationError> {
+        self.core.restore_state(state.core)
     }
 }

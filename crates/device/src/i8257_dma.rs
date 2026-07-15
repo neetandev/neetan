@@ -24,6 +24,7 @@ pub const MODE_AUTOLOAD: u8 = 0x80;
 /// Mode register bit: stop the channel (clear its enable) at terminal count.
 pub const MODE_TC_STOP: u8 = 0x40;
 
+save_state::runtime_state! {
 /// Per-channel DMA register state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct I8257ChannelState {
@@ -35,8 +36,9 @@ pub struct I8257ChannelState {
     pub mode_bits: u8,
     /// Whether the channel is currently transferring.
     pub running: bool,
-}
+}}
 
+save_state::runtime_state! {
 /// Snapshot of the uPD8257 state for save/restore.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I8257DmaState {
@@ -49,7 +51,7 @@ pub struct I8257DmaState {
     pub status: u8,
     /// Address/count byte flip-flop (false = low byte next).
     pub high_low: bool,
-}
+}}
 
 /// uPD8257 four-channel DMA controller.
 pub struct I8257Dma {

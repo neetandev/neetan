@@ -32,14 +32,13 @@ fn rs_midi_bytes_captured_verbatim_and_in_order() {
         machine.bus.io_write_byte(RS232C_DATA_PORT, byte);
     }
 
-    let mut drained = Vec::new();
-    machine.bus.flush_midi_into(&mut drained);
-    assert_eq!(drained, stream);
+    let mut drained = [0; 8];
+    let length = machine.bus.flush_midi_into(&mut drained);
+    assert_eq!(drained[..length], stream);
 
     // Draining again yields nothing.
-    let mut again = Vec::new();
-    machine.bus.flush_midi_into(&mut again);
-    assert!(again.is_empty());
+    let mut again = [0; 1];
+    assert_eq!(machine.bus.flush_midi_into(&mut again), 0);
 }
 
 #[test]
@@ -56,7 +55,6 @@ fn midi_capture_disabled_by_default() {
     for byte in [0x90, 0x40, 0x7F] {
         machine.bus.io_write_byte(RS232C_DATA_PORT, byte);
     }
-    let mut drained = Vec::new();
-    machine.bus.flush_midi_into(&mut drained);
-    assert!(drained.is_empty());
+    let mut drained = [0; 3];
+    assert_eq!(machine.bus.flush_midi_into(&mut drained), 0);
 }

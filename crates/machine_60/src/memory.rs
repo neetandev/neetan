@@ -43,6 +43,61 @@ pub enum Pc6000Memory {
     Sr(SrMemory),
 }
 
+save_state::runtime_state! {
+/// Authoritative base-model PC-6000 memory and banking state.
+#[derive(Clone)]
+pub(crate) struct BaseMemoryState {
+    work_ram: Vec<u8>,
+    bank_window: u8,
+    video_ram_base: u16,
+}}
+
+save_state::runtime_state! {
+/// Authoritative banked PC-6000 memory state.
+#[derive(Clone)]
+pub(crate) struct BankedMemoryState {
+    ram: Vec<u8>,
+    bank_low: u8,
+    bank_high: u8,
+    bank_write: u8,
+    opt_bank: u8,
+    gfx_bank_on: bool,
+    cgrom_bank_address: usize,
+    video_base: usize,
+}}
+
+save_state::runtime_state! {
+/// Authoritative PC-6000 SR memory and banking state.
+#[derive(Clone)]
+pub(crate) struct SrMemoryState {
+    work_ram: Vec<u8>,
+    extended_ram: Vec<u8>,
+    graphics_vram: Vec<u8>,
+    read_page: [u8; SR_PAGE_COUNT],
+    write_page: [u8; SR_PAGE_COUNT],
+    bitmap_mode: bool,
+    bitmap_x_offset: usize,
+    bitmap_y_offset: usize,
+    text_base: usize,
+    legacy_video_base: usize,
+    compatibility_bank_low: u8,
+    compatibility_bank_high: u8,
+    compatibility_bank_write: u8,
+    compatibility_option_bank: u8,
+    compatibility_gfx_bank_on: bool,
+    compatibility_cgrom_bank_address: usize,
+}}
+
+save_state::runtime_state! {
+/// Complete memory state for the selected PC-6000 family model.
+#[derive(Clone)]
+pub(crate) struct Pc6000MemoryState {
+    kind: u8,
+    base: Option<BaseMemoryState>,
+    banked: Option<BankedMemoryState>,
+    sr: Option<SrMemoryState>,
+}}
+
 impl Pc6000Memory {
     /// Creates the memory map for `model` with cleared RAM and no ROMs loaded.
     pub fn new(model: Pc6000Model) -> Self {
@@ -52,6 +107,141 @@ impl Pc6000Memory {
                 Pc6000Memory::Banked(BankedMemory::new())
             }
             Pc6000Model::Pc6001Mk2Sr | Pc6000Model::Pc6601Sr => Pc6000Memory::Sr(SrMemory::new()),
+        }
+    }
+
+    pub(crate) fn capture_state(&self) -> Pc6000MemoryState {
+        match self {
+            Self::Base(memory) => Pc6000MemoryState {
+                kind: 0,
+                base: Some(BaseMemoryState {
+                    work_ram: memory.work_ram.clone(),
+                    bank_window: memory.bank_window as u8,
+                    video_ram_base: memory.video_ram_base,
+                }),
+                banked: None,
+                sr: None,
+            },
+            Self::Banked(memory) => Pc6000MemoryState {
+                kind: 1,
+                base: None,
+                banked: Some(BankedMemoryState {
+                    ram: memory.physical[PHYS_WORK_RAM..PHYS_EXROM].to_vec(),
+                    bank_low: memory.bank_low,
+                    bank_high: memory.bank_high,
+                    bank_write: memory.bank_write,
+                    opt_bank: memory.opt_bank,
+                    gfx_bank_on: memory.gfx_bank_on,
+                    cgrom_bank_address: memory.cgrom_bank_addr,
+                    video_base: memory.video_base,
+                }),
+                sr: None,
+            },
+            Self::Sr(memory) => Pc6000MemoryState {
+                kind: 2,
+                base: None,
+                banked: None,
+                sr: Some(SrMemoryState {
+                    work_ram: memory.physical[SR_WORK_RAM..SR_WORK_RAM + SR_WORK_RAM_SIZE].to_vec(),
+                    extended_ram: memory.physical[SR_EX_RAM..SR_EX_RAM + SR_EX_RAM_SIZE].to_vec(),
+                    graphics_vram: memory.gvram.clone(),
+                    read_page: memory.read_page,
+                    write_page: memory.write_page,
+                    bitmap_mode: memory.bitmap_mode,
+                    bitmap_x_offset: memory.bitmap_x_offset,
+                    bitmap_y_offset: memory.bitmap_y_offset,
+                    text_base: memory.text_base,
+                    legacy_video_base: memory.legacy_video_base,
+                    compatibility_bank_low: memory.compat_bank_low,
+                    compatibility_bank_high: memory.compat_bank_high,
+                    compatibility_bank_write: memory.compat_bank_write,
+                    compatibility_option_bank: memory.compat_opt_bank,
+                    compatibility_gfx_bank_on: memory.compat_gfx_bank_on,
+                    compatibility_cgrom_bank_address: memory.compat_cgrom_bank_addr,
+                }),
+            },
+        }
+    }
+
+    pub(crate) fn restore_state(
+        &mut self,
+        state: Pc6000MemoryState,
+    ) -> Result<(), save_state::StateValidationError> {
+        match (self, state.kind, state.base, state.banked, state.sr) {
+            (Self::Base(memory), 0, Some(state), None, None)
+                if state.work_ram.len() == WORK_RAM_SIZE
+                    && matches!(state.bank_window, 0 | 1)
+                    && state.video_ram_base >= WORK_RAM_BASE =>
+            {
+                memory.work_ram = state.work_ram;
+                memory.bank_window = if state.bank_window == 0 {
+                    BankWindow::CharacterGenerator
+                } else {
+                    BankWindow::CartridgeUpper
+                };
+                memory.video_ram_base = state.video_ram_base;
+                Ok(())
+            }
+            (Self::Banked(memory), 1, None, Some(state), None)
+                if state.ram.len() == PHYS_EXROM - PHYS_WORK_RAM
+                    && state.opt_bank <= 3
+                    && state
+                        .cgrom_bank_address
+                        .checked_add(PAGE_SIZE)
+                        .is_some_and(|end| end <= GFX_CGROM_SIZE)
+                    && (PHYS_WORK_RAM..PHYS_EXROM).contains(&state.video_base) =>
+            {
+                memory.physical[PHYS_WORK_RAM..PHYS_EXROM].copy_from_slice(&state.ram);
+                memory.bank_low = state.bank_low;
+                memory.bank_high = state.bank_high;
+                memory.bank_write = state.bank_write;
+                memory.opt_bank = state.opt_bank;
+                memory.gfx_bank_on = state.gfx_bank_on;
+                memory.cgrom_bank_addr = state.cgrom_bank_address;
+                memory.video_base = state.video_base;
+                memory.resolve_read_banks();
+                Ok(())
+            }
+            (Self::Sr(memory), 2, None, None, Some(state))
+                if state.work_ram.len() == SR_WORK_RAM_SIZE
+                    && state.extended_ram.len() == SR_EX_RAM_SIZE
+                    && state.graphics_vram.len() == SR_GVRAM_SIZE
+                    && state
+                        .read_page
+                        .iter()
+                        .chain(&state.write_page)
+                        .all(|page| usize::from(*page) < SR_PHYSICAL_SIZE / PAGE_SIZE)
+                    && state.text_base < SR_WORK_RAM_SIZE
+                    && state.legacy_video_base < SR_WORK_RAM_SIZE
+                    && state.compatibility_option_bank <= 3
+                    && state
+                        .compatibility_cgrom_bank_address
+                        .checked_add(PAGE_SIZE)
+                        .is_some_and(|end| end <= GFX_CGROM_SIZE) =>
+            {
+                memory.physical[SR_WORK_RAM..SR_WORK_RAM + SR_WORK_RAM_SIZE]
+                    .copy_from_slice(&state.work_ram);
+                memory.physical[SR_EX_RAM..SR_EX_RAM + SR_EX_RAM_SIZE]
+                    .copy_from_slice(&state.extended_ram);
+                memory.gvram = state.graphics_vram;
+                memory.read_page = state.read_page;
+                memory.write_page = state.write_page;
+                memory.bitmap_mode = state.bitmap_mode;
+                memory.bitmap_x_offset = state.bitmap_x_offset;
+                memory.bitmap_y_offset = state.bitmap_y_offset;
+                memory.text_base = state.text_base;
+                memory.legacy_video_base = state.legacy_video_base;
+                memory.compat_bank_low = state.compatibility_bank_low;
+                memory.compat_bank_high = state.compatibility_bank_high;
+                memory.compat_bank_write = state.compatibility_bank_write;
+                memory.compat_opt_bank = state.compatibility_option_bank;
+                memory.compat_gfx_bank_on = state.compatibility_gfx_bank_on;
+                memory.compat_cgrom_bank_addr = state.compatibility_cgrom_bank_address;
+                Ok(())
+            }
+            _ => Err(save_state::StateValidationError::new(
+                "PC-6000 memory state does not match the active model",
+            )),
         }
     }
 

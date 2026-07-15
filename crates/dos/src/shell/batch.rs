@@ -7,6 +7,8 @@ use crate::{
     filesystem,
 };
 
+#[derive(Clone)]
+/// Saved parent batch context for one CALL nesting level.
 struct CallFrame {
     lines: Vec<Vec<u8>>,
     current_line: usize,
@@ -14,6 +16,15 @@ struct CallFrame {
     bat_path: Vec<u8>,
 }
 
+state_struct_codec!(CallFrame {
+    lines,
+    current_line,
+    params,
+    bat_path,
+});
+
+#[derive(Clone)]
+/// Complete authoritative progress of one executing batch file.
 pub(crate) struct BatchState {
     lines: Vec<Vec<u8>>,
     current_line: usize,
@@ -27,9 +38,26 @@ pub(crate) struct BatchState {
     paused: bool,
 }
 
-struct WaitingForChildCommand {
+state_struct_codec!(BatchState {
+    lines,
+    current_line,
+    params,
+    bat_path,
+    echo_on,
+    running_command,
+    current_redirect,
+    redirect_buffer,
+    call_stack,
+    paused,
+});
+
+#[derive(Clone)]
+/// Batch command state that waits for an external child to terminate.
+pub(crate) struct WaitingForChildCommand {
     owner_psp: u16,
 }
+
+state_struct_codec!(WaitingForChildCommand { owner_psp });
 
 impl WaitingForChildCommand {
     fn new(owner_psp: u16) -> Self {
@@ -53,6 +81,21 @@ impl RunningCommand for WaitingForChildCommand {
 }
 
 impl BatchState {
+    /// Prepares retained host resources for restored command progress.
+    pub(crate) fn prepare_restore(&mut self) -> Result<(), save_state::StateValidationError> {
+        if let Some(command) = &mut self.running_command {
+            crate::commands::prepare_restore(command)?;
+        }
+        Ok(())
+    }
+
+    /// Returns the command currently owned by this batch file.
+    pub(crate) fn active_command_name(&self) -> Option<&'static str> {
+        self.running_command
+            .as_deref()
+            .map(crate::commands::running_command_name)
+    }
+
     pub(crate) fn new(
         lines: Vec<Vec<u8>>,
         params: [Vec<u8>; 10],

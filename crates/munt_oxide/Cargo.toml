@@ -9,5 +9,6 @@ license = "LGPL-2.1-or-later"
 
 [dependencies]
 blake3.workspace = true
-common.workspace = true
+common = { workspace = true, features = ["std"] }
 resampler.workspace = true
+save_state.workspace = true

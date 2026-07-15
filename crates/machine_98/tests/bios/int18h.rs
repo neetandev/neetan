@@ -173,7 +173,7 @@ fn make_draw_test_code(draw_ah: u8) -> Vec<u8> {
 
 const DRAW_BUDGET: u64 = 1_000_000;
 
-fn run_draw_test_f(ucw_data: &[u8], draw_ah: u8) -> machine_98::Pc98MachineState {
+fn run_draw_test_f(ucw_data: &[u8], draw_ah: u8) -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_f();
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, DATA_TABLE, ucw_data);
@@ -184,50 +184,48 @@ fn run_draw_test_f(ucw_data: &[u8], draw_ah: u8) -> machine_98::Pc98MachineState
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(DRAW_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
-fn run_draw_test_vm(ucw_data: &[u8], draw_ah: u8) -> machine_98::Pc98MachineState {
+fn run_draw_test_vm(ucw_data: &[u8], draw_ah: u8) -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, DATA_TABLE, ucw_data);
     let code = make_draw_test_code(draw_ah);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(DRAW_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
-fn run_draw_test_vx(ucw_data: &[u8], draw_ah: u8) -> machine_98::Pc98MachineState {
+fn run_draw_test_vx(ucw_data: &[u8], draw_ah: u8) -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_vx();
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, DATA_TABLE, ucw_data);
     let code = make_draw_test_code(draw_ah);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
     machine.run_for(DRAW_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
-fn run_draw_test_ra(ucw_data: &[u8], draw_ah: u8) -> machine_98::Pc98MachineState {
+fn run_draw_test_ra(ucw_data: &[u8], draw_ah: u8) -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_ra();
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, DATA_TABLE, ucw_data);
@@ -242,7 +240,7 @@ fn run_draw_test_ra(ucw_data: &[u8], draw_ah: u8) -> machine_98::Pc98MachineStat
         s
     });
     machine.run_for(DRAW_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
 // ============================================================================
@@ -253,7 +251,7 @@ fn run_draw_test_ra(ucw_data: &[u8], draw_ah: u8) -> machine_98::Pc98MachineStat
 fn int18h_vector_f() {
     let mut machine = create_machine_f();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x18);
     assert!(
@@ -266,7 +264,7 @@ fn int18h_vector_f() {
 fn int18h_vector_vm() {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x18);
     assert!(
@@ -279,7 +277,7 @@ fn int18h_vector_vm() {
 fn int18h_vector_vx() {
     let mut machine = create_machine_vx();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x18);
     assert!(
@@ -292,7 +290,7 @@ fn int18h_vector_vx() {
 fn int18h_vector_ra() {
     let mut machine = create_machine_ra();
     boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x18);
     assert!(
@@ -407,7 +405,7 @@ fn buffer_sense_data_f() {
     let mut machine = boot_inject_run_f(&[0x1C], &code, INT18H_BUDGET);
     let ax = machine.bus.read_word(RESULT);
     let bh = machine.bus.read_byte(RESULT + 3);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(bh, 0x01, "AH=01h should return BH=0x01 when data available");
     assert_ne!(ax, 0x0000, "AH=01h should return key code in AX");
@@ -423,7 +421,7 @@ fn buffer_sense_data_vm() {
     let mut machine = boot_inject_run_vm(&[0x1C], &code, INT18H_BUDGET);
     let ax = machine.bus.read_word(RESULT);
     let bh = machine.bus.read_byte(RESULT + 3);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(bh, 0x01, "AH=01h should return BH=0x01 when data available");
     assert_ne!(ax, 0x0000, "AH=01h should return key code in AX");
@@ -439,7 +437,7 @@ fn buffer_sense_data_vx() {
     let mut machine = boot_inject_run_vx(&[0x1C], &code, INT18H_BUDGET);
     let ax = machine.bus.read_word(RESULT);
     let bh = machine.bus.read_byte(RESULT + 3);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(bh, 0x01, "AH=01h should return BH=0x01 when data available");
     assert_ne!(ax, 0x0000, "AH=01h should return key code in AX");
@@ -455,7 +453,7 @@ fn buffer_sense_data_ra() {
     let mut machine = boot_inject_run_ra(&[0x1C], &code, INT18H_BUDGET);
     let ax = machine.bus.read_word(RESULT);
     let bh = machine.bus.read_byte(RESULT + 3);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(bh, 0x01, "AH=01h should return BH=0x01 when data available");
     assert_ne!(ax, 0x0000, "AH=01h should return key code in AX");
@@ -472,7 +470,7 @@ fn buffer_sense_after_chained_int09h_prehandler_vm() {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let (original_segment, original_offset) = read_ivt_vector(&state.memory.ram, 0x09);
     let handler = make_dosshell_int09h_prehandler(original_segment, original_offset);
     write_bytes(&mut machine.bus, HANDLER, &handler);
@@ -491,10 +489,9 @@ fn buffer_sense_after_chained_int09h_prehandler_vm() {
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.bus.push_keyboard_scancode(0x4B);
     machine.cpu.load_state(&{
-        let mut state = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut state = cpu::V30State::default();
+        state.ip = TEST_CODE as u16;
+        state.initialize_cold_frontend();
         state.set_sp(0x4000);
         state
     });
@@ -504,7 +501,7 @@ fn buffer_sense_after_chained_int09h_prehandler_vm() {
     assert!(machine.cpu.halted(), "guest program should halt");
     let ax = machine.bus.read_word(RESULT);
     let bh = machine.bus.read_byte(RESULT + 3);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         bh, 0x01,
@@ -573,7 +570,7 @@ fn kb_init_f() {
         0xF4,                   // HLT
     ];
     let machine = boot_inject_run_f(&[0x1C], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 0,
@@ -603,7 +600,7 @@ fn kb_init_vm() {
         0xF4,                   // HLT
     ];
     let machine = boot_inject_run_vm(&[0x1C], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 0,
@@ -630,7 +627,7 @@ fn kb_init_vx() {
         0xF4,
     ];
     let machine = boot_inject_run_vx(&[0x1C], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 0,
@@ -657,7 +654,7 @@ fn kb_init_ra() {
         0xF4,
     ];
     let machine = boot_inject_run_ra(&[0x1C], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.memory.ram[KB_COUNT], 0,
@@ -684,7 +681,7 @@ fn kb_init_clears_key_status_and_sets_table_pointers_f() {
         0xF4,
     ];
     let machine = boot_inject_run_f(&[0x1C], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     // Key status area (0x0529..0x053B) should be cleared.
     for addr in 0x0529..0x053B {
@@ -722,7 +719,7 @@ fn kb_init_clears_key_status_and_sets_table_pointers_vm() {
         0xF4,
     ];
     let machine = boot_inject_run_vm(&[0x1C], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     // Key status area (0x0529..0x053B) should be cleared.
     for addr in 0x0529..0x053B {
@@ -864,7 +861,7 @@ fn key_code_read_data_f() {
     let mut machine = boot_inject_run_f(&[0x1C], &code, INT18H_BUDGET);
     let ax = machine.bus.read_word(RESULT);
     let bh = machine.bus.read_byte(RESULT + 3);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(bh, 0x01, "AH=05h should return BH=0x01 when data available");
     assert_ne!(ax, 0x0000, "AH=05h should return key code in AX");
@@ -880,7 +877,7 @@ fn key_code_read_data_vm() {
     let mut machine = boot_inject_run_vm(&[0x1C], &code, INT18H_BUDGET);
     let ax = machine.bus.read_word(RESULT);
     let bh = machine.bus.read_byte(RESULT + 3);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(bh, 0x01, "AH=05h should return BH=0x01 when data available");
     assert_ne!(ax, 0x0000, "AH=05h should return key code in AX");
@@ -896,7 +893,7 @@ fn key_code_read_data_vx() {
     let mut machine = boot_inject_run_vx(&[0x1C], &code, INT18H_BUDGET);
     let ax = machine.bus.read_word(RESULT);
     let bh = machine.bus.read_byte(RESULT + 3);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(bh, 0x01, "AH=05h should return BH=0x01 when data available");
     assert_ne!(ax, 0x0000, "AH=05h should return key code in AX");
@@ -912,7 +909,7 @@ fn key_code_read_data_ra() {
     let mut machine = boot_inject_run_ra(&[0x1C], &code, INT18H_BUDGET);
     let ax = machine.bus.read_word(RESULT);
     let bh = machine.bus.read_byte(RESULT + 3);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(bh, 0x01, "AH=05h should return BH=0x01 when data available");
     assert_ne!(ax, 0x0000, "AH=05h should return key code in AX");
@@ -931,7 +928,7 @@ fn crt_mode_sense_f() {
     let code = make_int18h_call_store(0x0B);
     let mut machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
     let al = machine.bus.read_byte(RESULT);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let expected = state.memory.ram[0x053C];
     assert_eq!(
         al, expected,
@@ -944,7 +941,7 @@ fn crt_mode_sense_vm() {
     let code = make_int18h_call_store(0x0B);
     let mut machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
     let al = machine.bus.read_byte(RESULT);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let expected = state.memory.ram[0x053C];
     assert_eq!(
         al, expected,
@@ -957,7 +954,7 @@ fn crt_mode_sense_vx() {
     let code = make_int18h_call_store(0x0B);
     let mut machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
     let al = machine.bus.read_byte(RESULT);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let expected = state.memory.ram[0x053C];
     assert_eq!(
         al, expected,
@@ -970,7 +967,7 @@ fn crt_mode_sense_ra() {
     let code = make_int18h_call_store(0x0B);
     let mut machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
     let al = machine.bus.read_byte(RESULT);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let expected = state.memory.ram[0x053C];
     assert_eq!(
         al, expected,
@@ -986,7 +983,7 @@ fn crt_mode_sense_ra() {
 fn text_display_stop_f() {
     let code = make_int18h_call(0x0D);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.display_enabled,
         "AH=0Dh should disable text display"
@@ -997,7 +994,7 @@ fn text_display_stop_f() {
 fn text_display_stop_vm() {
     let code = make_int18h_call(0x0D);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.display_enabled,
         "AH=0Dh should disable text display"
@@ -1008,7 +1005,7 @@ fn text_display_stop_vm() {
 fn text_display_stop_vx() {
     let code = make_int18h_call(0x0D);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.display_enabled,
         "AH=0Dh should disable text display"
@@ -1019,7 +1016,7 @@ fn text_display_stop_vx() {
 fn text_display_stop_ra() {
     let code = make_int18h_call(0x0D);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.display_enabled,
         "AH=0Dh should disable text display"
@@ -1034,7 +1031,7 @@ fn text_display_stop_ra() {
 fn text_display_start_f() {
     let code = make_int18h_two_calls(0x0D, 0x0C);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_master.display_enabled,
         "AH=0Ch should enable text display"
@@ -1045,7 +1042,7 @@ fn text_display_start_f() {
 fn text_display_start_vm() {
     let code = make_int18h_two_calls(0x0D, 0x0C);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_master.display_enabled,
         "AH=0Ch should enable text display"
@@ -1056,7 +1053,7 @@ fn text_display_start_vm() {
 fn text_display_start_vx() {
     let code = make_int18h_two_calls(0x0D, 0x0C);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_master.display_enabled,
         "AH=0Ch should enable text display"
@@ -1067,7 +1064,7 @@ fn text_display_start_vx() {
 fn text_display_start_ra() {
     let code = make_int18h_two_calls(0x0D, 0x0C);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_master.display_enabled,
         "AH=0Ch should enable text display"
@@ -1082,7 +1079,7 @@ fn text_display_start_ra() {
 fn cursor_blink_blinking_f() {
     let code = make_int18h_call_al(0x10, 0x00);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.cursor_blink,
         "AH=10h AL=0 should set cursor to blinking (cursor_blink=false)"
@@ -1093,7 +1090,7 @@ fn cursor_blink_blinking_f() {
 fn cursor_blink_blinking_vm() {
     let code = make_int18h_call_al(0x10, 0x00);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.cursor_blink,
         "AH=10h AL=0 should set cursor to blinking (cursor_blink=false)"
@@ -1104,7 +1101,7 @@ fn cursor_blink_blinking_vm() {
 fn cursor_blink_blinking_vx() {
     let code = make_int18h_call_al(0x10, 0x00);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.cursor_blink,
         "AH=10h AL=0 should set cursor to blinking (cursor_blink=false)"
@@ -1115,7 +1112,7 @@ fn cursor_blink_blinking_vx() {
 fn cursor_blink_blinking_ra() {
     let code = make_int18h_call_al(0x10, 0x00);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.cursor_blink,
         "AH=10h AL=0 should set cursor to blinking (cursor_blink=false)"
@@ -1130,7 +1127,7 @@ fn cursor_blink_blinking_ra() {
 fn cursor_blink_steady_f() {
     let code = make_int18h_call_al(0x10, 0x01);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_master.cursor_blink,
         "AH=10h AL=1 should set cursor to steady (cursor_blink=true)"
@@ -1141,7 +1138,7 @@ fn cursor_blink_steady_f() {
 fn cursor_blink_steady_vm() {
     let code = make_int18h_call_al(0x10, 0x01);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_master.cursor_blink,
         "AH=10h AL=1 should set cursor to steady (cursor_blink=true)"
@@ -1152,7 +1149,7 @@ fn cursor_blink_steady_vm() {
 fn cursor_blink_steady_vx() {
     let code = make_int18h_call_al(0x10, 0x01);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_master.cursor_blink,
         "AH=10h AL=1 should set cursor to steady (cursor_blink=true)"
@@ -1163,7 +1160,7 @@ fn cursor_blink_steady_vx() {
 fn cursor_blink_steady_ra() {
     let code = make_int18h_call_al(0x10, 0x01);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_master.cursor_blink,
         "AH=10h AL=1 should set cursor to steady (cursor_blink=true)"
@@ -1178,7 +1175,7 @@ fn cursor_blink_steady_ra() {
 fn cursor_display_stop_f() {
     let code = make_int18h_call(0x12);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.cursor_display,
         "AH=12h should hide cursor"
@@ -1189,7 +1186,7 @@ fn cursor_display_stop_f() {
 fn cursor_display_stop_vm() {
     let code = make_int18h_call(0x12);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.cursor_display,
         "AH=12h should hide cursor"
@@ -1200,7 +1197,7 @@ fn cursor_display_stop_vm() {
 fn cursor_display_stop_vx() {
     let code = make_int18h_call(0x12);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.cursor_display,
         "AH=12h should hide cursor"
@@ -1211,7 +1208,7 @@ fn cursor_display_stop_vx() {
 fn cursor_display_stop_ra() {
     let code = make_int18h_call(0x12);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.cursor_display,
         "AH=12h should hide cursor"
@@ -1226,7 +1223,7 @@ fn cursor_display_stop_ra() {
 fn cursor_display_start_f() {
     let code = make_int18h_two_calls(0x12, 0x11);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(state.gdc_master.cursor_display, "AH=11h should show cursor");
 }
 
@@ -1234,7 +1231,7 @@ fn cursor_display_start_f() {
 fn cursor_display_start_vm() {
     let code = make_int18h_two_calls(0x12, 0x11);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(state.gdc_master.cursor_display, "AH=11h should show cursor");
 }
 
@@ -1242,7 +1239,7 @@ fn cursor_display_start_vm() {
 fn cursor_display_start_vx() {
     let code = make_int18h_two_calls(0x12, 0x11);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(state.gdc_master.cursor_display, "AH=11h should show cursor");
 }
 
@@ -1250,7 +1247,7 @@ fn cursor_display_start_vx() {
 fn cursor_display_start_ra() {
     let code = make_int18h_two_calls(0x12, 0x11);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(state.gdc_master.cursor_display, "AH=11h should show cursor");
 }
 
@@ -1262,7 +1259,7 @@ fn cursor_display_start_ra() {
 fn cursor_position_set_f() {
     let code = make_int18h_call_dx(0x13, 0x0050);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_master.ead, 0x0028,
         "AH=13h DX=0x0050 should set GDC master EAD to 0x0028 (word address = DX/2)"
@@ -1273,7 +1270,7 @@ fn cursor_position_set_f() {
 fn cursor_position_set_vm() {
     let code = make_int18h_call_dx(0x13, 0x0050);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_master.ead, 0x0028,
         "AH=13h DX=0x0050 should set GDC master EAD to 0x0028 (word address = DX/2)"
@@ -1284,7 +1281,7 @@ fn cursor_position_set_vm() {
 fn cursor_position_set_vx() {
     let code = make_int18h_call_dx(0x13, 0x0050);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_master.ead, 0x0028,
         "AH=13h DX=0x0050 should set GDC master EAD to 0x0028 (word address = DX/2)"
@@ -1295,7 +1292,7 @@ fn cursor_position_set_vx() {
 fn cursor_position_set_ra() {
     let code = make_int18h_call_dx(0x13, 0x0050);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_master.ead, 0x0028,
         "AH=13h DX=0x0050 should set GDC master EAD to 0x0028 (word address = DX/2)"
@@ -1378,7 +1375,7 @@ fn text_vram_init_ra() {
 fn beep_on_f() {
     let code = make_int18h_call(0x17);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.beeper.buzzer_enabled,
         "AH=17h should enable the beeper"
@@ -1389,7 +1386,7 @@ fn beep_on_f() {
 fn beep_on_vm() {
     let code = make_int18h_call(0x17);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.beeper.buzzer_enabled,
         "AH=17h should enable the beeper"
@@ -1400,7 +1397,7 @@ fn beep_on_vm() {
 fn beep_on_vx() {
     let code = make_int18h_call(0x17);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.beeper.buzzer_enabled,
         "AH=17h should enable the beeper"
@@ -1411,7 +1408,7 @@ fn beep_on_vx() {
 fn beep_on_ra() {
     let code = make_int18h_call(0x17);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.beeper.buzzer_enabled,
         "AH=17h should enable the beeper"
@@ -1426,7 +1423,7 @@ fn beep_on_ra() {
 fn beep_off_f() {
     let code = make_int18h_two_calls(0x17, 0x18);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.beeper.buzzer_enabled,
         "AH=18h should disable the beeper"
@@ -1437,7 +1434,7 @@ fn beep_off_f() {
 fn beep_off_vm() {
     let code = make_int18h_two_calls(0x17, 0x18);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.beeper.buzzer_enabled,
         "AH=18h should disable the beeper"
@@ -1448,7 +1445,7 @@ fn beep_off_vm() {
 fn beep_off_vx() {
     let code = make_int18h_two_calls(0x17, 0x18);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.beeper.buzzer_enabled,
         "AH=18h should disable the beeper"
@@ -1459,7 +1456,7 @@ fn beep_off_vx() {
 fn beep_off_ra() {
     let code = make_int18h_two_calls(0x17, 0x18);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.beeper.buzzer_enabled,
         "AH=18h should disable the beeper"
@@ -1474,7 +1471,7 @@ fn beep_off_ra() {
 fn graphics_display_start_f() {
     let code = make_int18h_call(0x40);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_slave.display_enabled,
         "AH=40h should enable graphics display"
@@ -1485,7 +1482,7 @@ fn graphics_display_start_f() {
 fn graphics_display_start_vm() {
     let code = make_int18h_call(0x40);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_slave.display_enabled,
         "AH=40h should enable graphics display"
@@ -1496,7 +1493,7 @@ fn graphics_display_start_vm() {
 fn graphics_display_start_vx() {
     let code = make_int18h_call(0x40);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_slave.display_enabled,
         "AH=40h should enable graphics display"
@@ -1507,7 +1504,7 @@ fn graphics_display_start_vx() {
 fn graphics_display_start_ra() {
     let code = make_int18h_call(0x40);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_slave.display_enabled,
         "AH=40h should enable graphics display"
@@ -1522,7 +1519,7 @@ fn graphics_display_start_ra() {
 fn graphics_display_stop_f() {
     let code = make_int18h_two_calls(0x40, 0x41);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_slave.display_enabled,
         "AH=41h should disable graphics display"
@@ -1533,7 +1530,7 @@ fn graphics_display_stop_f() {
 fn graphics_display_stop_vm() {
     let code = make_int18h_two_calls(0x40, 0x41);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_slave.display_enabled,
         "AH=41h should disable graphics display"
@@ -1544,7 +1541,7 @@ fn graphics_display_stop_vm() {
 fn graphics_display_stop_vx() {
     let code = make_int18h_two_calls(0x40, 0x41);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_slave.display_enabled,
         "AH=41h should disable graphics display"
@@ -1555,7 +1552,7 @@ fn graphics_display_stop_vx() {
 fn graphics_display_stop_ra() {
     let code = make_int18h_two_calls(0x40, 0x41);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_slave.display_enabled,
         "AH=41h should disable graphics display"
@@ -1570,7 +1567,7 @@ fn graphics_display_stop_ra() {
 fn graphics_display_start_sets_prxcrt_bit7_f() {
     let code = make_int18h_call(0x40);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_ne!(
         state.memory.ram[0x054C] & 0x80,
         0,
@@ -1582,7 +1579,7 @@ fn graphics_display_start_sets_prxcrt_bit7_f() {
 fn graphics_display_start_sets_prxcrt_bit7_vm() {
     let code = make_int18h_call(0x40);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_ne!(
         state.memory.ram[0x054C] & 0x80,
         0,
@@ -1594,7 +1591,7 @@ fn graphics_display_start_sets_prxcrt_bit7_vm() {
 fn graphics_display_stop_clears_prxcrt_bit7_f() {
     let code = make_int18h_two_calls(0x40, 0x41);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.ram[0x054C] & 0x80,
         0,
@@ -1606,7 +1603,7 @@ fn graphics_display_stop_clears_prxcrt_bit7_f() {
 fn graphics_display_stop_clears_prxcrt_bit7_vm() {
     let code = make_int18h_two_calls(0x40, 0x41);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.ram[0x054C] & 0x80,
         0,
@@ -1622,7 +1619,7 @@ fn graphics_display_stop_clears_prxcrt_bit7_vm() {
 // digital palette registers (I/O ports 0xA8/0xAA/0xAC/0xAE). The BIOS
 // transforms GBCPC nibble-pair format into hardware register format.
 
-fn run_palette_set_f(gbcpc: &[u8; 4]) -> machine_98::Pc98MachineState {
+fn run_palette_set_f(gbcpc: &[u8; 4]) -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_f();
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, DATA_TABLE + 4, gbcpc);
@@ -1633,50 +1630,48 @@ fn run_palette_set_f(gbcpc: &[u8; 4]) -> machine_98::Pc98MachineState {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT18H_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
-fn run_palette_set_vm(gbcpc: &[u8; 4]) -> machine_98::Pc98MachineState {
+fn run_palette_set_vm(gbcpc: &[u8; 4]) -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, DATA_TABLE + 4, gbcpc);
     let code = make_int18h_call_ds_bx(0x43, DATA_TABLE as u16);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT18H_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
-fn run_palette_set_vx(gbcpc: &[u8; 4]) -> machine_98::Pc98MachineState {
+fn run_palette_set_vx(gbcpc: &[u8; 4]) -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_vx();
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, DATA_TABLE + 4, gbcpc);
     let code = make_int18h_call_ds_bx(0x43, DATA_TABLE as u16);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT18H_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
-fn run_palette_set_ra(gbcpc: &[u8; 4]) -> machine_98::Pc98MachineState {
+fn run_palette_set_ra(gbcpc: &[u8; 4]) -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_ra();
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, DATA_TABLE + 4, gbcpc);
@@ -1691,7 +1686,7 @@ fn run_palette_set_ra(gbcpc: &[u8; 4]) -> machine_98::Pc98MachineState {
         s
     });
     machine.run_for(INT18H_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
 #[test]
@@ -1699,7 +1694,7 @@ fn palette_set_f() {
     let default_state = {
         let mut m = create_machine_f();
         boot_to_halt!(m);
-        m.save_state()
+        m.inspection_state()
     };
     let state = run_palette_set_vm(&[0x00, 0x00, 0x00, 0x00]);
     assert_ne!(
@@ -1713,7 +1708,7 @@ fn palette_set_vm() {
     let default_state = {
         let mut m = create_machine_vm();
         boot_to_halt!(m);
-        m.save_state()
+        m.inspection_state()
     };
     let state = run_palette_set_vm(&[0x00, 0x00, 0x00, 0x00]);
     assert_ne!(
@@ -1727,7 +1722,7 @@ fn palette_set_vx() {
     let default_state = {
         let mut m = create_machine_vx();
         boot_to_halt!(m);
-        m.save_state()
+        m.inspection_state()
     };
     let state = run_palette_set_vx(&[0x00, 0x00, 0x00, 0x00]);
     assert_ne!(
@@ -1741,7 +1736,7 @@ fn palette_set_ra() {
     let default_state = {
         let mut m = create_machine_ra();
         boot_to_halt!(m);
-        m.save_state()
+        m.inspection_state()
     };
     let state = run_palette_set_ra(&[0x00, 0x00, 0x00, 0x00]);
     assert_ne!(
@@ -1758,7 +1753,7 @@ fn palette_set_ra() {
 fn crt_mode_set_20_f() {
     let code = make_int18h_call_al(0x0A, 0x01);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.ram[0x053C] & 0x01,
         0x01,
@@ -1770,7 +1765,7 @@ fn crt_mode_set_20_f() {
 fn crt_mode_set_20_vm() {
     let code = make_int18h_call_al(0x0A, 0x01);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.ram[0x053C] & 0x01,
         0x01,
@@ -1782,7 +1777,7 @@ fn crt_mode_set_20_vm() {
 fn crt_mode_set_20_vx() {
     let code = make_int18h_call_al(0x0A, 0x01);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.ram[0x053C] & 0x01,
         0x01,
@@ -1794,7 +1789,7 @@ fn crt_mode_set_20_vx() {
 fn crt_mode_set_20_ra() {
     let code = make_int18h_call_al(0x0A, 0x01);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.ram[0x053C] & 0x01,
         0x01,
@@ -1810,7 +1805,7 @@ fn crt_mode_set_20_ra() {
 fn crt_mode_set_25_f() {
     let code = make_int18h_call_al(0x0A, 0x00);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.ram[0x053C] & 0x01,
         0x00,
@@ -1822,7 +1817,7 @@ fn crt_mode_set_25_f() {
 fn crt_mode_set_25_vm() {
     let code = make_int18h_call_al(0x0A, 0x00);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.ram[0x053C] & 0x01,
         0x00,
@@ -1834,7 +1829,7 @@ fn crt_mode_set_25_vm() {
 fn crt_mode_set_25_vx() {
     let code = make_int18h_call_al(0x0A, 0x00);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.ram[0x053C] & 0x01,
         0x00,
@@ -1846,7 +1841,7 @@ fn crt_mode_set_25_vx() {
 fn crt_mode_set_25_ra() {
     let code = make_int18h_call_al(0x0A, 0x00);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.ram[0x053C] & 0x01,
         0x00,
@@ -1878,7 +1873,7 @@ fn make_show_cursor_then_crt_mode_set(al: u8) -> Vec<u8> {
 fn crt_mode_set_hides_cursor_f() {
     let code = make_show_cursor_then_crt_mode_set(0x00);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.cursor_display,
         "AH=0Ah should hide cursor via CSRFORM byte 0 rewrite without bit 7"
@@ -1889,7 +1884,7 @@ fn crt_mode_set_hides_cursor_f() {
 fn crt_mode_set_hides_cursor_vm() {
     let code = make_show_cursor_then_crt_mode_set(0x00);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.cursor_display,
         "AH=0Ah should hide cursor via CSRFORM byte 0 rewrite without bit 7"
@@ -1900,7 +1895,7 @@ fn crt_mode_set_hides_cursor_vm() {
 fn crt_mode_set_hides_cursor_vx() {
     let code = make_show_cursor_then_crt_mode_set(0x00);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.cursor_display,
         "AH=0Ah should hide cursor via CSRFORM byte 0 rewrite without bit 7"
@@ -1911,7 +1906,7 @@ fn crt_mode_set_hides_cursor_vx() {
 fn crt_mode_set_hides_cursor_ra() {
     let code = make_show_cursor_then_crt_mode_set(0x00);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         !state.gdc_master.cursor_display,
         "AH=0Ah should hide cursor via CSRFORM byte 0 rewrite without bit 7"
@@ -1926,7 +1921,7 @@ fn crt_mode_set_hides_cursor_ra() {
 fn single_display_area_f() {
     let code = make_int18h_call_dx(0x0E, 0x0100);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_master.scroll[0].start_address, 0x0080,
         "AH=0Eh DX=0x0100 should set scroll[0] start_address to 0x0080 (DX/2)"
@@ -1937,7 +1932,7 @@ fn single_display_area_f() {
 fn single_display_area_vm() {
     let code = make_int18h_call_dx(0x0E, 0x0100);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_master.scroll[0].start_address, 0x0080,
         "AH=0Eh DX=0x0100 should set scroll[0] start_address to 0x0080 (DX/2)"
@@ -1948,7 +1943,7 @@ fn single_display_area_vm() {
 fn single_display_area_vx() {
     let code = make_int18h_call_dx(0x0E, 0x0100);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_master.scroll[0].start_address, 0x0080,
         "AH=0Eh DX=0x0100 should set scroll[0] start_address to 0x0080 (DX/2)"
@@ -1959,7 +1954,7 @@ fn single_display_area_vx() {
 fn single_display_area_ra() {
     let code = make_int18h_call_dx(0x0E, 0x0100);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_master.scroll[0].start_address, 0x0080,
         "AH=0Eh DX=0x0100 should set scroll[0] start_address to 0x0080 (DX/2)"
@@ -1974,7 +1969,7 @@ fn single_display_area_ra() {
 fn kcg_access_mode_graphic_f() {
     let code = make_int18h_call_al(0x1B, 0x01);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_ne!(
         state.display_control.video_mode & 0x20,
         0,
@@ -1986,7 +1981,7 @@ fn kcg_access_mode_graphic_f() {
 fn kcg_access_mode_graphic_vm() {
     let code = make_int18h_call_al(0x1B, 0x01);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_ne!(
         state.display_control.video_mode & 0x20,
         0,
@@ -1998,7 +1993,7 @@ fn kcg_access_mode_graphic_vm() {
 fn kcg_access_mode_graphic_vx() {
     let code = make_int18h_call_al(0x1B, 0x01);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_ne!(
         state.display_control.video_mode & 0x20,
         0,
@@ -2010,7 +2005,7 @@ fn kcg_access_mode_graphic_vx() {
 fn kcg_access_mode_graphic_ra() {
     let code = make_int18h_call_al(0x1B, 0x01);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_ne!(
         state.display_control.video_mode & 0x20,
         0,
@@ -2032,7 +2027,7 @@ fn kcg_access_mode_code_f() {
         0xF4,                                   // HLT
     ];
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.display_control.video_mode & 0x20,
         0,
@@ -2050,7 +2045,7 @@ fn kcg_access_mode_code_vm() {
         0xF4,                                   // HLT
     ];
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.display_control.video_mode & 0x20,
         0,
@@ -2067,7 +2062,7 @@ fn kcg_access_mode_code_vx() {
         0xF4,
     ];
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.display_control.video_mode & 0x20,
         0,
@@ -2084,7 +2079,7 @@ fn kcg_access_mode_code_ra() {
         0xF4,
     ];
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.display_control.video_mode & 0x20,
         0,
@@ -2107,7 +2102,7 @@ fn display_area_set_f() {
         0xF4,                       // HLT
     ];
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_slave.display_enabled,
         "AH=40h after AH=42h should enable graphics display"
@@ -2125,7 +2120,7 @@ fn display_area_set_vm() {
         0xF4,                       // HLT
     ];
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_slave.display_enabled,
         "AH=40h after AH=42h should enable graphics display"
@@ -2142,7 +2137,7 @@ fn display_area_set_vx() {
         0xF4,
     ];
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_slave.display_enabled,
         "AH=40h after AH=42h should enable graphics display"
@@ -2161,7 +2156,7 @@ fn display_area_set_ra() {
         0xF4,                       // HLT
     ];
     let machine = boot_inject_run_ra(&[], &code, 2_000_000);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert!(
         state.gdc_slave.display_enabled,
         "AH=40h after AH=42h should enable graphics display"
@@ -2176,7 +2171,7 @@ fn display_area_set_ra() {
 fn draw_mode_set_f() {
     let code = make_int18h_call_ch(0x4A, 0x16);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     // CH=0x16 has bit 4 set -> PRXDUPD bit 3 should be cleared.
     assert_eq!(
         state.memory.ram[0x054D] & 0x08,
@@ -2189,7 +2184,7 @@ fn draw_mode_set_f() {
 fn draw_mode_set_vm() {
     let code = make_int18h_call_ch(0x4A, 0x16);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     // CH=0x16 has bit 4 set -> PRXDUPD bit 3 should be cleared.
     assert_eq!(
         state.memory.ram[0x054D] & 0x08,
@@ -2202,7 +2197,7 @@ fn draw_mode_set_vm() {
 fn draw_mode_set_vx() {
     let code = make_int18h_call_ch(0x4A, 0x16);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.ram[0x054D] & 0x08,
         0,
@@ -2214,7 +2209,7 @@ fn draw_mode_set_vx() {
 fn draw_mode_set_ra() {
     let code = make_int18h_call_ch(0x4A, 0x16);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.ram[0x054D] & 0x08,
         0,
@@ -2370,7 +2365,7 @@ fn font_pattern_read_kanji_ra() {
 // §9.2 AH=0Fh - Multi Display Area
 // ============================================================================
 
-fn run_multi_display_area_f() -> machine_98::Pc98MachineState {
+fn run_multi_display_area_f() -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_f();
     boot_to_halt!(machine);
     // Scroll parameter data: 2 areas, each 4 bytes (VRAM addr word + line count word).
@@ -2388,14 +2383,15 @@ fn run_multi_display_area_f() -> machine_98::Pc98MachineState {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT18H_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
-fn run_multi_display_area_vm() -> machine_98::Pc98MachineState {
+fn run_multi_display_area_vm() -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
     // Scroll parameter data: 2 areas, each 4 bytes (VRAM addr word + line count word).
@@ -2409,18 +2405,17 @@ fn run_multi_display_area_vm() -> machine_98::Pc98MachineState {
     let code = make_int18h_call_bx_cx_dx(0x0F, 0x0000, DATA_TABLE as u16, 0x0002);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT18H_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
-fn run_multi_display_area_vx() -> machine_98::Pc98MachineState {
+fn run_multi_display_area_vx() -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_vx();
     boot_to_halt!(machine);
     #[rustfmt::skip]
@@ -2432,18 +2427,16 @@ fn run_multi_display_area_vx() -> machine_98::Pc98MachineState {
     let code = make_int18h_call_bx_cx_dx(0x0F, 0x0000, DATA_TABLE as u16, 0x0002);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT18H_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
-fn run_multi_display_area_ra() -> machine_98::Pc98MachineState {
+fn run_multi_display_area_ra() -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_ra();
     boot_to_halt!(machine);
     #[rustfmt::skip]
@@ -2463,7 +2456,7 @@ fn run_multi_display_area_ra() -> machine_98::Pc98MachineState {
         s
     });
     machine.run_for(INT18H_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
 #[test]
@@ -2508,7 +2501,7 @@ fn multi_display_area_ra() {
 // §9.3 AH=1Ah - User Char Define (Round-trip)
 // ============================================================================
 
-fn run_user_char_define_f() -> machine_98::Pc98MachineState {
+fn run_user_char_define_f() -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_f();
     boot_to_halt!(machine);
 
@@ -2538,14 +2531,15 @@ fn run_user_char_define_f() -> machine_98::Pc98MachineState {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(DRAW_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
-fn run_user_char_define_vm() -> machine_98::Pc98MachineState {
+fn run_user_char_define_vm() -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
 
@@ -2571,18 +2565,17 @@ fn run_user_char_define_vm() -> machine_98::Pc98MachineState {
     ];
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(DRAW_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
-fn run_user_char_define_vx() -> machine_98::Pc98MachineState {
+fn run_user_char_define_vx() -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_vx();
     boot_to_halt!(machine);
     let mut source = vec![0x02u8, 0x02];
@@ -2604,18 +2597,16 @@ fn run_user_char_define_vx() -> machine_98::Pc98MachineState {
     ];
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
     machine.run_for(DRAW_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
-fn run_user_char_define_ra() -> machine_98::Pc98MachineState {
+fn run_user_char_define_ra() -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_ra();
     boot_to_halt!(machine);
     let mut source = vec![0x02u8, 0x02];
@@ -2645,7 +2636,7 @@ fn run_user_char_define_ra() -> machine_98::Pc98MachineState {
         s
     });
     machine.run_for(DRAW_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
 #[test]
@@ -3049,7 +3040,7 @@ const PATTERN_READ_BUFFER: u32 = 0x3000;
 const PATTERN_READ_SENTINEL: u8 = 0x55;
 const PATTERN_READ_BUFFER_LEN: usize = 80;
 
-fn run_pattern_read_f() -> machine_98::Pc98MachineState {
+fn run_pattern_read_f() -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_f();
     boot_to_halt!(machine);
 
@@ -3093,14 +3084,15 @@ fn run_pattern_read_f() -> machine_98::Pc98MachineState {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(DRAW_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
-fn run_pattern_read_vm() -> machine_98::Pc98MachineState {
+fn run_pattern_read_vm() -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
 
@@ -3140,18 +3132,17 @@ fn run_pattern_read_vm() -> machine_98::Pc98MachineState {
     ];
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(DRAW_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
-fn run_pattern_read_vx() -> machine_98::Pc98MachineState {
+fn run_pattern_read_vx() -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_vx();
     boot_to_halt!(machine);
     for i in 0..80u32 {
@@ -3183,18 +3174,16 @@ fn run_pattern_read_vx() -> machine_98::Pc98MachineState {
     ];
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
     machine.run_for(DRAW_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
-fn run_pattern_read_ra() -> machine_98::Pc98MachineState {
+fn run_pattern_read_ra() -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_ra();
     boot_to_halt!(machine);
     for i in 0..80u32 {
@@ -3234,10 +3223,10 @@ fn run_pattern_read_ra() -> machine_98::Pc98MachineState {
         s
     });
     machine.run_for(DRAW_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
-fn check_pattern_read_buffer(state: &machine_98::Pc98MachineState) -> bool {
+fn check_pattern_read_buffer(state: &machine_98::Pc98InspectionState) -> bool {
     let base = PATTERN_READ_BUFFER as usize;
     (0..PATTERN_READ_BUFFER_LEN).any(|i| state.memory.ram[base + i] != PATTERN_READ_SENTINEL)
 }
@@ -3295,6 +3284,7 @@ fn key_read_blocks_on_empty_buffer_f() {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -3315,10 +3305,9 @@ fn key_read_blocks_on_empty_buffer_vm() {
     let code = make_int18h_call(0x00);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -3338,10 +3327,8 @@ fn key_read_blocks_on_empty_buffer_vx() {
     let code = make_int18h_call(0x00);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
@@ -3459,11 +3446,12 @@ fn single_display_area_does_not_zero_other_partitions_f() {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_master.scroll[1].start_address, 80,
         "AH=0Eh should NOT zero scroll partition 1 (real BIOS behavior)"
@@ -3504,15 +3492,14 @@ fn single_display_area_does_not_zero_other_partitions_vm() {
     ];
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_master.scroll[1].start_address, 80,
         "AH=0Eh should NOT zero scroll partition 1 (real BIOS behavior)"
@@ -3550,15 +3537,13 @@ fn single_display_area_does_not_zero_other_partitions_vx() {
     ];
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_master.scroll[1].start_address, 80,
         "AH=0Eh should NOT zero scroll partition 1 (real BIOS behavior)"
@@ -3601,7 +3586,7 @@ fn single_display_area_does_not_zero_other_partitions_ra() {
         s
     });
     machine.run_for(INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_master.scroll[1].start_address, 80,
         "AH=0Eh should NOT zero scroll partition 1 (real BIOS behavior)"
@@ -3695,11 +3680,12 @@ fn user_char_define_rejects_invalid_row_f() {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(DRAW_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     // The font data should NOT be 0xBB - the define should have been rejected.
     let mut found_bb = false;
     for i in 2..34 {
@@ -3739,15 +3725,14 @@ fn user_char_define_rejects_invalid_row_vm() {
     ];
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(DRAW_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     // The font data should NOT be 0xBB - the define should have been rejected.
     let mut found_bb = false;
     for i in 2..34 {
@@ -3800,11 +3785,12 @@ fn user_char_define_skips_header_f() {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(DRAW_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     // Output header should be 0x0202 (16x16 kanji).
     let header = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(header, 0x0202, "AH=14h header should be 0x0202 for kanji");
@@ -3850,15 +3836,14 @@ fn user_char_define_skips_header_vm() {
     ];
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(DRAW_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     // Output header should be 0x0202 (16x16 kanji).
     let header = read_ram_u16(&state.memory.ram, RESULT as usize);
     assert_eq!(header, 0x0202, "AH=14h header should be 0x0202 for kanji");
@@ -3900,15 +3885,13 @@ fn user_char_define_skips_header_vx() {
     ];
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
     machine.run_for(DRAW_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let left_byte = state.memory.ram[RESULT as usize + 2];
     assert_eq!(left_byte, 0xCC, "AH=1Ah left half should be 0xCC");
     let right_byte = state.memory.ram[RESULT as usize + 3];
@@ -3949,7 +3932,7 @@ fn user_char_define_skips_header_ra() {
         s
     });
     machine.run_for(DRAW_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     let left_byte = state.memory.ram[RESULT as usize + 2];
     assert_eq!(left_byte, 0xCC, "AH=1Ah left half should be 0xCC");
     let right_byte = state.memory.ram[RESULT as usize + 3];
@@ -4115,7 +4098,7 @@ fn display_area_set_400line_lines_per_row_f() {
     // CH=0xC0 -> 400-line ALL mode -> lines_per_row should be 1, video_mode bit 4 clear.
     let code = make_int18h_call_ch(0x42, 0xC0);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_slave.lines_per_row, 1,
         "AH=42h CH=0xC0 (400-line) should set lines_per_row=1"
@@ -4132,7 +4115,7 @@ fn display_area_set_400line_lines_per_row_vm() {
     // CH=0xC0 -> 400-line ALL mode -> lines_per_row should be 1, video_mode bit 4 clear.
     let code = make_int18h_call_ch(0x42, 0xC0);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_slave.lines_per_row, 1,
         "AH=42h CH=0xC0 (400-line) should set lines_per_row=1"
@@ -4148,7 +4131,7 @@ fn display_area_set_400line_lines_per_row_vm() {
 fn display_area_set_400line_lines_per_row_vx() {
     let code = make_int18h_call_ch(0x42, 0xC0);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.gdc_slave.lines_per_row, 1);
     assert_eq!(state.display_control.video_mode & 0x10, 0);
 }
@@ -4157,7 +4140,7 @@ fn display_area_set_400line_lines_per_row_vx() {
 fn display_area_set_400line_lines_per_row_ra() {
     let code = make_int18h_call_ch(0x42, 0xC0);
     let machine = boot_inject_run_ra(&[], &code, 2_000_000);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.gdc_slave.lines_per_row, 1);
     assert_eq!(state.display_control.video_mode & 0x10, 0);
 }
@@ -4172,7 +4155,7 @@ fn display_area_set_200line_lines_per_row_f() {
     // video_mode bit 4 set (hide_odd_rasters).
     let code = make_int18h_call_ch(0x42, 0x80);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_slave.lines_per_row, 2,
         "AH=42h CH=0x80 (200-line, PRXCRT bit 6 set) should set lines_per_row=2"
@@ -4190,7 +4173,7 @@ fn display_area_set_200line_lines_per_row_vm() {
     // video_mode bit 4 set (hide_odd_rasters).
     let code = make_int18h_call_ch(0x42, 0x80);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_slave.lines_per_row, 2,
         "AH=42h CH=0x80 (200-line, PRXCRT bit 6 set) should set lines_per_row=2"
@@ -4206,7 +4189,7 @@ fn display_area_set_200line_lines_per_row_vm() {
 fn display_area_set_200line_lines_per_row_vx() {
     let code = make_int18h_call_ch(0x42, 0x80);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.gdc_slave.lines_per_row, 2);
     assert_ne!(state.display_control.video_mode & 0x10, 0);
 }
@@ -4215,7 +4198,7 @@ fn display_area_set_200line_lines_per_row_vx() {
 fn display_area_set_200line_lines_per_row_ra() {
     let code = make_int18h_call_ch(0x42, 0x80);
     let machine = boot_inject_run_ra(&[], &code, 2_000_000);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.gdc_slave.lines_per_row, 2);
     assert_ne!(state.display_control.video_mode & 0x10, 0);
 }
@@ -4229,7 +4212,7 @@ fn display_area_set_resets_scroll_f() {
     // AH=42h should reset scroll[0] start_address to 0 and line_count to 0x400.
     let code = make_int18h_call_ch(0x42, 0xC0);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_slave.scroll[0].start_address, 0,
         "AH=42h should reset scroll[0].start_address to 0"
@@ -4241,7 +4224,7 @@ fn display_area_set_resets_scroll_vm() {
     // AH=42h should reset scroll[0] start_address to 0 and line_count to 0x400.
     let code = make_int18h_call_ch(0x42, 0xC0);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_slave.scroll[0].start_address, 0,
         "AH=42h should reset scroll[0].start_address to 0"
@@ -4252,7 +4235,7 @@ fn display_area_set_resets_scroll_vm() {
 fn display_area_set_resets_scroll_vx() {
     let code = make_int18h_call_ch(0x42, 0xC0);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.gdc_slave.scroll[0].start_address, 0);
 }
 
@@ -4260,7 +4243,7 @@ fn display_area_set_resets_scroll_vx() {
 fn display_area_set_resets_scroll_ra() {
     let code = make_int18h_call_ch(0x42, 0xC0);
     let machine = boot_inject_run_ra(&[], &code, 2_000_000);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.gdc_slave.scroll[0].start_address, 0);
 }
 
@@ -4276,7 +4259,7 @@ fn display_area_set_resets_scroll_ra() {
 fn display_area_set_preserves_slave_sync_f() {
     let code = make_int18h_call_ch(0x42, 0x80); // 200-line LOWER
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_slave.pitch, 40,
         "AH=42h should not change GDC slave pitch when PRXDUPD condition is not met"
@@ -4299,7 +4282,7 @@ fn display_area_set_preserves_slave_sync_f() {
 fn display_area_set_preserves_slave_sync_vm() {
     let code = make_int18h_call_ch(0x42, 0x80); // 200-line LOWER
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_slave.pitch, 40,
         "AH=42h should not change GDC slave pitch when PRXDUPD condition is not met"
@@ -4318,7 +4301,7 @@ fn display_area_set_preserves_slave_sync_vm() {
 fn display_area_set_preserves_slave_sync_vx() {
     let code = make_int18h_call_ch(0x42, 0x80);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.gdc_slave.pitch, 40);
     assert_eq!(state.gdc_slave.aw, 40);
     assert_eq!(state.gdc_slave.al, 400);
@@ -4328,7 +4311,7 @@ fn display_area_set_preserves_slave_sync_vx() {
 fn display_area_set_preserves_slave_sync_ra() {
     let code = make_int18h_call_ch(0x42, 0x80);
     let machine = boot_inject_run_ra(&[], &code, 2_000_000);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.gdc_slave.pitch, 40);
     assert_eq!(state.gdc_slave.aw, 40);
     assert_eq!(state.gdc_slave.al, 400);
@@ -4340,7 +4323,7 @@ fn display_area_set_preserves_slave_sync_ra() {
 fn display_area_set_400line_preserves_slave_sync_f() {
     let code = make_int18h_call_ch(0x42, 0xC0); // 400-line ALL
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_slave.pitch, 40,
         "AH=42h 400-line should not change GDC slave pitch when PRXDUPD condition is not met"
@@ -4355,7 +4338,7 @@ fn display_area_set_400line_preserves_slave_sync_f() {
 fn display_area_set_400line_preserves_slave_sync_vm() {
     let code = make_int18h_call_ch(0x42, 0xC0); // 400-line ALL
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_slave.pitch, 40,
         "AH=42h 400-line should not change GDC slave pitch when PRXDUPD condition is not met"
@@ -4368,7 +4351,7 @@ fn display_area_set_400line_preserves_slave_sync_vm() {
 fn display_area_set_400line_preserves_slave_sync_vx() {
     let code = make_int18h_call_ch(0x42, 0xC0);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.gdc_slave.pitch, 40);
     assert_eq!(state.gdc_slave.aw, 40);
     assert_eq!(state.gdc_slave.al, 400);
@@ -4378,7 +4361,7 @@ fn display_area_set_400line_preserves_slave_sync_vx() {
 fn display_area_set_400line_preserves_slave_sync_ra() {
     let code = make_int18h_call_ch(0x42, 0xC0);
     let machine = boot_inject_run_ra(&[], &code, 2_000_000);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.gdc_slave.pitch, 40);
     assert_eq!(state.gdc_slave.aw, 40);
     assert_eq!(state.gdc_slave.al, 400);
@@ -4394,7 +4377,7 @@ fn draw_mode_set_sync_mode_byte_f() {
     // CH=0x02 -> param_buffer[0] = 0x02, display_mode=0x02.
     let code = make_int18h_call_ch(0x4A, 0x02);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_slave.param_buffer[0], 0x02,
         "AH=4Ah CH=0x02 should write 0x02 as SYNC P1 mode byte"
@@ -4408,7 +4391,7 @@ fn draw_mode_set_sync_mode_byte_vm() {
     // CH=0x02 -> param_buffer[0] = 0x02, display_mode=0x02.
     let code = make_int18h_call_ch(0x4A, 0x02);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.gdc_slave.param_buffer[0], 0x02,
         "AH=4Ah CH=0x02 should write 0x02 as SYNC P1 mode byte"
@@ -4420,7 +4403,7 @@ fn draw_mode_set_sync_mode_byte_vm() {
 fn draw_mode_set_sync_mode_byte_vx() {
     let code = make_int18h_call_ch(0x4A, 0x02);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.gdc_slave.param_buffer[0], 0x02);
     assert_eq!(state.gdc_slave.display_mode, DISPLAY_MODE_GRAPHICS);
 }
@@ -4429,12 +4412,12 @@ fn draw_mode_set_sync_mode_byte_vx() {
 fn draw_mode_set_sync_mode_byte_ra() {
     let code = make_int18h_call_ch(0x4A, 0x02);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.gdc_slave.param_buffer[0], 0x02);
     assert_eq!(state.gdc_slave.display_mode, DISPLAY_MODE_GRAPHICS);
 }
 
-fn assert_draw_mode_preserves_slave_sync(state: &machine_98::Pc98MachineState) {
+fn assert_draw_mode_preserves_slave_sync(state: &machine_98::Pc98InspectionState) {
     assert_eq!(state.gdc_slave.pitch, 40);
     assert_eq!(state.gdc_slave.aw, 40);
     assert_eq!(state.gdc_slave.al, 400);
@@ -4445,28 +4428,28 @@ fn assert_draw_mode_preserves_slave_sync(state: &machine_98::Pc98MachineState) {
 fn draw_mode_set_preserves_slave_sync_f() {
     let code = make_int18h_call_ch(0x4A, 0x02);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    assert_draw_mode_preserves_slave_sync(&machine.save_state());
+    assert_draw_mode_preserves_slave_sync(&machine.inspection_state());
 }
 
 #[test]
 fn draw_mode_set_preserves_slave_sync_vm() {
     let code = make_int18h_call_ch(0x4A, 0x02);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    assert_draw_mode_preserves_slave_sync(&machine.save_state());
+    assert_draw_mode_preserves_slave_sync(&machine.inspection_state());
 }
 
 #[test]
 fn draw_mode_set_preserves_slave_sync_vx() {
     let code = make_int18h_call_ch(0x4A, 0x02);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    assert_draw_mode_preserves_slave_sync(&machine.save_state());
+    assert_draw_mode_preserves_slave_sync(&machine.inspection_state());
 }
 
 #[test]
 fn draw_mode_set_preserves_slave_sync_ra() {
     let code = make_int18h_call_ch(0x4A, 0x02);
     let machine = boot_inject_run_ra(&[], &code, 2_000_000);
-    assert_draw_mode_preserves_slave_sync(&machine.save_state());
+    assert_draw_mode_preserves_slave_sync(&machine.inspection_state());
 }
 
 #[test]
@@ -4474,7 +4457,7 @@ fn draw_mode_set_sync_draw_on_retrace_f() {
     // CH=0x12 has bit 4 set -> draw_on_retrace should be true.
     let code = make_int18h_call_ch(0x4A, 0x12);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.gdc_slave.param_buffer[0], 0x12);
     assert!(
         state.gdc_slave.draw_on_retrace,
@@ -4487,7 +4470,7 @@ fn draw_mode_set_sync_draw_on_retrace_vm() {
     // CH=0x12 has bit 4 set -> draw_on_retrace should be true.
     let code = make_int18h_call_ch(0x4A, 0x12);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.gdc_slave.param_buffer[0], 0x12);
     assert!(
         state.gdc_slave.draw_on_retrace,
@@ -4499,7 +4482,7 @@ fn draw_mode_set_sync_draw_on_retrace_vm() {
 fn draw_mode_set_sync_draw_on_retrace_vx() {
     let code = make_int18h_call_ch(0x4A, 0x12);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.gdc_slave.param_buffer[0], 0x12);
     assert!(state.gdc_slave.draw_on_retrace);
 }
@@ -4508,7 +4491,7 @@ fn draw_mode_set_sync_draw_on_retrace_vx() {
 fn draw_mode_set_sync_draw_on_retrace_ra() {
     let code = make_int18h_call_ch(0x4A, 0x12);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(state.gdc_slave.param_buffer[0], 0x12);
     assert!(state.gdc_slave.draw_on_retrace);
 }
@@ -4538,22 +4521,21 @@ fn run_draw_test_vm_with_ch(
     ucw_data: &[u8],
     draw_ah: u8,
     draw_ch: u8,
-) -> machine_98::Pc98MachineState {
+) -> machine_98::Pc98InspectionState {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, DATA_TABLE, ucw_data);
     let code = make_draw_test_code_with_ch(draw_ah, draw_ch);
     write_bytes(&mut machine.bus, TEST_CODE, &code);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(DRAW_BUDGET);
-    machine.save_state()
+    machine.inspection_state()
 }
 
 fn make_ucw_horizontal_line_solid(

@@ -110,7 +110,7 @@ fn make_setup_counter_code(count: u8) -> Vec<u8> {
 fn int1ch_vector_f() {
     let mut machine = create_machine_f();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1C);
     assert!(
@@ -123,7 +123,7 @@ fn int1ch_vector_f() {
 fn int1ch_vector_vm() {
     let mut machine = create_machine_vm();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1C);
     assert!(
@@ -136,7 +136,7 @@ fn int1ch_vector_vm() {
 fn int1ch_vector_vx() {
     let mut machine = create_machine_vx();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1C);
     assert!(
@@ -149,7 +149,7 @@ fn int1ch_vector_vx() {
 fn int1ch_vector_ra() {
     let mut machine = create_machine_ra();
     let _cycles = boot_to_halt!(machine);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1C);
     assert!(
@@ -175,6 +175,7 @@ fn get_datetime_reads_calendar_f() {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -190,10 +191,9 @@ fn get_datetime_reads_calendar_vm() {
     machine.set_host_date_time_provider(test_local_time);
     write_bytes(&mut machine.bus, TEST_CODE, GET_DATETIME_CODE);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -209,10 +209,8 @@ fn get_datetime_reads_calendar_vx() {
     machine.set_host_date_time_provider(test_local_time);
     write_bytes(&mut machine.bus, TEST_CODE, GET_DATETIME_CODE);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
@@ -314,6 +312,7 @@ fn set_datetime_completes_f() {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -333,10 +332,9 @@ fn set_datetime_completes_vm() {
     write_bytes(&mut machine.bus, RESULT, &SET_DATE);
     write_bytes(&mut machine.bus, TEST_CODE, SET_DATETIME_CODE);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
@@ -356,10 +354,8 @@ fn set_datetime_completes_vx() {
     write_bytes(&mut machine.bus, RESULT, &SET_DATE);
     write_bytes(&mut machine.bus, TEST_CODE, SET_DATETIME_CODE);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
@@ -402,7 +398,7 @@ fn set_datetime_completes_ra() {
 #[test]
 fn setup_timer_stores_ivt_callback_f() {
     let (machine, _cycles) = boot_and_run_f(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x07);
     assert_eq!(segment, 0x0000, "Callback segment should be 0x0000 (ES=0)");
@@ -415,7 +411,7 @@ fn setup_timer_stores_ivt_callback_f() {
 #[test]
 fn setup_timer_stores_ivt_callback_vm() {
     let (machine, _cycles) = boot_and_run_vm(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x07);
     assert_eq!(segment, 0x0000, "Callback segment should be 0x0000 (ES=0)");
@@ -428,7 +424,7 @@ fn setup_timer_stores_ivt_callback_vm() {
 #[test]
 fn setup_timer_stores_ivt_callback_vx() {
     let (machine, _cycles) = boot_and_run_vx(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x07);
     assert_eq!(segment, 0x0000, "Callback segment should be 0x0000 (ES=0)");
@@ -441,7 +437,7 @@ fn setup_timer_stores_ivt_callback_vx() {
 #[test]
 fn setup_timer_stores_ivt_callback_ra() {
     let (machine, _cycles) = boot_and_run_ra(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x07);
     assert_eq!(segment, 0x0000, "Callback segment should be 0x0000 (ES=0)");
@@ -498,7 +494,7 @@ fn setup_timer_stores_counter_ra() {
 #[test]
 fn setup_timer_programs_pit_f() {
     let (machine, _cycles) = boot_and_run_f(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pit.channels[0].ctrl, 0x36,
@@ -513,7 +509,7 @@ fn setup_timer_programs_pit_f() {
 #[test]
 fn setup_timer_programs_pit_vm() {
     let (machine, _cycles) = boot_and_run_vm(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pit.channels[0].ctrl, 0x36,
@@ -528,7 +524,7 @@ fn setup_timer_programs_pit_vm() {
 #[test]
 fn setup_timer_programs_pit_vx() {
     let (machine, _cycles) = boot_and_run_vx(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pit.channels[0].ctrl, 0x36,
@@ -543,7 +539,7 @@ fn setup_timer_programs_pit_vx() {
 #[test]
 fn setup_timer_programs_pit_ra() {
     let (machine, _cycles) = boot_and_run_ra(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pit.channels[0].ctrl, 0x36,
@@ -570,12 +566,13 @@ fn set_datetime_stores_year_in_msw8_f() {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT1CH_BUDGET);
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.text_vram[0x3FFE], SET_DATE[0],
         "AH=01h should store year byte ({:#04X}) in MSW8 (text VRAM 0x3FFE)",
@@ -590,16 +587,15 @@ fn set_datetime_stores_year_in_msw8_vm() {
     write_bytes(&mut machine.bus, RESULT, &SET_DATE);
     write_bytes(&mut machine.bus, TEST_CODE, SET_DATETIME_CODE);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT1CH_BUDGET);
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.text_vram[0x3FFE], SET_DATE[0],
         "AH=01h should store year byte ({:#04X}) in MSW8 (text VRAM 0x3FFE)",
@@ -614,16 +610,14 @@ fn set_datetime_stores_year_in_msw8_vx() {
     write_bytes(&mut machine.bus, RESULT, &SET_DATE);
     write_bytes(&mut machine.bus, TEST_CODE, SET_DATETIME_CODE);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT1CH_BUDGET);
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.text_vram[0x3FFE], SET_DATE[0],
         "AH=01h should store year byte ({:#04X}) in MSW8 (text VRAM 0x3FFE)",
@@ -647,7 +641,7 @@ fn set_datetime_stores_year_in_msw8_ra() {
     });
     machine.run_for(INT1CH_BUDGET);
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         state.memory.text_vram[0x3FFE], SET_DATE[0],
         "AH=01h should store year byte ({:#04X}) in MSW8 (text VRAM 0x3FFE)",
@@ -675,12 +669,13 @@ fn set_datetime_distinct_bytes_completes_f() {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT1CH_BUDGET);
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         machine.bus.read_byte(MARKER),
         0xAA,
@@ -699,16 +694,15 @@ fn set_datetime_distinct_bytes_completes_vm() {
     write_bytes(&mut machine.bus, RESULT, &SET_DATE_DISTINCT);
     write_bytes(&mut machine.bus, TEST_CODE, SET_DATETIME_CODE);
     machine.cpu.load_state(&{
-        let mut s = cpu::V30State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::V30State::default();
+        s.ip = TEST_CODE as u16;
+        s.initialize_cold_frontend();
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT1CH_BUDGET);
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(
         machine.bus.read_byte(MARKER),
         0xAA,
@@ -727,16 +721,14 @@ fn set_datetime_distinct_bytes_completes_vx() {
     write_bytes(&mut machine.bus, RESULT, &SET_DATE_DISTINCT);
     write_bytes(&mut machine.bus, TEST_CODE, SET_DATETIME_CODE);
     machine.cpu.load_state(&{
-        let mut s = cpu::I286State {
-            ip: TEST_CODE as u16,
-            ..Default::default()
-        };
+        let mut s = cpu::I286State::default();
+        s.ip = TEST_CODE as u16;
         s.set_sp(0x4000);
         s
     });
     machine.run_for(INT1CH_BUDGET);
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(machine.bus.read_byte(MARKER), 0xAA);
     assert_eq!(state.memory.text_vram[0x3FFE], SET_DATE_DISTINCT[0]);
 }
@@ -757,7 +749,7 @@ fn set_datetime_distinct_bytes_completes_ra() {
     });
     machine.run_for(INT1CH_BUDGET);
 
-    let state = machine.save_state();
+    let state = machine.inspection_state();
     assert_eq!(machine.bus.read_byte(MARKER), 0xAA);
     assert_eq!(state.memory.text_vram[0x3FFE], SET_DATE_DISTINCT[0]);
 }
@@ -771,7 +763,7 @@ fn set_datetime_distinct_bytes_completes_ra() {
 #[test]
 fn setup_timer_sets_pit_flag_i_f() {
     let (machine, _cycles) = boot_and_run_f(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.pit.channels[0].flag & 0x20,
@@ -784,7 +776,7 @@ fn setup_timer_sets_pit_flag_i_f() {
 #[test]
 fn setup_timer_sets_pit_flag_i_vm() {
     let (machine, _cycles) = boot_and_run_vm(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.pit.channels[0].flag & 0x20,
@@ -797,7 +789,7 @@ fn setup_timer_sets_pit_flag_i_vm() {
 #[test]
 fn setup_timer_sets_pit_flag_i_vx() {
     let (machine, _cycles) = boot_and_run_vx(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.pit.channels[0].flag & 0x20,
@@ -810,7 +802,7 @@ fn setup_timer_sets_pit_flag_i_vx() {
 #[test]
 fn setup_timer_sets_pit_flag_i_ra() {
     let (machine, _cycles) = boot_and_run_ra(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_ne!(
         state.pit.channels[0].flag & 0x20,
@@ -828,7 +820,7 @@ fn setup_timer_sets_pit_flag_i_ra() {
 #[test]
 fn setup_timer_unmasks_irq0_f() {
     let (machine, _cycles) = boot_and_run_f(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[0].imr & 0x01,
@@ -841,7 +833,7 @@ fn setup_timer_unmasks_irq0_f() {
 #[test]
 fn setup_timer_unmasks_irq0_vm() {
     let (machine, _cycles) = boot_and_run_vm(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[0].imr & 0x01,
@@ -854,7 +846,7 @@ fn setup_timer_unmasks_irq0_vm() {
 #[test]
 fn setup_timer_unmasks_irq0_vx() {
     let (machine, _cycles) = boot_and_run_vx(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[0].imr & 0x01,
@@ -867,7 +859,7 @@ fn setup_timer_unmasks_irq0_vx() {
 #[test]
 fn setup_timer_unmasks_irq0_ra() {
     let (machine, _cycles) = boot_and_run_ra(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
-    let state = machine.save_state();
+    let state = machine.inspection_state();
 
     assert_eq!(
         state.pic.chips[0].imr & 0x01,

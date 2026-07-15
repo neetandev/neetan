@@ -28,6 +28,7 @@ const FIRQ_STATUS_SUB_ATTENTION: u8 = 0x01;
 /// `0xFD04` active-low BREAK pending bit.
 const FIRQ_STATUS_BREAK: u8 = 0x02;
 
+save_state::runtime_state! {
 /// Interrupt sources and masks for the main MC6809.
 #[derive(Debug, Clone)]
 pub(crate) struct MainInterrupts {
@@ -41,7 +42,7 @@ pub(crate) struct MainInterrupts {
     sub_attention: bool,
     irq_line: bool,
     firq_line: bool,
-}
+}}
 
 impl MainInterrupts {
     /// Creates the main interrupt controller with all lines inactive.

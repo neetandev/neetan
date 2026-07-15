@@ -37,9 +37,12 @@ fn write_optional_memory(memory: &mut Option<&mut [u8]>, address: u32, value: u8
 //        18-1D xxxxxxxx Start address (high)
 //        20-25 xxxxxxxx End address (low)
 //        28-2D xxxxxxxx End address (high)
+save_state::runtime_state! {
+/// Authoritative ADPCM-A register state.
+#[derive(Clone)]
 pub(crate) struct AdpcmARegisters {
     regdata: [u8; 0x30],
-}
+}}
 
 impl AdpcmARegisters {
     pub(crate) fn new() -> Self {
@@ -99,6 +102,9 @@ impl AdpcmARegisters {
     }
 }
 
+save_state::runtime_state! {
+/// Authoritative playback progress for one ADPCM-A channel.
+#[derive(Clone)]
 pub(crate) struct AdpcmAChannel {
     choffs: u32,
     address_shift: u32,
@@ -108,7 +114,7 @@ pub(crate) struct AdpcmAChannel {
     curaddress: u32,
     accumulator: i32,
     step_index: i32,
-}
+}}
 
 impl AdpcmAChannel {
     pub(crate) fn new(choffs: u32, addrshift: u32) -> Self {
@@ -224,10 +230,13 @@ impl AdpcmAChannel {
     }
 }
 
+save_state::runtime_state! {
+/// Complete authoritative ADPCM-A engine state.
+#[derive(Clone)]
 pub(crate) struct AdpcmAEngine {
     channels: [AdpcmAChannel; 6],
     regs: AdpcmARegisters,
-}
+}}
 
 impl AdpcmAEngine {
     pub(crate) fn new(addrshift: u32) -> Self {
@@ -317,9 +326,12 @@ impl AdpcmAEngine {
 //           0e xxxxxxxx DAC data high [Y8950]
 //           0f xx------ DAC data low [Y8950]
 //           10 -----xxx DAC data exponent [Y8950]
+save_state::runtime_state! {
+/// Authoritative ADPCM-B register state.
+#[derive(Clone)]
 pub(crate) struct AdpcmBRegisters {
     regdata: [u8; 0x11],
-}
+}}
 
 impl AdpcmBRegisters {
     pub(crate) fn new() -> Self {
@@ -397,6 +409,9 @@ impl AdpcmBRegisters {
     }
 }
 
+save_state::runtime_state! {
+/// Authoritative playback and recording progress for ADPCM-B.
+#[derive(Clone)]
 pub(crate) struct AdpcmBChannel {
     address_shift: u32,
     status: u32,
@@ -408,7 +423,7 @@ pub(crate) struct AdpcmBChannel {
     output: i32,
     prev_output: i32,
     adpcm_step: i32,
-}
+}}
 
 impl AdpcmBChannel {
     const STEP_MIN: i32 = 127;
@@ -777,10 +792,13 @@ impl AdpcmBChannel {
     }
 }
 
+save_state::runtime_state! {
+/// Complete authoritative ADPCM-B engine state.
+#[derive(Clone)]
 pub(crate) struct AdpcmBEngine {
     channel: AdpcmBChannel,
     regs: AdpcmBRegisters,
-}
+}}
 
 impl AdpcmBEngine {
     pub(crate) fn new(addrshift: u32) -> Self {
