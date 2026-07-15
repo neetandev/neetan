@@ -28,7 +28,7 @@ use device::{
     opn_fm::FmTimerAction,
     palette_pc88::{BACKGROUND_PEN, Pc88Palette},
     soundboard_ii::SoundboardII,
-    upd765a_fdc::{FloppyController, Upd765aFdc},
+    upd765a_fdc::{FloppyController, UPD765_PLATFORM_STANDARD, Upd765aFdc},
     upd3301_crtc::{STATUS_DISPLAY_ENABLE, STATUS_UNDERRUN, Upd3301},
     upd4990a_rtc::Upd4990aRtc,
 };
@@ -294,7 +294,7 @@ pub struct Pc8801Bus<T: TraceSink = NoTrace> {
     /// clock-ratio conversion exact across slices.
     pub(crate) sub_clock_credit: u64,
     /// Disk sub-CPU uPD765A FDC (driven by programmed I/O, no DMA).
-    pub(crate) fdc: Upd765aFdc,
+    pub(crate) fdc: Upd765aFdc<UPD765_PLATFORM_STANDARD>,
     /// Floppy drive store (reused for mounting and sector access).
     pub(crate) floppy: FloppyController,
     /// PPI mailbox, host side (main I/O 0xFC-0xFF).

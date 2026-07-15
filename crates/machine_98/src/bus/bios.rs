@@ -18,6 +18,7 @@ mod serial_rs232c;
 mod timer;
 
 use common::{Cpu, CpuAccess, SegmentRegister, warn};
+use device::upd765a_fdc::{UPD765_PLATFORM_STANDARD, Upd765aFdc};
 
 use super::{
     Pc9801Bus,
@@ -373,7 +374,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.memory.state.ram[addr + 1] = bytes[1];
     }
 
-    fn fdc_drain_results(fdc: &mut device::upd765a_fdc::Upd765aFdc, dest: &mut [u8]) -> usize {
+    fn fdc_drain_results(fdc: &mut Upd765aFdc<UPD765_PLATFORM_STANDARD>, dest: &mut [u8]) -> usize {
         let mut count = 0;
         while count < dest.len() {
             let status = fdc.read_status();

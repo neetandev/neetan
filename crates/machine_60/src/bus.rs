@@ -18,7 +18,7 @@ use device::{
     floppy::FloppyImage,
     i8251_serial::I8251Serial,
     opn_fm::{FmTimerAction, OpnFm, Ym2203},
-    upd765a_fdc::{FloppyController, Upd765aFdc},
+    upd765a_fdc::{FloppyController, UPD765_PLATFORM_STANDARD, Upd765aFdc},
     upd7752::Upd7752,
 };
 use fdc::FdcReadState;
@@ -150,7 +150,7 @@ pub struct Pc6000Bus<T: TraceSink = NoTrace> {
     cassette: CassetteDeck,
     cassette_active: bool,
     /// Built-in non-intelligent uPD765A, driven directly by the main CPU.
-    fdc: Upd765aFdc,
+    fdc: Upd765aFdc<UPD765_PLATFORM_STANDARD>,
     /// Mounted floppy drives backing the built-in FDC.
     floppy: FloppyController,
     /// Whether the built-in drive motor is running.

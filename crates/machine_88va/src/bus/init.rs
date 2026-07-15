@@ -5,7 +5,7 @@ use device::{
     i8255::I8255,
     i8259a_pic::I8259aPic,
     soundboard_ii::SoundboardII,
-    upd765a_fdc::{FloppyController, Upd765aFdc},
+    upd765a_fdc::{FloppyController, UPD765_PLATFORM_STANDARD, Upd765aFdc},
     upd4990a_rtc::Upd4990aRtc,
     upd71071_dma::Upd71071Dma,
 };
@@ -79,7 +79,7 @@ impl<T: common::TraceSink> Pc88VaBus<T> {
             sub_cycle: 0,
             sub_to_main_shift,
             sub_clock_credit: 0,
-            fdc: Upd765aFdc::new(),
+            fdc: Upd765aFdc::<UPD765_PLATFORM_STANDARD>::new(),
             floppy: FloppyController::new(),
             ppi_main: I8255::new(),
             ppi_sub: I8255::new(),

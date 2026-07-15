@@ -1,21 +1,40 @@
-//! µPD765A Floppy Disk Controller for the PC-98.
+//! uPD765-compatible floppy disk controllers.
 //!
-//! The PC-98 has two FDC interfaces: 1MB (ports 0x90/0x92/0x94) and
-//! 640KB (ports 0xC8/0xCA/0xCC). Each is an independent µPD765A.
+//! The shared command engine is specialized at compile time for a standard
+//! uPD765A, the X68000 uPD72065, or the IBM PC/AT front end. Platform-specific
+//! registers and behavior live in the same type.
 //!
 //! The FDC communicates with the bus via [`FdcAction`] return values
 //! from [`Upd765aFdc::write_data`]. The bus is responsible for disk
 //! image lookups, DMA transfers, and scheduling interrupts.
+
+mod at;
+mod x68k;
 
 use std::{
     ops::{Deref, DerefMut},
     path::PathBuf,
 };
 
+use at::{AT_DRIVE_COUNT, AT_DRIVES_READY_MASK};
+pub use at::{DorEffect, FdcDataRate};
+use common::warn;
+
 use crate::floppy::{
     FloppyImage, MountedFloppy,
     d88::{D88MediaType, D88Sector},
 };
+
+/// Standard uPD765A platform selector for [`Upd765aFdc`].
+pub const UPD765_PLATFORM_STANDARD: u8 = 0;
+/// Sharp X68000 uPD72065 platform selector for [`Upd765aFdc`].
+pub const UPD765_PLATFORM_X68K: u8 = 1;
+/// IBM PC/AT ISA platform selector for [`Upd765aFdc`].
+pub const UPD765_PLATFORM_ISA_AT: u8 = 2;
+
+type StandardUpd765aFdc = Upd765aFdc<UPD765_PLATFORM_STANDARD>;
+#[cfg(test)]
+type X68kUpd765aFdc = Upd765aFdc<UPD765_PLATFORM_X68K>;
 
 /// FDC command processing phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,10 +164,6 @@ pub struct Upd765aFdcState {
     pub drive_has_disk: u8,
     /// Bitmask of drives that have a write-protected disk (bit per drive 0-3).
     pub drive_write_protected: u8,
-    /// Whether SENSE DRIVE STATUS reports the two-side signal.
-    pub report_two_side: bool,
-    /// Whether SENSE DRIVE STATUS reports the command's head-select bit.
-    pub sense_reports_command_head: bool,
     /// Non-DMA (PIO) execution-phase data FIFO (one sector at a time). Unused on
     /// the DMA path; only touched while `exec_pio` is set.
     pub exec_buf: Vec<u8>,
@@ -162,34 +177,37 @@ pub struct Upd765aFdcState {
     pub exec_pio: bool,
     /// True while a DMA-paced execution-phase byte transfer is armed.
     pub exec_dma: bool,
-    /// Whether SCAN commands execute (uPD72065) or fail not-ready (PC-98).
-    pub scan_enabled: bool,
     /// Whether the current SCAN sector still satisfies its condition.
     pub scan_condition_held: bool,
-    /// Maximum RECALIBRATE step pulses (77 on uPD765A, 255 on uPD72065).
-    pub recalibrate_step_limit: u8,
 }
 
-/// µPD765A FDC controller.
-pub struct Upd765aFdc {
+/// uPD765-compatible FDC specialized for a host platform.
+pub struct Upd765aFdc<const PLATFORM: u8> {
     /// Embedded state for save/restore.
     pub state: Upd765aFdcState,
+    drives: [Option<MountedFloppy>; AT_DRIVE_COUNT],
+    dor: u8,
+    rate: FdcDataRate,
+    disk_change: [bool; AT_DRIVE_COUNT],
+    reset_held: bool,
+    warned_non_dma: bool,
+    standby: bool,
 }
 
-impl Deref for Upd765aFdc {
+impl<const PLATFORM: u8> Deref for Upd765aFdc<PLATFORM> {
     type Target = Upd765aFdcState;
     fn deref(&self) -> &Self::Target {
         &self.state
     }
 }
 
-impl DerefMut for Upd765aFdc {
+impl<const PLATFORM: u8> DerefMut for Upd765aFdc<PLATFORM> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.state
     }
 }
 
-impl Default for Upd765aFdc {
+impl<const PLATFORM: u8> Default for Upd765aFdc<PLATFORM> {
     fn default() -> Self {
         Self::new()
     }
@@ -351,10 +369,17 @@ const CMD_PARAMS: [u8; 32] = [
     0, 0, 8, 2, 1, 8, 8, 1, 0, 8, 1, 0, 8, 5, 0, 2, 0, 8, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 8, 0, 0,
 ];
 
-impl Upd765aFdc {
+impl<const PLATFORM: u8> Upd765aFdc<PLATFORM> {
     /// Creates a new FDC in idle state with RQM set.
     /// 2 built-in drives (0 and 1) are equipped by default.
     pub fn new() -> Self {
+        assert!(
+            matches!(
+                PLATFORM,
+                UPD765_PLATFORM_STANDARD | UPD765_PLATFORM_X68K | UPD765_PLATFORM_ISA_AT
+            ),
+            "unsupported uPD765 platform"
+        );
         Self {
             state: Upd765aFdcState {
                 phase: FdcPhase::Idle,
@@ -393,20 +418,27 @@ impl Upd765aFdc {
                 nd: false,
                 tc: false,
                 drive_equipped: DEFAULT_DRIVE_EQUIPPED,
-                drive_has_disk: 0,
+                drive_has_disk: if PLATFORM == UPD765_PLATFORM_ISA_AT {
+                    AT_DRIVES_READY_MASK
+                } else {
+                    0
+                },
                 drive_write_protected: 0,
-                report_two_side: true,
-                sense_reports_command_head: true,
                 exec_buf: Vec::new(),
                 exec_index: 0,
                 exec_len: 0,
                 exec_reading: false,
                 exec_pio: false,
                 exec_dma: false,
-                scan_enabled: false,
                 scan_condition_held: false,
-                recalibrate_step_limit: 77,
             },
+            drives: [None, None],
+            dor: 0,
+            rate: FdcDataRate::Rate250Kbps,
+            disk_change: [false; AT_DRIVE_COUNT],
+            reset_held: PLATFORM == UPD765_PLATFORM_ISA_AT,
+            warned_non_dma: false,
+            standby: false,
         }
     }
 
@@ -477,6 +509,10 @@ impl Upd765aFdc {
 
     /// Reads the data register (FIFO).
     pub fn read_data(&mut self) -> u8 {
+        if PLATFORM == UPD765_PLATFORM_ISA_AT && self.reset_held {
+            return 0xFF;
+        }
+
         // DMA-paced execution-phase read: serve the next sector byte without
         // RQM gating; the external DMA controller paces the transfer.
         if self.state.phase == FdcPhase::Execution && self.state.exec_dma && self.state.exec_reading
@@ -534,7 +570,13 @@ impl Upd765aFdc {
     /// Writes the data register (command/parameter bytes).
     /// Returns an [`FdcAction`] indicating what the bus should do.
     pub fn write_data(&mut self, value: u8) -> FdcAction {
-        match self.state.phase {
+        if (PLATFORM == UPD765_PLATFORM_ISA_AT && self.reset_held)
+            || (PLATFORM == UPD765_PLATFORM_X68K && self.standby)
+        {
+            return FdcAction::None;
+        }
+
+        let action = match self.state.phase {
             FdcPhase::Idle => {
                 self.state.interrupt_pending = false;
                 let cmd_index = (value & CMD_INDEX_MASK) as usize;
@@ -589,7 +631,16 @@ impl Upd765aFdc {
                 FdcAction::None
             }
             FdcPhase::Result => FdcAction::None,
+        };
+        if PLATFORM == UPD765_PLATFORM_ISA_AT
+            && action != FdcAction::None
+            && self.state.nd
+            && !self.warned_non_dma
+        {
+            warn!("AT FDC: non-DMA mode requested; only the DMA path is implemented");
+            self.warned_non_dma = true;
         }
+        action
     }
 
     /// Writes the external circuit control register.
@@ -903,7 +954,7 @@ impl Upd765aFdc {
             // Sense Drive Status: return ST3.
             CMD_SENSE_DRIVE_STATUS => {
                 let drive = (self.state.params[0] & HD_US_DRIVE_MASK) as usize;
-                let head = if self.state.sense_reports_command_head {
+                let head = if PLATFORM != UPD765_PLATFORM_X68K {
                     (self.state.params[0] >> HD_US_HEAD_SHIFT) & 0x01
                 } else {
                     0
@@ -923,7 +974,7 @@ impl Upd765aFdc {
                 } else {
                     0x00
                 };
-                let two_side = if equipped && self.state.report_two_side {
+                let two_side = if equipped && PLATFORM != UPD765_PLATFORM_X68K {
                     ST3_TWO_SIDE
                 } else {
                     0
@@ -961,7 +1012,11 @@ impl Upd765aFdc {
                 let drive = (self.state.params[0] & HD_US_DRIVE_MASK) as usize;
                 let drive_busy = (1u8 << drive) & MSR_DB;
                 let position = self.state.drive_cylinder[drive];
-                let limit = self.state.recalibrate_step_limit;
+                let limit = if PLATFORM == UPD765_PLATFORM_X68K {
+                    u8::MAX
+                } else {
+                    77
+                };
                 if position > limit {
                     self.state.drive_cylinder[drive] = position - limit;
                     self.state.drive_st0[drive] = ST0_ABNORMAL_TERMINATION
@@ -1052,7 +1107,7 @@ impl Upd765aFdc {
             CMD_SCAN_EQUAL | CMD_SCAN_LOW_OR_EQUAL | CMD_SCAN_HIGH_OR_EQUAL => {
                 self.state.hd_us = self.state.params[0];
                 self.extract_data_params();
-                if !self.state.scan_enabled {
+                if PLATFORM == UPD765_PLATFORM_STANDARD {
                     self.complete_error(ST0_NOT_READY, 0x00, 0x00);
                     return FdcAction::None;
                 }
@@ -1118,9 +1173,9 @@ const FDC_MEDIA_DEFAULT: u8 = 0x03;
 /// instances and the shared floppy drive storage (up to 4 drives).
 pub struct FloppyController {
     /// 1MB FDC (ports 0x90/0x92/0x94).
-    fdc_1mb: Upd765aFdc,
+    fdc_1mb: StandardUpd765aFdc,
     /// 640KB FDC (ports 0xC8/0xCA/0xCC).
-    fdc_640k: Upd765aFdc,
+    fdc_640k: StandardUpd765aFdc,
     /// Which FDC (0=1MB, 1=640K) is currently executing a command.
     active_interface: u8,
     /// Mounted floppy disks (up to 4 drives, shared between both FDCs).
@@ -1141,8 +1196,8 @@ impl FloppyController {
     /// Creates a new floppy controller with both FDCs in idle state.
     pub fn new() -> Self {
         Self {
-            fdc_1mb: Upd765aFdc::new(),
-            fdc_640k: Upd765aFdc::new(),
+            fdc_1mb: StandardUpd765aFdc::new(),
+            fdc_640k: StandardUpd765aFdc::new(),
             active_interface: 0,
             drives: [None, None, None, None],
             fdc_media: FDC_MEDIA_DEFAULT,
@@ -1207,27 +1262,27 @@ impl FloppyController {
     }
 
     /// Returns a reference to the 1MB FDC.
-    pub fn fdc_1mb(&self) -> &Upd765aFdc {
+    pub fn fdc_1mb(&self) -> &Upd765aFdc<UPD765_PLATFORM_STANDARD> {
         &self.fdc_1mb
     }
 
     /// Returns a mutable reference to the 1MB FDC.
-    pub fn fdc_1mb_mut(&mut self) -> &mut Upd765aFdc {
+    pub fn fdc_1mb_mut(&mut self) -> &mut Upd765aFdc<UPD765_PLATFORM_STANDARD> {
         &mut self.fdc_1mb
     }
 
     /// Returns a reference to the 640KB FDC.
-    pub fn fdc_640k(&self) -> &Upd765aFdc {
+    pub fn fdc_640k(&self) -> &Upd765aFdc<UPD765_PLATFORM_STANDARD> {
         &self.fdc_640k
     }
 
     /// Returns a mutable reference to the 640KB FDC.
-    pub fn fdc_640k_mut(&mut self) -> &mut Upd765aFdc {
+    pub fn fdc_640k_mut(&mut self) -> &mut Upd765aFdc<UPD765_PLATFORM_STANDARD> {
         &mut self.fdc_640k
     }
 
     /// Returns a reference to the FDC for the currently active interface.
-    pub fn active_fdc(&self) -> &Upd765aFdc {
+    pub fn active_fdc(&self) -> &Upd765aFdc<UPD765_PLATFORM_STANDARD> {
         if self.active_interface == 0 {
             &self.fdc_1mb
         } else {
@@ -1236,7 +1291,7 @@ impl FloppyController {
     }
 
     /// Returns a mutable reference to the FDC for the currently active interface.
-    pub fn active_fdc_mut(&mut self) -> &mut Upd765aFdc {
+    pub fn active_fdc_mut(&mut self) -> &mut Upd765aFdc<UPD765_PLATFORM_STANDARD> {
         if self.active_interface == 0 {
             &mut self.fdc_1mb
         } else {
@@ -1575,14 +1630,14 @@ mod tests {
 
     #[test]
     fn initial_state() {
-        let fdc = Upd765aFdc::new();
+        let fdc = StandardUpd765aFdc::new();
         assert_eq!(fdc.read_status(), MSR_RQM);
         assert_eq!(fdc.state.phase, FdcPhase::Idle);
     }
 
     #[test]
     fn specify_stores_params() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         // Specify: command 0x03, params: SRT/HUT=0xCF, HLT/ND=0x02
         let action = fdc.write_data(0x03);
         assert_eq!(action, FdcAction::None);
@@ -1600,7 +1655,7 @@ mod tests {
 
     #[test]
     fn recalibrate_returns_schedule_seek() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.drive_cylinder[0] = 10;
 
         let action = fdc.write_data(0x07); // Recalibrate
@@ -1618,8 +1673,7 @@ mod tests {
     fn recalibrate_default_limit_is_unchanged_for_normal_positions() {
         // PC-98 regression pin: recalibrating from any cylinder within the
         // default 77-step limit reaches track 0 with the unchanged ST0.
-        let mut fdc = Upd765aFdc::new();
-        assert_eq!(fdc.state.recalibrate_step_limit, 77);
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.drive_cylinder[1] = 77;
 
         fdc.write_data(0x07);
@@ -1630,7 +1684,7 @@ mod tests {
 
     #[test]
     fn recalibrate_over_limit_sets_equipment_check() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.drive_cylinder[0] = 100;
 
         fdc.write_data(0x07);
@@ -1646,9 +1700,7 @@ mod tests {
     fn scan_disabled_keeps_not_ready_error() {
         // PC-98 regression pin: with scan support disabled the SCAN commands
         // keep failing with abnormal termination and Not Ready.
-        let mut fdc = Upd765aFdc::new();
-        assert!(!fdc.state.scan_enabled);
-
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.write_data(0x11);
         for parameter in [0x00u8, 0, 0, 1, 3, 8, 0x74, 1] {
             fdc.write_data(parameter);
@@ -1659,8 +1711,7 @@ mod tests {
 
     #[test]
     fn scan_enabled_starts_execution() {
-        let mut fdc = Upd765aFdc::new();
-        fdc.state.scan_enabled = true;
+        let mut fdc = X68kUpd765aFdc::new();
 
         fdc.write_data(0x11);
         let mut action = FdcAction::None;
@@ -1675,8 +1726,7 @@ mod tests {
 
     #[test]
     fn scan_comparison_tracks_condition_per_sector() {
-        let mut fdc = Upd765aFdc::new();
-        fdc.state.scan_enabled = true;
+        let mut fdc = X68kUpd765aFdc::new();
 
         fdc.write_data(0x11);
         for parameter in [0x00u8, 0, 0, 1, 0, 8, 0x74, 1] {
@@ -1701,27 +1751,27 @@ mod tests {
 
     #[test]
     fn scan_low_and_high_conditions_compare_disk_against_host() {
-        assert!(Upd765aFdc::scan_byte_holds(
+        assert!(StandardUpd765aFdc::scan_byte_holds(
             CMD_SCAN_LOW_OR_EQUAL,
             0x10,
             0x20
         ));
-        assert!(!Upd765aFdc::scan_byte_holds(
+        assert!(!StandardUpd765aFdc::scan_byte_holds(
             CMD_SCAN_LOW_OR_EQUAL,
             0x21,
             0x20
         ));
-        assert!(Upd765aFdc::scan_byte_holds(
+        assert!(StandardUpd765aFdc::scan_byte_holds(
             CMD_SCAN_HIGH_OR_EQUAL,
             0x21,
             0x20
         ));
-        assert!(!Upd765aFdc::scan_byte_holds(
+        assert!(!StandardUpd765aFdc::scan_byte_holds(
             CMD_SCAN_HIGH_OR_EQUAL,
             0x10,
             0x20
         ));
-        assert!(Upd765aFdc::scan_byte_holds(
+        assert!(StandardUpd765aFdc::scan_byte_holds(
             CMD_SCAN_HIGH_OR_EQUAL,
             0x00,
             0xFF
@@ -1730,7 +1780,7 @@ mod tests {
 
     #[test]
     fn dma_execution_read_serves_bytes_without_ndm() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.write_data(0x06);
         for parameter in [0x00u8, 0, 0, 1, 0, 8, 0x74, 0xFF] {
             fdc.write_data(parameter);
@@ -1745,7 +1795,7 @@ mod tests {
 
     #[test]
     fn dma_execution_write_accumulates_bytes() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.write_data(0x05);
         for parameter in [0x00u8, 0, 0, 1, 0, 8, 0x74, 0xFF] {
             fdc.write_data(parameter);
@@ -1760,7 +1810,7 @@ mod tests {
 
     #[test]
     fn seek_returns_schedule_seek() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         let action = fdc.write_data(0x0F); // Seek
         assert_eq!(action, FdcAction::None);
         fdc.write_data(0x01); // Drive 1
@@ -1774,7 +1824,7 @@ mod tests {
 
     #[test]
     fn sense_interrupt_after_recalibrate() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.write_data(0x07);
         fdc.write_data(0x02); // Drive 2
         assert_eq!(fdc.read_status() & MSR_DB, 0x04);
@@ -1794,7 +1844,7 @@ mod tests {
 
     #[test]
     fn deferred_seek_keeps_drive_busy_until_completion() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.write_data(CMD_SEEK);
         fdc.write_data(0x01);
         fdc.write_data(42);
@@ -1813,7 +1863,7 @@ mod tests {
 
     #[test]
     fn sense_interrupt_consumes_one_drive_status_and_retains_the_others() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.drive_st0[0] = ST0_SEEK_END;
         fdc.state.drive_st0[1] = ST0_READY_LINE_CHANGED | 0x01;
         fdc.state.interrupt_pending = true;
@@ -1834,7 +1884,7 @@ mod tests {
 
     #[test]
     fn sense_interrupt_without_pending_irq_returns_invalid_st0() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
 
         let action = fdc.write_data(0x08);
         assert_eq!(action, FdcAction::None);
@@ -1846,7 +1896,7 @@ mod tests {
 
     #[test]
     fn ready_line_change_raises_interrupt_reported_by_sense() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.drive_equipped = 0x03; // Drives 0 and 1 equipped.
 
         // Disk inserted into drive 1: ready line goes active.
@@ -1871,7 +1921,7 @@ mod tests {
 
     #[test]
     fn ready_line_change_ignored_when_not_idle_or_unequipped() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.drive_equipped = 0x01; // Only drive 0 equipped.
 
         // Unequipped drive: no interrupt.
@@ -1886,7 +1936,7 @@ mod tests {
 
     #[test]
     fn read_data_returns_start_read_data() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         // READ DATA: 0x46 = MT=0, MF=1, SK=0, cmd=0x06
         let action = fdc.write_data(0x46);
         assert_eq!(action, FdcAction::None);
@@ -1907,7 +1957,7 @@ mod tests {
 
     #[test]
     fn read_id_returns_start_read_id() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         // READ ID: 0x4A = MF=1, cmd=0x0A
         let action = fdc.write_data(0x4A);
         assert_eq!(action, FdcAction::None);
@@ -1919,7 +1969,7 @@ mod tests {
 
     #[test]
     fn write_data_returns_start_write_data() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         // WRITE DATA: 0x45 = MT=0, MF=1, SK=0, cmd=0x05
         let action = fdc.write_data(0x45);
         assert_eq!(action, FdcAction::None);
@@ -1939,7 +1989,7 @@ mod tests {
 
     #[test]
     fn complete_success_fills_result() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         // Simulate a READ DATA that entered execution.
         fdc.state.phase = FdcPhase::Execution;
         fdc.state.hd_us = 0x00;
@@ -1971,7 +2021,7 @@ mod tests {
 
     #[test]
     fn complete_success_with_status_keeps_normal_termination() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.phase = FdcPhase::Execution;
         fdc.state.hd_us = 0x00;
         fdc.state.r = 1;
@@ -1987,7 +2037,7 @@ mod tests {
 
     #[test]
     fn read_diagnostic_is_recognised_as_read_track() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.write_data(0x42); // READ DIAGNOSTIC (READ TRACK), MFM
         for byte in [0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 0x1B, 0xFF] {
             fdc.write_data(byte);
@@ -1999,7 +2049,7 @@ mod tests {
 
     #[test]
     fn complete_error_sets_abnormal() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.phase = FdcPhase::Execution;
         fdc.state.hd_us = 0x01; // Drive 1
         fdc.state.c = 5;
@@ -2016,7 +2066,7 @@ mod tests {
 
     #[test]
     fn sense_drive_status_equipped() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.drive_equipped = 0x03; // Drives 0 and 1 equipped.
         fdc.state.control = 0x40; // Forced ready.
         fdc.write_data(0x04); // Sense Drive Status
@@ -2030,7 +2080,7 @@ mod tests {
 
     #[test]
     fn sense_drive_status_equipped_no_disk_not_ready() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.drive_equipped = 0x01; // Drive 0 equipped.
         // drive_has_disk = 0 (no disk), control = 0 (no FRY).
         fdc.write_data(0x04); // Sense Drive Status
@@ -2048,7 +2098,7 @@ mod tests {
 
     #[test]
     fn sense_drive_status_equipped_with_disk_ready() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.drive_equipped = 0x01; // Drive 0 equipped.
         fdc.state.drive_has_disk = 0x01; // Disk inserted in drive 0.
         // control = 0 (no FRY).
@@ -2062,7 +2112,7 @@ mod tests {
 
     #[test]
     fn sense_drive_status_forced_ready_no_disk() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.drive_equipped = 0x01; // Drive 0 equipped.
         // drive_has_disk = 0 (no disk).
         fdc.state.control = CTRL_FORCED_READY; // FRY set.
@@ -2076,7 +2126,7 @@ mod tests {
 
     #[test]
     fn sense_drive_status_not_equipped() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.drive_equipped = 0x00; // No drives equipped.
         fdc.write_data(0x04); // Sense Drive Status
         fdc.write_data(0x00); // Drive 0
@@ -2092,7 +2142,7 @@ mod tests {
 
     #[test]
     fn write_control_reset() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.drive_st0[0] = 0x20;
 
         // Rising edge of bit 7 triggers reset.
@@ -2103,7 +2153,7 @@ mod tests {
 
     #[test]
     fn current_track_index() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.drive_cylinder[2] = 10;
         fdc.state.hd_us = 0x06; // head=1, drive=2
         assert_eq!(fdc.current_track_index(), 10 * 2 + 1);
@@ -2157,7 +2207,7 @@ mod tests {
 
     #[test]
     fn pio_read_streams_sector_bytes_with_drq_pacing() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         let sector = [0x11u8, 0x22, 0x33];
         fdc.begin_pio_read(&sector);
 
@@ -2179,7 +2229,7 @@ mod tests {
 
     #[test]
     fn pio_read_before_drq_does_not_consume_byte() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         let sector = [0x11u8, 0x22];
         fdc.begin_pio_read(&sector);
 
@@ -2194,7 +2244,7 @@ mod tests {
 
     #[test]
     fn pio_write_accepts_sector_bytes() {
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.nd = true;
         fdc.begin_pio_write(3);
         assert_eq!(fdc.read_status(), MSR_EXM | MSR_CB);
@@ -2213,7 +2263,7 @@ mod tests {
     fn pio_fields_do_not_affect_dma_read_data_path() {
         // With exec_pio false (the DMA path), read_data behaves exactly as before:
         // 0xFF outside the result phase, result bytes inside it.
-        let mut fdc = Upd765aFdc::new();
+        let mut fdc = StandardUpd765aFdc::new();
         fdc.state.phase = FdcPhase::Execution;
         assert_eq!(fdc.read_data(), 0xFF, "DMA execution serves no data bytes");
 

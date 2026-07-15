@@ -5,8 +5,11 @@ use device::{
         FloppyImage, MountedFloppy,
         d88::{D88Disk, D88MediaType, D88Sector},
     },
-    mb8877_fdc::{Mb8877Config, Mb8877Fdc},
+    mb8877_fdc::{MB8877_PLATFORM_FM_TOWNS, MB8877_PLATFORM_X1, Mb8877Fdc},
 };
+
+type TownsMb8877Fdc = Mb8877Fdc<MB8877_PLATFORM_FM_TOWNS>;
+type X1Mb8877Fdc = Mb8877Fdc<MB8877_PLATFORM_X1>;
 
 const CPU_CLOCK_HZ: u32 = 16_000_000;
 const SECTORS_PER_TRACK: u8 = 8;
@@ -55,8 +58,8 @@ fn make_disk() -> D88Disk {
     )
 }
 
-fn make_controller() -> Mb8877Fdc {
-    let mut fdc = Mb8877Fdc::new(CPU_CLOCK_HZ, Mb8877Config::towns());
+fn make_controller() -> TownsMb8877Fdc {
+    let mut fdc = TownsMb8877Fdc::new(CPU_CLOCK_HZ);
     let image = FloppyImage::from_d88(make_disk());
     fdc.insert(0, MountedFloppy::new(image, None));
     // Enable IRQ and spin up the motor; select side 0.
@@ -183,7 +186,7 @@ fn read_sector_matches_by_id_and_ignores_the_size_code() {
     // The WD179x compares only the ID's track and record (and optionally the
     // side) when searching for a sector; the size code is taken from the found
     // ID, so a track mixing sector sizes delivers each record's own length.
-    let mut fdc = Mb8877Fdc::new(CPU_CLOCK_HZ, Mb8877Config::towns());
+    let mut fdc = TownsMb8877Fdc::new(CPU_CLOCK_HZ);
     let image = FloppyImage::from_d88(make_mixed_size_disk());
     fdc.insert(0, MountedFloppy::new(image, None));
     fdc.write_drive_control(IRQ_ENABLE | MOTOR);
@@ -267,7 +270,7 @@ fn command_fe_is_a_noop() {
 
 #[test]
 fn irq_mask_disabled_suppresses_interrupt() {
-    let mut fdc = Mb8877Fdc::new(CPU_CLOCK_HZ, Mb8877Config::towns());
+    let mut fdc = TownsMb8877Fdc::new(CPU_CLOCK_HZ);
     let image = FloppyImage::from_d88(make_disk());
     fdc.insert(0, MountedFloppy::new(image, None));
     // Motor on but IRQ mask cleared (bit0 = 0 -> disabled per errata).
@@ -312,8 +315,8 @@ fn side_select_bit_sets_head_one() {
     );
 }
 
-fn make_pio_controller() -> Mb8877Fdc {
-    let mut fdc = Mb8877Fdc::new(CPU_CLOCK_HZ, Mb8877Config::x1());
+fn make_pio_controller() -> X1Mb8877Fdc {
+    let mut fdc = X1Mb8877Fdc::new(CPU_CLOCK_HZ);
     let image = FloppyImage::from_d88(make_disk());
     fdc.insert(0, MountedFloppy::new(image, None));
     fdc.set_motor(true);

@@ -28,7 +28,7 @@ use device::{
     floppy::{FloppyImage, MountedFloppy},
     i8251_serial::I8251Serial,
     i8259a_pic::I8259aPic,
-    mb8877_fdc::{Mb8877Config, Mb8877Fdc},
+    mb8877_fdc::{MB8877_PLATFORM_FM_TOWNS, Mb8877Fdc},
     msm58321_rtc::Msm58321Rtc,
     opn_fm::{FmTimerAction, OpnFm, Ymf276},
     rf5c68::Rf5c68,
@@ -152,7 +152,7 @@ pub struct TownsBus<T: TraceSink = NoTrace> {
     pub(crate) keyboard: TownsKeyboard,
     pub(crate) cdc: TownsCdController,
     /// MB8877 floppy disk controller at I/O 0x0200-0x020E (IRQ 6, DMA channel 0).
-    pub(crate) fdc: Mb8877Fdc,
+    pub(crate) fdc: Mb8877Fdc<MB8877_PLATFORM_FM_TOWNS>,
     /// MB89352-class SCSI controller at I/O 0x0C30-0x0C37 (IRQ 8, DMA channel 1).
     pub(crate) scsi: TownsScsiController,
     /// PC-speaker-style buzzer. Its tone follows interval-timer channel 2 and it
@@ -271,7 +271,7 @@ impl<T: TraceSink> TownsBus<T> {
             rtc: Msm58321Rtc::new(),
             keyboard: TownsKeyboard::new(),
             cdc: TownsCdController::new(clocks.sample_rate, clocks.cpu_clock_hz),
-            fdc: Mb8877Fdc::new(clocks.cpu_clock_hz, Mb8877Config::towns()),
+            fdc: Mb8877Fdc::new(clocks.cpu_clock_hz),
             scsi: TownsScsiController::new(clocks.cpu_clock_hz),
             beeper: Beeper::new(BeeperKind::PitDriven, TIMER_CLOCK_HZ),
             buzzer_memio: false,

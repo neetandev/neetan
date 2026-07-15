@@ -10,7 +10,7 @@ use device::{
     i8257_dma::I8257Dma,
     palette_pc88::Pc88Palette,
     soundboard_ii::SoundboardII,
-    upd765a_fdc::{FloppyController, Upd765aFdc},
+    upd765a_fdc::{FloppyController, UPD765_PLATFORM_STANDARD, Upd765aFdc},
     upd3301_crtc::Upd3301,
     upd4990a_rtc::Upd4990aRtc,
 };
@@ -155,7 +155,7 @@ impl<T: TraceSink> Pc8801Bus<T> {
             sub_cycle: 0,
             sub_to_main_shift,
             sub_clock_credit: 0,
-            fdc: Upd765aFdc::new(),
+            fdc: Upd765aFdc::<UPD765_PLATFORM_STANDARD>::new(),
             floppy: FloppyController::new(),
             ppi_main: I8255::new(),
             ppi_sub: I8255::new(),

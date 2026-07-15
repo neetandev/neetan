@@ -1,10 +1,14 @@
 //! Integration tests for the AT FDC front-end.
 
 use device::{
-    at_fdc::{AtFdc, FdcDataRate},
     floppy::FloppyImage,
-    upd765a_fdc::{FdcAction, FdcPhase, ST0_READY_LINE_CHANGED},
+    upd765a_fdc::{
+        FdcAction, FdcDataRate, FdcPhase, ST0_READY_LINE_CHANGED, UPD765_PLATFORM_ISA_AT,
+        Upd765aFdc,
+    },
 };
+
+type AtUpd765aFdc = Upd765aFdc<UPD765_PLATFORM_ISA_AT>;
 
 /// DOR value: reset released, IRQ/DMA gate on, drive 0 selected, motor 0 on.
 const DOR_RUNNING: u8 = 0x1C;
@@ -21,15 +25,15 @@ fn image_360k() -> FloppyImage {
     FloppyImage::from_img_bytes(&vec![0u8; 368_640]).unwrap()
 }
 
-fn running_fdc() -> AtFdc {
-    let mut fdc = AtFdc::new();
+fn running_fdc() -> AtUpd765aFdc {
+    let mut fdc = AtUpd765aFdc::new();
     fdc.write_dor(DOR_RUNNING);
     fdc
 }
 
 #[test]
 fn power_on_holds_reset() {
-    let mut fdc = AtFdc::new();
+    let mut fdc = AtUpd765aFdc::new();
     assert_eq!(fdc.read_main_status(), 0x00);
     assert_eq!(fdc.write_data(0x03), FdcAction::None);
     assert_eq!(fdc.state.phase, FdcPhase::Idle);
@@ -37,7 +41,7 @@ fn power_on_holds_reset() {
 
 #[test]
 fn dor_reset_edges() {
-    let mut fdc = AtFdc::new();
+    let mut fdc = AtUpd765aFdc::new();
 
     let effect = fdc.write_dor(DOR_RUNNING);
     assert!(effect.reset_released);

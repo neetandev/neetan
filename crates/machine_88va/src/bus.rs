@@ -34,7 +34,7 @@ use device::{
     i8255::I8255,
     i8259a_pic::I8259aPic,
     soundboard_ii::SoundboardII,
-    upd765a_fdc::{FloppyController, Upd765aFdc},
+    upd765a_fdc::{FloppyController, UPD765_PLATFORM_STANDARD, Upd765aFdc},
     upd4990a_rtc::Upd4990aRtc,
     upd71071_dma::Upd71071Dma,
 };
@@ -137,7 +137,7 @@ pub struct Pc88VaBus<T: TraceSink = NoTrace> {
     /// Fractional main-unit remainder carried for an exact long-run clock ratio.
     pub(crate) sub_clock_credit: u64,
     /// uPD765A floppy disk controller, driven by the sub-CPU via PIO.
-    pub(crate) fdc: Upd765aFdc,
+    pub(crate) fdc: Upd765aFdc<UPD765_PLATFORM_STANDARD>,
     /// Mounted floppy images.
     pub(crate) floppy: FloppyController,
     /// PPI mailbox, host side (main I/O 0xFC-0xFF).
