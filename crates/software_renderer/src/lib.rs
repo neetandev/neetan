@@ -17,6 +17,7 @@ use std::{
 mod compose;
 pub mod fm7;
 mod ga1280a;
+pub mod msx;
 pub mod pc60;
 pub mod pc88;
 mod text_normalizer;
@@ -31,6 +32,10 @@ pub use fm7::{
 };
 pub use ga1280a::{
     Ga1280aCursorRenderInputs, Ga1280aRenderInputs, Ga1280aRenderMode, compose as compose_ga1280a,
+};
+pub use msx::{
+    MSX_FRAMEBUFFER_BYTES, MSX_SURFACE_HEIGHT, MSX_SURFACE_WIDTH, MSX2_FRAMEBUFFER_BYTES,
+    MSX2_SURFACE_WIDTH, MsxRenderer, MsxRendererState, RenderInputsMsx,
 };
 pub use pc60::{
     PC60_HEIGHT, PC60_MK2_HEIGHT, PC60_MK2_WIDTH, PC60_WIDTH, Pc60RenderModel, RenderInputs60,

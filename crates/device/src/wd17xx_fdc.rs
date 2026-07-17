@@ -1,13 +1,13 @@
-//! MB8877 floppy disk controller (WD1793 family).
+//! WD17xx-family floppy disk controller.
 //!
 //! The controller is transport-agnostic: the machine layer owns the I/O port
-//! decode and calls the register accessors ([`Mb8877Fdc::write_command`],
-//! [`Mb8877Fdc::read_status`], the track/sector/data registers) directly. It is
-//! a passive device: the bus polls [`Mb8877Fdc::irq_line`] /
-//! [`Mb8877Fdc::next_task_cycle`] and runs the scheduled task via
-//! [`Mb8877Fdc::run_task`]. Sector data moves either over DMA (the bus performs
-//! the block transfer requested by [`Mb8877Outcome`]) or over a CPU-polled PIO
-//! path ([`Mb8877Fdc::read_data_pio`] / [`Mb8877Fdc::write_data_pio`] with the
+//! decode and calls the register accessors ([`Wd17xxFdc::write_command`],
+//! [`Wd17xxFdc::read_status`], the track/sector/data registers) directly. It is
+//! a passive device: the bus polls [`Wd17xxFdc::irq_line`] /
+//! [`Wd17xxFdc::next_task_cycle`] and runs the scheduled task via
+//! [`Wd17xxFdc::run_task`]. Sector data moves either over DMA (the bus performs
+//! the block transfer requested by [`Wd17xxOutcome`]) or over a CPU-polled PIO
+//! path ([`Wd17xxFdc::read_data_pio`] / [`Wd17xxFdc::write_data_pio`] with the
 //! DRQ handshake), selected by the `PLATFORM` const generic.
 //!
 //! Command decode and status assembly follow the WD1793 model. Machine-specific
@@ -19,37 +19,50 @@ use crate::floppy::MountedFloppy;
 /// Number of physical drives the controller tracks.
 const DRIVE_COUNT: usize = 4;
 
-// Status register bits. Bit meanings for bits 1-5 depend on the command type.
+/// Status busy bit.
 const STATUS_BUSY: u8 = 0x01;
+/// Type I status index-hole bit.
 const STATUS_INDEX: u8 = 0x02;
 /// Data-request line, mirrored into the status register during a PIO transfer.
 const STATUS_DRQ: u8 = 0x02;
+/// Type I status track-zero bit.
 const STATUS_TRACK00: u8 = 0x04;
+/// Type II and III status lost-data bit.
 const STATUS_LOST_DATA: u8 = 0x04;
+/// Type II and III status CRC-error bit.
+const STATUS_CRC_ERROR: u8 = 0x08;
+/// Type II and III status record-not-found bit.
 const STATUS_RECORD_NOT_FOUND: u8 = 0x10;
+/// Write-command status write-fault bit.
 const STATUS_WRITE_FAULT: u8 = 0x20;
+/// Write-command status write-protect bit.
 const STATUS_WRITE_PROTECT: u8 = 0x40;
+/// Status drive-not-ready bit.
 const STATUS_NOT_READY: u8 = 0x80;
 
-// Drive-status register bits (I/O 0x0208 read).
+/// Composite drive-status disk-changed bit.
 const DRIVE_STATUS_DISK_CHANGED: u8 = 0x01;
+/// Composite drive-status ready bit.
 const DRIVE_STATUS_READY: u8 = 0x02;
 /// 3-mode drive indicator (bits 2 and 3).
 const DRIVE_STATUS_THREE_MODE: u8 = 0x0C;
 /// Two internal drives are present.
 const DRIVE_STATUS_TWO_DRIVES: u8 = 0x80;
 
-// Drive-control register bits (I/O 0x0208 write). Per the FM Towns errata the
-// IRQ-mask bit is 1 = enable (databook says the opposite), and the side-select
-// bit is 0 = side 0.
+/// Composite drive-control IRQ-enable bit.
 const CONTROL_IRQ_ENABLE: u8 = 0x01;
+/// Composite drive-control double-density bit.
 const CONTROL_DOUBLE_DENSITY: u8 = 0x02;
+/// Composite drive-control side-one bit.
 const CONTROL_SIDE_ONE: u8 = 0x04;
+/// Composite drive-control motor bit.
 const CONTROL_MOTOR: u8 = 0x10;
 
-// Drive-select register bits (I/O 0x020C write).
+/// Composite drive-select drive mask.
 const SELECT_DRIVE_MASK: u8 = 0x0F;
+/// Composite drive-select high-speed bit.
 const SELECT_HISPD: u8 = 0x40;
+/// Composite drive-select mode-B bit.
 const SELECT_MODEB: u8 = 0x80;
 
 /// Command byte flag selecting multi-sector transfer (read/write sector).
@@ -63,14 +76,17 @@ const CMD_UNKNOWN_FE: u8 = 0xFE;
 /// The highest track the head can step to.
 const MAX_TRACK: i32 = 82;
 
-// Force-interrupt acknowledge delay, in nanoseconds. The per-step seek and the
-// sector-access delays are machine-specific and selected by `PLATFORM`.
+/// Force-interrupt acknowledge delay in nanoseconds.
 const FORCE_IRQ_DELAY_NS: u64 = 20_000;
 
-// Index-hole synthesis for Type I / Type IV status reads. One revolution is
-// ~166 ms at 360 rpm; the hole is visible for the first ~2 ms.
+/// One synthesized 360 RPM revolution in nanoseconds.
 const REVOLUTION_NS: u128 = 166_000_000;
+/// One Sony 3.5-inch drive revolution at 300 RPM in nanoseconds.
+const MSX_REVOLUTION_NS: u128 = 200_000_000;
+/// Synthesized index-hole duration in nanoseconds.
 const INDEX_HOLE_NS: u128 = 2_000_000;
+/// Sony drive motor coast time after the motor latch is cleared.
+const MSX_MOTOR_OFF_NS: u64 = 4_000_000_000;
 
 /// The high-nibble decode of a WD1793 command byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,19 +136,21 @@ impl CommandType {
 /// A DMA transfer the bus must perform on the controller's behalf. Only produced
 /// by the FM Towns specialization; the PIO platforms stage bytes internally.
 #[derive(Debug, Default)]
-pub struct Mb8877Outcome {
+pub struct Wd17xxOutcome {
     /// Bytes to push to memory over DMA (read sector/address/track).
     pub dma_read: Option<Vec<u8>>,
     /// Byte count to pull from memory over DMA (write sector/track).
     pub dma_write_len: Option<usize>,
 }
 
-/// FM Towns host platform selector for [`Mb8877Fdc`].
-pub const MB8877_PLATFORM_FM_TOWNS: u8 = 0;
-/// Sharp X1 host platform selector for [`Mb8877Fdc`].
-pub const MB8877_PLATFORM_X1: u8 = 1;
-/// Fujitsu FM-7 host platform selector for [`Mb8877Fdc`].
-pub const MB8877_PLATFORM_FM7: u8 = 2;
+/// FM Towns host platform selector for [`Wd17xxFdc`].
+pub const WD17XX_PLATFORM_FM_TOWNS: u8 = 0;
+/// Sharp X1 host platform selector for [`Wd17xxFdc`].
+pub const WD17XX_PLATFORM_X1: u8 = 1;
+/// Fujitsu FM-7 host platform selector for [`Wd17xxFdc`].
+pub const WD17XX_PLATFORM_FM7: u8 = 2;
+/// Sony MSX host platform selector for [`Wd17xxFdc`].
+pub const WD17XX_PLATFORM_MSX: u8 = 3;
 
 /// Sharp X1 per-step head seek delay: the WD1793-family default step rate.
 const X1_SEEK_STEP_DELAY_NS: u64 = 6_000_000;
@@ -148,22 +166,28 @@ const FM7_SEEK_STEP_DELAY_NS: u64 = 6_000_000;
 /// Fujitsu FM-7 sector-access delay: head settle plus the rotational latency
 /// until the addressed record passes under the head of the 300 rpm 2D drive.
 const FM7_SECTOR_DELAY_NS: u64 = 15_000_000;
+/// Sony MSX WD2793 seek rates selected by command bits zero and one.
+const MSX_SEEK_STEP_DELAYS_NS: [u64; 4] = [6_000_000, 12_000_000, 20_000_000, 30_000_000];
+/// Sony MSX rotational sector-search delay.
+const MSX_SECTOR_DELAY_NS: u64 = 15_000_000;
 
 const fn seek_step_delay_ns(platform: u8) -> u64 {
     match platform {
-        MB8877_PLATFORM_FM_TOWNS => 300_000,
-        MB8877_PLATFORM_X1 => X1_SEEK_STEP_DELAY_NS,
-        MB8877_PLATFORM_FM7 => FM7_SEEK_STEP_DELAY_NS,
-        _ => panic!("unsupported MB8877 platform"),
+        WD17XX_PLATFORM_FM_TOWNS => 300_000,
+        WD17XX_PLATFORM_X1 => X1_SEEK_STEP_DELAY_NS,
+        WD17XX_PLATFORM_FM7 => FM7_SEEK_STEP_DELAY_NS,
+        WD17XX_PLATFORM_MSX => MSX_SEEK_STEP_DELAYS_NS[0],
+        _ => panic!("unsupported WD17xx platform"),
     }
 }
 
 const fn sector_delay_ns(platform: u8) -> u64 {
     match platform {
-        MB8877_PLATFORM_FM_TOWNS => 200_000,
-        MB8877_PLATFORM_X1 => X1_SECTOR_DELAY_NS,
-        MB8877_PLATFORM_FM7 => FM7_SECTOR_DELAY_NS,
-        _ => panic!("unsupported MB8877 platform"),
+        WD17XX_PLATFORM_FM_TOWNS => 200_000,
+        WD17XX_PLATFORM_X1 => X1_SECTOR_DELAY_NS,
+        WD17XX_PLATFORM_FM7 => FM7_SECTOR_DELAY_NS,
+        WD17XX_PLATFORM_MSX => MSX_SECTOR_DELAY_NS,
+        _ => panic!("unsupported WD17xx platform"),
     }
 }
 
@@ -179,9 +203,9 @@ enum PendingTransfer {
 }
 
 save_state::runtime_state! {
-/// Authoritative MB8877 electronics state without mounted floppy resources.
+/// Authoritative WD17xx electronics state without mounted floppy resources.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Mb8877FdcState {
+pub struct Wd17xxFdcState {
     command: u8,
     track_register: u8,
     sector_register: u8,
@@ -204,17 +228,20 @@ pub struct Mb8877FdcState {
     disk_changed: [bool; DRIVE_COUNT],
     irq_pending: bool,
     command_task_cycle: Option<u64>,
+    motor_off_cycle: Option<u64>,
     data_request: bool,
     pio_read_buffer: Vec<u8>,
     pio_read_index: usize,
     pio_write_accumulator: Vec<u8>,
     pio_write_expected: usize,
     pio_next_byte_cycle: u64,
+    pio_cycle_remainder: u64,
+    transfer_result_status: u8,
     media: save_state::MediaManifest,
 }}
 
-/// MB8877 floppy disk controller specialized for a host platform.
-pub struct Mb8877Fdc<const PLATFORM: u8> {
+/// WD17xx floppy disk controller specialized for a host platform.
+pub struct Wd17xxFdc<const PLATFORM: u8> {
     drives: [Option<MountedFloppy>; DRIVE_COUNT],
 
     // Registers.
@@ -244,6 +271,7 @@ pub struct Mb8877Fdc<const PLATFORM: u8> {
 
     irq_pending: bool,
     command_task_cycle: Option<u64>,
+    motor_off_cycle: Option<u64>,
 
     // PIO transfer state (unused in DMA mode).
     drq: bool,
@@ -252,6 +280,8 @@ pub struct Mb8877Fdc<const PLATFORM: u8> {
     pio_write_accum: Vec<u8>,
     pio_write_expected: usize,
     pio_next_byte_cycle: u64,
+    pio_cycle_remainder: u64,
+    transfer_result_status: u8,
 
     cpu_clock_hz: u32,
     seek_step_delay_cycles: u64,
@@ -263,7 +293,7 @@ fn ns_to_cycles(ns: u64, cpu_clock_hz: u32) -> u64 {
     ns.saturating_mul(u64::from(cpu_clock_hz)) / 1_000_000_000
 }
 
-impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
+impl<const PLATFORM: u8> Wd17xxFdc<PLATFORM> {
     /// Creates a controller with all drives empty.
     pub fn new(cpu_clock_hz: u32) -> Self {
         let seek_step_delay_ns = seek_step_delay_ns(PLATFORM);
@@ -291,12 +321,15 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
             disk_changed: [false; DRIVE_COUNT],
             irq_pending: false,
             command_task_cycle: None,
+            motor_off_cycle: None,
             drq: false,
             pio_read_buffer: Vec::new(),
             pio_read_index: 0,
             pio_write_accum: Vec::new(),
             pio_write_expected: 0,
             pio_next_byte_cycle: 0,
+            pio_cycle_remainder: 0,
+            transfer_result_status: 0,
             cpu_clock_hz,
             seek_step_delay_cycles: ns_to_cycles(seek_step_delay_ns, cpu_clock_hz).max(1),
             sector_delay_cycles: ns_to_cycles(sector_delay_ns, cpu_clock_hz).max(1),
@@ -305,7 +338,7 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
     }
 
     /// Captures controller electronics and mounted-media identities.
-    pub fn capture_state(&self) -> Result<Mb8877FdcState, save_state::StateValidationError> {
+    pub fn capture_state(&self) -> Result<Wd17xxFdcState, save_state::StateValidationError> {
         let (pending_type, pending_length) = match self.pending {
             PendingTransfer::None => (0, 0),
             PendingTransfer::ReadSector { length } => (1, length),
@@ -314,7 +347,7 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
             PendingTransfer::ReadTrack => (4, 0),
             PendingTransfer::WriteTrack => (5, 0),
         };
-        Ok(Mb8877FdcState {
+        Ok(Wd17xxFdcState {
             command: self.command,
             track_register: self.track_reg,
             sector_register: self.sector_reg,
@@ -337,12 +370,15 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
             disk_changed: self.disk_changed,
             irq_pending: self.irq_pending,
             command_task_cycle: self.command_task_cycle,
+            motor_off_cycle: self.motor_off_cycle,
             data_request: self.drq,
             pio_read_buffer: self.pio_read_buffer.clone(),
             pio_read_index: self.pio_read_index,
             pio_write_accumulator: self.pio_write_accum.clone(),
             pio_write_expected: self.pio_write_expected,
             pio_next_byte_cycle: self.pio_next_byte_cycle,
+            pio_cycle_remainder: self.pio_cycle_remainder,
+            transfer_result_status: self.transfer_result_status,
             media: self.media_manifest()?,
         })
     }
@@ -350,7 +386,7 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
     /// Restores controller electronics while retaining mounted floppy resources.
     pub fn restore_state(
         &mut self,
-        state: Mb8877FdcState,
+        state: Wd17xxFdcState,
     ) -> Result<(), save_state::StateValidationError> {
         state.media.verify_current(&self.media_manifest()?)?;
         if state.drive_select >= DRIVE_COUNT
@@ -359,7 +395,7 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
             || state.pio_write_accumulator.len() > state.pio_write_expected
         {
             return Err(save_state::StateValidationError::new(
-                "MB8877 state invariant is invalid",
+                "WD17xx state invariant is invalid",
             ));
         }
         let command_type = match state.command_type {
@@ -376,7 +412,7 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
             10 => CommandType::WriteTrack,
             _ => {
                 return Err(save_state::StateValidationError::new(
-                    "MB8877 command type is invalid",
+                    "WD17xx command type is invalid",
                 ));
             }
         };
@@ -391,7 +427,7 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
             5 => PendingTransfer::WriteTrack,
             _ => {
                 return Err(save_state::StateValidationError::new(
-                    "MB8877 pending transfer is invalid",
+                    "WD17xx pending transfer is invalid",
                 ));
             }
         };
@@ -416,12 +452,15 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
         self.disk_changed = state.disk_changed;
         self.irq_pending = state.irq_pending;
         self.command_task_cycle = state.command_task_cycle;
+        self.motor_off_cycle = state.motor_off_cycle;
         self.drq = state.data_request;
         self.pio_read_buffer = state.pio_read_buffer;
         self.pio_read_index = state.pio_read_index;
         self.pio_write_accum = state.pio_write_accumulator;
         self.pio_write_expected = state.pio_write_expected;
         self.pio_next_byte_cycle = state.pio_next_byte_cycle;
+        self.pio_cycle_remainder = state.pio_cycle_remainder;
+        self.transfer_result_status = state.transfer_result_status;
         Ok(())
     }
 
@@ -459,12 +498,15 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
         self.pending = PendingTransfer::None;
         self.irq_pending = false;
         self.command_task_cycle = None;
+        self.motor_off_cycle = None;
         self.drq = false;
         self.pio_read_buffer.clear();
         self.pio_read_index = 0;
         self.pio_write_accum.clear();
         self.pio_write_expected = 0;
         self.pio_next_byte_cycle = 0;
+        self.pio_cycle_remainder = 0;
+        self.transfer_result_status = 0;
     }
 
     /// Inserts a mounted floppy into a drive. A disk present from power-on is not
@@ -507,7 +549,12 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
 
     /// The cycle of the controller's next scheduled task, if any.
     pub fn next_task_cycle(&self) -> Option<u64> {
-        self.command_task_cycle
+        match (self.command_task_cycle, self.motor_off_cycle) {
+            (Some(command), Some(motor)) => Some(command.min(motor)),
+            (Some(command), None) => Some(command),
+            (None, Some(motor)) => Some(motor),
+            (None, None) => None,
+        }
     }
 
     fn drive_ready(&self) -> bool {
@@ -525,7 +572,12 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
             return false;
         }
         let now_ns = u128::from(now) * 1_000_000_000 / u128::from(self.cpu_clock_hz);
-        (now_ns % REVOLUTION_NS) < INDEX_HOLE_NS
+        let revolution = if PLATFORM == WD17XX_PLATFORM_MSX {
+            MSX_REVOLUTION_NS
+        } else {
+            REVOLUTION_NS
+        };
+        (now_ns % revolution) < INDEX_HOLE_NS
     }
 
     /// Writes the command register, decoding and starting the command.
@@ -554,13 +606,13 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
     }
 
     /// Reads the data register latch. For the CPU-polled PIO transfer path use
-    /// [`Mb8877Fdc::read_data_pio`] instead.
+    /// [`Wd17xxFdc::read_data_pio`] instead.
     pub fn read_data_register(&self) -> u8 {
         self.data_reg
     }
 
     /// Writes the data register latch. For the CPU-polled PIO transfer path use
-    /// [`Mb8877Fdc::write_data_pio`] instead.
+    /// [`Wd17xxFdc::write_data_pio`] instead.
     pub fn write_data_register(&mut self, value: u8) {
         self.data_reg = value;
     }
@@ -587,12 +639,46 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
         (read_staged || write_open).then_some(self.pio_next_byte_cycle)
     }
 
+    /// Cycle of the next PIO assertion or lost-data deadline.
+    pub fn next_pio_event_cycle(&self) -> Option<u64> {
+        if PLATFORM != WD17XX_PLATFORM_MSX {
+            return None;
+        }
+        let transfer_active = self.pio_read_index < self.pio_read_buffer.len()
+            || (self.pio_write_expected > 0
+                && self.pio_write_accum.len() < self.pio_write_expected);
+        transfer_active.then(|| {
+            if self.drq {
+                self.pio_next_byte_cycle
+                    .saturating_add(self.pio_byte_period_cycles())
+            } else {
+                self.pio_next_byte_cycle
+            }
+        })
+    }
+
+    /// Advances an MSX PIO request or expires an unserviced request.
+    pub fn run_pio_event(&mut self, now: u64) {
+        self.advance_pio_read(now);
+        self.advance_pio_write(now);
+        self.expire_unserviced_drq(now);
+    }
+
     /// Number of CPU cycles between successive PIO data bytes, from the WD1793
     /// data rate: 250 kbit/s MFM (double density) transfers one byte per ~32 us,
     /// single density FM half that.
     fn pio_byte_period_cycles(&self) -> u64 {
         let bytes_per_second = if self.double_density { 31_250 } else { 15_625 };
         (u64::from(self.cpu_clock_hz) / bytes_per_second).max(1)
+    }
+
+    /// Advances the byte clock without accumulating integer division drift.
+    fn advance_pio_byte_cycle(&mut self) {
+        let bytes_per_second = if self.double_density { 31_250 } else { 15_625 };
+        let numerator = u64::from(self.cpu_clock_hz).saturating_add(self.pio_cycle_remainder);
+        let cycles = (numerator / bytes_per_second).max(1);
+        self.pio_cycle_remainder = numerator % bytes_per_second;
+        self.pio_next_byte_cycle = self.pio_next_byte_cycle.saturating_add(cycles);
     }
 
     /// Re-asserts DRQ once the current byte's data-rate period has elapsed. Until
@@ -606,12 +692,31 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
         }
     }
 
+    /// Completes an MSX transfer when its DRQ service window expires.
+    fn expire_unserviced_drq(&mut self, now: u64) {
+        if PLATFORM == WD17XX_PLATFORM_MSX
+            && self.drq
+            && now
+                >= self
+                    .pio_next_byte_cycle
+                    .saturating_add(self.pio_byte_period_cycles())
+        {
+            self.drq = false;
+            self.pio_read_buffer.clear();
+            self.pio_read_index = 0;
+            self.pio_write_accum.clear();
+            self.pio_write_expected = 0;
+            self.complete_error(STATUS_LOST_DATA);
+        }
+    }
+
     /// Reads the next PIO data byte during a read transfer, advancing the buffer.
     /// A byte is only delivered once DRQ has re-asserted for the current data-rate
     /// slot. Taking it drops DRQ until the next slot. When the last byte is taken
     /// the command completes.
     pub fn read_data_pio(&mut self, now: u64) -> u8 {
         self.advance_pio_read(now);
+        self.expire_unserviced_drq(now);
         if !self.drq || self.pio_read_index >= self.pio_read_buffer.len() {
             return self.data_reg;
         }
@@ -623,9 +728,7 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
         // Bytes arrive off the rotating disk at a fixed rate: the next DRQ is one
         // data-rate period after the previous byte's scheduled slot, not after the
         // host happened to read it.
-        self.pio_next_byte_cycle = self
-            .pio_next_byte_cycle
-            .saturating_add(self.pio_byte_period_cycles());
+        self.advance_pio_byte_cycle();
 
         if self.pio_read_index >= self.pio_read_buffer.len() {
             let length = self.pio_read_buffer.len();
@@ -656,14 +759,17 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
     /// committed.
     pub fn write_data_pio(&mut self, value: u8, now: u64) {
         self.data_reg = value;
-        if self.pio_write_expected == 0 || self.pio_write_accum.len() >= self.pio_write_expected {
+        self.advance_pio_write(now);
+        self.expire_unserviced_drq(now);
+        if !self.drq
+            || self.pio_write_expected == 0
+            || self.pio_write_accum.len() >= self.pio_write_expected
+        {
             return;
         }
         self.pio_write_accum.push(value);
         self.drq = false;
-        self.pio_next_byte_cycle = self
-            .pio_next_byte_cycle
-            .saturating_add(self.pio_byte_period_cycles());
+        self.advance_pio_byte_cycle();
         if self.pio_write_accum.len() >= self.pio_write_expected {
             let data = core::mem::take(&mut self.pio_write_accum);
             self.pio_write_expected = 0;
@@ -676,9 +782,26 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
         self.side = side & 0x01;
     }
 
+    /// Returns the selected head.
+    pub const fn side(&self) -> u8 {
+        self.side
+    }
+
     /// Enables or disables the motor directly (X1 control-register path).
     pub fn set_motor(&mut self, on: bool) {
         self.motor_on = on;
+        self.motor_off_cycle = None;
+    }
+
+    /// Updates the Sony motor latch with its mechanical coast delay.
+    pub fn set_msx_motor(&mut self, on: bool, now: u64) {
+        if on {
+            self.motor_on = true;
+            self.motor_off_cycle = None;
+        } else if self.motor_on {
+            let delay = ns_to_cycles(MSX_MOTOR_OFF_NS, self.cpu_clock_hz);
+            self.motor_off_cycle = Some(now.saturating_add(delay));
+        }
     }
 
     /// Selects single/double density directly (X1 control-register path).
@@ -702,6 +825,7 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
     pub fn read_status(&mut self, now: u64) -> u8 {
         self.advance_pio_read(now);
         self.advance_pio_write(now);
+        self.expire_unserviced_drq(now);
         let mut value = self.status;
 
         if self.drive_ready() {
@@ -737,7 +861,7 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
     /// optionally the 3-mode indicator bits).
     pub fn read_drive_status(&self) -> u8 {
         let mut value = 0;
-        if PLATFORM == MB8877_PLATFORM_FM_TOWNS {
+        if PLATFORM == WD17XX_PLATFORM_FM_TOWNS {
             value |= DRIVE_STATUS_THREE_MODE | DRIVE_STATUS_TWO_DRIVES;
         }
         if self.disk_changed[self.drive_select] {
@@ -782,6 +906,7 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
         self.disk_changed[self.drive_select] = false;
         self.command = command;
         self.command_type = CommandType::decode(command);
+        self.clear_pio();
 
         if command == CMD_UNKNOWN_FE {
             // Undocumented; the SYSROM issues it at startup. Behave like a
@@ -800,7 +925,12 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
             self.status &= !STATUS_BUSY;
             self.pending = PendingTransfer::None;
             if command & CMD_FORCE_IRQ != 0 {
-                self.command_task_cycle = Some(now.saturating_add(self.force_irq_delay_cycles));
+                if PLATFORM == WD17XX_PLATFORM_MSX {
+                    self.command_task_cycle = None;
+                    self.raise_irq();
+                } else {
+                    self.command_task_cycle = Some(now.saturating_add(self.force_irq_delay_cycles));
+                }
             } else {
                 self.command_task_cycle = None;
             }
@@ -812,8 +942,17 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
         self.busy = true;
         self.status = STATUS_BUSY;
         self.pending = PendingTransfer::None;
+        self.transfer_result_status = 0;
         let delay = if self.command_type.is_type1() {
-            self.seek_step_delay_cycles
+            if PLATFORM == WD17XX_PLATFORM_MSX {
+                ns_to_cycles(
+                    MSX_SEEK_STEP_DELAYS_NS[usize::from(command & 0x03)],
+                    self.cpu_clock_hz,
+                )
+                .max(1)
+            } else {
+                self.seek_step_delay_cycles
+            }
         } else {
             self.sector_delay_cycles
         };
@@ -821,42 +960,105 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
     }
 
     /// Runs the scheduled command task. For transfer commands the returned
-    /// [`Mb8877Outcome`] tells the bus which DMA transfer to perform; the bus then
-    /// calls [`Mb8877Fdc::on_read_dma_complete`] or
-    /// [`Mb8877Fdc::on_write_dma_complete`].
-    pub fn run_task(&mut self, now: u64) -> Mb8877Outcome {
+    /// [`Wd17xxOutcome`] tells the bus which DMA transfer to perform; the bus then
+    /// calls [`Wd17xxFdc::on_read_dma_complete`] or
+    /// [`Wd17xxFdc::on_write_dma_complete`].
+    pub fn run_task(&mut self, now: u64) -> Wd17xxOutcome {
+        if self.motor_off_cycle.is_some_and(|cycle| cycle <= now) {
+            self.motor_off_cycle = None;
+            self.motor_on = false;
+            if self.command_task_cycle.is_none_or(|cycle| cycle > now) {
+                return Wd17xxOutcome::default();
+            }
+        }
+        if self.command_task_cycle.is_none() {
+            return Wd17xxOutcome::default();
+        }
         self.command_task_cycle = None;
+
+        if !self.command_type.is_type1()
+            && self.command_type != CommandType::ForceInterrupt
+            && !self.drive_ready()
+        {
+            self.complete_error(STATUS_NOT_READY);
+            return Wd17xxOutcome::default();
+        }
+        if PLATFORM == WD17XX_PLATFORM_MSX
+            && !self.command_type.is_type1()
+            && self.command_type != CommandType::ForceInterrupt
+            && !self.motor_on
+        {
+            self.complete_error(STATUS_RECORD_NOT_FOUND);
+            return Wd17xxOutcome::default();
+        }
+        if PLATFORM == WD17XX_PLATFORM_MSX
+            && matches!(
+                self.command_type,
+                CommandType::ReadSector
+                    | CommandType::WriteSector
+                    | CommandType::ReadAddress
+                    | CommandType::ReadTrack
+                    | CommandType::WriteTrack
+            )
+            && !self.density_matches()
+        {
+            self.complete_error(STATUS_RECORD_NOT_FOUND);
+            return Wd17xxOutcome::default();
+        }
 
         match self.command_type {
             CommandType::Restore => {
-                self.track_pos[self.drive_select] = 0;
-                self.track_reg = 0;
-                self.finish_type1(now);
-                Mb8877Outcome::default()
+                if PLATFORM == WD17XX_PLATFORM_MSX && self.track_pos[self.drive_select] > 0 {
+                    self.apply_step(-1);
+                    self.track_reg = self.track_pos[self.drive_select] as u8;
+                    if self.track_pos[self.drive_select] > 0 {
+                        self.schedule_next_type1_step(now);
+                    } else {
+                        self.finish_type1(now);
+                    }
+                } else {
+                    self.track_pos[self.drive_select] = 0;
+                    self.track_reg = 0;
+                    self.finish_type1(now);
+                }
+                Wd17xxOutcome::default()
             }
             CommandType::Seek => {
                 let target = i32::from(self.data_reg);
-                self.step_towards(target);
-                self.track_reg = self.data_reg;
-                self.finish_type1(now);
-                Mb8877Outcome::default()
+                if PLATFORM == WD17XX_PLATFORM_MSX {
+                    let target = target.clamp(0, MAX_TRACK);
+                    if self.track_pos[self.drive_select] != target {
+                        self.step_towards(target);
+                        self.track_reg = self.track_pos[self.drive_select] as u8;
+                    }
+                    if self.track_pos[self.drive_select] != target {
+                        self.schedule_next_type1_step(now);
+                    } else {
+                        self.finish_type1(now);
+                    }
+                } else {
+                    self.step_towards(target);
+                    self.track_reg = self.data_reg;
+                    self.finish_type1(now);
+                }
+                Wd17xxOutcome::default()
             }
             CommandType::Step => {
                 self.apply_step(self.last_step_dir);
                 self.finish_type1(now);
-                Mb8877Outcome::default()
+                Wd17xxOutcome::default()
             }
             CommandType::StepIn => {
                 self.apply_step(1);
                 self.last_step_dir = 1;
                 self.finish_type1(now);
-                Mb8877Outcome::default()
+                Wd17xxOutcome::default()
             }
             CommandType::StepOut => {
                 self.apply_step(-1);
                 self.last_step_dir = -1;
                 self.finish_type1(now);
-                Mb8877Outcome::default()
+                Wd17xxOutcome::default()
             }
             CommandType::ReadSector => self.start_read_sector(now),
             CommandType::WriteSector => self.start_write_sector(now),
@@ -869,7 +1071,7 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
                 if self.command & CMD_FORCE_IRQ != 0 {
                     self.raise_irq();
                 }
-                Mb8877Outcome::default()
+                Wd17xxOutcome::default()
             }
         }
     }
@@ -877,7 +1079,21 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
     fn step_towards(&mut self, target: i32) {
         let current = self.track_pos[self.drive_select];
         self.last_step_dir = if target >= current { 1 } else { -1 };
-        self.track_pos[self.drive_select] = target.clamp(0, MAX_TRACK);
+        if PLATFORM == WD17XX_PLATFORM_MSX {
+            self.track_pos[self.drive_select] = (current + self.last_step_dir).clamp(0, MAX_TRACK);
+        } else {
+            self.track_pos[self.drive_select] = target.clamp(0, MAX_TRACK);
+        }
+    }
+
+    /// Schedules another Sony Type I head step at the selected rate.
+    fn schedule_next_type1_step(&mut self, now: u64) {
+        let delay = ns_to_cycles(
+            MSX_SEEK_STEP_DELAYS_NS[usize::from(self.command & 0x03)],
+            self.cpu_clock_hz,
+        )
+        .max(1);
+        self.command_task_cycle = Some(now.saturating_add(delay));
     }
 
     fn apply_step(&mut self, direction: i32) {
@@ -912,10 +1128,10 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
         bytes: Vec<u8>,
         pending: PendingTransfer,
         now: u64,
-    ) -> Mb8877Outcome {
+    ) -> Wd17xxOutcome {
         self.pending = pending;
-        if PLATFORM == MB8877_PLATFORM_FM_TOWNS {
-            Mb8877Outcome {
+        if PLATFORM == WD17XX_PLATFORM_FM_TOWNS {
+            Wd17xxOutcome {
                 dma_read: Some(bytes),
                 dma_write_len: None,
             }
@@ -923,8 +1139,10 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
             self.pio_read_buffer = bytes;
             self.pio_read_index = 0;
             self.drq = false;
-            self.pio_next_byte_cycle = now.saturating_add(self.pio_byte_period_cycles());
-            Mb8877Outcome::default()
+            self.pio_cycle_remainder = 0;
+            self.pio_next_byte_cycle = now;
+            self.advance_pio_byte_cycle();
+            Wd17xxOutcome::default()
         }
     }
 
@@ -936,10 +1154,10 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
         length: usize,
         pending: PendingTransfer,
         now: u64,
-    ) -> Mb8877Outcome {
+    ) -> Wd17xxOutcome {
         self.pending = pending;
-        if PLATFORM == MB8877_PLATFORM_FM_TOWNS {
-            Mb8877Outcome {
+        if PLATFORM == WD17XX_PLATFORM_FM_TOWNS {
+            Wd17xxOutcome {
                 dma_read: None,
                 dma_write_len: Some(length),
             }
@@ -947,8 +1165,10 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
             self.pio_write_accum = Vec::with_capacity(length);
             self.pio_write_expected = length;
             self.drq = false;
-            self.pio_next_byte_cycle = now.saturating_add(self.pio_byte_period_cycles());
-            Mb8877Outcome::default()
+            self.pio_cycle_remainder = 0;
+            self.pio_next_byte_cycle = now;
+            self.advance_pio_byte_cycle();
+            Wd17xxOutcome::default()
         }
     }
 
@@ -961,12 +1181,23 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
         Some((sector.size_code, image.sector_count(track_index)))
     }
 
-    fn start_read_sector(&mut self, now: u64) -> Mb8877Outcome {
+    /// Returns whether the selected track uses the configured recording density.
+    fn density_matches(&self) -> bool {
+        self.drives[self.drive_select]
+            .as_ref()
+            .and_then(|mounted| mounted.image().sector_at_index(self.track_index(), 0))
+            .is_some_and(|sector| {
+                let medium_is_double_density = sector.mfm_flag & 0x40 == 0;
+                medium_is_double_density == self.double_density
+            })
+    }
+
+    fn start_read_sector(&mut self, now: u64) -> Wd17xxOutcome {
         let track_index = self.track_index();
         // The WD179x matches a sector by its ID (track and record, optionally
         // side); the size code is never compared, so a track that mixes sector
         // sizes is read by ID alone and delivers the record's own byte count.
-        let data = self.drives[self.drive_select].as_ref().and_then(|mounted| {
+        let sector = self.drives[self.drive_select].as_ref().and_then(|mounted| {
             mounted
                 .image()
                 .find_sector_id_near_track_index(
@@ -975,27 +1206,28 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
                     self.side,
                     self.sector_reg,
                 )
-                .map(|sector| sector.data.clone())
+                .map(|sector| (sector.data.clone(), sector.status))
         });
-        match data {
-            Some(bytes) => {
+        match sector {
+            Some((bytes, sector_status)) => {
                 let length = bytes.len();
+                self.transfer_result_status = u8::from(sector_status != 0) * STATUS_CRC_ERROR;
                 self.begin_read_transfer(bytes, PendingTransfer::ReadSector { length }, now)
             }
             None => {
                 self.complete_error(STATUS_RECORD_NOT_FOUND);
-                Mb8877Outcome::default()
+                Wd17xxOutcome::default()
             }
         }
     }
 
-    fn start_write_sector(&mut self, now: u64) -> Mb8877Outcome {
+    fn start_write_sector(&mut self, now: u64) -> Wd17xxOutcome {
         let write_protected = self.drives[self.drive_select]
             .as_ref()
             .is_some_and(|mounted| mounted.image().write_protected);
         if write_protected {
             self.complete_error(STATUS_WRITE_PROTECT | STATUS_WRITE_FAULT);
-            return Mb8877Outcome::default();
+            return Wd17xxOutcome::default();
         }
         let track_index = self.track_index();
         // The target record is matched by ID; its own size code sets the byte
@@ -1013,13 +1245,13 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
         });
         let Some(size_code) = target_size_code else {
             self.complete_error(STATUS_RECORD_NOT_FOUND);
-            return Mb8877Outcome::default();
+            return Wd17xxOutcome::default();
         };
         let length = 128usize << (size_code as usize).min(7);
         self.begin_write_transfer(length, PendingTransfer::WriteSector, now)
     }
 
-    fn start_read_address(&mut self, now: u64) -> Mb8877Outcome {
+    fn start_read_address(&mut self, now: u64) -> Wd17xxOutcome {
         let track_index = self.track_index();
         let id = self.drives[self.drive_select].as_ref().and_then(|mounted| {
             mounted
@@ -1043,12 +1275,12 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
             }
             None => {
                 self.complete_error(STATUS_RECORD_NOT_FOUND);
-                Mb8877Outcome::default()
+                Wd17xxOutcome::default()
             }
         }
     }
 
-    fn start_read_track(&mut self, now: u64) -> Mb8877Outcome {
+    fn start_read_track(&mut self, now: u64) -> Wd17xxOutcome {
         let track_index = self.track_index();
         let bytes = self.drives[self.drive_select].as_ref().map(|mounted| {
             let image = mounted.image();
@@ -1067,22 +1299,22 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
             }
             _ => {
                 self.complete_error(STATUS_LOST_DATA);
-                Mb8877Outcome::default()
+                Wd17xxOutcome::default()
             }
         }
     }
 
-    fn start_write_track(&mut self, now: u64) -> Mb8877Outcome {
+    fn start_write_track(&mut self, now: u64) -> Wd17xxOutcome {
         let write_protected = self.drives[self.drive_select]
             .as_ref()
             .is_some_and(|mounted| mounted.image().write_protected);
         if self.drives[self.drive_select].is_none() {
             self.complete_error(STATUS_RECORD_NOT_FOUND);
-            return Mb8877Outcome::default();
+            return Wd17xxOutcome::default();
         }
         if write_protected {
             self.complete_error(STATUS_WRITE_PROTECT | STATUS_WRITE_FAULT);
-            return Mb8877Outcome::default();
+            return Wd17xxOutcome::default();
         }
         // The whole raw track buffer is pulled in; the layout is parsed once the
         // bytes arrive in `on_write_dma_complete`.
@@ -1103,11 +1335,22 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
         }
     }
 
+    /// Completes a command with status error bits.
     fn complete_error(&mut self, error_bits: u8) {
         self.busy = false;
         self.pending = PendingTransfer::None;
+        self.clear_pio();
         self.status = error_bits;
         self.raise_irq();
+    }
+
+    /// Clears staged PIO data and the DRQ line.
+    fn clear_pio(&mut self) {
+        self.drq = false;
+        self.pio_read_buffer.clear();
+        self.pio_read_index = 0;
+        self.pio_write_accum.clear();
+        self.pio_write_expected = 0;
     }
 
     /// Called by the bus after a device-to-memory DMA transfer. `bytes_transferred`
@@ -1123,12 +1366,16 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
                     self.raise_irq();
                     return;
                 }
+                if self.transfer_result_status != 0 {
+                    self.finish_transfer(self.transfer_result_status);
+                    return;
+                }
                 if self.command & CMD_MULTI_SECTOR != 0 && self.advance_multi_sector() {
                     self.pending = PendingTransfer::None;
                     self.command_task_cycle = Some(now.saturating_add(self.sector_delay_cycles));
                     return;
                 }
-                self.finish_transfer(0);
+                self.finish_transfer(self.transfer_result_status);
             }
             PendingTransfer::ReadAddress | PendingTransfer::ReadTrack => {
                 self.finish_transfer(0);
@@ -1198,6 +1445,7 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
     fn finish_transfer(&mut self, extra_status: u8) {
         self.busy = false;
         self.pending = PendingTransfer::None;
+        self.drq = false;
         self.status = extra_status;
         self.raise_irq();
     }
@@ -1235,10 +1483,11 @@ impl<const PLATFORM: u8> Mb8877Fdc<PLATFORM> {
 mod tests {
     use super::*;
 
+    /// Controller clock used by the PIO timing tests.
     const CPU_CLOCK_HZ: u32 = 4_000_000;
 
-    fn x1_read_fdc() -> Mb8877Fdc<MB8877_PLATFORM_X1> {
-        let mut fdc = Mb8877Fdc::new(CPU_CLOCK_HZ);
+    fn x1_read_fdc() -> Wd17xxFdc<WD17XX_PLATFORM_X1> {
+        let mut fdc = Wd17xxFdc::new(CPU_CLOCK_HZ);
         // Put the controller in the state a Read Sector command leaves it in so
         // the status register mirrors DRQ for the PIO poll loop.
         fdc.command_type = CommandType::ReadSector;
@@ -1282,5 +1531,53 @@ mod tests {
         assert_eq!(fdc.read_status(start + 2 * period - 1) & STATUS_DRQ, 0);
         assert_ne!(fdc.read_status(start + 2 * period) & STATUS_DRQ, 0);
         assert_eq!(fdc.read_data_pio(start + 2 * period), 0xCD);
+    }
+
+    #[test]
+    fn msx_seek_moves_one_track_per_selected_step_period() {
+        let mut fdc = Wd17xxFdc::<WD17XX_PLATFORM_MSX>::new(CPU_CLOCK_HZ);
+        fdc.write_data_register(3);
+        fdc.write_command(0x13, 0);
+        assert_eq!(fdc.next_task_cycle(), Some(120_000));
+
+        fdc.run_task(120_000);
+        assert_eq!(fdc.track_pos[0], 1);
+        assert_eq!(fdc.next_task_cycle(), Some(240_000));
+        fdc.run_task(240_000);
+        assert_eq!(fdc.track_pos[0], 2);
+        fdc.run_task(360_000);
+        assert_eq!(fdc.track_pos[0], 3);
+        assert!(!fdc.busy);
+    }
+
+    #[test]
+    fn msx_immediate_force_interrupt_has_no_synthetic_delay() {
+        let mut fdc = Wd17xxFdc::<WD17XX_PLATFORM_MSX>::new(CPU_CLOCK_HZ);
+        fdc.set_irq_enable(true);
+        fdc.write_command(0xD8, 123);
+        assert!(fdc.irq_line());
+        assert_eq!(fdc.next_task_cycle(), None);
+    }
+
+    #[test]
+    fn msx_motor_coasts_for_four_seconds() {
+        let mut fdc = Wd17xxFdc::<WD17XX_PLATFORM_MSX>::new(CPU_CLOCK_HZ);
+        fdc.set_msx_motor(true, 0);
+        fdc.set_msx_motor(false, 10);
+        assert_eq!(fdc.next_task_cycle(), Some(16_000_010));
+        fdc.run_task(16_000_009);
+        assert!(fdc.motor_on);
+        fdc.run_task(16_000_010);
+        assert!(!fdc.motor_on);
+    }
+
+    #[test]
+    fn pio_fractional_cycles_do_not_accumulate_transfer_drift() {
+        let mut fdc = Wd17xxFdc::<WD17XX_PLATFORM_MSX>::new(3_579_545);
+        fdc.pio_next_byte_cycle = 0;
+        for _ in 0..31_250 {
+            fdc.advance_pio_byte_cycle();
+        }
+        assert_eq!(fdc.pio_next_byte_cycle, 3_579_545);
     }
 }

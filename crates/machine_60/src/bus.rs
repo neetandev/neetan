@@ -12,11 +12,11 @@ use common::{
     TraceEvent, TraceInterruptAction, TraceInterruptKind, TracePresentation, TraceSink, trace_id,
 };
 use device::{
-    ay8910::Ay8910,
     cassette::{CassetteDeck, CassetteError, CassetteRead, parse_tape},
     floppy::FloppyImage,
     i8251_serial::I8251Serial,
     opn_fm::{FmTimerAction, OpnFm, Ym2203},
+    psg::Ay38910,
     subcontroller_pc6000::SubHle,
     upd765a_fdc::{FloppyController, UPD765_PLATFORM_STANDARD, Upd765aFdc},
     upd7752::Upd7752,
@@ -62,7 +62,7 @@ const VOICE_SYNTHESIS_RATE_HZ: u64 = 10_000;
 /// The PSG/FM device: the discrete AY-3-8910 on the earlier machines, or the
 /// YM2203 (OPN) on the SR generation, whose SSG answers the same PSG ports.
 enum SoundChip {
-    Ay(Ay8910),
+    Ay(Ay38910),
     Opn(Box<OpnFm<Ym2203>>),
 }
 
@@ -75,7 +75,7 @@ pub(crate) struct Pc6000BusState {
     interrupt: crate::interrupt::InterruptController,
     ppi: crate::bus::ppi_link::PpiLinkState,
     sub: device::subcontroller_pc6000::SubHle,
-    sound_ay: Option<device::ay8910::Ay8910>,
+    sound_ay: Option<device::psg::PsgState>,
     sound_opn: Option<device::opn_fm::OpnFmState<ymfm_oxide::Ym2203, ymfm_oxide::YmfmOutput4>>,
     voice: device::upd7752::Upd7752,
     serial: device::i8251_serial::I8251SerialState,
@@ -249,6 +249,17 @@ impl<T: TraceSink> Pc6000Bus<T> {
             main_clock_hz: model.main_clock_hz(),
             sample_rate,
         };
+        let sound = if model.has_fm() {
+            SoundChip::Opn(Box::new(OpnFm::new(
+                model.main_clock_hz(),
+                sample_rate,
+                OPN_INPUT_CLOCK_HZ,
+            )))
+        } else {
+            let mut ay = Ay38910::new();
+            ay.configure_audio(AY_INPUT_CLOCK_HZ, model.main_clock_hz(), sample_rate);
+            SoundChip::Ay(ay)
+        };
         let (width, height) = display_dimensions(model);
         let mut bus = Self {
             model,
@@ -258,15 +269,7 @@ impl<T: TraceSink> Pc6000Bus<T> {
             interrupt: InterruptController::new(model.is_sr()),
             ppi: PpiLink::new(),
             sub: SubHle::new(),
-            sound: if model.has_fm() {
-                SoundChip::Opn(Box::new(OpnFm::new(
-                    model.main_clock_hz(),
-                    sample_rate,
-                    OPN_INPUT_CLOCK_HZ,
-                )))
-            } else {
-                SoundChip::Ay(Ay8910::new())
-            },
+            sound,
             voice: Upd7752::new(sample_rate),
             serial: I8251Serial::new(),
             cassette: CassetteDeck::new(),
@@ -720,7 +723,7 @@ impl<T: TraceSink> Pc6000Bus<T> {
         match &mut self.sound {
             SoundChip::Ay(ay) => match port & 0x03 {
                 0 => ay.address_w(value),
-                1 => ay.data_w(value),
+                1 => ay.data_w_at(value, current_cycle),
                 _ => {}
             },
             SoundChip::Opn(opn) => match port & 0x03 {

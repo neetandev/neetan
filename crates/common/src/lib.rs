@@ -1643,6 +1643,8 @@ pub struct JoystickState {
 /// Startup peripherals supported by a machine.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StartupCapabilities {
+    /// Whether the machine supports cartridge media.
+    pub cartridge: bool,
     /// Whether the machine supports cassette media.
     pub cassette: bool,
     /// Whether the machine supports hard disks.
@@ -1748,6 +1750,15 @@ pub trait Machine {
         StartupCapabilities::default()
     }
 
+    /// Inserts a cartridge image into the host-visible connector.
+    #[cfg(feature = "std")]
+    fn insert_cartridge(&mut self, _path: &std::path::Path) -> Result<String, String> {
+        Err("cartridges are not supported on this machine".to_string())
+    }
+
+    /// Ejects the cartridge in the host-visible connector.
+    fn eject_cartridge(&mut self) {}
+
     /// Inserts a floppy disk image into the specified drive (0-based).
     /// Reads the file, auto-detects format, and inserts. Returns a description string on success.
     #[cfg(feature = "std")]
@@ -1817,6 +1828,9 @@ pub trait Machine {
     ///
     /// The default is a no-op for machines without hard disk support.
     fn flush_hdds(&mut self) {}
+
+    /// Flushes battery-backed cartridge data.
+    fn flush_cartridges(&mut self) {}
 
     /// Flushes the printer output file, if attached.
     ///

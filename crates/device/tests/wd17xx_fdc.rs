@@ -1,32 +1,49 @@
-//! Tests for the MB8877 (WD1793 family) floppy disk controller.
+//! Tests for the WD17xx-family floppy disk controller.
 
 use device::{
     floppy::{
         FloppyImage, MountedFloppy,
         d88::{D88Disk, D88MediaType, D88Sector},
     },
-    mb8877_fdc::{MB8877_PLATFORM_FM_TOWNS, MB8877_PLATFORM_X1, Mb8877Fdc},
+    wd17xx_fdc::{WD17XX_PLATFORM_FM_TOWNS, WD17XX_PLATFORM_MSX, WD17XX_PLATFORM_X1, Wd17xxFdc},
 };
 
-type TownsMb8877Fdc = Mb8877Fdc<MB8877_PLATFORM_FM_TOWNS>;
-type X1Mb8877Fdc = Mb8877Fdc<MB8877_PLATFORM_X1>;
+type TownsWd17xxFdc = Wd17xxFdc<WD17XX_PLATFORM_FM_TOWNS>;
+type X1Wd17xxFdc = Wd17xxFdc<WD17XX_PLATFORM_X1>;
+type MsxWd17xxFdc = Wd17xxFdc<WD17XX_PLATFORM_MSX>;
 
+/// Controller clock used by the tests.
 const CPU_CLOCK_HZ: u32 = 16_000_000;
+/// Number of sectors in the fixture track.
 const SECTORS_PER_TRACK: u8 = 8;
+/// Fixture sector size in bytes.
 const SECTOR_SIZE: usize = 256;
-const SIZE_CODE: u8 = 1; // 128 << 1 = 256 bytes
+/// Fixture sector size code.
+const SIZE_CODE: u8 = 1;
 
-// Drive-control bits.
+/// Drive-control IRQ-enable bit.
 const IRQ_ENABLE: u8 = 0x01;
+/// Drive-control side-one bit.
 const SIDE_ONE: u8 = 0x04;
+/// Drive-control motor bit.
 const MOTOR: u8 = 0x10;
 
-// Status bits.
+/// Status busy bit.
 const STATUS_BUSY: u8 = 0x01;
+/// Status data-request bit.
 const STATUS_DRQ: u8 = 0x02;
+/// Status track-zero bit.
 const STATUS_TRACK00: u8 = 0x04;
+/// Status lost-data bit.
 const STATUS_LOST_DATA: u8 = 0x04;
+/// Status CRC-error bit.
+const STATUS_CRC_ERROR: u8 = 0x08;
+/// Status record-not-found bit.
 const STATUS_RECORD_NOT_FOUND: u8 = 0x10;
+/// Status write-protect bit.
+const STATUS_WRITE_PROTECT: u8 = 0x40;
+/// Status not-ready bit.
+const STATUS_NOT_READY: u8 = 0x80;
 
 fn sector_fill(record: u8) -> u8 {
     0x10u8.wrapping_add(record)
@@ -42,7 +59,7 @@ fn make_disk() -> D88Disk {
             record,
             size_code: SIZE_CODE,
             sector_count: u16::from(SECTORS_PER_TRACK),
-            mfm_flag: 0x40,
+            mfm_flag: 0x00,
             deleted: 0x00,
             status: 0x00,
             reserved: [0u8; 5],
@@ -58,8 +75,8 @@ fn make_disk() -> D88Disk {
     )
 }
 
-fn make_controller() -> TownsMb8877Fdc {
-    let mut fdc = TownsMb8877Fdc::new(CPU_CLOCK_HZ);
+fn make_controller() -> TownsWd17xxFdc {
+    let mut fdc = TownsWd17xxFdc::new(CPU_CLOCK_HZ);
     let image = FloppyImage::from_d88(make_disk());
     fdc.insert(0, MountedFloppy::new(image, None));
     // Enable IRQ and spin up the motor; select side 0.
@@ -152,7 +169,7 @@ fn make_mixed_size_disk() -> D88Disk {
             record,
             size_code: 3,
             sector_count: 6,
-            mfm_flag: 0x40,
+            mfm_flag: 0x00,
             deleted: 0x00,
             status: 0x00,
             reserved: [0u8; 5],
@@ -166,7 +183,7 @@ fn make_mixed_size_disk() -> D88Disk {
         record: 6,
         size_code: 2,
         sector_count: 6,
-        mfm_flag: 0x40,
+        mfm_flag: 0x00,
         deleted: 0x00,
         status: 0x00,
         reserved: [0u8; 5],
@@ -186,7 +203,7 @@ fn read_sector_matches_by_id_and_ignores_the_size_code() {
     // The WD179x compares only the ID's track and record (and optionally the
     // side) when searching for a sector; the size code is taken from the found
     // ID, so a track mixing sector sizes delivers each record's own length.
-    let mut fdc = TownsMb8877Fdc::new(CPU_CLOCK_HZ);
+    let mut fdc = TownsWd17xxFdc::new(CPU_CLOCK_HZ);
     let image = FloppyImage::from_d88(make_mixed_size_disk());
     fdc.insert(0, MountedFloppy::new(image, None));
     fdc.write_drive_control(IRQ_ENABLE | MOTOR);
@@ -270,7 +287,7 @@ fn command_fe_is_a_noop() {
 
 #[test]
 fn irq_mask_disabled_suppresses_interrupt() {
-    let mut fdc = TownsMb8877Fdc::new(CPU_CLOCK_HZ);
+    let mut fdc = TownsWd17xxFdc::new(CPU_CLOCK_HZ);
     let image = FloppyImage::from_d88(make_disk());
     fdc.insert(0, MountedFloppy::new(image, None));
     // Motor on but IRQ mask cleared (bit0 = 0 -> disabled per errata).
@@ -315,8 +332,8 @@ fn side_select_bit_sets_head_one() {
     );
 }
 
-fn make_pio_controller() -> X1Mb8877Fdc {
-    let mut fdc = X1Mb8877Fdc::new(CPU_CLOCK_HZ);
+fn make_pio_controller() -> X1Wd17xxFdc {
+    let mut fdc = X1Wd17xxFdc::new(CPU_CLOCK_HZ);
     let image = FloppyImage::from_d88(make_disk());
     fdc.insert(0, MountedFloppy::new(image, None));
     fdc.set_motor(true);
@@ -419,4 +436,146 @@ fn pio_data_register_write_latches_seek_target() {
         5,
         "SEEK must use the freshly written data-register target, not a stale byte"
     );
+}
+
+fn make_msx_controller() -> MsxWd17xxFdc {
+    let mut controller = MsxWd17xxFdc::new(CPU_CLOCK_HZ);
+    controller.insert(
+        0,
+        MountedFloppy::new(FloppyImage::from_d88(make_disk()), None),
+    );
+    controller.set_irq_enable(true);
+    controller.set_double_density(true);
+    controller.set_motor(true);
+    controller
+}
+
+#[test]
+fn msx_ready_motor_and_density_wiring_match_sony() {
+    let mut controller = make_msx_controller();
+    controller.set_motor(false);
+    controller.write_command(0x80, 0);
+    controller.run_task(0);
+    let status = controller.read_status(0);
+    assert_eq!(status & STATUS_NOT_READY, 0);
+    assert_ne!(status & STATUS_RECORD_NOT_FOUND, 0);
+
+    controller.set_motor(true);
+    controller.set_double_density(false);
+    controller.write_command(0x80, 0);
+    controller.run_task(0);
+    assert_ne!(controller.read_status(0) & STATUS_RECORD_NOT_FOUND, 0);
+}
+
+#[test]
+fn msx_unserviced_drq_sets_lost_data() {
+    let mut controller = make_msx_controller();
+    controller.write_command(0x80, 0);
+    controller.run_task(0);
+
+    let assertion = controller
+        .next_pio_event_cycle()
+        .expect("the first byte requests service");
+    controller.run_pio_event(assertion);
+    assert!(controller.drq());
+
+    let deadline = controller
+        .next_pio_event_cycle()
+        .expect("an asserted request has a deadline");
+    controller.run_pio_event(deadline);
+    assert_ne!(controller.read_status(deadline) & STATUS_LOST_DATA, 0);
+}
+
+#[test]
+fn msx_propagates_sector_crc_errors() {
+    let mut disk = make_disk();
+    disk.find_sector_on_track_index_mut(0, 0, 0, 1, SIZE_CODE)
+        .expect("fixture sector exists")
+        .status = 0xB0;
+    let mut controller = MsxWd17xxFdc::new(CPU_CLOCK_HZ);
+    controller.insert(0, MountedFloppy::new(FloppyImage::from_d88(disk), None));
+    controller.set_irq_enable(true);
+    controller.set_motor(true);
+    controller.write_command(0x80, 0);
+    controller.run_task(0);
+
+    let byte_period = u64::from(CPU_CLOCK_HZ) / 31_250;
+    let mut now = 0;
+    for _ in 0..SECTOR_SIZE {
+        now += byte_period;
+        let _ = controller.read_data_pio(now);
+    }
+    assert_ne!(controller.read_status(now) & STATUS_CRC_ERROR, 0);
+}
+
+#[test]
+fn write_protected_media_rejects_sector_writes() {
+    let disk = D88Disk::from_tracks(
+        String::new(),
+        true,
+        D88MediaType::Disk2HD,
+        vec![Some(vec![D88Sector {
+            cylinder: 0,
+            head: 0,
+            record: 1,
+            size_code: SIZE_CODE,
+            sector_count: 1,
+            mfm_flag: 0x00,
+            deleted: 0,
+            status: 0,
+            reserved: [0; 5],
+            data: vec![0; SECTOR_SIZE],
+            source_offset: None,
+        }])],
+    );
+    let mut controller = MsxWd17xxFdc::new(CPU_CLOCK_HZ);
+    controller.insert(0, MountedFloppy::new(FloppyImage::from_d88(disk), None));
+    controller.set_motor(true);
+    controller.write_command(0xA0, 0);
+    controller.run_task(0);
+    assert_ne!(controller.read_status(0) & STATUS_WRITE_PROTECT, 0);
+}
+
+#[test]
+fn multi_sector_read_advances_until_the_end_of_the_track() {
+    let mut controller = make_controller();
+    controller.write_sector_register(1);
+    controller.write_command(0x90, 0);
+    for record in 1..=SECTORS_PER_TRACK {
+        let outcome = controller.run_task(0);
+        let data = outcome.dma_read.expect("each record produces data");
+        assert!(data.iter().all(|byte| *byte == sector_fill(record)));
+        controller.on_read_dma_complete(0, data.len());
+    }
+    assert_eq!(controller.read_sector_register(), SECTORS_PER_TRACK);
+    assert_eq!(controller.read_status(0) & STATUS_BUSY, 0);
+}
+
+#[test]
+fn read_and_write_track_use_hardware_commands() {
+    let mut controller = make_controller();
+    controller.write_command(0xE0, 0);
+    let track = controller
+        .run_task(0)
+        .dma_read
+        .expect("Read Track returns a DMA stream");
+    assert_eq!(track.len(), usize::from(SECTORS_PER_TRACK) * SECTOR_SIZE);
+    controller.on_read_dma_complete(0, track.len());
+
+    controller.write_command(0xF0, 0);
+    let length = controller
+        .run_task(0)
+        .dma_write_len
+        .expect("Write Track requests a DMA stream");
+    let mut format_stream = vec![0x4E; length];
+    format_stream[..5].copy_from_slice(&[0xFE, 0, 0, 1, SIZE_CODE]);
+    controller.on_write_dma_complete(0, &format_stream);
+
+    controller.write_sector_register(1);
+    controller.write_command(0x80, 0);
+    let data = controller
+        .run_task(0)
+        .dma_read
+        .expect("formatted sector can be read");
+    assert!(data.iter().all(|byte| *byte == 0xE5));
 }

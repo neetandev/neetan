@@ -101,7 +101,7 @@ impl<T: TraceSink> Fm7Bus<T> {
         self.psg_command = value & PSG_COMMAND_MASK;
         match self.psg_command {
             PSG_COMMAND_LATCH_ADDRESS => self.psg.address_w(self.psg_data_latch),
-            PSG_COMMAND_WRITE_DATA => self.psg.data_w(self.psg_data_latch),
+            PSG_COMMAND_WRITE_DATA => self.psg.data_w_at(self.psg_data_latch, self.current_cycle),
             _ => {}
         }
     }
@@ -118,7 +118,7 @@ impl<T: TraceSink> Fm7Bus<T> {
         self.psg_data_latch = value;
         match self.psg_command {
             PSG_COMMAND_LATCH_ADDRESS => self.psg.address_w(value),
-            PSG_COMMAND_WRITE_DATA => self.psg.data_w(value),
+            PSG_COMMAND_WRITE_DATA => self.psg.data_w_at(value, self.current_cycle),
             _ => {}
         }
     }

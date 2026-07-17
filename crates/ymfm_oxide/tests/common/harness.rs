@@ -1,7 +1,42 @@
 use ymfm_oxide::{
-    Y8950, Ym2151, Ym2203, Ym2608, Ym3526, Ym3812, Ymf262, Ymf276, YmfmOpnFidelity, YmfmOutput1,
-    YmfmOutput2, YmfmOutput3, YmfmOutput4,
+    Y8950, Ym2151, Ym2203, Ym2413, Ym2608, Ym3526, Ym3812, Ymf262, Ymf276, YmfmOpnFidelity,
+    YmfmOutput1, YmfmOutput2, YmfmOutput3, YmfmOutput4,
 };
+
+/// Redistributable YM2413 instrument table adapted from emu2413.
+///
+/// Copyright (C) Mitsutaka Okazaki 2004
+///
+/// This software is provided 'as-is', without any express or implied warranty.
+/// In no event will the authors be held liable for any damages arising from
+/// the use of this software.
+///
+/// Permission is granted to anyone to use this software for any purpose,
+/// including commercial applications, and to alter it and redistribute it
+/// freely, subject to the following restrictions:
+///
+/// 1. The origin of this software must not be misrepresented; you must not
+///    claim that you wrote the original software. If you use this software
+///    in a product, an acknowledgment in the product documentation would be
+///    appreciated but is not required.
+/// 2. Altered source versions must be plainly marked as such, and must not
+///    be misrepresented as being the original software.
+/// 3. This notice may not be removed or altered from any source distribution.
+pub const EMU2413_YM2413_INSTRUMENTS: [u8; 144] = [
+    0x61, 0x61, 0x1E, 0x17, 0xF0, 0x7F, 0x00, 0x17, 0x13, 0x41, 0x16, 0x0E, 0xFD, 0xF4, 0x23, 0x23,
+    0x03, 0x01, 0x9A, 0x04, 0xF3, 0xF3, 0x13, 0xF3, 0x11, 0x61, 0x0E, 0x07, 0xFA, 0x64, 0x70, 0x17,
+    0x22, 0x21, 0x1E, 0x06, 0xF0, 0x76, 0x00, 0x28, 0x21, 0x22, 0x16, 0x05, 0xF0, 0x71, 0x00, 0x18,
+    0x21, 0x61, 0x1D, 0x07, 0x82, 0x80, 0x17, 0x17, 0x23, 0x21, 0x2D, 0x16, 0x90, 0x90, 0x00, 0x07,
+    0x21, 0x21, 0x1B, 0x06, 0x64, 0x65, 0x10, 0x17, 0x21, 0x21, 0x0B, 0x1A, 0x85, 0xA0, 0x70, 0x07,
+    0x23, 0x01, 0x83, 0x10, 0xFF, 0xB4, 0x10, 0xF4, 0x97, 0xC1, 0x20, 0x07, 0xFF, 0xF4, 0x22, 0x22,
+    0x61, 0x00, 0x0C, 0x05, 0xC2, 0xF6, 0x40, 0x44, 0x01, 0x01, 0x56, 0x03, 0x94, 0xC2, 0x03, 0x12,
+    0x21, 0x01, 0x89, 0x03, 0xF1, 0xE4, 0xF0, 0x23, 0x07, 0x21, 0x14, 0x00, 0xEE, 0xF8, 0xFF, 0xF8,
+    0x21, 0x31, 0x00, 0x00, 0xA7, 0xF7, 0xF7, 0xF7, 0x25, 0x11, 0x00, 0x00, 0xF8, 0xFB, 0xF8, 0x55,
+];
+
+/// First audible C++ YMFM sample for each emu2413 preset capture.
+pub const EMU2413_YM2413_PRESET_CAPTURE_STARTS: [usize; 15] =
+    [379, 1, 2, 251, 175, 187, 166, 67, 195, 37, 18, 1, 2, 11, 3];
 
 pub fn write_reg(chip: &mut Ym2203, addr: u8, data: u8) {
     chip.write_address(addr);
@@ -307,6 +342,50 @@ pub fn create_adpcm_rom() -> Vec<u8> {
         data[0x2000 + i] = ((i * 3) & 0xFF) as u8;
     }
     data
+}
+
+/// Creates a reset YM2413 using the emu2413 instrument table.
+pub fn setup_ym2413() -> Ym2413 {
+    let mut chip = Ym2413::new_with_instruments(EMU2413_YM2413_INSTRUMENTS);
+    chip.reset();
+    chip
+}
+
+/// Writes one YM2413 register.
+pub fn write_reg_ym2413(chip: &mut Ym2413, address: u8, value: u8) {
+    chip.write_address(address);
+    chip.write_data(value);
+}
+
+/// Configures and keys on one YM2413 melodic channel.
+pub fn setup_ym2413_channel(
+    chip: &mut Ym2413,
+    channel: u8,
+    instrument: u8,
+    frequency_low: u8,
+    control: u8,
+    volume: u8,
+) {
+    write_reg_ym2413(chip, 0x30 + channel, (instrument << 4) | (volume & 0x0F));
+    write_reg_ym2413(chip, 0x10 + channel, frequency_low);
+    write_reg_ym2413(chip, 0x20 + channel, control);
+}
+
+/// Configures the three YM2413 rhythm channels.
+pub fn setup_ym2413_rhythm(chip: &mut Ym2413) {
+    setup_ym2413_channel(chip, 6, 0, 0x40, 0x15, 0);
+    setup_ym2413_channel(chip, 7, 0, 0x60, 0x15, 0);
+    setup_ym2413_channel(chip, 8, 0, 0x80, 0x15, 0);
+    write_reg_ym2413(chip, 0x36, 0x00);
+    write_reg_ym2413(chip, 0x37, 0x00);
+    write_reg_ym2413(chip, 0x38, 0x00);
+}
+
+/// Generates native YM2413 melodic and rhythm samples.
+pub fn generate_2_ym2413(chip: &mut Ym2413, count: usize) -> Vec<[i32; 2]> {
+    let mut output = vec![YmfmOutput2 { data: [0; 2] }; count];
+    chip.generate(&mut output);
+    output.iter().map(|sample| sample.data).collect()
 }
 
 // --- OPM (YM2151) helpers ---

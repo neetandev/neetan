@@ -123,7 +123,7 @@ impl<T: TraceSink> X1Bus<T> {
                 let effect = self.ppi.write((port & 0x03) as u8, value);
                 self.apply_ppi_effect(effect);
             }
-            0x1B00 => self.psg.data_w(value),
+            0x1B00 => self.psg.data_w_at(value, self.current_cycle),
             0x1C00 => self.psg.address_w(value),
             0x1D00 => self.memory.select_rom(),
             0x1E00 => self.memory.select_ram(),

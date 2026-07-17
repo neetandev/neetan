@@ -170,6 +170,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "machine_msx"
+version = "2026.7.0"
+dependencies = [
+ "blake3",
+ "common",
+ "cpu",
+ "device",
+ "save_state",
+ "software_renderer",
+ "ymfm_oxide",
+]
+
+[[package]]
 name = "machine_towns"
 version = "2026.7.0"
 dependencies = [
@@ -231,6 +244,7 @@ dependencies = [
  "machine_98",
  "machine_at",
  "machine_fm7",
+ "machine_msx",
  "machine_towns",
  "machine_x1",
  "machine_x68k",

@@ -15,9 +15,10 @@
 //! scheduler events and IRQ wiring.
 
 use resampler::{Attenuation, Latency, ResamplerFir, ResamplerFirState};
-pub use ymfm_oxide::{Ym2151, Ym2203, Ymf276};
+pub use ymfm_oxide::{Y8950, YM2413_INSTRUMENT_DATA_SIZE, Ym2151, Ym2203, Ym2413, Ymf276};
 use ymfm_oxide::{
-    Ym2608, Ym2608State, YmfmOpnFidelity, YmfmOutput2, YmfmOutput3, YmfmOutput4, YmfmTimerUpdate,
+    Ym2608, Ym2608State, YmfmOpnFidelity, YmfmOutput1, YmfmOutput2, YmfmOutput3, YmfmOutput4,
+    YmfmTimerUpdate,
 };
 
 const FIDELITY: YmfmOpnFidelity = YmfmOpnFidelity::Max;
@@ -522,6 +523,148 @@ impl OpnChip for Ym2151 {
 
     fn take_ct_update(&mut self) -> Option<u8> {
         Ym2151::take_ct_update(self)
+    }
+}
+
+impl OpnChip for Ym2413 {
+    type Native = YmfmOutput2;
+    type State = Self;
+    const CHANNELS: usize = 1;
+
+    fn create() -> Self {
+        let mut chip = Ym2413::new();
+        chip.reset();
+        chip
+    }
+
+    fn capture_state(&self) -> Self::State {
+        Ym2413::capture_state(self)
+    }
+
+    fn validate_state(&self, state: &Self::State) -> Result<(), save_state::StateValidationError> {
+        save_state::ValidateState::validate_state(state, &())
+    }
+
+    fn replace_state(&mut self, state: Self::State) {
+        *self = state;
+    }
+
+    fn native_zero() -> Self::Native {
+        YmfmOutput2 { data: [0; 2] }
+    }
+
+    fn sample_rate(&mut self, clock: u32) -> u32 {
+        Ym2413::sample_rate(self, clock)
+    }
+
+    fn generate(&mut self, out: &mut [Self::Native]) {
+        Ym2413::generate(self, out);
+    }
+
+    fn mix_sample(sample: &Self::Native, out: &mut [f32]) {
+        /// YM2413 averaged nine-bit DAC output scale.
+        const OPLL_SCALE: f32 = 1.0 / 8192.0;
+        out[0] = (sample.data[0] + sample.data[1]) as f32 * OPLL_SCALE;
+    }
+
+    fn read_status(&mut self, _busy: bool) -> u8 {
+        0xFF
+    }
+
+    fn read_data(&mut self) -> u8 {
+        0xFF
+    }
+
+    fn write_address(&mut self, value: u8) -> u32 {
+        Ym2413::write_address(self, value)
+    }
+
+    fn write_data(&mut self, value: u8) -> u32 {
+        Ym2413::write_data(self, value)
+    }
+
+    fn timer_expired(&mut self, _timer_id: u32) {}
+
+    fn take_timer_update(&mut self, _timer_id: u8) -> Option<YmfmTimerUpdate> {
+        None
+    }
+
+    fn take_irq_update(&mut self) -> Option<bool> {
+        None
+    }
+}
+
+impl OpnChip for Y8950 {
+    type Native = YmfmOutput1;
+    type State = Self;
+    const CHANNELS: usize = 1;
+
+    fn create() -> Self {
+        let mut chip = Y8950::new();
+        chip.reset();
+        chip
+    }
+
+    fn capture_state(&self) -> Self::State {
+        Y8950::capture_state(self)
+    }
+
+    fn validate_state(&self, state: &Self::State) -> Result<(), save_state::StateValidationError> {
+        save_state::ValidateState::validate_state(state, &())
+    }
+
+    fn replace_state(&mut self, state: Self::State) {
+        *self = state;
+    }
+
+    fn native_zero() -> Self::Native {
+        YmfmOutput1 { data: [0] }
+    }
+
+    fn sample_rate(&mut self, clock: u32) -> u32 {
+        Y8950::sample_rate(self, clock)
+    }
+
+    fn generate(&mut self, out: &mut [Self::Native]) {
+        Y8950::generate(self, out);
+    }
+
+    fn mix_sample(sample: &Self::Native, out: &mut [f32]) {
+        /// Y8950 signed output scale.
+        const Y8950_SCALE: f32 = 1.0 / 32768.0;
+        out[0] = sample.data[0] as f32 * Y8950_SCALE;
+    }
+
+    fn read_status(&mut self, _busy: bool) -> u8 {
+        Y8950::read_status(self)
+    }
+
+    fn read_data(&mut self) -> u8 {
+        Y8950::read_data(self)
+    }
+
+    fn write_address(&mut self, value: u8) -> u32 {
+        Y8950::write_address(self, value)
+    }
+
+    fn write_data(&mut self, value: u8) -> u32 {
+        Y8950::write_data(self, value)
+    }
+
+    fn timer_expired(&mut self, timer_id: u32) {
+        Y8950::timer_expired(self, timer_id);
+    }
+
+    fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        Y8950::take_timer_update(self, timer_id)
+    }
+
+    fn take_irq_update(&mut self) -> Option<bool> {
+        Y8950::take_irq_update(self)
+    }
+
+    fn set_io_input(&mut self, port: u8, value: u8) {
+        Y8950::set_io_input(self, port, value);
     }
 }
 

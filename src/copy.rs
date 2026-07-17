@@ -1,5 +1,5 @@
 //! `neetan copy` subcommand: copy files between the host filesystem and
-//! FAT-formatted PC-98 disk images.
+//! FAT-formatted disk images.
 //!
 //! Directory copies are recursive. Long host filenames that don't fit
 //! 8.3 ASCII are rejected during a pre-flight pass before any file is written.
@@ -12,7 +12,7 @@ use std::{
 use common::{Context, StringError, bail, info};
 use device::{
     disk::{HddFormat, HddImage, load_hdd_image},
-    floppy::{FloppyFormat, FloppyImage, d88::D88MediaType, load_floppy_image},
+    floppy::{FloppyFormat, FloppyImage, MsxDskGeometry, d88::D88MediaType, load_floppy_image},
 };
 use dos::{
     DiskIo,
@@ -25,8 +25,20 @@ use dos::{
 
 use crate::config::CopyArg;
 
-const HDD_EXTENSIONS: &[&str] = &["hdi", "nhd", "thd", "hdd"];
-const FDD_EXTENSIONS: &[&str] = &["d88", "d98", "88d", "98d", "hdm", "nfd", "2d", "img", "ima"];
+/// File extensions treated as hard disk images.
+pub(crate) const HDD_EXTENSIONS: &[&str] = &["hdi", "nhd", "thd", "hdd"];
+/// File extensions treated as floppy disk images.
+pub(crate) const FDD_EXTENSIONS: &[&str] = &[
+    "d88", "d98", "88d", "98d", "hdm", "nfd", "2d", "img", "ima", "dsk",
+];
+
+/// Returns whether an extension identifies a supported disk image.
+pub(crate) fn is_disk_image_extension(extension: &str) -> bool {
+    HDD_EXTENSIONS
+        .iter()
+        .chain(FDD_EXTENSIONS)
+        .any(|known| extension.eq_ignore_ascii_case(known))
+}
 
 /// Top-level dispatcher for the `copy` subcommand.
 pub fn copy(source: CopyArg, dest: CopyArg) -> crate::Result<()> {
@@ -719,10 +731,15 @@ fn derive_fdd_geometry(image: &FloppyImage) -> Result<FddGeometry, String> {
     if sectors_per_track == 0 {
         return Err("FDD track 0 has no sectors".to_string());
     }
-    let (cylinders, heads) = match image.media_type {
-        D88MediaType::Disk2HD => (77u16, 2u8),
-        D88MediaType::Disk2DD => (80, 2),
-        D88MediaType::Disk2D => (40, 2),
+    let (cylinders, heads) = match image.format {
+        FloppyFormat::MsxDsk(MsxDskGeometry::Tracks80Sides1) => (80, 1),
+        FloppyFormat::MsxDsk(MsxDskGeometry::Tracks40Sides2) => (40, 2),
+        FloppyFormat::MsxDsk(MsxDskGeometry::Tracks80Sides2) => (80, 2),
+        _ => match image.media_type {
+            D88MediaType::Disk2HD => (77u16, 2u8),
+            D88MediaType::Disk2DD => (80, 2),
+            D88MediaType::Disk2D => (40, 2),
+        },
     };
     Ok(FddGeometry {
         cylinders,
@@ -888,6 +905,7 @@ mod tests {
     use super::*;
 
     #[test]
+    /// Logical sectors follow cylinder, head and record ordering.
     fn lba_to_chr_matches_geometry() {
         let geom = FddGeometry {
             cylinders: 77,
@@ -904,5 +922,16 @@ mod tests {
         assert_eq!(lba_to_chr(8, geom), (0, 1, 1));
         // LBA 16 -> first sector of cylinder 1, head 0
         assert_eq!(lba_to_chr(16, geom), (1, 0, 1));
+    }
+
+    #[test]
+    /// The copy utility preserves detected single-sided MSX geometry.
+    fn derives_single_sided_msx_geometry() {
+        let image = FloppyImage::from_msx_dsk_bytes(&vec![0; 360 * 1024]).expect("MSX disk parses");
+        let geometry = derive_fdd_geometry(&image).expect("geometry is available");
+        assert_eq!(geometry.cylinders, 80);
+        assert_eq!(geometry.heads, 1);
+        assert_eq!(geometry.sectors_per_track, 9);
+        assert_eq!(geometry.sector_size, 512);
     }
 }

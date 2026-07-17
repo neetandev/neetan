@@ -12,7 +12,6 @@ use common::{
     TraceSink, trace_id,
 };
 use device::{
-    ay8910::Ay8910,
     beeper::Beeper,
     cassette::CassetteDeck,
     kanji_rom_fm7::KanjiRom,
@@ -21,10 +20,11 @@ use device::{
         encoder::{KeyboardEncoder, ScancodeMode},
     },
     mb61vh010_alu::{AluMemory, Mb61vh010Alu},
-    mb8877_fdc::{MB8877_PLATFORM_FM7, Mb8877Fdc},
     mouse_fm7::MouseFm7,
+    psg::Ay38910,
     soundboard_fm7::Fm7Opn,
     video_fm7::{SubMemory, VideoState},
+    wd17xx_fdc::{WD17XX_PLATFORM_FM7, Wd17xxFdc},
 };
 use software_renderer::{Fm7Renderer, RenderInputsFm7};
 
@@ -188,7 +188,7 @@ pub(crate) struct Fm7BusState {
     sub_nmi_masked: bool,
     sub_beep_requested: bool,
     sub_reset_pending: bool,
-    psg: device::ay8910::Ay8910,
+    psg: device::psg::PsgState,
     psg_command: u8,
     psg_data_latch: u8,
     opn: Option<device::soundboard_fm7::Fm7OpnState>,
@@ -204,7 +204,7 @@ pub(crate) struct Fm7BusState {
     beeper_continuous_gate: bool,
     beeper_one_shot_active: bool,
     joystick_port_a: u8,
-    fdc: device::mb8877_fdc::Mb8877FdcState,
+    fdc: device::wd17xx_fdc::Wd17xxFdcState,
     fdc_side: u8,
     fdc_drive_select: u8,
     fdc_motor_on: bool,
@@ -263,7 +263,7 @@ pub struct Fm7Bus<T: TraceSink = NoTrace> {
     /// the sub CPU on the next slice.
     sub_reset_pending: bool,
     /// AY-3-8910 PSG driven through the `0xFD0D`/`0xFD0E` command latch (FM-7).
-    psg: Ay8910,
+    psg: Ay38910,
     /// Current PSG latch command: 0 inactive, 1 read, 2 write data, 3 latch
     /// address (masked to two bits like the hardware command register).
     psg_command: u8,
@@ -302,7 +302,7 @@ pub struct Fm7Bus<T: TraceSink = NoTrace> {
     /// Joystick pad state encoded for PSG parallel port A, active low.
     joystick_port_a: u8,
     /// MB8877 floppy disk controller at `0xFD18-0xFD1F`.
-    fdc: Mb8877Fdc<MB8877_PLATFORM_FM7>,
+    fdc: Wd17xxFdc<WD17XX_PLATFORM_FM7>,
     /// Selected head/side latched by `0xFD1C` (only bit 0 is meaningful).
     fdc_side: u8,
     /// Selected drive index latched by `0xFD1D` (two bits).
@@ -383,6 +383,8 @@ impl<T: TraceSink> Fm7Bus<T> {
             main_clock_hz: model.main_clock_hz(),
             sample_rate,
         };
+        let mut psg = Ay38910::new();
+        psg.configure_audio(PSG_CLOCK_HZ, model.main_clock_hz(), sample_rate);
         let mut bus = Self {
             model,
             clocks,
@@ -413,7 +415,7 @@ impl<T: TraceSink> Fm7Bus<T> {
             sub_nmi_masked: false,
             sub_beep_requested: false,
             sub_reset_pending: false,
-            psg: Ay8910::new(),
+            psg,
             psg_command: 0,
             psg_data_latch: 0,
             opn: if model.has_opn() {

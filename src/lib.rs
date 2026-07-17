@@ -1,6 +1,6 @@
 //! Neetan, an emulator for the PC-6001 / PC-6601, PC-8001 / PC-8801, PC-88VA,
-//! PC-9801 / PC-9821, FM Towns, Sharp X68000, Sharp X1 / X1 turbo and Fujitsu
-//! FM-7 families.
+//! PC-9801 / PC-9821, MSX, FM Towns, Sharp X68000, Sharp X1 / X1 turbo and
+//! Fujitsu FM-7 families.
 
 #![deny(unsafe_code)]
 
@@ -639,6 +639,7 @@ where
 impl Drop for Application {
     fn drop(&mut self) {
         self.machine.flush_printer();
+        self.machine.flush_cartridges();
         self.machine.flush_floppies();
         self.machine.flush_hdds();
     }
@@ -1291,6 +1292,7 @@ impl Application {
 
     fn hard_reset(&mut self) {
         self.machine.flush_printer();
+        self.machine.flush_cartridges();
         self.machine.flush_floppies();
         self.machine.flush_hdds();
 
