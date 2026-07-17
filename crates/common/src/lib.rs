@@ -25,6 +25,8 @@ mod scheduler;
 mod stack_vec;
 mod text_extractor;
 mod trace;
+#[cfg(feature = "std")]
+pub mod tracing;
 
 pub use display::{FramebufferVa, HighResCursor, TownsLayer};
 pub use dos::{

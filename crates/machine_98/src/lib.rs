@@ -28,6 +28,7 @@ use device::{
 };
 pub use machine::{
     Pc98Machine, Pc9801F, Pc9801Ra, Pc9801Rs, Pc9801Vm, Pc9801Vx, Pc9821Ap, Pc9821As,
+    build_untraced_machine,
 };
 
 pub use crate::{

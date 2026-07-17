@@ -96,6 +96,37 @@ pub struct Pc98Machine<C: Cpu, T: TraceSink = NoTrace> {
     pub bus: Pc9801Bus<T>,
 }
 
+/// Builds an untraced PC-98 machine and selects the CPU for `model`.
+pub fn build_untraced_machine(
+    model: common::MachineModel,
+    bus: Pc9801Bus<NoTrace>,
+) -> Box<dyn common::Machine> {
+    match model.cpu_type() {
+        common::CpuType::I8086 => Box::new(Pc98Machine::new(cpu::I8086::new(), bus)),
+        common::CpuType::V30 => Box::new(Pc98Machine::new(cpu::V30::new(), bus)),
+        common::CpuType::I286 => Box::new(Pc98Machine::new(cpu::I286::new(), bus)),
+        common::CpuType::I386 => match model {
+            common::MachineModel::PC9801RS => Box::new(Pc98Machine::new(
+                cpu::I386::<{ cpu::CPU_MODEL_386_SX }>::new(),
+                bus,
+            )),
+            common::MachineModel::PC9801F
+            | common::MachineModel::PC9801VM
+            | common::MachineModel::PC9801VX
+            | common::MachineModel::PC9801RA
+            | common::MachineModel::PC9821AS
+            | common::MachineModel::PC9821AP => Box::new(Pc98Machine::new(
+                cpu::I386::<{ cpu::CPU_MODEL_386_DX }>::new(),
+                bus,
+            )),
+        },
+        common::CpuType::I486DX => Box::new(Pc98Machine::new(
+            cpu::I386::<{ cpu::CPU_MODEL_486_DX }>::new(),
+            bus,
+        )),
+    }
+}
+
 impl<C: Cpu, T: TraceSink> Pc98Machine<C, T> {
     /// Creates a new machine from the given CPU and bus.
     pub fn new(cpu: C, bus: Pc9801Bus<T>) -> Self {
@@ -544,6 +575,26 @@ mod save_state_tests {
             MachineModel::PC9821AP,
             cpu::I386::<{ cpu::CPU_MODEL_486_DX }>::new(),
         );
+    }
+
+    #[test]
+    fn untraced_factory_builds_every_cpu_model() {
+        for model in [
+            MachineModel::PC9801F,
+            MachineModel::PC9801VM,
+            MachineModel::PC9801VX,
+            MachineModel::PC9801RS,
+            MachineModel::PC9801RA,
+            MachineModel::PC9821AS,
+            MachineModel::PC9821AP,
+        ] {
+            let bus = Pc9801Bus::new(model, CpuMode::High, 48_000);
+            let machine = build_untraced_machine(model, bus);
+            assert_eq!(
+                machine.cpu_clock_hz() as u32,
+                model.cpu_clock_hz(CpuMode::High)
+            );
+        }
     }
 
     #[test]

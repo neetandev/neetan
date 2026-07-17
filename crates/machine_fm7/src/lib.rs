@@ -15,5 +15,5 @@ mod scheduler;
 
 pub use bus::{Fm7Bus, MainBusView, SubBusView};
 pub use config::{BootMode, ClockConfig, Fm7Model};
-pub use machine::Fm7Machine;
+pub use machine::{Fm7Machine, build_untraced_machine};
 pub use rom::{LoadedRoms, RomError, load_rom_set};

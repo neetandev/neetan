@@ -24,6 +24,15 @@ pub struct AtMachine<T: TraceSink = NoTrace> {
     pub bus: AtBus<T>,
 }
 
+/// Builds an untraced PC/AT machine around a configured bus.
+pub fn build_untraced_machine(bus: AtBus<NoTrace>, boot_device: AtBootDevice) -> Box<dyn Machine> {
+    let mut cpu = cpu::I386::<{ cpu::CPU_MODEL_486_DX }, { cpu::ADDRESS_WIDTH_32 }>::new();
+    cpu.reset();
+    let mut machine = AtMachine::new(cpu, bus);
+    machine.set_boot_device(boot_device);
+    Box::new(machine)
+}
+
 impl<T: TraceSink> AtMachine<T> {
     /// Builds a machine around a configured CPU and bus.
     pub fn new(

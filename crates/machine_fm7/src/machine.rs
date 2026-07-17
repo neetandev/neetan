@@ -35,6 +35,16 @@ pub struct Fm7Machine<T: TraceSink = NoTrace> {
     sub_cycle_target: u64,
 }
 
+/// Builds an untraced FM-7 machine around a configured bus.
+pub fn build_untraced_machine(
+    model: crate::Fm7Model,
+    bus: Fm7Bus<NoTrace>,
+) -> Box<dyn common::Machine> {
+    let main_cpu = cpu::M6809::new(bus.cpu_clock_hz());
+    let sub_cpu = cpu::M6809::new(model.sub_clock_hz());
+    Box::new(Fm7Machine::new(main_cpu, sub_cpu, bus))
+}
+
 impl<T: TraceSink> Fm7Machine<T> {
     /// Creates a new machine from the given CPUs and bus.
     pub fn new(mut main_cpu: cpu::M6809, mut sub_cpu: cpu::M6809, mut bus: Fm7Bus<T>) -> Self {
