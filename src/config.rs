@@ -6,6 +6,7 @@ use machine_88::{EightMhzWaitMode, MemoryWaitSwitch, Pc8801Model};
 use machine_88va::Pc88VaModel;
 use machine_at::AtModel;
 use machine_fm7::Fm7Model;
+use machine_msx::MsxModel;
 use machine_towns::{TownsModel, TownsPadType};
 use machine_x1::{X1KeyboardMode, X1Model};
 use machine_x68k::X68kModel;
@@ -54,7 +55,7 @@ Commands:
 
 Options:
   -c, --config <PATH>           Load configuration from file
-      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RS, PC9801RA, PC9821AS, PC9821AP, PC8801MC, PC88VA2, PC6001, PC6001MK2, PC6601, PC6001MK2SR, PC6601SR, FMTowns, FMTownsIICX, FMTownsIIMX, X68000, X68000SUPER, X68000XVI, X1, X1TURBO, FM7, FM77AV, AT486DX50, AT486DX66
+      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RS, PC9801RA, PC9821AS, PC9821AP, PC8801MC, PC88VA2, PC6001, PC6001MK2, PC6601, PC6001MK2SR, PC6601SR, MSX, MSX2, MSX2PLUS, FMTowns, FMTownsIICX, FMTownsIIMX, X68000, X68000SUPER, X68000XVI, X1, X1TURBO, FM7, FM77AV, AT486DX50, AT486DX66
       --cpu-mode <MODE>         CPU speed mode: low or high (PC-88 derives from boot mode; X68000 XVI 10/16.67 MHz; FM Towns base fixed 16 MHz, CX 16/20 MHz, MX 33/66 MHz)
       --boot-mode <MODE>        Boot mode; each machine accepts only its own values: PC-8801 v1s, v1h, v2 (default), n, n80, n80sr; FM-7 basic (default), dos
       --monitor <MODE>          Monitor timing: auto, 15k, 24k (default: auto; PC-8801 and X1 turbo)
@@ -65,6 +66,7 @@ Options:
       --pc88-roms <PATH>        Directory with the PC-8801MC ROM set (required)
       --pc88va-roms <PATH>      Directory with the PC-88VA2 ROM set (required)
       --pc6000-roms <PATH>      Directory with the PC-6000 ROM set (required)
+      --msx-roms <PATH>         Directory with the MSX ROM set (required)
       --x1-roms <PATH>          Directory with the Sharp X1 ROM set (required)
       --x1-keyboard <A|B>       X1 turbo keyboard mode switch (default: A)
       --fm7-roms <PATH>         Directory with the FM-7 / FM-77AV ROM set (required)
@@ -80,7 +82,7 @@ Options:
       --cdrom <PATH>            CD-ROM disc image .cue or .ccd file (repeatable, PC-9821, PC/AT, FM Towns and X68000 SUPER/XVI)
       --cdrom-compat <on|off>   Slow/compatible CD-ROM drive timing (default: off; FM Towns only)
       --cartridge <PATH>        Cartridge ROM image to insert
-      --cassette <PATH>         Cassette tape image to insert (.cas/.p6/.p6t, X1 .tap, FM-7 .t77)
+      --cassette <PATH>         Cassette image (MSX .cas, PC-6000 .cas/.p6/.p6t, X1 .tap, FM-7 .t77)
       --audio-volume <FLOAT>    Audio volume 0.0-1.0
       --aspect-mode <MODE>      Display aspect mode: 4:3 or 1:1
       --crt <on|off>            Enable CRT effect (default: on; modern backend only)
@@ -193,7 +195,7 @@ fn print_copy_help() {
     println!(
         "\
 Copy files and directories between the host filesystem and FAT-formatted
-PC-98 disk images.
+disk images.
 
 Usage: neetan copy <SOURCE> <DEST>
 
@@ -212,7 +214,8 @@ Examples:
   neetan copy roms/disk.hdi:A:\\DOCS ./local_docs
   neetan copy src.hdi:A:\\FOO.EXE dst.hdi:A:\\FOO.EXE
 
-Image formats: HDI, NHD, THD (HDD); D88, D98, 88D, 98D, HDM, NFD, 2D (FDD).
+Image formats: HDI, NHD, THD, HDD (HDD);
+               D88, D98, 88D, 98D, HDM, NFD, 2D, IMG, IMA, DSK (FDD).
 
 Notes:
   - Directories are copied recursively (no -r flag).
@@ -292,14 +295,6 @@ pub enum CopyArg {
     },
 }
 
-/// File extensions that identify a disk image when looking for the
-/// `IMAGE:DOSPATH` separator. The substring up to a colon must end with one
-/// of these (case-insensitive) for the argument to be treated as an image
-/// reference; otherwise the colon is part of a host path.
-const IMAGE_EXTENSIONS: &[&str] = &[
-    "hdi", "nhd", "thd", "d88", "d98", "88d", "98d", "hdm", "nfd", "2d",
-];
-
 fn parse_copy_arg(raw: &str) -> CopyArg {
     for (idx, byte) in raw.as_bytes().iter().enumerate() {
         if *byte != b':' {
@@ -310,10 +305,7 @@ fn parse_copy_arg(raw: &str) -> CopyArg {
             continue;
         };
         let ext = &head[dot + 1..];
-        if IMAGE_EXTENSIONS
-            .iter()
-            .any(|known| ext.eq_ignore_ascii_case(known))
-        {
+        if crate::copy::is_disk_image_extension(ext) {
             return CopyArg::Image {
                 image_path: PathBuf::from(head),
                 dos_path: raw.as_bytes()[idx + 1..].to_vec(),
@@ -671,6 +663,7 @@ fn parse_args_from(
             "--at-roms" => config.at_roms = Some(PathBuf::from(value(&flag)?)),
             "--towns-pad" => config.towns_pad = value(&flag)?.parse().map_err(StringError)?,
             "--pc6000-roms" => config.pc60_roms = Some(PathBuf::from(value(&flag)?)),
+            "--msx-roms" => config.msx_roms = Some(PathBuf::from(value(&flag)?)),
             "--x1-roms" => config.x1_roms = Some(PathBuf::from(value(&flag)?)),
             "--fm7-roms" => config.fm7_roms = Some(PathBuf::from(value(&flag)?)),
             "--x1-keyboard" => {
@@ -806,6 +799,8 @@ pub enum Target {
     Pc88Va,
     /// PC-6000/PC-6600 series (the `machine_60` crate).
     Pc60,
+    /// MSX series (the `machine_msx` crate).
+    Msx,
     /// FM Towns series (the `machine_towns` crate).
     Towns,
     /// Sharp X1 series (the `machine_x1` crate).
@@ -957,6 +952,8 @@ pub struct EmulatorConfig {
     pub pc88va_roms: Option<PathBuf>,
     pub pc60_model: Pc6000Model,
     pub pc60_roms: Option<PathBuf>,
+    pub msx_model: MsxModel,
+    pub msx_roms: Option<PathBuf>,
     pub x1_model: X1Model,
     pub x1_roms: Option<PathBuf>,
     pub x1_keyboard: X1KeyboardMode,
@@ -1025,6 +1022,8 @@ impl Default for EmulatorConfig {
             pc88va_roms: None,
             pc60_model: Pc6000Model::Pc6001,
             pc60_roms: None,
+            msx_model: MsxModel::Msx,
+            msx_roms: None,
             x1_model: X1Model::X1,
             x1_roms: None,
             x1_keyboard: X1KeyboardMode::ModeA,
@@ -1119,6 +1118,7 @@ fn apply_config_file(
                 Err(error) => warn!("Invalid towns-pad in config: {error}"),
             },
             "pc6000-roms" => config.pc60_roms = Some(PathBuf::from(val)),
+            "msx-roms" => config.msx_roms = Some(PathBuf::from(val)),
             "x1-roms" => config.x1_roms = Some(PathBuf::from(val)),
             "fm7-roms" => config.fm7_roms = Some(PathBuf::from(val)),
             "x1-keyboard" => match val.parse() {
@@ -1216,6 +1216,7 @@ fn apply_config_file(
                     Target::Pc88Va => parse_key_binding_pc88va(host_name, val),
                     Target::Pc98 => parse_key_binding(host_name, val),
                     Target::Pc60 => parse_key_binding_pc60(host_name, val),
+                    Target::Msx => parse_key_binding(host_name, val),
                     Target::Towns => parse_key_binding_towns(host_name, val),
                     Target::X68k => parse_key_binding_x68k(host_name, val),
                     // Placeholder until the X1 key map lands in a later phase.
@@ -1259,8 +1260,8 @@ fn apply_derived_defaults(config: &mut EmulatorConfig, explicit: ExplicitSetting
 }
 
 /// Resolves a `--machine` / `machine=` value to a family and model. A PC-88,
-/// PC-88VA or PC-6000 model name selects that family's target; anything else is
-/// parsed as a PC-98 model. Returns a human-readable error if no family
+/// PC-88VA, PC-6000 or MSX model name selects that family's target; anything
+/// else is parsed as a PC-98 model. Returns a human-readable error if no family
 /// recognises the value.
 fn apply_machine_selection(config: &mut EmulatorConfig, value: &str) -> Result<(), String> {
     if let Ok(_model) = value.parse::<Pc8801Model>() {
@@ -1286,6 +1287,14 @@ fn apply_machine_selection(config: &mut EmulatorConfig, value: &str) -> Result<(
         }
         config.target = Target::Pc60;
         config.pc60_model = model;
+        return Ok(());
+    }
+    if let Ok(model) = value.parse::<MsxModel>() {
+        if config.target != Target::Msx {
+            config.key_map = KeyMap::new();
+        }
+        config.target = Target::Msx;
+        config.msx_model = model;
         return Ok(());
     }
     if let Ok(model) = value.parse::<X1Model>() {
@@ -1332,7 +1341,7 @@ fn apply_machine_selection(config: &mut EmulatorConfig, value: &str) -> Result<(
         return Err(format!(
             "unknown machine type '{value}', expected PC9801F, PC9801VM, PC9801VX, PC9801RS, \
              PC9801RA, PC9821AS, PC9821AP, PC8801MC, PC88VA2, PC6001, PC6001MK2, PC6601, PC6001MK2SR, \
-             PC6601SR, FMTowns, FMTownsIICX, FMTownsIIMX, X68000, X68000SUPER, X68000XVI, X1, \
+             PC6601SR, MSX, MSX2, MSX2PLUS, FMTowns, FMTownsIICX, FMTownsIIMX, X68000, X68000SUPER, X68000XVI, X1, \
              X1TURBO, FM7, FM77AV, AT486DX50 or AT486DX66"
         ));
     };
@@ -1647,6 +1656,64 @@ mod tests {
         apply_machine_selection(&mut config, "PC6001MK2SR").expect("PC6001MK2SR is valid");
         assert_eq!(config.target, Target::Pc60);
         assert_eq!(config.pc60_model, Pc6000Model::Pc6001Mk2Sr);
+    }
+
+    #[test]
+    fn copy_parser_recognizes_every_supported_disk_extension() {
+        for extension in crate::copy::HDD_EXTENSIONS
+            .iter()
+            .chain(crate::copy::FDD_EXTENSIONS)
+        {
+            for extension in [
+                extension.to_ascii_lowercase(),
+                extension.to_ascii_uppercase(),
+            ] {
+                let argument = format!("disk.{extension}:A:\\FILE.TXT");
+                let CopyArg::Image {
+                    image_path,
+                    dos_path,
+                } = parse_copy_arg(&argument)
+                else {
+                    panic!("{extension} should identify a disk image");
+                };
+                assert_eq!(image_path, PathBuf::from(format!("disk.{extension}")));
+                assert_eq!(dos_path, b"A:\\FILE.TXT");
+            }
+        }
+    }
+
+    #[test]
+    fn machine_flag_selects_msx_and_its_rom_directory() {
+        let config = parse_run_config(&["--machine", "msx", "--msx-roms", "roms/msx"]);
+        assert_eq!(config.target, Target::Msx);
+        assert_eq!(config.msx_model, MsxModel::Msx);
+        assert_eq!(config.msx_roms, Some(PathBuf::from("roms/msx")));
+        for (host, keycode) in [
+            (sdl3::keyboard::Scancode::A, 0x1D),
+            (sdl3::keyboard::Scancode::B, 0x2D),
+            (sdl3::keyboard::Scancode::C, 0x2B),
+            (sdl3::keyboard::Scancode::J, 0x23),
+            (sdl3::keyboard::Scancode::K, 0x24),
+            (sdl3::keyboard::Scancode::L, 0x25),
+            (sdl3::keyboard::Scancode::N, 0x2E),
+            (sdl3::keyboard::Scancode::V, 0x2C),
+            (sdl3::keyboard::Scancode::Right, 0x3C),
+            (sdl3::keyboard::Scancode::Down, 0x3D),
+        ] {
+            assert_eq!(config.key_map.lookup(host), keycode);
+        }
+    }
+
+    #[test]
+    fn machine_flag_exposes_msx2_and_msx2_plus() {
+        let mut config = EmulatorConfig::default();
+        apply_machine_selection(&mut config, "MSX2").expect("MSX2 is valid");
+        assert_eq!(config.target, Target::Msx);
+        assert_eq!(config.msx_model, MsxModel::Msx2);
+
+        apply_machine_selection(&mut config, "MSX2PLUS").expect("MSX2PLUS is valid");
+        assert_eq!(config.target, Target::Msx);
+        assert_eq!(config.msx_model, MsxModel::Msx2Plus);
     }
 
     #[test]

@@ -66,6 +66,8 @@ use crate::{
 };
 
 const WAVEFORM_LENGTH: usize = 0x400;
+/// Number of bytes in an OPLL instrument table.
+pub(crate) const OPLL_INSTRUMENT_DATA_SIZE: usize = 0x90;
 
 // Helper to extract a bitfield from register data.
 fn reg_byte(regdata: &[u8], offset: u32, start: u32, count: u32, extra_offset: u32) -> u32 {
@@ -299,6 +301,373 @@ fn opl_write<const REVISION: u32>(
         }
     }
     false
+}
+
+save_state::runtime_state! {
+/// OPLL registers for the YM2413.
+#[derive(Clone)]
+pub(crate) struct OpllRegisters {
+    lfo_am_counter: u16,
+    lfo_pm_counter: u16,
+    noise_lfsr: u32,
+    lfo_am: u8,
+    regdata: [u8; 0x40],
+    instrument_data: [u8; OPLL_INSTRUMENT_DATA_SIZE],
+    waveform: [[u16; WAVEFORM_LENGTH]; 2],
+}}
+
+impl OpllRegisters {
+    /// Replaces the built-in OPLL instrument table.
+    pub(crate) fn set_instrument_data(
+        &mut self,
+        instrument_data: &[u8; OPLL_INSTRUMENT_DATA_SIZE],
+    ) {
+        self.instrument_data.copy_from_slice(instrument_data);
+    }
+
+    fn rhythm_enabled(&self) -> bool {
+        reg_byte(&self.regdata, 0x0E, 5, 1, 0) != 0
+    }
+
+    fn instrument_base(&self, channel: u32) -> Option<usize> {
+        if self.rhythm_enabled() && channel >= 6 {
+            Some(8 * (15 + channel as usize - 6))
+        } else {
+            let instrument = reg_byte(&self.regdata, 0x30, 4, 4, channel) as usize;
+            if instrument == 0 {
+                None
+            } else {
+                Some(8 * (instrument - 1))
+            }
+        }
+    }
+
+    fn instrument_byte(&self, channel: u32, offset: usize) -> u8 {
+        self.instrument_base(channel).map_or_else(
+            || self.regdata[offset],
+            |base| self.instrument_data[base + offset],
+        )
+    }
+
+    fn operator_instrument_byte(&self, operator: u32, offset: usize) -> u8 {
+        let channel = operator >> 1;
+        self.instrument_byte(channel, offset + (operator as usize & 1))
+    }
+
+    fn operator_field(&self, operator: u32, offset: usize, start: u32, count: u32) -> u32 {
+        bitfield(
+            self.operator_instrument_byte(operator, offset) as u32,
+            start as i32,
+            count as i32,
+        )
+    }
+
+    fn channel_field(&self, channel: u32, offset: usize, start: u32, count: u32) -> u32 {
+        bitfield(
+            self.instrument_byte(channel, offset) as u32,
+            start as i32,
+            count as i32,
+        )
+    }
+
+    fn block_frequency(&self, channel: u32) -> u32 {
+        reg_word(&self.regdata, 0x20, 0, 4, 0x10, 0, 8, channel)
+    }
+
+    fn operator_pm_enabled(&self, operator: u32) -> bool {
+        self.operator_field(operator, 0, 6, 1) != 0
+    }
+}
+
+impl FmRegisters for OpllRegisters {
+    const OUTPUTS: usize = 2;
+    const CHANNELS: usize = 9;
+    const ALL_CHANNELS: u32 = (1 << 9) - 1;
+    const OPERATORS: usize = 18;
+    const DEFAULT_PRESCALE: u32 = 4;
+    const EG_CLOCK_DIVIDER: u32 = 1;
+    const CSM_TRIGGER_MASK: u32 = 0;
+    const REG_MODE: u32 = 0x3F;
+    const EG_HAS_DEPRESS: bool = true;
+    const EG_HAS_REVERB: bool = false;
+    const EG_HAS_SSG: bool = false;
+    const MODULATOR_DELAY: bool = true;
+    const DYNAMIC_OPS: bool = false;
+
+    const STATUS_TIMERA: u8 = 0;
+    const STATUS_TIMERB: u8 = 0;
+    const STATUS_BUSY: u8 = 0;
+    const STATUS_IRQ: u8 = 0;
+
+    const RHYTHM_CHANNEL: u32 = 0xFF;
+
+    fn new() -> Self {
+        let mut waveform = [[0u16; WAVEFORM_LENGTH]; 2];
+        for (index, entry) in waveform[0].iter_mut().enumerate() {
+            *entry = (abs_sin_attenuation(index as u32) | (bit(index as u32, 9) << 15)) as u16;
+        }
+        let zero = waveform[0][0];
+        let sine_waveform = waveform[0];
+        for (index, entry) in waveform[1].iter_mut().enumerate() {
+            *entry = if bit(index as u32, 9) != 0 {
+                zero
+            } else {
+                sine_waveform[index]
+            };
+        }
+        Self {
+            lfo_am_counter: 0,
+            lfo_pm_counter: 0,
+            noise_lfsr: 1,
+            lfo_am: 0,
+            regdata: [0; 0x40],
+            instrument_data: [0; OPLL_INSTRUMENT_DATA_SIZE],
+            waveform,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.regdata.fill(0);
+    }
+
+    fn operator_map(&self, index: usize) -> u32 {
+        operator_list((index * 2) as u8, (index * 2 + 1) as u8, 0xFF, 0xFF)
+    }
+
+    fn write(
+        &mut self,
+        index: u32,
+        data: u8,
+        keyon_channel: &mut u32,
+        keyon_opmask: &mut u32,
+    ) -> bool {
+        if index >= self.regdata.len() as u32 {
+            return false;
+        }
+        self.regdata[index as usize] = data;
+        if index == 0x0E {
+            *keyon_channel = Self::RHYTHM_CHANNEL;
+            *keyon_opmask = if bit(data as u32, 5) != 0 {
+                bitfield(data as u32, 0, 5)
+            } else {
+                0
+            };
+            return true;
+        }
+        if index & 0xF0 == 0x20 {
+            *keyon_channel = index & 0x0F;
+            if *keyon_channel < Self::CHANNELS as u32 {
+                *keyon_opmask = if bit(data as u32, 4) != 0 { 3 } else { 0 };
+                return true;
+            }
+        }
+        false
+    }
+
+    fn channel_offset(chnum: u32) -> u32 {
+        chnum
+    }
+
+    fn operator_offset(opnum: u32) -> u32 {
+        opnum
+    }
+
+    fn op_ssg_eg_enable(&self, _opoffs: u32) -> u32 {
+        0
+    }
+
+    fn op_ssg_eg_mode(&self, _opoffs: u32) -> u32 {
+        0
+    }
+
+    fn op_lfo_am_enable(&self, opoffs: u32) -> u32 {
+        self.operator_field(opoffs, 0, 7, 1)
+    }
+
+    fn ch_output_any(&self, _choffs: u32) -> u32 {
+        1
+    }
+
+    fn ch_output_0(&self, choffs: u32) -> u32 {
+        u32::from(!(self.rhythm_enabled() && choffs >= 6))
+    }
+
+    fn ch_output_1(&self, choffs: u32) -> u32 {
+        u32::from(self.rhythm_enabled() && choffs >= 6)
+    }
+
+    fn ch_output_2(&self, _choffs: u32) -> u32 {
+        0
+    }
+
+    fn ch_output_3(&self, _choffs: u32) -> u32 {
+        0
+    }
+
+    fn ch_feedback(&self, choffs: u32) -> u32 {
+        self.channel_field(choffs, 3, 0, 3)
+    }
+
+    fn ch_algorithm(&self, _choffs: u32) -> u32 {
+        0
+    }
+
+    fn noise_state(&self) -> u32 {
+        self.noise_lfsr >> 23
+    }
+
+    fn timer_a_value(&self) -> u32 {
+        0
+    }
+
+    fn timer_b_value(&self) -> u32 {
+        0
+    }
+
+    fn csm(&self) -> u32 {
+        0
+    }
+
+    fn reset_timer_a(&self) -> u32 {
+        0
+    }
+
+    fn reset_timer_b(&self) -> u32 {
+        0
+    }
+
+    fn enable_timer_a(&self) -> u32 {
+        0
+    }
+
+    fn enable_timer_b(&self) -> u32 {
+        0
+    }
+
+    fn load_timer_a(&self) -> u32 {
+        0
+    }
+
+    fn load_timer_b(&self) -> u32 {
+        0
+    }
+
+    fn cache_operator_data(&self, choffs: u32, opoffs: u32, cache: &mut OpdataCache) {
+        let waveform = self.channel_field(choffs, 3, 3 + bit(opoffs, 0), 1);
+        cache.waveform_index = waveform;
+        let block_frequency = self.block_frequency(choffs);
+        cache.block_freq = block_frequency;
+        let keycode = bitfield(block_frequency, 8, 4);
+        cache.detune = 0;
+
+        let multiple = self.operator_field(opoffs, 0, 0, 4);
+        cache.multiple = ((multiple & 0xE) | bitfield(0xC2AA, multiple as i32, 1)) * 2;
+        if cache.multiple == 0 {
+            cache.multiple = 1;
+        }
+        cache.phase_step = if self.operator_pm_enabled(opoffs) {
+            OpdataCache::PHASE_STEP_DYNAMIC
+        } else {
+            opl_compute_phase_step(block_frequency << 1, cache.multiple, 0)
+        };
+
+        cache.total_level = if bit(opoffs, 0) != 0 || (self.rhythm_enabled() && choffs >= 7) {
+            let start = 4 * bit(!opoffs, 0);
+            reg_byte(&self.regdata, 0x30, start, 4, choffs) * 4
+        } else {
+            self.channel_field(choffs, 2, 0, 6)
+        };
+        cache.total_level <<= 3;
+
+        let key_scale_level = self.operator_field(opoffs, 2, 6, 2);
+        if key_scale_level != 0 {
+            cache.total_level += opl_key_scale_atten(
+                bitfield(block_frequency, 9, 3),
+                bitfield(block_frequency, 5, 4),
+            ) << key_scale_level;
+        }
+
+        cache.eg_sustain = self.operator_field(opoffs, 6, 4, 4);
+        cache.eg_sustain |= (cache.eg_sustain + 1) & 0x10;
+        cache.eg_sustain <<= 5;
+
+        let key_scale_rate = self.operator_field(opoffs, 0, 4, 1);
+        let rate_adjustment = keycode >> (2 * (key_scale_rate ^ 1));
+        cache.eg_rate[EnvelopeState::Depress as usize] = 12 * 4;
+        cache.eg_rate[EnvelopeState::Attack as usize] =
+            effective_rate(self.operator_field(opoffs, 4, 4, 4) * 4, rate_adjustment) as u8;
+        cache.eg_rate[EnvelopeState::Decay as usize] =
+            effective_rate(self.operator_field(opoffs, 4, 0, 4) * 4, rate_adjustment) as u8;
+        let release_rate = self.operator_field(opoffs, 6, 0, 4) * 4;
+        let sustain_enabled = self.operator_field(opoffs, 0, 5, 1) != 0;
+        let channel_sustain = reg_byte(&self.regdata, 0x20, 5, 1, choffs) != 0;
+        if sustain_enabled {
+            cache.eg_rate[EnvelopeState::Sustain as usize] = 0;
+            cache.eg_rate[EnvelopeState::Release as usize] = if channel_sustain {
+                5 * 4
+            } else {
+                effective_rate(release_rate, rate_adjustment) as u8
+            };
+        } else {
+            cache.eg_rate[EnvelopeState::Sustain as usize] =
+                effective_rate(release_rate, rate_adjustment) as u8;
+            cache.eg_rate[EnvelopeState::Release as usize] =
+                if channel_sustain { 5 * 4 } else { 7 * 4 };
+        }
+    }
+
+    fn compute_phase_step(
+        &self,
+        _choffs: u32,
+        opoffs: u32,
+        cache: &OpdataCache,
+        lfo_raw_pm: i32,
+    ) -> u32 {
+        opl_compute_phase_step(
+            cache.block_freq << 1,
+            cache.multiple,
+            if self.operator_pm_enabled(opoffs) {
+                lfo_raw_pm
+            } else {
+                0
+            },
+        )
+    }
+
+    fn clock_noise_and_lfo(&mut self) -> i32 {
+        opl_clock_noise_and_lfo(
+            &mut self.noise_lfsr,
+            &mut self.lfo_am_counter,
+            &mut self.lfo_pm_counter,
+            &mut self.lfo_am,
+            1,
+            1,
+        )
+    }
+
+    fn lfo_am_offset(&self, _choffs: u32) -> u32 {
+        self.lfo_am as u32
+    }
+
+    fn waveform(&self, index: u32, phase: u32) -> u16 {
+        self.waveform[index as usize % 2][(phase & (WAVEFORM_LENGTH as u32 - 1)) as usize]
+    }
+
+    fn status_mask(&self) -> u8 {
+        0
+    }
+
+    fn irq_reset(&self) -> u32 {
+        0
+    }
+
+    fn noise_enable(&self) -> u32 {
+        0
+    }
+
+    fn rhythm_enable(&self) -> u32 {
+        u32::from(self.rhythm_enabled())
+    }
 }
 
 save_state::runtime_state! {

@@ -18,17 +18,17 @@ use common::{
     TracePresentation, TraceSink, trace_id,
 };
 use device::{
-    ay8910::Ay8910,
     cassette::{CassetteDeck, CassetteError, load_cassette},
     hd6845_crtc::Hd6845,
-    mb8877_fdc::{MB8877_PLATFORM_X1, Mb8877Fdc},
     mouse_x1::MouseX1,
     opn_fm::FmTimerAction,
+    psg::Ay38910,
     soundboard_opm::SoundBoardOpm,
     subcontroller_x1::{CassetteAction, SubHle},
     video_x1::{
         MODE1_ANK16, MODE1_CG_STRIDE_400, MODE1_CHAR_CLOCK_15, MODE1_KANJI_UNDERLINE, X1Video,
     },
+    wd17xx_fdc::{WD17XX_PLATFORM_X1, Wd17xxFdc},
     z80_ctc::Z80Ctc,
     z80_dma::Z80Dma,
     z80_sio::Z80Sio,
@@ -149,10 +149,10 @@ pub(crate) struct X1BusState {
     crtc: device::hd6845_crtc::Hd6845State,
     ctc: device::z80_ctc::Z80Ctc,
     ppi: crate::bus::ppi_link::PpiLinkState,
-    psg: device::ay8910::Ay8910,
+    psg: device::psg::PsgState,
     fm: Option<device::opn_fm::OpnFmState<ymfm_oxide::Ym2151, ymfm_oxide::YmfmOutput2>>,
     sound_ctc: device::z80_ctc::Z80Ctc,
-    fdc: device::mb8877_fdc::Mb8877FdcState,
+    fdc: device::wd17xx_fdc::Wd17xxFdcState,
     dma: device::z80_dma::Z80DmaState,
     sio: device::z80_sio::Z80Sio,
     mouse: device::mouse_x1::MouseX1,
@@ -196,12 +196,12 @@ pub struct X1Bus<T: TraceSink = NoTrace> {
     crtc: Hd6845,
     ctc: Z80Ctc,
     ppi: PpiLink,
-    psg: Ay8910,
+    psg: Ay38910,
     /// CZ-8BS1 FM sound board (YM2151); present only on the turbo.
     fm: Option<SoundBoardOpm>,
     /// Sound-board Z80 CTC (`ctc_ym`); used only when the FM board is present.
     sound_ctc: Z80Ctc,
-    fdc: Mb8877Fdc<MB8877_PLATFORM_X1>,
+    fdc: Wd17xxFdc<WD17XX_PLATFORM_X1>,
     dma: Z80Dma,
     sio: Z80Sio,
     mouse: MouseX1,
@@ -279,6 +279,8 @@ impl<T: TraceSink> X1Bus<T> {
         scheduler.schedule(EventX1::SubPoll, sub_poll);
         let crtc = Hd6845::new();
         let frame_params = latch_frame_params(&crtc, model, 0);
+        let mut psg = Ay38910::new();
+        psg.configure_audio(PSG_CLOCK_HZ, clocks.main_clock_hz, sample_rate);
         Self {
             model,
             clocks,
@@ -289,14 +291,14 @@ impl<T: TraceSink> X1Bus<T> {
             crtc,
             ctc: Z80Ctc::new(),
             ppi: PpiLink::new(),
-            psg: Ay8910::new(),
+            psg,
             fm: if model.has_fm() {
                 Some(SoundBoardOpm::new(clocks.main_clock_hz, sample_rate))
             } else {
                 None
             },
             sound_ctc: Z80Ctc::new(),
-            fdc: Mb8877Fdc::new(clocks.main_clock_hz),
+            fdc: Wd17xxFdc::new(clocks.main_clock_hz),
             dma: Z80Dma::new(),
             sio: Z80Sio::new(),
             mouse: MouseX1::new(),

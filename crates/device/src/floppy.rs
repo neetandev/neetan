@@ -10,12 +10,14 @@
 //! - **XDF** (.xdf/.2hd): Headerless raw sector format for X68000 2HD floppies.
 //! - **IMG** (.img/.ima): Headerless raw sector format for IBM PC floppies.
 //! - **IBM XDF** (.xdf/.img, 1,884,160 bytes): IBM Extended Density Format.
+//! - **MSX DSK** (.dsk): Headerless raw sector format for MSX floppies.
 
 pub mod d88;
 pub mod dim;
 pub mod hdm;
 pub mod ibm_xdf;
 pub mod img;
+pub mod msx_dsk;
 pub mod nfd;
 pub mod two_d;
 pub mod xdf;
@@ -29,6 +31,7 @@ use std::{
 
 use common::error;
 pub use d88::{D88Disk, D88Error, D88MediaType, D88Sector};
+pub use msx_dsk::{MsxDskError, MsxDskGeometry};
 pub use nfd::NfdRevision;
 
 use crate::disk_backend::DiskBackend;
@@ -56,6 +59,8 @@ pub enum FloppyFormat {
     Img,
     /// IBM Extended Density Format (.xdf/.img, 1,884,160 bytes).
     IbmXdf,
+    /// Headerless raw MSX sector format (.dsk).
+    MsxDsk(MsxDskGeometry),
 }
 
 /// A parsed floppy disk image.
@@ -188,6 +193,30 @@ impl FloppyImage {
         })
     }
 
+    /// Parses a raw MSX DSK floppy image with detected geometry.
+    pub fn from_msx_dsk_bytes(data: &[u8]) -> Result<Self, FloppyError> {
+        let (disk, geometry) = msx_dsk::from_bytes(data).map_err(FloppyError::MsxDsk)?;
+        Ok(Self {
+            disk,
+            format: FloppyFormat::MsxDsk(geometry),
+            container_header: None,
+        })
+    }
+
+    /// Parses a raw MSX DSK floppy image with explicit geometry.
+    pub fn from_msx_dsk_bytes_with_geometry(
+        data: &[u8],
+        geometry: MsxDskGeometry,
+    ) -> Result<Self, FloppyError> {
+        let disk =
+            msx_dsk::from_bytes_with_geometry(data, geometry).map_err(FloppyError::MsxDsk)?;
+        Ok(Self {
+            disk,
+            format: FloppyFormat::MsxDsk(geometry),
+            container_header: None,
+        })
+    }
+
     /// Returns a human-readable format name.
     pub fn format_name(&self) -> &'static str {
         match self.format {
@@ -201,6 +230,7 @@ impl FloppyImage {
             FloppyFormat::Xdf => "XDF",
             FloppyFormat::Img => "IMG",
             FloppyFormat::IbmXdf => "IBM XDF",
+            FloppyFormat::MsxDsk(_) => "MSX DSK",
         }
     }
 
@@ -216,6 +246,7 @@ impl FloppyImage {
             FloppyFormat::Xdf => xdf::to_bytes(&self.disk),
             FloppyFormat::Img => img::to_bytes(&self.disk),
             FloppyFormat::IbmXdf => ibm_xdf::to_bytes(&self.disk),
+            FloppyFormat::MsxDsk(geometry) => msx_dsk::to_bytes(&self.disk, geometry),
         }
     }
 
@@ -265,6 +296,13 @@ impl FloppyImage {
                     None
                 } else {
                     Some("IBM XDF cannot represent the current track layout")
+                }
+            }
+            FloppyFormat::MsxDsk(geometry) => {
+                if msx_dsk::is_representable(&self.disk, geometry) {
+                    None
+                } else {
+                    Some("MSX DSK cannot represent the current track layout")
                 }
             }
         }
@@ -464,6 +502,7 @@ impl MountedFloppy {
     }
 }
 
+/// Returns the stable media-manifest tag for a floppy format.
 const fn floppy_format_tag(format: FloppyFormat) -> u8 {
     match format {
         FloppyFormat::D88 => 0,
@@ -476,6 +515,9 @@ const fn floppy_format_tag(format: FloppyFormat) -> u8 {
         FloppyFormat::Xdf => 7,
         FloppyFormat::Img => 8,
         FloppyFormat::IbmXdf => 9,
+        FloppyFormat::MsxDsk(MsxDskGeometry::Tracks80Sides1) => 10,
+        FloppyFormat::MsxDsk(MsxDskGeometry::Tracks40Sides2) => 11,
+        FloppyFormat::MsxDsk(MsxDskGeometry::Tracks80Sides2) => 12,
     }
 }
 
@@ -500,6 +542,7 @@ pub fn load_floppy_image(path: &Path, data: &[u8]) -> Result<FloppyImage, Floppy
             FloppyImage::from_ibm_xdf_bytes(data)
         }
         Some("img") | Some("ima") => FloppyImage::from_img_bytes(data),
+        Some("dsk") => FloppyImage::from_msx_dsk_bytes(data),
         Some("d88") | Some("d98") | Some("88d") | Some("98d") => FloppyImage::from_d88_bytes(data),
         _ => FloppyImage::from_d88_bytes(data),
     }
@@ -524,6 +567,8 @@ pub enum FloppyError {
     Img(img::ImgError),
     /// IBM XDF format parsing error.
     IbmXdf(ibm_xdf::IbmXdfError),
+    /// Raw MSX DSK parsing error.
+    MsxDsk(MsxDskError),
     /// File extension not recognized as a supported floppy format.
     UnrecognizedFormat,
 }
@@ -539,6 +584,7 @@ impl fmt::Display for FloppyError {
             FloppyError::Xdf(err) => write!(f, "{err}"),
             FloppyError::Img(err) => write!(f, "{err}"),
             FloppyError::IbmXdf(err) => write!(f, "{err}"),
+            FloppyError::MsxDsk(err) => write!(f, "{err}"),
             FloppyError::UnrecognizedFormat => write!(f, "unrecognized floppy image format"),
         }
     }

@@ -810,3 +810,35 @@ fn dosv_144mb_img_floppy_roundtrip() {
     copy(image(&image_path, b"A:\\DOSV.TXT".to_vec()), host(&out)).unwrap();
     assert_eq!(std::fs::read(&out).unwrap(), b"dosv floppy data");
 }
+
+#[test]
+fn msx_720kb_dsk_floppy_roundtrip() {
+    let dir = unique_tempdir("msxdsk");
+    let mut data = vec![0u8; 737_280];
+    data[11..13].copy_from_slice(&512u16.to_le_bytes());
+    data[13] = 2;
+    data[14..16].copy_from_slice(&1u16.to_le_bytes());
+    data[16] = 2;
+    data[17..19].copy_from_slice(&112u16.to_le_bytes());
+    data[19..21].copy_from_slice(&1440u16.to_le_bytes());
+    data[21] = 0xF9;
+    data[22..24].copy_from_slice(&3u16.to_le_bytes());
+    data[24..26].copy_from_slice(&9u16.to_le_bytes());
+    data[26..28].copy_from_slice(&2u16.to_le_bytes());
+    for fat_offset in [512usize, 512 + 3 * 512] {
+        data[fat_offset] = 0xF9;
+        data[fat_offset + 1] = 0xFF;
+        data[fat_offset + 2] = 0xFF;
+    }
+    let image_path = dir.join("disk.dsk");
+    std::fs::write(&image_path, &data).unwrap();
+
+    let source = dir.join("source.txt");
+    let output = dir.join("output.txt");
+    std::fs::write(&source, b"MSX DSK data").unwrap();
+
+    copy(host(&source), image(&image_path, b"A:\\MSX.TXT".to_vec())).unwrap();
+    copy(image(&image_path, b"A:\\MSX.TXT".to_vec()), host(&output)).unwrap();
+    assert_eq!(std::fs::read(&output).unwrap(), b"MSX DSK data");
+    assert_eq!(std::fs::metadata(&image_path).unwrap().len(), 737_280);
+}

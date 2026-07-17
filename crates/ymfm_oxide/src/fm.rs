@@ -1037,6 +1037,10 @@ impl<R: FmRegisters> FmEngine<R> {
         }
     }
 
+    pub(crate) fn invalidate_caches(&mut self) {
+        self.modified_channels = R::ALL_CHANNELS;
+    }
+
     pub(crate) fn clock(&mut self, chanmask: u32) -> u32 {
         self.total_clocks = self.total_clocks.wrapping_add(1);
 

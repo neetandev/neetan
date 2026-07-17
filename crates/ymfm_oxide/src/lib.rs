@@ -17,6 +17,7 @@
 //! | YM3812 | OPL2   | 9-ch mono FM, 4 waveforms                 |
 //! | YMF262 | OPL3   | 18-ch 4-output FM, 8 waveforms, 4-op mode |
 //! | YM2151 | OPM    | 8-ch stereo FM + noise + LFO              |
+//! | YM2413 | OPLL   | 9-ch mono FM + rhythm                      |
 //!
 //! # Usage
 //!
@@ -67,7 +68,7 @@ pub(crate) mod tables;
 
 use adpcm::{AdpcmAEngine, AdpcmBChannel, AdpcmBEngine};
 use fm::{FmEngine, FmRegisters};
-use opl::{Opl2Registers, Opl3Registers, OplRegisters};
+use opl::{OPLL_INSTRUMENT_DATA_SIZE, Opl2Registers, Opl3Registers, OplRegisters, OpllRegisters};
 use opm::OpmRegisters;
 use opn::{OpnRegisters, OpnaRegisters, SsgResampler};
 use ssg::SsgEngine;
@@ -77,6 +78,99 @@ pub use sys::{
 
 const YM2608_ADPCM_A_ROM_SIZE: usize = 8192;
 static SILENT_ADPCM_MEMORY: [u8; 1] = [0];
+/// Number of bytes in a YM2413 instrument table.
+pub const YM2413_INSTRUMENT_DATA_SIZE: usize = OPLL_INSTRUMENT_DATA_SIZE;
+/// Redistributable YMFM default YM2413 instrument table.
+pub const YM2413_DEFAULT_INSTRUMENTS: [u8; YM2413_INSTRUMENT_DATA_SIZE] = [
+    0x71, 0x61, 0x1E, 0x17, 0xEF, 0x7F, 0x00, 0x17, 0x13, 0x41, 0x1A, 0x0D, 0xF8, 0xF7, 0x23, 0x13,
+    0x13, 0x01, 0x99, 0x00, 0xF2, 0xC4, 0x11, 0x23, 0x31, 0x61, 0x0E, 0x07, 0x98, 0x64, 0x70, 0x27,
+    0x22, 0x21, 0x1E, 0x06, 0xBF, 0x76, 0x00, 0x28, 0x31, 0x22, 0x16, 0x05, 0xE0, 0x71, 0x0F, 0x18,
+    0x21, 0x61, 0x1D, 0x07, 0x82, 0x8F, 0x10, 0x07, 0x23, 0x21, 0x2D, 0x14, 0xFF, 0x7F, 0x00, 0x07,
+    0x41, 0x61, 0x1B, 0x06, 0x64, 0x65, 0x10, 0x17, 0x61, 0x61, 0x0B, 0x18, 0x85, 0xFF, 0x81, 0x07,
+    0x13, 0x01, 0x83, 0x11, 0xFA, 0xE4, 0x10, 0x04, 0x17, 0x81, 0x23, 0x07, 0xF8, 0xF8, 0x22, 0x12,
+    0x61, 0x50, 0x0C, 0x05, 0xF2, 0xF5, 0x29, 0x42, 0x01, 0x01, 0x54, 0x03, 0xC3, 0x92, 0x03, 0x02,
+    0x41, 0x41, 0x89, 0x03, 0xF1, 0xE5, 0x11, 0x13, 0x01, 0x01, 0x18, 0x0F, 0xDF, 0xF8, 0x6A, 0x6D,
+    0x01, 0x01, 0x00, 0x00, 0xC8, 0xD8, 0xA7, 0x48, 0x05, 0x01, 0x00, 0x00, 0xF8, 0xAA, 0x59, 0x55,
+];
+
+save_state::runtime_state! {
+/// Yamaha YM2413 authoritative state and emulator.
+#[derive(Clone)]
+pub struct Ym2413 {
+    fm: FmEngine<OpllRegisters>,
+    address: u8,
+}}
+
+impl Ym2413 {
+    /// Creates a YM2413 with the redistributable default instrument table.
+    pub fn new() -> Self {
+        Self::new_with_instruments(YM2413_DEFAULT_INSTRUMENTS)
+    }
+
+    /// Creates a YM2413 with the supplied 144-byte instrument table.
+    pub fn new_with_instruments(instrument_data: [u8; YM2413_INSTRUMENT_DATA_SIZE]) -> Self {
+        let mut fm: FmEngine<OpllRegisters> = FmEngine::new();
+        fm.regs.set_instrument_data(&instrument_data);
+        Self { fm, address: 0 }
+    }
+
+    /// Captures the complete chip state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores the complete chip state.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &())
+    }
+
+    /// Resets the chip while preserving its instrument table.
+    pub fn reset(&mut self) {
+        self.fm.reset();
+        self.address = 0;
+    }
+
+    /// Replaces the 144-byte instrument table and invalidates cached operators.
+    pub fn set_instrument_data(&mut self, instrument_data: &[u8; YM2413_INSTRUMENT_DATA_SIZE]) {
+        self.fm.regs.set_instrument_data(instrument_data);
+        self.fm.invalidate_caches();
+    }
+
+    /// Returns the native output sample rate for `input_clock`.
+    pub fn sample_rate(&self, input_clock: u32) -> u32 {
+        input_clock / (OpllRegisters::OPERATORS as u32 * self.fm.clock_prescale())
+    }
+
+    /// Latches the register address for a subsequent data write.
+    pub fn write_address(&mut self, data: u8) -> u32 {
+        self.address = data;
+        12 * self.fm.clock_prescale()
+    }
+
+    /// Writes a value to the latched register.
+    pub fn write_data(&mut self, data: u8) -> u32 {
+        self.fm.write(self.address as u16, data);
+        84 * self.fm.clock_prescale()
+    }
+
+    /// Generates separate melodic and rhythm samples.
+    pub fn generate(&mut self, output: &mut [YmfmOutput2]) {
+        for sample in output {
+            self.fm.clock(OpllRegisters::ALL_CHANNELS);
+            sample.data = [0; 2];
+            self.fm
+                .output_mut(&mut sample.data, 5, 256, OpllRegisters::ALL_CHANNELS);
+            sample.data[0] = sample.data[0] * 128 / 9;
+            sample.data[1] = sample.data[1] * 128 / 9;
+        }
+    }
+}
+
+impl Default for Ym2413 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 save_state::runtime_state! {
 /// Yamaha YM2203 authoritative state and emulator.
@@ -1832,6 +1926,7 @@ macro_rules! impl_direct_chip_restore {
 
 impl_direct_chip_restore!(Ymf276, OpnaRegisters, "YMF276");
 impl_direct_chip_restore!(Ym2151, OpmRegisters, "YM2151");
+impl_direct_chip_restore!(Ym2413, OpllRegisters, "YM2413");
 impl_direct_chip_restore!(Ym3526, OplRegisters, "YM3526");
 impl_direct_chip_restore!(Ym3812, Opl2Registers, "YM3812");
 impl_direct_chip_restore!(Y8950, OplRegisters, "Y8950");

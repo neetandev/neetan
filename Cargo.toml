@@ -24,6 +24,7 @@ machine_60 = { path = "crates/machine_60" }
 machine_88 = { path = "crates/machine_88" }
 machine_88va = { path = "crates/machine_88va" }
 machine_fm7 = { path = "crates/machine_fm7" }
+machine_msx = { path = "crates/machine_msx" }
 machine_towns = { path = "crates/machine_towns" }
 machine_x68k = { path = "crates/machine_x68k" }
 machine_x1 = { path = "crates/machine_x1" }
@@ -69,6 +70,7 @@ machine_60 = { workspace = true }
 machine_88 = { workspace = true }
 machine_88va = { workspace = true }
 machine_fm7 = { workspace = true }
+machine_msx = { workspace = true }
 machine_towns = { workspace = true }
 machine_x68k = { workspace = true }
 machine_x1 = { workspace = true }
@@ -144,6 +146,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.machine_fm7]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.machine_msx]
 opt-level = 3
 codegen-units = 1
 

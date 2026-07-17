@@ -11,8 +11,10 @@
 - [PC-6001 / PC-6601](#pc-6001--pc-6601)
 - [FM Towns](#fm-towns)
 - [Sharp X68000](#sharp-x68000)
+- [MSX](#msx)
 - [Sharp X1](#sharp-x1)
 - [Fujitsu FM-7 / FM-77AV](#fujitsu-fm-7--fm-77av)
+- [PC/AT (DOS/V)](#pcat-dosv)
 - [MIDI: Roland MT-32](#midi-roland-mt-32)
 - [MIDI: Roland SC-55](#midi-roland-sc-55)
 
@@ -40,6 +42,7 @@ by file name (see that section).
 | PC-6001 / PC-6601  | `--pc6000-roms`  | Required                         |
 | FM Towns           | `--towns-roms`   | Required                         |
 | Sharp X68000       | `--x68k-roms`    | Required                         |
+| MSX                | `--msx-roms`     | Required                         |
 | Sharp X1           | `--x1-roms`      | Required                         |
 | FM-7 / FM-77AV     | `--fm7-roms`     | Required                         |
 | Roland MT-32       | `--mt32-roms`    | Required for `--midi mt32`       |
@@ -69,6 +72,9 @@ for that machine.
 | Sharp X68000          | `x68000`                                  | Original CZ-600C split IPL                                                       |
 | Sharp X68000 SUPER    | `x68ksupr`                                | IPL V1.0 and internal SCSI ROM                                                   |
 | Sharp X68000 XVI      | `x68kxvi`                                 | IPL V1.1 with the compatible Compact-XVI SCSI ROM                                |
+| MSX                   | `hb201` + `fsca1`                         | Sony HB-201 firmware and Panasonic FS-CA1 MSX-AUDIO                              |
+| MSX2                  | `hbf1xd` + `fsca1`                        | Sony HB-F1XD firmware and Panasonic FS-CA1 MSX-AUDIO                             |
+| MSX2+                 | `hbf1xdj` + `fsca1`                       | Sony HB-F1XDJ firmware and Panasonic FS-CA1 MSX-AUDIO                            |
 | Sharp X1              | `x1`                                      | Both X1 sets share the `--x1-roms` directory                                     |
 | Sharp X1 turbo        | `x1turbo`                                 | The ANK font is byte-identical with the `x1` set                                 |
 | Fujitsu FM-7          | `fm7`                                     | Both FM-7 sets share the `--fm7-roms` directory. Kanji ROM optional              |
@@ -112,6 +118,10 @@ roms/
 |   |-- rh-ix0897cezz.ic12, rh-ix0898cezz.ic11     (original split IPL)
 |   |-- iplrom.dat, scsiinsu.bin                   (SUPER)
 |   `-- iplromxv.dat, scsiinco.bin                 (XVI compatibility set)
+|-- msx/           --msx-roms                      hb201 + hbf1xd + hbf1xdj + fsca1 sets
+|   |-- 201bios.ic9, 201note.ic8                   (Sony HB-201)
+|   |-- f1xdbios.rom.ic27, f1xdext.rom.ic27, f1xddisk.rom.ic27
+|   `-- hb-f1xdj_main.rom, f1xjfirm.rom, f1xjkfn.rom, fs-ca1_CLEAN.rom
 |-- x1/            --x1-roms                       x1 + x1turbo sets
 |   |-- ipl.x1, ipl.x1t                            (IPL ROMs: X1, X1turbo)
 |   |-- fnt0808.x1, fnt0808_turbo.x1, ank.fnt      (8x8 CG fonts + shared 8x16 ANK font)
@@ -154,6 +164,9 @@ towns-roms = roms/fmtowns
 
 ; Sharp X68000.
 x68k-roms = roms/x68k
+
+; MSX.
+msx-roms = roms/msx
 
 ; Sharp X1.
 x1-roms = roms/x1
@@ -276,6 +289,16 @@ d5dc70e34d072889c28bed51ef3ccaac7f6f3fdd9e448d89297847247a901538  fmtowns/mytown
 7ac5c8fa53d2693ee61ada293efd1f681b1390ef50c1117ddcf52d2280468c20  x68k/scsiinsu.bin
 06d3d6365d2b4079abf37d362a393f9224e472b8321e1826fef0a263d9e26590  x68k/iplromxv.dat
 08e08002db7e47bdf6f2f60066f7253eb94791fb2aa17b392e26d23d72e0c19f  x68k/scsiinco.bin
+# --- MSX (all sets share roms/msx) ---
+038b7767b129a59483f1b0f0e94bfc479c3895a7222928515e8d0084736033aa  msx/201bios.ic9
+7acf34a44a5798c4ca4382e33c8096347de552633722533878ab24b3d4a002b3  msx/201note.ic8
+d5425c727a090ab43aca5d98a8092b28d87aa55bc275f5a72a65f16363a7f72f  msx/f1xdbios.rom.ic27
+9f4b9133b43f82833916ef9e1771245b23ed9ab5426218c7531c453e675a4443  msx/f1xdext.rom.ic27
+f89293a24e85a897a12193bff2a75edead4667f2fa0a43f2fe969abecd14ee44  msx/f1xddisk.rom.ic27
+cf60edceac5ceff127f719da30f1cf0335b4fce9866ce92edf4823d75bbd0797  msx/hb-f1xdj_main.rom
+1535249326208c0447d09b918dd025b8e9e3dbd542c7625e509ef41c83c84be1  msx/f1xjfirm.rom
+9953b4914d1567ac414fb57279872df830aecbb7dfa83e64ec63eb44b8df42e0  msx/f1xjkfn.rom
+fa7cf919162d7118e4b434b9442501d166b18c127521c1614506f7535c02f69a  msx/fs-ca1_CLEAN.rom
 # --- Sharp X1 / X1 turbo (both sets share roms/x1) ---
 194f351bc1024188162856e2374d92bc608d9c742ca007d8c19a4b4eed44abbc  x1/ipl.x1
 871c77226a6e65bf1820c0a3e6f63a330cb1d2eb6c135fc9e4da9741ce38106c  x1/ipl.x1t
@@ -511,6 +534,30 @@ odd bytes. Their assembled 128 KiB IPL has BLAKE3
 `fe7832b87d5bb5f8d56d9f1d697ef9bb94c446334e17105e574c8314b7602d32`.
 The XVI SCSI image is accepted as a named compatibility substitute and produces
 a startup warning.
+
+## MSX
+
+The MSX targets need a real ROM set, pointed to by `--msx-roms`. Select the
+generation with `--machine MSX`, `--machine MSX2`, or `--machine MSX2PLUS`. These
+targets use the Sony HB-201, HB-F1XD, and HB-F1XDJ firmware respectively. Extract
+whichever MAME sets you need into the directory. They can share it because ROMs
+are identified by BLAKE3 content hash rather than by file name.
+
+All three targets also install Panasonic FS-CA1 MSX-AUDIO internally. The
+128 KiB clean EEPROM dump and MAME's variant are accepted.
+
+| Model | Firmware image      | Size    | Contents             | BLAKE3                                                             |
+|-------|---------------------|---------|----------------------|--------------------------------------------------------------------|
+| MSX   | `201bios.ic9`       | 32 KiB  | BIOS and BASIC       | `038b7767b129a59483f1b0f0e94bfc479c3895a7222928515e8d0084736033aa` |
+| MSX   | `201note.ic8`       | 16 KiB  | Personal Data Bank   | `7acf34a44a5798c4ca4382e33c8096347de552633722533878ab24b3d4a002b3` |
+| MSX2  | `f1xdbios.rom.ic27` | 32 KiB  | BIOS and BASIC       | `d5425c727a090ab43aca5d98a8092b28d87aa55bc275f5a72a65f16363a7f72f` |
+| MSX2  | `f1xdext.rom.ic27`  | 16 KiB  | Sub-ROM              | `9f4b9133b43f82833916ef9e1771245b23ed9ab5426218c7531c453e675a4443` |
+| MSX2  | `f1xddisk.rom.ic27` | 16 KiB  | Disk ROM             | `f89293a24e85a897a12193bff2a75edead4667f2fa0a43f2fe969abecd14ee44` |
+| MSX2+ | `hb-f1xdj_main.rom` | 128 KiB | Combined system ROM  | `cf60edceac5ceff127f719da30f1cf0335b4fce9866ce92edf4823d75bbd0797` |
+| MSX2+ | `f1xjfirm.rom`      | 1 MiB   | Sony firmware mapper | `1535249326208c0447d09b918dd025b8e9e3dbd542c7625e509ef41c83c84be1` |
+| MSX2+ | `f1xjkfn.rom`       | 256 KiB | Kanji font           | `9953b4914d1567ac414fb57279872df830aecbb7dfa83e64ec63eb44b8df42e0` |
+| All   | `fs-ca1_CLEAN.rom`  | 128 KiB | FS-CA1 clean EEPROM  | `fa7cf919162d7118e4b434b9442501d166b18c127521c1614506f7535c02f69a` |
+| All   | `fs-ca1.rom`        | 128 KiB | FS-CA1 MAME variant  | `5a2241ea860d89951ca2eab1402d22b4d6c06a4b40929e9d0f5b11c7ef62e257` |
 
 ## Sharp X1
 

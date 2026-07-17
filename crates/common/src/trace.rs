@@ -46,6 +46,8 @@ pub mod trace_id {
         pub const FM7_SUB_FIRQ: &str = "fm7.sub.firq";
         /// FM-7 sub CPU NMI input.
         pub const FM7_SUB_NMI: &str = "fm7.sub.nmi";
+        /// MSX Z80 maskable interrupt input.
+        pub const MSX_IRQ: &str = "msx.irq";
         /// FM Towns programmable interrupt controller pair.
         pub const TOWNS_PIC: &str = "towns.pic";
         /// Sharp X1 Z80 daisy-chain interrupt controller.
@@ -70,6 +72,12 @@ pub mod trace_id {
         pub const PC98_FDC: &str = "pc98.fdc";
         /// FM Towns CD-ROM controller.
         pub const TOWNS_CDROM: &str = "towns.cdrom";
+        /// MSX slot-selection hardware.
+        pub const MSX_SLOT: &str = "msx.slot";
+        /// MSX memory mapper.
+        pub const MSX_MAPPER: &str = "msx.mapper";
+        /// MSX video processor.
+        pub const MSX_VDP: &str = "msx.vdp";
     }
 
     /// High-level call provider identifiers.
@@ -98,6 +106,12 @@ pub mod trace_id {
         pub const STATUS: &str = "status";
         /// A submitted command.
         pub const COMMAND: &str = "command";
+        /// A selected slot or register value.
+        pub const SELECT: &str = "select";
+        /// A mapper bank change.
+        pub const BANK: &str = "bank";
+        /// A video-processor event.
+        pub const EVENT: &str = "event";
     }
 
     /// Named call-interface identifiers.
@@ -140,6 +154,20 @@ pub mod trace_id {
         pub const OPCODE: &str = "opcode";
         /// Command parameters.
         pub const PARAMETERS: &str = "parameters";
+        /// MSX 16 KiB CPU page.
+        pub const PAGE: &str = "page";
+        /// MSX primary-slot number.
+        pub const PRIMARY_SLOT: &str = "primary_slot";
+        /// MSX secondary-slot number.
+        pub const SECONDARY_SLOT: &str = "secondary_slot";
+        /// MSX memory-mapper segment.
+        pub const SEGMENT: &str = "segment";
+        /// Device register number.
+        pub const REGISTER: &str = "register";
+        /// Register or selector value.
+        pub const VALUE: &str = "value";
+        /// Video scanline number.
+        pub const SCANLINE: &str = "scanline";
     }
 
     /// Stable scheduled-event identifiers.
@@ -269,6 +297,13 @@ pub mod trace_id {
             OPN_TIMER_B => "fm7.opn.timer_b",
             RTC_SECOND => "fm7.rtc.second",
             MOUSE_TIMEOUT => "fm7.mouse.timeout",
+        ]);
+        scheduled_catalog!(msx, MSX, [
+            VIDEO_SCANLINE => "msx.video.scanline",
+            VIDEO_VBLANK => "msx.video.vblank",
+            VIDEO_LINE_INTERRUPT => "msx.video.line_interrupt",
+            FDC_TASK => "msx.fdc.task",
+            FDC_PIO => "msx.fdc.pio",
         ]);
         scheduled_catalog!(towns, TOWNS, [
             TIMER_CHANNEL0 => "towns.timer.channel0",
@@ -1219,6 +1254,7 @@ mod tests {
             ("pc98", trace_id::scheduled::PC98, 23),
             ("at", trace_id::scheduled::AT, 18),
             ("fm7", trace_id::scheduled::FM7, 18),
+            ("msx", trace_id::scheduled::MSX, 5),
             ("towns", trace_id::scheduled::TOWNS, 11),
             ("x1", trace_id::scheduled::X1, 22),
             ("x68k", trace_id::scheduled::X68K, 14),

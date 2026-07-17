@@ -13,11 +13,11 @@ std = []
 
 [dependencies]
 common.workspace = true
+device.workspace = true
 save_state.workspace = true
 
 [dev-dependencies]
 software_renderer = { path = ".", features = ["std"] }
 common.workspace = true
 cpu.workspace = true
-device.workspace = true
 machine_98.workspace = true

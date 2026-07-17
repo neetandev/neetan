@@ -1,8 +1,8 @@
 # Neetan (ねーたん)
 
 An emulator for the PC-9821, PC-9801, PC-88VA2, PC-8801, PC-8001, PC-6601, PC-6001,
-Fujitsu FM Towns, Fujitsu FM-7, Sharp X68000, Sharp X1 and the IBM PC/AT (DOS/V)
-written in Rust.
+MSX, Fujitsu FM Towns, Fujitsu FM-7, Sharp X68000, Sharp X1 and the IBM PC/AT
+(DOS/V) written in Rust.
 
 ## Documentation
 
@@ -12,6 +12,7 @@ Each machine family has its own detailed guide:
 * [NEC PC-88VA2](doc/machine-pc88va.md)
 * [NEC PC-8001 / PC-8801](doc/machine-pc88.md)
 * [NEC PC-6001 / PC-6601](doc/machine-pc6000.md)
+* [MSX / MSX2 / MSX2+](doc/machine-msx.md)
 * [Fujitsu FM Towns](doc/machine-towns.md)
 * [Fujitsu FM-7 / FM-77AV](doc/machine-fm7.md)
 * [Sharp X68000](doc/machine-x68k.md)
@@ -27,6 +28,7 @@ Verified per-title compatibility lists.
 
 * [PC-98 game compatibility](doc/games-pc98.md)
 * [PC-88 VA game compatibility](doc/games-88va.md)
+* [MSX game compatibility](doc/games-msx.md)
 * [FM Towns game compatibility](doc/games-towns.md)
 * [FM-7 game compatibility](doc/games-fm7.md)
 * [X68000 game compatibility](doc/games-x68k.md)
@@ -36,7 +38,7 @@ Updates to the compatibility list is always greatly welcome!
 
 ## Supported systems
 
-Neetan emulates nine distinct families, selected through the `--machine` option. See
+Neetan emulates ten distinct families, selected through the `--machine` option. See
 each family's guide for the detailed target list, sound options, ROM requirements,
 and platform-specific flags.
 
@@ -46,6 +48,7 @@ and platform-specific flags.
 | [NEC PC-88VA2](doc/machine-pc88va.md)          | PC-88VA2                                                                   | Real ROM set required    |
 | [NEC PC-8001 / PC-8801](doc/machine-pc88.md)   | PC-8801MC (plus PC-8001 personalities via `--boot-mode`)                   | Real ROM set required    |
 | [NEC PC-6001 / PC-6601](doc/machine-pc6000.md) | PC-6001, PC-6001mkII, PC-6601, PC-6001mkIISR, PC-6601SR                    | Real ROM set required    |
+| [MSX / MSX2 / MSX2+](doc/machine-msx.md)       | MSX, MSX2, MSX2+                                                           | Real ROM sets required   |
 | [Fujitsu FM Towns](doc/machine-towns.md)       | FM Towns, FM Towns II CX, FM Towns II MX                                   | Real ROM set required    |
 | [Sharp X68000](doc/machine-x68k.md)            | X68000, X68000 SUPER, X68000 XVI                                           | Real ROM set required    |
 | [Sharp X1](doc/machine-x1.md)                  | X1, X1 turbo                                                               | Real ROM set required    |
@@ -66,10 +69,10 @@ neetan <COMMAND>
 
 The `System` column shows where an option applies: `All` (every family), `PC-98`
 (PC-9801 / PC-9821 only), `PC-9821` (PC-9821 only), `PC-88` (PC-8001 / PC-8801
-only), `PC-88VA` (PC-88VA only), `PC-6000` (PC-6001 / PC-6601 only), `FM Towns`
-(FM Towns only), `X68000` (Sharp X68000 only), `X1` (Sharp X1 only), `FM-7`
-(FM-7 / FM-77AV only), or `PC/AT` (IBM PC/AT DOS/V only). Options that apply to
-one family are ignored on the others.
+only), `PC-88VA` (PC-88VA only), `PC-6000` (PC-6001 / PC-6601 only), `MSX`
+(MSX / MSX2 / MSX2+ only), `FM Towns` (FM Towns only), `X68000` (Sharp X68000
+only), `X1` (Sharp X1 only), `FM-7` (FM-7 / FM-77AV only), or `PC/AT` (IBM
+PC/AT DOS/V only). Options that apply to one family are ignored on the others.
 
 | Option                       | System                           | Description                                                                                      | Default           |
 |------------------------------|----------------------------------|--------------------------------------------------------------------------------------------------|-------------------|
@@ -84,6 +87,7 @@ one family are ignored on the others.
 | `--pc88va-roms <PATH>`       | PC-88VA                          | Directory with the PC-88VA2 ROM set (required for `PC88VA2`)                                     | -                 |
 | `--pc6000-roms <PATH>`       | PC-6000                          | Directory with the PC-6000 ROM set (required for the PC-6000 targets)                            | -                 |
 | `--pc6000-phase <0-3>`       | PC-6000                          | Initial composite artifact-color phase; swaps the fake-color pair Mode 4 titles rely on.         | `0`               |
+| `--msx-roms <PATH>`          | MSX                              | Directory with the MSX machine and FS-CA1 ROM sets                                               | -                 |
 | `--towns-roms <PATH>`        | FM Towns                         | Directory with the FM Towns ROM set (required for the FM Towns targets)                          | -                 |
 | `--towns-pad <2\|6>`         | FM Towns                         | FM Towns game pad type: `2` (2-button) or `6` (6-button)                                         | `6`               |
 | `--x68k-roms <PATH>`         | X68000                           | Directory with the selected X68000 model ROM set                                                 | -                 |
@@ -97,8 +101,8 @@ one family are ignored on the others.
 | `--hdd2 <PATH>`              | All                              | Hard disk image for hard disk drive 2                                                            | -                 |
 | `--cdrom <PATH>`             | PC-9821, PC/AT, FM Towns, X68000 | CD-ROM disc image .cue or .ccd file (repeatable)                                                 | -                 |
 | `--cdrom-compat <on\|off>`   | FM Towns                         | Slow/compatible CD-ROM drive timing                                                              | `off`             |
-| `--cartridge <PATH>`         | PC-6000                          | Cartridge ROM image to insert                                                                    | -                 |
-| `--cassette <PATH>`          | PC-6000, X1, FM-7                | Cassette tape image to insert (`.cas`, `.p6`, `.p6t`; X1 `.tap`; FM-7 `.t77`)                    | -                 |
+| `--cartridge <PATH>`         | PC-6000, MSX                     | One cartridge ROM image to insert; MSX mapper selection is automatic                             | -                 |
+| `--cassette <PATH>`          | PC-6000, MSX, X1, FM-7           | Cassette tape image (`MSX .cas`; PC-6000 `.cas`/`.p6`/`.p6t`; X1 `.tap`; FM-7 `.t77`)            | -                 |
 | `--audio-volume <FLOAT>`     | All                              | Audio volume 0.0-1.0                                                                             | `1.0`             |
 | `--aspect-mode <MODE>`       | All                              | Display aspect mode: `4:3` or `1:1`                                                              | `4:3`             |
 | `--crt <on\|off>`            | All                              | Enable the CRT effect. Not available when using the legacy backend.                              | `on`              |
@@ -124,9 +128,9 @@ one family are ignored on the others.
 
 The `--machine <TYPE>` values are: `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RS`,
 `PC9801RA`, `PC9821AS`, `PC9821AP`, `PC8801MC`, `PC88VA2`, `PC6001`, `PC6001MK2`, `PC6601`,
-`PC6001MK2SR`, `PC6601SR`, `FM7`, `FM77AV`, `FMTowns`, `FMTownsIICX`, `FMTownsIIMX`, `X68000`,
-`X68000SUPER`, `X68000XVI`, `X1`, `X1TURBO`, `AT486DX50`, `AT486DX66`. The default
-is `PC9801RA`.
+`PC6001MK2SR`, `PC6601SR`, `MSX`, `MSX2`, `MSX2PLUS`, `FM7`, `FM77AV`, `FMTowns`,
+`FMTownsIICX`, `FMTownsIIMX`, `X68000`, `X68000SUPER`, `X68000XVI`, `X1`, `X1TURBO`,
+`AT486DX50`, `AT486DX66`. The default is `PC9801RA`.
 
 On the PC/AT, the real AMI BIOS exposes only `A: then C:` or `C: then A:`.
 `auto` and `fdd1` select the first order, while `hdd1` selects the second.
@@ -181,8 +185,8 @@ neetan copy src.hdi:A:\FOO.EXE dst.hdi:A:\FOO.EXE
 
 Directories are copied recursively (there is no `-r` flag). DOS paths must use 8.3
 ASCII filenames. Longer names are rejected before any file is written. Recognized
-image extensions are `hdi`, `nhd`, `thd` (hard disks) and `d88`, `d98`, `88d`, `98d`,
-`hdm`, `nfd`, `2d` (floppies).
+image extensions are `hdi`, `nhd`, `thd`, `hdd` (hard disks) and `d88`, `d98`, `88d`,
+`98d`, `hdm`, `nfd`, `2d`, `img`, `ima`, `dsk` (floppies).
 
 ## Configuration file
 
@@ -297,6 +301,7 @@ mappings.
 | NFD     | `.nfd`                         | Partial  | T98Next format with per-sector metadata            |
 | 2D      | `.2d`                          | Yes      | Headerless raw sector image (Sharp X1, 2D only)    |
 | D77     | `.d77`                         | Yes      | Fujitsu FM-7 disk image; byte-compatible D88       |
+| MSX DSK | `.dsk`                         | Yes      | Headerless raw MSX floppy image                    |
 | DIM     | `.dim`                         | Yes      | X68000 DIFC.X container                            |
 | XDF     | `.xdf`, `.2hd`                 | Yes      | Headerless raw sector image (X68000, 2HD only)     |
 | IMG     | `.img`, `.ima`                 | Yes      | Headerless raw IBM PC floppy image                 |
@@ -396,6 +401,7 @@ were invaluable for developing neetan:
 - [MAME](https://www.mamedev.org/)
 - [MartyPC](https://github.com/dbalsom/martypc)
 - [NP21W](https://simk98.github.io/np21w/)
+- [OpenMSX](https://openmsx.org/)
 - [Tsugaru](https://github.com/captainys/TOWNSEMU)
 - [XEiJ](https://stdkmd.net/xeij/)
 - [SingleStepTests](https://github.com/SingleStepTests)

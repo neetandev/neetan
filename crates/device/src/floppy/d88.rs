@@ -84,7 +84,7 @@ pub struct D88Sector {
     pub size_code: u8,
     /// Number of sectors on this track (from sector header).
     pub sector_count: u16,
-    /// MFM flag (bit 6: 0x40 = MFM).
+    /// Recording-density flag (bit 6: 0 = double density, 0x40 = single density).
     pub mfm_flag: u8,
     /// Deleted data flag.
     pub deleted: u8,

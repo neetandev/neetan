@@ -26,7 +26,6 @@ use device::{
     i8251_serial::I8251Serial,
     i8259a_pic::I8259aPic,
     keyboard_towns::TownsKeyboard,
-    mb8877_fdc::{MB8877_PLATFORM_FM_TOWNS, Mb8877Fdc},
     msm58321_rtc::Msm58321Rtc,
     opn_fm::{FmTimerAction, OpnFm, Ymf276},
     rf5c68::Rf5c68,
@@ -35,6 +34,7 @@ use device::{
     timer_towns::{TIMER_CLOCK_HZ, TownsTimer},
     upd71071_dma::Upd71071Dma,
     video_towns::TownsVideo,
+    wd17xx_fdc::{WD17XX_PLATFORM_FM_TOWNS, Wd17xxFdc},
 };
 use software_renderer::{RenderInputsTowns, TownsRenderer};
 
@@ -163,7 +163,7 @@ pub(crate) struct TownsBusState {
     rtc: device::msm58321_rtc::Msm58321RuntimeState,
     keyboard: device::keyboard_towns::TownsKeyboardState,
     cdc: device::cdrom_towns::TownsCdControllerState,
-    fdc: device::mb8877_fdc::Mb8877FdcState,
+    fdc: device::wd17xx_fdc::Wd17xxFdcState,
     scsi: device::scsi::TownsScsiControllerState,
     beeper: device::beeper::BeeperState,
     buzzer_memio: bool,
@@ -214,7 +214,7 @@ pub struct TownsBus<T: TraceSink = NoTrace> {
     pub(crate) keyboard: TownsKeyboard,
     pub(crate) cdc: TownsCdController,
     /// MB8877 floppy disk controller at I/O 0x0200-0x020E (IRQ 6, DMA channel 0).
-    pub(crate) fdc: Mb8877Fdc<MB8877_PLATFORM_FM_TOWNS>,
+    pub(crate) fdc: Wd17xxFdc<WD17XX_PLATFORM_FM_TOWNS>,
     /// MB89352-class SCSI controller at I/O 0x0C30-0x0C37 (IRQ 8, DMA channel 1).
     pub(crate) scsi: TownsScsiController,
     /// PC-speaker-style buzzer. Its tone follows interval-timer channel 2 and it
@@ -333,7 +333,7 @@ impl<T: TraceSink> TownsBus<T> {
             rtc: Msm58321Rtc::new(),
             keyboard: TownsKeyboard::new(),
             cdc: TownsCdController::new(clocks.sample_rate, clocks.cpu_clock_hz),
-            fdc: Mb8877Fdc::new(clocks.cpu_clock_hz),
+            fdc: Wd17xxFdc::new(clocks.cpu_clock_hz),
             scsi: TownsScsiController::new(clocks.cpu_clock_hz),
             beeper: Beeper::new(BeeperKind::PitDriven, TIMER_CLOCK_HZ),
             buzzer_memio: false,

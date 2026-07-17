@@ -43,6 +43,7 @@ pub(super) fn initialize_machine(
         Target::Pc88 => initialize_pc88_machine(config, sample_rate),
         Target::Pc88Va => initialize_pc88va_machine(config, sample_rate),
         Target::Pc60 => initialize_pc60_machine(config, sample_rate),
+        Target::Msx => initialize_msx_machine(config, sample_rate),
         Target::Towns => initialize_towns_machine(config, sample_rate),
         Target::X1 => initialize_x1_machine(config, sample_rate),
         Target::Fm7 => initialize_fm7_machine(config, sample_rate),
@@ -563,6 +564,95 @@ where
     Ok(build_machine(bus))
 }
 
+/// Builds the concrete untraced MSX machine inside `machine_msx`.
+fn initialize_msx_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
+    initialize_msx_machine_with(
+        config,
+        sample_rate,
+        common::NoTrace,
+        machine_msx::MsxBus::new_with_trace_sink,
+        machine_msx::build_untraced_machine,
+    )
+}
+
+/// Applies shared MSX setup before selecting a concrete machine.
+fn initialize_msx_machine_with<T, BuildBus, BuildMachine>(
+    config: &EmulatorConfig,
+    sample_rate: u32,
+    tracer: T,
+    build_bus: BuildBus,
+    build_machine: BuildMachine,
+) -> Result<Box<dyn Machine>>
+where
+    T: common::TraceSink + 'static,
+    BuildBus: FnOnce(machine_msx::MsxModel, u32, T) -> machine_msx::MsxBus<T>,
+    BuildMachine: FnOnce(machine_msx::MsxBus<T>) -> Box<dyn Machine>,
+{
+    let model = config.msx_model;
+    info!("Selected machine model {model}");
+
+    let rom_directory = config.msx_roms.as_ref().ok_or_else(|| {
+        StringError(format!(
+            "{model} requires a ROM directory (--msx-roms <DIR>)"
+        ))
+    })?;
+    let firmware = machine_msx::load_firmware_set(model, rom_directory).map_err(|error| {
+        StringError(format!(
+            "Failed to load {model} ROM set from {}: {error}",
+            rom_directory.display()
+        ))
+    })?;
+
+    let mut bus = build_bus(model, sample_rate, tracer);
+    bus.load_firmware(&firmware)
+        .map_err(|error| StringError(format!("Failed to install {model} firmware: {error}")))?;
+    info!(
+        "{model} configured: RAM {} KiB, mapper RAM {} KiB, VRAM {} KiB, MSX-AUDIO {}",
+        model.work_ram_size() / 1024,
+        if model.mapper_readback().is_some() {
+            model.work_ram_size() / 1024
+        } else {
+            0
+        },
+        model.vram_size() / 1024,
+        if bus.has_msx_audio() {
+            "Panasonic FS-CA1"
+        } else {
+            "disabled"
+        }
+    );
+
+    if let Some(cartridge_path) = config.cartridge.as_ref() {
+        let image = std::fs::read(cartridge_path).map_err(|error| {
+            StringError(format!(
+                "Failed to read MSX cartridge {}: {error}",
+                cartridge_path.display()
+            ))
+        })?;
+        let info = bus
+            .insert_cartridge_from_path(0, &image, cartridge_path)
+            .map_err(|error| {
+                StringError(format!(
+                    "Failed to insert MSX cartridge {}: {error}",
+                    cartridge_path.display()
+                ))
+            })?;
+        info!(
+            "Loaded cartridge {} ({} bytes, BLAKE3 {}, {}, {:?})",
+            cartridge_path.display(),
+            image.len(),
+            info.digest,
+            info.mapper,
+            info.identification
+        );
+        if let Some(warning) = info.warning {
+            warn!("{warning}");
+        }
+    }
+
+    Ok(build_machine(bus))
+}
+
 /// Builds the concrete untraced FM Towns machine inside `machine_towns`.
 fn initialize_towns_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
     initialize_towns_machine_with(
@@ -930,8 +1020,11 @@ mod tests {
 
     use common::BUILTIN_FONT_ROM;
 
-    use super::{expand_selector_font_rom, resolve_at_boot_device};
-    use crate::image_selector::{ImageEntry, ImageSelector, MediaType};
+    use super::{expand_selector_font_rom, initialize_machine, resolve_at_boot_device};
+    use crate::{
+        config::{EmulatorConfig, Target},
+        image_selector::{ImageEntry, ImageSelector, MediaType},
+    };
 
     #[test]
     fn pc_at_boot_devices_resolve_to_supported_bios_orders() {
@@ -951,6 +1044,23 @@ mod tests {
             assert_eq!(resolved, expected, "requested {requested}");
             assert_eq!(warning.is_some(), warns, "requested {requested}");
         }
+    }
+
+    #[test]
+    fn msx_requires_its_rom_directory() {
+        let config = EmulatorConfig {
+            target: Target::Msx,
+            ..EmulatorConfig::default()
+        };
+        let error = initialize_machine(&config, 48_000)
+            .err()
+            .expect("MSX without a ROM directory must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("MSX requires a ROM directory (--msx-roms <DIR>)")
+        );
     }
 
     #[test]
