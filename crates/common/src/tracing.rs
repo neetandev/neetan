@@ -8,7 +8,7 @@ use std::{
     rc::Rc,
 };
 
-use common::{OwnedTraceEvent, TraceContext, TraceEvent, TraceEventKey, TraceInterest, TraceSink};
+use crate::{OwnedTraceEvent, TraceContext, TraceEvent, TraceEventKey, TraceInterest, TraceSink};
 
 /// Default number of owned events retained by an application trace queue.
 pub const DEFAULT_TRACE_QUEUE_EVENT_CAPACITY: usize = 16_384;
@@ -188,7 +188,7 @@ impl TraceState {
         };
 
         self.queue.push_back(ApplicationTraceEnvelope {
-            schema_version: common::TRACE_SCHEMA_VERSION,
+            schema_version: crate::TRACE_SCHEMA_VERSION,
             sequence: self.next_sequence,
             epoch: self.epoch,
             context,
@@ -383,12 +383,11 @@ impl TraceHandle {
 
 #[cfg(test)]
 mod tests {
-    use common::{
+    use super::*;
+    use crate::{
         TraceAccessKind, TraceAccessWidth, TraceAddressSpace, TraceDeviceEvent, TraceEventClass,
         TraceField, TraceValue,
     };
-
-    use super::*;
 
     fn access(address: u64) -> TraceEvent<'static> {
         TraceEvent::access(

@@ -23,6 +23,12 @@ pub struct Pc6000Machine<T: TraceSink = NoTrace> {
     pub bus: Pc6000Bus<T>,
 }
 
+/// Builds an untraced PC-6000 machine around a configured bus.
+pub fn build_untraced_machine(bus: Pc6000Bus<NoTrace>) -> Box<dyn common::Machine> {
+    let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+    Box::new(Pc6000Machine::new(main_cpu, bus))
+}
+
 impl<T: TraceSink> Pc6000Machine<T> {
     /// Creates a new machine from the given CPU and bus.
     pub fn new(main_cpu: cpu::Z80, bus: Pc6000Bus<T>) -> Self {

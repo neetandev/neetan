@@ -24,6 +24,15 @@ pub struct X68kMachine<T: TraceSink = NoTrace> {
     pub bus: X68kBus<T>,
 }
 
+/// Builds an untraced X68000 machine around a configured bus.
+pub fn build_untraced_machine(
+    model: X68kModel,
+    cpu_mode: CpuMode,
+    bus: X68kBus<NoTrace>,
+) -> Box<dyn Machine> {
+    Box::new(X68kMachine::from_bus(model, cpu_mode, bus))
+}
+
 impl<T: TraceSink> X68kMachine<T> {
     /// Builds a machine around a configured CPU and bus.
     pub fn new(cpu: Box<M68000>, bus: X68kBus<T>) -> Self {

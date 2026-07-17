@@ -31,6 +31,12 @@ pub struct Pc88VaMachine<T: TraceSink = NoTrace> {
     pub bus: Pc88VaBus<T>,
 }
 
+/// Builds an untraced PC-88VA machine around a configured bus.
+pub fn build_untraced_machine(bus: Pc88VaBus<NoTrace>) -> Box<dyn common::Machine> {
+    let sub_cpu = cpu::Z80::new(bus.clock_config().sub_clock_hz);
+    Box::new(Pc88VaMachine::new(reset_cpu(), sub_cpu, bus))
+}
+
 impl<T: TraceSink> Pc88VaMachine<T> {
     /// Builds a machine around configured CPUs and bus.
     pub fn new(cpu: cpu::V30, sub_cpu: cpu::Z80, bus: Pc88VaBus<T>) -> Self {

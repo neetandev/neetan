@@ -23,6 +23,12 @@ pub struct X1Machine<T: TraceSink = NoTrace> {
     pub bus: X1Bus<T>,
 }
 
+/// Builds an untraced X1 machine around a configured bus.
+pub fn build_untraced_machine(bus: X1Bus<NoTrace>) -> Box<dyn common::Machine> {
+    let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+    Box::new(X1Machine::new(main_cpu, bus))
+}
+
 impl<T: TraceSink> X1Machine<T> {
     /// Creates a new machine from the given CPU and bus.
     pub fn new(main_cpu: cpu::Z80, bus: X1Bus<T>) -> Self {

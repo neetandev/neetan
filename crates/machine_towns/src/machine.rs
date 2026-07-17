@@ -9,7 +9,7 @@ use common::{Bus, Cpu, JoystickState, Machine, NoTrace, TraceSink};
 
 use crate::{
     bus::TownsBus,
-    config::{TownsBootDevice, TownsPadType},
+    config::{TownsBootDevice, TownsModel, TownsPadType},
 };
 
 /// CMOS boot-device type / boot-device byte pairs (I/O 0x3182 / 0x3C28).
@@ -38,6 +38,52 @@ pub struct TownsMachine<const CPU_MODEL: u8, T: TraceSink = NoTrace> {
     pub bus: TownsBus<T>,
     /// Requested boot device; resolved into the CMOS boot-device byte.
     boot_device: TownsBootDevice,
+}
+
+/// Builds an untraced FM Towns machine and selects the CPU for `model`.
+pub fn build_untraced_machine(
+    model: TownsModel,
+    bus: TownsBus<NoTrace>,
+    boot_device: TownsBootDevice,
+    pad_type: TownsPadType,
+    cdrom_compatibility_timing: bool,
+) -> Box<dyn Machine> {
+    match model {
+        TownsModel::FmTowns => build_untraced_machine_for_cpu::<{ cpu::CPU_MODEL_386_SX }>(
+            bus,
+            boot_device,
+            pad_type,
+            cdrom_compatibility_timing,
+        ),
+        TownsModel::FmTownsIICx => build_untraced_machine_for_cpu::<{ cpu::CPU_MODEL_386_DX }>(
+            bus,
+            boot_device,
+            pad_type,
+            cdrom_compatibility_timing,
+        ),
+        TownsModel::FmTownsIIMx => build_untraced_machine_for_cpu::<{ cpu::CPU_MODEL_486_DX }>(
+            bus,
+            boot_device,
+            pad_type,
+            cdrom_compatibility_timing,
+        ),
+    }
+}
+
+/// Builds one concrete untraced FM Towns CPU variant.
+fn build_untraced_machine_for_cpu<const CPU_MODEL: u8>(
+    bus: TownsBus<NoTrace>,
+    boot_device: TownsBootDevice,
+    pad_type: TownsPadType,
+    cdrom_compatibility_timing: bool,
+) -> Box<dyn Machine> {
+    let mut cpu = cpu::I386::<CPU_MODEL, { cpu::ADDRESS_WIDTH_32 }>::new();
+    cpu.reset();
+    let mut machine = TownsMachine::new(cpu, bus);
+    machine.set_boot_device(boot_device);
+    machine.set_pad_type(pad_type);
+    machine.set_cdrom_compatibility_timing(cdrom_compatibility_timing);
+    Box::new(machine)
 }
 
 impl<const CPU_MODEL: u8, T: TraceSink> TownsMachine<CPU_MODEL, T> {
@@ -394,4 +440,42 @@ fn insert_cdrom_impl<T: TraceSink>(
     let (image, description) = device::cdrom::load_cd_image(path)?;
     bus.insert_cdrom(image);
     Ok(description)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_roms() -> crate::LoadedRoms {
+        crate::LoadedRoms {
+            dos: Vec::new(),
+            font: Vec::new(),
+            system: Vec::new(),
+            f20: Vec::new(),
+            dictionary: Vec::new(),
+            serial: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn untraced_factory_builds_every_cpu_model() {
+        for model in [
+            TownsModel::FmTowns,
+            TownsModel::FmTownsIICx,
+            TownsModel::FmTownsIIMx,
+        ] {
+            let bus = TownsBus::new(model, common::CpuMode::High, empty_roms(), 48_000);
+            let machine = build_untraced_machine(
+                model,
+                bus,
+                TownsBootDevice::Auto,
+                TownsPadType::SixButton,
+                false,
+            );
+            assert_eq!(
+                machine.cpu_clock_hz() as u32,
+                model.cpu_clock_hz(common::CpuMode::High)
+            );
+        }
+    }
 }

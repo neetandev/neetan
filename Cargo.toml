@@ -55,14 +55,12 @@ rust-version.workspace = true
 default = ["mt32", "sc55"]
 mt32 = ["machine_98/mt32", "machine_towns/mt32", "machine_x68k/mt32", "machine_at/mt32"]
 sc55 = ["machine_98/sc55", "machine_towns/sc55", "machine_x68k/sc55", "machine_at/sc55"]
-tracing = []
 sdl3-build-from-source = ["sdl3/build-from-source"]
 sdl3-use-pkg-config = ["sdl3/use-pkg-config"]
 sdl3-use-vcpkg = ["sdl3/use-vcpkg"]
 
 [dependencies]
 audio_engine = { workspace = true }
-cpu = { workspace = true }
 common = { workspace = true, features = ["std"] }
 device = { workspace = true }
 machine_98 = { workspace = true }
@@ -85,7 +83,7 @@ text_extractor = { workspace = true }
 
 [profile.release]
 opt-level = 3
-codegen-units = 1
+codegen-units = 4
 lto = "thin"
 strip = true
 

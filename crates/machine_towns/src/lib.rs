@@ -19,5 +19,5 @@ mod scheduler;
 
 pub use bus::TownsBus;
 pub use config::{ClockConfig, TownsBootDevice, TownsModel, TownsPadType};
-pub use machine::TownsMachine;
+pub use machine::{TownsMachine, build_untraced_machine};
 pub use rom::{LoadedRoms, RomError, load_rom_set};
