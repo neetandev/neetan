@@ -1,0 +1,19 @@
+[package]
+name = "r7rs"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT-0"
+publish = false
+
+[features]
+default = ["host-capabilities"]
+host-capabilities = []
+
+[dependencies]
+
+[[bin]]
+name = "repl"
+path = "src/bin/repl.rs"
+required-features = ["host-capabilities"]

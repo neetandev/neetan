@@ -28,6 +28,7 @@ machine_msx = { path = "crates/machine_msx" }
 machine_towns = { path = "crates/machine_towns" }
 machine_x68k = { path = "crates/machine_x68k" }
 machine_x1 = { path = "crates/machine_x1" }
+r7rs = { path = "crates/r7rs" }
 resampler = { path = "crates/resampler" }
 save_state = { path = "crates/save_state" }
 sdl3 = { path = "crates/sdl3" }
@@ -170,6 +171,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.nuked_sc55_oxide]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.r7rs]
 opt-level = 3
 codegen-units = 1
 
