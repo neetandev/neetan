@@ -1,0 +1,3718 @@
+<!DOCTYPE html>
+<!-- Is there a portable way to write an em-dash?
+     Can I have bangs, plusses, or slashes in #tags? Spaces?
+	Yes: plus, bang, star   No: space  Yes: slash, question, ampersand
+	You can't put sharp in a path, so anything goes, really.
+	Nonetheless, some of these confuse Netscape, so I'll avoid them.
+ -->
+<!--========================================================================-->
+<html lang="en-US">
+  <head>
+<!--
+SPDX-FileCopyrightText: 1998 - 1999 Olin Shivers
+
+SPDX-License-Identifier: MIT
+-->
+    <meta charset="utf-8" />
+    <meta content="Scheme, programming language, list processing, SRFI" name="keywords" />
+    <meta content="width=device-width, initial-scale=1" name="viewport" />
+    <link href="https://srfi.schemers.org/srfi.css" rel="stylesheet" type="text/css" />
+    <link href="/favicon.png" rel="icon" sizes="192x192" type="image/png" />
+    <title>SRFI 1: List Library</title>
+
+    <!-- Should have a media=all to get, for example, printing to work.
+      == But my Netscape will completely ignore the tag if I do that.
+      -->
+    <style type="text/css">
+	   /*<![CDATA[*/
+	   /* A little general layout hackery for headers & the title. */
+           body { margin-left: +7%;
+	          font-family: "Helvetica", sans-serif;
+		  }
+           /* Netscape workaround: */
+	   td, th { font-family: "Helvetica", sans-serif; }
+
+	   code, pre { font-family: "courier new", "courier"; }
+
+           h1 { margin-left: -5%; }
+	   h1, h2 { clear: both; }
+	   h1, h2, h3, h4, h5, h6 { color: blue }
+	   div.title-text { font-size: large; font-weight: bold; }
+
+	   div.indent { margin-left: 2em; }	  /* General indentation */
+	   pre.code-example { margin-left: 2em; } /* Indent code examples. */
+
+	   /* This stuff is for definition lists of defined procedures.
+           ** A proc-def2 is used when you want a stack of procs to go
+	   ** with one <dd> ... </dd> body. In this case, make the first
+	   ** proc a proc-def1, following ones proc-defi's, and the last one
+           ** a proc-defn.
+           **
+           ** Unfortunately, Netscape has huge bugs with respect to style
+           ** sheets and dl list rendering. We have to set truly random
+           ** values here to get the rendering to come out. The proper values
+           ** are in the following style sheet, for Internet Explorer.
+	   ** In the following settings, the *comments* say what the
+           ** setting *really* causes Netscape to do.
+	   **
+           ** Ugh. Professional coders sacrifice their self-respect,
+           ** that others may live.
+           */
+	   /* m-t ignored; m-b sets top margin space. */
+	   dt.proc-def1 { margin-top: 0ex; margin-bottom: 3ex; }
+	   dt.proc-defi { margin-top: 0ex; margin-bottom: 0ex; }
+	   dt.proc-defn { margin-top: 0ex; margin-bottom: 0ex; }
+
+	   /* m-t works weird depending on whether or not the last line
+           ** of the previous entry was a pre. Set to zero.
+           */
+	   dt.proc-def  { margin-top: 0ex; margin-bottom: 3ex; }
+
+	   /* m-b sets space between dd & dt; m-t ignored. */
+	   dd.proc-def { margin-bottom: 0.5ex; margin-top: 0ex; }
+
+
+	   /* Boldface the name of a procedure when it's being defined. */
+	   code.proc-def { font-weight: bold; font-size: 110%}
+
+	   /* For the index of procedures.
+           ** Same hackery as for dt.proc-def, above.
+           */
+	   /* m-b sets space between dd & dt; m-t ignored. */
+	   dd.proc-index  { margin-bottom: 0ex; margin-top: 0ex; }
+	   /* What the fuck? */
+	   pre.proc-index { margin-top: -2ex; }
+
+	   /* Pull the table of contents back flush with the margin.
+	   ** Both NS & IE screw this up in different ways.
+	   */
+	   #toc-table { margin-top: -2ex; margin-left: -5%; }
+
+	   /* R5RS proc names are in italic; extended R5RS names
+           ** in italic boldface.
+	   */
+	   span.r5rs-proc { font-weight: bold; }
+	   span.r5rs-procx { font-style: italic; font-weight: bold; }
+
+	   /* Spread out bibliographic lists. */
+	   /* More Netscape-specific lossage; see the following stylesheet
+	   ** for the proper values (used by IE).
+           */
+	   dt.biblio { margin-bottom: 1ex; }
+
+	   /* Links to draft copies (e.g., not at the official SRFI site)
+	   ** are colored in red, so people will use them during the
+	   ** development process and kill them when the document's done.
+	   */
+           a.draft { color: red; }
+	   /*]]>*/
+    </style>
+
+    <style media="all" type="text/css">
+	   /*<![CDATA[*/
+	   /* Nastiness: Here, I'm using a bug to work around a bug.
+	   ** Netscape rendering bugs mean you need bogus <dt> and <dd>
+	   ** margin settings -- settings which screw up IE's proper rendering.
+	   ** Fortunately, Netscape has *another* bug: it will ignore this
+	   ** media=all style sheet. So I am placing the (proper) IE values
+	   ** here. Perhaps, one day, when these rendering bugs are fixed,
+	   ** this gross hackery can be removed.
+	   */
+	   dt.proc-def1 { margin-top: 3ex; margin-bottom: 0ex; }
+	   dt.proc-defi { margin-top: 0ex; margin-bottom: 0ex; }
+	   dt.proc-defn { margin-top: 0ex; margin-bottom: 0.5ex; }
+	   dt.proc-def  { margin-top: 3ex; margin-bottom: 0.5ex; }
+
+	   pre { margin-top: 1ex; }
+
+	   dd.proc-def { margin-bottom: 2ex; margin-top: 0.5ex; }
+
+	   /* For the index of procedures.
+           ** Same hackery as for dt.proc-def, above.
+           */
+	   dd.proc-index { margin-top: 0ex; }
+	   pre.proc-index { margin-top: 0ex; }
+
+	   /* Spread out bibliographic lists. */
+	   dt.biblio { margin-top: 3ex; margin-bottom: 0ex; }
+	   dd.biblio { margin-bottom: 1ex; }
+	   /*]]>*/
+    </style>
+  </head>
+
+<body>
+
+<!--========================================================================-->
+<h1><a href="https://srfi.schemers.org/"><img alt="SRFI surfboard logo" class="srfi-logo" src="https://srfi.schemers.org/srfi-logo.svg" /></a>1: List Library</h1>
+
+<p>by Olin Shivers</p>
+
+<!--========================================================================-->
+<h2 id="status">Status</h2>
+
+<p>This SRFI is currently in <em>final</em> status.  Here is <a href="https://srfi.schemers.org/srfi-process.html">an explanation</a> of each status that a SRFI can hold.  To provide input on this SRFI, please send email to <code><a href="mailto:srfi+minus+1%20%20+at+srfi+dotschemers+dot+org">srfi-1  @<span class="antispam">nospam</span>srfi.schemers.org</a></code>.  To subscribe to the list, follow <a href="https://srfi.schemers.org/srfi-list-subscribe.html">these instructions</a>.  You can access previous messages via the mailing list <a href="https://srfi-email.schemers.org/srfi-1">archive</a>.</p>
+<ul>
+    <li>Received: 1998-11-08</li>
+    <li>Draft: 1998-12-22--1999-03-09</li>
+    <li>Revised: several times</li>
+    <li>Final: 1999-10-09</li>
+    <li>Revised to fix errata:
+      <ul>
+	<li>2016-08-27 (Clarify Booleans.)</li>
+	<li>2018-10-08 (Remove extra parenthesis.)</li>
+	<li>2019-10-25 (Fix broken links.)</li>
+	<li>2020-06-02 (Add <a href="#lset%3D-element-equality-order">note</a>
+	  about order of arguments to <code>lset=</code>.)</li>
+	<li>2022-10-22 (Fixed <a href="#reduce-right">definition of <code>reduce-right</code></a>.  See <a href="https://srfi-email.schemers.org/srfi-1/msg/18561246/">discussion in archive</a>.)</li>
+	<li>2022-11-21 (Add missing ellipsis in signature of <a href="#count"><code>count</code></a>.)</li>
+        <li>2023-04-27 (Fix return type of <a href="#circular-list"><code>circular-list</code></a>.)</li>
+        <li>2025-09-02 (Fix <a href="#right-example">example</a>
+          of <code>drop-right</code> and <code>take-right</code>.)
+      </ul>
+    </li>
+</ul>
+
+<!--========================================================================-->
+<h2>Table of contents</h2>
+
+<!-- A bug in netscape (?) keeps the first link in this UL from being active.
+==== So the Abstract link be dead. 99/8/22 -Olin
+-->
+<ul id="toc-table">
+  <li><a href="#Abstract">Abstract</a></li>
+  <li><a href="#Rationale">Rationale</a></li>
+  <li><a href="#ProcedureIndex">Procedure index</a></li>
+  <li>
+    <a href="#GeneralDiscussion">General discussion</a>
+    <ul>
+      <li><a href="#LinearUpdateProcedures">"Linear update" procedures</a></li>
+      <li><a href="#ImproperLists">Improper lists</a></li>
+      <li><a href="#Errors">Errors</a></li>
+      <li><a href="#NotIncludedInThisLibrary">Not included in this library</a></li>
+    </ul>
+  </li>
+  <li>
+    <a href="#TheProcedures">The procedures</a>
+    <ul>
+      <li><a href="#Constructors">Constructors</a></li>
+      <li><a href="#Predicates">Predicates</a></li>
+      <li><a href="#Selectors">Selectors</a></li>
+      <li><a href="#Miscellaneous">Miscellaneous: length, append, reverse, zip &amp; count</a></li>
+      <li><a href="#FoldUnfoldMap">Fold, unfold, and map</a></li>
+      <li><a href="#FilteringPartitioning">Filtering &amp; partitioning</a></li>
+      <li><a href="#Searching">Searching</a></li><li><a href="#Deletion">Deletion</a></li>
+      <li><a href="#AssociationLists">Association lists</a></li>
+      <li><a href="#SetOperationsOnLists">Set operations on lists</a></li>
+      <li><a href="#PrimitiveSideEffects">Primitive side-effects</a></li>
+    </ul>
+  </li>
+  <li><a href="#Acknowledgements">Acknowledgements</a></li>
+  <li><a href="#ReferencesLinks">References &amp; links</a></li>
+  <li><a href="#Copyright">Copyright</a></li>
+</ul>
+
+
+<!--========================================================================-->
+<h2 id="Abstract">Abstract</h2>
+<p>
+<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr> Scheme has an impoverished set of list-processing utilities, which is a
+problem for authors of portable code.  This <abbr title="Scheme Request for Implementation">SRFI</abbr> proposes a coherent and
+comprehensive set of list-processing procedures; it is accompanied by a
+reference implementation of the spec. The reference implementation is
+</p>
+<ul>
+  <li>portable</li>
+  <li>efficient</li>
+  <li>completely open, public-domain source</li>
+</ul>
+
+<!--========================================================================-->
+<h2 id="Rationale">Rationale</h2>
+<p>
+The set of basic list and pair operations provided by R4RS/<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr> Scheme is far
+from satisfactory. Because this set is so small and basic, most
+implementations provide additional utilities, such as a list-filtering
+function, or a "left fold" operator, and so forth. But, of course, this
+introduces incompatibilities -- different Scheme implementations provide
+different sets of procedures.
+</p>
+<p>
+I have designed a full-featured library of procedures for list processing.
+While putting this library together, I checked as many Schemes as I could get
+my hands on. (I have a fair amount of experience with several of these
+already.) I missed Chez -- no on-line manual that I can find -- but I hit most
+of the other big, full-featured Schemes. The complete list of list-processing
+systems I checked is:
+</p>
+<div class="indent">
+    <abbr title="Revised^4 Report on Scheme">R4RS</abbr>/<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr> Scheme, MIT Scheme, Gambit, RScheme, MzScheme, slib,
+    <a href="#CommonLisp">Common Lisp</a>, Bigloo, guile, T, APL and the SML standard basis
+</div>
+<p>
+As a result, the library I am proposing is fairly rich.
+</p>
+<p>
+Following this initial design phase, this library went through several
+months of discussion on the SRFI mailing lists, and was altered in light
+of the ideas and suggestions put forth during this discussion.
+</p>
+<p>
+In parallel with designing this API, I have also written a reference
+implementation. I have placed this source on the Net with an unencumbered,
+"open" copyright. A few notes about the reference implementation:
+</p>
+<ul>
+<li>Although I got procedure names and specs from many Schemes, I wrote this
+    code myself. Thus, there are <em>no</em> entanglements.
+    Any Scheme implementor
+    can pick this library up with no worries about copyright problems -- both
+    commercial and non-commercial systems.
+
+</li><li>The code is written for portability and should be trivial to port to
+    any Scheme. It has only four deviations from <abbr title="Revised^4 Report on Scheme">R4RS</abbr>, clearly discussed
+    in the comments: <ul>
+	<li>Use of an <code>error</code> procedure;
+	</li><li>Use of the <abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr> <code>values</code> and a simple <code>receive</code> macro for producing
+	  and consuming multiple return values;
+	</li><li>Use of simple <code>:optional</code> and <code>let-optionals</code> macros for optional
+	  argument parsing and defaulting;
+	</li><li>Use of a simple <code>check-arg</code> procedure for argument checking.
+        </li></ul>
+
+</li><li>It is written for clarity and well-commented. The current source is
+    768 lines of source code and 826 lines of comments and white space.
+
+</li><li><p>
+    It is written for efficiency. Fast paths are provided for common
+    cases. Side-effecting procedures such as <code>filter!</code> avoid unnecessary,
+    redundant <code>set-cdr!</code>s which would thrash a generational GC's write barrier
+    and the store buffers of fast processors. Functions reuse longest common
+    tails from input parameters to construct their results where
+    possible. Constant-space iterations are used in preference to recursions;
+    local recursions are used in preference to consing temporary intermediate
+    data structures.
+    </p>
+    <p>
+    This is not to say that the implementation can't be tuned up for
+    a specific Scheme implementation. There are notes in comments addressing
+    ways implementors can tune the reference implementation for performance.
+</p></li></ul>
+<p>
+In short, I've written the reference implementation to make it as painless
+as possible for an implementor -- or a regular programmer -- to adopt this
+library and get good results with it.
+</p>
+
+<!--========================================================================-->
+<h2 id="ProcedureIndex">Procedure Index</h2>
+<p>
+Here is a short list of the procedures provided by the list-lib package.
+<a href="#R5RS">R5RS</a> procedures are shown in
+<span class="r5rs-proc">bold</span>;
+extended <a href="#R5RS">R5RS</a>
+         procedures, in <span class="r5rs-procx">bold italic</span>.
+</p>
+<div class="indent">
+<dl>
+<dt class="proc-index"> Constructors
+</dt><dd class="proc-index">
+<pre class="proc-index">
+<span class="r5rs-proc"><a href="#cons">cons</a> <a href="#list">list</a></span>
+<a href="#xcons">xcons</a> <a href="#cons*">cons*</a> <a href="#make-list">make-list</a> <a href="#list-tabulate">list-tabulate</a>
+<a href="#list-copy">list-copy</a> <a href="#circular-list">circular-list</a> <a href="#iota">iota</a>
+</pre>
+
+</dd><dt class="proc-index"> Predicates
+</dt><dd class="proc-index">
+<pre class="proc-index">
+<span class="r5rs-proc"><a href="#pair-p">pair?</a> <a href="#null-p">null?</a></span>
+<a href="#proper-list-p">proper-list?</a> <a href="#circular-list-p">circular-list?</a> <a href="#dotted-list-p">dotted-list?</a>
+<a href="#not-pair-p">not-pair?</a> <a href="#null-list-p">null-list?</a>
+<a href="#list%3D">list=</a>
+</pre>
+
+</dd><dt class="proc-index"> Selectors
+</dt><dd class="proc-index">
+<pre class="proc-index">
+<span class="r5rs-proc"><a href="#car">car</a> <a href="#cdr">cdr</a> ... <a href="#cddadr">cddadr</a> <a href="#cddddr">cddddr</a> <a href="#list-ref">list-ref</a></span>
+<a href="#first">first</a> <a href="#second">second</a> <a href="#third">third</a> <a href="#fourth">fourth</a> <a href="#fifth">fifth</a> <a href="#sixth">sixth</a> <a href="#seventh">seventh</a> <a href="#eighth">eighth</a> <a href="#ninth">ninth</a> <a href="#tenth">tenth</a>
+<a href="#car%2Bcdr">car+cdr</a>
+<a href="#take">take</a>       <a href="#drop">drop</a>
+<a href="#take-right">take-right</a> <a href="#drop-right">drop-right</a>
+<a href="#take!">take!</a>      <a href="#drop-right!">drop-right!</a>
+<a href="#split-at">split-at</a>   <a href="#split-at!">split-at!</a>
+<a href="#last">last</a> <a href="#last-pair">last-pair</a>
+</pre>
+
+</dd><dt class="proc-index"> Miscellaneous: length, append, concatenate, reverse, zip &amp; count
+</dt><dd class="proc-index">
+<pre class="proc-index">
+<span class="r5rs-proc"><a href="#length">length</a></span> <a href="#length%2B">length+</a>
+<span class="r5rs-proc"><a href="#append">append</a></span>  <a href="#concatenate">concatenate</a>  <span class="r5rs-proc"><a href="#reverse">reverse</a></span>
+<a href="#append!">append!</a> <a href="#concatenate!">concatenate!</a> <a href="#reverse!">reverse!</a>
+<a href="#append-reverse">append-reverse</a> <a href="#append-reverse!">append-reverse!</a>
+<a href="#zip">zip</a> <a href="#unzip1">unzip1</a> <a href="#unzip2">unzip2</a> <a href="#unzip3">unzip3</a> <a href="#unzip4">unzip4</a> <a href="#unzip5">unzip5</a>
+<a href="#count">count</a>
+</pre>
+
+</dd><dt class="proc-index"> Fold, unfold &amp; map
+</dt><dd class="proc-index">
+<pre class="proc-index">
+<span class="r5rs-procx"><a href="#map">map</a> <a href="#for-each">for-each</a></span>
+<a href="#fold">fold</a>       <a href="#unfold">unfold</a>       <a href="#pair-fold">pair-fold</a>       <a href="#reduce">reduce</a>
+<a href="#fold-right">fold-right</a> <a href="#unfold-right">unfold-right</a> <a href="#pair-fold-right">pair-fold-right</a> <a href="#reduce-right">reduce-right</a>
+<a href="#append-map">append-map</a> <a href="#append-map!">append-map!</a>
+<a href="#map!">map!</a> <a href="#pair-for-each">pair-for-each</a> <a href="#filter-map">filter-map</a> <a href="#map-in-order">map-in-order</a>
+</pre>
+
+</dd><dt class="proc-index"> Filtering &amp; partitioning
+</dt><dd class="proc-index">
+<pre class="proc-index">
+<a href="#filter">filter</a>  <a href="#partition">partition</a>  <a href="#remove">remove</a>
+<a href="#filter!">filter!</a> <a href="#partition!">partition!</a> <a href="#remove!">remove!</a>
+</pre>
+
+</dd><dt class="proc-index"> Searching
+</dt><dd class="proc-index">
+<pre class="proc-index">
+<span class="r5rs-procx"><a href="#member">member</a></span> <span class="r5rs-proc"><a href="#memq">memq</a> <a href="#memv">memv</a></span>
+<a href="#find">find</a> <a href="#find-tail">find-tail</a>
+<a href="#any">any</a> <a href="#every">every</a>
+<a href="#list-index">list-index</a>
+<a href="#take-while">take-while</a> <a href="#drop-while">drop-while</a> <a href="#take-while!">take-while!</a>
+<a href="#span">span</a> <a href="#break">break</a> <a href="#span!">span!</a> <a href="#break!">break!</a>
+</pre>
+
+</dd><dt class="proc-index"> Deleting
+</dt><dd class="proc-index">
+<pre class="proc-index">
+<a href="#delete">delete</a>  <a href="#delete-duplicates">delete-duplicates</a>
+<a href="#delete!">delete!</a> <a href="#delete-duplicates!">delete-duplicates!</a>
+</pre>
+
+</dd><dt class="proc-index"> Association lists
+</dt><dd class="proc-index">
+<pre class="proc-index">
+<span class="r5rs-procx"><a href="#assoc">assoc</a></span> <span class="r5rs-proc"><a href="#assq">assq</a> <a href="#assv">assv</a></span>
+<a href="#alist-cons">alist-cons</a> <a href="#alist-copy">alist-copy</a>
+<a href="#alist-delete">alist-delete</a> <a href="#alist-delete!">alist-delete!</a>
+</pre>
+
+</dd><dt class="proc-index"> Set operations on lists
+</dt><dd class="proc-index">
+<pre class="proc-index">
+<a href="#lset%3C%3D">lset&lt;=</a> <a href="#lset%3D">lset=</a> <a href="#lset-adjoin">lset-adjoin</a>
+<a href="#lset-union">lset-union</a>			<a href="#lset-union!">lset-union!</a>
+<a href="#lset-intersection">lset-intersection</a>		<a href="#lset-intersection!">lset-intersection!</a>
+<a href="#lset-difference">lset-difference</a>		        <a href="#lset-difference!">lset-difference!</a>
+<a href="#lset-xor">lset-xor</a>			<a href="#lset-xor!">lset-xor!</a>
+<a href="#lset-diff%2Bintersection">lset-diff+intersection</a>	        <a href="#lset-diff%2Bintersection!">lset-diff+intersection!</a>
+</pre>
+
+</dd><dt class="proc-index"> Primitive side-effects
+</dt><dd class="proc-index">
+<pre class="proc-index">
+<span class="r5rs-proc"><a href="#set-car!">set-car!</a> <a href="#set-cdr!">set-cdr!</a></span>
+</pre>
+</dd></dl>
+</div>
+
+<p>
+Four <abbr title="Revised^4 Report on Scheme">R4RS</abbr>/<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr> list-processing procedures are extended by this library in
+backwards-compatible ways:
+</p>
+<div class="indent">
+<table cellspacing="0">
+<tr valign="baseline"><td><code>map for-each</code>
+    </td><td>(Extended to take lists of unequal length)
+</td></tr><tr valign="baseline"><td><code>member assoc</code>
+    </td><td>(Extended to take an optional comparison procedure.)
+</td></tr></table>
+</div>
+
+<p>
+The following <abbr title="Revised^4 Report on Scheme">R4RS</abbr>/<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr> list- and pair-processing procedures are also part of
+list-lib's exports, as defined by the <abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>:
+</p>
+<div class="indent">
+<pre>
+cons pair? null?
+car cdr ... cdddar cddddr
+set-car! set-cdr!
+list append reverse
+length list-ref
+memq memv assq assv
+</pre>
+</div>
+
+<p>
+The remaining two <abbr title="Revised^4 Report on Scheme">R4RS</abbr>/<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr> list-processing
+procedures are <em>not</em> part of
+this library:
+</p>
+<div class="indent">
+<table cellspacing="0">
+<tr><td><code>list-tail</code>
+    </td><td>(renamed <code>drop</code>)
+</td></tr><tr valign="baseline"><td><code>list?</code>
+    </td><td>(see <code>proper-list?</code>,
+             <code>circular-list?</code> and
+             <code>dotted-list?</code>)
+</td></tr></table>
+</div>
+
+<!--========================================================================-->
+<h2 id="GeneralDiscussion">General discussion</h2>
+<p>
+
+A set of general criteria guided the design of this library.
+
+</p>
+<p>
+
+I don't require "destructive" (what I call "linear update") procedures to
+alter and recycle cons cells from the argument lists. They are allowed to, but
+not required to. (And the reference implementations I have written <em>do</em>
+recycle the argument lists.)
+
+</p>
+<p>
+List-filtering procedures such as <code>filter</code> or <code>delete</code> do not disorder
+lists. Elements appear in the answer list in the same order as they appear in
+the argument list. This constrains implementation, but seems like a desirable
+feature, since in many uses of lists, order matters.  (In particular,
+disordering an alist is definitely a bad idea.)
+</p>
+<p>
+Contrariwise, although the reference implementations of the list-filtering
+procedures share longest common tails between argument and answer lists,
+it not is part of the spec.
+</p>
+<p>
+Because lists are an inherently sequential data structure (unlike, say,
+vectors), list-inspection functions such as <code>find</code>, <code>find-tail</code>, <code>for-each</code>, <code>any</code>
+and <code>every</code> commit to a left-to-right traversal order of their argument list.
+</p>
+<p>
+However, constructor functions, such as <code>list-tabulate</code> and the mapping
+procedures (<code>append-map</code>, <code>append-map!</code>, <code>map!</code>, <code>pair-for-each</code>, <code>filter-map</code>,
+<code>map-in-order</code>), do <em>not</em> specify the dynamic order in which their procedural
+argument is applied to its various values.
+</p>
+<p>
+Predicates return useful true values wherever possible.  Thus <code>any</code> must return
+the true value produced by its predicate, and <code>every</code>  returns the final true
+value produced by applying its predicate argument to the last element of its
+argument list.
+</p>
+<p>
+Functionality is provided both in pure and linear-update (potentially
+destructive) forms wherever this makes sense.
+</p>
+<p>
+No special status accorded Scheme's built-in equality functions.
+Any functionality provided in terms of <code>eq?</code>, <code>eqv?</code>, <code>equal?</code> is also
+available using a client-provided equality function.
+</p>
+<p>
+Proper design counts for more than backwards compatibility, but I have tried,
+<em>ceteris paribus</em>,
+to be as backwards-compatible as possible with existing
+list-processing libraries, in order to facilitate porting old code to run as a
+client of the procedures in this library. Name choices and semantics are, for
+the most part, in agreement with existing practice in many current Scheme
+systems. I have indicated some incompatibilities in the following text.
+</p>
+<p>
+These procedures are <em>not</em> "sequence generic" -- <em>i.e.</em>, procedures that
+operate on either vectors and lists. They are list-specific. I prefer to
+keep the library simple and focussed.
+</p>
+<p>
+I have named these procedures without a qualifying initial "list-" lexeme,
+which is in keeping with the existing set of list-processing utilities in
+Scheme.
+I follow the general Scheme convention (vector-length, string-ref) of
+placing the type-name before the action when naming procedures -- so
+we have <code>list-copy</code> and <code>pair-for-each</code> rather than the perhaps
+more fluid, but less consistent, <code>copy-list</code> or <code>for-each-pair</code>.
+</p>
+<p>
+I have generally followed a regular and consistent naming scheme, composing
+procedure names from a set of basic lexemes.
+</p>
+
+<!--========================================================================-->
+<h2><a name="LinearUpdateProcedures">"Linear update" procedures</a></h2>
+<p>
+
+Many procedures in this library have "pure" and "linear update" variants.  A
+"pure" procedure has no side-effects, and in particular does not alter its
+arguments in any way. A "linear update" procedure is allowed -- but <em>not</em>
+required -- to side-effect its arguments in order to construct its
+result. "Linear update" procedures are typically given names ending with an
+exclamation point. So, for example, <code>(append! list1 list2)</code> is allowed to
+construct its result by simply using <code>set-cdr!</code> to set the cdr of the last pair
+of <var>list<sub>1</sub></var> to point to <var>list<sub>2</sub></var>, and then returning <var>list<sub>1</sub></var> (unless <var>list<sub>1</sub></var> is the
+empty list, in which case it would simply return <var>list<sub>2</sub></var>). However, <code>append!</code> may
+also elect to perform a pure append operation -- this is a legal definition
+of <code>append!</code>:
+</p>
+<pre class="code-example">
+(define append! append)
+</pre>
+<p>
+This is why we do not call these procedures "destructive" -- because they
+aren't <em>required</em> to be destructive. They are <em>potentially</em> destructive.
+</p>
+<p>
+What this means is that you may only apply linear-update procedures to
+values that you know are "dead" -- values that will never be used again
+in your program. This must be so, since you can't rely on the value passed
+to a linear-update procedure after that procedure has been called. It
+might be unchanged; it might be altered.
+</p>
+<p>
+The "linear" in "linear update" doesn't mean "linear time" or "linear space"
+or any sort of multiple-of-n kind of meaning. It's a fancy term that
+type theorists and pure functional programmers use to describe
+systems where you are only allowed to have exactly one reference to each
+variable. This provides a guarantee that the value bound to a variable is
+bound to no other variable. So when you <em>use</em> a variable in a variable
+reference, you "use it up." Knowing that no one else has a pointer to that
+value means the a system primitive is free to side-effect its arguments to
+produce what is, observationally, a pure-functional result.
+</p>
+<p>
+In the context of this library, "linear update" means you, the programmer,
+know there are <em>no other</em> live references to the value passed to the
+procedure -- after passing the value to one of these procedures, the
+value of the old pointer is indeterminate. Basically, you are licensing
+the Scheme implementation to alter the data structure if it feels like
+it -- you have declared you don't care either way.
+</p>
+<p>
+You get no help from Scheme in checking that the values you claim are "linear"
+really are. So you better get it right. Or play it safe and use the non-!
+procedures -- it doesn't do any good to compute quickly if you get the wrong
+answer.
+</p>
+<p>
+Why go to all this trouble to define the notion of "linear update" and use it
+in a procedure spec, instead of the more common notion of a "destructive"
+operation?  First, note that destructive list-processing procedures are almost
+always used in a linear-update fashion. This is in part required by the
+special case of operating upon the empty list, which can't be side-effected.
+This means that destructive operators are not pure side-effects -- they have
+to return a result. Second, note that code written using linear-update
+operators can be trivially ported to a pure, functional subset of Scheme by
+simply providing pure implementations of the linear-update operators. Finally,
+requiring destructive side-effects ruins opportunities to parallelise these
+operations -- and the places where one has taken the trouble to spell out
+destructive operations are usually exactly the code one would want a
+parallelising compiler to parallelise: the efficiency-critical kernels of the
+algorithm.  Linear-update operations are easily parallelised. Going with a
+linear-update spec doesn't close off these valuable alternative implementation
+techniques. This list library is intended as a set of low-level, basic
+operators, so we don't want to exclude these possible implementations.
+</p>
+<p>
+The linear-update procedures in this library are
+</p>
+<div class="indent"><code>
+take! drop-right! split-at!
+append! concatenate! reverse! append-reverse!
+append-map! map!
+filter! partition! remove!
+take-while! span! break!
+delete! alist-delete! delete-duplicates!
+lset-union! lset-intersection!
+lset-difference! lset-xor! lset-diff+intersection!
+</code></div>
+
+
+<!--========================================================================-->
+<h2><a name="ImproperLists">Improper Lists</a></h2>
+<p>
+
+Scheme does not properly have a list type, just as C does not have a string
+type. Rather, Scheme has a binary-tuple type, from which one can build binary
+trees. There is an <em>interpretation</em> of Scheme values that allows one to
+treat these trees as lists. Further complications ensue from the fact that
+Scheme allows side-effects to these tuples, raising the possibility of lists
+of unbounded length, and trees of unbounded depth (that is, circular data
+structures).
+</p>
+<p>
+However, there is a simple view of the world of Scheme values that considers
+every value to be a list of some sort. that is, every value is either
+</p>
+<ul>
+  <li>
+    a "proper list" -- a finite, nil-terminated list, such as:<br />
+          <code>(a b c)</code><br />
+          <code>()</code><br />
+          <code>(32)</code><br />
+  </li>
+  <li>
+    a "dotted list" -- a finite, non-nil terminated list, such as:<br />
+          <code>(a b c . d)</code><br />
+          <code>(x . y)</code><br />
+          <code>42</code><br />
+          <code>george</code><br />
+  </li>
+  <li>
+    or a "circular list" -- an infinite, unterminated list.
+  </li>
+</ul>
+<p>
+Note that the zero-length dotted lists are simply all the non-null, non-pair
+values.
+</p>
+<p>
+This view is captured by the predicates <code>proper-list?</code>, <code>dotted-list?</code>, and
+<code>circular-list?</code>. List-lib users should note that dotted lists are not commonly
+used, and are considered by many Scheme programmers to be an ugly artifact of
+Scheme's lack of a true list type. However, dotted lists do play a noticeable
+role in the <em>syntax</em> of Scheme, in the "rest" parameters used by n-ary
+lambdas: <code>(lambda (x y . rest) ...)</code>.
+</p>
+<p>
+Dotted lists are <em>not</em> fully supported by list-lib. Most procedures are
+defined only on proper lists -- that is, finite, nil-terminated lists.  The
+procedures that will also handle circular or dotted lists are specifically
+marked. While this design decision restricts the domain of possible arguments
+one can pass to these procedures, it has the benefit of allowing the
+procedures to catch the error cases where programmers inadvertently pass
+scalar values to a list procedure by accident,
+<em>e.g.</em>, by switching the arguments to a procedure call.
+</p>
+
+<!--========================================================================-->
+<h2><a name="Errors">Errors</a></h2>
+<p>
+
+Note that statements of the form "it is an error" merely mean "don't
+do that." They are not a guarantee that a conforming implementation will
+"catch" such improper use by, for example, raising some kind of exception.
+Regrettably, <abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr> Scheme requires no firmer guarantee even for basic operators such
+as <code>car</code> and <code>cdr</code>, so there's little point in requiring these procedures to do
+more.  Here is the relevant section of the <abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>:
+</p>
+<blockquote>
+    <p>
+    When speaking of an error situation, this report uses the phrase "an
+    error is signalled" to indicate that implementations must detect and
+    report the error.  If such wording does not appear in the discussion
+    of an error, then implementations are not required to detect or
+    report the error, though they are encouraged to do so.  An error
+    situation that implementations are not required to detect is usually
+    referred to simply as "an error."
+    </p><p>
+    For example, it is an error for a procedure to be passed an argument
+    that the procedure is not explicitly specified to handle, even though
+    such domain errors are seldom mentioned in this report.
+    Implementations may extend a procedure's domain of definition to
+    include such arguments.
+</p></blockquote>
+
+
+<!--========================================================================-->
+<h2><a name="NotIncludedInThisLibrary">Not included in this library</a></h2>
+<p>
+The following items are not in this library:
+</p>
+<ul>
+<li>Sort routines
+</li><li>Destructuring/pattern-matching macro
+</li><li>Tree-processing routines
+</li></ul>
+<p>
+They should have their own <abbr title="Scheme Request for Implementation">SRFI</abbr> specs.
+</p>
+
+
+<!--========================================================================-->
+<h2 id="TheProcedures">The procedures</h2>
+<p>
+
+In a Scheme system that has a module or package system, these procedures
+should be contained in a module named "list-lib".
+</p>
+<p>
+The templates given below obey the following conventions for procedure formals:
+</p>
+<table>
+<tr valign="baseline"><th align="left"> <var>list</var>
+    </th><td> A proper (finite, nil-terminated) list
+</td></tr><tr valign="baseline"><th align="left"> <var>clist</var>
+    </th><td> A proper or circular list
+</td></tr><tr valign="baseline"><th align="left"> <var>flist</var>
+    </th><td> A finite (proper or dotted) list
+</td></tr><tr valign="baseline"><th align="left"> <var>pair</var>
+    </th><td> A pair
+</td></tr><tr valign="baseline">
+    <th align="left"> <var>x</var>, <var>y</var>, <var>d</var>, <var>a</var>
+    </th><td> Any value
+</td></tr><tr valign="baseline"><th align="left"> <var>object</var>, <var>value</var>
+    </th><td> Any value
+</td></tr><tr valign="baseline"><th align="left"> <var>n</var>, <var>i</var>
+    </th><td> A natural number (an integer &gt;= 0)
+</td></tr><tr valign="baseline"><th align="left"> <var>proc</var>
+    </th><td> A procedure
+</td></tr><tr valign="baseline"><th align="left"> <var>pred</var>
+    </th><td> A procedure whose return value is treated as a boolean
+</td></tr><tr valign="baseline"><th align="left"> <var>=</var>
+    </th><td> A boolean procedure taking two arguments
+</td></tr></table>
+
+<p>
+It is an error to pass a circular or dotted list to a procedure not
+defined to accept such an argument.
+</p>
+<!--========================================================================-->
+<h2 id="Constructors">Constructors</h2>
+
+
+<dl>
+
+<!--
+==== cons
+============================================================================-->
+<dt class="proc-def">
+<a name="cons"></a>
+<code class="proc-def">cons</code> <var>a d -&gt; pair</var>
+</dt>
+<dd class="proc-def">
+<p>
+    [<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>]
+    The primitive constructor.  Returns a newly allocated pair whose car is
+    <var>a</var> and whose cdr is <var>d</var>.
+    The pair is guaranteed to be different (in the sense of <code>eqv?</code>)
+    from every existing object.
+</p>
+<pre class="code-example">
+(cons 'a '())        =&gt; (a)
+(cons '(a) '(b c d)) =&gt; ((a) b c d)
+(cons "a" '(b c))    =&gt; ("a" b c)
+(cons 'a 3)          =&gt; (a . 3)
+(cons '(a b) 'c)     =&gt; ((a b) . c)
+</pre>
+</dd>
+<!--
+==== list
+============================================================================-->
+<dt class="proc-def">
+<a name="list"></a>
+<code class="proc-def">list</code> <var>object ... -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    [<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>]
+    Returns a newly allocated list of its arguments.
+</p>
+<pre class="code-example">
+(list 'a (+ 3 4) 'c) =&gt;  (a 7 c)
+(list)               =&gt;  ()
+</pre>
+</dd>
+<!--
+==== xcons
+============================================================================-->
+<dt class="proc-def">
+<a name="xcons"></a>
+<code class="proc-def">xcons</code> <var>d a -&gt; pair</var>
+</dt>
+<dd class="proc-def">
+<pre>
+(lambda (d a) (cons a d))
+</pre>
+<p>
+    Of utility only as a value to be conveniently passed to higher-order
+    procedures.
+</p>
+<pre class="code-example">
+(xcons '(b c) 'a) =&gt; (a b c)
+</pre>
+<p>
+    The name stands for "eXchanged CONS."
+</p>
+</dd>
+<!--
+==== cons*
+============================================================================-->
+<dt class="proc-def" id="cons*"><code class="proc-def">cons*</code><var> elt<sub>1</sub> elt<sub>2</sub> ... -&gt; object</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Like <code>list</code>,
+    but the last argument provides the tail of the constructed list,
+    returning
+</p>
+    <div class="indent"><code>
+(cons <var>elt<sub>1</sub></var> (cons <var>elt<sub>2</sub></var> (cons ... <var>elt<sub>n</sub></var>)))
+    </code></div>
+<p>
+    This function is called <code>list*</code> in <a href="#CommonLisp">Common Lisp</a> and about
+    half of the Schemes that provide it,
+    and <code>cons*</code> in the other half.
+</p>
+<pre class="code-example">
+(cons* 1 2 3 4) =&gt; (1 2 3 . 4)
+(cons* 1) =&gt; 1
+</pre>
+</dd>
+<!--
+==== make-list
+============================================================================-->
+<dt class="proc-def" id="make-list"> <code class="proc-def">make-list</code> <var>n [fill] -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Returns an <var>n</var>-element list,
+    whose elements are all the value <var>fill</var>.
+    If the <var>fill</var> argument is not given, the elements of the list may
+    be arbitrary values.
+</p>
+<pre class="code-example">
+(make-list 4 'c) =&gt; (c c c c)
+</pre>
+</dd>
+<!--
+==== list-tabulate
+============================================================================-->
+<dt class="proc-def" id="list-tabulate"><code class="proc-def">list-tabulate</code><var> n init-proc -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Returns an <var>n</var>-element list. Element <var>i</var> of the list, where 0 &lt;= <var>i</var> &lt; <var>n</var>,
+    is produced by <code>(<var>init-proc</var> <var>i</var>)</code>. No guarantee is made about the dynamic
+    order in which <var>init-proc</var> is applied to these indices.
+</p>
+<pre class="code-example">
+(list-tabulate 4 values) =&gt; (0 1 2 3)
+</pre>
+</dd>
+<!--
+==== list-copy
+============================================================================-->
+<dt class="proc-def" id="list-copy"><code class="proc-def">list-copy</code><var> flist -&gt; flist</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Copies the spine of the argument.
+</p>
+</dd>
+<!--
+==== circular-list
+============================================================================-->
+<dt class="proc-def" id="circular-list"><code class="proc-def">circular-list</code><var> elt<sub>1</sub> elt<sub>2</sub> ... -&gt; clist</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Constructs a circular list of the elements.
+</p>
+<pre class="code-example">
+(circular-list 'z 'q) =&gt; (z q z q z q ...)
+</pre>
+</dd>
+<!--
+==== iota
+============================================================================-->
+<dt class="proc-def" id="iota"><code class="proc-def">iota</code><var> count [start step] -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Returns a list containing the elements
+</p>
+<pre class="code-example">
+(<var>start</var> <var>start</var>+<var>step</var> ... <var>start</var>+(<var>count</var>-1)*<var>step</var>)
+</pre>
+<p>
+    The <var>start</var> and <var>step</var> parameters default to 0 and 1, respectively.
+    This procedure takes its name from the APL primitive.
+</p>
+<pre class="code-example">
+(iota 5) =&gt; (0 1 2 3 4)
+(iota 5 0 -0.1) =&gt; (0 -0.1 -0.2 -0.3 -0.4)
+</pre>
+</dd>
+</dl>
+
+<!--========================================================================-->
+<h2><a name="Predicates">Predicates</a></h2>
+<p>
+Note: the predicates <code>proper-list?</code>, <code>circular-list?</code>, and <code>dotted-list?</code>
+partition the entire universe of Scheme values.
+</p>
+<dl>
+<!--
+==== proper-list?
+============================================================================-->
+<dt class="proc-def">
+<code class="proc-def">proper-list?</code><var> x -&gt; boolean</var>
+<a name="proper-list-p"></a>
+</dt>
+<dd class="proc-def">
+<p>
+    Returns true iff <var>x</var> is a proper list -- a finite, nil-terminated list.
+</p>
+<p>
+    More carefully: The empty list is a proper list. A pair whose cdr is a
+    proper list is also a proper list:
+</p>
+<pre>
+&lt;proper-list&gt; ::= ()                            (Empty proper list)
+              |   (cons &lt;x&gt; &lt;proper-list&gt;)      (Proper-list pair)
+</pre>
+<p>
+    Note that this definition rules out circular lists. This
+    function is required to detect this case and return false.
+</p>
+<p>
+    Nil-terminated lists are called "proper" lists by <abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr> and <a href="#CommonLisp">Common Lisp</a>.
+    The opposite of proper is improper.
+</p>
+<p>
+    <abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr> binds this function to the variable <code>list?</code>.
+</p>
+<pre>
+(not (proper-list? <var>x</var>)) = (or (dotted-list? <var>x</var>) (circular-list? <var>x</var>))
+</pre>
+</dd>
+<!--
+==== circular-list?
+============================================================================-->
+<dt class="proc-def" id="circular-list-p"><code class="proc-def">circular-list?</code><var> x -&gt; boolean</var>
+</dt>
+<dd class="proc-def">
+<p>
+    True if <var>x</var> is a circular list. A circular list is a value such that
+    for every <var>n</var> &gt;= 0, cdr<sup><var>n</var></sup>(<var>x</var>) is a pair.
+</p>
+<p>
+    Terminology: The opposite of circular is finite.
+</p>
+<pre>
+(not (circular-list? <var>x</var>)) = (or (proper-list? <var>x</var>) (dotted-list? <var>x</var>))
+</pre>
+</dd>
+<!--
+==== dotted-list?
+============================================================================-->
+<dt class="proc-def" id="dotted-list-p"><code class="proc-def">dotted-list?</code><var> x -&gt; boolean</var>
+</dt>
+<dd class="proc-def">
+<p>
+    True if <var>x</var> is a finite, non-nil-terminated list. That is, there exists
+    an <var>n</var> &gt;= 0 such that cdr<sup><var>n</var></sup>(<var>x</var>) is neither a pair nor ().
+    This includes
+    non-pair, non-() values (<em>e.g.</em> symbols, numbers),
+    which are considered to be dotted lists of length 0.
+</p>
+<pre>
+(not (dotted-list? <var>x</var>)) = (or (proper-list? <var>x</var>) (circular-list? <var>x</var>))
+</pre>
+</dd>
+<!--
+==== pair?
+============================================================================-->
+<dt class="proc-def" id="pair-p"><code class="proc-def">pair?</code><var> object -&gt; boolean</var>
+</dt>
+<dd class="proc-def">
+<p>
+    [<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>]
+    Returns #t if <var>object</var> is a pair; otherwise, #f.
+</p>
+<pre class="code-example">
+(pair? '(a . b)) =&gt;  #t
+(pair? '(a b c)) =&gt;  #t
+(pair? '())      =&gt;  #f
+(pair? '#(a b))  =&gt;  #f
+(pair? 7)        =&gt;  #f
+(pair? 'a)       =&gt;  #f
+</pre>
+</dd>
+<!--
+==== null?
+============================================================================-->
+<dt class="proc-def" id="null-p"><code class="proc-def">null?</code><var> object -&gt; boolean</var>
+</dt>
+<dd class="proc-def">
+<p>
+    [<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>]
+    Returns #t if <var>object</var> is the empty list; otherwise, #f.
+</p>
+</dd>
+<!--
+==== null-list?
+============================================================================-->
+<dt class="proc-def" id="null-list-p"><code class="proc-def">null-list?</code><var> list -&gt; boolean</var>
+</dt>
+<dd class="proc-def">
+<p>
+    <var>List</var> is a proper or circular list. This procedure returns true if
+    the argument is the empty list (), and false otherwise. It is an
+    error to pass this procedure a value which is not a proper or
+    circular list.
+</p>
+<p>
+    This procedure is recommended as the termination condition for
+    list-processing procedures that are not defined on dotted lists.
+</p>
+</dd>
+<!--
+==== not-pair?
+============================================================================-->
+<dt class="proc-def">
+<a name="not-pair-p"></a>
+<code class="proc-def">not-pair?</code><var> x -&gt; boolean</var>
+</dt>
+<dd class="proc-def">
+<pre>(lambda (x) (not (pair? x)))</pre>
+<p>
+    Provided as a procedure as it can be useful as the termination condition
+    for list-processing procedures that wish to handle all finite lists,
+    both proper and dotted.
+</p>
+</dd>
+<!--
+==== list=
+============================================================================-->
+<dt class="proc-def">
+<a name="list="></a>
+<code class="proc-def">list=</code><var> elt= list<sub>1</sub> ... -&gt; boolean</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Determines list equality, given an element-equality procedure.
+    Proper list <var>A</var> equals proper list <var>B</var>
+    if they are of the same length,
+    and their corresponding elements are equal,
+    as determined by <var>elt=</var>.
+    If the element-comparison procedure's first argument is
+    from <var>list<sub>i</sub></var>,
+    then its second argument is from <var>list<sub>i+1</sub></var>,
+    <em>i.e.</em> it is always called as
+        <code>(<var>elt=</var> <var>a</var> <var>b</var>)</code>
+    for <var>a</var> an element of list <var>A</var>,
+    and <var>b</var> an element of list <var>B</var>.
+</p>
+<p>
+    In the <var>n</var>-ary case,
+    every <var>list<sub>i</sub></var> is compared to
+    <var>list<sub>i+1</sub></var>
+    (as opposed, for example, to comparing
+    <var>list<sub>1</sub></var> to every <var>list<sub>i</sub></var>,
+    for <var>i</var>&gt;1).
+    If there are no list arguments at all,
+    <code>list=</code> simply returns true.
+</p>
+<p>
+    It is an error to apply <code>list=</code> to anything except proper lists.
+    While
+    implementations may choose to extend it to circular lists, note that it
+    cannot reasonably be extended to dotted lists, as it provides no way to
+    specify an equality procedure for comparing the list terminators.
+</p>
+<p>
+    Note that the dynamic order in which the <var>elt=</var> procedure is
+    applied to pairs of elements is not specified.
+    For example, if <code>list=</code> is applied
+    to three lists, <var>A</var>, <var>B</var>, and <var>C</var>,
+    it may first completely compare <var>A</var> to <var>B</var>,
+    then compare <var>B</var> to <var>C</var>,
+    or it may compare the first elements of <var>A</var> and <var>B</var>,
+    then the first elements of <var>B</var> and <var>C</var>,
+    then the second elements of <var>A</var> and <var>B</var>, and so forth.
+</p>
+<p>
+    The equality procedure must be consistent with <code>eq?</code>.
+    That is, it must be the case that
+</p>
+<div class="indent">
+        <code>(eq? <var>x</var> <var>y</var>)</code> =&gt; <code>(<var>elt=</var> <var>x</var> <var>y</var>)</code>.
+</div>
+<p>
+    Note that this implies that two lists which are <code>eq?</code>
+    are always <var>list=</var>, as well; implementations may exploit this
+    fact to "short-cut" the element-by-element comparisons.
+</p>
+<pre class="code-example">
+(list= eq?) =&gt; #t       ; Trivial cases
+(list= eq? '(a)) =&gt; #t
+</pre>
+</dd>
+</dl>
+
+
+<!--========================================================================-->
+<h2 id="Selectors">Selectors</h2>
+<dl>
+
+<!--
+==== car cdr
+============================================================================-->
+<dt class="proc-def1" id="car"><code class="proc-def">car</code><var> pair -&gt; value</var>
+</dt>
+<dt class="proc-defn" id="cdr"><code class="proc-def">cdr</code><var> pair -&gt; value</var>
+</dt>
+<dd class="proc-def">
+<p>
+    [<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>]
+    These functions return the contents of the car and cdr field of their
+    argument, respectively.
+    Note that it is an error to apply them to the empty list.
+</p>
+<pre class="code-example">
+(car '(a b c))     =&gt;  a             (cdr '(a b c))     =&gt;  (b c)
+(car '((a) b c d)) =&gt;  (a)	     (cdr '((a) b c d)) =&gt;  (b c d)
+(car '(1 . 2))     =&gt;  1	     (cdr '(1 . 2))     =&gt;  2
+(car '())          =&gt;  *error*	     (cdr '())          =&gt;  *error*
+</pre>
+</dd>
+
+
+<!--
+==== caar cadr ... cdddar cddddr
+============================================================================-->
+<dt class="proc-def1" id="caar"><code class="proc-def">caar</code><var> pair -&gt; value</var>
+</dt>
+<dt class="proc-defi" id="cadr"><code class="proc-def">cadr</code><var> pair -&gt; value</var>
+</dt>
+<dt class="proc-defi"><code class="proc-def">:</code>
+</dt>
+<dt class="proc-defi" id="cddadr"><code class="proc-def">cddadr</code><var> pair -&gt; value</var>
+</dt>
+<dt class="proc-defi" id="cdddar"><code class="proc-def">cdddar</code><var> pair -&gt; value</var>
+</dt>
+<dt class="proc-defn" id="cddddr"><code class="proc-def">cddddr</code><var> pair -&gt; value</var>
+</dt>
+<dd class="proc-def">
+<p>
+    [<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>]
+    These procedures are compositions of <code>car</code> and <code>cdr</code>,
+    where for example <code>caddr</code> could be defined by
+</p>
+<pre class="code-example">
+(define caddr (lambda (x) (car (cdr (cdr x))))).
+</pre>
+<p>
+    Arbitrary compositions, up to four deep, are provided.  There are
+    twenty-eight of these procedures in all.
+</p>
+</dd>
+<!--
+==== list-ref
+============================================================================-->
+<dt class="proc-def" id="list-ref"><code class="proc-def">list-ref</code><var> clist i -&gt; value</var>
+</dt>
+<dd class="proc-def">
+<p>
+    [<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>]
+    Returns the <var>i</var><sup>th</sup> element of <var>clist</var>.
+    (This is the same as the car of
+        <code>(drop <var>clist</var> <var>i</var>)</code>.)
+    It is an error if <var>i</var> &gt;= <var>n</var>,
+    where <var>n</var> is the length of <var>clist</var>.
+</p>
+<pre class="code-example">
+(list-ref '(a b c d) 2) =&gt; c
+</pre>
+</dd>
+<!--
+==== tenth
+==== ninth
+==== eighth
+==== seventh
+==== sixth
+==== fifth
+==== fourth
+==== third
+==== second
+==== first
+============================================================================-->
+<dt class="proc-def1">
+<a name="first"></a>
+<code class="proc-def">first&nbsp;&nbsp;&nbsp;</code><var>pair -&gt; object </var>
+</dt><dt class="proc-defi">
+<a name="second"></a>
+<code class="proc-def">second&nbsp;&nbsp;</code><var>pair -&gt; object </var>
+</dt><dt class="proc-defi">
+<a name="third"></a>
+<code class="proc-def">third&nbsp;&nbsp;&nbsp;</code><var>pair -&gt; object </var>
+</dt><dt class="proc-defi">
+<a name="fourth"></a>
+<code class="proc-def">fourth&nbsp;&nbsp;</code><var>pair -&gt; object </var>
+</dt><dt class="proc-defi">
+<a name="fifth"></a>
+<code class="proc-def">fifth&nbsp;&nbsp;&nbsp;</code><var>pair -&gt; object </var>
+</dt><dt class="proc-defi">
+<a name="sixth"></a>
+<code class="proc-def">sixth&nbsp;&nbsp;&nbsp;</code><var>pair -&gt; object </var>
+</dt><dt class="proc-defi">
+<a name="seventh"></a>
+<code class="proc-def">seventh&nbsp;</code><var>pair -&gt; object </var>
+</dt><dt class="proc-defi">
+<a name="eighth"></a>
+<code class="proc-def">eighth&nbsp;&nbsp;</code><var>pair -&gt; object </var>
+</dt><dt class="proc-defi">
+<a name="ninth"></a>
+<code class="proc-def">ninth&nbsp;&nbsp;&nbsp;</code><var>pair -&gt; object </var>
+</dt><dt class="proc-defn">
+<a name="tenth"></a>
+<code class="proc-def">tenth&nbsp;&nbsp;&nbsp;</code><var>pair -&gt; object  </var>
+</dt><dd class="proc-def">
+    Synonyms for <code>car</code>, <code>cadr</code>, <code>caddr</code>, ...
+
+<pre class="code-example">
+(third '(a b c d e)) =&gt; c
+</pre>
+
+<!--
+==== car+cdr
+============================================================================-->
+</dd><dt class="proc-def">
+<a name="car+cdr"></a>
+<code class="proc-def">car+cdr</code><var> pair -&gt; [x y]</var>
+</dt><dd class="proc-def">
+    The fundamental pair deconstructor:
+<pre class="code-example">
+(lambda (p) (values (car p) (cdr p)))
+</pre>
+    This can, of course, be implemented more efficiently by a compiler.
+</dd>
+<!--
+==== drop
+==== take
+============================================================================-->
+<dt class="proc-def1">
+<a name="take"></a>
+<code class="proc-def">take</code><var> x i -&gt; list</var>
+</dt><dt class="proc-defn">
+<a name="drop"></a>
+<code class="proc-def">drop</code><var> x i -&gt; object</var>
+</dt><dd class="proc-def">
+    <code>take</code> returns the first <var>i</var> elements of list <var>x</var>.<br />
+    <code>drop</code> returns all but the first <var>i</var> elements of list <var>x</var>.
+<pre class="code-example">
+(take '(a b c d e)  2) =&gt; (a b)
+(drop '(a b c d e)  2) =&gt; (c d e)
+</pre>
+    <var>x</var> may be any value -- a proper, circular, or dotted list:
+<pre class="code-example">
+(take '(1 2 3 . d) 2) =&gt; (1 2)
+(drop '(1 2 3 . d) 2) =&gt; (3 . d)
+(take '(1 2 3 . d) 3) =&gt; (1 2 3)
+(drop '(1 2 3 . d) 3) =&gt; d
+</pre>
+    For a legal <var>i</var>, <code>take</code> and <code>drop</code> partition the list in a manner which
+    can be inverted with <code>append</code>:
+<pre class="code-example">
+(append (take <var>x</var> <var>i</var>) (drop <var>x</var> <var>i</var>)) = <var>x</var>
+</pre>
+    <code>drop</code> is exactly equivalent to performing <var>i</var> cdr operations on <var>x</var>;
+    the returned value shares a common tail with <var>x</var>.
+
+    If the argument is a list of non-zero length, <code>take</code> is guaranteed to
+    return a freshly-allocated list, even in the case where the entire
+    list is taken, <em>e.g.</em> <code>(take lis (length lis))</code>.
+</dd>
+<!--
+==== drop-right
+==== take-right
+============================================================================-->
+<dt class="proc-def1">
+<a name="take-right"></a>
+<code class="proc-def">take-right</code><var> flist i -&gt; object</var>
+</dt>
+<dt class="proc-defn">
+<a name="drop-right"></a>
+<code class="proc-def">drop-right</code><var> flist i -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    <code>take-right</code> returns the last <var>i</var> elements of <var>flist</var>.<br />
+    <code>drop-right</code> returns all but the last <var>i</var> elements of <var>flist</var>.
+</p>
+<pre class="code-example">
+(take-right '(a b c d e) 2) =&gt; (d e)
+(drop-right '(a b c d e) 2) =&gt; (a b c)
+</pre>
+<p>
+    The returned list may share a common tail with the argument list.
+</p>
+<p>
+    <var>flist</var> may be any finite list, either proper or dotted:
+</p>
+<pre class="code-example">
+(take-right '(1 2 3 . d) 2) =&gt; (2 3 . d)
+(drop-right '(1 2 3 . d) 2) =&gt; (1)
+(take-right '(1 2 3 . d) 0) =&gt; d
+(drop-right '(1 2 3 . d) 0) =&gt; (1 2 3)
+</pre>
+<p>
+    For a legal <var>i</var>, <code>take-right</code> and <code>drop-right</code> partition the list in a manner
+    which can be inverted with <code>append</code>:
+</p>
+<pre class="code-example">
+(append (drop-right flist <var>i</var>) (take-right flist <var>i</var>)) = <var>flist</var>
+</pre>
+<p>
+    <code>take-right</code>'s return value is guaranteed to share a common tail with <var>flist</var>.
+
+    If the argument is a list of non-zero length, <code>drop-right</code> is guaranteed to
+    return a freshly-allocated list, even in the case where nothing is
+    dropped, <em>e.g.</em> <code>(drop-right lis 0)</code>.
+</p>
+</dd>
+<!--
+==== drop-right!
+==== take!
+============================================================================-->
+<dt class="proc-def1">
+<a name="take!"></a>
+<code class="proc-def">take!</code><var>        x     i -&gt; list</var>
+</dt>
+<dt class="proc-defn">
+<a name="drop-right!"></a>
+<code class="proc-def">drop-right!</code><var>  flist i -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    <code>take!</code> and <code>drop-right!</code> are "linear-update" variants of <code>take</code> and
+    <code>drop-right</code>: the procedure is allowed, but not required, to alter the
+    argument list to produce the result.
+</p><p>
+    If <var>x</var> is circular, <code>take!</code> may return a shorter-than-expected list:
+</p>
+<pre class="code-example">
+(take! (circular-list 1 3 5) 8) =&gt; (1 3)
+(take! (circular-list 1 3 5) 8) =&gt; (1 3 5 1 3 5 1 3)
+</pre>
+</dd>
+
+<!--
+==== split-at!
+==== split-at
+============================================================================-->
+<dt class="proc-def1">
+<a name="split-at"></a>
+<code class="proc-def">split-at&nbsp;</code><var> x i -&gt; [list object]</var>
+</dt>
+<dt class="proc-defn">
+<a name="split-at!"></a>
+<code class="proc-def">split-at!</code><var> x i -&gt; [list object]</var>
+</dt>
+<dd class="proc-def">
+<p>
+    <code>split-at</code> splits the list <var>x</var>
+    at index <var>i</var>, returning a list of the
+    first <var>i</var> elements, and the remaining tail. It is equivalent
+    to
+</p>
+<pre class="code-example">
+(values (take x i) (drop x i))
+</pre>
+<p>
+    <code>split-at!</code> is the linear-update variant. It is allowed, but not
+    required, to alter the argument list to produce the result.
+</p>
+<pre class="code-example">
+(split-at '(a b c d e f g h) 3) =&gt;
+    (a b c)
+    (d e f g h)
+</pre>
+</dd>
+
+<!--
+==== last-pair
+==== last
+============================================================================-->
+<dt class="proc-def1">
+<a name="last"></a>
+<code class="proc-def">last</code><var> pair -&gt; object</var>
+</dt>
+<dt class="proc-defn">
+<a name="last-pair"></a>
+<code class="proc-def">last-pair</code><var> pair -&gt; pair</var>
+</dt>
+<dd class="proc-def">
+<p>
+    <code>last</code> returns the last element of the non-empty,
+    finite list <var>pair</var>.
+    <code>last-pair</code> returns the last pair in the non-empty,
+    finite list <var>pair</var>.
+</p>
+<pre class="code-example">
+(last '(a b c)) =&gt; c
+(last-pair '(a b c)) =&gt; (c)
+</pre>
+</dd>
+</dl>
+
+<!--========================================================================-->
+<h2><a name="Miscellaneous">Miscellaneous: length, append, concatenate, reverse, zip &amp; count</a></h2>
+
+<dl>
+<!--
+==== length+
+==== length
+============================================================================-->
+<dt class="proc-def1">
+<a name="length"></a>
+<code class="proc-def">length&nbsp;&nbsp;</code><var>list -&gt; integer</var>
+</dt>
+<dt class="proc-defn">
+<a name="length+"></a>
+<code class="proc-def">length+&nbsp;</code><var>clist -&gt; integer or #f</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Both <code>length</code> and <code>length+</code> return the length of the argument.
+    It is an error to pass a value to <code>length</code> which is not a proper
+    list (finite and nil-terminated). In particular, this means an
+    implementation may diverge or signal an error when <code>length</code> is
+    applied to a circular list.
+</p>
+<p>
+    <code>length+</code>, on the other hand, returns <code>#F</code> when applied to a circular
+    list.
+</p>
+<p>
+    The length of a proper list is a non-negative integer <var>n</var> such that <code>cdr</code>
+    applied <var>n</var> times to the list produces the empty list.
+</p>
+</dd>
+
+<!--
+==== append append!
+============================================================================-->
+<dt class="proc-def1">
+<a name="append"></a>
+<code class="proc-def">append&nbsp;</code><var> list<sub>1</sub> ... -&gt; list</var>
+</dt>
+<dt class="proc-defn">
+<a name="append!"></a>
+<code class="proc-def">append!</code><var> list<sub>1</sub> ... -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    [<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>]
+    <code>append</code> returns a list consisting of the elements
+    of <var>list<sub>1</sub></var>
+    followed by the elements of the other list parameters.
+</p>
+<pre class="code-example">
+(append '(x) '(y))        =&gt;  (x y)
+(append '(a) '(b c d))    =&gt;  (a b c d)
+(append '(a (b)) '((c)))  =&gt;  (a (b) (c))
+</pre>
+<p>
+    The resulting list is always newly allocated, except that it
+    shares structure with the final <var>list<sub>i</sub></var> argument.
+    This last argument may be any value at all;
+    an improper list results if it is not
+    a proper list. All other arguments must be proper lists.
+</p>
+<pre class="code-example">
+(append '(a b) '(c . d))  =&gt;  (a b c . d)
+(append '() 'a)           =&gt;  a
+(append '(x y))           =&gt;  (x y)
+(append)                  =&gt;  ()
+</pre>
+<p>
+    <code>append!</code> is the "linear-update" variant of <code>append</code>
+    -- it is allowed, but not required, to alter cons cells in the argument
+    lists to construct the result list.
+    The last argument is never altered; the result
+    list shares structure with this parameter.
+</p>
+</dd>
+<!--
+==== concatenate concatenate!
+============================================================================-->
+<dt class="proc-def1">
+<a name="concatenate"></a>
+<code class="proc-def">concatenate&nbsp;</code><var> list-of-lists -&gt; value</var>
+</dt>
+<dt class="proc-defn">
+<a name="concatenate!"></a>
+<code class="proc-def">concatenate!</code><var> list-of-lists -&gt; value</var>
+</dt>
+<dd class="proc-def">
+<p>
+    These functions append the elements of their argument together.
+    That is, <code>concatenate</code> returns
+</p>
+<pre class="code-example">
+(apply append list-of-lists)
+</pre>
+<p>
+    or, equivalently,
+</p>
+<pre class="code-example">
+(reduce-right append '() list-of-lists)
+</pre>
+<p>
+    <code>concatenate!</code> is the linear-update variant, defined in
+    terms of <code>append!</code> instead of <code>append</code>.
+</p>
+<p>
+    Note that some Scheme implementations do not support passing more than a
+    certain number (<em>e.g.</em>, 64) of arguments to an n-ary procedure.
+    In these implementations, the <code>(apply append ...)</code> idiom
+    would fail when applied to long lists,
+    but <code>concatenate</code> would continue to function properly.
+</p>
+<p>
+    As with <code>append</code> and <code>append!</code>,
+    the last element of the input list may be any value at all.
+</p>
+</dd>
+<!--
+==== reverse reverse!
+============================================================================-->
+<dt class="proc-def1">
+<a name="reverse"></a>
+<code class="proc-def">reverse&nbsp;</code><var> list -&gt; list</var>
+</dt>
+<dt class="proc-defn">
+<a name="reverse!"></a>
+<code class="proc-def">reverse!</code><var> list -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    [<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>]
+
+    <code>reverse</code> returns a newly allocated list consisting of
+    the elements of <var>list</var> in reverse order.
+</p>
+<pre class="code-example">
+(reverse '(a b c)) =&gt;  (c b a)
+(reverse '(a (b c) d (e (f))))
+    =&gt;  ((e (f)) d (b c) a)
+</pre>
+<p>
+    <code>reverse!</code> is the linear-update variant of <code>reverse</code>.
+    It is permitted, but not required, to alter the argument's cons cells
+    to produce the reversed list.
+</p>
+</dd>
+
+<!--
+==== append-reverse!
+==== append-reverse
+============================================================================-->
+<dt class="proc-def1">
+<a name="append-reverse"></a>
+<code class="proc-def">append-reverse&nbsp;&nbsp;</code><var>rev-head tail -&gt; list</var>
+</dt>
+<dt class="proc-defn">
+<a name="append-reverse!"></a>
+<code class="proc-def">append-reverse!&nbsp;</code><var>rev-head tail -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    <code>append-reverse</code> returns
+	<code>(append (reverse <var>rev-head</var>) <var>tail</var>)</code>.
+    It is provided because it is a common operation -- a common
+    list-processing style calls for this exact operation to transfer values
+    accumulated in reverse order onto the front of another list, and because
+    the implementation is significantly more efficient than the simple
+    composition it replaces. (But note that this pattern of iterative
+    computation followed by a reverse can frequently be rewritten as a
+    recursion, dispensing with the <code>reverse</code> and <code>append-reverse</code> steps, and
+    shifting temporary, intermediate storage from the heap to the stack,
+    which is typically a win for reasons of cache locality and eager storage
+    reclamation.)
+</p>
+<p>
+    <code>append-reverse!</code> is just the linear-update variant -- it is allowed, but
+    not required, to alter <var>rev-head</var>'s cons cells to construct the result.
+</p>
+</dd>
+<!--
+==== zip
+============================================================================-->
+<dt class="proc-def" id="zip"><code class="proc-def">zip</code> <var>clist<sub>1</sub> clist<sub>2</sub> ... -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<pre>(lambda lists (apply map list lists))
+</pre>
+<p>
+    If <code>zip</code> is passed <var>n</var> lists, it returns a list as long as the shortest
+    of these lists, each element of which is an <var>n</var>-element list comprised
+    of the corresponding elements from the parameter lists.
+</p>
+<pre class="code-example">
+(zip '(one two three)
+     '(1 2 3)
+     '(odd even odd even odd even odd even))
+    =&gt; ((one 1 odd) (two 2 even) (three 3 odd))
+
+(zip '(1 2 3)) =&gt; ((1) (2) (3))
+</pre>
+<p>
+    At least one of the argument lists must be finite:
+</p>
+<pre class="code-example">
+(zip '(3 1 4 1) (circular-list #f #t))
+    =&gt; ((3 #f) (1 #t) (4 #f) (1 #t))
+</pre>
+</dd>
+<!--
+==== unzip5
+==== unzip4
+==== unzip3
+==== unzip2
+==== unzip1
+============================================================================-->
+<dt class="proc-def1" id="unzip1">  <code class="proc-def">unzip1</code><var> list -&gt; list</var>
+</dt>
+<dt class="proc-defi" id="unzip2"> <code class="proc-def">unzip2</code><var> list -&gt; [list list]</var>
+</dt>
+<dt class="proc-defi" id="unzip3"> <code class="proc-def">unzip3</code><var> list -&gt; [list list list]</var>
+</dt>
+<dt class="proc-defi" id="unzip4"> <code class="proc-def">unzip4</code><var> list -&gt; [list list list list]</var>
+</dt>
+<dt class="proc-defn" id="unzip5"> <code class="proc-def">unzip5</code><var> list -&gt; [list list list list list]</var>
+</dt>
+<dd class="proc-def">
+<p>
+    <code>unzip1</code> takes a list of lists,
+    where every list must contain at least one element,
+    and returns a list containing the initial element of each such list.
+    That is, it returns <code>(map car lists)</code>.
+    <code>unzip2</code> takes a list of lists, where every list must contain at least
+    two elements, and returns two values: a list of the first elements,
+    and a list of the second elements. <code>unzip3</code> does the same for the first
+    three elements of the lists, and so forth.
+</p>
+<pre class="code-example">
+(unzip2 '((1 one) (2 two) (3 three))) =&gt;
+    (1 2 3)
+    (one two three)
+</pre>
+</dd>
+<!--
+==== count
+============================================================================-->
+<dt class="proc-def">
+<a name="count"></a>
+<code class="proc-def">count</code><var> pred clist<sub>1</sub> clist<sub>2</sub> ... -&gt; integer</var>
+</dt>
+<dd class="proc-def">
+<p>
+    <var>pred</var> is a procedure taking as many arguments as there
+    are lists and returning a single value. It is applied
+    element-wise to the elements of the <var>list</var>s, and a count is
+    tallied of the number of elements that produce a true value. This count
+    is returned. <code>count</code> is "iterative" in that it is guaranteed
+    to apply <var>pred</var> to the <var>list</var> elements in a
+    left-to-right order.
+    The counting stops when the shortest list expires.
+</p>
+<pre class="code-example">
+(count even? '(3 1 4 1 5 9 2 5 6)) =&gt; 3
+(count &lt; '(1 2 4 8) '(2 4 6 8 10 12 14 16)) =&gt; 3
+</pre>
+<p>
+    At least one of the argument lists must be finite:
+</p>
+<pre class="code-example">
+(count &lt; '(3 1 4 1) (circular-list 1 10)) =&gt; 2
+</pre>
+</dd>
+</dl>
+
+<!--========================================================================-->
+<h2 id="FoldUnfoldMap">Fold, unfold &amp; map</h2>
+<dl>
+<!--
+==== fold
+============================================================================-->
+<dt class="proc-def">
+<a name="fold"></a>
+<code class="proc-def">fold</code><var> kons knil clist<sub>1</sub> clist<sub>2</sub> ... -&gt; value</var>
+</dt>
+<dd class="proc-def">
+<p>
+    The fundamental list iterator.
+</p>
+<p>
+    First, consider the single list-parameter case. If <var>clist<sub>1</sub></var> = (<var>e<sub>1</sub></var> <var>e<sub>2</sub></var> ... <var>e<sub>n</sub></var>),
+    then this procedure returns
+</p>
+<div class="indent">
+<code>(<var>kons</var> <var>e<sub>n</sub></var> ... (<var>kons</var> <var>e<sub>2</sub></var> (<var>kons</var> <var>e<sub>1</sub></var> <var>knil</var>)) ... )</code>
+</div>
+<p>
+    That is, it obeys the (tail) recursion
+</p>
+<pre class="code-example">
+(fold <var>kons</var> <var>knil</var> <var>lis</var>) = (fold <var>kons</var> (<var>kons</var> (car <var>lis</var>) <var>knil</var>) (cdr <var>lis</var>))
+(fold <var>kons</var> <var>knil</var> '()) = <var>knil</var>
+</pre>
+<p>
+    Examples:
+</p>
+<pre class="code-example">
+(fold + 0 lis)			; Add up the elements of LIS.
+
+(fold cons '() lis)		; Reverse LIS.
+
+(fold cons tail rev-head)	; See APPEND-REVERSE.
+
+;; How many symbols in LIS?
+(fold (lambda (x count) (if (symbol? x) (+ count 1) count))
+      0
+      lis)
+
+;; Length of the longest string in LIS:
+(fold (lambda (s max-len) (max max-len (string-length s)))
+      0
+      lis)
+</pre>
+<p>
+    If <var>n</var> list arguments are provided, then the <var>kons</var> function must take
+    <var>n</var>+1 parameters: one element from each list, and the "seed" or fold
+    state, which is initially <var>knil</var>. The fold operation terminates when
+    the shortest list runs out of values:
+</p>
+<pre class="code-example">
+(fold cons* '() '(a b c) '(1 2 3 4 5)) =&gt; (c 3 b 2 a 1)
+</pre>
+<p>
+    At least one of the list arguments must be finite.
+</p>
+</dd>
+<!--
+==== fold-right
+============================================================================-->
+<dt class="proc-def">
+<a name="fold-right"></a>
+<code class="proc-def">fold-right</code><var> kons knil clist<sub>1</sub> clist<sub>2</sub> ... -&gt; value</var>
+</dt>
+<dd class="proc-def">
+<p>
+    The fundamental list recursion operator.
+</p>
+<p>
+    First, consider the single list-parameter case. If <var>clist<sub>1</sub></var> = <code>(<var>e<sub>1</sub></var> <var>e<sub>2</sub></var> ... <var>e<sub>n</sub></var>)</code>,
+    then this procedure returns
+</p>
+<div class="indent"><code>
+(<var>kons</var> <var>e<sub>1</sub></var> (<var>kons</var> <var>e<sub>2</sub></var> ... (<var>kons</var> <var>e<sub>n</sub></var> <var>knil</var>)))
+</code></div>
+<p>
+    That is, it obeys the recursion
+</p>
+<pre class="code-example">
+(fold-right <var>kons</var> <var>knil</var> <var>lis</var>) = (<var>kons</var> (car <var>lis</var>) (fold-right <var>kons</var> <var>knil</var> (cdr <var>lis</var>)))
+(fold-right <var>kons</var> <var>knil</var> '()) = <var>knil</var>
+</pre>
+<p>
+    Examples:
+</p>
+<pre class="code-example">
+(fold-right cons '() lis)		; Copy LIS.
+
+;; Filter the even numbers out of LIS.
+(fold-right (lambda (x l) (if (even? x) (cons x l) l)) '() lis))
+</pre>
+<p>
+    If <var>n</var> list arguments are provided, then the <var>kons</var> function must take
+    <var>n</var>+1 parameters: one element from each list, and the "seed" or fold
+    state, which is initially <var>knil</var>. The fold operation terminates when
+    the shortest list runs out of values:
+</p>
+<pre class="code-example">
+(fold-right cons* '() '(a b c) '(1 2 3 4 5)) =&gt; (a 1 b 2 c 3)
+</pre>
+<p>
+    At least one of the list arguments must be finite.
+</p>
+</dd>
+<!--
+==== pair-fold
+============================================================================-->
+<dt class="proc-def">
+<a name="pair-fold"></a>
+<code class="proc-def">pair-fold</code><var> kons knil clist<sub>1</sub> clist<sub>2</sub> ... -&gt; value</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Analogous to <code>fold</code>, but <var>kons</var> is applied to successive sublists of the
+    lists, rather than successive elements -- that is, <var>kons</var> is applied to the
+    pairs making up the lists, giving this (tail) recursion:
+</p>
+<pre class="code-example">
+(pair-fold <var>kons</var> <var>knil</var> <var>lis</var>) = (let ((tail (cdr <var>lis</var>)))
+                              (pair-fold <var>kons</var> (<var>kons</var> <var>lis</var> <var>knil</var>) tail))
+(pair-fold <var>kons</var> <var>knil</var> <code>'()</code>) = <var>knil</var>
+</pre>
+<p>
+    For finite lists, the <var>kons</var> function may reliably apply
+    <code>set-cdr!</code> to the pairs it is given
+    without altering the sequence of execution.
+</p>
+<p>
+    Example:
+</p>
+<pre class="code-example">
+;;; Destructively reverse a list.
+(pair-fold (lambda (pair tail) (set-cdr! pair tail) pair) '() lis)
+</pre>
+<p>
+    At least one of the list arguments must be finite.
+</p>
+</dd>
+<!--
+==== pair-fold-right
+============================================================================-->
+<dt class="proc-def">
+<a name="pair-fold-right"></a>
+<code class="proc-def">pair-fold-right</code><var> kons knil clist<sub>1</sub> clist<sub>2</sub> ... -&gt; value</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Holds the same relationship with <code>fold-right</code> that <code>pair-fold</code> holds with <code>fold</code>.
+    Obeys the recursion
+</p>
+<pre class="code-example">
+(pair-fold-right <var>kons</var> <var>knil</var> <var>lis</var>) =
+    (<var>kons</var> <var>lis</var> (pair-fold-right <var>kons</var> <var>knil</var> (cdr <var>lis</var>)))
+(pair-fold-right <var>kons</var> <var>knil</var> <code>'()</code>) = <var>knil</var>
+</pre>
+<p>
+    Example:
+</p>
+<pre class="code-example">
+(pair-fold-right cons '() '(a b c)) =&gt; ((a b c) (b c) (c))
+</pre>
+<p>
+    At least one of the list arguments must be finite.
+</p>
+</dd>
+<!--
+==== reduce
+============================================================================-->
+<dt class="proc-def">
+<a name="reduce"></a>
+<code class="proc-def">reduce</code><var> f ridentity list -&gt; value</var>
+</dt>
+<dd class="proc-def">
+<p>
+    <code>reduce</code> is a variant of <code>fold</code>.
+</p>
+<p>
+    <var>ridentity</var> should be a "right identity" of the procedure <var>f</var> -- that is,
+    for any value <var>x</var> acceptable to <var>f</var>,
+</p>
+<pre class="code-example">
+(<var>f</var> <var>x</var> <var>ridentity</var>) = <var>x</var>
+</pre>
+<p>
+    <code>reduce</code> has the following definition:
+</p>
+<div class="indent">
+If <var>list</var> = (),  return <var>ridentity</var>;<br />
+Otherwise,    return <code>(fold <var>f</var> (car <var>list</var>) (cdr <var>list</var>))</code>.
+</div>
+<p>
+    ...in other words, we compute
+    <code>(fold <var>f</var> <var>ridentity</var> <var>list</var>)</code>.
+</p>
+<p>
+    Note that <var>ridentity</var> is used <em>only</em> in the empty-list case.
+    You typically use <code>reduce</code> when applying <var>f</var> is expensive and you'd
+    like to avoid the extra application incurred when <code>fold</code> applies
+    <var>f</var> to the head of <var>list</var> and the identity value,
+    redundantly producing the same value passed in to <var>f</var>.
+    For example, if <var>f</var> involves searching a file directory or
+    performing a database query, this can be significant.
+    In general, however, <code>fold</code> is useful in many contexts where <code>reduce</code> is not
+    (consider the examples given in the <code>fold</code> definition -- only one of the
+    five folds uses a function with a right identity.
+    The other four may not be performed with <code>reduce</code>).
+</p>
+<p>
+    Note: MIT Scheme and Haskell flip F's arg order for their <code>reduce</code> and
+    <code>fold</code> functions.
+</p>
+<pre class="code-example">
+;; Take the max of a list of non-negative integers.
+(reduce max 0 nums) ; i.e., (apply max 0 nums)
+</pre>
+</dd>
+<!--
+==== reduce-right
+============================================================================-->
+<dt class="proc-def">
+<a name="reduce-right"></a>
+<code class="proc-def">reduce-right</code><var> f ridentity list -&gt; value</var>
+</dt>
+<dd class="proc-def">
+<p>
+    <code>reduce-right</code> is the fold-right variant of <code>reduce</code>.
+    It obeys the following definition:
+</p>
+<pre class="code-example">
+(reduce-right <var>f</var> <var>ridentity</var> '()) = <var>ridentity</var>
+(reduce-right <var>f</var> <var>ridentity</var> '(<var>e<sub>1</sub></var>)) = (<var>f</var> <var>e<sub>1</sub></var> <var>ridentity</var>) = <var>e<sub>1</sub></var>
+(reduce-right <var>f</var> <var>ridentity</var> '(<var>e<sub>1</sub></var> <var>e<sub>2</sub></var> ...)) =
+    (fold-right <var>f</var> <var>e<sub>1</sub></var> '(<var>e<sub>2</sub></var> ...))
+</pre>
+<p>
+  ... in other words, we compute <code>(fold-right <var>f</var> <var>ridentity</var> <var>list</var>)</code>, but as with <code>reduce</code>, only use <var>ridentity</var> in the empty-list case.
+</p>
+<pre class="code-example">
+;; Append a bunch of lists together.
+;; I.e., (apply append list-of-lists)
+(reduce-right append '() list-of-lists)
+</pre>
+</dd>
+<!--
+==== unfold
+============================================================================-->
+<dt class="proc-def">
+<a name="unfold"></a>
+<code class="proc-def">unfold</code><var> p f g seed [tail-gen] -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+<code>unfold</code> is best described by its basic recursion:
+</p>
+<pre class="code-example">
+(unfold <var>p</var> <var>f</var> <var>g</var> <var>seed</var>) =
+    (if (<var>p</var> <var>seed</var>) (<var>tail-gen</var> <var>seed</var>)
+        (cons (<var>f</var> <var>seed</var>)
+              (unfold <var>p</var> <var>f</var> <var>g</var> (<var>g</var> <var>seed</var>))))
+</pre>
+<dl>
+  <dt> <var>p</var> </dt>
+  <dd> Determines when to stop unfolding.</dd>
+  <dt> <var>f</var> </dt>
+  <dd> Maps each seed value to the corresponding list element.</dd>
+  <dt> <var>g</var> </dt>
+  <dd> Maps each seed value to next seed value.</dd>
+  <dt> <var>seed</var> </dt>
+  <dd> The "state" value for the unfold.</dd>
+  <dt> <var>tail-gen</var> </dt>
+  <dd> Creates the tail of the list; defaults to <code>(lambda (x) '())</code></dd>
+</dl>
+<p>
+    In other words, we use <var>g</var> to generate a sequence of seed values
+</p>
+<div class="indent">
+<var>seed</var>, <var>g</var>(<var>seed</var>), <var>g<sup>2</sup></var>(<var>seed</var>), <var>g<sup>3</sup></var>(<var>seed</var>), ...
+</div>
+<p>
+    These seed values are mapped to list elements by <var>f</var>,
+    producing the elements of the result list in a left-to-right order.
+    <var>P</var> says when to stop.
+</p>
+<p>
+    <code>unfold</code> is the fundamental recursive list constructor,
+    just as <code>fold-right</code> is
+    the fundamental recursive list consumer.
+    While <code>unfold</code> may seem a bit abstract
+    to novice functional programmers, it can be used in a number of ways:
+</p>
+<pre class="code-example">
+;; List of squares: 1^2 ... 10^2
+(unfold (lambda (x) (&gt; x 10))
+        (lambda (x) (* x x))
+	(lambda (x) (+ x 1))
+	1)
+
+(unfold null-list? car cdr lis) ; Copy a proper list.
+
+;; Read current input port into a list of values.
+(unfold eof-object? values (lambda (x) (read)) (read))
+
+;; Copy a possibly non-proper list:
+(unfold not-pair? car cdr lis
+              values)
+
+;; Append HEAD onto TAIL:
+(unfold null-list? car cdr head
+              (lambda (x) tail))
+</pre>
+<p>
+    Interested functional programmers may enjoy noting that
+    <code>fold-right</code> and <code>unfold</code>
+    are in some sense inverses.
+    That is, given operations <var>knull?</var>, <var>kar</var>,
+    <var>kdr</var>, <var>kons</var>, and <var>knil</var> satisfying
+</p>
+<div class="indent">
+<code>(<var>kons</var> (<var>kar</var> <var>x</var>) (<var>kdr</var> <var>x</var>))</code> = <code>x</code>
+    and
+<code>(<var>knull?</var> <var>knil</var>)</code> = <code>#t</code>
+</div>
+<p>
+    then
+</p>
+<div class="indent">
+<code>(fold-right <var>kons</var> <var>knil</var> (unfold <var>knull?</var> <var>kar</var> <var>kdr</var> <var>x</var>))</code> = <var>x</var>
+</div>
+<p>
+    and
+</p>
+<div class="indent">
+<code>(unfold <var>knull?</var> <var>kar</var> <var>kdr</var> (fold-right <var>kons</var> <var>knil</var> <var>x</var>))</code> = <var>x</var>.
+</div>
+<p>
+    This combinator sometimes is called an "anamorphism;" when an
+    explicit <var>tail-gen</var> procedure is supplied, it is called an
+    "apomorphism."
+</p>
+</dd>
+<!--
+==== unfold-right
+============================================================================-->
+<dt class="proc-def">
+<a name="unfold-right"></a>
+<code class="proc-def">unfold-right</code><var> p f g seed [tail] -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    <code>unfold-right</code> constructs a list with the following loop:
+</p>
+<pre class="code-example">
+(let lp ((seed seed) (lis tail))
+  (if (p seed) lis
+      (lp (g seed)
+          (cons (f seed) lis))))
+</pre>
+<dl>
+  <dt> <var>p</var> </dt>
+  <dd> Determines when to stop unfolding.</dd>
+  <dt> <var>f</var> </dt>
+  <dd> Maps each seed value to the corresponding list element.</dd>
+  <dt> <var>g</var> </dt>
+  <dd> Maps each seed value to next seed value.</dd>
+  <dt> <var>seed</var> </dt>
+  <dd> The "state" value for the unfold.</dd>
+  <dt> <var>tail</var> </dt>
+  <dd> list terminator; defaults to <code>'()</code>.</dd>
+</dl>
+<p>
+    In other words, we use <var>g</var> to generate a sequence of seed values
+</p>
+<div class="indent">
+<var>seed</var>, <var>g</var>(<var>seed</var>), <var>g<sup>2</sup></var>(<var>seed</var>), <var>g<sup>3</sup></var>(<var>seed</var>), ...
+</div>
+<p>
+    These seed values are mapped to list elements by <var>f</var>,
+    producing the elements of the result list in a right-to-left order.
+    <var>P</var> says when to stop.
+</p>
+<p>
+    <code>unfold-right</code> is the fundamental iterative list constructor,
+    just as <code>fold</code> is the
+    fundamental iterative list consumer.
+    While <code>unfold-right</code> may seem a bit abstract
+    to novice functional programmers, it can be used in a number of ways:
+</p>
+<pre class="code-example">
+;; List of squares: 1^2 ... 10^2
+(unfold-right zero?
+              (lambda (x) (* x x))
+              (lambda (x) (- x 1))
+              10)
+
+;; Reverse a proper list.
+(unfold-right null-list? car cdr lis)
+
+;; Read current input port into a list of values.
+(unfold-right eof-object? values (lambda (x) (read)) (read))
+
+;; (append-reverse rev-head tail)
+(unfold-right null-list? car cdr rev-head tail)
+</pre>
+<p>
+    Interested functional programmers may enjoy noting that
+    <code>fold</code> and <code>unfold-right</code>
+    are in some sense inverses.
+    That is, given operations <var>knull?</var>, <var>kar</var>,
+    <var>kdr</var>, <var>kons</var>, and <var>knil</var> satisfying
+</p>
+<div class="indent">
+<code>(<var>kons</var> (<var>kar</var> <var>x</var>) (<var>kdr</var> <var>x</var>))</code> = <code>x</code>
+    and
+<code>(<var>knull?</var> <var>knil</var>)</code> = <code>#t</code>
+</div>
+<p>
+    then
+</p>
+<div class="indent">
+<code>(fold <var>kons</var> <var>knil</var> (unfold-right <var>knull?</var> <var>kar</var> <var>kdr</var> <var>x</var>))</code> = <var>x</var>
+</div>
+<p>
+    and
+</p>
+<div class="indent">
+<code>(unfold-right <var>knull?</var> <var>kar</var> <var>kdr</var> (fold <var>kons</var> <var>knil</var> <var>x</var>))</code> = <var>x</var>.
+</div>
+<p>
+    This combinator presumably has some pretentious mathematical name;
+    interested readers are invited to communicate it to the author.
+</p>
+</dd>
+<!--
+==== map
+============================================================================-->
+<dt class="proc-def">
+<a name="map"></a>
+<code class="proc-def">map</code><var> proc clist<sub>1</sub> clist<sub>2</sub> ... -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+     [<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>+]
+     <var>proc</var> is a procedure taking as many arguments
+     as there are list arguments and returning a single value.
+     <code>map</code> applies <var>proc</var> element-wise to the elements
+     of the lists and returns a list of the results,
+     in order.
+     The dynamic order in which <var>proc</var>
+     is applied to the elements of the lists is unspecified.
+</p>
+<pre class="code-example">
+(map cadr '((a b) (d e) (g h))) =&gt;  (b e h)
+
+(map (lambda (n) (expt n n))
+     '(1 2 3 4 5))
+    =&gt;  (1 4 27 256 3125)
+
+(map + '(1 2 3) '(4 5 6)) =&gt;  (5 7 9)
+
+(let ((count 0))
+  (map (lambda (ignored)
+         (set! count (+ count 1))
+         count)
+       '(a b))) =&gt;  (1 2) <em>or</em> (2 1)
+</pre>
+<p>
+    This procedure is extended from its
+    <abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>
+    specification to allow the arguments to be of unequal length;
+    it terminates when the shortest list runs out.
+</p>
+<p>
+    At least one of the argument lists must be finite:
+</p>
+<pre class="code-example">
+(map + '(3 1 4 1) (circular-list 1 0)) =&gt; (4 1 5 1)
+</pre>
+</dd>
+<!--
+==== for-each
+============================================================================-->
+<dt class="proc-def">
+<a name="for-each"></a>
+<code class="proc-def">for-each</code><var> proc clist<sub>1</sub> clist<sub>2</sub> ... -&gt; unspecified</var>
+</dt>
+<dd class="proc-def">
+<p>
+     [<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>+]
+</p>
+<p>
+     The arguments to <code>for-each</code> are like the arguments to
+     <code>map</code>, but
+     <code>for-each</code> calls <var>proc</var> for its side effects rather
+     than for its values.
+     Unlike <code>map</code>, <code>for-each</code> is guaranteed to call
+     <var>proc</var> on the elements of the lists in order from the first
+     element(s) to the last,
+     and the value returned by <code>for-each</code> is unspecified.
+</p>
+<pre class="code-example">
+(let ((v (make-vector 5)))
+  (for-each (lambda (i)
+              (vector-set! v i (* i i)))
+            '(0 1 2 3 4))
+  v)  =&gt;  #(0 1 4 9 16)
+</pre>
+<p>
+    This procedure is extended from its
+    <abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>
+    specification to allow the arguments to be of unequal length;
+    it terminates when the shortest list runs out.
+</p>
+<p>
+    At least one of the argument lists must be finite.
+</p>
+</dd>
+<!--
+==== append-map!
+==== append-map
+============================================================================-->
+<dt class="proc-def1">
+<a name="append-map"></a>
+<code class="proc-def">append-map&nbsp;&nbsp;</code><var>f clist<sub>1</sub> clist<sub>2</sub> ... -&gt; value</var>
+</dt>
+<dt class="proc-defn">
+<a name="append-map!"></a>
+<code class="proc-def">append-map!&nbsp;</code><var>f clist<sub>1</sub> clist<sub>2</sub> ... -&gt; value</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Equivalent to
+</p>
+<div class="indent"><code>
+(apply append  (map <var>f</var> <var>clist<sub>1</sub></var> <var>clist<sub>2</sub></var> ...))
+</code></div>
+<p>
+    and
+</p>
+<div class="indent"><code>
+(apply append! (map <var>f</var> <var>clist<sub>1</sub></var> <var>clist<sub>2</sub></var> ...))
+</code></div>
+<p>
+    Map <var>f</var> over the elements of the lists, just as in the <code>map</code> function.
+    However, the results of the applications are appended together to
+    make the final result. <code>append-map</code> uses <code>append</code> to append the results
+    together; <code>append-map!</code> uses <code>append!</code>.
+</p>
+<p>
+    The dynamic order in which the various applications of <var>f</var> are made is
+    not specified.
+</p>
+<p>
+    Example:
+</p>
+<pre class="code-example">
+(append-map! (lambda (x) (list x (- x))) '(1 3 8))
+    =&gt; (1 -1 3 -3 8 -8)
+</pre>
+<p>
+    At least one of the list arguments must be finite.
+</p>
+</dd>
+<!--
+==== map!
+============================================================================-->
+<dt class="proc-def">
+<a name="map!"></a>
+<code class="proc-def">map!</code><var> f list<sub>1</sub> clist<sub>2</sub> ... -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Linear-update variant of <code>map</code> -- <code>map!</code> is allowed, but not required, to
+    alter the cons cells of <var>list<sub>1</sub></var> to construct the result list.
+</p>
+<p>
+    The dynamic order in which the various applications of <var>f</var> are made is
+    not specified.
+</p>
+<p>
+    In the n-ary case, <var>clist<sub>2</sub></var>, <var>clist<sub>3</sub></var>, ... must have at least as many
+    elements as <var>list<sub>1</sub></var>.
+</p>
+</dd>
+<!--
+==== map-in-order
+============================================================================-->
+<dt class="proc-def">
+<a name="map-in-order"></a>
+<code class="proc-def">map-in-order </code><var>f</var> <var>clist<sub>1</sub> clist<sub>2</sub> ... -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    A variant of the <code>map</code> procedure that guarantees to apply <var>f</var> across
+    the elements of the <var>list<sub>i</sub></var> arguments in a left-to-right order. This
+    is useful for mapping procedures that both have side effects and
+    return useful values.
+</p>
+<p>
+    At least one of the list arguments must be finite.
+</p>
+</dd>
+<!--
+==== pair-for-each
+============================================================================-->
+<dt class="proc-def">
+<a name="pair-for-each"></a>
+<code class="proc-def">pair-for-each </code><var>f clist<sub>1</sub> clist<sub>2</sub> ... -&gt; unspecific</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Like <code>for-each</code>, but <var>f</var> is applied to successive sublists of the argument
+    lists. That is, <var>f</var> is applied to the cons cells of the lists, rather
+    than the lists' elements. These applications occur in left-to-right
+    order.
+</p>
+<p>
+    The <var>f</var> procedure may reliably apply <code>set-cdr!</code> to the pairs it is given
+    without altering the sequence of execution.
+</p>
+<pre class="code-example">
+(pair-for-each (lambda (pair) (display pair) (newline)) '(a b c)) ==&gt;
+    (a b c)
+    (b c)
+    (c)
+</pre>
+<p>
+    At least one of the list arguments must be finite.
+</p>
+</dd>
+<!--
+==== filter-map
+============================================================================-->
+<dt class="proc-def">
+<a name="filter-map"></a>
+<code class="proc-def">filter-map</code><var> f clist<sub>1</sub> clist<sub>2</sub> ... -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Like <code>map</code>, but only true values are saved.
+</p>
+<pre class="code-example">
+(filter-map (lambda (x) (and (number? x) (* x x))) '(a 1 b 3 c 7))
+    =&gt; (1 9 49)
+</pre>
+<p>
+    The dynamic order in which the various applications of <var>f</var> are made is
+    not specified.
+</p>
+<p>
+    At least one of the list arguments must be finite.
+</p>
+</dd>
+</dl>
+
+<!--========================================================================-->
+<h2 id="FilteringPartitioning">Filtering &amp; partitioning</h2>
+<dl>
+
+<!--
+==== filter
+============================================================================-->
+<dt class="proc-def">
+<a name="filter"></a>
+<code class="proc-def">filter</code><var> pred list -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Return all the elements of <var>list</var> that satisfy predicate <var>pred</var>.
+    The list is not disordered -- elements that appear in the result list
+    occur in the same order as they occur in the argument list.
+    The returned list may share a common tail with the argument list.
+    The dynamic order in which the various applications of <var>pred</var> are made is
+    not specified.
+</p>
+<pre class="code-example">
+(filter even? '(0 7 8 8 43 -4)) =&gt; (0 8 8 -4)
+</pre>
+</dd>
+<!--
+==== partition
+============================================================================-->
+<dt class="proc-def">
+<a name="partition"></a>
+<code class="proc-def">partition</code><var> pred list -&gt; [list list]</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Partitions the elements of <var>list</var> with predicate <var>pred</var>, and returns two
+    values: the list of in-elements and the list of out-elements.
+    The list is not disordered -- elements occur in the result lists
+    in the same order as they occur in the argument list.
+    The dynamic order in which the various applications of <var>pred</var> are made is
+    not specified. One of the returned lists may share a common tail with the
+    argument list.
+</p>
+<pre class="code-example">
+(partition symbol? '(one 2 3 four five 6)) =&gt;
+    (one four five)
+    (2 3 6)
+</pre>
+</dd>
+<!--
+==== remove
+============================================================================-->
+<dt class="proc-def">
+<a name="remove"></a>
+<code class="proc-def">remove</code><var> pred list -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Returns <var>list</var> without the elements that satisfy predicate <var>pred</var>:
+</p>
+<pre class="code-example">
+(lambda (pred list) (filter (lambda (x) (not (pred x))) list))
+</pre>
+<p>
+    The list is not disordered -- elements that appear in the result list
+    occur in the same order as they occur in the argument list.
+    The returned list may share a common tail with the argument list.
+    The dynamic order in which the various applications of <var>pred</var> are made is
+    not specified.
+</p>
+<pre class="code-example">
+(remove even? '(0 7 8 8 43 -4)) =&gt; (7 43)
+</pre>
+</dd>
+<!--
+==== remove!
+==== partition!
+==== filter!
+============================================================================-->
+<dt class="proc-def1">
+<a name="filter!"></a>
+<code class="proc-def">filter!&nbsp;&nbsp;&nbsp;&nbsp;</code><var>pred list -&gt; list</var>
+</dt>
+<dt class="proc-defi">
+<a name="partition!"></a>
+<code class="proc-def">partition!&nbsp;</code><var>pred list -&gt; [list list]</var>
+</dt>
+<dt class="proc-defn">
+<a name="remove!"></a>
+<code class="proc-def">remove!&nbsp;&nbsp;&nbsp;&nbsp;</code><var>pred list -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Linear-update variants of <code>filter</code>, <code>partition</code> and <code>remove</code>.
+    These procedures are allowed, but not required, to alter the cons cells
+    in the argument list to construct the result lists.
+</p>
+</dd>
+</dl>
+
+<!--========================================================================-->
+<h2 id="Searching">Searching</h2>
+
+<p>
+The following procedures all search lists for a leftmost element satisfying
+some criteria. This means they do not always examine the entire list; thus,
+there is no efficient way for them to reliably detect and signal an error when
+passed a dotted or circular list. Here are the general rules describing how
+these procedures work when applied to different kinds of lists:
+</p>
+
+<dl>
+    <dt> Proper lists:
+    </dt>
+    <dd>
+      <p>
+        The standard, canonical behavior happens in this case.
+      </p>
+    </dd>
+    <dt> Dotted lists:
+    </dt>
+    <dd>
+      <p>
+                  It is an error to pass these procedures a dotted list
+                  that does not contain an element satisfying the search
+                  criteria. That is, it is an error if the procedure has
+                  to search all the way to the end of the dotted list.
+		  However, this <abbr title="Scheme Request for Implementation">SRFI</abbr> does <em>not</em> specify anything at all
+                  about the behavior of these procedures when passed a
+                  dotted list containing an element satisfying the search
+                  criteria. It may finish successfully, signal an error,
+                  or perform some third action. Different implementations
+                  may provide different functionality in this case; code
+                  which is compliant with this <abbr title="Scheme Request for Implementation">SRFI</abbr> may not rely on any
+                  particular behavior. Future <abbr title="Scheme Request for Implementation">SRFI</abbr>'s may refine SRFI-1
+                  to define specific behavior in this case.
+      </p>
+      <p>
+		  In brief, SRFI-1 compliant code may not pass a dotted
+                  list argument to these procedures.
+      </p>
+    </dd>
+    <dt> Circular lists:
+    </dt>
+    <dd>
+      <p>
+                  It is an error to pass these procedures a circular list
+                  that does not contain an element satisfying the search
+                  criteria. Note that the procedure is not required to
+                  detect this case; it may simply diverge. It is, however,
+                  acceptable to search a circular list <em>if the search is
+                  successful</em> -- that is, if the list contains an element
+                  satisfying the search criteria.
+      </p>
+    </dd>
+</dl>
+<p>
+Here are some examples, using the <code>find</code> and <code>any</code> procedures as canonical
+representatives:
+</p>
+<pre class="code-example">
+;; Proper list -- success
+(find even? '(1 2 3))	=&gt; 2
+(any  even? '(1 2 3))	=&gt; #t
+
+;; proper list -- failure
+(find even? '(1 7 3))	=&gt; #f
+(any  even? '(1 7 3))	=&gt; #f
+
+;; Failure is error on a dotted list.
+(find even? '(1 3 . x))	=&gt; error
+(any  even? '(1 3 . x))	=&gt; error
+
+;; The dotted list contains an element satisfying the search.
+;; This case is not specified -- it could be success, an error,
+;; or some third possibility.
+(find even? '(1 2 . x))	=&gt; error/undefined
+(any  even? '(1 2 . x))	=&gt; error/undefined ; success, error or other.
+
+;; circular list -- success
+(find even? (circular-list 1 6 3)) =&gt; 6
+(any  even? (circular-list 1 6 3)) =&gt; #t
+
+;; circular list -- failure is error. Procedure may diverge.
+(find even? (circular-list 1 3)) =&gt; error
+(any  even? (circular-list 1 3)) =&gt; error
+</pre>
+
+<dl>
+<!--
+==== find
+============================================================================-->
+<dt class="proc-def">
+<a name="find"></a>
+<code class="proc-def">find</code><var> pred clist -&gt; value</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Return the first element of <var>clist</var> that satisfies predicate <var>pred</var>;
+    false if no element does.
+</p>
+<pre class="code-example">
+(find even? '(3 1 4 1 5 9)) =&gt; 4
+</pre>
+<p>
+    Note that <code>find</code> has an ambiguity in its lookup semantics -- if <code>find</code>
+    returns <code>#f</code>, you cannot tell (in general) if it found a <code>#f</code> element
+    that satisfied <var>pred</var>, or if it did not find any element at all. In
+    many situations, this ambiguity cannot arise -- either the list being
+    searched is known not to contain any <code>#f</code> elements, or the list is
+    guaranteed to have an element satisfying <var>pred</var>. However, in cases
+    where this ambiguity can arise, you should use <code>find-tail</code> instead of
+    <code>find</code> -- <code>find-tail</code> has no such ambiguity:
+</p>
+<pre class="code-example">
+(cond ((find-tail pred lis) =&gt; (lambda (pair) ...)) ; Handle (CAR PAIR)
+      (else ...)) ; Search failed.
+</pre>
+</dd>
+<!--
+==== find-tail
+============================================================================-->
+<dt class="proc-def">
+<a name="find-tail"></a>
+<code class="proc-def">find-tail</code><var> pred clist -&gt; pair or false</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Return the first pair of <var>clist</var> whose car satisfies <var>pred</var>. If no pair does,
+    return false.
+</p>
+<p>
+    <code>find-tail</code> can be viewed as a general-predicate variant of the <code>member</code>
+    function.
+</p>
+<p>
+    Examples:
+</p>
+<pre class="code-example">
+(find-tail even? '(3 1 37 -8 -5 0 0)) =&gt; (-8 -5 0 0)
+(find-tail even? '(3 1 37 -5)) =&gt; #f
+
+;; MEMBER X LIS:
+(find-tail (lambda (elt) (equal? x elt)) lis)
+</pre>
+<p>
+    In the circular-list case, this procedure "rotates" the list.
+</p>
+<p>
+    <code>Find-tail</code> is essentially <code>drop-while</code>,
+    where the sense of the predicate is inverted:
+    <code>Find-tail</code> searches until it finds an element satisfying
+    the predicate; <code>drop-while</code> searches until it finds an
+    element that <em>doesn't</em> satisfy the predicate.
+</p>
+</dd>
+<!--
+==== take-while take-while!
+============================================================================-->
+<dt class="proc-def1">
+<a name="take-while"></a>
+<code class="proc-def">take-while&nbsp;</code><var> pred clist -&gt; list</var>
+</dt>
+<dt class="proc-defn">
+<a name="take-while!"></a>
+<code class="proc-def">take-while!</code><var> pred clist -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+Returns the longest initial prefix of <var>clist</var> whose elements all
+satisfy the predicate <var>pred</var>.
+</p>
+<p>
+<code>Take-while!</code> is the linear-update variant. It is allowed, but not
+required, to alter the argument list to produce the result.
+</p>
+<pre class="code-example">
+(take-while even? '(2 18 3 10 22 9)) =&gt; (2 18)
+</pre>
+</dd>
+<!--
+==== drop-while
+============================================================================-->
+<dt class="proc-def">
+<a name="drop-while"></a>
+<code class="proc-def">drop-while</code><var> pred clist -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+Drops the longest initial prefix of <var>clist</var> whose elements all
+satisfy the predicate <var>pred</var>, and returns the rest of the list.
+</p>
+<pre class="code-example">
+(drop-while even? '(2 18 3 10 22 9)) =&gt; (3 10 22 9)
+</pre>
+<p>
+The circular-list case may be viewed as "rotating" the list.
+</p>
+</dd>
+
+<!--
+==== span span! break break!
+============================================================================-->
+<dt class="proc-def1">
+<a name="span"></a>
+<code class="proc-def">span&nbsp;&nbsp;</code><var> pred clist -&gt; [list clist]</var>
+</dt>
+<dt class="proc-defi">
+<a name="span!"></a>
+<code class="proc-def">span!&nbsp;</code><var> pred list&nbsp; -&gt; [list list]</var>
+</dt>
+<dt class="proc-defi">
+<a name="break"></a>
+<code class="proc-def">break&nbsp;</code><var> pred clist -&gt; [list clist]</var>
+</dt>
+<dt class="proc-defn">
+<a name="break!"></a>
+<code class="proc-def">break!</code><var> pred list&nbsp; -&gt; [list list]</var>
+</dt>
+<dd class="proc-def">
+<p>
+<code>Span</code> splits the list into the longest initial prefix whose
+elements all satisfy <var>pred</var>, and the remaining tail.
+<code>Break</code> inverts the sense of the predicate:
+the tail commences with the first element of the input list
+that satisfies the predicate.
+</p>
+<p>
+In other words:
+<code>span</code> finds the intial span of elements
+satisfying <var>pred</var>,
+and <code>break</code> breaks the list at the first element satisfying
+<var>pred</var>.
+</p>
+<p>
+<code>Span</code> is equivalent to
+</p>
+<pre class="code-example">
+(values (take-while <var>pred</var> <var>clist</var>)
+        (drop-while <var>pred</var> <var>clist</var>))
+</pre>
+<p>
+<code>Span!</code> and <code>break!</code> are the linear-update variants.
+They are allowed, but not required,
+to alter the argument list to produce the result.
+</p>
+<pre class="code-example">
+(span even? '(2 18 3 10 22 9)) =&gt;
+  (2 18)
+  (3 10 22 9)
+
+(break even? '(3 1 4 1 5 9)) =&gt;
+  (3 1)
+  (4 1 5 9)
+</pre>
+</dd>
+
+<!--
+==== any
+============================================================================-->
+<dt class="proc-def">
+<a name="any"></a>
+<code class="proc-def">any</code><var> pred clist<sub>1</sub> clist<sub>2</sub> ... -&gt; value</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Applies the predicate across the lists, returning true if the predicate
+    returns true on any application.
+</p>
+<p>
+    If there are <var>n</var> list arguments <var>clist<sub>1</sub></var> ... <var>clist<sub>n</sub></var>, then <var>pred</var> must be a
+    procedure taking <var>n</var> arguments
+    and returning a single value, interpreted as a boolean (that is,
+    <code>#f</code> means false, and any other value means true).
+</p>
+<p>
+    <code>any</code> applies <var>pred</var> to the first elements of the <var>clist<sub>i</sub></var> parameters.
+    If this application returns a true value, <code>any</code> immediately returns
+    that value. Otherwise, it iterates, applying <var>pred</var> to the second
+    elements of the <var>clist<sub>i</sub></var> parameters, then the third, and so forth.
+    The iteration stops when a true value is produced or one of the lists runs
+    out of values; in
+    the latter case, <code>any</code> returns <code>#f</code>.
+    The application of <var>pred</var> to the last element of the
+    lists is a tail call.
+</p>
+<p>
+    Note the difference between <code>find</code> and <code>any</code> -- <code>find</code> returns the element
+    that satisfied the predicate; <code>any</code> returns the true value that the
+    predicate produced.
+</p>
+<p>
+    Like <code>every</code>, <code>any</code>'s name does not end with a question mark -- this is to
+    indicate that it does not return a simple boolean (<code>#t</code> or <code>#f</code>), but a
+    general value.
+</p>
+<pre class="code-example">
+(any integer? '(a 3 b 2.7))   =&gt; #t
+(any integer? '(a 3.1 b 2.7)) =&gt; #f
+(any &lt; '(3 1 4 1 5)
+       '(2 7 1 8 2)) =&gt; #t
+</pre>
+</dd>
+<!--
+==== every
+============================================================================-->
+<dt class="proc-def">
+<a name="every"></a>
+<code class="proc-def">every</code><var> pred clist<sub>1</sub> clist<sub>2</sub> ... -&gt; value</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Applies the predicate across the lists, returning true if the predicate
+    returns true on every application.
+</p>
+<p>
+    If there are <var>n</var> list arguments <var>clist<sub>1</sub></var> ... <var>clist<sub>n</sub></var>, then <var>pred</var> must be a
+    procedure taking <var>n</var> arguments
+    and returning a single value, interpreted as a boolean (that is,
+    <code>#f</code> means false, and any other value means true).
+</p>
+<p>
+    <code>every</code> applies <var>pred</var> to the first elements of the <var>clist<sub>i</sub></var> parameters.
+    If this application returns false, <code>every</code> immediately returns false.
+    Otherwise, it iterates, applying <var>pred</var> to the second elements of the
+    <var>clist<sub>i</sub></var> parameters, then the third, and so forth. The iteration stops
+    when a false value is produced or one of the lists runs out of values.
+    In the latter case, <code>every</code> returns
+    the true value produced by its final application of <var>pred</var>.
+    The application of <var>pred</var> to the last element of the lists
+    is a tail call.
+</p>
+<p>
+    If one of the <var>clist<sub>i</sub></var> has no elements, <code>every</code> simply returns <code>#t</code>.
+</p>
+<p>
+    Like <code>any</code>, <code>every</code>'s name does not end with a question mark -- this is to
+    indicate that it does not return a simple boolean (<code>#t</code> or <code>#f</code>), but a
+    general value.
+</p>
+</dd>
+<!--
+==== list-index
+============================================================================-->
+<dt class="proc-def">
+<a name="list-index"></a>
+<code class="proc-def">list-index</code><var> pred clist<sub>1</sub> clist<sub>2</sub> ... -&gt; integer or false</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Return the index of the leftmost element that satisfies <var>pred</var>.
+</p>
+<p>
+    If there are <var>n</var> list arguments <var>clist<sub>1</sub></var> ... <var>clist<sub>n</sub></var>, then <var>pred</var> must be a
+    function taking <var>n</var> arguments
+    and returning a single value, interpreted as a boolean (that is,
+    <code>#f</code> means false, and any other value means true).
+</p>
+<p>
+    <code>list-index</code> applies <var>pred</var> to the first elements of the <var>clist<sub>i</sub></var> parameters.
+    If this application returns true, <code>list-index</code> immediately returns zero.
+    Otherwise, it iterates, applying <var>pred</var> to the second elements of the
+    <var>clist<sub>i</sub></var> parameters, then the third, and so forth. When it finds a tuple of
+    list elements that cause <var>pred</var> to return true, it stops and returns the
+    zero-based index of that position in the lists.
+</p>
+<p>
+    The iteration stops when one of the lists runs out of values; in this
+    case, <code>list-index</code> returns <code>#f</code>.
+</p>
+<pre class="code-example">
+(list-index even? '(3 1 4 1 5 9)) =&gt; 2
+(list-index &lt; '(3 1 4 1 5 9 2 5 6) '(2 7 1 8 2)) =&gt; 1
+(list-index = '(3 1 4 1 5 9 2 5 6) '(2 7 1 8 2)) =&gt; #f
+</pre>
+</dd>
+<!--
+==== member memq memv
+============================================================================-->
+<dt class="proc-def1">
+<a name="member"></a>
+<code class="proc-def">member</code><var> x list [=] -&gt; list</var>
+</dt>
+<dt class="proc-defi">
+<a name="memq"></a>
+<code class="proc-def">memq</code><var> x list -&gt; list</var>
+</dt>
+<dt class="proc-defn">
+<a name="memv"></a>
+<code class="proc-def">memv</code><var> x list -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    [<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>+]
+    These procedures return the first sublist of <var>list</var> whose car is
+    <var>x</var>, where the sublists of <var>list</var> are the
+    non-empty lists returned by
+        <code>(drop <var>list</var> <var>i</var>)</code>
+    for <var>i</var> less than the length of <var>list</var>.
+    If <var>x</var> does
+    not occur in <var>list</var>, then <code>#f</code> is returned.
+    <code>memq</code> uses <code>eq?</code> to compare <var>x</var>
+    with the elements of <var>list</var>,
+    while <code>memv</code> uses <code>eqv?</code>, and
+    <code>member</code> uses <code>equal?</code>.
+</p>
+<pre class="code-example">
+    (memq 'a '(a b c))          =&gt;  (a b c)
+    (memq 'b '(a b c))          =&gt;  (b c)
+    (memq 'a '(b c d))          =&gt;  #f
+    (memq (list 'a) '(b (a) c)) =&gt;  #f
+    (member (list 'a)
+            '(b (a) c))         =&gt;  ((a) c)
+    (memq 101 '(100 101 102))   =&gt;  *unspecified*
+    (memv 101 '(100 101 102))   =&gt;  (101 102)
+</pre>
+<p>
+    <code>member</code> is extended from its
+    <abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>
+    definition to allow the client to pass in
+    an optional equality procedure <var>=</var> used to compare keys.
+
+</p>
+<p>
+    The comparison procedure is used to compare the elements <var>e<sub>i</sub></var> of <var>list</var>
+    to the key <var>x</var> in this way:
+</p>
+<div class="indent"><code>
+(= <var>x</var> <var>e<sub>i</sub></var>)		; list is (E1 ... En)
+</code></div>
+<p>
+    That is, the first argument is always <var>x</var>, and the second argument is
+    one of the list elements. Thus one can reliably find the first element
+    of <var>list</var> that is greater than five with
+	<code>(member 5 <var>list</var> &lt;)</code>
+</p>
+<p>
+    Note that fully general list searching may be performed with
+    the <code>find-tail</code> and <code>find</code> procedures, <em>e.g.</em>
+</p>
+<pre class="code-example">
+(find-tail even? list) ; Find the first elt with an even key.
+</pre>
+</dd>
+</dl>
+
+<!--========================================================================-->
+<h2 id="Deletion">Deletion</h2>
+
+<dl>
+<!--
+==== delete!
+==== delete
+============================================================================-->
+<dt class="proc-def1">
+<a name="delete"></a>
+<code class="proc-def">delete&nbsp;&nbsp;</code><var>x list [=] -&gt; list</var>
+</dt>
+<dt class="proc-defn">
+<a name="delete!"></a>
+<code class="proc-def">delete!&nbsp;</code><var>x list [=] -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    <code>delete</code> uses the comparison procedure =, which defaults to <code>equal?</code>, to find
+    all elements of <var>list</var> that are equal to <var>x</var>, and deletes them from <var>list</var>. The
+    dynamic order in which the various applications of <var>=</var> are made is not
+    specified.
+</p>
+<p>
+    The list is not disordered -- elements that appear in the result list
+    occur in the same order as they occur in the argument list.
+    The result may share a common tail with the argument list.
+</p>
+<p>
+    Note that fully general element deletion can be performed with the <code>remove</code>
+    and <code>remove!</code> procedures, <em>e.g.</em>:
+</p>
+<pre class="code-example">
+;; Delete all the even elements from LIS:
+(remove even? lis)
+</pre>
+<p>
+    The comparison procedure is used in this way:
+	<code>(= <var>x</var> <var>e<sub>i</sub></var>)</code>.
+    That is, <var>x</var> is always the first argument,
+    and a list element is always the
+    second argument. The comparison procedure will be used to compare each
+    element of <var>list</var> exactly once; the order in which it is applied to the
+    various <var>e<sub>i</sub></var> is not specified.  Thus, one can reliably remove all the
+    numbers greater than five from a list with
+	<code>(delete 5 list &lt;)</code>
+</p>
+<p>
+    <code>delete!</code> is the linear-update variant of <code>delete</code>.
+    It is allowed, but not required, to alter the cons cells in
+    its argument list to construct the result.
+</p>
+</dd>
+<!--
+==== delete-duplicates!
+==== delete-duplicates
+============================================================================-->
+<dt class="proc-def1">
+<a name="delete-duplicates"></a>
+<code class="proc-def">delete-duplicates&nbsp;&nbsp;</code><var>list [=] -&gt; list</var>
+</dt>
+<dt class="proc-defn">
+<a name="delete-duplicates!"></a>
+<code class="proc-def">delete-duplicates!&nbsp;</code><var>list [=] -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    <code>delete-duplicates</code> removes duplicate elements from the
+    list argument.
+    If there are multiple equal elements in the argument list, the result list
+    only contains the first or leftmost of these elements in the result.
+    The order of these surviving elements is the same as in the original
+    list -- <code>delete-duplicates</code> does not disorder the list (hence it is useful
+    for "cleaning up" association lists).
+</p>
+<p>
+    The <var>=</var> parameter is used to compare the elements of the list; it defaults
+    to <code>equal?</code>. If <var>x</var> comes before <var>y</var> in <var>list</var>, then the comparison is performed
+	<code>(= <var>x</var> <var>y</var>)</code>.
+    The comparison procedure will be used to compare each pair of elements in
+    <var>list</var> no more than once;
+    the order in which it is applied to the various pairs is not specified.
+</p>
+<p>
+    Implementations of <code>delete-duplicates</code>
+    are allowed to share common tails
+    between argument and result lists -- for example, if the list argument
+    contains only unique elements, it may simply return exactly
+    this list.
+</p>
+<p>
+    Be aware that, in general, <code>delete-duplicates</code>
+    runs in time O(n<sup>2</sup>) for <var>n</var>-element lists.
+    Uniquifying long lists can be accomplished in O(n lg n) time by sorting
+    the list to bring equal elements together, then using a linear-time
+    algorithm to remove equal elements. Alternatively, one can use algorithms
+    based on element-marking, with linear-time results.
+</p>
+<p>
+    <code>delete-duplicates!</code> is the linear-update variant of <code>delete-duplicates</code>; it
+    is allowed, but not required, to alter the cons cells in its argument
+    list to construct the result.
+</p>
+<pre class="code-example">
+(delete-duplicates '(a b a c a b c z)) =&gt; (a b c z)
+
+;; Clean up an alist:
+(delete-duplicates '((a . 3) (b . 7) (a . 9) (c . 1))
+                   (lambda (x y) (eq? (car x) (car y))))
+    =&gt; ((a . 3) (b . 7) (c . 1))
+</pre>
+</dd>
+</dl>
+
+<!--========================================================================-->
+<h2 id="AssociationLists">Association lists</h2>
+<p>
+An "association list" (or "alist") is a list of pairs. The car of each pair
+contains a key value, and the cdr contains the associated data value. They can
+be used to construct simple look-up tables in Scheme. Note that association
+lists are probably inappropriate for performance-critical use on large data;
+in these cases, hash tables or some other alternative should be employed.
+</p>
+<dl>
+<!--
+==== assoc assq assv
+============================================================================-->
+<dt class="proc-def1">
+<a name="assoc"></a>
+<code class="proc-def">assoc</code><var> key alist [=] -&gt; pair or #f</var>
+</dt>
+<dt class="proc-defi">
+<a name="assq"></a>
+<code class="proc-def">assq</code><var> key alist -&gt; pair or #f</var>
+</dt>
+<dt class="proc-defn">
+<a name="assv"></a>
+<code class="proc-def">assv</code><var> key alist -&gt; pair or #f</var>
+</dt>
+<dd class="proc-def">
+<p>
+    [<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>+]
+    <var>alist</var> must be an association list -- a list of pairs.
+    These procedures
+    find the first pair in <var>alist</var> whose car field is <var>key</var>,
+    and returns that pair.
+    If no pair in <var>alist</var> has <var>key</var> as its car,
+    then <code>#f</code> is returned.
+    <code>assq</code> uses <code>eq?</code> to compare <var>key</var>
+    with the car fields of the pairs in <var>alist</var>,
+    while <code>assv</code> uses <code>eqv?</code>
+    and <code>assoc</code> uses <code>equal?</code>.
+</p>
+<pre class="code-example">
+(define e '((a 1) (b 2) (c 3)))
+(assq 'a e)                            =&gt;  (a 1)
+(assq 'b e)                            =&gt;  (b 2)
+(assq 'd e)                            =&gt;  #f
+(assq (list 'a) '(((a)) ((b)) ((c))))  =&gt;  #f
+(assoc (list 'a) '(((a)) ((b)) ((c)))) =&gt;  ((a))
+(assq 5 '((2 3) (5 7) (11 13)))	   =&gt;  *unspecified*
+(assv 5 '((2 3) (5 7) (11 13)))	   =&gt;  (5 7)
+</pre>
+<p>
+    <code>assoc</code> is extended from its
+    <abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>
+    definition to allow the client to pass in
+    an optional equality procedure <var>=</var> used to compare keys.
+</p>
+<p>
+    The comparison procedure is used to compare the elements <var>e<sub>i</sub></var> of <var>list</var>
+    to the <var>key</var> parameter in this way:
+</p>
+<div class="indent"><code>
+(= <var>key</var> (car <var>e<sub>i</sub></var>))	; list is (E1 ... En)
+</code></div>
+<p>
+    That is, the first argument is always <var>key</var>,
+    and the second argument is one of the list elements.
+    Thus one can reliably find the first entry
+    of <var>alist</var> whose key is greater than five with
+	<code>(assoc 5 <var>alist</var> &lt;)</code>
+</p>
+<p>
+    Note that fully general alist searching may be performed with
+    the <code>find-tail</code> and <code>find</code> procedures, <em>e.g.</em>
+</p>
+<pre class="code-example">
+;; Look up the first association in <var>alist</var> with an even key:
+(find (lambda (a) (even? (car a))) alist)
+</pre>
+</dd>
+
+<!--
+==== alist-cons
+============================================================================-->
+<dt class="proc-def">
+<a name="alist-cons"></a>
+<code class="proc-def">alist-cons</code><var> key datum alist -&gt; alist</var>
+</dt>
+<dd class="proc-def">
+<pre>
+(lambda (key datum alist) (cons (cons key datum) alist))
+</pre>
+<p>
+    Cons a new alist entry mapping <var>key</var> -&gt; <var>datum</var> onto <var>alist</var>.
+</p>
+</dd>
+<!--
+==== alist-copy
+============================================================================-->
+<dt class="proc-def">
+<a name="alist-copy"></a>
+<code class="proc-def">alist-copy</code><var> alist -&gt; alist</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Make a fresh copy of <var>alist</var>. This means copying each pair that
+    forms an association as well as the spine of the list, <em>i.e.</em>
+</p>
+<pre>
+(lambda (a) (map (lambda (elt) (cons (car elt) (cdr elt))) a))
+</pre>
+</dd>
+<!--
+==== alist-delete!
+==== alist-delete
+============================================================================-->
+<dt class="proc-def1">
+<a name="alist-delete"></a>
+<code class="proc-def">alist-delete&nbsp;&nbsp;</code><var>key alist [=] -&gt; alist</var>
+</dt>
+<dt class="proc-defn">
+<a name="alist-delete!"></a>
+<code class="proc-def">alist-delete!&nbsp;</code><var>key alist [=] -&gt; alist</var>
+</dt>
+<dd class="proc-def">
+<p>
+    <code>alist-delete</code> deletes all associations from <var>alist</var> with the given <var>key</var>,
+    using key-comparison procedure =, which defaults to <code>equal?</code>.
+    The dynamic order in which the various applications of <var>=</var> are made is not
+    specified.
+</p>
+<p>
+    Return values may share common tails with the <var>alist</var> argument.
+    The alist is not disordered -- elements that appear in the result alist
+    occur in the same order as they occur in the argument alist.
+</p>
+<p>
+    The comparison procedure is used to compare the element keys <var>k<sub>i</sub></var> of <var>alist</var>'s
+    entries to the <var>key</var> parameter in this way:
+	<code>(= <var>key</var> <var>k<sub>i</sub></var>)</code>.
+    Thus, one can reliably remove all entries of <var>alist</var> whose key is greater
+    than five with
+	<code>(alist-delete 5 <var>alist</var> &lt;)</code>
+</p>
+<p>
+    <code>alist-delete!</code> is the linear-update variant of <code>alist-delete</code>.
+    It is allowed, but not required,
+    to alter cons cells from the <var>alist</var> parameter to construct the result.
+</p>
+</dd>
+</dl>
+
+<!--========================================================================-->
+<h2 id="SetOperationsOnLists">Set operations on lists</h2>
+<p>
+These procedures implement operations on sets represented as lists of elements.
+They all take an <var>=</var> argument used to compare elements of lists.
+This equality procedure is required to be consistent with <code>eq?</code>.
+That is, it must be the case that
+</p>
+<div class="indent">
+        <code>(eq? <var>x</var> <var>y</var>)</code> =&gt; <code>(<var>=</var> <var>x</var> <var>y</var>)</code>.
+</div>
+<p>
+Note that this implies, in turn, that two lists that are <code>eq?</code> are
+also set-equal by any legal comparison procedure. This allows for
+constant-time determination of set operations on <code>eq?</code> lists.
+</p>
+<p>
+Be aware that these procedures typically run in time
+O(<var>n</var> * <var>m</var>)
+for <var>n</var>- and <var>m</var>-element list arguments.
+Performance-critical applications
+operating upon large sets will probably wish to use other data
+structures and algorithms.
+</p>
+<dl>
+<!--
+==== lset<=
+============================================================================-->
+<dt class="proc-def">
+<a name="lset&lt;="></a>
+<code class="proc-def">lset&lt;=</code><var> = list<sub>1</sub> ... -&gt; boolean</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Returns true iff every <var>list<sub>i</sub></var> is a subset of <var>list<sub>i+1</sub></var>, using <var>=</var> for
+    the element-equality procedure.
+    List <var>A</var> is a subset of list <var>B</var> if every
+    element in <var>A</var> is equal to some element of <var>B</var>.
+    When performing an element comparison,
+    the <var>=</var> procedure's first argument is an element
+    of <var>A</var>; its second, an element of <var>B</var>.
+</p>
+<pre class="code-example">
+(lset&lt;= eq? '(a) '(a b a) '(a b c c)) =&gt; #t
+
+(lset&lt;= eq?) =&gt; #t             ; Trivial cases
+(lset&lt;= eq? '(a)) =&gt; #t
+</pre>
+</dd>
+<!--
+==== lset=
+============================================================================-->
+<dt class="proc-def">
+<a name="lset="></a>
+<code class="proc-def">lset=</code><var> = list<sub>1</sub> list<sub>2</sub> ... -&gt; boolean</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Returns true iff every <var>list<sub>i</sub></var> is set-equal to <var>list<sub>i+1</sub></var>, using <var>=</var> for
+    the element-equality procedure. "Set-equal" simply means that
+    <var>list<sub>i</sub></var> is a subset of <var>list<sub>i+1</sub></var>, and <var>list<sub>i+1</sub></var> is a subset of <var>list<sub>i</sub></var>.
+    The <var>=</var> procedure's first argument is an element of <var>list<sub>i</sub></var>; its second is an element of
+    <var>list<sub>i+1</sub></var>.
+</p>
+<pre class="code-example">
+(lset= eq? '(b e a) '(a e b) '(e e b a)) =&gt; #t
+
+(lset= eq?) =&gt; #t               ; Trivial cases
+(lset= eq? '(a)) =&gt; #t
+</pre>
+
+<p id="lset=-element-equality-order">
+<ins><em>Note added on 2020-06-02:</em>
+The reference (sample) <a href="#ReferencesLinks">implementation</a>
+had a bug that reversed the arguments to <var>=</var>.  The
+implementation has been corrected to match the text above.</ins>
+</p>
+</dd>
+<!--
+==== lset-adjoin
+============================================================================-->
+<dt class="proc-def">
+<a name="lset-adjoin"></a>
+<code class="proc-def">lset-adjoin</code><var> = list elt<sub>1</sub> ... -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Adds the <var>elt<sub>i</sub></var> elements not already in the list parameter to the
+    result list. The result shares a common tail with the list parameter.
+    The new elements are added to the front of the list, but no guarantees
+    are made about their order. The <var>=</var> parameter is an equality procedure
+    used to determine if an <var>elt<sub>i</sub></var> is already a member of <var>list</var>. Its first
+    argument is an element of <var>list</var>; its second is one of the <var>elt<sub>i</sub></var>.
+</p>
+<p>
+    The list parameter is always a suffix of the result -- even if the list
+    parameter contains repeated elements, these are not reduced.
+</p>
+<pre class="code-example">
+(lset-adjoin eq? '(a b c d c e) 'a 'e 'i 'o 'u) =&gt; (u o i a b c d c e)
+</pre>
+</dd>
+<!--
+==== lset-union
+============================================================================-->
+<dt class="proc-def">
+<a name="lset-union"></a>
+<code class="proc-def">lset-union</code><var> = list<sub>1</sub> ... -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Returns the union of the lists, using <var>=</var> for the element-equality
+    procedure.
+</p>
+<p>
+    The union of lists <var>A</var> and <var>B</var> is constructed as follows:
+</p>
+    <ul>
+        <li> If <var>A</var> is the empty list,
+             the answer is <var>B</var> (or a copy of <var>B</var>).
+        </li><li> Otherwise, the result is initialised to be list <var>A</var>
+             (or a copy of <var>A</var>).
+	</li><li> Proceed through the elements of list <var>B</var>
+             in a left-to-right order.
+	     If <var>b</var> is such an element of <var>B</var>,
+             compare every element <var>r</var> of the current result list
+             to <var>b</var>:
+             <code>(= <var>r</var> <var>b</var>)</code>.
+             If all comparisons fail,
+             <var>b</var> is consed onto the front of the result.
+    </li></ul>
+<p>
+    However, there is no guarantee that = will be applied to every pair
+    of arguments from <var>A</var> and <var>B</var>.
+    In particular, if <var>A</var> is <code>eq</code>? to <var>B</var>,
+    the operation may immediately terminate.
+</p>
+<p>
+    In the n-ary case, the two-argument list-union operation is simply
+    folded across the argument lists.
+</p>
+<pre class="code-example">
+(lset-union eq? '(a b c d e) '(a e i o u)) =&gt;
+    (u o i a b c d e)
+
+;; Repeated elements in LIST1 are preserved.
+(lset-union eq? '(a a c) '(x a x)) =&gt; (x a a c)
+
+;; Trivial cases
+(lset-union eq?) =&gt; ()
+(lset-union eq? '(a b c)) =&gt; (a b c)
+</pre>
+</dd>
+<!--
+==== lset-intersection
+============================================================================-->
+<dt class="proc-def">
+<a name="lset-intersection"></a>
+<code class="proc-def">lset-intersection</code><var> = list<sub>1</sub> list<sub>2</sub> ... -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Returns the intersection of the lists,
+    using <var>=</var> for the element-equality procedure.
+</p>
+<p>
+    The intersection of lists <var>A</var> and <var>B</var>
+    is comprised of every element of <var>A</var> that is <var>=</var>
+    to some element of <var>B</var>:
+        <code>(<var>=</var> <var>a</var> <var>b</var>)</code>,
+    for <var>a</var> in <var>A</var>, and <var>b</var> in <var>B</var>.
+    Note this implies that an element which appears in <var>B</var>
+    and multiple times in list <var>A</var>
+    will also appear multiple times in the result.
+</p>
+<p>
+    The order in which elements appear in the result is the same as
+    they appear in <var>list<sub>1</sub></var> --
+    that is, <code>lset-intersection</code> essentially filters
+    <var>list<sub>1</sub></var>,
+    without disarranging element order.
+    The result may
+    share a common tail with <var>list<sub>1</sub></var>.
+</p>
+<p>
+    In the n-ary case, the two-argument list-intersection operation is simply
+    folded across the argument lists. However, the dynamic order in which the
+    applications of <var>=</var> are made is not specified.
+    The procedure may check an
+    element of <var>list<sub>1</sub></var> for membership
+    in every other list before proceeding to
+    consider the next element of <var>list<sub>1</sub></var>,
+    or it may completely intersect <var>list<sub>1</sub></var>
+    and <var>list<sub>2</sub></var>
+    before proceeding to <var>list<sub>3</sub></var>,
+    or it may go about its work in some third order.
+</p>
+<pre class="code-example">
+(lset-intersection eq? '(a b c d e) '(a e i o u)) =&gt; (a e)
+
+;; Repeated elements in LIST1 are preserved.
+(lset-intersection eq? '(a x y a) '(x a x z)) =&gt; '(a x a)
+
+(lset-intersection eq? '(a b c)) =&gt; (a b c)     ; Trivial case
+</pre>
+</dd>
+<!--
+==== lset-difference
+============================================================================-->
+<dt class="proc-def">
+<a name="lset-difference"></a>
+<code class="proc-def">lset-difference</code><var> = list<sub>1</sub> list<sub>2</sub> ... -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Returns the difference of the lists, using <var>=</var> for the element-equality
+    procedure -- all the elements of <var>list<sub>1</sub></var> that are not
+    <var>=</var> to any element from one of the
+    other <var>list<sub>i</sub></var> parameters.
+</p>
+<p>
+    The <var>=</var> procedure's first argument is
+    always an element of <var>list<sub>1</sub></var>;
+    its second is an element of one of the other <var>list<sub>i</sub></var>.
+    Elements that are repeated multiple times in the
+    <var>list<sub>1</sub></var> parameter
+    will occur multiple times in the result.
+
+    The order in which elements appear in the result is the same as
+    they appear in <var>list<sub>1</sub></var> --
+    that is, <code>lset-difference</code> essentially
+    filters <var>list<sub>1</sub></var>, without disarranging element order.
+    The result may share a common tail with <var>list<sub>1</sub></var>.
+
+    The dynamic order in which the applications of <var>=</var> are made is not
+    specified.
+    The procedure may check an element of <var>list<sub>1</sub></var>
+    for membership in every other list before proceeding to consider the
+    next element of <var>list<sub>1</sub></var>,
+    or it may completely compute the difference of
+    <var>list<sub>1</sub></var> and <var>list<sub>2</sub></var> before
+    proceeding to <var>list<sub>3</sub></var>,
+    or it may go about its work in some third order.
+</p>
+<pre class="code-example">
+(lset-difference eq? '(a b c d e) '(a e i o u)) =&gt; (b c d)
+
+(lset-difference eq? '(a b c)) =&gt; (a b c) ; Trivial case
+</pre>
+</dd>
+<!--
+==== lset-xor
+============================================================================-->
+<dt class="proc-def">
+<a name="lset-xor"></a>
+<code class="proc-def">lset-xor</code><var> = list<sub>1</sub> ... -&gt; list</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Returns the exclusive-or of the sets,
+    using <var>=</var> for the element-equality procedure.
+    If there are exactly two lists, this is all the elements
+    that appear in exactly one of the two lists. The operation is associative,
+    and thus extends to the n-ary case -- the elements that appear in an
+    odd number of the lists. The result may share a common tail with any of
+    the <var>list<sub>i</sub></var> parameters.
+</p>
+<p>
+    More precisely, for two lists <var>A</var> and <var>B</var>,
+    <var>A</var> xor <var>B</var> is a list of
+</p>
+    <ul>
+     <li> every element <var>a</var> of <var>A</var>
+          such that there is no element <var>b</var> of <var>B</var>
+          such that <code>(<var>=</var> <var>a</var> <var>b</var>)</code>, and
+     </li><li> every element <var>b</var> of <var>B</var>
+          such that there is no element <var>a</var> of <var>A</var>
+          such that <code>(<var>=</var> <var>b</var> <var>a</var>)</code>.
+    </li></ul>
+<p>
+    However, an implementation is allowed to assume that <var>=</var> is
+    symmetric -- that is, that
+</p>
+<div class="indent">
+	<code>(<var>=</var> <var>a</var> <var>b</var>)</code> =&gt;
+        <code>(<var>=</var> <var>b</var> <var>a</var>)</code>.
+</div>
+<p>
+    This means, for example, that if a comparison
+    <code>(<var>=</var> <var>a</var> <var>b</var>)</code> produces
+    true for some <var>a</var> in <var>A</var>
+    and <var>b</var> in <var>B</var>,
+    both <var>a</var> and <var>b</var> may be removed from
+    inclusion in the result.
+</p>
+<p>
+    In the n-ary case, the binary-xor operation is simply folded across
+    the lists.
+</p>
+<pre class="code-example">
+(lset-xor eq? '(a b c d e) '(a e i o u)) =&gt; (d c b i o u)
+
+;; Trivial cases.
+(lset-xor eq?) =&gt; ()
+(lset-xor eq? '(a b c d e)) =&gt; (a b c d e)
+</pre>
+</dd>
+
+<!--
+==== lset-diff+intersection
+============================================================================-->
+<dt class="proc-def">
+<a name="lset-diff+intersection"></a>
+<code class="proc-def">lset-diff+intersection</code><var> = list<sub>1</sub> list<sub>2</sub> ... -&gt; [list list]</var>
+</dt>
+<dd class="proc-def">
+<p>
+    Returns two values -- the difference and the intersection of the lists.
+    Is equivalent to
+</p>
+<pre class="code-example">
+(values (lset-difference <var>=</var> <var>list<sub>1</sub></var> <var>list<sub>2</sub></var> ...)
+        (lset-intersection <var>=</var> <var>list<sub>1</sub></var>
+                             (lset-union <var>=</var> <var>list<sub>2</sub></var> ...)))
+</pre>
+<p>
+    but can be implemented more efficiently.
+</p>
+<p>
+    The <var>=</var> procedure's first argument is an element of <var>list<sub>1</sub></var>; its second
+    is an element of one of the other <var>list<sub>i</sub></var>.
+</p>
+<p>
+    Either of the answer lists may share a
+    common tail with <var>list<sub>1</sub></var>.
+    This operation essentially partitions <var>list<sub>1</sub></var>.
+</p>
+</dd>
+<!--
+==== lset-diff+intersection!
+==== lset-xor!
+==== lset-difference!
+==== lset-intersection!
+==== lset-union!
+============================================================================-->
+<dt class="proc-def1">
+<a name="lset-union!"></a>
+<code class="proc-def">lset-union!&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</code><var>= list<sub>1</sub> ... -&gt; list</var>
+</dt>
+<dt class="proc-defi">
+<a name="lset-intersection!"></a>
+<code class="proc-def">lset-intersection!&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</code><var>= list<sub>1</sub> list<sub>2</sub> ... -&gt; list</var>
+</dt>
+<dt class="proc-defi">
+<a name="lset-difference!"></a>
+<code class="proc-def">lset-difference!&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</code><var>= list<sub>1</sub> list<sub>2</sub> ... -&gt; list</var>
+</dt>
+<dt class="proc-defi">
+<a name="lset-xor!"></a>
+<code class="proc-def">lset-xor!&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</code><var>= list<sub>1</sub> ... -&gt; list</var>
+</dt>
+<dt class="proc-defn">
+<a name="lset-diff+intersection!"></a>
+<code class="proc-def">lset-diff+intersection!&nbsp;</code><var>= list<sub>1</sub> list<sub>2</sub> ... -&gt; [list list]</var>
+</dt>
+<dd class="proc-def">
+<p>
+    These are linear-update variants. They are allowed, but not required,
+    to use the cons cells in their first list parameter to construct their
+    answer. <code>lset-union!</code> is permitted to recycle cons cells from <em>any</em>
+    of its list arguments.
+</p>
+</dd>
+</dl>
+
+<!--========================================================================-->
+<h2 id="PrimitiveSideEffects">Primitive side-effects</h2>
+<p>
+These two procedures are the primitive,
+<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>
+side-effect operations on pairs.
+</p>
+<dl>
+<!--
+==== set-car!
+============================================================================-->
+<dt class="proc-def1">
+<a name="set-car!"></a>
+<code class="proc-def">set-car!</code><var> pair object -&gt; unspecified</var>
+</dt>
+<dt class="proc-defn">
+<a name="set-cdr!"></a>
+<code class="proc-def">set-cdr!</code><var> pair object -&gt; unspecified</var>
+</dt>
+<dd class="proc-def">
+<p>
+     [<abbr title="Revised^5 Report on Scheme"><a href="#R5RS">R5RS</a></abbr>]
+     These procedures store <var>object</var> in the car and cdr field
+     of <var>pair</var>, respectively.
+     The value returned is unspecified.
+</p>
+<pre class="code-example">
+(define (f) (list 'not-a-constant-list))
+(define (g) '(constant-list))
+(set-car! (f) 3) =&gt;  *unspecified*
+(set-car! (g) 3) =&gt;  *error*
+</pre>
+</dd>
+</dl>
+
+<!--========================================================================-->
+<h2 id="Acknowledgements">Acknowledgements</h2>
+<p>
+The design of this library benefited greatly from the feedback provided during
+the <abbr title="Scheme Request for Implementation">SRFI</abbr> discussion phase. Among those contributing thoughtful commentary and
+suggestions, both on the mailing list and by private discussion, were Mike
+Ashley, Darius Bacon, Alan Bawden, Phil Bewig, Jim Blandy, Dan Bornstein, Per
+Bothner, Anthony Carrico, Doug Currie, Kent Dybvig, Sergei Egorov, Doug Evans,
+Marc Feeley, Matthias Felleisen, Will Fitzgerald, Matthew Flatt, Dan Friedman,
+Lars Thomas Hansen, Brian Harvey, Erik Hilsdale, Wolfgang Hukriede, Richard
+Kelsey, Donovan Kolbly, Shriram Krishnamurthi, Dave Mason, Jussi Piitulainen,
+David Pokorny, Duncan Smith, Mike Sperber, Maciej Stachowiak, Harvey J. Stein,
+John David Stone, and Joerg F. Wittenberger. I am grateful to them for their
+assistance.
+</p>
+<p>
+I am also grateful the authors, implementors and documentors of all the systems
+mentioned in the rationale.  Aubrey Jaffer and Kent Pitman should be noted
+for their work in producing Web-accessible versions of the R5RS and
+<a href="#CommonLisp">Common Lisp</a> spec, which was a tremendous aid.
+</p>
+<p>
+This is not to imply that these individuals necessarily endorse the final
+results, of course.
+</p>
+
+<!--========================================================================-->
+<h2 id="ReferencesLinks">References &amp; links</h2>
+
+<dl>
+<dt class="biblio">This document, in HTML:
+</dt><dd><a href="srfi-1.html">
+    https://srfi.schemers.org/srfi-1/srfi-1.html</a>
+
+</dd><dt class="biblio">Source code for the reference implementation:
+</dt><dd><a href="srfi-1-reference.scm">
+    https://srfi.schemers.org/srfi-1/srfi-1-reference.scm</a>
+
+</dd><dt class="biblio">Archive of SRFI-1 discussion-list email:
+</dt><dd><a href="https://srfi-email.schemers.org/srfi-1">
+    https://srfi-email.schemers.org/srfi-1</a>
+
+</dd><dt class="biblio">SRFI web site:
+</dt><dd><a href="https://srfi.schemers.org/">
+    https://srfi.schemers.org/</a>
+</dd></dl>
+
+
+
+<dl>
+<dt class="biblio"><strong><a name="CommonLisp">[CommonLisp]</a></strong></dt>
+<dd>
+<p>
+<em>Common Lisp: the Language</em><br />
+Guy L. Steele Jr. (editor).<br />
+Digital Press, Maynard, Mass., second edition 1990.<br />
+(<a href="https://en.wikipedia.org/wiki/Common_Lisp_the_Language">Wikipedia entry</a>)
+</p>
+<p>
+The Common Lisp "HyperSpec," produced by Kent Pitman, is essentially
+the ANSI spec for Common Lisp:
+<a href="http://www.lispworks.com/documentation/HyperSpec/Front/index.htm">http://www.lispworks.com/documentation/HyperSpec/Front/index.htm</a>
+</p>
+</dd>
+<dt class="biblio"><strong><a name="R5RS">[R5RS]</a></strong></dt>
+<dd>Revised<sup>5</sup> report on the algorithmic language Scheme.<br />
+    R. Kelsey, W. Clinger, J. Rees (editors). <br />
+    Higher-Order and Symbolic Computation, Vol. 11, No. 1, September, 1998. <br />
+    and ACM SIGPLAN Notices, Vol. 33, No. 9, October, 1998. <br />
+    Available at <a href="http://www.schemers.org/Documents/Standards/">
+    http://www.schemers.org/Documents/Standards/</a>.
+</dd>
+</dl>
+
+
+
+
+<!--========================================================================-->
+<h2 id="Copyright">Copyright</h2>
+<p>
+Certain portions of this document -- the specific, marked segments of text
+describing the R5RS procedures -- were adapted with permission from the R5RS
+report.
+</p>
+<p>
+All other text is copyright (C) Olin Shivers (1998, 1999).
+All Rights Reserved.
+</p>
+<p>
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+</p>
+<p>
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+</p>
+<p>
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+</p>
+  <hr />
+  <address>Editor: <a href="mailto:srfi-editors+at+srfi+dot+schemers+dot+org">Michael Sperber</a></address>
+</body>
+</html>

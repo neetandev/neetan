@@ -1,0 +1,203 @@
+<!DOCTYPE html PUBLIC "-//IETF//DTD HTML//EN" "http://www.w3.org/TR/html.dtd">
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>SRFI 2: AND-LET*: an AND with local bindings, a guarded LET* special form</title>
+    <meta content="width=device-width, initial-scale=1" name="viewport" />
+    <link href="https://srfi.schemers.org/srfi.css" rel="stylesheet" type="text/css" />
+    <link href="/favicon.png" rel="icon" sizes="192x192" type="image/png" />
+  </head>
+
+<body>
+<h1><a href="https://srfi.schemers.org/"><img alt="SRFI surfboard logo" class="srfi-logo" src="https://srfi.schemers.org/srfi-logo.svg" /></a>2: AND-LET*: an AND with local bindings, a guarded LET* special form</h1>
+
+<p>by Oleg Kiselyov</p>
+
+<h2>Status</h2>
+
+<p>This SRFI is currently in <em>final</em> status.  Here is <a href="https://srfi.schemers.org/srfi-process.html">an explanation</a> of each status that a SRFI can hold.  To provide input on this SRFI, please send email to <code><a href="mailto:srfi+minus+2+at+srfi+dotschemers+dot+org">srfi-2@<span class="antispam">nospam</span>srfi.schemers.org</a></code>.  To subscribe to the list, follow <a href="https://srfi.schemers.org/srfi-list-subscribe.html">these instructions</a>.  You can access previous messages via the mailing list <a href="https://srfi-email.schemers.org/srfi-2">archive</a>.</p>
+<ul>
+      <li>Received: 1998-12-28
+      </li><li>Revised: 1999-02-09
+      </li><li>Draft: 1998-12-28--1999-02-28
+      </li><li>Final: 1999-03-01
+      </li><li>Revised to fix errata:
+	<ul>
+	  <li>2020-06-08 (Fixed: Variables bound by AND-LET* needn't
+	    be unique.  This requirement was based on the mistaken
+	    impression that LET* imposed that requirement, which it
+	    doesn't.  Also, updated link to sample implementation to
+	    point to a more recent version by Oleg.)</li>
+	  <li>2020-10-26 (Clarified what is meant by BODY in (and-let*
+	    (CLAWS) BODY).)</li></ul></li>
+</ul>
+
+<h2>Abstract</h2>
+
+<p>Like an ordinary AND, an AND-LET* special form evaluates its arguments --
+expressions -- one after another in order, till the first one that
+yields #f. Unlike AND, however, a non-#f result of one expression can
+be bound to a fresh variable and used in the subsequent expressions.
+AND-LET* is a cross-breed between LET* and AND.
+</p>
+
+<h2>Rationale</h2>
+
+<p>In case of an ordinary AND formed of proper boolean expressions:<br />
+(AND E1 E2 ...)<br />
+expression E2, if it gets to be evaluated, knows that E1 has returned
+non-#f. Moreover, E2 knows exactly what the result of E1 was -- #t --
+which E2 can use to its advantage. If E1 however is an extended
+boolean expression, E2 can no longer tell which particular non-#f
+value E1 has returned. Chances are it took a lot of work to evaluate
+E1, and the produced result (a number, a vector, a string, etc) may be
+of value to E2. Alas, the AND form merely checks that the result is
+not an #f, and throws it away. If E2 needs it, it has to compute that
+value anew. This proposed AND-LET* special form lets constituent
+expressions get hold of the results of already evaluated expressions,
+without re-doing their work.
+</p>
+<p>AND-LET* can be thought of as a combination of LET* and AND, or a
+generalization of COND's send operator =&gt;. An AND-LET* form can also be
+considered a sequence of guarded expressions. In a regular program,
+forms may produce results, bind them to variables and let other forms
+use these results. AND-LET* differs in that it checks to make sure that
+every produced result "makes sense" (that is, not an #f). The first
+"failure" triggers the guard and aborts the rest of the sequence
+(which presumably would not make any sense to execute anyway).
+</p>
+<p>
+Examples:
+</p>
+<pre>
+(AND-LET* ((my-list (compute-list)) ((not (null? my-list))))
+    (do-something my-list))
+
+(define (look-up key alist)
+  (and-let* ((x (assq key alist))) (cdr x)))
+
+(or
+ (and-let* ((c (read-char))
+            ((not (eof-object? c))))
+     (string-set! some-str i c)
+   (set! i (+ 1 i)))
+ (begin (do-process-eof)))
+
+			; A more realistic example
+                        ; Parse the 'timestamp' ::= 'token1' 'token2'
+                        ;   token1 ::= 'YY' 'MM' 'J'
+                        ;   token2 ::= 'GG' 'gg' "/"
+(define (parse-full-timestamp token1 token2)
+  (AND-LET* (((= 5 (string-length token1)))
+             ((= 5 (string-length token2)))
+             (timestamp
+               (OS:string-&gt;time "%m/%d/%y %H:%M"
+                 (string
+                   (string-ref token1 2) (string-ref token1 3) #\/
+                   (string-ref token1 0) (string-ref token1 1) #\/
+                   (case (string-ref token1 4)
+                     ((#\8 #\9) #\9) (else #\0))
+                   (string-ref token1 4) #\space
+                   (string-ref token2 0) (string-ref token2 1) #\:
+                   (string-ref token2 2) (string-ref token2 3))))
+             ((positive? timestamp)))
+           timestamp))
+</pre>
+<p>
+AND-LET* is also similar to an "anaphoric AND" LISP macro [Rob Warnock,
+comp.lang.scheme, 26 Feb 1998 09:06:43 GMT, Message-ID:
+6d3bb3$3804h@fido.asd.sgi.com]. AND-LET* allows however more than one
+intermediate result, each of which continues to be bound through the
+rest of the form.
+</p>
+
+<h2>Specification</h2>
+
+<h3 id="and-let">Syntax and Informal Semantics</h3>
+
+<pre>
+AND-LET* (CLAWS) BODY
+
+CLAWS ::= '() | (cons CLAW CLAWS)
+CLAW  ::=  (VARIABLE EXPRESSION) | (EXPRESSION) |
+           BOUND-VARIABLE
+</pre>
+
+<ul>
+<li>The CLAWS are evaluated in the strict left-to-right order
+</li><li>For each CLAW, the EXPRESSION part is evaluated first (or BOUND-VARIABLE is looked up)
+</li><li>If the result is #f, AND-LET* immediately returns #f
+</li><li>Otherwise, if  the CLAW is of the form (VARIABLE EXPRESSION)
+the EXPRESSION's value is bound to a freshly made VARIABLE
+</li><li>The VARIABLE is available for the rest of the CLAWS , and the BODY
+</li><li><del>As usual, all VARIABLEs must be unique (like in let*)</del>
+</li><li>BODY is a body as in a LET* form.</li>
+
+</ul>
+
+<h3>Formal (Denotational) Semantics</h3>
+
+<pre>
+eval[ (AND-LET* (CLAW1 ...) BODY), env] =
+   eval_claw[ CLAW1, env ] andalso
+   eval[ (AND-LET* ( ...) BODY), ext_claw_env[CLAW1, env]]
+
+eval[ (AND-LET* (CLAW) ), env] = eval_claw[ CLAW, env ]
+eval[ (AND-LET* () FORM1 ...), env] = eval[ (LET* () FORM1 ...), env ]
+eval[ (AND-LET* () ), env] = #t
+
+eval_claw[ BOUND-VARIABLE, env ] =
+   eval[ BOUND-VARIABLE, env ]
+eval_claw[ (EXPRESSION), env ] =
+   eval[ EXPRESSION, env ]
+eval_claw[ (VARIABLE EXPRESSION), env ] =
+   eval[ EXPRESSION, env ]
+
+ext_claw_env[ BOUND-VARIABLE, env ] = env
+ext_claw_env[ (EXPRESSION), env ] =
+   env-after-eval[ EXPRESSION, env ]
+ext_claw_env[ (VARIABLE EXPRESSION), env ] =
+   extend-env[ env-after-eval[ EXPRESSION, env ],
+              VARIABLE boundto eval[ EXPRESSION, env ]]
+</pre>
+<h2>Implementation</h2>
+
+<p>A full sample implementation is available at <a class="eponymous" href="http://okmij.org/ftp/Scheme/lib/myenv-chez.scm">http://okmij.org/ftp/Scheme/lib/myenv-chez.scm</a>.  The test suite is at <a class="eponymous" href="http://okmij.org/ftp/Scheme/tests/vland.scm">http://okmij.org/ftp/Scheme/tests/vland.scm</a>.
+</p>
+<h2>Copyright</h2>
+<p>
+Copyright (C) Oleg Kiselyov (1998). All Rights Reserved. 
+</p>
+<p>
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+</p>
+<p>
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+</p>
+<p>
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+</p>
+
+    <hr />
+<address>Editor: <a href="mailto:srfi%20minus%20editors%20at%20srfi%20dot%20schemers%20dot%20org">Dave Mason</a></address>
+<!-- Created: Mon Dec 28 13:49:00 PST 1998 -->
+<p>
+<!-- hhmts start -->
+Last modified: Sun Jan 28 13:40:28 MET 2007
+<!-- hhmts end -->
+</p></body>
+</html><!-- <code><a href="mailto:oleg@okmij.org">&lt;oleg@okmij.org&gt;</A></code>, <code>&lt;oleg@acm.org&gt;</code>, <code>&lt;oleg@computer.org&gt;</code>-->
+
