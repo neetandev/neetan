@@ -364,7 +364,24 @@ impl ProcessContext for StdProcessContext {
     }
 
     fn environment_variable(&mut self, name: &str) -> Result<Option<String>, HostIoError> {
-        Ok(self.environment.get(name).cloned())
+        if let Some(value) = self.environment.get(name) {
+            return Ok(Some(value.clone()));
+        }
+        // Windows environment variable names are case-insensitive, and the
+        // process table stores canonical names such as "Path" rather than
+        // "PATH". Fall back to an ASCII case-insensitive match there so a
+        // lookup by any casing resolves the way the platform expects.
+        #[cfg(windows)]
+        {
+            let value = self
+                .environment
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.clone());
+            Ok(value)
+        }
+        #[cfg(not(windows))]
+        Ok(None)
     }
 
     fn environment_variables(&mut self) -> Result<Vec<(String, String)>, HostIoError> {
