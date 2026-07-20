@@ -1,6 +1,8 @@
 //! Runnable X68000 CPU and motherboard.
 
-use common::{Bus, CpuM68000, CpuMode, JoystickState, Machine, NoTrace, TraceSink};
+use common::{
+    Bus, CpuM68000, CpuMode, HostKey, JoystickState, KeyModifiers, Machine, NoTrace, TraceSink,
+};
 use cpu_68k::M68000;
 
 use crate::{LoadedRoms, X68kBus, X68kModel};
@@ -33,6 +35,187 @@ pub fn build_untraced_machine(
     Box::new(X68kMachine::from_bus(model, cpu_mode, bus))
 }
 
+/// Builds an automated X68000 machine around a configured bus.
+pub fn build_automated_machine(
+    model: X68kModel,
+    cpu_mode: CpuMode,
+    bus: X68kBus<common::tracing::ApplicationTraceSink>,
+) -> Box<dyn common::AutomatedMachine> {
+    Box::new(X68kMachine::from_bus(model, cpu_mode, bus))
+}
+
+impl common::AutomationDriver for X68kMachine<common::tracing::ApplicationTraceSink> {
+    fn arm_presentation_yield(&mut self, target_frame: u64) {
+        self.bus.tracer().arm_presentation_yield(target_frame);
+    }
+
+    fn disarm_presentation_yield(&mut self) {
+        self.bus.tracer().disarm_presentation_yield();
+    }
+
+    fn epoch_ticks(&self) -> u64 {
+        self.bus.current_cycle()
+    }
+
+    fn epoch_frames(&self) -> u64 {
+        self.bus.presented_frames()
+    }
+
+    fn run_for(&mut self, budget: u64) -> u64 {
+        X68kMachine::run_for(self, budget)
+    }
+
+    fn shutdown_requested(&self) -> bool {
+        self.bus.shutdown_requested()
+    }
+
+    fn drain_audio(&mut self, elapsed_ticks: u64) {
+        self.bus.drain_automation_audio(elapsed_ticks);
+    }
+}
+
+impl common::AutomatedMachine for X68kMachine<common::tracing::ApplicationTraceSink> {
+    fn automation_descriptor(&self) -> common::AutomationDescriptor {
+        let (numerator, denominator) = self.bus.automation_timebase();
+        common::AutomationDescriptor {
+            target: "x68k",
+            model: self.bus.model_id(),
+            timebase: common::AutomationTimebase {
+                ticks_per_second_numerator: numerator,
+                ticks_per_second_denominator: denominator,
+            },
+            audio_sample_rate: self.bus.audio_sample_rate(),
+            input: common::InputCapabilities {
+                keyboard: true,
+                mouse_buttons: 2,
+                joystick_ports: 2,
+            },
+        }
+    }
+
+    fn automation_timeline(&self) -> common::AutomationTimeline {
+        common::AutomationTimeline {
+            epoch_ticks: self.bus.current_cycle() as u128,
+            epoch_frames: self.bus.presented_frames() as u128,
+            ..common::AutomationTimeline::default()
+        }
+    }
+
+    fn run_automation(&mut self, request: common::RunRequest) -> common::RunOutcome {
+        common::drive_automation(self, request)
+    }
+
+    fn inspector(&mut self) -> Option<&mut dyn common::MachineInspector> {
+        Some(self)
+    }
+
+    fn trace_catalog(&self) -> common::TraceCatalog {
+        X68K_TRACE_CATALOG
+    }
+}
+
+/// Stable trace identifiers emitted by the X68000 bus.
+const X68K_TRACE_CATALOG: common::TraceCatalog = common::TraceCatalog {
+    controllers: &[
+        common::trace_id::controller::X68K_MFP,
+        common::trace_id::controller::X68K_SCC,
+        common::trace_id::controller::X68K_MIDI,
+        common::trace_id::controller::X68K_DMAC,
+        common::trace_id::controller::X68K_IOC,
+    ],
+    scheduled: common::trace_id::scheduled::X68K,
+    devices: &[common::TraceDeviceCatalog {
+        device: common::trace_id::device::X68K_FDC,
+        actions: &[common::trace_id::action::READ],
+    }],
+    providers: &[],
+};
+
+impl common::MachineInspector for X68kMachine<common::tracing::ApplicationTraceSink> {
+    fn processors(&self) -> common::ProcessorList {
+        let mut processors = common::ProcessorList::new();
+        processors.push(common::inspect::m68000_processor("cpu.main"));
+        processors
+    }
+
+    fn address_spaces(&self) -> common::AddressSpaceList {
+        // The MC68000 is memory-mapped only; there is no separate I/O space.
+        let mut spaces = common::AddressSpaceList::new();
+        spaces.push(common::inspect::memory_space(
+            "cpu.main.memory",
+            24,
+            common::ByteOrder::Big,
+        ));
+        spaces
+    }
+
+    fn read_register(&self, processor: &str, register: &str) -> Result<u128, common::InspectError> {
+        match processor {
+            "cpu.main" => common::inspect::m68000_read(self.cpu.as_ref(), register),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn write_register(
+        &mut self,
+        processor: &str,
+        register: &str,
+        value: u128,
+    ) -> Result<(), common::InspectError> {
+        match processor {
+            "cpu.main" => common::inspect::m68000_write(self.cpu.as_mut(), register, value),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn protected_mode_state(
+        &self,
+        processor: &str,
+    ) -> Result<common::ProtectedModeState, common::InspectError> {
+        match processor {
+            "cpu.main" => Err(common::InspectError::Unsupported),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn peek_memory(
+        &mut self,
+        space: &str,
+        address: u64,
+        buffer: &mut [u8],
+    ) -> Result<(), common::InspectError> {
+        match space {
+            "cpu.main.memory" => {
+                for (index, byte) in buffer.iter_mut().enumerate() {
+                    *byte = self
+                        .bus
+                        .peek_byte(common::inspect::offset_u32(address, index)?);
+                }
+                Ok(())
+            }
+            _ => Err(common::InspectError::UnknownSpace),
+        }
+    }
+
+    fn poke_memory(
+        &mut self,
+        space: &str,
+        address: u64,
+        bytes: &[u8],
+    ) -> Result<(), common::InspectError> {
+        match space {
+            "cpu.main.memory" => {
+                for (index, byte) in bytes.iter().enumerate() {
+                    self.bus
+                        .poke_byte(common::inspect::offset_u32(address, index)?, *byte);
+                }
+                Ok(())
+            }
+            _ => Err(common::InspectError::UnknownSpace),
+        }
+    }
+}
+
 impl<T: TraceSink> X68kMachine<T> {
     /// Builds a machine around a configured CPU and bus.
     pub fn new(cpu: Box<M68000>, bus: X68kBus<T>) -> Self {
@@ -54,6 +237,16 @@ impl<T: TraceSink> X68kMachine<T> {
         path: Option<std::path::PathBuf>,
     ) -> Result<(), String> {
         self.bus.insert_hdd(slot, image, path)
+    }
+
+    /// Attaches a hard disk image with the requested backing.
+    pub fn insert_hdd_backed(
+        &mut self,
+        slot: usize,
+        image: device::disk::HddImage,
+        backing: common::MediaBacking,
+    ) -> Result<(), String> {
+        self.bus.insert_hdd_backed(slot, image, backing)
     }
 
     /// Ejects and flushes the hard disk in `slot`.
@@ -189,8 +382,8 @@ impl<T: TraceSink> Machine for X68kMachine<T> {
         self.restore_machine_blob(blob)
     }
 
-    fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
-        self.bus.set_host_date_time_provider(provider);
+    fn set_host_date_time_source(&mut self, source: common::SharedHostDateTimeSource) {
+        self.bus.set_host_date_time_source(source);
     }
 
     fn startup_capabilities(&self) -> common::StartupCapabilities {
@@ -232,6 +425,119 @@ impl<T: TraceSink> Machine for X68kMachine<T> {
         self.bus.push_keyboard_scancode(code);
     }
 
+    /// Maps a host key to the X68000 native scan code.
+    fn translate_host_key(&self, key: HostKey, _modifiers: KeyModifiers) -> Option<u8> {
+        Some(match key {
+            HostKey::Escape => 0x01,
+            HostKey::Digit1 => 0x02,
+            HostKey::Digit2 => 0x03,
+            HostKey::Digit3 => 0x04,
+            HostKey::Digit4 => 0x05,
+            HostKey::Digit5 => 0x06,
+            HostKey::Digit6 => 0x07,
+            HostKey::Digit7 => 0x08,
+            HostKey::Digit8 => 0x09,
+            HostKey::Digit9 => 0x0A,
+            HostKey::Digit0 => 0x0B,
+            HostKey::Minus => 0x0C,
+            HostKey::Equals => 0x0D,
+            HostKey::Backslash => 0x0E,
+            HostKey::Backspace => 0x0F,
+            HostKey::Tab => 0x10,
+            HostKey::Q => 0x11,
+            HostKey::W => 0x12,
+            HostKey::E => 0x13,
+            HostKey::R => 0x14,
+            HostKey::T => 0x15,
+            HostKey::Y => 0x16,
+            HostKey::U => 0x17,
+            HostKey::I => 0x18,
+            HostKey::O => 0x19,
+            HostKey::P => 0x1A,
+            HostKey::Grave => 0x1B,
+            HostKey::LeftBracket => 0x1C,
+            HostKey::Return => 0x1D,
+            HostKey::A => 0x1E,
+            HostKey::S => 0x1F,
+            HostKey::D => 0x20,
+            HostKey::F => 0x21,
+            HostKey::G => 0x22,
+            HostKey::H => 0x23,
+            HostKey::J => 0x24,
+            HostKey::K => 0x25,
+            HostKey::L => 0x26,
+            HostKey::Semicolon => 0x27,
+            HostKey::Apostrophe => 0x28,
+            HostKey::RightBracket => 0x29,
+            HostKey::Z => 0x2A,
+            HostKey::X => 0x2B,
+            HostKey::C => 0x2C,
+            HostKey::V => 0x2D,
+            HostKey::B => 0x2E,
+            HostKey::N => 0x2F,
+            HostKey::M => 0x30,
+            HostKey::Comma => 0x31,
+            HostKey::Period => 0x32,
+            HostKey::Slash => 0x33,
+            HostKey::NonUsBackslash => 0x34,
+            HostKey::Space => 0x35,
+            HostKey::Home => 0x36,
+            HostKey::Delete => 0x37,
+            HostKey::PageUp => 0x38,
+            HostKey::PageDown => 0x39,
+            HostKey::End => 0x3A,
+            HostKey::Left => 0x3B,
+            HostKey::Up => 0x3C,
+            HostKey::Right => 0x3D,
+            HostKey::Down => 0x3E,
+            HostKey::NumLock => 0x3F,
+            HostKey::KpDivide => 0x40,
+            HostKey::KpMultiply => 0x41,
+            HostKey::KpMinus => 0x42,
+            HostKey::Kp7 => 0x43,
+            HostKey::Kp8 => 0x44,
+            HostKey::Kp9 => 0x45,
+            HostKey::KpPlus => 0x46,
+            HostKey::Kp4 => 0x47,
+            HostKey::Kp5 => 0x48,
+            HostKey::Kp6 => 0x49,
+            HostKey::Kp1 => 0x4B,
+            HostKey::Kp2 => 0x4C,
+            HostKey::Kp3 => 0x4D,
+            HostKey::KpEnter => 0x4E,
+            HostKey::Kp0 => 0x4F,
+            HostKey::KpComma => 0x50,
+            HostKey::KpPeriod => 0x51,
+            HostKey::Application => 0x54,
+            HostKey::F11 => 0x55,
+            HostKey::F12 => 0x56,
+            HostKey::F13 => 0x57,
+            HostKey::F14 => 0x58,
+            HostKey::F15 => 0x59,
+            HostKey::CapsLock => 0x5D,
+            HostKey::Insert => 0x5E,
+            HostKey::LeftAlt => 0x5F,
+            HostKey::RightAlt => 0x5A,
+            HostKey::RightControl => 0x60,
+            HostKey::Pause => 0x61,
+            HostKey::PrintScreen => 0x62,
+            HostKey::F1 => 0x63,
+            HostKey::F2 => 0x64,
+            HostKey::F3 => 0x65,
+            HostKey::F4 => 0x66,
+            HostKey::F5 => 0x67,
+            HostKey::F6 => 0x68,
+            HostKey::F7 => 0x69,
+            HostKey::F8 => 0x6A,
+            HostKey::F9 => 0x6B,
+            HostKey::F10 => 0x6C,
+            HostKey::LeftShift => 0x70,
+            HostKey::RightShift => 0x70,
+            HostKey::LeftControl => 0x71,
+            _ => return None,
+        })
+    }
+
     /// Accumulates host mouse movement for the SCC mouse.
     fn push_mouse_delta(&mut self, dx: i16, dy: i16) {
         self.bus.push_mouse_delta(dx, dy);
@@ -258,14 +564,22 @@ impl<T: TraceSink> Machine for X68kMachine<T> {
     }
 
     /// Loads and mounts a floppy image into `drive`.
-    fn insert_floppy(&mut self, drive: usize, path: &std::path::Path) -> Result<String, String> {
-        let data = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
-        let image = device::floppy::load_floppy_image(path, &data)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        let description = format!("{} ({})", image.name, image.format_name());
-        self.bus
-            .insert_floppy(drive, image, Some(path.to_path_buf()))?;
+    fn insert_floppy(
+        &mut self,
+        drive: usize,
+        image: common::MediaImage<'_>,
+        backing: common::MediaBacking,
+    ) -> Result<String, String> {
+        let parsed =
+            device::floppy::load_floppy_image(std::path::Path::new(image.name), image.bytes)
+                .map_err(|error| format!("{}: {error}", image.name))?;
+        let description = format!("{} ({})", parsed.name, parsed.format_name());
+        self.bus.insert_floppy_backed(drive, parsed, backing)?;
         Ok(description)
+    }
+
+    fn floppy_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.bus.floppy_image_bytes(drive)
     }
 
     /// Ejects and flushes the floppy in `drive`.
@@ -283,30 +597,37 @@ impl<T: TraceSink> Machine for X68kMachine<T> {
         self.bus.flush_hdds();
     }
 
-    fn insert_hdd(&mut self, slot: usize, path: &std::path::Path) -> Result<String, String> {
-        let extension_is_hdf = path
+    fn insert_hdd(
+        &mut self,
+        slot: usize,
+        image: common::MediaImage<'_>,
+        backing: common::MediaBacking,
+    ) -> Result<String, String> {
+        let extension_is_hdf = std::path::Path::new(image.name)
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("hdf"));
         if !extension_is_hdf {
             return Err(format!(
                 "X68000 hard disks must be headerless .hdf images; got {}",
-                path.display(),
+                image.name,
             ));
         }
-        let data = std::fs::read(path)
-            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
         let sector_size = self.bus.model().storage_controller().sector_size();
-        let image = device::disk::load_x68k_hdf(data, sector_size)
-            .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
+        let parsed = device::disk::load_x68k_hdf(image.bytes.to_vec(), sector_size)
+            .map_err(|error| format!("Failed to parse {}: {error}", image.name))?;
         let description = format!(
             "{} HDD unit {slot}: {} sectors from {}",
             self.bus.model(),
-            image.geometry.total_sectors(),
-            path.display(),
+            parsed.geometry.total_sectors(),
+            image.name,
         );
-        X68kMachine::insert_hdd(self, slot, image, Some(path.to_path_buf()))?;
+        X68kMachine::insert_hdd_backed(self, slot, parsed, backing)?;
         Ok(description)
+    }
+
+    fn hdd_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.bus.hdd_image_bytes(drive)
     }
 
     #[cfg(feature = "mt32")]
@@ -440,13 +761,13 @@ mod tests {
 
         let mut machine: X68kMachine =
             crate::bus::test_support::machine(X68kModel::X68000, CpuMode::High, roms());
-        let label = machine.insert_floppy(0, &path).unwrap();
+        let label = machine.insert_floppy_from_path(0, &path).unwrap();
         assert!(
             label.contains("D88"),
             "label reports the container: {label}"
         );
         assert!(
-            machine.insert_floppy(2, &path).is_err(),
+            machine.insert_floppy_from_path(2, &path).is_err(),
             "the X68000 only installs drives 0 and 1"
         );
         machine.flush_floppies();

@@ -9,9 +9,12 @@
 
 use std::path::PathBuf;
 
-use common::TraceSink;
+use common::{
+    TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField, TraceSink, TraceValue,
+    trace_id,
+};
 use device::{
-    floppy::{FloppyImage, MountedFloppy},
+    floppy::FloppyImage,
     wd17xx_fdc::{WD17XX_PLATFORM_FM7, Wd17xxFdc},
 };
 
@@ -106,12 +109,58 @@ impl<T: TraceSink> Fm7Bus<T> {
         }
     }
 
+    /// Emits an FDC read device trace event for a read-sector command.
+    fn trace_fdc_read_command(&mut self, command: u8) {
+        // WD17xx Type II Read Sector opcodes are 0x80..0x9F.
+        if command & 0xE0 != 0x80 {
+            return;
+        }
+        if !T::ENABLED
+            || !self.tracer.interested(TraceEventKey::Device {
+                device: trace_id::device::FM7_FDC,
+                action: trace_id::action::READ,
+            })
+        {
+            return;
+        }
+        let drive = self.fdc_drive_select;
+        let head = self.fdc_side;
+        let cylinder = self.fdc.read_track_register();
+        let record = self.fdc.read_sector_register();
+        self.tracer.trace(
+            TraceContext::main_cpu(self.current_cycle(), Some(u64::from(self.cpu_clock_hz()))),
+            TraceEvent::Device(TraceDeviceEvent {
+                device: trace_id::device::FM7_FDC,
+                action: trace_id::action::READ,
+                fields: &[
+                    TraceField {
+                        name: trace_id::field::DRIVE,
+                        value: TraceValue::Unsigned(u64::from(drive)),
+                    },
+                    TraceField {
+                        name: trace_id::field::CYLINDER,
+                        value: TraceValue::Unsigned(u64::from(cylinder)),
+                    },
+                    TraceField {
+                        name: trace_id::field::HEAD,
+                        value: TraceValue::Unsigned(u64::from(head)),
+                    },
+                    TraceField {
+                        name: trace_id::field::RECORD,
+                        value: TraceValue::Unsigned(u64::from(record)),
+                    },
+                ],
+            }),
+        );
+    }
+
     /// Writes an FDC port (`0xFD18-0xFD1F`).
     pub(crate) fn fdc_write(&mut self, port: u8, value: u8) {
         let now = self.current_cycle();
         match port {
             PORT_FDC_STATUS_COMMAND => {
                 self.fdc.write_command(value, now);
+                self.trace_fdc_read_command(value);
                 self.sync_fdc_schedule();
                 self.sync_fdc_interrupt();
             }
@@ -216,8 +265,22 @@ impl<T: TraceSink> Fm7Bus<T> {
 
     /// Mounts a floppy image into `drive`, remembering its backing path.
     pub fn insert_floppy(&mut self, drive: usize, image: FloppyImage, path: PathBuf) {
-        self.fdc
-            .insert(drive, MountedFloppy::new(image, Some(path)));
+        self.insert_floppy_backed(drive, image, path.into());
+    }
+
+    /// Mounts a floppy image into `drive` with the requested backing.
+    pub fn insert_floppy_backed(
+        &mut self,
+        drive: usize,
+        image: FloppyImage,
+        backing: common::MediaBacking,
+    ) {
+        self.fdc.insert_backed(drive, image, backing);
+    }
+
+    /// Returns the current in-memory bytes of the floppy in `drive`, if mounted.
+    pub fn floppy_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.fdc.drive_image_bytes(drive)
     }
 
     /// Ejects and flushes the floppy in `drive`.

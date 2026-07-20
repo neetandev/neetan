@@ -47,7 +47,9 @@ fn rtc_dout(machine: &mut Pc8801Machine) -> u8 {
 #[test]
 fn rtc_time_read_shifts_out_host_time() {
     let mut machine = build_machine_with_rom(&[0u8; 0x8000]);
-    machine.set_host_date_time_provider(fixed_rtc_time);
+    machine.set_host_date_time_source(std::sync::Arc::new(common::FixedHostDateTime(
+        fixed_rtc_time(),
+    )));
 
     // Load the host time into the shift register, then enter shift mode.
     rtc_command(&mut machine, RTC_CMD_TIME_READ);

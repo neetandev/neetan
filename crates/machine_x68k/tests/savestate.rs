@@ -167,7 +167,7 @@ fn partial_floppy_command_replays_exactly() {
     let path = std::env::temp_dir().join("neetan_x68k_savestate.xdf");
     std::fs::write(&path, vec![0x5A; 1_261_568]).unwrap();
     let mut machine = machine(X68kModel::X68000);
-    machine.insert_floppy(0, &path).unwrap();
+    machine.insert_floppy_from_path(0, &path).unwrap();
     write_byte(&mut machine, 0xE94007, 0x80);
     write_byte(&mut machine, 0xE94003, 0x07);
     write_byte(&mut machine, 0xE94003, 0x00);

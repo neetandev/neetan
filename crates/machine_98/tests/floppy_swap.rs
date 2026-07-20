@@ -84,7 +84,7 @@ fn insert_floppy_from_file() {
     let path = write_temp_d88("neetan_test_insert.d88", &d88);
 
     let mut machine = create_machine_vm();
-    let result = machine.insert_floppy(0, &path);
+    let result = machine.insert_floppy_from_path(0, &path);
     cleanup_temp_file(&path);
 
     let desc = result.expect("insert_floppy should succeed");
@@ -117,7 +117,7 @@ fn eject_floppy_clears_drive() {
 
     let mut machine = create_machine_vm();
     machine
-        .insert_floppy(0, &path)
+        .insert_floppy_from_path(0, &path)
         .expect("insert should succeed");
     cleanup_temp_file(&path);
 
@@ -152,7 +152,7 @@ fn swap_floppy_replaces_disk_data() {
 
     // Insert disk A.
     machine
-        .insert_floppy(0, &path_a)
+        .insert_floppy_from_path(0, &path_a)
         .expect("insert A should succeed");
     {
         let disk = machine
@@ -171,7 +171,7 @@ fn swap_floppy_replaces_disk_data() {
     assert!(machine.bus.floppy_disk(0).is_none());
 
     machine
-        .insert_floppy(0, &path_b)
+        .insert_floppy_from_path(0, &path_b)
         .expect("insert B should succeed");
     {
         let disk = machine
@@ -200,7 +200,7 @@ fn swap_floppy_on_drive_1() {
     let mut machine = create_machine_vm();
 
     machine
-        .insert_floppy(1, &path_a)
+        .insert_floppy_from_path(1, &path_a)
         .expect("insert on drive 1 should succeed");
     assert_eq!(machine.bus.floppy_disk(1).expect("drive 1").name, "FDD2_A");
 
@@ -208,7 +208,7 @@ fn swap_floppy_on_drive_1() {
     assert!(machine.bus.floppy_disk(1).is_none());
 
     machine
-        .insert_floppy(1, &path_b)
+        .insert_floppy_from_path(1, &path_b)
         .expect("insert B on drive 1 should succeed");
     assert_eq!(machine.bus.floppy_disk(1).expect("drive 1").name, "FDD2_B");
 
@@ -219,7 +219,7 @@ fn swap_floppy_on_drive_1() {
 #[test]
 fn insert_floppy_nonexistent_file_returns_error() {
     let mut machine = create_machine_vm();
-    let result = machine.insert_floppy(0, Path::new("/tmp/neetan_nonexistent_disk.d88"));
+    let result = machine.insert_floppy_from_path(0, Path::new("/tmp/neetan_nonexistent_disk.d88"));
     assert!(result.is_err(), "should fail for nonexistent file");
     let err = result.unwrap_err();
     assert!(
@@ -233,7 +233,7 @@ fn insert_floppy_invalid_data_returns_error() {
     let path = write_temp_d88("neetan_test_invalid.d88", b"not a valid d88 image");
 
     let mut machine = create_machine_vm();
-    let result = machine.insert_floppy(0, &path);
+    let result = machine.insert_floppy_from_path(0, &path);
     cleanup_temp_file(&path);
 
     assert!(result.is_err(), "should fail for invalid D88 data");
@@ -251,7 +251,7 @@ fn insert_floppy_write_protected_disk() {
 
     let mut machine = create_machine_vm();
     let desc = machine
-        .insert_floppy(0, &path)
+        .insert_floppy_from_path(0, &path)
         .expect("insert should succeed");
     cleanup_temp_file(&path);
 
@@ -273,8 +273,12 @@ fn independent_drives_do_not_interfere() {
     let path_2 = write_temp_d88("neetan_test_indep_1.d88", &d88_2);
 
     let mut machine = create_machine_vm();
-    machine.insert_floppy(0, &path_1).expect("insert drive 0");
-    machine.insert_floppy(1, &path_2).expect("insert drive 1");
+    machine
+        .insert_floppy_from_path(0, &path_1)
+        .expect("insert drive 0");
+    machine
+        .insert_floppy_from_path(1, &path_2)
+        .expect("insert drive 1");
 
     // Eject drive 0 - drive 1 should be unaffected.
     machine.eject_floppy(0);
@@ -286,7 +290,7 @@ fn independent_drives_do_not_interfere() {
 
     // Re-insert drive 0 - drive 1 still unaffected.
     machine
-        .insert_floppy(0, &path_1)
+        .insert_floppy_from_path(0, &path_1)
         .expect("re-insert drive 0");
     assert_eq!(
         machine.bus.floppy_disk(0).expect("drive 0 back").name,
@@ -313,7 +317,9 @@ fn insert_floppy_works_on_all_cpu_types() {
     // V30
     {
         let mut machine = create_machine_vm();
-        let desc = machine.insert_floppy(0, &path).expect("V30 insert");
+        let desc = machine
+            .insert_floppy_from_path(0, &path)
+            .expect("V30 insert");
         assert!(desc.contains("MULTI_CPU"));
         machine.eject_floppy(0);
         assert!(machine.bus.floppy_disk(0).is_none());
@@ -322,7 +328,9 @@ fn insert_floppy_works_on_all_cpu_types() {
     // I286
     {
         let mut machine = create_machine_vx();
-        let desc = machine.insert_floppy(0, &path).expect("I286 insert");
+        let desc = machine
+            .insert_floppy_from_path(0, &path)
+            .expect("I286 insert");
         assert!(desc.contains("MULTI_CPU"));
         machine.eject_floppy(0);
         assert!(machine.bus.floppy_disk(0).is_none());
@@ -331,7 +339,9 @@ fn insert_floppy_works_on_all_cpu_types() {
     // I386
     {
         let mut machine = create_machine_ra();
-        let desc = machine.insert_floppy(0, &path).expect("I386 insert");
+        let desc = machine
+            .insert_floppy_from_path(0, &path)
+            .expect("I386 insert");
         assert!(desc.contains("MULTI_CPU"));
         machine.eject_floppy(0);
         assert!(machine.bus.floppy_disk(0).is_none());
@@ -347,7 +357,7 @@ fn fdc_sees_disk_after_trait_insert() {
     let path = write_temp_d88("neetan_test_fdc_sense.d88", &d88);
 
     let mut machine = create_machine_vm();
-    machine.insert_floppy(0, &path).expect("insert");
+    machine.insert_floppy_from_path(0, &path).expect("insert");
     cleanup_temp_file(&path);
 
     // Issue Sense Drive Status via FDC I/O ports to verify the FDC knows about the disk.
@@ -370,7 +380,7 @@ fn fdc_not_ready_after_trait_eject() {
     let path = write_temp_d88("neetan_test_fdc_eject.d88", &d88);
 
     let mut machine = create_machine_vm();
-    machine.insert_floppy(0, &path).expect("insert");
+    machine.insert_floppy_from_path(0, &path).expect("insert");
     cleanup_temp_file(&path);
 
     machine.eject_floppy(0);

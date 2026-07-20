@@ -15,9 +15,12 @@ extern crate alloc;
 use alloc::string::ToString;
 use alloc::{boxed::Box, format, string::String};
 
+mod automation;
 pub mod display;
 mod dos;
 pub mod error;
+pub mod input;
+pub mod inspect;
 mod jis;
 #[cfg(feature = "std")]
 pub mod log;
@@ -28,12 +31,23 @@ mod trace;
 #[cfg(feature = "std")]
 pub mod tracing;
 
+pub use automation::{
+    AutomatedMachine, AutomationDescriptor, AutomationDriver, AutomationTimebase,
+    AutomationTimeline, InputCapabilities, RunOutcome, RunRequest, RunTarget, StopReason,
+    TraceCatalog, TraceDeviceCatalog, TraceProviderCatalog, drive_automation,
+};
 pub use display::{FramebufferVa, HighResCursor, TownsLayer};
 pub use dos::{
     AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
     ConsoleIo, CpuAccess, CursorAccess, DiskIo, DriveIo, HardwareCursorState, MemoryAccess,
 };
 pub use error::{Context, ContextError, OptionContext, StringError};
+pub use input::{HostKey, KeyModifiers};
+pub use inspect::{
+    AddressSpaceClass, AddressSpaceDescriptor, AddressSpaceList, ByteOrder, DescriptorTableReading,
+    InspectError, MachineInspector, ProcessorDescriptor, ProcessorList, ProtectedModeState,
+    RegisterDescriptor, RegisterReading, SegmentReading,
+};
 pub use jis::{
     JisChar, char_to_jis, is_shift_jis_lead_byte, is_shift_jis_trail_byte, jis_slice_to_string,
     jis_to_char, jis_to_shift_jis, shift_jis_pair_to_jis, str_to_jis,
@@ -87,8 +101,48 @@ impl HostDateTime {
     }
 }
 
-/// Callback used by a machine bus to obtain the current host date and time.
-pub type HostDateTimeProvider = fn() -> HostDateTime;
+/// Source of the current host date and time for emulated real-time clocks.
+///
+/// Replaces the former bare function pointer so a fixed, cloneable source can
+/// be shared across executor threads by the automation frontend.
+pub trait HostDateTimeSource {
+    /// Returns the current host date and time.
+    fn now(&self) -> HostDateTime;
+}
+
+/// Cloneable host date-time source shared across threads.
+pub type SharedHostDateTimeSource = alloc::sync::Arc<dyn HostDateTimeSource + Send + Sync>;
+
+/// Host date-time source backed by the system wall clock.
+#[cfg(feature = "std")]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemHostDateTime;
+
+#[cfg(feature = "std")]
+impl HostDateTimeSource for SystemHostDateTime {
+    fn now(&self) -> HostDateTime {
+        default_host_date_time()
+    }
+}
+
+/// Returns a shared host date-time source backed by the system wall clock.
+#[cfg(feature = "std")]
+pub fn default_host_date_time_source() -> SharedHostDateTimeSource {
+    alloc::sync::Arc::new(SystemHostDateTime)
+}
+
+/// Host date-time source that always returns a fixed value.
+///
+/// Used by the automation frontend for deterministic guest RTC time and by
+/// tests that need a stable clock.
+#[derive(Debug, Clone, Copy)]
+pub struct FixedHostDateTime(pub HostDateTime);
+
+impl HostDateTimeSource for FixedHostDateTime {
+    fn now(&self) -> HostDateTime {
+        self.0
+    }
+}
 
 /// Converts a decimal value below one hundred to packed BCD.
 pub const fn to_bcd(value: u8) -> u8 {
@@ -1227,6 +1281,12 @@ pub trait Cpu {
         0
     }
 
+    /// Returns the full protected-mode state snapshot, when the model provides
+    /// one (i386+)
+    fn protected_mode_state(&self) -> Option<ProtectedModeState> {
+        None
+    }
+
     /// Returns the high byte of AX.
     #[inline]
     fn ah(&self) -> u8 {
@@ -1640,6 +1700,57 @@ pub struct JoystickState {
     pub select: bool,
 }
 
+/// Where guest writes to a mounted disk image are directed.
+///
+/// This abstracts a mounted floppy or hard disk away from a filesystem path so
+/// a caller can mount an image whose writes are dropped, kept only in memory,
+/// or written through to a host file.
+#[cfg(feature = "std")]
+#[derive(Debug, Clone)]
+pub enum MediaBacking {
+    /// Guest writes are dropped. The image stays pristine in memory.
+    ReadOnly,
+    /// Guest writes are kept in the in-memory image only and discarded on eject.
+    Ram,
+    /// Guest writes are written through to the host file at this path.
+    WriteThrough(std::path::PathBuf),
+}
+
+#[cfg(feature = "std")]
+impl From<Option<std::path::PathBuf>> for MediaBacking {
+    /// `None` becomes [`MediaBacking::Ram`]; `Some(path)` write-through.
+    fn from(path: Option<std::path::PathBuf>) -> Self {
+        match path {
+            None => Self::Ram,
+            Some(path) => Self::WriteThrough(path),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl From<std::path::PathBuf> for MediaBacking {
+    /// An empty path becomes [`MediaBacking::Ram`]; otherwise write-through.
+    fn from(path: std::path::PathBuf) -> Self {
+        if path.as_os_str().is_empty() {
+            Self::Ram
+        } else {
+            Self::WriteThrough(path)
+        }
+    }
+}
+
+/// A disk image handed to a machine for mounting.
+///
+/// `name` carries the original file name including its extension, which the
+/// machine uses to detect the image format and to build a description.
+#[derive(Debug, Clone, Copy)]
+pub struct MediaImage<'a> {
+    /// The image file name, used for format detection and descriptions.
+    pub name: &'a str,
+    /// The raw image bytes.
+    pub bytes: &'a [u8],
+}
+
 /// Startup peripherals supported by a machine.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StartupCapabilities {
@@ -1698,6 +1809,37 @@ pub trait Machine {
     /// lives in the application and is selected per machine family.
     fn push_keyboard_scancode(&mut self, code: u8);
 
+    /// Translates a host-side key plus modifier state into this machine's native
+    /// scan code.
+    ///
+    /// Returns `None` for a key the machine has no scan code for. The default is
+    /// `None` so that a default implementation never implies support. Machines
+    /// with a keyboard override this with their own key table. Matrix machines
+    /// ignore `modifiers` and forward Shift and Control as their own key cells;
+    /// only machines that resolve a pre-composed code (the PC-6000 family) fold
+    /// the modifiers.
+    fn translate_host_key(&self, _key: HostKey, _modifiers: KeyModifiers) -> Option<u8> {
+        None
+    }
+
+    /// Returns whether this machine can translate `key` with no modifiers held.
+    fn supports_host_key(&self, key: HostKey) -> bool {
+        self.translate_host_key(key, KeyModifiers::default())
+            .is_some()
+    }
+
+    /// Injects a host-side key press or release, resolving `modifiers`.
+    ///
+    /// The key is translated to a native scan code and injected through
+    /// [`push_keyboard_scancode`](Self::push_keyboard_scancode); a release sets
+    /// bit 7, matching the shared host-side make/break convention. Keys the
+    /// machine cannot translate are ignored.
+    fn push_host_key(&mut self, key: HostKey, pressed: bool, modifiers: KeyModifiers) {
+        if let Some(code) = self.translate_host_key(key, modifiers) {
+            self.push_keyboard_scancode(if pressed { code } else { code | 0x80 });
+        }
+    }
+
     /// Injects mouse movement deltas for the current frame.
     ///
     /// `dx`/`dy` are relative pixel deltas from the host.
@@ -1742,8 +1884,8 @@ pub trait Machine {
     /// own software renderer with the same font ROM the bus is using.
     fn font_rom_data(&self) -> &[u8];
 
-    /// Sets the host date and time provider used by this machine's RTC.
-    fn set_host_date_time_provider(&mut self, _provider: HostDateTimeProvider) {}
+    /// Sets the host date and time source used by this machine's RTC.
+    fn set_host_date_time_source(&mut self, _source: SharedHostDateTimeSource) {}
 
     /// Returns the startup peripherals supported by this machine.
     fn startup_capabilities(&self) -> StartupCapabilities {
@@ -1760,9 +1902,53 @@ pub trait Machine {
     fn eject_cartridge(&mut self) {}
 
     /// Inserts a floppy disk image into the specified drive (0-based).
-    /// Reads the file, auto-detects format, and inserts. Returns a description string on success.
+    ///
+    /// Detects the format from the image name, parses it, and mounts it with the
+    /// requested backing. Returns a description string on success.
     #[cfg(feature = "std")]
-    fn insert_floppy(&mut self, drive: usize, path: &std::path::Path) -> Result<String, String>;
+    fn insert_floppy(
+        &mut self,
+        drive: usize,
+        image: MediaImage<'_>,
+        backing: MediaBacking,
+    ) -> Result<String, String>;
+
+    // TODO: Remove this function and always use insert_floppy() directly instead.
+    /// Inserts a floppy disk image from a host path with write-through backing.
+    ///
+    /// Reads the file, then delegates to [`insert_floppy`](Self::insert_floppy).
+    /// This is the path-based convenience used by the interactive frontend.
+    #[cfg(feature = "std")]
+    fn insert_floppy_from_path(
+        &mut self,
+        drive: usize,
+        path: &std::path::Path,
+    ) -> Result<String, String> {
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("floppy");
+        self.insert_floppy(
+            drive,
+            MediaImage {
+                name,
+                bytes: &bytes,
+            },
+            MediaBacking::WriteThrough(path.to_path_buf()),
+        )
+    }
+
+    /// Returns the current in-memory bytes of the floppy in `drive`, if mounted.
+    ///
+    /// Used to capture written contents so a caller can re-inject them after a
+    /// machine reconstruction. The default is `None` for machines without a
+    /// floppy drive or one that cannot serialize its image.
+    #[cfg(feature = "std")]
+    fn floppy_image_bytes(&self, _drive: usize) -> Option<Vec<u8>> {
+        None
+    }
 
     /// Ejects the floppy disk from the specified drive, flushing any dirty data first.
     fn eject_floppy(&mut self, drive: usize);
@@ -1783,9 +1969,54 @@ pub trait Machine {
     fn eject_cassette(&mut self) {}
 
     /// Loads and mounts a hard disk image into the specified drive.
+    ///
+    /// Detects the format from the image name, parses it, and mounts it with the
+    /// requested backing. The default returns an error for machines without hard
+    /// disk support.
     #[cfg(feature = "std")]
-    fn insert_hdd(&mut self, _drive: usize, _path: &std::path::Path) -> Result<String, String> {
+    fn insert_hdd(
+        &mut self,
+        _drive: usize,
+        _image: MediaImage<'_>,
+        _backing: MediaBacking,
+    ) -> Result<String, String> {
         Err("hard disks are not supported on this machine".to_string())
+    }
+
+    /// Inserts a hard disk image from a host path with write-through backing.
+    ///
+    /// Reads the file, then delegates to [`insert_hdd`](Self::insert_hdd). This
+    /// is the path-based convenience used by the interactive frontend.
+    #[cfg(feature = "std")]
+    fn insert_hdd_from_path(
+        &mut self,
+        drive: usize,
+        path: &std::path::Path,
+    ) -> Result<String, String> {
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("harddisk");
+        self.insert_hdd(
+            drive,
+            MediaImage {
+                name,
+                bytes: &bytes,
+            },
+            MediaBacking::WriteThrough(path.to_path_buf()),
+        )
+    }
+
+    /// Returns the current in-memory bytes of the hard disk in `drive`, if mounted.
+    ///
+    /// Used to capture written contents so a caller can re-inject them after a
+    /// machine reconstruction. The default is `None` for machines without a hard
+    /// disk or one that cannot serialize its image.
+    #[cfg(feature = "std")]
+    fn hdd_image_bytes(&self, _drive: usize) -> Option<Vec<u8>> {
+        None
     }
 
     /// Attaches a printer output file.
@@ -1871,7 +2102,7 @@ pub const fn unlikely(b: bool) -> bool {
 mod tests {
     use super::{
         Bus, CpuMode, M68000AccessSize, M68000BusAccess, M68000CycleKind, M68000FunctionCode,
-        Machine, MachineModel, SaveStateError,
+        Machine, MachineModel, MediaBacking, MediaImage, SaveStateError,
     };
 
     /// A machine that implements only the required [`Machine`] methods,
@@ -1917,7 +2148,8 @@ mod tests {
         fn insert_floppy(
             &mut self,
             _drive: usize,
-            _path: &std::path::Path,
+            _image: MediaImage<'_>,
+            _backing: MediaBacking,
         ) -> Result<String, String> {
             Err("no floppy drive".to_string())
         }

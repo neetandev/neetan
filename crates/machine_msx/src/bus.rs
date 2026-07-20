@@ -15,7 +15,7 @@ mod s1985;
 use std::path::Path;
 
 use common::{
-    HostDateTime, HostDateTimeProvider, NoTrace, TraceAccessKind, TraceAccessWidth,
+    HostDateTime, NoTrace, SharedHostDateTimeSource, TraceAccessKind, TraceAccessWidth,
     TraceAddressSpace, TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField,
     TraceInterruptAction, TraceInterruptKind, TracePresentation, TraceSink, TraceValue, trace_id,
 };
@@ -189,6 +189,8 @@ pub struct MsxBus<T: TraceSink = NoTrace> {
     completed_scanlines: u64,
     vblank_count: u64,
     frame_number: u64,
+    presented_frames: u64,
+    automation_audio_remainder: u64,
     tracer: T,
 }
 
@@ -217,6 +219,7 @@ pub(crate) struct MsxBusState {
     keyboard_click: device::one_bit_dac::OneBitDacState,
     scheduler: common::SchedulerState,
     current_cycle: u64,
+    presented_frames: u64,
     wait_cycles: i64,
     scanline: u16,
     completed_scanlines: u64,
@@ -285,6 +288,8 @@ impl<T: TraceSink> MsxBus<T> {
             completed_scanlines: 0,
             vblank_count: 0,
             frame_number: 0,
+            presented_frames: 0,
+            automation_audio_remainder: 0,
             tracer,
         };
         bus.schedule_video_timing();
@@ -302,10 +307,51 @@ impl<T: TraceSink> MsxBus<T> {
     }
 
     /// Sets and immediately seeds the RP5C01 from the host clock.
-    pub fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
+    pub fn set_host_date_time_source(&mut self, source: SharedHostDateTimeSource) {
         if let Some(rtc) = self.rtc.as_mut() {
-            rtc.seed_time(provider(), self.current_cycle);
+            rtc.seed_time(source.now(), self.current_cycle);
         }
+    }
+
+    /// Returns the number of frames presented within the current epoch.
+    pub(crate) fn presented_frames(&self) -> u64 {
+        self.presented_frames
+    }
+
+    /// Returns the fixed audio output rate in Hz.
+    pub(crate) fn audio_sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Returns the primary scheduling-tick rate as `(numerator, denominator)`.
+    pub(crate) fn automation_timebase(&self) -> (u64, u64) {
+        (u64::from(self.cpu_clock_hz()), 1)
+    }
+
+    /// Returns the stable automation model identifier.
+    pub(crate) fn model_id(&self) -> &'static str {
+        match self.model {
+            MsxModel::Msx => "msx",
+            MsxModel::Msx2 => "msx2",
+            MsxModel::Msx2Plus => "msx2plus",
+        }
+    }
+
+    /// Generates and discards audio covering `elapsed_ticks` for determinism.
+    ///
+    /// Sample counts use integer-remainder accounting so the generated sequence
+    /// is identical across two identical runs.
+    pub(crate) fn drain_automation_audio(&mut self, elapsed_ticks: u64) {
+        let (numerator, denominator) = self.automation_timebase();
+        let accumulator = elapsed_ticks as u128 * denominator as u128 * self.sample_rate as u128
+            + self.automation_audio_remainder as u128;
+        let frames = (accumulator / numerator as u128) as usize;
+        self.automation_audio_remainder = (accumulator % numerator as u128) as u64;
+        if frames == 0 {
+            return;
+        }
+        let mut scratch = vec![0.0f32; frames * 2];
+        let _ = self.generate_audio_samples(1.0, &mut scratch);
     }
 
     /// Returns identities for installed firmware and cartridges.
@@ -377,6 +423,7 @@ impl<T: TraceSink> MsxBus<T> {
             keyboard_click: self.keyboard_click.capture_state(),
             scheduler: self.scheduler.capture_state(),
             current_cycle: self.current_cycle,
+            presented_frames: self.presented_frames,
             wait_cycles: self.wait_cycles,
             scanline: self.scanline,
             completed_scanlines: self.completed_scanlines,
@@ -480,6 +527,7 @@ impl<T: TraceSink> MsxBus<T> {
         self.switched_io_device = state.switched_io_device;
         self.system_flags = state.system_flags;
         self.current_cycle = state.current_cycle;
+        self.presented_frames = state.presented_frames;
         self.wait_cycles = state.wait_cycles;
         self.scanline = state.scanline;
         self.completed_scanlines = state.completed_scanlines;
@@ -1354,21 +1402,28 @@ impl<T: TraceSink> MsxBus<T> {
     fn present_latched_frame(&mut self) {
         let (width, height) = self.renderer.present_latched_frame();
         self.frame_number = self.frame_number.wrapping_add(1);
-        if T::ENABLED {
-            self.tracer.trace(
-                TraceContext::presentation_main(
-                    self.current_cycle,
-                    Some(u64::from(self.cpu_clock_hz())),
-                ),
-                TraceEvent::Presentation(TracePresentation {
-                    display: trace_id::display::MAIN,
-                    frame: self.frame_number,
-                    width,
-                    height,
-                }),
-            );
-        }
+        self.trace_presentation(width, height);
         self.renderer.clear_latched_frame();
+    }
+
+    /// Emits the presentation trace event for the just-published frame.
+    fn trace_presentation(&mut self, width: u32, height: u32) {
+        if !T::ENABLED {
+            return;
+        }
+        self.presented_frames = self.presented_frames.saturating_add(1);
+        self.tracer.trace(
+            TraceContext::presentation_main(
+                self.current_cycle,
+                Some(u64::from(self.cpu_clock_hz())),
+            ),
+            TraceEvent::Presentation(TracePresentation {
+                display: trace_id::display::MAIN,
+                frame: self.presented_frames,
+                width,
+                height,
+            }),
+        );
     }
 }
 

@@ -11,6 +11,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "automation"
+version = "2026.7.0"
+dependencies = [
+ "blake3",
+ "common",
+ "machine_98",
+ "machine_factory",
+ "machine_fm7",
+ "machine_msx",
+ "machine_x68k",
+ "r7rs",
+ "sdl3",
+]
+
+[[package]]
 name = "blake3"
 version = "1.0.0"
 
@@ -158,6 +173,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "machine_factory"
+version = "2026.7.0"
+dependencies = [
+ "common",
+ "machine_60",
+ "machine_88",
+ "machine_88va",
+ "machine_98",
+ "machine_at",
+ "machine_fm7",
+ "machine_msx",
+ "machine_towns",
+ "machine_x1",
+ "machine_x68k",
+]
+
+[[package]]
 name = "machine_fm7"
 version = "2026.7.0"
 dependencies = [
@@ -234,25 +266,9 @@ dependencies = [
 name = "neetan"
 version = "2026.7.0"
 dependencies = [
- "audio_engine",
+ "automation",
  "common",
- "device",
- "dos",
- "machine_60",
- "machine_88",
- "machine_88va",
- "machine_98",
- "machine_at",
- "machine_fm7",
- "machine_msx",
- "machine_towns",
- "machine_x1",
- "machine_x68k",
- "save_state",
- "sdl3",
- "sdl3_backend",
- "software_renderer",
- "text_extractor",
+ "user_interface",
 ]
 
 [[package]]
@@ -357,6 +373,32 @@ version = "0.1.0"
 dependencies = [
  "common",
  "sdl3",
+]
+
+[[package]]
+name = "user_interface"
+version = "2026.7.0"
+dependencies = [
+ "audio_engine",
+ "common",
+ "device",
+ "dos",
+ "machine_60",
+ "machine_88",
+ "machine_88va",
+ "machine_98",
+ "machine_at",
+ "machine_factory",
+ "machine_fm7",
+ "machine_msx",
+ "machine_towns",
+ "machine_x1",
+ "machine_x68k",
+ "save_state",
+ "sdl3",
+ "sdl3_backend",
+ "software_renderer",
+ "text_extractor",
 ]
 
 [[package]]

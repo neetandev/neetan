@@ -7,7 +7,7 @@
 //! still while a PPI mailbox handshake is in flight, so the two cores make
 //! progress together.
 
-use common::{CpuZ80, NoTrace, TraceSink};
+use common::{CpuZ80, HostKey, KeyModifiers, NoTrace, TraceSink};
 
 use crate::bus::{MainBusView, Pc8801Bus, SYNC_SLICE, SubBusView, TIGHT_SLICE};
 
@@ -35,6 +35,218 @@ pub fn build_untraced_machine(bus: Pc8801Bus<NoTrace>) -> Box<dyn common::Machin
     let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
     let sub_cpu = cpu::Z80::new(bus.sub_clock_hz());
     Box::new(Pc8801Machine::new(main_cpu, sub_cpu, bus))
+}
+
+/// Builds an automated PC-8801 machine around a configured bus.
+pub fn build_automated_machine(
+    bus: Pc8801Bus<common::tracing::ApplicationTraceSink>,
+) -> Box<dyn common::AutomatedMachine> {
+    let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+    let sub_cpu = cpu::Z80::new(bus.sub_clock_hz());
+    Box::new(Pc8801Machine::new(main_cpu, sub_cpu, bus))
+}
+
+impl common::AutomationDriver for Pc8801Machine<common::tracing::ApplicationTraceSink> {
+    fn arm_presentation_yield(&mut self, target_frame: u64) {
+        self.bus.tracer().arm_presentation_yield(target_frame);
+    }
+
+    fn disarm_presentation_yield(&mut self) {
+        self.bus.tracer().disarm_presentation_yield();
+    }
+
+    fn epoch_ticks(&self) -> u64 {
+        self.bus.current_cycle()
+    }
+
+    fn epoch_frames(&self) -> u64 {
+        self.bus.presented_frames()
+    }
+
+    fn run_for(&mut self, budget: u64) -> u64 {
+        Pc8801Machine::run_for(self, budget)
+    }
+
+    fn shutdown_requested(&self) -> bool {
+        false
+    }
+
+    fn drain_audio(&mut self, elapsed_ticks: u64) {
+        self.bus.drain_automation_audio(elapsed_ticks);
+    }
+}
+
+impl common::AutomatedMachine for Pc8801Machine<common::tracing::ApplicationTraceSink> {
+    fn automation_descriptor(&self) -> common::AutomationDescriptor {
+        let (numerator, denominator) = self.bus.automation_timebase();
+        common::AutomationDescriptor {
+            target: "pc88",
+            model: self.bus.model_id(),
+            timebase: common::AutomationTimebase {
+                ticks_per_second_numerator: numerator,
+                ticks_per_second_denominator: denominator,
+            },
+            audio_sample_rate: self.bus.audio_sample_rate(),
+            input: common::InputCapabilities {
+                keyboard: true,
+                mouse_buttons: 2,
+                joystick_ports: 1,
+            },
+        }
+    }
+
+    fn automation_timeline(&self) -> common::AutomationTimeline {
+        common::AutomationTimeline {
+            epoch_ticks: self.bus.current_cycle() as u128,
+            epoch_frames: self.bus.presented_frames() as u128,
+            ..common::AutomationTimeline::default()
+        }
+    }
+
+    fn run_automation(&mut self, request: common::RunRequest) -> common::RunOutcome {
+        common::drive_automation(self, request)
+    }
+
+    fn inspector(&mut self) -> Option<&mut dyn common::MachineInspector> {
+        Some(self)
+    }
+
+    fn trace_catalog(&self) -> common::TraceCatalog {
+        PC88_TRACE_CATALOG
+    }
+}
+
+/// Stable trace identifiers emitted by the PC-88 bus.
+const PC88_TRACE_CATALOG: common::TraceCatalog = common::TraceCatalog {
+    controllers: &[
+        common::trace_id::controller::PC88_I8214,
+        common::trace_id::controller::PC88_SUB_FDC,
+    ],
+    scheduled: common::trace_id::scheduled::PC88,
+    devices: &[common::TraceDeviceCatalog {
+        device: common::trace_id::device::PC88_FDC,
+        actions: &[common::trace_id::action::READ],
+    }],
+    providers: &[],
+};
+
+impl common::MachineInspector for Pc8801Machine<common::tracing::ApplicationTraceSink> {
+    fn processors(&self) -> common::ProcessorList {
+        let mut processors = common::ProcessorList::new();
+        processors.push(common::inspect::z80_processor("cpu.main"));
+        processors.push(common::inspect::z80_processor("cpu.sub"));
+        processors
+    }
+
+    fn address_spaces(&self) -> common::AddressSpaceList {
+        let mut spaces = common::AddressSpaceList::new();
+        spaces.push(common::inspect::memory_space(
+            "cpu.main.memory",
+            16,
+            common::ByteOrder::Little,
+        ));
+        spaces.push(common::inspect::io_space(
+            "cpu.main.io",
+            16,
+            common::ByteOrder::Little,
+        ));
+        spaces.push(common::inspect::memory_space(
+            "cpu.sub.memory",
+            16,
+            common::ByteOrder::Little,
+        ));
+        spaces.push(common::inspect::io_space(
+            "cpu.sub.io",
+            16,
+            common::ByteOrder::Little,
+        ));
+        spaces
+    }
+
+    fn read_register(&self, processor: &str, register: &str) -> Result<u128, common::InspectError> {
+        match processor {
+            "cpu.main" => common::inspect::z80_read(&self.main_cpu, register),
+            "cpu.sub" => common::inspect::z80_read(&self.sub_cpu, register),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn write_register(
+        &mut self,
+        processor: &str,
+        register: &str,
+        value: u128,
+    ) -> Result<(), common::InspectError> {
+        match processor {
+            "cpu.main" => common::inspect::z80_write(&mut self.main_cpu, register, value),
+            "cpu.sub" => common::inspect::z80_write(&mut self.sub_cpu, register, value),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn protected_mode_state(
+        &self,
+        processor: &str,
+    ) -> Result<common::ProtectedModeState, common::InspectError> {
+        match processor {
+            "cpu.main" | "cpu.sub" => Err(common::InspectError::Unsupported),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn peek_memory(
+        &mut self,
+        space: &str,
+        address: u64,
+        buffer: &mut [u8],
+    ) -> Result<(), common::InspectError> {
+        match space {
+            "cpu.main.memory" => {
+                for (index, byte) in buffer.iter_mut().enumerate() {
+                    *byte = self
+                        .bus
+                        .peek_byte(common::inspect::offset_u16(address, index)?);
+                }
+                Ok(())
+            }
+            "cpu.sub.memory" => {
+                for (index, byte) in buffer.iter_mut().enumerate() {
+                    *byte = self
+                        .bus
+                        .peek_sub_byte(common::inspect::offset_u16(address, index)?);
+                }
+                Ok(())
+            }
+            "cpu.main.io" | "cpu.sub.io" => Err(common::InspectError::NotPeekable),
+            _ => Err(common::InspectError::UnknownSpace),
+        }
+    }
+
+    fn poke_memory(
+        &mut self,
+        space: &str,
+        address: u64,
+        bytes: &[u8],
+    ) -> Result<(), common::InspectError> {
+        match space {
+            "cpu.main.memory" => {
+                for (index, byte) in bytes.iter().enumerate() {
+                    self.bus
+                        .poke_byte(common::inspect::offset_u16(address, index)?, *byte);
+                }
+                Ok(())
+            }
+            "cpu.sub.memory" => {
+                for (index, byte) in bytes.iter().enumerate() {
+                    self.bus
+                        .poke_sub_byte(common::inspect::offset_u16(address, index)?, *byte);
+                }
+                Ok(())
+            }
+            "cpu.main.io" | "cpu.sub.io" => Err(common::InspectError::NotWritable),
+            _ => Err(common::InspectError::UnknownSpace),
+        }
+    }
 }
 
 impl<T: TraceSink> Pc8801Machine<T> {
@@ -199,8 +411,8 @@ impl<T: TraceSink> common::Machine for Pc8801Machine<T> {
         self.restore_machine_blob(blob)
     }
 
-    fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
-        self.bus.set_host_date_time_provider(provider);
+    fn set_host_date_time_source(&mut self, source: common::SharedHostDateTimeSource) {
+        self.bus.set_host_date_time_source(source);
     }
 
     fn cpu_clock_hz(&self) -> f64 {
@@ -231,6 +443,110 @@ impl<T: TraceSink> common::Machine for Pc8801Machine<T> {
         self.bus.set_key(cell >> 3, cell & 0x07, pressed);
     }
 
+    fn translate_host_key(&self, key: HostKey, _modifiers: KeyModifiers) -> Option<u8> {
+        Some(match key {
+            HostKey::Kp0 => 0x00,
+            HostKey::Kp1 => 0x01,
+            HostKey::Kp2 => 0x02,
+            HostKey::Kp3 => 0x03,
+            HostKey::Kp4 => 0x04,
+            HostKey::Kp5 => 0x05,
+            HostKey::Kp6 => 0x06,
+            HostKey::Kp7 => 0x07,
+            HostKey::Kp8 => 0x08,
+            HostKey::Kp9 => 0x09,
+            HostKey::KpMultiply => 0x0A,
+            HostKey::KpPlus => 0x0B,
+            HostKey::KpComma => 0x0D,
+            HostKey::KpPeriod => 0x0E,
+            HostKey::Return => 0x0F,
+            HostKey::KpEnter => 0x0F,
+            HostKey::LeftBracket => 0x10,
+            HostKey::A => 0x11,
+            HostKey::B => 0x12,
+            HostKey::C => 0x13,
+            HostKey::D => 0x14,
+            HostKey::E => 0x15,
+            HostKey::F => 0x16,
+            HostKey::G => 0x17,
+            HostKey::H => 0x18,
+            HostKey::I => 0x19,
+            HostKey::J => 0x1A,
+            HostKey::K => 0x1B,
+            HostKey::L => 0x1C,
+            HostKey::M => 0x1D,
+            HostKey::N => 0x1E,
+            HostKey::O => 0x1F,
+            HostKey::P => 0x20,
+            HostKey::Q => 0x21,
+            HostKey::R => 0x22,
+            HostKey::S => 0x23,
+            HostKey::T => 0x24,
+            HostKey::U => 0x25,
+            HostKey::V => 0x26,
+            HostKey::W => 0x27,
+            HostKey::X => 0x28,
+            HostKey::Y => 0x29,
+            HostKey::Z => 0x2A,
+            HostKey::RightBracket => 0x2B,
+            HostKey::NonUsBackslash => 0x2C,
+            HostKey::Backslash => 0x2D,
+            HostKey::Equals => 0x2E,
+            HostKey::Minus => 0x2F,
+            HostKey::Digit0 => 0x30,
+            HostKey::Digit1 => 0x31,
+            HostKey::Digit2 => 0x32,
+            HostKey::Digit3 => 0x33,
+            HostKey::Digit4 => 0x34,
+            HostKey::Digit5 => 0x35,
+            HostKey::Digit6 => 0x36,
+            HostKey::Digit7 => 0x37,
+            HostKey::Digit8 => 0x38,
+            HostKey::Digit9 => 0x39,
+            HostKey::Apostrophe => 0x3A,
+            HostKey::Semicolon => 0x3B,
+            HostKey::Comma => 0x3C,
+            HostKey::Period => 0x3D,
+            HostKey::Slash => 0x3E,
+            HostKey::Home => 0x40,
+            HostKey::Up => 0x41,
+            HostKey::Right => 0x42,
+            HostKey::Backspace => 0x43,
+            HostKey::Delete => 0x43,
+            HostKey::LeftAlt => 0x44,
+            HostKey::RightAlt => 0x45,
+            HostKey::LeftShift => 0x46,
+            HostKey::RightShift => 0x46,
+            HostKey::LeftControl => 0x47,
+            HostKey::Pause => 0x48,
+            HostKey::F1 => 0x49,
+            HostKey::F2 => 0x4A,
+            HostKey::F3 => 0x4B,
+            HostKey::F4 => 0x4C,
+            HostKey::F5 => 0x4D,
+            HostKey::Space => 0x4E,
+            HostKey::Escape => 0x4F,
+            HostKey::Tab => 0x50,
+            HostKey::Down => 0x51,
+            HostKey::Left => 0x52,
+            HostKey::End => 0x53,
+            HostKey::PrintScreen => 0x54,
+            HostKey::KpMinus => 0x55,
+            HostKey::KpDivide => 0x56,
+            HostKey::CapsLock => 0x57,
+            HostKey::PageUp => 0x58,
+            HostKey::PageDown => 0x59,
+            HostKey::F6 => 0x68,
+            HostKey::F7 => 0x69,
+            HostKey::F8 => 0x6A,
+            HostKey::F9 => 0x6B,
+            HostKey::F10 => 0x6C,
+            HostKey::F11 => 0x6D,
+            HostKey::F12 => 0x6E,
+            _ => return None,
+        })
+    }
+
     fn push_mouse_delta(&mut self, delta_x: i16, delta_y: i16) {
         self.bus.set_mouse_delta(delta_x, delta_y);
     }
@@ -255,15 +571,22 @@ impl<T: TraceSink> common::Machine for Pc8801Machine<T> {
         self.bus.font_rom_data()
     }
 
-    fn insert_floppy(&mut self, drive: usize, path: &std::path::Path) -> Result<String, String> {
-        let data = std::fs::read(path)
-            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-        let image = device::floppy::load_floppy_image(path, &data)
-            .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
-        let description = format!("{} ({})", image.name, image.format_name());
-        self.bus
-            .insert_floppy(drive, image, Some(path.to_path_buf()));
+    fn insert_floppy(
+        &mut self,
+        drive: usize,
+        image: common::MediaImage<'_>,
+        backing: common::MediaBacking,
+    ) -> Result<String, String> {
+        let parsed =
+            device::floppy::load_floppy_image(std::path::Path::new(image.name), image.bytes)
+                .map_err(|error| format!("Failed to parse {}: {error}", image.name))?;
+        let description = format!("{} ({})", parsed.name, parsed.format_name());
+        self.bus.insert_floppy_backed(drive, parsed, backing);
         Ok(description)
+    }
+
+    fn floppy_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.bus.floppy_image_bytes(drive)
     }
 
     fn eject_floppy(&mut self, drive: usize) {

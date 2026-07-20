@@ -11,9 +11,9 @@ mod serial;
 mod sound;
 
 use common::{
-    Bus, HostDateTime, HostDateTimeProvider, NoTrace, TraceAccessKind, TraceAccessWidth,
-    TraceAddressSpace, TraceContext, TraceEvent, TraceInterruptAction, TraceInterruptKind,
-    TracePresentation, TraceSink, default_host_date_time, trace_id,
+    Bus, NoTrace, SharedHostDateTimeSource, TraceAccessKind, TraceAccessWidth, TraceAddressSpace,
+    TraceContext, TraceEvent, TraceInterruptAction, TraceInterruptKind, TracePresentation,
+    TraceSink, default_host_date_time_source, trace_id,
 };
 use device::{
     at_dma::AtDma,
@@ -43,7 +43,7 @@ use software_renderer::{
 
 use crate::{
     cmos::initial_cmos,
-    config::{ClockConfig, PIT_CLOCK_HZ},
+    config::{AtModel, ClockConfig, PIT_CLOCK_HZ},
     memory::{AtMemory, UMA_BASE, VGA_WINDOW_BASE},
     rom::LoadedRoms,
     scheduler::{AtScheduler, EventAt},
@@ -209,8 +209,10 @@ pub struct AtBus<T: TraceSink = NoTrace> {
     unhandled_read_logged: Box<[u64; PORT_BITMAP_WORDS]>,
     /// Log-once bitmap for unhandled write ports.
     unhandled_write_logged: Box<[u64; PORT_BITMAP_WORDS]>,
-    /// Host date-time provider used to seed the RTC.
-    host_date_time_provider: HostDateTimeProvider,
+    /// Source of the host local time, used to seed the RTC.
+    host_date_time_source: SharedHostDateTimeSource,
+    /// Carried fractional-sample accumulator for deterministic audio draining.
+    automation_audio_remainder: u64,
     /// TraceSink sink.
     pub(crate) tracer: T,
 }
@@ -224,9 +226,9 @@ impl<T: TraceSink> AtBus<T> {
         sample_rate: u32,
         tracer: T,
     ) -> Self {
-        let provider: HostDateTimeProvider = default_host_date_time;
+        let source = default_host_date_time_source();
         let cmos_seed = initial_cmos(ram_size as usize);
-        let seed = provider();
+        let seed = source.now();
 
         let mut bus = Self {
             memory: AtMemory::new(ram_size, roms.system_bios, roms.vga_bios),
@@ -267,7 +269,8 @@ impl<T: TraceSink> AtBus<T> {
             last_post_code: 0,
             unhandled_read_logged: Box::new([0; PORT_BITMAP_WORDS]),
             unhandled_write_logged: Box::new([0; PORT_BITMAP_WORDS]),
-            host_date_time_provider: provider,
+            host_date_time_source: source,
+            automation_audio_remainder: 0,
             tracer,
         };
         bus.memory.refresh_uma(&bus.chipset);
@@ -476,11 +479,60 @@ impl AtBus<NoTrace> {
 }
 
 impl<T: TraceSink> AtBus<T> {
-    /// Installs the host date-time provider and reseeds the RTC from it.
-    pub fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
-        self.host_date_time_provider = provider;
-        let now: HostDateTime = provider();
+    /// Installs the host date-time source and reseeds the RTC from it.
+    pub fn set_host_date_time_source(&mut self, source: SharedHostDateTimeSource) {
+        let now = source.now();
         self.rtc.reseed_time(now);
+        self.host_date_time_source = source;
+    }
+
+    /// Returns the number of frames presented within the current epoch.
+    pub(crate) fn presented_frames(&self) -> u64 {
+        self.presented_frames
+    }
+
+    /// Returns the fixed audio output rate in Hz.
+    pub(crate) fn audio_sample_rate(&self) -> u32 {
+        self.clocks.sample_rate
+    }
+
+    /// Returns the primary scheduling-tick rate as `(numerator, denominator)`.
+    pub(crate) fn automation_timebase(&self) -> (u64, u64) {
+        (u64::from(self.clocks.cpu_clock_hz), 1)
+    }
+
+    /// Returns the stable automation model identifier.
+    ///
+    /// The AT bus is model-agnostic and is distinguished only by its configured
+    /// CPU clock, so the model is recovered from that clock: the two i486DX2
+    /// parts have disjoint core and bus clock rates.
+    pub(crate) fn model_id(&self) -> &'static str {
+        let clock_hz = self.clocks.cpu_clock_hz;
+        if clock_hz == AtModel::At486Dx50.core_clock_hz()
+            || clock_hz == AtModel::At486Dx50.bus_clock_hz()
+        {
+            "at486dx50"
+        } else {
+            "at486dx66"
+        }
+    }
+
+    /// Generates and discards audio covering `elapsed_ticks` for determinism.
+    ///
+    /// Sample counts use integer-remainder accounting so the generated sequence
+    /// is identical across two identical runs.
+    pub(crate) fn drain_automation_audio(&mut self, elapsed_ticks: u64) {
+        let (numerator, denominator) = self.automation_timebase();
+        let accumulator =
+            elapsed_ticks as u128 * denominator as u128 * self.clocks.sample_rate as u128
+                + self.automation_audio_remainder as u128;
+        let frames = (accumulator / numerator as u128) as usize;
+        self.automation_audio_remainder = (accumulator % numerator as u128) as u64;
+        if frames == 0 {
+            return;
+        }
+        let mut scratch = vec![0.0f32; frames * 2];
+        let _ = self.generate_audio_samples(1.0, &mut scratch);
     }
 
     /// A shared reference to the bus-activity tracer.
@@ -1085,6 +1137,19 @@ impl<T: TraceSink> AtBus<T> {
         let low = self.read_word_for_cpu::<FETCH>(address) as u32;
         let high = self.read_word_for_cpu::<FETCH>(address.wrapping_add(2)) as u32;
         low | (high << 16)
+    }
+
+    /// Reads one byte of physical memory without device side effects, for
+    /// inspection. The VGA window and other MMIO read as physical DRAM or open
+    /// bus rather than performing a device access.
+    pub fn peek_byte(&self, physical_address: u32) -> u8 {
+        self.memory.read_physical(physical_address)
+    }
+
+    /// Writes one byte through the physical memory decode without device side
+    /// effects, for mutation. Writes to read-only regions are dropped.
+    pub fn poke_byte(&mut self, physical_address: u32, value: u8) {
+        self.memory.write_physical(physical_address, value);
     }
 }
 

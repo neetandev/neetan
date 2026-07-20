@@ -7,7 +7,10 @@
 //! [`Event60::FdcDrqByte`], and finalizes commands. The FDC interrupt line is
 //! polled through port 0xB2 rather than delivered to the vectored controller.
 
-use common::TraceSink;
+use common::{
+    TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField, TraceSink, TraceValue,
+    trace_id,
+};
 use device::upd765a_fdc::{
     FdcAction, FdcCommand, FdcPhase, ST0_NOT_READY, ST1_DATA_ERROR, ST1_MISSING_ADDRESS_MARK,
     ST1_NOT_WRITABLE, ST2_CONTROL_MARK, ST2_DATA_ERROR, ST2_MISSING_DATA_ADDRESS_MARK,
@@ -264,12 +267,60 @@ impl<T: TraceSink> Pc6000Bus<T> {
         }
     }
 
+    /// Emits an FDC read device trace event for the active command sector.
+    fn trace_fdc_read(&mut self, drive: usize) {
+        if !T::ENABLED
+            || !self.tracer.interested(TraceEventKey::Device {
+                device: trace_id::device::PC60_FDC,
+                action: trace_id::action::READ,
+            })
+        {
+            return;
+        }
+        let track_index = self.fdc.current_track_index();
+        let state = &self.fdc.state;
+        self.tracer.trace(
+            TraceContext::main_cpu(self.current_cycle, Some(u64::from(self.cpu_clock_hz()))),
+            TraceEvent::Device(TraceDeviceEvent {
+                device: trace_id::device::PC60_FDC,
+                action: trace_id::action::READ,
+                fields: &[
+                    TraceField {
+                        name: trace_id::field::DRIVE,
+                        value: TraceValue::Unsigned(drive as u64),
+                    },
+                    TraceField {
+                        name: trace_id::field::TRACK_INDEX,
+                        value: TraceValue::Unsigned(track_index as u64),
+                    },
+                    TraceField {
+                        name: trace_id::field::CYLINDER,
+                        value: TraceValue::Unsigned(u64::from(state.c)),
+                    },
+                    TraceField {
+                        name: trace_id::field::HEAD,
+                        value: TraceValue::Unsigned(u64::from(state.h)),
+                    },
+                    TraceField {
+                        name: trace_id::field::RECORD,
+                        value: TraceValue::Unsigned(u64::from(state.r)),
+                    },
+                    TraceField {
+                        name: trace_id::field::SIZE_CODE,
+                        value: TraceValue::Unsigned(u64::from(state.n)),
+                    },
+                ],
+            }),
+        );
+    }
+
     fn start_pio_read(&mut self) {
         self.fdc_read.dma_data.clear();
         self.fdc_read.dma_transfer_index = 0;
         self.fdc_read.dma_pages.clear();
         self.fdc_read.dma_read_indices.clear();
         let drive = self.fdc.current_drive();
+        self.trace_fdc_read(drive);
         if !self.floppy.has_drive(drive) {
             self.complete_no_disk();
             return;

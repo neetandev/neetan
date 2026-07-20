@@ -7,7 +7,7 @@ mod sound;
 mod sub_io;
 
 use common::{
-    BeeperKind, HostDateTimeProvider, NoTrace, TraceAccessKind, TraceAccessWidth,
+    BeeperKind, NoTrace, SharedHostDateTimeSource, TraceAccessKind, TraceAccessWidth,
     TraceAddressSpace, TraceContext, TraceEvent, TraceInterruptAction, TracePresentation,
     TraceSink, trace_id,
 };
@@ -168,6 +168,7 @@ pub(crate) struct Fm7BusState {
     encoder: device::keyboard_fm7::encoder::KeyboardEncoder,
     scheduler: common::SchedulerState,
     current_cycle: u64,
+    presented_frames: u64,
     wait_cycles: i64,
     clock_fast: bool,
     clock_reanchor_pending: bool,
@@ -322,6 +323,10 @@ pub struct Fm7Bus<T: TraceSink = NoTrace> {
     display_width: u32,
     display_height: u32,
     frame_number: u64,
+    /// Number of frames presented within the current automation epoch.
+    presented_frames: u64,
+    /// Fractional audio-sample carry for deterministic automation audio draining.
+    automation_audio_remainder: u64,
     scanline: u16,
     /// Cycle at which the current frame began, anchoring beam-position reads.
     frame_start_cycle: u64,
@@ -453,6 +458,8 @@ impl<T: TraceSink> Fm7Bus<T> {
             display_width: DISPLAY_WIDTH,
             display_height: DISPLAY_HEIGHT,
             frame_number: 0,
+            presented_frames: 0,
+            automation_audio_remainder: 0,
             scanline: 0,
             frame_start_cycle: 0,
             rom_bindings: Vec::new(),
@@ -517,6 +524,7 @@ impl<T: TraceSink> Fm7Bus<T> {
             encoder: self.encoder.clone(),
             scheduler: self.scheduler.capture_state(),
             current_cycle: self.current_cycle,
+            presented_frames: self.presented_frames,
             wait_cycles: self.wait_cycles,
             clock_fast: self.clock_fast,
             clock_reanchor_pending: self.clock_reanchor_pending,
@@ -615,6 +623,7 @@ impl<T: TraceSink> Fm7Bus<T> {
         self.keyboard = state.keyboard;
         self.encoder = state.encoder;
         self.current_cycle = state.current_cycle;
+        self.presented_frames = state.presented_frames;
         self.wait_cycles = state.wait_cycles;
         self.clock_fast = state.clock_fast;
         self.clock_reanchor_pending = state.clock_reanchor_pending;
@@ -804,6 +813,18 @@ impl<T: TraceSink> Fm7Bus<T> {
     /// Writes a byte through the memory map for tests and tooling.
     pub fn poke_byte(&mut self, address: u16, value: u8) {
         self.memory.write(address, value);
+    }
+
+    /// Reads a byte from the sub-CPU memory without side effects, for
+    /// inspection. This reads sub RAM, shared RAM, and ROM directly and never
+    /// drives the ALU or sub I/O decode.
+    pub fn peek_sub_byte(&self, address: u16) -> u8 {
+        self.sub_memory.read(address)
+    }
+
+    /// Writes a byte through the sub-CPU memory decode, for mutation.
+    pub fn poke_sub_byte(&mut self, address: u16, value: u8) {
+        self.sub_memory.write(address, value);
     }
 
     /// Whether the FM-77AV ALU is present and enabled, so it intercepts VRAM
@@ -1169,6 +1190,7 @@ impl<T: TraceSink> Fm7Bus<T> {
         if !T::ENABLED {
             return;
         }
+        self.presented_frames = self.presented_frames.saturating_add(1);
         self.tracer.trace(
             TraceContext::presentation_main(
                 self.current_cycle,
@@ -1176,7 +1198,7 @@ impl<T: TraceSink> Fm7Bus<T> {
             ),
             TraceEvent::Presentation(TracePresentation {
                 display: trace_id::display::MAIN,
-                frame: self.frame_number.saturating_add(1),
+                frame: self.presented_frames,
                 width: self.display_width,
                 height: self.display_height,
             }),
@@ -1615,8 +1637,8 @@ impl<T: TraceSink> Fm7Bus<T> {
     }
 
     /// Sets and immediately seeds the FM-77AV encoder RTC from the host time provider.
-    pub(crate) fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
-        let time = provider();
+    pub(crate) fn set_host_date_time_source(&mut self, source: SharedHostDateTimeSource) {
+        let time = source.now();
         self.encoder.seed_from_host(
             time.year,
             time.month,
@@ -1626,6 +1648,47 @@ impl<T: TraceSink> Fm7Bus<T> {
             time.minute,
             time.second,
         );
+    }
+
+    /// Returns the number of frames presented within the current epoch.
+    pub(crate) fn presented_frames(&self) -> u64 {
+        self.presented_frames
+    }
+
+    /// Returns the fixed audio output rate in Hz.
+    pub(crate) fn audio_sample_rate(&self) -> u32 {
+        self.clocks.sample_rate
+    }
+
+    /// Returns the primary scheduling-tick rate as `(numerator, denominator)`.
+    pub(crate) fn automation_timebase(&self) -> (u64, u64) {
+        (u64::from(self.cpu_clock_hz()), 1)
+    }
+
+    /// Returns the stable automation model identifier.
+    pub(crate) fn model_id(&self) -> &'static str {
+        match self.model {
+            Fm7Model::Fm7 => "fm7",
+            Fm7Model::Fm77Av => "fm77av",
+        }
+    }
+
+    /// Generates and discards audio covering `elapsed_ticks` for determinism.
+    ///
+    /// Sample counts use integer-remainder accounting so the generated sequence
+    /// is identical across two identical runs.
+    pub(crate) fn drain_automation_audio(&mut self, elapsed_ticks: u64) {
+        let (numerator, denominator) = self.automation_timebase();
+        let accumulator =
+            elapsed_ticks as u128 * denominator as u128 * self.clocks.sample_rate as u128
+                + self.automation_audio_remainder as u128;
+        let frames = (accumulator / numerator as u128) as usize;
+        self.automation_audio_remainder = (accumulator % numerator as u128) as u64;
+        if frames == 0 {
+            return;
+        }
+        let mut scratch = vec![0.0f32; frames * 2];
+        let _ = self.generate_audio_samples(1.0, &mut scratch);
     }
 
     /// Schedules the next periodic timer IRQ event.

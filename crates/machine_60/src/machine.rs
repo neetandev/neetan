@@ -3,7 +3,7 @@
 //! A single-Z80 machine: one CPU driving one bus, paced by a monotonic
 //! `current_cycle` in main-clock units.
 
-use common::{CpuZ80, NoTrace, TraceSink};
+use common::{CpuZ80, HostKey, KeyModifiers, NoTrace, TraceSink};
 
 use crate::bus::{MainBusView, Pc6000Bus};
 
@@ -27,6 +27,186 @@ pub struct Pc6000Machine<T: TraceSink = NoTrace> {
 pub fn build_untraced_machine(bus: Pc6000Bus<NoTrace>) -> Box<dyn common::Machine> {
     let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
     Box::new(Pc6000Machine::new(main_cpu, bus))
+}
+
+/// Builds an automated PC-6000 machine around a configured bus.
+pub fn build_automated_machine(
+    bus: Pc6000Bus<common::tracing::ApplicationTraceSink>,
+) -> Box<dyn common::AutomatedMachine> {
+    let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+    Box::new(Pc6000Machine::new(main_cpu, bus))
+}
+
+impl common::AutomationDriver for Pc6000Machine<common::tracing::ApplicationTraceSink> {
+    fn arm_presentation_yield(&mut self, target_frame: u64) {
+        self.bus.tracer().arm_presentation_yield(target_frame);
+    }
+
+    fn disarm_presentation_yield(&mut self) {
+        self.bus.tracer().disarm_presentation_yield();
+    }
+
+    fn epoch_ticks(&self) -> u64 {
+        self.bus.current_cycle()
+    }
+
+    fn epoch_frames(&self) -> u64 {
+        self.bus.presented_frames()
+    }
+
+    fn run_for(&mut self, budget: u64) -> u64 {
+        Pc6000Machine::run_for(self, budget)
+    }
+
+    fn shutdown_requested(&self) -> bool {
+        false
+    }
+
+    fn drain_audio(&mut self, elapsed_ticks: u64) {
+        self.bus.drain_automation_audio(elapsed_ticks);
+    }
+}
+
+impl common::AutomatedMachine for Pc6000Machine<common::tracing::ApplicationTraceSink> {
+    fn automation_descriptor(&self) -> common::AutomationDescriptor {
+        let (numerator, denominator) = self.bus.automation_timebase();
+        common::AutomationDescriptor {
+            target: "pc60",
+            model: self.bus.model_id(),
+            timebase: common::AutomationTimebase {
+                ticks_per_second_numerator: numerator,
+                ticks_per_second_denominator: denominator,
+            },
+            audio_sample_rate: self.bus.audio_sample_rate(),
+            input: common::InputCapabilities {
+                keyboard: true,
+                mouse_buttons: 0,
+                joystick_ports: 1,
+            },
+        }
+    }
+
+    fn automation_timeline(&self) -> common::AutomationTimeline {
+        common::AutomationTimeline {
+            epoch_ticks: self.bus.current_cycle() as u128,
+            epoch_frames: self.bus.presented_frames() as u128,
+            ..common::AutomationTimeline::default()
+        }
+    }
+
+    fn run_automation(&mut self, request: common::RunRequest) -> common::RunOutcome {
+        common::drive_automation(self, request)
+    }
+
+    fn inspector(&mut self) -> Option<&mut dyn common::MachineInspector> {
+        Some(self)
+    }
+
+    fn trace_catalog(&self) -> common::TraceCatalog {
+        PC60_TRACE_CATALOG
+    }
+}
+
+/// Stable trace identifiers emitted by the PC-6000 bus.
+const PC60_TRACE_CATALOG: common::TraceCatalog = common::TraceCatalog {
+    controllers: &[common::trace_id::controller::PC60_IRQ],
+    scheduled: common::trace_id::scheduled::PC60,
+    devices: &[common::TraceDeviceCatalog {
+        device: common::trace_id::device::PC60_FDC,
+        actions: &[common::trace_id::action::READ],
+    }],
+    providers: &[],
+};
+
+impl common::MachineInspector for Pc6000Machine<common::tracing::ApplicationTraceSink> {
+    fn processors(&self) -> common::ProcessorList {
+        let mut processors = common::ProcessorList::new();
+        processors.push(common::inspect::z80_processor("cpu.main"));
+        processors
+    }
+
+    fn address_spaces(&self) -> common::AddressSpaceList {
+        let mut spaces = common::AddressSpaceList::new();
+        spaces.push(common::inspect::memory_space(
+            "cpu.main.memory",
+            16,
+            common::ByteOrder::Little,
+        ));
+        spaces.push(common::inspect::io_space(
+            "cpu.main.io",
+            16,
+            common::ByteOrder::Little,
+        ));
+        spaces
+    }
+
+    fn read_register(&self, processor: &str, register: &str) -> Result<u128, common::InspectError> {
+        match processor {
+            "cpu.main" => common::inspect::z80_read(&self.main_cpu, register),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn write_register(
+        &mut self,
+        processor: &str,
+        register: &str,
+        value: u128,
+    ) -> Result<(), common::InspectError> {
+        match processor {
+            "cpu.main" => common::inspect::z80_write(&mut self.main_cpu, register, value),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn protected_mode_state(
+        &self,
+        processor: &str,
+    ) -> Result<common::ProtectedModeState, common::InspectError> {
+        match processor {
+            "cpu.main" => Err(common::InspectError::Unsupported),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn peek_memory(
+        &mut self,
+        space: &str,
+        address: u64,
+        buffer: &mut [u8],
+    ) -> Result<(), common::InspectError> {
+        match space {
+            "cpu.main.memory" => {
+                for (index, byte) in buffer.iter_mut().enumerate() {
+                    *byte = self
+                        .bus
+                        .peek_byte(common::inspect::offset_u16(address, index)?);
+                }
+                Ok(())
+            }
+            "cpu.main.io" => Err(common::InspectError::NotPeekable),
+            _ => Err(common::InspectError::UnknownSpace),
+        }
+    }
+
+    fn poke_memory(
+        &mut self,
+        space: &str,
+        address: u64,
+        bytes: &[u8],
+    ) -> Result<(), common::InspectError> {
+        match space {
+            "cpu.main.memory" => {
+                for (index, byte) in bytes.iter().enumerate() {
+                    self.bus
+                        .poke_byte(common::inspect::offset_u16(address, index)?, *byte);
+                }
+                Ok(())
+            }
+            "cpu.main.io" => Err(common::InspectError::NotWritable),
+            _ => Err(common::InspectError::UnknownSpace),
+        }
+    }
 }
 
 impl<T: TraceSink> Pc6000Machine<T> {
@@ -167,6 +347,130 @@ impl<T: TraceSink> common::Machine for Pc6000Machine<T> {
         self.bus.push_keyboard_scancode(code);
     }
 
+    /// Maps a host key plus modifier state to its PC-6001 firmware keycode.
+    ///
+    /// Letters carry their uppercase ASCII code, digits and punctuation their
+    /// ASCII code, and the function keys F1-F5 the wire ids 0x60-0x64. The
+    /// PC-6001 sub-controller expects a pre-composed code, so Control folds a
+    /// letter to its control code (0x01-0x1A) and Shift selects the shifted code.
+    /// Control takes precedence over Shift, matching the real key scan.
+    fn translate_host_key(&self, key: HostKey, modifiers: KeyModifiers) -> Option<u8> {
+        const PC60_FUNCTION_KEY_BASE: u8 = 0x60;
+        let base = match key {
+            HostKey::A => b'A',
+            HostKey::B => b'B',
+            HostKey::C => b'C',
+            HostKey::D => b'D',
+            HostKey::E => b'E',
+            HostKey::F => b'F',
+            HostKey::G => b'G',
+            HostKey::H => b'H',
+            HostKey::I => b'I',
+            HostKey::J => b'J',
+            HostKey::K => b'K',
+            HostKey::L => b'L',
+            HostKey::M => b'M',
+            HostKey::N => b'N',
+            HostKey::O => b'O',
+            HostKey::P => b'P',
+            HostKey::Q => b'Q',
+            HostKey::R => b'R',
+            HostKey::S => b'S',
+            HostKey::T => b'T',
+            HostKey::U => b'U',
+            HostKey::V => b'V',
+            HostKey::W => b'W',
+            HostKey::X => b'X',
+            HostKey::Y => b'Y',
+            HostKey::Z => b'Z',
+            HostKey::Digit0 => b'0',
+            HostKey::Digit1 => b'1',
+            HostKey::Digit2 => b'2',
+            HostKey::Digit3 => b'3',
+            HostKey::Digit4 => b'4',
+            HostKey::Digit5 => b'5',
+            HostKey::Digit6 => b'6',
+            HostKey::Digit7 => b'7',
+            HostKey::Digit8 => b'8',
+            HostKey::Digit9 => b'9',
+            HostKey::Space => b' ',
+            HostKey::Minus => b'-',
+            HostKey::Comma => b',',
+            HostKey::Period => b'.',
+            HostKey::Slash => b'/',
+            HostKey::Semicolon => b';',
+            HostKey::LeftBracket => b'[',
+            HostKey::RightBracket => b']',
+            HostKey::Equals => b'^',
+            HostKey::Return | HostKey::KpEnter => 0x0D,
+            HostKey::Backspace | HostKey::Delete => 0x08,
+            HostKey::Tab => 0x09,
+            HostKey::Right => 0x1C,
+            HostKey::Left => 0x1D,
+            HostKey::Up => 0x1E,
+            HostKey::Down => 0x1F,
+            HostKey::F1 => PC60_FUNCTION_KEY_BASE,
+            HostKey::F2 => PC60_FUNCTION_KEY_BASE + 1,
+            HostKey::F3 => PC60_FUNCTION_KEY_BASE + 2,
+            HostKey::F4 => PC60_FUNCTION_KEY_BASE + 3,
+            HostKey::F5 => PC60_FUNCTION_KEY_BASE + 4,
+            _ => return None,
+        };
+        if modifiers.ctrl && (0x40..=0x5F).contains(&base) {
+            return Some(base & 0x1F);
+        }
+        if modifiers.shift {
+            return Some(match key {
+                HostKey::A => b'a',
+                HostKey::B => b'b',
+                HostKey::C => b'c',
+                HostKey::D => b'd',
+                HostKey::E => b'e',
+                HostKey::F => b'f',
+                HostKey::G => b'g',
+                HostKey::H => b'h',
+                HostKey::I => b'i',
+                HostKey::J => b'j',
+                HostKey::K => b'k',
+                HostKey::L => b'l',
+                HostKey::M => b'm',
+                HostKey::N => b'n',
+                HostKey::O => b'o',
+                HostKey::P => b'p',
+                HostKey::Q => b'q',
+                HostKey::R => b'r',
+                HostKey::S => b's',
+                HostKey::T => b't',
+                HostKey::U => b'u',
+                HostKey::V => b'v',
+                HostKey::W => b'w',
+                HostKey::X => b'x',
+                HostKey::Y => b'y',
+                HostKey::Z => b'z',
+                HostKey::Digit1 => b'!',
+                HostKey::Digit2 => b'"',
+                HostKey::Digit3 => b'#',
+                HostKey::Digit4 => b'$',
+                HostKey::Digit5 => b'%',
+                HostKey::Digit6 => b'&',
+                HostKey::Digit7 => b'\'',
+                HostKey::Digit8 => b'(',
+                HostKey::Digit9 => b')',
+                HostKey::Digit0 => b'=',
+                HostKey::Comma => b';',
+                HostKey::Period => b':',
+                HostKey::Slash => b'?',
+                HostKey::F1 => PC60_FUNCTION_KEY_BASE + 5,
+                HostKey::F2 => PC60_FUNCTION_KEY_BASE + 6,
+                HostKey::F3 => PC60_FUNCTION_KEY_BASE + 7,
+                HostKey::F4 => PC60_FUNCTION_KEY_BASE + 8,
+                HostKey::F5 => PC60_FUNCTION_KEY_BASE + 9,
+                _ => base,
+            });
+        }
+        Some(base)
+    }
+
     fn set_joystick(&mut self, index: usize, state: common::JoystickState) {
         if index == 0 {
             self.bus.set_joystick(state);
@@ -181,14 +485,22 @@ impl<T: TraceSink> common::Machine for Pc6000Machine<T> {
         self.bus.font_rom_data()
     }
 
-    fn insert_floppy(&mut self, drive: usize, path: &std::path::Path) -> Result<String, String> {
-        let data = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
-        let image = device::floppy::load_floppy_image(path, &data)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        let description = format!("{} ({})", image.name, image.format_name());
-        self.bus
-            .insert_floppy(drive, image, Some(path.to_path_buf()));
+    fn insert_floppy(
+        &mut self,
+        drive: usize,
+        image: common::MediaImage<'_>,
+        backing: common::MediaBacking,
+    ) -> Result<String, String> {
+        let parsed =
+            device::floppy::load_floppy_image(std::path::Path::new(image.name), image.bytes)
+                .map_err(|error| format!("{}: {error}", image.name))?;
+        let description = format!("{} ({})", parsed.name, parsed.format_name());
+        self.bus.insert_floppy_backed(drive, parsed, backing);
         Ok(description)
+    }
+
+    fn floppy_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.bus.floppy_image_bytes(drive)
     }
 
     fn eject_floppy(&mut self, drive: usize) {
@@ -243,6 +555,77 @@ mod tests {
         bus.load_roms(&loaded_roms_with_boot(model, boot));
         let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
         Pc6000Machine::new(main_cpu, bus)
+    }
+
+    #[test]
+    fn translate_host_key_folds_shift_and_control() {
+        let bus = Pc6000Bus::new(Pc6000Model::Pc6001, 48_000);
+        let machine = Pc6000Machine::new(cpu::Z80::new(bus.cpu_clock_hz()), bus);
+        let none = KeyModifiers::default();
+        let shift = KeyModifiers {
+            shift: true,
+            ctrl: false,
+        };
+        let control = KeyModifiers {
+            shift: false,
+            ctrl: true,
+        };
+        let both = KeyModifiers {
+            shift: true,
+            ctrl: true,
+        };
+
+        // Letters carry uppercase ASCII; Shift lowercases and Control folds to a
+        // control code, with Control taking precedence over Shift.
+        assert_eq!(machine.translate_host_key(HostKey::A, none), Some(b'A'));
+        assert_eq!(machine.translate_host_key(HostKey::A, shift), Some(b'a'));
+        assert_eq!(machine.translate_host_key(HostKey::A, control), Some(0x01));
+        assert_eq!(machine.translate_host_key(HostKey::C, control), Some(0x03));
+        assert_eq!(machine.translate_host_key(HostKey::A, both), Some(0x01));
+
+        // Shifted number row and punctuation carry their symbols.
+        assert_eq!(
+            machine.translate_host_key(HostKey::Digit1, shift),
+            Some(b'!')
+        );
+        assert_eq!(
+            machine.translate_host_key(HostKey::Digit2, shift),
+            Some(b'"')
+        );
+        assert_eq!(
+            machine.translate_host_key(HostKey::Digit7, shift),
+            Some(b'\'')
+        );
+        assert_eq!(
+            machine.translate_host_key(HostKey::Digit0, shift),
+            Some(b'=')
+        );
+        assert_eq!(
+            machine.translate_host_key(HostKey::Comma, shift),
+            Some(b';')
+        );
+        assert_eq!(
+            machine.translate_host_key(HostKey::Period, shift),
+            Some(b':')
+        );
+        assert_eq!(
+            machine.translate_host_key(HostKey::Slash, shift),
+            Some(b'?')
+        );
+
+        // Shifted F1 carries the upper wire id; the base is the lower id.
+        assert_eq!(machine.translate_host_key(HostKey::F1, none), Some(0x60));
+        assert_eq!(machine.translate_host_key(HostKey::F1, shift), Some(0x65));
+
+        // The physical '=' key resolves to the PC-6001 caret code.
+        assert_eq!(
+            machine.translate_host_key(HostKey::Equals, none),
+            Some(b'^')
+        );
+
+        // Bare modifiers stay no-key.
+        assert_eq!(machine.translate_host_key(HostKey::LeftShift, none), None);
+        assert_eq!(machine.translate_host_key(HostKey::LeftControl, none), None);
     }
 
     #[test]

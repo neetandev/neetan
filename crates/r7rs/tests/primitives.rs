@@ -270,7 +270,10 @@ fn native_callbacks_keep_arguments_and_results_alive_during_collection() {
             &native,
             "host-panic",
             0..=0,
-            |_, _| -> Result<Value, r7rs::Error> { panic!("test") },
+            |cx, _| -> Result<Value, r7rs::Error> {
+                let _temporary = cx.pair(Value::integer(1), Value::nil())?;
+                panic!("test")
+            },
         )
         .unwrap();
     let module = engine

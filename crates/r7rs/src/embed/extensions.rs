@@ -621,8 +621,9 @@ const SRFI_27_SOURCE: &str = r#"
 /// companion. Internal helpers use a `%` prefix and are not exported. The stable
 /// vector sort is a top-down merge sort with a scratch buffer, list sorts route
 /// through the vector sort, and selection uses an in-place quickselect. The
-/// destructive `!` list procedures are functional aliases, which the SRFI
-/// permits. The destructive vector procedures genuinely mutate their target.
+/// `list-sort!` and `list-stable-sort!` are functional aliases, which the SRFI
+/// permits, but `list-merge!` and `list-delete-neighbor-dups!` genuinely rewire
+/// their argument lists, as do the destructive vector procedures.
 const SRFI_132_SOURCE: &str = r#"
 (define-library (srfi 132)
   (export

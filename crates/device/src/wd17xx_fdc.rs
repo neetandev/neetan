@@ -519,6 +519,24 @@ impl<const PLATFORM: u8> Wd17xxFdc<PLATFORM> {
         self.disk_changed[drive] = false;
     }
 
+    /// Inserts a floppy disk image with the requested backing.
+    pub fn insert_backed(
+        &mut self,
+        drive: usize,
+        image: crate::floppy::FloppyImage,
+        backing: common::MediaBacking,
+    ) {
+        self.insert(drive, crate::floppy::mounted_from_backing(image, backing));
+    }
+
+    /// Returns the current in-memory bytes of the floppy in `drive`, if mounted.
+    pub fn drive_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.drives
+            .get(drive)?
+            .as_ref()
+            .map(MountedFloppy::image_bytes)
+    }
+
     /// Ejects a drive's floppy, flushing it, and latches the media-change flag.
     pub fn eject(&mut self, drive: usize) {
         if drive >= DRIVE_COUNT {

@@ -150,12 +150,19 @@ pub(super) fn call(
             )
         }
         CallableKind::Native => {
-            let id = heap.native(procedure).ok_or_else(|| bad("native"))?;
-            let result = invoke_native(
-                heap, stack, frames, globals, symbols, natives, id, call_base, count,
-            )?
-            .into_results();
-            if let Some(status) = heap.take_exit_request() {
+            let (id, _, single_result, may_exit) =
+                heap.native_callee(procedure).ok_or_else(|| bad("native"))?;
+            let result = if single_result {
+                Results::One(invoke_native_one(
+                    heap, stack, frames, globals, symbols, natives, id, call_base, count,
+                )?)
+            } else {
+                invoke_native_many(
+                    heap, stack, frames, globals, symbols, natives, id, call_base, count,
+                )?
+                .into_results()
+            };
+            if may_exit && let Some(status) = heap.take_exit_request() {
                 return begin_exit(
                     heap, stack, frames, globals, symbols, natives, call_base, status,
                 );
@@ -287,7 +294,27 @@ pub(super) fn call(
 /// pending arguments, which `apply` may have spread above the caller's
 /// register window) directly through this view.
 #[allow(clippy::too_many_arguments)]
-fn invoke_native(
+fn invoke_native_one(
+    heap: &mut Heap,
+    stack: &RegisterStack,
+    frames: &FrameStack,
+    globals: &crate::global::GlobalStore,
+    symbols: &mut HashMap<String, Value>,
+    natives: &crate::native::NativeRegistry,
+    id: u32,
+    call_base: usize,
+    count: usize,
+) -> Result<Value, Error> {
+    let arguments = &stack[call_base + 1..call_base + 1 + count];
+    let live_floor = call_base + 1 + count;
+    let gather = move |roots: &mut Vec<Value>| {
+        gather_vm_roots(stack, frames, live_floor, roots);
+    };
+    natives.invoke_one(id, heap, symbols, globals, arguments, Some(&gather))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn invoke_native_many(
     heap: &mut Heap,
     stack: &RegisterStack,
     frames: &FrameStack,
@@ -303,7 +330,7 @@ fn invoke_native(
     let gather = move |roots: &mut Vec<Value>| {
         gather_vm_roots(stack, frames, live_floor, roots);
     };
-    natives.invoke(id, heap, symbols, globals, arguments, Some(&gather))
+    natives.invoke_many(id, heap, symbols, globals, arguments, Some(&gather))
 }
 
 /// Outcome of [`call_native_inline`], the dispatch loop's native fast path.
@@ -330,6 +357,8 @@ pub(super) fn call_native_inline(
     natives: &crate::native::NativeRegistry,
     id: u32,
     fast: Option<crate::native::FastProcedure>,
+    single_result: bool,
+    may_exit: bool,
     call_base: usize,
     count: usize,
     expected: ExpectedResults,
@@ -362,12 +391,43 @@ pub(super) fn call_native_inline(
             return Ok(NativeInline::Continue);
         }
     }
-    let outcome = invoke_native(
+    if single_result {
+        let outcome = invoke_native_one(
+            heap, stack, frames, globals, symbols, natives, id, call_base, count,
+        );
+        let pending = match outcome {
+            Ok(value) => {
+                if may_exit && heap.exit_request_pending() {
+                    std::hint::cold_path();
+                    let status = heap.take_exit_request().expect("pending exit request");
+                    return Ok(NativeInline::Suspend(begin_exit(
+                        heap, stack, frames, globals, symbols, natives, call_base, status,
+                    )?));
+                }
+                if expected != ExpectedResults::Discard {
+                    stack.ensure(call_base + 1);
+                    stack[call_base] = value;
+                    if expected == ExpectedResults::All
+                        && let Some(frame) = frames.last_mut()
+                    {
+                        frame.top = call_base + 1;
+                    }
+                }
+                return Ok(NativeInline::Continue);
+            }
+            Err(error) => Err(error),
+        };
+        std::hint::cold_path();
+        return finish_native_cold(
+            heap, stack, frames, globals, symbols, natives, call_base, expected, pending,
+        );
+    }
+    let outcome = invoke_native_many(
         heap, stack, frames, globals, symbols, natives, id, call_base, count,
     );
     let pending = match outcome {
         Ok(values) => {
-            if heap.exit_request_pending() {
+            if may_exit && heap.exit_request_pending() {
                 std::hint::cold_path();
                 let status = heap.take_exit_request().expect("pending exit request");
                 return Ok(NativeInline::Suspend(begin_exit(
@@ -416,6 +476,8 @@ pub(super) fn tail_call_native_inline(
     natives: &crate::native::NativeRegistry,
     id: u32,
     fast: Option<crate::native::FastProcedure>,
+    single_result: bool,
+    may_exit: bool,
     call_base: usize,
     count: usize,
 ) -> Result<Option<Results>, Error> {
@@ -428,14 +490,18 @@ pub(super) fn tail_call_native_inline(
             fast.invoke(heap, &stack[call_base + 1..call_base + 1 + count], &mut out)
         }) {
             Results::One(out)
+        } else if single_result {
+            Results::One(invoke_native_one(
+                heap, stack, frames, globals, symbols, natives, id, call_base, count,
+            )?)
         } else {
-            invoke_native(
+            invoke_native_many(
                 heap, stack, frames, globals, symbols, natives, id, call_base, count,
             )?
             .into_results()
         }
     };
-    if let Some(status) = heap.take_exit_request() {
+    if may_exit && let Some(status) = heap.take_exit_request() {
         return begin_exit(
             heap, stack, frames, globals, symbols, natives, call_base, status,
         );

@@ -407,18 +407,25 @@ impl<T: TraceSink> X68kBus<T> {
             odd_field: self.crtc.beam_position().odd_field,
         };
         self.renderer.publish_frame(&inputs);
-        if T::ENABLED {
-            let (width, height) = self.renderer.dimensions();
-            self.tracer.trace(
-                TraceContext::presentation_main(self.current_cycle, Some(self.cpu_clock_hz)),
-                TraceEvent::Presentation(TracePresentation {
-                    display: trace_id::display::MAIN,
-                    frame: self.crtc.frame_count(),
-                    width,
-                    height,
-                }),
-            );
+        self.trace_presentation();
+    }
+
+    /// Emits the presentation trace event for the just-published frame.
+    fn trace_presentation(&mut self) {
+        if !T::ENABLED {
+            return;
         }
+        self.presented_frames = self.presented_frames.saturating_add(1);
+        let (width, height) = self.renderer.dimensions();
+        self.tracer.trace(
+            TraceContext::presentation_main(self.current_cycle, Some(self.cpu_clock_hz)),
+            TraceEvent::Presentation(TracePresentation {
+                display: trace_id::display::MAIN,
+                frame: self.presented_frames,
+                width,
+                height,
+            }),
+        );
     }
 }
 

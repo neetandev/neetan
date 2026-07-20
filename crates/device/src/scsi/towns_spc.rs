@@ -337,6 +337,11 @@ impl TownsScsiController {
         }
     }
 
+    /// Returns the current in-memory bytes of the disk at `id`, if mounted.
+    pub fn drive_image_bytes(&self, id: usize) -> Option<Vec<u8>> {
+        self.targets.get(id)?.as_ref()?.disk_image_bytes()
+    }
+
     /// Detaches and flushes the drive at the given SCSI ID, if any.
     pub fn eject_drive(&mut self, id: usize) {
         if let Some(Some(disk)) = self.targets.get_mut(id) {

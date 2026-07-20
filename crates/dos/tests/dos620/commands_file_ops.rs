@@ -181,7 +181,9 @@ fn test_time() -> HostDateTime {
 
 #[test]
 fn date_command() {
-    let mut machine = boot_hle_with_time(Some(test_time));
+    let mut machine = boot_hle_with_time(Some(std::sync::Arc::new(common::FixedHostDateTime(
+        test_time(),
+    ))));
     type_string(&mut machine.bus, b"CLS\r");
     run_until_prompt(&mut machine);
 
@@ -197,7 +199,9 @@ fn date_command() {
 
 #[test]
 fn time_command() {
-    let mut machine = boot_hle_with_time(Some(test_time));
+    let mut machine = boot_hle_with_time(Some(std::sync::Arc::new(common::FixedHostDateTime(
+        test_time(),
+    ))));
     type_string(&mut machine.bus, b"CLS\r");
     run_until_prompt(&mut machine);
 

@@ -336,11 +336,11 @@ impl EngineConfig {
     /// Returns whether native (host) procedures are trusted not to panic.
     ///
     /// Defaults to `false`: a panic in a host callback is caught and surfaced as
-    /// an [`crate::ErrorKind::NativePanic`] error, isolating the VM. Enabling
-    /// this skips the per-call `catch_unwind` guard for lower call overhead. A
-    /// panicking native then unwinds through the interpreter as an ordinary Rust
-    /// panic, so only enable it when every registered native is known not to
-    /// panic.
+    /// an [`crate::ErrorKind::NativePanic`] error at the evaluation boundary,
+    /// isolating the VM. Enabling this skips that boundary and the active-native
+    /// marker. A panicking native then unwinds through the interpreter as an
+    /// ordinary Rust panic, so only enable it when every registered native is
+    /// known not to panic.
     #[must_use]
     pub const fn trusts_natives(&self) -> bool {
         self.trust_natives

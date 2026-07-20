@@ -140,6 +140,8 @@ struct TraceState {
     epoch: u64,
     matcher_yield_requested: bool,
     failure: Option<TraceFailure>,
+    presentation_yield_target: Option<u64>,
+    presentation_boundary_reached: bool,
 }
 
 impl TraceState {
@@ -202,7 +204,7 @@ impl TraceState {
     }
 
     fn yield_requested(&self) -> bool {
-        self.matcher_yield_requested || self.failure.is_some()
+        self.matcher_yield_requested || self.failure.is_some() || self.presentation_boundary_reached
     }
 }
 
@@ -225,6 +227,8 @@ impl ApplicationTraceSink {
             epoch: 0,
             matcher_yield_requested: false,
             failure: None,
+            presentation_yield_target: None,
+            presentation_boundary_reached: false,
         }));
         let interest = Rc::new(Cell::new(TraceInterest::NONE));
         (
@@ -247,6 +251,28 @@ impl ApplicationTraceSink {
         let decision = matcher.borrow_mut().decide(context, event);
         self.state.borrow_mut().record(context, event, decision);
     }
+
+    /// Arms an exact presentation-boundary stop at absolute epoch `target`.
+    ///
+    /// The next published frame whose number reaches `target` sets the boundary
+    /// flag, so the machine run loop yields right after that scheduler batch.
+    pub fn arm_presentation_yield(&self, target: u64) {
+        let mut state = self.state.borrow_mut();
+        state.presentation_yield_target = Some(target);
+        state.presentation_boundary_reached = false;
+    }
+
+    /// Disarms any pending presentation-boundary stop.
+    pub fn disarm_presentation_yield(&self) {
+        let mut state = self.state.borrow_mut();
+        state.presentation_yield_target = None;
+        state.presentation_boundary_reached = false;
+    }
+
+    /// Returns whether the armed presentation boundary has been reached.
+    pub fn presentation_boundary_reached(&self) -> bool {
+        self.state.borrow().presentation_boundary_reached
+    }
 }
 
 impl Default for ApplicationTraceSink {
@@ -261,6 +287,14 @@ impl TraceSink for ApplicationTraceSink {
     }
 
     fn trace(&mut self, context: TraceContext, event: TraceEvent<'_>) {
+        if let TraceEvent::Presentation(presentation) = event {
+            let mut state = self.state.borrow_mut();
+            if let Some(target) = state.presentation_yield_target
+                && presentation.frame >= target
+            {
+                state.presentation_boundary_reached = true;
+            }
+        }
         if self.interested(event.key()) {
             self.record(context, event);
         }
@@ -336,6 +370,25 @@ impl TraceHandle {
     /// Returns the current automation epoch.
     pub fn epoch(&self) -> u64 {
         self.state.borrow().epoch
+    }
+
+    /// Arms an exact presentation-boundary stop at absolute epoch `target`.
+    pub fn arm_presentation_yield(&self, target: u64) {
+        let mut state = self.state.borrow_mut();
+        state.presentation_yield_target = Some(target);
+        state.presentation_boundary_reached = false;
+    }
+
+    /// Disarms any pending presentation-boundary stop.
+    pub fn disarm_presentation_yield(&self) {
+        let mut state = self.state.borrow_mut();
+        state.presentation_yield_target = None;
+        state.presentation_boundary_reached = false;
+    }
+
+    /// Returns whether the armed presentation boundary has been reached.
+    pub fn presentation_boundary_reached(&self) -> bool {
+        self.state.borrow().presentation_boundary_reached
     }
 
     /// Drains all queued events in sequence order.

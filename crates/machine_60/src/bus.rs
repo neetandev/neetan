@@ -238,6 +238,8 @@ pub struct Pc6000Bus<T: TraceSink = NoTrace> {
     rom_bindings: Vec<save_state::ResourceBinding>,
     framebuffer: Vec<u8>,
     presented_frames: u64,
+    /// Carried fractional-sample accumulator for deterministic audio draining.
+    automation_audio_remainder: u64,
     /// Bus-activity tracer (a no-op by default).
     tracer: T,
 }
@@ -310,6 +312,7 @@ impl<T: TraceSink> Pc6000Bus<T> {
             rom_bindings: Vec::new(),
             framebuffer: vec![0; width as usize * height as usize * BYTES_PER_PIXEL],
             presented_frames: 0,
+            automation_audio_remainder: 0,
             tracer,
         };
         bus.schedule_frame();
@@ -419,10 +422,25 @@ impl<T: TraceSink> Pc6000Bus<T> {
 
     /// Mounts a floppy image into a drive and marks the FDC drive as occupied.
     pub fn insert_floppy(&mut self, drive: usize, image: FloppyImage, path: Option<PathBuf>) {
-        self.floppy.insert_drive(drive, image, path);
+        self.insert_floppy_backed(drive, image, path.into());
+    }
+
+    /// Mounts a floppy image with the requested backing.
+    pub fn insert_floppy_backed(
+        &mut self,
+        drive: usize,
+        image: FloppyImage,
+        backing: common::MediaBacking,
+    ) {
+        self.floppy.insert_drive_backed(drive, image, backing);
         if drive < 4 {
             self.fdc.state.drive_has_disk |= 1 << drive;
         }
+    }
+
+    /// Returns the current in-memory bytes of the floppy in `drive`, if mounted.
+    pub fn floppy_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.floppy.drive_image_bytes(drive)
     }
 
     /// Ejects the floppy from a drive and clears the FDC drive-occupied bit.
@@ -588,6 +606,50 @@ impl<T: TraceSink> Pc6000Bus<T> {
     /// Main CPU clock frequency in Hz.
     pub fn cpu_clock_hz(&self) -> u32 {
         self.clocks.main_clock_hz
+    }
+
+    /// Returns the number of frames presented within the current epoch.
+    pub(crate) fn presented_frames(&self) -> u64 {
+        self.presented_frames
+    }
+
+    /// Returns the fixed audio output rate in Hz.
+    pub(crate) fn audio_sample_rate(&self) -> u32 {
+        self.clocks.sample_rate
+    }
+
+    /// Returns the primary scheduling-tick rate as `(numerator, denominator)`.
+    pub(crate) fn automation_timebase(&self) -> (u64, u64) {
+        (u64::from(self.cpu_clock_hz()), 1)
+    }
+
+    /// Returns the stable automation model identifier.
+    pub(crate) fn model_id(&self) -> &'static str {
+        match self.model {
+            Pc6000Model::Pc6001 => "pc6001",
+            Pc6000Model::Pc6001Mk2 => "pc6001mk2",
+            Pc6000Model::Pc6601 => "pc6601",
+            Pc6000Model::Pc6001Mk2Sr => "pc6001mk2sr",
+            Pc6000Model::Pc6601Sr => "pc6601sr",
+        }
+    }
+
+    /// Generates and discards audio covering `elapsed_ticks` for determinism.
+    ///
+    /// Sample counts use integer-remainder accounting so the generated sequence
+    /// is identical across two identical runs.
+    pub(crate) fn drain_automation_audio(&mut self, elapsed_ticks: u64) {
+        let (numerator, denominator) = self.automation_timebase();
+        let accumulator =
+            elapsed_ticks as u128 * denominator as u128 * self.clocks.sample_rate as u128
+                + self.automation_audio_remainder as u128;
+        let frames = (accumulator / numerator as u128) as usize;
+        self.automation_audio_remainder = (accumulator % numerator as u128) as u64;
+        if frames == 0 {
+            return;
+        }
+        let mut scratch = vec![0.0f32; frames * 2];
+        let _ = self.generate_audio_samples(1.0, &mut scratch);
     }
 
     /// The current monotonic cycle count (main-clock units).

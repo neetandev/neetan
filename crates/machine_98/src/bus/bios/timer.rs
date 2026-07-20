@@ -68,7 +68,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
     }
 
     fn int1ch_get_datetime(&mut self, cpu: &mut impl Cpu) {
-        let time = (self.host_date_time_provider)().to_bcd_bytes();
+        let time = self.host_date_time_source.now().to_bcd_bytes();
         for (i, &byte) in time.iter().enumerate() {
             self.hle_write_byte(
                 cpu,

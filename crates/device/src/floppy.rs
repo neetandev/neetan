@@ -323,11 +323,40 @@ pub struct MountedFloppy {
     image: FloppyImage,
     backend: Option<DiskBackend>,
     dirty: bool,
+    read_only: bool,
     identity: save_state::ResourceIdentity,
     source_path: Option<save_state::MediaSourcePath>,
 }
 
+/// Builds a mount from a media backing.
+pub fn mounted_from_backing(image: FloppyImage, backing: common::MediaBacking) -> MountedFloppy {
+    match backing {
+        common::MediaBacking::Ram => MountedFloppy::new(image, None),
+        common::MediaBacking::WriteThrough(path) => MountedFloppy::new(image, Some(path)),
+        common::MediaBacking::ReadOnly => MountedFloppy::new_read_only(image),
+    }
+}
+
 impl MountedFloppy {
+    /// Constructs a read-only mount whose guest writes are dropped.
+    ///
+    /// The image stays pristine in memory and nothing is written back.
+    pub fn new_read_only(image: FloppyImage) -> Self {
+        let mut mount = Self::new(image, None);
+        mount.read_only = true;
+        mount
+    }
+
+    /// Returns the current in-memory image bytes.
+    pub fn image_bytes(&self) -> Vec<u8> {
+        self.image.to_bytes()
+    }
+
+    /// Returns whether guest writes to this mount are dropped.
+    pub const fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
     /// Constructs a new mount. If `path` is `None` or the file cannot be
     /// opened for write, writes only land in memory.
     pub fn new(image: FloppyImage, path: Option<PathBuf>) -> Self {
@@ -358,6 +387,7 @@ impl MountedFloppy {
             image,
             backend,
             dirty: false,
+            read_only: false,
             identity,
             source_path,
         }
@@ -395,6 +425,9 @@ impl MountedFloppy {
         n: u8,
         data: &[u8],
     ) -> bool {
+        if self.read_only {
+            return true;
+        }
         let Some(sector) = self
             .image
             .find_sector_near_track_index_mut(track_index, c, h, r, n)
@@ -426,6 +459,9 @@ impl MountedFloppy {
         data_n: u8,
         fill_byte: u8,
     ) {
+        if self.read_only {
+            return;
+        }
         self.image
             .format_track(track_index, chrn, data_n, fill_byte);
         self.dirty = true;
@@ -852,6 +888,63 @@ mod tests {
         );
 
         drop(mounted);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn ram_backing_keeps_writes_in_memory_only() {
+        let original = build_minimal_d88(0x00);
+        let image = FloppyImage::from_d88_bytes(&original).unwrap();
+        let mut mounted = mounted_from_backing(image, common::MediaBacking::Ram);
+        assert!(!mounted.is_read_only());
+
+        let pattern = [0x42u8; 256];
+        assert!(mounted.write_sector_data(0, 0, 0, 1, 1, &pattern));
+
+        // The write is visible in the in-memory image.
+        let reparsed = FloppyImage::from_d88_bytes(&mounted.image_bytes()).unwrap();
+        let sector = reparsed.find_sector(0, 0, 1, 1).unwrap();
+        assert!(sector.data.iter().all(|&byte| byte == 0x42));
+    }
+
+    #[test]
+    fn read_only_backing_drops_writes_and_stays_pristine() {
+        let original = build_minimal_d88(0x11);
+        let image = FloppyImage::from_d88_bytes(&original).unwrap();
+        let mut mounted = mounted_from_backing(image, common::MediaBacking::ReadOnly);
+        assert!(mounted.is_read_only());
+
+        let pattern = [0x42u8; 256];
+        // The write reports success to the guest but is dropped.
+        assert!(mounted.write_sector_data(0, 0, 0, 1, 1, &pattern));
+
+        let reparsed = FloppyImage::from_d88_bytes(&mounted.image_bytes()).unwrap();
+        let sector = reparsed.find_sector(0, 0, 1, 1).unwrap();
+        assert!(
+            sector.data.iter().all(|&byte| byte == 0x11),
+            "read-only image must stay pristine"
+        );
+    }
+
+    #[test]
+    fn write_through_backing_persists_to_host_file() {
+        let original = build_minimal_d88(0x00);
+        let path = tempfile_with(&original, ".d88");
+        let image = FloppyImage::from_d88_bytes(&original).unwrap();
+        let mut mounted =
+            mounted_from_backing(image, common::MediaBacking::WriteThrough(path.clone()));
+        assert!(!mounted.is_read_only());
+
+        let pattern = [0x42u8; 256];
+        assert!(mounted.write_sector_data(0, 0, 0, 1, 1, &pattern));
+        mounted.flush();
+        drop(mounted);
+
+        let raw = std::fs::read(&path).unwrap();
+        let reparsed = FloppyImage::from_d88_bytes(&raw).unwrap();
+        let sector = reparsed.find_sector(0, 0, 1, 1).unwrap();
+        assert!(sector.data.iter().all(|&byte| byte == 0x42));
+
         std::fs::remove_file(&path).ok();
     }
 }

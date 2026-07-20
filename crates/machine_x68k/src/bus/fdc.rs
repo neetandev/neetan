@@ -6,7 +6,10 @@
 //! bus-master cycle. Sector lookups, drive readiness, the IOC FDC/FDD
 //! interrupt latches, and DIM/XDF/D88 media mounting all live here.
 
-use common::TraceSink;
+use common::{
+    TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField, TraceSink, TraceValue,
+    trace_id,
+};
 use device::{
     floppy::{FloppyImage, MountedFloppy},
     upd765a_fdc::{
@@ -228,8 +231,56 @@ impl<T: TraceSink> X68kBus<T> {
     }
 
     /// Starts a READ DATA transfer through the DMA byte cadence.
+    /// Emits an FDC read device trace event for the active command sector.
+    fn trace_fdc_read(&mut self, drive: usize) {
+        if !T::ENABLED
+            || !self.tracer.interested(TraceEventKey::Device {
+                device: trace_id::device::X68K_FDC,
+                action: trace_id::action::READ,
+            })
+        {
+            return;
+        }
+        let track_index = self.fdc.current_track_index();
+        let state = &self.fdc.state;
+        self.tracer.trace(
+            TraceContext::main_cpu(self.current_cycle, Some(self.cpu_clock_hz)),
+            TraceEvent::Device(TraceDeviceEvent {
+                device: trace_id::device::X68K_FDC,
+                action: trace_id::action::READ,
+                fields: &[
+                    TraceField {
+                        name: trace_id::field::DRIVE,
+                        value: TraceValue::Unsigned(drive as u64),
+                    },
+                    TraceField {
+                        name: trace_id::field::TRACK_INDEX,
+                        value: TraceValue::Unsigned(track_index as u64),
+                    },
+                    TraceField {
+                        name: trace_id::field::CYLINDER,
+                        value: TraceValue::Unsigned(u64::from(state.c)),
+                    },
+                    TraceField {
+                        name: trace_id::field::HEAD,
+                        value: TraceValue::Unsigned(u64::from(state.h)),
+                    },
+                    TraceField {
+                        name: trace_id::field::RECORD,
+                        value: TraceValue::Unsigned(u64::from(state.r)),
+                    },
+                    TraceField {
+                        name: trace_id::field::SIZE_CODE,
+                        value: TraceValue::Unsigned(u64::from(state.n)),
+                    },
+                ],
+            }),
+        );
+    }
+
     fn start_fdc_read(&mut self) {
         let drive = self.fdc.current_drive();
+        self.trace_fdc_read(drive);
         if !self.fdc_drive_ready(drive) {
             self.fdc.complete_error(ST0_NOT_READY, 0, 0);
             return;
@@ -494,17 +545,35 @@ impl<T: TraceSink> X68kBus<T> {
         image: FloppyImage,
         path: Option<std::path::PathBuf>,
     ) -> Result<(), String> {
+        self.insert_floppy_backed(drive, image, path.into())
+    }
+
+    /// Mounts a floppy image into `drive` with the requested backing.
+    pub fn insert_floppy_backed(
+        &mut self,
+        drive: usize,
+        image: FloppyImage,
+        backing: common::MediaBacking,
+    ) -> Result<(), String> {
         if drive >= INSERTABLE_DRIVES {
             return Err(format!("X68000 drive {drive} is not installed"));
         }
         if let Some(previous) = self.floppy_drives[drive].take() {
             previous.eject();
         }
-        self.floppy_drives[drive] = Some(MountedFloppy::new(image, path));
+        self.floppy_drives[drive] = Some(device::floppy::mounted_from_backing(image, backing));
         self.fdd.set_inserted(drive, true);
         self.sync_fdc_ready_lines();
         self.sync_fdd_interrupt();
         Ok(())
+    }
+
+    /// Returns the current in-memory bytes of the floppy in `drive`, if mounted.
+    pub fn floppy_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.floppy_drives
+            .get(drive)?
+            .as_ref()
+            .map(MountedFloppy::image_bytes)
     }
 
     /// Ejects and flushes the floppy in `drive`.

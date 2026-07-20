@@ -11,9 +11,9 @@ mod sub_io_read;
 mod sub_io_write;
 
 use common::{
-    HostDateTimeProvider, JoystickState, MonitorTiming, NoTrace, TraceAccessKind, TraceAccessWidth,
-    TraceAddressSpace, TraceContext, TraceEvent, TraceInterruptAction, TracePresentation,
-    TraceSink, trace_id,
+    JoystickState, MonitorTiming, NoTrace, SharedHostDateTimeSource, TraceAccessKind,
+    TraceAccessWidth, TraceAddressSpace, TraceContext, TraceEvent, TraceInterruptAction,
+    TracePresentation, TraceSink, trace_id,
 };
 use device::{
     beeper::Beeper,
@@ -244,7 +244,9 @@ pub struct Pc8801Bus<T: TraceSink = NoTrace> {
     /// i8251 USART (RS-232C, ports 0x20/0x21), modeled as no-cable.
     pub(crate) serial: I8251Serial,
     /// Host BCD local-time source used by the RTC's TIME_READ command.
-    pub(crate) host_date_time_provider: HostDateTimeProvider,
+    pub(crate) host_date_time_source: SharedHostDateTimeSource,
+    /// Carried fractional-sample accumulator for deterministic audio draining.
+    pub(crate) automation_audio_remainder: u64,
     /// Port 0x10 write latch (RTC command/data lines and printer data).
     pub(crate) port10: u8,
     /// Level-1 kanji ROM read-window address latch (ports 0xE8/0xE9).
@@ -443,6 +445,16 @@ impl<T: TraceSink> Pc8801Bus<T> {
         self.memory.write_byte(address, value);
     }
 
+    /// Reads a byte from the sub-CPU (disk unit) memory without side effects.
+    pub fn peek_sub_byte(&self, address: u16) -> u8 {
+        self.sub_mem.read(address)
+    }
+
+    /// Writes a byte through the sub-CPU (disk unit) memory decode.
+    pub fn poke_sub_byte(&mut self, address: u16, value: u8) {
+        self.sub_mem.write(address, value);
+    }
+
     /// Loads the N88-BASIC main ROM image (32 KiB), mapped at 0x0000-0x7FFF in
     /// N88 mode. Useful for tests that drive the main CPU from a crafted image.
     pub fn load_main_rom(&mut self, data: &[u8]) {
@@ -631,8 +643,48 @@ impl<T: TraceSink> Pc8801Bus<T> {
 
     /// Overrides the host BCD local-time source used by the RTC. Intended for
     /// tests that need a deterministic clock.
-    pub(crate) fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
-        self.host_date_time_provider = provider;
+    pub(crate) fn set_host_date_time_source(&mut self, source: SharedHostDateTimeSource) {
+        self.host_date_time_source = source;
+    }
+
+    /// Returns the number of frames presented within the current epoch.
+    pub(crate) fn presented_frames(&self) -> u64 {
+        self.presented_frames
+    }
+
+    /// Returns the fixed audio output rate in Hz.
+    pub(crate) fn audio_sample_rate(&self) -> u32 {
+        self.clocks.sample_rate
+    }
+
+    /// Returns the primary scheduling-tick rate as `(numerator, denominator)`.
+    pub(crate) fn automation_timebase(&self) -> (u64, u64) {
+        (u64::from(self.cpu_clock_hz()), 1)
+    }
+
+    /// Returns the stable automation model identifier.
+    pub(crate) fn model_id(&self) -> &'static str {
+        match self.model {
+            Pc8801Model::PC8801MC => "pc8801mc",
+        }
+    }
+
+    /// Generates and discards audio covering `elapsed_ticks` for determinism.
+    ///
+    /// Sample counts use integer-remainder accounting so the generated sequence
+    /// is identical across two identical runs.
+    pub(crate) fn drain_automation_audio(&mut self, elapsed_ticks: u64) {
+        let (numerator, denominator) = self.automation_timebase();
+        let accumulator =
+            elapsed_ticks as u128 * denominator as u128 * self.clocks.sample_rate as u128
+                + self.automation_audio_remainder as u128;
+        let frames = (accumulator / numerator as u128) as usize;
+        self.automation_audio_remainder = (accumulator % numerator as u128) as u64;
+        if frames == 0 {
+            return;
+        }
+        let mut scratch = vec![0.0f32; frames * 2];
+        let _ = self.generate_audio_samples(1.0, &mut scratch);
     }
 
     /// Sets the N88-BASIC boot mode (DIP setting), supplied by the application
@@ -1421,7 +1473,7 @@ impl<T: TraceSink> Pc8801Bus<T> {
         if self.port10 & PORT10_RTC_DIN != 0 {
             command |= RTC_CHIP_DIN;
         }
-        let host_time = (self.host_date_time_provider)().to_bcd_bytes();
+        let host_time = self.host_date_time_source.now().to_bcd_bytes();
         self.rtc.write_port(command, &host_time);
     }
 
@@ -1886,16 +1938,34 @@ impl<T: TraceSink> Pc8801Bus<T> {
     }
 
     /// Mounts a floppy image into a drive and marks the FDC drive as occupied.
+    ///
+    /// A path-based convenience retained for the sub-FDC tests.
+    #[cfg(test)]
     pub(crate) fn insert_floppy(
         &mut self,
         drive: usize,
         image: device::floppy::FloppyImage,
         path: Option<std::path::PathBuf>,
     ) {
-        self.floppy.insert_drive(drive, image, path);
+        self.insert_floppy_backed(drive, image, path.into());
+    }
+
+    /// Mounts a floppy image with the requested backing.
+    pub(crate) fn insert_floppy_backed(
+        &mut self,
+        drive: usize,
+        image: device::floppy::FloppyImage,
+        backing: common::MediaBacking,
+    ) {
+        self.floppy.insert_drive_backed(drive, image, backing);
         if drive < 4 {
             self.fdc.state.drive_has_disk |= 1 << drive;
         }
+    }
+
+    /// Returns the current in-memory bytes of the floppy in `drive`, if mounted.
+    pub(crate) fn floppy_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.floppy.drive_image_bytes(drive)
     }
 
     /// Ejects the floppy from a drive and clears the FDC drive-occupied bit.

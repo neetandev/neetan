@@ -2,8 +2,11 @@
 
 use std::path::PathBuf;
 
-use common::TraceSink;
-use device::floppy::{FloppyImage, MountedFloppy};
+use common::{
+    TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField, TraceSink, TraceValue,
+    trace_id,
+};
+use device::floppy::FloppyImage;
 
 use super::{MsxBus, OPEN_BUS};
 use crate::{FirmwareRegion, scheduler::EventMsx};
@@ -60,15 +63,54 @@ impl<T: TraceSink> MsxBus<T> {
         value
     }
 
+    /// Emits an FDC read device trace event for a read-sector command.
+    fn trace_fdc_read(&mut self, cylinder: u8, record: u8) {
+        if !T::ENABLED
+            || !self.tracer.interested(TraceEventKey::Device {
+                device: trace_id::device::MSX_FDC,
+                action: trace_id::action::READ,
+            })
+        {
+            return;
+        }
+        self.tracer.trace(
+            TraceContext::main_cpu(self.current_cycle, Some(u64::from(self.cpu_clock_hz()))),
+            TraceEvent::Device(TraceDeviceEvent {
+                device: trace_id::device::MSX_FDC,
+                action: trace_id::action::READ,
+                fields: &[
+                    TraceField {
+                        name: trace_id::field::CYLINDER,
+                        value: TraceValue::Unsigned(u64::from(cylinder)),
+                    },
+                    TraceField {
+                        name: trace_id::field::RECORD,
+                        value: TraceValue::Unsigned(u64::from(record)),
+                    },
+                ],
+            }),
+        );
+    }
+
     /// Writes a selected disk-system register.
     pub(super) fn fdc_write(&mut self, address: u16, value: u8) {
         let offset = address & 0x3FFF;
         let now = self.current_cycle;
+        let mut fdc_read = None;
         let Some(controller) = self.fdc.as_mut() else {
             return;
         };
         match offset {
-            FDC_STATUS_COMMAND => controller.write_command(value, now),
+            FDC_STATUS_COMMAND => {
+                controller.write_command(value, now);
+                // WD17xx Type II Read Sector opcodes are 0x80..0x9F.
+                if value & 0xE0 == 0x80 {
+                    fdc_read = Some((
+                        controller.read_track_register(),
+                        controller.read_sector_register(),
+                    ));
+                }
+            }
             FDC_TRACK => controller.write_track_register(value),
             FDC_SECTOR => controller.write_sector_register(value),
             FDC_DATA => controller.write_data_pio(value, now),
@@ -84,6 +126,9 @@ impl<T: TraceSink> MsxBus<T> {
                 controller.set_msx_motor(value & DRIVE_CONTROL_MOTOR != 0, now);
             }
             _ => {}
+        }
+        if let Some((cylinder, record)) = fdc_read {
+            self.trace_fdc_read(cylinder, record);
         }
         self.sync_fdc_schedule();
     }
@@ -124,6 +169,16 @@ impl<T: TraceSink> MsxBus<T> {
 
     /// Mounts a floppy image in a built-in drive.
     pub fn insert_floppy(&mut self, drive: usize, image: FloppyImage, path: PathBuf) {
+        self.insert_floppy_backed(drive, image, path.into());
+    }
+
+    /// Mounts a floppy image in a built-in drive with the requested backing.
+    pub fn insert_floppy_backed(
+        &mut self,
+        drive: usize,
+        image: FloppyImage,
+        backing: common::MediaBacking,
+    ) {
         let digest = crate::cartridge::digest_hex(&image.to_bytes());
         if let Some(mapper) = crate::sound_cartridge_for_disk_blake3(&digest)
             && !self.memory.cartridge_present(1)
@@ -133,8 +188,15 @@ impl<T: TraceSink> MsxBus<T> {
                 .expect("automatic SCC+ cartridge has a valid slot and mapper");
         }
         if let Some(controller) = self.fdc.as_mut() {
-            controller.insert(drive, MountedFloppy::new(image, Some(path)));
+            controller.insert_backed(drive, image, backing);
         }
+    }
+
+    /// Returns the current in-memory bytes of the floppy in `drive`, if mounted.
+    pub fn floppy_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.fdc
+            .as_ref()
+            .and_then(|controller| controller.drive_image_bytes(drive))
     }
 
     /// Ejects and flushes a built-in floppy.

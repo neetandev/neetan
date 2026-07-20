@@ -647,7 +647,12 @@ pub(crate) fn execute(
                         // activation. Skipping the generic dispatch prologue,
                         // the return delivery machinery, and the outer-loop
                         // re-establish entirely.
-                        Callee::Native { id, fast } => {
+                        Callee::Native {
+                            id,
+                            fast,
+                            single_result,
+                            may_exit,
+                        } => {
                             match call_native_inline(
                                 heap,
                                 &mut *stack,
@@ -657,6 +662,8 @@ pub(crate) fn execute(
                                 natives,
                                 id,
                                 fast,
+                                single_result,
+                                may_exit,
                                 call_base,
                                 arguments,
                                 expected,
@@ -763,7 +770,8 @@ pub(crate) fn execute(
                     // prologue and deliver through the popped frame's return
                     // slot. The frame changes, so control re-establishes
                     // through the outer loop like the generic path below.
-                    if let Some((id, fast)) = heap.native_callee(procedure) {
+                    if let Some((id, fast, single_result, may_exit)) = heap.native_callee(procedure)
+                    {
                         let completed = match tail_call_native_inline(
                             heap,
                             &mut *stack,
@@ -773,6 +781,8 @@ pub(crate) fn execute(
                             natives,
                             id,
                             fast,
+                            single_result,
+                            may_exit,
                             call_base,
                             arguments,
                         ) {

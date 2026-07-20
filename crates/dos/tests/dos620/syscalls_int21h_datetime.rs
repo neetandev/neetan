@@ -16,7 +16,9 @@ fn test_time() -> HostDateTime {
 }
 
 fn boot_hle_with_fixed_time() -> machine_98::Pc9801Ra {
-    harness::boot_hle_with_time(Some(test_time))
+    harness::boot_hle_with_time(Some(std::sync::Arc::new(common::FixedHostDateTime(
+        test_time(),
+    ))))
 }
 
 #[test]

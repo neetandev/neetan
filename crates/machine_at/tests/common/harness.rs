@@ -72,7 +72,9 @@ pub fn machine_with_roms<T: TraceSink + Default>(model: AtModel, roms: LoadedRom
         48_000,
         T::default(),
     );
-    bus.set_host_date_time_provider(fixed_clock);
+    bus.set_host_date_time_source(std::sync::Arc::new(
+        common::FixedHostDateTime(fixed_clock()),
+    ));
     let mut cpu = cpu::I386::<{ cpu::CPU_MODEL_486_DX }, { cpu::ADDRESS_WIDTH_32 }>::new();
     cpu.reset();
     AtMachine::new(cpu, bus)

@@ -16,8 +16,8 @@ mod video;
 mod write;
 
 use common::{
-    Bus, CpuMode, HostDateTimeProvider, JoystickState, M68000AccessSize, M68000BusAccess,
-    M68000BusError, M68000CycleKind, M68000FunctionCode, NoTrace, TraceAccessKind,
+    Bus, CpuMode, JoystickState, M68000AccessSize, M68000BusAccess, M68000BusError,
+    M68000CycleKind, M68000FunctionCode, NoTrace, SharedHostDateTimeSource, TraceAccessKind,
     TraceAccessWidth, TraceAddressSpace, TraceContext, TraceEvent, TraceInterruptAction, TraceSink,
     trace_id,
 };
@@ -239,6 +239,7 @@ pub(crate) struct X68kBusState {
     dmac_wait_clocks: u64,
     dmac_refresh_access_count: u8,
     current_cycle: u64,
+    presented_frames: u64,
 }}
 
 /// Returns the CPU wait penalty of one bus access to the region, in whole
@@ -371,8 +372,10 @@ pub struct X68kBus<T: TraceSink = NoTrace> {
     dmac_stall_remainder: u64,
     dmac_wait_clocks: u64,
     dmac_refresh_access_count: u8,
-    host_date_time_provider: HostDateTimeProvider,
+    host_date_time_source: SharedHostDateTimeSource,
     current_cycle: u64,
+    presented_frames: u64,
+    automation_audio_remainder: u64,
     tracer: T,
 }
 
@@ -487,8 +490,10 @@ impl<T: TraceSink> X68kBus<T> {
             dmac_stall_remainder: 0,
             dmac_wait_clocks: 0,
             dmac_refresh_access_count: 0,
-            host_date_time_provider: common::default_host_date_time,
+            host_date_time_source: common::default_host_date_time_source(),
             current_cycle: 0,
+            presented_frames: 0,
+            automation_audio_remainder: 0,
             tracer,
         };
         bus.initialize_device_pins();
@@ -609,6 +614,7 @@ impl<T: TraceSink> X68kBus<T> {
             dmac_wait_clocks: self.dmac_wait_clocks,
             dmac_refresh_access_count: self.dmac_refresh_access_count,
             current_cycle: self.current_cycle,
+            presented_frames: self.presented_frames,
         })
     }
 
@@ -722,6 +728,7 @@ impl<T: TraceSink> X68kBus<T> {
             self.dmac_wait_clocks = state.dmac_wait_clocks;
             self.dmac_refresh_access_count = state.dmac_refresh_access_count;
             self.current_cycle = state.current_cycle;
+            self.presented_frames = state.presented_frames;
             Ok(())
         })();
 
@@ -852,6 +859,58 @@ impl<T: TraceSink> X68kBus<T> {
         self.ram.get(address as usize).copied()
     }
 
+    /// Reads one byte of memory without device side effects, for inspection.
+    /// RAM, text VRAM, and the ROM windows read from their backing store; every
+    /// device-register and unmapped region reads as open bus.
+    pub fn peek_byte(&self, address: u32) -> u8 {
+        const OPEN_BUS: u8 = 0xFF;
+        let address = address & ADDRESS_MASK;
+        match Self::decode_region(address) {
+            X68kRegion::MainRam => self.ram.get(address as usize).copied().unwrap_or(OPEN_BUS),
+            X68kRegion::TextVram => self
+                .text_vram
+                .get((address - 0xE00000) as usize)
+                .copied()
+                .unwrap_or(OPEN_BUS),
+            X68kRegion::Cgrom => self
+                .cgrom
+                .get((address - 0xF00000) as usize)
+                .copied()
+                .unwrap_or(OPEN_BUS),
+            X68kRegion::InternalScsiRom => self
+                .internal_scsi
+                .as_ref()
+                .and_then(|rom| rom.get((address - 0xFC0000) as usize).copied())
+                .unwrap_or(OPEN_BUS),
+            X68kRegion::IplRom => self
+                .ipl
+                .get((address - 0xFE0000) as usize)
+                .copied()
+                .unwrap_or(OPEN_BUS),
+            _ => OPEN_BUS,
+        }
+    }
+
+    /// Writes one byte through the memory decode without device side effects,
+    /// for mutation. Writes to RAM and text VRAM land; writes to ROM windows,
+    /// device registers, and unmapped regions are dropped.
+    pub fn poke_byte(&mut self, address: u32, value: u8) {
+        let address = address & ADDRESS_MASK;
+        match Self::decode_region(address) {
+            X68kRegion::MainRam => {
+                if let Some(slot) = self.ram.get_mut(address as usize) {
+                    *slot = value;
+                }
+            }
+            X68kRegion::TextVram => {
+                if let Some(slot) = self.text_vram.get_mut((address - 0xE00000) as usize) {
+                    *slot = value;
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Returns the current in-memory SRAM image.
     pub fn sram_data(&self) -> &[u8] {
         self.sram.data()
@@ -882,9 +941,50 @@ impl<T: TraceSink> X68kBus<T> {
         self.renderer.dimensions()
     }
 
-    /// Installs the local-calendar provider used for the first RTC access.
-    pub(crate) fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
-        self.host_date_time_provider = provider;
+    /// Installs the local-calendar source used for the first RTC access.
+    pub(crate) fn set_host_date_time_source(&mut self, source: SharedHostDateTimeSource) {
+        self.host_date_time_source = source;
+    }
+
+    /// Returns the number of frames presented within the current epoch.
+    pub(crate) fn presented_frames(&self) -> u64 {
+        self.presented_frames
+    }
+
+    /// Returns the fixed audio output rate in Hz.
+    pub(crate) fn audio_sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Returns the primary scheduling-tick rate as `(numerator, denominator)`.
+    pub(crate) fn automation_timebase(&self) -> (u64, u64) {
+        (self.cpu_clock_hz, 1)
+    }
+
+    /// Returns the stable automation model identifier.
+    pub(crate) fn model_id(&self) -> &'static str {
+        match self.model {
+            X68kModel::X68000 => "x68000",
+            X68kModel::X68000Super => "x68000super",
+            X68kModel::X68000Xvi => "x68000xvi",
+        }
+    }
+
+    /// Generates and discards audio covering `elapsed_ticks` for determinism.
+    ///
+    /// Sample counts use integer-remainder accounting so the generated sequence
+    /// is identical across two identical runs.
+    pub(crate) fn drain_automation_audio(&mut self, elapsed_ticks: u64) {
+        let (numerator, denominator) = self.automation_timebase();
+        let accumulator = elapsed_ticks as u128 * denominator as u128 * self.sample_rate as u128
+            + self.automation_audio_remainder as u128;
+        let frames = (accumulator / numerator as u128) as usize;
+        self.automation_audio_remainder = (accumulator % numerator as u128) as u64;
+        if frames == 0 {
+            return;
+        }
+        let mut scratch = vec![0.0f32; frames * 2];
+        let _ = self.generate_audio_samples(1.0, &mut scratch);
     }
 
     /// Updates a physical X68000 key from a make or break code.
@@ -1193,7 +1293,7 @@ impl<T: TraceSink> X68kBus<T> {
         if self.rtc.seeded() {
             return;
         }
-        let mut calendar = (self.host_date_time_provider)().to_bcd_bytes();
+        let mut calendar = self.host_date_time_source.now().to_bcd_bytes();
         let year = bcd_to_binary(calendar[0]);
         calendar[0] = binary_to_bcd(if year >= 80 { year - 80 } else { year + 20 });
         self.rtc.seed_from_calendar_bcd(calendar);
@@ -2370,7 +2470,8 @@ mod tests {
 
         let bus = bus(X68kModel::X68000);
         let mut machine = crate::X68kMachine::from_bus(X68kModel::X68000, CpuMode::High, bus);
-        machine.set_host_date_time_provider(calendar);
+        machine
+            .set_host_date_time_source(std::sync::Arc::new(common::FixedHostDateTime(calendar())));
         let supervisor = M68000FunctionCode::SupervisorData;
         assert_eq!(
             machine

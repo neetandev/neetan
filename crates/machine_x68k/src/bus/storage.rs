@@ -10,7 +10,7 @@
 use common::TraceSink;
 use device::{
     cdrom::CdImage,
-    disk::{HddImage, MountedHdd},
+    disk::HddImage,
     scsi::{ScsiCdrom, ScsiDisk, ScsiTarget},
 };
 
@@ -136,6 +136,16 @@ impl<T: TraceSink> X68kBus<T> {
         image: HddImage,
         path: Option<std::path::PathBuf>,
     ) -> Result<(), String> {
+        self.insert_hdd_backed(slot, image, path.into())
+    }
+
+    /// Attaches a hard disk image with the requested backing at `slot`.
+    pub fn insert_hdd_backed(
+        &mut self,
+        slot: usize,
+        image: HddImage,
+        backing: common::MediaBacking,
+    ) -> Result<(), String> {
         if slot >= X68K_HDD_SLOT_COUNT {
             return Err(format!("X68000 hard-disk slot {slot} is not installed"));
         }
@@ -149,7 +159,7 @@ impl<T: TraceSink> X68kBus<T> {
                         self.model, image.geometry.sector_size
                     ));
                 }
-                self.hdc.insert_drive(slot, image, path);
+                self.hdc.insert_drive_backed(slot, image, backing);
                 self.sram.set_sasi_hdmax(self.hdc.drive_count());
             }
             X68kStorageController::InternalScsi => {
@@ -161,11 +171,21 @@ impl<T: TraceSink> X68kBus<T> {
                 }
                 self.spc.insert_target(
                     slot,
-                    ScsiTarget::Disk(ScsiDisk::new(MountedHdd::new(image, path))),
+                    ScsiTarget::Disk(ScsiDisk::new(device::disk::mounted_hdd_from_backing(
+                        image, backing,
+                    ))),
                 );
             }
         }
         Ok(())
+    }
+
+    /// Returns the current in-memory bytes of the disk in `slot`, if mounted.
+    pub fn hdd_image_bytes(&self, slot: usize) -> Option<Vec<u8>> {
+        match self.model.storage_controller() {
+            X68kStorageController::Sasi => self.hdc.drive_image_bytes(slot),
+            X68kStorageController::InternalScsi => self.spc.drive_image_bytes(slot),
+        }
     }
 
     /// Ejects and flushes the hard disk in `slot`, if any.

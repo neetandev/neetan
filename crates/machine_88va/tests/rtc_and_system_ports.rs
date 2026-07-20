@@ -44,7 +44,7 @@ fn rtc_cdat(machine: &mut Pc88VaMachine) -> u8 {
 #[test]
 fn rtc_time_read_shifts_out_calendar() {
     let mut machine = machine();
-    machine.set_host_date_time_provider(test_time);
+    machine.set_host_date_time_source(std::sync::Arc::new(common::FixedHostDateTime(test_time())));
 
     // Time Read loads the calendar; Register Shift starts the readout.
     rtc_stb_command(&mut machine, 0x03);

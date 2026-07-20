@@ -183,6 +183,16 @@ impl Upd765aFdc<UPD765_PLATFORM_ISA_AT> {
 
     /// Inserts an AT floppy disk image.
     pub fn insert_drive(&mut self, drive: usize, image: FloppyImage, path: Option<PathBuf>) {
+        self.insert_drive_backed(drive, image, path.into());
+    }
+
+    /// Inserts an AT floppy disk image with the requested backing.
+    pub fn insert_drive_backed(
+        &mut self,
+        drive: usize,
+        image: FloppyImage,
+        backing: common::MediaBacking,
+    ) {
         if drive >= AT_DRIVE_COUNT {
             return;
         }
@@ -190,13 +200,22 @@ impl Upd765aFdc<UPD765_PLATFORM_ISA_AT> {
             mounted.eject();
         }
         let mask = 1u8 << drive;
-        if image.write_protected {
+        let read_only = matches!(backing, common::MediaBacking::ReadOnly);
+        if image.write_protected || read_only {
             self.state.drive_write_protected |= mask;
         } else {
             self.state.drive_write_protected &= !mask;
         }
-        self.drives[drive] = Some(MountedFloppy::new(image, path));
+        self.drives[drive] = Some(crate::floppy::mounted_from_backing(image, backing));
         self.disk_change[drive] = true;
+    }
+
+    /// Returns the current in-memory bytes of the floppy in `drive`, if mounted.
+    pub fn drive_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.drives
+            .get(drive)?
+            .as_ref()
+            .map(MountedFloppy::image_bytes)
     }
 
     /// Ejects an AT floppy disk image.

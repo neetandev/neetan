@@ -220,12 +220,27 @@ impl X68kSasiHdc {
 
     /// Attaches a hard disk image at the given SASI ID (0 or 1).
     pub fn insert_drive(&mut self, id: usize, image: HddImage, path: Option<PathBuf>) {
+        self.insert_drive_backed(id, image, path.into());
+    }
+
+    /// Attaches a hard disk image with the requested backing (SASI ID 0 or 1).
+    pub fn insert_drive_backed(
+        &mut self,
+        id: usize,
+        image: HddImage,
+        backing: common::MediaBacking,
+    ) {
         if id < X68K_SASI_DRIVE_COUNT {
             if let Some(mounted) = self.drives[id].take() {
                 mounted.eject();
             }
-            self.drives[id] = Some(MountedHdd::new(image, path));
+            self.drives[id] = Some(crate::disk::mounted_hdd_from_backing(image, backing));
         }
+    }
+
+    /// Returns the current in-memory bytes of the disk at `id`, if mounted.
+    pub fn drive_image_bytes(&self, id: usize) -> Option<Vec<u8>> {
+        self.drives.get(id)?.as_ref().map(MountedHdd::image_bytes)
     }
 
     /// Detaches and flushes the drive at the given SASI ID, if any.

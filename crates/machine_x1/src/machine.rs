@@ -3,7 +3,7 @@
 //! A single-Z80 machine: one CPU driving one bus, paced by a monotonic
 //! `current_cycle` in main-clock units.
 
-use common::{CpuZ80, NoTrace, TraceSink};
+use common::{CpuZ80, HostKey, KeyModifiers, NoTrace, TraceSink};
 
 use crate::bus::{MainBusView, X1Bus};
 
@@ -27,6 +27,186 @@ pub struct X1Machine<T: TraceSink = NoTrace> {
 pub fn build_untraced_machine(bus: X1Bus<NoTrace>) -> Box<dyn common::Machine> {
     let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
     Box::new(X1Machine::new(main_cpu, bus))
+}
+
+/// Builds an automated X1 machine around a configured bus.
+pub fn build_automated_machine(
+    bus: X1Bus<common::tracing::ApplicationTraceSink>,
+) -> Box<dyn common::AutomatedMachine> {
+    let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
+    Box::new(X1Machine::new(main_cpu, bus))
+}
+
+impl common::AutomationDriver for X1Machine<common::tracing::ApplicationTraceSink> {
+    fn arm_presentation_yield(&mut self, target_frame: u64) {
+        self.bus.tracer().arm_presentation_yield(target_frame);
+    }
+
+    fn disarm_presentation_yield(&mut self) {
+        self.bus.tracer().disarm_presentation_yield();
+    }
+
+    fn epoch_ticks(&self) -> u64 {
+        self.bus.current_cycle()
+    }
+
+    fn epoch_frames(&self) -> u64 {
+        self.bus.presented_frames()
+    }
+
+    fn run_for(&mut self, budget: u64) -> u64 {
+        X1Machine::run_for(self, budget)
+    }
+
+    fn shutdown_requested(&self) -> bool {
+        false
+    }
+
+    fn drain_audio(&mut self, elapsed_ticks: u64) {
+        self.bus.drain_automation_audio(elapsed_ticks);
+    }
+}
+
+impl common::AutomatedMachine for X1Machine<common::tracing::ApplicationTraceSink> {
+    fn automation_descriptor(&self) -> common::AutomationDescriptor {
+        let (numerator, denominator) = self.bus.automation_timebase();
+        common::AutomationDescriptor {
+            target: "x1",
+            model: self.bus.model_id(),
+            timebase: common::AutomationTimebase {
+                ticks_per_second_numerator: numerator,
+                ticks_per_second_denominator: denominator,
+            },
+            audio_sample_rate: self.bus.audio_sample_rate(),
+            input: common::InputCapabilities {
+                keyboard: true,
+                mouse_buttons: 0,
+                joystick_ports: 1,
+            },
+        }
+    }
+
+    fn automation_timeline(&self) -> common::AutomationTimeline {
+        common::AutomationTimeline {
+            epoch_ticks: self.bus.current_cycle() as u128,
+            epoch_frames: self.bus.presented_frames() as u128,
+            ..common::AutomationTimeline::default()
+        }
+    }
+
+    fn run_automation(&mut self, request: common::RunRequest) -> common::RunOutcome {
+        common::drive_automation(self, request)
+    }
+
+    fn inspector(&mut self) -> Option<&mut dyn common::MachineInspector> {
+        Some(self)
+    }
+
+    fn trace_catalog(&self) -> common::TraceCatalog {
+        X1_TRACE_CATALOG
+    }
+}
+
+/// Stable trace identifiers emitted by the Sharp X1 bus.
+const X1_TRACE_CATALOG: common::TraceCatalog = common::TraceCatalog {
+    controllers: &[common::trace_id::controller::X1_DAISY],
+    scheduled: common::trace_id::scheduled::X1,
+    devices: &[common::TraceDeviceCatalog {
+        device: common::trace_id::device::X1_FDC,
+        actions: &[common::trace_id::action::READ],
+    }],
+    providers: &[],
+};
+
+impl common::MachineInspector for X1Machine<common::tracing::ApplicationTraceSink> {
+    fn processors(&self) -> common::ProcessorList {
+        let mut processors = common::ProcessorList::new();
+        processors.push(common::inspect::z80_processor("cpu.main"));
+        processors
+    }
+
+    fn address_spaces(&self) -> common::AddressSpaceList {
+        let mut spaces = common::AddressSpaceList::new();
+        spaces.push(common::inspect::memory_space(
+            "cpu.main.memory",
+            16,
+            common::ByteOrder::Little,
+        ));
+        spaces.push(common::inspect::io_space(
+            "cpu.main.io",
+            16,
+            common::ByteOrder::Little,
+        ));
+        spaces
+    }
+
+    fn read_register(&self, processor: &str, register: &str) -> Result<u128, common::InspectError> {
+        match processor {
+            "cpu.main" => common::inspect::z80_read(&self.main_cpu, register),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn write_register(
+        &mut self,
+        processor: &str,
+        register: &str,
+        value: u128,
+    ) -> Result<(), common::InspectError> {
+        match processor {
+            "cpu.main" => common::inspect::z80_write(&mut self.main_cpu, register, value),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn protected_mode_state(
+        &self,
+        processor: &str,
+    ) -> Result<common::ProtectedModeState, common::InspectError> {
+        match processor {
+            "cpu.main" => Err(common::InspectError::Unsupported),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn peek_memory(
+        &mut self,
+        space: &str,
+        address: u64,
+        buffer: &mut [u8],
+    ) -> Result<(), common::InspectError> {
+        match space {
+            "cpu.main.memory" => {
+                for (index, byte) in buffer.iter_mut().enumerate() {
+                    *byte = self
+                        .bus
+                        .peek_byte(common::inspect::offset_u16(address, index)?);
+                }
+                Ok(())
+            }
+            "cpu.main.io" => Err(common::InspectError::NotPeekable),
+            _ => Err(common::InspectError::UnknownSpace),
+        }
+    }
+
+    fn poke_memory(
+        &mut self,
+        space: &str,
+        address: u64,
+        bytes: &[u8],
+    ) -> Result<(), common::InspectError> {
+        match space {
+            "cpu.main.memory" => {
+                for (index, byte) in bytes.iter().enumerate() {
+                    self.bus
+                        .poke_byte(common::inspect::offset_u16(address, index)?, *byte);
+                }
+                Ok(())
+            }
+            "cpu.main.io" => Err(common::InspectError::NotWritable),
+            _ => Err(common::InspectError::UnknownSpace),
+        }
+    }
 }
 
 impl<T: TraceSink> X1Machine<T> {
@@ -134,8 +314,8 @@ impl<T: TraceSink> common::Machine for X1Machine<T> {
         self.restore_machine_blob(blob)
     }
 
-    fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
-        self.bus.set_host_date_time_provider(provider);
+    fn set_host_date_time_source(&mut self, source: common::SharedHostDateTimeSource) {
+        self.bus.set_host_date_time_source(source);
     }
 
     fn startup_capabilities(&self) -> common::StartupCapabilities {
@@ -169,6 +349,98 @@ impl<T: TraceSink> common::Machine for X1Machine<T> {
         self.bus.push_keyboard_scancode(code);
     }
 
+    fn translate_host_key(&self, key: HostKey, _modifiers: KeyModifiers) -> Option<u8> {
+        Some(match key {
+            HostKey::A => 0x41,
+            HostKey::B => 0x42,
+            HostKey::C => 0x43,
+            HostKey::D => 0x44,
+            HostKey::E => 0x45,
+            HostKey::F => 0x46,
+            HostKey::G => 0x47,
+            HostKey::H => 0x48,
+            HostKey::I => 0x49,
+            HostKey::J => 0x4A,
+            HostKey::K => 0x4B,
+            HostKey::L => 0x4C,
+            HostKey::M => 0x4D,
+            HostKey::N => 0x4E,
+            HostKey::O => 0x4F,
+            HostKey::P => 0x50,
+            HostKey::Q => 0x51,
+            HostKey::R => 0x52,
+            HostKey::S => 0x53,
+            HostKey::T => 0x54,
+            HostKey::U => 0x55,
+            HostKey::V => 0x56,
+            HostKey::W => 0x57,
+            HostKey::X => 0x58,
+            HostKey::Y => 0x59,
+            HostKey::Z => 0x5A,
+            HostKey::Digit0 => 0x30,
+            HostKey::Digit1 => 0x31,
+            HostKey::Digit2 => 0x32,
+            HostKey::Digit3 => 0x33,
+            HostKey::Digit4 => 0x34,
+            HostKey::Digit5 => 0x35,
+            HostKey::Digit6 => 0x36,
+            HostKey::Digit7 => 0x37,
+            HostKey::Digit8 => 0x38,
+            HostKey::Digit9 => 0x39,
+            HostKey::Space => 0x20,
+            HostKey::Return => 0x0D,
+            HostKey::KpEnter => 0x0D,
+            HostKey::Backspace => 0x08,
+            HostKey::Delete => 0x2E,
+            HostKey::Insert => 0x2D,
+            HostKey::Tab => 0x09,
+            HostKey::Escape => 0x1B,
+            HostKey::Home => 0x24,
+            HostKey::End => 0x23,
+            HostKey::PageUp => 0x21,
+            HostKey::PageDown => 0x22,
+            HostKey::Left => 0x25,
+            HostKey::Up => 0x26,
+            HostKey::Right => 0x27,
+            HostKey::Down => 0x28,
+            HostKey::Kp0 => 0x60,
+            HostKey::Kp1 => 0x61,
+            HostKey::Kp2 => 0x62,
+            HostKey::Kp3 => 0x63,
+            HostKey::Kp4 => 0x64,
+            HostKey::Kp5 => 0x65,
+            HostKey::Kp6 => 0x66,
+            HostKey::Kp7 => 0x67,
+            HostKey::Kp8 => 0x68,
+            HostKey::Kp9 => 0x69,
+            HostKey::KpMultiply => 0x6A,
+            HostKey::KpPlus => 0x6B,
+            HostKey::KpComma => 0x6C,
+            HostKey::KpMinus => 0x6D,
+            HostKey::KpPeriod => 0x6E,
+            HostKey::KpDivide => 0x6F,
+            HostKey::Semicolon => 0x02,
+            HostKey::Apostrophe => 0x01,
+            HostKey::Comma => 0x04,
+            HostKey::Period => 0x06,
+            HostKey::Slash => 0x07,
+            HostKey::Minus => 0x05,
+            HostKey::Grave => 0x0A,
+            HostKey::LeftBracket => 0x0B,
+            HostKey::RightBracket => 0x0E,
+            HostKey::Backslash => 0x0C,
+            HostKey::Equals => 0x0F,
+            HostKey::LeftShift => 0x10,
+            HostKey::RightShift => 0x10,
+            HostKey::LeftControl => 0x11,
+            HostKey::RightControl => 0x11,
+            HostKey::LeftAlt => 0x12,
+            HostKey::RightAlt => 0x12,
+            HostKey::CapsLock => 0x14,
+            _ => return None,
+        })
+    }
+
     fn set_joystick(&mut self, index: usize, state: common::JoystickState) {
         if index == 0 {
             self.bus.set_joystick(state);
@@ -183,13 +455,22 @@ impl<T: TraceSink> common::Machine for X1Machine<T> {
         self.bus.font_rom_data()
     }
 
-    fn insert_floppy(&mut self, drive: usize, path: &std::path::Path) -> Result<String, String> {
-        let data = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
-        let image = device::floppy::load_floppy_image(path, &data)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        let description = format!("{} ({})", image.name, image.format_name());
-        self.bus.insert_floppy(drive, image, path.to_path_buf());
+    fn insert_floppy(
+        &mut self,
+        drive: usize,
+        image: common::MediaImage<'_>,
+        backing: common::MediaBacking,
+    ) -> Result<String, String> {
+        let parsed =
+            device::floppy::load_floppy_image(std::path::Path::new(image.name), image.bytes)
+                .map_err(|error| format!("{}: {error}", image.name))?;
+        let description = format!("{} ({})", parsed.name, parsed.format_name());
+        self.bus.insert_floppy_backed(drive, parsed, backing);
         Ok(description)
+    }
+
+    fn floppy_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.bus.floppy_image_bytes(drive)
     }
 
     fn eject_floppy(&mut self, drive: usize) {

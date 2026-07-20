@@ -212,7 +212,8 @@ impl<T: TraceSink> Pc9801Bus<T> {
             ga1280a: None,
             beeper: Beeper::new(machine_model.beeper_kind(), clocks.pit_clock_hz),
             rtc: Upd4990aRtc::new(),
-            host_date_time_provider: common::default_host_date_time,
+            host_date_time_source: common::default_host_date_time_source(),
+            automation_audio_remainder: 0,
             mpu401: Mpu401::new(),
             #[cfg(feature = "mt32")]
             mt32: None,
@@ -949,7 +950,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
         // Memory switches at text VRAM (stride 4).
         // MSW3 bits 0-2 encode conventional memory in 128 KB units above
         // the base 128 KB: 0x04 = 4 * 128 KB + 128 KB = 640 KB.
-        let year_bcd = (self.host_date_time_provider)().to_bcd_bytes()[0];
+        let year_bcd = self.host_date_time_source.now().to_bcd_bytes()[0];
         let msw_values: [u8; 8] = [0x48, 0x05, 0x04, 0x00, 0x01, 0x00, 0x00, year_bcd];
         let msw_offsets: [usize; 8] = [
             0x3FE2, 0x3FE6, 0x3FEA, 0x3FEE, 0x3FF2, 0x3FF6, 0x3FFA, 0x3FFE,

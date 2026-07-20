@@ -122,7 +122,7 @@ fn read_rtc_register(
 #[test]
 fn rtc_registers_return_fixed_host_time() {
     let mut machine = machine_mx();
-    machine.set_host_date_time_provider(fixed_time);
+    machine.set_host_date_time_source(std::sync::Arc::new(common::FixedHostDateTime(fixed_time())));
 
     let digit = |machine: &mut _, reg| read_rtc_register(machine, reg) & RTC_DIGIT_MASK;
 
@@ -143,7 +143,7 @@ fn rtc_registers_return_fixed_host_time() {
 #[test]
 fn rtc_ready_flag_tracks_subsecond_time() {
     let mut machine = machine_mx();
-    machine.set_host_date_time_provider(fixed_time);
+    machine.set_host_date_time_source(std::sync::Arc::new(common::FixedHostDateTime(fixed_time())));
 
     // At cycle 0 the second has just started: the ready flag is low.
     machine.bus.set_current_cycle(0);

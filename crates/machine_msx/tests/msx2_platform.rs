@@ -52,7 +52,7 @@ fn rtc_ports_are_mirrored_and_absent_from_msx1() {
     assert_eq!(io_read(&mut msx1, RTC_DATA_PORT), 0xFF);
 
     let mut msx2 = MsxBus::new(MsxModel::Msx2, 48_000);
-    msx2.set_host_date_time_provider(host_time);
+    msx2.set_host_date_time_source(std::sync::Arc::new(common::FixedHostDateTime(host_time())));
     io_write(&mut msx2, RTC_ADDRESS_PORT, 0);
     assert_eq!(io_read(&mut msx2, RTC_DATA_PORT), 0xF9);
     io_write(&mut msx2, RTC_MIRROR_ADDRESS_PORT, 1);
@@ -149,7 +149,7 @@ fn synthetic_program_accesses_rtc_and_s1985() {
         0x76,
     ];
     let mut bus = MsxBus::new(MsxModel::Msx2, 48_000);
-    bus.set_host_date_time_provider(host_time);
+    bus.set_host_date_time_source(std::sync::Arc::new(common::FixedHostDateTime(host_time())));
     bus.load_synthetic_program(&program).unwrap();
     let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
     let mut machine = MsxMachine::new(main_cpu, bus);
@@ -163,7 +163,7 @@ fn synthetic_program_accesses_rtc_and_s1985() {
 #[test]
 fn halted_run_loop_advances_rtc_and_video_events() {
     let mut bus = MsxBus::new(MsxModel::Msx2, 48_000);
-    bus.set_host_date_time_provider(host_time);
+    bus.set_host_date_time_source(std::sync::Arc::new(common::FixedHostDateTime(host_time())));
     bus.load_synthetic_program(&[0x76]).unwrap();
     let main_cpu = cpu::Z80::new(bus.cpu_clock_hz());
     let mut machine = MsxMachine::new(main_cpu, bus);

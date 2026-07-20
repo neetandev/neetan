@@ -125,6 +125,16 @@ impl<T: TraceSink> AtBus<T> {
         image: HddImage,
         path: Option<std::path::PathBuf>,
     ) -> Result<(), String> {
+        self.insert_hdd_backed(drive, image, path.into())
+    }
+
+    /// Attaches a hard disk image with the requested backing to `drive`.
+    pub fn insert_hdd_backed(
+        &mut self,
+        drive: usize,
+        image: HddImage,
+        backing: common::MediaBacking,
+    ) -> Result<(), String> {
         if drive >= 2 {
             return Err(format!("AT IDE drive {drive} is not installed"));
         }
@@ -135,9 +145,14 @@ impl<T: TraceSink> AtBus<T> {
             ));
         }
         let geometry = image.geometry;
-        self.ide.insert_drive(drive, image, path);
+        self.ide.insert_drive_backed(drive, image, backing);
         set_hard_disk_user_type(&mut self.rtc.cmos, drive, &geometry);
         Ok(())
+    }
+
+    /// Returns the current in-memory bytes of the disk in `drive`, if mounted.
+    pub fn hdd_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.ide.drive_image_bytes(drive)
     }
 
     /// Flushes every attached hard disk to its backing file.

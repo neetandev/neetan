@@ -92,7 +92,7 @@ fn fdc_reads_mounted_sector_over_pio() {
 
     let mut machine = build_machine_with(|_| {});
     machine
-        .insert_floppy(0, &path)
+        .insert_floppy_from_path(0, &path)
         .expect("mount synthetic image");
 
     // Drive 0 is a 2D disk; select 2D so the density check matches.

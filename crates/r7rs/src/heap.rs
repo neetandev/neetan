@@ -329,6 +329,15 @@ impl Heap {
         self.rooted_region_depth = self.rooted_region_depth.saturating_sub(1);
     }
 
+    /// Restores native-rooting state after a callback unwinds to `Engine::eval`.
+    ///
+    /// The execution root scope and VM guard restore their own state while
+    /// unwinding. The rooted-region depth is the only native-call field whose
+    /// normal epilogue was skipped.
+    pub(crate) fn recover_native_unwind(&mut self) {
+        self.rooted_region_depth = 0;
+    }
+
     /// Reports whether a deferred collection is pending at the next VM safe point.
     pub(crate) fn needs_collection(&self) -> bool {
         self.pending_collection

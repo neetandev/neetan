@@ -96,6 +96,16 @@ impl AtIdeController {
 
     /// Inserts a hard disk image into the specified drive (0-1).
     pub fn insert_drive(&mut self, drive: usize, image: HddImage, path: Option<PathBuf>) {
+        self.insert_drive_backed(drive, image, path.into());
+    }
+
+    /// Inserts a hard disk image with the requested backing (drive 0-1).
+    pub fn insert_drive_backed(
+        &mut self,
+        drive: usize,
+        image: HddImage,
+        backing: common::MediaBacking,
+    ) {
         if drive >= DRIVE_COUNT {
             return;
         }
@@ -103,8 +113,16 @@ impl AtIdeController {
         if let Some(mounted) = self.drives[drive].take() {
             mounted.eject();
         }
-        self.drives[drive] = Some(MountedHdd::new(image, path));
+        self.drives[drive] = Some(crate::disk::mounted_hdd_from_backing(image, backing));
         self.controller.set_drive_sector_size(0, drive, sector_size);
+    }
+
+    /// Returns the current in-memory bytes of the disk in `drive`, if mounted.
+    pub fn drive_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.drives
+            .get(drive)?
+            .as_ref()
+            .map(MountedHdd::image_bytes)
     }
 
     /// Ejects the hard disk from the specified drive, flushing if dirty.

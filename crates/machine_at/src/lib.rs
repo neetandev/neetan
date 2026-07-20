@@ -22,5 +22,5 @@ pub use bus::{
     AT_KEY_PAGE_DOWN, AT_KEY_PAGE_UP, AT_KEY_RIGHT_ALT, AT_KEY_RIGHT_CTRL, AtBus,
 };
 pub use config::{AtBootDevice, AtModel, ClockConfig, PIT_CLOCK_HZ};
-pub use machine::{AtMachine, build_untraced_machine};
+pub use machine::{AtMachine, build_automated_machine, build_untraced_machine};
 pub use rom::{LoadedRoms, RomError, load_rom_set};
