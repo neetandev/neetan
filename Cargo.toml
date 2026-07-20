@@ -12,6 +12,7 @@ version = "2026.7.0"
 [workspace.dependencies]
 # Internal dependencies
 audio_engine = { path = "crates/audio_engine" }
+automation = { path = "crates/automation" }
 blake3 = { path = "crates/blake3" }
 common = { path = "crates/common" }
 cpu = { path = "crates/cpu" }
@@ -23,12 +24,14 @@ machine_at = { path = "crates/machine_at" }
 machine_60 = { path = "crates/machine_60" }
 machine_88 = { path = "crates/machine_88" }
 machine_88va = { path = "crates/machine_88va" }
+machine_factory = { path = "crates/machine_factory" }
 machine_fm7 = { path = "crates/machine_fm7" }
 machine_msx = { path = "crates/machine_msx" }
 machine_towns = { path = "crates/machine_towns" }
 machine_x68k = { path = "crates/machine_x68k" }
 machine_x1 = { path = "crates/machine_x1" }
 r7rs = { path = "crates/r7rs" }
+user_interface = { path = "crates/user_interface" }
 resampler = { path = "crates/resampler" }
 save_state = { path = "crates/save_state" }
 sdl3 = { path = "crates/sdl3" }
@@ -48,6 +51,7 @@ zlib-rs = { version = "0.6", default-features = false, features = ["rust-allocat
 name = "neetan"
 version.workspace = true
 publish = false
+default-run = "neetan"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -55,32 +59,16 @@ rust-version.workspace = true
 
 [features]
 default = ["mt32", "sc55"]
-mt32 = ["machine_98/mt32", "machine_towns/mt32", "machine_x68k/mt32", "machine_at/mt32"]
-sc55 = ["machine_98/sc55", "machine_towns/sc55", "machine_x68k/sc55", "machine_at/sc55"]
-sdl3-build-from-source = ["sdl3/build-from-source"]
-sdl3-use-pkg-config = ["sdl3/use-pkg-config"]
-sdl3-use-vcpkg = ["sdl3/use-vcpkg"]
+mt32 = ["automation/mt32", "user_interface/mt32"]
+sc55 = ["automation/sc55", "user_interface/sc55"]
+sdl3-build-from-source = ["user_interface/sdl3-build-from-source"]
+sdl3-use-pkg-config = ["user_interface/sdl3-use-pkg-config"]
+sdl3-use-vcpkg = ["user_interface/sdl3-use-vcpkg"]
 
 [dependencies]
-audio_engine = { workspace = true }
+automation = { workspace = true }
 common = { workspace = true, features = ["std"] }
-device = { workspace = true }
-machine_98 = { workspace = true }
-machine_at = { workspace = true }
-machine_60 = { workspace = true }
-machine_88 = { workspace = true }
-machine_88va = { workspace = true }
-machine_fm7 = { workspace = true }
-machine_msx = { workspace = true }
-machine_towns = { workspace = true }
-machine_x68k = { workspace = true }
-machine_x1 = { workspace = true }
-dos = { workspace = true }
-save_state = { workspace = true }
-sdl3 = { workspace = true }
-sdl3_backend = { workspace = true }
-software_renderer = { workspace = true }
-text_extractor = { workspace = true }
+user_interface = { workspace = true }
 
 [dev-dependencies]
 
@@ -99,6 +87,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.audio_engine]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.automation]
 opt-level = 3
 codegen-units = 1
 
@@ -195,6 +187,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.text_extractor]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.user_interface]
 opt-level = 3
 codegen-units = 1
 

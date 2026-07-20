@@ -430,6 +430,11 @@ impl Mb89352Spc {
         }
     }
 
+    /// Returns the current in-memory bytes of the disk at `id`, if mounted.
+    pub fn drive_image_bytes(&self, id: usize) -> Option<Vec<u8>> {
+        self.targets.get(id)?.as_ref()?.disk_image_bytes()
+    }
+
     /// Detaches and flushes the target at the given SCSI ID, if any.
     pub fn eject_target(&mut self, id: usize) {
         if let Some(Some(target)) = self.targets.get_mut(id) {

@@ -1,0 +1,37 @@
+[package]
+name = "user_interface"
+version.workspace = true
+publish = false
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+mt32 = ["machine_98/mt32", "machine_towns/mt32", "machine_x68k/mt32", "machine_at/mt32", "machine_factory/mt32"]
+sc55 = ["machine_98/sc55", "machine_towns/sc55", "machine_x68k/sc55", "machine_at/sc55", "machine_factory/sc55"]
+sdl3-build-from-source = ["sdl3/build-from-source"]
+sdl3-use-pkg-config = ["sdl3/use-pkg-config"]
+sdl3-use-vcpkg = ["sdl3/use-vcpkg"]
+
+[dependencies]
+audio_engine = { workspace = true }
+common = { workspace = true, features = ["std"] }
+device = { workspace = true }
+machine_98 = { workspace = true }
+machine_at = { workspace = true }
+machine_60 = { workspace = true }
+machine_88 = { workspace = true }
+machine_88va = { workspace = true }
+machine_factory = { workspace = true }
+machine_fm7 = { workspace = true }
+machine_msx = { workspace = true }
+machine_towns = { workspace = true }
+machine_x68k = { workspace = true }
+machine_x1 = { workspace = true }
+dos = { workspace = true }
+save_state = { workspace = true }
+sdl3 = { workspace = true }
+sdl3_backend = { workspace = true }
+software_renderer = { workspace = true }
+text_extractor = { workspace = true }

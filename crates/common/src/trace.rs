@@ -66,16 +66,32 @@ pub mod trace_id {
 
     /// Device identifiers.
     pub mod device {
+        /// PC-6000 floppy controller.
+        pub const PC60_FDC: &str = "pc60.fdc";
         /// PC-8801 floppy controller.
         pub const PC88_FDC: &str = "pc88.fdc";
+        /// PC-88VA floppy controller.
+        pub const PC88VA_FDC: &str = "pc88va.fdc";
         /// PC-98 floppy controller.
         pub const PC98_FDC: &str = "pc98.fdc";
+        /// IBM PC/AT floppy controller.
+        pub const AT_FDC: &str = "at.fdc";
+        /// FM-7 floppy controller.
+        pub const FM7_FDC: &str = "fm7.fdc";
+        /// FM Towns floppy controller.
+        pub const TOWNS_FDC: &str = "towns.fdc";
         /// FM Towns CD-ROM controller.
         pub const TOWNS_CDROM: &str = "towns.cdrom";
+        /// Sharp X1 floppy controller.
+        pub const X1_FDC: &str = "x1.fdc";
+        /// X68000 floppy controller.
+        pub const X68K_FDC: &str = "x68k.fdc";
         /// MSX slot-selection hardware.
         pub const MSX_SLOT: &str = "msx.slot";
         /// MSX memory mapper.
         pub const MSX_MAPPER: &str = "msx.mapper";
+        /// MSX floppy controller.
+        pub const MSX_FDC: &str = "msx.fdc";
         /// MSX video processor.
         pub const MSX_VDP: &str = "msx.vdp";
     }

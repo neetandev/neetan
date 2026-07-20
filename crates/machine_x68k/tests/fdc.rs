@@ -104,7 +104,7 @@ fn xdf_images_load_by_extension_and_read_through_dma() {
     std::fs::write(&path, &image).unwrap();
 
     let mut machine = transfer_machine(&READ_SECTOR_ONE, true);
-    let label = machine.insert_floppy(0, &path).unwrap();
+    let label = machine.insert_floppy_from_path(0, &path).unwrap();
     assert!(
         label.contains("XDF"),
         "label reports the container: {label}"
@@ -147,7 +147,7 @@ fn d88_writes_flush_back_into_the_source_container() {
     std::fs::write(&path, FloppyImage::from_d88(disk).to_bytes()).unwrap();
 
     let mut machine = transfer_machine(&WRITE_SECTOR_ONE, false);
-    machine.insert_floppy(0, &path).unwrap();
+    machine.insert_floppy_from_path(0, &path).unwrap();
     let payload: Vec<u8> = (0..SECTOR_BYTES)
         .map(|index| (index as u8).wrapping_mul(7).wrapping_add(3))
         .collect();
@@ -181,7 +181,7 @@ fn trait_insert_and_eject_latch_the_disk_change_interrupt() {
     write_byte(&mut machine, 0xE9C001, 0x0F);
     write_byte(&mut machine, 0xE9C003, 0x40);
 
-    machine.insert_floppy(0, &path).unwrap();
+    machine.insert_floppy_from_path(0, &path).unwrap();
     assert_eq!(machine.bus.m68000_interrupt_level(), 1);
     assert_eq!(machine.bus.m68000_acknowledge_interrupt(1), 0x41);
 

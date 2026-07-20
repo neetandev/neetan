@@ -584,7 +584,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
 
             // µPD4990A RTC strobe/command (port 0x20 write).
             0x20 => {
-                let host_time = (self.host_date_time_provider)().to_bcd_bytes();
+                let host_time = self.host_date_time_source.now().to_bcd_bytes();
                 self.rtc.write_port(value, &host_time);
             }
 

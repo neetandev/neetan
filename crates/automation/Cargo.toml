@@ -1,0 +1,26 @@
+[package]
+name = "automation"
+version.workspace = true
+publish = false
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
+common = { workspace = true, features = ["std"] }
+machine_factory = { workspace = true }
+r7rs = { workspace = true }
+sdl3 = { workspace = true }
+
+[features]
+mt32 = ["machine_factory/mt32"]
+sc55 = ["machine_factory/sc55"]
+
+[dev-dependencies]
+machine_98 = { workspace = true }
+machine_fm7 = { workspace = true }
+machine_msx = { workspace = true }
+machine_x68k = { workspace = true }
+sdl3 = { workspace = true }

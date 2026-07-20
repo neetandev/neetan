@@ -6,6 +6,9 @@
 //! [`device::upd765a_fdc`]); this layer resolves sectors, paces bytes at the
 //! data rate via `Event88Va::FdcDrqByte`, and finalizes commands.
 
+use common::{
+    TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField, TraceValue, trace_id,
+};
 use device::{
     floppy::D88MediaType,
     upd765a_fdc::{
@@ -154,8 +157,60 @@ impl<T: common::TraceSink> Pc88VaBus<T> {
     /// Performs a native-mode READ DATA as a block DMA transfer: streams sector
     /// bytes into memory at the channel-2 address up to the programmed count,
     /// spanning sectors until the count or the command's EOT is reached.
+    /// Emits an FDC read device trace event for the active command sector.
+    fn trace_fdc_read(&mut self, drive: usize) {
+        if !T::ENABLED
+            || !self.tracer.interested(TraceEventKey::Device {
+                device: trace_id::device::PC88VA_FDC,
+                action: trace_id::action::READ,
+            })
+        {
+            return;
+        }
+        let track_index = self.fdc.current_track_index();
+        let state = &self.fdc.state;
+        self.tracer.trace(
+            TraceContext::sub_cpu(
+                self.current_cycle,
+                self.sub_cycle,
+                Some(u64::from(self.clocks.sub_clock_hz)),
+            ),
+            TraceEvent::Device(TraceDeviceEvent {
+                device: trace_id::device::PC88VA_FDC,
+                action: trace_id::action::READ,
+                fields: &[
+                    TraceField {
+                        name: trace_id::field::DRIVE,
+                        value: TraceValue::Unsigned(drive as u64),
+                    },
+                    TraceField {
+                        name: trace_id::field::TRACK_INDEX,
+                        value: TraceValue::Unsigned(track_index as u64),
+                    },
+                    TraceField {
+                        name: trace_id::field::CYLINDER,
+                        value: TraceValue::Unsigned(u64::from(state.c)),
+                    },
+                    TraceField {
+                        name: trace_id::field::HEAD,
+                        value: TraceValue::Unsigned(u64::from(state.h)),
+                    },
+                    TraceField {
+                        name: trace_id::field::RECORD,
+                        value: TraceValue::Unsigned(u64::from(state.r)),
+                    },
+                    TraceField {
+                        name: trace_id::field::SIZE_CODE,
+                        value: TraceValue::Unsigned(u64::from(state.n)),
+                    },
+                ],
+            }),
+        );
+    }
+
     fn start_dma_read(&mut self) {
         let drive = self.fdc.current_drive();
+        self.trace_fdc_read(drive);
         if !self.floppy.has_drive(drive) {
             self.complete_no_disk();
             self.finish_dma_command();

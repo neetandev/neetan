@@ -26,6 +26,6 @@ pub use config::{
     MsxGeneration, MsxKeyboardLayout, MsxModel, MsxSlot, MsxSlotDevice, MsxSlotDeviceKind,
     MsxSlotLayout, MsxVdpVersion, SlotLayoutError,
 };
-pub use machine::{MsxMachine, build_untraced_machine};
+pub use machine::{MsxMachine, build_automated_machine, build_untraced_machine};
 pub use memory::FirmwareInstallError;
 pub use rom::{FirmwareError, LoadedFirmware, LoadedFirmwareRegion, load_firmware_set};

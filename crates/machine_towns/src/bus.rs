@@ -9,19 +9,17 @@
 mod io_read;
 mod io_write;
 
-use std::path::PathBuf;
-
 use common::{
-    BeeperKind, Bus, HostDateTimeProvider, NoTrace, TraceAccessKind, TraceAccessWidth,
+    BeeperKind, Bus, NoTrace, SharedHostDateTimeSource, TraceAccessKind, TraceAccessWidth,
     TraceAddressSpace, TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField,
     TraceInterruptAction, TraceInterruptKind, TracePresentation, TraceSink, TraceValue, trace_id,
 };
 use device::{
     beeper::Beeper,
     cdrom_towns::TownsCdController,
-    disk::{HddImage, MountedHdd},
+    disk::HddImage,
     electronic_volume_towns::ElectronicVolume,
-    floppy::{FloppyImage, MountedFloppy},
+    floppy::FloppyImage,
     gameport_towns::TownsGamePort,
     i8251_serial::I8251Serial,
     i8259a_pic::I8259aPic,
@@ -287,7 +285,9 @@ pub struct TownsBus<T: TraceSink = NoTrace> {
     /// Memory-card attribute register-select latch (I/O 0x0491 bit 0).
     pub(crate) memcard_reg: bool,
     /// Host local-time source (BCD) for the RTC.
-    pub(crate) host_date_time_provider: HostDateTimeProvider,
+    pub(crate) host_date_time_source: SharedHostDateTimeSource,
+    /// Fractional audio-sample carry used when draining audio during automation.
+    pub(crate) automation_audio_remainder: u64,
     /// Roland MT-32 sound module, fed by RS-MIDI bytes (optional, requires munt).
     #[cfg(feature = "mt32")]
     mt32: Option<device::mt32::Mt32>,
@@ -365,7 +365,8 @@ impl<T: TraceSink> TownsBus<T> {
             last_serial_rom_command: 0,
             memcard_bank: 0,
             memcard_reg: false,
-            host_date_time_provider: common::default_host_date_time,
+            host_date_time_source: common::default_host_date_time_source(),
+            automation_audio_remainder: 0,
             #[cfg(feature = "mt32")]
             mt32: None,
             #[cfg(feature = "sc55")]
@@ -632,8 +633,47 @@ impl TownsBus<NoTrace> {
 
 impl<T: TraceSink> TownsBus<T> {
     /// Overrides the host local-time source (BCD) used by the RTC.
-    pub(crate) fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
-        self.host_date_time_provider = provider;
+    pub(crate) fn set_host_date_time_source(&mut self, source: SharedHostDateTimeSource) {
+        self.host_date_time_source = source;
+    }
+
+    /// Returns the number of frames presented within the current epoch.
+    pub(crate) fn presented_frames(&self) -> u64 {
+        self.presented_frames
+    }
+
+    /// Returns the fixed audio output rate in Hz.
+    pub(crate) fn audio_sample_rate(&self) -> u32 {
+        self.clocks.sample_rate
+    }
+
+    /// Returns the primary scheduling-tick rate as `(numerator, denominator)`.
+    pub(crate) fn automation_timebase(&self) -> (u64, u64) {
+        (u64::from(self.clocks.cpu_clock_hz), 1)
+    }
+
+    /// Returns the stable automation model identifier.
+    pub(crate) fn model_id(&self) -> &'static str {
+        match self.model {
+            TownsModel::FmTowns => "fmtowns",
+            TownsModel::FmTownsIICx => "fmtownsiicx",
+            TownsModel::FmTownsIIMx => "fmtownsiimx",
+        }
+    }
+
+    /// Generates and discards audio covering `elapsed_ticks` for determinism.
+    pub(crate) fn drain_automation_audio(&mut self, elapsed_ticks: u64) {
+        let (numerator, denominator) = self.automation_timebase();
+        let accumulator =
+            elapsed_ticks as u128 * denominator as u128 * self.clocks.sample_rate as u128
+                + self.automation_audio_remainder as u128;
+        let frames = (accumulator / numerator as u128) as usize;
+        self.automation_audio_remainder = (accumulator % numerator as u128) as u64;
+        if frames == 0 {
+            return;
+        }
+        let mut scratch = vec![0.0f32; frames * 2];
+        let _ = self.generate_audio_samples(1.0, &mut scratch);
     }
 
     /// Installs a Roland MT-32 sound module driven by RS-MIDI (RS-232C) output.
@@ -1147,9 +1187,49 @@ impl<T: TraceSink> TownsBus<T> {
         value
     }
 
+    /// Emits an FDC read device trace event for a read-sector command.
+    fn trace_fdc_read(&mut self) {
+        if !T::ENABLED
+            || !self.tracer.interested(TraceEventKey::Device {
+                device: trace_id::device::TOWNS_FDC,
+                action: trace_id::action::READ,
+            })
+        {
+            return;
+        }
+        let cylinder = self.fdc.read_track_register();
+        let record = self.fdc.read_sector_register();
+        self.tracer.trace(
+            TraceContext::main_cpu(
+                self.current_cycle,
+                Some(u64::from(self.clocks.cpu_clock_hz)),
+            ),
+            TraceEvent::Device(TraceDeviceEvent {
+                device: trace_id::device::TOWNS_FDC,
+                action: trace_id::action::READ,
+                fields: &[
+                    TraceField {
+                        name: trace_id::field::CYLINDER,
+                        value: TraceValue::Unsigned(u64::from(cylinder)),
+                    },
+                    TraceField {
+                        name: trace_id::field::RECORD,
+                        value: TraceValue::Unsigned(u64::from(record)),
+                    },
+                ],
+            }),
+        );
+    }
+
     fn fdc_io_write(&mut self, port: u16, value: u8) {
         match port & 0x0F {
-            0x00 => self.fdc.write_command(value, self.current_cycle),
+            0x00 => {
+                self.fdc.write_command(value, self.current_cycle);
+                // WD17xx Type II Read Sector opcodes are 0x80..0x9F.
+                if value & 0xE0 == 0x80 {
+                    self.trace_fdc_read();
+                }
+            }
             0x02 => self.fdc.write_track_register(value),
             0x04 => self.fdc.write_sector_register(value),
             0x06 => self.fdc.write_data_register(value),
@@ -1188,10 +1268,20 @@ impl<T: TraceSink> TownsBus<T> {
     }
 
     /// Inserts a mounted floppy into a drive and re-evaluates the FDC IRQ.
-    pub(crate) fn insert_floppy(&mut self, drive: usize, image: FloppyImage, path: PathBuf) {
-        self.fdc
-            .insert(drive, MountedFloppy::new(image, Some(path)));
+    /// Mounts a floppy image into `drive` with the requested backing.
+    pub(crate) fn insert_floppy_backed(
+        &mut self,
+        drive: usize,
+        image: FloppyImage,
+        backing: common::MediaBacking,
+    ) {
+        self.fdc.insert_backed(drive, image, backing);
         self.refresh_fdc_irq();
+    }
+
+    /// Returns the current in-memory bytes of the floppy in `drive`, if mounted.
+    pub(crate) fn floppy_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.fdc.drive_image_bytes(drive)
     }
 
     /// Ejects a drive's floppy, flushing it.
@@ -1291,12 +1381,26 @@ impl<T: TraceSink> TownsBus<T> {
         self.scsi.on_data_out_collected(&data, self.current_cycle);
     }
 
-    /// Attaches a hard disk image at the given SCSI drive index (0-based) and
-    /// registers its boot partition in the CMOS drive-assignment table so the
-    /// Towns OS mounts a drive letter for it (and can therefore boot from it).
-    pub(crate) fn insert_hdd(&mut self, drive: usize, image: HddImage, path: Option<PathBuf>) {
-        self.scsi.insert_drive(drive, MountedHdd::new(image, path));
+    /// Attaches a hard disk image with the requested backing at the given SCSI
+    /// drive index (0-based) and registers its boot partition in the CMOS
+    /// drive-assignment table so the Towns OS mounts a drive letter for it (and
+    /// can therefore boot from it).
+    pub(crate) fn insert_hdd_backed(
+        &mut self,
+        drive: usize,
+        image: HddImage,
+        backing: common::MediaBacking,
+    ) {
+        self.scsi.insert_drive(
+            drive,
+            device::disk::mounted_hdd_from_backing(image, backing),
+        );
         self.memory.register_scsi_hdd(drive as u8, 0);
+    }
+
+    /// Returns the current in-memory bytes of the disk at `drive`, if mounted.
+    pub(crate) fn hdd_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.scsi.drive_image_bytes(drive)
     }
 
     /// Flushes all attached hard disks to their backing files.
@@ -1550,6 +1654,19 @@ impl<T: TraceSink> TownsBus<T> {
 
     /// Reads a byte through the memory-mapped windows (RF5C68 wave RAM, FMR
     /// buzzer control) and the physical memory map, without charging waits.
+    /// Reads one byte of physical memory without device side effects, for
+    /// inspection. This goes straight through the physical memory decode and
+    /// never touches the PCM wave window, the buzzer gate, or other MMIO.
+    pub fn peek_byte(&mut self, physical_address: u32) -> u8 {
+        self.memory.read_byte(physical_address)
+    }
+
+    /// Writes one byte through the physical memory decode without device side
+    /// effects, for mutation. Writes to ROM windows are dropped.
+    pub fn poke_byte(&mut self, physical_address: u32, value: u8) {
+        self.memory.write_byte(physical_address, value);
+    }
+
     fn read_byte_data(&mut self, address: u32) -> u8 {
         if (RF5C68_WAVE_WINDOW_BASE..RF5C68_WAVE_WINDOW_END).contains(&address) {
             return self

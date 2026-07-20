@@ -16,7 +16,7 @@ mod io_write;
 use std::path::PathBuf;
 
 use common::{
-    CpuType, HostDateTimeProvider, MachineModel, StackVec, TraceAccessKind, TraceAccessWidth,
+    CpuType, MachineModel, SharedHostDateTimeSource, StackVec, TraceAccessKind, TraceAccessWidth,
     TraceAddressSpace, TraceCall, TraceCallInterface, TraceCallPhase, TraceContext, TraceEvent,
     TraceEventKey, TraceField, TraceInterruptAction, TraceInterruptKind, TracePresentation,
     TraceValue, trace_id,
@@ -310,6 +310,7 @@ save_state::runtime_state! {
 #[derive(Clone)]
 pub(crate) struct Pc9801BusState {
     current_cycle: u64,
+    presented_frames: u64,
     nmi_enabled: bool,
     memory: crate::Pc9801MemoryState,
     pic: device::i8259a_pic::I8259aPicState,
@@ -462,9 +463,10 @@ pub struct Pc9801Bus<T: TraceSink = NoTrace> {
     ga1280a: Option<Ga1280a>,
     beeper: Beeper,
     rtc: Upd4990aRtc,
-    /// Returns the current host local time as 6-byte BCD:
-    /// `[year, month<<4|day_of_week, day, hour, minute, second]`.
-    host_date_time_provider: HostDateTimeProvider,
+    /// Source of the current host local time, used by the RTC and DOS HLE.
+    host_date_time_source: SharedHostDateTimeSource,
+    /// Carried fractional-sample accumulator for deterministic audio draining.
+    automation_audio_remainder: u64,
     /// MPU-PC98II MIDI interface (C-Bus, default base 0xE0D0).
     mpu401: device::mpu401::Mpu401,
     /// MT-32 sound module (optional, requires munt).
@@ -635,7 +637,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
     /// through to a real DOS loaded from disk.
     pub fn enable_neetan_dos(&mut self) {
         let mut dos = dos::NeetanDos::new();
-        dos.set_host_date_time_provider(self.host_date_time_provider);
+        dos.set_host_date_time_source(self.host_date_time_source.clone());
         self.dos = Some(dos);
     }
 
@@ -684,8 +686,18 @@ impl<T: TraceSink> Pc9801Bus<T> {
 
     /// Inserts a floppy disk image into the specified drive (0-3).
     pub fn insert_floppy(&mut self, drive: usize, image: FloppyImage, path: Option<PathBuf>) {
+        self.insert_floppy_backed(drive, image, path.into());
+    }
+
+    /// Inserts a floppy disk image with the requested backing (drive 0-3).
+    pub fn insert_floppy_backed(
+        &mut self,
+        drive: usize,
+        image: FloppyImage,
+        backing: common::MediaBacking,
+    ) {
         let install_fdd640k_hle = self.machine_model == MachineModel::PC9801F;
-        self.floppy.insert_drive(drive, image, path);
+        self.floppy.insert_drive_backed(drive, image, backing);
         if install_fdd640k_hle {
             self.fdd640k_hle.install_rom();
         }
@@ -706,6 +718,11 @@ impl<T: TraceSink> Pc9801Bus<T> {
     /// Returns a reference to the disk image in the given drive, if present.
     pub fn floppy_disk(&self, drive: usize) -> Option<&FloppyImage> {
         self.floppy.drive(drive)
+    }
+
+    /// Returns the current in-memory bytes of the floppy in `drive`, if mounted.
+    pub fn floppy_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.floppy.drive_image_bytes(drive)
     }
 
     /// Returns whether the disk in the given drive has been modified.
@@ -742,16 +759,26 @@ impl<T: TraceSink> Pc9801Bus<T> {
 
     /// Inserts a hard disk image into the specified drive (0-1).
     pub fn insert_hdd(&mut self, drive: usize, image: HddImage, path: Option<PathBuf>) {
+        self.insert_hdd_backed(drive, image, path.into());
+    }
+
+    /// Inserts a hard disk image with the requested backing (drive 0-1).
+    pub fn insert_hdd_backed(
+        &mut self,
+        drive: usize,
+        image: HddImage,
+        backing: common::MediaBacking,
+    ) {
         match self.machine_model {
             MachineModel::PC9801F
             | MachineModel::PC9801VM
             | MachineModel::PC9801VX
             | MachineModel::PC9801RS
             | MachineModel::PC9801RA => {
-                self.sasi.insert_drive(drive, image, path);
+                self.sasi.insert_drive_backed(drive, image, backing);
             }
             MachineModel::PC9821AS | MachineModel::PC9821AP => {
-                self.ide.insert_drive(drive, image, path);
+                self.ide.insert_drive_backed(drive, image, backing);
                 if self
                     .ide
                     .drive_geometry(drive)
@@ -772,6 +799,18 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 vram_ems_bank,
             );
             dos.invalidate_drive_caches(&memory, 0x80 | drive as u8);
+        }
+    }
+
+    /// Returns the current in-memory bytes of the disk in `drive`, if mounted.
+    pub fn hdd_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        match self.machine_model {
+            MachineModel::PC9801F
+            | MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
+            | MachineModel::PC9801RA => self.sasi.drive_image_bytes(drive),
+            MachineModel::PC9821AS | MachineModel::PC9821AP => self.ide.drive_image_bytes(drive),
         }
     }
 
@@ -1056,14 +1095,60 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.cgrom.state.cg_ram = enabled;
     }
 
-    /// Sets the host local time provider for the µPD4990A RTC.
+    /// Sets the host local time source for the µPD4990A RTC.
     ///
     /// Also updates Memory Switch 8 (`A000:3FFEh`) with the BCD year byte,
     /// since the µPD1990A (used by VM-class machines) has no year register
     /// and the BIOS reads the year from the memory switch instead.
-    pub(crate) fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
-        self.host_date_time_provider = provider;
-        self.memory.state.text_vram[0x3FFE] = provider().to_bcd_bytes()[0];
+    pub(crate) fn set_host_date_time_source(&mut self, source: SharedHostDateTimeSource) {
+        self.memory.state.text_vram[0x3FFE] = source.now().to_bcd_bytes()[0];
+        self.host_date_time_source = source;
+    }
+
+    /// Returns the number of frames presented within the current epoch.
+    pub(crate) fn presented_frames(&self) -> u64 {
+        self.presented_frames
+    }
+
+    /// Returns the fixed audio output rate in Hz.
+    pub(crate) fn audio_sample_rate(&self) -> u32 {
+        self.clocks.sample_rate
+    }
+
+    /// Returns the primary scheduling-tick rate as `(numerator, denominator)`.
+    pub(crate) fn automation_timebase(&self) -> (u64, u64) {
+        (u64::from(self.cpu_clock_hz()), 1)
+    }
+
+    /// Returns the stable automation model identifier.
+    pub(crate) fn model_id(&self) -> &'static str {
+        match self.machine_model {
+            MachineModel::PC9801F => "pc9801f",
+            MachineModel::PC9801VM => "pc9801vm",
+            MachineModel::PC9801VX => "pc9801vx",
+            MachineModel::PC9801RS => "pc9801rs",
+            MachineModel::PC9801RA => "pc9801ra",
+            MachineModel::PC9821AS => "pc9821as",
+            MachineModel::PC9821AP => "pc9821ap",
+        }
+    }
+
+    /// Generates and discards audio covering `elapsed_ticks` for determinism.
+    ///
+    /// Sample counts use integer-remainder accounting so the generated sequence
+    /// is identical across two identical runs.
+    pub(crate) fn drain_automation_audio(&mut self, elapsed_ticks: u64) {
+        let (numerator, denominator) = self.automation_timebase();
+        let accumulator =
+            elapsed_ticks as u128 * denominator as u128 * self.clocks.sample_rate as u128
+                + self.automation_audio_remainder as u128;
+        let frames = (accumulator / numerator as u128) as usize;
+        self.automation_audio_remainder = (accumulator % numerator as u128) as u64;
+        if frames == 0 {
+            return;
+        }
+        let mut scratch = vec![0.0f32; frames * 2];
+        let _ = self.generate_audio_samples(1.0, &mut scratch);
     }
 
     /// Enables/disables the 16-color graphics extension board.
@@ -1820,6 +1905,13 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.read_byte_with_access_page(physical_address)
     }
 
+    /// Writes a single byte directly through the memory decode without device
+    /// side effects. Writes to read-only regions are dropped by the memory
+    /// subsystem.
+    pub fn write_byte_direct(&mut self, physical_address: u32, value: u8) {
+        self.write_byte_with_access_page(physical_address, value);
+    }
+
     /// Sets the master-GDC text cursor position to (row, col).
     ///
     /// Intended for test harnesses that need to position the text cursor
@@ -1897,6 +1989,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
         }
         Ok(Pc9801BusState {
             current_cycle: self.current_cycle,
+            presented_frames: self.presented_frames,
             nmi_enabled: self.nmi_enabled,
             memory: self.memory.state.clone(),
             pic: self.pic.capture_state(),
@@ -2050,7 +2143,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
 
         let mut restored_dos = state.dos;
         if let Some(dos) = restored_dos.as_mut() {
-            dos.prepare_restore(self.host_date_time_provider)?;
+            dos.prepare_restore(self.host_date_time_source.clone())?;
         }
 
         #[cfg(feature = "mt32")]
@@ -2106,6 +2199,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             }
 
             self.current_cycle = state.current_cycle;
+            self.presented_frames = state.presented_frames;
             self.nmi_enabled = state.nmi_enabled;
             self.memory.state = state.memory;
             self.scheduler.state = state.scheduler;
@@ -2190,6 +2284,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
             Ok(())
         })();
 
+        // The MT-32 and SC-55 modules must abort their prepared restore before
+        // the error propagates, so this cannot collapse to the `?` operator.
+        #[allow(clippy::question_mark)]
         if let Err(error) = restore_result {
             #[cfg(feature = "mt32")]
             if mt32_prepared && let Some(module) = &mut self.mt32 {

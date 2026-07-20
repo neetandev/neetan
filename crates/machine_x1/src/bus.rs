@@ -13,9 +13,9 @@ mod io_write;
 mod ppi_link;
 
 use common::{
-    HostDateTimeProvider, JoystickState, MonitorTiming, NoTrace, TraceAccessKind, TraceAccessWidth,
-    TraceAddressSpace, TraceContext, TraceEvent, TraceInterruptAction, TraceInterruptKind,
-    TracePresentation, TraceSink, trace_id,
+    JoystickState, MonitorTiming, NoTrace, SharedHostDateTimeSource, TraceAccessKind,
+    TraceAccessWidth, TraceAddressSpace, TraceContext, TraceEvent, TraceInterruptAction,
+    TraceInterruptKind, TracePresentation, TraceSink, trace_id,
 };
 use device::{
     cassette::{CassetteDeck, CassetteError, load_cassette},
@@ -170,6 +170,7 @@ pub(crate) struct X1BusState {
     vram_wait_remainder: i64,
     dma_stall_deadline: u64,
     current_cycle: u64,
+    presented_frames: u64,
     frame_start_cycle: u64,
     frame_number: u32,
     frame_params: FrameCrtcParams,
@@ -240,6 +241,10 @@ pub struct X1Bus<T: TraceSink = NoTrace> {
     current_cycle: u64,
     frame_start_cycle: u64,
     frame_number: u32,
+    /// Number of frames presented within the current automation epoch.
+    presented_frames: u64,
+    /// Fractional audio-sample carry for deterministic automation audio draining.
+    automation_audio_remainder: u64,
     /// CRTC geometry latched for the current frame.
     frame_params: FrameCrtcParams,
     /// Cycle at which the current vertical blanking period began; the beam
@@ -322,6 +327,8 @@ impl<T: TraceSink> X1Bus<T> {
             current_cycle: 0,
             frame_start_cycle: 0,
             frame_number: 0,
+            presented_frames: 0,
+            automation_audio_remainder: 0,
             frame_params,
             vblank_anchor_cycle: 0,
             port_b_vdisp_seen: false,
@@ -447,6 +454,7 @@ impl<T: TraceSink> X1Bus<T> {
             vram_wait_remainder: self.vram_wait_remainder,
             dma_stall_deadline: self.dma_stall_deadline,
             current_cycle: self.current_cycle,
+            presented_frames: self.presented_frames,
             frame_start_cycle: self.frame_start_cycle,
             frame_number: self.frame_number,
             frame_params: self.frame_params.clone(),
@@ -522,6 +530,7 @@ impl<T: TraceSink> X1Bus<T> {
         self.vram_wait_remainder = state.vram_wait_remainder;
         self.dma_stall_deadline = state.dma_stall_deadline;
         self.current_cycle = state.current_cycle;
+        self.presented_frames = state.presented_frames;
         self.frame_start_cycle = state.frame_start_cycle;
         self.frame_number = state.frame_number;
         self.frame_params = state.frame_params;
@@ -1016,8 +1025,8 @@ impl<T: TraceSink> X1Bus<T> {
     }
 
     /// Sets and immediately seeds the calendar/clock from the host time provider.
-    pub(crate) fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
-        let time = provider();
+    pub(crate) fn set_host_date_time_source(&mut self, source: SharedHostDateTimeSource) {
+        let time = source.now();
         self.sub.set_host_time(
             time.year,
             time.month,
@@ -1027,6 +1036,47 @@ impl<T: TraceSink> X1Bus<T> {
             time.minute,
             time.second,
         );
+    }
+
+    /// Returns the number of frames presented within the current epoch.
+    pub(crate) fn presented_frames(&self) -> u64 {
+        self.presented_frames
+    }
+
+    /// Returns the fixed audio output rate in Hz.
+    pub(crate) fn audio_sample_rate(&self) -> u32 {
+        self.clocks.sample_rate
+    }
+
+    /// Returns the primary scheduling-tick rate as `(numerator, denominator)`.
+    pub(crate) fn automation_timebase(&self) -> (u64, u64) {
+        (u64::from(self.cpu_clock_hz()), 1)
+    }
+
+    /// Returns the stable automation model identifier.
+    pub(crate) fn model_id(&self) -> &'static str {
+        match self.model {
+            X1Model::X1 => "x1",
+            X1Model::X1Turbo => "x1turbo",
+        }
+    }
+
+    /// Generates and discards audio covering `elapsed_ticks` for determinism.
+    ///
+    /// Sample counts use integer-remainder accounting so the generated sequence
+    /// is identical across two identical runs.
+    pub(crate) fn drain_automation_audio(&mut self, elapsed_ticks: u64) {
+        let (numerator, denominator) = self.automation_timebase();
+        let accumulator =
+            elapsed_ticks as u128 * denominator as u128 * self.clocks.sample_rate as u128
+                + self.automation_audio_remainder as u128;
+        let frames = (accumulator / numerator as u128) as usize;
+        self.automation_audio_remainder = (accumulator % numerator as u128) as u64;
+        if frames == 0 {
+            return;
+        }
+        let mut scratch = vec![0.0f32; frames * 2];
+        let _ = self.generate_audio_samples(1.0, &mut scratch);
     }
 
     fn frame_period(&self) -> u64 {
@@ -1189,6 +1239,7 @@ impl<T: TraceSink> X1Bus<T> {
         if !T::ENABLED {
             return;
         }
+        self.presented_frames = self.presented_frames.saturating_add(1);
         self.tracer.trace(
             TraceContext::presentation_main(
                 self.current_cycle,
@@ -1196,7 +1247,7 @@ impl<T: TraceSink> X1Bus<T> {
             ),
             TraceEvent::Presentation(TracePresentation {
                 display: trace_id::display::MAIN,
-                frame: u64::from(self.frame_number) + 1,
+                frame: self.presented_frames,
                 width: self.display_width,
                 height: self.display_height,
             }),

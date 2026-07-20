@@ -73,13 +73,37 @@ impl NativeValues {
 
 /// Converts a native callback result into a Scheme result packet.
 pub trait IntoNativeValues {
+    /// Whether this type always represents exactly one value.
+    ///
+    /// External implementations may leave the default in place. Implementations
+    /// that override this to `true` must also override
+    /// [`Self::into_single_native_value`] to return the promised value.
+    const SINGLE_RESULT: bool = false;
+
     /// Performs the conversion.
     fn into_native_values(self) -> NativeValues;
+
+    /// Converts a result type that promises exactly one value.
+    ///
+    /// The default preserves compatibility for external result types and leaves
+    /// them on the general zero-or-more-values path.
+    fn into_single_native_value(self) -> Result<Value, NativeValues>
+    where
+        Self: Sized,
+    {
+        Err(self.into_native_values())
+    }
 }
 
 impl IntoNativeValues for Value {
+    const SINGLE_RESULT: bool = true;
+
     fn into_native_values(self) -> NativeValues {
         NativeValues::one(self)
+    }
+
+    fn into_single_native_value(self) -> Result<Value, NativeValues> {
+        Ok(self)
     }
 }
 
@@ -122,6 +146,84 @@ impl NativeContext<'_> {
     #[must_use]
     pub fn kind(&self, value: Value) -> ValueKind {
         self.heap.kind(value)
+    }
+
+    /// Borrows the text of a string argument.
+    ///
+    /// The slice is valid for the callback activation. Callers that need to
+    /// retain the text after returning should copy it with `to_owned`.
+    pub fn to_str(&self, value: Value) -> Result<&str, Error> {
+        self.heap
+            .string_slice(value)
+            .ok_or_else(|| type_error("string", value, self.heap))
+    }
+
+    /// Borrows the name of a symbol argument.
+    ///
+    /// The slice is valid for the callback activation. Callers that need to
+    /// retain the name after returning should copy it with `to_owned`.
+    pub fn to_symbol_name(&self, value: Value) -> Result<&str, Error> {
+        self.heap
+            .symbol_slice(value)
+            .ok_or_else(|| type_error("symbol", value, self.heap))
+    }
+
+    /// Borrows the bytes of a bytevector argument.
+    ///
+    /// The slice is valid for the callback activation. Callers that need to
+    /// retain the bytes after returning should copy them with `to_vec`.
+    pub fn to_bytes(&self, value: Value) -> Result<&[u8], Error> {
+        self.heap
+            .bytevector_slice(value)
+            .ok_or_else(|| type_error("bytevector", value, self.heap))
+    }
+
+    /// Reads the car and cdr of a pair argument.
+    ///
+    /// This is the primitive for decomposing list structure. Walk a chain by
+    /// following the returned cdr, or use [`Self::to_list`] to collect a
+    /// proper list in one call.
+    pub fn to_pair(&self, value: Value) -> Result<(Value, Value), Error> {
+        self.heap
+            .pair(value)
+            .ok_or_else(|| type_error("pair", value, self.heap))
+    }
+
+    /// Collects the elements of a proper list argument in order.
+    ///
+    /// A non-pair tail other than the empty list, or a circular list, is
+    /// reported as a type error. The traversal uses a tortoise and hare so a
+    /// cyclic argument terminates instead of looping forever.
+    pub fn to_list(&self, value: Value) -> Result<Vec<Value>, Error> {
+        let mut elements = Vec::new();
+        let mut hare = value;
+        let mut tortoise = value;
+        loop {
+            if hare == Value::nil() {
+                return Ok(elements);
+            }
+            let Some((car, cdr)) = self.heap.pair(hare) else {
+                return Err(type_error("proper list", value, self.heap));
+            };
+            elements.push(car);
+            hare = cdr;
+            if hare == Value::nil() {
+                return Ok(elements);
+            }
+            let Some((car, cdr)) = self.heap.pair(hare) else {
+                return Err(type_error("proper list", value, self.heap));
+            };
+            elements.push(car);
+            hare = cdr;
+            // The hare advanced two pairs, so step the tortoise one and
+            // compare. Meeting means the chain is circular.
+            if let Some((_, next)) = self.heap.pair(tortoise) {
+                tortoise = next;
+            }
+            if hare == tortoise {
+                return Err(type_error("proper list", value, self.heap));
+            }
+        }
     }
 
     /// Allocates a mutable pair. Pinned `inline(always)` like

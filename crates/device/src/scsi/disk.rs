@@ -30,6 +30,11 @@ impl ScsiDisk {
         }
     }
 
+    /// Returns the current in-memory bytes of the mounted image.
+    pub fn image_bytes(&self) -> Vec<u8> {
+        self.drive.image_bytes()
+    }
+
     /// Captures the command sense latch.
     pub fn capture_state(&self) -> SenseData {
         self.sense

@@ -168,7 +168,9 @@ fn int1ch_vector_ra() {
 fn get_datetime_reads_calendar_f() {
     let mut machine = create_machine_f();
     boot_to_halt!(machine);
-    machine.set_host_date_time_provider(test_local_time);
+    machine.set_host_date_time_source(std::sync::Arc::new(common::FixedHostDateTime(
+        test_local_time(),
+    )));
     write_bytes(&mut machine.bus, TEST_CODE, GET_DATETIME_CODE);
     machine.cpu.load_state(&{
         let mut s = cpu::I8086State {
@@ -188,7 +190,9 @@ fn get_datetime_reads_calendar_f() {
 fn get_datetime_reads_calendar_vm() {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
-    machine.set_host_date_time_provider(test_local_time);
+    machine.set_host_date_time_source(std::sync::Arc::new(common::FixedHostDateTime(
+        test_local_time(),
+    )));
     write_bytes(&mut machine.bus, TEST_CODE, GET_DATETIME_CODE);
     machine.cpu.load_state(&{
         let mut s = cpu::V30State::default();
@@ -206,7 +210,9 @@ fn get_datetime_reads_calendar_vm() {
 fn get_datetime_reads_calendar_vx() {
     let mut machine = create_machine_vx();
     boot_to_halt!(machine);
-    machine.set_host_date_time_provider(test_local_time);
+    machine.set_host_date_time_source(std::sync::Arc::new(common::FixedHostDateTime(
+        test_local_time(),
+    )));
     write_bytes(&mut machine.bus, TEST_CODE, GET_DATETIME_CODE);
     machine.cpu.load_state(&{
         let mut s = cpu::I286State::default();
@@ -223,7 +229,9 @@ fn get_datetime_reads_calendar_vx() {
 fn get_datetime_reads_calendar_ra() {
     let mut machine = create_machine_ra();
     boot_to_halt!(machine);
-    machine.set_host_date_time_provider(test_local_time);
+    machine.set_host_date_time_source(std::sync::Arc::new(common::FixedHostDateTime(
+        test_local_time(),
+    )));
     write_bytes(&mut machine.bus, TEST_CODE, GET_DATETIME_CODE);
     machine.cpu.load_state(&{
         let mut s = cpu::I386State {
@@ -245,7 +253,9 @@ fn get_datetime_uses_segment_base_in_protected_mode_ra() {
 
     let mut machine = create_machine_ra();
     boot_to_halt!(machine);
-    machine.set_host_date_time_provider(test_local_time);
+    machine.set_host_date_time_source(std::sync::Arc::new(common::FixedHostDateTime(
+        test_local_time(),
+    )));
 
     for i in 0..6 {
         machine.bus.write_byte(RESULT + i, 0x00);

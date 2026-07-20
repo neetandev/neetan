@@ -1,3 +1,6 @@
+//! A fixed-capacity vector stored entirely on the stack, for small bounded
+//! lists that must avoid heap allocation.
+
 use core::{
     mem::MaybeUninit,
     ops::{Deref, DerefMut},

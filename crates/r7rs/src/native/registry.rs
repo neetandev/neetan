@@ -1,14 +1,23 @@
 //! The engine-local native-procedure registry and the fast-path dispatch
 //! classification used by the VM's inline arithmetic/vector opcodes.
 
+use std::cell::Cell;
+
 use super::*;
 
-type Callback = dyn for<'a> Fn(&mut NativeContext<'a>, &[Value]) -> Result<NativeValues, Error>;
+type OneCallback =
+    dyn for<'a> Fn(&mut NativeContext<'a>, &[Value], &mut Value) -> Result<(), Error>;
+type ManyCallback = dyn for<'a> Fn(&mut NativeContext<'a>, &[Value]) -> Result<NativeValues, Error>;
+
+enum Callback {
+    One(Box<OneCallback>),
+    Many(Box<ManyCallback>),
+}
 
 struct NativeProcedure {
     name: String,
     arity: RangeInclusive<usize>,
-    callback: Box<Callback>,
+    callback: Callback,
     fast: Option<FastProcedure>,
 }
 
@@ -119,23 +128,35 @@ impl FastProcedure {
 /// Engine-local registry for host and built-in procedures.
 pub(crate) struct NativeRegistry {
     procedures: Vec<NativeProcedure>,
-    /// When set, every host callback is invoked inside `catch_unwind` so a panic
-    /// becomes a `NativePanic` error rather than unwinding through the VM.
-    catch_panics: bool,
+    /// The callback currently running under the engine-level unwind boundary.
+    /// A panic leaves this set so `Engine::eval` can distinguish a host panic
+    /// from an internal interpreter panic.
+    active_native: Cell<Option<u32>>,
+    /// Trusted engines do not install an unwind boundary, so they also skip the
+    /// active-native stores on every callback.
+    track_panics: bool,
 }
 
 impl NativeRegistry {
     pub(crate) const fn new() -> Self {
         Self {
             procedures: Vec::new(),
-            catch_panics: true,
+            active_native: Cell::new(None),
+            track_panics: true,
         }
     }
 
-    /// Sets whether host callbacks are guarded by `catch_unwind`. Disabling it
-    /// (for engines that trust their natives) removes the per-call guard.
-    pub(crate) fn set_catch_panics(&mut self, catch: bool) {
-        self.catch_panics = catch;
+    /// Enables the active-callback marker used by the engine unwind boundary.
+    pub(crate) fn set_track_panics(&mut self, track: bool) {
+        self.track_panics = track;
+    }
+
+    /// Returns and clears the procedure name left by a panicking callback.
+    pub(crate) fn take_panicked_native_name(&self) -> Option<String> {
+        let id = self.active_native.take()?;
+        self.procedures
+            .get(id as usize)
+            .map(|procedure| procedure.name.clone())
     }
 
     pub(crate) fn register<F, R>(
@@ -181,13 +202,38 @@ impl NativeRegistry {
         // The classification is stored both here and in the heap object, so
         // the VM's call fast paths read it with the callee probe itself.
         let fast = FastProcedure::named(&global_name);
-        let value = heap.alloc(Object::Native { id, fast })?;
+        let single_result = R::SINGLE_RESULT;
+        // Only the built-in base procedures receive their plain public names
+        // here. Host-library globals are encoded private names and cannot
+        // request VM exit through the public NativeContext.
+        let may_exit = matches!(global_name.as_str(), "exit" | "emergency-exit");
+        let value = heap.alloc(Object::Native {
+            id,
+            fast,
+            single_result,
+            may_exit,
+        })?;
+        let callback = if single_result {
+            Callback::One(Box::new(move |cx, args, output| {
+                *output = callback(cx, args)?
+                    .into_single_native_value()
+                    .map_err(|_| {
+                        Error::plain(
+                            ErrorKind::RuntimeError,
+                            "native result type promised one value but returned a different count",
+                        )
+                    })?;
+                Ok(())
+            }))
+        } else {
+            Callback::Many(Box::new(move |cx, args| {
+                callback(cx, args).map(IntoNativeValues::into_native_values)
+            }))
+        };
         self.procedures.push(NativeProcedure {
             name: procedure_name,
             arity,
-            callback: Box::new(move |cx, args| {
-                callback(cx, args).map(IntoNativeValues::into_native_values)
-            }),
+            callback,
             fast,
         });
         globals.insert(global_name, value);
@@ -250,10 +296,7 @@ impl NativeRegistry {
         )
     }
 
-    /// Invokes a registered procedure: the classified inline fast path first
-    /// (falling through on any shape it does not handle so the general path
-    /// raises the canonical error), then the host callback inside a rooted
-    /// region.
+    /// Invokes a registered procedure that always returns one value.
     ///
     /// `vm_roots` enumerates the live VM register file (including any pending
     /// `apply`-spread arguments) so a collection during the call can trace it
@@ -261,7 +304,7 @@ impl NativeRegistry {
     /// Passing `None` is sound only on paths that run under VM-managed rooting
     /// (`vm.rs`'s register-operation fallback), where `alloc` defers collection
     /// to the next safe point instead of collecting mid-call.
-    pub(crate) fn invoke(
+    pub(crate) fn invoke_one(
         &self,
         id: u32,
         heap: &mut Heap,
@@ -269,7 +312,7 @@ impl NativeRegistry {
         globals: &crate::global::GlobalStore,
         args: &[Value],
         vm_roots: Option<&crate::heap::RootGatherer<'_>>,
-    ) -> Result<NativeValues, Error> {
+    ) -> Result<Value, Error> {
         let procedure = self
             .procedures
             .get(id as usize)
@@ -277,7 +320,7 @@ impl NativeRegistry {
         if let Some(fast) = procedure.fast {
             let mut out = Value::unspecified();
             if fast.invoke(heap, args, &mut out) {
-                return Ok(NativeValues::one(out));
+                return Ok(out);
             }
         }
         if !procedure.arity.contains(&args.len()) {
@@ -302,18 +345,26 @@ impl NativeRegistry {
             globals,
             vm_roots,
         };
-        let result = if self.catch_panics {
-            match catch_unwind(AssertUnwindSafe(|| {
-                (procedure.callback)(&mut context, args)
-            })) {
-                Ok(result) => result,
-                Err(_) => Err(Error::plain(
-                    ErrorKind::NativePanic,
-                    format!("native procedure '{}' panicked", procedure.name),
+        let mut output = Value::unspecified();
+        let result = if self.track_panics {
+            self.active_native.set(Some(id));
+            let result = match &procedure.callback {
+                Callback::One(callback) => callback(&mut context, args, &mut output),
+                Callback::Many(_) => Err(Error::plain(
+                    ErrorKind::RuntimeError,
+                    "native result metadata does not match its callback",
+                )),
+            };
+            self.active_native.set(None);
+            result
+        } else {
+            match &procedure.callback {
+                Callback::One(callback) => callback(&mut context, args, &mut output),
+                Callback::Many(_) => Err(Error::plain(
+                    ErrorKind::RuntimeError,
+                    "native result metadata does not match its callback",
                 )),
             }
-        } else {
-            (procedure.callback)(&mut context, args)
         };
         heap.exit_rooted_region();
         // Roots pushed by the callback (via `NativeContext::alloc`) end with the
@@ -322,6 +373,65 @@ impl NativeRegistry {
         heap.truncate_temporary_roots(mark);
         // A newly interned symbol flags `engine_roots` for refresh inside
         // `NativeContext::intern_symbol`, the single place the table grows.
+        result.map(|()| output)
+    }
+
+    /// Invokes a registered procedure that may return any number of values.
+    pub(crate) fn invoke_many(
+        &self,
+        id: u32,
+        heap: &mut Heap,
+        symbols: &mut HashMap<String, Value>,
+        globals: &crate::global::GlobalStore,
+        args: &[Value],
+        vm_roots: Option<&crate::heap::RootGatherer<'_>>,
+    ) -> Result<NativeValues, Error> {
+        let procedure = self
+            .procedures
+            .get(id as usize)
+            .ok_or_else(|| Error::plain(ErrorKind::RuntimeError, "unknown native procedure"))?;
+        if !procedure.arity.contains(&args.len()) {
+            return Err(Error::plain(
+                ErrorKind::ArityError,
+                format!(
+                    "{} expected {}..={} arguments, received {}",
+                    procedure.name,
+                    procedure.arity.start(),
+                    procedure.arity.end(),
+                    args.len()
+                ),
+            ));
+        }
+        let mark = heap.temporary_root_mark();
+        heap.enter_rooted_region();
+        let mut context = NativeContext {
+            heap,
+            symbols,
+            globals,
+            vm_roots,
+        };
+        let result = if self.track_panics {
+            self.active_native.set(Some(id));
+            let result = match &procedure.callback {
+                Callback::Many(callback) => callback(&mut context, args),
+                Callback::One(_) => Err(Error::plain(
+                    ErrorKind::RuntimeError,
+                    "native result metadata does not match its callback",
+                )),
+            };
+            self.active_native.set(None);
+            result
+        } else {
+            match &procedure.callback {
+                Callback::Many(callback) => callback(&mut context, args),
+                Callback::One(_) => Err(Error::plain(
+                    ErrorKind::RuntimeError,
+                    "native result metadata does not match its callback",
+                )),
+            }
+        };
+        heap.exit_rooted_region();
+        heap.truncate_temporary_roots(mark);
         result
     }
 }

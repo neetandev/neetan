@@ -336,6 +336,27 @@ pub struct Error {
 }
 
 impl Error {
+    /// Builds an error with the given classification and message.
+    ///
+    /// A native procedure returns `Err(..)` to raise a Scheme condition. The
+    /// [`ErrorKind`] selects the condition class the handler sees, so
+    /// [`ErrorKind::FileError`] produces a `file-error?` condition and the
+    /// read-family kinds produce a `read-error?` condition. Any other kind
+    /// produces a plain error object whose `error-object-message` is `message`.
+    #[must_use]
+    pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
+        Self::plain(kind, message)
+    }
+
+    /// Builds a runtime error with the given message.
+    ///
+    /// Shortcut for `Error::new(ErrorKind::RuntimeError, message)`, the common
+    /// case for a native procedure raising a custom-message condition.
+    #[must_use]
+    pub fn runtime(message: impl Into<String>) -> Self {
+        Self::plain(ErrorKind::RuntimeError, message)
+    }
+
     pub(crate) fn plain(kind: ErrorKind, message: impl Into<String>) -> Self {
         Self {
             diagnostic: Box::new(Diagnostic::new(kind, message)),

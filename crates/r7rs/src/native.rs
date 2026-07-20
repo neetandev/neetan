@@ -1,10 +1,6 @@
 //! Registered host procedures and the built-in base library primitives.
 
-use std::{
-    collections::HashMap,
-    ops::RangeInclusive,
-    panic::{AssertUnwindSafe, catch_unwind},
-};
+use std::{collections::HashMap, ops::RangeInclusive};
 
 use crate::{
     Error, ErrorKind, Value, ValueKind,

@@ -1,4 +1,7 @@
-use std::fmt::Write as _;
+use std::{
+    fmt::Write as _,
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+};
 
 use crate::{
     DiagnosticLabel, EngineConfig, Error, ErrorKind, InterruptToken, LabelStyle, LoadedSource,
@@ -66,7 +69,7 @@ impl Engine {
         };
         engine
             .natives
-            .set_catch_panics(!engine.config.trusts_natives());
+            .set_track_panics(!engine.config.trusts_natives());
         #[cfg(feature = "host-capabilities")]
         if engine.config.is_standalone() {
             engine.source_loader = Some(Box::new(crate::StdSourceLoader));
@@ -438,19 +441,37 @@ impl Engine {
             ));
         }
         self.refresh_engine_roots();
-        crate::vm::execute(
-            module,
-            &mut self.heap,
-            &mut self.register_stack,
-            &mut self.globals,
-            &mut self.symbols,
-            &self.natives,
-            self.config.limits(),
-            &self.interrupt_token,
-            &self.config,
-            &mut self.source_loader,
-            &mut self.sources,
-        )
+        let mut execute = || {
+            crate::vm::execute(
+                module,
+                &mut self.heap,
+                &mut self.register_stack,
+                &mut self.globals,
+                &mut self.symbols,
+                &self.natives,
+                self.config.limits(),
+                &self.interrupt_token,
+                &self.config,
+                &mut self.source_loader,
+                &mut self.sources,
+            )
+        };
+        if self.config.trusts_natives() {
+            return execute();
+        }
+        match catch_unwind(AssertUnwindSafe(execute)) {
+            Ok(result) => result,
+            Err(payload) => {
+                let Some(name) = self.natives.take_panicked_native_name() else {
+                    resume_unwind(payload);
+                };
+                self.heap.recover_native_unwind();
+                Err(Error::plain(
+                    ErrorKind::NativePanic,
+                    format!("native procedure '{name}' panicked"),
+                ))
+            }
+        }
     }
 
     /// Registers an engine-local host procedure exported by `library` as `binding`.

@@ -528,11 +528,40 @@ pub struct MountedHdd {
     image: HddImage,
     backend: Option<DiskBackend>,
     dirty: bool,
+    read_only: bool,
     identity: save_state::ResourceIdentity,
     source_path: Option<save_state::MediaSourcePath>,
 }
 
+/// Builds a mount from a media backing.
+pub fn mounted_hdd_from_backing(image: HddImage, backing: common::MediaBacking) -> MountedHdd {
+    match backing {
+        common::MediaBacking::Ram => MountedHdd::new(image, None),
+        common::MediaBacking::WriteThrough(path) => MountedHdd::new(image, Some(path)),
+        common::MediaBacking::ReadOnly => MountedHdd::new_read_only(image),
+    }
+}
+
 impl MountedHdd {
+    /// Constructs a read-only mount whose guest writes are dropped.
+    ///
+    /// The image stays pristine in memory and nothing is written back.
+    pub fn new_read_only(image: HddImage) -> Self {
+        let mut mount = Self::new(image, None);
+        mount.read_only = true;
+        mount
+    }
+
+    /// Returns the current in-memory image bytes.
+    pub fn image_bytes(&self) -> Vec<u8> {
+        self.image.to_bytes()
+    }
+
+    /// Returns whether guest writes to this mount are dropped.
+    pub const fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
     /// Constructs a new mount. If `path` is `None` or the file cannot be
     /// opened for write, writes only land in memory.
     pub fn new(image: HddImage, path: Option<PathBuf>) -> Self {
@@ -566,6 +595,7 @@ impl MountedHdd {
             image,
             backend,
             dirty: false,
+            read_only: false,
             identity,
             source_path,
         }
@@ -603,6 +633,9 @@ impl MountedHdd {
 
     /// Writes sector data at the given LBA.
     pub fn write_sector(&mut self, lba: u32, data: &[u8]) -> bool {
+        if self.read_only {
+            return true;
+        }
         if !self.image.write_sector(lba, data) {
             return false;
         }
@@ -622,6 +655,9 @@ impl MountedHdd {
     /// Formats the track containing `start_lba` by filling its sectors
     /// with 0xE5.
     pub fn format_track(&mut self, start_lba: u32) -> bool {
+        if self.read_only {
+            return true;
+        }
         if !self.image.format_track(start_lba) {
             return false;
         }
@@ -1311,6 +1347,62 @@ mod tests {
         );
 
         drop(mounted);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn ram_backing_keeps_writes_in_memory_only() {
+        let image_bytes = build_nhd_image(50, 4, 17, 512);
+        let image = HddImage::from_nhd(&image_bytes).unwrap();
+        let mut mounted = mounted_hdd_from_backing(image, common::MediaBacking::Ram);
+        assert!(!mounted.is_read_only());
+
+        let pattern = [0x42u8; 512];
+        assert!(mounted.write_sector(7, &pattern));
+        assert_eq!(mounted.read_sector(7), Some(&pattern[..]));
+
+        // The write is visible in the serialized in-memory image.
+        let reparsed = HddImage::from_nhd(&mounted.image_bytes()).unwrap();
+        assert_eq!(reparsed.read_sector(7), Some(&pattern[..]));
+    }
+
+    #[test]
+    fn read_only_backing_drops_writes_and_stays_pristine() {
+        let image_bytes = build_nhd_image(50, 4, 17, 512);
+        let pristine = HddImage::from_nhd(&image_bytes).unwrap().to_bytes();
+        let image = HddImage::from_nhd(&image_bytes).unwrap();
+        let mut mounted = mounted_hdd_from_backing(image, common::MediaBacking::ReadOnly);
+        assert!(mounted.is_read_only());
+
+        let pattern = [0x42u8; 512];
+        // The write reports success to the guest but is dropped.
+        assert!(mounted.write_sector(7, &pattern));
+
+        assert_eq!(
+            mounted.image_bytes(),
+            pristine,
+            "read-only image must stay pristine"
+        );
+    }
+
+    #[test]
+    fn write_through_backing_persists_to_host_file() {
+        let image_bytes = build_nhd_image(50, 4, 17, 512);
+        let path = tempfile_with(&image_bytes, ".nhd");
+        let image = HddImage::from_nhd(&image_bytes).unwrap();
+        let mut mounted =
+            mounted_hdd_from_backing(image, common::MediaBacking::WriteThrough(path.clone()));
+        assert!(!mounted.is_read_only());
+
+        let pattern = [0x42u8; 512];
+        assert!(mounted.write_sector(7, &pattern));
+        mounted.flush();
+        drop(mounted);
+
+        let raw = std::fs::read(&path).unwrap();
+        let reparsed = HddImage::from_nhd(&raw).unwrap();
+        assert_eq!(reparsed.read_sector(7), Some(&pattern[..]));
+
         std::fs::remove_file(&path).ok();
     }
 }

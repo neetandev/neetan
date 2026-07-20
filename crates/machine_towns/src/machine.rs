@@ -5,7 +5,7 @@
 //! MX and the 386-based CX; the physical address width is fixed at 32 bits for
 //! both.
 
-use common::{Bus, Cpu, JoystickState, Machine, NoTrace, TraceSink};
+use common::{Bus, Cpu, HostKey, JoystickState, KeyModifiers, Machine, NoTrace, TraceSink};
 
 use crate::{
     bus::TownsBus,
@@ -86,6 +86,243 @@ fn build_untraced_machine_for_cpu<const CPU_MODEL: u8>(
     Box::new(machine)
 }
 
+/// Builds an automated FM Towns machine and selects the CPU for `model`.
+pub fn build_automated_machine(
+    model: TownsModel,
+    bus: TownsBus<common::tracing::ApplicationTraceSink>,
+    boot_device: TownsBootDevice,
+    pad_type: TownsPadType,
+    cdrom_compatibility_timing: bool,
+) -> Box<dyn common::AutomatedMachine> {
+    match model {
+        TownsModel::FmTowns => build_automated_machine_for_cpu::<{ cpu::CPU_MODEL_386_SX }>(
+            bus,
+            boot_device,
+            pad_type,
+            cdrom_compatibility_timing,
+        ),
+        TownsModel::FmTownsIICx => build_automated_machine_for_cpu::<{ cpu::CPU_MODEL_386_DX }>(
+            bus,
+            boot_device,
+            pad_type,
+            cdrom_compatibility_timing,
+        ),
+        TownsModel::FmTownsIIMx => build_automated_machine_for_cpu::<{ cpu::CPU_MODEL_486_DX }>(
+            bus,
+            boot_device,
+            pad_type,
+            cdrom_compatibility_timing,
+        ),
+    }
+}
+
+/// Builds one concrete automated FM Towns CPU variant.
+fn build_automated_machine_for_cpu<const CPU_MODEL: u8>(
+    bus: TownsBus<common::tracing::ApplicationTraceSink>,
+    boot_device: TownsBootDevice,
+    pad_type: TownsPadType,
+    cdrom_compatibility_timing: bool,
+) -> Box<dyn common::AutomatedMachine> {
+    let mut cpu = cpu::I386::<CPU_MODEL, { cpu::ADDRESS_WIDTH_32 }>::new();
+    cpu.reset();
+    let mut machine = TownsMachine::new(cpu, bus);
+    machine.set_boot_device(boot_device);
+    machine.set_pad_type(pad_type);
+    machine.set_cdrom_compatibility_timing(cdrom_compatibility_timing);
+    Box::new(machine)
+}
+
+impl<const CPU_MODEL: u8> common::AutomationDriver
+    for TownsMachine<CPU_MODEL, common::tracing::ApplicationTraceSink>
+{
+    fn arm_presentation_yield(&mut self, target_frame: u64) {
+        self.bus.tracer().arm_presentation_yield(target_frame);
+    }
+
+    fn disarm_presentation_yield(&mut self) {
+        self.bus.tracer().disarm_presentation_yield();
+    }
+
+    fn epoch_ticks(&self) -> u64 {
+        self.bus.current_cycle()
+    }
+
+    fn epoch_frames(&self) -> u64 {
+        self.bus.presented_frames()
+    }
+
+    fn run_for(&mut self, budget: u64) -> u64 {
+        TownsMachine::run_for(self, budget)
+    }
+
+    fn shutdown_requested(&self) -> bool {
+        self.bus.power_off_requested()
+    }
+
+    fn drain_audio(&mut self, elapsed_ticks: u64) {
+        self.bus.drain_automation_audio(elapsed_ticks);
+    }
+}
+
+impl<const CPU_MODEL: u8> common::AutomatedMachine
+    for TownsMachine<CPU_MODEL, common::tracing::ApplicationTraceSink>
+{
+    fn automation_descriptor(&self) -> common::AutomationDescriptor {
+        let (numerator, denominator) = self.bus.automation_timebase();
+        common::AutomationDescriptor {
+            target: "towns",
+            model: self.bus.model_id(),
+            timebase: common::AutomationTimebase {
+                ticks_per_second_numerator: numerator,
+                ticks_per_second_denominator: denominator,
+            },
+            audio_sample_rate: self.bus.audio_sample_rate(),
+            input: common::InputCapabilities {
+                keyboard: true,
+                mouse_buttons: 2,
+                joystick_ports: 1,
+            },
+        }
+    }
+
+    fn automation_timeline(&self) -> common::AutomationTimeline {
+        common::AutomationTimeline {
+            epoch_ticks: self.bus.current_cycle() as u128,
+            epoch_frames: self.bus.presented_frames() as u128,
+            ..common::AutomationTimeline::default()
+        }
+    }
+
+    fn run_automation(&mut self, request: common::RunRequest) -> common::RunOutcome {
+        common::drive_automation(self, request)
+    }
+
+    fn inspector(&mut self) -> Option<&mut dyn common::MachineInspector> {
+        Some(self)
+    }
+
+    fn trace_catalog(&self) -> common::TraceCatalog {
+        TOWNS_TRACE_CATALOG
+    }
+}
+
+/// Stable trace identifiers emitted by the FM Towns bus.
+const TOWNS_TRACE_CATALOG: common::TraceCatalog = common::TraceCatalog {
+    controllers: &[common::trace_id::controller::TOWNS_PIC],
+    scheduled: common::trace_id::scheduled::TOWNS,
+    devices: &[
+        common::TraceDeviceCatalog {
+            device: common::trace_id::device::TOWNS_CDROM,
+            actions: &[
+                common::trace_id::action::INTERRUPT,
+                common::trace_id::action::STATUS,
+                common::trace_id::action::COMMAND,
+            ],
+        },
+        common::TraceDeviceCatalog {
+            device: common::trace_id::device::TOWNS_FDC,
+            actions: &[common::trace_id::action::READ],
+        },
+    ],
+    providers: &[],
+};
+
+impl<const CPU_MODEL: u8> common::MachineInspector
+    for TownsMachine<CPU_MODEL, common::tracing::ApplicationTraceSink>
+{
+    fn processors(&self) -> common::ProcessorList {
+        let mut processors = common::ProcessorList::new();
+        processors.push(common::inspect::x86_processor("cpu.main", true));
+        processors
+    }
+
+    fn address_spaces(&self) -> common::AddressSpaceList {
+        let mut spaces = common::AddressSpaceList::new();
+        spaces.push(common::inspect::memory_space(
+            "cpu.main.memory",
+            32,
+            common::ByteOrder::Little,
+        ));
+        spaces.push(common::inspect::io_space(
+            "cpu.main.io",
+            16,
+            common::ByteOrder::Little,
+        ));
+        spaces
+    }
+
+    fn read_register(&self, processor: &str, register: &str) -> Result<u128, common::InspectError> {
+        match processor {
+            "cpu.main" => common::inspect::x86_read(&self.cpu, register),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn write_register(
+        &mut self,
+        processor: &str,
+        register: &str,
+        value: u128,
+    ) -> Result<(), common::InspectError> {
+        match processor {
+            "cpu.main" => common::inspect::x86_write(&mut self.cpu, register, value),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn protected_mode_state(
+        &self,
+        processor: &str,
+    ) -> Result<common::ProtectedModeState, common::InspectError> {
+        match processor {
+            "cpu.main" => self
+                .cpu
+                .protected_mode_state()
+                .ok_or(common::InspectError::Unsupported),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn peek_memory(
+        &mut self,
+        space: &str,
+        address: u64,
+        buffer: &mut [u8],
+    ) -> Result<(), common::InspectError> {
+        match space {
+            "cpu.main.memory" => {
+                for (index, byte) in buffer.iter_mut().enumerate() {
+                    *byte = self
+                        .bus
+                        .peek_byte(common::inspect::offset_u32(address, index)?);
+                }
+                Ok(())
+            }
+            "cpu.main.io" => Err(common::InspectError::NotPeekable),
+            _ => Err(common::InspectError::UnknownSpace),
+        }
+    }
+
+    fn poke_memory(
+        &mut self,
+        space: &str,
+        address: u64,
+        bytes: &[u8],
+    ) -> Result<(), common::InspectError> {
+        match space {
+            "cpu.main.memory" => {
+                for (index, byte) in bytes.iter().enumerate() {
+                    self.bus
+                        .poke_byte(common::inspect::offset_u32(address, index)?, *byte);
+                }
+                Ok(())
+            }
+            "cpu.main.io" => Err(common::InspectError::NotWritable),
+            _ => Err(common::InspectError::UnknownSpace),
+        }
+    }
+}
+
 impl<const CPU_MODEL: u8, T: TraceSink> TownsMachine<CPU_MODEL, T> {
     /// Builds a machine around a configured CPU and bus.
     pub fn new(cpu: cpu::I386<CPU_MODEL, { cpu::ADDRESS_WIDTH_32 }>, bus: TownsBus<T>) -> Self {
@@ -139,7 +376,17 @@ impl<const CPU_MODEL: u8, T: TraceSink> TownsMachine<CPU_MODEL, T> {
         image: device::disk::HddImage,
         path: Option<std::path::PathBuf>,
     ) {
-        self.bus.insert_hdd(drive, image, path);
+        self.insert_hdd_backed(drive, image, path.into());
+    }
+
+    /// Attaches a hard disk image with the requested backing.
+    pub fn insert_hdd_backed(
+        &mut self,
+        drive: usize,
+        image: device::disk::HddImage,
+        backing: common::MediaBacking,
+    ) {
+        self.bus.insert_hdd_backed(drive, image, backing);
         self.refresh_boot_device();
     }
 
@@ -292,8 +539,8 @@ impl<const CPU_MODEL: u8, T: TraceSink> Machine for TownsMachine<CPU_MODEL, T> {
         self.restore_machine_blob(blob)
     }
 
-    fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
-        self.bus.set_host_date_time_provider(provider);
+    fn set_host_date_time_source(&mut self, source: common::SharedHostDateTimeSource) {
+        self.bus.set_host_date_time_source(source);
     }
 
     fn startup_capabilities(&self) -> common::StartupCapabilities {
@@ -329,6 +576,111 @@ impl<const CPU_MODEL: u8, T: TraceSink> Machine for TownsMachine<CPU_MODEL, T> {
         self.bus.push_key_scancode(code);
     }
 
+    fn translate_host_key(&self, key: HostKey, _modifiers: KeyModifiers) -> Option<u8> {
+        Some(match key {
+            HostKey::Escape => 0x01,
+            HostKey::Digit1 => 0x02,
+            HostKey::Digit2 => 0x03,
+            HostKey::Digit3 => 0x04,
+            HostKey::Digit4 => 0x05,
+            HostKey::Digit5 => 0x06,
+            HostKey::Digit6 => 0x07,
+            HostKey::Digit7 => 0x08,
+            HostKey::Digit8 => 0x09,
+            HostKey::Digit9 => 0x0A,
+            HostKey::Digit0 => 0x0B,
+            HostKey::Minus => 0x0C,
+            HostKey::Equals => 0x0D,
+            HostKey::Backslash => 0x0E,
+            HostKey::Backspace => 0x0F,
+            HostKey::Tab => 0x10,
+            HostKey::Q => 0x11,
+            HostKey::W => 0x12,
+            HostKey::E => 0x13,
+            HostKey::R => 0x14,
+            HostKey::T => 0x15,
+            HostKey::Y => 0x16,
+            HostKey::U => 0x17,
+            HostKey::I => 0x18,
+            HostKey::O => 0x19,
+            HostKey::P => 0x1A,
+            HostKey::Grave => 0x1B,
+            HostKey::LeftBracket => 0x1C,
+            HostKey::Return => 0x1D,
+            HostKey::A => 0x1E,
+            HostKey::S => 0x1F,
+            HostKey::D => 0x20,
+            HostKey::F => 0x21,
+            HostKey::G => 0x22,
+            HostKey::H => 0x23,
+            HostKey::J => 0x24,
+            HostKey::K => 0x25,
+            HostKey::L => 0x26,
+            HostKey::Semicolon => 0x27,
+            HostKey::Apostrophe => 0x28,
+            HostKey::RightBracket => 0x29,
+            HostKey::Z => 0x2A,
+            HostKey::X => 0x2B,
+            HostKey::C => 0x2C,
+            HostKey::V => 0x2D,
+            HostKey::B => 0x2E,
+            HostKey::N => 0x2F,
+            HostKey::M => 0x30,
+            HostKey::Comma => 0x31,
+            HostKey::Period => 0x32,
+            HostKey::Slash => 0x33,
+            HostKey::NonUsBackslash => 0x34,
+            HostKey::Space => 0x35,
+            HostKey::KpMultiply => 0x36,
+            HostKey::KpDivide => 0x37,
+            HostKey::KpPlus => 0x38,
+            HostKey::KpMinus => 0x39,
+            HostKey::Kp7 => 0x3A,
+            HostKey::Kp8 => 0x3B,
+            HostKey::Kp9 => 0x3C,
+            HostKey::Kp4 => 0x3E,
+            HostKey::Kp5 => 0x3F,
+            HostKey::Kp6 => 0x40,
+            HostKey::Kp1 => 0x42,
+            HostKey::Kp2 => 0x43,
+            HostKey::Kp3 => 0x44,
+            HostKey::KpEnter => 0x45,
+            HostKey::Kp0 => 0x46,
+            HostKey::KpPeriod => 0x47,
+            HostKey::Insert => 0x48,
+            HostKey::Delete => 0x4B,
+            HostKey::Up => 0x4D,
+            HostKey::Home => 0x4E,
+            HostKey::Left => 0x4F,
+            HostKey::Down => 0x50,
+            HostKey::Right => 0x51,
+            HostKey::LeftControl => 0x52,
+            HostKey::RightControl => 0x52,
+            HostKey::LeftShift => 0x53,
+            HostKey::RightShift => 0x53,
+            HostKey::CapsLock => 0x55,
+            HostKey::F12 => 0x5B,
+            HostKey::LeftAlt => 0x5C,
+            HostKey::RightAlt => 0x5C,
+            HostKey::F1 => 0x5D,
+            HostKey::F2 => 0x5E,
+            HostKey::F3 => 0x5F,
+            HostKey::F4 => 0x60,
+            HostKey::F5 => 0x61,
+            HostKey::F6 => 0x62,
+            HostKey::F7 => 0x63,
+            HostKey::F8 => 0x64,
+            HostKey::F9 => 0x65,
+            HostKey::F10 => 0x66,
+            HostKey::F11 => 0x69,
+            HostKey::End => 0x72,
+            HostKey::PageDown => 0x73,
+            HostKey::Pause => 0x7C,
+            HostKey::PrintScreen => 0x7D,
+            _ => return None,
+        })
+    }
+
     fn push_mouse_delta(&mut self, dx: i16, dy: i16) {
         self.bus.push_mouse_delta(dx, dy);
     }
@@ -352,10 +704,19 @@ impl<const CPU_MODEL: u8, T: TraceSink> Machine for TownsMachine<CPU_MODEL, T> {
         self.bus.font_rom_data()
     }
 
-    fn insert_floppy(&mut self, drive: usize, path: &std::path::Path) -> Result<String, String> {
-        let description = insert_floppy_impl(&mut self.bus, drive, path)?;
+    fn insert_floppy(
+        &mut self,
+        drive: usize,
+        image: common::MediaImage<'_>,
+        backing: common::MediaBacking,
+    ) -> Result<String, String> {
+        let description = insert_floppy_impl(&mut self.bus, drive, image, backing)?;
         self.refresh_boot_device();
         Ok(description)
+    }
+
+    fn floppy_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.bus.floppy_image_bytes(drive)
     }
 
     fn eject_floppy(&mut self, drive: usize) {
@@ -371,25 +732,32 @@ impl<const CPU_MODEL: u8, T: TraceSink> Machine for TownsMachine<CPU_MODEL, T> {
         self.bus.flush_hdds();
     }
 
-    fn insert_hdd(&mut self, drive: usize, path: &std::path::Path) -> Result<String, String> {
-        let data = std::fs::read(path)
-            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-        let image = device::disk::load_hdd_image(path, &data)
-            .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
-        if image.format != device::disk::HddFormat::Raw {
+    fn hdd_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.bus.hdd_image_bytes(drive)
+    }
+
+    fn insert_hdd(
+        &mut self,
+        drive: usize,
+        image: common::MediaImage<'_>,
+        backing: common::MediaBacking,
+    ) -> Result<String, String> {
+        let parsed = device::disk::load_hdd_image(std::path::Path::new(image.name), image.bytes)
+            .map_err(|error| format!("Failed to parse {}: {error}", image.name))?;
+        if parsed.format != device::disk::HddFormat::Raw {
             return Err(format!(
                 "FM Towns hard disks must be raw images (.h0-.h4); {} is {}",
-                path.display(),
-                image.format_name(),
+                image.name,
+                parsed.format_name(),
             ));
         }
         let description = format!(
             "FM Towns SCSI ID {drive}: {} sectors ({}) from {}",
-            image.geometry.total_sectors(),
-            image.format_name(),
-            path.display(),
+            parsed.geometry.total_sectors(),
+            parsed.format_name(),
+            image.name,
         );
-        TownsMachine::insert_hdd(self, drive, image, Some(path.to_path_buf()));
+        TownsMachine::insert_hdd_backed(self, drive, parsed, backing);
         Ok(description)
     }
 
@@ -420,14 +788,13 @@ impl<const CPU_MODEL: u8, T: TraceSink> Machine for TownsMachine<CPU_MODEL, T> {
 fn insert_floppy_impl<T: TraceSink>(
     bus: &mut TownsBus<T>,
     drive: usize,
-    path: &std::path::Path,
+    image: common::MediaImage<'_>,
+    backing: common::MediaBacking,
 ) -> Result<String, String> {
-    let data = std::fs::read(path)
-        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-    let image = device::floppy::load_floppy_image(path, &data)
-        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
-    let description = format!("{} ({})", image.name, image.format_name());
-    bus.insert_floppy(drive, image, path.to_path_buf());
+    let parsed = device::floppy::load_floppy_image(std::path::Path::new(image.name), image.bytes)
+        .map_err(|error| format!("Failed to parse {}: {error}", image.name))?;
+    let description = format!("{} ({})", parsed.name, parsed.format_name());
+    bus.insert_floppy_backed(drive, parsed, backing);
     Ok(description)
 }
 

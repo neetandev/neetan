@@ -78,8 +78,8 @@ fn default_engine_catches_native_panics_as_errors() {
 
 #[test]
 fn trusted_natives_execute_directly() {
-    // The trusted-natives path skips the catch_unwind guard; a well-behaved
-    // native must still run and return correctly.
+    // The trusted-natives path skips panic-origin tracking and the outer
+    // unwind boundary. A well-behaved native must still run correctly.
     let mut engine = Engine::new(EngineConfig::default().with_trusted_natives(true)).unwrap();
     engine
         .register_library_fn(&name(&["test", "inc"]), "inc", 1..=1, |cx, args| {
@@ -862,4 +862,189 @@ fn interactive_compiles_carry_imported_macros() {
         .unwrap();
     let value = engine.eval(&module).unwrap().into_one().unwrap();
     assert_eq!(engine.write_root(&value).unwrap(), "(1 2 3)");
+}
+
+// The following tests exercise the public read accessors on NativeContext and
+// the public Error constructors. They double as usage documentation for an
+// author writing native procedures against the public API.
+
+#[test]
+fn natives_read_string_and_symbol_arguments() {
+    let mut engine = Engine::new(EngineConfig::default()).unwrap();
+    engine
+        .register_library_fn(&name(&["test", "text"]), "%shout", 1..=1, |cx, args| {
+            // Borrow the argument text, transform it, and return a fresh string.
+            let text = cx.to_str(args[0])?.to_ascii_uppercase();
+            cx.string_utf8(text)
+        })
+        .unwrap();
+    engine
+        .register_library_fn(
+            &name(&["test", "text"]),
+            "%symbol->text",
+            1..=1,
+            |cx, args| {
+                let name = cx.to_symbol_name(args[0])?.to_owned();
+                cx.string_utf8(name)
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        run(
+            &mut engine,
+            "(import (scheme base) (test text)) (string=? (%shout \"hi\") \"HI\")",
+        ),
+        Value::boolean(true),
+    );
+    assert_eq!(
+        run(
+            &mut engine,
+            "(import (scheme base) (test text)) (string=? (%symbol->text 'foo) \"foo\")",
+        ),
+        Value::boolean(true),
+    );
+
+    // A non-string argument is reported as an error, never a panic.
+    let module = engine
+        .compile("mismatch.scm", "(import (test text)) (%shout 5)")
+        .unwrap();
+    assert_eq!(
+        engine.eval(&module).unwrap_err().kind(),
+        ErrorKind::TypeError,
+    );
+}
+
+#[test]
+fn natives_read_list_and_pair_arguments() {
+    let mut engine = Engine::new(EngineConfig::default()).unwrap();
+    engine
+        .register_library_fn(&name(&["test", "seq"]), "%sum", 1..=1, |cx, args| {
+            // to_list collects a proper list; each element is read as an integer.
+            let items = cx.to_list(args[0])?;
+            let mut total: i128 = 0;
+            for item in items {
+                total += cx.to_i128(item)?;
+            }
+            cx.integer(total)
+        })
+        .unwrap();
+    engine
+        .register_library_fn(&name(&["test", "seq"]), "%pair-sum", 1..=1, |cx, args| {
+            let (car, cdr) = cx.to_pair(args[0])?;
+            cx.integer(cx.to_i128(car)? + cx.to_i128(cdr)?)
+        })
+        .unwrap();
+
+    assert_eq!(
+        run(&mut engine, "(import (test seq)) (%sum '(1 2 3 4))"),
+        Value::integer(10),
+    );
+    assert_eq!(
+        run(&mut engine, "(import (test seq)) (%sum '())"),
+        Value::integer(0),
+    );
+    assert_eq!(
+        run(&mut engine, "(import (test seq)) (%pair-sum '(3 . 4))"),
+        Value::integer(7),
+    );
+
+    // An improper list is a type error.
+    let improper = engine
+        .compile("improper.scm", "(import (test seq)) (%sum '(1 2 . 3))")
+        .unwrap();
+    assert_eq!(
+        engine.eval(&improper).unwrap_err().kind(),
+        ErrorKind::TypeError,
+    );
+
+    // A circular list terminates the traversal and is reported, not looped on.
+    let circular = engine
+        .compile(
+            "circular.scm",
+            "(import (scheme base) (test seq))
+             (define ring (list 1 2 3))
+             (set-cdr! (cddr ring) ring)
+             (%sum ring)",
+        )
+        .unwrap();
+    assert_eq!(
+        engine.eval(&circular).unwrap_err().kind(),
+        ErrorKind::TypeError,
+    );
+}
+
+#[test]
+fn natives_read_bytevector_arguments() {
+    let mut engine = Engine::new(EngineConfig::default()).unwrap();
+    engine
+        .register_library_fn(&name(&["test", "bytes"]), "%byte-sum", 1..=1, |cx, args| {
+            let total: i128 = cx.to_bytes(args[0])?.iter().map(|b| i128::from(*b)).sum();
+            cx.integer(total)
+        })
+        .unwrap();
+
+    assert_eq!(
+        run(
+            &mut engine,
+            "(import (scheme base) (test bytes)) (%byte-sum (bytevector 1 2 3 4))",
+        ),
+        Value::integer(10),
+    );
+}
+
+#[test]
+fn natives_raise_custom_message_conditions() {
+    let mut engine = Engine::new(EngineConfig::default()).unwrap();
+    engine
+        .register_library_fn(&name(&["test", "boom"]), "%boom", 0..=0, |_, _| {
+            Err::<Value, _>(r7rs::Error::runtime("custom boom"))
+        })
+        .unwrap();
+    engine
+        .register_library_fn(&name(&["test", "boom"]), "%file-boom", 0..=0, |_, _| {
+            Err::<Value, _>(r7rs::Error::new(ErrorKind::FileError, "disk gone"))
+        })
+        .unwrap();
+    engine
+        .register_library_fn(&name(&["test", "boom"]), "%read-boom", 0..=0, |_, _| {
+            Err::<Value, _>(r7rs::Error::new(ErrorKind::ReadError, "bad read"))
+        })
+        .unwrap();
+
+    // The raised value is a Scheme error object carrying the custom message.
+    assert_eq!(
+        run(
+            &mut engine,
+            "(import (scheme base) (test boom))
+             (guard (e (#t (and (error-object? e)
+                                (string=? (error-object-message e) \"custom boom\"))))
+               (%boom))",
+        ),
+        Value::boolean(true),
+    );
+    // ErrorKind selects the condition class.
+    assert_eq!(
+        run(
+            &mut engine,
+            "(import (scheme base) (test boom))
+             (guard (e ((file-error? e) #t) (#t #f)) (%file-boom))",
+        ),
+        Value::boolean(true),
+    );
+    assert_eq!(
+        run(
+            &mut engine,
+            "(import (scheme base) (test boom))
+             (guard (e ((read-error? e) #t) (#t #f)) (%read-boom))",
+        ),
+        Value::boolean(true),
+    );
+
+    // Uncaught, the custom message reaches the embedder unchanged.
+    let module = engine
+        .compile("uncaught.scm", "(import (test boom)) (%boom)")
+        .unwrap();
+    let error = engine.eval(&module).unwrap_err();
+    assert!(error.diagnostic().message().contains("custom boom"));
 }

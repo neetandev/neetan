@@ -283,6 +283,16 @@ mounted when the snapshot was captured. Guest writes to writable media remain pe
 The snapshot is not written to disk and is lost when Neetan exits. Save normally inside
 the emulated software because quick saves do not replace disk or application saves.
 
+## Automation
+
+`neetan-auto` is a deterministic, headless frontend for writing automated scripts
+and tests for the emulator as R7RS-small Scheme programs. It builds a machine,
+drives it at exact frame boundaries, injects input, reads the screen, and
+reports one pass or fail result.
+
+The [Automation API reference](doc/api.md) documents how to run `neetan-auto`,
+explains it's general usage and has an API reference.
+
 ### How do I rebind my keys?
 
 You can remap keys in the configuration file using `key.<HostKey> = <PC-98 Key>`

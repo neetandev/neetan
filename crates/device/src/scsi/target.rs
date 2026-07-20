@@ -24,6 +24,14 @@ impl ScsiTarget {
         }
     }
 
+    /// Returns the current in-memory bytes of a disk target's image.
+    pub fn disk_image_bytes(&self) -> Option<Vec<u8>> {
+        match self {
+            ScsiTarget::Disk(disk) => Some(disk.image_bytes()),
+            ScsiTarget::Cdrom(_) => None,
+        }
+    }
+
     /// Captures a disk target's command sense latch.
     pub fn capture_disk_state(&self) -> Option<crate::scsi::command::SenseData> {
         match self {

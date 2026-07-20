@@ -744,9 +744,9 @@ pub(super) fn invoke_register_operation(
     // runs under VM-managed rooting (no rooted region is entered): any `alloc`
     // inside the built-in defers collection to the next safe point rather than
     // collecting mid-call.
-    Ok(natives
-        .invoke(id, heap, symbols, globals, arguments, None)?
-        .into_results())
+    Ok(Results::One(
+        natives.invoke_one(id, heap, symbols, globals, arguments, None)?,
+    ))
 }
 
 pub(super) fn execute_cold(

@@ -17,7 +17,7 @@ mod sub_io_read;
 mod sub_io_write;
 
 use common::{
-    Bus, HostDateTimeProvider, NoTrace, TraceAccessKind, TraceAccessWidth, TraceAddressSpace,
+    Bus, NoTrace, SharedHostDateTimeSource, TraceAccessKind, TraceAccessWidth, TraceAddressSpace,
     TraceContext, TraceEvent, TraceInterruptAction, TraceInterruptKind, TracePresentation,
     TraceSink, trace_id,
 };
@@ -160,7 +160,9 @@ pub struct Pc88VaBus<T: TraceSink = NoTrace> {
     /// Number assigned to the next published frame.
     pub(crate) presented_frames: u64,
     /// Host BCD local-time source used by the RTC's TIME_READ command.
-    pub(crate) host_date_time_provider: HostDateTimeProvider,
+    pub(crate) host_date_time_source: SharedHostDateTimeSource,
+    /// Carried fractional-sample accumulator for deterministic audio draining.
+    pub(crate) automation_audio_remainder: u64,
     /// Floppy sub-CPU (PC80S31K) 64 KiB memory: ROM, init pattern, and RAM.
     pub(crate) sub_mem: Pc80s31kMemory,
     /// Sub-CPU T-state position, tracked separately from `current_cycle`.
@@ -371,8 +373,46 @@ impl<T: TraceSink> Pc88VaBus<T> {
     }
 
     /// Overrides the host local-time source (BCD), used by tests.
-    pub(crate) fn set_host_date_time_provider(&mut self, provider: HostDateTimeProvider) {
-        self.host_date_time_provider = provider;
+    pub(crate) fn set_host_date_time_source(&mut self, source: SharedHostDateTimeSource) {
+        self.host_date_time_source = source;
+    }
+
+    /// Returns the number of frames presented within the current epoch.
+    pub(crate) fn presented_frames(&self) -> u64 {
+        self.presented_frames
+    }
+
+    /// Returns the fixed audio output rate in Hz.
+    pub(crate) fn audio_sample_rate(&self) -> u32 {
+        self.clocks.sample_rate
+    }
+
+    /// Returns the primary scheduling-tick rate as `(numerator, denominator)`.
+    pub(crate) fn automation_timebase(&self) -> (u64, u64) {
+        (u64::from(self.clocks.main_clock_hz), 1)
+    }
+
+    /// Returns the stable automation model identifier.
+    pub(crate) fn model_id(&self) -> &'static str {
+        "pc88va2"
+    }
+
+    /// Generates and discards audio covering `elapsed_ticks` for determinism.
+    ///
+    /// Sample counts use integer-remainder accounting so the generated sequence
+    /// is identical across two identical runs.
+    pub(crate) fn drain_automation_audio(&mut self, elapsed_ticks: u64) {
+        let (numerator, denominator) = self.automation_timebase();
+        let accumulator =
+            elapsed_ticks as u128 * denominator as u128 * self.clocks.sample_rate as u128
+                + self.automation_audio_remainder as u128;
+        let frames = (accumulator / numerator as u128) as usize;
+        self.automation_audio_remainder = (accumulator % numerator as u128) as u64;
+        if frames == 0 {
+            return;
+        }
+        let mut scratch = vec![0.0f32; frames * 2];
+        let _ = self.generate_audio_samples(1.0, &mut scratch);
     }
 
     /// The cycle of the next scheduled event, if any.
@@ -703,6 +743,27 @@ impl<T: TraceSink> Pc88VaBus<T> {
         self.sub_mem.load_rom(data);
     }
 
+    /// Reads one byte from the main-CPU memory decode without side effects, for
+    /// inspection. The current banking state selects what is visible.
+    pub fn peek_byte(&self, address: u32) -> u8 {
+        self.memory.read_byte(address)
+    }
+
+    /// Writes one byte through the main-CPU memory decode, for mutation.
+    pub fn poke_byte(&mut self, address: u32, value: u8) {
+        self.memory.write_byte(address, value);
+    }
+
+    /// Reads one byte from the sub-CPU (disk unit) memory without side effects.
+    pub fn peek_sub_byte(&self, address: u16) -> u8 {
+        self.sub_mem.read(address)
+    }
+
+    /// Writes one byte through the sub-CPU (disk unit) memory decode.
+    pub fn poke_sub_byte(&mut self, address: u16, value: u8) {
+        self.sub_mem.write(address, value);
+    }
+
     /// Whether the floppy sub-CPU has a pending FDC interrupt. When the main-CPU
     /// DMA path owns the FDC, its interrupt is routed to the main 8259 instead,
     /// so the sub-CPU must not see (and consume) it.
@@ -727,17 +788,35 @@ impl<T: TraceSink> Pc88VaBus<T> {
     }
 
     /// Mounts a floppy image into a drive and marks the FDC drive as occupied.
+    ///
+    /// A path-based convenience retained for the sub-FDC tests.
+    #[cfg(test)]
     pub(crate) fn insert_floppy(
         &mut self,
         drive: usize,
         image: device::floppy::FloppyImage,
         path: Option<std::path::PathBuf>,
     ) {
-        self.floppy.insert_drive(drive, image, path);
+        self.insert_floppy_backed(drive, image, path.into());
+    }
+
+    /// Mounts a floppy image with the requested backing.
+    pub(crate) fn insert_floppy_backed(
+        &mut self,
+        drive: usize,
+        image: device::floppy::FloppyImage,
+        backing: common::MediaBacking,
+    ) {
+        self.floppy.insert_drive_backed(drive, image, backing);
         if drive < 4 {
             self.fdc.state.drive_has_disk |= 1 << drive;
             self.signal_drive_ready_change(drive, true);
         }
+    }
+
+    /// Returns the current in-memory bytes of the floppy in `drive`, if mounted.
+    pub(crate) fn floppy_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.floppy.drive_image_bytes(drive)
     }
 
     /// Ejects the floppy from a drive and clears the FDC drive-occupied bit.

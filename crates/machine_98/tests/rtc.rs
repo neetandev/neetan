@@ -19,7 +19,7 @@ fn test_time() -> HostDateTime {
 fn make_machine() -> Pc9801Vm {
     let bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
     let mut machine = machine_98::Pc98Machine::new(cpu::V30::new(), bus);
-    machine.set_host_date_time_provider(test_time);
+    machine.set_host_date_time_source(std::sync::Arc::new(common::FixedHostDateTime(test_time())));
     machine
 }
 

@@ -131,7 +131,17 @@ impl Heap {
             .and_then(Option::as_ref)
         {
             Some(Object::Closure(closure)) => Callee::Closure(closure),
-            Some(&Object::Native { id, fast }) => Callee::Native { id, fast },
+            Some(&Object::Native {
+                id,
+                fast,
+                single_result,
+                may_exit,
+            }) => Callee::Native {
+                id,
+                fast,
+                single_result,
+                may_exit,
+            },
             _ => Callee::Other,
         }
     }
@@ -149,10 +159,15 @@ impl Heap {
     pub(crate) fn native_callee(
         &self,
         value: Value,
-    ) -> Option<(u32, Option<crate::native::FastProcedure>)> {
+    ) -> Option<(u32, Option<crate::native::FastProcedure>, bool, bool)> {
         let reference = value.heap_ref()?;
         match self.slots.get(reference.0 as usize)?.as_ref()? {
-            &Object::Native { id, fast } => Some((id, fast)),
+            &Object::Native {
+                id,
+                fast,
+                single_result,
+                may_exit,
+            } => Some((id, fast, single_result, may_exit)),
             _ => None,
         }
     }

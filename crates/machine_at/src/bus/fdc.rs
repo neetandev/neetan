@@ -5,7 +5,10 @@
 //! DMA channel 2, and a completion event raises IRQ 6 when the DOR gate is
 //! open. Seek completion is paced by the SPECIFY step rate time.
 
-use common::{StackVec, TraceSink};
+use common::{
+    StackVec, TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField, TraceSink,
+    TraceValue, trace_id,
+};
 use device::{
     floppy::FloppyImage,
     upd765a_fdc::{
@@ -170,6 +173,55 @@ impl<T: TraceSink> AtBus<T> {
     }
 
     /// Executes the armed FDC command through DMA channel 2.
+    /// Emits an FDC read device trace event for the active command sector.
+    fn trace_fdc_read(&mut self, drive: usize, track_index: usize) {
+        if !T::ENABLED
+            || !self.tracer.interested(TraceEventKey::Device {
+                device: trace_id::device::AT_FDC,
+                action: trace_id::action::READ,
+            })
+        {
+            return;
+        }
+        let state = &self.fdc.state;
+        self.tracer.trace(
+            TraceContext::main_cpu(
+                self.current_cycle,
+                Some(u64::from(self.clocks.cpu_clock_hz)),
+            ),
+            TraceEvent::Device(TraceDeviceEvent {
+                device: trace_id::device::AT_FDC,
+                action: trace_id::action::READ,
+                fields: &[
+                    TraceField {
+                        name: trace_id::field::DRIVE,
+                        value: TraceValue::Unsigned(drive as u64),
+                    },
+                    TraceField {
+                        name: trace_id::field::TRACK_INDEX,
+                        value: TraceValue::Unsigned(track_index as u64),
+                    },
+                    TraceField {
+                        name: trace_id::field::CYLINDER,
+                        value: TraceValue::Unsigned(u64::from(state.c)),
+                    },
+                    TraceField {
+                        name: trace_id::field::HEAD,
+                        value: TraceValue::Unsigned(u64::from(state.h)),
+                    },
+                    TraceField {
+                        name: trace_id::field::RECORD,
+                        value: TraceValue::Unsigned(u64::from(state.r)),
+                    },
+                    TraceField {
+                        name: trace_id::field::SIZE_CODE,
+                        value: TraceValue::Unsigned(u64::from(state.n)),
+                    },
+                ],
+            }),
+        );
+    }
+
     pub(super) fn handle_fdc_execution(&mut self) {
         match self.fdc.state.active_command {
             FdcCommand::ReadData => self.handle_fdc_read_data(),
@@ -185,6 +237,7 @@ impl<T: TraceSink> AtBus<T> {
     fn handle_fdc_read_data(&mut self) {
         let drive = self.fdc.current_drive();
         let track_index = self.fdc.current_track_index();
+        self.trace_fdc_read(drive, track_index);
 
         if !self.fdc.has_drive(drive) {
             self.fdc.complete_error(ST0_NOT_READY, 0x00, 0x00);
@@ -430,12 +483,27 @@ impl<T: TraceSink> AtBus<T> {
         image: FloppyImage,
         path: Option<std::path::PathBuf>,
     ) -> Result<(), String> {
+        self.insert_floppy_backed(drive, image, path.into())
+    }
+
+    /// Mounts a floppy image into `drive` with the requested backing.
+    pub fn insert_floppy_backed(
+        &mut self,
+        drive: usize,
+        image: FloppyImage,
+        backing: common::MediaBacking,
+    ) -> Result<(), String> {
         if drive >= FDC_DRIVE_COUNT {
             return Err(format!("AT floppy drive {drive} is not installed"));
         }
-        self.fdc.insert_drive(drive, image, path);
+        self.fdc.insert_drive_backed(drive, image, backing);
         self.update_cmos_floppy_types();
         Ok(())
+    }
+
+    /// Returns the current in-memory bytes of the floppy in `drive`, if mounted.
+    pub fn floppy_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.fdc.drive_image_bytes(drive)
     }
 
     /// Ejects and flushes the floppy in `drive`.

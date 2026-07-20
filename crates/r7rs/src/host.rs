@@ -447,3 +447,47 @@ fn path_text(path: &Path) -> Result<String, SourceLoaderError> {
         .into_string()
         .map_err(|_| "canonical source path is not Unicode".into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn context_with(pairs: &[(&str, &str)]) -> StdProcessContext {
+        StdProcessContext {
+            arguments: Vec::new(),
+            environment: pairs
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn environment_variable_matches_exact_name() {
+        let mut context = context_with(&[("PATH", "/bin")]);
+        assert_eq!(
+            context.environment_variable("PATH").unwrap().as_deref(),
+            Some("/bin")
+        );
+    }
+
+    #[test]
+    fn environment_variable_missing_name_is_none() {
+        let mut context = context_with(&[("PATH", "/bin")]);
+        assert_eq!(context.environment_variable("HOME").unwrap(), None);
+    }
+
+    // Windows stores the canonical name "Path" and treats lookups as
+    // case-insensitive, so a query for "PATH" must resolve there. On other
+    // platforms the same query stays case-sensitive and returns nothing.
+    #[test]
+    fn environment_variable_casing_follows_platform() {
+        let mut context = context_with(&[("Path", "/bin")]);
+        let resolved = context.environment_variable("PATH").unwrap();
+        if cfg!(windows) {
+            assert_eq!(resolved.as_deref(), Some("/bin"));
+        } else {
+            assert_eq!(resolved, None);
+        }
+    }
+}

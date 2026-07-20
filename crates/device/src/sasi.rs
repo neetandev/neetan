@@ -138,14 +138,33 @@ impl SasiController {
     /// Inserts a hard disk image into the specified drive (0-1).
     /// Installs the expansion ROM on the first insertion.
     pub fn insert_drive(&mut self, drive: usize, image: HddImage, path: Option<PathBuf>) {
+        self.insert_drive_backed(drive, image, path.into());
+    }
+
+    /// Inserts a hard disk image with the requested backing.
+    /// Installs the expansion ROM on the first insertion.
+    pub fn insert_drive_backed(
+        &mut self,
+        drive: usize,
+        image: HddImage,
+        backing: common::MediaBacking,
+    ) {
         if let Some(mounted) = self.drives[drive].take() {
             mounted.eject();
         }
-        self.drives[drive] = Some(MountedHdd::new(image, path));
+        self.drives[drive] = Some(crate::disk::mounted_hdd_from_backing(image, backing));
         if self.rom.is_none() {
             self.rom = Some(Box::new(*ROM_IMAGE));
         }
         self.refresh_parameter_tables(drive);
+    }
+
+    /// Returns the current in-memory bytes of the disk in `drive`, if mounted.
+    pub fn drive_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.drives
+            .get(drive)?
+            .as_ref()
+            .map(MountedHdd::image_bytes)
     }
 
     /// Flushes the HDD image to its source file.

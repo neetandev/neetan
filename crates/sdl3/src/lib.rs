@@ -25,6 +25,8 @@ pub mod mouse;
 pub mod properties;
 /// 2D rendering with `SDL_Renderer` and `SDL_Texture`.
 pub mod render;
+/// `SDL_Surface` wrapper with in-memory PNG load and save.
+pub mod surface;
 /// Date and time utilities.
 pub mod time;
 /// Video subsystem and window creation.

@@ -3192,6 +3192,82 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> common::Cpu for I386<CPU_MODE
         self.state.cr3
     }
 
+    fn protected_mode_state(&self) -> Option<common::ProtectedModeState> {
+        let state = &self.state;
+        let reading = |name: &'static str, value: u32| common::RegisterReading {
+            name,
+            value: u128::from(value),
+        };
+        let segment = |name: &'static str, index: SegReg32| common::SegmentReading {
+            name,
+            selector: u32::from(state.sregs[index as usize]),
+            base: state.seg_bases[index as usize],
+            limit: state.seg_limits[index as usize],
+            rights: u32::from(state.seg_rights[index as usize]),
+        };
+        Some(common::ProtectedModeState {
+            general: [
+                reading("eax", state.eax()),
+                reading("ebx", state.ebx()),
+                reading("ecx", state.ecx()),
+                reading("edx", state.edx()),
+                reading("esp", state.esp()),
+                reading("ebp", state.ebp()),
+                reading("esi", state.esi()),
+                reading("edi", state.edi()),
+            ],
+            segments: [
+                segment("es", SegReg32::ES),
+                segment("cs", SegReg32::CS),
+                segment("ss", SegReg32::SS),
+                segment("ds", SegReg32::DS),
+                segment("fs", SegReg32::FS),
+                segment("gs", SegReg32::GS),
+            ],
+            control: [
+                reading("cr0", state.cr0),
+                reading("cr2", state.cr2),
+                reading("cr3", state.cr3),
+            ],
+            debug: [
+                reading("dr0", state.dr0),
+                reading("dr1", state.dr1),
+                reading("dr2", state.dr2),
+                reading("dr3", state.dr3),
+                reading("dr6", state.dr6),
+                reading("dr7", state.dr7),
+            ],
+            descriptor_tables: [
+                common::DescriptorTableReading {
+                    name: "gdtr",
+                    selector: None,
+                    base: state.gdt_base,
+                    limit: u32::from(state.gdt_limit),
+                },
+                common::DescriptorTableReading {
+                    name: "idtr",
+                    selector: None,
+                    base: state.idt_base,
+                    limit: u32::from(state.idt_limit),
+                },
+                common::DescriptorTableReading {
+                    name: "ldtr",
+                    selector: Some(u32::from(state.ldtr)),
+                    base: state.ldtr_base,
+                    limit: state.ldtr_limit,
+                },
+                common::DescriptorTableReading {
+                    name: "tr",
+                    selector: Some(u32::from(state.tr)),
+                    base: state.tr_base,
+                    limit: state.tr_limit,
+                },
+            ],
+            eip: u64::from(state.eip()),
+            eflags: u64::from(state.eflags()),
+        })
+    }
+
     fn load_segment_real_mode(&mut self, seg: common::SegmentRegister, selector: u16) {
         let seg32 = match seg {
             common::SegmentRegister::ES => SegReg32::ES,

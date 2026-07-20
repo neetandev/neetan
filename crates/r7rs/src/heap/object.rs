@@ -57,6 +57,10 @@ pub(crate) enum Object {
         /// same arena probe that classifies the callee, instead of a second
         /// registry lookup per call.
         fast: Option<crate::native::FastProcedure>,
+        /// Whether the callback's result type always produces one value.
+        single_result: bool,
+        /// Whether the callback can request process exit through the VM.
+        may_exit: bool,
     },
     /// VM-integrated `apply`, which can invoke Scheme closures without a Rust
     /// reentrant call.
@@ -174,6 +178,8 @@ pub(crate) enum Callee<'heap> {
     Native {
         id: u32,
         fast: Option<crate::native::FastProcedure>,
+        single_result: bool,
+        may_exit: bool,
     },
     Other,
 }

@@ -5,7 +5,7 @@
 //! slice is kept tight, and tighter still while a PPI mailbox handshake is in
 //! flight, so the two cores make progress together.
 
-use common::{Bus, Cpu, CpuZ80, NoTrace, TraceSink};
+use common::{Bus, Cpu, CpuZ80, HostKey, KeyModifiers, NoTrace, TraceSink};
 
 use crate::bus::{Pc88VaBus, SYNC_SLICE, SubBusView, TIGHT_SLICE};
 
@@ -35,6 +35,218 @@ pub struct Pc88VaMachine<T: TraceSink = NoTrace> {
 pub fn build_untraced_machine(bus: Pc88VaBus<NoTrace>) -> Box<dyn common::Machine> {
     let sub_cpu = cpu::Z80::new(bus.clock_config().sub_clock_hz);
     Box::new(Pc88VaMachine::new(reset_cpu(), sub_cpu, bus))
+}
+
+/// Builds an automated PC-88VA machine around a configured bus.
+pub fn build_automated_machine(
+    bus: Pc88VaBus<common::tracing::ApplicationTraceSink>,
+) -> Box<dyn common::AutomatedMachine> {
+    let sub_cpu = cpu::Z80::new(bus.clock_config().sub_clock_hz);
+    Box::new(Pc88VaMachine::new(reset_cpu(), sub_cpu, bus))
+}
+
+impl common::AutomationDriver for Pc88VaMachine<common::tracing::ApplicationTraceSink> {
+    fn arm_presentation_yield(&mut self, target_frame: u64) {
+        self.bus.tracer().arm_presentation_yield(target_frame);
+    }
+
+    fn disarm_presentation_yield(&mut self) {
+        self.bus.tracer().disarm_presentation_yield();
+    }
+
+    fn epoch_ticks(&self) -> u64 {
+        self.bus.current_cycle()
+    }
+
+    fn epoch_frames(&self) -> u64 {
+        self.bus.presented_frames()
+    }
+
+    fn run_for(&mut self, budget: u64) -> u64 {
+        Pc88VaMachine::run_for(self, budget)
+    }
+
+    fn shutdown_requested(&self) -> bool {
+        false
+    }
+
+    fn drain_audio(&mut self, elapsed_ticks: u64) {
+        self.bus.drain_automation_audio(elapsed_ticks);
+    }
+}
+
+impl common::AutomatedMachine for Pc88VaMachine<common::tracing::ApplicationTraceSink> {
+    fn automation_descriptor(&self) -> common::AutomationDescriptor {
+        let (numerator, denominator) = self.bus.automation_timebase();
+        common::AutomationDescriptor {
+            target: "pc88va",
+            model: self.bus.model_id(),
+            timebase: common::AutomationTimebase {
+                ticks_per_second_numerator: numerator,
+                ticks_per_second_denominator: denominator,
+            },
+            audio_sample_rate: self.bus.audio_sample_rate(),
+            input: common::InputCapabilities {
+                keyboard: true,
+                mouse_buttons: 2,
+                joystick_ports: 1,
+            },
+        }
+    }
+
+    fn automation_timeline(&self) -> common::AutomationTimeline {
+        common::AutomationTimeline {
+            epoch_ticks: self.bus.current_cycle() as u128,
+            epoch_frames: self.bus.presented_frames() as u128,
+            ..common::AutomationTimeline::default()
+        }
+    }
+
+    fn run_automation(&mut self, request: common::RunRequest) -> common::RunOutcome {
+        common::drive_automation(self, request)
+    }
+
+    fn inspector(&mut self) -> Option<&mut dyn common::MachineInspector> {
+        Some(self)
+    }
+
+    fn trace_catalog(&self) -> common::TraceCatalog {
+        PC88VA_TRACE_CATALOG
+    }
+}
+
+/// Stable trace identifiers emitted by the PC-88VA bus.
+const PC88VA_TRACE_CATALOG: common::TraceCatalog = common::TraceCatalog {
+    controllers: &[
+        common::trace_id::controller::PC88VA_PIC,
+        common::trace_id::controller::PC88VA_SUB_FDC,
+    ],
+    scheduled: common::trace_id::scheduled::PC88VA,
+    devices: &[common::TraceDeviceCatalog {
+        device: common::trace_id::device::PC88VA_FDC,
+        actions: &[common::trace_id::action::READ],
+    }],
+    providers: &[],
+};
+
+impl common::MachineInspector for Pc88VaMachine<common::tracing::ApplicationTraceSink> {
+    fn processors(&self) -> common::ProcessorList {
+        let mut processors = common::ProcessorList::new();
+        // The main uPD9002 runs a V30 instruction set; it has no protected mode.
+        processors.push(common::inspect::x86_processor("cpu.main", false));
+        processors.push(common::inspect::z80_processor("cpu.sub"));
+        processors
+    }
+
+    fn address_spaces(&self) -> common::AddressSpaceList {
+        let mut spaces = common::AddressSpaceList::new();
+        spaces.push(common::inspect::memory_space(
+            "cpu.main.memory",
+            20,
+            common::ByteOrder::Little,
+        ));
+        spaces.push(common::inspect::io_space(
+            "cpu.main.io",
+            16,
+            common::ByteOrder::Little,
+        ));
+        spaces.push(common::inspect::memory_space(
+            "cpu.sub.memory",
+            16,
+            common::ByteOrder::Little,
+        ));
+        spaces.push(common::inspect::io_space(
+            "cpu.sub.io",
+            16,
+            common::ByteOrder::Little,
+        ));
+        spaces
+    }
+
+    fn read_register(&self, processor: &str, register: &str) -> Result<u128, common::InspectError> {
+        match processor {
+            "cpu.main" => common::inspect::x86_read(&self.cpu, register),
+            "cpu.sub" => common::inspect::z80_read(&self.sub_cpu, register),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn write_register(
+        &mut self,
+        processor: &str,
+        register: &str,
+        value: u128,
+    ) -> Result<(), common::InspectError> {
+        match processor {
+            "cpu.main" => common::inspect::x86_write(&mut self.cpu, register, value),
+            "cpu.sub" => common::inspect::z80_write(&mut self.sub_cpu, register, value),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn protected_mode_state(
+        &self,
+        processor: &str,
+    ) -> Result<common::ProtectedModeState, common::InspectError> {
+        match processor {
+            "cpu.main" | "cpu.sub" => Err(common::InspectError::Unsupported),
+            _ => Err(common::InspectError::UnknownProcessor),
+        }
+    }
+
+    fn peek_memory(
+        &mut self,
+        space: &str,
+        address: u64,
+        buffer: &mut [u8],
+    ) -> Result<(), common::InspectError> {
+        match space {
+            "cpu.main.memory" => {
+                for (index, byte) in buffer.iter_mut().enumerate() {
+                    *byte = self
+                        .bus
+                        .peek_byte(common::inspect::offset_u32(address, index)?);
+                }
+                Ok(())
+            }
+            "cpu.sub.memory" => {
+                for (index, byte) in buffer.iter_mut().enumerate() {
+                    *byte = self
+                        .bus
+                        .peek_sub_byte(common::inspect::offset_u16(address, index)?);
+                }
+                Ok(())
+            }
+            "cpu.main.io" | "cpu.sub.io" => Err(common::InspectError::NotPeekable),
+            _ => Err(common::InspectError::UnknownSpace),
+        }
+    }
+
+    fn poke_memory(
+        &mut self,
+        space: &str,
+        address: u64,
+        bytes: &[u8],
+    ) -> Result<(), common::InspectError> {
+        match space {
+            "cpu.main.memory" => {
+                for (index, byte) in bytes.iter().enumerate() {
+                    self.bus
+                        .poke_byte(common::inspect::offset_u32(address, index)?, *byte);
+                }
+                Ok(())
+            }
+            "cpu.sub.memory" => {
+                for (index, byte) in bytes.iter().enumerate() {
+                    self.bus
+                        .poke_sub_byte(common::inspect::offset_u16(address, index)?, *byte);
+                }
+                Ok(())
+            }
+            "cpu.main.io" | "cpu.sub.io" => Err(common::InspectError::NotWritable),
+            _ => Err(common::InspectError::UnknownSpace),
+        }
+    }
 }
 
 impl<T: TraceSink> Pc88VaMachine<T> {
@@ -145,20 +357,24 @@ impl<T: TraceSink> Pc88VaMachine<T> {
         }
     }
 
-    /// Mounts a floppy image (read and parsed from `path`) into a drive.
+    /// Mounts a floppy image into a drive with the requested backing.
     pub fn insert_floppy(
         &mut self,
         drive: usize,
-        path: &std::path::Path,
+        image: common::MediaImage<'_>,
+        backing: common::MediaBacking,
     ) -> Result<String, String> {
-        let data = std::fs::read(path)
-            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-        let image = device::floppy::load_floppy_image(path, &data)
-            .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
-        let description = format!("{} ({})", image.name, image.format_name());
-        self.bus
-            .insert_floppy(drive, image, Some(path.to_path_buf()));
+        let parsed =
+            device::floppy::load_floppy_image(std::path::Path::new(image.name), image.bytes)
+                .map_err(|error| format!("Failed to parse {}: {error}", image.name))?;
+        let description = format!("{} ({})", parsed.name, parsed.format_name());
+        self.bus.insert_floppy_backed(drive, parsed, backing);
         Ok(description)
+    }
+
+    /// Returns the current in-memory bytes of the floppy in `drive`, if mounted.
+    pub fn floppy_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        self.bus.floppy_image_bytes(drive)
     }
 
     /// Ejects the floppy from a drive.
@@ -242,8 +458,8 @@ impl<T: TraceSink> common::Machine for Pc88VaMachine<T> {
         self.restore_machine_blob(blob)
     }
 
-    fn set_host_date_time_provider(&mut self, provider: common::HostDateTimeProvider) {
-        self.bus.set_host_date_time_provider(provider);
+    fn set_host_date_time_source(&mut self, source: common::SharedHostDateTimeSource) {
+        self.bus.set_host_date_time_source(source);
     }
 
     fn cpu_clock_hz(&self) -> f64 {
@@ -270,6 +486,122 @@ impl<T: TraceSink> common::Machine for Pc88VaMachine<T> {
         self.bus.push_key_scancode(code);
     }
 
+    fn translate_host_key(&self, key: HostKey, _modifiers: KeyModifiers) -> Option<u8> {
+        Some(match key {
+            HostKey::Escape => 0x00,
+            HostKey::Digit1 => 0x01,
+            HostKey::Digit2 => 0x02,
+            HostKey::Digit3 => 0x03,
+            HostKey::Digit4 => 0x04,
+            HostKey::Digit5 => 0x05,
+            HostKey::Digit6 => 0x06,
+            HostKey::Digit7 => 0x07,
+            HostKey::Digit8 => 0x08,
+            HostKey::Digit9 => 0x09,
+            HostKey::Digit0 => 0x0A,
+            HostKey::Minus => 0x0B,
+            HostKey::Equals => 0x0C,
+            HostKey::Backslash => 0x0D,
+            HostKey::Backspace => 0x0E,
+            HostKey::Tab => 0x0F,
+            HostKey::Q => 0x10,
+            HostKey::W => 0x11,
+            HostKey::E => 0x12,
+            HostKey::R => 0x13,
+            HostKey::T => 0x14,
+            HostKey::Y => 0x15,
+            HostKey::U => 0x16,
+            HostKey::I => 0x17,
+            HostKey::O => 0x18,
+            HostKey::P => 0x19,
+            HostKey::Grave => 0x1A,
+            HostKey::LeftBracket => 0x1B,
+            HostKey::Return => 0x1C,
+            HostKey::A => 0x1D,
+            HostKey::S => 0x1E,
+            HostKey::D => 0x1F,
+            HostKey::F => 0x20,
+            HostKey::G => 0x21,
+            HostKey::H => 0x22,
+            HostKey::J => 0x23,
+            HostKey::K => 0x24,
+            HostKey::L => 0x25,
+            HostKey::Semicolon => 0x26,
+            HostKey::Apostrophe => 0x27,
+            HostKey::RightBracket => 0x28,
+            HostKey::Z => 0x29,
+            HostKey::X => 0x2A,
+            HostKey::C => 0x2B,
+            HostKey::V => 0x2C,
+            HostKey::B => 0x2D,
+            HostKey::N => 0x2E,
+            HostKey::M => 0x2F,
+            HostKey::Comma => 0x30,
+            HostKey::Period => 0x31,
+            HostKey::Slash => 0x32,
+            HostKey::NonUsBackslash => 0x33,
+            HostKey::Space => 0x34,
+            HostKey::RightAlt => 0x35,
+            HostKey::PageUp => 0x36,
+            HostKey::PageDown => 0x37,
+            HostKey::Insert => 0x38,
+            HostKey::Delete => 0x39,
+            HostKey::Up => 0x3A,
+            HostKey::Left => 0x3B,
+            HostKey::Right => 0x3C,
+            HostKey::Down => 0x3D,
+            HostKey::Home => 0x3E,
+            HostKey::End => 0x3F,
+            HostKey::KpMinus => 0x40,
+            HostKey::KpDivide => 0x41,
+            HostKey::Kp7 => 0x42,
+            HostKey::Kp8 => 0x43,
+            HostKey::Kp9 => 0x44,
+            HostKey::KpMultiply => 0x45,
+            HostKey::Kp4 => 0x46,
+            HostKey::Kp5 => 0x47,
+            HostKey::Kp6 => 0x48,
+            HostKey::KpPlus => 0x49,
+            HostKey::Kp1 => 0x4A,
+            HostKey::Kp2 => 0x4B,
+            HostKey::Kp3 => 0x4C,
+            HostKey::KpEnter => 0x79,
+            HostKey::Kp0 => 0x4E,
+            HostKey::KpComma => 0x4F,
+            HostKey::KpPeriod => 0x50,
+            HostKey::Application => 0x51,
+            HostKey::F11 => 0x52,
+            HostKey::F12 => 0x53,
+            HostKey::F13 => 0x54,
+            HostKey::F14 => 0x55,
+            HostKey::F15 => 0x56,
+            HostKey::Pause => 0x60,
+            HostKey::PrintScreen => 0x61,
+            HostKey::F1 => 0x62,
+            HostKey::F2 => 0x63,
+            HostKey::F3 => 0x64,
+            HostKey::F4 => 0x65,
+            HostKey::F5 => 0x66,
+            HostKey::F6 => 0x67,
+            HostKey::F7 => 0x68,
+            HostKey::F8 => 0x69,
+            HostKey::F9 => 0x6A,
+            HostKey::F10 => 0x6B,
+            HostKey::LeftShift => 0x70,
+            HostKey::RightShift => 0x70,
+            HostKey::CapsLock => 0x71,
+            HostKey::NumLock => 0x72,
+            HostKey::LeftAlt => 0x73,
+            HostKey::LeftControl => 0x74,
+            HostKey::International1 => 0x33,
+            HostKey::International2 => 0x72,
+            HostKey::International3 => 0x0D,
+            HostKey::International4 => 0x35,
+            HostKey::International5 => 0x51,
+            _ => return None,
+        })
+    }
+
     fn push_mouse_delta(&mut self, delta_x: i16, delta_y: i16) {
         self.bus.push_mouse_delta(delta_x, delta_y);
     }
@@ -294,8 +626,17 @@ impl<T: TraceSink> common::Machine for Pc88VaMachine<T> {
         self.bus.font_rom_data()
     }
 
-    fn insert_floppy(&mut self, drive: usize, path: &std::path::Path) -> Result<String, String> {
-        Pc88VaMachine::insert_floppy(self, drive, path)
+    fn insert_floppy(
+        &mut self,
+        drive: usize,
+        image: common::MediaImage<'_>,
+        backing: common::MediaBacking,
+    ) -> Result<String, String> {
+        Pc88VaMachine::insert_floppy(self, drive, image, backing)
+    }
+
+    fn floppy_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {
+        Pc88VaMachine::floppy_image_bytes(self, drive)
     }
 
     fn eject_floppy(&mut self, drive: usize) {

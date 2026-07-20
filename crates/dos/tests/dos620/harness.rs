@@ -4,7 +4,7 @@ use std::{
 };
 
 use common::{
-    BUILTIN_FONT_ROM, Bus, CpuMode, HostDateTimeProvider, JisChar, Machine as _, MachineModel,
+    BUILTIN_FONT_ROM, Bus, CpuMode, JisChar, Machine as _, MachineModel, SharedHostDateTimeSource,
     TraceSink,
 };
 use device::{
@@ -510,10 +510,10 @@ pub fn boot_hle() -> machine_98::Pc9801Ra {
 }
 
 /// Boots a machine with NEETAN DOS HLE DOS and an optional fixed time provider.
-pub fn boot_hle_with_time(time_provider: Option<HostDateTimeProvider>) -> machine_98::Pc9801Ra {
+pub fn boot_hle_with_time(time_source: Option<SharedHostDateTimeSource>) -> machine_98::Pc9801Ra {
     let mut machine = create_hle_machine();
-    if let Some(provider) = time_provider {
-        machine.set_host_date_time_provider(provider);
+    if let Some(source) = time_source {
+        machine.set_host_date_time_source(source);
     }
     wait_for_prompt(
         &mut machine,
