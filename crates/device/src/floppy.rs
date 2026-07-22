@@ -32,7 +32,7 @@ use std::{
 use common::error;
 pub use d88::{D88Disk, D88Error, D88MediaType, D88Sector};
 pub use msx_dsk::{MsxDskError, MsxDskGeometry};
-pub use nfd::NfdRevision;
+pub use nfd::{NfdExtra, NfdRevision};
 
 use crate::disk_backend::DiskBackend;
 
@@ -63,6 +63,17 @@ pub enum FloppyFormat {
     MsxDsk(MsxDskGeometry),
 }
 
+/// Format-specific metadata preserved so an image can be re-emitted
+/// losslessly. Exactly one variant is present per non-canonical container
+/// format; canonical formats carry no extra.
+#[derive(Debug, Clone)]
+pub enum FormatExtra {
+    /// DIM (X68000 DIFC.X) container header, preserved verbatim.
+    Dim(Box<[u8; dim::DIM_HEADER_SIZE]>),
+    /// NFD (T98-Next) container and per-sector metadata.
+    Nfd(Box<NfdExtra>),
+}
+
 /// A parsed floppy disk image.
 #[derive(Debug, Clone)]
 pub struct FloppyImage {
@@ -70,8 +81,10 @@ pub struct FloppyImage {
     disk: D88Disk,
     /// Original image format.
     pub format: FloppyFormat,
-    /// Original container header preserved for lossless re-emit (DIM only).
-    container_header: Option<Box<[u8; dim::DIM_HEADER_SIZE]>>,
+    /// Format-specific metadata preserved for lossless re-emit. For NFD it is
+    /// kept aligned with the disk tracks and sectors, so the disk structure
+    /// must only be mutated through `FloppyImage` methods.
+    extra: Option<FormatExtra>,
 }
 
 impl Deref for FloppyImage {
@@ -93,7 +106,7 @@ impl FloppyImage {
         Self {
             disk,
             format: FloppyFormat::D88,
-            container_header: None,
+            extra: None,
         }
     }
 
@@ -103,7 +116,7 @@ impl FloppyImage {
         Ok(Self {
             disk,
             format: FloppyFormat::D88,
-            container_header: None,
+            extra: None,
         })
     }
 
@@ -115,7 +128,7 @@ impl FloppyImage {
         Ok(Self {
             disk,
             format: FloppyFormat::D77,
-            container_header: None,
+            extra: None,
         })
     }
 
@@ -125,21 +138,22 @@ impl FloppyImage {
         Ok(Self {
             disk,
             format: FloppyFormat::Hdm,
-            container_header: None,
+            extra: None,
         })
     }
 
-    /// Parses an NFD floppy image from raw bytes.
+    /// Parses an NFD floppy image from raw bytes, keeping the container and
+    /// per-sector metadata for lossless re-emit.
     pub fn from_nfd_bytes(data: &[u8]) -> Result<Self, FloppyError> {
-        let (disk, revision) = nfd::from_bytes(data).map_err(FloppyError::Nfd)?;
-        let format = match revision {
+        let (disk, extra) = nfd::from_bytes(data).map_err(FloppyError::Nfd)?;
+        let format = match extra.revision() {
             NfdRevision::R0 => FloppyFormat::NfdR0,
             NfdRevision::R1 => FloppyFormat::NfdR1,
         };
         Ok(Self {
             disk,
             format,
-            container_header: None,
+            extra: Some(FormatExtra::Nfd(extra)),
         })
     }
 
@@ -149,7 +163,7 @@ impl FloppyImage {
         Ok(Self {
             disk,
             format: FloppyFormat::TwoD,
-            container_header: None,
+            extra: None,
         })
     }
 
@@ -159,7 +173,7 @@ impl FloppyImage {
         Ok(Self {
             disk,
             format: FloppyFormat::Dim,
-            container_header: Some(header),
+            extra: Some(FormatExtra::Dim(header)),
         })
     }
 
@@ -169,7 +183,7 @@ impl FloppyImage {
         Ok(Self {
             disk,
             format: FloppyFormat::Xdf,
-            container_header: None,
+            extra: None,
         })
     }
 
@@ -179,7 +193,7 @@ impl FloppyImage {
         Ok(Self {
             disk,
             format: FloppyFormat::Img,
-            container_header: None,
+            extra: None,
         })
     }
 
@@ -189,7 +203,7 @@ impl FloppyImage {
         Ok(Self {
             disk,
             format: FloppyFormat::IbmXdf,
-            container_header: None,
+            extra: None,
         })
     }
 
@@ -199,7 +213,7 @@ impl FloppyImage {
         Ok(Self {
             disk,
             format: FloppyFormat::MsxDsk(geometry),
-            container_header: None,
+            extra: None,
         })
     }
 
@@ -213,7 +227,7 @@ impl FloppyImage {
         Ok(Self {
             disk,
             format: FloppyFormat::MsxDsk(geometry),
-            container_header: None,
+            extra: None,
         })
     }
 
@@ -239,8 +253,8 @@ impl FloppyImage {
         match self.format {
             FloppyFormat::D88 | FloppyFormat::D77 => self.disk.to_bytes(),
             FloppyFormat::Hdm => hdm::to_bytes(&self.disk),
-            FloppyFormat::NfdR0 => nfd::to_bytes_r0(&self.disk),
-            FloppyFormat::NfdR1 => nfd::to_bytes_r1(&self.disk),
+            FloppyFormat::NfdR0 => nfd::to_bytes_r0(&self.disk, self.nfd_extra()),
+            FloppyFormat::NfdR1 => nfd::to_bytes_r1(&self.disk, self.nfd_extra()),
             FloppyFormat::TwoD => two_d::to_bytes(&self.disk),
             FloppyFormat::Dim => dim::to_bytes(&self.disk, self.dim_header()),
             FloppyFormat::Xdf => xdf::to_bytes(&self.disk),
@@ -260,9 +274,8 @@ impl FloppyImage {
                     Some("HDM cannot represent the current track layout")
                 }
             }
-            FloppyFormat::NfdR0 | FloppyFormat::NfdR1 => {
-                Some("NFD full-image serialization does not preserve all source metadata")
-            }
+            FloppyFormat::NfdR0 => nfd::r0_reemit_error(&self.disk),
+            FloppyFormat::NfdR1 => nfd::r1_reemit_error(&self.disk, self.nfd_extra()),
             FloppyFormat::TwoD => {
                 if two_d::is_representable(&self.disk) {
                     None
@@ -311,10 +324,113 @@ impl FloppyImage {
     /// Returns the preserved DIM header, or a blank 2HD header when absent.
     fn dim_header(&self) -> &[u8; dim::DIM_HEADER_SIZE] {
         const DEFAULT_DIM_HEADER: [u8; dim::DIM_HEADER_SIZE] = dim::blank_header();
-        self.container_header
-            .as_deref()
-            .unwrap_or(&DEFAULT_DIM_HEADER)
+        match &self.extra {
+            Some(FormatExtra::Dim(header)) => header,
+            _ => &DEFAULT_DIM_HEADER,
+        }
     }
+
+    /// Returns the preserved NFD metadata, when this is an NFD image.
+    fn nfd_extra(&self) -> Option<&NfdExtra> {
+        match &self.extra {
+            Some(FormatExtra::Nfd(extra)) => Some(extra),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference to the preserved NFD metadata, when this is
+    /// an NFD image.
+    fn nfd_extra_mut(&mut self) -> Option<&mut NfdExtra> {
+        match &mut self.extra {
+            Some(FormatExtra::Nfd(extra)) => Some(extra),
+            _ => None,
+        }
+    }
+
+    /// Formats a track in place and resets the NFD per-track metadata so the
+    /// image can still be re-emitted losslessly. Delegates the disk mutation
+    /// to `D88Disk::format_track`.
+    pub fn format_track(
+        &mut self,
+        track_index: usize,
+        chrn: &[(u8, u8, u8, u8)],
+        data_n: u8,
+        fill_byte: u8,
+    ) {
+        self.disk.format_track(track_index, chrn, data_n, fill_byte);
+        let media_type = self.disk.media_type;
+        if let Some(extra) = self.nfd_extra_mut() {
+            extra.reset_track(track_index, chrn.len(), media_type);
+        }
+    }
+
+    /// Applies a guest sector write to the in-memory image, refreshing any NFD
+    /// retry copies so every stored read returns the new data, and returns
+    /// where the file copies live for synchronous write-through.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_sector_payload(
+        &mut self,
+        track_index: usize,
+        cylinder: u8,
+        head: u8,
+        record: u8,
+        size_code: u8,
+        payload: &[u8],
+    ) -> Option<SectorWriteBack> {
+        let (track, slot) = self.disk.find_sector_slot_near_track_index(
+            track_index,
+            cylinder,
+            head,
+            record,
+            size_code,
+        )?;
+
+        let sector = self.disk.sector_at_index_mut(track, slot)?;
+        let copy_len = payload.len().min(sector.data.len());
+        sector.data[..copy_len].copy_from_slice(&payload[..copy_len]);
+        let source_offset = sector.source_offset;
+        let sector_size = sector.data.len();
+        let updated = sector.data.clone();
+
+        let mut retry_copies = 0;
+        if let Some(NfdExtra {
+            revision: nfd::NfdRevisionExtra::R1(r1),
+            ..
+        }) = self.nfd_extra_mut()
+            && let Some(Some(track_extra)) = r1.tracks.get_mut(track)
+            && let Some(sector_extra) = track_extra.sectors.get_mut(slot)
+        {
+            for copy in &mut sector_extra.retry_data {
+                *copy = updated.clone();
+            }
+            retry_copies = sector_extra.retry_data.len();
+        }
+
+        let full_sector = if retry_copies > 0 {
+            Some(updated)
+        } else {
+            None
+        };
+        Some(SectorWriteBack {
+            source_offset,
+            sector_size,
+            retry_copies,
+            full_sector,
+        })
+    }
+}
+
+/// File write-back targets produced by an in-memory sector write.
+#[derive(Debug, Clone)]
+pub struct SectorWriteBack {
+    /// Offset of the primary sector data in the source file, when known.
+    pub source_offset: Option<u64>,
+    /// Full sector data length in bytes.
+    pub sector_size: usize,
+    /// Number of NFD R1 retry copies following the primary copy in the file.
+    pub retry_copies: usize,
+    /// The full updated sector bytes, present only when retry copies exist.
+    pub full_sector: Option<Vec<u8>>,
 }
 
 /// A floppy image bound to its source file for synchronous write-through.
@@ -428,20 +544,30 @@ impl MountedFloppy {
         if self.read_only {
             return true;
         }
-        let Some(sector) = self
+        let Some(writeback) = self
             .image
-            .find_sector_near_track_index_mut(track_index, c, h, r, n)
+            .write_sector_payload(track_index, c, h, r, n, data)
         else {
             return false;
         };
-        let copy_len = data.len().min(sector.data.len());
-        sector.data[..copy_len].copy_from_slice(&data[..copy_len]);
-        let source_offset = sector.source_offset;
+        let copy_len = data.len().min(writeback.sector_size);
 
-        if let (Some(backend), Some(offset)) = (self.backend.as_mut(), source_offset) {
+        if let (Some(backend), Some(offset)) = (self.backend.as_mut(), writeback.source_offset) {
             if let Err(err) = backend.write_at(offset, &data[..copy_len]) {
                 self.dirty = true;
                 error!("Floppy write-through failed at offset {offset}: {err}");
+            } else if let Some(full_sector) = writeback.full_sector.as_ref() {
+                // Refresh the NFD retry copies in the file with the full
+                // updated sector so every stored read returns the new data.
+                for copy in 1..=writeback.retry_copies {
+                    let retry_offset = offset + (copy * writeback.sector_size) as u64;
+                    if let Err(err) = backend.write_at(retry_offset, full_sector) {
+                        self.dirty = true;
+                        error!(
+                            "Floppy retry-copy write-through failed at offset {retry_offset}: {err}"
+                        );
+                    }
+                }
             }
         } else {
             self.dirty = true;
@@ -807,33 +933,79 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
-    #[test]
-    fn mounted_floppy_nfd_format_stays_dirty_and_leaves_file_unchanged() {
-        const COMMON_HEADER_SIZE: usize = 0x120;
-        const R1_TRACK_TABLE_SIZE: usize = 164 * 4;
-        const R1_TRACK_HEADER_SIZE: usize = 16;
-        const SECTOR_ENTRY_SIZE: usize = 16;
+    /// Constants and layout helpers shared by the NFD R1 mount tests.
+    const NFD_COMMON_HEADER_SIZE: usize = 0x120;
+    const NFD_R1_TRACK_TABLE_SIZE: usize = 164 * 4;
+    const NFD_R1_TRACK_HEADER_SIZE: usize = 16;
+    const NFD_SECTOR_ENTRY_SIZE: usize = 16;
+    const NFD_R1_FIXED_HEADER_END: usize = NFD_COMMON_HEADER_SIZE + NFD_R1_TRACK_TABLE_SIZE;
 
-        let track_metadata_size = R1_TRACK_HEADER_SIZE + SECTOR_ENTRY_SIZE;
-        let header_section_size = COMMON_HEADER_SIZE + R1_TRACK_TABLE_SIZE + track_metadata_size;
-        let mut original = vec![0u8; header_section_size + 256];
+    /// Builds a compact NFD R1 image: one track, one 256-byte sector with
+    /// `retry` retry copies, a "KEEP-TITLE" comment, and an optional
+    /// `additional_info_offset` written into a 16-byte header gap.
+    fn build_mount_r1(retry: u8, additional_info_offset: u32) -> Vec<u8> {
+        let gap = if additional_info_offset != 0 { 16 } else { 0 };
+        let track_metadata_size = NFD_R1_TRACK_HEADER_SIZE + NFD_SECTOR_ENTRY_SIZE;
+        let head_size = NFD_R1_FIXED_HEADER_END + gap + track_metadata_size;
+        let sector_bytes = 256 * (1 + retry as usize);
+        let mut original = vec![0u8; head_size + sector_bytes];
+
         original[..15].copy_from_slice(b"T98FDDIMAGE.R1\0");
         original[0x10..0x1A].copy_from_slice(b"KEEP-TITLE");
-        original[0x110..0x114].copy_from_slice(&(header_section_size as u32).to_le_bytes());
+        original[0x110..0x114].copy_from_slice(&(head_size as u32).to_le_bytes());
 
-        let track_meta_offset = COMMON_HEADER_SIZE + R1_TRACK_TABLE_SIZE;
-        original[COMMON_HEADER_SIZE..COMMON_HEADER_SIZE + 4]
+        if gap != 0 {
+            original[NFD_R1_FIXED_HEADER_END..NFD_R1_FIXED_HEADER_END + 4]
+                .copy_from_slice(&additional_info_offset.to_le_bytes());
+        }
+
+        let track_meta_offset = NFD_R1_FIXED_HEADER_END + gap;
+        original[NFD_COMMON_HEADER_SIZE..NFD_COMMON_HEADER_SIZE + 4]
             .copy_from_slice(&(track_meta_offset as u32).to_le_bytes());
         original[track_meta_offset..track_meta_offset + 2].copy_from_slice(&1u16.to_le_bytes());
 
-        let entry = track_meta_offset + R1_TRACK_HEADER_SIZE;
+        let entry = track_meta_offset + NFD_R1_TRACK_HEADER_SIZE;
         original[entry] = 0;
         original[entry + 1] = 0;
         original[entry + 2] = 1;
         original[entry + 3] = 1;
+        original[entry + 10] = retry;
         original[entry + 11] = 0x90;
-        original[header_section_size..].fill(0xA5);
 
+        for copy in 0..=retry as usize {
+            let offset = head_size + copy * 256;
+            original[offset..offset + 256].fill(0xA5);
+        }
+
+        original
+    }
+
+    #[test]
+    fn mounted_floppy_nfd_format_track_reemits_file() {
+        let original = build_mount_r1(0, 0);
+        let path = tempfile_with(&original, ".nfd");
+        let image = FloppyImage::from_nfd_bytes(&original).unwrap();
+        let mut mounted = MountedFloppy::new(image, Some(path.clone()));
+
+        mounted.format_track(0, &[(0, 0, 1, 1), (0, 0, 2, 1)], 1, 0xE5);
+
+        assert!(!mounted.is_dirty());
+        mounted.flush();
+        drop(mounted);
+
+        let raw = std::fs::read(&path).unwrap();
+        let reparsed = FloppyImage::from_nfd_bytes(&raw).unwrap();
+        assert_eq!(reparsed.sector_count(0), 2);
+        // The preserved comment survives the re-emit.
+        assert_eq!(&raw[0x10..0x1A], b"KEEP-TITLE");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn mounted_floppy_nfd_gated_format_stays_dirty_and_leaves_file_unchanged() {
+        // A nonzero dwAddInfo keeps the image re-emit gated.
+        let original = build_mount_r1(0, 0x1234);
         let path = tempfile_with(&original, ".nfd");
         let image = FloppyImage::from_nfd_bytes(&original).unwrap();
         let mut mounted = MountedFloppy::new(image, Some(path.clone()));
@@ -845,6 +1017,32 @@ mod tests {
         assert_eq!(raw, original);
 
         drop(mounted);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn mounted_floppy_nfd_write_updates_retry_copies() {
+        let original = build_mount_r1(1, 0);
+        let head_size = original.len() - 512;
+        let path = tempfile_with(&original, ".nfd");
+        let image = FloppyImage::from_nfd_bytes(&original).unwrap();
+        let mut mounted = MountedFloppy::new(image, Some(path.clone()));
+
+        let pattern = [0x77u8; 256];
+        assert!(mounted.write_sector_data(0, 0, 0, 1, 1, &pattern));
+
+        mounted.flush();
+        drop(mounted);
+
+        let raw = std::fs::read(&path).unwrap();
+        // Both the primary copy and the retry copy carry the new data.
+        assert!(raw[head_size..head_size + 256].iter().all(|&b| b == 0x77));
+        assert!(
+            raw[head_size + 256..head_size + 512]
+                .iter()
+                .all(|&b| b == 0x77)
+        );
+
         std::fs::remove_file(&path).ok();
     }
 

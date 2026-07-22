@@ -304,23 +304,21 @@ mappings.
 
 ### Supported floppy disk image formats
 
-| Format  | Extensions                     | Writable | Description                                        |
-|---------|--------------------------------|----------|----------------------------------------------------|
-| D88     | `.d88`, `.d98`, `.88d`, `.98d` | Yes      | Standard PC-98 disk image with per-sector metadata |
-| HDM     | `.hdm`                         | Yes      | Headerless raw sector image (2HD only)             |
-| NFD     | `.nfd`                         | Partial  | T98Next format with per-sector metadata            |
-| 2D      | `.2d`                          | Yes      | Headerless raw sector image (Sharp X1, 2D only)    |
-| D77     | `.d77`                         | Yes      | Fujitsu FM-7 disk image; byte-compatible D88       |
-| MSX DSK | `.dsk`                         | Yes      | Headerless raw MSX floppy image                    |
-| DIM     | `.dim`                         | Yes      | X68000 DIFC.X container                            |
-| XDF     | `.xdf`, `.2hd`                 | Yes      | Headerless raw sector image (X68000, 2HD only)     |
-| IMG     | `.img`, `.ima`                 | Yes      | Headerless raw IBM PC floppy image                 |
-| IBM XDF | `.xdf`, `.img`, `.ima`         | Yes      | IBM Extended Density Format, detected by file size |
+| Format  | Extensions                     | Description                                        |
+|---------|--------------------------------|----------------------------------------------------|
+| D88     | `.d88`, `.d98`, `.88d`, `.98d` | Standard PC-98 disk image with per-sector metadata |
+| HDM     | `.hdm`                         | Headerless raw sector image (2HD only)             |
+| NFD     | `.nfd`                         | T98Next format with per-sector metadata            |
+| 2D      | `.2d`                          | Headerless raw sector image (Sharp X1, 2D only)    |
+| D77     | `.d77`                         | Fujitsu FM-7 disk image; byte-compatible D88       |
+| MSX DSK | `.dsk`                         | Headerless raw MSX floppy image                    |
+| DIM     | `.dim`                         | X68000 DIFC.X container                            |
+| XDF     | `.xdf`, `.2hd`                 | Headerless raw sector image (X68000, 2HD only)     |
+| IMG     | `.img`, `.ima`                 | Headerless raw IBM PC floppy image                 |
+| IBM XDF | `.xdf`, `.img`, `.ima`         | IBM Extended Density Format, detected by file size |
 
-Sector writes made by the emulated software (e.g. game saves) are persisted back to the
-source file for all formats. Full track reformatting (`FORMAT TRACK`) is persisted when
-the resulting layout remains representable by the source format. NFD full-image
-serialization is disabled because it cannot preserve all per-sector metadata.
+Writes made by the emulated software (e.g. game saves) are persisted back to the source file for
+all formats.
 
 ### Supported CD-ROM disc image formats
 

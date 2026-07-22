@@ -117,6 +117,18 @@ fn sector_at_index_wraps_nfd() {
 }
 
 #[test]
+fn blank_2hd_nfd_roundtrip_byte_identical() {
+    // Parsing then re-serializing the real fixture must reproduce it exactly,
+    // pinning the spec header (dwHeadSize = 68,112, byHead = 2) and the 16-byte
+    // Reserve3 tail preserved via NfdExtra.
+    let path = fixture_path("blank_2HD.nfd");
+    let data = std::fs::read(&path).expect("read fixture");
+    let (disk, extra) = nfd::from_bytes(&data).expect("parse fixture");
+    let serialized = nfd::to_bytes_r0(&disk, Some(&extra));
+    assert_eq!(serialized, data);
+}
+
+#[test]
 fn blank_2hd_nfd_matches_d88() {
     let nfd_disk = load_nfd_fixture("blank_2HD.nfd");
     let d88_disk = load_d88_fixture("blank_2HD.d88");
