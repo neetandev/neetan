@@ -129,7 +129,7 @@ fn day_of_week(year: u16, month: u8, day: u8) -> u8 {
 #[derive(Clone, Debug, Default)]
 pub struct CommonConfig {
     /// PC-6000 / PC-6600 ROM directory.
-    pub pc60_roms: Option<PathBuf>,
+    pub pc6000_roms: Option<PathBuf>,
     /// PC-88 ROM directory.
     pub pc88_roms: Option<PathBuf>,
     /// PC-88VA ROM directory.
@@ -256,7 +256,7 @@ impl CommonConfig {
         line_number: usize,
     ) -> Result<(), String> {
         let rom_target: Option<&mut Option<PathBuf>> = match key {
-            "pc60-roms" => Some(&mut self.pc60_roms),
+            "pc6000-roms" => Some(&mut self.pc6000_roms),
             "pc88-roms" => Some(&mut self.pc88_roms),
             "pc88va-roms" => Some(&mut self.pc88va_roms),
             "pc98-roms" => Some(&mut self.pc98_roms),

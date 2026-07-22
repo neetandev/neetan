@@ -3,6 +3,11 @@
 use std::{collections::BTreeMap, path::Path};
 
 use common::{MediaBacking, MediaImage};
+use device::disk::{
+    HddSizeType, blank_hdd_image,
+    format::{PartitionTableType, format_hdd_image},
+    load_hdd_image,
+};
 
 use super::{ActiveMachine, AutomationSession, OpError};
 use crate::{
@@ -89,6 +94,14 @@ impl AutomationSession {
         Self::check_media_supported(active, kind)?;
         if active.mounts.contains_key(&(kind, slot)) {
             Self::eject_from(active, kind, slot);
+        }
+
+        // A synthetic "blank:<size>" source mounts a zeroed hard disk built in
+        // memory, with no host file to read.
+        if kind == MediaKind::Hdd
+            && let Some(size_token) = request.source.strip_prefix("blank:")
+        {
+            return Self::mount_blank_hdd(active, request, slot, size_token, written);
         }
 
         let root = match kind {
@@ -188,6 +201,49 @@ impl AutomationSession {
         Ok(mount)
     }
 
+    /// Synthesizes a blank hard disk of `size_token` and mounts it RAM-backed.
+    ///
+    /// On a hard-reset replay `written` carries the captured image so the
+    /// formatted-and-installed content survives the reconstruction.
+    fn mount_blank_hdd(
+        active: &mut ActiveMachine,
+        request: &MediaRequest,
+        slot: usize,
+        size_token: &str,
+        written: Option<&[u8]>,
+    ) -> Result<MediaMount, OpError> {
+        let size: HddSizeType = size_token
+            .parse()
+            .map_err(|message: String| OpError::Argument(message))?;
+        let image = blank_hdd_image(size);
+        let extension = image.format.file_extension();
+        let name = format!("blank.{extension}");
+        let bytes = match written {
+            Some(bytes) => bytes.to_vec(),
+            None => image.to_bytes(),
+        };
+        let media = MediaImage {
+            name: &name,
+            bytes: &bytes,
+        };
+        let description = active
+            .machine
+            .insert_hdd(slot, media, MediaBacking::Ram)
+            .map_err(OpError::Io)?;
+        let mount = MediaMount {
+            kind: MediaKind::Hdd,
+            slot,
+            requested: request.source.clone(),
+            format: extension.to_uppercase(),
+            description,
+            write_protected: false,
+            dirty: false,
+            printer_artifact: None,
+        };
+        active.mounts.insert((MediaKind::Hdd, slot), mount.clone());
+        Ok(mount)
+    }
+
     /// Rejects a media kind the current machine does not support.
     ///
     /// Floppy and CD-ROM have no `StartupCapabilities` flag, so an unsupported
@@ -243,6 +299,50 @@ impl AutomationSession {
     ) -> Result<MediaMount, OpError> {
         let request = MediaRequest { kind, slot, source };
         self.mount(&request, None)
+    }
+
+    /// Synthesizes a blank hard disk of `size` in memory and mounts it
+    /// RAM-backed in `slot`. No host file is created or read.
+    pub fn create_hdd(&mut self, slot: usize, size: HddSizeType) -> Result<MediaMount, OpError> {
+        let source = format!("blank:{}", size.as_token());
+        let request = MediaRequest {
+            kind: MediaKind::Hdd,
+            slot,
+            source,
+        };
+        self.mount(&request, None)
+    }
+
+    /// Formats the hard disk mounted in `slot` in place, writing the partition
+    /// table and an empty FAT volume, then re-mounts the formatted image
+    /// RAM-backed. Intended to run before the guest boots.
+    pub fn format_hdd(&mut self, slot: usize, table: PartitionTableType) -> Result<(), OpError> {
+        let active = self.active.as_mut().ok_or(OpError::NoMachine)?;
+        let mount = active
+            .mounts
+            .get(&(MediaKind::Hdd, slot))
+            .cloned()
+            .ok_or_else(|| OpError::Argument(format!("no hard disk is mounted in slot {slot}")))?;
+        let bytes = active.machine.hdd_image_bytes(slot).ok_or_else(|| {
+            OpError::Argument(format!("hard disk in slot {slot} cannot be read back"))
+        })?;
+
+        let name = format!("disk.{}", mount.format.to_ascii_lowercase());
+        let mut image = load_hdd_image(Path::new(&name), &bytes)
+            .map_err(|error| OpError::Io(format!("cannot parse hard disk image: {error}")))?;
+        format_hdd_image(&mut image, table)
+            .map_err(|error| OpError::Io(format!("cannot format hard disk: {error}")))?;
+        let formatted = image.to_bytes();
+
+        let media = MediaImage {
+            name: &name,
+            bytes: &formatted,
+        };
+        active
+            .machine
+            .insert_hdd(slot, media, MediaBacking::Ram)
+            .map_err(OpError::Io)?;
+        Ok(())
     }
 
     /// Ejects mounted media from a slot.

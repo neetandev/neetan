@@ -333,112 +333,7 @@ impl std::str::FromStr for FddType {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum HddSizeType {
-    Mb5,
-    Mb10,
-    Mb15,
-    Mb20,
-    Mb30,
-    Mb40,
-    IdeMb40,
-    IdeMb80,
-    IdeMb120,
-    IdeMb200,
-    IdeMb500,
-    ScsiMb20,
-    ScsiMb40,
-    ScsiMb100,
-    ScsiMb200,
-    ScsiMb340,
-    ScsiMb540,
-    X68kSasiMb10,
-    X68kSasiMb20,
-    X68kSasiMb40,
-    X68kScsiMb20,
-    X68kScsiMb40,
-    AtMb40,
-    AtMb100,
-    AtMb250,
-    AtMb504,
-}
-
-impl std::str::FromStr for HddSizeType {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "sasi5" => Ok(Self::Mb5),
-            "sasi10" => Ok(Self::Mb10),
-            "sasi15" => Ok(Self::Mb15),
-            "sasi20" => Ok(Self::Mb20),
-            "sasi30" => Ok(Self::Mb30),
-            "sasi40" => Ok(Self::Mb40),
-            "ide40" => Ok(Self::IdeMb40),
-            "ide80" => Ok(Self::IdeMb80),
-            "ide120" => Ok(Self::IdeMb120),
-            "ide200" => Ok(Self::IdeMb200),
-            "ide500" => Ok(Self::IdeMb500),
-            "scsi20" => Ok(Self::ScsiMb20),
-            "scsi40" => Ok(Self::ScsiMb40),
-            "scsi100" => Ok(Self::ScsiMb100),
-            "scsi200" => Ok(Self::ScsiMb200),
-            "scsi340" => Ok(Self::ScsiMb340),
-            "scsi540" => Ok(Self::ScsiMb540),
-            "x68sasi10" => Ok(Self::X68kSasiMb10),
-            "x68sasi20" => Ok(Self::X68kSasiMb20),
-            "x68sasi40" => Ok(Self::X68kSasiMb40),
-            "x68scsi20" => Ok(Self::X68kScsiMb20),
-            "x68scsi40" => Ok(Self::X68kScsiMb40),
-            "at40" => Ok(Self::AtMb40),
-            "at100" => Ok(Self::AtMb100),
-            "at250" => Ok(Self::AtMb250),
-            "at504" => Ok(Self::AtMb504),
-            _ => Err(format!(
-                "unknown HDD size '{s}', expected sasi5, sasi10, sasi15, sasi20, sasi30, sasi40, \
-                 ide40, ide80, ide120, ide200, ide500, scsi20, scsi40, scsi100, scsi200, scsi340, \
-                 scsi540, x68sasi10, x68sasi20, x68sasi40, x68scsi20, x68scsi40, at40, at100, \
-                 at250, or at504"
-            )),
-        }
-    }
-}
-
-impl HddSizeType {
-    /// Whether this size denotes an FM Towns raw SCSI image (.h0-.h4) rather
-    /// than a PC-98 SASI/IDE header format (.hdi).
-    pub fn is_scsi_raw(self) -> bool {
-        matches!(
-            self,
-            Self::ScsiMb20
-                | Self::ScsiMb40
-                | Self::ScsiMb100
-                | Self::ScsiMb200
-                | Self::ScsiMb340
-                | Self::ScsiMb540
-        )
-    }
-
-    /// Whether this size denotes an X68000 headerless .hdf image.
-    pub fn is_x68k_hdf(self) -> bool {
-        matches!(
-            self,
-            Self::X68kSasiMb10
-                | Self::X68kSasiMb20
-                | Self::X68kSasiMb40
-                | Self::X68kScsiMb20
-                | Self::X68kScsiMb40
-        )
-    }
-
-    /// Whether this size denotes an AT headerless flat .hdd image.
-    pub fn is_at_flat(self) -> bool {
-        matches!(
-            self,
-            Self::AtMb40 | Self::AtMb100 | Self::AtMb250 | Self::AtMb504
-        )
-    }
-}
+pub use device::disk::HddSizeType;
 
 fn parse_create_fdd_args(args: &mut impl Iterator<Item = String>) -> crate::Result<Action> {
     let mut path: Option<PathBuf> = None;
@@ -657,7 +552,7 @@ fn parse_args_from(
             "--x68k-roms" => config.x68k_roms = Some(PathBuf::from(value(&flag)?)),
             "--at-roms" => config.at_roms = Some(PathBuf::from(value(&flag)?)),
             "--towns-pad" => config.towns_pad = value(&flag)?.parse().map_err(StringError)?,
-            "--pc6000-roms" => config.pc60_roms = Some(PathBuf::from(value(&flag)?)),
+            "--pc6000-roms" => config.pc6000_roms = Some(PathBuf::from(value(&flag)?)),
             "--msx-roms" => config.msx_roms = Some(PathBuf::from(value(&flag)?)),
             "--x1-roms" => config.x1_roms = Some(PathBuf::from(value(&flag)?)),
             "--fm7-roms" => config.fm7_roms = Some(PathBuf::from(value(&flag)?)),
@@ -862,7 +757,7 @@ fn apply_config_file(
                 Ok(pad) => config.towns_pad = pad,
                 Err(error) => warn!("Invalid towns-pad in config: {error}"),
             },
-            "pc6000-roms" => config.pc60_roms = Some(PathBuf::from(val)),
+            "pc6000-roms" => config.pc6000_roms = Some(PathBuf::from(val)),
             "msx-roms" => config.msx_roms = Some(PathBuf::from(val)),
             "x1-roms" => config.x1_roms = Some(PathBuf::from(val)),
             "fm7-roms" => config.fm7_roms = Some(PathBuf::from(val)),

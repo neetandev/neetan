@@ -127,7 +127,7 @@ fn host_config_value(
     let common = session.borrow().common_config().clone();
     let mut entries: Vec<(&str, Value)> = Vec::new();
     for (key, directory) in [
-        ("pc60-roms", &common.pc60_roms),
+        ("pc6000-roms", &common.pc6000_roms),
         ("pc88-roms", &common.pc88_roms),
         ("pc88va-roms", &common.pc88va_roms),
         ("pc98-roms", &common.pc98_roms),
@@ -166,7 +166,7 @@ fn format_guest_time(common: &CommonConfig) -> String {
 
 /// Copies the common ROM directories into every matching config field.
 fn seed_rom_directories(config: &mut EmulatorConfig, common: &CommonConfig) {
-    config.pc60_roms = common.pc60_roms.clone();
+    config.pc6000_roms = common.pc6000_roms.clone();
     config.pc88_roms = common.pc88_roms.clone();
     config.pc88va_roms = common.pc88va_roms.clone();
     config.pc98_roms = common.pc98_roms.clone();
