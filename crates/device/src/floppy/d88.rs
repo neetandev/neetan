@@ -388,6 +388,43 @@ impl D88Disk {
         Some(&track.sectors[idx])
     }
 
+    /// Returns a mutable reference to the sector at the given rotational index
+    /// on the specified track.
+    pub fn sector_at_index_mut(
+        &mut self,
+        track_index: usize,
+        sector_index: usize,
+    ) -> Option<&mut D88Sector> {
+        let track = self.tracks.get_mut(track_index)?.as_mut()?;
+        if track.sectors.is_empty() {
+            return None;
+        }
+        let idx = sector_index % track.sectors.len();
+        Some(&mut track.sectors[idx])
+    }
+
+    /// Locates a sector by C/H/R/N near `track_index`, returning its resolved
+    /// track index and rotational slot within that track.
+    pub fn find_sector_slot_near_track_index(
+        &self,
+        track_index: usize,
+        cylinder: u8,
+        head: u8,
+        record: u8,
+        size_code: u8,
+    ) -> Option<(usize, usize)> {
+        let target =
+            self.find_target_track_index(track_index, cylinder, head, record, size_code)?;
+        let track = self.tracks.get(target)?.as_ref()?;
+        let slot = track.sectors.iter().position(|sector| {
+            sector.cylinder == cylinder
+                && sector.head == head
+                && sector.record == record
+                && sector.size_code == size_code
+        })?;
+        Some((target, slot))
+    }
+
     /// Finds the sector matching C/H/R/N on the given track index, returning a mutable reference.
     pub fn find_sector_on_track_index_mut(
         &mut self,
