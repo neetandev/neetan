@@ -1,17 +1,27 @@
-//! Hard disk image format parsers for SASI hard disk emulation.
+//! Hard disk image format parsers for SASI, SCSI, and AT/IDE hard disks.
 //!
-//! Supports the PC-98 HDD image formats:
-//! - **NHD** (.nhd): T98Next format with signature and full geometry header.
-//! - **HDI** (.hdi): Anex86 format with compact 32-byte geometry header.
-//! - **THD** (.thd): Original T98 format with minimal header, fixed SASI geometry.
-//!
-//! and the FM Towns HDD image format:
-//! - **RAW** (.h0-.h4): headerless flat 512-byte-sector image; the extension
-//!   digit is the SCSI drive index.
+//! Serves PC-98 SASI, FM Towns SCSI, AT/IDE, and X68000 SASI/SCSI machines.
+//! Supported formats:
+//! - **NHD** (.nhd): T98-Next format with a "T98HDDIMAGE.R0" signature and a
+//!   512-byte header carrying full CHS + sector-size geometry.
+//! - **HDI** (.hdi): Anex86 format with a compact 32-byte geometry header.
+//! - **THD** (.thd): original T98 format with a 256-byte header; heads/SPT/
+//!   sector-size are fixed SASI geometry.
+//! - **RAW** (.h0-.h4): headerless flat 512-byte-sector image (FM Towns /
+//!   X68000 SCSI); the extension digit is the SCSI drive index.
+//! - **HDD** (.hdd): headerless flat AT/IDE image with the classic
+//!   16 head x 63 SPT x 512-byte translation geometry.
+//! - **HDF** (.hdf): headerless X68000 image; the machine model selects its
+//!   SASI or SCSI geometry.
 
-mod hdi;
-mod nhd;
-mod thd;
+pub mod at_flat;
+pub mod hdi;
+pub mod nhd;
+pub mod raw;
+#[cfg(test)]
+mod test_support;
+pub mod thd;
+pub mod x68k_sasi;
 
 use std::{
     error::Error,
@@ -21,49 +31,10 @@ use std::{
 
 use common::error;
 
+pub use self::x68k_sasi::{
+    X68K_SASI_HDF_10MB_BYTES, X68K_SASI_HDF_20MB_BYTES, X68K_SASI_HDF_40MB_BYTES,
+};
 use crate::disk_backend::DiskBackend;
-
-/// HDI header size (fixed at 32 bytes).
-const HDI_HEADER_SIZE: usize = 32;
-
-/// NHD file signature: "T98HDDIMAGE.R0\0" (15 bytes).
-const NHD_SIGNATURE: &[u8; 15] = b"T98HDDIMAGE.R0\0";
-
-/// NHD header size (fixed at 512 bytes).
-const NHD_HEADER_SIZE: usize = 512;
-
-/// THD header size (fixed at 256 bytes).
-const THD_HEADER_SIZE: usize = 256;
-
-/// THD fixed geometry: 33 sectors per track.
-const THD_SECTORS_PER_TRACK: u8 = 33;
-
-/// THD fixed geometry: 8 heads.
-const THD_HEADS: u8 = 8;
-
-/// THD fixed sector size: 256 bytes.
-const THD_SECTOR_SIZE: u16 = 256;
-
-/// Raw (.h0-.h4) images use a fixed 512-byte sector.
-const RAW_SECTOR_SIZE: u16 = 512;
-
-/// Synthesized head count for the raw-image geometry container.
-const RAW_HEADS: u8 = 8;
-
-/// Synthesized sectors-per-track for the raw-image geometry container.
-const RAW_SECTORS_PER_TRACK: u8 = 32;
-
-/// Heads of the classic AT IDE translation geometry.
-const AT_FLAT_HEADS: u8 = 16;
-
-/// Sectors per track of the classic AT IDE translation geometry.
-const AT_FLAT_SECTORS_PER_TRACK: u8 = 63;
-
-/// Sector size of an AT IDE hard disk.
-const AT_FLAT_SECTOR_SIZE: u16 = 512;
-
-/// Cylinder ceiling of CHS addressing (10 cylinder bits).
-const AT_FLAT_MAX_CYLINDERS: u16 = 1023;
 
 /// Legacy SENSE (INT 1Bh Function 04h) return values per SASI HDD type index.
 const SASI_LEGACY_SENSE: [u8; 7] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x04, 0x05];
@@ -173,66 +144,6 @@ impl HddImage {
         }
     }
 
-    /// Loads a headerless flat 512-byte-sector image (.h0-.h4). The SCSI path
-    /// is purely LBA-based; the CHS geometry is synthesized only to fill the
-    /// `HddGeometry` container. The image size must be a nonzero multiple of
-    /// 128 KiB (one synthesized cylinder), which every whole-megabyte image
-    /// satisfies.
-    pub fn from_raw_flat(data: Vec<u8>) -> Result<Self, HddError> {
-        let sectors_per_cylinder = RAW_HEADS as usize * RAW_SECTORS_PER_TRACK as usize;
-        let cylinder_bytes = sectors_per_cylinder * RAW_SECTOR_SIZE as usize;
-        if data.is_empty() || !data.len().is_multiple_of(cylinder_bytes) {
-            return Err(HddError::InvalidGeometry {
-                field: "raw image size (must be a nonzero multiple of 128 KiB)",
-                value: data.len() as u32,
-            });
-        }
-        let cylinders = data.len() / cylinder_bytes;
-        if cylinders > u16::MAX as usize {
-            return Err(HddError::InvalidGeometry {
-                field: "raw image cylinders",
-                value: cylinders as u32,
-            });
-        }
-        let geometry = HddGeometry {
-            cylinders: cylinders as u16,
-            heads: RAW_HEADS,
-            sectors_per_track: RAW_SECTORS_PER_TRACK,
-            sector_size: RAW_SECTOR_SIZE,
-        };
-        Ok(Self::from_raw(geometry, HddFormat::Raw, data))
-    }
-
-    /// Loads a headerless flat AT IDE image (.hdd) with the classic
-    /// 16 head x 63 sector x 512 byte translation geometry. The image size
-    /// must be a nonzero whole number of cylinders (516,096 bytes each) up
-    /// to the 1023-cylinder CHS ceiling (about 504 MB).
-    pub fn from_at_flat(data: Vec<u8>) -> Result<Self, HddError> {
-        let cylinder_bytes = AT_FLAT_HEADS as usize
-            * AT_FLAT_SECTORS_PER_TRACK as usize
-            * AT_FLAT_SECTOR_SIZE as usize;
-        if data.is_empty() || !data.len().is_multiple_of(cylinder_bytes) {
-            return Err(HddError::InvalidGeometry {
-                field: "AT flat image size (must be a nonzero multiple of 504 KiB)",
-                value: data.len() as u32,
-            });
-        }
-        let cylinders = data.len() / cylinder_bytes;
-        if cylinders > AT_FLAT_MAX_CYLINDERS as usize {
-            return Err(HddError::InvalidGeometry {
-                field: "AT flat image cylinders (the CHS ceiling is 1023)",
-                value: cylinders as u32,
-            });
-        }
-        let geometry = HddGeometry {
-            cylinders: cylinders as u16,
-            heads: AT_FLAT_HEADS,
-            sectors_per_track: AT_FLAT_SECTORS_PER_TRACK,
-            sector_size: AT_FLAT_SECTOR_SIZE,
-        };
-        Ok(Self::from_raw(geometry, HddFormat::AtFlat, data))
-    }
-
     /// Returns the raw sector data.
     pub fn data(&self) -> &[u8] {
         &self.data
@@ -313,33 +224,9 @@ impl HddImage {
 /// image.
 fn synthesize_default_header(format: HddFormat, geometry: HddGeometry) -> Vec<u8> {
     match format {
-        HddFormat::Nhd => {
-            let mut header = vec![0u8; NHD_HEADER_SIZE];
-            header[..15].copy_from_slice(NHD_SIGNATURE);
-            header[0x110..0x114].copy_from_slice(&(NHD_HEADER_SIZE as u32).to_le_bytes());
-            header[0x114..0x118].copy_from_slice(&(geometry.cylinders as u32).to_le_bytes());
-            header[0x118..0x11A].copy_from_slice(&(geometry.heads as u16).to_le_bytes());
-            header[0x11A..0x11C]
-                .copy_from_slice(&(geometry.sectors_per_track as u16).to_le_bytes());
-            header[0x11C..0x11E].copy_from_slice(&geometry.sector_size.to_le_bytes());
-            header
-        }
-        HddFormat::Hdi => {
-            let mut header = vec![0u8; HDI_HEADER_SIZE];
-            let total_sectors = geometry.total_sectors();
-            header[8..12].copy_from_slice(&(HDI_HEADER_SIZE as u32).to_le_bytes());
-            header[12..16].copy_from_slice(&total_sectors.to_le_bytes());
-            header[16..20].copy_from_slice(&(geometry.sector_size as u32).to_le_bytes());
-            header[20..24].copy_from_slice(&(geometry.sectors_per_track as u32).to_le_bytes());
-            header[24..28].copy_from_slice(&(geometry.heads as u32).to_le_bytes());
-            header[28..32].copy_from_slice(&(geometry.cylinders as u32).to_le_bytes());
-            header
-        }
-        HddFormat::Thd => {
-            let mut header = vec![0u8; THD_HEADER_SIZE];
-            header[0..2].copy_from_slice(&geometry.cylinders.to_le_bytes());
-            header
-        }
+        HddFormat::Nhd => nhd::synth_header(geometry),
+        HddFormat::Hdi => hdi::synth_header(geometry),
+        HddFormat::Thd => thd::synth_header(geometry),
         // A raw image is the bare sector data with no header, so `to_bytes`
         // round-trips the file byte-for-byte.
         HddFormat::Raw | HddFormat::AtFlat => Vec::new(),
@@ -383,7 +270,7 @@ fn validate_geometry(
 /// Loads an HDD image, auto-detecting the format by file extension and signature.
 pub fn load_hdd_image(path: &Path, data: &[u8]) -> Result<HddImage, HddError> {
     // Try NHD first (has a signature).
-    if data.len() >= 15 && &data[..15] == NHD_SIGNATURE {
+    if data.len() >= 15 && &data[..15] == nhd::NHD_SIGNATURE {
         return HddImage::from_nhd(data);
     }
 
@@ -400,55 +287,6 @@ pub fn load_hdd_image(path: &Path, data: &[u8]) -> Result<HddImage, HddError> {
         Some("h0" | "h1" | "h2" | "h3" | "h4") => HddImage::from_raw_flat(data.to_vec()),
         Some("hdd") => HddImage::from_at_flat(data.to_vec()),
         _ => Err(HddError::UnrecognizedFormat),
-    }
-}
-
-/// Sectors per track of an X68000 SASI hard disk.
-const X68K_SASI_SECTORS_PER_TRACK: u8 = 33;
-
-/// Sector size of an X68000 SASI hard disk.
-const X68K_SASI_SECTOR_SIZE: u16 = 256;
-
-/// Exact byte size of a 10 MB X68000 SASI .hdf image (309 cylinders, 4 heads).
-pub const X68K_SASI_HDF_10MB_BYTES: usize = 10_441_728;
-
-/// Exact byte size of a 20 MB X68000 SASI .hdf image (614 cylinders, 4 heads).
-pub const X68K_SASI_HDF_20MB_BYTES: usize = 20_748_288;
-
-/// Exact byte size of a 40 MB X68000 SASI .hdf image (614 cylinders, 8 heads).
-pub const X68K_SASI_HDF_40MB_BYTES: usize = 41_496_576;
-
-/// Loads a headerless X68000 .hdf image. `sector_size` selects the
-/// controller the image is meant for: 256 (SASI) must match one of the three
-/// fixed drive capacities exactly and gets that drive's geometry; 512 (SCSI)
-/// accepts any flat image size `from_raw_flat` accepts.
-pub fn load_x68k_hdf(data: Vec<u8>, sector_size: u16) -> Result<HddImage, HddError> {
-    match sector_size {
-        256 => {
-            let (cylinders, heads) = match data.len() {
-                X68K_SASI_HDF_10MB_BYTES => (309, 4),
-                X68K_SASI_HDF_20MB_BYTES => (614, 4),
-                X68K_SASI_HDF_40MB_BYTES => (614, 8),
-                _ => {
-                    return Err(HddError::InvalidGeometry {
-                        field: "SASI .hdf size (must be exactly a 10, 20, or 40 MB image)",
-                        value: data.len() as u32,
-                    });
-                }
-            };
-            let geometry = HddGeometry {
-                cylinders,
-                heads,
-                sectors_per_track: X68K_SASI_SECTORS_PER_TRACK,
-                sector_size: X68K_SASI_SECTOR_SIZE,
-            };
-            Ok(HddImage::from_raw(geometry, HddFormat::Raw, data))
-        }
-        512 => HddImage::from_raw_flat(data),
-        _ => Err(HddError::InvalidGeometry {
-            field: "X68000 .hdf sector size (must be 256 or 512)",
-            value: sector_size as u32,
-        }),
     }
 }
 
@@ -731,143 +569,13 @@ fn hdd_identity_structure(image: &HddImage) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    fn build_nhd_image(cylinders: u16, heads: u8, spt: u8, sector_size: u16) -> Vec<u8> {
-        let header_size = NHD_HEADER_SIZE as u32;
-        let mut header = vec![0u8; NHD_HEADER_SIZE];
-
-        header[..15].copy_from_slice(NHD_SIGNATURE);
-        header[0x110..0x114].copy_from_slice(&header_size.to_le_bytes());
-        header[0x114..0x118].copy_from_slice(&(cylinders as u32).to_le_bytes());
-        header[0x118..0x11A].copy_from_slice(&(heads as u16).to_le_bytes());
-        header[0x11A..0x11C].copy_from_slice(&(spt as u16).to_le_bytes());
-        header[0x11C..0x11E].copy_from_slice(&sector_size.to_le_bytes());
-
-        let total_sectors = cylinders as usize * heads as usize * spt as usize;
-        let data_size = total_sectors * sector_size as usize;
-        let mut data = vec![0u8; data_size];
-        // Fill each sector's first byte with its LBA index (mod 256).
-        for lba in 0..total_sectors {
-            data[lba * sector_size as usize] = lba as u8;
-        }
-
-        header.extend_from_slice(&data);
-        header
-    }
-
-    fn build_hdi_image(cylinders: u16, heads: u8, spt: u8, sector_size: u16) -> Vec<u8> {
-        let header_size = HDI_HEADER_SIZE as u32;
-        let total_sectors = cylinders as u32 * heads as u32 * spt as u32;
-        let mut header = vec![0u8; HDI_HEADER_SIZE];
-
-        header[8..12].copy_from_slice(&header_size.to_le_bytes());
-        header[12..16].copy_from_slice(&total_sectors.to_le_bytes());
-        header[16..20].copy_from_slice(&(sector_size as u32).to_le_bytes());
-        header[20..24].copy_from_slice(&(spt as u32).to_le_bytes());
-        header[24..28].copy_from_slice(&(heads as u32).to_le_bytes());
-        header[28..32].copy_from_slice(&(cylinders as u32).to_le_bytes());
-
-        let data_size = total_sectors as usize * sector_size as usize;
-        let mut data = vec![0u8; data_size];
-        for lba in 0..total_sectors as usize {
-            data[lba * sector_size as usize] = lba as u8;
-        }
-
-        header.extend_from_slice(&data);
-        header
-    }
-
-    fn build_thd_image(cylinders: u16) -> Vec<u8> {
-        let mut header = vec![0u8; THD_HEADER_SIZE];
-        header[0..2].copy_from_slice(&cylinders.to_le_bytes());
-
-        let total_sectors =
-            cylinders as usize * THD_HEADS as usize * THD_SECTORS_PER_TRACK as usize;
-        let data_size = total_sectors * THD_SECTOR_SIZE as usize;
-        let mut data = vec![0u8; data_size];
-        for lba in 0..total_sectors {
-            data[lba * THD_SECTOR_SIZE as usize] = lba as u8;
-        }
-
-        header.extend_from_slice(&data);
-        header
-    }
-
-    #[test]
-    fn parse_nhd_5mb() {
-        let image = build_nhd_image(153, 4, 33, 256);
-        let hdd = HddImage::from_nhd(&image).unwrap();
-
-        assert_eq!(hdd.geometry.cylinders, 153);
-        assert_eq!(hdd.geometry.heads, 4);
-        assert_eq!(hdd.geometry.sectors_per_track, 33);
-        assert_eq!(hdd.geometry.sector_size, 256);
-        assert_eq!(hdd.geometry.total_sectors(), 153 * 4 * 33);
-        assert_eq!(hdd.format, HddFormat::Nhd);
-    }
-
-    #[test]
-    fn parse_hdi_10mb() {
-        let image = build_hdi_image(310, 4, 33, 256);
-        let hdd = HddImage::from_hdi(&image).unwrap();
-
-        assert_eq!(hdd.geometry.cylinders, 310);
-        assert_eq!(hdd.geometry.heads, 4);
-        assert_eq!(hdd.geometry.sectors_per_track, 33);
-        assert_eq!(hdd.geometry.sector_size, 256);
-        assert_eq!(hdd.format, HddFormat::Hdi);
-    }
-
-    #[test]
-    fn parse_thd_20mb() {
-        let image = build_thd_image(310);
-        let hdd = HddImage::from_thd(&image).unwrap();
-
-        assert_eq!(hdd.geometry.cylinders, 310);
-        assert_eq!(hdd.geometry.heads, THD_HEADS);
-        assert_eq!(hdd.geometry.sectors_per_track, THD_SECTORS_PER_TRACK);
-        assert_eq!(hdd.geometry.sector_size, THD_SECTOR_SIZE);
-        assert_eq!(hdd.format, HddFormat::Thd);
-    }
-
-    #[test]
-    fn parse_raw_h0_round_trips() {
-        // 1 MiB image: 2048 sectors of 512 bytes = 8 cyls x 8 heads x 32 spt.
-        let mut data = vec![0u8; 1024 * 1024];
-        for lba in 0..(data.len() / 512) {
-            data[lba * 512] = lba as u8;
-        }
-        let hdd = load_hdd_image(Path::new("disk.h0"), &data).unwrap();
-
-        assert_eq!(hdd.format, HddFormat::Raw);
-        assert_eq!(hdd.geometry.sector_size, 512);
-        assert_eq!(hdd.geometry.heads, RAW_HEADS);
-        assert_eq!(hdd.geometry.sectors_per_track, RAW_SECTORS_PER_TRACK);
-        assert_eq!(hdd.geometry.cylinders, 8);
-        assert_eq!(hdd.geometry.total_sectors(), 2048);
-        assert_eq!(hdd.read_sector(5).unwrap()[0], 5);
-        // Headerless: serialization is byte-identical to the source file.
-        assert_eq!(hdd.to_bytes(), data);
-    }
-
-    #[test]
-    fn raw_h1_extension_also_parses() {
-        let data = vec![0u8; 128 * 1024];
-        let hdd = load_hdd_image(Path::new("disk.h1"), &data).unwrap();
-        assert_eq!(hdd.format, HddFormat::Raw);
-        assert_eq!(hdd.geometry.cylinders, 1);
-    }
-
-    #[test]
-    fn raw_rejects_unaligned_size() {
-        // 300 KiB is a multiple of 512 but not of the 128 KiB cylinder size.
-        let data = vec![0u8; 300 * 1024];
-        assert!(matches!(
-            HddImage::from_raw_flat(data),
-            Err(HddError::InvalidGeometry { .. })
-        ));
-    }
+    use super::{
+        hdi::HDI_HEADER_SIZE,
+        nhd::NHD_HEADER_SIZE,
+        test_support::{build_hdi_image, build_nhd_image, build_thd_image, tempfile_with},
+        thd::{THD_HEADER_SIZE, THD_SECTOR_SIZE},
+        *,
+    };
 
     #[test]
     fn read_sector_at_various_lbas() {
@@ -957,102 +665,6 @@ mod tests {
     }
 
     #[test]
-    fn nhd_roundtrip() {
-        let image = build_nhd_image(153, 4, 33, 256);
-        let hdd = HddImage::from_nhd(&image).unwrap();
-        let serialized = hdd.to_bytes();
-
-        assert_eq!(serialized.len(), image.len());
-        // Header should match.
-        assert_eq!(&serialized[..15], NHD_SIGNATURE);
-        // Data should match.
-        let data_start = NHD_HEADER_SIZE;
-        assert_eq!(&serialized[data_start..], &image[data_start..]);
-    }
-
-    #[test]
-    fn hdi_roundtrip() {
-        let image = build_hdi_image(310, 4, 33, 256);
-        let hdd = HddImage::from_hdi(&image).unwrap();
-        let serialized = hdd.to_bytes();
-
-        assert_eq!(serialized.len(), image.len());
-        assert_eq!(&serialized[HDI_HEADER_SIZE..], &image[HDI_HEADER_SIZE..]);
-    }
-
-    #[test]
-    fn thd_roundtrip() {
-        let image = build_thd_image(153);
-        let hdd = HddImage::from_thd(&image).unwrap();
-        let serialized = hdd.to_bytes();
-
-        assert_eq!(serialized.len(), image.len());
-        assert_eq!(&serialized[..2], &image[..2]);
-        assert_eq!(&serialized[THD_HEADER_SIZE..], &image[THD_HEADER_SIZE..]);
-    }
-
-    #[test]
-    fn nhd_too_small_rejected() {
-        let data = vec![0u8; 100];
-        assert!(matches!(
-            HddImage::from_nhd(&data),
-            Err(HddError::TooSmall { format: "NHD", .. })
-        ));
-    }
-
-    #[test]
-    fn nhd_bad_signature_rejected() {
-        let mut image = build_nhd_image(153, 4, 33, 256);
-        image[0] = b'X';
-        assert!(matches!(
-            HddImage::from_nhd(&image),
-            Err(HddError::InvalidSignature { format: "NHD", .. })
-        ));
-    }
-
-    #[test]
-    fn hdi_too_small_rejected() {
-        let data = vec![0u8; 16];
-        assert!(matches!(
-            HddImage::from_hdi(&data),
-            Err(HddError::TooSmall { format: "HDI", .. })
-        ));
-    }
-
-    #[test]
-    fn thd_too_small_rejected() {
-        let data = vec![0u8; 100];
-        assert!(matches!(
-            HddImage::from_thd(&data),
-            Err(HddError::TooSmall { format: "THD", .. })
-        ));
-    }
-
-    #[test]
-    fn thd_zero_cylinders_rejected() {
-        let mut image = build_thd_image(153);
-        image[0] = 0;
-        image[1] = 0;
-        assert!(matches!(
-            HddImage::from_thd(&image),
-            Err(HddError::InvalidGeometry {
-                field: "cylinders",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn nhd_truncated_data_rejected() {
-        let mut image = build_nhd_image(153, 4, 33, 256);
-        image.truncate(NHD_HEADER_SIZE + 100);
-        assert!(matches!(
-            HddImage::from_nhd(&image),
-            Err(HddError::DataTruncated { .. })
-        ));
-    }
-
-    #[test]
     fn auto_detect_nhd_by_signature() {
         let image = build_nhd_image(153, 4, 33, 256);
         let hdd = load_hdd_image(Path::new("test.nhd"), &image).unwrap();
@@ -1114,56 +726,6 @@ mod tests {
             sector_size: 512,
         };
         assert_eq!(non_sasi.sasi_media_type(), None);
-    }
-
-    #[test]
-    fn nhd_with_512_byte_sectors() {
-        let image = build_nhd_image(100, 4, 17, 512);
-        let hdd = HddImage::from_nhd(&image).unwrap();
-
-        assert_eq!(hdd.geometry.sector_size, 512);
-        assert_eq!(hdd.geometry.total_sectors(), 100 * 4 * 17);
-
-        let sector = hdd.read_sector(0).unwrap();
-        assert_eq!(sector.len(), 512);
-    }
-
-    #[test]
-    fn hdi_with_larger_header() {
-        let mut image = build_hdi_image(153, 4, 33, 256);
-        // Simulate a larger header by setting header_size and inserting padding.
-        let new_header_size = 4096u32;
-        image[8..12].copy_from_slice(&new_header_size.to_le_bytes());
-        let padding = vec![0u8; (new_header_size as usize) - HDI_HEADER_SIZE];
-        let data_portion = image[HDI_HEADER_SIZE..].to_vec();
-        image.truncate(HDI_HEADER_SIZE);
-        image.extend_from_slice(&padding);
-        image.extend_from_slice(&data_portion);
-
-        let hdd = HddImage::from_hdi(&image).unwrap();
-        assert_eq!(hdd.geometry.cylinders, 153);
-        assert_eq!(hdd.header_bytes.len(), 4096);
-
-        // Roundtrip preserves the larger header byte-for-byte.
-        let serialized = hdd.to_bytes();
-        assert_eq!(serialized.len(), image.len());
-        assert_eq!(&serialized[..4096], &image[..4096]);
-    }
-
-    fn tempfile_with(bytes: &[u8], suffix: &str) -> PathBuf {
-        let dir = std::env::temp_dir();
-        let unique = format!(
-            "neetan_hdd_test_{}_{}{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-            suffix
-        );
-        let path = dir.join(unique);
-        std::fs::write(&path, bytes).expect("write temp file");
-        path
     }
 
     #[test]
@@ -1258,69 +820,6 @@ mod tests {
             mounted.is_dirty(),
             "dirty must remain set after later successful write"
         );
-
-        drop(mounted);
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn x68k_hdf_sasi_sizes_map_to_drive_geometries() {
-        let cases = [
-            (X68K_SASI_HDF_10MB_BYTES, 309u16, 4u8),
-            (X68K_SASI_HDF_20MB_BYTES, 614, 4),
-            (X68K_SASI_HDF_40MB_BYTES, 614, 8),
-        ];
-        for (bytes, cylinders, heads) in cases {
-            let image = load_x68k_hdf(vec![0u8; bytes], 256).unwrap();
-            assert_eq!(image.geometry.cylinders, cylinders);
-            assert_eq!(image.geometry.heads, heads);
-            assert_eq!(image.geometry.sectors_per_track, 33);
-            assert_eq!(image.geometry.sector_size, 256);
-            assert_eq!(image.geometry.total_bytes(), bytes as u64);
-            assert_eq!(image.format, HddFormat::Raw);
-            assert!(image.header_bytes.is_empty());
-        }
-    }
-
-    #[test]
-    fn x68k_hdf_sasi_rejects_other_sizes() {
-        assert!(load_x68k_hdf(vec![0u8; X68K_SASI_HDF_10MB_BYTES - 256], 256).is_err());
-        assert!(load_x68k_hdf(vec![0u8; X68K_SASI_HDF_10MB_BYTES + 256], 256).is_err());
-        assert!(load_x68k_hdf(Vec::new(), 256).is_err());
-    }
-
-    #[test]
-    fn x68k_hdf_scsi_derives_flat_geometry() {
-        let bytes = 20 << 20;
-        let image = load_x68k_hdf(vec![0u8; bytes], 512).unwrap();
-        assert_eq!(image.geometry.heads, 8);
-        assert_eq!(image.geometry.sectors_per_track, 32);
-        assert_eq!(image.geometry.sector_size, 512);
-        assert_eq!(image.geometry.total_bytes(), bytes as u64);
-        assert_eq!(image.format, HddFormat::Raw);
-        assert!(load_x68k_hdf(vec![0u8; 512], 512).is_err());
-    }
-
-    #[test]
-    fn x68k_hdf_rejects_unknown_sector_size() {
-        assert!(load_x68k_hdf(vec![0u8; X68K_SASI_HDF_10MB_BYTES], 1024).is_err());
-    }
-
-    #[test]
-    fn x68k_hdf_flushes_headerless_round_trip() {
-        let mut data = vec![0u8; X68K_SASI_HDF_10MB_BYTES];
-        data[0] = 0x60;
-        let path = tempfile_with(&data, ".hdf");
-
-        let image = load_x68k_hdf(data, 256).unwrap();
-        let mut mounted = MountedHdd::new(image, Some(path.clone()));
-        assert!(mounted.write_sector(1, &[0xA5u8; 256]));
-        mounted.flush();
-
-        let written = std::fs::read(&path).unwrap();
-        assert_eq!(written.len(), X68K_SASI_HDF_10MB_BYTES);
-        assert_eq!(written[0], 0x60);
-        assert_eq!(written[256], 0xA5);
 
         drop(mounted);
         std::fs::remove_file(&path).ok();

@@ -7,7 +7,7 @@
 use common::{
     Bus, CpuM68000, CpuMode, M68000AccessSize, M68000BusAccess, M68000CycleKind, M68000FunctionCode,
 };
-use device::disk::{HddImage, X68K_SASI_HDF_10MB_BYTES, load_x68k_hdf};
+use device::disk::{HddImage, X68K_SASI_HDF_10MB_BYTES};
 use machine_x68k::{LoadedRoms, X68kBus, X68kMachine, X68kModel};
 
 /// Size of the mapped character-generator ROM.
@@ -206,7 +206,7 @@ pub fn patterned_sasi_hdf() -> HddImage {
         sector[..4].copy_from_slice(&(lba as u32).to_le_bytes());
         sector[4..].fill((lba as u8) ^ 0x5A);
     }
-    load_x68k_hdf(data, 256).unwrap()
+    HddImage::from_x68k_sasi(data).unwrap()
 }
 
 /// Builds a flat SCSI .hdf image of `megabytes` MiB with the same
@@ -217,5 +217,5 @@ pub fn patterned_scsi_hdf(megabytes: usize) -> HddImage {
         sector[..4].copy_from_slice(&(lba as u32).to_le_bytes());
         sector[4..].fill((lba as u8) ^ 0xA5);
     }
-    load_x68k_hdf(data, 512).unwrap()
+    HddImage::from_raw_flat(data).unwrap()
 }
