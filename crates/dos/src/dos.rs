@@ -167,8 +167,9 @@ impl NeetanDos {
         dev_info & tables::SFT_DEVINFO_NUL != 0
     }
 
-    fn write_stdout_byte(&mut self, memory: &mut dyn MemoryAccess, byte: u8) {
-        if !self.stdout_is_nul(memory) {
+    /// Writes one byte through the active console output path.
+    pub(crate) fn write_stdout_byte(&mut self, memory: &mut dyn MemoryAccess, byte: u8) {
+        if !self.stdout_is_nul(memory) && !int29_handler_is_iret(memory) {
             self.console.process_byte(memory, byte);
         }
     }
@@ -1503,6 +1504,13 @@ impl NeetanDos {
     }
 }
 
+fn int29_handler_is_iret(memory: &dyn MemoryAccess) -> bool {
+    const INT29_VECTOR: u32 = 0x29 * 4;
+    let offset = u32::from(memory.read_word(INT29_VECTOR));
+    let segment = u32::from(memory.read_word(INT29_VECTOR + 2));
+    memory.read_byte((segment << 4).wrapping_add(offset)) == 0xCF
+}
+
 /// Normalizes a DOS path by resolving `.` and `..` components.
 /// Input/output is a byte vector like `A:\FOO\BAR\..\BAZ`.
 pub(crate) fn normalize_path(path: &[u8]) -> Vec<u8> {
@@ -1551,6 +1559,7 @@ fn read_dword(memory: &dyn MemoryAccess, address: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use super::int29_handler_is_iret;
     use crate::{
         CpuAccess, MemoryAccess, NeetanDos,
         memory::{self, memory_manager::MemoryManager},
@@ -1584,6 +1593,26 @@ mod tests {
 
     fn mcb_addr(segment: u16) -> u32 {
         (segment as u32) << 4
+    }
+
+    #[test]
+    fn int29_iret_hook_suppresses_fast_console_output() {
+        let mut memory = MockMemory::with_extended_memory(0x200000, 0);
+        memory.write_word(0x29 * 4, 0x0123);
+        memory.write_word(0x29 * 4 + 2, 0x2000);
+        memory.write_byte(0x20123, 0xCF);
+
+        assert!(int29_handler_is_iret(&memory));
+    }
+
+    #[test]
+    fn int29_non_iret_hook_keeps_fast_console_output() {
+        let mut memory = MockMemory::with_extended_memory(0x200000, 0);
+        memory.write_word(0x29 * 4, 0x0123);
+        memory.write_word(0x29 * 4 + 2, 0x2000);
+        memory.write_byte(0x20123, 0x90);
+
+        assert!(!int29_handler_is_iret(&memory));
     }
 
     #[test]

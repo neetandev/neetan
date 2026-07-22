@@ -100,9 +100,10 @@ impl Console {
             return;
         }
 
+        let shift_jis_mode = self.shift_jis_mode_enabled(memory);
         if self.esc_parser.state == EscState::Normal
-            && self.shift_jis_mode_enabled(memory)
             && is_shift_jis_lead_byte(byte)
+            && (shift_jis_mode || byte == 0x86)
         {
             self.set_pending_shift_jis_lead(memory, byte);
             return;
@@ -340,6 +341,14 @@ impl Console {
             let parameter = self.esc_parser.params[index];
             match parameter {
                 0 | 39 => self.set_attribute(memory, 0xE1),
+                4 => self.update_attribute(memory, 0x08, 0x00),
+                5 => self.update_attribute(memory, 0x02, 0x00),
+                7 => self.update_attribute(memory, 0x04, 0x00),
+                8 => self.update_attribute(memory, 0x00, 0x01),
+                24 => self.update_attribute(memory, 0x00, 0x08),
+                25 => self.update_attribute(memory, 0x00, 0x02),
+                27 => self.update_attribute(memory, 0x00, 0x04),
+                28 => self.update_attribute(memory, 0x01, 0x00),
                 30..=37 => {
                     let color = ansi_foreground_to_pc98_color(parameter as u8);
                     let lower_bits = memory
@@ -347,9 +356,21 @@ impl Console {
                         & 0x1F;
                     self.set_attribute(memory, (color << 5) | lower_bits);
                 }
+                40..=47 => {
+                    let color = ansi_foreground_to_pc98_color(parameter as u8 - 10);
+                    let lower_bits = memory
+                        .read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DISPLAY_ATTR)
+                        & 0x1F;
+                    self.set_attribute(memory, (color << 5) | lower_bits | 0x04);
+                }
                 _ => {}
             }
         }
+    }
+
+    fn update_attribute(&self, memory: &mut dyn MemoryAccess, set: u8, clear: u8) {
+        let attribute = memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DISPLAY_ATTR);
+        self.set_attribute(memory, (attribute | set) & !clear);
     }
 
     fn esc_dispatch_csi_question(&self, memory: &mut dyn MemoryAccess, final_byte: u8) {

@@ -106,7 +106,8 @@ impl Console {
     pub(crate) fn put_fullwidth_jis_char(&self, memory: &mut dyn MemoryAccess, jis: JisChar) {
         let mut row = self.cursor_row(memory);
         let mut col = self.cursor_col(memory);
-        if col == COLUMNS - 1 {
+        let width = jis.display_width();
+        if width == 2 && col == COLUMNS - 1 {
             if !self.wrap_to_next_line(memory) {
                 return;
             }
@@ -116,8 +117,10 @@ impl Console {
 
         let attr = self.display_attr(memory);
         self.write_cell(memory, row, col, jis, attr);
-        self.write_cell(memory, row, col + 1, JisChar::from_u16(0x0000), attr);
-        self.advance_cursor(memory);
+        if width == 2 {
+            self.write_cell(memory, row, col + 1, JisChar::from_u16(0x0000), attr);
+            self.advance_cursor(memory);
+        }
         self.advance_cursor(memory);
     }
 
@@ -722,21 +725,25 @@ mod tests {
     }
 
     #[test]
-    fn process_byte_graphic_mode_does_not_pair_shift_jis_leads() {
+    fn process_byte_graphic_mode_pairs_halfwidth_jis_graphics() {
         let mut console = make_console();
         let mut memory = make_memory();
 
         feed_str(&mut console, &mut memory, "\x1b)3");
         console.process_byte(&mut memory, 0x86);
-        console.process_byte(&mut memory, 0x86);
+        console.process_byte(&mut memory, 0x5F);
 
         assert_eq!(
             memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_HI_FLAG),
             0x00
         );
-        assert_vram_char(&memory, 0, 0, 0x86, 0x00);
-        assert_vram_char(&memory, 0, 1, 0x86, 0x00);
-        assert_cursor(&console, &memory, 0, 2);
+        assert_vram_jis(
+            &memory,
+            0,
+            0,
+            common::shift_jis_pair_to_jis(0x86, 0x5F).unwrap(),
+        );
+        assert_cursor(&console, &memory, 0, 1);
     }
 
     #[test]
@@ -1440,6 +1447,38 @@ mod tests {
 
         assert_eq!(read_vram_attr(&memory, 0, 0), 0x0041);
         assert_eq!(read_vram_attr(&memory, 0, 1), 0x00E1);
+    }
+
+    #[test]
+    fn csi_m_sets_pc98_text_effects() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        feed_str(&mut console, &mut memory, "\x1B[4;5;7mX");
+
+        assert_eq!(read_vram_attr(&memory, 0, 0), 0x00EF);
+    }
+
+    #[test]
+    fn csi_m_clears_pc98_text_effects() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        feed_str(
+            &mut console,
+            &mut memory,
+            "\x1B[4;5;7;8mX\x1B[24;25;27;28mY",
+        );
+
+        assert_eq!(read_vram_attr(&memory, 0, 0), 0x00EE);
+        assert_eq!(read_vram_attr(&memory, 0, 1), 0x00E1);
+    }
+
+    #[test]
+    fn csi_m_maps_background_color_to_pc98_reverse_video() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        feed_str(&mut console, &mut memory, "\x1B[46mX");
+
+        assert_eq!(read_vram_attr(&memory, 0, 0), 0x00A5);
     }
 
     #[test]
