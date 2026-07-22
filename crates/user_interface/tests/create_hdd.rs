@@ -3,8 +3,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use device::disk::{
-    HddFormat, X68K_SASI_HDF_10MB_BYTES, X68K_SASI_HDF_20MB_BYTES, X68K_SASI_HDF_40MB_BYTES,
-    load_hdd_image, load_x68k_hdf,
+    HddFormat, HddImage, X68K_SASI_HDF_10MB_BYTES, X68K_SASI_HDF_20MB_BYTES,
+    X68K_SASI_HDF_40MB_BYTES, load_hdd_image,
 };
 use user_interface::{config::HddSizeType, create::create_hdd_image};
 
@@ -76,7 +76,7 @@ fn creates_x68k_sasi_hdf_images_with_exact_sizes() {
         let data = std::fs::read(&path).expect("read created image");
         assert_eq!(data.len(), expected_bytes);
 
-        let image = load_x68k_hdf(data, 256).expect("parse created image");
+        let image = HddImage::from_x68k_sasi(data).expect("parse created image");
         assert_eq!(image.format, HddFormat::Raw);
         assert_eq!(image.geometry.sector_size, 256);
 
@@ -97,7 +97,7 @@ fn creates_x68k_scsi_hdf_images() {
         let data = std::fs::read(&path).expect("read created image");
         assert_eq!(data.len(), expected_bytes);
 
-        let image = load_x68k_hdf(data, 512).expect("parse created image");
+        let image = HddImage::from_raw_flat(data).expect("parse created image");
         assert_eq!(image.format, HddFormat::Raw);
         assert_eq!(image.geometry.sector_size, 512);
 

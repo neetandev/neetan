@@ -5,7 +5,7 @@ use common::{
 };
 use cpu_68k::M68000;
 
-use crate::{LoadedRoms, X68kBus, X68kModel};
+use crate::{LoadedRoms, X68kBus, X68kModel, X68kStorageController};
 
 /// Default audio sample rate.
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
@@ -613,9 +613,15 @@ impl<T: TraceSink> Machine for X68kMachine<T> {
                 image.name,
             ));
         }
-        let sector_size = self.bus.model().storage_controller().sector_size();
-        let parsed = device::disk::load_x68k_hdf(image.bytes.to_vec(), sector_size)
-            .map_err(|error| format!("Failed to parse {}: {error}", image.name))?;
+        let parsed = match self.bus.model().storage_controller() {
+            X68kStorageController::Sasi => {
+                device::disk::HddImage::from_x68k_sasi(image.bytes.to_vec())
+            }
+            X68kStorageController::InternalScsi => {
+                device::disk::HddImage::from_raw_flat(image.bytes.to_vec())
+            }
+        }
+        .map_err(|error| format!("Failed to parse {}: {error}", image.name))?;
         let description = format!(
             "{} HDD unit {slot}: {} sectors from {}",
             self.bus.model(),
