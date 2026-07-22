@@ -55,42 +55,6 @@ jobs:
             libwayland-dev libdecor-0-dev libxkbcommon-dev \
             libdrm-dev libgbm-dev libgl1-mesa-dev libgles2-mesa-dev libegl1-mesa-dev \
             libdbus-1-dev libibus-1.0-dev libudev-dev libvulkan-dev
-          VK_VERSION=$(curl -s https://vulkan.lunarg.com/sdk/latest/linux.txt)
-          curl -fsSL -o "$RUNNER_TEMP/vulkan_sdk.tar.xz" \
-            "https://sdk.lunarg.com/sdk/download/$VK_VERSION/linux/vulkan_sdk.tar.xz"
-          mkdir -p "$HOME/VulkanSDK"
-          tar xJf "$RUNNER_TEMP/vulkan_sdk.tar.xz" -C "$HOME/VulkanSDK"
-          echo "VULKAN_SDK=$HOME/VulkanSDK/$VK_VERSION/x86_64" >> "$GITHUB_ENV"
-          echo "$HOME/VulkanSDK/$VK_VERSION/x86_64/bin" >> "$GITHUB_PATH"
-
-      - name: Install system dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          VK_VERSION=$(curl -s https://vulkan.lunarg.com/sdk/latest/mac.txt)
-          curl -fsSL -o "$RUNNER_TEMP/vulkan_sdk.zip" \
-            "https://sdk.lunarg.com/sdk/download/$VK_VERSION/mac/vulkan_sdk.zip"
-          unzip -q "$RUNNER_TEMP/vulkan_sdk.zip" -d "$RUNNER_TEMP/vulkan_sdk"
-          sudo "$RUNNER_TEMP/vulkan_sdk/vulkansdk-macOS-$VK_VERSION.app/Contents/MacOS/vulkansdk-macOS-$VK_VERSION" \
-            --root "$HOME/VulkanSDK/$VK_VERSION" --accept-licenses --default-answer --confirm-command install \
-            copy_only=1
-          echo "VULKAN_SDK=$HOME/VulkanSDK/$VK_VERSION/macOS" >> "$GITHUB_ENV"
-          echo "$HOME/VulkanSDK/$VK_VERSION/macOS/bin" >> "$GITHUB_PATH"
-          echo "DYLD_FALLBACK_LIBRARY_PATH=$HOME/VulkanSDK/$VK_VERSION/macOS/lib" >> "$GITHUB_ENV"
-
-      - name: Install system dependencies (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ver = (Invoke-RestMethod -Uri "https://vulkan.lunarg.com/sdk/latest/windows.txt").Trim()
-          $installer = "$env:RUNNER_TEMP\vulkan_sdk.exe"
-          Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/$ver/windows/vulkan_sdk.exe" -OutFile $installer
-          Start-Process -FilePath $installer -ArgumentList "--accept-licenses --default-answer --confirm-command install" -Wait
-          echo "VULKAN_SDK=C:\VulkanSDK\$ver" >> $env:GITHUB_ENV
-          echo "C:\VulkanSDK\$ver\Bin" >> $env:GITHUB_PATH
-
-      - name: Verify Vulkan SDK
-        shell: bash
-        run: echo "VULKAN_SDK=$VULKAN_SDK"
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --features sdl3-build-from-source -- -D warnings

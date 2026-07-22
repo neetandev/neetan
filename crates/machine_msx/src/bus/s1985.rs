@@ -31,8 +31,6 @@ impl S1985 {
     /// Creates an S1985 with erased battery-backed RAM.
     pub(super) const fn new() -> Self {
         let mut controller = Self {
-            // TODO: Replace this erased image if an initialized Sony machine dump
-            // establishes different power-on contents.
             backup_ram: [BACKUP_RAM_ERASED; BACKUP_RAM_SIZE],
             backup_address: 0,
             first_color: 0,

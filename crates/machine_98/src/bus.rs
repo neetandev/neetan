@@ -2018,7 +2018,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 .soundboard_26k
                 .as_ref()
                 .map(Soundboard26k::capture_state),
-            soundboard_86: self.soundboard_86.as_ref().map(Soundboard86::capture_state),
+            soundboard_86: self.soundboard_86.as_ref().map(Soundboard86::save_state),
             sound_blaster_16: self
                 .sound_blaster_16
                 .as_ref()
@@ -2364,7 +2364,10 @@ impl<T: TraceSink> Pc9801Bus<T> {
             palette: self.palette.state.clone(),
             soundboard_14: self.soundboard_14.as_ref().map(|sb| sb.save_state()),
             soundboard_26k: self.soundboard_26k.as_ref().map(|sb| sb.save_state()),
-            soundboard_86: self.soundboard_86.as_ref().map(|sb| sb.save_state()),
+            soundboard_86: self
+                .soundboard_86
+                .as_ref()
+                .map(|sb| sb.capture_board_state()),
             sound_blaster_16: self.sound_blaster_16.as_ref().map(|sb| sb.save_state()),
             ga1280a: self.ga1280a.as_ref().map(|ga| ga.state.clone()),
             beeper: self.beeper.state.clone(),
