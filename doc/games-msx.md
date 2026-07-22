@@ -38,5 +38,5 @@ Even if a title is not listed here, there is a good chance it runs.
 | SD Snatcher                       | SDスナッチャー          |  MSX2+  | Floppy    |   ✅    |                                                      |
 | Super Lode Runner                 | スーパーロードランナー       |  MSX2   | Cartridge |   ✅    |                                                      |
 | Vampire Killer                    | 悪魔城ドラキュラ          |  MSX2   | Cartridge |   ✅    |                                                      |
-| Wizardry                          | ウィザードリィ           |  MSX2   | Cartridge |   ✅    | Hold CTRL while powering on or resetting             |
+| Wizardry                          | ウィザードリィ           |  MSX2+  | Cartridge |   ✅    |                                                      |
 | Wonder Boy                        | ワンダーボーイ           |  MSX2   | Cartridge |   ✅    |                                                      |

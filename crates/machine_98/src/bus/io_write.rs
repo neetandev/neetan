@@ -525,8 +525,8 @@ impl<T: TraceSink> Pc9801Bus<T> {
             // BIOS HLE trap port.
             0x07F0 => {
                 self.bios.write_trap_port(value);
-                // TODO: Calibrate these by comparing against the real VM target BIOS calls,
-                //       once we have a verified V30 cycle accurate core.
+                // We could change these made up values if any game actually cares
+                // about how many cycles any of the bios function take.
                 let cost = match self.bios.pending_vector() {
                     0x09 | 0x0C | 0x12 | 0x13 => 50,
                     0x18 => 20,
@@ -2073,7 +2073,7 @@ mod tests {
         bus.io_write_byte(0xA466, 0x0A); // 000_01010 -> line 0, value 10
 
         // Snapshot the live state and verify both were stored.
-        let state = bus.soundboard_86.as_ref().unwrap().save_state();
+        let state = bus.soundboard_86.as_ref().unwrap().capture_board_state();
         assert_eq!(state.pcm86.vol[5], 5);
         assert_eq!(state.pcm86.vol[0], 10);
     }
@@ -2132,7 +2132,7 @@ mod tests {
         bus.io_write_byte(0xA46C, 0xFF);
 
         // The real_buf should be capped below the buffer size.
-        let state = bus.soundboard_86.as_ref().unwrap().save_state();
+        let state = bus.soundboard_86.as_ref().unwrap().capture_board_state();
         assert!(
             state.pcm86.real_buf < 65536,
             "real_buf should be capped after overflow"
@@ -2157,7 +2157,7 @@ mod tests {
         assert_eq!(bus.io_read_byte(0xA46A), 0x70);
 
         // Verify threshold was set correctly.
-        let state = bus.soundboard_86.as_ref().unwrap().save_state();
+        let state = bus.soundboard_86.as_ref().unwrap().capture_board_state();
         assert_eq!(state.pcm86.fifo_size, 512);
     }
 

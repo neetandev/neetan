@@ -81,8 +81,6 @@ impl Rp5c01 {
     /// Creates a clock seeded from a host date and time.
     pub fn new(seed: HostDateTime, current_cycle: u64) -> Self {
         let mut clock = Self {
-            // TODO: Replace the zeroed backup blocks if initialized HB-F1XD or
-            // HB-F1XDJ hardware dumps establish model-specific contents.
             registers: [[0; REGISTERS_PER_BLOCK]; BLOCK_COUNT],
             mode: MODE_TIMER_ENABLE,
             test: 0,

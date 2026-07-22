@@ -16,7 +16,7 @@ use resampler::{Attenuation, Latency, ResamplerFir, ResamplerFirState};
 use ymfm_oxide::{Ym2608, Ym2608State, YmfmOutput3};
 
 use crate::{
-    opn_fm::{EVOLVED_RHYTHM_ROM, FmTimerAction, OpnFm, OpnFmState, OpnFmTiming},
+    opn_fm::{EVOLVED_RHYTHM_ROM, FmTimerAction, OpnFm, OpnFmState},
     soundboard_26k::FmSampleRemainder,
 };
 
@@ -981,9 +981,9 @@ impl Soundboard86 {
     }
 
     /// Captures complete OPNA, PCM86, and resampler history.
-    pub fn capture_state(&self) -> Soundboard86RuntimeState {
+    pub fn save_state(&self) -> Soundboard86RuntimeState {
         Soundboard86RuntimeState {
-            board: self.save_state(),
+            board: self.capture_board_state(),
             core: self.core.capture_state(),
             pcm86: self.pcm86.capture_state(),
             cpu_clock_hz: self.cpu_clock_hz,
@@ -991,6 +991,19 @@ impl Soundboard86 {
             sample_rate: self.sample_rate,
             fm_timer_just_fired: self.fm_timer_just_fired,
         }
+    }
+
+    /// Creates a snapshot of the current board state.
+    pub fn capture_board_state(&self) -> Soundboard86State {
+        let timing = self.core.timing();
+        let mut state = self.state.clone();
+        state.sample_remainder = timing.sample_remainder;
+        state.fm_sync_cursor = timing.fm_sync_cursor;
+        state.busy_end_cycle = timing.busy_end_cycle;
+        state.audio_frame_start_cycle = timing.audio_frame_start_cycle;
+        state.irq_asserted = timing.irq_asserted;
+        state.pcm86 = self.pcm86.state.clone();
+        state
     }
 
     /// Restores complete audio state without recreating either synthesizer.
@@ -1344,64 +1357,6 @@ impl Soundboard86 {
             self.pcm86
                 .generate_samples(current_cycle, cpu_clock_hz, volume, output);
         }
-    }
-
-    /// Creates a snapshot of the current state for save/restore.
-    pub fn save_state(&self) -> Soundboard86State {
-        let timing = self.core.timing();
-        let mut state = self.state.clone();
-        state.sample_remainder = timing.sample_remainder;
-        state.fm_sync_cursor = timing.fm_sync_cursor;
-        state.busy_end_cycle = timing.busy_end_cycle;
-        state.audio_frame_start_cycle = timing.audio_frame_start_cycle;
-        state.irq_asserted = timing.irq_asserted;
-        state.pcm86 = self.pcm86.state.clone();
-        state
-    }
-
-    /// Restores from a saved state, recreating the ymfm chip.
-    pub fn load_state(
-        &mut self,
-        saved: &Soundboard86State,
-        cpu_clock_hz: u32,
-        sample_rate: u32,
-        current_cycle: u64,
-        rhythm_rom: Option<&[u8]>,
-    ) {
-        self.state = saved.clone();
-        self.cpu_clock_hz = cpu_clock_hz;
-        self.sample_rate = sample_rate;
-        self.chip_action_cycle = current_cycle;
-        self.pcm86.state = saved.pcm86.clone();
-        self.pcm86.pending_irq_change = None;
-        self.pcm86.last_generate_cycle = saved.audio_frame_start_cycle;
-        self.pcm86.pcm_input_buffer.clear();
-        self.pcm86.pcm_resampler = ResamplerFir::new_from_hz(
-            2,
-            self.pcm86.pcm_rate(),
-            sample_rate,
-            REAMPLER_LATENCY,
-            RESAMPLER_ATTENUTATION,
-        );
-        self.pcm86
-            .pcm_resample_output
-            .resize(self.pcm86.pcm_resampler.buffer_size_output(), 0.0);
-        // TODO: Save/restore ymfm internal state
-        let rom_data = rhythm_rom.unwrap_or(EVOLVED_RHYTHM_ROM.as_slice());
-        self.core.reload(cpu_clock_hz, sample_rate, current_cycle);
-        self.core.chip_mut().set_adpcm_a_rom(rom_data);
-        if saved.adpcm_ram {
-            self.core
-                .chip_mut()
-                .set_adpcm_b_ram(vec![0; ADPCM_B_RAM_SIZE]);
-        }
-        self.core.set_timing(OpnFmTiming {
-            sample_remainder: saved.sample_remainder,
-            fm_sync_cursor: saved.fm_sync_cursor,
-            busy_end_cycle: saved.busy_end_cycle,
-            audio_frame_start_cycle: saved.audio_frame_start_cycle,
-            irq_asserted: saved.irq_asserted,
-        });
     }
 }
 
