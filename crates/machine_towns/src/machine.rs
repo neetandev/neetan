@@ -214,14 +214,14 @@ const TOWNS_TRACE_CATALOG: common::TraceCatalog = common::TraceCatalog {
         common::TraceDeviceCatalog {
             device: common::trace_id::device::TOWNS_CDROM,
             actions: &[
-                common::trace_id::action::INTERRUPT,
-                common::trace_id::action::STATUS,
-                common::trace_id::action::COMMAND,
+                common::trace_action(common::trace_id::action::INTERRUPT),
+                common::trace_action(common::trace_id::action::STATUS),
+                common::trace_action(common::trace_id::action::COMMAND),
             ],
         },
         common::TraceDeviceCatalog {
             device: common::trace_id::device::TOWNS_FDC,
-            actions: &[common::trace_id::action::READ],
+            actions: &[common::trace_action(common::trace_id::action::READ)],
         },
     ],
     providers: &[],

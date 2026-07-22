@@ -24,6 +24,28 @@ pub(super) fn make_alist(
     Ok(list)
 }
 
+/// Builds the artifact alist `((path . "...") (bytes . n))` for a written file.
+pub(super) fn artifact_alist(
+    context: &mut NativeContext,
+    path: &str,
+    bytes: Option<usize>,
+) -> Result<Value, Error> {
+    let path_value = context.string_utf8(path.to_owned())?;
+    let mut entries = vec![("path", path_value)];
+    if let Some(bytes) = bytes {
+        let bytes_value = context.integer(i128::try_from(bytes).unwrap_or(i128::MAX))?;
+        entries.push(("bytes", bytes_value));
+    }
+    make_alist(context, entries)
+}
+
+/// Returns the on-disk byte length of a written artifact, or 0 when unknown.
+pub(super) fn written_len(path: &std::path::Path) -> usize {
+    std::fs::metadata(path)
+        .map(|metadata| usize::try_from(metadata.len()).unwrap_or(usize::MAX))
+        .unwrap_or(0)
+}
+
 /// Builds a proper list from values, preserving the given order.
 pub(super) fn make_list(context: &mut NativeContext, values: Vec<Value>) -> Result<Value, Error> {
     let mut list = Value::nil();

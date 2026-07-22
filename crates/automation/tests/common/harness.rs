@@ -138,9 +138,16 @@ pub struct Run {
 /// Runs a committed script through the executor with a private artifact root and
 /// collects its message stream.
 pub fn run_committed_script(name: &str, timeout_seconds: u64) -> Run {
-    // Keep artifacts out of the source tree, and start from a clean root so
-    // assertions on written artifacts see only this run's output.
-    let artifact_root = std::env::temp_dir().join("neetan-auto-tests").join(name);
+    // Keep artifacts out of the source tree, and give every invocation its own
+    // clean root so concurrently running tests of the same script never clear
+    // or read each other's artifacts.
+    static INVOCATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let invocation = INVOCATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let artifact_root = std::env::temp_dir().join("neetan-auto-tests").join(format!(
+        "{}-{}-{invocation}",
+        name,
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&artifact_root);
     let mut config = CommonConfig::with_defaults();
     config.timeout_seconds = timeout_seconds;

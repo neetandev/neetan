@@ -8,7 +8,10 @@ use std::{
     rc::Rc,
 };
 
-use crate::{OwnedTraceEvent, TraceContext, TraceEvent, TraceEventKey, TraceInterest, TraceSink};
+use crate::{
+    OwnedTraceEvent, ProcessorSnapshot, TraceContext, TraceEvent, TraceEventKey, TraceInterest,
+    TraceSink,
+};
 
 /// Default number of owned events retained by an application trace queue.
 pub const DEFAULT_TRACE_QUEUE_EVENT_CAPACITY: usize = 16_384;
@@ -129,6 +132,59 @@ pub struct ApplicationTraceEnvelope {
     pub context: TraceContext,
     /// Owned event payload.
     pub event: OwnedTraceEvent,
+    /// Processor snapshot captured when the event was created, when armed.
+    pub snapshot: Option<ProcessorSnapshot>,
+}
+
+/// Progress of an armed ring capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RingCaptureStatus {
+    /// No ring capture is armed.
+    Idle,
+    /// Armed, waiting for the trigger event.
+    Armed,
+    /// Triggered, collecting post-trigger context.
+    Triggered,
+    /// The requested post-trigger context is complete.
+    Complete,
+}
+
+/// The retained events of a disarmed ring capture.
+pub struct RingCaptureResult {
+    /// Retained envelopes in sequence order, trigger event included.
+    pub events: Vec<ApplicationTraceEnvelope>,
+    /// Whether the trigger event was seen.
+    pub triggered: bool,
+    /// Whether the post-trigger context completed.
+    pub complete: bool,
+    /// Index of the trigger event within `events`, when triggered.
+    pub trigger_index: Option<usize>,
+}
+
+/// A bounded before-and-after capture window around a trigger event.
+struct RingCaptureState {
+    capture: Rc<RefCell<Box<dyn TraceMatcher>>>,
+    trigger: Rc<RefCell<Box<dyn TraceMatcher>>>,
+    before: usize,
+    after: usize,
+    pre: VecDeque<(ApplicationTraceEnvelope, usize)>,
+    trigger_event: Option<ApplicationTraceEnvelope>,
+    post: Vec<ApplicationTraceEnvelope>,
+    retained_payload_bytes: usize,
+    complete: bool,
+}
+
+/// One device-interest entry: a device identifier and an optional action.
+///
+/// An entry with no action covers every action of the device; an entry with an
+/// action covers only that action, so sibling high-volume actions of the same
+/// device are never built.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceInterest {
+    /// Stable device identifier.
+    pub device: String,
+    /// Stable action identifier, or `None` for every action of the device.
+    pub action: Option<String>,
 }
 
 struct TraceState {
@@ -142,6 +198,10 @@ struct TraceState {
     failure: Option<TraceFailure>,
     presentation_yield_target: Option<u64>,
     presentation_boundary_reached: bool,
+    armed_snapshot: Option<&'static str>,
+    pending_snapshot: Option<ProcessorSnapshot>,
+    device_interest: Option<Vec<DeviceInterest>>,
+    ring: Option<RingCaptureState>,
 }
 
 impl TraceState {
@@ -156,7 +216,19 @@ impl TraceState {
             return;
         }
 
-        let Some(payload_bytes) = event.owned_payload_bytes() else {
+        let Some(event_payload_bytes) = event.owned_payload_bytes() else {
+            self.latch_failure(TraceFailure::EventPayloadTooLarge {
+                capacity: self.limits.event_payload_capacity,
+            });
+            return;
+        };
+        let snapshot_bytes = self.pending_snapshot.as_ref().map_or(0, |snapshot| {
+            snapshot
+                .registers
+                .len()
+                .saturating_mul(core::mem::size_of::<u128>())
+        });
+        let Some(payload_bytes) = event_payload_bytes.checked_add(snapshot_bytes) else {
             self.latch_failure(TraceFailure::EventPayloadTooLarge {
                 capacity: self.limits.event_payload_capacity,
             });
@@ -195,6 +267,7 @@ impl TraceState {
             epoch: self.epoch,
             context,
             event: OwnedTraceEvent::from(event),
+            snapshot: self.pending_snapshot.clone(),
         });
         self.next_sequence = next_sequence;
         self.queued_payload_bytes = next_payload_bytes;
@@ -204,7 +277,101 @@ impl TraceState {
     }
 
     fn yield_requested(&self) -> bool {
-        self.matcher_yield_requested || self.failure.is_some() || self.presentation_boundary_reached
+        self.matcher_yield_requested
+            || self.failure.is_some()
+            || self.presentation_boundary_reached
+            || self.ring.as_ref().is_some_and(|ring| ring.complete)
+    }
+
+    /// Stores one matched event into the armed ring capture.
+    ///
+    /// Retention is decided before the owned payload is allocated, so events
+    /// that would fall out of an empty pre-trigger window cost nothing. The
+    /// retained window is charged against the queue byte capacity, so a ring
+    /// capture honours the same advertised limits as the continuous queue.
+    fn ring_record(&mut self, context: TraceContext, event: TraceEvent<'_>, is_trigger: bool) {
+        let retain = match &self.ring {
+            None => return,
+            Some(ring) if ring.complete => return,
+            Some(ring) => is_trigger || ring.trigger_event.is_some() || ring.before > 0,
+        };
+        if !retain {
+            return;
+        }
+
+        let Some(event_payload_bytes) = event.owned_payload_bytes() else {
+            self.latch_failure(TraceFailure::EventPayloadTooLarge {
+                capacity: self.limits.event_payload_capacity,
+            });
+            return;
+        };
+        let snapshot_bytes = self.pending_snapshot.as_ref().map_or(0, |snapshot| {
+            snapshot
+                .registers
+                .len()
+                .saturating_mul(core::mem::size_of::<u128>())
+        });
+        let payload_bytes = event_payload_bytes.saturating_add(snapshot_bytes);
+        if payload_bytes > self.limits.event_payload_capacity.get() {
+            self.latch_failure(TraceFailure::EventPayloadTooLarge {
+                capacity: self.limits.event_payload_capacity,
+            });
+            return;
+        }
+        let Some(next_sequence) = self.next_sequence.checked_add(1) else {
+            self.latch_failure(TraceFailure::SequenceExhausted);
+            return;
+        };
+
+        let over_byte_capacity = {
+            let ring = self.ring.as_mut().expect("ring capture armed");
+            if ring.trigger_event.is_none() && !is_trigger {
+                // Evict the oldest pre-window event first, so the sliding
+                // window frees its bytes before the new event is charged.
+                while ring.pre.len() >= ring.before.max(1) {
+                    let Some((_, evicted_bytes)) = ring.pre.pop_front() else {
+                        break;
+                    };
+                    ring.retained_payload_bytes =
+                        ring.retained_payload_bytes.saturating_sub(evicted_bytes);
+                }
+            }
+            ring.retained_payload_bytes.saturating_add(payload_bytes)
+                > self.limits.byte_capacity.get()
+        };
+        if over_byte_capacity {
+            self.latch_failure(TraceFailure::QueueOverflow {
+                event_capacity: self.limits.event_capacity,
+                byte_capacity: self.limits.byte_capacity,
+            });
+            return;
+        }
+
+        let envelope = ApplicationTraceEnvelope {
+            schema_version: crate::TRACE_SCHEMA_VERSION,
+            sequence: self.next_sequence,
+            epoch: self.epoch,
+            context,
+            event: OwnedTraceEvent::from(event),
+            snapshot: self.pending_snapshot.clone(),
+        };
+        self.next_sequence = next_sequence;
+
+        let ring = self.ring.as_mut().expect("ring capture armed");
+        ring.retained_payload_bytes = ring.retained_payload_bytes.saturating_add(payload_bytes);
+        if is_trigger {
+            ring.trigger_event = Some(envelope);
+            if ring.after == 0 {
+                ring.complete = true;
+            }
+        } else if ring.trigger_event.is_none() {
+            ring.pre.push_back((envelope, payload_bytes));
+        } else {
+            ring.post.push(envelope);
+            if ring.post.len() >= ring.after {
+                ring.complete = true;
+            }
+        }
     }
 }
 
@@ -229,6 +396,10 @@ impl ApplicationTraceSink {
             failure: None,
             presentation_yield_target: None,
             presentation_boundary_reached: false,
+            armed_snapshot: None,
+            pending_snapshot: None,
+            device_interest: None,
+            ring: None,
         }));
         let interest = Rc::new(Cell::new(TraceInterest::NONE));
         (
@@ -250,6 +421,39 @@ impl ApplicationTraceSink {
         };
         let decision = matcher.borrow_mut().decide(context, event);
         self.state.borrow_mut().record(context, event, decision);
+    }
+
+    /// Feeds one event to the armed ring capture, when one is armed.
+    ///
+    /// The trigger and capture filters are evaluated on the borrowed event
+    /// before any owned payload is allocated.
+    fn ring_capture(&self, context: TraceContext, event: TraceEvent<'_>) {
+        let (capture, trigger, triggered) = {
+            let state = self.state.borrow();
+            if state.failure.is_some() {
+                return;
+            }
+            let Some(ring) = &state.ring else {
+                return;
+            };
+            if ring.complete {
+                return;
+            }
+            (
+                Rc::clone(&ring.capture),
+                Rc::clone(&ring.trigger),
+                ring.trigger_event.is_some(),
+            )
+        };
+        let is_trigger =
+            !triggered && trigger.borrow_mut().decide(context, event) != TraceDecision::Ignore;
+        let is_capture = capture.borrow_mut().decide(context, event) != TraceDecision::Ignore;
+        if !is_trigger && !is_capture {
+            return;
+        }
+        self.state
+            .borrow_mut()
+            .ring_record(context, event, is_trigger);
     }
 
     /// Arms an exact presentation-boundary stop at absolute epoch `target`.
@@ -283,7 +487,21 @@ impl Default for ApplicationTraceSink {
 
 impl TraceSink for ApplicationTraceSink {
     fn interested(&self, key: TraceEventKey) -> bool {
-        self.interest.get().contains(key.class())
+        if !self.interest.get().contains(key.class()) {
+            return false;
+        }
+        if let TraceEventKey::Device { device, action } = key
+            && let Some(entries) = &self.state.borrow().device_interest
+        {
+            return entries.iter().any(|entry| {
+                entry.device == device
+                    && entry
+                        .action
+                        .as_ref()
+                        .is_none_or(|interested| interested == action)
+            });
+        }
+        true
     }
 
     fn trace(&mut self, context: TraceContext, event: TraceEvent<'_>) {
@@ -297,11 +515,24 @@ impl TraceSink for ApplicationTraceSink {
         }
         if self.interested(event.key()) {
             self.record(context, event);
+            self.ring_capture(context, event);
         }
     }
 
     fn yield_requested(&self) -> bool {
         self.state.borrow().yield_requested()
+    }
+
+    fn snapshot_request(&self) -> Option<&'static str> {
+        self.state.borrow().armed_snapshot
+    }
+
+    fn set_pending_snapshot(&mut self, snapshot: ProcessorSnapshot) {
+        self.state.borrow_mut().pending_snapshot = Some(snapshot);
+    }
+
+    fn clear_pending_snapshot(&mut self) {
+        self.state.borrow_mut().pending_snapshot = None;
     }
 }
 
@@ -329,6 +560,9 @@ impl TraceHandle {
         state.queued_payload_bytes = 0;
         state.matcher_yield_requested = false;
         state.failure = None;
+        state.armed_snapshot = None;
+        state.pending_snapshot = None;
+        state.device_interest = None;
         self.interest.set(interest);
     }
 
@@ -354,7 +588,105 @@ impl TraceHandle {
         let mut state = self.state.borrow_mut();
         state.matcher = Rc::new(RefCell::new(Box::new(IgnoreAll)));
         state.matcher_yield_requested = false;
+        state.armed_snapshot = None;
+        state.pending_snapshot = None;
+        state.device_interest = None;
+        state.ring = None;
         self.interest.set(TraceInterest::NONE);
+    }
+
+    /// Arms a bounded ring capture and clears all buffered state.
+    ///
+    /// Events matching `capture` are retained in a window of at most `before`
+    /// events preceding the first `trigger` match and `after` events following
+    /// it. Storage is bounded from this call on, and the sink requests a yield
+    /// once the post-trigger context is complete.
+    pub fn arm_ring_capture<C, T>(
+        &self,
+        capture: C,
+        trigger: T,
+        before: usize,
+        after: usize,
+        interest: TraceInterest,
+    ) where
+        C: TraceMatcher + 'static,
+        T: TraceMatcher + 'static,
+    {
+        let mut state = self.state.borrow_mut();
+        state.matcher = Rc::new(RefCell::new(Box::new(IgnoreAll)));
+        state.queue.clear();
+        state.queued_payload_bytes = 0;
+        state.matcher_yield_requested = false;
+        state.failure = None;
+        state.armed_snapshot = None;
+        state.pending_snapshot = None;
+        state.device_interest = None;
+        state.ring = Some(RingCaptureState {
+            capture: Rc::new(RefCell::new(Box::new(capture))),
+            trigger: Rc::new(RefCell::new(Box::new(trigger))),
+            before,
+            after,
+            pre: VecDeque::new(),
+            trigger_event: None,
+            post: Vec::new(),
+            retained_payload_bytes: 0,
+            complete: false,
+        });
+        self.interest.set(interest);
+    }
+
+    /// Returns the progress of the armed ring capture.
+    pub fn ring_status(&self) -> RingCaptureStatus {
+        match &self.state.borrow().ring {
+            None => RingCaptureStatus::Idle,
+            Some(ring) if ring.complete => RingCaptureStatus::Complete,
+            Some(ring) if ring.trigger_event.is_some() => RingCaptureStatus::Triggered,
+            Some(_) => RingCaptureStatus::Armed,
+        }
+    }
+
+    /// Disarms the ring capture and returns its retained events in order.
+    pub fn take_ring_capture(&self) -> Option<RingCaptureResult> {
+        let mut state = self.state.borrow_mut();
+        let ring = state.ring.take()?;
+        self.interest.set(TraceInterest::NONE);
+        let triggered = ring.trigger_event.is_some();
+        let complete = ring.complete;
+        let mut events: Vec<ApplicationTraceEnvelope> =
+            ring.pre.into_iter().map(|(envelope, _)| envelope).collect();
+        let trigger_index = ring.trigger_event.map(|event| {
+            events.push(event);
+            events.len() - 1
+        });
+        events.extend(ring.post);
+        Some(RingCaptureResult {
+            events,
+            triggered,
+            complete,
+            trigger_index,
+        })
+    }
+
+    /// Restricts device-class interest to the given device and action entries.
+    ///
+    /// `None` keeps every device the interest classes cover. High-volume
+    /// device events are skipped entirely at the emitter's interest check when
+    /// their device, or their action within a listed device, is not listed.
+    pub fn set_device_interest(&self, entries: Option<Vec<DeviceInterest>>) {
+        self.state.borrow_mut().device_interest = entries;
+    }
+
+    /// Arms an atomic register snapshot for a processor at each recorded event.
+    pub fn arm_snapshot(&self, processor: &'static str) {
+        self.state.borrow_mut().armed_snapshot = Some(processor);
+    }
+
+    /// Returns a clone of every queued event without draining the queue.
+    ///
+    /// Used to persist the buffered trace to an artifact while leaving the events
+    /// available for a later drain.
+    pub fn snapshot_events(&self) -> Vec<ApplicationTraceEnvelope> {
+        self.state.borrow().queue.iter().cloned().collect()
     }
 
     /// Restores the default matcher that ignores every event.
@@ -622,5 +954,224 @@ mod tests {
         sink.trace(context(3), access(3));
         assert_eq!(handle.queued_len(), 0);
         assert!(!handle.yield_requested());
+    }
+
+    fn device_event(device: &'static str) -> TraceEvent<'static> {
+        TraceEvent::Device(TraceDeviceEvent {
+            device,
+            action: "data",
+            fields: &[],
+        })
+    }
+
+    #[test]
+    fn device_interest_narrows_device_events() {
+        let (mut sink, handle) = ApplicationTraceSink::new(limits(8, 64, 64));
+        handle.set_matcher_with_interest(
+            |_: TraceContext, _: TraceEvent<'_>| TraceDecision::Record,
+            TraceInterest::only(TraceEventClass::Device),
+        );
+        handle.set_device_interest(Some(vec![DeviceInterest {
+            device: String::from("want.device"),
+            action: None,
+        }]));
+        assert!(sink.interested(TraceEventKey::Device {
+            device: "want.device",
+            action: "data",
+        }));
+        assert!(!sink.interested(TraceEventKey::Device {
+            device: "other.device",
+            action: "data",
+        }));
+        sink.trace(context(1), device_event("want.device"));
+        sink.trace(context(2), device_event("other.device"));
+        assert_eq!(handle.queued_len(), 1);
+        // Stopping restores interest in every device.
+        handle.stop();
+        handle.set_matcher_with_interest(
+            |_: TraceContext, _: TraceEvent<'_>| TraceDecision::Record,
+            TraceInterest::only(TraceEventClass::Device),
+        );
+        assert!(sink.interested(TraceEventKey::Device {
+            device: "other.device",
+            action: "data",
+        }));
+    }
+
+    #[test]
+    fn device_interest_narrows_to_the_named_action() {
+        let (mut sink, handle) = ApplicationTraceSink::new(limits(8, 64, 64));
+        handle.set_matcher_with_interest(
+            |_: TraceContext, _: TraceEvent<'_>| TraceDecision::Record,
+            TraceInterest::only(TraceEventClass::Device),
+        );
+        handle.set_device_interest(Some(vec![DeviceInterest {
+            device: String::from("want.device"),
+            action: Some(String::from("data")),
+        }]));
+        assert!(sink.interested(TraceEventKey::Device {
+            device: "want.device",
+            action: "data",
+        }));
+        // A sibling action of the same device is rejected at the interest
+        // check, so its high-volume events are never built.
+        assert!(!sink.interested(TraceEventKey::Device {
+            device: "want.device",
+            action: "other",
+        }));
+        sink.trace(context(1), device_event("want.device"));
+        assert_eq!(handle.queued_len(), 1);
+    }
+
+    #[test]
+    fn oversized_event_payload_failure_is_sticky() {
+        let (mut sink, handle) = ApplicationTraceSink::new(limits(8, 64, 1));
+        handle.set_matcher_with_interest(
+            |_: TraceContext, _: TraceEvent<'_>| TraceDecision::Record,
+            TraceInterest::only(TraceEventClass::Device),
+        );
+        let fields = [TraceField {
+            name: "bytes",
+            value: TraceValue::Bytes(&[1, 2, 3]),
+        }];
+        let oversized = TraceEvent::Device(TraceDeviceEvent {
+            device: "test.device",
+            action: "data",
+            fields: &fields,
+        });
+        sink.trace(context(1), oversized);
+        assert!(matches!(
+            handle.failure(),
+            Some(TraceFailure::EventPayloadTooLarge { .. })
+        ));
+        // The failure is sticky: later events are not recorded over it.
+        sink.trace(context(2), device_event("test.device"));
+        assert_eq!(handle.queued_len(), 0);
+        assert!(matches!(
+            handle.failure(),
+            Some(TraceFailure::EventPayloadTooLarge { .. })
+        ));
+        handle.take_failure().unwrap();
+    }
+
+    #[test]
+    fn ring_capture_retains_before_and_after_counts() {
+        let (mut sink, handle) = ApplicationTraceSink::new(limits(64, 1024, 64));
+        handle.arm_ring_capture(
+            |_: TraceContext, _: TraceEvent<'_>| TraceDecision::Record,
+            |_: TraceContext, event: TraceEvent<'_>| match event {
+                TraceEvent::Access(access) if access.address == 10 => TraceDecision::RecordAndYield,
+                _ => TraceDecision::Ignore,
+            },
+            3,
+            2,
+            TraceInterest::only(TraceEventClass::Access),
+        );
+        assert_eq!(handle.ring_status(), RingCaptureStatus::Armed);
+        for address in 1..=9 {
+            sink.trace(context(address), access(address));
+        }
+        assert_eq!(handle.ring_status(), RingCaptureStatus::Armed);
+        sink.trace(context(10), access(10));
+        assert_eq!(handle.ring_status(), RingCaptureStatus::Triggered);
+        assert!(!handle.yield_requested());
+        sink.trace(context(11), access(11));
+        sink.trace(context(12), access(12));
+        assert_eq!(handle.ring_status(), RingCaptureStatus::Complete);
+        assert!(handle.yield_requested());
+        // Later events are not retained once the capture is complete.
+        sink.trace(context(13), access(13));
+
+        let result = handle.take_ring_capture().unwrap();
+        assert!(result.triggered);
+        assert!(result.complete);
+        assert_eq!(result.trigger_index, Some(3));
+        assert_eq!(result.events.len(), 6);
+        let addresses: Vec<u64> = result
+            .events
+            .iter()
+            .map(|envelope| match &envelope.event {
+                OwnedTraceEvent::Access(access) => access.address,
+                _ => panic!("expected access event"),
+            })
+            .collect();
+        assert_eq!(addresses, [7, 8, 9, 10, 11, 12]);
+        assert_eq!(handle.ring_status(), RingCaptureStatus::Idle);
+        assert!(!handle.is_active());
+    }
+
+    #[test]
+    fn ring_capture_charges_retained_bytes_against_the_queue_capacity() {
+        // Each device event carries two payload bytes; the queue byte capacity
+        // of five holds at most two retained events.
+        let (mut sink, handle) = ApplicationTraceSink::new(limits(64, 5, 64));
+        handle.arm_ring_capture(
+            |_: TraceContext, _: TraceEvent<'_>| TraceDecision::Record,
+            |_: TraceContext, _: TraceEvent<'_>| TraceDecision::Ignore,
+            2,
+            2,
+            TraceInterest::only(TraceEventClass::Device),
+        );
+        let fields = [TraceField {
+            name: "bytes",
+            value: TraceValue::Bytes(&[1, 2]),
+        }];
+        let event = TraceEvent::Device(TraceDeviceEvent {
+            device: "test.device",
+            action: "data",
+            fields: &fields,
+        });
+        // The sliding pre-window stays within the byte capacity because the
+        // evicted event's bytes are freed before the new event is charged.
+        for cycle in 1..=4 {
+            sink.trace(context(cycle), event);
+        }
+        assert_eq!(handle.failure(), None);
+        let result = handle.take_ring_capture().unwrap();
+        assert_eq!(result.events.len(), 2);
+
+        // A post-trigger window that accumulates beyond the byte capacity
+        // latches the queue overflow instead of retaining unbounded storage.
+        handle.arm_ring_capture(
+            |_: TraceContext, _: TraceEvent<'_>| TraceDecision::Record,
+            |_: TraceContext, event: TraceEvent<'_>| match event {
+                TraceEvent::Access(_) => TraceDecision::RecordAndYield,
+                _ => TraceDecision::Ignore,
+            },
+            0,
+            8,
+            TraceInterest::only(TraceEventClass::Device)
+                .union(TraceInterest::only(TraceEventClass::Access)),
+        );
+        sink.trace(context(10), access(10));
+        for cycle in 11..=14 {
+            sink.trace(context(cycle), event);
+        }
+        assert!(matches!(
+            handle.failure(),
+            Some(TraceFailure::QueueOverflow { .. })
+        ));
+    }
+
+    #[test]
+    fn ring_capture_with_empty_pre_window_allocates_nothing_before_trigger() {
+        let (mut sink, handle) = ApplicationTraceSink::new(limits(64, 1024, 64));
+        handle.arm_ring_capture(
+            |_: TraceContext, _: TraceEvent<'_>| TraceDecision::Record,
+            |_: TraceContext, event: TraceEvent<'_>| match event {
+                TraceEvent::Access(access) if access.address == 5 => TraceDecision::RecordAndYield,
+                _ => TraceDecision::Ignore,
+            },
+            0,
+            1,
+            TraceInterest::only(TraceEventClass::Access),
+        );
+        sink.trace(context(1), access(1));
+        sink.trace(context(5), access(5));
+        sink.trace(context(6), access(6));
+        let result = handle.take_ring_capture().unwrap();
+        assert!(result.complete);
+        assert_eq!(result.trigger_index, Some(0));
+        assert_eq!(result.events.len(), 2);
     }
 }

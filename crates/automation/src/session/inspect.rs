@@ -242,6 +242,21 @@ impl AutomationSession {
         Ok(value)
     }
 
+    /// Peeks `length` bytes of `space` and writes them to an artifact.
+    ///
+    /// The peek is side-effect-free, so the artifact is directly usable with a
+    /// disassembler such as `ndisasm`.
+    pub fn save_memory(
+        &mut self,
+        space: &str,
+        address: u64,
+        length: u64,
+        path: &str,
+    ) -> Result<std::path::PathBuf, OpError> {
+        let bytes = self.peek_memory(space, address, length)?;
+        self.write_artifact(path, &bytes)
+    }
+
     /// Writes one register after validating the value against its width.
     pub fn write_register(
         &mut self,

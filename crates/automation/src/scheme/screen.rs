@@ -2,25 +2,12 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use r7rs::{Engine, Error, LibraryName, NativeContext, Value};
+use r7rs::{Engine, Error, LibraryName, Value};
 
-use super::support::{machine_id, make_alist, make_list, op_error_value, to_count, to_u32};
+use super::support::{
+    artifact_alist, machine_id, make_list, op_error_value, to_count, to_u32, written_len,
+};
 use crate::session::AutomationSession;
-
-/// Builds the artifact alist describing a written or recorded artifact path.
-fn artifact_alist(
-    context: &mut NativeContext,
-    path: &str,
-    bytes: Option<usize>,
-) -> Result<Value, Error> {
-    let path_value = context.string_utf8(path.to_owned())?;
-    let mut entries = vec![("path", path_value)];
-    if let Some(bytes) = bytes {
-        let bytes_value = context.integer(i128::try_from(bytes).unwrap_or(i128::MAX))?;
-        entries.push(("bytes", bytes_value));
-    }
-    make_alist(context, entries)
-}
 
 /// Derives the artifact-relative comparison image name from an expected path.
 ///
@@ -32,13 +19,6 @@ fn comparison_output_name(expected_path: &str) -> String {
         .and_then(|stem| stem.to_str())
         .unwrap_or("screen");
     format!("{stem}-compare.png")
-}
-
-/// Returns the on-disk byte length of a written artifact, or 0 when unknown.
-fn written_len(path: &std::path::Path) -> usize {
-    std::fs::metadata(path)
-        .map(|metadata| usize::try_from(metadata.len()).unwrap_or(usize::MAX))
-        .unwrap_or(0)
 }
 
 /// Registers the screen read, hash, screenshot, and comparison natives.

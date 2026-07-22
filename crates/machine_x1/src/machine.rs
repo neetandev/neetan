@@ -113,7 +113,7 @@ const X1_TRACE_CATALOG: common::TraceCatalog = common::TraceCatalog {
     scheduled: common::trace_id::scheduled::X1,
     devices: &[common::TraceDeviceCatalog {
         device: common::trace_id::device::X1_FDC,
-        actions: &[common::trace_id::action::READ],
+        actions: &[common::trace_action(common::trace_id::action::READ)],
     }],
     providers: &[],
 };

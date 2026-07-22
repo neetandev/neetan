@@ -125,7 +125,7 @@ const PC88_TRACE_CATALOG: common::TraceCatalog = common::TraceCatalog {
     scheduled: common::trace_id::scheduled::PC88,
     devices: &[common::TraceDeviceCatalog {
         device: common::trace_id::device::PC88_FDC,
-        actions: &[common::trace_id::action::READ],
+        actions: &[common::trace_action(common::trace_id::action::READ)],
     }],
     providers: &[],
 };

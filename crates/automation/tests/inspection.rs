@@ -333,3 +333,16 @@ fn pc98_inspect_script_passes_end_to_end() {
         run.termination
     );
 }
+
+#[test]
+fn pc98_text_script_passes_end_to_end() {
+    let run = run_committed_script("pc98-text.scm", 60);
+    assert!(
+        matches!(
+            run.termination,
+            automation::RunTermination::Completed(automation::ExecutionResult::Ok)
+        ),
+        "expected pc98-text.scm to complete Ok, got {:?}",
+        run.termination
+    );
+}

@@ -1,8 +1,54 @@
 //! Native ESC sequence state machine and processing.
 
+use alloc::{string::ToString, vec::Vec};
+
 use common::{is_shift_jis_lead_byte, is_shift_jis_trail_byte, shift_jis_pair_to_jis};
 
-use crate::{MemoryAccess, console::Console, tables};
+use crate::{
+    MemoryAccess,
+    console::Console,
+    tables,
+    trace::{
+        DosConsoleByteEvent, DosConsoleEscapeEvent, DosTraceEvent, character_mode,
+        parser_state_symbol,
+    },
+};
+
+/// Escape-relevant console state captured ahead of a dispatched sequence.
+struct EscapeTraceBefore {
+    attribute: u8,
+    cursor_row: u8,
+    cursor_column: u8,
+}
+
+/// Console parser and screen state captured before and after one byte.
+struct ConsoleByteState {
+    parser_state: &'static str,
+    character_mode: &'static str,
+    pending_lead: Option<u8>,
+    cursor_row: u8,
+    cursor_column: u8,
+    attribute: u8,
+}
+
+/// Maps a CSI final byte to its stable command symbol.
+fn csi_command_name(final_byte: u8) -> &'static str {
+    match final_byte {
+        b'H' | b'f' => "cursor-position",
+        b'A' => "cursor-up",
+        b'B' => "cursor-down",
+        b'C' => "cursor-right",
+        b'D' => "cursor-left",
+        b's' => "save-cursor",
+        b'u' => "restore-cursor",
+        b'J' => "erase-display",
+        b'K' => "erase-line",
+        b'L' => "insert-line",
+        b'M' => "delete-line",
+        b'm' => "sgr",
+        _ => "unknown",
+    }
+}
 
 save_state::runtime_state_enum! {
     /// Current phase of the DOS console escape-sequence parser.
@@ -81,9 +127,67 @@ impl Console {
         memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_MODE) != 0
     }
 
+    fn capture_byte_state(&self, memory: &dyn MemoryAccess) -> ConsoleByteState {
+        ConsoleByteState {
+            parser_state: parser_state_symbol(self.esc_parser.state),
+            character_mode: if self.shift_jis_mode_enabled(memory) {
+                character_mode::SHIFT_JIS
+            } else {
+                character_mode::ANK
+            },
+            pending_lead: self.pending_shift_jis_lead(memory),
+            cursor_row: self.cursor_row(memory),
+            cursor_column: self.cursor_col(memory),
+            attribute: memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DISPLAY_ATTR),
+        }
+    }
+
     /// Main entry point: feed one byte into the console output pipeline.
     /// Handles control characters, ESC sequences, and printable output.
+    ///
+    /// When the trace log is armed, this records a `byte` event with before and
+    /// after parser, cursor, and attribute state around the inner processing.
     pub(crate) fn process_byte(&mut self, memory: &mut dyn MemoryAccess, byte: u8) {
+        if !self.dos_trace.console_byte_enabled.get() {
+            self.process_byte_inner(memory, byte);
+            return;
+        }
+        let before = self.capture_byte_state(memory);
+        let index = {
+            let mut events = self.dos_trace.events.borrow_mut();
+            let index = events.len();
+            events.push(DosTraceEvent::ConsoleByte(DosConsoleByteEvent {
+                byte,
+                parser_state_before: before.parser_state,
+                parser_state_after: before.parser_state,
+                character_mode_before: before.character_mode,
+                character_mode_after: before.character_mode,
+                pending_shift_jis_lead_before: before.pending_lead,
+                pending_shift_jis_lead_after: before.pending_lead,
+                cursor_row_before: before.cursor_row,
+                cursor_column_before: before.cursor_column,
+                cursor_row_after: before.cursor_row,
+                cursor_column_after: before.cursor_column,
+                attribute_before: before.attribute,
+                attribute_after: before.attribute,
+            }));
+            index
+        };
+        self.process_byte_inner(memory, byte);
+        let after = self.capture_byte_state(memory);
+        if let Some(DosTraceEvent::ConsoleByte(event)) =
+            self.dos_trace.events.borrow_mut().get_mut(index)
+        {
+            event.parser_state_after = after.parser_state;
+            event.character_mode_after = after.character_mode;
+            event.pending_shift_jis_lead_after = after.pending_lead;
+            event.cursor_row_after = after.cursor_row;
+            event.cursor_column_after = after.cursor_column;
+            event.attribute_after = after.attribute;
+        }
+    }
+
+    fn process_byte_inner(&mut self, memory: &mut dyn MemoryAccess, byte: u8) {
         if let Some(lead) = self.pending_shift_jis_lead(memory) {
             self.clear_pending_shift_jis_lead(memory);
             if let Some(jis) = if is_shift_jis_trail_byte(byte) {
@@ -96,7 +200,7 @@ impl Console {
             }
 
             self.put_char(memory, lead);
-            self.process_byte(memory, byte);
+            self.process_byte_inner(memory, byte);
             return;
         }
 
@@ -144,20 +248,28 @@ impl Console {
                 self.esc_parser.state = EscState::GotCsi;
             }
             b'*' => {
+                let before = self.escape_trace_begin(memory);
                 self.clear_screen(memory);
+                self.escape_trace_end(memory, before, &[0x1B, b'*'], "clear-screen", &[]);
                 self.esc_parser.reset();
             }
             b'D' => {
+                let before = self.escape_trace_begin(memory);
                 self.linefeed(memory);
+                self.escape_trace_end(memory, before, &[0x1B, b'D'], "line-feed", &[]);
                 self.esc_parser.reset();
             }
             b'E' => {
+                let before = self.escape_trace_begin(memory);
                 self.carriage_return(memory);
                 self.linefeed(memory);
+                self.escape_trace_end(memory, before, &[0x1B, b'E'], "next-line", &[]);
                 self.esc_parser.reset();
             }
             b'M' => {
+                let before = self.escape_trace_begin(memory);
                 self.reverse_linefeed(memory);
+                self.escape_trace_end(memory, before, &[0x1B, b'M'], "reverse-line-feed", &[]);
                 self.esc_parser.reset();
             }
             b')' => {
@@ -195,7 +307,7 @@ impl Console {
                 if self.esc_parser.has_digit || self.esc_parser.param_count > 0 {
                     self.esc_parser.push_param();
                 }
-                self.esc_dispatch_csi(memory, byte);
+                self.dispatch_csi_traced(memory, byte);
                 self.esc_parser.reset();
             }
             _ => {
@@ -224,10 +336,24 @@ impl Console {
                 if self.esc_parser.has_digit || self.esc_parser.param_count > 0 {
                     self.esc_parser.push_param();
                 }
+                let before = self.escape_trace_begin(memory);
+                let prefix: &[u8] = if is_question { b"?" } else { b">" };
+                let command = match (is_question, byte) {
+                    (true, b'h') => "set-mode",
+                    (true, _) => "reset-mode",
+                    (false, b'h') => "set-extended-mode",
+                    (false, _) => "reset-extended-mode",
+                };
                 if is_question {
                     self.esc_dispatch_csi_question(memory, byte);
                 } else {
                     self.esc_dispatch_csi_greater(memory, byte);
+                }
+                if before.is_some() {
+                    let bytes = self.build_csi_bytes(prefix, byte);
+                    let parameters: Vec<u16> =
+                        self.esc_parser.params[..self.esc_parser.param_count].to_vec();
+                    self.escape_trace_end(memory, before, &bytes, command, &parameters);
                 }
                 self.esc_parser.reset();
             }
@@ -238,19 +364,23 @@ impl Console {
     }
 
     fn esc_process_right_paren(&mut self, memory: &mut dyn MemoryAccess, byte: u8) {
-        match byte {
+        let before = self.escape_trace_begin(memory);
+        let command = match byte {
             b'0' => {
                 // Set Shift-JIS kanji display mode.
                 memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_MODE, 0x01);
                 memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_GRAPH_CHAR, 0x20);
+                "kanji-mode"
             }
             b'3' => {
                 // Set graphic character display mode.
                 memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_MODE, 0x00);
                 memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_GRAPH_CHAR, 0x67);
+                "graphic-mode"
             }
-            _ => {}
-        }
+            _ => "unknown",
+        };
+        self.escape_trace_end(memory, before, &[0x1B, b')', byte], command, &[]);
         self.esc_parser.reset();
     }
 
@@ -264,8 +394,96 @@ impl Console {
         let raw_col = byte;
         let row = raw_row.saturating_sub(0x20);
         let col = raw_col.saturating_sub(0x20);
+        let before = self.escape_trace_begin(memory);
         self.set_cursor_position(memory, row, col);
+        self.escape_trace_end(
+            memory,
+            before,
+            &[0x1B, b'=', raw_row, raw_col],
+            "cursor-address",
+            &[u16::from(row), u16::from(col)],
+        );
         self.esc_parser.reset();
+    }
+
+    /// Builds the canonical byte form of the pending CSI sequence.
+    ///
+    /// `prefix` carries the private-parameter marker for `CSI ?` and `CSI >`
+    /// sequences, or is empty for a plain CSI sequence.
+    fn build_csi_bytes(&self, prefix: &[u8], final_byte: u8) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.push(0x1B);
+        bytes.push(b'[');
+        bytes.extend_from_slice(prefix);
+        for index in 0..self.esc_parser.param_count {
+            if index > 0 {
+                bytes.push(b';');
+            }
+            bytes.extend_from_slice(self.esc_parser.params[index].to_string().as_bytes());
+        }
+        bytes.push(final_byte);
+        bytes
+    }
+
+    /// Captures the escape-relevant state ahead of a dispatch when the escape
+    /// action is armed, or returns `None` so tracing costs nothing.
+    fn escape_trace_begin(&self, memory: &dyn MemoryAccess) -> Option<EscapeTraceBefore> {
+        if !self.dos_trace.console_escape_enabled.get() {
+            return None;
+        }
+        Some(EscapeTraceBefore {
+            attribute: memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DISPLAY_ATTR),
+            cursor_row: self.cursor_row(memory),
+            cursor_column: self.cursor_col(memory),
+        })
+    }
+
+    /// Records an `escape` event for a dispatched sequence when armed.
+    fn escape_trace_end(
+        &self,
+        memory: &dyn MemoryAccess,
+        before: Option<EscapeTraceBefore>,
+        bytes: &[u8],
+        command: &'static str,
+        parameters: &[u16],
+    ) {
+        let Some(before) = before else {
+            return;
+        };
+        let event = DosConsoleEscapeEvent {
+            bytes: bytes.to_vec(),
+            command,
+            parameters: parameters.to_vec(),
+            attribute_before: before.attribute,
+            attribute_after: memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DISPLAY_ATTR),
+            cursor_row_before: before.cursor_row,
+            cursor_column_before: before.cursor_column,
+            cursor_row_after: self.cursor_row(memory),
+            cursor_column_after: self.cursor_col(memory),
+        };
+        self.dos_trace
+            .events
+            .borrow_mut()
+            .push(DosTraceEvent::ConsoleEscape(event));
+    }
+
+    /// Dispatches a CSI final byte, recording an `escape` event when armed.
+    fn dispatch_csi_traced(&mut self, memory: &mut dyn MemoryAccess, final_byte: u8) {
+        let before = self.escape_trace_begin(memory);
+        if before.is_none() {
+            self.esc_dispatch_csi(memory, final_byte);
+            return;
+        }
+        let bytes = self.build_csi_bytes(&[], final_byte);
+        let parameters: Vec<u16> = self.esc_parser.params[..self.esc_parser.param_count].to_vec();
+        self.esc_dispatch_csi(memory, final_byte);
+        self.escape_trace_end(
+            memory,
+            before,
+            &bytes,
+            csi_command_name(final_byte),
+            &parameters,
+        );
     }
 
     fn esc_dispatch_csi(&mut self, memory: &mut dyn MemoryAccess, final_byte: u8) {

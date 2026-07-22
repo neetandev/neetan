@@ -9,8 +9,8 @@ use common::{
 use r7rs::{Engine, Error, LibraryName, NativeContext, Value};
 
 use super::support::{
-    error_value, inspected_integer, machine_id, make_alist, make_list, op_error_value, to_count,
-    to_u32, to_u128,
+    artifact_alist, error_value, inspected_integer, machine_id, make_alist, make_list,
+    op_error_value, to_count, to_u32, to_u128, written_len,
 };
 use crate::session::AutomationSession;
 
@@ -352,6 +352,30 @@ pub(super) fn register_inspect_natives(
             }
         },
     )?;
+
+    let save_memory = Rc::clone(session);
+    engine.register_library_fn(internal, "%save-memory", 5..=5, move |context, args| {
+        if let Err(value) = machine_id(context, &save_memory, args[0])? {
+            return Ok(value);
+        }
+        let space = context.to_symbol_name(args[1])?.to_owned();
+        let address = match to_count(context, args[2])? {
+            Ok(address) => address,
+            Err(value) => return Ok(value),
+        };
+        let length = match to_count(context, args[3])? {
+            Ok(length) => length,
+            Err(value) => return Ok(value),
+        };
+        let path = context.to_str(args[4])?.to_owned();
+        match save_memory
+            .borrow_mut()
+            .save_memory(&space, address, length, &path)
+        {
+            Ok(written) => artifact_alist(context, &path, Some(written_len(&written))),
+            Err(error) => op_error_value(context, &error),
+        }
+    })?;
 
     Ok(())
 }

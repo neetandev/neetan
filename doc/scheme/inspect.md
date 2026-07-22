@@ -34,3 +34,35 @@ handle from [`(neetan automation 1)`](automation.md).
 - `(memory-peek-unsigned machine space address width byte-order)` -> integer.
   Reads a `width`-byte unsigned value. `byte-order` is `little`, `big`, or
   `native` (the address-space descriptor's order).
+- `(save-memory! machine space address length path)` -> alist with `path` and
+  `bytes`. Writes `length` exact guest bytes beneath the artifact root, ready
+  for tools such as `ndisasm`. Path traversal and absolute paths raise
+  `neetan/path-escape`.
+
+## Text surfaces
+
+Decoded text-mode inspection without knowing the physical text VRAM layout or
+performing JIS decoding in Scheme. Reads are side-effect-free and never render
+a framebuffer. On the PC-98 the main surface is `display.main`.
+
+- `(text-surfaces machine)` -> list of symbols. The inspectable text surfaces.
+- `(text-surface-info machine surface)` -> alist. Keys `id`, `rows`, and
+  `columns`.
+- `(text-cell machine surface row column)` -> alist. One decoded cell with
+  `row`, `column`, `raw-jis`, `unicode` (a character, or `#f` when the code has
+  no mapping), `attribute` (the raw hardware attribute byte), and
+  `display-width` (1 or 2 columns).
+- `(text-screen machine surface)` -> list of strings. Every row decoded to
+  text, top to bottom. Use `text-cell` when raw attributes matter, for example
+  to check reverse video separately from the glyphs.
+- `(wait-for-text machine surface predicate)` /
+  `(wait-for-text machine surface predicate options)` -> string or `#f`. Runs
+  the machine until the decoded surface matches, returning the matched text.
+  The predicate is a bare string, shorthand for `((contains . string))`, or an
+  alist with a required `contains` string and an optional `row`; options are
+  `frames` (default `120`) and `ticks`. The live text plane is sampled once up
+  front and then at each frame boundary, so text appearing and vanishing
+  within a single frame is not observed.
+- `(save-text-screen! machine surface path)` -> alist with `path` and `bytes`.
+  Writes the decoded rows beneath the artifact root, one line per row. Path
+  traversal and absolute paths raise `neetan/path-escape`.
