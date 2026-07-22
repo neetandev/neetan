@@ -15,6 +15,7 @@
 //!   SASI or SCSI geometry.
 
 pub mod at_flat;
+pub mod format;
 pub mod hdi;
 pub mod nhd;
 pub mod raw;
@@ -231,6 +232,238 @@ fn synthesize_default_header(format: HddFormat, geometry: HddGeometry) -> Vec<u8
         // round-trips the file byte-for-byte.
         HddFormat::Raw | HddFormat::AtFlat => Vec::new(),
     }
+}
+
+impl HddFormat {
+    /// Returns the canonical file extension for this image format. Used when a
+    /// programmatically built image is re-parsed by [`load_hdd_image`].
+    pub fn file_extension(self) -> &'static str {
+        match self {
+            HddFormat::Nhd => "nhd",
+            HddFormat::Hdi => "hdi",
+            HddFormat::Thd => "thd",
+            HddFormat::Raw => "h0",
+            HddFormat::AtFlat => "hdd",
+        }
+    }
+}
+
+/// A named hard-disk capacity and container format, selectable on the command
+/// line and by the automation `create-hdd!` procedure.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum HddSizeType {
+    /// PC-98 SASI 5 MB (.hdi).
+    Mb5,
+    /// PC-98 SASI 10 MB (.hdi).
+    Mb10,
+    /// PC-98 SASI 15 MB (.hdi).
+    Mb15,
+    /// PC-98 SASI 20 MB (.hdi).
+    Mb20,
+    /// PC-98 SASI 30 MB (.hdi).
+    Mb30,
+    /// PC-98 SASI 40 MB (.hdi).
+    Mb40,
+    /// PC-98 IDE 40 MB (.hdi).
+    IdeMb40,
+    /// PC-98 IDE 80 MB (.hdi).
+    IdeMb80,
+    /// PC-98 IDE 120 MB (.hdi).
+    IdeMb120,
+    /// PC-98 IDE 200 MB (.hdi).
+    IdeMb200,
+    /// PC-98 IDE 500 MB (.hdi).
+    IdeMb500,
+    /// FM Towns SCSI 20 MB (.h0-.h4).
+    ScsiMb20,
+    /// FM Towns SCSI 40 MB (.h0-.h4).
+    ScsiMb40,
+    /// FM Towns SCSI 100 MB (.h0-.h4).
+    ScsiMb100,
+    /// FM Towns SCSI 200 MB (.h0-.h4).
+    ScsiMb200,
+    /// FM Towns SCSI 340 MB (.h0-.h4).
+    ScsiMb340,
+    /// FM Towns SCSI 540 MB (.h0-.h4).
+    ScsiMb540,
+    /// X68000 SASI 10 MB (.hdf).
+    X68kSasiMb10,
+    /// X68000 SASI 20 MB (.hdf).
+    X68kSasiMb20,
+    /// X68000 SASI 40 MB (.hdf).
+    X68kSasiMb40,
+    /// X68000 SCSI 20 MB (.hdf).
+    X68kScsiMb20,
+    /// X68000 SCSI 40 MB (.hdf).
+    X68kScsiMb40,
+    /// PC/AT flat 40 MB (.hdd).
+    AtMb40,
+    /// PC/AT flat 100 MB (.hdd).
+    AtMb100,
+    /// PC/AT flat 250 MB (.hdd).
+    AtMb250,
+    /// PC/AT flat 504 MB (.hdd).
+    AtMb504,
+}
+
+impl std::str::FromStr for HddSizeType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "sasi5" => Ok(Self::Mb5),
+            "sasi10" => Ok(Self::Mb10),
+            "sasi15" => Ok(Self::Mb15),
+            "sasi20" => Ok(Self::Mb20),
+            "sasi30" => Ok(Self::Mb30),
+            "sasi40" => Ok(Self::Mb40),
+            "ide40" => Ok(Self::IdeMb40),
+            "ide80" => Ok(Self::IdeMb80),
+            "ide120" => Ok(Self::IdeMb120),
+            "ide200" => Ok(Self::IdeMb200),
+            "ide500" => Ok(Self::IdeMb500),
+            "scsi20" => Ok(Self::ScsiMb20),
+            "scsi40" => Ok(Self::ScsiMb40),
+            "scsi100" => Ok(Self::ScsiMb100),
+            "scsi200" => Ok(Self::ScsiMb200),
+            "scsi340" => Ok(Self::ScsiMb340),
+            "scsi540" => Ok(Self::ScsiMb540),
+            "x68sasi10" => Ok(Self::X68kSasiMb10),
+            "x68sasi20" => Ok(Self::X68kSasiMb20),
+            "x68sasi40" => Ok(Self::X68kSasiMb40),
+            "x68scsi20" => Ok(Self::X68kScsiMb20),
+            "x68scsi40" => Ok(Self::X68kScsiMb40),
+            "at40" => Ok(Self::AtMb40),
+            "at100" => Ok(Self::AtMb100),
+            "at250" => Ok(Self::AtMb250),
+            "at504" => Ok(Self::AtMb504),
+            _ => Err(format!(
+                "unknown HDD size '{s}', expected sasi5, sasi10, sasi15, sasi20, sasi30, sasi40, \
+                 ide40, ide80, ide120, ide200, ide500, scsi20, scsi40, scsi100, scsi200, scsi340, \
+                 scsi540, x68sasi10, x68sasi20, x68sasi40, x68scsi20, x68scsi40, at40, at100, \
+                 at250, or at504"
+            )),
+        }
+    }
+}
+
+impl HddSizeType {
+    /// Whether this size denotes an FM Towns raw SCSI image (.h0-.h4) rather
+    /// than a PC-98 SASI/IDE header format (.hdi).
+    pub fn is_scsi_raw(self) -> bool {
+        matches!(
+            self,
+            Self::ScsiMb20
+                | Self::ScsiMb40
+                | Self::ScsiMb100
+                | Self::ScsiMb200
+                | Self::ScsiMb340
+                | Self::ScsiMb540
+        )
+    }
+
+    /// Whether this size denotes an X68000 headerless .hdf image.
+    pub fn is_x68k_hdf(self) -> bool {
+        matches!(
+            self,
+            Self::X68kSasiMb10
+                | Self::X68kSasiMb20
+                | Self::X68kSasiMb40
+                | Self::X68kScsiMb20
+                | Self::X68kScsiMb40
+        )
+    }
+
+    /// Whether this size denotes an AT headerless flat .hdd image.
+    pub fn is_at_flat(self) -> bool {
+        matches!(
+            self,
+            Self::AtMb40 | Self::AtMb100 | Self::AtMb250 | Self::AtMb504
+        )
+    }
+
+    /// Returns the canonical short token for this size, the inverse of the
+    /// [`std::str::FromStr`] parse (for example [`Self::Mb40`] is `"sasi40"`).
+    pub fn as_token(self) -> &'static str {
+        match self {
+            Self::Mb5 => "sasi5",
+            Self::Mb10 => "sasi10",
+            Self::Mb15 => "sasi15",
+            Self::Mb20 => "sasi20",
+            Self::Mb30 => "sasi30",
+            Self::Mb40 => "sasi40",
+            Self::IdeMb40 => "ide40",
+            Self::IdeMb80 => "ide80",
+            Self::IdeMb120 => "ide120",
+            Self::IdeMb200 => "ide200",
+            Self::IdeMb500 => "ide500",
+            Self::ScsiMb20 => "scsi20",
+            Self::ScsiMb40 => "scsi40",
+            Self::ScsiMb100 => "scsi100",
+            Self::ScsiMb200 => "scsi200",
+            Self::ScsiMb340 => "scsi340",
+            Self::ScsiMb540 => "scsi540",
+            Self::X68kSasiMb10 => "x68sasi10",
+            Self::X68kSasiMb20 => "x68sasi20",
+            Self::X68kSasiMb40 => "x68sasi40",
+            Self::X68kScsiMb20 => "x68scsi20",
+            Self::X68kScsiMb40 => "x68scsi40",
+            Self::AtMb40 => "at40",
+            Self::AtMb100 => "at100",
+            Self::AtMb250 => "at250",
+            Self::AtMb504 => "at504",
+        }
+    }
+
+    /// Returns the CHS geometry and container format for this size.
+    pub fn geometry(self) -> (HddGeometry, HddFormat) {
+        // The SCSI geometry is purely a container: 8 heads x 32 sectors of
+        // 512 bytes per cylinder (128 KiB), so cylinders = megabytes x 8.
+        let (cylinders, heads, sectors_per_track, sector_size, format) = match self {
+            Self::Mb5 => (153u16, 4u8, 33u8, 256u16, HddFormat::Hdi),
+            Self::Mb10 => (310, 4, 33, 256, HddFormat::Hdi),
+            Self::Mb15 => (310, 6, 33, 256, HddFormat::Hdi),
+            Self::Mb20 => (310, 8, 33, 256, HddFormat::Hdi),
+            Self::Mb30 => (615, 6, 33, 256, HddFormat::Hdi),
+            Self::Mb40 => (615, 8, 33, 256, HddFormat::Hdi),
+            Self::IdeMb40 => (977, 5, 17, 512, HddFormat::Hdi),
+            Self::IdeMb80 => (977, 10, 17, 512, HddFormat::Hdi),
+            Self::IdeMb120 => (977, 15, 17, 512, HddFormat::Hdi),
+            Self::IdeMb200 => (977, 15, 28, 512, HddFormat::Hdi),
+            Self::IdeMb500 => (1015, 16, 63, 512, HddFormat::Hdi),
+            Self::ScsiMb20 => (20 * 8, 8, 32, 512, HddFormat::Raw),
+            Self::ScsiMb40 => (40 * 8, 8, 32, 512, HddFormat::Raw),
+            Self::ScsiMb100 => (100 * 8, 8, 32, 512, HddFormat::Raw),
+            Self::ScsiMb200 => (200 * 8, 8, 32, 512, HddFormat::Raw),
+            Self::ScsiMb340 => (340 * 8, 8, 32, 512, HddFormat::Raw),
+            Self::ScsiMb540 => (540 * 8, 8, 32, 512, HddFormat::Raw),
+            Self::X68kSasiMb10 => (309, 4, 33, 256, HddFormat::Raw),
+            Self::X68kSasiMb20 => (614, 4, 33, 256, HddFormat::Raw),
+            Self::X68kSasiMb40 => (614, 8, 33, 256, HddFormat::Raw),
+            Self::X68kScsiMb20 => (20 * 8, 8, 32, 512, HddFormat::Raw),
+            Self::X68kScsiMb40 => (40 * 8, 8, 32, 512, HddFormat::Raw),
+            Self::AtMb40 => (81, 16, 63, 512, HddFormat::AtFlat),
+            Self::AtMb100 => (203, 16, 63, 512, HddFormat::AtFlat),
+            Self::AtMb250 => (507, 16, 63, 512, HddFormat::AtFlat),
+            Self::AtMb504 => (1023, 16, 63, 512, HddFormat::AtFlat),
+        };
+        (
+            HddGeometry {
+                cylinders,
+                heads,
+                sectors_per_track,
+                sector_size,
+            },
+            format,
+        )
+    }
+}
+
+/// Builds a blank, zero-filled hard-disk image for the given size in memory.
+pub fn blank_hdd_image(size: HddSizeType) -> HddImage {
+    let (geometry, format) = size.geometry();
+    let data = vec![0u8; geometry.total_bytes() as usize];
+    HddImage::from_raw(geometry, format, data)
 }
 
 /// Validates geometry parameters are within acceptable bounds.

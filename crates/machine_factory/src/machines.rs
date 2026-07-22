@@ -633,7 +633,7 @@ where
     let model = config.pc60_model;
     info!("Selected machine model {model}");
 
-    let rom_dir = config.pc60_roms.as_ref().ok_or_else(|| {
+    let rom_dir = config.pc6000_roms.as_ref().ok_or_else(|| {
         InitError::rom_missing(format!(
             "{model} requires a ROM directory (--pc6000-roms <DIR>)"
         ))

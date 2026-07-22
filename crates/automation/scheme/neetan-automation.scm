@@ -14,7 +14,7 @@
     save-state restore-state! discard-state! call-with-saved-state
     key-down! key-up! key-tap! type-text!
     joystick-set! joystick-clear! mouse-move! mouse-button!
-    media-insert! media-eject! media-flush! media-info
+    media-insert! media-eject! media-flush! media-info create-hdd! format-hdd!
     screen-available? screen-size screen-rgba screen-pixel screen-hash
     save-screenshot! screen-matches? screen-region-matches? wait-for-screen)
   (import (scheme base) (neetan internal 1) (neetan handles internal 1))
@@ -469,6 +469,29 @@
       (%require-count "media-info" slot)
       (%raise-if-error
         (%media-info (%machine-token "media-info" machine) type slot)))
+
+    (define (create-hdd! machine type slot size)
+      (%require-symbol "create-hdd!" type)
+      (%require-count "create-hdd!" slot)
+      (%require-symbol "create-hdd!" size)
+      (%raise-if-error
+        (%create-hdd (%machine-token "create-hdd!" machine)
+                     type slot size)))
+
+    (define (format-hdd! machine type slot . optional-table)
+      (%require-symbol "format-hdd!" type)
+      (%require-count "format-hdd!" slot)
+      (let ((table
+              (cond
+                ((null? optional-table) 'pc98)
+                ((null? (cdr optional-table)) (car optional-table))
+                (else
+                 (error "format-hdd!: expected three or four arguments"
+                        'neetan/argument)))))
+        (%require-symbol "format-hdd!" table)
+        (%raise-if-error
+          (%format-hdd (%machine-token "format-hdd!" machine)
+                       type slot table))))
 
     (define (%require-tolerance who value)
       (if (and (real? value) (>= value 0) (<= value 1))

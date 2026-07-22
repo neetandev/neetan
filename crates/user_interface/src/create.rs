@@ -1,10 +1,7 @@
 use std::path::Path;
 
 use common::{Context, bail, info};
-use device::{
-    disk::{HddFormat, HddGeometry, HddImage},
-    floppy::d88::{D88Disk, D88MediaType, D88Sector},
-};
+use device::floppy::d88::{D88Disk, D88MediaType, D88Sector};
 
 use crate::config::{FddType, HddSizeType};
 
@@ -96,46 +93,7 @@ pub fn create_hdd_image(path: &Path, hdd_type: HddSizeType) -> crate::Result<()>
         bail!("output path must have a .hdi extension");
     }
 
-    // The SCSI geometry is purely a container: 8 heads x 32 sectors of
-    // 512 bytes per cylinder (128 KiB), so cylinders = megabytes x 8.
-    let (cylinders, heads, sectors_per_track, sector_size, format) = match hdd_type {
-        HddSizeType::Mb5 => (153u16, 4u8, 33u8, 256u16, HddFormat::Hdi),
-        HddSizeType::Mb10 => (310, 4, 33, 256, HddFormat::Hdi),
-        HddSizeType::Mb15 => (310, 6, 33, 256, HddFormat::Hdi),
-        HddSizeType::Mb20 => (310, 8, 33, 256, HddFormat::Hdi),
-        HddSizeType::Mb30 => (615, 6, 33, 256, HddFormat::Hdi),
-        HddSizeType::Mb40 => (615, 8, 33, 256, HddFormat::Hdi),
-        HddSizeType::IdeMb40 => (977, 5, 17, 512, HddFormat::Hdi),
-        HddSizeType::IdeMb80 => (977, 10, 17, 512, HddFormat::Hdi),
-        HddSizeType::IdeMb120 => (977, 15, 17, 512, HddFormat::Hdi),
-        HddSizeType::IdeMb200 => (977, 15, 28, 512, HddFormat::Hdi),
-        HddSizeType::IdeMb500 => (1015, 16, 63, 512, HddFormat::Hdi),
-        HddSizeType::ScsiMb20 => (20 * 8, 8, 32, 512, HddFormat::Raw),
-        HddSizeType::ScsiMb40 => (40 * 8, 8, 32, 512, HddFormat::Raw),
-        HddSizeType::ScsiMb100 => (100 * 8, 8, 32, 512, HddFormat::Raw),
-        HddSizeType::ScsiMb200 => (200 * 8, 8, 32, 512, HddFormat::Raw),
-        HddSizeType::ScsiMb340 => (340 * 8, 8, 32, 512, HddFormat::Raw),
-        HddSizeType::ScsiMb540 => (540 * 8, 8, 32, 512, HddFormat::Raw),
-        HddSizeType::X68kSasiMb10 => (309, 4, 33, 256, HddFormat::Raw),
-        HddSizeType::X68kSasiMb20 => (614, 4, 33, 256, HddFormat::Raw),
-        HddSizeType::X68kSasiMb40 => (614, 8, 33, 256, HddFormat::Raw),
-        HddSizeType::X68kScsiMb20 => (20 * 8, 8, 32, 512, HddFormat::Raw),
-        HddSizeType::X68kScsiMb40 => (40 * 8, 8, 32, 512, HddFormat::Raw),
-        HddSizeType::AtMb40 => (81, 16, 63, 512, HddFormat::AtFlat),
-        HddSizeType::AtMb100 => (203, 16, 63, 512, HddFormat::AtFlat),
-        HddSizeType::AtMb250 => (507, 16, 63, 512, HddFormat::AtFlat),
-        HddSizeType::AtMb504 => (1023, 16, 63, 512, HddFormat::AtFlat),
-    };
-
-    let geometry = HddGeometry {
-        cylinders,
-        heads,
-        sectors_per_track,
-        sector_size,
-    };
-
-    let data = vec![0u8; geometry.total_bytes() as usize];
-    let image = HddImage::from_raw(geometry, format, data);
+    let image = device::disk::blank_hdd_image(hdd_type);
     let bytes = image.to_bytes();
     let size_mb = bytes.len() / (1024 * 1024);
 
