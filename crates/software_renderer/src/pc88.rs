@@ -1,7 +1,7 @@
 //! PC-8801 display renderer.
 //!
 //! Composites the graphics layer (3-plane GVRAM) under the uPD3301 text layer
-//! into a packed RGBA framebuffer, reusing the crate's framebuffer/PPM plumbing.
+//! into a packed RGBA framebuffer, reusing the crate's framebuffer plumbing.
 //! It consumes a [`RenderInputs88`] snapshot of the expanded character and
 //! attribute planes produced by the CRTC and the GVRAM planes, plus the built-in
 //! 8x8 ANK character generator (the kanji ROM window at offset 0x1000).

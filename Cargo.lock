@@ -364,6 +364,7 @@ dependencies = [
  "device",
  "machine_98",
  "save_state",
+ "sdl3",
  "software_renderer",
 ]
 

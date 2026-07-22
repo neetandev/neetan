@@ -1,5 +1,6 @@
 use std::{env, fs};
 
+use sdl3::surface::Surface;
 use software_renderer::{
     GdcGraphicsInput, GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer,
     TEXT_VRAM_BYTES,
@@ -73,7 +74,7 @@ fn pixel_at(framebuffer: &[u8], x: usize, y: usize) -> [u8; 4] {
 }
 
 #[test]
-fn renders_text_cell_color_and_writes_ppm() {
+fn renders_text_cell_color_and_writes_png() {
     // Set up font ROM so 'A' renders with bit 7 set on its first scanline.
     let mut font_rom = vec![0u8; 0x83000];
     font_rom[0x80000 + (b'A' as usize) * 16] = 0x80;
@@ -111,10 +112,10 @@ fn renders_text_cell_color_and_writes_ppm() {
     assert_eq!(pixel_at(fb, 0, 401), [0x00, 0x00, 0x00, 0xFF]);
 
     let path = env::temp_dir().join(format!(
-        "neetan-software-renderer-{}.ppm",
+        "neetan-software-renderer-{}.png",
         std::process::id()
     ));
-    SoftwareRenderer::write_ppm(
+    SoftwareRenderer::write_png(
         &path,
         fb,
         SoftwareRenderer::WIDTH as u32,
@@ -122,13 +123,32 @@ fn renders_text_cell_color_and_writes_ppm() {
     )
     .unwrap();
 
-    let ppm = fs::read(&path).unwrap();
-    let header = b"P6\n640 480\n255\n";
-    assert!(ppm.starts_with(header));
-    assert_eq!(ppm.len(), header.len() + SoftwareRenderer::PIXEL_COUNT * 3);
-    assert_eq!(&ppm[header.len()..header.len() + 3], &[0xFF, 0x00, 0x00]);
+    let png = fs::read(&path).unwrap();
+    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+    let decoded = Surface::load_png(&png).unwrap();
+    assert_eq!(
+        decoded.dimensions(),
+        (
+            SoftwareRenderer::WIDTH as u32,
+            SoftwareRenderer::HEIGHT as u32
+        )
+    );
+    let pixels = decoded.to_rgba8().unwrap();
+    assert_eq!(&pixels[..4], &[0xFF, 0x00, 0x00, 0xFF]);
 
     fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn rejects_short_png_framebuffer() {
+    let path = env::temp_dir().join(format!(
+        "neetan-software-renderer-short-{}.png",
+        std::process::id()
+    ));
+    let error = SoftwareRenderer::write_png(&path, &[0; 7], 2, 1).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(!path.exists());
 }
 
 #[test]

@@ -3,7 +3,7 @@
 //! display memory is painted with a deterministic pattern, a frame is rendered
 //! and the host asserts exact framebuffer pixels and display dimensions.
 //!
-//! `NEETAN_DUMP_FRAMES=<dir>` writes one PPM per step for debugging;
+//! `NEETAN_DUMP_FRAMES=<dir>` writes one PNG per step for debugging;
 //! `NEETAN_RECORD_FRAME_HASHES=1` prints the golden hash table instead of
 //! asserting it.
 
@@ -1037,14 +1037,14 @@ fn check_frame_hash(machine: &AtMachine<NoTrace>, step: u8) {
     );
 }
 
-/// Dumps the frame as PPM when `NEETAN_DUMP_FRAMES` names a directory.
+/// Dumps the frame as PNG when `NEETAN_DUMP_FRAMES` names a directory.
 fn dump_frame(machine: &AtMachine<NoTrace>, step: u8) {
     let Ok(directory) = std::env::var("NEETAN_DUMP_FRAMES") else {
         return;
     };
     let (width, height) = machine.display_dimensions();
-    let path = std::path::PathBuf::from(directory).join(format!("step_{step:02X}.ppm"));
-    software_renderer::SoftwareRenderer::write_ppm(
+    let path = std::path::PathBuf::from(directory).join(format!("step_{step:02X}.png"));
+    software_renderer::SoftwareRenderer::write_png(
         &path,
         machine.display_framebuffer(),
         width,

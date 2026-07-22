@@ -7,12 +7,11 @@
 extern crate alloc;
 
 use alloc::{boxed::Box, vec};
-#[cfg(feature = "std")]
-use std::{
-    fs::File,
-    io::{self, BufWriter, Write},
-    path::Path,
-};
+#[cfg(feature = "write_png")]
+use std::{fs, io, path::Path};
+
+#[cfg(feature = "write_png")]
+use sdl3::surface::Surface;
 
 mod compose;
 pub mod fm7;
@@ -305,32 +304,36 @@ impl SoftwareRenderer {
         }
     }
 
-    /// Writes the top-left `width * height` region of a packed RGBA framebuffer
-    /// to a binary PPM (P6) file.
-    #[cfg(feature = "std")]
-    pub fn write_ppm(
+    /// Writes a packed RGBA framebuffer to a PNG file using SDL3.
+    #[cfg(feature = "write_png")]
+    pub fn write_png(
         path: impl AsRef<Path>,
         framebuffer: &[u8],
         width: u32,
         height: u32,
     ) -> io::Result<()> {
-        let required = (width as usize) * (height as usize) * Self::PIXEL_BYTES;
+        let required = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|pixels| pixels.checked_mul(Self::PIXEL_BYTES))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "software renderer PNG output dimensions overflow the framebuffer size",
+                )
+            })?;
         if framebuffer.len() < required {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "software renderer PPM output framebuffer is smaller than the requested region",
+                "software renderer PNG output framebuffer is smaller than the requested region",
             ));
         }
 
-        let file = File::create(path)?;
-        let mut writer = BufWriter::new(file);
-        writeln!(writer, "P6\n{} {}\n255", width, height)?;
-
-        for chunk in framebuffer[..required].chunks_exact(Self::PIXEL_BYTES) {
-            writer.write_all(&chunk[0..3])?;
-        }
-
-        writer.flush()
+        let surface = Surface::from_rgba8(width, height, &framebuffer[..required])
+            .map_err(|error| io::Error::other(format!("cannot build PNG surface: {error}")))?;
+        let png = surface
+            .save_png()
+            .map_err(|error| io::Error::other(format!("cannot encode PNG: {error}")))?;
+        fs::write(path, png)
     }
 }
 

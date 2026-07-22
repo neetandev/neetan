@@ -10,14 +10,16 @@ rust-version.workspace = true
 [features]
 default = []
 std = []
+write_png = ["std", "dep:sdl3"]
 
 [dependencies]
 common.workspace = true
 device.workspace = true
 save_state.workspace = true
+sdl3 = { workspace = true, optional = true }
 
 [dev-dependencies]
-software_renderer = { path = ".", features = ["std"] }
+software_renderer = { path = ".", features = ["write_png"] }
 common.workspace = true
 cpu.workspace = true
 machine_98.workspace = true
