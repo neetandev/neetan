@@ -311,6 +311,10 @@ fn pc98_check_screen_failure_writes_comparison_image() {
                 message.contains("PC-98 mismatch: 1 of 1 test case(s) failed"),
                 "summary should report a failure, got {message:?}"
             );
+            assert!(
+                message.contains("check: (check-screen machine \"expected/pc98-wrong.png\")"),
+                "summary should identify the failed check, got {message:?}"
+            );
         }
         other => panic!("expected Completed(Error), got {other:?}"),
     }

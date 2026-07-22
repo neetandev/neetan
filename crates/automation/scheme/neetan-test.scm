@@ -4,7 +4,7 @@
     test-suite test-case
     check-true check-false check-equal check-near check-screen
     fail note artifact!)
-  (import (scheme base) (neetan automation 1) (neetan internal 1)
+  (import (scheme base) (scheme write) (neetan automation 1) (neetan internal 1)
           (neetan handles internal 1))
   (begin
     (define-record-type <test-suite-state>
@@ -30,6 +30,15 @@
     (define (%assert-fail message)
       (%require-test-case "assertion")
       (error message 'neetan/assertion))
+
+    (define (%written value)
+      (let ((port (open-output-string)))
+        (write value port)
+        (get-output-string port)))
+
+    (define (%check-fail message check-form)
+      (%assert-fail
+        (string-append message "; check: " (%written check-form))))
 
     ;; Returns whether a condition is a neetan/assertion failure.
     (define (%assertion? condition)
@@ -174,25 +183,25 @@
              (if #f #f)
              body ...)))))
 
-    (define (check-true value)
+    (define (%check-true check-form value)
       (%require-test-case "check-true")
       (if value
           value
-          (%assert-fail "check-true failed: value was false")))
+          (%check-fail "check-true failed: value was false" check-form)))
 
-    (define (check-false value)
+    (define (%check-false check-form value)
       (%require-test-case "check-false")
       (if value
-          (%assert-fail "check-false failed: value was true")
+          (%check-fail "check-false failed: value was true" check-form)
           value))
 
-    (define (check-equal expected actual)
+    (define (%check-equal check-form expected actual)
       (%require-test-case "check-equal")
       (if (equal? expected actual)
           actual
-          (%assert-fail "check-equal failed: values are not equal")))
+          (%check-fail "check-equal failed: values are not equal" check-form)))
 
-    (define (check-near expected actual tolerance)
+    (define (%check-near check-form expected actual tolerance)
       (%require-test-case "check-near")
       (if (not (and (real? expected) (real? actual)
                     (real? tolerance) (>= tolerance 0)))
@@ -200,11 +209,12 @@
                  'neetan/argument)
           (if (<= (abs (- expected actual)) tolerance)
               actual
-              (%assert-fail
+              (%check-fail
                 (string-append "check-near failed: |"
                                (number->string expected) " - "
                                (number->string actual) "| > "
-                               (number->string tolerance))))))
+                               (number->string tolerance))
+                check-form))))
 
     ;; Best-effort extraction of a written comparison-image path for a message.
     (define (%comparison-path result)
@@ -212,7 +222,7 @@
           "(comparison image unavailable)"
           (alist-ref result 'path)))
 
-    (define (check-screen machine expected-path . optional-options)
+    (define (%check-screen check-form machine expected-path . optional-options)
       (%require-test-case "check-screen")
       (if (not (string? expected-path))
           (error "check-screen path must be a string" 'neetan/argument)
@@ -232,9 +242,35 @@
                         (%screen-comparison-image
                           (%require-machine-token "check-screen" machine)
                           expected-path)))
-                  (%assert-fail
+                  (%check-fail
                     (string-append "check-screen failed: " expected-path
                                    " did not match; comparison image at "
-                                   (%comparison-path artifact))))))))
+                                   (%comparison-path artifact))
+                    check-form))))))
+
+    (define-syntax check-true
+      (syntax-rules ()
+        ((_ arguments ...)
+         (%check-true '(check-true arguments ...) arguments ...))))
+
+    (define-syntax check-false
+      (syntax-rules ()
+        ((_ arguments ...)
+         (%check-false '(check-false arguments ...) arguments ...))))
+
+    (define-syntax check-equal
+      (syntax-rules ()
+        ((_ arguments ...)
+         (%check-equal '(check-equal arguments ...) arguments ...))))
+
+    (define-syntax check-near
+      (syntax-rules ()
+        ((_ arguments ...)
+         (%check-near '(check-near arguments ...) arguments ...))))
+
+    (define-syntax check-screen
+      (syntax-rules ()
+        ((_ arguments ...)
+         (%check-screen '(check-screen arguments ...) arguments ...))))
 
     ))

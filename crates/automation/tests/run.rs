@@ -110,6 +110,50 @@ fn failed_case_is_named_and_later_cases_continue() {
 }
 
 #[test]
+fn failed_checks_report_their_source_forms() {
+    let run = run_committed_script("test-suite-check-details.scm", 30);
+    let expected_messages = [
+        (
+            "check-true detail",
+            "check-true failed: value was false; check: (check-true (begin (set! evaluations (+ evaluations 1)) #f))",
+        ),
+        (
+            "check-false detail",
+            "check-false failed: value was true; check: (check-false (> 2 1))",
+        ),
+        (
+            "check-equal detail",
+            "check-equal failed: values are not equal; check: (check-equal (+ 1 1) 3)",
+        ),
+        (
+            "check-near detail",
+            "check-near failed: |1.0 - 2.0| > 0.1; check: (check-near 1.0 2.0 0.1)",
+        ),
+    ];
+
+    for (test_case, expected_message) in expected_messages {
+        assert!(run.messages.iter().any(|message| matches!(
+            message,
+            MessageProtocol::TestCaseFinished {
+                test_case: actual_test_case,
+                outcome: TestCaseOutcome::Failure { message, .. },
+                ..
+            } if actual_test_case == test_case && message == expected_message
+        )));
+    }
+
+    match &run.termination {
+        RunTermination::Completed(ExecutionResult::Error { message }) => {
+            assert!(message.contains("check detail suite: 4 of 5 test case(s) failed"));
+            for (test_case, expected_message) in expected_messages {
+                assert!(message.contains(&format!("{test_case}: {expected_message}")));
+            }
+        }
+        other => panic!("expected Completed(Error), got {other:?}"),
+    }
+}
+
+#[test]
 fn catchable_case_error_is_recorded_and_later_cases_continue() {
     let run = run_committed_script("test-suite-error.scm", 30);
     let output = output_text(&run);
