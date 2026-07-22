@@ -710,7 +710,7 @@ impl NeetanDos {
                 // Device write: send to console
                 for i in 0..count {
                     let byte = memory.read_byte(buf_addr + i);
-                    self.console.process_byte(memory, byte);
+                    self.write_stdout_byte(memory, byte);
                 }
                 return Ok(count as u16);
             }
