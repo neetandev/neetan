@@ -2,7 +2,12 @@
 
 use common::JisChar;
 
-use crate::{MemoryAccess, console_esc::EscParser, tables};
+use crate::{
+    MemoryAccess,
+    console_esc::EscParser,
+    tables,
+    trace::{DosCellWriteEvent, DosClearEvent, DosScrollEvent, DosTraceEvent, DosTraceLog},
+};
 
 const TEXT_CHAR_BASE: u32 = 0xA0000;
 const TEXT_ATTR_BASE: u32 = 0xA2000;
@@ -20,9 +25,27 @@ fn vram_attr_addr(row: u8, col: u8) -> u32 {
 /// Authoritative DOS console escape-processing state.
 pub(crate) struct Console {
     pub(crate) esc_parser: EscParser,
+    /// Transient trace log, filled only while a dispatch is armed. Excluded from
+    /// save-state.
+    pub(crate) dos_trace: DosTraceLog,
 }
 
-state_struct_codec!(Console { esc_parser });
+impl save_state::StateEncode for Console {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        save_state::StateEncode::encode_state(&self.esc_parser, output);
+    }
+}
+
+impl save_state::StateDecode for Console {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        Ok(Self {
+            esc_parser: save_state::StateDecode::decode_state(decoder)?,
+            dos_trace: DosTraceLog::default(),
+        })
+    }
+}
 
 impl Console {
     pub(crate) fn cursor_row(&self, memory: &dyn MemoryAccess) -> u8 {
@@ -95,11 +118,54 @@ impl Console {
         memory.write_word(vram_attr_addr(row, col), attr as u16);
     }
 
+    fn record_cell_write(&self, row: u8, col: u8, jis: JisChar, attr: u8) {
+        if self.dos_trace.cell_write_enabled.get() {
+            self.dos_trace
+                .events
+                .borrow_mut()
+                .push(DosTraceEvent::CellWrite(DosCellWriteEvent {
+                    row,
+                    column: col,
+                    jis: jis.as_u16(),
+                    display_width: jis.display_width(),
+                    attribute: attr,
+                }));
+        }
+    }
+
+    fn record_clear(&self, region_top: u8, region_bottom: u8, count: u32) {
+        if self.dos_trace.clear_enabled.get() {
+            self.dos_trace
+                .events
+                .borrow_mut()
+                .push(DosTraceEvent::Clear(DosClearEvent {
+                    region_top,
+                    region_bottom,
+                    count,
+                }));
+        }
+    }
+
+    fn record_scroll(&self, region_top: u8, region_bottom: u8, count: u8, direction: i8) {
+        if self.dos_trace.scroll_enabled.get() {
+            self.dos_trace
+                .events
+                .borrow_mut()
+                .push(DosTraceEvent::Scroll(DosScrollEvent {
+                    region_top,
+                    region_bottom,
+                    count,
+                    direction,
+                }));
+        }
+    }
+
     pub(crate) fn put_char(&self, memory: &mut dyn MemoryAccess, ch: u8) {
         let row = self.cursor_row(memory);
         let col = self.cursor_col(memory);
         let attr = self.display_attr(memory);
         self.write_cell(memory, row, col, JisChar::from_u16(ch as u16), attr);
+        self.record_cell_write(row, col, JisChar::from_u16(ch as u16), attr);
         self.advance_cursor(memory);
     }
 
@@ -117,6 +183,7 @@ impl Console {
 
         let attr = self.display_attr(memory);
         self.write_cell(memory, row, col, jis, attr);
+        self.record_cell_write(row, col, jis, attr);
         if width == 2 {
             self.write_cell(memory, row, col + 1, JisChar::from_u16(0x0000), attr);
             self.advance_cursor(memory);
@@ -232,6 +299,8 @@ impl Console {
                 memory.write_word(vram_attr_addr(row, col), clear_at as u16);
             }
         }
+
+        self.record_scroll(upper, lower, count, 1);
     }
 
     pub(crate) fn scroll_down(&self, memory: &mut dyn MemoryAccess, count: u8) {
@@ -267,6 +336,8 @@ impl Console {
                 memory.write_word(vram_attr_addr(row, col), clear_at as u16);
             }
         }
+
+        self.record_scroll(upper, lower, count, -1);
     }
 
     pub(crate) fn clear_screen(&self, memory: &mut dyn MemoryAccess) {
@@ -283,6 +354,7 @@ impl Console {
                 memory.write_word(vram_attr_addr(row, col), clear_at as u16);
             }
         }
+        self.record_clear(0, lower, (u32::from(lower) + 1) * u32::from(COLUMNS));
         self.set_cursor(memory, 0, 0);
     }
 
@@ -308,6 +380,9 @@ impl Console {
                 memory.write_word(vram_attr_addr(r, c), clear_at as u16);
             }
         }
+        let count = (u32::from(COLUMNS) - u32::from(col))
+            + u32::from(lower.saturating_sub(row)) * u32::from(COLUMNS);
+        self.record_clear(row, lower, count);
     }
 
     pub(crate) fn clear_screen_to_cursor(&self, memory: &mut dyn MemoryAccess) {
@@ -331,6 +406,8 @@ impl Console {
             memory.write_byte(addr + 1, odd);
             memory.write_word(vram_attr_addr(row, c), clear_at as u16);
         }
+        let count = u32::from(row) * u32::from(COLUMNS) + u32::from(col) + 1;
+        self.record_clear(0, row, count);
     }
 
     pub(crate) fn clear_line_from_cursor(&self, memory: &mut dyn MemoryAccess) {
@@ -346,6 +423,7 @@ impl Console {
             memory.write_byte(char_addr + 1, odd);
             memory.write_word(vram_attr_addr(row, c), clear_at as u16);
         }
+        self.record_clear(row, row, u32::from(COLUMNS) - u32::from(col));
     }
 
     pub(crate) fn clear_line_to_cursor(&self, memory: &mut dyn MemoryAccess) {
@@ -361,6 +439,7 @@ impl Console {
             memory.write_byte(char_addr + 1, odd);
             memory.write_word(vram_attr_addr(row, c), clear_at as u16);
         }
+        self.record_clear(row, row, u32::from(col) + 1);
     }
 
     pub(crate) fn clear_line(&self, memory: &mut dyn MemoryAccess) {
@@ -375,6 +454,7 @@ impl Console {
             memory.write_byte(char_addr + 1, odd);
             memory.write_word(vram_attr_addr(row, c), clear_at as u16);
         }
+        self.record_clear(row, row, u32::from(COLUMNS));
     }
 
     pub(crate) fn set_cursor_position(&self, memory: &mut dyn MemoryAccess, row: u8, col: u8) {
@@ -610,6 +690,230 @@ mod tests {
         for byte in s.bytes() {
             console.process_byte(memory, byte);
         }
+    }
+
+    fn armed_console() -> Console {
+        let console = Console::default();
+        console.dos_trace.arm(crate::trace::DosTraceInterest::all());
+        console
+    }
+
+    fn recorded_events(console: &Console) -> Vec<crate::trace::DosTraceEvent> {
+        console.dos_trace.events.borrow().clone()
+    }
+
+    #[test]
+    fn sgr_reverse_video_records_escape_transition() {
+        use crate::trace::DosTraceEvent;
+        let mut console = armed_console();
+        let mut memory = make_memory();
+        feed_str(&mut console, &mut memory, "\u{1b}[7m");
+        let events = recorded_events(&console);
+        let escape = events
+            .iter()
+            .find_map(|event| match event {
+                DosTraceEvent::ConsoleEscape(escape) if escape.command == "sgr" => Some(escape),
+                _ => None,
+            })
+            .expect("sgr escape event");
+        assert!(escape.parameters.contains(&7));
+        assert_ne!(escape.attribute_before, escape.attribute_after);
+        assert_eq!(escape.attribute_after & 0x04, 0x04);
+    }
+
+    #[test]
+    fn shift_jis_graphic_pair_records_one_cell() {
+        use crate::trace::DosTraceEvent;
+        let mut console = armed_console();
+        let mut memory = make_memory();
+        console.process_byte(&mut memory, 0x86);
+        console.process_byte(&mut memory, 0x5F);
+        let events = recorded_events(&console);
+        let cell = events
+            .iter()
+            .find_map(|event| match event {
+                DosTraceEvent::CellWrite(cell) => Some(cell),
+                _ => None,
+            })
+            .expect("cell-write event");
+        assert_eq!(cell.display_width, 1);
+        let trail = events
+            .iter()
+            .filter_map(|event| match event {
+                DosTraceEvent::ConsoleByte(byte) => Some(byte),
+                _ => None,
+            })
+            .next_back()
+            .expect("trailing byte event");
+        assert_eq!(trail.byte, 0x5F);
+        assert_eq!(trail.cursor_column_after, trail.cursor_column_before + 1);
+    }
+
+    #[test]
+    fn byte_event_records_before_and_after_state() {
+        use crate::trace::DosTraceEvent;
+        let mut console = armed_console();
+        let mut memory = make_memory();
+        console.process_byte(&mut memory, b'A');
+        let events = recorded_events(&console);
+        let byte = events
+            .iter()
+            .find_map(|event| match event {
+                DosTraceEvent::ConsoleByte(byte) => Some(byte),
+                _ => None,
+            })
+            .expect("byte event");
+        assert_eq!(byte.byte, b'A');
+        assert_eq!(byte.parser_state_before, "normal");
+        assert_eq!(byte.cursor_column_before, 0);
+        assert_eq!(byte.cursor_column_after, 1);
+    }
+
+    #[test]
+    fn clear_screen_records_region() {
+        use crate::trace::DosTraceEvent;
+        let mut console = armed_console();
+        let mut memory = make_memory();
+        feed_str(&mut console, &mut memory, "\u{1b}[2J");
+        let events = recorded_events(&console);
+        let clear = events
+            .iter()
+            .find_map(|event| match event {
+                DosTraceEvent::Clear(clear) => Some(clear),
+                _ => None,
+            })
+            .expect("clear event");
+        assert_eq!(clear.region_top, 0);
+        assert_eq!(clear.region_bottom, 24);
+        assert!(clear.count > 0);
+    }
+
+    #[test]
+    fn scroll_records_region_and_direction() {
+        use crate::trace::DosTraceEvent;
+        let mut console = armed_console();
+        let mut memory = make_memory();
+        feed_str(&mut console, &mut memory, "\u{1b}[M");
+        let events = recorded_events(&console);
+        let scroll = events
+            .iter()
+            .find_map(|event| match event {
+                DosTraceEvent::Scroll(scroll) => Some(scroll),
+                _ => None,
+            })
+            .expect("scroll event");
+        assert_eq!(scroll.region_top, 0);
+        assert_eq!(scroll.region_bottom, 24);
+        assert_eq!(scroll.count, 1);
+        assert_eq!(scroll.direction, 1);
+    }
+
+    #[test]
+    fn disabled_log_records_nothing() {
+        let mut console = Console::default();
+        let mut memory = make_memory();
+        feed_str(&mut console, &mut memory, "\u{1b}[7mABC");
+        assert!(console.dos_trace.events.borrow().is_empty());
+    }
+
+    #[test]
+    fn escape_parameters_preserve_values_above_255() {
+        use crate::trace::DosTraceEvent;
+        let mut console = armed_console();
+        let mut memory = make_memory();
+        feed_str(&mut console, &mut memory, "\u{1b}[300m");
+        let events = recorded_events(&console);
+        let escape = events
+            .iter()
+            .find_map(|event| match event {
+                DosTraceEvent::ConsoleEscape(escape) => Some(escape),
+                _ => None,
+            })
+            .expect("escape event");
+        assert_eq!(escape.parameters, [300]);
+    }
+
+    #[test]
+    fn non_csi_escape_sequences_record_escape_events() {
+        use crate::trace::DosTraceEvent;
+        let mut console = armed_console();
+        let mut memory = make_memory();
+        console.set_cursor(&mut memory, 3, 5);
+        feed_str(&mut console, &mut memory, "\u{1b})3");
+        feed_str(&mut console, &mut memory, "\u{1b}E");
+        console.process_byte(&mut memory, 0x1B);
+        console.process_byte(&mut memory, b'=');
+        console.process_byte(&mut memory, 0x20 + 7);
+        console.process_byte(&mut memory, 0x20 + 11);
+        let events = recorded_events(&console);
+        let commands: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                DosTraceEvent::ConsoleEscape(escape) => Some(escape.command),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(commands, ["graphic-mode", "next-line", "cursor-address"]);
+        let cursor_address = events
+            .iter()
+            .find_map(|event| match event {
+                DosTraceEvent::ConsoleEscape(escape) if escape.command == "cursor-address" => {
+                    Some(escape)
+                }
+                _ => None,
+            })
+            .expect("cursor-address event");
+        assert_eq!(cursor_address.parameters, [7, 11]);
+        assert_eq!(cursor_address.bytes, [0x1B, b'=', 0x27, 0x2B]);
+        assert_eq!(cursor_address.cursor_row_after, 7);
+        assert_eq!(cursor_address.cursor_column_after, 11);
+    }
+
+    #[test]
+    fn set_mode_sequences_record_escape_events() {
+        use crate::trace::DosTraceEvent;
+        let mut console = armed_console();
+        let mut memory = make_memory();
+        feed_str(&mut console, &mut memory, "\u{1b}[?7l");
+        feed_str(&mut console, &mut memory, "\u{1b}[>5h");
+        let events = recorded_events(&console);
+        let escapes: Vec<(&str, Vec<u16>, Vec<u8>)> = events
+            .iter()
+            .filter_map(|event| match event {
+                DosTraceEvent::ConsoleEscape(escape) => Some((
+                    escape.command,
+                    escape.parameters.clone(),
+                    escape.bytes.clone(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(escapes.len(), 2);
+        assert_eq!(escapes[0].0, "reset-mode");
+        assert_eq!(escapes[0].1, [7]);
+        assert_eq!(escapes[0].2, b"\x1b[?7l");
+        assert_eq!(escapes[1].0, "set-extended-mode");
+        assert_eq!(escapes[1].1, [5]);
+        assert_eq!(escapes[1].2, b"\x1b[>5h");
+    }
+
+    #[test]
+    fn per_action_arming_skips_sibling_console_events() {
+        use crate::trace::{DosTraceEvent, DosTraceInterest};
+        let mut console = Console::default();
+        console.dos_trace.arm(DosTraceInterest {
+            console_escape: true,
+            ..DosTraceInterest::default()
+        });
+        let mut memory = make_memory();
+        feed_str(&mut console, &mut memory, "\u{1b}[7mABC");
+        let events = recorded_events(&console);
+        assert!(!events.is_empty());
+        assert!(
+            events
+                .iter()
+                .all(|event| matches!(event, DosTraceEvent::ConsoleEscape(_)))
+        );
     }
 
     #[test]

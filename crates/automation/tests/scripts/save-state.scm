@@ -1,5 +1,5 @@
 ;; Runtime save-state capture, restore, discard, and invalidation.
-(import (scheme base) (neetan automation 1) (neetan test 1))
+(import (scheme base) (neetan automation 1) (neetan trace 1) (neetan test 1))
 
 (define (expect-symbol name thunk symbol)
   (call/cc
@@ -48,6 +48,12 @@
           (fail "restore must rewind the tick counter"))
       (if (not (= (machine-frame machine) saved-frame))
           (fail "restore must rewind the frame counter"))
+
+      ;; Trace envelopes keep the unchanged epoch after an in-run restore.
+      (let ((event (wait-for-event machine '((class . presentation)))))
+        (let ((entry (assq 'epoch event)))
+          (if (or (not entry) (not (= (cdr entry) saved-epoch)))
+              (fail "trace events should carry the unchanged epoch after restore"))))
 
       ;; Discard invalidates the opaque state.
       (discard-state! state)

@@ -84,6 +84,7 @@ mod state;
 pub mod tables;
 #[cfg(test)]
 mod test_support;
+pub mod trace;
 
 use std::collections::BTreeMap;
 
@@ -93,7 +94,10 @@ pub use common::{
     SegmentRegister,
 };
 
-use crate::memory::memory_manager::MemoryManager;
+use crate::{
+    memory::memory_manager::MemoryManager,
+    trace::{DosTraceKind, DosTraceSink},
+};
 
 /// Information about a discovered drive for CDS/DPB/DAUA population.
 struct DriveInfo {
@@ -1330,7 +1334,10 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
         device: &mut (impl DiskIo + CdromIo),
         cursor: &mut impl CursorAccess,
+        trace: &mut impl DosTraceSink,
     ) -> bool {
+        self.arm_trace_log(trace);
+
         let hardware = cursor.read();
         let iosys = read_iosys_cursor(memory);
         if iosys != self.last_cursor {
@@ -1345,7 +1352,36 @@ impl NeetanDos {
         let iosys = read_iosys_cursor(memory);
         cursor.write(iosys);
         self.last_cursor = iosys;
+
+        self.drain_trace_log(trace);
         result
+    }
+
+    /// Arms the transient trace log with the sink's per-action interests,
+    /// statically compiled out for a disabled sink.
+    fn arm_trace_log<S: DosTraceSink>(&self, trace: &S) {
+        if S::ENABLED {
+            self.console.dos_trace.arm(trace::DosTraceInterest {
+                vector: trace.wants(DosTraceKind::Vector),
+                stdout: trace.wants(DosTraceKind::Stdout),
+                console_byte: trace.wants(DosTraceKind::ConsoleByte),
+                console_escape: trace.wants(DosTraceKind::ConsoleEscape),
+                cell_write: trace.wants(DosTraceKind::CellWrite),
+                clear: trace.wants(DosTraceKind::Clear),
+                scroll: trace.wants(DosTraceKind::Scroll),
+            });
+        }
+    }
+
+    /// Drains the events captured during a dispatch into the sink, statically
+    /// compiled out for a disabled sink.
+    fn drain_trace_log<S: DosTraceSink>(&self, trace: &mut S) {
+        if S::ENABLED {
+            let events = self.console.dos_trace.finish();
+            for event in &events {
+                trace.emit(event);
+            }
+        }
     }
 
     fn dispatch_inner(

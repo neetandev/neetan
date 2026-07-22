@@ -17,14 +17,58 @@ mod pmode;
 mod serial_rs232c;
 mod timer;
 
-use common::{Cpu, CpuAccess, SegmentRegister, warn};
+use common::{Cpu, CpuAccess, ProcessorSnapshot, RegisterReading, SegmentRegister, warn};
 use device::upd765a_fdc::{UPD765_PLATFORM_STANDARD, Upd765aFdc};
 
 use super::{
     Pc9801Bus,
     dos_adapter::{DosCpuAccess, DosCursorAccess, DosDiskIo, DosMemoryAccess},
+    dos_trace::DosTraceBridge,
 };
 use crate::{TraceSink, memory::Pc9801Memory};
+
+/// Captures the x86 registers into an atomic processor snapshot.
+///
+/// The base registers are read with the same helpers the machine inspector
+/// uses, so a snapshot register agrees with a separate `register-ref` read.
+/// A processor with protected-mode support appends its 32-bit general
+/// registers, the `fs` and `gs` selectors, `eip`, `eflags`, and the control
+/// registers.
+fn capture_x86_snapshot(processor: &'static str, cpu: &impl Cpu) -> ProcessorSnapshot {
+    let descriptors = common::inspect::x86_registers();
+    let mut registers = Vec::with_capacity(descriptors.len());
+    for descriptor in descriptors {
+        let value = common::inspect::x86_read(cpu, descriptor.name).unwrap_or(0);
+        registers.push(RegisterReading {
+            name: descriptor.name,
+            value,
+        });
+    }
+    if let Some(state) = cpu.protected_mode_state() {
+        registers.extend(state.general);
+        for segment in &state.segments {
+            if matches!(segment.name, "fs" | "gs") {
+                registers.push(RegisterReading {
+                    name: segment.name,
+                    value: u128::from(segment.selector),
+                });
+            }
+        }
+        registers.push(RegisterReading {
+            name: "eip",
+            value: u128::from(state.eip),
+        });
+        registers.push(RegisterReading {
+            name: "eflags",
+            value: u128::from(state.eflags),
+        });
+        registers.extend(state.control);
+    }
+    ProcessorSnapshot {
+        processor,
+        registers,
+    }
+}
 
 const PIT_CLOCK_8MHZ_LINEAGE: u32 = 1_996_800;
 const PAGE_PRESENT: u32 = 0x01;
@@ -232,6 +276,19 @@ impl<T: TraceSink> Pc9801Bus<T> {
             0x1F => self.hle_int1fh(cpu),
             0x20..=0x2A | 0x2F | 0x33 | 0x67 | 0xDC | 0xE7 | 0xEE | 0xEF | 0xFD | 0xFE => {
                 if let Some(mut neetan_dos) = self.dos.take() {
+                    // Capture the guest registers at dispatch entry so the
+                    // boundary call events and every event emitted during the
+                    // HLE handler carry an atomic snapshot. The handler runs to
+                    // completion as one CPU step, so a post-return snapshot
+                    // would show clobbered registers.
+                    let trace_cycle = self.current_cycle;
+                    let trace_clock_hz = self.clocks.cpu_clock_hz;
+                    if T::ENABLED
+                        && let Some(processor) = self.tracer.snapshot_request()
+                    {
+                        let snapshot = capture_x86_snapshot(processor, &*cpu);
+                        self.tracer.set_pending_snapshot(snapshot);
+                    }
                     self.trace_call(
                         common::trace_id::provider::NEETAN_DOS,
                         common::TraceCallInterface::Interrupt(u32::from(vector)),
@@ -257,15 +314,23 @@ impl<T: TraceSink> Pc9801Bus<T> {
                             ide: &mut self.ide,
                         };
                         let mut cursor_access = DosCursorAccess(&mut self.gdc_master.state);
+                        let mut dos_trace = DosTraceBridge {
+                            sink: &mut self.tracer,
+                            cycle: trace_cycle,
+                            clock_hz: trace_clock_hz,
+                        };
                         neetan_dos.dispatch(
                             vector,
                             &mut cpu_access,
                             &mut mem_access,
                             &mut disk_io,
                             &mut cursor_access,
+                            &mut dos_trace,
                         );
                         cpu_access.ax()
                     };
+                    // The exit call event still carries the entry snapshot, so
+                    // the syscall arguments stay visible on either boundary.
                     self.trace_call(
                         common::trace_id::provider::NEETAN_DOS,
                         common::TraceCallInterface::Interrupt(u32::from(vector)),
@@ -274,6 +339,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
                         common::TraceCallPhase::Exit,
                         Some(u64::from(result)),
                     );
+                    if T::ENABLED {
+                        self.tracer.clear_pending_snapshot();
+                    }
                     self.dos = Some(neetan_dos);
                 }
             }

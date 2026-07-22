@@ -3,6 +3,8 @@
 use alloc::{string::String, vec::Vec};
 use core::num::NonZeroU64;
 
+use crate::inspect::RegisterReading;
+
 /// Version of the public tracing event schema.
 pub const TRACE_SCHEMA_VERSION: u16 = 1;
 
@@ -94,6 +96,12 @@ pub mod trace_id {
         pub const MSX_FDC: &str = "msx.fdc";
         /// MSX video processor.
         pub const MSX_VDP: &str = "msx.vdp";
+        /// HLE DOS interrupt-vector changes.
+        pub const NEETAN_DOS_VECTOR: &str = "neetan.dos.vector";
+        /// HLE DOS console-bound stdout routing decisions.
+        pub const NEETAN_DOS_STDOUT: &str = "neetan.dos.stdout";
+        /// HLE DOS console parser and screen operations.
+        pub const NEETAN_DOS_CONSOLE: &str = "neetan.dos.console";
     }
 
     /// High-level call provider identifiers.
@@ -128,6 +136,20 @@ pub mod trace_id {
         pub const BANK: &str = "bank";
         /// A video-processor event.
         pub const EVENT: &str = "event";
+        /// An interrupt-vector set operation.
+        pub const SET: &str = "set";
+        /// A console-bound stdout write.
+        pub const WRITE: &str = "write";
+        /// A single byte entering the console parser.
+        pub const BYTE: &str = "byte";
+        /// A complete escape sequence dispatched by the console.
+        pub const ESCAPE: &str = "escape";
+        /// A decoded character cell written to text VRAM.
+        pub const CELL_WRITE: &str = "cell-write";
+        /// A console clear operation.
+        pub const CLEAR: &str = "clear";
+        /// A console scroll operation.
+        pub const SCROLL: &str = "scroll";
     }
 
     /// Named call-interface identifiers.
@@ -184,6 +206,74 @@ pub mod trace_id {
         pub const VALUE: &str = "value";
         /// Video scanline number.
         pub const SCANLINE: &str = "scanline";
+        /// Interrupt vector number.
+        pub const VECTOR: &str = "vector";
+        /// A single console input byte value.
+        pub const BYTE: &str = "byte";
+        /// Interrupt-vector offset word.
+        pub const OFFSET: &str = "offset";
+        /// Interrupt-vector linear target address.
+        pub const LINEAR_ADDRESS: &str = "linear-address";
+        /// DOS API path that produced console output.
+        pub const SOURCE: &str = "source";
+        /// File handle, or false when the API supplied no handle.
+        pub const HANDLE: &str = "handle";
+        /// Output buffer linear address, or false for a single byte.
+        pub const BUFFER_ADDRESS: &str = "buffer-address";
+        /// Requested output byte count.
+        pub const REQUESTED_COUNT: &str = "requested-count";
+        /// Console output routing decision.
+        pub const ROUTE: &str = "route";
+        /// Reason output was suppressed, or false.
+        pub const SUPPRESSION_REASON: &str = "suppression-reason";
+        /// Active INT 29h handler segment.
+        pub const INT29_SEGMENT: &str = "int29-segment";
+        /// Active INT 29h handler offset.
+        pub const INT29_OFFSET: &str = "int29-offset";
+        /// Text cell row.
+        pub const ROW: &str = "row";
+        /// Text cell column.
+        pub const COLUMN: &str = "column";
+        /// Raw JIS character value of a written cell.
+        pub const JIS: &str = "jis";
+        /// Cell display width in columns.
+        pub const DISPLAY_WIDTH: &str = "display-width";
+        /// PC-98 text attribute byte.
+        pub const ATTRIBUTE: &str = "attribute";
+        /// Dispatched escape command identifier.
+        pub const COMMAND: &str = "command";
+        /// Console parser state before a byte.
+        pub const PARSER_STATE_BEFORE: &str = "parser-state-before";
+        /// Console parser state after a byte.
+        pub const PARSER_STATE_AFTER: &str = "parser-state-after";
+        /// Console character mode before a byte.
+        pub const CHARACTER_MODE_BEFORE: &str = "character-mode-before";
+        /// Console character mode after a byte.
+        pub const CHARACTER_MODE_AFTER: &str = "character-mode-after";
+        /// Pending Shift-JIS lead byte before a byte, or false.
+        pub const PENDING_SHIFT_JIS_LEAD_BEFORE: &str = "pending-shift-jis-lead-before";
+        /// Pending Shift-JIS lead byte after a byte, or false.
+        pub const PENDING_SHIFT_JIS_LEAD_AFTER: &str = "pending-shift-jis-lead-after";
+        /// Cursor row before an operation.
+        pub const CURSOR_ROW_BEFORE: &str = "cursor-row-before";
+        /// Cursor column before an operation.
+        pub const CURSOR_COLUMN_BEFORE: &str = "cursor-column-before";
+        /// Cursor row after an operation.
+        pub const CURSOR_ROW_AFTER: &str = "cursor-row-after";
+        /// Cursor column after an operation.
+        pub const CURSOR_COLUMN_AFTER: &str = "cursor-column-after";
+        /// Text attribute before an operation.
+        pub const ATTRIBUTE_BEFORE: &str = "attribute-before";
+        /// Text attribute after an operation.
+        pub const ATTRIBUTE_AFTER: &str = "attribute-after";
+        /// Top row of an affected console region.
+        pub const REGION_TOP: &str = "region-top";
+        /// Bottom row of an affected console region.
+        pub const REGION_BOTTOM: &str = "region-bottom";
+        /// Operation count for a clear or scroll.
+        pub const COUNT: &str = "count";
+        /// Scroll direction, positive for up.
+        pub const DIRECTION: &str = "direction";
     }
 
     /// Stable scheduled-event identifiers.
@@ -653,6 +743,10 @@ pub enum TraceValue<'a> {
     Bytes(&'a [u8]),
     /// Borrowed text.
     Text(&'a str),
+    /// A stable interned identifier, surfaced to clients as a symbol.
+    Symbol(&'static str),
+    /// A borrowed group of 16-bit integers, surfaced as an integer list.
+    U16List(&'a [u16]),
 }
 
 /// A named value attached to a trace event.
@@ -923,7 +1017,11 @@ impl TraceEvent<'_> {
                 let field_size = match field.value {
                     TraceValue::Bytes(value) => value.len(),
                     TraceValue::Text(value) => value.len(),
-                    TraceValue::Unsigned(_) | TraceValue::Signed(_) | TraceValue::Bool(_) => 0,
+                    TraceValue::U16List(value) => value.len().saturating_mul(2),
+                    TraceValue::Unsigned(_)
+                    | TraceValue::Signed(_)
+                    | TraceValue::Bool(_)
+                    | TraceValue::Symbol(_) => 0,
                 };
                 size.checked_add(field_size)
             })
@@ -1006,6 +1104,10 @@ pub enum OwnedTraceValue {
     Bytes(Vec<u8>),
     /// Owned text.
     Text(String),
+    /// A stable interned identifier, surfaced to clients as a symbol.
+    Symbol(&'static str),
+    /// An owned group of 16-bit integers, surfaced as an integer list.
+    U16List(Vec<u16>),
 }
 
 /// An owned named trace value.
@@ -1072,6 +1174,8 @@ impl<'a> From<TraceValue<'a>> for OwnedTraceValue {
             TraceValue::Bool(value) => Self::Bool(value),
             TraceValue::Bytes(value) => Self::Bytes(value.to_vec()),
             TraceValue::Text(value) => Self::Text(String::from(value)),
+            TraceValue::Symbol(value) => Self::Symbol(value),
+            TraceValue::U16List(value) => Self::U16List(value.to_vec()),
         }
     }
 }
@@ -1107,6 +1211,21 @@ impl<'a> From<TraceEvent<'a>> for OwnedTraceEvent {
     }
 }
 
+/// An atomic snapshot of one processor's registers captured at the creation of
+/// a trace event.
+///
+/// Registers are read into `RegisterReading` values with the same names and
+/// semantics as the machine inspector, so a snapshot register agrees with a
+/// separate `register-ref` read of the same processor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessorSnapshot {
+    /// Stable processor identifier the snapshot was taken for.
+    pub processor: &'static str,
+    /// Every advertised register of the processor, in descriptor order,
+    /// followed by extended protected-mode registers when supported.
+    pub registers: Vec<RegisterReading>,
+}
+
 /// Consumes trace events produced by an emulated machine.
 pub trait TraceSink {
     /// Whether this sink can observe events in this monomorphization.
@@ -1124,6 +1243,20 @@ pub trait TraceSink {
     fn yield_requested(&self) -> bool {
         false
     }
+
+    /// Returns the processor a register snapshot is armed for, or `None`.
+    ///
+    /// An emitter checks this cheaply before capturing registers, so no
+    /// snapshot work happens unless a client armed one.
+    fn snapshot_request(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Stores a register snapshot to attach to subsequently recorded events.
+    fn set_pending_snapshot(&mut self, _snapshot: ProcessorSnapshot) {}
+
+    /// Clears the pending register snapshot after a dispatch completes.
+    fn clear_pending_snapshot(&mut self) {}
 }
 
 /// A no-op trace sink eliminated through static dispatch.
@@ -1160,13 +1293,24 @@ mod tests {
                 name: "text",
                 value: TraceValue::Text("value"),
             },
+            TraceField {
+                name: "route",
+                value: TraceValue::Symbol("suppressed"),
+            },
         ];
-        let owned = OwnedTraceEvent::from(TraceEvent::Device(TraceDeviceEvent {
+        let event = TraceEvent::Device(TraceDeviceEvent {
             device: "test.device",
             action: "test",
             fields: &fields,
-        }));
+        });
 
+        // A symbol is a static identifier, so it contributes no owned bytes.
+        assert_eq!(
+            event.owned_payload_bytes(),
+            Some(bytes.len() + "value".len())
+        );
+
+        let owned = OwnedTraceEvent::from(event);
         let OwnedTraceEvent::Device(device) = owned else {
             panic!("expected device event");
         };
@@ -1177,6 +1321,10 @@ mod tests {
         assert_eq!(
             device.fields[1].value,
             OwnedTraceValue::Text(String::from("value"))
+        );
+        assert_eq!(
+            device.fields[2].value,
+            OwnedTraceValue::Symbol("suppressed")
         );
     }
 

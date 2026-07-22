@@ -288,32 +288,6 @@ impl AutomationSession {
         self.write_artifact(output_path, &png)?;
         Ok(())
     }
-
-    /// Resolves an artifact path, charges the byte budget, and writes the bytes.
-    fn write_artifact(&mut self, path: &str, bytes: &[u8]) -> Result<PathBuf, OpError> {
-        let resolved = resolve_within(&self.artifact_root, path).map_err(OpError::PathEscape)?;
-        self.charge_artifact_bytes(bytes.len() as u128)?;
-        if let Some(parent) = resolved.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                OpError::Io(format!("cannot create artifact directory: {error}"))
-            })?;
-        }
-        std::fs::write(&resolved, bytes)
-            .map_err(|error| OpError::Io(format!("cannot write artifact {path}: {error}")))?;
-        Ok(resolved)
-    }
-
-    /// Charges `bytes` against the artifact-byte budget when one is set.
-    fn charge_artifact_bytes(&mut self, bytes: u128) -> Result<(), OpError> {
-        if let Some(remaining) = self.budgets.artifact_bytes.as_mut() {
-            if *remaining < bytes {
-                *remaining = 0;
-                return Err(OpError::Io("artifact byte budget exhausted".to_owned()));
-            }
-            *remaining -= bytes;
-        }
-        Ok(())
-    }
 }
 
 /// Derives the comparison artifact name from an expected image path.

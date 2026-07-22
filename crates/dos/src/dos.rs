@@ -5,6 +5,7 @@ use common::warn;
 use crate::{
     BufferedInputState, CpuAccess, DriveIo, MemoryAccess, NeetanDos, SegmentRegister,
     adjust_iret_ip, country, filesystem, memory, set_iret_carry, set_iret_zf, tables,
+    trace::{DosStdoutEvent, DosVectorEvent, route, source, suppression},
 };
 
 impl NeetanDos {
@@ -152,6 +153,23 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
     ) {
         let dl = (cpu.dx() & 0xFF) as u8;
+        if self.stdout_trace_enabled() {
+            let route = self.stdout_route(memory);
+            self.record_stdout(
+                memory,
+                DosStdoutEvent {
+                    source: source::INT21_02,
+                    handle: None,
+                    buffer_address: None,
+                    requested_count: 1,
+                    bytes: vec![dl],
+                    route: route.symbol(),
+                    suppression_reason: route.suppression_reason(),
+                    int29_segment: 0,
+                    int29_offset: 0,
+                },
+            );
+        }
         self.write_stdout_byte(memory, dl);
         cpu.set_ax((cpu.ax() & 0xFF00) | dl as u16);
     }
@@ -169,9 +187,59 @@ impl NeetanDos {
 
     /// Writes one byte through the active console output path.
     pub(crate) fn write_stdout_byte(&mut self, memory: &mut dyn MemoryAccess, byte: u8) {
-        if !self.stdout_is_nul(memory) && !int29_handler_is_iret(memory) {
+        if self.stdout_route(memory).reaches_console() {
             self.console.process_byte(memory, byte);
         }
+    }
+
+    pub(crate) fn stdout_trace_enabled(&self) -> bool {
+        self.console.dos_trace.stdout_enabled.get()
+    }
+
+    /// Decides where handle-1 console output routes. The console write path and
+    /// the trace both consume this single decision.
+    pub(crate) fn stdout_route(&self, memory: &dyn MemoryAccess) -> StdoutRoute {
+        route_for_character_device(memory, self.stdout_is_nul(memory))
+    }
+
+    /// Records a stdout routing event when the trace log is armed for it.
+    ///
+    /// The `int29_segment` and `int29_offset` fields of `event` are ignored and
+    /// filled from the live INT 29h vector.
+    pub(crate) fn record_stdout(&self, memory: &dyn MemoryAccess, event: DosStdoutEvent) {
+        let (int29_segment, int29_offset) = int29_handler_vector(memory);
+        self.console.dos_trace.push_stdout(DosStdoutEvent {
+            int29_segment,
+            int29_offset,
+            ..event
+        });
+    }
+
+    /// Records an INT 21h AH=40h stdout routing event with the buffer bytes.
+    pub(crate) fn record_stdout_write(
+        &self,
+        memory: &dyn MemoryAccess,
+        handle: u16,
+        buffer_address: u32,
+        count: u32,
+        route: StdoutRoute,
+    ) {
+        let mut bytes = vec![0u8; count as usize];
+        memory.read_block(buffer_address, &mut bytes);
+        self.record_stdout(
+            memory,
+            DosStdoutEvent {
+                source: source::INT21_40,
+                handle: Some(handle),
+                buffer_address: Some(buffer_address),
+                requested_count: count,
+                bytes,
+                route: route.symbol(),
+                suppression_reason: route.suppression_reason(),
+                int29_segment: 0,
+                int29_offset: 0,
+            },
+        );
     }
 
     /// Reads one key byte for INT 21h input functions.
@@ -311,7 +379,24 @@ impl NeetanDos {
                 }
             }
         } else {
-            self.console.process_byte(memory, dl);
+            if self.stdout_trace_enabled() {
+                let route = self.stdout_route(memory);
+                self.record_stdout(
+                    memory,
+                    DosStdoutEvent {
+                        source: source::INT21_06,
+                        handle: None,
+                        buffer_address: None,
+                        requested_count: 1,
+                        bytes: vec![dl],
+                        route: route.symbol(),
+                        suppression_reason: route.suppression_reason(),
+                        int29_segment: 0,
+                        int29_offset: 0,
+                    },
+                );
+            }
+            self.write_stdout_byte(memory, dl);
             cpu.set_ax((cpu.ax() & 0xFF00) | dl as u16);
             true
         }
@@ -497,6 +582,31 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
     ) {
         let start = cpu.linear_address(SegmentRegister::DS, cpu.dx());
+        if self.stdout_trace_enabled() {
+            let mut buffer = Vec::new();
+            for addr in start..start + 0xFFFFu32 {
+                let byte = memory.read_byte(addr);
+                if byte == b'$' {
+                    break;
+                }
+                buffer.push(byte);
+            }
+            let route = self.stdout_route(memory);
+            self.record_stdout(
+                memory,
+                DosStdoutEvent {
+                    source: source::INT21_09,
+                    handle: None,
+                    buffer_address: Some(start),
+                    requested_count: buffer.len() as u32,
+                    bytes: buffer,
+                    route: route.symbol(),
+                    suppression_reason: route.suppression_reason(),
+                    int29_segment: 0,
+                    int29_offset: 0,
+                },
+            );
+        }
         for addr in start..start + 0xFFFFu32 {
             let byte = memory.read_byte(addr);
             if byte == b'$' {
@@ -537,6 +647,17 @@ impl NeetanDos {
         let ivt_addr = vector * 4;
         memory.write_word(ivt_addr, cpu.dx());
         memory.write_word(ivt_addr + 2, cpu.ds());
+
+        if self.console.dos_trace.vector_enabled.get() {
+            let segment = cpu.ds();
+            let offset = cpu.dx();
+            self.console.dos_trace.push_vector(DosVectorEvent {
+                vector: vector as u8,
+                segment,
+                offset,
+                linear_address: (u32::from(segment) << 4).wrapping_add(u32::from(offset)),
+            });
+        }
     }
 
     /// AH=2Fh: Get DTA address.
@@ -1511,6 +1632,63 @@ fn int29_handler_is_iret(memory: &dyn MemoryAccess) -> bool {
     memory.read_byte((segment << 4).wrapping_add(offset)) == 0xCF
 }
 
+/// Returns the active INT 29h handler `(segment, offset)`.
+fn int29_handler_vector(memory: &dyn MemoryAccess) -> (u16, u16) {
+    const INT29_VECTOR: u32 = 0x29 * 4;
+    let offset = memory.read_word(INT29_VECTOR);
+    let segment = memory.read_word(INT29_VECTOR + 2);
+    (segment, offset)
+}
+
+/// Routing decision for console-bound output.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StdoutRoute {
+    /// Output reaches the text console.
+    Console,
+    /// The handle points at the NUL device.
+    Nul,
+    /// The handle was redirected to a file.
+    Redirected,
+    /// The guest hooked INT 29h with an IRET, so output is dropped.
+    Suppressed,
+}
+
+impl StdoutRoute {
+    /// Stable route symbol for trace events.
+    pub(crate) fn symbol(self) -> &'static str {
+        match self {
+            Self::Console => route::CONSOLE,
+            Self::Nul => route::NUL,
+            Self::Redirected => route::REDIRECTED,
+            Self::Suppressed => route::SUPPRESSED,
+        }
+    }
+
+    /// Suppression reason symbol, when output is suppressed.
+    pub(crate) fn suppression_reason(self) -> Option<&'static str> {
+        match self {
+            Self::Suppressed => Some(suppression::INT29_IRET_HOOK),
+            Self::Console | Self::Nul | Self::Redirected => None,
+        }
+    }
+
+    /// Whether bytes should reach the console parser.
+    pub(crate) fn reaches_console(self) -> bool {
+        matches!(self, Self::Console)
+    }
+}
+
+/// Decides where character-device output routes, given the device's NUL flag.
+pub(crate) fn route_for_character_device(memory: &dyn MemoryAccess, is_nul: bool) -> StdoutRoute {
+    if is_nul {
+        StdoutRoute::Nul
+    } else if int29_handler_is_iret(memory) {
+        StdoutRoute::Suppressed
+    } else {
+        StdoutRoute::Console
+    }
+}
+
 /// Normalizes a DOS path by resolving `.` and `..` components.
 /// Input/output is a byte vector like `A:\FOO\BAR\..\BAZ`.
 pub(crate) fn normalize_path(path: &[u8]) -> Vec<u8> {
@@ -1569,6 +1747,7 @@ mod tests {
             UMB_FIRST_MCB_SEGMENT,
         },
         test_support::{MockCpu, MockMemory},
+        trace::{DosTraceEvent, route, source},
     };
 
     fn prepare_dos_with_umb() -> (NeetanDos, MockMemory) {
@@ -1613,6 +1792,221 @@ mod tests {
         memory.write_byte(0x20123, 0x90);
 
         assert!(!int29_handler_is_iret(&memory));
+    }
+
+    struct StubDisk;
+
+    impl crate::DiskIo for StubDisk {
+        fn read_sectors(&mut self, _drive: u8, _lba: u32, _count: u32) -> Result<Vec<u8>, u8> {
+            Err(0xFF)
+        }
+
+        fn write_sectors(&mut self, _drive: u8, _lba: u32, _data: &[u8]) -> Result<(), u8> {
+            Err(0xFF)
+        }
+
+        fn sector_size(&self, _drive: u8) -> Option<u16> {
+            None
+        }
+
+        fn total_sectors(&self, _drive: u8) -> Option<u32> {
+            None
+        }
+
+        fn drive_geometry(&self, _drive: u8) -> Option<(u16, u8, u8)> {
+            None
+        }
+    }
+
+    const TEST_PSP: u16 = 0x2000;
+
+    fn dos_with_stdout_handle(dev_info: u16) -> (NeetanDos, MockMemory) {
+        let mut dos = NeetanDos::new();
+        let mut memory = MockMemory::with_extended_memory(0x200000, 0);
+        dos.state.current_psp = TEST_PSP;
+        let psp_base = (TEST_PSP as u32) << 4;
+        memory.write_byte(psp_base + crate::tables::PSP_OFF_JFT + 1, 1);
+        let sft_addr = dos.state.sft_entry_addr(1).unwrap();
+        memory.write_word(sft_addr + crate::tables::SFT_ENT_DEV_INFO, dev_info);
+        dos.console
+            .dos_trace
+            .arm(crate::trace::DosTraceInterest::all());
+        (dos, memory)
+    }
+
+    fn stdout_events(dos: &NeetanDos) -> Vec<crate::trace::DosStdoutEvent> {
+        dos.console
+            .dos_trace
+            .events
+            .borrow()
+            .iter()
+            .filter_map(|event| match event {
+                DosTraceEvent::Stdout(stdout) => Some(stdout.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn write_via_ah40(dos: &mut NeetanDos, memory: &mut MockMemory, payload: &[u8]) {
+        let mut cpu = MockCpu::default();
+        let buffer_offset = 0x0300u16;
+        let buffer_addr = ((TEST_PSP as u32) << 4) + u32::from(buffer_offset);
+        for (index, &byte) in payload.iter().enumerate() {
+            memory.write_byte(buffer_addr + index as u32, byte);
+        }
+        cpu.ds = TEST_PSP;
+        cpu.set_ax(0x4000);
+        cpu.set_bx(1);
+        cpu.set_cx(payload.len() as u16);
+        cpu.set_dx(buffer_offset);
+        dos.int21h_40h_write(&mut cpu, memory, &mut StubDisk);
+    }
+
+    #[test]
+    fn int21h_25h_records_vector_event() {
+        let dos = NeetanDos::new();
+        let mut memory = MockMemory::with_extended_memory(0x200000, 0);
+        dos.console
+            .dos_trace
+            .arm(crate::trace::DosTraceInterest::all());
+        let mut cpu = MockCpu::default();
+        cpu.set_ax(0x2529);
+        cpu.ds = 0x2000;
+        cpu.set_dx(0x0123);
+
+        dos.int21h_25h_set_interrupt_vector(&cpu, &mut memory);
+
+        assert_eq!(memory.read_word(0x29 * 4), 0x0123);
+        assert_eq!(memory.read_word(0x29 * 4 + 2), 0x2000);
+        let events = dos.console.dos_trace.events.borrow();
+        let vector = events
+            .iter()
+            .find_map(|event| match event {
+                DosTraceEvent::Vector(vector) => Some(vector.clone()),
+                _ => None,
+            })
+            .expect("vector event");
+        assert_eq!(vector.vector, 0x29);
+        assert_eq!(vector.segment, 0x2000);
+        assert_eq!(vector.offset, 0x0123);
+        assert_eq!(vector.linear_address, 0x20123);
+    }
+
+    #[test]
+    fn int21h_40h_records_exact_bytes_and_console_route() {
+        let (mut dos, mut memory) =
+            dos_with_stdout_handle(crate::tables::SFT_DEVINFO_CHAR_DEVICE_COMMON);
+
+        write_via_ah40(&mut dos, &mut memory, b"HELLO");
+
+        let events = stdout_events(&dos);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.source, source::INT21_40);
+        assert_eq!(event.handle, Some(1));
+        assert_eq!(
+            event.buffer_address,
+            Some(((TEST_PSP as u32) << 4) + 0x0300)
+        );
+        assert_eq!(event.requested_count, 5);
+        assert_eq!(event.bytes, b"HELLO");
+        assert_eq!(event.route, route::CONSOLE);
+        assert_eq!(event.suppression_reason, None);
+    }
+
+    #[test]
+    fn int21h_40h_nul_destination_reports_nul_route() {
+        let (mut dos, mut memory) = dos_with_stdout_handle(
+            crate::tables::SFT_DEVINFO_CHAR_DEVICE_COMMON | crate::tables::SFT_DEVINFO_NUL,
+        );
+
+        write_via_ah40(&mut dos, &mut memory, b"GONE");
+
+        let events = stdout_events(&dos);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].route, route::NUL);
+        assert_eq!(events[0].suppression_reason, None);
+    }
+
+    #[test]
+    fn int21h_40h_iret_hook_reports_suppressed_route() {
+        let (mut dos, mut memory) =
+            dos_with_stdout_handle(crate::tables::SFT_DEVINFO_CHAR_DEVICE_COMMON);
+        memory.write_word(0x29 * 4, 0x0123);
+        memory.write_word(0x29 * 4 + 2, 0x3000);
+        memory.write_byte(0x30123, 0xCF);
+
+        write_via_ah40(&mut dos, &mut memory, b"LOST");
+
+        let events = stdout_events(&dos);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].route, route::SUPPRESSED);
+        assert_eq!(
+            events[0].suppression_reason,
+            Some(crate::trace::suppression::INT29_IRET_HOOK)
+        );
+        assert_eq!(events[0].int29_segment, 0x3000);
+        assert_eq!(events[0].int29_offset, 0x0123);
+        assert_eq!(events[0].bytes, b"LOST");
+    }
+
+    #[test]
+    fn int21h_40h_redirected_stdout_reports_redirected_route() {
+        let (mut dos, mut memory) = dos_with_stdout_handle(0x0000);
+
+        write_via_ah40(&mut dos, &mut memory, b"FILE");
+
+        let events = stdout_events(&dos);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].route, route::REDIRECTED);
+        assert_eq!(events[0].suppression_reason, None);
+        assert_eq!(events[0].bytes, b"FILE");
+    }
+
+    #[test]
+    fn int21h_02h_reports_no_handle() {
+        let (mut dos, mut memory) =
+            dos_with_stdout_handle(crate::tables::SFT_DEVINFO_CHAR_DEVICE_COMMON);
+        let mut cpu = MockCpu::default();
+        cpu.set_ax(0x0200);
+        cpu.set_dx(u16::from(b'A'));
+
+        dos.int21h_02h_display_character(&mut cpu, &mut memory);
+
+        let events = stdout_events(&dos);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].source, source::INT21_02);
+        // AH=02h takes no handle argument, so the event reports none.
+        assert_eq!(events[0].handle, None);
+        assert_eq!(events[0].bytes, b"A");
+        assert_eq!(events[0].route, route::CONSOLE);
+    }
+
+    #[test]
+    fn int21h_06h_iret_hook_suppresses_output_like_ah02() {
+        let (mut dos, mut memory) =
+            dos_with_stdout_handle(crate::tables::SFT_DEVINFO_CHAR_DEVICE_COMMON);
+        memory.write_word(0x29 * 4, 0x0123);
+        memory.write_word(0x29 * 4 + 2, 0x3000);
+        memory.write_byte(0x30123, 0xCF);
+        let mut cpu = MockCpu::default();
+        cpu.set_ax(0x0600);
+        cpu.set_dx(u16::from(b'Z'));
+
+        dos.int21h_06h_direct_console_io(&mut cpu, &mut memory);
+
+        let events = stdout_events(&dos);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].source, source::INT21_06);
+        assert_eq!(events[0].handle, None);
+        assert_eq!(events[0].route, route::SUPPRESSED);
+        assert_eq!(
+            events[0].suppression_reason,
+            Some(crate::trace::suppression::INT29_IRET_HOOK)
+        );
+        assert_eq!(events[0].bytes, b"Z");
+        // The suppressed byte must not reach the console parser.
+        assert_eq!(memory.read_byte(0xA0000), 0x00);
     }
 
     #[test]

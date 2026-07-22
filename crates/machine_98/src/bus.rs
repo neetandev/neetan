@@ -5,6 +5,7 @@
 
 mod bios;
 mod dos_adapter;
+mod dos_trace;
 mod fdc;
 mod fdd_hle;
 mod graphics;

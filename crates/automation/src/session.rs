@@ -19,6 +19,7 @@ mod lifecycle;
 mod media;
 mod run;
 mod screen;
+pub(crate) mod text;
 pub(crate) mod trace;
 
 use std::{
@@ -35,6 +36,7 @@ use common::{
 use machine_factory::{InitError, InitErrorKind, config::EmulatorConfig};
 
 use crate::{
+    capabilities::resolve_within,
     config::CommonConfig,
     media::{MediaKind, MediaMount, MediaRequest},
     protocol::{ExecutionResult, MessageProtocol, TestCaseOutcome},
@@ -319,6 +321,42 @@ impl AutomationSession {
     /// Sets the total-session budgets.
     pub fn set_budgets(&mut self, budgets: SessionBudgets) {
         self.budgets = budgets;
+    }
+
+    /// Resolves an artifact path, charges the byte budget, and writes the bytes.
+    ///
+    /// The path is confined to the session artifact root; a `..` escape reports
+    /// `neetan/path-escape`. Parent directories are created as needed.
+    pub(crate) fn write_artifact(&mut self, path: &str, bytes: &[u8]) -> Result<PathBuf, OpError> {
+        let resolved = resolve_within(&self.artifact_root, path).map_err(OpError::PathEscape)?;
+        self.charge_artifact_bytes(bytes.len() as u128)?;
+        if let Some(parent) = resolved.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                OpError::Io(format!("cannot create artifact directory: {error}"))
+            })?;
+        }
+        std::fs::write(&resolved, bytes)
+            .map_err(|error| OpError::Io(format!("cannot write artifact {path}: {error}")))?;
+        Ok(resolved)
+    }
+
+    /// Validates that an artifact path stays within the artifact root without
+    /// writing anything.
+    pub(crate) fn validate_artifact_path(&self, path: &str) -> Result<(), OpError> {
+        resolve_within(&self.artifact_root, path).map_err(OpError::PathEscape)?;
+        Ok(())
+    }
+
+    /// Charges `bytes` against the artifact-byte budget when one is set.
+    fn charge_artifact_bytes(&mut self, bytes: u128) -> Result<(), OpError> {
+        if let Some(remaining) = self.budgets.artifact_bytes.as_mut() {
+            if *remaining < bytes {
+                *remaining = 0;
+                return Err(OpError::Io("artifact byte budget exhausted".to_owned()));
+            }
+            *remaining -= bytes;
+        }
+        Ok(())
     }
 
     /// Returns the full timeline overlaying the epoch and session-total bases on

@@ -34,7 +34,8 @@ pub mod tracing;
 pub use automation::{
     AutomatedMachine, AutomationDescriptor, AutomationDriver, AutomationTimebase,
     AutomationTimeline, InputCapabilities, RunOutcome, RunRequest, RunTarget, StopReason,
-    TraceCatalog, TraceDeviceCatalog, TraceProviderCatalog, drive_automation,
+    TraceActionCatalog, TraceCatalog, TraceDeviceCatalog, TraceFieldDescriptor, TraceFieldType,
+    TraceProviderCatalog, drive_automation, trace_action, trace_field, trace_field_range,
 };
 pub use display::{FramebufferVa, HighResCursor, TownsLayer};
 pub use dos::{
@@ -46,7 +47,8 @@ pub use input::{HostKey, KeyModifiers};
 pub use inspect::{
     AddressSpaceClass, AddressSpaceDescriptor, AddressSpaceList, ByteOrder, DescriptorTableReading,
     InspectError, MachineInspector, ProcessorDescriptor, ProcessorList, ProtectedModeState,
-    RegisterDescriptor, RegisterReading, SegmentReading,
+    RegisterDescriptor, RegisterReading, SegmentReading, TextCell, TextSurfaceInfo,
+    TextSurfaceInspector, TextSurfaceList,
 };
 pub use jis::{
     JisChar, char_to_jis, is_shift_jis_lead_byte, is_shift_jis_trail_byte, jis_slice_to_string,
@@ -58,11 +60,11 @@ pub use stack_vec::StackVec;
 pub use text_extractor::TextExtractor;
 pub use trace::{
     NoTrace, OwnedTraceCall, OwnedTraceDeviceEvent, OwnedTraceEvent, OwnedTraceField,
-    OwnedTraceValue, TRACE_SCHEMA_VERSION, TraceAccess, TraceAccessKind, TraceAccessWidth,
-    TraceAddressSpace, TraceAddressSpaceClass, TraceCall, TraceCallInterface, TraceCallPhase,
-    TraceContext, TraceDeviceEvent, TraceEvent, TraceEventClass, TraceEventKey, TraceField,
-    TraceInterest, TraceInterrupt, TraceInterruptAction, TraceInterruptKind, TracePresentation,
-    TraceRate, TraceSink, TraceValue, trace_clock, trace_id, trace_source,
+    OwnedTraceValue, ProcessorSnapshot, TRACE_SCHEMA_VERSION, TraceAccess, TraceAccessKind,
+    TraceAccessWidth, TraceAddressSpace, TraceAddressSpaceClass, TraceCall, TraceCallInterface,
+    TraceCallPhase, TraceContext, TraceDeviceEvent, TraceEvent, TraceEventClass, TraceEventKey,
+    TraceField, TraceInterest, TraceInterrupt, TraceInterruptAction, TraceInterruptKind,
+    TracePresentation, TraceRate, TraceSink, TraceValue, trace_clock, trace_id, trace_source,
 };
 
 /// Built-in V98-format PC-98 font ROM used when no external font ROM is configured.
@@ -2102,8 +2104,10 @@ pub const fn unlikely(b: bool) -> bool {
 mod tests {
     use super::{
         Bus, CpuMode, M68000AccessSize, M68000BusAccess, M68000CycleKind, M68000FunctionCode,
-        Machine, MachineModel, MediaBacking, MediaImage, SaveStateError,
+        Machine, MachineModel, SaveStateError,
     };
+    #[cfg(feature = "std")]
+    use super::{MediaBacking, MediaImage};
 
     /// A machine that implements only the required [`Machine`] methods,
     /// verifying that machines without CD-ROM, hard disk, printer, or

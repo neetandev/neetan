@@ -113,15 +113,15 @@ const MSX_TRACE_CATALOG: common::TraceCatalog = common::TraceCatalog {
     devices: &[
         common::TraceDeviceCatalog {
             device: common::trace_id::device::MSX_SLOT,
-            actions: &[common::trace_id::action::SELECT],
+            actions: &[common::trace_action(common::trace_id::action::SELECT)],
         },
         common::TraceDeviceCatalog {
             device: common::trace_id::device::MSX_MAPPER,
-            actions: &[common::trace_id::action::BANK],
+            actions: &[common::trace_action(common::trace_id::action::BANK)],
         },
         common::TraceDeviceCatalog {
             device: common::trace_id::device::MSX_FDC,
-            actions: &[common::trace_id::action::READ],
+            actions: &[common::trace_action(common::trace_id::action::READ)],
         },
     ],
     providers: &[],

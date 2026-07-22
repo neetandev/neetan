@@ -7,7 +7,7 @@
 
 use crate::{
     Machine,
-    inspect::MachineInspector,
+    inspect::{MachineInspector, TextSurfaceInspector},
     trace::{TraceEventClass, TraceInterest},
 };
 
@@ -34,6 +34,14 @@ pub trait AutomatedMachine: Machine {
         None
     }
 
+    /// Returns the read-only decoded text-surface inspector, when supported.
+    ///
+    /// This borrows `&self` because text decoding is side-effect-free, unlike the
+    /// register and memory inspector. The default is `None`.
+    fn text_inspector(&self) -> Option<&dyn TextSurfaceInspector> {
+        None
+    }
+
     /// Asserts the documented machine reset mechanism, returning whether a real
     /// reset was performed.
     ///
@@ -48,13 +56,89 @@ pub trait AutomatedMachine: Machine {
     fn trace_catalog(&self) -> TraceCatalog;
 }
 
+/// The value type of a provider-specific trace field.
+///
+/// This drives schema discovery and up-front filter validation. A falseable
+/// type accepts its scalar value or Boolean false, used when an event omits a
+/// field such as a handle or a suppression reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceFieldType {
+    /// A stable symbol value.
+    Symbol,
+    /// An unsigned or signed integer value.
+    Integer,
+    /// A Boolean value.
+    Boolean,
+    /// An integer value or Boolean false.
+    IntegerOrFalse,
+    /// A symbol value or Boolean false.
+    SymbolOrFalse,
+    /// A borrowed byte group.
+    Bytes,
+    /// A group of 16-bit integers, surfaced as an exact-integer list.
+    U16List,
+}
+
+/// One provider-specific trace field and its value type.
+#[derive(Debug, Clone, Copy)]
+pub struct TraceFieldDescriptor {
+    /// Stable field name.
+    pub name: &'static str,
+    /// Value type carried by the field.
+    pub value_type: TraceFieldType,
+    /// Whether an inclusive integer-range constraint is accepted.
+    pub range: bool,
+}
+
+/// Builds a field descriptor that accepts no integer-range constraint.
+#[must_use]
+pub const fn trace_field(name: &'static str, value_type: TraceFieldType) -> TraceFieldDescriptor {
+    TraceFieldDescriptor {
+        name,
+        value_type,
+        range: false,
+    }
+}
+
+/// Builds a field descriptor that also accepts an inclusive integer-range
+/// constraint.
+#[must_use]
+pub const fn trace_field_range(
+    name: &'static str,
+    value_type: TraceFieldType,
+) -> TraceFieldDescriptor {
+    TraceFieldDescriptor {
+        name,
+        value_type,
+        range: true,
+    }
+}
+
+/// One device or call action and the provider-specific fields it carries.
+#[derive(Debug, Clone, Copy)]
+pub struct TraceActionCatalog {
+    /// Stable action identifier.
+    pub action: &'static str,
+    /// Provider-specific fields carried by this action.
+    pub fields: &'static [TraceFieldDescriptor],
+}
+
+/// Builds an action catalog entry that carries no provider-specific fields.
+#[must_use]
+pub const fn trace_action(action: &'static str) -> TraceActionCatalog {
+    TraceActionCatalog {
+        action,
+        fields: &[],
+    }
+}
+
 /// A device identifier and the action identifiers a machine emits for it.
 #[derive(Debug, Clone, Copy)]
 pub struct TraceDeviceCatalog {
     /// Stable namespaced device identifier.
     pub device: &'static str,
-    /// Stable action identifiers emitted for this device.
-    pub actions: &'static [&'static str],
+    /// Actions emitted for this device with their provider-specific fields.
+    pub actions: &'static [TraceActionCatalog],
 }
 
 /// A call provider identifier and the named interface identifiers a machine emits.
@@ -65,6 +149,8 @@ pub struct TraceProviderCatalog {
     /// Stable named-interface identifiers, empty when only numeric interfaces are
     /// used.
     pub named_interfaces: &'static [&'static str],
+    /// Provider-specific fields carried by this provider's call events.
+    pub call_fields: &'static [TraceFieldDescriptor],
 }
 
 /// The stable trace identifiers a machine actually emits.

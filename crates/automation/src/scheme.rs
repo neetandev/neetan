@@ -20,6 +20,7 @@ mod query;
 mod run;
 mod screen;
 mod support;
+mod text;
 mod trace;
 
 use std::{cell::RefCell, rc::Rc};
@@ -115,6 +116,7 @@ pub fn register_libraries(
     screen::register_screen_natives(engine, session, &internal)?;
     inspect::register_inspect_natives(engine, session, &internal)?;
     inspect::register_mutate_natives(engine, session, &internal)?;
+    text::register_text_natives(engine, session, &internal)?;
     trace::register_trace_natives(engine, session, &internal)?;
 
     engine.register_library_source(

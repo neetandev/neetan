@@ -4,6 +4,7 @@ use common::warn;
 
 use crate::{
     CpuAccess, DiskIo, DosState, DriveIo, MemoryAccess, NeetanDos, SegmentRegister,
+    dos::{StdoutRoute, route_for_character_device},
     filesystem::{
         self, FatHandleMetadata, ReadDirEntrySource, ReadDirectory, fat_dir,
         fat_file::FatFileCursor, find_matching_read_entry, find_read_entry, iso9660, split_path,
@@ -704,7 +705,12 @@ impl NeetanDos {
 
             let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
             if dev_info & tables::SFT_DEVINFO_CHAR != 0 {
-                if dev_info & tables::SFT_DEVINFO_NUL != 0 {
+                let is_nul = dev_info & tables::SFT_DEVINFO_NUL != 0;
+                if self.stdout_trace_enabled() {
+                    let route = route_for_character_device(memory, is_nul);
+                    self.record_stdout_write(memory, handle, buf_addr, count, route);
+                }
+                if is_nul {
                     return Ok(count as u16);
                 }
                 // Device write: send to console
@@ -713,6 +719,12 @@ impl NeetanDos {
                     self.write_stdout_byte(memory, byte);
                 }
                 return Ok(count as u16);
+            }
+
+            // A standard output handle pointing at a regular file means the
+            // guest redirected console output.
+            if (handle == 1 || handle == 2) && self.stdout_trace_enabled() {
+                self.record_stdout_write(memory, handle, buf_addr, count, StdoutRoute::Redirected);
             }
 
             // File write

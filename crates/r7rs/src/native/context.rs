@@ -158,6 +158,15 @@ impl NativeContext<'_> {
             .ok_or_else(|| type_error("string", value, self.heap))
     }
 
+    /// Renders a value to its `write` external representation.
+    ///
+    /// The text matches the `write` procedure, so it reads back with `read`. This
+    /// lets a host serialize Scheme data to an artifact and reload it later without
+    /// a bespoke serializer.
+    pub fn write_to_string(&self, value: Value) -> Result<String, Error> {
+        crate::printer::write_value(self.heap, value, crate::printer::RuntimeWriteMode::Write)
+    }
+
     /// Borrows the name of a symbol argument.
     ///
     /// The slice is valid for the callback activation. Callers that need to

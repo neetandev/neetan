@@ -4,16 +4,19 @@ use std::{cell::RefCell, rc::Rc};
 
 use common::{
     OwnedTraceCall, OwnedTraceDeviceEvent, OwnedTraceEvent, OwnedTraceField, OwnedTraceValue,
-    TraceCallInterface, TraceContext, TraceEventClass,
+    ProcessorSnapshot, TraceCallInterface, TraceContext, TraceEventClass, TraceFieldDescriptor,
     tracing::{ApplicationTraceEnvelope, TraceFailure},
 };
 use r7rs::{Engine, Error, LibraryName, NativeContext, Value, ValueKind};
 
-use super::support::{error_value, machine_id, make_alist, make_list, op_error_value, to_count};
+use super::support::{
+    artifact_alist, error_value, inspected_integer, machine_id, make_alist, make_list,
+    op_error_value, to_count, written_len,
+};
 use crate::session::{
-    AutomationSession,
+    AutomationSession, OpError,
     trace::{
-        CLASS_SCHEMAS, ENVELOPE_FIELDS, FilterScalar, FilterSpec, access_operation,
+        CLASS_SCHEMAS, ENVELOPE_FIELDS, FilterScalar, FilterSpec, SchemaType, access_operation,
         access_width_bits, call_phase_name, interrupt_action_name, interrupt_kind_name,
         space_class_name,
     },
@@ -35,10 +38,14 @@ fn parse_scalar(
             Ok(Ok(FilterScalar::Integer(integer)))
         }
         ValueKind::Pair => parse_range(context, value),
+        ValueKind::Bytevector => {
+            let bytes = context.to_bytes(value)?.to_vec();
+            Ok(Ok(FilterScalar::Bytes(bytes)))
+        }
         _ => Ok(Err(error_value(
             context,
             "neetan/argument",
-            "trace filter value must be a symbol, integer, boolean, or range",
+            "trace filter value must be a symbol, integer, boolean, bytevector, or range",
         )?)),
     }
 }
@@ -119,6 +126,73 @@ fn parse_alist(
     }
 }
 
+/// The two sections of a parsed `data` block: the direct data constraints and an
+/// optional nested `fields` sub-alist of provider-specific field constraints.
+type DataSections = (
+    Vec<(String, FilterScalar)>,
+    Option<Vec<(String, FilterScalar)>>,
+);
+
+/// Parses the nested `data` alist, splitting out an optional `fields` sub-alist.
+fn parse_data(
+    context: &mut NativeContext,
+    value: Value,
+) -> Result<Result<DataSections, Value>, Error> {
+    let items = match context.kind(value) {
+        ValueKind::Nil => Vec::new(),
+        ValueKind::Pair => {
+            let Ok(items) = context.to_list(value) else {
+                return Ok(Err(error_value(
+                    context,
+                    "neetan/argument",
+                    "trace filter data must be a proper association list",
+                )?));
+            };
+            items
+        }
+        _ => {
+            return Ok(Err(error_value(
+                context,
+                "neetan/argument",
+                "trace filter data must be an association list",
+            )?));
+        }
+    };
+    let mut data = Vec::new();
+    let mut fields = None;
+    for item in items {
+        if context.kind(item) != ValueKind::Pair {
+            return Ok(Err(error_value(
+                context,
+                "neetan/argument",
+                "trace filter data entry must be a (key . value) pair",
+            )?));
+        }
+        let (key, tail) = context.to_pair(item)?;
+        if context.kind(key) != ValueKind::Symbol {
+            return Ok(Err(error_value(
+                context,
+                "neetan/argument",
+                "trace filter data key must be a symbol",
+            )?));
+        }
+        let name = context.to_symbol_name(key)?.to_owned();
+        if name == "fields" {
+            match parse_alist(context, tail)? {
+                Ok(sub) => fields = Some(sub),
+                Err(error) => return Ok(Err(error)),
+            }
+        } else {
+            let scalar = match parse_scalar(context, tail)? {
+                Ok(scalar) => scalar,
+                Err(error) => return Ok(Err(error)),
+            };
+            data.push((name, scalar));
+        }
+    }
+    Ok(Ok((data, fields)))
+}
+
 /// Parses a full declarative filter value into a filter specification.
 fn parse_filter(
     context: &mut NativeContext,
@@ -126,6 +200,7 @@ fn parse_filter(
 ) -> Result<Result<FilterSpec, Value>, Error> {
     let mut top = Vec::new();
     let mut data = None;
+    let mut fields = None;
     let items = match context.kind(value) {
         ValueKind::Nil => Vec::new(),
         ValueKind::Pair => match context.to_list(value) {
@@ -164,8 +239,11 @@ fn parse_filter(
         }
         let name = context.to_symbol_name(key)?.to_owned();
         if name == "data" {
-            match parse_alist(context, tail)? {
-                Ok(sub) => data = Some(sub),
+            match parse_data(context, tail)? {
+                Ok((sub_data, sub_fields)) => {
+                    data = Some(sub_data);
+                    fields = sub_fields;
+                }
                 Err(error) => return Ok(Err(error)),
             }
         } else {
@@ -176,7 +254,7 @@ fn parse_filter(
             top.push((name, scalar));
         }
     }
-    Ok(Ok(FilterSpec { top, data }))
+    Ok(Ok(FilterSpec { top, data, fields }))
 }
 
 /// Interns a stable identifier symbol.
@@ -205,6 +283,14 @@ fn field_value(context: &mut NativeContext, value: &OwnedTraceValue) -> Result<V
         OwnedTraceValue::Bool(flag) => Ok(Value::boolean(*flag)),
         OwnedTraceValue::Bytes(bytes) => context.bytevector(bytes.clone()),
         OwnedTraceValue::Text(text) => context.string_utf8(text.clone()),
+        OwnedTraceValue::Symbol(name) => symbol(context, name),
+        OwnedTraceValue::U16List(elements) => {
+            let mut values = Vec::with_capacity(elements.len());
+            for element in elements {
+                values.push(context.integer(i128::from(*element))?);
+            }
+            make_list(context, values)
+        }
         _ => Ok(Value::boolean(false)),
     }
 }
@@ -369,6 +455,26 @@ fn clock_rate_value(
     }
 }
 
+/// Marshals an entry snapshot into `#f` or a `((processor . registers))` alist.
+///
+/// The registers use the same names and values as `register-ref`, captured at
+/// HLE dispatch entry. Events without an armed snapshot marshal to `#f`.
+fn snapshot_value(
+    context: &mut NativeContext,
+    snapshot: &Option<ProcessorSnapshot>,
+) -> Result<Value, Error> {
+    let Some(snapshot) = snapshot else {
+        return Ok(Value::boolean(false));
+    };
+    let mut register_entries: Vec<(&str, Value)> = Vec::with_capacity(snapshot.registers.len());
+    for register in &snapshot.registers {
+        let value = inspected_integer(context, register.value)?;
+        register_entries.push((register.name, value));
+    }
+    let registers = make_alist(context, register_entries)?;
+    make_alist(context, vec![(snapshot.processor, registers)])
+}
+
 /// Marshals one owned trace envelope into a normalized event alist.
 fn envelope_value(
     context: &mut NativeContext,
@@ -384,6 +490,7 @@ fn envelope_value(
     let clock_rate = clock_rate_value(context, &envelope.context)?;
     let class = symbol(context, owned_class_name(&envelope.event))?;
     let data = data_value(context, &envelope.event)?;
+    let snapshot = snapshot_value(context, &envelope.snapshot)?;
     make_alist(
         context,
         vec![
@@ -397,6 +504,7 @@ fn envelope_value(
             ("clock-rate", clock_rate),
             ("class", class),
             ("data", data),
+            ("snapshot", snapshot),
         ],
     )
 }
@@ -439,6 +547,32 @@ fn failure_value(
             make_alist(context, vec![("reason", reason)])
         }
     }
+}
+
+/// Marshals a list of provider-specific field descriptors into a list of
+/// `((name . sym) (type . sym) (range . bool))` alists.
+fn descriptor_list(
+    context: &mut NativeContext,
+    descriptors: &[TraceFieldDescriptor],
+) -> Result<Value, Error> {
+    let mut entries = Vec::with_capacity(descriptors.len());
+    for descriptor in descriptors {
+        let name = symbol(context, descriptor.name)?;
+        let type_symbol = symbol(
+            context,
+            SchemaType::from_field_type(descriptor.value_type).name(),
+        )?;
+        let entry = make_alist(
+            context,
+            vec![
+                ("name", name),
+                ("type", type_symbol),
+                ("range", Value::boolean(descriptor.range)),
+            ],
+        )?;
+        entries.push(entry);
+    }
+    make_list(context, entries)
 }
 
 /// Builds the `trace-schema` descriptor alist.
@@ -533,11 +667,14 @@ fn schema_value(
     let mut device_entries = Vec::with_capacity(parts.catalog.devices.len());
     for device in parts.catalog.devices {
         let device_symbol = symbol(context, device.device)?;
-        let mut action_symbols = Vec::with_capacity(device.actions.len());
+        let mut action_entries = Vec::with_capacity(device.actions.len());
         for action in device.actions {
-            action_symbols.push(symbol(context, action)?);
+            let action_symbol = symbol(context, action.action)?;
+            let fields = descriptor_list(context, action.fields)?;
+            let entry = make_alist(context, vec![("action", action_symbol), ("fields", fields)])?;
+            action_entries.push(entry);
         }
-        let actions = make_list(context, action_symbols)?;
+        let actions = make_list(context, action_entries)?;
         let entry = make_alist(
             context,
             vec![("device", device_symbol), ("actions", actions)],
@@ -554,11 +691,13 @@ fn schema_value(
             interface_symbols.push(symbol(context, interface)?);
         }
         let interfaces = make_list(context, interface_symbols)?;
+        let call_fields = descriptor_list(context, provider.call_fields)?;
         let entry = make_alist(
             context,
             vec![
                 ("provider", provider_symbol),
                 ("named-interfaces", interfaces),
+                ("call-fields", call_fields),
             ],
         )?;
         provider_entries.push(entry);
@@ -580,6 +719,45 @@ fn schema_value(
             ("providers", providers),
         ],
     )
+}
+
+/// Parses a snapshot-processor argument into a list of processor identifiers.
+///
+/// The argument is a list of symbols, or `#f` for no snapshot request.
+fn parse_snapshot_processors(
+    context: &mut NativeContext,
+    value: Value,
+) -> Result<Result<Vec<String>, Value>, Error> {
+    match context.kind(value) {
+        ValueKind::Boolean if value == Value::boolean(false) => Ok(Ok(Vec::new())),
+        ValueKind::Nil => Ok(Ok(Vec::new())),
+        ValueKind::Pair => {
+            let Ok(items) = context.to_list(value) else {
+                return Ok(Err(error_value(
+                    context,
+                    "neetan/argument",
+                    "snapshot must be a proper list of processor symbols",
+                )?));
+            };
+            let mut processors = Vec::with_capacity(items.len());
+            for item in items {
+                if context.kind(item) != ValueKind::Symbol {
+                    return Ok(Err(error_value(
+                        context,
+                        "neetan/argument",
+                        "snapshot processor must be a symbol",
+                    )?));
+                }
+                processors.push(context.to_symbol_name(item)?.to_owned());
+            }
+            Ok(Ok(processors))
+        }
+        _ => Ok(Err(error_value(
+            context,
+            "neetan/argument",
+            "snapshot must be a list of processor symbols",
+        )?)),
+    }
 }
 
 /// Registers the tracing natives.
@@ -657,8 +835,123 @@ pub(super) fn register_trace_natives(
         }
     })?;
 
+    let save_trace = Rc::clone(session);
+    engine.register_library_fn(internal, "%save-trace", 2..=2, move |context, args| {
+        if let Err(value) = machine_id(context, &save_trace, args[0])? {
+            return Ok(value);
+        }
+        let path = context.to_str(args[1])?.to_owned();
+        let events = match save_trace.borrow().trace_snapshot() {
+            Ok(events) => events,
+            Err(error) => return op_error_value(context, &error),
+        };
+        // Render each event with the same alist marshalling as trace-drain!, then
+        // to its `write` external form, so the artifact reads back with `read`.
+        let mut text = String::new();
+        for envelope in &events {
+            let value = envelope_value(context, envelope)?;
+            text.push_str(&context.write_to_string(value)?);
+            text.push('\n');
+        }
+        match save_trace
+            .borrow_mut()
+            .write_artifact(&path, text.as_bytes())
+        {
+            Ok(written) => artifact_alist(context, &path, Some(written_len(&written))),
+            Err(error) => op_error_value(context, &error),
+        }
+    })?;
+
+    let arm = Rc::clone(session);
+    engine.register_library_fn(internal, "%trace-arm", 8..=8, move |context, args| {
+        if let Err(value) = machine_id(context, &arm, args[0])? {
+            return Ok(value);
+        }
+        let capture = match parse_filter(context, args[1])? {
+            Ok(spec) => spec,
+            Err(value) => return Ok(value),
+        };
+        let trigger = match parse_filter(context, args[2])? {
+            Ok(spec) => spec,
+            Err(value) => return Ok(value),
+        };
+        let before = match to_count(context, args[3])? {
+            Ok(value) => value,
+            Err(value) => return Ok(value),
+        };
+        let after = match to_count(context, args[4])? {
+            Ok(value) => value,
+            Err(value) => return Ok(value),
+        };
+        let path = context.to_str(args[5])?.to_owned();
+        let max_frames = match to_count(context, args[6])? {
+            Ok(value) => value,
+            Err(value) => return Ok(value),
+        };
+        let max_ticks = match to_count(context, args[7])? {
+            Ok(value) => value,
+            Err(value) => return Ok(value),
+        };
+        if let Err(error) = arm.borrow().validate_artifact_path(&path) {
+            return op_error_value(context, &error);
+        }
+        let outcome = match arm
+            .borrow_mut()
+            .trace_capture(capture, trigger, before, after, max_frames, max_ticks)
+        {
+            Ok(outcome) => outcome,
+            Err(error) => return op_error_value(context, &error),
+        };
+        // The artifact uses the same one-datum-per-line rendering as
+        // save-trace!, and is only written once the trigger has fired. A
+        // capture ended by an overflow still writes the partially retained
+        // window before the failure is raised.
+        let mut written_path = None;
+        if outcome.triggered {
+            let mut text = String::new();
+            for envelope in &outcome.events {
+                let value = envelope_value(context, envelope)?;
+                text.push_str(&context.write_to_string(value)?);
+                text.push('\n');
+            }
+            match arm.borrow_mut().write_artifact(&path, text.as_bytes()) {
+                Ok(written) => written_path = Some(written),
+                Err(error) => return op_error_value(context, &error),
+            }
+        }
+        if outcome.failure.is_some() {
+            return op_error_value(
+                context,
+                &OpError::TraceOverflow(
+                    "trace capture exceeded its bounded payload limits".to_owned(),
+                ),
+            );
+        }
+        let bytes_value = match &written_path {
+            Some(written) => context.integer(written_len(written) as i128)?,
+            None => Value::boolean(false),
+        };
+        let triggered = Value::boolean(outcome.triggered);
+        let complete = Value::boolean(outcome.complete);
+        let events = context.integer(outcome.events.len() as i128)?;
+        let trigger_index = match outcome.trigger_index {
+            Some(index) => context.integer(index as i128)?,
+            None => Value::boolean(false),
+        };
+        make_alist(
+            context,
+            vec![
+                ("triggered", triggered),
+                ("complete", complete),
+                ("events", events),
+                ("trigger-index", trigger_index),
+                ("bytes", bytes_value),
+            ],
+        )
+    })?;
+
     let wait = Rc::clone(session);
-    engine.register_library_fn(internal, "%wait-for-event", 4..=4, move |context, args| {
+    engine.register_library_fn(internal, "%wait-for-event", 5..=5, move |context, args| {
         if let Err(value) = machine_id(context, &wait, args[0])? {
             return Ok(value);
         }
@@ -674,9 +967,13 @@ pub(super) fn register_trace_natives(
             Ok(value) => value,
             Err(value) => return Ok(value),
         };
+        let snapshot_processors = match parse_snapshot_processors(context, args[4])? {
+            Ok(processors) => processors,
+            Err(value) => return Ok(value),
+        };
         match wait
             .borrow_mut()
-            .wait_for_event(spec, max_frames, max_ticks)
+            .wait_for_event(spec, max_frames, max_ticks, snapshot_processors)
         {
             Ok(Some(envelope)) => envelope_value(context, &envelope),
             Ok(None) => Ok(Value::boolean(false)),

@@ -7,10 +7,15 @@
 //! ([`Cpu`], [`CpuZ80`], [`CpuM68000`], [`Cpu6809`]),
 //! none of which is object-safe, so the helpers are generic free functions.
 
+use alloc::vec::Vec;
+
 use crate::{Cpu, Cpu6809, CpuM68000, CpuZ80, stack_vec::StackVec};
 
 /// Maximum inspectable processors a machine exposes (dual-CPU families).
 pub const MAX_PROCESSORS: usize = 2;
+
+/// Maximum inspectable text surfaces a machine exposes.
+pub const MAX_TEXT_SURFACES: usize = 2;
 
 /// Maximum inspectable address spaces a machine exposes (main and sub, each
 /// with a memory and an I/O space).
@@ -203,6 +208,59 @@ pub trait MachineInspector {
 
     /// Writes `bytes` to `space` at `address` through the memory decode.
     fn poke_memory(&mut self, space: &str, address: u64, bytes: &[u8]) -> Result<(), InspectError>;
+}
+
+/// A bounded, stack-allocated list of text-surface descriptors.
+pub type TextSurfaceList = StackVec<TextSurfaceInfo, MAX_TEXT_SURFACES>;
+
+/// Geometry of one inspectable text surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextSurfaceInfo {
+    /// Stable surface identifier, for example `"display.main"`.
+    pub id: &'static str,
+    /// Number of text rows.
+    pub rows: u16,
+    /// Number of text columns.
+    pub columns: u16,
+}
+
+/// One decoded text-mode cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextCell {
+    /// Zero-based row.
+    pub row: u16,
+    /// Zero-based column.
+    pub column: u16,
+    /// Raw code as stored in the character plane.
+    pub raw_jis: u16,
+    /// Decoded Unicode character, when the code maps to one.
+    pub unicode: Option<char>,
+    /// Raw attribute byte from the attribute plane.
+    pub attribute: u8,
+    /// Display width in cells, 1 for half-width and 2 for full-width.
+    pub display_width: u8,
+}
+
+/// Read-only decoded text-surface inspection surface.
+///
+/// A machine implements this on itself and returns `Some(self)` from
+/// [`crate::AutomatedMachine::text_inspector`]. Every read is side-effect-free
+/// and decodes the current text VRAM without touching device state.
+pub trait TextSurfaceInspector {
+    /// Returns the text surfaces this machine exposes.
+    fn text_surfaces(&self) -> TextSurfaceList;
+
+    /// Returns the geometry of one surface, or an error when it is unknown.
+    fn text_surface_info(&self, surface: &str) -> Result<TextSurfaceInfo, InspectError>;
+
+    /// Decodes one cell of a surface.
+    fn text_cell(&self, surface: &str, row: u16, column: u16) -> Result<TextCell, InspectError>;
+
+    /// Decodes one full row of a surface, left to right.
+    fn text_row(&self, surface: &str, row: u16) -> Result<Vec<TextCell>, InspectError>;
+
+    /// Decodes every row of a surface, top to bottom.
+    fn text_screen(&self, surface: &str) -> Result<Vec<Vec<TextCell>>, InspectError>;
 }
 
 /// Adds a byte offset to a base address for a 16-bit space, reporting overflow

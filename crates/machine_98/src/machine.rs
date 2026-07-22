@@ -227,38 +227,180 @@ impl<C: Pc98RuntimeCpu> common::AutomatedMachine
         Some(self)
     }
 
+    fn text_inspector(&self) -> Option<&dyn common::TextSurfaceInspector> {
+        Some(self)
+    }
+
     fn trace_catalog(&self) -> common::TraceCatalog {
         PC98_TRACE_CATALOG
     }
 }
 
 /// Stable trace identifiers emitted by the PC-98 bus.
+use common::TraceFieldType::{Bytes, Integer, IntegerOrFalse, Symbol, SymbolOrFalse, U16List};
+
+/// Field schema for the `neetan.dos`, BIOS, and extension-ROM call providers.
+///
+/// Enter events carry `function` and `subfunction`. `result` is present only
+/// on exit events, so a `result` constraint matches exit phases alone.
+const PC98_PROVIDER_CALL_FIELDS: &[common::TraceFieldDescriptor] = &[
+    common::trace_field_range(common::trace_id::field::FUNCTION, Integer),
+    common::trace_field_range(common::trace_id::field::SUBFUNCTION, Integer),
+    common::trace_field_range(common::trace_id::field::RESULT, Integer),
+];
+
+/// Field schema for the `neetan.dos.vector` `set` action.
+const DOS_VECTOR_SET_FIELDS: &[common::TraceFieldDescriptor] = &[
+    common::trace_field_range(common::trace_id::field::VECTOR, Integer),
+    common::trace_field(common::trace_id::field::SEGMENT, Integer),
+    common::trace_field(common::trace_id::field::OFFSET, Integer),
+    common::trace_field_range(common::trace_id::field::LINEAR_ADDRESS, Integer),
+];
+
+/// Field schema for the `neetan.dos.stdout` `write` action.
+const DOS_STDOUT_WRITE_FIELDS: &[common::TraceFieldDescriptor] = &[
+    common::trace_field(common::trace_id::field::SOURCE, Symbol),
+    common::trace_field(common::trace_id::field::HANDLE, IntegerOrFalse),
+    common::trace_field(common::trace_id::field::BUFFER_ADDRESS, IntegerOrFalse),
+    common::trace_field(common::trace_id::field::REQUESTED_COUNT, Integer),
+    common::trace_field(common::trace_id::field::BYTES, Bytes),
+    common::trace_field(common::trace_id::field::ROUTE, Symbol),
+    common::trace_field(common::trace_id::field::SUPPRESSION_REASON, SymbolOrFalse),
+    common::trace_field(common::trace_id::field::INT29_SEGMENT, Integer),
+    common::trace_field(common::trace_id::field::INT29_OFFSET, Integer),
+];
+
+/// Field schema for the `neetan.dos.console` `byte` action.
+const DOS_CONSOLE_BYTE_FIELDS: &[common::TraceFieldDescriptor] = &[
+    common::trace_field_range(common::trace_id::field::BYTE, Integer),
+    common::trace_field(common::trace_id::field::PARSER_STATE_BEFORE, Symbol),
+    common::trace_field(common::trace_id::field::PARSER_STATE_AFTER, Symbol),
+    common::trace_field(common::trace_id::field::CHARACTER_MODE_BEFORE, Symbol),
+    common::trace_field(common::trace_id::field::CHARACTER_MODE_AFTER, Symbol),
+    common::trace_field(
+        common::trace_id::field::PENDING_SHIFT_JIS_LEAD_BEFORE,
+        IntegerOrFalse,
+    ),
+    common::trace_field(
+        common::trace_id::field::PENDING_SHIFT_JIS_LEAD_AFTER,
+        IntegerOrFalse,
+    ),
+    common::trace_field(common::trace_id::field::CURSOR_ROW_BEFORE, Integer),
+    common::trace_field(common::trace_id::field::CURSOR_COLUMN_BEFORE, Integer),
+    common::trace_field(common::trace_id::field::CURSOR_ROW_AFTER, Integer),
+    common::trace_field(common::trace_id::field::CURSOR_COLUMN_AFTER, Integer),
+    common::trace_field(common::trace_id::field::ATTRIBUTE_BEFORE, Integer),
+    common::trace_field(common::trace_id::field::ATTRIBUTE_AFTER, Integer),
+];
+
+/// Field schema for the `neetan.dos.console` `escape` action.
+const DOS_CONSOLE_ESCAPE_FIELDS: &[common::TraceFieldDescriptor] = &[
+    common::trace_field(common::trace_id::field::BYTES, Bytes),
+    common::trace_field(common::trace_id::field::COMMAND, Symbol),
+    common::trace_field(common::trace_id::field::PARAMETERS, U16List),
+    common::trace_field(common::trace_id::field::ATTRIBUTE_BEFORE, Integer),
+    common::trace_field(common::trace_id::field::ATTRIBUTE_AFTER, Integer),
+    common::trace_field(common::trace_id::field::CURSOR_ROW_BEFORE, Integer),
+    common::trace_field(common::trace_id::field::CURSOR_COLUMN_BEFORE, Integer),
+    common::trace_field(common::trace_id::field::CURSOR_ROW_AFTER, Integer),
+    common::trace_field(common::trace_id::field::CURSOR_COLUMN_AFTER, Integer),
+];
+
+/// Field schema for the `neetan.dos.console` `cell-write` action.
+const DOS_CONSOLE_CELL_WRITE_FIELDS: &[common::TraceFieldDescriptor] = &[
+    common::trace_field(common::trace_id::field::ROW, Integer),
+    common::trace_field(common::trace_id::field::COLUMN, Integer),
+    common::trace_field_range(common::trace_id::field::JIS, Integer),
+    common::trace_field(common::trace_id::field::DISPLAY_WIDTH, Integer),
+    common::trace_field(common::trace_id::field::ATTRIBUTE, Integer),
+];
+
+/// Field schema for the `neetan.dos.console` `clear` action.
+const DOS_CONSOLE_CLEAR_FIELDS: &[common::TraceFieldDescriptor] = &[
+    common::trace_field(common::trace_id::field::REGION_TOP, Integer),
+    common::trace_field(common::trace_id::field::REGION_BOTTOM, Integer),
+    common::trace_field(common::trace_id::field::COUNT, Integer),
+];
+
+/// Field schema for the `neetan.dos.console` `scroll` action.
+const DOS_CONSOLE_SCROLL_FIELDS: &[common::TraceFieldDescriptor] = &[
+    common::trace_field(common::trace_id::field::REGION_TOP, Integer),
+    common::trace_field(common::trace_id::field::REGION_BOTTOM, Integer),
+    common::trace_field(common::trace_id::field::COUNT, Integer),
+    common::trace_field(common::trace_id::field::DIRECTION, Integer),
+];
+
 const PC98_TRACE_CATALOG: common::TraceCatalog = common::TraceCatalog {
     controllers: &[common::trace_id::controller::PC98_PIC],
     scheduled: common::trace_id::scheduled::PC98,
-    devices: &[common::TraceDeviceCatalog {
-        device: common::trace_id::device::PC98_FDC,
-        actions: &[
-            common::trace_id::action::SEEK,
-            common::trace_id::action::READ,
-        ],
-    }],
+    devices: &[
+        common::TraceDeviceCatalog {
+            device: common::trace_id::device::PC98_FDC,
+            actions: &[
+                common::trace_action(common::trace_id::action::SEEK),
+                common::trace_action(common::trace_id::action::READ),
+            ],
+        },
+        common::TraceDeviceCatalog {
+            device: common::trace_id::device::NEETAN_DOS_VECTOR,
+            actions: &[common::TraceActionCatalog {
+                action: common::trace_id::action::SET,
+                fields: DOS_VECTOR_SET_FIELDS,
+            }],
+        },
+        common::TraceDeviceCatalog {
+            device: common::trace_id::device::NEETAN_DOS_STDOUT,
+            actions: &[common::TraceActionCatalog {
+                action: common::trace_id::action::WRITE,
+                fields: DOS_STDOUT_WRITE_FIELDS,
+            }],
+        },
+        common::TraceDeviceCatalog {
+            device: common::trace_id::device::NEETAN_DOS_CONSOLE,
+            actions: &[
+                common::TraceActionCatalog {
+                    action: common::trace_id::action::BYTE,
+                    fields: DOS_CONSOLE_BYTE_FIELDS,
+                },
+                common::TraceActionCatalog {
+                    action: common::trace_id::action::ESCAPE,
+                    fields: DOS_CONSOLE_ESCAPE_FIELDS,
+                },
+                common::TraceActionCatalog {
+                    action: common::trace_id::action::CELL_WRITE,
+                    fields: DOS_CONSOLE_CELL_WRITE_FIELDS,
+                },
+                common::TraceActionCatalog {
+                    action: common::trace_id::action::CLEAR,
+                    fields: DOS_CONSOLE_CLEAR_FIELDS,
+                },
+                common::TraceActionCatalog {
+                    action: common::trace_id::action::SCROLL,
+                    fields: DOS_CONSOLE_SCROLL_FIELDS,
+                },
+            ],
+        },
+    ],
     providers: &[
         common::TraceProviderCatalog {
             provider: common::trace_id::provider::NEETAN_DOS,
             named_interfaces: &[common::trace_id::interface::BOOT],
+            call_fields: PC98_PROVIDER_CALL_FIELDS,
         },
         common::TraceProviderCatalog {
             provider: common::trace_id::provider::PC98_BIOS,
             named_interfaces: &[],
+            call_fields: PC98_PROVIDER_CALL_FIELDS,
         },
         common::TraceProviderCatalog {
             provider: common::trace_id::provider::PC98_FDD_640K,
             named_interfaces: &[common::trace_id::interface::EXTENSION_ROM],
+            call_fields: PC98_PROVIDER_CALL_FIELDS,
         },
         common::TraceProviderCatalog {
             provider: common::trace_id::provider::PC98_SASI,
             named_interfaces: &[common::trace_id::interface::EXTENSION_ROM],
+            call_fields: PC98_PROVIDER_CALL_FIELDS,
         },
     ],
 };
@@ -366,6 +508,122 @@ impl<C: Pc98RuntimeCpu> common::MachineInspector
             "cpu.main.io" => Err(common::InspectError::NotWritable),
             _ => Err(common::InspectError::UnknownSpace),
         }
+    }
+}
+
+/// The single decoded text surface exposed by the PC-98.
+const PC98_TEXT_SURFACE: &str = "display.main";
+
+/// Text rows on the PC-98 console.
+///
+/// The geometry is fixed to the 80x25 layout the HLE DOS console uses. A guest
+/// that programs the GDC for 20-row or 40-column text is not reflected here.
+const PC98_TEXT_ROWS: u16 = 25;
+
+/// Text columns on the PC-98 console.
+const PC98_TEXT_COLUMNS: u16 = 80;
+
+/// Byte offset of the attribute plane inside the text VRAM.
+const PC98_TEXT_ATTRIBUTE_PLANE: usize = 0x2000;
+
+/// Decodes one PC-98 text cell from the raw text VRAM slice.
+fn decode_pc98_text_cell(vram: &[u8], row: u16, column: u16) -> common::TextCell {
+    let cell_index = (row as usize * PC98_TEXT_COLUMNS as usize + column as usize) * 2;
+    let even = vram.get(cell_index).copied().unwrap_or(0);
+    let odd = vram.get(cell_index + 1).copied().unwrap_or(0);
+    let attribute = vram
+        .get(PC98_TEXT_ATTRIBUTE_PLANE + cell_index)
+        .copied()
+        .unwrap_or(0);
+    let jis = common::JisChar::from_vram_bytes(even, odd);
+    common::TextCell {
+        row,
+        column,
+        raw_jis: jis.as_u16(),
+        unicode: common::jis_to_char(jis),
+        attribute,
+        display_width: jis.display_width(),
+    }
+}
+
+impl<C: Pc98RuntimeCpu> common::TextSurfaceInspector
+    for Pc98Machine<C, common::tracing::ApplicationTraceSink>
+{
+    fn text_surfaces(&self) -> common::TextSurfaceList {
+        let mut surfaces = common::TextSurfaceList::new();
+        surfaces.push(common::TextSurfaceInfo {
+            id: PC98_TEXT_SURFACE,
+            rows: PC98_TEXT_ROWS,
+            columns: PC98_TEXT_COLUMNS,
+        });
+        surfaces
+    }
+
+    fn text_surface_info(
+        &self,
+        surface: &str,
+    ) -> Result<common::TextSurfaceInfo, common::InspectError> {
+        match surface {
+            PC98_TEXT_SURFACE => Ok(common::TextSurfaceInfo {
+                id: PC98_TEXT_SURFACE,
+                rows: PC98_TEXT_ROWS,
+                columns: PC98_TEXT_COLUMNS,
+            }),
+            _ => Err(common::InspectError::UnknownSpace),
+        }
+    }
+
+    fn text_cell(
+        &self,
+        surface: &str,
+        row: u16,
+        column: u16,
+    ) -> Result<common::TextCell, common::InspectError> {
+        if surface != PC98_TEXT_SURFACE {
+            return Err(common::InspectError::UnknownSpace);
+        }
+        if row >= PC98_TEXT_ROWS || column >= PC98_TEXT_COLUMNS {
+            return Err(common::InspectError::OutOfRange);
+        }
+        Ok(decode_pc98_text_cell(self.bus.text_vram(), row, column))
+    }
+
+    fn text_row(
+        &self,
+        surface: &str,
+        row: u16,
+    ) -> Result<Vec<common::TextCell>, common::InspectError> {
+        if surface != PC98_TEXT_SURFACE {
+            return Err(common::InspectError::UnknownSpace);
+        }
+        if row >= PC98_TEXT_ROWS {
+            return Err(common::InspectError::OutOfRange);
+        }
+        let vram = self.bus.text_vram();
+        let mut cells = Vec::with_capacity(PC98_TEXT_COLUMNS as usize);
+        for column in 0..PC98_TEXT_COLUMNS {
+            cells.push(decode_pc98_text_cell(vram, row, column));
+        }
+        Ok(cells)
+    }
+
+    fn text_screen(
+        &self,
+        surface: &str,
+    ) -> Result<Vec<Vec<common::TextCell>>, common::InspectError> {
+        if surface != PC98_TEXT_SURFACE {
+            return Err(common::InspectError::UnknownSpace);
+        }
+        let vram = self.bus.text_vram();
+        let mut rows = Vec::with_capacity(PC98_TEXT_ROWS as usize);
+        for row in 0..PC98_TEXT_ROWS {
+            let mut cells = Vec::with_capacity(PC98_TEXT_COLUMNS as usize);
+            for column in 0..PC98_TEXT_COLUMNS {
+                cells.push(decode_pc98_text_cell(vram, row, column));
+            }
+            rows.push(cells);
+        }
+        Ok(rows)
     }
 }
 
@@ -993,6 +1251,53 @@ mod save_state_tests {
         machine.run_for(257);
         machine.restore_state(&snapshot).unwrap();
         assert_eq!(machine.capture_state().unwrap(), snapshot);
+    }
+
+    #[test]
+    fn trace_catalog_declares_the_dos_devices_with_their_actions() {
+        let expectations: &[(&str, &[&str])] = &[
+            (common::trace_id::device::NEETAN_DOS_VECTOR, &["set"]),
+            (common::trace_id::device::NEETAN_DOS_STDOUT, &["write"]),
+            (
+                common::trace_id::device::NEETAN_DOS_CONSOLE,
+                &["byte", "escape", "cell-write", "clear", "scroll"],
+            ),
+        ];
+        for (device, actions) in expectations {
+            let catalog = PC98_TRACE_CATALOG
+                .devices
+                .iter()
+                .find(|entry| entry.device == *device)
+                .unwrap_or_else(|| panic!("catalog must declare {device}"));
+            for action in *actions {
+                let declared = catalog
+                    .actions
+                    .iter()
+                    .find(|entry| entry.action == *action)
+                    .unwrap_or_else(|| panic!("{device} must declare action {action}"));
+                assert!(
+                    !declared.fields.is_empty(),
+                    "{device} action {action} must describe its fields"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn trace_catalog_declares_provider_call_fields() {
+        for provider in PC98_TRACE_CATALOG.providers {
+            let names: Vec<&str> = provider
+                .call_fields
+                .iter()
+                .map(|descriptor| descriptor.name)
+                .collect();
+            assert_eq!(
+                names,
+                ["function", "subfunction", "result"],
+                "{} must describe its call fields",
+                provider.provider
+            );
+        }
     }
 
     #[test]

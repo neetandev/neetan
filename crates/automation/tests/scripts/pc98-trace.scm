@@ -35,6 +35,20 @@
       (let ((providers (map (lambda (entry) (field 'provider entry))
                             (field 'providers schema))))
         (check-true (and (memq 'neetan.dos providers) #t)))
+      ;; The envelope discovery lists the snapshot key.
+      (let ((names (map (lambda (entry) (field 'name entry))
+                        (field 'envelope-fields schema))))
+        (check-true (and (memq 'snapshot names) #t)))
+      ;; Call providers describe their provider-specific fields.
+      (let ((provider (let loop ((entries (field 'providers schema)))
+                        (cond ((null? entries) #f)
+                              ((eq? 'neetan.dos (field 'provider (car entries)))
+                               (car entries))
+                              (else (loop (cdr entries)))))))
+        (check-true (pair? provider))
+        (check-equal '(function subfunction result)
+                     (map (lambda (entry) (field 'name entry))
+                          (field 'call-fields provider))))
       ;; Queue limits are reported.
       (check-true (> (field 'event-capacity (field 'queue-limits schema)) 0))
       (set-cdr! (assq 'schema-version schema) 99)
@@ -107,6 +121,36 @@
                          (lambda ()
                          (trace-start! machine
                            '((data . ((address . (range 100 10))))))))))
+
+(test-case "nested field filters validate against the device schema"
+  ;; A valid nested field filter on a known device and action compiles.
+  (trace-start! machine
+    '((class . device)
+      (data . ((device . neetan.dos.console) (action . cell-write)
+               (fields . ((display-width . 1)))))))
+  (trace-stop! machine)
+  ;; An unknown provider-specific field name is rejected up front.
+  (check-true (raises? 'neetan/argument
+    (lambda ()
+      (trace-start! machine
+        '((class . device)
+          (data . ((device . neetan.dos.console) (action . cell-write)
+                   (fields . ((bogus-field . 1))))))))))
+  ;; A wrong-typed field constraint (symbol where an integer is required) is
+  ;; rejected.
+  (check-true (raises? 'neetan/argument
+    (lambda ()
+      (trace-start! machine
+        '((class . device)
+          (data . ((device . neetan.dos.console) (action . cell-write)
+                   (fields . ((display-width . not-an-integer))))))))))
+  ;; A nested field block without a device (and action) to fix the schema is
+  ;; rejected.
+  (check-true (raises? 'neetan/argument
+    (lambda ()
+      (trace-start! machine
+        '((class . device)
+          (data . ((fields . ((display-width . 1)))))))))))
 
 (test-case "wait-for-event options use the argument contract"
   (check-true
