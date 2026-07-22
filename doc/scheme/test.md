@@ -28,8 +28,10 @@ A misuse of these forms (nesting, no active case, a second root) raises
 
 ## Checks
 
-Each check returns the checked value on success and aborts the case with a
-`neetan/assertion` error on failure.
+Each check is a syntax form that returns the checked value on success and aborts
+the case with a `neetan/assertion` error on failure. Failure messages include a
+normalized written representation of the complete check form so multiple checks
+in one case can be distinguished.
 
 - `(check-true value)` -> value. Fails if `value` is `#f`.
 - `(check-false value)` -> value. Fails if `value` is not `#f`.
