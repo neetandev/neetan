@@ -196,9 +196,17 @@ fn patch_hankaku_row(v98: &mut [u8], code_row: u8, jis_row: u8, font: &BitmapFon
 fn patch_fullwidth_row(v98: &mut [u8], code_row: u8, jis_row: u8, font: &BitmapFont) {
     for col in 0x21u8..=0x7E {
         let encoding = ((jis_row as u32) << 8) | col as u32;
-        if let Some(glyph) = font.get_16x16(encoding) {
+        if let Some(mut glyph) = font.get_16x16(encoding) {
+            swap_fullwidth_halves(&mut glyph);
             write_kanji_v98(v98, code_row, col, &glyph);
         }
+    }
+}
+
+/// Swaps the two 8-pixel halves used by the NP21W fullwidth patch data.
+fn swap_fullwidth_halves(glyph: &mut [u8; 32]) {
+    for row in 0..16 {
+        glyph.swap(row, 16 + row);
     }
 }
 
