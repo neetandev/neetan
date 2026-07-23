@@ -1,2 +1,3 @@
 target/
 .idea/
+utils/bios_at/fonts/*.bin

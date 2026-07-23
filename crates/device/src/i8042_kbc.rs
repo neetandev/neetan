@@ -45,7 +45,7 @@ const SET2_BREAK_PREFIX: u8 = 0xF0;
 
 save_state::runtime_state! {
 /// Authoritative state of the attached AT keyboard.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct AtKeyboardState {
     output: VecDeque<u8>,
     enabled: bool,
@@ -56,7 +56,7 @@ pub struct AtKeyboardState {
 
 save_state::runtime_state! {
 /// Authoritative 8042 controller and keyboard state.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct I8042KbcState {
     status: u8,
     output_buffer: u8,

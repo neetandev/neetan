@@ -108,6 +108,8 @@ pub mod trace_id {
     pub mod provider {
         /// PC-98 BIOS HLE provider.
         pub const PC98_BIOS: &str = "pc98.bios";
+        /// PC/AT BIOS HLE provider.
+        pub const AT_BIOS: &str = "at.bios";
         /// NEETAN DOS HLE provider.
         pub const NEETAN_DOS: &str = "neetan.dos";
         /// PC-98 640 KiB floppy extension provider.

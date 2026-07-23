@@ -161,6 +161,8 @@ impl save_state::StateDecode for FileHashState {
     }
 }
 
+save_state::impl_boxed_state_decode!(FileHashState);
+
 #[derive(Clone)]
 enum B3sumPhase {
     Init,

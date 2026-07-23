@@ -13,7 +13,7 @@ pub const CMOS_SIZE: usize = 128;
 
 save_state::runtime_state! {
 /// Authoritative MC146818 calendar and CMOS state.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Mc146818RtcState {
     cmos: [u8; CMOS_SIZE],
     address: u8,

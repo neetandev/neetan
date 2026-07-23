@@ -171,6 +171,8 @@ state_struct_codec_with_resources!(AppState {
     }
 });
 
+save_state::impl_boxed_state_decode!(AppState);
+
 impl AppState {
     fn new(mode: AppMode) -> Self {
         Self {

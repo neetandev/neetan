@@ -17,10 +17,11 @@ accesses are paced at the fixed ISA bus clock (about 8.33 MHz), so I/O-bound
 timing loops run at credible speed on both variants.
 
 DOS/V needs no Japanese-specific hardware: Japanese text is rendered entirely in
-software into VGA graphics modes, so any good VGA PC/AT clone qualifies. There is
-no HLE BIOS and no HLE DOS. The machine boots a real system BIOS and a real VGA
-BIOS from ROM (see [ROM set](#rom-set)), and you install a real DOS/V from floppy
-images (IBM PC DOS J5.0x/V through PC DOS 7.0/V, and MS-DOS 5.0/V and
+software into VGA graphics modes, so any good VGA PC/AT clone qualifies. The
+machine boots a built-in HLE system BIOS and HLE VGA BIOS by default, so no ROM
+files are needed. Pass `--bios` with `--at-roms` to boot a real ROM set instead
+(see [ROM set](#rom-set)). There is no HLE DOS: you install a real DOS/V from
+floppy images (IBM PC DOS J5.0x/V through PC DOS 7.0/V, and MS-DOS 5.0/V and
 6.2/V).
 
 ## Installed hardware
@@ -38,13 +39,14 @@ images (IBM PC DOS J5.0x/V through PC DOS 7.0/V, and MS-DOS 5.0/V and
 
 ## Platform options
 
-| Option             | Description                                                 | Default |
-|--------------------|-------------------------------------------------------------|---------|
-| `--at-roms <PATH>` | Directory with the `ct486` and `et4000` ROM sets (required) | -       |
+| Option             | Description                                                        | Default   |
+|--------------------|--------------------------------------------------------------------|-----------|
+| `--at-roms <PATH>` | Directory with the `ct486` and `et4000` ROM sets, by content hash  | -         |
+| `--bios`           | Boot the real BIOS from `--at-roms` instead of the HLE BIOS        | HLE BIOS  |
 
 Floppy images attach with `--fdd1` / `--fdd2`, hard disks with `--hdd1` /
 `--hdd2` (flat `.hdd` images with an MBR partition table), and CD-ROM images with
-`--cdrom`. The real AMI BIOS exposes two boot orders. `--boot-device auto` and
+`--cdrom`. Both BIOSes expose two boot orders. `--boot-device auto` and
 `--boot-device fdd1` select `A: then C:`, while `--boot-device hdd1` selects
 `C: then A:`.
 
@@ -99,8 +101,13 @@ and [License](../README.md#license).
 
 ## ROM set
 
-The PC/AT target needs a real ROM set, pointed to by `--at-roms`: the AMI CS4031
-system BIOS (`chips_1.ami`) and the Tseng ET4000AX VGA BIOS (`et4000.bin`, or the
-alternate ColorImage `cvet4kax.bin`). Matching is by content hash, so file names
-do not matter. See the [PC/AT (DOS/V)](roms.md#pcat-dosv) ROM section for the
-exact files and hashes.
+The PC/AT target runs without any ROM files: the built-in HLE system BIOS and HLE
+VGA BIOS cover the POST, the boot sequence, INT 10h/13h/14h/15h/16h/17h/1Ah and
+the VGA services, including the video parameter table published through
+SAVE_PTR (BDA 40:A8).
+
+A real ROM set is optional and selected with `--bios` plus `--at-roms`: the AMI
+CS4031 system BIOS (`chips_1.ami`) and the Tseng ET4000AX VGA BIOS
+(`et4000.bin`, or the alternate ColorImage `cvet4kax.bin`). Matching is by
+content hash, so file names do not matter. See the
+[PC/AT (DOS/V)](roms.md#pcat-dosv) ROM section for the exact files and hashes.

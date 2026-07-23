@@ -51,6 +51,8 @@ state_struct_codec!(BatchState {
     paused,
 });
 
+save_state::impl_boxed_state_decode!(BatchState);
+
 #[derive(Clone)]
 /// Batch command state that waits for an external child to terminate.
 pub(crate) struct WaitingForChildCommand {

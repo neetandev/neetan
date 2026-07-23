@@ -20,6 +20,7 @@ fn executes_first_bios_instructions_from_reset_vector() {
     let roms = LoadedRoms {
         system_bios: reset_vector_bios(),
         vga_bios: vec![0u8; 0x8000],
+        hle: false,
     };
     let bus = AtBus::<common::NoTrace>::new(66_000_000, 8 << 20, roms, 48_000);
 

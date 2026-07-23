@@ -54,34 +54,34 @@ MAME ROM sets are named by a short identifier (the set below). Get the set from 
 MAME ROM collection matching your MAME version, then extract it into the directory
 for that machine.
 
-| Machine / model       | MAME set(s)                               | Notes                                                                            |
-|-----------------------|-------------------------------------------|----------------------------------------------------------------------------------|
-| PC-9801F              | `pc9801f`                                 | BIOS assembled from `urm01-02`..`urm06-02`                                       |
-| PC-9801VM             | `pc9801vm`                                | BIOS assembled from the `cpu_board_*` chips                                      |
-| PC-9801VX             | `pc9801vx`                                | BIOS assembled from the four `..._yll0x` chips; ships the font ROM               |
-| PC-9801RS / PC-9801RA | `pc9801rs`                                | The `pc9801rs` set supplies the BIOS for both models; ships the font ROM         |
-| PC-9821AS / PC-9821AP | -                                         | HLE BIOS only; their fonts are not part of any MAME set (built-in font used)     |
-| PC-8801MC             | `pc8801mc` (+ `pc8001mk2`, `pc8001mk2sr`) | The two `pc8001*` sets only add the optional N80 boot-mode ROMs                  |
-| PC-88VA2              | `pc88va2`                                 | The sub-CPU ROM is NO_DUMP in MAME and must be sourced separately                |
-| PC-6001               | `pc6001`                                  |                                                                                  |
-| PC-6001mkII           | `pc6001mk2`                               |                                                                                  |
-| PC-6601               | `pc6601`                                  |                                                                                  |
-| PC-6001mkIISR         | `pc6001mk2sr`                             |                                                                                  |
-| PC-6601SR             | `pc6601sr`                                |                                                                                  |
-| FM Towns / II CX / MX | `fmtownsmx`                               | The base FM Towns and CX targets boot the shared MX ROM set until CX dumps exist |
-| Sharp X68000          | `x68000`                                  | Original CZ-600C split IPL                                                       |
-| Sharp X68000 SUPER    | `x68ksupr`                                | IPL V1.0 and internal SCSI ROM                                                   |
-| Sharp X68000 XVI      | `x68kxvi`                                 | IPL V1.1 with the compatible Compact-XVI SCSI ROM                                |
-| MSX                   | `hb201` + `fsca1`                         | Sony HB-201 firmware and Panasonic FS-CA1 MSX-AUDIO                              |
-| MSX2                  | `hbf1xd` + `fsca1`                        | Sony HB-F1XD firmware and Panasonic FS-CA1 MSX-AUDIO                             |
-| MSX2+                 | `hbf1xdj` + `fsca1`                       | Sony HB-F1XDJ firmware and Panasonic FS-CA1 MSX-AUDIO                            |
-| Sharp X1              | `x1`                                      | Both X1 sets share the `--x1-roms` directory                                     |
-| Sharp X1 turbo        | `x1turbo`                                 | The ANK font is byte-identical with the `x1` set                                 |
-| Fujitsu FM-7          | `fm7`                                     | Both FM-7 sets share the `--fm7-roms` directory. Kanji ROM optional              |
-| Fujitsu FM-77AV       | `fm77av`                                  | The sub monitor C and kanji ROMs are byte-identical with the `fm7` set           |
-| IBM PC/AT (DOS/V)     | `ct486` + `et4000`                        | System BIOS from `ct486`, VGA BIOS from `et4000`. Share the `--at-roms` dir      |
-| Roland MT-32          | MT-32 v1.07 (recommended)                 | Any supported control + PCM pair works; see the MT-32 section                    |
-| Roland SC-55          | SC-55 v1.21 (recommended)                 | Any supported model works; see the SC-55 section                                 |
+| Machine / model       | MAME set(s)                               | Notes                                                                               |
+|-----------------------|-------------------------------------------|-------------------------------------------------------------------------------------|
+| PC-9801F              | `pc9801f`                                 | BIOS assembled from `urm01-02`..`urm06-02`                                          |
+| PC-9801VM             | `pc9801vm`                                | BIOS assembled from the `cpu_board_*` chips                                         |
+| PC-9801VX             | `pc9801vx`                                | BIOS assembled from the four `..._yll0x` chips; ships the font ROM                  |
+| PC-9801RS / PC-9801RA | `pc9801rs`                                | The `pc9801rs` set supplies the BIOS for both models; ships the font ROM            |
+| PC-9821AS / PC-9821AP | -                                         | HLE BIOS only; their fonts are not part of any MAME set (built-in font used)        |
+| PC-8801MC             | `pc8801mc` (+ `pc8001mk2`, `pc8001mk2sr`) | The two `pc8001*` sets only add the optional N80 boot-mode ROMs                     |
+| PC-88VA2              | `pc88va2`                                 | The sub-CPU ROM is NO_DUMP in MAME and must be sourced separately                   |
+| PC-6001               | `pc6001`                                  |                                                                                     |
+| PC-6001mkII           | `pc6001mk2`                               |                                                                                     |
+| PC-6601               | `pc6601`                                  |                                                                                     |
+| PC-6001mkIISR         | `pc6001mk2sr`                             |                                                                                     |
+| PC-6601SR             | `pc6601sr`                                |                                                                                     |
+| FM Towns / II CX / MX | `fmtownsmx`                               | The base FM Towns and CX targets boot the shared MX ROM set until CX dumps exist    |
+| Sharp X68000          | `x68000`                                  | Original CZ-600C split IPL                                                          |
+| Sharp X68000 SUPER    | `x68ksupr`                                | IPL V1.0 and internal SCSI ROM                                                      |
+| Sharp X68000 XVI      | `x68kxvi`                                 | IPL V1.1 with the compatible Compact-XVI SCSI ROM                                   |
+| MSX                   | `hb201` + `fsca1`                         | Sony HB-201 firmware and Panasonic FS-CA1 MSX-AUDIO                                 |
+| MSX2                  | `hbf1xd` + `fsca1`                        | Sony HB-F1XD firmware and Panasonic FS-CA1 MSX-AUDIO                                |
+| MSX2+                 | `hbf1xdj` + `fsca1`                       | Sony HB-F1XDJ firmware and Panasonic FS-CA1 MSX-AUDIO                               |
+| Sharp X1              | `x1`                                      | Both X1 sets share the `--x1-roms` directory                                        |
+| Sharp X1 turbo        | `x1turbo`                                 | The ANK font is byte-identical with the `x1` set                                    |
+| Fujitsu FM-7          | `fm7`                                     | Both FM-7 sets share the `--fm7-roms` directory. Kanji ROM optional                 |
+| Fujitsu FM-77AV       | `fm77av`                                  | The sub monitor C and kanji ROMs are byte-identical with the `fm7` set              |
+| IBM PC/AT (DOS/V)     | `ct486` + `et4000`                        | Optional (HLE BIOS by default). Both share the `--at-roms` dir, `--bios` boots them |
+| Roland MT-32          | MT-32 v1.07 (recommended)                 | Any supported control + PCM pair works; see the MT-32 section                       |
+| Roland SC-55          | SC-55 v1.21 (recommended)                 | Any supported model works; see the SC-55 section                                    |
 
 The PC-98 models all use the single `--pc98-roms` directory. Because matching is by
 content hash, you can extract the `pc9801f`, `pc9801vm`, `pc9801vx`, and `pc9801rs`
@@ -131,7 +131,7 @@ roms/
 |   |-- initiate.rom, fbasic30.rom                 (FM-77AV initiator + F-BASIC)
 |   |-- subsys_c.rom, subsys_a.rom, subsys_b.rom, subsyscg.rom (sub monitors + CG)
 |   `-- kanji.rom                                  (shared JIS level-1 kanji ROM)
-|-- at/            --at-roms                       ct486 + et4000 sets
+|-- at/            --at-roms                       ct486 + et4000 sets (optional)
 |   |-- chips_1.ami                                (AMI CS4031 system BIOS)
 |   `-- et4000.bin                                 (Tseng ET4000AX VGA BIOS)
 |-- mt32/          --mt32-roms     MT-32 v1.07
@@ -173,6 +173,9 @@ x1-roms = roms/x1
 
 ; Fujitsu FM-7 / FM-77AV.
 fm7-roms = roms/fm7
+
+; IBM PC/AT (DOS/V). Optional: the HLE BIOS is used unless bios=on.
+at-roms = roms/at
 
 ; MIDI modules.
 mt32-roms = roms/mt32
@@ -614,7 +617,11 @@ the matching slot for both models.
 
 ## PC/AT (DOS/V)
 
-The PC/AT targets need two MAME ROM sets, both selected with `--at-roms`: the
+The PC/AT targets run on a built-in HLE system BIOS and a built-in HLE VGA BIOS by
+default, so a ROM set is optional. Point `--at-roms` at a directory of MAME dumps
+and pass `--bios` to boot the real ROM pair instead.
+
+With `--bios` two MAME sets are needed, both selected with `--at-roms`: the
 `ct486` set for the AMI CS4031 system BIOS and the `et4000` set for the Tseng
 ET4000AX VGA BIOS. Extract both into the one `--at-roms` directory (or into
 `ct486` and `et4000` sub-directories inside it, which the loader also scans). ROMs

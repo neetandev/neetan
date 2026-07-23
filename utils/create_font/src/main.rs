@@ -1,8 +1,7 @@
-mod bdf;
-
+// TODO Rework this file to also use the src/bin/ and /lib.rs pattern so we align the PC-908 and PC/AT paths.
 use std::path::{Path, PathBuf};
 
-use bdf::BitmapFont;
+use create_font::bdf::BitmapFont;
 
 const V98_SIZE: usize = 0x46800;
 
@@ -253,24 +252,24 @@ fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> String {
 fn print_help() {
     println!(
         "\
-create_font — Generate a V98-format font ROM from Shinonome bitmap fonts
+create_font - Generate a V98-format font ROM from Shinonome bitmap fonts
 
 Usage: create_font [OPTIONS] -o <PATH>
 
 Options:
   -o, --output <PATH>       Output V98 font ROM path (required)
-      --kanji-bdf <PATH>    Path to 16x16 kanji BDF font (.bit) [default: utils/font/shinonome/kanjic16.bit]
-      --ank-bdf <PATH>      Path to 8x16 ANK BDF font (.bit) [default: utils/font/shinonome/latin1_8x16.bit]
-      --patch-dir <PATH>    Directory containing BDF patch files [default: utils/font/patches]
+      --kanji-bdf <PATH>    Path to 16x16 kanji BDF font (.bit) [default: utils/bios/fonts/shinonome/kanjic16.bit]
+      --ank-bdf <PATH>      Path to 8x16 ANK BDF font (.bit) [default: utils/bios/fonts/shinonome/latin1_8x16.bit]
+      --patch-dir <PATH>    Directory containing BDF patch files [default: utils/bios/fonts/patches]
   -h, --help                Print help"
     );
 }
 
 fn parse_args() -> Args {
     let mut output: Option<PathBuf> = None;
-    let mut kanji_bdf = PathBuf::from("utils/font/shinonome/kanjic16.bit");
-    let mut ank_bdf = PathBuf::from("utils/font/shinonome/latin1_8x16.bit");
-    let mut patch_dir = PathBuf::from("utils/font/patches");
+    let mut kanji_bdf = PathBuf::from("utils/bios/fonts/shinonome/kanjic16.bit");
+    let mut ank_bdf = PathBuf::from("utils/bios/fonts/shinonome/latin1_8x16.bit");
+    let mut patch_dir = PathBuf::from("utils/bios/fonts/patches");
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {

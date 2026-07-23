@@ -884,16 +884,23 @@ where
         model.ram_size() / (1024 * 1024),
     );
 
-    let rom_dir = config.at_roms.as_ref().ok_or_else(|| {
-        InitError::rom_missing("PC/AT requires a ROM directory (--at-roms <DIR>)")
-    })?;
-
-    let roms = machine_at::load_rom_set(rom_dir).map_err(|error| {
-        StringError(format!(
-            "Failed to load PC/AT ROM set from {}: {error}",
-            rom_dir.display()
-        ))
-    })?;
+    let roms = if config.bios {
+        let rom_dir = config
+            .at_roms
+            .as_ref()
+            .ok_or_else(|| StringError("--bios requires --at-roms <DIR>".into()))?;
+        let roms = machine_at::load_rom_set(rom_dir).map_err(|error| {
+            StringError(format!(
+                "Failed to load PC/AT ROM set from {}: {error}",
+                rom_dir.display()
+            ))
+        })?;
+        info!("Loaded PC/AT ROM set from {}", rom_dir.display());
+        roms
+    } else {
+        info!("No BIOS ROM selected - running in HLE BIOS mode");
+        machine_at::LoadedRoms::hle_stub_set()
+    };
 
     let (boot_device, boot_warning) = resolve_at_boot_device(config.boot_device);
     if let Some(message) = boot_warning {

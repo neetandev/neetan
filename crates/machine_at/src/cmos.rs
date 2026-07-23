@@ -194,7 +194,7 @@ pub fn set_hard_disk_user_type(cmos: &mut [u8; CMOS_SIZE], drive: usize, geometr
     let write_precompensation = 0xFFFFu16.to_le_bytes();
     // Landing zone: past the last cylinder.
     let landing_zone = geometry.cylinders.to_le_bytes();
-    let control_byte = 0xC0 | if geometry.heads > 8 { 0x08 } else { 0x00 };
+    let control_byte = hard_disk_control_byte(geometry);
 
     cmos[parameters] = cylinders[0];
     cmos[parameters + 1] = cylinders[1];
@@ -207,6 +207,13 @@ pub fn set_hard_disk_user_type(cmos: &mut [u8; CMOS_SIZE], drive: usize, geometr
     cmos[parameters + 8] = geometry.sectors_per_track;
 
     recompute_standard_checksum(cmos);
+}
+
+/// Returns the drive control byte shared by the CMOS user parameter block
+/// and the fixed disk parameter table: disabled retries plus the
+/// more-than-8-heads bit.
+pub fn hard_disk_control_byte(geometry: &HddGeometry) -> u8 {
+    0xC0 | if geometry.heads > 8 { 0x08 } else { 0x00 }
 }
 
 /// Sets the floppy drive type nibbles (0x10) and the equipment-byte

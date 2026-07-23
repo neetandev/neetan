@@ -156,6 +156,22 @@ impl AtMemory {
         self.ab_internal[((address - VGA_WINDOW_BASE) >> 16) as usize]
     }
 
+    /// Reads a byte from the system BIOS ROM image.
+    pub(crate) fn bios_byte(&self, offset: usize) -> u8 {
+        self.bios[offset]
+    }
+
+    /// Patches a byte of the system BIOS ROM image. The POST patches the
+    /// fixed disk parameter tables with the mounted drive geometry.
+    pub(crate) fn set_bios_byte(&mut self, offset: usize, value: u8) {
+        self.bios[offset] = value;
+    }
+
+    /// Reads a byte from the VGA BIOS ROM image.
+    pub(crate) fn vga_bios_byte(&self, offset: usize) -> u8 {
+        self.vga_bios[offset]
+    }
+
     /// Sets the A20 gate state.
     pub fn set_a20(&mut self, enabled: bool) {
         self.a20_mask = if enabled { !0 } else { !(1 << 20) };

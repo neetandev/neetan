@@ -34,7 +34,7 @@ pub const CS4031_UMA_REGION_COUNT: usize = 7;
 
 save_state::runtime_state! {
 /// Authoritative CS4031 register and glue state.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Cs4031State {
     registers: [u8; 0x20],
     index: u8,

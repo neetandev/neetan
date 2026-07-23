@@ -44,6 +44,12 @@ const VGA_BIOS_SLOT: RomSlot = RomSlot {
     accepted: VGA_BIOS_DIGESTS,
 };
 
+/// Embedded HLE system BIOS stub ROM (64 KiB), built from `utils/bios_at/bios.asm`.
+static HLE_SYSTEM_BIOS: &[u8; SYSTEM_BIOS_SIZE] = include_bytes!("../../../utils/bios_at/bios.rom");
+
+/// Embedded HLE VGA BIOS stub ROM (32 KiB), built from `utils/bios_at/vgabios.asm`.
+static HLE_VGA_BIOS: &[u8; VGA_BIOS_SIZE] = include_bytes!("../../../utils/bios_at/vgabios.rom");
+
 /// Raw bytes of a successfully loaded and validated PC/AT ROM set.
 #[derive(Debug)]
 pub struct LoadedRoms {
@@ -51,6 +57,27 @@ pub struct LoadedRoms {
     pub system_bios: Vec<u8>,
     /// ET4000AX VGA BIOS ROM (32 KiB), mapped at 0xC0000.
     pub vga_bios: Vec<u8>,
+    /// Whether the set is the HLE stub pair. HLE-only paths like the fixed
+    /// disk parameter table patching stay away from real ROM images.
+    pub hle: bool,
+}
+
+impl LoadedRoms {
+    /// Builds the ROM set from the embedded HLE stub images.
+    ///
+    /// The VGA stub reserves zero space for the video parameter table and the
+    /// video save pointer table, which are filled here from the mode tables.
+    /// Doing it during the build keeps the ROM identity a pure function of the
+    /// images, which the save-state resource bindings depend on.
+    pub fn hle_stub_set() -> Self {
+        let mut vga_bios = HLE_VGA_BIOS.to_vec();
+        crate::bus::write_video_parameter_tables(&mut vga_bios);
+        Self {
+            system_bios: HLE_SYSTEM_BIOS.to_vec(),
+            vga_bios,
+            hle: true,
+        }
+    }
 }
 
 /// Error encountered while loading a PC/AT ROM set.
@@ -115,6 +142,7 @@ pub fn load_rom_set(rom_dir: &Path) -> Result<LoadedRoms, RomError> {
     Ok(LoadedRoms {
         system_bios: take(&SYSTEM_BIOS_SLOT)?,
         vga_bios: take(&VGA_BIOS_SLOT)?,
+        hle: false,
     })
 }
 

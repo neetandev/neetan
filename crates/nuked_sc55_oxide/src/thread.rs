@@ -74,6 +74,8 @@ crate::impl_state_codec!(Sc55WorkerState {
     native_rate,
 });
 
+save_state::impl_boxed_state_decode!(Sc55WorkerState);
+
 crate::impl_state_codec!(Sc55ActorState {
     worker,
     pending_audio,

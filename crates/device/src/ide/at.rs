@@ -149,6 +149,21 @@ impl AtIdeController {
         self.drives.get(drive)?.as_ref().map(MountedHdd::geometry)
     }
 
+    /// Reads one sector of a drive directly, bypassing the task file. Used by
+    /// the HLE BIOS for synchronous disk services.
+    pub fn read_sector(&self, drive: usize, lba: u32) -> Option<&[u8]> {
+        self.drives.get(drive)?.as_ref()?.read_sector(lba)
+    }
+
+    /// Writes one sector of a drive directly, bypassing the task file. Used
+    /// by the HLE BIOS for synchronous disk services.
+    pub fn write_sector(&mut self, drive: usize, lba: u32, data: &[u8]) -> bool {
+        self.drives
+            .get_mut(drive)
+            .and_then(Option::as_mut)
+            .is_some_and(|mounted| mounted.write_sector(lba, data))
+    }
+
     /// Reads the 16-bit data register (port 0x1F0).
     pub fn read_data_word(&mut self) -> (u16, IdeAction) {
         self.controller.read_data_word(&self.drives)

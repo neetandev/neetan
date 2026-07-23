@@ -108,12 +108,15 @@ pub fn hdd_bpb_params(sector_size: u16, partition_sectors: u32) -> BpbParams {
             64
         }
     } else {
-        // IDE 512-byte sectors: target 2 KB clusters for small volumes
-        if volume_bytes <= (64 << 20) {
+        // IDE 512-byte sectors: the MS-DOS FORMAT FAT16 cluster size
+        // steps. DOS SETUP and FORMAT compute the same layout from the
+        // partition size, so matching them keeps every component of the
+        // guest OS on one filesystem geometry.
+        if volume_bytes <= (128 << 20) {
             4
-        } else if volume_bytes <= (128 << 20) {
-            8
         } else if volume_bytes <= (256 << 20) {
+            8
+        } else if volume_bytes <= (512 << 20) {
             16
         } else {
             32
@@ -194,12 +197,78 @@ pub fn pc98_partition_table_sector(
     sector
 }
 
+/// BIOS drive number of the first hard disk, stored in the extended BPB.
+const HDD_PHYSICAL_DRIVE_NUMBER: u8 = 0x80;
+
+/// Extended BPB marker: the serial number, label, and type fields are valid.
+const EXTENDED_BOOT_SIGNATURE: u8 = 0x29;
+
+/// Fixed volume serial number, keeping formatted images deterministic.
+const VOLUME_SERIAL_NUMBER: u32 = 0x4E45_5441;
+
+/// Master boot record bootstrap: relocates itself from 0000:7C00 to
+/// 0000:0600, finds the active partition entry, reads its first sector to
+/// 0000:7C00 through INT 13h using the entry's CHS fields, verifies the
+/// 0x55AA signature, and jumps to it with DS:SI at the entry. Errors park in
+/// a self-loop.
+#[rustfmt::skip]
+const AT_MBR_BOOTSTRAP: [u8; 77] = [
+    0xFA,                               // CLI
+    0x33, 0xC0,                         // XOR AX, AX
+    0x8E, 0xD0,                         // MOV SS, AX
+    0xBC, 0x00, 0x7C,                   // MOV SP, 0x7C00
+    0xFB,                               // STI
+    0x8E, 0xD8,                         // MOV DS, AX
+    0x8E, 0xC0,                         // MOV ES, AX
+    0xBE, 0x00, 0x7C,                   // MOV SI, 0x7C00
+    0xBF, 0x00, 0x06,                   // MOV DI, 0x0600
+    0xB9, 0x00, 0x01,                   // MOV CX, 0x0100
+    0xFC,                               // CLD
+    0xF3, 0xA5,                         // REP MOVSW
+    0xEA, 0x1E, 0x06, 0x00, 0x00,       // JMP 0000:061E (relocated copy)
+    0xBE, 0xBE, 0x07,                   // MOV SI, 0x07BE (first relocated entry)
+    0xB9, 0x04, 0x00,                   // MOV CX, 4
+    0x80, 0x3C, 0x80,                   // CMP BYTE [SI], 0x80
+    0x74, 0x08,                         // JE found
+    0x83, 0xC6, 0x10,                   // ADD SI, 16
+    0xE2, 0xF6,                         // LOOP the entry scan
+    0xEB, 0xFE,                         // JMP $ (park on failure)
+    0x90,                               // NOP
+    0x8B, 0x14,                         // MOV DX, [SI] (DL drive, DH head)
+    0x8B, 0x4C, 0x02,                   // MOV CX, [SI+2] (cylinder/sector)
+    0xBB, 0x00, 0x7C,                   // MOV BX, 0x7C00
+    0xB8, 0x01, 0x02,                   // MOV AX, 0x0201 (read one sector)
+    0xCD, 0x13,                         // INT 0x13
+    0x72, 0xEE,                         // JC park
+    0x81, 0x3E, 0xFE, 0x7D, 0x55, 0xAA, // CMP WORD [0x7DFE], 0xAA55
+    0x75, 0xE6,                         // JNE park
+    0xEA, 0x00, 0x7C, 0x00, 0x00,       // JMP 0000:7C00
+];
+
+/// Packs an LBA into the three INT 13h CHS bytes of a partition table entry
+/// (head, sector with cylinder high bits, cylinder low byte). Cylinders past
+/// the 10-bit limit clamp like FDISK.
+fn partition_entry_chs(lba: u32, heads: u8, sectors_per_track: u8) -> [u8; 3] {
+    let sectors_per_cylinder = u32::from(heads) * u32::from(sectors_per_track);
+    let cylinder = (lba / sectors_per_cylinder).min(1023);
+    let head = (lba / u32::from(sectors_per_track)) % u32::from(heads);
+    let sector = lba % u32::from(sectors_per_track) + 1;
+    [
+        head as u8,
+        sector as u8 | ((cylinder >> 2) & 0xC0) as u8,
+        (cylinder & 0xFF) as u8,
+    ]
+}
+
 /// Builds the PC/AT master boot record (disk sector 0). One active FAT16B
-/// partition starting at `partition_offset`, plus the 0x55AA boot signature.
+/// partition starting at `partition_offset`, the standard bootstrap that
+/// chain-loads the active partition's boot sector, and the 0x55AA signature.
 pub fn at_master_boot_record(
     sector_size: u16,
     partition_offset: u32,
     partition_sectors: u32,
+    heads: u8,
+    sectors_per_track: u8,
 ) -> Vec<u8> {
     /// Byte offset of the first partition entry in the MBR.
     const PARTITION_TABLE_OFFSET: usize = 0x1BE;
@@ -209,11 +278,19 @@ pub fn at_master_boot_record(
     const TYPE_FAT16B: u8 = 0x06;
 
     let mut sector = vec![0u8; sector_size as usize];
+    sector[..AT_MBR_BOOTSTRAP.len()].copy_from_slice(&AT_MBR_BOOTSTRAP);
+
     let entry = PARTITION_TABLE_OFFSET;
+    let start_chs = partition_entry_chs(partition_offset, heads, sectors_per_track);
+    let end_chs = partition_entry_chs(
+        partition_offset + partition_sectors - 1,
+        heads,
+        sectors_per_track,
+    );
     sector[entry] = STATUS_ACTIVE;
-    // Offsets +1..+4: start CHS (left zero; the FAT mounter uses the LBA fields).
+    sector[entry + 1..entry + 4].copy_from_slice(&start_chs);
     sector[entry + 4] = TYPE_FAT16B;
-    // Offsets +5..+8: end CHS (left zero).
+    sector[entry + 5..entry + 8].copy_from_slice(&end_chs);
     sector[entry + 8..entry + 12].copy_from_slice(&partition_offset.to_le_bytes());
     sector[entry + 12..entry + 16].copy_from_slice(&partition_sectors.to_le_bytes());
 
@@ -254,6 +331,29 @@ pub fn hdd_boot_sector(
     boot[24..26].copy_from_slice(&(sectors_per_track as u16).to_le_bytes());
     boot[26..28].copy_from_slice(&(heads as u16).to_le_bytes());
     boot[28..32].copy_from_slice(&partition_offset.to_le_bytes());
+
+    // The extended BPB and the boot signature make DOS accept the BPB when
+    // it mounts the volume. Without them the IBM DOS kernel builds a default
+    // layout from the partition size instead, which breaks the filesystem
+    // as soon as SYS trusts the on-disk BPB.
+    boot[36] = HDD_PHYSICAL_DRIVE_NUMBER;
+    boot[38] = EXTENDED_BOOT_SIGNATURE;
+    boot[39..43].copy_from_slice(&VOLUME_SERIAL_NUMBER.to_le_bytes());
+    boot[43..54].copy_from_slice(b"NO NAME    ");
+    boot[54..62].copy_from_slice(if bpb.is_fat16 {
+        b"FAT16   "
+    } else {
+        b"FAT12   "
+    });
+
+    // The EB 3C jump at offset 0 lands here. A freshly formatted volume has
+    // no operating system, so park instead of running into zero bytes.
+    boot[62] = 0xEB;
+    boot[63] = 0xFE;
+
+    let signature_offset = sector_size as usize - 2;
+    boot[signature_offset] = 0x55;
+    boot[signature_offset + 1] = 0xAA;
     boot
 }
 
@@ -315,7 +415,13 @@ pub fn format_hdd_image(
             write(image, 1, &part)?;
         }
         PartitionTableType::At => {
-            let mbr = at_master_boot_record(sector_size, partition_offset, partition_sectors);
+            let mbr = at_master_boot_record(
+                sector_size,
+                partition_offset,
+                partition_sectors,
+                geometry.heads,
+                sectors_per_track,
+            );
             write(image, 0, &mbr)?;
         }
     }
@@ -381,9 +487,13 @@ mod tests {
         let mbr = image.read_sector(0).unwrap();
         assert_eq!(mbr[510], 0x55);
         assert_eq!(mbr[511], 0xAA);
+        // The chain-loading bootstrap sits at the start of the sector.
+        assert_eq!(&mbr[..AT_MBR_BOOTSTRAP.len()], &AT_MBR_BOOTSTRAP);
         // Active FAT16B partition entry at 0x1BE.
         assert_eq!(mbr[0x1BE], 0x80);
         assert_eq!(mbr[0x1BE + 4], 0x06);
+        // The partition starts at CHS 0/1/1, the second track.
+        assert_eq!(&mbr[0x1BE + 1..0x1BE + 4], &[0x01, 0x01, 0x00]);
         let start_lba = u32::from_le_bytes([
             mbr[0x1BE + 8],
             mbr[0x1BE + 9],
@@ -391,5 +501,28 @@ mod tests {
             mbr[0x1BE + 11],
         ]);
         assert_eq!(start_lba, image.geometry.sectors_per_track as u32);
+    }
+
+    #[test]
+    fn hdd_boot_sector_passes_dos_validation() {
+        let mut image = blank_hdd_image(HddSizeType::AtMb100);
+        format_hdd_image(&mut image, PartitionTableType::At).unwrap();
+
+        let partition_offset = image.geometry.sectors_per_track as u32;
+        let boot = image.read_sector(partition_offset).unwrap();
+
+        assert_eq!(&boot[0..3], &[0xEB, 0x3C, 0x90]);
+        assert_eq!(boot[36], HDD_PHYSICAL_DRIVE_NUMBER);
+        assert_eq!(boot[38], EXTENDED_BOOT_SIGNATURE);
+        assert_eq!(&boot[43..54], b"NO NAME    ");
+        assert_eq!(&boot[54..62], b"FAT16   ");
+        assert_eq!(boot[510], 0x55);
+        assert_eq!(boot[511], 0xAA);
+
+        // The MS-DOS FORMAT layout for a 100 MB FAT16 partition: 2 KB
+        // clusters and 200 FAT sectors. DOS SETUP computes the same values
+        // from the partition size, so any other layout corrupts the install.
+        assert_eq!(boot[13], 4);
+        assert_eq!(u16::from_le_bytes([boot[22], boot[23]]), 200);
     }
 }

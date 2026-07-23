@@ -29,7 +29,7 @@ const CASCADE_LOCAL_CHANNEL: usize = 0;
 
 save_state::runtime_state! {
 /// Authoritative state of the cascaded AT DMA controllers.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct AtDmaState {
     controllers: [crate::i8237_dma::I8237DmaState; 2],
     pages: [u8; AT_DMA_PAGE_COUNT],
