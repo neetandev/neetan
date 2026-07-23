@@ -17,7 +17,7 @@ mod pmode;
 mod serial_rs232c;
 mod timer;
 
-use common::{Cpu, CpuAccess, ProcessorSnapshot, RegisterReading, SegmentRegister, warn};
+use common::{Cpu, CpuAccess, SegmentRegister, inspect::capture_x86_snapshot, warn};
 use device::upd765a_fdc::{UPD765_PLATFORM_STANDARD, Upd765aFdc};
 
 use super::{
@@ -26,49 +26,6 @@ use super::{
     dos_trace::DosTraceBridge,
 };
 use crate::{TraceSink, memory::Pc9801Memory};
-
-/// Captures the x86 registers into an atomic processor snapshot.
-///
-/// The base registers are read with the same helpers the machine inspector
-/// uses, so a snapshot register agrees with a separate `register-ref` read.
-/// A processor with protected-mode support appends its 32-bit general
-/// registers, the `fs` and `gs` selectors, `eip`, `eflags`, and the control
-/// registers.
-fn capture_x86_snapshot(processor: &'static str, cpu: &impl Cpu) -> ProcessorSnapshot {
-    let descriptors = common::inspect::x86_registers();
-    let mut registers = Vec::with_capacity(descriptors.len());
-    for descriptor in descriptors {
-        let value = common::inspect::x86_read(cpu, descriptor.name).unwrap_or(0);
-        registers.push(RegisterReading {
-            name: descriptor.name,
-            value,
-        });
-    }
-    if let Some(state) = cpu.protected_mode_state() {
-        registers.extend(state.general);
-        for segment in &state.segments {
-            if matches!(segment.name, "fs" | "gs") {
-                registers.push(RegisterReading {
-                    name: segment.name,
-                    value: u128::from(segment.selector),
-                });
-            }
-        }
-        registers.push(RegisterReading {
-            name: "eip",
-            value: u128::from(state.eip),
-        });
-        registers.push(RegisterReading {
-            name: "eflags",
-            value: u128::from(state.eflags),
-        });
-        registers.extend(state.control);
-    }
-    ProcessorSnapshot {
-        processor,
-        registers,
-    }
-}
 
 const PIT_CLOCK_8MHZ_LINEAGE: u32 = 1_996_800;
 const PAGE_PRESENT: u32 = 0x01;

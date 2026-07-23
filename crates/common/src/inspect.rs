@@ -510,6 +510,52 @@ pub fn x86_write<C: Cpu>(cpu: &mut C, register: &str, value: u128) -> Result<(),
     Ok(())
 }
 
+/// Captures the x86 registers into an atomic processor snapshot.
+///
+/// The base registers are read with the same helpers the machine inspector
+/// uses, so a snapshot register agrees with a separate `register-ref` read.
+/// A processor with protected-mode support appends its 32-bit general
+/// registers, the `fs` and `gs` selectors, `eip`, `eflags`, and the control
+/// registers.
+pub fn capture_x86_snapshot<C: Cpu>(
+    processor: &'static str,
+    cpu: &C,
+) -> crate::trace::ProcessorSnapshot {
+    let descriptors = x86_registers();
+    let mut registers = Vec::with_capacity(descriptors.len());
+    for descriptor in descriptors {
+        let value = x86_read(cpu, descriptor.name).unwrap_or(0);
+        registers.push(RegisterReading {
+            name: descriptor.name,
+            value,
+        });
+    }
+    if let Some(state) = cpu.protected_mode_state() {
+        registers.extend(state.general);
+        for segment in &state.segments {
+            if matches!(segment.name, "fs" | "gs") {
+                registers.push(RegisterReading {
+                    name: segment.name,
+                    value: u128::from(segment.selector),
+                });
+            }
+        }
+        registers.push(RegisterReading {
+            name: "eip",
+            value: u128::from(state.eip),
+        });
+        registers.push(RegisterReading {
+            name: "eflags",
+            value: u128::from(state.eflags),
+        });
+        registers.extend(state.control);
+    }
+    crate::trace::ProcessorSnapshot {
+        processor,
+        registers,
+    }
+}
+
 /// The fixed base MC68000 register table.
 static M68000_REGISTERS: [RegisterDescriptor; 19] = [
     writable("pc", 32),

@@ -56,7 +56,7 @@ Options:
       --pc88-memory-wait <MODE> PC-8801 memory wait: fast or compatible (default derives from boot mode)
       --pc88-8mhz-wait <MODE>   PC-8801 8 MHz wait: fast or compatible (default: fast; PC-8801 only)
       --pc98-roms <PATH>        Directory with the PC-98 ROM set (optional)
-      --bios                    Use the real BIOS from --pc98-roms instead of HLE
+      --bios                    Use the real BIOS from --pc98-roms / --at-roms instead of HLE
       --pc88-roms <PATH>        Directory with the PC-8801MC ROM set (required)
       --pc88va-roms <PATH>      Directory with the PC-88VA2 ROM set (required)
       --pc6000-roms <PATH>      Directory with the PC-6000 ROM set (required)
@@ -66,7 +66,7 @@ Options:
       --fm7-roms <PATH>         Directory with the FM-7 / FM-77AV ROM set (required)
       --towns-roms <PATH>       Directory with the FM Towns ROM set (required)
       --x68k-roms <PATH>        Directory with the X68000 ROM set (required)
-      --at-roms <PATH>          Directory with the PC/AT (ct486) ROM set (required)
+      --at-roms <PATH>          Directory with the PC/AT (ct486) ROM set (optional)
       --towns-pad <2|6>         FM Towns game pad type (default 6-button)
       --pc6000-phase <0-3>      Initial composite artifact-color phase; cycle with Right Ctrl + P (PC-6000 only)
       --fdd1 <PATH>             Floppy disk image for drive 1 (repeatable)

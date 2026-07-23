@@ -29,6 +29,7 @@ fn build_bus() -> AtBus {
     let roms = LoadedRoms {
         system_bios: vec![0u8; 0x1_0000],
         vga_bios: vec![0u8; 0x8000],
+        hle: false,
     };
     AtBus::new(CPU_CLOCK_HZ, 16 << 20, roms, OUTPUT_SAMPLE_RATE)
 }

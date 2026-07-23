@@ -174,6 +174,15 @@ impl Upd765aFdc<UPD765_PLATFORM_ISA_AT> {
         (self.dor & DOR_DRIVE_SELECT_MASK) as usize
     }
 
+    /// Returns whether the AT disk-change latch is set for the drive. Also
+    /// true when no media is mounted.
+    pub fn disk_changed(&self, drive: usize) -> bool {
+        match self.drives.get(drive) {
+            Some(slot) => self.disk_change[drive] || slot.is_none(),
+            None => true,
+        }
+    }
+
     /// Clears an AT disk-change latch after a head step.
     pub fn clear_disk_change_on_step(&mut self, drive: usize) {
         if drive < AT_DRIVE_COUNT && self.drives[drive].is_some() {

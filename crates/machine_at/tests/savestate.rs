@@ -71,6 +71,94 @@ fn clear_atapi_media_attention(machine: &mut machine_at::AtMachine) {
 }
 
 #[test]
+fn hle_bios_boot_round_trips() {
+    let mut boot = vec![0u8; 1_474_560];
+    boot[0] = 0xFA;
+    boot[1] = 0xF4;
+    let mut machine = machine_with_roms::<common::NoTrace>(
+        AtModel::At486Dx66,
+        machine_at::LoadedRoms::hle_stub_set(),
+    );
+    machine
+        .bus
+        .insert_floppy(0, FloppyImage::from_img_bytes(&boot).unwrap(), None)
+        .unwrap();
+    run_millis(&mut machine, 100);
+
+    let saved = capture(&mut machine);
+    machine.restore_state(&saved).expect("restore must succeed");
+    let restored = capture(&mut machine);
+    assert_eq!(saved.payload(), restored.payload());
+}
+
+/// Boot sector that keeps every HLE BIOS bus field alive: the teletype bell
+/// tops up the beeper tick countdown, AH=12h BL=33h holds the gray-scale
+/// summing request in BDA 40:89, and the non-destructive INT 16h read keeps
+/// the keyboard path busy.
+#[rustfmt::skip]
+const HLE_FIELD_BOOT_CODE: &[u8] = &[
+    0xFB,                   // STI
+    0xB8, 0x07, 0x0E,       // MOV AX, 0x0E07 (teletype BEL)
+    0xCD, 0x10,             // INT 10h
+    0xB8, 0x00, 0x12,       // MOV AX, 0x1200 (gray-scale summing enable)
+    0xBB, 0x33, 0x00,       // MOV BX, 0x0033
+    0xCD, 0x10,             // INT 10h
+    0xB4, 0x01,             // MOV AH, 0x01 (peek at the keyboard buffer)
+    0xCD, 0x16,             // INT 16h
+    0xEB, 0xED,             // JMP back to the BEL
+];
+
+#[test]
+fn hle_bios_fields_replay_exactly() {
+    let mut boot = vec![0u8; 1_474_560];
+    boot[..HLE_FIELD_BOOT_CODE.len()].copy_from_slice(HLE_FIELD_BOOT_CODE);
+    let mut machine = machine_with_roms::<common::NoTrace>(
+        AtModel::At486Dx66,
+        machine_at::LoadedRoms::hle_stub_set(),
+    );
+    machine
+        .bus
+        .insert_floppy(0, FloppyImage::from_img_bytes(&boot).unwrap(), None)
+        .unwrap();
+    run_millis(&mut machine, 100);
+
+    // The scancode latch behind port 0x07F1 and the BDA buffer are live.
+    machine.push_keyboard_scancode(0x1E);
+    machine.push_keyboard_scancode(0x9E);
+    run_millis(&mut machine, 5);
+
+    // The boot code really ran and left the state the replay depends on.
+    assert_eq!(
+        machine.bus.read_byte(0x489) & 0x02,
+        0x02,
+        "gray-scale summing requested in BDA 40:89"
+    );
+    assert_ne!(
+        machine.bus.read_byte(0x41C),
+        machine.bus.read_byte(0x41A),
+        "a keystroke is waiting in the BDA buffer"
+    );
+
+    let saved = capture(&mut machine);
+    let expected = exercise(&mut machine);
+    machine.restore_state(&saved).expect("restore must succeed");
+    let actual = exercise(&mut machine);
+
+    assert_eq!(expected, actual);
+}
+
+/// The HLE ROM images are built deterministically, which is what makes the
+/// `rom:vga-bios` resource identity in a save state stable across processes.
+#[test]
+fn hle_rom_images_are_byte_identical_across_builds() {
+    let first = machine_at::LoadedRoms::hle_stub_set();
+    let second = machine_at::LoadedRoms::hle_stub_set();
+
+    assert_eq!(first.system_bios, second.system_bios);
+    assert_eq!(first.vga_bios, second.vga_bios);
+}
+
+#[test]
 fn both_models_restore_immediately_without_mutation() {
     for model in [AtModel::At486Dx50, AtModel::At486Dx66] {
         let mut machine = machine_for_model(model);

@@ -68,7 +68,7 @@ pub use trace::{
 };
 
 /// Built-in V98-format PC-98 font ROM used when no external font ROM is configured.
-pub static BUILTIN_FONT_ROM: &[u8] = include_bytes!("../../../utils/font/font.rom");
+pub static BUILTIN_FONT_ROM: &[u8] = include_bytes!("../../../utils/bios/fonts/font.rom");
 
 /// Host wall-clock date and time supplied to emulated real-time clocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

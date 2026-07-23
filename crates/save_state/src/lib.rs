@@ -698,10 +698,40 @@ impl<State: StateEncode> StateEncode for Box<State> {
     }
 }
 
-impl<State: StateDecode> StateDecode for Box<State> {
+// Decodes through a Vec so a large array never materializes on the stack.
+// A blanket decode for Box<State> would route boxed arrays through a stack
+// copy of the array and overflow the thread stack. Boxed non-array states
+// use the impl_boxed_state_decode macro instead.
+impl<State: StateDecode, const LENGTH: usize> StateDecode for Box<[State; LENGTH]> {
     fn decode_state(decoder: &mut StateDecoder<'_>) -> Result<Self, StateDecodeError> {
-        Ok(Box::new(State::decode_state(decoder)?))
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(LENGTH)
+            .map_err(|_| StateDecodeError::AllocationFailed)?;
+        for _ in 0..LENGTH {
+            values.push(State::decode_state(decoder)?);
+        }
+        values
+            .into_boxed_slice()
+            .try_into()
+            .map_err(|_| StateDecodeError::IntegerOutOfRange)
     }
+}
+
+/// Implements `StateDecode` for `Box<$state>` by decoding the inner value.
+#[macro_export]
+macro_rules! impl_boxed_state_decode {
+    ($state:ty) => {
+        impl $crate::StateDecode for Box<$state> {
+            fn decode_state(
+                decoder: &mut $crate::StateDecoder<'_>,
+            ) -> Result<Self, $crate::StateDecodeError> {
+                Ok(Box::new(<$state as $crate::StateDecode>::decode_state(
+                    decoder,
+                )?))
+            }
+        }
+    };
 }
 
 impl<State: StateEncode> StateEncode for Box<[State]> {

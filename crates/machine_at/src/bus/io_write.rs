@@ -147,6 +147,29 @@ impl<T: TraceSink> AtBus<T> {
             0x2100..=0x217F => {}
             // DOS/V display-adapter presence probe for an unfitted PS/55 adapter.
             0x1160 => {}
+            // BIOS HLE trap port.
+            0x07F0 => {
+                self.bios.write_trap_port(value);
+                // We could change these made up values if any game actually cares
+                // about how many cycles any of the bios function take.
+                let cost = match self.bios.pending_vector() {
+                    0x05 | 0x08 | 0x0E | 0x11 | 0x12 | 0x14 | 0x16 | 0x17 | 0x1A | 0x70 => 20,
+                    0x10 | 0x15 => 50,
+                    0x13 | 0x40 => 100,
+                    0x19 => 500,
+                    0xF0 | 0xF2 => 1000,
+                    _ => 0,
+                };
+                self.pending_wait_cycles += cost;
+            }
+            // BIOS HLE keyboard scancode latch: arms the INT 09h trap. The
+            // latch bypasses the 0x07F0 cost table, so the translation cost
+            // is charged here.
+            0x07F1 => {
+                self.hle_scancode = value;
+                self.bios.write_trap_port(0x09);
+                self.pending_wait_cycles += 30;
+            }
             _ => {
                 self.log_unhandled_write(port, value);
                 handled = false;

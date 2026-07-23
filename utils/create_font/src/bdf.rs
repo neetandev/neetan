@@ -151,6 +151,36 @@ impl BitmapFont {
         Some(cell)
     }
 
+    /// Extracts a baseline-aligned 8x14 cell for the given encoding.
+    pub fn get_8x14(&self, encoding: u32) -> Option<[u8; 14]> {
+        let glyph = self.glyphs.get(&encoding)?;
+        let mut cell = [0u8; 14];
+
+        let glyph_top_from_baseline = glyph.bbx_y_offset + glyph.bbx_height as i32;
+        let cell_row_start = self.ascent - glyph_top_from_baseline;
+        let x_offset = glyph.bbx_x_offset;
+
+        let bytes_per_row = (glyph.bbx_width as usize).div_ceil(8);
+
+        for r in 0..glyph.bbx_height as usize {
+            let cell_row = cell_row_start + r as i32;
+            if !(0..14).contains(&cell_row) {
+                continue;
+            }
+
+            let src_byte = glyph.rows.get(r * bytes_per_row)?;
+            if x_offset == 0 {
+                cell[cell_row as usize] = *src_byte;
+            } else if x_offset > 0 {
+                cell[cell_row as usize] = src_byte >> x_offset;
+            } else {
+                cell[cell_row as usize] = src_byte << (-x_offset);
+            }
+        }
+
+        Some(cell)
+    }
+
     pub fn get_16x16(&self, encoding: u32) -> Option<[u8; 32]> {
         let glyph = self.glyphs.get(&encoding)?;
         let mut cell = [0u8; 32];

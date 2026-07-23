@@ -1,8 +1,10 @@
 //! PC/AT machine: an i486 main CPU on the full 32-bit memory map.
 
-use common::{Bus, Cpu, HostKey, KeyModifiers, Machine, NoTrace, StartupCapabilities, TraceSink};
+use common::{
+    Bus, Cpu, HostKey, KeyModifiers, Machine, NoTrace, StartupCapabilities, TraceSink, unlikely,
+};
 
-use crate::{bus::AtBus, config::AtBootDevice};
+use crate::{AtInspectionState, bus::AtBus, config::AtBootDevice};
 
 /// CPU cycles executed per interleave slice while the CPU is running. Kept
 /// tight so scheduled timer interrupts are serviced promptly.
@@ -115,6 +117,25 @@ impl common::AutomatedMachine for AtMachine<common::tracing::ApplicationTraceSin
     }
 }
 
+/// Field schema for the `at.bios` call provider.
+///
+/// Enter events carry `function` and `subfunction`. `result` is present only
+/// on exit events, so a `result` constraint matches exit phases alone.
+const AT_BIOS_CALL_FIELDS: &[common::TraceFieldDescriptor] = &[
+    common::trace_field_range(
+        common::trace_id::field::FUNCTION,
+        common::TraceFieldType::Integer,
+    ),
+    common::trace_field_range(
+        common::trace_id::field::SUBFUNCTION,
+        common::TraceFieldType::Integer,
+    ),
+    common::trace_field_range(
+        common::trace_id::field::RESULT,
+        common::TraceFieldType::Integer,
+    ),
+];
+
 /// Stable trace identifiers emitted by the IBM PC/AT bus.
 const AT_TRACE_CATALOG: common::TraceCatalog = common::TraceCatalog {
     controllers: &[common::trace_id::controller::AT_PIC],
@@ -123,7 +144,11 @@ const AT_TRACE_CATALOG: common::TraceCatalog = common::TraceCatalog {
         device: common::trace_id::device::AT_FDC,
         actions: &[common::trace_action(common::trace_id::action::READ)],
     }],
-    providers: &[],
+    providers: &[common::TraceProviderCatalog {
+        provider: common::trace_id::provider::AT_BIOS,
+        named_interfaces: &[],
+        call_fields: AT_BIOS_CALL_FIELDS,
+    }],
 };
 
 impl common::MachineInspector for AtMachine<common::tracing::ApplicationTraceSink> {
@@ -234,6 +259,11 @@ impl<T: TraceSink> AtMachine<T> {
         self.bus.set_boot_device(device);
     }
 
+    /// Returns a read-only hardware inspection view for focused assertions.
+    pub fn inspection_state(&self) -> AtInspectionState {
+        self.bus.inspection_state()
+    }
+
     /// Runs the CPU for up to `budget` cycles, returning the cycles advanced.
     ///
     /// The CPU advances the bus clock per instruction, so scheduled events fire
@@ -257,15 +287,26 @@ impl<T: TraceSink> AtMachine<T> {
             };
 
             let ran_cycles = self.cpu.run_for(slice_end - current_cycle, &mut self.bus);
-            if T::ENABLED && self.bus.tracer().yield_requested() {
-                break;
-            }
 
             if self.bus.reset_pending() {
                 if self.bus.take_cpu_reset() {
                     self.cpu.reset();
                 }
                 continue;
+            }
+
+            // A pending BIOS HLE trap must be dispatched before honoring a
+            // presentation yield. The trap OUT leaves the CPU parked on the
+            // stub IRET with the handler not yet run, so breaking out here
+            // would resume past the trap and skip the handler entirely.
+            if unlikely(self.bus.bios_hle_pending()) {
+                self.bus.set_hle_paging(self.cpu.cr0(), self.cpu.cr3());
+                self.bus.execute_bios_hle(&mut self.cpu);
+                continue;
+            }
+
+            if unlikely(T::ENABLED && self.bus.tracer().yield_requested()) {
+                break;
             }
 
             if ran_cycles == 0 && self.bus.current_cycle() < slice_end {

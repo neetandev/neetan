@@ -10,6 +10,7 @@ fn test_bus() -> AtBus<common::NoTrace> {
     let roms = LoadedRoms {
         system_bios: vec![0u8; 0x1_0000],
         vga_bios: vec![0u8; 0x8000],
+        hle: false,
     };
     let mut bus = AtBus::<common::NoTrace>::new(66_000_000, 16 << 20, roms, 48_000);
     // Command byte: translation on, IRQ1 on.

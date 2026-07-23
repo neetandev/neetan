@@ -59,6 +59,8 @@ crate::impl_state_codec!(MuntWorkerState {
     native_rate,
 });
 
+save_state::impl_boxed_state_decode!(MuntWorkerState);
+
 crate::impl_state_codec!(MuntActorState {
     worker,
     pending_audio,

@@ -2,14 +2,17 @@
 //! drives the event scheduler.
 
 mod atapi;
+mod bios;
 mod fdc;
 mod hdd;
+mod init;
 mod io_read;
 mod io_write;
 mod keyboard;
 mod serial;
 mod sound;
 
+pub(crate) use bios::video_param::write_video_parameter_tables;
 use common::{
     Bus, NoTrace, SharedHostDateTimeSource, TraceAccessKind, TraceAccessWidth, TraceAddressSpace,
     TraceContext, TraceEvent, TraceInterruptAction, TraceInterruptKind, TracePresentation,
@@ -131,6 +134,12 @@ pub(crate) struct AtBusState {
     cpu_reset_pending: bool,
     pending_wait_cycles: i64,
     last_post_code: u8,
+    bios: device::bios::BiosControllerState,
+    hle_cr0: u32,
+    hle_cr3: u32,
+    hle_scancode: u8,
+    bel_ticks_remaining: u8,
+    needs_full_reinit: bool,
 }}
 
 /// PC/AT system bus.
@@ -205,6 +214,21 @@ pub struct AtBus<T: TraceSink = NoTrace> {
     pub(crate) pending_wait_cycles: i64,
     /// Most recent POST diagnostic code (port 0x80).
     pub(crate) last_post_code: u8,
+    /// BIOS HLE trap controller.
+    pub(crate) bios: device::bios::BiosController,
+    /// CR0 snapshot for HLE guest memory accessors.
+    pub(crate) hle_cr0: u32,
+    /// CR3 snapshot for HLE guest memory accessors.
+    pub(crate) hle_cr3: u32,
+    /// Scancode latched through port 0x07F1 for the INT 09h HLE path.
+    pub(crate) hle_scancode: u8,
+    /// Timer ticks the INT 10h teletype BEL tone stays on.
+    pub(crate) bel_ticks_remaining: u8,
+    /// Whether the next pseudo-vector 0xF0 trap must re-run the full POST.
+    pub(crate) needs_full_reinit: bool,
+    /// Whether the loaded ROM set is the HLE stub pair. Real ROM images are
+    /// never patched.
+    pub(crate) hle_bios: bool,
     /// Log-once bitmap for unhandled read ports.
     unhandled_read_logged: Box<[u64; PORT_BITMAP_WORDS]>,
     /// Log-once bitmap for unhandled write ports.
@@ -229,6 +253,7 @@ impl<T: TraceSink> AtBus<T> {
         let source = default_host_date_time_source();
         let cmos_seed = initial_cmos(ram_size as usize);
         let seed = source.now();
+        let hle_bios = roms.hle;
 
         let mut bus = Self {
             memory: AtMemory::new(ram_size, roms.system_bios, roms.vga_bios),
@@ -267,6 +292,13 @@ impl<T: TraceSink> AtBus<T> {
             cpu_reset_pending: false,
             pending_wait_cycles: 0,
             last_post_code: 0,
+            bios: device::bios::BiosController::new(),
+            hle_cr0: 0,
+            hle_cr3: 0,
+            hle_scancode: 0,
+            bel_ticks_remaining: 0,
+            needs_full_reinit: true,
+            hle_bios,
             unhandled_read_logged: Box::new([0; PORT_BITMAP_WORDS]),
             unhandled_write_logged: Box::new([0; PORT_BITMAP_WORDS]),
             host_date_time_source: source,
@@ -350,6 +382,12 @@ impl<T: TraceSink> AtBus<T> {
             cpu_reset_pending: self.cpu_reset_pending,
             pending_wait_cycles: self.pending_wait_cycles,
             last_post_code: self.last_post_code,
+            bios: self.bios.capture_state(),
+            hle_cr0: self.hle_cr0,
+            hle_cr3: self.hle_cr3,
+            hle_scancode: self.hle_scancode,
+            bel_ticks_remaining: self.bel_ticks_remaining,
+            needs_full_reinit: self.needs_full_reinit,
         })
     }
 
@@ -428,6 +466,12 @@ impl<T: TraceSink> AtBus<T> {
             self.cpu_reset_pending = state.cpu_reset_pending;
             self.pending_wait_cycles = state.pending_wait_cycles;
             self.last_post_code = state.last_post_code;
+            self.bios.restore_state(state.bios);
+            self.hle_cr0 = state.hle_cr0;
+            self.hle_cr3 = state.hle_cr3;
+            self.hle_scancode = state.hle_scancode;
+            self.bel_ticks_remaining = state.bel_ticks_remaining;
+            self.needs_full_reinit = state.needs_full_reinit;
             self.memory.refresh_uma(&self.chipset);
             self.memory.set_a20(self.chipset.a20_enabled());
             self.next_event_cycle = self.scheduler.next_event_cycle().unwrap_or(u64::MAX);
@@ -710,6 +754,20 @@ impl<T: TraceSink> AtBus<T> {
         core::mem::take(&mut self.cpu_reset_pending)
     }
 
+    /// Returns a read-only hardware inspection view for focused assertions.
+    pub(crate) fn inspection_state(&self) -> crate::AtInspectionState {
+        crate::AtInspectionState {
+            pic: self.pic.capture_state(),
+            pit: self.pit.state.clone(),
+            dma: self.dma.capture_state(),
+            kbc: self.kbc.capture_state(),
+            chipset: self.chipset.capture_state(),
+            rtc: self.rtc.capture_state(),
+            keyboard_leds: self.kbc.keyboard.leds,
+            a20_enabled: self.chipset.a20_enabled(),
+        }
+    }
+
     /// Applies a CS4031 effect set to the bus.
     pub(crate) fn apply_chipset_effects(&mut self, effects: device::cs4031::Cs4031Effects) {
         if effects.shadow_map_changed {
@@ -720,6 +778,10 @@ impl<T: TraceSink> AtBus<T> {
         }
         if effects.cpu_reset_pulse {
             self.cpu_reset_pending = true;
+            // The reset vector fetch at 0xFFFFFFF0 needs A20 unmasked; the HLE
+            // POST re-establishes the post-POST A20 state afterwards.
+            self.memory.set_a20(true);
+            self.needs_full_reinit = true;
         }
     }
 
@@ -1443,7 +1505,7 @@ impl<T: TraceSink> Bus for AtBus<T> {
     }
 
     fn cpu_should_yield(&self) -> bool {
-        T::ENABLED && self.tracer.yield_requested()
+        T::ENABLED && self.tracer.yield_requested() || self.bios.take_yield_requested()
     }
 
     fn current_cycle(&self) -> u64 {
@@ -1495,6 +1557,7 @@ mod tests {
         let roms = LoadedRoms {
             system_bios: vec![0; 0x1_0000],
             vga_bios: vec![0; 0x8000],
+            hle: false,
         };
         AtBus::new_with_trace_sink(66_000_000, 0x10_0000, roms, 48_000, AccessTrace::default())
     }
@@ -1616,6 +1679,7 @@ mod tests {
         let roms = LoadedRoms {
             system_bios: vec![0; 0x1_0000],
             vga_bios: vec![0; 0x8000],
+            hle: false,
         };
         let mut bus =
             AtBus::new_with_trace_sink(66_000_000, 0x10_0000, roms, 48_000, DisabledPanicTrace);

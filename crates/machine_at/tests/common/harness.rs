@@ -4,12 +4,12 @@
 
 use common::{Bus, Cpu, CpuMode, HostDateTime, Machine, NoTrace, TraceSink};
 use device::vga::{
-    VGA_PORT_ATC_WRITE, VGA_PORT_CRTC_DATA_COLOR, VGA_PORT_CRTC_DATA_MONO,
+    VGA_PORT_ATC_READ, VGA_PORT_ATC_WRITE, VGA_PORT_CRTC_DATA_COLOR, VGA_PORT_CRTC_DATA_MONO,
     VGA_PORT_CRTC_INDEX_COLOR, VGA_PORT_CRTC_INDEX_MONO, VGA_PORT_DAC_DATA, VGA_PORT_DAC_MASK,
-    VGA_PORT_DAC_WRITE_INDEX, VGA_PORT_GC_DATA, VGA_PORT_GC_INDEX, VGA_PORT_HERCULES_COMPAT,
-    VGA_PORT_MODE_CONTROL_COLOR, VGA_PORT_MODE_CONTROL_MONO, VGA_PORT_SEGMENT_SELECT,
-    VGA_PORT_SEQ_DATA, VGA_PORT_SEQ_INDEX, VGA_PORT_STATUS_COLOR, VGA_PORT_STATUS_MONO,
-    VGA_PORT_STATUS0_MISC_WRITE,
+    VGA_PORT_DAC_READ_INDEX, VGA_PORT_DAC_WRITE_INDEX, VGA_PORT_GC_DATA, VGA_PORT_GC_INDEX,
+    VGA_PORT_HERCULES_COMPAT, VGA_PORT_MISC_READ, VGA_PORT_MODE_CONTROL_COLOR,
+    VGA_PORT_MODE_CONTROL_MONO, VGA_PORT_SEGMENT_SELECT, VGA_PORT_SEQ_DATA, VGA_PORT_SEQ_INDEX,
+    VGA_PORT_STATUS_COLOR, VGA_PORT_STATUS_MONO, VGA_PORT_STATUS0_MISC_WRITE,
 };
 use machine_at::{AtBus, AtMachine, AtModel, LoadedRoms};
 
@@ -55,6 +55,7 @@ pub fn roms_with_bios(system_bios: Vec<u8>) -> LoadedRoms {
     LoadedRoms {
         system_bios,
         vga_bios: vec![0u8; VGA_BIOS_SIZE],
+        hle: false,
     }
 }
 
@@ -65,8 +66,18 @@ pub fn machine_for_model(model: AtModel) -> AtMachine<NoTrace> {
 
 /// Builds a machine of the given model over a caller-supplied ROM set.
 pub fn machine_with_roms<T: TraceSink + Default>(model: AtModel, roms: LoadedRoms) -> AtMachine<T> {
+    machine_with_roms_and_cpu_mode(model, CpuMode::High, roms)
+}
+
+/// Builds a machine of the given model and CPU mode over a caller-supplied
+/// ROM set.
+pub fn machine_with_roms_and_cpu_mode<T: TraceSink + Default>(
+    model: AtModel,
+    cpu_mode: CpuMode,
+    roms: LoadedRoms,
+) -> AtMachine<T> {
     let mut bus = AtBus::new_with_trace_sink(
-        model.cpu_clock_hz(CpuMode::High),
+        model.cpu_clock_hz(cpu_mode),
         model.ram_size(),
         roms,
         48_000,
@@ -276,4 +287,139 @@ pub fn framebuffer_hash<T: TraceSink>(machine: &AtMachine<T>) -> String {
         hex.push(HEX_DIGITS[(byte & 0x0F) as usize] as char);
     }
     hex
+}
+
+/// A VGA register file read back through the I/O ports for comparison with
+/// a captured `ModeVector`.
+pub struct ReadBackRegisters {
+    pub misc: u8,
+    pub seq: [u8; 8],
+    pub crtc: [u8; 0x19],
+    pub gc: [u8; 9],
+    pub atc: [u8; 0x17],
+    pub palette: Vec<u8>,
+    pub segment_select: u8,
+}
+
+/// Reads the full VGA register file back through the I/O ports (misc,
+/// sequencer, CRTC, graphics controller, attribute controller, the 768-byte
+/// DAC palette and the segment select).
+pub fn read_back_vga_registers(bus: &mut AtBus<NoTrace>) -> ReadBackRegisters {
+    let misc = bus.io_read_byte(VGA_PORT_MISC_READ);
+    let color = misc & 0x01 != 0;
+    let (crtc_index_port, crtc_data_port, status_port) = if color {
+        (
+            VGA_PORT_CRTC_INDEX_COLOR,
+            VGA_PORT_CRTC_DATA_COLOR,
+            VGA_PORT_STATUS_COLOR,
+        )
+    } else {
+        (
+            VGA_PORT_CRTC_INDEX_MONO,
+            VGA_PORT_CRTC_DATA_MONO,
+            VGA_PORT_STATUS_MONO,
+        )
+    };
+
+    let mut seq = [0u8; 8];
+    for (index, value) in seq.iter_mut().enumerate() {
+        bus.io_write_byte(VGA_PORT_SEQ_INDEX, index as u8);
+        *value = bus.io_read_byte(VGA_PORT_SEQ_DATA);
+    }
+
+    let mut crtc = [0u8; 0x19];
+    for (index, value) in crtc.iter_mut().enumerate() {
+        bus.io_write_byte(crtc_index_port, index as u8);
+        *value = bus.io_read_byte(crtc_data_port);
+    }
+
+    let mut gc = [0u8; 9];
+    for (index, value) in gc.iter_mut().enumerate() {
+        bus.io_write_byte(VGA_PORT_GC_INDEX, index as u8);
+        *value = bus.io_read_byte(VGA_PORT_GC_DATA);
+    }
+
+    // ATC reads use the index/data flip-flop; leave the palette address
+    // source re-enabled afterwards.
+    let mut atc = [0u8; 0x17];
+    for (index, value) in atc.iter_mut().enumerate() {
+        let _ = bus.io_read_byte(status_port);
+        bus.io_write_byte(VGA_PORT_ATC_WRITE, index as u8);
+        *value = bus.io_read_byte(VGA_PORT_ATC_READ);
+    }
+    let _ = bus.io_read_byte(status_port);
+    bus.io_write_byte(VGA_PORT_ATC_WRITE, 0x20);
+
+    let mut palette = vec![0u8; 768];
+    bus.io_write_byte(VGA_PORT_DAC_READ_INDEX, 0x00);
+    for component in palette.iter_mut() {
+        *component = bus.io_read_byte(VGA_PORT_DAC_DATA);
+    }
+
+    let segment_select = bus.io_read_byte(VGA_PORT_SEGMENT_SELECT);
+
+    ReadBackRegisters {
+        misc,
+        seq,
+        crtc,
+        gc,
+        atc,
+        palette,
+        segment_select,
+    }
+}
+
+/// Asserts a read-back register file equals a captured mode vector. The CRTC
+/// start address and cursor location bytes (0x0C-0x0F) are runtime state and
+/// are skipped; the mode set leaves them zero for page zero.
+pub fn assert_vector_applied(actual: &ReadBackRegisters, expected: &ModeVector, label: &str) {
+    assert_eq!(actual.misc, expected.misc, "{label}: misc output");
+    for (index, (actual, expected)) in actual.seq.iter().zip(expected.seq.iter()).enumerate() {
+        assert_eq!(actual, expected, "{label}: SEQ {index:02X}");
+    }
+    for (index, (actual, expected)) in actual.crtc.iter().zip(expected.crtc.iter()).enumerate() {
+        if (0x0C..=0x0F).contains(&index) {
+            continue;
+        }
+        assert_eq!(actual, expected, "{label}: CRTC {index:02X}");
+    }
+    for (index, (actual, expected)) in actual.gc.iter().zip(expected.gc.iter()).enumerate() {
+        assert_eq!(actual, expected, "{label}: GC {index:02X}");
+    }
+    for (index, (actual, expected)) in actual.atc.iter().zip(expected.atc.iter()).enumerate() {
+        assert_eq!(actual, expected, "{label}: ATC {index:02X}");
+    }
+    for (index, (actual, expected)) in actual
+        .palette
+        .iter()
+        .zip(expected.palette.iter())
+        .enumerate()
+    {
+        assert_eq!(actual, expected, "{label}: DAC byte {index}");
+    }
+    assert_eq!(
+        actual.segment_select, expected.segment_select,
+        "{label}: segment select"
+    );
+}
+
+/// Reads the character and attribute of a text cell straight from the VGA
+/// planes (page-relative to the given regen page size in bytes). The
+/// odd/even chain stores the CPU byte pair (2N, 2N+1) at the dword-interleaved
+/// planes 0/1 of VRAM address 2N, so one cell occupies eight VRAM bytes.
+pub fn text_cell<T: TraceSink>(
+    machine: &AtMachine<T>,
+    page: u8,
+    page_size: u16,
+    columns: u16,
+    row: u8,
+    column: u8,
+) -> (u8, u8) {
+    let cell = u32::from(page) * u32::from(page_size) / 2
+        + u32::from(row) * u32::from(columns)
+        + u32::from(column);
+    let vram = machine.bus.vga().vram();
+    let character = vram[(cell * 8) as usize];
+    let attribute = vram[(cell * 8 + 1) as usize];
+    (character, attribute)
 }

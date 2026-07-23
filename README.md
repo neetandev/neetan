@@ -94,7 +94,7 @@ PC/AT DOS/V only). Options that apply to one family are ignored on the others.
 | `--x1-roms <PATH>`           | X1                               | Directory with the Sharp X1 ROM set (required for the X1 targets)                                | -                 |
 | `--x1-keyboard <A\|B>`       | X1                               | X1 turbo keyboard mode switch: `A` (standard) or `B` (game-key matrix, mode-B kana layout)       | `A`               |
 | `--fm7-roms <PATH>`          | FM-7                             | Directory with the FM-7 / FM-77AV ROM set (required for the FM-7 targets)                        | -                 |
-| `--at-roms <PATH>`           | PC/AT                            | Directory with the PC/AT ROM set (required for the PC/AT targets)                                | -                 |
+| `--at-roms <PATH>`           | PC/AT                            | Directory with the PC/AT ROM set, matched by content hash. All ROMs optional                     | -                 |
 | `--fdd1 <PATH>`              | All                              | Floppy disk image for drive 1 (repeatable)                                                       | -                 |
 | `--fdd2 <PATH>`              | All                              | Floppy disk image for drive 2 (repeatable)                                                       | -                 |
 | `--hdd1 <PATH>`              | All                              | Hard disk image for hard disk drive 1                                                            | -                 |
@@ -112,7 +112,7 @@ PC/AT DOS/V only). Options that apply to one family are ignored on the others.
 | `--force-gdc-clock <2.5\|5>` | PC-98                            | Force GDC clock to 2.5 or 5 MHz. VX and later only                                               | auto              |
 | `--graphicboard <TYPE>`      | PC-98                            | Graphics accelerator board: `none`, `ga1280a`                                                    | `none`            |
 | `--pc98-roms <PATH>`         | PC-98                            | Directory with the PC-98 ROM set (BIOS, font, sound), matched by content hash. All ROMs optional | -                 |
-| `--bios`                     | PC-98                            | Boot the real BIOS from `--pc98-roms` instead of the HLE BIOS. Ignored (warns) on PC-9821        | HLE BIOS          |
+| `--bios`                     | PC-98, PC/AT                     | Boot the real BIOS from `--pc98-roms` / `--at-roms` instead of the HLE BIOS. Ignored on PC-9821  | HLE BIOS          |
 | `--soundboard <TYPE>`        | PC-98                            | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`                             | `86+26k`          |
 | `--adpcm-ram <on\|off>`      | PC-98                            | ADPCM RAM option for the PC-9801-86                                                              | `on`              |
 | `--ems <on\|off>`            | PC-98                            | Enable EMS expanded memory                                                                       | `on`              |

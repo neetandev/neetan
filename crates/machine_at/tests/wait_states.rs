@@ -10,6 +10,7 @@ fn bus_for(model: AtModel) -> AtBus<NoTrace> {
     let roms = LoadedRoms {
         system_bios: vec![0xFF; 0x1_0000],
         vga_bios: vec![0xFF; 0x8000],
+        hle: false,
     };
     AtBus::<NoTrace>::new(
         model.cpu_clock_hz(common::CpuMode::High),
