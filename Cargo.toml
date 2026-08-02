@@ -6,8 +6,8 @@ members = ["crates/*", "utils/create_font"]
 authors = ["Nils Hasenbanck <nils@hasenbanck.de>"]
 edition = "2024"
 license = "BSD-3-Clause"
-rust-version = "1.95"
-version = "2026.7.0"
+rust-version = "1.97"
+version = "2026.8.0"
 
 [workspace.dependencies]
 # Internal dependencies
@@ -75,7 +75,7 @@ user_interface = { workspace = true }
 [profile.release]
 opt-level = 3
 codegen-units = 4
-lto = "thin"
+lto = "fat"
 strip = true
 
 [profile.dev]
