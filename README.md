@@ -373,7 +373,7 @@ again.
 
 ## Build requirements
 
-* [Rust 1.95](https://rustup.rs/)
+* [Rust 1.97](https://rustup.rs/)
 * [SDL3](https://github.com/libsdl-org/SDL) (See [sdl3_sys description](https://docs.rs/sdl3-sys/latest/sdl3_sys/#usage))
 
 Build a release binary with:

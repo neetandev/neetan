@@ -12,7 +12,7 @@ dependencies = [
 
 [[package]]
 name = "automation"
-version = "2026.7.0"
+version = "2026.8.0"
 dependencies = [
  "blake3",
  "common",
@@ -32,9 +32,9 @@ version = "1.0.0"
 
 [[package]]
 name = "cc"
-version = "1.3.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c89588d05638b5b4594a3348a2d6c20277e43a7f5c5202b05cc56888475a47b8"
+checksum = "5add81bb678e6cb321aff7fa0dc7689ad82b112dbc032cea19f91d6b8e3582b9"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -111,7 +111,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "machine_60"
-version = "2026.7.0"
+version = "2026.8.0"
 dependencies = [
  "blake3",
  "common",
@@ -124,7 +124,7 @@ dependencies = [
 
 [[package]]
 name = "machine_88"
-version = "2026.7.0"
+version = "2026.8.0"
 dependencies = [
  "blake3",
  "common",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "machine_88va"
-version = "2026.7.0"
+version = "2026.8.0"
 dependencies = [
  "blake3",
  "common",
@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "machine_98"
-version = "2026.7.0"
+version = "2026.8.0"
 dependencies = [
  "blake3",
  "common",
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "machine_at"
-version = "2026.7.0"
+version = "2026.8.0"
 dependencies = [
  "blake3",
  "common",
@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "machine_factory"
-version = "2026.7.0"
+version = "2026.8.0"
 dependencies = [
  "common",
  "machine_60",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "machine_fm7"
-version = "2026.7.0"
+version = "2026.8.0"
 dependencies = [
  "blake3",
  "common",
@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "machine_msx"
-version = "2026.7.0"
+version = "2026.8.0"
 dependencies = [
  "blake3",
  "common",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "machine_towns"
-version = "2026.7.0"
+version = "2026.8.0"
 dependencies = [
  "blake3",
  "common",
@@ -229,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "machine_x1"
-version = "2026.7.0"
+version = "2026.8.0"
 dependencies = [
  "blake3",
  "common",
@@ -242,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "machine_x68k"
-version = "2026.7.0"
+version = "2026.8.0"
 dependencies = [
  "blake3",
  "common",
@@ -265,7 +265,7 @@ dependencies = [
 
 [[package]]
 name = "neetan"
-version = "2026.7.0"
+version = "2026.8.0"
 dependencies = [
  "automation",
  "common",
@@ -289,7 +289,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "r7rs"
-version = "2026.7.0"
+version = "2026.8.0"
 
 [[package]]
 name = "resampler"
@@ -379,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "user_interface"
-version = "2026.7.0"
+version = "2026.8.0"
 dependencies = [
  "audio_engine",
  "common",
