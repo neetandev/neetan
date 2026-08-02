@@ -50,6 +50,7 @@ jobs:
           ARCHIVE_NAME="neetan-${VERSION}-x86_64-pc-windows-msvc"
           mkdir -p "staging/${ARCHIVE_NAME}"
           cp "target/release/neetan.exe" "staging/${ARCHIVE_NAME}/"
+          cp "target/release/neetan-auto.exe" "staging/${ARCHIVE_NAME}/"
           cp "${{ steps.sdl3.outputs.path }}" "staging/${ARCHIVE_NAME}/"
           cp -r licenses/ "staging/${ARCHIVE_NAME}/"
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
@@ -80,7 +81,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang mold cmake libfuse2 \
+          sudo apt-get install -y clang mold cmake libfuse2 patchelf \
             libasound2-dev libpulse-dev libjack-dev libpipewire-0.3-dev libsndio-dev \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
             libwayland-dev libdecor-0-dev libxkbcommon-dev \
@@ -156,11 +157,37 @@ jobs:
           echo "APPIMAGE_FILE=$OUTPUT_APPIMAGE" >> "$GITHUB_ENV"
           echo "ARCHIVE_NAME=neetan-${VERSION}-x86_64-linux-appimage" >> "$GITHUB_ENV"
 
+      - name: Prepare neetan-auto archive
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          AUTO_ARCHIVE_NAME="neetan-auto-${VERSION}-x86_64-unknown-linux-gnu"
+          STAGING="$RUNNER_TEMP/${AUTO_ARCHIVE_NAME}"
+          SDL3_SONAME="libSDL3.so.0"
+
+          mkdir -p "$STAGING"
+          cp target/release/neetan-auto "$STAGING/"
+          cp "${{ steps.sdl3.outputs.path }}" "$STAGING/"
+          ln -sf "$(basename "${{ steps.sdl3.outputs.path }}")" "$STAGING/$SDL3_SONAME"
+          cp -r licenses/ "$STAGING/"
+
+          # Resolve the bundled SDL3 next to the executable.
+          patchelf --set-rpath '$ORIGIN' "$STAGING/neetan-auto"
+
+          tar -czf "${AUTO_ARCHIVE_NAME}.tar.gz" -C "$RUNNER_TEMP" "$AUTO_ARCHIVE_NAME"
+          echo "AUTO_ARCHIVE_NAME=${AUTO_ARCHIVE_NAME}" >> "$GITHUB_ENV"
+          echo "AUTO_ARCHIVE_FILE=${AUTO_ARCHIVE_NAME}.tar.gz" >> "$GITHUB_ENV"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARCHIVE_NAME }}
           path: ${{ env.APPIMAGE_FILE }}
+
+      - name: Upload neetan-auto artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.AUTO_ARCHIVE_NAME }}
+          path: ${{ env.AUTO_ARCHIVE_FILE }}
 
   release:
     name: Publish Release
