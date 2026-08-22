@@ -31,7 +31,7 @@ use sdl3_backend::{
 };
 
 use crate::{
-    config::{AspectMode, Backend, EmulatorConfig, ScalingMode, Target, WindowMode},
+    config::{AspectMode, Backend, EmulatorConfig, ScalingMode, WindowMode},
     image_selector::{ImageEntry, ImageSelector, MediaType},
     input::{JoystickKey, KeyOverrides, KeyboardForwardingState, host_key_from_scancode},
     machines::{initialize_machine, selector_font_rom_data},
@@ -279,7 +279,7 @@ fn select_graphics_backend(
     window: &mut Window,
 ) -> Result<(Box<dyn GraphicsEngine>, Backend)> {
     let large_native_target = config.graphicboard != config::GraphicboardType::None
-        || matches!(config.target, Target::Towns | Target::X68k | Target::At);
+        || config.target.wants_large_native_surface();
     match config.backend {
         Backend::Legacy => {
             info!("Using legacy backend");
@@ -1227,7 +1227,7 @@ impl Application {
     }
 
     fn cycle_composite_phase(&mut self) {
-        if self.config.target != Target::Pc60 {
+        if !self.config.target.has_composite_video() {
             return;
         }
         self.composite_phase = (self.composite_phase + 1) % 4;
@@ -1666,7 +1666,7 @@ impl Application {
                 width,
                 height,
                 crt: self.crt_enabled,
-                composite: self.config.target == Target::Pc60,
+                composite: self.config.target.has_composite_video(),
                 composite_phase: self.composite_phase,
             }
         };

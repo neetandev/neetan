@@ -32,9 +32,9 @@ version = "1.0.0"
 
 [[package]]
 name = "cc"
-version = "1.4.0"
+version = "1.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5add81bb678e6cb321aff7fa0dc7689ad82b112dbc032cea19f91d6b8e3582b9"
+checksum = "0ad534f4357a5264cce5019c989cf66a4f0dc4e0d1b1d15f8aacec0ff7360273"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -105,9 +105,9 @@ dependencies = [
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.9"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
 
 [[package]]
 name = "machine_60"
@@ -178,6 +178,7 @@ name = "machine_factory"
 version = "2026.8.0"
 dependencies = [
  "common",
+ "device",
  "machine_60",
  "machine_88",
  "machine_88va",
@@ -283,9 +284,9 @@ dependencies = [
 
 [[package]]
 name = "pkg-config"
-version = "0.3.33"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
+checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "r7rs"
@@ -327,15 +328,15 @@ dependencies = [
 
 [[package]]
 name = "sdl3-src"
-version = "3.4.12"
+version = "3.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f0adb191c684688f845f1dab6f5a2b36428885d01aa3afd7ec32faa3fb0b7ca"
+checksum = "e75661ac9dbedc58da5ce739e9688be6bf9d5542a282d89e7e29fdb7dcb43936"
 
 [[package]]
 name = "sdl3-sys"
-version = "0.6.7+SDL-3.4.12"
+version = "0.6.8+SDL-3.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e89cde1ff23eb110e348da9b5be904381235163272a424938a2c99c86ea33041"
+checksum = "b97e3d18c4994224aec3fb2d3d189f5fc88af0958fb8ed7b569272fde558f033"
 dependencies = [
  "cc",
  "cmake",
@@ -393,15 +394,8 @@ dependencies = [
  "device",
  "dos",
  "machine_60",
- "machine_88",
- "machine_88va",
- "machine_98",
- "machine_at",
  "machine_factory",
- "machine_fm7",
  "machine_msx",
- "machine_towns",
- "machine_x1",
  "machine_x68k",
  "save_state",
  "sdl3",
@@ -425,6 +419,6 @@ dependencies = [
 
 [[package]]
 name = "zlib-rs"
-version = "0.6.6"
+version = "0.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b142a20ec14a91d5bc708c1dc21b080c550113d8aa77afa29635673a65dd02c5"
+checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"

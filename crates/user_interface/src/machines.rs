@@ -1,9 +1,12 @@
 //! Host-side machine services: the SDL wall clock and image-selector font ROM.
 
-use common::{BUILTIN_FONT_ROM, CpuMode, HostDateTime, Machine, MachineModel};
+use common::{BUILTIN_FONT_ROM, HostDateTime, Machine};
 pub use machine_factory::machines::initialize_machine;
 
-use crate::config::{EmulatorConfig, Target};
+use crate::config::EmulatorConfig;
+
+/// Bytes of the expanded CG-ROM the image selector reads.
+const SELECTOR_FONT_ROM_BYTES: usize = 0x83000;
 
 /// Host date-time source backed by the SDL local wall clock.
 struct SdlHostDateTime;
@@ -44,7 +47,7 @@ fn host_date_time() -> HostDateTime {
 }
 
 pub(crate) fn selector_font_rom_data(config: &EmulatorConfig, machine: &dyn Machine) -> Vec<u8> {
-    if config.target == Target::Pc98 {
+    if config.target.has_pc98_cgrom_layout() {
         return machine.font_rom_data().to_vec();
     }
 
@@ -52,13 +55,11 @@ pub(crate) fn selector_font_rom_data(config: &EmulatorConfig, machine: &dyn Mach
 }
 
 fn expand_selector_font_rom(raw_font_rom: &[u8]) -> Vec<u8> {
-    let mut bus: machine_98::Pc9801Bus<common::NoTrace> = machine_98::Pc9801Bus::new(
-        MachineModel::PC9801VM,
-        CpuMode::High,
-        audio_engine::SAMPLE_RATE as u32,
-    );
-    bus.load_font_rom(raw_font_rom);
-    bus.font_rom_data().to_vec()
+    let mut font_rom = vec![0u8; software_renderer::PC98_CGROM_SIZE].into_boxed_slice();
+    let buffer: &mut [u8; software_renderer::PC98_CGROM_SIZE] =
+        (&mut font_rom[..]).try_into().expect("CG-ROM buffer size");
+    software_renderer::expand_v98_font_rom(buffer, raw_font_rom);
+    font_rom[..SELECTOR_FONT_ROM_BYTES].to_vec()
 }
 
 #[cfg(test)]

@@ -12,6 +12,7 @@ use sdl3::keyboard::Scancode;
 
 /// Parses a `0xNN` literal into a raw key code. Targets that allow binding a raw
 /// native code directly (PC-6001 and PC/AT) accept this form.
+#[cfg(any(feature = "pc60", feature = "at"))]
 fn raw_hex_code(name: &str) -> Option<u8> {
     let hex = name
         .strip_prefix("0x")
@@ -19,6 +20,7 @@ fn raw_hex_code(name: &str) -> Option<u8> {
     u8::from_str_radix(hex, 16).ok()
 }
 
+#[cfg(any(feature = "pc98", feature = "pc88va"))]
 pub fn pc98_scancode_from_name(name: &str) -> Option<u8> {
     let name_lower = name.to_ascii_lowercase();
     Some(match name_lower.as_str() {
@@ -131,6 +133,7 @@ pub fn pc98_scancode_from_name(name: &str) -> Option<u8> {
 }
 
 /// Maps an X68000 key name to its native `row << 3 | column` code.
+#[cfg(feature = "x68k")]
 pub fn x68k_scancode_from_name(name: &str) -> Option<u8> {
     let name = name.to_ascii_lowercase();
     Some(match name.as_str() {
@@ -253,6 +256,7 @@ pub fn x68k_scancode_from_name(name: &str) -> Option<u8> {
 /// Maps a PC-88VA key name to its keycode (the value read at port 0x1C1). The VA
 /// keycode interface reuses the PC-98 scan-code protocol, so this defers to the
 /// PC-98 name table and adds the few VA-only keys.
+#[cfg(feature = "pc88va")]
 pub fn pc88va_keycode_from_name(name: &str) -> Option<u8> {
     if let Some(code) = pc98_scancode_from_name(name) {
         return Some(code);
@@ -269,6 +273,7 @@ pub fn pc88va_keycode_from_name(name: &str) -> Option<u8> {
 
 /// Maps an FM Towns key name to its JIS scancode (the second byte of the
 /// keyboard's serial packet).
+#[cfg(feature = "towns")]
 pub fn towns_scancode_from_name(name: &str) -> Option<u8> {
     let name_lower = name.to_ascii_lowercase();
     Some(match name_lower.as_str() {
@@ -374,12 +379,14 @@ pub fn towns_scancode_from_name(name: &str) -> Option<u8> {
 
 /// Encodes a PC-88 keyboard matrix position as `row << 3 | column`. The high bit
 /// stays clear so the forwarding layer can set it to mark a key release.
+#[cfg(feature = "pc88")]
 const fn pc88_cell(row: u8, column: u8) -> u8 {
     (row << 3) | column
 }
 
 /// Maps a PC-88 key name to its matrix code, used for `key.*` config overrides.
 /// Cells follow the standard PC-8801 keyboard matrix (ports 0x00-0x0E).
+#[cfg(feature = "pc88")]
 pub fn pc88_matrix_code_from_name(name: &str) -> Option<u8> {
     let name_lower = name.to_ascii_lowercase();
     Some(match name_lower.as_str() {
@@ -497,11 +504,13 @@ pub fn pc88_matrix_code_from_name(name: &str) -> Option<u8> {
 
 /// First function-key id on the PC-6001 wire encoding (F1). Function keys are
 /// sent as ids 0x60-0x69 so the release bit (0x80) stays free for every key.
+#[cfg(feature = "pc60")]
 const PC60_FUNCTION_KEY_BASE: u8 = 0x60;
 
 /// Maps a key name to a PC-6001 keycode for `key.*` config overrides. Normal
 /// keys use their character code; function keys use the wire ids F1-F5.
 /// A `0xNN` hex literal binds a raw keycode directly.
+#[cfg(feature = "pc60")]
 pub fn pc60_keycode_from_name(name: &str) -> Option<u8> {
     if let Some(code) = raw_hex_code(name) {
         return Some(code);
@@ -537,6 +546,7 @@ pub fn pc60_keycode_from_name(name: &str) -> Option<u8> {
 /// Maps an MSX key name to its keycode byte (0x00-0x74). Only keys with a real
 /// position in the Sony keyboard matrix are exposed. Values mirror the MSX
 /// machine's own host-key translation.
+#[cfg(feature = "msx")]
 pub fn msx_scancode_from_name(name: &str) -> Option<u8> {
     let name_lower = name.to_ascii_lowercase();
     Some(match name_lower.as_str() {
@@ -631,6 +641,7 @@ pub fn msx_scancode_from_name(name: &str) -> Option<u8> {
 
 /// Maps a Sharp X1 key name to its host sub-id (0x00-0x7F). The sub-CPU remaps
 /// these ids to virtual keys; values mirror the X1 machine's own translation.
+#[cfg(feature = "x1")]
 pub fn x1_scancode_from_name(name: &str) -> Option<u8> {
     let name_lower = name.to_ascii_lowercase();
     Some(match name_lower.as_str() {
@@ -723,6 +734,7 @@ pub fn x1_scancode_from_name(name: &str) -> Option<u8> {
 /// Maps a Fujitsu FM-7 key name to its physical scancode (0x01-0x66). Values
 /// mirror the FM-7 machine's own host-key translation, plus the named KANA and
 /// BREAK keys the encoder recognizes.
+#[cfg(feature = "fm7")]
 pub fn fm7_scancode_from_name(name: &str) -> Option<u8> {
     let name_lower = name.to_ascii_lowercase();
     Some(match name_lower.as_str() {
@@ -825,8 +837,9 @@ pub fn fm7_scancode_from_name(name: &str) -> Option<u8> {
 }
 
 /// Maps a PC/AT key name to its set-1 key id for the 106-key JIS (OADG) layout.
-/// The E0-extended keys use the synthetic ids the machine_at crate exports. A
-/// `0xNN` hex literal binds a raw id directly.
+/// The E0-extended keys use the synthetic ids in `common::input`. A `0xNN` hex
+/// literal binds a raw id directly.
+#[cfg(feature = "at")]
 pub fn at_key_from_name(name: &str) -> Option<u8> {
     if let Some(code) = raw_hex_code(name) {
         return Some(code);
@@ -923,20 +936,20 @@ pub fn at_key_from_name(name: &str) -> Option<u8> {
         "yen" => 0x7D,
         "henkan" | "xfer" => 0x79,
         "muhenkan" | "nfer" => 0x7B,
-        "up" => machine_at::AT_KEY_CURSOR_UP,
-        "down" => machine_at::AT_KEY_CURSOR_DOWN,
-        "left" => machine_at::AT_KEY_CURSOR_LEFT,
-        "right" => machine_at::AT_KEY_CURSOR_RIGHT,
-        "insert" | "ins" => machine_at::AT_KEY_INSERT,
-        "delete" | "del" => machine_at::AT_KEY_DELETE,
-        "home" => machine_at::AT_KEY_HOME,
-        "end" => machine_at::AT_KEY_END,
-        "pageup" => machine_at::AT_KEY_PAGE_UP,
-        "pagedown" => machine_at::AT_KEY_PAGE_DOWN,
-        "kpenter" => machine_at::AT_KEY_KEYPAD_ENTER,
-        "kpdivide" => machine_at::AT_KEY_KEYPAD_DIVIDE,
-        "rctrl" => machine_at::AT_KEY_RIGHT_CTRL,
-        "ralt" => machine_at::AT_KEY_RIGHT_ALT,
+        "up" => common::input::AT_KEY_CURSOR_UP,
+        "down" => common::input::AT_KEY_CURSOR_DOWN,
+        "left" => common::input::AT_KEY_CURSOR_LEFT,
+        "right" => common::input::AT_KEY_CURSOR_RIGHT,
+        "insert" | "ins" => common::input::AT_KEY_INSERT,
+        "delete" | "del" => common::input::AT_KEY_DELETE,
+        "home" => common::input::AT_KEY_HOME,
+        "end" => common::input::AT_KEY_END,
+        "pageup" => common::input::AT_KEY_PAGE_UP,
+        "pagedown" => common::input::AT_KEY_PAGE_DOWN,
+        "kpenter" => common::input::AT_KEY_KEYPAD_ENTER,
+        "kpdivide" => common::input::AT_KEY_KEYPAD_DIVIDE,
+        "rctrl" => common::input::AT_KEY_RIGHT_CTRL,
+        "ralt" => common::input::AT_KEY_RIGHT_ALT,
         _ => return None,
     })
 }
@@ -951,15 +964,25 @@ pub fn parse_key_binding(
 ) -> Option<(Scancode, u8)> {
     let host = Scancode::from_name(host_name)?;
     let code = match target {
+        #[cfg(feature = "pc60")]
         Target::Pc60 => pc60_keycode_from_name(native_name),
+        #[cfg(feature = "pc88")]
         Target::Pc88 => pc88_matrix_code_from_name(native_name),
+        #[cfg(feature = "pc88va")]
         Target::Pc88Va => pc88va_keycode_from_name(native_name),
+        #[cfg(feature = "pc98")]
         Target::Pc98 => pc98_scancode_from_name(native_name),
+        #[cfg(feature = "msx")]
         Target::Msx => msx_scancode_from_name(native_name),
+        #[cfg(feature = "towns")]
         Target::Towns => towns_scancode_from_name(native_name),
+        #[cfg(feature = "x68k")]
         Target::X68k => x68k_scancode_from_name(native_name),
+        #[cfg(feature = "x1")]
         Target::X1 => x1_scancode_from_name(native_name),
+        #[cfg(feature = "fm7")]
         Target::Fm7 => fm7_scancode_from_name(native_name),
+        #[cfg(feature = "at")]
         Target::At => at_key_from_name(native_name),
     }?;
     Some((host, code))

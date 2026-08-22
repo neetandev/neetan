@@ -14,49 +14,71 @@ use std::{fs, io, path::Path};
 use sdl3::surface::Surface;
 
 mod compose;
+#[cfg(feature = "fm7")]
 pub mod fm7;
+#[cfg(feature = "ga1280a")]
 mod ga1280a;
+#[cfg(feature = "msx")]
 pub mod msx;
+#[cfg(feature = "pc60")]
 pub mod pc60;
+#[cfg(feature = "pc88")]
 pub mod pc88;
+pub mod pc98_font;
 mod text_normalizer;
+#[cfg(feature = "towns")]
 pub mod towns;
+#[cfg(feature = "va")]
 pub mod va;
+#[cfg(feature = "vga")]
 pub mod vga;
+#[cfg(feature = "x1")]
 pub mod x1;
+#[cfg(feature = "x68k")]
 pub mod x68k;
 
+#[cfg(feature = "fm7")]
 pub use fm7::{
     FM7_FRAMEBUFFER_BYTES, FM7_SURFACE_HEIGHT, FM7_SURFACE_WIDTH, Fm7Renderer, RenderInputsFm7,
 };
+#[cfg(feature = "ga1280a")]
 pub use ga1280a::{
     Ga1280aCursorRenderInputs, Ga1280aRenderInputs, Ga1280aRenderMode, compose as compose_ga1280a,
 };
+#[cfg(feature = "msx")]
 pub use msx::{
     MSX_FRAMEBUFFER_BYTES, MSX_SURFACE_HEIGHT, MSX_SURFACE_WIDTH, MSX2_FRAMEBUFFER_BYTES,
     MSX2_SURFACE_WIDTH, MsxRenderer, MsxRendererState, RenderInputsMsx,
 };
+#[cfg(feature = "pc60")]
 pub use pc60::{
     PC60_HEIGHT, PC60_MK2_HEIGHT, PC60_MK2_WIDTH, PC60_WIDTH, Pc60RenderModel, RenderInputs60,
     RenderInputsSr, render as render_pc60, render_sr,
 };
+#[cfg(feature = "pc88")]
 pub use pc88::{GraphicsMode88, Pc88Renderer, RenderInputs88};
+pub use pc98_font::{PC98_CGROM_SIZE, V98_FONT_ROM_SIZE, expand_v98_font_rom};
+#[cfg(feature = "towns")]
 pub use towns::{
     HighResCursor, RenderInputsTowns, SpriteRenderParams, TOWNS_FRAMEBUFFER_BYTES,
     TOWNS_SPRITE_LAYER_VRAM_OFFSET, TOWNS_SURFACE_HEIGHT, TOWNS_SURFACE_WIDTH, TownsLayer,
     TownsRenderer, TownsRendererState, render_sprites, towns_color_to_rgba,
 };
+#[cfg(feature = "va")]
 pub use va::{
     HsyncModeVa, RenderInputsVa, VA_FRAMEBUFFER_BYTES, VA_SURFACE_HEIGHT, VA_SURFACE_WIDTH,
     VaRenderer, VaRendererState,
 };
+#[cfg(feature = "vga")]
 pub use vga::{
     RenderInputsVga, VGA_FALLBACK_HEIGHT, VGA_FALLBACK_WIDTH, VGA_FRAMEBUFFER_BYTES,
     VGA_SURFACE_HEIGHT, VGA_SURFACE_WIDTH, VgaRenderMode, VgaRenderer,
 };
+#[cfg(feature = "x1")]
 pub use x1::{
     RenderInputsX1, X1_FRAMEBUFFER_BYTES, X1_SURFACE_HEIGHT, X1_SURFACE_WIDTH, X1Renderer,
 };
+#[cfg(feature = "x68k")]
 pub use x68k::{
     RenderInputsX68k, X68K_GVRAM_WORDS, X68K_INITIAL_HEIGHT, X68K_INITIAL_WIDTH,
     X68K_PALETTE_ENTRIES, X68K_PIXEL_BYTES, X68K_SPRITE_COUNT, X68K_SPRITE_PATTERN_WORDS,

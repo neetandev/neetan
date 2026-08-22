@@ -11,6 +11,20 @@ rust-version.workspace = true
 default = []
 std = []
 write_png = ["std", "dep:sdl3"]
+# One feature per emulated machine's renderer. The PC-98 compose pass in the
+# crate root is unconditional: the host image selector renders with it whatever
+# machine is running.
+fm7 = []
+ga1280a = []
+msx = []
+pc60 = []
+pc88 = []
+towns = []
+va = []
+vga = []
+x1 = []
+x68k = []
+all-machines = ["fm7", "ga1280a", "msx", "pc60", "pc88", "towns", "va", "vga", "x1", "x68k"]
 
 [dependencies]
 common.workspace = true
@@ -19,7 +33,7 @@ save_state.workspace = true
 sdl3 = { workspace = true, optional = true }
 
 [dev-dependencies]
-software_renderer = { path = ".", features = ["write_png"] }
+software_renderer = { path = ".", features = ["write_png", "all-machines"] }
 common.workspace = true
 cpu.workspace = true
 machine_98.workspace = true

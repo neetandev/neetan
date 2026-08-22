@@ -16,10 +16,11 @@ mod memory;
 mod rom;
 mod scheduler;
 
-pub use bus::{
+pub use bus::AtBus;
+pub use common::input::{
     AT_KEY_CURSOR_DOWN, AT_KEY_CURSOR_LEFT, AT_KEY_CURSOR_RIGHT, AT_KEY_CURSOR_UP, AT_KEY_DELETE,
     AT_KEY_END, AT_KEY_HOME, AT_KEY_INSERT, AT_KEY_KEYPAD_DIVIDE, AT_KEY_KEYPAD_ENTER,
-    AT_KEY_PAGE_DOWN, AT_KEY_PAGE_UP, AT_KEY_RIGHT_ALT, AT_KEY_RIGHT_CTRL, AtBus,
+    AT_KEY_PAGE_DOWN, AT_KEY_PAGE_UP, AT_KEY_RIGHT_ALT, AT_KEY_RIGHT_CTRL,
 };
 pub use config::{AtBootDevice, AtModel, ClockConfig, PIT_CLOCK_HZ};
 pub use machine::{AtMachine, build_automated_machine, build_untraced_machine};
