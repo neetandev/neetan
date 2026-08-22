@@ -2,12 +2,11 @@
 #![deny(missing_docs)]
 
 mod device;
-mod error;
 mod gpu;
 mod legacy;
 mod pipeline;
 
-pub use error::Error;
+pub use common::Error;
 pub use gpu::ModernSdlGpuBackend;
 pub use legacy::LegacySdlBackend;
 use sdl3::video::Window;
@@ -25,7 +24,7 @@ pub const GA_MAX_WIDTH: u32 = 1600;
 pub const GA_MAX_HEIGHT: u32 = 1024;
 
 /// Backend result type.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = common::Result<T>;
 
 /// The instructions to render a frame.
 pub struct RenderInstructions<'a> {

@@ -16,4 +16,5 @@ mod scheduler;
 pub use bus::Pc6000Bus;
 pub use config::{ClockConfig, Pc6000Model};
 pub use machine::{Pc6000Machine, build_automated_machine, build_untraced_machine};
-pub use rom::{LoadedRoms, RomError, load_rom_set};
+pub use rom::{LoadedRoms, load_rom_set};
+pub use rom_loader::RomError;

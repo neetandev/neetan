@@ -23,7 +23,8 @@ pub use bus::{
 };
 pub use config::{AtBootDevice, AtModel, ClockConfig, PIT_CLOCK_HZ};
 pub use machine::{AtMachine, build_automated_machine, build_untraced_machine};
-pub use rom::{LoadedRoms, RomError, load_rom_set};
+pub use rom::{LoadedRoms, load_rom_set};
+pub use rom_loader::RomError;
 
 /// Read-only PC/AT hardware inspection view.
 ///

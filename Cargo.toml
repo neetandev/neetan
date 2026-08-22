@@ -33,6 +33,7 @@ machine_x1 = { path = "crates/machine_x1" }
 r7rs = { path = "crates/r7rs" }
 user_interface = { path = "crates/user_interface" }
 resampler = { path = "crates/resampler" }
+rom_loader = { path = "crates/rom_loader" }
 save_state = { path = "crates/save_state" }
 sdl3 = { path = "crates/sdl3" }
 sdl3_backend = { path = "crates/sdl3_backend" }
@@ -171,6 +172,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.resampler]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.rom_loader]
 opt-level = 3
 codegen-units = 1
 

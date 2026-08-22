@@ -179,7 +179,7 @@ impl<T: TraceSink> MsxBus<T> {
         image: FloppyImage,
         backing: common::MediaBacking,
     ) {
-        let digest = crate::cartridge::digest_hex(&image.to_bytes());
+        let digest = rom_loader::blake3_hex(&image.to_bytes());
         if let Some(mapper) = crate::sound_cartridge_for_disk_blake3(&digest)
             && !self.memory.cartridge_present(1)
         {

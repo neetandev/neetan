@@ -7,7 +7,9 @@
 //! machine needs the AMI CS4031 system BIOS (`chips_1.ami`) and the ET4000AX
 //! VGA BIOS (`et4000.bin`, or the alternate `cvet4kax.bin`).
 
-use std::{collections::HashMap, fmt, path::Path};
+use std::path::Path;
+
+use rom_loader::{RomError, RomSlot, ScanOptions};
 
 /// System BIOS ROM size in bytes.
 const SYSTEM_BIOS_SIZE: usize = 0x1_0000;
@@ -28,21 +30,10 @@ const VGA_BIOS_DIGESTS: &[&str] = &[
     "5e5b51a62a2f5f20a09eb3dc6275d7c4b8af6ad2c9c67c02fc09150e974c4e23",
 ];
 
-/// One ROM slot: its label and accepted content digests.
-struct RomSlot {
-    label: &'static str,
-    accepted: &'static [&'static str],
-}
+const SYSTEM_BIOS_SLOT: RomSlot =
+    RomSlot::new("system-bios", SYSTEM_BIOS_SIZE, SYSTEM_BIOS_DIGESTS);
 
-const SYSTEM_BIOS_SLOT: RomSlot = RomSlot {
-    label: "system-bios",
-    accepted: SYSTEM_BIOS_DIGESTS,
-};
-
-const VGA_BIOS_SLOT: RomSlot = RomSlot {
-    label: "vga-bios",
-    accepted: VGA_BIOS_DIGESTS,
-};
+const VGA_BIOS_SLOT: RomSlot = RomSlot::new("vga-bios", VGA_BIOS_SIZE, VGA_BIOS_DIGESTS);
 
 /// Embedded HLE system BIOS stub ROM (64 KiB), built from `utils/bios_at/bios.asm`.
 static HLE_SYSTEM_BIOS: &[u8; SYSTEM_BIOS_SIZE] = include_bytes!("../../../utils/bios_at/bios.rom");
@@ -80,125 +71,22 @@ impl LoadedRoms {
     }
 }
 
-/// Error encountered while loading a PC/AT ROM set.
-#[derive(Debug)]
-pub enum RomError {
-    /// The ROM directory could not be scanned.
-    Read {
-        /// The directory that failed to read.
-        directory: String,
-        /// The underlying error message.
-        message: String,
-    },
-    /// No candidate image matched a slot's accepted digests.
-    Missing {
-        /// The ROM slot label.
-        label: String,
-        /// The accepted digests for that slot.
-        accepted: Vec<String>,
-    },
-}
-
-impl fmt::Display for RomError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RomError::Read { directory, message } => {
-                write!(
-                    formatter,
-                    "failed to read ROM directory {directory}: {message}"
-                )
-            }
-            RomError::Missing { label, accepted } => write!(
-                formatter,
-                "no ROM matched the {label} slot (accepted digests: {})",
-                accepted.join(", ")
-            ),
-        }
-    }
-}
-
-impl std::error::Error for RomError {}
-
 /// Loads and validates the PC/AT ROM set from `rom_dir`.
 ///
 /// Every regular file in the directory and its immediate subdirectories is
 /// scanned; file names do not matter. Both slots are required.
 pub fn load_rom_set(rom_dir: &Path) -> Result<LoadedRoms, RomError> {
-    let mut by_digest = HashMap::new();
-    hash_directory(rom_dir, &mut by_digest, true)?;
-
-    let take = |slot: &RomSlot| -> Result<Vec<u8>, RomError> {
-        for digest in slot.accepted {
-            if let Some(data) = by_digest.get(*digest) {
-                return Ok(data.clone());
-            }
-        }
-        Err(RomError::Missing {
-            label: slot.label.to_string(),
-            accepted: slot.accepted.iter().map(|d| d.to_string()).collect(),
-        })
+    let options = ScanOptions {
+        accepted_sizes: KNOWN_ROM_SIZES,
+        subdirectory_depth: 1,
+        expand: None,
     };
+    let index = rom_loader::scan_directory(rom_dir, &options)?;
+    let take = |slot: &RomSlot| index.take(slot);
 
     Ok(LoadedRoms {
         system_bios: take(&SYSTEM_BIOS_SLOT)?,
         vga_bios: take(&VGA_BIOS_SLOT)?,
         hle: false,
     })
-}
-
-/// Reads every regular file in `dir` and maps each candidate image's BLAKE3
-/// digest to its bytes, keeping only files of a known ROM size. Descends one
-/// level into subdirectories when `recurse` is set.
-fn hash_directory(
-    dir: &Path,
-    by_digest: &mut HashMap<String, Vec<u8>>,
-    recurse: bool,
-) -> Result<(), RomError> {
-    let entries = std::fs::read_dir(dir).map_err(|error| RomError::Read {
-        directory: dir.display().to_string(),
-        message: error.to_string(),
-    })?;
-
-    for entry in entries {
-        let entry = entry.map_err(|error| RomError::Read {
-            directory: dir.display().to_string(),
-            message: error.to_string(),
-        })?;
-        let path = entry.path();
-        if path.is_dir() {
-            if recurse {
-                hash_directory(&path, by_digest, false)?;
-            }
-            continue;
-        }
-        if !path.is_file() {
-            continue;
-        }
-        let data = match std::fs::read(&path) {
-            Ok(data) => data,
-            Err(_) => continue,
-        };
-        if !KNOWN_ROM_SIZES.contains(&data.len()) {
-            continue;
-        }
-        by_digest.entry(blake3_hex(&data)).or_insert(data);
-    }
-
-    Ok(())
-}
-
-/// Returns the lowercase hexadecimal BLAKE3 digest of `data`.
-fn blake3_hex(data: &[u8]) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(data);
-    let mut digest = [0u8; 32];
-    hasher.finalize(&mut digest);
-
-    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut hex = String::with_capacity(64);
-    for byte in digest {
-        hex.push(HEX_DIGITS[(byte >> 4) as usize] as char);
-        hex.push(HEX_DIGITS[(byte & 0x0F) as usize] as char);
-    }
-    hex
 }

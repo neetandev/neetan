@@ -17,9 +17,10 @@
 //! and leaves the decision of which ROMs are required to the caller, which
 //! depends on the machine model and whether real-BIOS mode is enabled.
 
-use std::{collections::HashMap, fmt, path::Path};
+use std::path::Path;
 
 use common::MachineModel;
+use rom_loader::{RomError, RomIndex, ScanOptions};
 
 /// Dual-bank BIOS image size (ITF bank + BIOS bank), 192 KB.
 const BIOS_ROM_SIZE: usize = 0x30000;
@@ -155,33 +156,6 @@ pub struct LoadedRoms {
     pub sound: Option<Vec<u8>>,
 }
 
-/// Error encountered while loading a PC-98 ROM set.
-#[derive(Debug)]
-pub enum RomError {
-    /// The ROM directory could not be scanned.
-    Read {
-        /// The directory that failed to scan.
-        directory: String,
-        /// The underlying I/O error message.
-        message: String,
-    },
-}
-
-impl fmt::Display for RomError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RomError::Read { directory, message } => {
-                write!(
-                    formatter,
-                    "failed to read ROM directory {directory}: {message}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for RomError {}
-
 /// Returns the MAME ROM set that supplies the BIOS chips for a model, or `None`
 /// for models without a supported real-BIOS boot path (PC-9821).
 pub fn required_mame_set(model: MachineModel) -> Option<&'static str> {
@@ -246,34 +220,33 @@ pub fn accepted_bios_digests(model: MachineModel) -> Vec<String> {
 /// font and sound ROMs are matched directly. File names do not matter. All
 /// slots are optional here; missing ROMs come back as `None`.
 pub fn load_rom_set(model: MachineModel, rom_dir: &Path) -> Result<LoadedRoms, RomError> {
-    let by_digest = hash_directory(rom_dir)?;
+    let index = rom_loader::scan_directory(rom_dir, &ScanOptions::ANY_SIZE)?;
 
     let bios = bios_chips(model).and_then(|(_chips, expected)| {
-        let image = assemble_bios(model, &by_digest)?;
-        (blake3_hex(&image) == expected).then_some(image)
+        let image = assemble_bios(model, &index)?;
+        (rom_loader::blake3_hex(&image) == expected).then_some(image)
     });
 
     let font = font_digests(model).iter().find_map(|digest| {
-        by_digest
-            .get(*digest)
+        index
+            .bytes(digest)
             .filter(|data| data.len() == FONT_ROM_SIZE)
-            .cloned()
+            .map(<[u8]>::to_vec)
     });
 
-    let sound = by_digest
-        .get(SOUND_DIGEST)
+    let sound = index
+        .bytes(SOUND_DIGEST)
         .filter(|data| data.len() == SOUND_ROM_SIZE)
-        .cloned();
+        .map(<[u8]>::to_vec);
 
     Ok(LoadedRoms { bios, font, sound })
 }
 
 /// Fetches a chip's bytes by BLAKE3 digest, verifying the expected size.
-fn chip<'a>(by_digest: &'a HashMap<String, Vec<u8>>, chip: &Chip) -> Option<&'a [u8]> {
-    by_digest
-        .get(chip.digest)
+fn chip<'a>(index: &'a RomIndex, chip: &Chip) -> Option<&'a [u8]> {
+    index
+        .bytes(chip.digest)
         .filter(|data| data.len() == chip.size)
-        .map(Vec::as_slice)
 }
 
 /// Copies `src` into `dst` byte by byte at `start`, `start + 2`, ... matching
@@ -296,23 +269,23 @@ fn canonical_dual_bank(page: &[u8]) -> Vec<u8> {
 
 /// Assembles the model's dual-bank BIOS image from its chips, or `None` if any
 /// chip is missing.
-fn assemble_bios(model: MachineModel, by_digest: &HashMap<String, Vec<u8>>) -> Option<Vec<u8>> {
+fn assemble_bios(model: MachineModel, index: &RomIndex) -> Option<Vec<u8>> {
     match model {
         MachineModel::PC9801F => {
             let mut page = vec![0xFFu8; BIOS_PAGE_SIZE];
-            interleave(&mut page, chip(by_digest, &F_URM01)?, 0x00000);
-            interleave(&mut page, chip(by_digest, &F_URM02)?, 0x00001);
-            interleave(&mut page, chip(by_digest, &F_URM03)?, 0x08000);
-            interleave(&mut page, chip(by_digest, &F_URM04)?, 0x08001);
-            interleave(&mut page, chip(by_digest, &F_URM05)?, 0x10000);
-            interleave(&mut page, chip(by_digest, &F_URM06)?, 0x10001);
+            interleave(&mut page, chip(index, &F_URM01)?, 0x00000);
+            interleave(&mut page, chip(index, &F_URM02)?, 0x00001);
+            interleave(&mut page, chip(index, &F_URM03)?, 0x08000);
+            interleave(&mut page, chip(index, &F_URM04)?, 0x08001);
+            interleave(&mut page, chip(index, &F_URM05)?, 0x10000);
+            interleave(&mut page, chip(index, &F_URM06)?, 0x10001);
             Some(canonical_dual_bank(&page))
         }
         MachineModel::PC9801VM => {
-            let cpu_1a = chip(by_digest, &VM_CPU_1A)?;
-            let cpu_2a = chip(by_digest, &VM_CPU_2A)?;
-            let cpu_3a = chip(by_digest, &VM_CPU_3A)?;
-            let cpu_4a = chip(by_digest, &VM_CPU_4A)?;
+            let cpu_1a = chip(index, &VM_CPU_1A)?;
+            let cpu_2a = chip(index, &VM_CPU_2A)?;
+            let cpu_3a = chip(index, &VM_CPU_3A)?;
+            let cpu_4a = chip(index, &VM_CPU_4A)?;
             let mut page = vec![0xFFu8; BIOS_PAGE_SIZE];
             interleave(&mut page, cpu_4a, 0x10000);
             interleave(&mut page, cpu_1a, 0x10001);
@@ -324,10 +297,10 @@ fn assemble_bios(model: MachineModel, by_digest: &HashMap<String, Vec<u8>>) -> O
         }
         MachineModel::PC9801VX => {
             let mut biosrom = vec![0xFFu8; 0x20000];
-            interleave(&mut biosrom, chip(by_digest, &VX_YLL01)?, 0x00000);
-            interleave(&mut biosrom, chip(by_digest, &VX_YLL03)?, 0x00001);
-            interleave(&mut biosrom, chip(by_digest, &VX_YLL02)?, 0x10000);
-            interleave(&mut biosrom, chip(by_digest, &VX_YLL04)?, 0x10001);
+            interleave(&mut biosrom, chip(index, &VX_YLL01)?, 0x00000);
+            interleave(&mut biosrom, chip(index, &VX_YLL03)?, 0x00001);
+            interleave(&mut biosrom, chip(index, &VX_YLL02)?, 0x10000);
+            interleave(&mut biosrom, chip(index, &VX_YLL04)?, 0x10001);
             let mut image = vec![0xFFu8; BIOS_ROM_SIZE];
             image[0x10000..0x18000].copy_from_slice(&biosrom[0x18000..0x20000]);
             image[0x18000..0x20000].copy_from_slice(&biosrom[0x08000..0x10000]);
@@ -336,8 +309,8 @@ fn assemble_bios(model: MachineModel, by_digest: &HashMap<String, Vec<u8>>) -> O
             Some(image)
         }
         MachineModel::PC9801RS | MachineModel::PC9801RA => {
-            let itf = chip(by_digest, &RS_ITF)?;
-            let bios = chip(by_digest, &RS_BIOS)?;
+            let itf = chip(index, &RS_ITF)?;
+            let bios = chip(index, &RS_BIOS)?;
             let mut image = vec![0xFFu8; BIOS_ROM_SIZE];
             image[ITF_WINDOW_OFFSET..ITF_WINDOW_OFFSET + KIB_32].copy_from_slice(itf);
             image[BIOS_WINDOW_OFFSET..BIOS_WINDOW_OFFSET + BIOS_PAGE_SIZE].copy_from_slice(bios);
@@ -345,47 +318,6 @@ fn assemble_bios(model: MachineModel, by_digest: &HashMap<String, Vec<u8>>) -> O
         }
         MachineModel::PC9821AS | MachineModel::PC9821AP => None,
     }
-}
-
-/// Reads every regular file in `dir` and maps its BLAKE3 digest to its contents.
-fn hash_directory(dir: &Path) -> Result<HashMap<String, Vec<u8>>, RomError> {
-    let entries = std::fs::read_dir(dir).map_err(|error| RomError::Read {
-        directory: dir.display().to_string(),
-        message: error.to_string(),
-    })?;
-
-    let mut by_digest = HashMap::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| RomError::Read {
-            directory: dir.display().to_string(),
-            message: error.to_string(),
-        })?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let data = match std::fs::read(&path) {
-            Ok(data) => data,
-            Err(_) => continue,
-        };
-        by_digest.entry(blake3_hex(&data)).or_insert(data);
-    }
-    Ok(by_digest)
-}
-
-fn blake3_hex(data: &[u8]) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(data);
-    let mut digest = [0u8; 32];
-    hasher.finalize(&mut digest);
-
-    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut hex = String::with_capacity(64);
-    for byte in digest {
-        hex.push(HEX_DIGITS[(byte >> 4) as usize] as char);
-        hex.push(HEX_DIGITS[(byte & 0x0F) as usize] as char);
-    }
-    hex
 }
 
 #[cfg(test)]
@@ -423,20 +355,21 @@ mod tests {
     /// Builds a digest map from `(bytes, digest-key)` pairs, keying each blob by
     /// an arbitrary digest string so assembly logic can be exercised without the
     /// real ROM content.
-    fn map(entries: &[(&str, Vec<u8>)]) -> HashMap<String, Vec<u8>> {
-        entries
-            .iter()
-            .map(|(digest, data)| (digest.to_string(), data.clone()))
-            .collect()
+    fn map(entries: &[(&str, Vec<u8>)]) -> RomIndex {
+        RomIndex::from_entries(
+            entries
+                .iter()
+                .map(|(digest, data)| (digest.to_string(), data.clone())),
+        )
     }
 
     #[test]
     fn assemble_ra_places_itf_and_bios_windows() {
-        let by_digest = map(&[
+        let index = map(&[
             (RS_ITF.digest, vec![0xAA; RS_ITF.size]),
             (RS_BIOS.digest, vec![0xBB; RS_BIOS.size]),
         ]);
-        let image = assemble_bios(MachineModel::PC9801RA, &by_digest).expect("assembled");
+        let image = assemble_bios(MachineModel::PC9801RA, &index).expect("assembled");
         assert_eq!(image.len(), BIOS_ROM_SIZE);
         assert!(image[0x00000..0x10000].iter().all(|&b| b == 0xFF));
         assert!(image[0x10000..0x18000].iter().all(|&b| b == 0xAA));
@@ -447,13 +380,13 @@ mod tests {
     fn assemble_vx_rearranges_biosrom() {
         // Fill each yll chip with a distinct byte so the ROM_COPY layout is
         // observable in the assembled image.
-        let by_digest = map(&[
+        let index = map(&[
             (VX_YLL01.digest, vec![0x01; VX_YLL01.size]),
             (VX_YLL02.digest, vec![0x02; VX_YLL02.size]),
             (VX_YLL03.digest, vec![0x03; VX_YLL03.size]),
             (VX_YLL04.digest, vec![0x04; VX_YLL04.size]),
         ]);
-        let image = assemble_bios(MachineModel::PC9801VX, &by_digest).expect("assembled");
+        let image = assemble_bios(MachineModel::PC9801VX, &index).expect("assembled");
         // biosrom[0x18000..0x20000] is the yll02/yll04 interleave -> ITF window.
         assert_eq!(image[0x10000], 0x02);
         assert_eq!(image[0x10001], 0x04);
@@ -464,8 +397,8 @@ mod tests {
 
     #[test]
     fn assemble_returns_none_when_chip_missing() {
-        let by_digest = map(&[(RS_ITF.digest, vec![0xAA; RS_ITF.size])]);
-        assert!(assemble_bios(MachineModel::PC9801RA, &by_digest).is_none());
+        let index = map(&[(RS_ITF.digest, vec![0xAA; RS_ITF.size])]);
+        assert!(assemble_bios(MachineModel::PC9801RA, &index).is_none());
     }
 
     /// Assembles every model's BIOS from a real MAME ROM directory and checks
@@ -489,7 +422,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("no BIOS assembled for {model}"));
             assert_eq!(bios.len(), BIOS_ROM_SIZE);
             assert_eq!(
-                blake3_hex(&bios),
+                rom_loader::blake3_hex(&bios),
                 expected,
                 "BIOS digest mismatch for {model}"
             );

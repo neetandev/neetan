@@ -5,7 +5,9 @@
 //! against a table of accepted digests per slot. This way any dump layout works
 //! regardless of how the files are named, and stray files are ignored.
 
-use std::{collections::HashMap, fmt, path::Path};
+use std::path::Path;
+
+use rom_loader::{RomError, RomSlot, ScanOptions};
 
 const ROM00_SIZE: usize = 0x8_0000;
 const ROM08_SIZE: usize = 0x2_0000;
@@ -13,15 +15,6 @@ const ROM1_SIZE: usize = 0x2_0000;
 const FONT_SIZE: usize = 0x5_0000;
 const DICTIONARY_SIZE: usize = 0x8_0000;
 const SUBSYS_SIZE: usize = 0x2000;
-
-/// One ROM slot: its human label, expected size, and the BLAKE3 digests that
-/// are accepted as valid content for it. Multiple digests allow several known
-/// good dumps to satisfy the same slot.
-struct RomSlot {
-    label: &'static str,
-    size: usize,
-    accepted: &'static [&'static str],
-}
 
 /// The set of ROM slots for the PC-88VA2.
 struct RomTables {
@@ -83,52 +76,6 @@ pub struct LoadedRoms {
     pub subsys: Vec<u8>,
 }
 
-/// Error encountered while loading a PC-88VA2 ROM set.
-#[derive(Debug)]
-pub enum RomError {
-    /// The ROM directory could not be scanned.
-    Read {
-        /// The directory that failed to read.
-        directory: String,
-        /// The underlying error message.
-        message: String,
-    },
-    /// No file in the directory matched a slot's accepted digests.
-    Missing {
-        /// The ROM slot label.
-        label: String,
-        /// The accepted digests for that slot.
-        accepted: Vec<String>,
-    },
-}
-
-impl fmt::Display for RomError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RomError::Read { directory, message } => {
-                write!(
-                    formatter,
-                    "failed to read ROM directory {directory}: {message}"
-                )
-            }
-            RomError::Missing { label, accepted } => write!(
-                formatter,
-                "no ROM in the directory matched the {label} slot (accepted digests: {})",
-                accepted.join(", ")
-            ),
-        }
-    }
-}
-
-impl std::error::Error for RomError {}
-
-fn missing_rom(slot: &RomSlot) -> RomError {
-    RomError::Missing {
-        label: slot.label.to_string(),
-        accepted: slot.accepted.iter().map(|d| d.to_string()).collect(),
-    }
-}
-
 /// Loads and validates the PC-88VA2 ROM set.
 ///
 /// Every file in `rom_dir` is hashed and matched against the accepted digests
@@ -140,16 +87,8 @@ pub fn load_rom_set(rom_dir: &Path) -> Result<LoadedRoms, RomError> {
 }
 
 fn load_rom_set_with_tables(rom_dir: &Path, tables: &RomTables) -> Result<LoadedRoms, RomError> {
-    let by_digest = hash_directory(rom_dir, tables)?;
-
-    let take = |slot: &RomSlot| -> Result<Vec<u8>, RomError> {
-        for digest in slot.accepted {
-            if let Some(data) = by_digest.get(*digest) {
-                return Ok(data.clone());
-            }
-        }
-        Err(missing_rom(slot))
-    };
+    let index = rom_loader::scan_directory(rom_dir, &ScanOptions::sizes(&rom_sizes(tables)))?;
+    let take = |slot: &RomSlot| index.take(slot);
     let rom00 = take(&tables.rom00)?;
     let rom08 = take(&tables.rom08)?;
     let rom1 = take(&tables.rom1)?;
@@ -167,37 +106,8 @@ fn load_rom_set_with_tables(rom_dir: &Path, tables: &RomTables) -> Result<Loaded
     })
 }
 
-/// Reads every regular file in `dir` whose size matches a known ROM slot and
-/// maps its BLAKE3 digest to its contents.
-fn hash_directory(dir: &Path, tables: &RomTables) -> Result<HashMap<String, Vec<u8>>, RomError> {
-    let entries = std::fs::read_dir(dir).map_err(|error| RomError::Read {
-        directory: dir.display().to_string(),
-        message: error.to_string(),
-    })?;
-
-    let mut by_digest = HashMap::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| RomError::Read {
-            directory: dir.display().to_string(),
-            message: error.to_string(),
-        })?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let data = match std::fs::read(&path) {
-            Ok(data) => data,
-            Err(_) => continue,
-        };
-        if !is_known_rom_size(data.len(), tables) {
-            continue;
-        }
-        by_digest.entry(blake3_hex(&data)).or_insert(data);
-    }
-    Ok(by_digest)
-}
-
-fn is_known_rom_size(size: usize, tables: &RomTables) -> bool {
+/// File sizes worth hashing when scanning a ROM directory.
+fn rom_sizes(tables: &RomTables) -> [usize; 6] {
     [
         tables.rom00.size,
         tables.rom08.size,
@@ -206,22 +116,6 @@ fn is_known_rom_size(size: usize, tables: &RomTables) -> bool {
         tables.dictionary.size,
         tables.subsys.size,
     ]
-    .contains(&size)
-}
-
-fn blake3_hex(data: &[u8]) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(data);
-    let mut digest = [0u8; 32];
-    hasher.finalize(&mut digest);
-
-    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut hex = String::with_capacity(64);
-    for byte in digest {
-        hex.push(HEX_DIGITS[(byte >> 4) as usize] as char);
-        hex.push(HEX_DIGITS[(byte & 0x0F) as usize] as char);
-    }
-    hex
 }
 
 #[cfg(test)]
@@ -295,12 +189,16 @@ mod tests {
         subsys: &[u8],
     ) -> RomTables {
         RomTables {
-            rom00: slot("rom00", ROM00_SIZE, leak(blake3_hex(rom00))),
-            rom08: slot("rom08", ROM08_SIZE, leak(blake3_hex(rom08))),
-            rom1: slot("rom1", ROM1_SIZE, leak(blake3_hex(rom1))),
-            font: slot("font", FONT_SIZE, leak(blake3_hex(font))),
-            dictionary: slot("dictionary", DICTIONARY_SIZE, leak(blake3_hex(dictionary))),
-            subsys: slot("subsys", SUBSYS_SIZE, leak(blake3_hex(subsys))),
+            rom00: slot("rom00", ROM00_SIZE, leak(rom_loader::blake3_hex(rom00))),
+            rom08: slot("rom08", ROM08_SIZE, leak(rom_loader::blake3_hex(rom08))),
+            rom1: slot("rom1", ROM1_SIZE, leak(rom_loader::blake3_hex(rom1))),
+            font: slot("font", FONT_SIZE, leak(rom_loader::blake3_hex(font))),
+            dictionary: slot(
+                "dictionary",
+                DICTIONARY_SIZE,
+                leak(rom_loader::blake3_hex(dictionary)),
+            ),
+            subsys: slot("subsys", SUBSYS_SIZE, leak(rom_loader::blake3_hex(subsys))),
         }
     }
 

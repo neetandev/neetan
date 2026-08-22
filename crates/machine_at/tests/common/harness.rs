@@ -275,18 +275,7 @@ pub fn mode_pixel<T: TraceSink>(
 pub fn framebuffer_hash<T: TraceSink>(machine: &AtMachine<T>) -> String {
     let (width, height) = machine.display_dimensions();
     let bytes = &machine.display_framebuffer()[..(width * height * 4) as usize];
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(bytes);
-    let mut digest = [0u8; 32];
-    hasher.finalize(&mut digest);
-
-    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut hex = String::with_capacity(64);
-    for byte in digest {
-        hex.push(HEX_DIGITS[(byte >> 4) as usize] as char);
-        hex.push(HEX_DIGITS[(byte & 0x0F) as usize] as char);
-    }
-    hex
+    rom_loader::blake3_hex(bytes)
 }
 
 /// A VGA register file read back through the I/O ports for comparison with

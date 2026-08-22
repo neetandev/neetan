@@ -1,6 +1,8 @@
 //! Content-addressed X68000 ROM-set loading.
 
-use std::{collections::HashMap, fmt, path::Path};
+use std::{fmt, path::Path};
+
+use rom_loader::{DirectoryScanError, RomIndex, RomSlot, ScanOptions};
 
 use crate::X68kModel;
 
@@ -33,19 +35,8 @@ const XVI_IPL_DIGEST: &str = "06d3d6365d2b4079abf37d362a393f9224e472b8321e1826fe
 /// BLAKE3 digest of the XVI-compatible internal-SCSI ROM.
 const XVI_SCSI_DIGEST: &str = "08e08002db7e47bdf6f2f60066f7253eb94791fb2aa17b392e26d23d72e0c19f";
 
-#[derive(Clone, Copy)]
-struct RomSlot {
-    label: &'static str,
-    size: usize,
-    digest: &'static str,
-}
-
 /// Shared character-generator ROM slot definition.
-const CGROM_SLOT: RomSlot = RomSlot {
-    label: "CGROM",
-    size: CGROM_SIZE,
-    digest: CGROM_DIGEST,
-};
+const CGROM_SLOT: RomSlot = RomSlot::new("CGROM", CGROM_SIZE, &[CGROM_DIGEST]);
 
 /// Raw bytes of a validated X68000 ROM set.
 #[derive(Debug, Clone)]
@@ -129,10 +120,20 @@ impl fmt::Display for RomError {
 
 impl std::error::Error for RomError {}
 
+impl From<DirectoryScanError> for RomError {
+    fn from(error: DirectoryScanError) -> Self {
+        Self::Read {
+            directory: error.directory,
+            message: error.message,
+        }
+    }
+}
+
 /// Loads the ROMs required by `model` from one non-recursive directory scan.
 pub fn load_rom_set(model: X68kModel, rom_directory: &Path) -> Result<LoadedRoms, RomError> {
-    let files = hash_directory(rom_directory)?;
-    load_from_files(model, &files, &production_slots())
+    let options = ScanOptions::sizes(&[CGROM_SIZE, IPL_SIZE, SPLIT_IPL_SIZE, SCSI_ROM_SIZE]);
+    let index = rom_loader::scan_directory(rom_directory, &options)?;
+    load_from_files(model, &index, &production_slots())
 }
 
 struct ModelSlots {
@@ -150,49 +151,45 @@ fn production_slots() -> [ModelSlots; 3] {
         ModelSlots {
             cgrom: CGROM_SLOT,
             ipl: None,
-            ipl_even: Some(RomSlot {
-                label: "X68000 IPL even half",
-                size: SPLIT_IPL_SIZE,
-                digest: ORIGINAL_IPL_EVEN_DIGEST,
-            }),
-            ipl_odd: Some(RomSlot {
-                label: "X68000 IPL odd half",
-                size: SPLIT_IPL_SIZE,
-                digest: ORIGINAL_IPL_ODD_DIGEST,
-            }),
+            ipl_even: Some(RomSlot::new(
+                "X68000 IPL even half",
+                SPLIT_IPL_SIZE,
+                &[ORIGINAL_IPL_EVEN_DIGEST],
+            )),
+            ipl_odd: Some(RomSlot::new(
+                "X68000 IPL odd half",
+                SPLIT_IPL_SIZE,
+                &[ORIGINAL_IPL_ODD_DIGEST],
+            )),
             scsi: None,
             assembled_ipl_digest: ORIGINAL_IPL_DIGEST,
         },
         ModelSlots {
             cgrom: CGROM_SLOT,
-            ipl: Some(RomSlot {
-                label: "X68000 SUPER IPL",
-                size: IPL_SIZE,
-                digest: SUPER_IPL_DIGEST,
-            }),
+            ipl: Some(RomSlot::new(
+                "X68000 SUPER IPL",
+                IPL_SIZE,
+                &[SUPER_IPL_DIGEST],
+            )),
             ipl_even: None,
             ipl_odd: None,
-            scsi: Some(RomSlot {
-                label: "X68000 SUPER internal SCSI",
-                size: SCSI_ROM_SIZE,
-                digest: SUPER_SCSI_DIGEST,
-            }),
+            scsi: Some(RomSlot::new(
+                "X68000 SUPER internal SCSI",
+                SCSI_ROM_SIZE,
+                &[SUPER_SCSI_DIGEST],
+            )),
             assembled_ipl_digest: SUPER_IPL_DIGEST,
         },
         ModelSlots {
             cgrom: CGROM_SLOT,
-            ipl: Some(RomSlot {
-                label: "X68000 XVI IPL",
-                size: IPL_SIZE,
-                digest: XVI_IPL_DIGEST,
-            }),
+            ipl: Some(RomSlot::new("X68000 XVI IPL", IPL_SIZE, &[XVI_IPL_DIGEST])),
             ipl_even: None,
             ipl_odd: None,
-            scsi: Some(RomSlot {
-                label: "X68000 XVI compatibility SCSI",
-                size: SCSI_ROM_SIZE,
-                digest: XVI_SCSI_DIGEST,
-            }),
+            scsi: Some(RomSlot::new(
+                "X68000 XVI compatibility SCSI",
+                SCSI_ROM_SIZE,
+                &[XVI_SCSI_DIGEST],
+            )),
             assembled_ipl_digest: XVI_IPL_DIGEST,
         },
     ]
@@ -201,7 +198,7 @@ fn production_slots() -> [ModelSlots; 3] {
 /// Loads a model from previously hashed files.
 fn load_from_files(
     model: X68kModel,
-    files: &HashMap<String, Vec<Vec<u8>>>,
+    index: &RomIndex,
     all_slots: &[ModelSlots; 3],
 ) -> Result<LoadedRoms, RomError> {
     let slots = &all_slots[match model {
@@ -209,24 +206,24 @@ fn load_from_files(
         X68kModel::X68000Super => 1,
         X68kModel::X68000Xvi => 2,
     }];
-    let cgrom = take_slot(files, slots.cgrom)?;
+    let cgrom = take_slot(index, slots.cgrom)?;
     let ipl = if let Some(slot) = slots.ipl {
-        take_slot(files, slot)?
+        take_slot(index, slot)?
     } else {
-        let even = take_slot(files, slots.ipl_even.expect("original even IPL slot"))?;
-        let odd = take_slot(files, slots.ipl_odd.expect("original odd IPL slot"))?;
+        let even = take_slot(index, slots.ipl_even.expect("original even IPL slot"))?;
+        let odd = take_slot(index, slots.ipl_odd.expect("original odd IPL slot"))?;
         let mut interleaved = Vec::with_capacity(IPL_SIZE);
         for (even_byte, odd_byte) in even.into_iter().zip(odd) {
             interleaved.push(even_byte);
             interleaved.push(odd_byte);
         }
-        let digest = blake3_hex(&interleaved);
+        let digest = rom_loader::blake3_hex(&interleaved);
         if digest != slots.assembled_ipl_digest {
             return Err(RomError::InvalidInterleave { digest });
         }
         interleaved
     };
-    let internal_scsi = slots.scsi.map(|slot| take_slot(files, slot)).transpose()?;
+    let internal_scsi = slots.scsi.map(|slot| take_slot(index, slot)).transpose()?;
     Ok(LoadedRoms {
         model,
         cgrom,
@@ -237,65 +234,20 @@ fn load_from_files(
 }
 
 /// Takes the unique file matching one ROM slot.
-fn take_slot(files: &HashMap<String, Vec<Vec<u8>>>, slot: RomSlot) -> Result<Vec<u8>, RomError> {
-    match files.get(slot.digest) {
-        None => Err(RomError::Missing {
+fn take_slot(index: &RomIndex, slot: RomSlot) -> Result<Vec<u8>, RomError> {
+    let digest = slot.accepted[0];
+    match index.match_count(digest) {
+        0 => Err(RomError::Missing {
             label: slot.label.to_string(),
             size: slot.size,
-            digest: slot.digest.to_string(),
+            digest: digest.to_string(),
         }),
-        Some(matches) if matches.len() > 1 => Err(RomError::Duplicate {
+        1 => Ok(index.bytes(digest).expect("matched image").to_vec()),
+        _ => Err(RomError::Duplicate {
             label: slot.label.to_string(),
-            digest: slot.digest.to_string(),
+            digest: digest.to_string(),
         }),
-        Some(matches) => Ok(matches[0].clone()),
     }
-}
-
-/// Hashes candidate files in one directory.
-fn hash_directory(directory: &Path) -> Result<HashMap<String, Vec<Vec<u8>>>, RomError> {
-    let entries = std::fs::read_dir(directory).map_err(|error| RomError::Read {
-        directory: directory.display().to_string(),
-        message: error.to_string(),
-    })?;
-    let mut files: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| RomError::Read {
-            directory: directory.display().to_string(),
-            message: error.to_string(),
-        })?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Ok(data) = std::fs::read(path) else {
-            continue;
-        };
-        if !matches!(
-            data.len(),
-            CGROM_SIZE | IPL_SIZE | SPLIT_IPL_SIZE | SCSI_ROM_SIZE
-        ) {
-            continue;
-        }
-        files.entry(blake3_hex(&data)).or_default().push(data);
-    }
-    Ok(files)
-}
-
-/// Formats a BLAKE3 digest as lowercase hexadecimal.
-fn blake3_hex(data: &[u8]) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(data);
-    let mut digest = [0; 32];
-    hasher.finalize(&mut digest);
-    /// Lowercase hexadecimal digits used to format BLAKE3 digests.
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut text = String::with_capacity(64);
-    for byte in digest {
-        text.push(HEX[(byte >> 4) as usize] as char);
-        text.push(HEX[(byte & 15) as usize] as char);
-    }
-    text
 }
 
 #[cfg(test)]
@@ -303,11 +255,9 @@ mod tests {
     use super::*;
 
     fn slot(label: &'static str, data: &[u8]) -> RomSlot {
-        RomSlot {
-            label,
-            size: data.len(),
-            digest: Box::leak(blake3_hex(data).into_boxed_str()),
-        }
+        let digest: &'static str = Box::leak(rom_loader::blake3_hex(data).into_boxed_str());
+        let accepted: &'static [&'static str] = Box::leak(vec![digest].into_boxed_slice());
+        RomSlot::new(label, data.len(), accepted)
     }
 
     #[test]
@@ -321,12 +271,9 @@ mod tests {
             ipl_even: None,
             ipl_odd: None,
             scsi: Some(slot("scsi", &scsi)),
-            assembled_ipl_digest: Box::leak(blake3_hex(&ipl).into_boxed_str()),
+            assembled_ipl_digest: Box::leak(rom_loader::blake3_hex(&ipl).into_boxed_str()),
         };
-        let mut files = HashMap::new();
-        for data in [&cgrom, &ipl, &scsi, &vec![9; 5]] {
-            files.insert(blake3_hex(data), vec![data.clone()]);
-        }
+        let index = RomIndex::from_images([cgrom.clone(), ipl.clone(), scsi.clone(), vec![9; 5]]);
         let all_slots = [
             ModelSlots {
                 scsi: None,
@@ -335,7 +282,7 @@ mod tests {
             slots_for_clone(&slots),
             slots_for_clone(&slots),
         ];
-        let loaded = load_from_files(X68kModel::X68000Super, &files, &all_slots).unwrap();
+        let loaded = load_from_files(X68kModel::X68000Super, &index, &all_slots).unwrap();
         assert_eq!(loaded.cgrom, cgrom);
         assert_eq!(loaded.ipl, ipl);
         assert_eq!(loaded.internal_scsi, Some(scsi));
@@ -356,9 +303,9 @@ mod tests {
     fn duplicate_slot_is_rejected() {
         let data = vec![1; 8];
         let selected = slot("test", &data);
-        let files = HashMap::from([(selected.digest.to_string(), vec![data.clone(), data])]);
+        let index = RomIndex::from_images([data.clone(), data]);
         assert!(matches!(
-            take_slot(&files, selected),
+            take_slot(&index, selected),
             Err(RomError::Duplicate { .. })
         ));
     }

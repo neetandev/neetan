@@ -15,4 +15,5 @@ mod scheduler;
 pub use bus::Pc88VaBus;
 pub use config::{ClockConfig, Pc88VaModel};
 pub use machine::{Pc88VaMachine, build_automated_machine, build_untraced_machine, reset_cpu};
-pub use rom::{LoadedRoms, RomError, load_rom_set};
+pub use rom::{LoadedRoms, load_rom_set};
+pub use rom_loader::RomError;

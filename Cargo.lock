@@ -113,10 +113,10 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 name = "machine_60"
 version = "2026.8.0"
 dependencies = [
- "blake3",
  "common",
  "cpu",
  "device",
+ "rom_loader",
  "save_state",
  "software_renderer",
  "ymfm_oxide",
@@ -126,10 +126,10 @@ dependencies = [
 name = "machine_88"
 version = "2026.8.0"
 dependencies = [
- "blake3",
  "common",
  "cpu",
  "device",
+ "rom_loader",
  "save_state",
  "software_renderer",
 ]
@@ -138,10 +138,10 @@ dependencies = [
 name = "machine_88va"
 version = "2026.8.0"
 dependencies = [
- "blake3",
  "common",
  "cpu",
  "device",
+ "rom_loader",
  "save_state",
  "software_renderer",
 ]
@@ -150,12 +150,12 @@ dependencies = [
 name = "machine_98"
 version = "2026.8.0"
 dependencies = [
- "blake3",
  "common",
  "cpu",
  "device",
  "dos",
  "resampler",
+ "rom_loader",
  "save_state",
  "software_renderer",
 ]
@@ -164,11 +164,11 @@ dependencies = [
 name = "machine_at"
 version = "2026.8.0"
 dependencies = [
- "blake3",
  "common",
  "cpu",
  "device",
  "resampler",
+ "rom_loader",
  "save_state",
  "software_renderer",
 ]
@@ -194,10 +194,10 @@ dependencies = [
 name = "machine_fm7"
 version = "2026.8.0"
 dependencies = [
- "blake3",
  "common",
  "cpu",
  "device",
+ "rom_loader",
  "save_state",
  "software_renderer",
 ]
@@ -206,10 +206,10 @@ dependencies = [
 name = "machine_msx"
 version = "2026.8.0"
 dependencies = [
- "blake3",
  "common",
  "cpu",
  "device",
+ "rom_loader",
  "save_state",
  "software_renderer",
  "ymfm_oxide",
@@ -219,10 +219,10 @@ dependencies = [
 name = "machine_towns"
 version = "2026.8.0"
 dependencies = [
- "blake3",
  "common",
  "cpu",
  "device",
+ "rom_loader",
  "save_state",
  "software_renderer",
 ]
@@ -231,10 +231,10 @@ dependencies = [
 name = "machine_x1"
 version = "2026.8.0"
 dependencies = [
- "blake3",
  "common",
  "cpu",
  "device",
+ "rom_loader",
  "save_state",
  "software_renderer",
  "ymfm_oxide",
@@ -244,11 +244,11 @@ dependencies = [
 name = "machine_x68k"
 version = "2026.8.0"
 dependencies = [
- "blake3",
  "common",
  "cpu_68k",
  "device",
  "dos",
+ "rom_loader",
  "save_state",
  "software_renderer",
 ]
@@ -296,6 +296,13 @@ name = "resampler"
 version = "0.1.0"
 dependencies = [
  "save_state",
+]
+
+[[package]]
+name = "rom_loader"
+version = "2026.8.0"
+dependencies = [
+ "blake3",
 ]
 
 [[package]]

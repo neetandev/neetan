@@ -80,3 +80,9 @@ impl From<common::ContextError> for InitError {
         }
     }
 }
+
+impl From<InitError> for common::Error {
+    fn from(error: InitError) -> Self {
+        Self::Message(common::StringError(error.message))
+    }
+}

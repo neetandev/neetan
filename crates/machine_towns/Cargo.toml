@@ -16,5 +16,5 @@ common = { workspace = true, features = ["std"] }
 cpu.workspace = true
 device.workspace = true
 software_renderer = { workspace = true, features = ["std"] }
-blake3.workspace = true
+rom_loader.workspace = true
 save_state = { workspace = true, features = ["std"] }

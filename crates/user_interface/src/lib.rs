@@ -14,6 +14,7 @@ use std::{
 };
 
 use audio_engine::AudioEngine;
+pub use common::Error;
 use common::{Context, JoystickState, KeyModifiers, Machine, StringError, error, info, warn};
 use sdl3::{
     Sdl,
@@ -31,7 +32,6 @@ use sdl3_backend::{
 
 use crate::{
     config::{AspectMode, Backend, EmulatorConfig, ScalingMode, Target, WindowMode},
-    errors::Error,
     image_selector::{ImageEntry, ImageSelector, MediaType},
     input::{JoystickKey, KeyOverrides, KeyboardForwardingState, host_key_from_scancode},
     machines::{initialize_machine, selector_font_rom_data},
@@ -41,7 +41,6 @@ pub mod config;
 pub mod convert;
 pub mod copy;
 pub mod create;
-mod errors;
 mod image_selector;
 mod input;
 mod machines;
@@ -60,7 +59,7 @@ const FAST_FORWARD_MAX_ELAPSED: Duration = Duration::from_millis(100);
 /// Analog-stick magnitude past which a left-stick axis counts as a held direction.
 const GAMEPAD_AXIS_DEADZONE: i16 = 16384;
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = common::Result<T>;
 
 pub fn run(config: EmulatorConfig, key_overrides: KeyOverrides) -> Result<()> {
     let aspect_mode = config.aspect_mode;

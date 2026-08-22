@@ -5,7 +5,9 @@
 //! against a table of accepted digests per slot. This way any dump layout works
 //! regardless of how the files are named, and stray files are ignored.
 
-use std::{collections::HashMap, fmt, path::Path};
+use std::path::Path;
+
+use rom_loader::{RomError, RomSlot, ScanOptions};
 
 use crate::config::BootMode;
 
@@ -19,15 +21,6 @@ const DICTIONARY_ROM_SIZE: usize = 0x8_0000;
 const KANJI_ROM_SIZE: usize = 0x2_0000;
 const DISK_ROM_SIZE: usize = 0x2000;
 const CDROM_BIOS_ROM_SIZE: usize = 0x1_0000;
-
-/// One ROM slot: its human label, expected size, and the BLAKE3 digests that
-/// are accepted as valid content for it. Multiple digests allow several known
-/// good dumps to satisfy the same slot.
-struct RomSlot {
-    label: &'static str,
-    size: usize,
-    accepted: &'static [&'static str],
-}
 
 const N88_SLOT: RomSlot = RomSlot {
     label: "n88",
@@ -128,45 +121,6 @@ pub struct LoadedRoms {
     pub cdrom_bios: Vec<u8>,
 }
 
-/// Error encountered while loading a PC-8801MC ROM set.
-#[derive(Debug)]
-pub enum RomError {
-    /// The ROM directory could not be scanned.
-    Read {
-        /// The directory that failed to read.
-        directory: String,
-        /// The underlying error message.
-        message: String,
-    },
-    /// No file in the directory matched a slot's accepted digests.
-    Missing {
-        /// The ROM slot label.
-        label: String,
-        /// The accepted digests for that slot.
-        accepted: Vec<String>,
-    },
-}
-
-impl fmt::Display for RomError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RomError::Read { directory, message } => {
-                write!(
-                    formatter,
-                    "failed to read ROM directory {directory}: {message}"
-                )
-            }
-            RomError::Missing { label, accepted } => write!(
-                formatter,
-                "no ROM in the directory matched the {label} slot (accepted digests: {})",
-                accepted.join(", ")
-            ),
-        }
-    }
-}
-
-impl std::error::Error for RomError {}
-
 impl LoadedRoms {
     /// Verifies that the ROMs a given boot mode depends on are present. The plain
     /// N-BASIC ROM is always loaded; the PC-8001mkII/mkIISR personalities, however,
@@ -175,15 +129,15 @@ impl LoadedRoms {
         match boot_mode {
             BootMode::N80 => {
                 if self.n80_mkii.is_none() {
-                    return Err(missing_rom(&N80_MKII_SLOT));
+                    return Err(rom_loader::missing_rom(&N80_MKII_SLOT));
                 }
             }
             BootMode::N80SR => {
                 if self.n80sr.is_none() {
-                    return Err(missing_rom(&N80SR_SLOT));
+                    return Err(rom_loader::missing_rom(&N80SR_SLOT));
                 }
                 if self.n80_mkiisr.is_none() {
-                    return Err(missing_rom(&N80_MKIISR_SLOT));
+                    return Err(rom_loader::missing_rom(&N80_MKIISR_SLOT));
                 }
             }
             BootMode::N | BootMode::V1S | BootMode::V1H | BootMode::V2 => {}
@@ -192,12 +146,18 @@ impl LoadedRoms {
     }
 }
 
-fn missing_rom(slot: &RomSlot) -> RomError {
-    RomError::Missing {
-        label: slot.label.to_string(),
-        accepted: slot.accepted.iter().map(|d| d.to_string()).collect(),
-    }
-}
+/// File sizes worth hashing when scanning a ROM directory.
+const ROM_SIZES: &[usize] = &[
+    N88_SLOT.size,
+    N88_EXT_SLOTS[0].size,
+    N_BASIC_SLOT.size,
+    N80SR_SLOT.size,
+    DICTIONARY_SLOT.size,
+    KANJI1_SLOT.size,
+    KANJI2_SLOT.size,
+    DISK_SLOT.size,
+    CDROM_BIOS_SLOT.size,
+];
 
 /// Loads and validates the PC-8801MC ROM set.
 ///
@@ -206,24 +166,9 @@ fn missing_rom(slot: &RomSlot) -> RomError {
 /// the N88, extension, N80, dictionary, disk sub-CPU, CD-ROM BIOS, and both
 /// kanji ROMs.
 pub fn load_rom_set(rom_dir: &Path) -> Result<LoadedRoms, RomError> {
-    let by_digest = hash_directory(rom_dir)?;
-
-    let take = |slot: &RomSlot| -> Result<Vec<u8>, RomError> {
-        for digest in slot.accepted {
-            if let Some(data) = by_digest.get(*digest) {
-                return Ok(data.clone());
-            }
-        }
-        Err(missing_rom(slot))
-    };
-    let take_optional = |slot: &RomSlot| -> Option<Vec<u8>> {
-        for digest in slot.accepted {
-            if let Some(data) = by_digest.get(*digest) {
-                return Some(data.clone());
-            }
-        }
-        None
-    };
+    let index = rom_loader::scan_directory(rom_dir, &ScanOptions::sizes(ROM_SIZES))?;
+    let take = |slot: &RomSlot| index.take(slot);
+    let take_optional = |slot: &RomSlot| index.take_optional(slot);
 
     let n88 = take(&N88_SLOT)?;
     let n88_ext = [
@@ -255,64 +200,4 @@ pub fn load_rom_set(rom_dir: &Path) -> Result<LoadedRoms, RomError> {
         disk,
         cdrom_bios,
     })
-}
-
-/// Reads every regular file in `dir` whose size matches a known ROM slot and
-/// maps its BLAKE3 digest to its contents.
-fn hash_directory(dir: &Path) -> Result<HashMap<String, Vec<u8>>, RomError> {
-    let entries = std::fs::read_dir(dir).map_err(|error| RomError::Read {
-        directory: dir.display().to_string(),
-        message: error.to_string(),
-    })?;
-
-    let mut by_digest = HashMap::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| RomError::Read {
-            directory: dir.display().to_string(),
-            message: error.to_string(),
-        })?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let data = match std::fs::read(&path) {
-            Ok(data) => data,
-            Err(_) => continue,
-        };
-        if !is_known_rom_size(data.len()) {
-            continue;
-        }
-        by_digest.entry(blake3_hex(&data)).or_insert(data);
-    }
-    Ok(by_digest)
-}
-
-fn is_known_rom_size(size: usize) -> bool {
-    [
-        N88_SLOT.size,
-        N88_EXT_SLOTS[0].size,
-        N_BASIC_SLOT.size,
-        N80SR_SLOT.size,
-        DICTIONARY_SLOT.size,
-        KANJI1_SLOT.size,
-        KANJI2_SLOT.size,
-        DISK_SLOT.size,
-        CDROM_BIOS_SLOT.size,
-    ]
-    .contains(&size)
-}
-
-fn blake3_hex(data: &[u8]) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(data);
-    let mut digest = [0u8; 32];
-    hasher.finalize(&mut digest);
-
-    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut hex = String::with_capacity(64);
-    for byte in digest {
-        hex.push(HEX_DIGITS[(byte >> 4) as usize] as char);
-        hex.push(HEX_DIGITS[(byte & 0x0F) as usize] as char);
-    }
-    hex
 }

@@ -111,3 +111,61 @@ macro_rules! ensure {
         }
     };
 }
+
+/// An error carrying either a context chain or a plain message.
+pub enum Error {
+    /// An error with context.
+    Context(ContextError),
+    /// An error with a message.
+    Message(StringError),
+}
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Context(error) => core::fmt::Display::fmt(error, formatter),
+            Self::Message(error) => core::fmt::Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl core::fmt::Debug for Error {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Context(error) => core::fmt::Debug::fmt(error, formatter),
+            Self::Message(error) => core::fmt::Debug::fmt(error, formatter),
+        }
+    }
+}
+
+impl core::error::Error for Error {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Context(error) => error.source(),
+            Self::Message(error) => error.source(),
+        }
+    }
+}
+
+impl From<ContextError> for Error {
+    fn from(error: ContextError) -> Self {
+        Self::Context(error)
+    }
+}
+
+impl From<StringError> for Error {
+    fn from(error: StringError) -> Self {
+        Self::Message(error)
+    }
+}
+
+#[cfg(feature = "std")]
+impl From<std::ffi::NulError> for Error {
+    fn from(error: std::ffi::NulError) -> Self {
+        use alloc::string::ToString;
+        Self::Message(StringError(error.to_string()))
+    }
+}
+
+/// Result alias defaulting to the shared [`Error`].
+pub type Result<T, E = Error> = core::result::Result<T, E>;
