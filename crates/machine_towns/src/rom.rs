@@ -13,7 +13,9 @@
 //! The 32-byte serial machine-identity ROM (`mytownsmx.rom`) is matched the same
 //! way.
 
-use std::{collections::HashMap, fmt, path::Path};
+use std::path::Path;
+
+use rom_loader::{RomError, RomSlot, ScanOptions};
 
 use crate::config::TownsModel;
 
@@ -33,15 +35,6 @@ const PACKED_FONT_OFFSET: usize = 0x08_0000;
 const PACKED_SYSTEM_OFFSET: usize = 0x0C_0000;
 const PACKED_F20_OFFSET: usize = 0x10_0000;
 const PACKED_DIC_OFFSET: usize = 0x18_0000;
-
-/// One ROM slot: its human label, expected size, and the BLAKE3 digests that are
-/// accepted as valid content for it. Multiple digests allow several known-good
-/// dumps to satisfy the same slot.
-struct RomSlot {
-    label: &'static str,
-    size: usize,
-    accepted: &'static [&'static str],
-}
 
 /// The set of ROM slots for an FM Towns model.
 struct RomTables {
@@ -114,52 +107,6 @@ pub struct LoadedRoms {
     pub serial: Vec<u8>,
 }
 
-/// Error encountered while loading an FM Towns ROM set.
-#[derive(Debug)]
-pub enum RomError {
-    /// The ROM directory could not be scanned.
-    Read {
-        /// The directory that failed to read.
-        directory: String,
-        /// The underlying error message.
-        message: String,
-    },
-    /// No candidate image matched a slot's accepted digests.
-    Missing {
-        /// The ROM slot label.
-        label: String,
-        /// The accepted digests for that slot.
-        accepted: Vec<String>,
-    },
-}
-
-impl fmt::Display for RomError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RomError::Read { directory, message } => {
-                write!(
-                    formatter,
-                    "failed to read ROM directory {directory}: {message}"
-                )
-            }
-            RomError::Missing { label, accepted } => write!(
-                formatter,
-                "no ROM matched the {label} slot (accepted digests: {})",
-                accepted.join(", ")
-            ),
-        }
-    }
-}
-
-impl std::error::Error for RomError {}
-
-fn missing_rom(slot: &RomSlot) -> RomError {
-    RomError::Missing {
-        label: slot.label.to_string(),
-        accepted: slot.accepted.iter().map(|d| d.to_string()).collect(),
-    }
-}
-
 /// Loads and validates the FM Towns ROM set for `model`.
 ///
 /// Every file in `rom_dir` is scanned; a packed 2 MiB BIOS image is sliced into
@@ -171,16 +118,13 @@ pub fn load_rom_set(model: TownsModel, rom_dir: &Path) -> Result<LoadedRoms, Rom
 }
 
 fn load_rom_set_with_tables(rom_dir: &Path, tables: &RomTables) -> Result<LoadedRoms, RomError> {
-    let by_digest = hash_directory(rom_dir, tables)?;
-
-    let take = |slot: &RomSlot| -> Result<Vec<u8>, RomError> {
-        for digest in slot.accepted {
-            if let Some(data) = by_digest.get(*digest) {
-                return Ok(data.clone());
-            }
-        }
-        Err(missing_rom(slot))
+    let options = ScanOptions {
+        accepted_sizes: &rom_sizes(tables),
+        subdirectory_depth: 0,
+        expand: Some(expand_packed_bios),
     };
+    let index = rom_loader::scan_directory(rom_dir, &options)?;
+    let take = |slot: &RomSlot| index.take(slot);
 
     Ok(LoadedRoms {
         dos: take(&tables.dos)?,
@@ -192,41 +136,9 @@ fn load_rom_set_with_tables(rom_dir: &Path, tables: &RomTables) -> Result<Loaded
     })
 }
 
-/// Reads every regular file in `dir`, expands a packed BIOS image into its
-/// component slices, and maps each candidate image's BLAKE3 digest to its bytes.
-fn hash_directory(dir: &Path, tables: &RomTables) -> Result<HashMap<String, Vec<u8>>, RomError> {
-    let entries = std::fs::read_dir(dir).map_err(|error| RomError::Read {
-        directory: dir.display().to_string(),
-        message: error.to_string(),
-    })?;
-
-    let mut by_digest = HashMap::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| RomError::Read {
-            directory: dir.display().to_string(),
-            message: error.to_string(),
-        })?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let data = match std::fs::read(&path) {
-            Ok(data) => data,
-            Err(_) => continue,
-        };
-        for candidate in candidate_images(data) {
-            by_digest.entry(blake3_hex(&candidate)).or_insert(candidate);
-        }
-    }
-
-    // Retain only candidates whose size matches some slot, to keep the map small.
-    by_digest.retain(|_, data| is_known_rom_size(data.len(), tables));
-    Ok(by_digest)
-}
-
-/// Expands a raw file into the candidate images it may contribute: a packed BIOS
-/// image yields its five slices, any other file yields itself.
-fn candidate_images(data: Vec<u8>) -> Vec<Vec<u8>> {
+/// Expands a packed 2 MiB BIOS image into its five component ROMs. Any other
+/// image is passed through unchanged.
+fn expand_packed_bios(data: &[u8]) -> Vec<Vec<u8>> {
     if data.len() == PACKED_BIOS_SIZE {
         let slice = |offset: usize, size: usize| data[offset..offset + size].to_vec();
         vec![
@@ -237,11 +149,12 @@ fn candidate_images(data: Vec<u8>) -> Vec<Vec<u8>> {
             slice(PACKED_DIC_OFFSET, DIC_SIZE),
         ]
     } else {
-        vec![data]
+        vec![data.to_vec()]
     }
 }
 
-fn is_known_rom_size(size: usize, tables: &RomTables) -> bool {
+/// File sizes worth hashing when scanning a ROM directory.
+fn rom_sizes(tables: &RomTables) -> [usize; 6] {
     [
         tables.dos.size,
         tables.font.size,
@@ -250,22 +163,6 @@ fn is_known_rom_size(size: usize, tables: &RomTables) -> bool {
         tables.dictionary.size,
         tables.serial.size,
     ]
-    .contains(&size)
-}
-
-fn blake3_hex(data: &[u8]) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(data);
-    let mut digest = [0u8; 32];
-    hasher.finalize(&mut digest);
-
-    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut hex = String::with_capacity(64);
-    for byte in digest {
-        hex.push(HEX_DIGITS[(byte >> 4) as usize] as char);
-        hex.push(HEX_DIGITS[(byte & 0x0F) as usize] as char);
-    }
-    hex
 }
 
 #[cfg(test)]
@@ -345,12 +242,16 @@ mod tests {
 
     fn tables_from(roms: &FakeRoms) -> RomTables {
         RomTables {
-            dos: slot("dos", DOS_SIZE, blake3_hex(&roms.dos)),
-            font: slot("font", FONT_SIZE, blake3_hex(&roms.font)),
-            system: slot("system", SYSTEM_SIZE, blake3_hex(&roms.system)),
-            f20: slot("f20", F20_SIZE, blake3_hex(&roms.f20)),
-            dictionary: slot("dictionary", DIC_SIZE, blake3_hex(&roms.dictionary)),
-            serial: slot("serial", SERIAL_SIZE, blake3_hex(&roms.serial)),
+            dos: slot("dos", DOS_SIZE, rom_loader::blake3_hex(&roms.dos)),
+            font: slot("font", FONT_SIZE, rom_loader::blake3_hex(&roms.font)),
+            system: slot("system", SYSTEM_SIZE, rom_loader::blake3_hex(&roms.system)),
+            f20: slot("f20", F20_SIZE, rom_loader::blake3_hex(&roms.f20)),
+            dictionary: slot(
+                "dictionary",
+                DIC_SIZE,
+                rom_loader::blake3_hex(&roms.dictionary),
+            ),
+            serial: slot("serial", SERIAL_SIZE, rom_loader::blake3_hex(&roms.serial)),
         }
     }
 

@@ -30,12 +30,13 @@ pub use machine::{
     Pc98Machine, Pc9801F, Pc9801Ra, Pc9801Rs, Pc9801Vm, Pc9801Vx, Pc9821Ap, Pc9821As,
     build_automated_machine, build_untraced_machine,
 };
+pub use rom_loader::RomError;
 
 pub use crate::{
     bus::{BootDevice, Pc9801Bus},
     config::ClockConfig,
     memory::Pc9801MemoryState,
-    rom::{LoadedRoms, RomError, accepted_bios_digests, load_rom_set, required_mame_set},
+    rom::{LoadedRoms, accepted_bios_digests, load_rom_set, required_mame_set},
     scheduler::{Event98, Pc98SchedulerState},
 };
 

@@ -9,7 +9,9 @@
 //! on both machines, so a single file can satisfy the matching slot for both
 //! models.
 
-use std::{collections::HashMap, fmt, path::Path};
+use std::path::Path;
+
+use rom_loader::{RomError, RomSlot, ScanOptions};
 
 use crate::config::Fm7Model;
 
@@ -23,15 +25,6 @@ const ROM_SIZE_10K: usize = 0x2800;
 const ROM_SIZE_31744: usize = 0x7C00;
 /// Size of the kanji ROM image.
 const ROM_SIZE_128K: usize = 0x2_0000;
-
-/// One ROM slot: its human label, expected size, and the BLAKE3 digests accepted
-/// as valid content for it. Multiple digests allow several known good dumps to
-/// satisfy the same slot.
-struct RomSlot {
-    label: &'static str,
-    size: usize,
-    accepted: &'static [&'static str],
-}
 
 /// ROM slot descriptor for F-BASIC v3.0.
 const FBASIC_SLOT: RomSlot = RomSlot {
@@ -116,52 +109,14 @@ pub struct LoadedRoms {
     pub subsyscg: Option<Vec<u8>>,
 }
 
-/// Error encountered while loading an FM-7 ROM set.
-#[derive(Debug)]
-pub enum RomError {
-    /// The ROM directory could not be scanned.
-    Read {
-        /// The directory that failed to read.
-        directory: String,
-        /// The underlying error message.
-        message: String,
-    },
-    /// No file in the directory matched a slot's accepted digests.
-    Missing {
-        /// The ROM slot label.
-        label: String,
-        /// The accepted digests for that slot.
-        accepted: Vec<String>,
-    },
-}
-
-impl fmt::Display for RomError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RomError::Read { directory, message } => {
-                write!(
-                    formatter,
-                    "failed to read ROM directory {directory}: {message}"
-                )
-            }
-            RomError::Missing { label, accepted } => write!(
-                formatter,
-                "no ROM in the directory matched the {label} slot (accepted digests: {})",
-                accepted.join(", ")
-            ),
-        }
-    }
-}
-
-impl std::error::Error for RomError {}
-
-/// Builds the `RomError::Missing` value describing an unmatched slot.
-fn missing_rom(slot: &RomSlot) -> RomError {
-    RomError::Missing {
-        label: slot.label.to_string(),
-        accepted: slot.accepted.iter().map(|d| d.to_string()).collect(),
-    }
-}
+/// File sizes worth hashing when scanning a ROM directory.
+const ROM_SIZES: &[usize] = &[
+    BOOT_BAS_SLOT.size,
+    SUBSYS_A_SLOT.size,
+    SUBSYS_C_SLOT.size,
+    FBASIC_SLOT.size,
+    KANJI_SLOT.size,
+];
 
 /// Loads and validates the ROM set required by `model`.
 ///
@@ -170,16 +125,8 @@ fn missing_rom(slot: &RomSlot) -> RomError {
 /// both boot ROMs and SUBSYS_C (kanji is optional); the FM-77AV needs the
 /// initiator, F-BASIC, all four sub monitors and the kanji ROM.
 pub fn load_rom_set(model: Fm7Model, rom_dir: &Path) -> Result<LoadedRoms, RomError> {
-    let by_digest = hash_directory(rom_dir)?;
-
-    let take = |slot: &RomSlot| -> Result<Vec<u8>, RomError> {
-        for digest in slot.accepted {
-            if let Some(data) = by_digest.get(*digest) {
-                return Ok(data.clone());
-            }
-        }
-        Err(missing_rom(slot))
-    };
+    let index = rom_loader::scan_directory(rom_dir, &ScanOptions::sizes(ROM_SIZES))?;
+    let take = |slot: &RomSlot| index.take(slot);
 
     let fbasic = take(&FBASIC_SLOT)?;
     let subsys_c = take(&SUBSYS_C_SLOT)?;
@@ -216,65 +163,6 @@ pub fn load_rom_set(model: Fm7Model, rom_dir: &Path) -> Result<LoadedRoms, RomEr
         subsys_b,
         subsyscg,
     })
-}
-
-/// Reads every regular file in `dir` whose size matches a known ROM slot and maps
-/// its BLAKE3 digest to its contents.
-fn hash_directory(dir: &Path) -> Result<HashMap<String, Vec<u8>>, RomError> {
-    let entries = std::fs::read_dir(dir).map_err(|error| RomError::Read {
-        directory: dir.display().to_string(),
-        message: error.to_string(),
-    })?;
-
-    let mut by_digest = HashMap::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| RomError::Read {
-            directory: dir.display().to_string(),
-            message: error.to_string(),
-        })?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let data = match std::fs::read(&path) {
-            Ok(data) => data,
-            Err(_) => continue,
-        };
-        if !is_known_rom_size(data.len()) {
-            continue;
-        }
-        by_digest.entry(blake3_hex(&data)).or_insert(data);
-    }
-    Ok(by_digest)
-}
-
-/// Whether `size` matches any ROM slot, filtering the directory scan cheaply.
-fn is_known_rom_size(size: usize) -> bool {
-    [
-        BOOT_BAS_SLOT.size,
-        SUBSYS_A_SLOT.size,
-        SUBSYS_C_SLOT.size,
-        FBASIC_SLOT.size,
-        KANJI_SLOT.size,
-    ]
-    .contains(&size)
-}
-
-/// Computes the lowercase hexadecimal BLAKE3 digest of `data`.
-fn blake3_hex(data: &[u8]) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(data);
-    let mut digest = [0u8; 32];
-    hasher.finalize(&mut digest);
-
-    /// Lowercase hexadecimal digit table used for digest formatting.
-    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut hex = String::with_capacity(64);
-    for byte in digest {
-        hex.push(HEX_DIGITS[(byte >> 4) as usize] as char);
-        hex.push(HEX_DIGITS[(byte & 0x0F) as usize] as char);
-    }
-    hex
 }
 
 #[cfg(test)]

@@ -440,7 +440,7 @@ fn load_from_manifest(
             })?;
         let bytes = &image
             [region_specification.offset..region_specification.offset + region_specification.size];
-        let actual_hash = blake3_hex(bytes);
+        let actual_hash = rom_loader::blake3_hex(bytes);
         if actual_hash != region_specification.digest {
             return Err(FirmwareError::InvalidLayout {
                 model,
@@ -540,7 +540,7 @@ fn hash_directory(
             continue;
         }
         by_digest
-            .entry(blake3_hex(&bytes))
+            .entry(rom_loader::blake3_hex(&bytes))
             .or_insert_with(|| Arc::from(bytes));
     }
     Ok(by_digest)
@@ -579,21 +579,6 @@ fn model_manifest(
     }
 }
 
-fn blake3_hex(bytes: &[u8]) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(bytes);
-    let mut digest = [0; 32];
-    hasher.finalize(&mut digest);
-    let mut text = String::with_capacity(64);
-    /// Lowercase hexadecimal digits.
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for byte in digest {
-        text.push(HEX[(byte >> 4) as usize] as char);
-        text.push(HEX[(byte & 0x0F) as usize] as char);
-    }
-    text
-}
-
 #[cfg(test)]
 mod tests {
     use std::{fs, path::PathBuf};
@@ -618,9 +603,9 @@ mod tests {
         let directory = temp_directory("split");
         let bytes = b"abcdefgh";
         fs::write(directory.join("arbitrary-name.dat"), bytes).unwrap();
-        let image_hash = blake3_hex(bytes);
-        let left_hash = blake3_hex(&bytes[..4]);
-        let right_hash = blake3_hex(&bytes[4..]);
+        let image_hash = rom_loader::blake3_hex(bytes);
+        let left_hash = rom_loader::blake3_hex(&bytes[..4]);
+        let right_hash = rom_loader::blake3_hex(&bytes[4..]);
         let accepted = [image_hash.as_str()];
         let images = [RomSlot {
             image: FirmwareImage::Hb201Bios,

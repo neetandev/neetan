@@ -8,7 +8,9 @@
 //! The 8x16 ANK font dump is byte-identical on both machines, so a single file
 //! can satisfy the matching slot for both models.
 
-use std::{collections::HashMap, fmt, path::Path};
+use std::path::Path;
+
+use rom_loader::{RomError, RomSlot, ScanOptions};
 
 use crate::config::X1Model;
 
@@ -16,15 +18,6 @@ const ROM_SIZE_2K: usize = 0x0800;
 const ROM_SIZE_4K: usize = 0x1000;
 const ROM_SIZE_8K: usize = 0x2000;
 const ROM_SIZE_32K: usize = 0x8000;
-
-/// One ROM slot: its human label, expected size, and the BLAKE3 digests accepted
-/// as valid content for it. Multiple digests allow several known good dumps to
-/// satisfy the same slot.
-struct RomSlot {
-    label: &'static str,
-    size: usize,
-    accepted: &'static [&'static str],
-}
 
 const IPL_X1_SLOT: RomSlot = RomSlot {
     label: "ipl (X1)",
@@ -91,51 +84,7 @@ pub struct LoadedRoms {
     pub kanji: Option<Vec<u8>>,
 }
 
-/// Error encountered while loading an X1 ROM set.
-#[derive(Debug)]
-pub enum RomError {
-    /// The ROM directory could not be scanned.
-    Read {
-        /// The directory that failed to read.
-        directory: String,
-        /// The underlying error message.
-        message: String,
-    },
-    /// No file in the directory matched a slot's accepted digests.
-    Missing {
-        /// The ROM slot label.
-        label: String,
-        /// The accepted digests for that slot.
-        accepted: Vec<String>,
-    },
-}
-
-impl fmt::Display for RomError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RomError::Read { directory, message } => {
-                write!(
-                    formatter,
-                    "failed to read ROM directory {directory}: {message}"
-                )
-            }
-            RomError::Missing { label, accepted } => write!(
-                formatter,
-                "no ROM in the directory matched the {label} slot (accepted digests: {})",
-                accepted.join(", ")
-            ),
-        }
-    }
-}
-
-impl std::error::Error for RomError {}
-
-fn missing_rom(slot: &RomSlot) -> RomError {
-    RomError::Missing {
-        label: slot.label.to_string(),
-        accepted: slot.accepted.iter().map(|d| d.to_string()).collect(),
-    }
-}
+const ROM_SIZES: &[usize] = &[ROM_SIZE_2K, ROM_SIZE_4K, ROM_SIZE_8K, ROM_SIZE_32K];
 
 /// Loads and validates the ROM set required by `model`.
 ///
@@ -144,16 +93,8 @@ fn missing_rom(slot: &RomSlot) -> RomError {
 /// the IPL, 8x8 CG and ANK fonts; the turbo additionally requires the four kanji
 /// ROMs, concatenated into the linear 128 KiB kanji region.
 pub fn load_rom_set(model: X1Model, rom_dir: &Path) -> Result<LoadedRoms, RomError> {
-    let by_digest = hash_directory(rom_dir)?;
-
-    let take = |slot: &RomSlot| -> Result<Vec<u8>, RomError> {
-        for digest in slot.accepted {
-            if let Some(data) = by_digest.get(*digest) {
-                return Ok(data.clone());
-            }
-        }
-        Err(missing_rom(slot))
-    };
+    let index = rom_loader::scan_directory(rom_dir, &ScanOptions::sizes(ROM_SIZES))?;
+    let take = |slot: &RomSlot| index.take(slot);
 
     let ipl_slot = match model {
         X1Model::X1 => &IPL_X1_SLOT,
@@ -209,61 +150,6 @@ fn deinterleave_kanji(raw: &[u8]) -> Vec<u8> {
         }
     }
     kanji
-}
-
-/// Reads every regular file in `dir` whose size matches a known ROM slot and maps
-/// its BLAKE3 digest to its contents.
-fn hash_directory(dir: &Path) -> Result<HashMap<String, Vec<u8>>, RomError> {
-    let entries = std::fs::read_dir(dir).map_err(|error| RomError::Read {
-        directory: dir.display().to_string(),
-        message: error.to_string(),
-    })?;
-
-    let mut by_digest = HashMap::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| RomError::Read {
-            directory: dir.display().to_string(),
-            message: error.to_string(),
-        })?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let data = match std::fs::read(&path) {
-            Ok(data) => data,
-            Err(_) => continue,
-        };
-        if !is_known_rom_size(data.len()) {
-            continue;
-        }
-        by_digest.entry(blake3_hex(&data)).or_insert(data);
-    }
-    Ok(by_digest)
-}
-
-fn is_known_rom_size(size: usize) -> bool {
-    [
-        CGROM_X1_SLOT.size,
-        IPL_X1_SLOT.size,
-        ANK_SLOT.size,
-        KANJI1_SLOT.size,
-    ]
-    .contains(&size)
-}
-
-fn blake3_hex(data: &[u8]) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(data);
-    let mut digest = [0u8; 32];
-    hasher.finalize(&mut digest);
-
-    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut hex = String::with_capacity(64);
-    for byte in digest {
-        hex.push(HEX_DIGITS[(byte >> 4) as usize] as char);
-        hex.push(HEX_DIGITS[(byte & 0x0F) as usize] as char);
-    }
-    hex
 }
 
 #[cfg(test)]

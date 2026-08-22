@@ -3,7 +3,7 @@
 mod known;
 
 use std::{
-    fmt::{self, Write as _},
+    fmt,
     fs::File,
     io::Write,
     path::{Path, PathBuf},
@@ -773,7 +773,7 @@ impl Cartridge {
         image: &[u8],
         rom_path: Option<&Path>,
     ) -> Result<(Self, CartridgeLoadInfo), CartridgeError> {
-        let digest = digest_hex(image);
+        let digest = rom_loader::blake3_hex(image);
         let (mapper, identification) = if let Some(mapper) = known::mapper_for_digest(&digest) {
             (mapper, MapperIdentification::KnownHash)
         } else if let Some(mapper) = detect_plain(image) {
@@ -1903,18 +1903,6 @@ fn page2_header(image: &[u8]) -> bool {
         return true;
     }
     init & 0xC000 == PAGE_2_START && image.get(usize::from(init) & (image.len() - 1)) == Some(&0xC9)
-}
-
-pub(super) fn digest_hex(bytes: &[u8]) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(bytes);
-    let mut digest = [0; 32];
-    hasher.finalize(&mut digest);
-    let mut text = String::with_capacity(64);
-    for byte in digest {
-        write!(text, "{byte:02x}").expect("writing to a string cannot fail");
-    }
-    text
 }
 
 fn plain_start(image: &[u8]) -> u16 {

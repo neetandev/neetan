@@ -867,7 +867,7 @@ fn lba_to_chr(lba: u32, geom: FddGeometry) -> (u8, u8, u8) {
     (cylinder, head, record)
 }
 
-fn map_fat_err(error: FatError) -> crate::errors::Error {
+fn map_fat_err(error: FatError) -> crate::Error {
     StringError(format!("FAT error: {error}")).into()
 }
 

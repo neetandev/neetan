@@ -13,5 +13,5 @@ cpu.workspace = true
 device.workspace = true
 save_state.workspace = true
 software_renderer = { workspace = true, features = ["std"] }
-blake3.workspace = true
+rom_loader.workspace = true
 ymfm_oxide.workspace = true

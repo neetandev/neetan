@@ -12,7 +12,7 @@ mt32 = ["device/mt32"]
 sc55 = ["device/sc55"]
 
 [dependencies]
-blake3.workspace = true
+rom_loader.workspace = true
 common = { workspace = true, features = ["std"] }
 cpu_68k.workspace = true
 device.workspace = true

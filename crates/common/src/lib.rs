@@ -42,7 +42,7 @@ pub use dos::{
     AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
     ConsoleIo, CpuAccess, CursorAccess, DiskIo, DriveIo, HardwareCursorState, MemoryAccess,
 };
-pub use error::{Context, ContextError, OptionContext, StringError};
+pub use error::{Context, ContextError, Error, OptionContext, Result, StringError};
 pub use input::{HostKey, KeyModifiers};
 pub use inspect::{
     AddressSpaceClass, AddressSpaceDescriptor, AddressSpaceList, ByteOrder, DescriptorTableReading,

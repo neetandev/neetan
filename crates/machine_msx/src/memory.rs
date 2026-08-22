@@ -486,7 +486,7 @@ impl MsxMemory {
         cartridge.synchronize_audio(current_cycle);
         *connector = Some(cartridge);
         Ok(CartridgeLoadInfo {
-            digest: crate::cartridge::digest_hex(image),
+            digest: rom_loader::blake3_hex(image),
             mapper,
             identification: crate::cartridge::MapperIdentification::Explicit,
             warning: None,
