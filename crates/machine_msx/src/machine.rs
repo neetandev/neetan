@@ -694,7 +694,7 @@ mod tests {
 
         let mut image = vec![0; 0x1_0000];
         image[..6].copy_from_slice(&[0x32, 0x00, 0x50, 0x32, 0x00, 0x90]);
-        for (bank, bytes) in image.chunks_exact_mut(0x2000).enumerate() {
+        for (bank, bytes) in image.as_chunks_mut::<0x2000>().0.iter_mut().enumerate() {
             bytes.fill(bank as u8);
         }
         image[..6].copy_from_slice(&[0x32, 0x00, 0x50, 0x32, 0x00, 0x90]);

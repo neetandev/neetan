@@ -31,9 +31,8 @@ pub(super) fn parse(data: &[u8]) -> Result<SampledSignal, CassetteError> {
     }
 
     let mut waveform = WaveformBuilder::default();
-    let mut records = data[HEADER_MAGIC.len()..].chunks_exact(2);
-    for record in records.by_ref() {
-        let word = u16::from_be_bytes([record[0], record[1]]);
+    for record in data[HEADER_MAGIC.len()..].as_chunks::<2>().0 {
+        let word = u16::from_be_bytes(*record);
         let count = usize::from(word & RECORD_COUNT_MASK);
         if count == 0 {
             continue;

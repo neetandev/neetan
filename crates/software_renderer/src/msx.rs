@@ -1229,7 +1229,7 @@ fn backdrop_color(state: MsxVdpRenderState) -> u16 {
 fn convert_row(state: MsxVdpRenderState, row: &[u16], line_rgba: &mut [u8], row_start: usize) {
     let byte_start = row_start * MSX_PIXEL_BYTES;
     let destination = &mut line_rgba[byte_start..byte_start + row.len() * MSX_PIXEL_BYTES];
-    for (color, pixel) in row.iter().copied().zip(destination.chunks_exact_mut(4)) {
+    for (color, pixel) in row.iter().copied().zip(destination.as_chunks_mut::<4>().0) {
         let rgba = if color & YJK_COLOR_MARKER != 0 {
             yjk_rgba(color)
         } else if color & FIXED_SPRITE_COLOR_MARKER != 0 {

@@ -55,16 +55,16 @@ impl Vga {
 
         let memory_mode = self.seq[4];
         let mut write_mask = self.seq[2] & 0x0F;
-        let plane_address;
-        if memory_mode & 0x08 != 0 {
+
+        let plane_address = if memory_mode & 0x08 != 0 {
             write_mask &= 1 << (address & 3);
-            plane_address = address & !3;
+            address & !3
         } else if memory_mode & 0x04 == 0 {
             write_mask &= 0x05 << (address & 1);
-            plane_address = (address & !1) << 2;
+            (address & !1) << 2
         } else {
-            plane_address = address << 2;
-        }
+            address << 2
+        };
         if write_mask == 0 || plane_address >= VGA_VRAM_SIZE as u32 {
             return;
         }
@@ -74,8 +74,8 @@ impl Vga {
         let write_mode = self.gc[5] & 0x03;
 
         let mut plane_values = [0u8; 4];
-        let bit_mask;
-        match write_mode {
+
+        let bit_mask = match write_mode {
             0 => {
                 let rotated = value.rotate_right(rotate);
                 for (plane, plane_value) in plane_values.iter_mut().enumerate() {
@@ -85,7 +85,7 @@ impl Vga {
                         rotated
                     };
                 }
-                bit_mask = self.gc[8];
+                self.gc[8]
             }
             1 => {
                 for plane in 0..4 {
@@ -99,16 +99,16 @@ impl Vga {
                 for (plane, plane_value) in plane_values.iter_mut().enumerate() {
                     *plane_value = plane_fill(value, plane);
                 }
-                bit_mask = self.gc[8];
+                self.gc[8]
             }
             _ => {
                 let rotated = value.rotate_right(rotate);
                 for (plane, plane_value) in plane_values.iter_mut().enumerate() {
                     *plane_value = plane_fill(self.gc[0], plane);
                 }
-                bit_mask = self.gc[8] & rotated;
+                self.gc[8] & rotated
             }
-        }
+        };
 
         for (plane, &plane_value) in plane_values.iter().enumerate() {
             if write_mask & (1 << plane) == 0 {

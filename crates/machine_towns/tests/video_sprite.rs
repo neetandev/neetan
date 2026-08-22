@@ -252,7 +252,7 @@ fn palette_color_bars_compose_into_framebuffer() {
     let framebuffer = machine.display_framebuffer();
     let mut distinct_colors = std::collections::BTreeSet::new();
     let mut non_black = 0usize;
-    for pixel in framebuffer.chunks_exact(4) {
+    for pixel in framebuffer.as_chunks::<4>().0 {
         if pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0 {
             non_black += 1;
             distinct_colors.insert((pixel[0], pixel[1], pixel[2]));

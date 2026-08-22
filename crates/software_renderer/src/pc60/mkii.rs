@@ -58,7 +58,7 @@ pub(crate) fn render(inputs: &RenderInputs60, framebuffer: &mut [u8]) {
 }
 
 fn fill_black(framebuffer: &mut [u8]) {
-    for pixel in framebuffer.chunks_exact_mut(4) {
+    for pixel in framebuffer.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&MK2_PALETTE[0]);
     }
 }

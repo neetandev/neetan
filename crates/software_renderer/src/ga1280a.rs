@@ -131,7 +131,7 @@ fn compose_indexed8(
                 [framebuffer_row_start..framebuffer_row_start + width * PIXEL_BYTES];
             for (palette_index, pixel) in row
                 .iter()
-                .zip(framebuffer_row.chunks_exact_mut(PIXEL_BYTES))
+                .zip(framebuffer_row.as_chunks_mut::<PIXEL_BYTES>().0)
             {
                 let value = palette[(*palette_index & visible_mask) as usize];
                 pixel.copy_from_slice(&value.to_le_bytes());

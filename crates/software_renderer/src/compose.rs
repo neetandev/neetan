@@ -1154,7 +1154,7 @@ fn compute_text_row_and_glyph_y(
 
 fn fill_black(buffer: &mut [u8]) {
     debug_assert_eq!(buffer.len() % PIXEL_BYTES, 0);
-    for chunk in buffer.chunks_exact_mut(PIXEL_BYTES) {
+    for chunk in buffer.as_chunks_mut::<PIXEL_BYTES>().0 {
         chunk.copy_from_slice(&BLACK.to_le_bytes());
     }
 }

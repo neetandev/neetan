@@ -202,7 +202,7 @@ pub fn program_storage_dma(
 /// (little-endian) followed by a repeating pattern byte.
 pub fn patterned_sasi_hdf() -> HddImage {
     let mut data = vec![0u8; X68K_SASI_HDF_10MB_BYTES];
-    for (lba, sector) in data.chunks_exact_mut(256).enumerate() {
+    for (lba, sector) in data.as_chunks_mut::<256>().0.iter_mut().enumerate() {
         sector[..4].copy_from_slice(&(lba as u32).to_le_bytes());
         sector[4..].fill((lba as u8) ^ 0x5A);
     }
@@ -213,7 +213,7 @@ pub fn patterned_sasi_hdf() -> HddImage {
 /// LBA-stamped sector pattern over 512-byte sectors.
 pub fn patterned_scsi_hdf(megabytes: usize) -> HddImage {
     let mut data = vec![0u8; megabytes << 20];
-    for (lba, sector) in data.chunks_exact_mut(512).enumerate() {
+    for (lba, sector) in data.as_chunks_mut::<512>().0.iter_mut().enumerate() {
         sector[..4].copy_from_slice(&(lba as u32).to_le_bytes());
         sector[4..].fill((lba as u8) ^ 0xA5);
     }

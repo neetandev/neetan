@@ -312,7 +312,7 @@ impl<T: TraceSink> Pc8801Bus<T> {
         let fill_byte = self.fdc.state.dtl;
         let ids = self.fdc.take_pio_write_buf().to_vec();
         let mut chrn: Vec<(u8, u8, u8, u8)> = Vec::with_capacity(ids.len() / 4);
-        for entry in ids.chunks_exact(4) {
+        for entry in ids.as_chunks::<4>().0 {
             chrn.push((entry[0], entry[1], entry[2], entry[3]));
         }
         self.floppy

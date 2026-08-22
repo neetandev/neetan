@@ -290,7 +290,7 @@ impl Upd7752 {
     /// Adds the queued voice output to a stereo-interleaved buffer, draining one
     /// queued sample per output frame. `level` scales the contribution.
     pub fn mix_into(&mut self, output: &mut [f32], level: f32) {
-        for frame in output.chunks_exact_mut(2) {
+        for frame in output.as_chunks_mut::<2>().0 {
             let Some(sample) = self.output.pop_front() else {
                 break;
             };
@@ -657,7 +657,7 @@ mod tests {
         voice.mix_into(&mut buffer, 1.0);
         assert!(voice.output.is_empty(), "queue drained");
         // Left and right channels carry the same mono sample.
-        for frame in buffer.chunks_exact(2) {
+        for frame in buffer.as_chunks::<2>().0 {
             assert_eq!(frame[0], frame[1]);
         }
         assert!(buffer.iter().any(|&s| s != 0.0));

@@ -671,8 +671,7 @@ impl FmChannel {
             return;
         }
 
-        let result;
-        if bit(regs.ch_algorithm(self.choffs), 0) == 0 {
+        let result = if bit(regs.ch_algorithm(self.choffs), 0) == 0 {
             // Some OPL chips use the previous sample for modulation instead of
             // the current sample.
             opmod = if R::MODULATOR_DELAY {
@@ -680,11 +679,11 @@ impl FmChannel {
             } else {
                 op1value
             } >> 1;
-            result = operators[op1_idx].compute_volume::<R>(
+            operators[op1_idx].compute_volume::<R>(
                 operators[op1_idx].phase().wrapping_add(opmod as u32),
                 am_offset,
                 regs,
-            ) >> rshift;
+            ) >> rshift
         } else {
             let mut r = if R::MODULATOR_DELAY {
                 self.feedback[1] as i32
@@ -695,8 +694,8 @@ impl FmChannel {
                 operators[op1_idx].compute_volume::<R>(operators[op1_idx].phase(), am_offset, regs)
                     >> rshift;
             let clipmin = -clipmax - 1;
-            result = clamp(r, clipmin, clipmax);
-        }
+            clamp(r, clipmin, clipmax)
+        };
 
         self.add_to_output::<R>(self.choffs, output, result, regs);
     }

@@ -654,16 +654,16 @@ fn eram_pack(eram: &mut [u16; 0x4000], addr: i32, val: i32) {
     if top & 0x40 != 0 {
         top ^= 0x7F;
     }
-    let sh: i32;
-    if top >= 16 {
-        sh = 3;
+
+    let sh: i32 = if top >= 16 {
+        3
     } else if top >= 4 {
-        sh = 2;
+        2
     } else if top >= 1 {
-        sh = 1;
+        1
     } else {
-        sh = 0;
-    }
+        0
+    };
 
     let mut data = (val >> (sh * 2)) & 0x3FFF;
     data |= sh << 14;

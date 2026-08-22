@@ -1122,22 +1122,22 @@ pub(crate) fn mcu_opcode_shlr(state: &mut Sc55State, _opcode: u8, opcode_reg: u8
 pub(crate) fn mcu_opcode_mulxu(state: &mut Sc55State, _opcode: u8, mut opcode_reg: u8) {
     let t1 = mcu_operand_read(state);
     let mut t2 = state.mcu.r[opcode_reg as usize] as u32;
-    let n: u32;
+
     if state.operand_size == 0 {
         t2 &= 0xFF;
     }
     let mut t1 = t1.wrapping_mul(t2);
 
-    if state.operand_size != 0 {
+    let n: u32 = if state.operand_size != 0 {
         opcode_reg &= !1;
         state.mcu.r[opcode_reg as usize] = (t1 >> 16) as u16;
         state.mcu.r[(opcode_reg | 1) as usize] = t1 as u16;
-        n = (t1 & 0x80000000) >> 31; // FIXME
+        (t1 & 0x80000000) >> 31 // FIXME
     } else {
         t1 &= 0xFFFF;
         state.mcu.r[opcode_reg as usize] = t1 as u16;
-        n = (t1 & 0x8000 != 0) as u32; // FIXME
-    }
+        (t1 & 0x8000 != 0) as u32 // FIXME
+    };
     let z = (t1 == 0) as u32;
     mcu_set_status(state, n, STATUS_N);
     mcu_set_status(state, z, STATUS_Z);

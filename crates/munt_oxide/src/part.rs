@@ -480,7 +480,7 @@ fn rhythm_note_on(state: &mut MuntState, part_index: usize, midi_key: u32, veloc
         return;
     }
     // synth->rhythmNotePlayed() - notification only, no-op in our port
-    let key;
+
     let drum_num = (midi_key - 24) as usize;
     let drum_timbre_num = state.mt32_ram.rhythm_temp(drum_num).timbre as i32;
     let timbre_r_count = state
@@ -494,16 +494,16 @@ fn rhythm_note_on(state: &mut MuntState, part_index: usize, midi_key: u32, veloc
         return;
     }
     // CONFIRMED: Two special cases described by Mok
-    if drum_timbre_num == 64 + 6 {
+    let key = if drum_timbre_num == 64 + 6 {
         note_off(state, part_index, 0);
-        key = 1;
+        1
     } else if drum_timbre_num == 64 + 7 {
         // This noteOff(0) is not performed on MT-32, only LAPC-I
         note_off(state, part_index, 0);
-        key = 0;
+        0
     } else {
-        key = midi_key;
-    }
+        midi_key
+    };
     let abs_timbre_num = (drum_timbre_num + 128) as usize;
 
     let mut name_buf = [0u8; 10];
