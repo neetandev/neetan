@@ -483,7 +483,9 @@ fn build_hdd_image(volume_spec: HddVolumeSpec<'_>) -> device::disk::HddImage {
 
 fn text_vram_codes(bus: &machine_98::Pc9801Bus) -> Vec<u16> {
     bus.text_vram()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .take(TEXT_VRAM_CELL_COUNT)
         .map(|cell| u16::from_le_bytes([cell[0], cell[1]]))
         .collect()
@@ -491,7 +493,9 @@ fn text_vram_codes(bus: &machine_98::Pc9801Bus) -> Vec<u16> {
 
 fn text_vram_jis_chars(bus: &machine_98::Pc9801Bus) -> Vec<JisChar> {
     bus.text_vram()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .take(TEXT_VRAM_CELL_COUNT)
         .map(|cell| JisChar::from_vram_bytes(cell[0], cell[1]))
         .collect()

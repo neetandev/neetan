@@ -176,26 +176,26 @@ impl AyEngine {
     /// sample rate. Its oscillation is dropped so it cannot alias into the output
     /// band.
     fn output<const VARIANT: u8>(&mut self, min_audible_tone_period: u32) -> [i32; 3] {
-        let envelope_volume;
-        if (self.regs.envelope_hold() | (self.regs.envelope_continue() ^ 1)) != 0
+        let envelope_volume = if (self.regs.envelope_hold() | (self.regs.envelope_continue() ^ 1))
+            != 0
             && self.envelope_state >= 32
         {
             self.envelope_state = 32;
-            envelope_volume = if ((self.regs.envelope_attack() ^ self.regs.envelope_alternate())
+            if ((self.regs.envelope_attack() ^ self.regs.envelope_alternate())
                 & self.regs.envelope_continue())
                 != 0
             {
                 31
             } else {
                 0
-            };
+            }
         } else {
             let mut attack = self.regs.envelope_attack();
             if self.regs.envelope_alternate() != 0 {
                 attack ^= bit(self.envelope_state, 5);
             }
-            envelope_volume = (self.envelope_state & 31) ^ (if attack != 0 { 0 } else { 31 });
-        }
+            (self.envelope_state & 31) ^ (if attack != 0 { 0 } else { 31 })
+        };
 
         let mut data = [0i32; 3];
         for (channel, slot) in data.iter_mut().enumerate() {

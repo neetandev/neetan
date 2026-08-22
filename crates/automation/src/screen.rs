@@ -79,8 +79,10 @@ pub fn rgb_matches(
     let pixels = width as usize * height as usize;
     if tolerance == 0.0 {
         return actual
-            .chunks_exact(4)
-            .zip(expected.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(expected.as_chunks::<4>().0)
             .take(pixels)
             .all(|(actual, expected)| actual[..3] == expected[..3]);
     }
@@ -89,8 +91,10 @@ pub fn rgb_matches(
     let maximum_error = tolerance * tolerance * 255.0 * 255.0 * channel_count;
     let mut sum_squares = 0u128;
     for (actual, expected) in actual
-        .chunks_exact(4)
-        .zip(expected.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(expected.as_chunks::<4>().0)
         .take(pixels)
     {
         for channel in 0..3 {
@@ -171,7 +175,7 @@ pub fn side_by_side_native_size(
     let height = expected_height.max(actual_height);
     let row_bytes = width as usize * 4;
     let mut output = vec![0u8; row_bytes * height as usize];
-    for pixel in output.chunks_exact_mut(4) {
+    for pixel in output.as_chunks_mut::<4>().0 {
         pixel[3] = 0xFF;
     }
 
@@ -218,7 +222,7 @@ fn copy_image(
 /// Copies one RGBA8 row, forcing every alpha byte to fully opaque.
 fn copy_opaque(target: &mut [u8], source: &[u8]) {
     target.copy_from_slice(source);
-    for pixel in target.chunks_exact_mut(4) {
+    for pixel in target.as_chunks_mut::<4>().0 {
         pixel[3] = 0xFF;
     }
 }
@@ -316,7 +320,7 @@ mod tests {
     fn extract_region_copies_the_window() {
         // 3x2 image with a unique red value per pixel column.
         let mut source = vec![0u8; 3 * 2 * 4];
-        for (index, pixel) in source.chunks_exact_mut(4).enumerate() {
+        for (index, pixel) in source.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             pixel[0] = index as u8;
             pixel[3] = 255;
         }

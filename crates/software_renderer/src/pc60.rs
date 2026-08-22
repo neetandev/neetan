@@ -251,7 +251,9 @@ mod tests {
         render(&inputs, &mut framebuffer);
 
         let lit = framebuffer
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0);
         assert!(lit, "extended text should render foreground pixels");
     }
@@ -276,7 +278,9 @@ mod tests {
         render(&inputs, &mut framebuffer);
 
         let lit = framebuffer
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0);
         assert!(lit, "bitmap mode should paint pixels");
     }

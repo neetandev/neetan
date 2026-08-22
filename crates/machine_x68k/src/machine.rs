@@ -730,8 +730,10 @@ mod tests {
         assert!(
             machine
                 .display_framebuffer()
-                .chunks_exact(4)
-                .all(|pixel| pixel == [0, 0, 0, 0xFF])
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [0, 0, 0, 0xFF])
         );
         let mut audio = [1.0; 8];
         assert_eq!(machine.generate_audio_samples(1.0, &mut audio), 8);

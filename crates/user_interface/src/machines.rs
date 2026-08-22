@@ -87,7 +87,9 @@ mod tests {
         assert!(
             selector
                 .framebuffer()
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .any(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0),
             "image selector framebuffer must not be blank"
         );

@@ -657,10 +657,9 @@ impl Fp80 {
             return INDEFINITE_BCD;
         }
 
-        let magnitude: u64;
         let has_fraction: bool;
 
-        if true_exp < 0 {
+        let magnitude: u64 = if true_exp < 0 {
             has_fraction = true;
             let round_up = match rc {
                 RoundingMode::NearestEven => {
@@ -674,7 +673,7 @@ impl Fp80 {
                 RoundingMode::Down => sign,
                 RoundingMode::Zero => false,
             };
-            magnitude = if round_up { 1 } else { 0 };
+            if round_up { 1 } else { 0 }
         } else {
             let shift_right = 63 - true_exp as u32;
             let integer_part = sig >> shift_right;
@@ -704,12 +703,12 @@ impl Fp80 {
             } else {
                 false
             };
-            magnitude = if round_up {
+            if round_up {
                 integer_part + 1
             } else {
                 integer_part
-            };
-        }
+            }
+        };
 
         if has_fraction {
             ef.precision = true;

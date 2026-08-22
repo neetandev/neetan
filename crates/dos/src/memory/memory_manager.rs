@@ -622,7 +622,7 @@ impl MemoryManager {
         }
 
         let handle = &mut self.ems_handles[handle_index as usize];
-        let pages: Vec<Allocation> = handle.pages.drain(..).collect();
+        let pages: Vec<Allocation> = std::mem::take(&mut handle.pages);
         for alloc in pages {
             self.allocator.deallocate(alloc);
         }

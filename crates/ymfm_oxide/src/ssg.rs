@@ -179,26 +179,27 @@ impl SsgEngine {
 
     pub(crate) fn output(&mut self, output: &mut SsgOutput) {
         // Compute the envelope volume.
-        let envelope_volume;
-        if (self.regs.envelope_hold() | (self.regs.envelope_continue() ^ 1)) != 0
+
+        let envelope_volume = if (self.regs.envelope_hold() | (self.regs.envelope_continue() ^ 1))
+            != 0
             && self.envelope_state >= 32
         {
             self.envelope_state = 32;
-            envelope_volume = if ((self.regs.envelope_attack() ^ self.regs.envelope_alternate())
+            if ((self.regs.envelope_attack() ^ self.regs.envelope_alternate())
                 & self.regs.envelope_continue())
                 != 0
             {
                 31
             } else {
                 0
-            };
+            }
         } else {
             let mut attack = self.regs.envelope_attack();
             if self.regs.envelope_alternate() != 0 {
                 attack ^= bit(self.envelope_state, 5);
             }
-            envelope_volume = (self.envelope_state & 31) ^ (if attack != 0 { 0 } else { 31 });
-        }
+            (self.envelope_state & 31) ^ (if attack != 0 { 0 } else { 31 })
+        };
 
         for chan in 0..3usize {
             // Noise/tone enable bits are inverted: 0=enabled, 1=disabled.
@@ -206,11 +207,10 @@ impl SsgEngine {
             let noise_on = self.regs.ch_noise_enable_n(chan as u32) | (self.noise_state & 1);
             let tone_on = self.regs.ch_tone_enable_n(chan as u32) | self.tone_state[chan];
 
-            let volume;
-            if (noise_on & tone_on) == 0 {
-                volume = 0;
+            let volume = if (noise_on & tone_on) == 0 {
+                0
             } else if self.regs.ch_envelope_enable(chan as u32) != 0 {
-                volume = envelope_volume;
+                envelope_volume
             } else {
                 // Scale the tone amplitude up to match envelope values;
                 // according to the datasheet, amplitude 15 maps to envelope 31.
@@ -218,8 +218,8 @@ impl SsgEngine {
                 if v != 0 {
                     v |= 1;
                 }
-                volume = v;
-            }
+                v
+            };
 
             // Volume-to-amplitude table taken from MAME's implementation, biased so that 0 == 0.
             output.data[chan] = SSG_AMPLITUDES[volume as usize] as i32;

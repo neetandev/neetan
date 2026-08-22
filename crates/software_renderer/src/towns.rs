@@ -127,7 +127,7 @@ impl TownsRenderer {
     /// Renders one frame and returns the `(width, height)` of the valid region.
     pub fn render(&mut self, inputs: &RenderInputsTowns<'_>) -> (u32, u32) {
         let framebuffer = &mut self.state.framebuffer;
-        for pixel in framebuffer.chunks_exact_mut(TOWNS_PIXEL_BYTES) {
+        for pixel in framebuffer.as_chunks_mut::<TOWNS_PIXEL_BYTES>().0 {
             pixel[0] = BACKDROP as u8;
             pixel[1] = (BACKDROP >> 8) as u8;
             pixel[2] = (BACKDROP >> 16) as u8;

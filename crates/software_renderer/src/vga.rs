@@ -273,7 +273,10 @@ impl VgaRenderer {
     /// Fills the top-left `width` x `height` region with a solid color.
     fn fill_region(&mut self, width: u32, height: u32, color: u32) {
         let bytes = (width * height) as usize * VGA_PIXEL_BYTES;
-        for pixel in self.framebuffer[..bytes].chunks_exact_mut(VGA_PIXEL_BYTES) {
+        for pixel in self.framebuffer[..bytes]
+            .as_chunks_mut::<VGA_PIXEL_BYTES>()
+            .0
+        {
             pixel.copy_from_slice(&color.to_le_bytes());
         }
     }
@@ -286,7 +289,9 @@ impl VgaRenderer {
         let row = &mut self.framebuffer
             [row_start..row_start + layout.content_width as usize * VGA_PIXEL_BYTES];
         for (pixel, dot) in row
-            .chunks_exact_mut(VGA_PIXEL_BYTES)
+            .as_chunks_mut::<VGA_PIXEL_BYTES>()
+            .0
+            .iter_mut()
             .zip(self.line_buffer[pan as usize..].iter())
         {
             pixel.copy_from_slice(&dot.to_le_bytes());

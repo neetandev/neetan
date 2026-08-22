@@ -3892,7 +3892,7 @@ mod tests {
         assert_eq!(Bus::fetch_opcode_dword(&mut bus, aliased_address), value);
 
         assert_eq!(bus.tracer().accesses.len(), 6);
-        for accesses in bus.tracer().accesses.chunks_exact(2) {
+        for accesses in bus.tracer().accesses.as_chunks::<2>().0 {
             assert_eq!(accesses[0].address, u64::from(bus_address));
             assert_eq!(accesses[1].address, u64::from(bus_address + 2));
             assert!(

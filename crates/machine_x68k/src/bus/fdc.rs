@@ -442,7 +442,9 @@ impl<T: TraceSink> X68kBus<T> {
         let received = self.fdc.state.exec_index & !3;
         let identifiers = self.fdc.execution_write_buf()[..received].to_vec();
         let chrn: Vec<(u8, u8, u8, u8)> = identifiers
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|entry| (entry[0], entry[1], entry[2], entry[3]))
             .collect();
         if !chrn.is_empty()

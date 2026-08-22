@@ -282,7 +282,7 @@ impl X1Renderer {
             let framebuffer_row = &mut self.framebuffer
                 [framebuffer_start..framebuffer_start + X1_SURFACE_WIDTH * X1_PIXEL_BYTES];
             if dest_line >= height || dest_line < vt_ofs {
-                for pixel in framebuffer_row.chunks_exact_mut(X1_PIXEL_BYTES) {
+                for pixel in framebuffer_row.as_chunks_mut::<X1_PIXEL_BYTES>().0 {
                     pixel.copy_from_slice(&BLACK);
                 }
                 continue;
@@ -340,7 +340,7 @@ impl X1Renderer {
             let framebuffer_row = &mut self.framebuffer
                 [framebuffer_start..framebuffer_start + X1_SURFACE_WIDTH * X1_PIXEL_BYTES];
             if dest_line >= height {
-                for pixel in framebuffer_row.chunks_exact_mut(X1_PIXEL_BYTES) {
+                for pixel in framebuffer_row.as_chunks_mut::<X1_PIXEL_BYTES>().0 {
                     pixel.copy_from_slice(&BLACK);
                 }
                 continue;

@@ -749,10 +749,10 @@ pub(crate) fn utf16_to_string(cx: &mut NativeContext<'_>, a: &[Value]) -> Result
             start = 2;
         }
     }
-    let chunks = bytes[start..].chunks_exact(2);
-    let partial_tail = !chunks.remainder().is_empty();
-    let units = chunks.map(|pair| {
-        let pair = [pair[0], pair[1]];
+    let (chunks, remainder) = bytes[start..].as_chunks::<2>();
+    let partial_tail = !remainder.is_empty();
+    let units = chunks.iter().map(|pair| {
+        let pair = *pair;
         match endian {
             Endianness::Little => u16::from_le_bytes(pair),
             Endianness::Big => u16::from_be_bytes(pair),
@@ -786,11 +786,11 @@ pub(crate) fn utf32_to_string(cx: &mut NativeContext<'_>, a: &[Value]) -> Result
             start = 4;
         }
     }
-    let chunks = bytes[start..].chunks_exact(4);
-    let partial_tail = !chunks.remainder().is_empty();
+    let (chunks, remainder) = bytes[start..].as_chunks::<4>();
+    let partial_tail = !remainder.is_empty();
     let mut text = String::new();
     for window in chunks {
-        let window = [window[0], window[1], window[2], window[3]];
+        let window = *window;
         let scalar = match endian {
             Endianness::Little => u32::from_le_bytes(window),
             Endianness::Big => u32::from_be_bytes(window),

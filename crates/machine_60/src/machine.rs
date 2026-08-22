@@ -790,7 +790,9 @@ mod tests {
 
         let framebuffer = machine.display_framebuffer();
         let lit = framebuffer
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0)
             .count();
         assert!(lit > 0, "the boot program should render a non-blank screen");

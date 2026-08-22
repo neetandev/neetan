@@ -347,7 +347,7 @@ pub fn boot_hle_with_temp_hdd_and_floppy(
 
 fn find_partition_offset(hdd: &HddImage) -> u32 {
     let sector = hdd.read_sector(1).expect("partition table sector");
-    for entry in sector.chunks_exact(32).take(16) {
+    for entry in sector.as_chunks::<32>().0.iter().take(16) {
         if entry[0] == 0 && entry[1] == 0 {
             break;
         }
@@ -475,7 +475,7 @@ fn read_root_directory(hard_disk: &HddImage, bpb: &BpbInfo) -> Result<Vec<u8>, S
 }
 
 fn find_directory_entry(directory: &[u8], name: &[u8; 11]) -> Option<DirectoryEntryInfo> {
-    for entry in directory.chunks_exact(32) {
+    for entry in directory.as_chunks::<32>().0 {
         if entry[0] == 0x00 {
             break;
         }

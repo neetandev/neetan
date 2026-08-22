@@ -25,7 +25,9 @@ fn prompt_visible(machine: &machine_98::Pc9801Ra) -> bool {
     machine
         .bus
         .text_vram()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .take(TEXT_VRAM_COLUMNS * TEXT_VRAM_ROWS)
         .any(|cell| u16::from_le_bytes([cell[0], cell[1]]) == 0x003E)
 }

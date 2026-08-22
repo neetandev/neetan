@@ -54,7 +54,7 @@ fn all_preset_instruments_match_ymfm() {
         samples.extend(generate_2_ym2413(&mut chip, 96));
     }
     assert_samples_2(&samples, golden::ALL_PRESET_INSTRUMENTS);
-    for instrument in golden::ALL_PRESET_INSTRUMENTS.chunks_exact(96) {
+    for instrument in golden::ALL_PRESET_INSTRUMENTS.as_chunks::<96>().0 {
         assert!(contains_audio(instrument));
     }
 }
@@ -131,7 +131,7 @@ fn isolated_rhythm_voices_match_ymfm() {
         samples.extend(generate_2_ym2413(&mut chip, 192));
     }
     assert_samples_2(&samples, golden::RHYTHM_VOICES);
-    for voice in golden::RHYTHM_VOICES.chunks_exact(192) {
+    for voice in golden::RHYTHM_VOICES.as_chunks::<192>().0 {
         assert!(contains_audio(voice));
     }
 }
