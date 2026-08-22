@@ -4,6 +4,23 @@
 //! resolver. The `machines` module builds fully configured machines from an
 //! `EmulatorConfig`.
 
+#[cfg(not(any(
+    feature = "pc98",
+    feature = "pc88",
+    feature = "pc88va",
+    feature = "pc60",
+    feature = "msx",
+    feature = "towns",
+    feature = "x1",
+    feature = "fm7",
+    feature = "x68k",
+    feature = "at"
+)))]
+compile_error!(
+    "at least one machine feature must be enabled: pc98, pc88, pc88va, pc60, msx, towns, x1, \
+     fm7, x68k or at (or the all-machines feature)"
+);
+
 pub mod config;
 pub mod machines;
 

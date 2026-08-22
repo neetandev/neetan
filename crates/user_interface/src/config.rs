@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use common::{Context, CpuMode, MonitorTiming, StringError, bail, info, warn};
-use machine_88::{EightMhzWaitMode, MemoryWaitSwitch};
+#[cfg(feature = "pc88")]
+use common::{EightMhzWaitMode, MemoryWaitSwitch};
 pub use machine_factory::config::{
     AspectMode, Backend, BootMode, EmulatorConfig, ForceGdcClock, GraphicboardType, MidiDevice,
     ScalingMode, SoundboardType, Target, WindowMode,
@@ -49,7 +50,7 @@ Commands:
 
 Options:
   -c, --config <PATH>           Load configuration from file
-      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RS, PC9801RA, PC9821AS, PC9821AP, PC8801MC, PC88VA2, PC6001, PC6001MK2, PC6601, PC6001MK2SR, PC6601SR, MSX, MSX2, MSX2PLUS, FMTowns, FMTownsIICX, FMTownsIIMX, X68000, X68000SUPER, X68000XVI, X1, X1TURBO, FM7, FM77AV, AT486DX50, AT486DX66
+      --machine <TYPE>          Machine type: {}
       --cpu-mode <MODE>         CPU speed mode: low or high (PC-88 derives from boot mode; X68000 XVI 10/16.67 MHz; FM Towns base fixed 16 MHz, CX 16/20 MHz, MX 33/66 MHz)
       --boot-mode <MODE>        Boot mode; each machine accepts only its own values: PC-8801 v1s, v1h, v2 (default), n, n80, n80sr; FM-7 basic (default), dos
       --monitor <MODE>          Monitor timing: auto, 15k, 24k (default: auto; PC-8801 and X1 turbo)
@@ -104,6 +105,7 @@ Global configuration:
 
 Run 'neetan <COMMAND> --help' for more information on a command.",
         crate::GAME_NAME,
+        machine_factory::config::compiled_model_names().join(", "),
     );
 }
 
@@ -534,11 +536,13 @@ fn parse_args_from(
                 let val = value(&flag)?;
                 config.monitor = val.parse::<MonitorTiming>().map_err(StringError)?;
             }
+            #[cfg(feature = "pc88")]
             "--pc88-memory-wait" => {
                 let val = value(&flag)?;
                 config.pc88_memory_wait = val.parse::<MemoryWaitSwitch>().map_err(StringError)?;
                 explicit.pc88_memory_wait = true;
             }
+            #[cfg(feature = "pc88")]
             "--pc88-8mhz-wait" => {
                 let val = value(&flag)?;
                 config.pc88_8mhz_wait = val.parse::<EightMhzWaitMode>().map_err(StringError)?;
@@ -633,7 +637,7 @@ fn parse_args_from(
             }
             "--boot-device" => {
                 let val = value(&flag)?;
-                config.boot_device = val.parse::<machine_98::BootDevice>().map_err(StringError)?;
+                config.boot_device = val.parse::<common::BootDevice>().map_err(StringError)?;
             }
             "--enable-extractor" => config.enable_extractor = true,
             other => bail!("unknown argument: {other}"),
@@ -678,6 +682,7 @@ fn validate_paths(config: &EmulatorConfig) -> crate::Result<()> {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct ExplicitSettings {
     cpu_mode: bool,
+    #[cfg(feature = "pc88")]
     pc88_memory_wait: bool,
 }
 
@@ -730,6 +735,7 @@ fn apply_config_file(
                 Ok(timing) => config.monitor = timing,
                 Err(_) => warn!("Unknown monitor timing in config: {val}"),
             },
+            #[cfg(feature = "pc88")]
             "pc88-memory-wait" => match val.parse::<MemoryWaitSwitch>() {
                 Ok(switch) => {
                     config.pc88_memory_wait = switch;
@@ -737,6 +743,7 @@ fn apply_config_file(
                 }
                 Err(_) => warn!("Unknown PC-88 memory wait in config: {val}"),
             },
+            #[cfg(feature = "pc88")]
             "pc88-8mhz-wait" => match val.parse::<EightMhzWaitMode>() {
                 Ok(mode) => config.pc88_8mhz_wait = mode,
                 Err(_) => warn!("Unknown PC-88 8 MHz wait in config: {val}"),
@@ -840,7 +847,7 @@ fn apply_config_file(
                 Ok(device) => config.midi = device,
                 Err(_) => warn!("Unknown MIDI device in config: {val}"),
             },
-            "boot-device" => match val.parse::<machine_98::BootDevice>() {
+            "boot-device" => match val.parse::<common::BootDevice>() {
                 Ok(device) => config.boot_device = device,
                 Err(_) => warn!("Unknown boot device in config: {val}"),
             },
@@ -863,17 +870,17 @@ fn apply_config_file(
     Ok(())
 }
 
+#[cfg(feature = "pc88")]
 fn apply_derived_defaults(config: &mut EmulatorConfig, explicit: ExplicitSettings) {
     if config.target != Target::Pc88 {
         return;
     }
-    // An FM-7-only value here resolves to None and derives from V2; the real
-    // error for a mismatched value is raised when the PC-88 machine is built.
-    let boot_mode = config
+    // With no boot mode set the PC-88 starts in V2, which runs at full speed.
+    // A mismatched value is reported when the PC-88 machine is built.
+    if !config
         .boot_mode
-        .and_then(|mode| mode.to_pc88().ok())
-        .unwrap_or(machine_88::BootMode::V2);
-    if !(matches!(boot_mode, machine_88::BootMode::V1S) || boot_mode.is_n_family()) {
+        .is_some_and(BootMode::wants_pc88_compatibility_speed)
+    {
         return;
     }
     if !explicit.cpu_mode {
@@ -883,6 +890,10 @@ fn apply_derived_defaults(config: &mut EmulatorConfig, explicit: ExplicitSetting
         config.pc88_memory_wait = MemoryWaitSwitch::Compatible;
     }
 }
+
+/// The PC-88 is the only family with speed defaults derived from the boot mode.
+#[cfg(not(feature = "pc88"))]
+fn apply_derived_defaults(_config: &mut EmulatorConfig, _explicit: ExplicitSettings) {}
 
 /// Resolves a `--machine` / `machine=` value to a family and model, then clears
 /// the native key overrides when the family changed so later `key.*` overrides
@@ -909,9 +920,13 @@ fn global_config_path() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "pc98")]
     use common::MachineModel;
+    #[cfg(feature = "pc60")]
     use machine_60::Pc6000Model;
+    #[cfg(feature = "msx")]
     use machine_msx::MsxModel;
+    #[cfg(feature = "x68k")]
     use machine_x68k::X68kModel;
 
     use super::*;
@@ -925,6 +940,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "pc88")]
     #[test]
     fn machine_flag_selects_the_pc88_target() {
         let mut config = EmulatorConfig::default();
@@ -933,6 +949,7 @@ mod tests {
         assert_eq!(config.target, Target::Pc88);
     }
 
+    #[cfg(feature = "pc60")]
     #[test]
     fn machine_flag_selects_the_pc60_target() {
         let mut config = EmulatorConfig::default();
@@ -967,6 +984,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "msx")]
     #[test]
     fn machine_flag_selects_msx_and_its_rom_directory() {
         let (config, key_map) = parse_run_config(&["--machine", "msx", "--msx-roms", "roms/msx"]);
@@ -978,6 +996,7 @@ mod tests {
         let _ = key_map;
     }
 
+    #[cfg(feature = "msx")]
     #[test]
     fn machine_flag_exposes_msx2_and_msx2_plus() {
         let mut config = EmulatorConfig::default();
@@ -991,6 +1010,7 @@ mod tests {
         assert_eq!(config.msx_model, MsxModel::Msx2Plus);
     }
 
+    #[cfg(feature = "pc98")]
     #[test]
     fn machine_flag_selects_the_pc98_target() {
         let mut config = EmulatorConfig::default();
@@ -1000,6 +1020,7 @@ mod tests {
         assert_eq!(config.machine, MachineModel::PC9801VX);
     }
 
+    #[cfg(feature = "x68k")]
     #[test]
     fn machine_flag_selects_x68000_and_its_rom_directory() {
         let (config, key_map) =
@@ -1010,6 +1031,7 @@ mod tests {
         let _ = key_map;
     }
 
+    #[cfg(feature = "at")]
     #[test]
     fn config_file_applies_named_pc_at_key_binding() {
         let path = std::env::temp_dir().join(format!(
@@ -1042,6 +1064,7 @@ mod tests {
         assert!("2xx".parse::<FddType>().is_err());
     }
 
+    #[cfg(feature = "pc88")]
     #[test]
     fn pc88_n_family_boot_modes_derive_compatible_defaults() {
         for boot_mode in ["n", "n80", "n80sr"] {
@@ -1056,6 +1079,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "pc88")]
     #[test]
     fn pc88_v1s_boot_mode_derives_compatible_defaults() {
         let (config, _key_map) = parse_run_config(&["--machine", "PC8801MC", "--boot-mode", "v1s"]);
@@ -1063,6 +1087,7 @@ mod tests {
         assert_eq!(config.pc88_memory_wait, MemoryWaitSwitch::Compatible);
     }
 
+    #[cfg(feature = "pc88")]
     #[test]
     fn pc88_v2_boot_mode_keeps_fast_defaults() {
         let (config, _key_map) = parse_run_config(&["--machine", "PC8801MC", "--boot-mode", "v2"]);
@@ -1070,6 +1095,7 @@ mod tests {
         assert_eq!(config.pc88_memory_wait, MemoryWaitSwitch::Fast);
     }
 
+    #[cfg(feature = "pc88")]
     #[test]
     fn explicit_pc88_cpu_mode_overrides_boot_mode_default() {
         let (config, _key_map) = parse_run_config(&[
@@ -1084,6 +1110,7 @@ mod tests {
         assert_eq!(config.pc88_memory_wait, MemoryWaitSwitch::Compatible);
     }
 
+    #[cfg(feature = "pc88")]
     #[test]
     fn explicit_pc88_memory_wait_overrides_boot_mode_default() {
         let (config, _key_map) = parse_run_config(&[
@@ -1098,6 +1125,7 @@ mod tests {
         assert_eq!(config.pc88_memory_wait, MemoryWaitSwitch::Fast);
     }
 
+    #[cfg(feature = "pc88")]
     #[test]
     fn config_file_explicit_pc88_values_override_boot_mode_default() {
         let path = std::env::temp_dir().join(format!(

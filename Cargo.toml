@@ -12,7 +12,7 @@ version = "2026.8.0"
 [workspace.dependencies]
 # Internal dependencies
 audio_engine = { path = "crates/audio_engine" }
-automation = { path = "crates/automation" }
+automation = { path = "crates/automation", default-features = false }
 blake3 = { path = "crates/blake3" }
 common = { path = "crates/common" }
 cpu = { path = "crates/cpu" }
@@ -24,14 +24,14 @@ machine_at = { path = "crates/machine_at" }
 machine_60 = { path = "crates/machine_60" }
 machine_88 = { path = "crates/machine_88" }
 machine_88va = { path = "crates/machine_88va" }
-machine_factory = { path = "crates/machine_factory" }
+machine_factory = { path = "crates/machine_factory", default-features = false }
 machine_fm7 = { path = "crates/machine_fm7" }
 machine_msx = { path = "crates/machine_msx" }
 machine_towns = { path = "crates/machine_towns" }
 machine_x68k = { path = "crates/machine_x68k" }
 machine_x1 = { path = "crates/machine_x1" }
 r7rs = { path = "crates/r7rs" }
-user_interface = { path = "crates/user_interface" }
+user_interface = { path = "crates/user_interface", default-features = false }
 resampler = { path = "crates/resampler" }
 rom_loader = { path = "crates/rom_loader" }
 save_state = { path = "crates/save_state" }
@@ -59,17 +59,44 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["mt32", "sc55"]
-mt32 = ["automation/mt32", "user_interface/mt32"]
-sc55 = ["automation/sc55", "user_interface/sc55"]
-sdl3-build-from-source = ["user_interface/sdl3-build-from-source"]
-sdl3-use-pkg-config = ["user_interface/sdl3-use-pkg-config"]
-sdl3-use-vcpkg = ["user_interface/sdl3-use-vcpkg"]
+default = ["gui", "auto", "all-machines", "mt32", "sc55"]
+# Frontends. `gui` builds the neetan binary, `auto` builds neetan-auto.
+gui = ["dep:user_interface"]
+auto = ["dep:automation"]
+# One feature per emulated machine family.
+pc98 = ["user_interface?/pc98", "automation?/pc98"]
+pc88 = ["user_interface?/pc88", "automation?/pc88"]
+pc88va = ["user_interface?/pc88va", "automation?/pc88va"]
+pc60 = ["user_interface?/pc60", "automation?/pc60"]
+msx = ["user_interface?/msx", "automation?/msx"]
+towns = ["user_interface?/towns", "automation?/towns"]
+x1 = ["user_interface?/x1", "automation?/x1"]
+fm7 = ["user_interface?/fm7", "automation?/fm7"]
+x68k = ["user_interface?/x68k", "automation?/x68k"]
+at = ["user_interface?/at", "automation?/at"]
+all-machines = ["pc98", "pc88", "pc88va", "pc60", "msx", "towns", "x1", "fm7", "x68k", "at"]
+# Optional MIDI support.
+mt32 = ["automation?/mt32", "user_interface?/mt32"]
+sc55 = ["automation?/sc55", "user_interface?/sc55"]
+# SDL3 build options.
+sdl3-build-from-source = ["user_interface?/sdl3-build-from-source"]
+sdl3-use-pkg-config = ["user_interface?/sdl3-use-pkg-config"]
+sdl3-use-vcpkg = ["user_interface?/sdl3-use-vcpkg"]
+
+[[bin]]
+name = "neetan"
+path = "src/bin/neetan.rs"
+required-features = ["gui"]
+
+[[bin]]
+name = "neetan-auto"
+path = "src/bin/neetan-auto.rs"
+required-features = ["auto"]
 
 [dependencies]
-automation = { workspace = true }
+automation = { workspace = true, optional = true }
 common = { workspace = true, features = ["std"] }
-user_interface = { workspace = true }
+user_interface = { workspace = true, optional = true }
 
 [dev-dependencies]
 

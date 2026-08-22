@@ -1,13 +1,24 @@
 //! Machine construction and startup configuration shared across frontends.
 
+#[cfg(any(
+    feature = "pc98",
+    feature = "pc88",
+    feature = "towns",
+    feature = "x68k"
+))]
+use common::CpuMode;
 use common::{
-    AutomatedMachine, BUILTIN_FONT_ROM, Context, CpuMode, Machine, MachineModel,
-    SharedHostDateTimeSource, StringError, bail, ensure, info, tracing::ApplicationTraceSink, warn,
+    AutomatedMachine, Machine, SharedHostDateTimeSource, StringError, info,
+    tracing::ApplicationTraceSink, warn,
 };
+#[cfg(feature = "pc98")]
+use common::{BUILTIN_FONT_ROM, Context, MachineModel, bail, ensure};
 
+#[cfg(feature = "pc98")]
+use crate::config::ForceGdcClock;
 use crate::{
     InitError,
-    config::{self, EmulatorConfig, ForceGdcClock, Target},
+    config::{self, EmulatorConfig, Target},
 };
 
 /// Builds a fully configured machine for the interactive frontend.
@@ -17,15 +28,25 @@ pub fn initialize_machine(
     rtc: SharedHostDateTimeSource,
 ) -> Result<Box<dyn Machine>, InitError> {
     let mut machine = match config.target {
+        #[cfg(feature = "pc98")]
         Target::Pc98 => initialize_pc98_machine(config, sample_rate),
+        #[cfg(feature = "pc88")]
         Target::Pc88 => initialize_pc88_machine(config, sample_rate),
+        #[cfg(feature = "pc88va")]
         Target::Pc88Va => initialize_pc88va_machine(config, sample_rate),
+        #[cfg(feature = "pc60")]
         Target::Pc60 => initialize_pc60_machine(config, sample_rate),
+        #[cfg(feature = "msx")]
         Target::Msx => initialize_msx_machine(config, sample_rate),
+        #[cfg(feature = "towns")]
         Target::Towns => initialize_towns_machine(config, sample_rate),
+        #[cfg(feature = "x1")]
         Target::X1 => initialize_x1_machine(config, sample_rate),
+        #[cfg(feature = "fm7")]
         Target::Fm7 => initialize_fm7_machine(config, sample_rate),
+        #[cfg(feature = "x68k")]
         Target::X68k => initialize_x68k_machine(config, sample_rate),
+        #[cfg(feature = "at")]
         Target::At => initialize_at_machine(config, sample_rate),
     }?;
     configure_machine(machine.as_mut(), config, rtc)?;
@@ -95,6 +116,7 @@ pub fn initialize_automated_machine(
     trace_sink: ApplicationTraceSink,
 ) -> Result<Box<dyn AutomatedMachine>, InitError> {
     let mut machine: Box<dyn AutomatedMachine> = match config.target {
+        #[cfg(feature = "pc98")]
         Target::Pc98 => initialize_pc98_machine_with(
             &config,
             sample_rate,
@@ -104,6 +126,7 @@ pub fn initialize_automated_machine(
             },
             machine_98::build_automated_machine,
         )?,
+        #[cfg(feature = "pc88")]
         Target::Pc88 => initialize_pc88_machine_with(
             &config,
             sample_rate,
@@ -111,6 +134,7 @@ pub fn initialize_automated_machine(
             machine_88::Pc8801Bus::new_with_trace_sink,
             machine_88::build_automated_machine,
         )?,
+        #[cfg(feature = "pc88va")]
         Target::Pc88Va => initialize_pc88va_machine_with(
             &config,
             sample_rate,
@@ -118,6 +142,7 @@ pub fn initialize_automated_machine(
             machine_88va::Pc88VaBus::new_with_trace_sink,
             machine_88va::build_automated_machine,
         )?,
+        #[cfg(feature = "pc60")]
         Target::Pc60 => initialize_pc60_machine_with(
             &config,
             sample_rate,
@@ -125,6 +150,7 @@ pub fn initialize_automated_machine(
             machine_60::Pc6000Bus::new_with_trace_sink,
             machine_60::build_automated_machine,
         )?,
+        #[cfg(feature = "msx")]
         Target::Msx => initialize_msx_machine_with(
             &config,
             sample_rate,
@@ -132,6 +158,7 @@ pub fn initialize_automated_machine(
             machine_msx::MsxBus::new_with_trace_sink,
             machine_msx::build_automated_machine,
         )?,
+        #[cfg(feature = "towns")]
         Target::Towns => initialize_towns_machine_with(
             &config,
             sample_rate,
@@ -141,6 +168,7 @@ pub fn initialize_automated_machine(
             },
             machine_towns::build_automated_machine,
         )?,
+        #[cfg(feature = "x1")]
         Target::X1 => initialize_x1_machine_with(
             &config,
             sample_rate,
@@ -148,6 +176,7 @@ pub fn initialize_automated_machine(
             machine_x1::X1Bus::new_with_trace_sink,
             machine_x1::build_automated_machine,
         )?,
+        #[cfg(feature = "fm7")]
         Target::Fm7 => initialize_fm7_machine_with(
             &config,
             sample_rate,
@@ -157,6 +186,7 @@ pub fn initialize_automated_machine(
             },
             machine_fm7::build_automated_machine,
         )?,
+        #[cfg(feature = "x68k")]
         Target::X68k => initialize_x68k_machine_with(
             &config,
             sample_rate,
@@ -166,6 +196,7 @@ pub fn initialize_automated_machine(
             },
             machine_x68k::build_automated_machine,
         )?,
+        #[cfg(feature = "at")]
         Target::At => initialize_at_machine_with(
             &config,
             sample_rate,
@@ -252,6 +283,7 @@ fn configure_sc55(
 }
 
 /// Builds the concrete untraced PC-98 machine inside `machine_98`.
+#[cfg(feature = "pc98")]
 fn initialize_pc98_machine(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -266,6 +298,7 @@ fn initialize_pc98_machine(
 }
 
 /// Applies shared PC-98 setup before selecting a concrete machine.
+#[cfg(feature = "pc98")]
 fn initialize_pc98_machine_with<T, R, BuildBus, BuildMachine>(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -459,6 +492,7 @@ where
 }
 
 /// Builds the concrete untraced PC-88 machine inside `machine_88`.
+#[cfg(feature = "pc88")]
 fn initialize_pc88_machine(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -475,6 +509,7 @@ fn initialize_pc88_machine(
 }
 
 /// Applies shared PC-88 setup before selecting a concrete machine.
+#[cfg(feature = "pc88")]
 fn initialize_pc88_machine_with<T, R, BuildBus, BuildMachine>(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -550,6 +585,7 @@ where
 }
 
 /// Builds the concrete untraced PC-88VA machine inside `machine_88va`.
+#[cfg(feature = "pc88va")]
 fn initialize_pc88va_machine(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -564,6 +600,7 @@ fn initialize_pc88va_machine(
 }
 
 /// Applies shared PC-88VA setup before selecting a concrete machine.
+#[cfg(feature = "pc88va")]
 fn initialize_pc88va_machine_with<T, R, BuildBus, BuildMachine>(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -604,6 +641,7 @@ where
 }
 
 /// Builds the concrete untraced PC-6000 machine inside `machine_60`.
+#[cfg(feature = "pc60")]
 fn initialize_pc60_machine(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -618,6 +656,7 @@ fn initialize_pc60_machine(
 }
 
 /// Applies shared PC-6000 setup before selecting a concrete machine.
+#[cfg(feature = "pc60")]
 fn initialize_pc60_machine_with<T, R, BuildBus, BuildMachine>(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -668,6 +707,7 @@ where
 }
 
 /// Builds the concrete untraced MSX machine inside `machine_msx`.
+#[cfg(feature = "msx")]
 fn initialize_msx_machine(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -682,6 +722,7 @@ fn initialize_msx_machine(
 }
 
 /// Applies shared MSX setup before selecting a concrete machine.
+#[cfg(feature = "msx")]
 fn initialize_msx_machine_with<T, R, BuildBus, BuildMachine>(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -760,6 +801,7 @@ where
 }
 
 /// Builds the concrete untraced FM Towns machine inside `machine_towns`.
+#[cfg(feature = "towns")]
 fn initialize_towns_machine(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -776,6 +818,7 @@ fn initialize_towns_machine(
 }
 
 /// Applies shared FM Towns setup before selecting a concrete machine.
+#[cfg(feature = "towns")]
 fn initialize_towns_machine_with<T, R, BuildBus, BuildMachine>(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -815,14 +858,12 @@ where
     })?;
 
     let boot_device = match config.boot_device {
-        machine_98::BootDevice::Auto => machine_towns::TownsBootDevice::Auto,
-        machine_98::BootDevice::Fdd1 | machine_98::BootDevice::Fdd2 => {
+        common::BootDevice::Auto => machine_towns::TownsBootDevice::Auto,
+        common::BootDevice::Fdd1 | common::BootDevice::Fdd2 => {
             machine_towns::TownsBootDevice::Floppy
         }
-        machine_98::BootDevice::Hdd1 | machine_98::BootDevice::Hdd2 => {
-            machine_towns::TownsBootDevice::Hdd
-        }
-        machine_98::BootDevice::Dos => {
+        common::BootDevice::Hdd1 | common::BootDevice::Hdd2 => machine_towns::TownsBootDevice::Hdd,
+        common::BootDevice::Dos => {
             warn!("'dos' boot is not available for the FM Towns; using the default boot device");
             machine_towns::TownsBootDevice::Auto
         }
@@ -848,6 +889,7 @@ where
 }
 
 /// Builds the concrete untraced PC/AT machine inside `machine_at`.
+#[cfg(feature = "at")]
 fn initialize_at_machine(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -864,6 +906,7 @@ fn initialize_at_machine(
 }
 
 /// Applies shared PC/AT setup before selecting a concrete machine.
+#[cfg(feature = "at")]
 fn initialize_at_machine_with<T, R, BuildBus, BuildMachine>(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -912,23 +955,24 @@ where
 }
 
 /// Converts the shared boot selection into the two orders exposed by the AMI BIOS.
+#[cfg(feature = "at")]
 fn resolve_at_boot_device(
-    device: machine_98::BootDevice,
+    device: common::BootDevice,
 ) -> (machine_at::AtBootDevice, Option<&'static str>) {
     match device {
-        machine_98::BootDevice::Auto | machine_98::BootDevice::Fdd1 => {
+        common::BootDevice::Auto | common::BootDevice::Fdd1 => {
             (machine_at::AtBootDevice::FloppyFirst, None)
         }
-        machine_98::BootDevice::Fdd2 => (
+        common::BootDevice::Fdd2 => (
             machine_at::AtBootDevice::FloppyFirst,
             Some("The PC/AT BIOS cannot select drive B: for boot. Using A: then C:"),
         ),
-        machine_98::BootDevice::Hdd1 => (machine_at::AtBootDevice::HddFirst, None),
-        machine_98::BootDevice::Hdd2 => (
+        common::BootDevice::Hdd1 => (machine_at::AtBootDevice::HddFirst, None),
+        common::BootDevice::Hdd2 => (
             machine_at::AtBootDevice::HddFirst,
             Some("The PC/AT BIOS cannot select the second HDD for boot. Using C: then A:"),
         ),
-        machine_98::BootDevice::Dos => (
+        common::BootDevice::Dos => (
             machine_at::AtBootDevice::FloppyFirst,
             Some("'dos' boot is not available for the PC/AT. Using A: then C:"),
         ),
@@ -936,6 +980,7 @@ fn resolve_at_boot_device(
 }
 
 /// Builds the concrete untraced X1 machine inside `machine_x1`.
+#[cfg(feature = "x1")]
 fn initialize_x1_machine(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -950,6 +995,7 @@ fn initialize_x1_machine(
 }
 
 /// Applies shared X1 setup before selecting a concrete machine.
+#[cfg(feature = "x1")]
 fn initialize_x1_machine_with<T, R, BuildBus, BuildMachine>(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -992,6 +1038,7 @@ where
 /// Builds an FM-7 / FM-77AV machine: loads the ROM set, resolves the shared
 /// boot mode to an FM-7 mode, wires the two MC6809 cores (main and sub) and the
 /// bus, and returns the boxed machine.
+#[cfg(feature = "fm7")]
 fn initialize_fm7_machine(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -1006,6 +1053,7 @@ fn initialize_fm7_machine(
 }
 
 /// Applies shared FM-7 setup before selecting a concrete machine.
+#[cfg(feature = "fm7")]
 fn initialize_fm7_machine_with<T, R, BuildBus, BuildMachine>(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -1053,6 +1101,7 @@ where
 }
 
 /// Builds the concrete untraced X68000 machine inside `machine_x68k`.
+#[cfg(feature = "x68k")]
 fn initialize_x68k_machine(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -1069,6 +1118,7 @@ fn initialize_x68k_machine(
 }
 
 /// Applies shared X68000 setup before selecting a concrete machine.
+#[cfg(feature = "x68k")]
 fn initialize_x68k_machine_with<T, R, BuildBus, BuildMachine>(
     config: &EmulatorConfig,
     sample_rate: u32,
@@ -1113,12 +1163,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{initialize_machine, resolve_at_boot_device};
+    #[cfg(feature = "msx")]
+    use super::initialize_machine;
+    #[cfg(feature = "at")]
+    use super::resolve_at_boot_device;
+    #[cfg(feature = "msx")]
     use crate::config::{EmulatorConfig, Target};
 
+    #[cfg(feature = "at")]
     #[test]
     fn pc_at_boot_devices_resolve_to_supported_bios_orders() {
-        use machine_98::BootDevice;
+        use common::BootDevice;
         use machine_at::AtBootDevice;
 
         let cases = [
@@ -1136,6 +1191,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "msx")]
     #[test]
     fn msx_requires_its_rom_directory() {
         let config = EmulatorConfig {

@@ -16,6 +16,18 @@ r7rs = { workspace = true }
 sdl3 = { workspace = true }
 
 [features]
+default = ["all-machines"]
+pc98 = ["machine_factory/pc98"]
+pc88 = ["machine_factory/pc88"]
+pc88va = ["machine_factory/pc88va"]
+pc60 = ["machine_factory/pc60"]
+msx = ["machine_factory/msx"]
+towns = ["machine_factory/towns"]
+x1 = ["machine_factory/x1"]
+fm7 = ["machine_factory/fm7"]
+x68k = ["machine_factory/x68k"]
+at = ["machine_factory/at"]
+all-machines = ["pc98", "pc88", "pc88va", "pc60", "msx", "towns", "x1", "fm7", "x68k", "at"]
 mt32 = ["machine_factory/mt32"]
 sc55 = ["machine_factory/sc55"]
 
@@ -24,4 +36,54 @@ machine_98 = { workspace = true }
 machine_fm7 = { workspace = true }
 machine_msx = { workspace = true }
 machine_x68k = { workspace = true }
-sdl3 = { workspace = true }
+
+[[test]]
+name = "config"
+
+[[test]]
+name = "construction"
+required-features = ["pc98", "msx", "x68k", "fm7"]
+
+[[test]]
+name = "determinism"
+required-features = ["pc98", "msx"]
+
+[[test]]
+name = "factory"
+required-features = ["pc98", "msx"]
+
+[[test]]
+name = "hdd"
+required-features = ["pc98"]
+
+[[test]]
+name = "input"
+required-features = ["pc98"]
+
+[[test]]
+name = "inspection"
+required-features = ["pc98", "msx", "x68k", "fm7"]
+
+[[test]]
+name = "media"
+required-features = ["pc98"]
+
+[[test]]
+name = "reset_restore"
+required-features = ["pc98"]
+
+[[test]]
+name = "run"
+required-features = ["pc98"]
+
+[[test]]
+name = "save_state"
+required-features = ["pc98"]
+
+[[test]]
+name = "screen"
+required-features = ["pc98", "msx"]
+
+[[test]]
+name = "tracing"
+required-features = ["pc98"]

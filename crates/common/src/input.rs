@@ -187,3 +187,36 @@ pub struct KeyModifiers {
     /// Whether a Control key is held.
     pub ctrl: bool,
 }
+
+// PC/AT host key ids. A host forwards one set-1 make code per key event; the
+// E0-extended keys have no set-1 code of their own, so they use the synthetic
+// ids below.
+
+/// Synthetic host id: cursor up (E0-extended).
+pub const AT_KEY_CURSOR_UP: u8 = 0x59;
+/// Synthetic host id: cursor down (E0-extended).
+pub const AT_KEY_CURSOR_DOWN: u8 = 0x5A;
+/// Synthetic host id: cursor left (E0-extended).
+pub const AT_KEY_CURSOR_LEFT: u8 = 0x5B;
+/// Synthetic host id: cursor right (E0-extended).
+pub const AT_KEY_CURSOR_RIGHT: u8 = 0x5C;
+/// Synthetic host id: insert (E0-extended).
+pub const AT_KEY_INSERT: u8 = 0x5D;
+/// Synthetic host id: delete (E0-extended).
+pub const AT_KEY_DELETE: u8 = 0x5E;
+/// Synthetic host id: home (E0-extended).
+pub const AT_KEY_HOME: u8 = 0x5F;
+/// Synthetic host id: end (E0-extended).
+pub const AT_KEY_END: u8 = 0x60;
+/// Synthetic host id: page up (E0-extended).
+pub const AT_KEY_PAGE_UP: u8 = 0x61;
+/// Synthetic host id: page down (E0-extended).
+pub const AT_KEY_PAGE_DOWN: u8 = 0x62;
+/// Synthetic host id: keypad enter (E0-extended).
+pub const AT_KEY_KEYPAD_ENTER: u8 = 0x63;
+/// Synthetic host id: keypad divide (E0-extended).
+pub const AT_KEY_KEYPAD_DIVIDE: u8 = 0x64;
+/// Synthetic host id: right control (E0-extended).
+pub const AT_KEY_RIGHT_CTRL: u8 = 0x65;
+/// Synthetic host id: right alt (E0-extended).
+pub const AT_KEY_RIGHT_ALT: u8 = 0x66;

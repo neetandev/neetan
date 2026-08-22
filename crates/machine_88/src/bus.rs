@@ -11,9 +11,9 @@ mod sub_io_read;
 mod sub_io_write;
 
 use common::{
-    JoystickState, MonitorTiming, NoTrace, SharedHostDateTimeSource, TraceAccessKind,
-    TraceAccessWidth, TraceAddressSpace, TraceContext, TraceEvent, TraceInterruptAction,
-    TracePresentation, TraceSink, trace_id,
+    EightMhzWaitMode, JoystickState, MemoryWaitSwitch, MonitorTiming, NoTrace,
+    SharedHostDateTimeSource, TraceAccessKind, TraceAccessWidth, TraceAddressSpace, TraceContext,
+    TraceEvent, TraceInterruptAction, TracePresentation, TraceSink, trace_id,
 };
 use device::{
     beeper::Beeper,
@@ -36,7 +36,7 @@ use software_renderer::{
 };
 
 use crate::{
-    config::{BootMode, ClockConfig, EightMhzWaitMode, MemoryWaitSwitch, Pc8801Model},
+    config::{BootMode, ClockConfig, Pc8801Model},
     memory::{GvramSelect, Pc8801Memory, Pc8801MemoryTarget},
     scheduler::{Event88, Pc8801Scheduler},
 };

@@ -13,8 +13,8 @@ common = { workspace = true, features = ["std"] }
 cpu.workspace = true
 device.workspace = true
 save_state.workspace = true
-software_renderer.workspace = true
+software_renderer = { workspace = true, features = ["std", "msx"] }
 ymfm_oxide.workspace = true
 
 [dev-dependencies]
-software_renderer = { workspace = true, features = ["std"] }
+software_renderer = { workspace = true, features = ["std", "msx"] }

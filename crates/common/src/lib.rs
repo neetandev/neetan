@@ -278,6 +278,125 @@ impl core::str::FromStr for CpuMode {
     }
 }
 
+/// Boot device selection for the HLE bootstrap.
+///
+/// Shared across every machine family: each family maps the value onto the boot
+/// order its own firmware exposes.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub enum BootDevice {
+    /// Try all devices in standard order: FDD 0-1, CD-ROM, SASI HDD, IDE HDD, HLE DOS.
+    #[default]
+    Auto,
+    /// Boot from FDD drive 0 only.
+    Fdd1,
+    /// Boot from FDD drive 1 only.
+    Fdd2,
+    /// Boot from HDD drive 0 (SASI or IDE depending on machine model).
+    Hdd1,
+    /// Boot from HDD drive 1 (SASI or IDE depending on machine model).
+    Hdd2,
+    /// Skip all disk boot attempts, go straight to HLE Neetan DOS.
+    Dos,
+}
+
+impl core::fmt::Display for BootDevice {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Auto => f.write_str("auto"),
+            Self::Fdd1 => f.write_str("fdd1"),
+            Self::Fdd2 => f.write_str("fdd2"),
+            Self::Hdd1 => f.write_str("hdd1"),
+            Self::Hdd2 => f.write_str("hdd2"),
+            Self::Dos => f.write_str("dos"),
+        }
+    }
+}
+
+impl core::str::FromStr for BootDevice {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "fdd1" => Ok(Self::Fdd1),
+            "fdd2" => Ok(Self::Fdd2),
+            "hdd1" => Ok(Self::Hdd1),
+            "hdd2" => Ok(Self::Hdd2),
+            "dos" => Ok(Self::Dos),
+            _ => Err(format!(
+                "unknown boot device '{s}', expected auto, fdd1, fdd2, hdd1, hdd2 or dos"
+            )),
+        }
+    }
+}
+
+/// PC-8801 memory wait compatibility switch. `Compatible` inserts the
+/// additional real-hardware memory wait states; `Fast` omits them where the
+/// hardware switch would.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryWaitSwitch {
+    /// Omit the optional memory wait states.
+    Fast,
+    /// Insert the real-hardware memory wait states.
+    Compatible,
+}
+
+impl core::fmt::Display for MemoryWaitSwitch {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            MemoryWaitSwitch::Fast => formatter.write_str("fast"),
+            MemoryWaitSwitch::Compatible => formatter.write_str("compatible"),
+        }
+    }
+}
+
+impl core::str::FromStr for MemoryWaitSwitch {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text.to_ascii_lowercase().as_str() {
+            "fast" => Ok(MemoryWaitSwitch::Fast),
+            "compatible" => Ok(MemoryWaitSwitch::Compatible),
+            _ => Err(format!(
+                "unknown PC-88 memory wait '{text}', expected fast or compatible"
+            )),
+        }
+    }
+}
+
+/// PC-8801 8 MHz wait-state mode. `Fast` is the high-speed mode that omits the
+/// extra 8 MHz wait state; `Compatible` keeps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EightMhzWaitMode {
+    /// High-speed: omit the extra 8 MHz wait state.
+    Fast,
+    /// Keep the extra 8 MHz wait state.
+    Compatible,
+}
+
+impl core::fmt::Display for EightMhzWaitMode {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            EightMhzWaitMode::Fast => formatter.write_str("fast"),
+            EightMhzWaitMode::Compatible => formatter.write_str("compatible"),
+        }
+    }
+}
+
+impl core::str::FromStr for EightMhzWaitMode {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text.to_ascii_lowercase().as_str() {
+            "fast" => Ok(EightMhzWaitMode::Fast),
+            "compatible" => Ok(EightMhzWaitMode::Compatible),
+            _ => Err(format!(
+                "unknown PC-88 8 MHz wait '{text}', expected fast or compatible"
+            )),
+        }
+    }
+}
+
 /// Display monitor timing.
 ///
 /// Both the PC-8801 and the Sharp X1 turbo can drive a 15 kHz (200-line) monitor

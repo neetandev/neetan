@@ -15,6 +15,7 @@ mod memory;
 mod rom;
 mod scheduler;
 
+pub use common::BootDevice;
 use common::{MachineModel, NoTrace, TraceSink};
 use device::{
     beeper::BeeperState, cgrom::CgromState, display_control::DisplayControlState, egc::EgcState,
@@ -33,7 +34,7 @@ pub use machine::{
 pub use rom_loader::RomError;
 
 pub use crate::{
-    bus::{BootDevice, Pc9801Bus},
+    bus::Pc9801Bus,
     config::ClockConfig,
     memory::Pc9801MemoryState,
     rom::{LoadedRoms, accepted_bios_digests, load_rom_set, required_mame_set},

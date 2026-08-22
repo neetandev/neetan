@@ -17,10 +17,10 @@ mod io_write;
 use std::path::PathBuf;
 
 use common::{
-    CpuType, MachineModel, SharedHostDateTimeSource, StackVec, TraceAccessKind, TraceAccessWidth,
-    TraceAddressSpace, TraceCall, TraceCallInterface, TraceCallPhase, TraceContext, TraceEvent,
-    TraceEventKey, TraceField, TraceInterruptAction, TraceInterruptKind, TracePresentation,
-    TraceValue, trace_id,
+    BootDevice, CpuType, MachineModel, SharedHostDateTimeSource, StackVec, TraceAccessKind,
+    TraceAccessWidth, TraceAddressSpace, TraceCall, TraceCallInterface, TraceCallPhase,
+    TraceContext, TraceEvent, TraceEventKey, TraceField, TraceInterruptAction, TraceInterruptKind,
+    TracePresentation, TraceValue, trace_id,
 };
 use device::{
     beeper::Beeper,
@@ -288,24 +288,6 @@ const GRAPHICS_PAGE_SIZE_BYTES: usize = 0x18000;
 /// E-plane VRAM bytes per page.
 const E_PLANE_PAGE_SIZE_BYTES: usize = 0x8000;
 
-/// Boot device selection for the HLE bootstrap.
-#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
-pub enum BootDevice {
-    /// Try all devices in standard order: FDD 0-1, CD-ROM, SASI HDD, IDE HDD, HLE DOS.
-    #[default]
-    Auto,
-    /// Boot from FDD drive 0 only.
-    Fdd1,
-    /// Boot from FDD drive 1 only.
-    Fdd2,
-    /// Boot from HDD drive 0 (SASI or IDE depending on machine model).
-    Hdd1,
-    /// Boot from HDD drive 1 (SASI or IDE depending on machine model).
-    Hdd2,
-    /// Skip all disk boot attempts, go straight to HLE Neetan DOS.
-    Dos,
-}
-
 save_state::runtime_state! {
 /// Complete non-threaded PC-98 bus state.
 #[derive(Clone)]
@@ -394,37 +376,6 @@ pub(crate) struct Pc9801BusState {
     xms_32_enabled: bool,
     xms_hmamin_kb: u16,
 }}
-
-impl std::fmt::Display for BootDevice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Auto => f.write_str("auto"),
-            Self::Fdd1 => f.write_str("fdd1"),
-            Self::Fdd2 => f.write_str("fdd2"),
-            Self::Hdd1 => f.write_str("hdd1"),
-            Self::Hdd2 => f.write_str("hdd2"),
-            Self::Dos => f.write_str("dos"),
-        }
-    }
-}
-
-impl std::str::FromStr for BootDevice {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
-            "auto" => Ok(Self::Auto),
-            "fdd1" => Ok(Self::Fdd1),
-            "fdd2" => Ok(Self::Fdd2),
-            "hdd1" => Ok(Self::Hdd1),
-            "hdd2" => Ok(Self::Hdd2),
-            "dos" => Ok(Self::Dos),
-            _ => Err(format!(
-                "unknown boot device '{s}', expected auto, fdd1, fdd2, hdd1, hdd2 or dos"
-            )),
-        }
-    }
-}
 
 /// PC-9801 system bus.
 pub struct Pc9801Bus<T: TraceSink = NoTrace> {

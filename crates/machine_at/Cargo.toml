@@ -15,10 +15,10 @@ sc55 = ["device/sc55"]
 common = { workspace = true, features = ["std"] }
 cpu.workspace = true
 device.workspace = true
-software_renderer = { workspace = true, features = ["std"] }
+software_renderer = { workspace = true, features = ["std", "vga"] }
 rom_loader.workspace = true
 save_state = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 resampler.workspace = true
-software_renderer = { workspace = true, features = ["write_png"] }
+software_renderer = { workspace = true, features = ["write_png", "vga"] }

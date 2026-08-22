@@ -41,6 +41,7 @@ pub fn trace_sink() -> ApplicationTraceSink {
 }
 
 /// Builds an automated PC-98 machine (HLE, ROM-free) with the fixed RTC.
+#[cfg(feature = "pc98")]
 pub fn build_pc98() -> Box<dyn AutomatedMachine> {
     let bus = machine_98::Pc9801Bus::new_with_trace_sink(
         MachineModel::PC9801VM,
@@ -54,6 +55,7 @@ pub fn build_pc98() -> Box<dyn AutomatedMachine> {
 }
 
 /// Builds an automated MSX machine with the fixed RTC.
+#[cfg(feature = "msx")]
 pub fn build_msx() -> Box<dyn AutomatedMachine> {
     let bus =
         machine_msx::MsxBus::new_with_trace_sink(machine_msx::MsxModel::Msx, 48000, trace_sink());
@@ -63,6 +65,7 @@ pub fn build_msx() -> Box<dyn AutomatedMachine> {
 }
 
 /// Builds an automated X68000 machine with synthetic ROMs and the fixed RTC.
+#[cfg(feature = "x68k")]
 pub fn build_x68k() -> Box<dyn AutomatedMachine> {
     let mut ipl = vec![0u8; 0x20000];
     // A synthetic reset vector so the real CPU bus is exercised on construction.
@@ -89,6 +92,7 @@ pub fn build_x68k() -> Box<dyn AutomatedMachine> {
 }
 
 /// Builds an automated FM-7 machine with synthetic ROMs and the fixed RTC.
+#[cfg(feature = "fm7")]
 pub fn build_fm7() -> Box<dyn AutomatedMachine> {
     let model = machine_fm7::Fm7Model::Fm7;
     let mut bus = machine_fm7::Fm7Bus::new_with_trace_sink(

@@ -61,3 +61,22 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --features sdl3-build-from-source
+
+      - name: Check machine builds
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for machine in pc98 pc88 pc88va pc60 msx towns x1 fm7 x68k at; do
+            echo "::group::gui,auto,$machine"
+            cargo check -p neetan --no-default-features \
+              --features "gui,auto,$machine,sdl3-build-from-source"
+            echo "::endgroup::"
+          done
+          echo "::group::gui only, all machines"
+          cargo check -p neetan --no-default-features \
+            --features "gui,all-machines,sdl3-build-from-source"
+          echo "::endgroup::"
+          echo "::group::auto only, all machines"
+          cargo check -p neetan --no-default-features --features "auto,all-machines"
+          echo "::endgroup::"

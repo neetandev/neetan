@@ -35,11 +35,6 @@ use device::{
     upd765a_fdc::{UPD765_PLATFORM_ISA_AT, Upd765aFdc},
     vga::{RetraceStatus, Vga, VgaRenderMode as DeviceVgaRenderMode},
 };
-pub use keyboard::{
-    AT_KEY_CURSOR_DOWN, AT_KEY_CURSOR_LEFT, AT_KEY_CURSOR_RIGHT, AT_KEY_CURSOR_UP, AT_KEY_DELETE,
-    AT_KEY_END, AT_KEY_HOME, AT_KEY_INSERT, AT_KEY_KEYPAD_DIVIDE, AT_KEY_KEYPAD_ENTER,
-    AT_KEY_PAGE_DOWN, AT_KEY_PAGE_UP, AT_KEY_RIGHT_ALT, AT_KEY_RIGHT_CTRL,
-};
 use software_renderer::{
     RenderInputsVga, VGA_FALLBACK_HEIGHT, VGA_FALLBACK_WIDTH, VgaRenderMode, VgaRenderer,
 };

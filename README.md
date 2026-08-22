@@ -385,6 +385,34 @@ cargo build --release
 The resulting binary is `target/release/neetan`. Run it with any of the options
 documented under [Usage](#usage).
 
+### Build features
+
+Every machine family and both frontends are selectable at build time. All of them are
+on by default, so a plain `cargo build` produces the full emulator.
+
+| Feature        | Builds                                              |
+|----------------|-----------------------------------------------------|
+| `gui`          | The `neetan` binary and its SDL3 fronted            |
+| `auto`         | The `neetan-auto` binary and its Scheme interpreter |
+| `pc98`         | NEC PC-9801 / PC-9821                               |
+| `pc88`         | NEC PC-8001 / PC-8801                               |
+| `pc88va`       | NEC PC-88VA2                                        |
+| `pc60`         | NEC PC-6001 / PC-6601                               |
+| `msx`          | MSX / MSX2 / MSX2+                                  |
+| `towns`        | Fujitsu FM Towns                                    |
+| `fm7`          | Fujitsu FM-7 / FM-77AV                              |
+| `x68k`         | Sharp X68000                                        |
+| `x1`           | Sharp X1                                            |
+| `at`           | IBM PC/AT (DOS/V)                                   |
+| `all-machines` | All ten machine families                            |
+
+Examples:
+
+```bash
+cargo build --no-default-features --features gui,msx        # MSX only, GUI only
+cargo build --no-default-features --features auto,pc98      # PC-98 only, headless only
+```
+
 ### Optional MIDI features
 
 The Roland MT-32 and SC-55 emulations are optional build features, both enabled by
@@ -392,9 +420,12 @@ default. Distributions that cannot comply with their licenses (see
 [License](#license)) can disable one or both at build time:
 
 ```bash
-cargo build --release --no-default-features                       # neither
-cargo build --release --no-default-features --features mt32       # MT-32 only
-cargo build --release --no-default-features --features sc55       # SC-55 only
+# neither
+cargo build --release --no-default-features --features gui,auto,all-machines
+# MT-32 only
+cargo build --release --no-default-features --features gui,auto,all-machines,mt32
+# SC-55 only
+cargo build --release --no-default-features --features gui,auto,all-machines,sc55
 ```
 
 When built without a feature, the corresponding `--midi` option is still accepted but
