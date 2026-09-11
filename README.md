@@ -375,6 +375,7 @@ again.
 
 * [Rust 1.97](https://rustup.rs/)
 * [SDL3](https://github.com/libsdl-org/SDL) (See [sdl3_sys description](https://docs.rs/sdl3-sys/latest/sdl3_sys/#usage))
+* Linux: [The mold linker]([https://github.com/wild-linker/wild](https://github.com/rui314/mold))
 
 Build a release binary with:
 

@@ -44,7 +44,7 @@ munt_oxide = { path = "crates/munt_oxide" }
 nuked_sc55_oxide = { path = "crates/nuked_sc55_oxide" }
 ymfm_oxide = { path = "crates/ymfm_oxide" }
 # External dependencies
-sdl3-sys = "0.6"
+sdl3-sys = "0.7"
 # Dependencies only used for the CPU verification tests
 zlib-rs = { version = "0.6", default-features = false, features = ["rust-allocator"] }
 
