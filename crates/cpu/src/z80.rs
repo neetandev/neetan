@@ -159,6 +159,11 @@ impl Z80 {
             self.check_interrupts(bus);
         }
         self.ei = 0;
+        if self.halted {
+            self.increment_r();
+            self.clk(4);
+            return;
+        }
         self.p = 0;
         self.set_q_latch(false);
 
@@ -224,7 +229,8 @@ impl Z80 {
         save_state::restore_root(self, state, &())
     }
 
-    /// Executes exactly one logical instruction (should only be used in tests).
+    /// Executes one instruction or halted M1 cycle, servicing pending interrupts first.
+    /// This entry point should only be used in tests.
     pub fn step(&mut self, bus: &mut impl common::Bus) {
         let start_cycle = bus.current_cycle();
         self.cycles_remaining = i64::MAX;
@@ -256,13 +262,6 @@ impl CpuZ80 for Z80 {
                     self.pending_irq |= crate::PENDING_IRQ;
                 } else {
                     self.pending_irq &= !crate::PENDING_IRQ;
-                }
-                if self.pending_irq != 0 {
-                    self.halted = false;
-                } else {
-                    let consumed = (cycles_to_run as i64 - self.cycles_remaining) as u64;
-                    bus.set_current_cycle(start_cycle + consumed);
-                    return consumed;
                 }
             }
 

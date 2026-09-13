@@ -81,6 +81,7 @@ impl Z80 {
         result
     }
 
+    /// Sets subtraction flags and leaves A unchanged.
     pub(crate) fn cp8(&mut self, left: u8, right: u8) {
         let diff = left.wrapping_sub(right);
         let borrow = u16::from(left) < u16::from(right);
