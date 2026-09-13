@@ -22,15 +22,16 @@ impl Z80 {
         bus.acknowledge_nmi();
     }
 
+    /// Takes an IRQ in 13 clocks for IM0 RST and IM1, or 19 for IM2.
     fn service_irq(&mut self, bus: &mut impl common::Bus) {
         self.halted = false;
         self.iff1 = false;
         self.iff2 = false;
         self.increment_r();
         let vector = bus.acknowledge_irq();
-        self.clk(7);
         match self.im & 3 {
             2 => {
+                self.clk(7);
                 let table = (u16::from(self.i) << 8) | u16::from(vector);
                 let low = self.read_byte(bus, table);
                 let high = self.read_byte(bus, table.wrapping_add(1));
@@ -39,11 +40,15 @@ impl Z80 {
                 self.pc = u16::from(low) | (u16::from(high) << 8);
             }
             1 => {
+                self.clk(7);
                 let return_pc = self.pc;
                 self.push(bus, return_pc);
                 self.pc = 0x0038;
             }
-            _ => self.execute_im0_opcode(vector, bus),
+            _ => {
+                self.clk(6);
+                self.execute_im0_opcode(vector, bus);
+            }
         }
         self.wz = self.pc;
         self.pending_irq &= !crate::PENDING_IRQ;
