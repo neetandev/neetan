@@ -3,7 +3,7 @@ mod common;
 use std::fmt::Write;
 
 use common::{harness::*, signals::*};
-use ymfm_oxide::{Y8950, Ym2203, Ym2608, Ym3526, Ymf262, YmfmOpnFidelity};
+use ymfm_oxide::{Y8950, Ym2203, Ym2608, Ym2610, Ym2610b, Ym3526, Ymf262, YmfmOpnFidelity};
 
 const SAMPLES: usize = 256;
 
@@ -908,6 +908,107 @@ fn gen_ym2608_adpcm(dir: &str) {
 
     std::fs::write(format!("{dir}/ym2608_adpcm.rs"), f).unwrap();
     println!("  wrote ym2608_adpcm.rs");
+}
+
+/// Formats a `u8` status golden value.
+fn fmt_u8(name: &str, value: u8) -> String {
+    format!("pub const {name}: u8 = {value};\n\n")
+}
+
+fn gen_ym2610_fm(dir: &str) {
+    let mut f = header();
+
+    {
+        let mut chip: Ym2610 = setup_ym2610(YmfmOpnFidelity::Max, false);
+        f.push_str(&fmt3("SILENCE", &generate_3_2610(&mut chip, SAMPLES)));
+    }
+
+    {
+        let mut chip: Ym2610 = setup_ym2610(YmfmOpnFidelity::Max, false);
+        add_ssg_tone_2610(&mut chip);
+        setup_ym2610_simple_tone(&mut chip, 1, 7, 0);
+        key_on_2610(&mut chip, 1);
+        f.push_str(&fmt3(
+            "TONE_CHANNEL_1",
+            &generate_3_2610(&mut chip, SAMPLES),
+        ));
+    }
+
+    {
+        let mut chip: Ym2610 = setup_ym2610(YmfmOpnFidelity::Max, false);
+        setup_ym2610_simple_tone(&mut chip, 0, 4, 3);
+        key_on_2610(&mut chip, 0);
+        f.push_str(&fmt3(
+            "CHANNEL_0_YM2610",
+            &generate_3_2610(&mut chip, SAMPLES),
+        ));
+    }
+
+    {
+        let mut chip: Ym2610b = setup_ym2610(YmfmOpnFidelity::Max, false);
+        setup_ym2610_simple_tone(&mut chip, 0, 4, 3);
+        key_on_2610(&mut chip, 0);
+        f.push_str(&fmt3(
+            "CHANNEL_0_YM2610B",
+            &generate_3_2610(&mut chip, SAMPLES),
+        ));
+    }
+
+    {
+        let mut chip: Ym2610 = setup_ym2610(YmfmOpnFidelity::Max, false);
+        setup_ym2610_simple_tone(&mut chip, 4, 7, 0);
+        key_on_2610(&mut chip, 4);
+        f.push_str(&fmt3(
+            "TONE_CHANNEL_4",
+            &generate_3_2610(&mut chip, SAMPLES),
+        ));
+    }
+
+    {
+        let mut chip: Ym2610 = setup_ym2610(YmfmOpnFidelity::Min, false);
+        add_ssg_tone_2610(&mut chip);
+        f.push_str(&fmt3("SSG_MIN", &generate_3_2610(&mut chip, SAMPLES)));
+    }
+
+    {
+        let mut chip: Ym2610 = setup_ym2610(YmfmOpnFidelity::Med, false);
+        add_ssg_tone_2610(&mut chip);
+        setup_ym2610_simple_tone(&mut chip, 2, 7, 0);
+        key_on_2610(&mut chip, 2);
+        f.push_str(&fmt3("SSG_TONE_MED", &generate_3_2610(&mut chip, SAMPLES)));
+    }
+
+    std::fs::write(format!("{dir}/ym2610_fm.rs"), f).unwrap();
+    println!("  wrote ym2610_fm.rs");
+}
+
+fn gen_ym2610_adpcm(dir: &str) {
+    let mut f = header();
+
+    {
+        let mut chip: Ym2610 = setup_ym2610(YmfmOpnFidelity::Min, true);
+        start_ym2610_adpcm_a(&mut chip);
+        f.push_str(&fmt3("ADPCM_A", &generate_3_2610(&mut chip, SAMPLES)));
+        generate_3_2610(&mut chip, 2048);
+        f.push_str(&fmt_u8("ADPCM_A_STATUS_END", chip.read_status_hi()));
+        write_reg_2610(&mut chip, 0x1C, 0x01);
+        f.push_str(&fmt_u8("ADPCM_A_STATUS_MASKED", chip.read_status_hi()));
+        write_reg_2610(&mut chip, 0x1C, 0x00);
+        f.push_str(&fmt_u8("ADPCM_A_STATUS_UNMASKED", chip.read_status_hi()));
+    }
+
+    {
+        let mut chip: Ym2610 = setup_ym2610(YmfmOpnFidelity::Min, true);
+        start_ym2610_adpcm_b(&mut chip);
+        f.push_str(&fmt3("ADPCM_B", &generate_3_2610(&mut chip, SAMPLES)));
+        generate_3_2610(&mut chip, 8192);
+        f.push_str(&fmt_u8("ADPCM_B_STATUS_END", chip.read_status_hi()));
+        write_reg_2610(&mut chip, 0x1C, 0x80);
+        f.push_str(&fmt_u8("ADPCM_B_STATUS_CLEARED", chip.read_status_hi()));
+    }
+
+    std::fs::write(format!("{dir}/ym2610_adpcm.rs"), f).unwrap();
+    println!("  wrote ym2610_adpcm.rs");
 }
 
 fn fmt1(name: &str, data: &[[i32; 1]]) -> String {
@@ -2273,6 +2374,8 @@ fn generate_golden_vectors() {
     gen_ym2608_fm(&dir);
     gen_ym2608_stereo(&dir);
     gen_ym2608_adpcm(&dir);
+    gen_ym2610_fm(&dir);
+    gen_ym2610_adpcm(&dir);
     gen_ymf276_fm(&dir);
     gen_ym2203_fidelity(&dir);
     gen_ym2413_fm(&dir);

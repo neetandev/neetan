@@ -126,6 +126,49 @@ macro_rules! runtime_state {
     (
         #[doc = $documentation:expr]
         $(#[$structure_attribute:meta])*
+        $visibility:vis struct $name:ident<const $constant:ident: $constant_type:ty> {
+            $(
+                $(#[$field_attribute:meta])*
+                $field_visibility:vis $field:ident: $field_type:ty
+            ),* $(,)?
+        }
+    ) => {
+        #[doc = $documentation]
+        $(#[$structure_attribute])*
+        $visibility struct $name<const $constant: $constant_type> {
+            $(
+                $(#[$field_attribute])*
+                $field_visibility $field: $field_type,
+            )*
+        }
+
+        #[allow(unused_doc_comments)]
+        impl<const $constant: $constant_type> $crate::StateEncode for $name<$constant> {
+            fn encode_state(&self, output: &mut ::alloc::vec::Vec<u8>) {
+                $(
+                    $(#[$field_attribute])*
+                    $crate::StateEncode::encode_state(&self.$field, output);
+                )*
+            }
+        }
+
+        #[allow(unused_doc_comments)]
+        impl<const $constant: $constant_type> $crate::StateDecode for $name<$constant> {
+            fn decode_state(
+                decoder: &mut $crate::StateDecoder<'_>,
+            ) -> Result<Self, $crate::StateDecodeError> {
+                Ok(Self {
+                    $(
+                        $(#[$field_attribute])*
+                        $field: <$field_type as $crate::StateDecode>::decode_state(decoder)?,
+                    )*
+                })
+            }
+        }
+    };
+    (
+        #[doc = $documentation:expr]
+        $(#[$structure_attribute:meta])*
         $visibility:vis struct $name:ident<$first_generic:ident, $second_generic:ident> {
             $(
                 $(#[$field_attribute:meta])*
