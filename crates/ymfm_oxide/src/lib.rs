@@ -7,17 +7,19 @@
 //!
 //! Not all chips are ported. We only ported the chips that we use in our emulated machines.
 //!
-//! | Chip   | Family | Features                                  |
-//! |--------|--------|-------------------------------------------|
-//! | YM2203 | OPN    | 3-ch FM + 3-ch SSG                        |
-//! | YM2608 | OPNA   | 6-ch stereo FM + SSG + ADPCM-A + ADPCM-B  |
-//! | YMF276 | OPN2   | 6-ch stereo FM + channel-6 DAC            |
-//! | YM3526 | OPL    | 9-ch mono FM                              |
-//! | Y8950  | OPL    | 9-ch mono FM + ADPCM-B                    |
-//! | YM3812 | OPL2   | 9-ch mono FM, 4 waveforms                 |
-//! | YMF262 | OPL3   | 18-ch 4-output FM, 8 waveforms, 4-op mode |
-//! | YM2151 | OPM    | 8-ch stereo FM + noise + LFO              |
-//! | YM2413 | OPLL   | 9-ch mono FM + rhythm                      |
+//! | Chip    | Family | Features                                  |
+//! |---------|--------|-------------------------------------------|
+//! | YM2203  | OPN    | 3-ch FM + 3-ch SSG                        |
+//! | YM2608  | OPNA   | 6-ch stereo FM + SSG + ADPCM-A + ADPCM-B  |
+//! | YM2610  | OPNB   | 4-ch stereo FM + SSG + ADPCM-A + ADPCM-B  |
+//! | YM2610B | OPNB2  | 6-ch stereo FM + SSG + ADPCM-A + ADPCM-B  |
+//! | YMF276  | OPN2   | 6-ch stereo FM + channel-6 DAC            |
+//! | YM3526  | OPL    | 9-ch mono FM                              |
+//! | Y8950   | OPL    | 9-ch mono FM + ADPCM-B                    |
+//! | YM3812  | OPL2   | 9-ch mono FM, 4 waveforms                 |
+//! | YMF262  | OPL3   | 18-ch 4-output FM, 8 waveforms, 4-op mode |
+//! | YM2151  | OPM    | 8-ch stereo FM + noise + LFO              |
+//! | YM2413  | OPLL   | 9-ch mono FM + rhythm                     |
 //!
 //! # Usage
 //!
@@ -939,6 +941,448 @@ impl Ym2608 {
                 }
             },
         }
+    }
+}
+
+/// FM channel mask of the YM2610. The chip has FM channels 1, 2, 4 and 5.
+pub const YM2610_FM_CHANNEL_MASK: u32 = 0x36;
+/// FM channel mask of the YM2610B. All six channels are present.
+pub const YM2610B_FM_CHANNEL_MASK: u32 = 0x3F;
+/// Visible bits of the YM2610 end-of-sample status. Bit 6 holds the hidden live ADPCM-B EOS.
+const YM2610_EOS_FLAGS_MASK: u8 = 0xBF;
+/// Hidden status bit that tracks the live ADPCM-B end-of-sample signal.
+const YM2610_ADPCM_B_LIVE_EOS: u8 = 0x40;
+/// Mask of all six ADPCM-A channels.
+const YM2610_ADPCM_A_ALL_CHANNELS: u32 = 0x3F;
+/// Address shift of the ADPCM-A and ADPCM-B units on the YM2610 external memory bus.
+const YM2610_ADPCM_ADDRESS_SHIFT: u32 = 8;
+/// ADPCM-B control register 1 bit that selects external memory.
+const YM2610_ADPCM_B_EXTERNAL: u8 = 0x20;
+/// ADPCM-B control register 1 bit that selects recording.
+const YM2610_ADPCM_B_RECORD: u8 = 0x40;
+
+save_state::runtime_state! {
+/// Complete mutable state of a YM2610 family chip.
+#[derive(Clone)]
+pub struct Ym2610FamilyState<const FM_CHANNEL_MASK: u32> {
+    fm: FmEngine<OpnaRegisters>,
+    ssg: SsgEngine,
+    ssg_resampler: SsgResampler,
+    adpcm_a: AdpcmAEngine,
+    adpcm_b: AdpcmBEngine,
+    fidelity: YmfmOpnFidelity,
+    address: u16,
+    fm_samples_per_output: u32,
+    last_fm: [i32; 2],
+    eos_status: u8,
+    flag_mask: u8,
+    adpcm_a_rom_identity: save_state::ResourceIdentity,
+    adpcm_b_rom_identity: save_state::ResourceIdentity,
+}}
+
+/// Complete mutable state of a YM2610 chip.
+pub type Ym2610State = Ym2610FamilyState<YM2610_FM_CHANNEL_MASK>;
+/// Complete mutable state of a YM2610B chip.
+pub type Ym2610bState = Ym2610FamilyState<YM2610B_FM_CHANNEL_MASK>;
+
+/// Identities of the ADPCM-A and ADPCM-B ROMs attached to a YM2610 family chip.
+pub type Ym2610RomIdentities = (save_state::ResourceIdentity, save_state::ResourceIdentity);
+
+/// Yamaha YM2610 family (OPNB) emulator.
+///
+/// The YM2610 family has the OPNA FM core, an SSG, six ADPCM-A channels and one
+/// ADPCM-B channel. Both ADPCM units play samples from external ROMs.
+/// `FM_CHANNEL_MASK` selects the FM channels that the chip has.
+#[derive(Clone)]
+pub struct Ym2610Family<const FM_CHANNEL_MASK: u32> {
+    fm: FmEngine<OpnaRegisters>,
+    ssg: SsgEngine,
+    ssg_resampler: SsgResampler,
+    adpcm_a: AdpcmAEngine,
+    adpcm_b: AdpcmBEngine,
+    adpcm_a_rom: Vec<u8>,
+    adpcm_b_rom: Option<Vec<u8>>,
+    fidelity: YmfmOpnFidelity,
+    address: u16,
+    fm_samples_per_output: u32,
+    last_fm: [i32; 2],
+    eos_status: u8,
+    flag_mask: u8,
+}
+
+/// Yamaha YM2610 (OPNB) with four FM channels.
+pub type Ym2610 = Ym2610Family<YM2610_FM_CHANNEL_MASK>;
+/// Yamaha YM2610B (OPNB2) with six FM channels.
+pub type Ym2610b = Ym2610Family<YM2610B_FM_CHANNEL_MASK>;
+
+impl<const FM_CHANNEL_MASK: u32> Ym2610Family<FM_CHANNEL_MASK> {
+    /// Creates a new YM2610 family instance.
+    pub fn new() -> Self {
+        let mut chip = Self {
+            fm: FmEngine::new(),
+            ssg: SsgEngine::new(),
+            ssg_resampler: SsgResampler::new(true, 2),
+            adpcm_a: AdpcmAEngine::new(YM2610_ADPCM_ADDRESS_SHIFT),
+            adpcm_b: AdpcmBEngine::new(YM2610_ADPCM_ADDRESS_SHIFT),
+            adpcm_a_rom: SILENT_ADPCM_MEMORY.to_vec(),
+            adpcm_b_rom: None,
+            fidelity: YmfmOpnFidelity::Max,
+            address: 0,
+            fm_samples_per_output: 0,
+            last_fm: [0, 0],
+            eos_status: 0x00,
+            flag_mask: YM2610_EOS_FLAGS_MASK,
+        };
+        chip.update_prescale();
+        chip
+    }
+
+    /// Captures mutable chip state and the identities of the attached ROMs.
+    pub fn capture_state(&self) -> Ym2610FamilyState<FM_CHANNEL_MASK> {
+        let (adpcm_a_rom_identity, adpcm_b_rom_identity) = self.rom_identities();
+        Ym2610FamilyState {
+            fm: self.fm.clone(),
+            ssg: self.ssg.clone(),
+            ssg_resampler: self.ssg_resampler.clone(),
+            adpcm_a: self.adpcm_a.clone(),
+            adpcm_b: self.adpcm_b.clone(),
+            fidelity: self.fidelity,
+            address: self.address,
+            fm_samples_per_output: self.fm_samples_per_output,
+            last_fm: self.last_fm,
+            eos_status: self.eos_status,
+            flag_mask: self.flag_mask,
+            adpcm_a_rom_identity,
+            adpcm_b_rom_identity,
+        }
+    }
+
+    /// Restores mutable state while retaining the attached ROMs.
+    pub fn restore_state(
+        &mut self,
+        state: Ym2610FamilyState<FM_CHANNEL_MASK>,
+    ) -> Result<(), save_state::StateValidationError> {
+        let identities = self.rom_identities();
+        save_state::restore_root(self, state, &identities)
+    }
+
+    /// Resets the chip to its initial power-on state.
+    pub fn reset(&mut self) {
+        self.fm.reset();
+        self.ssg.reset();
+        self.adpcm_a.reset();
+        self.adpcm_b.reset();
+
+        self.eos_status = 0x00;
+        self.flag_mask = YM2610_EOS_FLAGS_MASK;
+    }
+
+    /// Attaches the ADPCM-A sample ROM.
+    ///
+    /// Panics if `data` is empty. Reads past the end of the ROM wrap around.
+    pub fn set_adpcm_a_rom(&mut self, data: Vec<u8>) {
+        assert!(!data.is_empty(), "ADPCM-A ROM data must not be empty");
+        self.adpcm_a_rom = data;
+    }
+
+    /// Removes the ADPCM-A sample ROM. Reads from a missing ROM return zero.
+    pub fn clear_adpcm_a_rom(&mut self) {
+        self.adpcm_a_rom = SILENT_ADPCM_MEMORY.to_vec();
+    }
+
+    /// Attaches the ADPCM-B sample ROM.
+    ///
+    /// Panics if `data` is empty. Reads past the end of the ROM wrap around.
+    pub fn set_adpcm_b_rom(&mut self, data: Vec<u8>) {
+        assert!(!data.is_empty(), "ADPCM-B ROM data must not be empty");
+        self.adpcm_b_rom = Some(data);
+    }
+
+    /// Removes the ADPCM-B sample ROM. Reads from a missing ROM return zero.
+    pub fn clear_adpcm_b_rom(&mut self) {
+        self.adpcm_b_rom = None;
+    }
+
+    /// Sets the output fidelity level.
+    pub fn set_fidelity(&mut self, fidelity: YmfmOpnFidelity) {
+        self.fidelity = fidelity;
+        self.update_prescale();
+    }
+
+    /// Returns the output sample rate in Hz for the given `input_clock` in Hz.
+    pub fn sample_rate(&mut self, input_clock: u32) -> u32 {
+        match self.fidelity {
+            YmfmOpnFidelity::Min | YmfmOpnFidelity::Med => input_clock / 144,
+            YmfmOpnFidelity::Max => input_clock / 16,
+        }
+    }
+
+    /// Reads the chip status register (low).
+    pub fn read_status(&mut self, busy: bool) -> u8 {
+        let mut result =
+            self.fm.status() & (OpnaRegisters::STATUS_TIMERA | OpnaRegisters::STATUS_TIMERB);
+        if busy {
+            result |= OpnaRegisters::STATUS_BUSY;
+        }
+        result
+    }
+
+    /// Reads data from the currently addressed register (low bank).
+    pub fn read_data(&mut self) -> u8 {
+        if self.address < 0x0E {
+            // 00-0D: Read from SSG
+            self.ssg.read(self.address as u32 & 0x0F)
+        } else if self.address < 0x10 {
+            // 0E-0F: I/O ports are not present
+            0xFF
+        } else if self.address == 0xFF {
+            // FF: ID code
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Reads the end-of-sample status register (high).
+    ///
+    /// Bits 0-5 flag the ADPCM-A channels and bit 7 flags ADPCM-B.
+    pub fn read_status_hi(&mut self) -> u8 {
+        self.eos_status & self.flag_mask
+    }
+
+    /// Reads data from the currently addressed register (high bank).
+    pub fn read_data_hi(&mut self) -> u8 {
+        0
+    }
+
+    /// Latches the register address for the low bank.
+    pub fn write_address(&mut self, data: u8) -> u32 {
+        self.address = data as u16;
+        0
+    }
+
+    /// Writes a value to the previously addressed register (low bank).
+    pub fn write_data(&mut self, data: u8) -> u32 {
+        // Ignore if paired with upper address (port 1 address, port 0 data).
+        if helpers::bit(self.address as u32, 8) != 0 {
+            return 0;
+        }
+
+        if self.address < 0x0E {
+            // 00-0D: write to SSG
+            self.ssg.write(self.address as u32 & 0x0F, data);
+        } else if self.address < 0x10 {
+            // 0E-0F: I/O ports are not present
+        } else if self.address < 0x1C {
+            // 10-1B: write to ADPCM-B. The chip forces external memory on and recording off.
+            let data = if self.address == 0x10 {
+                (data | YM2610_ADPCM_B_EXTERNAL) & !YM2610_ADPCM_B_RECORD
+            } else {
+                data
+            };
+            self.adpcm_b.write(
+                self.address as u32 & 0x0F,
+                data,
+                self.adpcm_b_rom.as_deref_mut(),
+            );
+        } else if self.address == 0x1C {
+            // 1C: EOS flag reset
+            self.flag_mask = !data & YM2610_EOS_FLAGS_MASK;
+            self.eos_status &= !(data & YM2610_EOS_FLAGS_MASK);
+        } else {
+            // 1D-FF: write to FM
+            self.fm.write(self.address, data);
+        }
+
+        32 * self.fm.clock_prescale()
+    }
+
+    /// Latches the register address for the high bank.
+    pub fn write_address_hi(&mut self, data: u8) -> u32 {
+        self.address = 0x100 | data as u16;
+        0
+    }
+
+    /// Writes a value to the previously addressed register (high bank).
+    pub fn write_data_hi(&mut self, data: u8) -> u32 {
+        // Ignore if paired with lower address (port 0 address, port 1 data).
+        if helpers::bit(self.address as u32, 8) == 0 {
+            return 0;
+        }
+
+        if self.address < 0x130 {
+            // 100-12F: write to ADPCM-A
+            self.adpcm_a.write(self.address as u32 & 0x3F, data);
+        } else {
+            // 130-1FF: write to FM
+            self.fm.write(self.address, data);
+        }
+
+        32 * self.fm.clock_prescale()
+    }
+
+    /// Generates audio samples into `output`.
+    ///
+    /// Each sample contains three channels: `[FM_L, FM_R, SSG]`.
+    pub fn generate(&mut self, output: &mut [YmfmOutput3]) {
+        let numsamples = output.len();
+        let sampindex = self.ssg_resampler.sampindex();
+
+        for (samp, out) in output.iter_mut().enumerate() {
+            if (sampindex + samp as u32).is_multiple_of(self.fm_samples_per_output) {
+                self.clock_fm_and_adpcm();
+            }
+            out.data[0] = self.last_fm[0];
+            out.data[1] = self.last_fm[1];
+        }
+
+        // SAFETY: YmfmOutput3 is #[repr(C)] with a single [i32; 3] field,
+        // so &mut [YmfmOutput3] has the same layout as &mut [[i32; 3]].
+        #[allow(unsafe_code)]
+        let output_nested = unsafe { &mut *(output as *mut [YmfmOutput3] as *mut [[i32; 3]]) };
+        const _: () = assert!(size_of::<YmfmOutput3>() == size_of::<[i32; 3]>());
+
+        let output_flat = output_nested.as_flattened_mut();
+        self.ssg_resampler
+            .resample(&mut self.ssg, output_flat, numsamples);
+    }
+
+    /// Notifies the chip that the specified timer has expired.
+    pub fn timer_expired(&mut self, timer_id: u32) {
+        self.fm.engine_timer_expired(timer_id);
+    }
+
+    /// Returns and clears the pending update for a timer.
+    pub fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        self.fm.take_timer_update(timer_id)
+    }
+
+    /// Returns and clears the pending IRQ output update.
+    pub fn take_irq_update(&mut self) -> Option<bool> {
+        self.fm.take_irq_update()
+    }
+
+    /// Returns whether the chip IRQ output is currently asserted.
+    pub fn irq_asserted(&self) -> bool {
+        self.fm.irq_asserted()
+    }
+
+    fn rom_identities(&self) -> Ym2610RomIdentities {
+        (
+            save_state::ResourceIdentity::from_bytes(&self.adpcm_a_rom),
+            save_state::ResourceIdentity::from_bytes(self.adpcm_b_rom.as_deref().unwrap_or(&[])),
+        )
+    }
+
+    fn clock_fm_and_adpcm(&mut self) {
+        let env_counter = self.fm.clock(FM_CHANNEL_MASK);
+
+        // Clock all ADPCM-A channels on every envelope cycle.
+        if helpers::bitfield(env_counter, 0, 2) == 0 {
+            self.eos_status |=
+                self.adpcm_a
+                    .clock(YM2610_ADPCM_A_ALL_CHANNELS, &self.adpcm_a_rom) as u8;
+        }
+
+        // Clock the ADPCM-B engine every cycle.
+        self.adpcm_b.clock(self.adpcm_b_rom.as_deref_mut());
+
+        // Bit 6 tracks the live ADPCM-B EOS. A change latches it into the visible bit 7.
+        let live_eos = if self.adpcm_b.status() as u32 & AdpcmBChannel::STATUS_EOS != 0 {
+            YM2610_ADPCM_B_LIVE_EOS
+        } else {
+            0x00
+        };
+        if (live_eos ^ self.eos_status) & YM2610_ADPCM_B_LIVE_EOS != 0 {
+            self.eos_status = (self.eos_status & !0xC0) | live_eos | (live_eos << 1);
+        }
+
+        // OPNB is 13-bit with no intermediate clipping.
+        self.last_fm = [0, 0];
+        self.fm
+            .output_mut(&mut self.last_fm, 1, 32767, FM_CHANNEL_MASK);
+
+        self.adpcm_a
+            .output::<2>(&mut self.last_fm, YM2610_ADPCM_A_ALL_CHANNELS);
+        self.adpcm_b.output::<2>(&mut self.last_fm, 1);
+
+        for value in &mut self.last_fm {
+            *value = (*value).clamp(-32768, 32767);
+        }
+    }
+
+    fn update_prescale(&mut self) {
+        // Fidelity:   ---- minimum ----    ---- medium -----    ---- maximum-----
+        //              rate = clock/144     rate = clock/144     rate = clock/16
+        // Prescale    FM rate  SSG rate    FM rate  SSG rate    FM rate  SSG rate
+        //     6          1:1     2:9          1:1     2:9         9:1     2:1
+        match self.fidelity {
+            YmfmOpnFidelity::Min | YmfmOpnFidelity::Med => {
+                self.fm_samples_per_output = 1;
+                self.ssg_resampler.configure(2, 9);
+            }
+            YmfmOpnFidelity::Max => {
+                self.fm_samples_per_output = 9;
+                self.ssg_resampler.configure(2, 1);
+            }
+        }
+    }
+}
+
+impl<const FM_CHANNEL_MASK: u32> Default for Ym2610Family<FM_CHANNEL_MASK> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const FM_CHANNEL_MASK: u32> save_state::ValidateState<Ym2610RomIdentities>
+    for Ym2610FamilyState<FM_CHANNEL_MASK>
+{
+    fn validate_state(
+        &self,
+        current_rom_identities: &Ym2610RomIdentities,
+    ) -> Result<(), save_state::StateValidationError> {
+        if self.adpcm_a_rom_identity != current_rom_identities.0 {
+            return Err(save_state::StateValidationError::new(
+                "YM2610 ADPCM-A ROM identity differs",
+            ));
+        }
+        if self.adpcm_b_rom_identity != current_rom_identities.1 {
+            return Err(save_state::StateValidationError::new(
+                "YM2610 ADPCM-B ROM identity differs",
+            ));
+        }
+        if self.fm.operators.len() != OpnaRegisters::OPERATORS
+            || self.fm.channels.len() != OpnaRegisters::CHANNELS
+        {
+            return Err(save_state::StateValidationError::new(
+                "YM2610 state topology is invalid",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<const FM_CHANNEL_MASK: u32> save_state::AfterRestore for Ym2610Family<FM_CHANNEL_MASK> {
+    fn after_restore(&mut self) {}
+}
+
+impl<const FM_CHANNEL_MASK: u32> save_state::RestoreTarget for Ym2610Family<FM_CHANNEL_MASK> {
+    type State = Ym2610FamilyState<FM_CHANNEL_MASK>;
+    type ValidationContext = Ym2610RomIdentities;
+
+    fn replace_state(&mut self, state: Self::State) {
+        self.fm = state.fm;
+        self.ssg = state.ssg;
+        self.ssg_resampler = state.ssg_resampler;
+        self.adpcm_a = state.adpcm_a;
+        self.adpcm_b = state.adpcm_b;
+        self.fidelity = state.fidelity;
+        self.address = state.address;
+        self.fm_samples_per_output = state.fm_samples_per_output;
+        self.last_fm = state.last_fm;
+        self.eos_status = state.eos_status;
+        self.flag_mask = state.flag_mask;
     }
 }
 
@@ -2004,6 +2448,99 @@ mod state_tests {
         let mut restored = Ym2608::new();
         restored.set_adpcm_a_rom(&[0x22; YM2608_ADPCM_A_ROM_SIZE]);
         assert!(restored.restore_state(state).is_err());
+    }
+
+    /// Builds a YM2610 family chip with ROMs, playing FM channel 1, ADPCM-A and ADPCM-B.
+    fn ym2610_family_playing<const FM_CHANNEL_MASK: u32>(
+        adpcm_a_rom: &[u8],
+        adpcm_b_rom: &[u8],
+    ) -> Ym2610Family<FM_CHANNEL_MASK> {
+        let mut chip = Ym2610Family::<FM_CHANNEL_MASK>::new();
+        chip.set_adpcm_a_rom(adpcm_a_rom.to_vec());
+        chip.set_adpcm_b_rom(adpcm_b_rom.to_vec());
+        chip.reset();
+        for (address, data) in [(0xA5, 0x24), (0xA1, 0x41), (0xB1, 0x07), (0x41, 0x00)] {
+            chip.write_address(address);
+            chip.write_data(data);
+        }
+        for (address, data) in [(0x08, 0xDF), (0x01, 0x3F), (0x00, 0x01)] {
+            chip.write_address_hi(address);
+            chip.write_data_hi(data);
+        }
+        for (address, data) in [
+            (0x11, 0xC0),
+            (0x15, 0x01),
+            (0x19, 0x55),
+            (0x1B, 0xFF),
+            (0x10, 0x80),
+        ] {
+            chip.write_address(address);
+            chip.write_data(data);
+        }
+        chip.write_address(0x28);
+        chip.write_data(0xF1);
+        chip
+    }
+
+    /// Checks that a restored YM2610 family chip generates the same samples as the original.
+    fn assert_ym2610_family_replays<const FM_CHANNEL_MASK: u32>() {
+        let adpcm_a_rom = [0x5Au8; 0x1000];
+        let adpcm_b_rom = [0x3Cu8; 0x800];
+        let mut chip = ym2610_family_playing::<FM_CHANNEL_MASK>(&adpcm_a_rom, &adpcm_b_rom);
+        chip.generate(&mut [YmfmOutput3 { data: [0; 3] }; 41]);
+
+        let encoded = save_state::encode_runtime_state(&chip.capture_state());
+        let decoded = save_state::decode_runtime_state::<Ym2610FamilyState<FM_CHANNEL_MASK>>(
+            &encoded,
+            1 << 20,
+        )
+        .unwrap();
+        let mut restored = Ym2610Family::<FM_CHANNEL_MASK>::new();
+        restored.set_adpcm_a_rom(adpcm_a_rom.to_vec());
+        restored.set_adpcm_b_rom(adpcm_b_rom.to_vec());
+        restored.restore_state(decoded).unwrap();
+
+        let mut expected = [YmfmOutput3 { data: [0; 3] }; 256];
+        let mut actual = [YmfmOutput3 { data: [0; 3] }; 256];
+        chip.generate(&mut expected);
+        restored.generate(&mut actual);
+        assert!(expected.iter().any(|sample| sample.data[0] != 0));
+        assert!(
+            expected
+                .iter()
+                .zip(actual)
+                .all(|(left, right)| left.data == right.data)
+        );
+    }
+
+    #[test]
+    fn ym2610_state_replays_exact_samples() {
+        assert_ym2610_family_replays::<YM2610_FM_CHANNEL_MASK>();
+    }
+
+    #[test]
+    fn ym2610b_state_replays_exact_samples() {
+        assert_ym2610_family_replays::<YM2610B_FM_CHANNEL_MASK>();
+    }
+
+    #[test]
+    fn ym2610_rejects_different_roms() {
+        let chip = ym2610_family_playing::<YM2610_FM_CHANNEL_MASK>(&[0x11; 0x100], &[0x22; 0x100]);
+
+        let mut other_adpcm_a = Ym2610::new();
+        other_adpcm_a.set_adpcm_a_rom(vec![0x33; 0x100]);
+        other_adpcm_a.set_adpcm_b_rom(vec![0x22; 0x100]);
+        assert!(other_adpcm_a.restore_state(chip.capture_state()).is_err());
+
+        let mut other_adpcm_b = Ym2610::new();
+        other_adpcm_b.set_adpcm_a_rom(vec![0x11; 0x100]);
+        other_adpcm_b.clear_adpcm_b_rom();
+        assert!(other_adpcm_b.restore_state(chip.capture_state()).is_err());
+
+        let mut same_roms = Ym2610::new();
+        same_roms.set_adpcm_a_rom(vec![0x11; 0x100]);
+        same_roms.set_adpcm_b_rom(vec![0x22; 0x100]);
+        assert!(same_roms.restore_state(chip.capture_state()).is_ok());
     }
 
     #[test]

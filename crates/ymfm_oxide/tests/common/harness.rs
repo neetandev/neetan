@@ -1,6 +1,6 @@
 use ymfm_oxide::{
-    Y8950, Ym2151, Ym2203, Ym2413, Ym2608, Ym3526, Ym3812, Ymf262, Ymf276, YmfmOpnFidelity,
-    YmfmOutput1, YmfmOutput2, YmfmOutput3, YmfmOutput4,
+    Y8950, Ym2151, Ym2203, Ym2413, Ym2608, Ym2610Family, Ym3526, Ym3812, Ymf262, Ymf276,
+    YmfmOpnFidelity, YmfmOutput1, YmfmOutput2, YmfmOutput3, YmfmOutput4,
 };
 
 /// Redistributable YM2413 instrument table adapted from emu2413.
@@ -815,4 +815,144 @@ pub fn create_y8950_adpcm_data() -> Vec<u8> {
         data[0x2000 + i] = ((i * 3) & 0xFF) as u8;
     }
     data
+}
+
+pub fn write_reg_2610<const FM_CHANNEL_MASK: u32>(
+    chip: &mut Ym2610Family<FM_CHANNEL_MASK>,
+    addr: u8,
+    data: u8,
+) {
+    chip.write_address(addr);
+    chip.write_data(data);
+}
+
+pub fn write_reg_2610_hi<const FM_CHANNEL_MASK: u32>(
+    chip: &mut Ym2610Family<FM_CHANNEL_MASK>,
+    addr: u8,
+    data: u8,
+) {
+    chip.write_address_hi(addr);
+    chip.write_data_hi(data);
+}
+
+pub fn generate_3_2610<const FM_CHANNEL_MASK: u32>(
+    chip: &mut Ym2610Family<FM_CHANNEL_MASK>,
+    count: usize,
+) -> Vec<[i32; 3]> {
+    let mut output = vec![YmfmOutput3 { data: [0; 3] }; count];
+    chip.generate(&mut output);
+    output.iter().map(|s| s.data).collect()
+}
+
+/// Creates a reset YM2610 family chip. `with_roms` attaches the synthetic ADPCM ROMs.
+pub fn setup_ym2610<const FM_CHANNEL_MASK: u32>(
+    fidelity: YmfmOpnFidelity,
+    with_roms: bool,
+) -> Ym2610Family<FM_CHANNEL_MASK> {
+    let mut chip = Ym2610Family::<FM_CHANNEL_MASK>::new();
+    if with_roms {
+        chip.set_adpcm_a_rom(create_ym2610_adpcm_a_rom());
+        chip.set_adpcm_b_rom(create_ym2610_adpcm_b_rom());
+    }
+    chip.reset();
+    chip.set_fidelity(fidelity);
+    chip
+}
+
+/// Synthetic 192 KiB ADPCM-A ROM. Samples above 64 KiB need the 8-bit address shift.
+pub fn create_ym2610_adpcm_a_rom() -> Vec<u8> {
+    (0..0x30000usize)
+        .map(|i| (((i * 7) ^ (i >> 3)) & 0xFF) as u8)
+        .collect()
+}
+
+/// Synthetic 128 KiB ADPCM-B ROM.
+pub fn create_ym2610_adpcm_b_rom() -> Vec<u8> {
+    (0..0x20000usize)
+        .map(|i| (((i * 13) + (i >> 4)) & 0xFF) as u8)
+        .collect()
+}
+
+pub fn setup_ym2610_simple_tone<const FM_CHANNEL_MASK: u32>(
+    chip: &mut Ym2610Family<FM_CHANNEL_MASK>,
+    channel: u8,
+    algorithm: u8,
+    feedback: u8,
+) {
+    let fb_algo = (feedback << 3) | (algorithm & 0x07);
+    let high = channel >= 3;
+    let ch = if high { channel - 3 } else { channel };
+    let mut write = |addr: u8, data: u8| {
+        if high {
+            write_reg_2610_hi(chip, addr, data);
+        } else {
+            write_reg_2610(chip, addr, data);
+        }
+    };
+    write(0xB0 + ch, fb_algo);
+    for op_offset in [0x00, 0x04, 0x08, 0x0C] {
+        let reg_base = ch + op_offset;
+        write(0x30 + reg_base, 0x01);
+        write(0x40 + reg_base, 0x00);
+        write(0x50 + reg_base, 0x1F);
+        write(0x60 + reg_base, 0x00);
+        write(0x70 + reg_base, 0x00);
+        write(0x80 + reg_base, 0x0F);
+        write(0x90 + reg_base, 0x00);
+    }
+    write(0xA4 + ch, 0x22);
+    write(0xA0 + ch, 0x69);
+    write(0xB4 + ch, 0xC0);
+}
+
+pub fn key_on_2610<const FM_CHANNEL_MASK: u32>(
+    chip: &mut Ym2610Family<FM_CHANNEL_MASK>,
+    channel: u8,
+) {
+    let ch_bits = if channel < 3 { channel } else { channel + 1 };
+    write_reg_2610(chip, 0x28, 0xF0 | ch_bits);
+}
+
+pub fn add_ssg_tone_2610<const FM_CHANNEL_MASK: u32>(chip: &mut Ym2610Family<FM_CHANNEL_MASK>) {
+    write_reg_2610(chip, 0x00, 0x10);
+    write_reg_2610(chip, 0x01, 0x00);
+    write_reg_2610(chip, 0x07, 0x3E);
+    write_reg_2610(chip, 0x08, 0x0F);
+}
+
+/// Keys on ADPCM-A channel 0 (start/end 0x0123, both sides) and channel 5 (start/end 0x0200, left).
+pub fn start_ym2610_adpcm_a<const FM_CHANNEL_MASK: u32>(chip: &mut Ym2610Family<FM_CHANNEL_MASK>) {
+    for (addr, data) in [
+        (0x10, 0x23),
+        (0x18, 0x01),
+        (0x20, 0x23),
+        (0x28, 0x01),
+        (0x15, 0x00),
+        (0x1D, 0x02),
+        (0x25, 0x00),
+        (0x2D, 0x02),
+        (0x08, 0xDF),
+        (0x0D, 0x9F),
+        (0x01, 0x3F),
+        (0x00, 0x21),
+    ] {
+        write_reg_2610_hi(chip, addr, data);
+    }
+}
+
+/// Starts ADPCM-B playback of 0x0100-0x0100. Control 1 also sets the record bit, which the chip ignores.
+pub fn start_ym2610_adpcm_b<const FM_CHANNEL_MASK: u32>(chip: &mut Ym2610Family<FM_CHANNEL_MASK>) {
+    for (addr, data) in [
+        (0x11, 0xC0),
+        (0x12, 0x00),
+        (0x13, 0x01),
+        (0x14, 0x00),
+        (0x15, 0x01),
+        (0x19, 0x55),
+        (0x1A, 0x55),
+        (0x1B, 0xFF),
+        (0x10, 0xC0),
+    ] {
+        write_reg_2610(chip, addr, data);
+    }
 }
