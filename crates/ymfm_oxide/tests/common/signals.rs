@@ -1,6 +1,6 @@
 use ymfm_oxide::{
     Y8950, Ym2151, Ym2203, Ym2608, Ym2610, Ym2610b, Ym2612, Ym3438, Ym3526, Ym3812, Ymf262, Ymf276,
-    Ymf288, YmfmTimerUpdate,
+    Ymf288, Ymf289b, YmfmTimerUpdate,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,4 +59,5 @@ impl_take_signals!(Ym2612);
 impl_take_signals!(Ym3438);
 impl_take_signals!(Ymf276);
 impl_take_signals!(Ymf288);
+impl_take_signals!(Ymf289b);
 impl_take_signals!(Ym2151);
