@@ -96,21 +96,88 @@ pub const YM2413_DEFAULT_INSTRUMENTS: [u8; YM2413_INSTRUMENT_DATA_SIZE] = [
     0x01, 0x01, 0x00, 0x00, 0xC8, 0xD8, 0xA7, 0x48, 0x05, 0x01, 0x00, 0x00, 0xF8, 0xAA, 0x59, 0x55,
 ];
 
+/// Redistributable YMFM default YM2423 (OPLL-X) instrument table.
+pub const YM2423_DEFAULT_INSTRUMENTS: [u8; YM2413_INSTRUMENT_DATA_SIZE] = [
+    0x61, 0x61, 0x1B, 0x07, 0x94, 0x5F, 0x10, 0x06, 0x93, 0xB1, 0x51, 0x04, 0xF3, 0xF2, 0x70, 0xFB,
+    0x41, 0x21, 0x11, 0x85, 0xF2, 0xF2, 0x70, 0x75, 0x93, 0xB2, 0x28, 0x07, 0xF3, 0xF2, 0x70, 0xB4,
+    0x72, 0x31, 0x97, 0x05, 0x51, 0x6F, 0x60, 0x09, 0x13, 0x30, 0x18, 0x06, 0xF7, 0xF4, 0x50, 0x85,
+    0x51, 0x31, 0x1C, 0x07, 0x51, 0x71, 0x20, 0x26, 0x41, 0xF4, 0x1B, 0x07, 0x74, 0x34, 0x00, 0x06,
+    0x50, 0x30, 0x4D, 0x03, 0x42, 0x65, 0x20, 0x06, 0x40, 0x20, 0x10, 0x85, 0xF3, 0xF5, 0x20, 0x04,
+    0x61, 0x61, 0x1B, 0x07, 0xC5, 0x96, 0xF3, 0xF6, 0xF9, 0xF1, 0xDC, 0x00, 0xF5, 0xF3, 0x77, 0xF2,
+    0x60, 0xA2, 0x91, 0x03, 0x94, 0xC1, 0xF7, 0xF7, 0x30, 0x30, 0x17, 0x06, 0xF3, 0xF1, 0xB7, 0xFC,
+    0x31, 0x36, 0x0D, 0x05, 0xF2, 0xF4, 0x27, 0x9C, 0x01, 0x01, 0x18, 0x0F, 0xDF, 0xF8, 0x6A, 0x6D,
+    0x01, 0x01, 0x00, 0x00, 0xC8, 0xD8, 0xA7, 0x48, 0x05, 0x01, 0x00, 0x00, 0xF8, 0xAA, 0x59, 0x55,
+];
+/// Redistributable YMFM default YMF281 (OPLLP) instrument table.
+pub const YMF281_DEFAULT_INSTRUMENTS: [u8; YM2413_INSTRUMENT_DATA_SIZE] = [
+    0x72, 0x21, 0x1A, 0x07, 0xF6, 0x64, 0x01, 0x16, 0x00, 0x10, 0x45, 0x00, 0xF6, 0x83, 0x73, 0x63,
+    0x13, 0x01, 0x96, 0x00, 0xF1, 0xF4, 0x31, 0x23, 0x71, 0x21, 0x0B, 0x0F, 0xF9, 0x64, 0x70, 0x17,
+    0x02, 0x21, 0x1E, 0x06, 0xF9, 0x76, 0x00, 0x28, 0x00, 0x61, 0x82, 0x0E, 0xF9, 0x61, 0x20, 0x27,
+    0x21, 0x61, 0x1B, 0x07, 0x84, 0x8F, 0x10, 0x07, 0x37, 0x32, 0xCA, 0x02, 0x66, 0x64, 0x47, 0x29,
+    0x41, 0x41, 0x07, 0x03, 0xF5, 0x70, 0x51, 0xF5, 0x36, 0x01, 0x5E, 0x07, 0xF2, 0xF3, 0xF7, 0xF7,
+    0x00, 0x00, 0x18, 0x06, 0xC5, 0xF3, 0x20, 0xF2, 0x17, 0x81, 0x25, 0x07, 0xF7, 0xF3, 0x21, 0xF7,
+    0x35, 0x64, 0x00, 0x00, 0xFF, 0xF3, 0x77, 0xF5, 0x11, 0x31, 0x00, 0x07, 0xDD, 0xF3, 0xFF, 0xFB,
+    0x3A, 0x21, 0x00, 0x07, 0x95, 0x84, 0x0F, 0xF5, 0x01, 0x01, 0x18, 0x0F, 0xDF, 0xF8, 0x6A, 0x6D,
+    0x01, 0x01, 0x00, 0x00, 0xC8, 0xD8, 0xA7, 0x48, 0x05, 0x01, 0x00, 0x00, 0xF8, 0xAA, 0x59, 0x55,
+];
+/// Redistributable YMFM default DS1001 (Konami VRC7) instrument table.
+pub const DS1001_DEFAULT_INSTRUMENTS: [u8; YM2413_INSTRUMENT_DATA_SIZE] = [
+    0x03, 0x21, 0x05, 0x06, 0xC8, 0x81, 0x42, 0x27, 0x13, 0x41, 0x14, 0x0D, 0xF8, 0xF7, 0x23, 0x12,
+    0x31, 0x11, 0x08, 0x08, 0xFA, 0xC2, 0x28, 0x22, 0x31, 0x61, 0x0C, 0x07, 0xF8, 0x64, 0x60, 0x27,
+    0x22, 0x21, 0x1E, 0x06, 0xFF, 0x76, 0x00, 0x28, 0x02, 0x01, 0x05, 0x00, 0xAC, 0xF2, 0x03, 0x02,
+    0x21, 0x61, 0x1D, 0x07, 0x82, 0x8F, 0x10, 0x07, 0x23, 0x21, 0x22, 0x17, 0xFF, 0x73, 0x00, 0x17,
+    0x15, 0x11, 0x25, 0x00, 0x41, 0x71, 0x00, 0xF1, 0x95, 0x01, 0x10, 0x0F, 0xB8, 0xAA, 0x50, 0x02,
+    0x17, 0xC1, 0x5E, 0x07, 0xFA, 0xF8, 0x22, 0x12, 0x71, 0x23, 0x11, 0x06, 0x65, 0x74, 0x10, 0x16,
+    0x01, 0x02, 0xD3, 0x05, 0xF3, 0x92, 0x83, 0xF2, 0x61, 0x63, 0x0C, 0x00, 0xA4, 0xFF, 0x30, 0x06,
+    0x21, 0x62, 0x0D, 0x00, 0xA1, 0xFF, 0x50, 0x08, 0x01, 0x01, 0x18, 0x0F, 0xDF, 0xF8, 0x6A, 0x6D,
+    0x01, 0x01, 0x00, 0x00, 0xC8, 0xD8, 0xA7, 0x48, 0x05, 0x01, 0x00, 0x00, 0xF8, 0xAA, 0x59, 0x55,
+];
+
+/// OPLL variant with the YM2413 instrument ROM.
+pub const OPLL_VARIANT_YM2413: u8 = 0;
+/// OPLL variant with the YM2423 (OPLL-X) instrument ROM.
+pub const OPLL_VARIANT_YM2423: u8 = 1;
+/// OPLL variant with the YMF281 (OPLLP) instrument ROM.
+pub const OPLL_VARIANT_YMF281: u8 = 2;
+/// OPLL variant with the DS1001 (Konami VRC7) instrument ROM.
+pub const OPLL_VARIANT_DS1001: u8 = 3;
+
 save_state::runtime_state! {
-/// Yamaha YM2413 authoritative state and emulator.
+/// Yamaha OPLL family authoritative state and emulator.
+///
+/// The YM2413, YM2423, YMF281 and DS1001 share one engine and differ only in
+/// their built-in instrument ROM.
 #[derive(Clone)]
-pub struct Ym2413 {
+pub struct OpllFamily<const VARIANT: u8> {
     fm: FmEngine<OpllRegisters>,
     address: u8,
 }}
 
-impl Ym2413 {
-    /// Creates a YM2413 with the redistributable default instrument table.
+/// Yamaha YM2413 (OPLL) emulator.
+pub type Ym2413 = OpllFamily<OPLL_VARIANT_YM2413>;
+/// Yamaha YM2423 (OPLL-X) emulator.
+pub type Ym2423 = OpllFamily<OPLL_VARIANT_YM2423>;
+/// Yamaha YMF281 (OPLLP) emulator.
+pub type Ymf281 = OpllFamily<OPLL_VARIANT_YMF281>;
+/// Yamaha DS1001 (Konami VRC7) emulator.
+pub type Ds1001 = OpllFamily<OPLL_VARIANT_DS1001>;
+
+impl<const VARIANT: u8> OpllFamily<VARIANT> {
+    /// Default instrument table of this variant.
+    const DEFAULT_INSTRUMENTS: [u8; YM2413_INSTRUMENT_DATA_SIZE] = match VARIANT {
+        OPLL_VARIANT_YM2413 => YM2413_DEFAULT_INSTRUMENTS,
+        OPLL_VARIANT_YM2423 => YM2423_DEFAULT_INSTRUMENTS,
+        OPLL_VARIANT_YMF281 => YMF281_DEFAULT_INSTRUMENTS,
+        _ => DS1001_DEFAULT_INSTRUMENTS,
+    };
+
+    /// Creates a chip with the redistributable default instrument table of
+    /// its variant.
     pub fn new() -> Self {
-        Self::new_with_instruments(YM2413_DEFAULT_INSTRUMENTS)
+        Self::new_with_instruments(Self::DEFAULT_INSTRUMENTS)
     }
 
-    /// Creates a YM2413 with the supplied 144-byte instrument table.
+    /// Creates a chip with the supplied 144-byte instrument table.
     pub fn new_with_instruments(instrument_data: [u8; YM2413_INSTRUMENT_DATA_SIZE]) -> Self {
         let mut fm: FmEngine<OpllRegisters> = FmEngine::new();
         fm.regs.set_instrument_data(&instrument_data);
@@ -127,10 +194,10 @@ impl Ym2413 {
         save_state::restore_root(self, state, &())
     }
 
-    /// Resets the chip while preserving its instrument table.
+    /// Resets the FM engine. The instrument table and the address latch keep
+    /// their values.
     pub fn reset(&mut self) {
         self.fm.reset();
-        self.address = 0;
     }
 
     /// Replaces the 144-byte instrument table and invalidates cached operators.
@@ -169,7 +236,7 @@ impl Ym2413 {
     }
 }
 
-impl Default for Ym2413 {
+impl<const VARIANT: u8> Default for OpllFamily<VARIANT> {
     fn default() -> Self {
         Self::new()
     }
@@ -2567,6 +2634,145 @@ impl Ymf262 {
     }
 }
 
+/// Status bits the YMF289B sets while busy in YMF289B mode.
+const YMF289B_STATUS_BUSY_FLAGS: u8 = 0x05;
+/// Busy time in input clocks of every YMF289B register access.
+const YMF289B_BUSY_CLOCKS: u32 = 56;
+
+save_state::runtime_state! {
+/// Yamaha YMF289B (OPL3L) authoritative state and emulator.
+///
+/// The YMF289B is a YMF262 with a power down mode, a bulk register clear, a
+/// busy flag in the status register, shorter busy times, readable registers
+/// and only two of the four outputs.
+#[derive(Clone)]
+pub struct Ymf289b {
+    fm: FmEngine<Opl3Registers>,
+    address: u16,
+}}
+
+impl Ymf289b {
+    /// Creates a new YMF289B instance.
+    pub fn new() -> Self {
+        Self {
+            fm: FmEngine::new(),
+            address: 0,
+        }
+    }
+
+    /// Captures the complete chip state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores the complete chip state.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &())
+    }
+
+    /// Resets the chip to its initial power-on state.
+    pub fn reset(&mut self) {
+        self.fm.reset();
+    }
+
+    /// Returns the output sample rate in Hz for the given `input_clock` in Hz.
+    pub fn sample_rate(&self, input_clock: u32) -> u32 {
+        input_clock / (Opl3Registers::OPERATORS as u32 * self.fm.clock_prescale())
+    }
+
+    /// Reads the chip status register. In YMF289B mode the busy flags are set
+    /// while `busy` is true.
+    pub fn read_status(&mut self, busy: bool) -> u8 {
+        let mut result = self.fm.status();
+        if self.ymf289b_mode() && busy {
+            result |= YMF289B_STATUS_BUSY_FLAGS;
+        }
+        result
+    }
+
+    /// Reads back the addressed register in YMF289B mode. Returns 0xFF otherwise.
+    pub fn read_data(&mut self) -> u8 {
+        if self.ymf289b_mode() {
+            self.fm.regs.read(self.address)
+        } else {
+            0xFF
+        }
+    }
+
+    /// Latches the register address for the low bank (0x00-0xFF).
+    pub fn write_address(&mut self, data: u8) -> u32 {
+        self.address = data as u16;
+        YMF289B_BUSY_CLOCKS
+    }
+
+    /// Writes a value to the previously addressed register.
+    pub fn write_data(&mut self, data: u8) -> u32 {
+        self.fm.write(self.address, data);
+
+        // Writes to 0x108 with the CLR flag set clear the registers.
+        if self.address == 0x108 && helpers::bit(data as u32, 2) != 0 {
+            self.fm.regs.reset();
+        }
+        YMF289B_BUSY_CLOCKS
+    }
+
+    /// Latches the register address for the high bank (0x100-0x1FF).
+    pub fn write_address_hi(&mut self, data: u8) -> u32 {
+        self.address = data as u16 | 0x100;
+
+        // in compatibility mode, upper bit is masked except for register 0x105
+        if self.fm.regs.newflag() == 0 && self.address != 0x105 {
+            self.address &= 0xFF;
+        }
+        YMF289B_BUSY_CLOCKS
+    }
+
+    /// Generates audio samples into `output`.
+    ///
+    /// Each sample holds the two exposed outputs of the four OPL3 outputs.
+    pub fn generate(&mut self, output: &mut [YmfmOutput2]) {
+        for out in output.iter_mut() {
+            self.fm.clock(Opl3Registers::ALL_CHANNELS);
+
+            let mut full = [0i32; 4];
+            self.fm
+                .output_mut(&mut full, 0, 32767, Opl3Registers::ALL_CHANNELS);
+            out.data = [full[0].clamp(-32768, 32767), full[1].clamp(-32768, 32767)];
+        }
+    }
+
+    /// Notifies the chip that the specified timer has expired.
+    pub fn timer_expired(&mut self, timer_id: u32) {
+        self.fm.engine_timer_expired(timer_id);
+    }
+
+    /// Returns and clears the pending update for a timer.
+    pub fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        self.fm.take_timer_update(timer_id)
+    }
+
+    /// Returns and clears the pending IRQ output update.
+    pub fn take_irq_update(&mut self) -> Option<bool> {
+        self.fm.take_irq_update()
+    }
+
+    /// Returns whether the chip IRQ output is currently asserted.
+    pub fn irq_asserted(&self) -> bool {
+        self.fm.irq_asserted()
+    }
+
+    /// Returns whether YMF289B mode (register 0x105 bit 2) is enabled.
+    fn ymf289b_mode(&self) -> bool {
+        self.fm.regs.read(0x105) & 0x04 != 0
+    }
+}
+
+impl Default for Ymf289b {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Default for Ym2203 {
     fn default() -> Self {
         Self::new()
@@ -2880,10 +3086,11 @@ macro_rules! impl_direct_chip_restore {
 
 impl_direct_chip_restore!(Opn2Family<const VARIANT: u8>, OpnaRegisters, "OPN2");
 impl_direct_chip_restore!(Ym2151, OpmRegisters, "YM2151");
-impl_direct_chip_restore!(Ym2413, OpllRegisters, "YM2413");
+impl_direct_chip_restore!(OpllFamily<const VARIANT: u8>, OpllRegisters, "OPLL");
 impl_direct_chip_restore!(Ym3526, OplRegisters, "YM3526");
 impl_direct_chip_restore!(Ym3812, Opl2Registers, "YM3812");
 impl_direct_chip_restore!(Y8950, OplRegisters, "Y8950");
+impl_direct_chip_restore!(Ymf289b, Opl3Registers, "YMF289B");
 
 #[cfg(test)]
 mod state_tests {
@@ -3039,6 +3246,70 @@ mod state_tests {
         let mut restored = Ymf288::new();
         restored.set_adpcm_a_rom(&[0x22; YM2608_ADPCM_A_ROM_SIZE]);
         assert!(restored.restore_state(state).is_err());
+    }
+
+    #[test]
+    fn ymf289b_state_replays_exact_samples() {
+        let mut chip = Ymf289b::new();
+        chip.reset();
+        chip.write_address_hi(0x05);
+        chip.write_data(0x05);
+        for (address, data) in [
+            (0x20, 0x21),
+            (0x60, 0xF0),
+            (0xC0, 0x31),
+            (0xA0, 0x41),
+            (0xB0, 0x31),
+        ] {
+            chip.write_address(address);
+            chip.write_data(data);
+        }
+        chip.generate(&mut [YmfmOutput2 { data: [0; 2] }; 33]);
+
+        let encoded = save_state::encode_runtime_state(&chip.capture_state());
+        let decoded = save_state::decode_runtime_state::<Ymf289b>(&encoded, 1 << 20).unwrap();
+        let mut restored = Ymf289b::new();
+        restored.restore_state(decoded).unwrap();
+
+        let mut expected = [YmfmOutput2 { data: [0; 2] }; 64];
+        let mut actual = [YmfmOutput2 { data: [0; 2] }; 64];
+        chip.generate(&mut expected);
+        restored.generate(&mut actual);
+        assert!(expected.iter().any(|sample| sample.data != [0; 2]));
+        assert!(
+            expected
+                .iter()
+                .zip(actual)
+                .all(|(left, right)| left.data == right.data)
+        );
+    }
+
+    #[test]
+    fn ym2423_state_replays_exact_samples() {
+        let mut chip = Ym2423::new();
+        chip.reset();
+        for (address, data) in [(0x30, 0x30), (0x10, 0x80), (0x20, 0x15)] {
+            chip.write_address(address);
+            chip.write_data(data);
+        }
+        chip.generate(&mut [YmfmOutput2 { data: [0; 2] }; 57]);
+
+        let encoded = save_state::encode_runtime_state(&chip.capture_state());
+        let decoded = save_state::decode_runtime_state::<Ym2423>(&encoded, 1 << 20).unwrap();
+        let mut restored = Ym2423::new();
+        restored.restore_state(decoded).unwrap();
+
+        let mut expected = [YmfmOutput2 { data: [0; 2] }; 64];
+        let mut actual = [YmfmOutput2 { data: [0; 2] }; 64];
+        chip.generate(&mut expected);
+        restored.generate(&mut actual);
+        assert!(expected.iter().any(|sample| sample.data != [0; 2]));
+        assert!(
+            expected
+                .iter()
+                .zip(actual)
+                .all(|(left, right)| left.data == right.data)
+        );
     }
 
     /// Builds a YM2610 family chip with ROMs, playing FM channel 1, ADPCM-A and ADPCM-B.

@@ -1,6 +1,6 @@
 use ymfm_oxide::{
-    Opn2Family, Y8950, Ym2151, Ym2203, Ym2413, Ym2608, Ym2610Family, Ym3526, Ym3812, Ymf262,
-    Ymf288, YmfmOpnFidelity, YmfmOutput1, YmfmOutput2, YmfmOutput3, YmfmOutput4,
+    OpllFamily, Opn2Family, Y8950, Ym2151, Ym2203, Ym2413, Ym2608, Ym2610Family, Ym3526, Ym3812,
+    Ymf262, Ymf288, Ymf289b, YmfmOpnFidelity, YmfmOutput1, YmfmOutput2, YmfmOutput3, YmfmOutput4,
 };
 
 /// Redistributable YM2413 instrument table adapted from emu2413.
@@ -712,41 +712,209 @@ pub fn setup_ym2413() -> Ym2413 {
     chip
 }
 
-/// Writes one YM2413 register.
-pub fn write_reg_ym2413(chip: &mut Ym2413, address: u8, value: u8) {
+/// Writes one OPLL register.
+pub fn write_reg_opll<const VARIANT: u8>(chip: &mut OpllFamily<VARIANT>, address: u8, value: u8) {
     chip.write_address(address);
     chip.write_data(value);
 }
 
-/// Configures and keys on one YM2413 melodic channel.
-pub fn setup_ym2413_channel(
-    chip: &mut Ym2413,
+/// Configures and keys on one OPLL melodic channel.
+pub fn setup_opll_channel<const VARIANT: u8>(
+    chip: &mut OpllFamily<VARIANT>,
     channel: u8,
     instrument: u8,
     frequency_low: u8,
     control: u8,
     volume: u8,
 ) {
-    write_reg_ym2413(chip, 0x30 + channel, (instrument << 4) | (volume & 0x0F));
-    write_reg_ym2413(chip, 0x10 + channel, frequency_low);
-    write_reg_ym2413(chip, 0x20 + channel, control);
+    write_reg_opll(chip, 0x30 + channel, (instrument << 4) | (volume & 0x0F));
+    write_reg_opll(chip, 0x10 + channel, frequency_low);
+    write_reg_opll(chip, 0x20 + channel, control);
 }
 
-/// Configures the three YM2413 rhythm channels.
-pub fn setup_ym2413_rhythm(chip: &mut Ym2413) {
-    setup_ym2413_channel(chip, 6, 0, 0x40, 0x15, 0);
-    setup_ym2413_channel(chip, 7, 0, 0x60, 0x15, 0);
-    setup_ym2413_channel(chip, 8, 0, 0x80, 0x15, 0);
-    write_reg_ym2413(chip, 0x36, 0x00);
-    write_reg_ym2413(chip, 0x37, 0x00);
-    write_reg_ym2413(chip, 0x38, 0x00);
+/// Configures the three OPLL rhythm channels.
+pub fn setup_opll_rhythm<const VARIANT: u8>(chip: &mut OpllFamily<VARIANT>) {
+    setup_opll_channel(chip, 6, 0, 0x40, 0x15, 0);
+    setup_opll_channel(chip, 7, 0, 0x60, 0x15, 0);
+    setup_opll_channel(chip, 8, 0, 0x80, 0x15, 0);
+    write_reg_opll(chip, 0x36, 0x00);
+    write_reg_opll(chip, 0x37, 0x00);
+    write_reg_opll(chip, 0x38, 0x00);
 }
 
-/// Generates native YM2413 melodic and rhythm samples.
-pub fn generate_2_ym2413(chip: &mut Ym2413, count: usize) -> Vec<[i32; 2]> {
+/// Generates native OPLL melodic and rhythm samples.
+pub fn generate_2_opll<const VARIANT: u8>(
+    chip: &mut OpllFamily<VARIANT>,
+    count: usize,
+) -> Vec<[i32; 2]> {
     let mut output = vec![YmfmOutput2 { data: [0; 2] }; count];
     chip.generate(&mut output);
     output.iter().map(|sample| sample.data).collect()
+}
+
+/// Names of the OPLL instrument ROM golden scenarios shared by all variants.
+pub const OPLL_ROM_SCENARIOS: &[&str] = &[
+    "SILENCE",
+    "INSTRUMENT_1",
+    "INSTRUMENT_2",
+    "INSTRUMENT_3",
+    "INSTRUMENT_4",
+    "INSTRUMENT_5",
+    "INSTRUMENT_6",
+    "INSTRUMENT_7",
+    "INSTRUMENT_8",
+    "INSTRUMENT_9",
+    "INSTRUMENT_10",
+    "INSTRUMENT_11",
+    "INSTRUMENT_12",
+    "INSTRUMENT_13",
+    "INSTRUMENT_14",
+    "INSTRUMENT_15",
+    "USER_INSTRUMENT",
+    "RHYTHM_BASS_DRUM",
+    "RHYTHM_ALL",
+];
+
+/// Number of samples an OPLL ROM scenario runs before its golden window.
+pub const OPLL_ROM_WARM_UP: usize = 2048;
+
+/// Builds the named OPLL ROM scenario with the default instruments of the variant.
+pub fn opll_rom_scenario<const VARIANT: u8>(name: &str) -> OpllFamily<VARIANT> {
+    let mut chip = OpllFamily::<VARIANT>::new();
+    chip.reset();
+    if let Some(number) = name.strip_prefix("INSTRUMENT_") {
+        let instrument: u8 = number.parse().unwrap();
+        setup_opll_channel(&mut chip, 0, instrument, 0x58 + instrument * 7, 0x19, 0);
+        return chip;
+    }
+    match name {
+        "SILENCE" => {}
+        "USER_INSTRUMENT" => {
+            for (address, value) in [0xF1, 0xF1, 0x1E, 0x17, 0xF0, 0xF0, 0x00, 0x07]
+                .into_iter()
+                .enumerate()
+            {
+                write_reg_opll(&mut chip, address as u8, value);
+            }
+            setup_opll_channel(&mut chip, 1, 0, 0x80, 0x15, 2);
+        }
+        "RHYTHM_BASS_DRUM" => {
+            setup_opll_rhythm(&mut chip);
+            write_reg_opll(&mut chip, 0x0E, 0x30);
+        }
+        "RHYTHM_ALL" => {
+            setup_opll_rhythm(&mut chip);
+            write_reg_opll(&mut chip, 0x0E, 0x3F);
+        }
+        _ => panic!("unknown OPLL scenario {name}"),
+    }
+    chip
+}
+
+// --- OPL3L (YMF289B) helpers ---
+
+pub fn write_reg_ymf289b(chip: &mut Ymf289b, addr: u8, data: u8) {
+    chip.write_address(addr);
+    chip.write_data(data);
+}
+
+pub fn write_reg_ymf289b_hi(chip: &mut Ymf289b, addr: u8, data: u8) {
+    chip.write_address_hi(addr);
+    chip.write_data(data);
+}
+
+pub fn generate_2_ymf289b(chip: &mut Ymf289b, count: usize) -> Vec<[i32; 2]> {
+    let mut output = vec![YmfmOutput2 { data: [0; 2] }; count];
+    chip.generate(&mut output);
+    output.iter().map(|s| s.data).collect()
+}
+
+/// Creates a reset YMF289B in OPL3 mode.
+pub fn setup_ymf289b() -> Ymf289b {
+    let mut chip = Ymf289b::new();
+    chip.reset();
+    write_reg_ymf289b_hi(&mut chip, 0x05, 0x01);
+    chip
+}
+
+/// A simple 2-operator tone on the given channel (0-17) with the given output bits.
+pub fn setup_ymf289b_simple_tone(chip: &mut Ymf289b, channel: u8, algorithm: u8, outputs: u8) {
+    let fb_algo = (algorithm & 0x01) | (outputs << 4);
+    let high = channel >= 9;
+    let ch = if high { channel - 9 } else { channel };
+    let mut write = |addr: u8, data: u8| {
+        if high {
+            write_reg_ymf289b_hi(chip, addr, data);
+        } else {
+            write_reg_ymf289b(chip, addr, data);
+        }
+    };
+    write(0xC0 + ch, fb_algo);
+    for op in 0..2u8 {
+        let off = opl_op_offset(ch, op);
+        write(0x20 + off, 0x21);
+        write(0x40 + off, 0x00);
+        write(0x60 + off, 0xF0);
+        write(0x80 + off, 0x0F);
+        write(0xE0 + off, 0x00);
+    }
+    write(0xA0 + ch, 0x41);
+    write(0xB0 + ch, 0x31);
+}
+
+/// Names of the YMF289B golden scenarios.
+pub const YMF289B_SCENARIOS: &[&str] = &[
+    "SILENCE",
+    "TONE_OUTPUT_A",
+    "TONE_OUTPUT_B",
+    "TONE_OUTPUTS_C_AND_D",
+    "HIGH_BANK_TONE",
+    "FOUR_OPERATOR",
+    "WAVEFORMS",
+    "LOUD_CLAMPED",
+    "REGISTER_CLEAR",
+    "YMF289B_MODE_TONE",
+];
+
+/// Builds the named YMF289B scenario.
+pub fn ymf289b_scenario(name: &str) -> Ymf289b {
+    let mut chip = setup_ymf289b();
+    match name {
+        "SILENCE" => {}
+        "TONE_OUTPUT_A" => setup_ymf289b_simple_tone(&mut chip, 0, 0, 0x1),
+        "TONE_OUTPUT_B" => setup_ymf289b_simple_tone(&mut chip, 1, 1, 0x2),
+        "TONE_OUTPUTS_C_AND_D" => setup_ymf289b_simple_tone(&mut chip, 2, 0, 0xC),
+        "HIGH_BANK_TONE" => setup_ymf289b_simple_tone(&mut chip, 13, 0, 0x3),
+        "FOUR_OPERATOR" => {
+            write_reg_ymf289b_hi(&mut chip, 0x04, 0x01);
+            setup_ymf289b_simple_tone(&mut chip, 3, 1, 0x3);
+            setup_ymf289b_simple_tone(&mut chip, 0, 0, 0x3);
+        }
+        "WAVEFORMS" => {
+            for channel in 0..8u8 {
+                setup_ymf289b_simple_tone(&mut chip, channel, 1, 0x3);
+                for op in 0..2u8 {
+                    write_reg_ymf289b(&mut chip, 0xE0 + opl_op_offset(channel, op), channel);
+                }
+            }
+        }
+        "LOUD_CLAMPED" => {
+            for channel in 0..18u8 {
+                setup_ymf289b_simple_tone(&mut chip, channel, 1, 0x3);
+            }
+        }
+        "REGISTER_CLEAR" => {
+            setup_ymf289b_simple_tone(&mut chip, 0, 0, 0x3);
+            write_reg_ymf289b_hi(&mut chip, 0x05, 0x05);
+            write_reg_ymf289b_hi(&mut chip, 0x08, 0x04);
+        }
+        "YMF289B_MODE_TONE" => {
+            write_reg_ymf289b_hi(&mut chip, 0x05, 0x05);
+            setup_ymf289b_simple_tone(&mut chip, 4, 0, 0x3);
+        }
+        _ => panic!("unknown YMF289B scenario {name}"),
+    }
+    chip
 }
 
 // --- OPM (YM2151) helpers ---

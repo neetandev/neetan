@@ -4,6 +4,7 @@ use std::fmt::Write;
 
 use common::{harness::*, signals::*};
 use ymfm_oxide::{
+    OPLL_VARIANT_DS1001, OPLL_VARIANT_YM2413, OPLL_VARIANT_YM2423, OPLL_VARIANT_YMF281,
     OPN2_VARIANT_YM2612, OPN2_VARIANT_YM3438, OPN2_VARIANT_YMF276, Y8950, Ym2203, Ym2608, Ym2610,
     Ym2610b, Ym3526, Ymf262, YmfmOpnFidelity,
 };
@@ -1041,6 +1042,27 @@ fn gen_ymf288_adpcm(dir: &str) {
     }
     std::fs::write(format!("{dir}/ymf288_adpcm.rs"), f).unwrap();
     println!("  wrote ymf288_adpcm.rs");
+}
+
+fn gen_opll_rom_fm<const VARIANT: u8>(dir: &str, file_name: &str) {
+    let mut f = header();
+    for name in OPLL_ROM_SCENARIOS {
+        let mut chip = opll_rom_scenario::<VARIANT>(name);
+        generate_2_opll(&mut chip, OPLL_ROM_WARM_UP);
+        f.push_str(&fmt2(name, &generate_2_opll(&mut chip, SAMPLES)));
+    }
+    std::fs::write(format!("{dir}/{file_name}"), f).unwrap();
+    println!("  wrote {file_name}");
+}
+
+fn gen_ymf289b_fm(dir: &str) {
+    let mut f = header();
+    for name in YMF289B_SCENARIOS {
+        let mut chip = ymf289b_scenario(name);
+        f.push_str(&fmt2(name, &generate_2_ymf289b(&mut chip, SAMPLES)));
+    }
+    std::fs::write(format!("{dir}/ymf289b_fm.rs"), f).unwrap();
+    println!("  wrote ymf289b_fm.rs");
 }
 
 fn gen_opn2_fm<const VARIANT: u8>(dir: &str, file_name: &str) {
@@ -2091,16 +2113,16 @@ fn gen_ym2413_fm(dir: &str) {
         file.push_str(&fmt2_documented(
             "SILENCE",
             "Reset output from the YMFM reference.",
-            &generate_2_ym2413(&mut chip, 64),
+            &generate_2_opll(&mut chip, 64),
         ));
     }
     {
         let mut chip = setup_ym2413();
-        setup_ym2413_channel(&mut chip, 0, 1, 0x80, 0x15, 0);
+        setup_opll_channel(&mut chip, 0, 1, 0x80, 0x15, 0);
         file.push_str(&fmt2_documented(
             "PRESET_ONE_KEY_ON",
             "Preset one from key-on through attack.",
-            &generate_2_ym2413(&mut chip, 768),
+            &generate_2_opll(&mut chip, 768),
         ));
     }
     {
@@ -2109,22 +2131,22 @@ fn gen_ym2413_fm(dir: &str) {
             .into_iter()
             .enumerate()
         {
-            write_reg_ym2413(&mut chip, address as u8, value);
+            write_reg_opll(&mut chip, address as u8, value);
         }
-        setup_ym2413_channel(&mut chip, 0, 0, 0x80, 0x15, 0);
+        setup_opll_channel(&mut chip, 0, 0, 0x80, 0x15, 0);
         file.push_str(&fmt2_documented(
             "USER_INSTRUMENT_KEY_ON",
             "User instrument with AM, vibrato, and alternate waveforms.",
-            &generate_2_ym2413(&mut chip, 768),
+            &generate_2_opll(&mut chip, 768),
         ));
     }
     {
         let mut samples = Vec::new();
         for (instrument, first_sample) in (1_u8..=15).zip(EMU2413_YM2413_PRESET_CAPTURE_STARTS) {
             let mut chip = setup_ym2413();
-            setup_ym2413_channel(&mut chip, 0, instrument, 0x58 + instrument * 7, 0x15, 0);
-            generate_2_ym2413(&mut chip, first_sample);
-            samples.extend(generate_2_ym2413(&mut chip, 96));
+            setup_opll_channel(&mut chip, 0, instrument, 0x58 + instrument * 7, 0x15, 0);
+            generate_2_opll(&mut chip, first_sample);
+            samples.extend(generate_2_opll(&mut chip, 96));
         }
         file.push_str(&fmt2_documented(
             "ALL_PRESET_INSTRUMENTS",
@@ -2134,23 +2156,23 @@ fn gen_ym2413_fm(dir: &str) {
     }
     {
         let mut chip = setup_ym2413();
-        setup_ym2413_channel(&mut chip, 0, 8, 0x80, 0x15, 0);
-        generate_2_ym2413(&mut chip, 768);
-        write_reg_ym2413(&mut chip, 0x20, 0x05);
+        setup_opll_channel(&mut chip, 0, 8, 0x80, 0x15, 0);
+        generate_2_opll(&mut chip, 768);
+        write_reg_opll(&mut chip, 0x20, 0x05);
         file.push_str(&fmt2_documented(
             "KEY_OFF_RELEASE",
             "Preset eight immediately after key-off.",
-            &generate_2_ym2413(&mut chip, 512),
+            &generate_2_opll(&mut chip, 512),
         ));
     }
     {
         let mut chip = setup_ym2413();
-        setup_ym2413_channel(&mut chip, 0, 4, 0x80, 0x15, 0);
-        generate_2_ym2413(&mut chip, 512);
-        let mut samples = generate_2_ym2413(&mut chip, 128);
-        write_reg_ym2413(&mut chip, 0x10, 0xD0);
-        write_reg_ym2413(&mut chip, 0x20, 0x17);
-        samples.extend(generate_2_ym2413(&mut chip, 256));
+        setup_opll_channel(&mut chip, 0, 4, 0x80, 0x15, 0);
+        generate_2_opll(&mut chip, 512);
+        let mut samples = generate_2_opll(&mut chip, 128);
+        write_reg_opll(&mut chip, 0x10, 0xD0);
+        write_reg_opll(&mut chip, 0x20, 0x17);
+        samples.extend(generate_2_opll(&mut chip, 256));
         file.push_str(&fmt2_documented(
             "PITCH_CHANGE",
             "A live frequency and octave change.",
@@ -2159,11 +2181,11 @@ fn gen_ym2413_fm(dir: &str) {
     }
     {
         let mut chip = setup_ym2413();
-        setup_ym2413_channel(&mut chip, 0, 6, 0x80, 0x15, 0);
-        generate_2_ym2413(&mut chip, 512);
-        let mut samples = generate_2_ym2413(&mut chip, 128);
-        write_reg_ym2413(&mut chip, 0x30, 0x6A);
-        samples.extend(generate_2_ym2413(&mut chip, 128));
+        setup_opll_channel(&mut chip, 0, 6, 0x80, 0x15, 0);
+        generate_2_opll(&mut chip, 512);
+        let mut samples = generate_2_opll(&mut chip, 128);
+        write_reg_opll(&mut chip, 0x30, 0x6A);
+        samples.extend(generate_2_opll(&mut chip, 128));
         file.push_str(&fmt2_documented(
             "VOLUME_CHANGE",
             "A live carrier volume change.",
@@ -2172,43 +2194,43 @@ fn gen_ym2413_fm(dir: &str) {
     }
     {
         let mut chip = setup_ym2413();
-        setup_ym2413_channel(&mut chip, 0, 1, 0x70, 0x15, 0);
-        setup_ym2413_channel(&mut chip, 1, 7, 0x98, 0x17, 0);
-        setup_ym2413_channel(&mut chip, 2, 12, 0xC0, 0x13, 0);
+        setup_opll_channel(&mut chip, 0, 1, 0x70, 0x15, 0);
+        setup_opll_channel(&mut chip, 1, 7, 0x98, 0x17, 0);
+        setup_opll_channel(&mut chip, 2, 12, 0xC0, 0x13, 0);
         file.push_str(&fmt2_documented(
             "THREE_CHANNEL_MIX",
             "Three melodic channels mixed together.",
-            &generate_2_ym2413(&mut chip, 768),
+            &generate_2_opll(&mut chip, 768),
         ));
     }
     {
         let mut chip = setup_ym2413();
-        setup_ym2413_channel(&mut chip, 0, 9, 0x90, 0x35, 0);
-        generate_2_ym2413(&mut chip, 768);
-        write_reg_ym2413(&mut chip, 0x20, 0x25);
+        setup_opll_channel(&mut chip, 0, 9, 0x90, 0x35, 0);
+        generate_2_opll(&mut chip, 768);
+        write_reg_opll(&mut chip, 0x20, 0x25);
         file.push_str(&fmt2_documented(
             "SUSTAINED_KEY_OFF",
             "Key-off with the channel sustain flag set.",
-            &generate_2_ym2413(&mut chip, 512),
+            &generate_2_opll(&mut chip, 512),
         ));
     }
     {
         let mut chip = setup_ym2413();
-        setup_ym2413_rhythm(&mut chip);
-        write_reg_ym2413(&mut chip, 0x0E, 0x3F);
+        setup_opll_rhythm(&mut chip);
+        write_reg_opll(&mut chip, 0x0E, 0x3F);
         file.push_str(&fmt2_documented(
             "RHYTHM_ALL_KEY_ON",
             "All five rhythm voices keyed on together.",
-            &generate_2_ym2413(&mut chip, 256),
+            &generate_2_opll(&mut chip, 256),
         ));
     }
     {
         let mut samples = Vec::new();
         for key in 0..5 {
             let mut chip = setup_ym2413();
-            setup_ym2413_rhythm(&mut chip);
-            write_reg_ym2413(&mut chip, 0x0E, 0x20 | (1 << key));
-            samples.extend(generate_2_ym2413(&mut chip, 192));
+            setup_opll_rhythm(&mut chip);
+            write_reg_opll(&mut chip, 0x0E, 0x20 | (1 << key));
+            samples.extend(generate_2_opll(&mut chip, 192));
         }
         file.push_str(&fmt2_documented(
             "RHYTHM_VOICES",
@@ -2218,14 +2240,14 @@ fn gen_ym2413_fm(dir: &str) {
     }
     {
         let mut chip = setup_ym2413();
-        setup_ym2413_rhythm(&mut chip);
-        write_reg_ym2413(&mut chip, 0x0E, 0x3F);
-        generate_2_ym2413(&mut chip, 96);
-        write_reg_ym2413(&mut chip, 0x0E, 0x20);
+        setup_opll_rhythm(&mut chip);
+        write_reg_opll(&mut chip, 0x0E, 0x3F);
+        generate_2_opll(&mut chip, 96);
+        write_reg_opll(&mut chip, 0x0E, 0x20);
         file.push_str(&fmt2_documented(
             "RHYTHM_KEY_OFF",
             "All five rhythm voices immediately after key-off.",
-            &generate_2_ym2413(&mut chip, 192),
+            &generate_2_opll(&mut chip, 192),
         ));
     }
 
@@ -2304,6 +2326,11 @@ fn generate_golden_vectors() {
     gen_opn2_fm::<OPN2_VARIANT_YMF276>(&dir, "ymf276_fm.rs");
     gen_ymf288_fm(&dir);
     gen_ymf288_adpcm(&dir);
+    gen_opll_rom_fm::<OPLL_VARIANT_YM2413>(&dir, "ym2413_rom_fm.rs");
+    gen_opll_rom_fm::<OPLL_VARIANT_YM2423>(&dir, "ym2423_fm.rs");
+    gen_opll_rom_fm::<OPLL_VARIANT_YMF281>(&dir, "ymf281_fm.rs");
+    gen_opll_rom_fm::<OPLL_VARIANT_DS1001>(&dir, "ds1001_fm.rs");
+    gen_ymf289b_fm(&dir);
     gen_ym2203_fidelity(&dir);
     gen_ym2413_fm(&dir);
     gen_ym3526_fm(&dir);

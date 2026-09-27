@@ -1160,6 +1160,11 @@ pub(crate) struct Opl3Registers {
 }}
 
 impl Opl3Registers {
+    /// Returns the raw value of register `index`.
+    pub(crate) fn read(&self, index: u16) -> u8 {
+        self.regdata[index as usize]
+    }
+
     pub(crate) fn newflag(&self) -> u32 {
         reg_byte(&self.regdata, 0x105, 0, 1, 0)
     }
