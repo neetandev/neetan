@@ -48,6 +48,20 @@ fn fmt3(name: &str, data: &[[i32; 3]]) -> String {
     s
 }
 
+fn fmt6(name: &str, data: &[[i32; 6]]) -> String {
+    let mut s = format!("pub const {name}: &[[i32; 6]] = &[\n");
+    for d in data {
+        writeln!(
+            s,
+            "    [{}, {}, {}, {}, {}, {}],",
+            d[0], d[1], d[2], d[3], d[4], d[5]
+        )
+        .unwrap();
+    }
+    s.push_str("];\n\n");
+    s
+}
+
 fn fmt_checksums(name: &str, checksums: &[u64]) -> String {
     let mut s = format!("pub const {name}: &[u64] = &[\n");
     for checksum in checksums {
@@ -1141,6 +1155,40 @@ fn gen_ym2414_fuzz(dir: &str) {
     }
     std::fs::write(format!("{dir}/ym2414_fuzz.rs"), f).unwrap();
     println!("  wrote ym2414_fuzz.rs");
+}
+
+fn gen_ymf278b_fm(dir: &str) {
+    let mut f = header();
+    for name in YMF278B_FM_SCENARIOS {
+        f.push_str(&fmt6(name, &ymf278b_fm_scenario(name)));
+    }
+    std::fs::write(format!("{dir}/ymf278b_fm.rs"), f).unwrap();
+    println!("  wrote ymf278b_fm.rs");
+}
+
+fn gen_ymf278b_pcm(dir: &str) {
+    let mut f = header();
+    for name in YMF278B_PCM_SCENARIOS {
+        f.push_str(&fmt6(name, &ymf278b_pcm_scenario(name)));
+    }
+    for name in YMF278B_LONG_SCENARIOS {
+        let samples = ymf278b_long_scenario(name);
+        f.push_str(&fmt_checksums(
+            name,
+            &block_checksums(&samples, YMF278B_CHECKSUM_BLOCK),
+        ));
+    }
+    std::fs::write(format!("{dir}/ymf278b_pcm.rs"), f).unwrap();
+    println!("  wrote ymf278b_pcm.rs");
+}
+
+fn gen_ymf278b_fuzz(dir: &str) {
+    let mut f = header();
+    for seed in 1..=YMF278B_FUZZ_SEEDS {
+        f.push_str(&fmt_checksums(&format!("SEED_{seed}"), &ymf278b_fuzz(seed)));
+    }
+    std::fs::write(format!("{dir}/ymf278b_fuzz.rs"), f).unwrap();
+    println!("  wrote ymf278b_fuzz.rs");
 }
 
 fn gen_opn2_fm<const VARIANT: u8>(dir: &str, file_name: &str) {
@@ -2424,5 +2472,8 @@ fn generate_golden_vectors() {
     gen_ym3806_fuzz(&dir);
     gen_ym2414_fm(&dir);
     gen_ym2414_fuzz(&dir);
+    gen_ymf278b_fm(&dir);
+    gen_ymf278b_pcm(&dir);
+    gen_ymf278b_fuzz(&dir);
     println!("Done!");
 }

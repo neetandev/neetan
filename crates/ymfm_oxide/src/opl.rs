@@ -1148,9 +1148,9 @@ impl FmRegisters for Opl2Registers {
 }
 
 save_state::runtime_state! {
-/// OPL3 registers for the YMF262.
+/// OPL3 and OPL4 FM registers for revision `REVISION` (3 or 4).
 #[derive(Clone)]
-pub(crate) struct Opl3Registers {
+pub(crate) struct Opl3FamilyRegisters<const REVISION: u32> {
     lfo_am_counter: u16,
     lfo_pm_counter: u16,
     noise_lfsr: u32,
@@ -1159,14 +1159,29 @@ pub(crate) struct Opl3Registers {
     waveform: [[u16; WAVEFORM_LENGTH]; 8],
 }}
 
-impl Opl3Registers {
+/// OPL3 registers for the YMF262 and YMF289B.
+pub(crate) type Opl3Registers = Opl3FamilyRegisters<3>;
+/// OPL4 FM registers for the YMF278B.
+pub(crate) type Opl4Registers = Opl3FamilyRegisters<4>;
+
+impl<const REVISION: u32> Opl3FamilyRegisters<REVISION> {
     /// Returns the raw value of register `index`.
     pub(crate) fn read(&self, index: u16) -> u8 {
         self.regdata[index as usize]
     }
 
+    /// Returns the NEW flag (register 0x105 bit 0) that enables OPL3 mode.
     pub(crate) fn newflag(&self) -> u32 {
         reg_byte(&self.regdata, 0x105, 0, 1, 0)
+    }
+
+    /// Returns the NEW2 flag (register 0x105 bit 1) that enables OPL4 mode.
+    pub(crate) fn new2flag(&self) -> u32 {
+        if REVISION >= 4 {
+            reg_byte(&self.regdata, 0x105, 1, 1, 0)
+        } else {
+            0
+        }
     }
 
     fn fourop_enable(&self) -> u32 {
@@ -1174,12 +1189,12 @@ impl Opl3Registers {
     }
 }
 
-impl FmRegisters for Opl3Registers {
+impl<const REVISION: u32> FmRegisters for Opl3FamilyRegisters<REVISION> {
     const OUTPUTS: usize = 4;
     const CHANNELS: usize = 18;
     const ALL_CHANNELS: u32 = (1 << 18) - 1;
     const OPERATORS: usize = 36;
-    const DEFAULT_PRESCALE: u32 = 8;
+    const DEFAULT_PRESCALE: u32 = if REVISION >= 4 { 19 } else { 8 };
     const EG_CLOCK_DIVIDER: u32 = 1;
     const CSM_TRIGGER_MASK: u32 = (1 << 18) - 1;
     const REG_MODE: u32 = 0x04;
@@ -1359,7 +1374,7 @@ impl FmRegisters for Opl3Registers {
         keyon_channel: &mut u32,
         keyon_opmask: &mut u32,
     ) -> bool {
-        opl_write::<3>(
+        opl_write::<REVISION>(
             &mut self.regdata,
             index as u16,
             data,
@@ -1481,7 +1496,7 @@ impl FmRegisters for Opl3Registers {
     }
 
     fn cache_operator_data(&self, choffs: u32, opoffs: u32, cache: &mut OpdataCache) {
-        opl_cache_operator_data::<3>(&self.regdata, 8, choffs, opoffs, cache);
+        opl_cache_operator_data::<REVISION>(&self.regdata, 8, choffs, opoffs, cache);
     }
 
     fn compute_phase_step(

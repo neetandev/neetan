@@ -66,17 +66,22 @@ pub(crate) mod opm;
 pub(crate) mod opn;
 pub(crate) mod opq;
 pub(crate) mod opz;
+pub(crate) mod pcm;
 pub(crate) mod ssg;
 mod sys;
 pub(crate) mod tables;
 
 use adpcm::{AdpcmAEngine, AdpcmBChannel, AdpcmBEngine};
 use fm::{FmEngine, FmRegisters};
-use opl::{OPLL_INSTRUMENT_DATA_SIZE, Opl2Registers, Opl3Registers, OplRegisters, OpllRegisters};
+use opl::{
+    OPLL_INSTRUMENT_DATA_SIZE, Opl2Registers, Opl3Registers, Opl4Registers, OplRegisters,
+    OpllRegisters,
+};
 use opm::OpmRegisters;
 use opn::{OpnRegisters, OpnaRegisters, SsgResampler};
 use opq::OpqRegisters;
 use opz::OpzRegisters;
+use pcm::{PCM_ALL_CHANNELS, PCM_OUTPUTS, PcmEngine, PcmMemory};
 use ssg::{SsgEngine, SsgOutput};
 pub use sys::{
     YmfmOpnFidelity, YmfmOutput1, YmfmOutput2, YmfmOutput3, YmfmOutput4, YmfmOutput6,
@@ -2777,6 +2782,345 @@ impl Default for Ymf289b {
     }
 }
 
+/// Busy time in input clocks of a YMF278B FM register write.
+const YMF278B_FM_BUSY_CLOCKS: u32 = 56;
+/// Busy time in input clocks of a YMF278B PCM register write.
+const YMF278B_PCM_BUSY_CLOCKS: u32 = 88;
+/// YMF278B status bit set while the chip is busy.
+const YMF278B_STATUS_BUSY: u8 = 0x01;
+/// YMF278B status bit set while a wave table header loads.
+const YMF278B_STATUS_LD: u8 = 0x02;
+/// Output samples the LD status bit stays set after a wave table number write.
+const YMF278B_LOAD_SAMPLES: u32 = 13;
+/// FM resampling accumulator limit. The FM engine runs 192 ticks for 171 output samples.
+const YMF278B_FM_EXTRA_SAMPLE_THRESHOLD: u32 = 171;
+/// FM resampling accumulator step per output sample.
+const YMF278B_FM_EXTRA_SAMPLE_STEP: u32 = 192 - YMF278B_FM_EXTRA_SAMPLE_THRESHOLD;
+/// Mix gain as a .11 fraction for each of the 3-bit mix control values.
+const YMF278B_MIX_SCALE: [i32; 8] = [0x7FA, 0x5A4, 0x3FD, 0x2D2, 0x1FE, 0x169, 0xFF, 0];
+
+save_state::runtime_state! {
+/// Complete mutable state of a YMF278B chip.
+#[derive(Clone)]
+pub struct Ymf278bState {
+    fm: FmEngine<Opl4Registers>,
+    pcm: PcmEngine,
+    pcm_ram: Vec<u8>,
+    pcm_ram_base: u32,
+    address: u16,
+    fm_pos: u32,
+    load_remaining: u32,
+    next_status_id: bool,
+    pcm_rom_identity: save_state::ResourceIdentity,
+}}
+
+/// Yamaha YMF278B (OPL4) emulator.
+///
+/// The YMF278B combines an OPL3 FM core with a 24-channel wavetable PCM engine.
+/// The wave memory holds ROM mapped from address 0 and optional RAM mapped at a
+/// configurable base address. RAM takes priority where both overlap, and
+/// unmapped addresses read as 0.
+#[derive(Clone)]
+pub struct Ymf278b {
+    fm: FmEngine<Opl4Registers>,
+    pcm: PcmEngine,
+    pcm_rom: Vec<u8>,
+    pcm_ram: Vec<u8>,
+    pcm_ram_base: u32,
+    address: u16,
+    fm_pos: u32,
+    load_remaining: u32,
+    next_status_id: bool,
+}
+
+impl Ymf278b {
+    /// Creates a new YMF278B instance without wave memory.
+    pub fn new() -> Self {
+        Self {
+            fm: FmEngine::new(),
+            pcm: PcmEngine::new(),
+            pcm_rom: Vec::new(),
+            pcm_ram: Vec::new(),
+            pcm_ram_base: 0,
+            address: 0,
+            fm_pos: 0,
+            load_remaining: 0,
+            next_status_id: false,
+        }
+    }
+
+    /// Captures mutable chip state and the identity of the retained wave ROM.
+    pub fn capture_state(&self) -> Ymf278bState {
+        Ymf278bState {
+            fm: self.fm.clone(),
+            pcm: self.pcm.clone(),
+            pcm_ram: self.pcm_ram.clone(),
+            pcm_ram_base: self.pcm_ram_base,
+            address: self.address,
+            fm_pos: self.fm_pos,
+            load_remaining: self.load_remaining,
+            next_status_id: self.next_status_id,
+            pcm_rom_identity: save_state::ResourceIdentity::from_bytes(&self.pcm_rom),
+        }
+    }
+
+    /// Restores mutable state while retaining the wave ROM.
+    pub fn restore_state(
+        &mut self,
+        state: Ymf278bState,
+    ) -> Result<(), save_state::StateValidationError> {
+        let identity = save_state::ResourceIdentity::from_bytes(&self.pcm_rom);
+        save_state::restore_root(self, state, &identity)
+    }
+
+    /// Resets the chip to its initial power-on state.
+    pub fn reset(&mut self) {
+        self.fm.reset();
+        self.pcm.reset();
+
+        // the next status read returns the chip ID
+        self.next_status_id = true;
+    }
+
+    /// Replaces the wave ROM, mapped from address 0.
+    pub fn set_pcm_rom(&mut self, data: Vec<u8>) {
+        self.pcm_rom = data;
+    }
+
+    /// Replaces the wave RAM with `data`, mapped from address `base`.
+    pub fn set_pcm_ram(&mut self, base: u32, data: Vec<u8>) {
+        self.pcm_ram_base = base;
+        self.pcm_ram = data;
+    }
+
+    /// Removes the wave RAM.
+    pub fn clear_pcm_ram(&mut self) {
+        self.pcm_ram_base = 0;
+        self.pcm_ram = Vec::new();
+    }
+
+    /// Returns the wave RAM.
+    pub fn pcm_ram(&self) -> &[u8] {
+        &self.pcm_ram
+    }
+
+    /// Returns the mutable wave RAM.
+    pub fn pcm_ram_mut(&mut self) -> &mut [u8] {
+        &mut self.pcm_ram
+    }
+
+    /// Returns the output sample rate in Hz for the given `input_clock` in Hz.
+    pub fn sample_rate(&self, input_clock: u32) -> u32 {
+        input_clock / 768
+    }
+
+    /// Reads the chip status register. The BUSY bit is set while `busy` is true.
+    ///
+    /// The first read after a reset or after NEW2 gets set returns the chip ID.
+    /// BUSY and LD are visible only in OPL4 mode (NEW2 set).
+    pub fn read_status(&mut self, busy: bool) -> u8 {
+        if self.next_status_id {
+            self.next_status_id = false;
+            return if self.fm.regs.new2flag() != 0 {
+                0x02
+            } else if self.fm.regs.newflag() != 0 {
+                0x00
+            } else {
+                0x06
+            };
+        }
+
+        let mut result = self.fm.status();
+        if busy {
+            result |= YMF278B_STATUS_BUSY;
+        }
+        if self.load_remaining != 0 {
+            result |= YMF278B_STATUS_LD;
+        }
+        if self.fm.regs.new2flag() == 0 {
+            result &= !(YMF278B_STATUS_BUSY | YMF278B_STATUS_LD);
+        }
+        result
+    }
+
+    /// Reads the addressed PCM register. Returns 0 while an FM register is addressed.
+    pub fn read_data_pcm(&mut self) -> u8 {
+        if helpers::bit(self.address as u32, 9) == 0 {
+            return 0;
+        }
+        let register = (self.address & 0xFF) as u32;
+        let memory = PcmMemory {
+            rom: &self.pcm_rom,
+            ram: &mut self.pcm_ram,
+            ram_base: self.pcm_ram_base,
+        };
+        let mut result = self.pcm.read(register, &memory);
+        // the device ID bits of register 0x02 read as 1
+        if register == 0x02 {
+            result |= 0x20;
+        }
+        result
+    }
+
+    /// Reads a chip port: offset 0 is the status and offset 5 the PCM data.
+    /// Other offsets return 0xFF.
+    pub fn read(&mut self, offset: u32, busy: bool) -> u8 {
+        match offset & 7 {
+            0 => self.read_status(busy),
+            5 => self.read_data_pcm(),
+            _ => 0xFF,
+        }
+    }
+
+    /// Latches the register address for the low FM bank (0x00-0xFF).
+    pub fn write_address(&mut self, data: u8) -> u32 {
+        self.address = data as u16;
+        0
+    }
+
+    /// Writes a value to the addressed FM register.
+    pub fn write_data(&mut self, data: u8) -> u32 {
+        if helpers::bit(self.address as u32, 9) == 0 {
+            let old_new2 = self.fm.regs.new2flag();
+            self.fm.write(self.address, data);
+
+            // setting NEW2 makes the next status read return the chip ID
+            if old_new2 == 0 && self.fm.regs.new2flag() != 0 {
+                self.next_status_id = true;
+            }
+        }
+        YMF278B_FM_BUSY_CLOCKS
+    }
+
+    /// Latches the register address for the high FM bank (0x100-0x1FF).
+    pub fn write_address_hi(&mut self, data: u8) -> u32 {
+        self.address = data as u16 | 0x100;
+
+        // in compatibility mode, upper bit is masked except for register 0x105
+        if self.fm.regs.newflag() == 0 && self.address != 0x105 {
+            self.address &= 0xFF;
+        }
+        0
+    }
+
+    /// Latches the PCM register address.
+    pub fn write_address_pcm(&mut self, data: u8) -> u32 {
+        self.address = data as u16 | 0x200;
+        0
+    }
+
+    /// Writes a value to the addressed PCM register. Ignored while NEW2 is clear.
+    pub fn write_data_pcm(&mut self, data: u8) -> u32 {
+        if self.fm.regs.new2flag() == 0 {
+            return 0;
+        }
+
+        if helpers::bit(self.address as u32, 9) != 0 {
+            let register = (self.address & 0xFF) as u32;
+            let mut memory = PcmMemory {
+                rom: &self.pcm_rom,
+                ram: &mut self.pcm_ram,
+                ram_base: self.pcm_ram_base,
+            };
+            self.pcm.write(register, data, &mut memory);
+
+            // a wave table number write loads its header for about 300 microseconds
+            if (0x08..=0x1F).contains(&register) {
+                self.load_remaining = YMF278B_LOAD_SAMPLES;
+            }
+        }
+        YMF278B_PCM_BUSY_CLOCKS
+    }
+
+    /// Writes a chip port and returns the busy time in input clocks.
+    ///
+    /// Offsets 0 and 2 latch the low and high FM address, 1 and 3 write FM
+    /// data, 4 latches the PCM address and 5 writes PCM data.
+    pub fn write(&mut self, offset: u32, data: u8) -> u32 {
+        match offset & 7 {
+            0 => self.write_address(data),
+            1 | 3 => self.write_data(data),
+            2 => self.write_address_hi(data),
+            4 => self.write_address_pcm(data),
+            5 => self.write_data_pcm(data),
+            _ => 0,
+        }
+    }
+
+    /// Generates audio samples into `output`.
+    ///
+    /// Each sample holds FM outputs 2 and 3, PCM outputs 2 and 3, and the mix
+    /// of FM and PCM outputs 0 and 1.
+    pub fn generate(&mut self, output: &mut [YmfmOutput6]) {
+        let pcm_left = YMF278B_MIX_SCALE[self.pcm.regs().mix_pcm_l() as usize];
+        let pcm_right = YMF278B_MIX_SCALE[self.pcm.regs().mix_pcm_r() as usize];
+        let fm_left = YMF278B_MIX_SCALE[self.pcm.regs().mix_fm_l() as usize];
+        let fm_right = YMF278B_MIX_SCALE[self.pcm.regs().mix_fm_r() as usize];
+        let memory = PcmMemory {
+            rom: &self.pcm_rom,
+            ram: &mut self.pcm_ram,
+            ram_base: self.pcm_ram_base,
+        };
+        for out in output.iter_mut() {
+            // the FM engine runs 192 ticks for every 171 output samples
+            self.fm_pos += YMF278B_FM_EXTRA_SAMPLE_STEP;
+            if self.fm_pos >= YMF278B_FM_EXTRA_SAMPLE_THRESHOLD {
+                self.fm.clock(Opl4Registers::ALL_CHANNELS);
+                self.fm_pos -= YMF278B_FM_EXTRA_SAMPLE_THRESHOLD;
+            }
+            self.fm.clock(Opl4Registers::ALL_CHANNELS);
+            self.pcm.clock(PCM_ALL_CHANNELS);
+
+            let mut fm_output = [0i32; 4];
+            self.fm
+                .output_mut(&mut fm_output, 0, 32767, Opl4Registers::ALL_CHANNELS);
+
+            let mut pcm_output = [0i32; PCM_OUTPUTS];
+            self.pcm.output(&mut pcm_output, PCM_ALL_CHANNELS, &memory);
+
+            out.data = [
+                fm_output[2],
+                fm_output[3],
+                pcm_output[2],
+                pcm_output[3],
+                (fm_output[0] * fm_left + pcm_output[0] * pcm_left) >> 11,
+                (fm_output[1] * fm_right + pcm_output[1] * pcm_right) >> 11,
+            ];
+            for value in &mut out.data {
+                *value = (*value).clamp(-32768, 32767);
+            }
+        }
+
+        self.load_remaining -= self.load_remaining.min(output.len() as u32);
+    }
+
+    /// Notifies the chip that the specified timer has expired.
+    pub fn timer_expired(&mut self, timer_id: u32) {
+        self.fm.engine_timer_expired(timer_id);
+    }
+
+    /// Returns and clears the pending update for a timer.
+    pub fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        self.fm.take_timer_update(timer_id)
+    }
+
+    /// Returns and clears the pending IRQ output update.
+    pub fn take_irq_update(&mut self) -> Option<bool> {
+        self.fm.take_irq_update()
+    }
+
+    /// Returns whether the chip IRQ output is currently asserted.
+    pub fn irq_asserted(&self) -> bool {
+        self.fm.irq_asserted()
+    }
+}
+
+impl Default for Ymf278b {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Default for Ym2203 {
     fn default() -> Self {
         Self::new()
@@ -3397,6 +3741,47 @@ impl save_state::RestoreTarget for Ym2608 {
     }
 }
 
+impl save_state::ValidateState<save_state::ResourceIdentity> for Ymf278bState {
+    fn validate_state(
+        &self,
+        current_rom_identity: &save_state::ResourceIdentity,
+    ) -> Result<(), save_state::StateValidationError> {
+        if &self.pcm_rom_identity != current_rom_identity {
+            return Err(save_state::StateValidationError::new(
+                "YMF278B wave ROM identity differs",
+            ));
+        }
+        if self.fm.operators.len() != Opl4Registers::OPERATORS
+            || self.fm.channels.len() != Opl4Registers::CHANNELS
+        {
+            return Err(save_state::StateValidationError::new(
+                "YMF278B state topology is invalid",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl save_state::AfterRestore for Ymf278b {
+    fn after_restore(&mut self) {}
+}
+
+impl save_state::RestoreTarget for Ymf278b {
+    type State = Ymf278bState;
+    type ValidationContext = save_state::ResourceIdentity;
+
+    fn replace_state(&mut self, state: Self::State) {
+        self.fm = state.fm;
+        self.pcm = state.pcm;
+        self.pcm_ram = state.pcm_ram;
+        self.pcm_ram_base = state.pcm_ram_base;
+        self.address = state.address;
+        self.fm_pos = state.fm_pos;
+        self.load_remaining = state.load_remaining;
+        self.next_status_id = state.next_status_id;
+    }
+}
+
 impl save_state::ValidateState for Ym2203 {
     fn validate_state(&self, _context: &()) -> Result<(), save_state::StateValidationError> {
         if self.fm.operators.len() != OpnRegisters::OPERATORS
@@ -3987,5 +4372,93 @@ mod state_tests {
                 .zip(actual)
                 .all(|(left, right)| left.data == right.data)
         );
+    }
+
+    fn ymf278b_test_rom() -> Vec<u8> {
+        let mut rom = alloc::vec![0u8; 0x400];
+        // wave 0: 8-bit samples at 0x100 looping over 64 samples
+        rom[..12].copy_from_slice(&[
+            0x00, 0x01, 0x00, 0x00, 0x00, 0xFF, 0xC0, 0x2A, 0xF4, 0x42, 0xF6, 0x03,
+        ]);
+        // wave 1: 16-bit samples in RAM at 0x200000 looping over 32 samples
+        rom[12..24].copy_from_slice(&[
+            0xA0, 0x00, 0x00, 0x00, 0x08, 0xFF, 0xE0, 0x00, 0xF0, 0x00, 0xF7, 0x00,
+        ]);
+        for (index, value) in rom[0x100..0x140].iter_mut().enumerate() {
+            *value = (index as u8).wrapping_mul(29);
+        }
+        rom
+    }
+
+    fn write_ymf278b_pcm(chip: &mut Ymf278b, register: u8, data: u8) {
+        chip.write_address_pcm(register);
+        chip.write_data_pcm(data);
+    }
+
+    #[test]
+    fn ymf278b_state_replays_exact_samples_and_retains_rom() {
+        let mut chip = Ymf278b::new();
+        chip.set_pcm_rom(ymf278b_test_rom());
+        chip.set_pcm_ram(0x20_0000, alloc::vec![0; 0x100]);
+        chip.reset();
+        chip.write_address_hi(0x05);
+        chip.write_data(0x03);
+        chip.write_address(0xC0);
+        chip.write_data(0x31);
+        chip.write_address(0xA0);
+        chip.write_data(0x80);
+        chip.write_address(0xB0);
+        chip.write_data(0x31);
+
+        write_ymf278b_pcm(&mut chip, 0x02, 0x03);
+        write_ymf278b_pcm(&mut chip, 0x03, 0x20);
+        write_ymf278b_pcm(&mut chip, 0x04, 0x00);
+        write_ymf278b_pcm(&mut chip, 0x05, 0x00);
+        for index in 0..64u8 {
+            write_ymf278b_pcm(&mut chip, 0x06, index.wrapping_mul(71));
+        }
+        write_ymf278b_pcm(&mut chip, 0x02, 0x02);
+        for (channel, wave) in [(0u8, 0u8), (1, 1)] {
+            write_ymf278b_pcm(&mut chip, 0x20 + channel, 0x40);
+            write_ymf278b_pcm(&mut chip, 0x38 + channel, 0x12);
+            write_ymf278b_pcm(&mut chip, 0x50 + channel, 0x01);
+            write_ymf278b_pcm(&mut chip, 0x08 + channel, wave);
+            write_ymf278b_pcm(&mut chip, 0x68 + channel, 0x83 + channel * 0x10);
+        }
+        chip.generate(&mut [YmfmOutput6 { data: [0; 6] }; 5]);
+        write_ymf278b_pcm(&mut chip, 0x50, 0x40);
+
+        let encoded = save_state::encode_runtime_state(&chip.capture_state());
+        let decoded = save_state::decode_runtime_state::<Ymf278bState>(&encoded, 1 << 20).unwrap();
+        let mut restored = Ymf278b::new();
+        restored.set_pcm_rom(ymf278b_test_rom());
+        restored.restore_state(decoded).unwrap();
+        assert_eq!(restored.pcm_ram(), chip.pcm_ram());
+        assert_eq!(restored.read_status(false), chip.read_status(false));
+
+        let mut expected = [YmfmOutput6 { data: [0; 6] }; 256];
+        let mut actual = [YmfmOutput6 { data: [0; 6] }; 256];
+        chip.generate(&mut expected);
+        restored.generate(&mut actual);
+        assert!(expected.iter().any(|sample| sample.data != [0; 6]));
+        assert!(
+            expected
+                .iter()
+                .zip(actual)
+                .all(|(left, right)| left.data == right.data)
+        );
+        assert_eq!(restored.read_status(false), chip.read_status(false));
+    }
+
+    #[test]
+    fn ymf278b_rejects_a_different_retained_rom() {
+        let mut chip = Ymf278b::new();
+        chip.set_pcm_rom(ymf278b_test_rom());
+        let state = chip.capture_state();
+        let mut restored = Ymf278b::new();
+        restored.set_pcm_rom(alloc::vec![0x22; 0x400]);
+        assert!(restored.restore_state(state.clone()).is_err());
+        restored.set_pcm_rom(ymf278b_test_rom());
+        assert!(restored.restore_state(state).is_ok());
     }
 }
