@@ -906,22 +906,41 @@ impl SsgResampler {
         };
     }
 
-    pub(crate) fn resample(&mut self, ssg: &mut SsgEngine, output: &mut [i32], num_outputs: usize) {
+    /// Resamples the SSG into `frames`, one output frame each, starting at
+    /// channel `first_output` of every frame.
+    pub(crate) fn resample<'a, const N: usize>(
+        &mut self,
+        ssg: &mut SsgEngine,
+        frames: impl Iterator<Item = &'a mut [i32; N]>,
+    ) {
+        let factor = self.mode.factor;
         match self.mode.kind {
-            ResampleModeKind::Nop => self.resample_nop(num_outputs),
-            ResampleModeKind::N1 => self.resample_n_1(ssg, output, num_outputs, self.mode.factor),
-            ResampleModeKind::OneN => self.resample_1_n(ssg, output, num_outputs, self.mode.factor),
-            ResampleModeKind::TwoNine => self.resample_2_9(ssg, output, num_outputs),
-            ResampleModeKind::TwoThree => self.resample_2_3(ssg, output, num_outputs),
-            ResampleModeKind::FourThree => self.resample_4_3(ssg, output, num_outputs),
-        }
-    }
-
-    fn output_stride(&self) -> usize {
-        if self.mix_to_1 {
-            self.first_output + 1
-        } else {
-            self.first_output + 3
+            ResampleModeKind::Nop => self.sampindex += frames.count() as u32,
+            ResampleModeKind::N1 => {
+                for frame in frames {
+                    self.resample_n_1(ssg, frame, factor);
+                }
+            }
+            ResampleModeKind::OneN => {
+                for frame in frames {
+                    self.resample_1_n(ssg, frame, factor);
+                }
+            }
+            ResampleModeKind::TwoNine => {
+                for frame in frames {
+                    self.resample_2_9(ssg, frame);
+                }
+            }
+            ResampleModeKind::TwoThree => {
+                for frame in frames {
+                    self.resample_2_3(ssg, frame);
+                }
+            }
+            ResampleModeKind::FourThree => {
+                for frame in frames {
+                    self.resample_4_3(ssg, frame);
+                }
+            }
         }
     }
 
@@ -946,121 +965,93 @@ impl SsgResampler {
         *sum2 += self.last.data[2] * scale;
     }
 
-    fn write_to_output(
+    fn write_to_output<const N: usize>(
         &mut self,
-        output: &mut [i32],
-        offset: usize,
+        frame: &mut [i32; N],
         sum0: i32,
         sum1: i32,
         sum2: i32,
         divisor: i32,
     ) {
         if self.mix_to_1 {
-            output[offset + self.first_output] = (sum0 + sum1 + sum2) * 2 / (3 * divisor);
+            frame[self.first_output] = (sum0 + sum1 + sum2) * 2 / (3 * divisor);
         } else {
-            output[offset + self.first_output] = sum0 / divisor;
-            output[offset + self.first_output + 1] = sum1 / divisor;
-            output[offset + self.first_output + 2] = sum2 / divisor;
+            frame[self.first_output] = sum0 / divisor;
+            frame[self.first_output + 1] = sum1 / divisor;
+            frame[self.first_output + 2] = sum2 / divisor;
         }
         self.sampindex += 1;
     }
 
-    fn resample_nop(&mut self, num_outputs: usize) {
-        self.sampindex += num_outputs as u32;
-    }
-
-    fn resample_n_1(
+    fn resample_n_1<const N: usize>(
         &mut self,
         ssg: &mut SsgEngine,
-        output: &mut [i32],
-        num_outputs: usize,
+        frame: &mut [i32; N],
         multiplier: u32,
     ) {
-        let stride = self.output_stride();
-        for samp in 0..num_outputs {
-            if self.sampindex.is_multiple_of(multiplier) {
-                ssg.clock();
-                ssg.output(&mut self.last);
-            }
-            self.write_to_output(
-                output,
-                samp * stride,
-                self.last.data[0],
-                self.last.data[1],
-                self.last.data[2],
-                1,
-            );
+        if self.sampindex.is_multiple_of(multiplier) {
+            ssg.clock();
+            ssg.output(&mut self.last);
         }
+        let [sum0, sum1, sum2] = self.last.data;
+        self.write_to_output(frame, sum0, sum1, sum2, 1);
     }
 
-    fn resample_1_n(
+    fn resample_1_n<const N: usize>(
         &mut self,
         ssg: &mut SsgEngine,
-        output: &mut [i32],
-        num_outputs: usize,
+        frame: &mut [i32; N],
         divisor: u32,
     ) {
-        let stride = self.output_stride();
-        for samp in 0..num_outputs {
-            let mut sum0: i32 = 0;
-            let mut sum1: i32 = 0;
-            let mut sum2: i32 = 0;
-            for _rep in 0..divisor {
-                self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 1);
-            }
-            self.write_to_output(output, samp * stride, sum0, sum1, sum2, divisor as i32);
+        let mut sum0: i32 = 0;
+        let mut sum1: i32 = 0;
+        let mut sum2: i32 = 0;
+        for _rep in 0..divisor {
+            self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 1);
         }
+        self.write_to_output(frame, sum0, sum1, sum2, divisor as i32);
     }
 
-    fn resample_2_9(&mut self, ssg: &mut SsgEngine, output: &mut [i32], num_outputs: usize) {
-        let stride = self.output_stride();
-        for samp in 0..num_outputs {
-            let mut sum0: i32 = 0;
-            let mut sum1: i32 = 0;
-            let mut sum2: i32 = 0;
-            if bitfield(self.sampindex, 0, 1) != 0 {
-                self.add_last(&mut sum0, &mut sum1, &mut sum2, 1);
-            }
-            self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 2);
-            self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 2);
-            self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 2);
-            self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 2);
-            if bitfield(self.sampindex, 0, 1) == 0 {
-                self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 1);
-            }
-            self.write_to_output(output, samp * stride, sum0, sum1, sum2, 9);
+    fn resample_2_9<const N: usize>(&mut self, ssg: &mut SsgEngine, frame: &mut [i32; N]) {
+        let mut sum0: i32 = 0;
+        let mut sum1: i32 = 0;
+        let mut sum2: i32 = 0;
+        if bitfield(self.sampindex, 0, 1) != 0 {
+            self.add_last(&mut sum0, &mut sum1, &mut sum2, 1);
         }
+        self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 2);
+        self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 2);
+        self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 2);
+        self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 2);
+        if bitfield(self.sampindex, 0, 1) == 0 {
+            self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 1);
+        }
+        self.write_to_output(frame, sum0, sum1, sum2, 9);
     }
 
-    fn resample_2_3(&mut self, ssg: &mut SsgEngine, output: &mut [i32], num_outputs: usize) {
-        let stride = self.output_stride();
-        for samp in 0..num_outputs {
-            let mut sum0: i32 = 0;
-            let mut sum1: i32 = 0;
-            let mut sum2: i32 = 0;
-            if bitfield(self.sampindex, 0, 1) == 0 {
-                self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 2);
-                self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 1);
-            } else {
-                self.add_last(&mut sum0, &mut sum1, &mut sum2, 1);
-                self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 2);
-            }
-            self.write_to_output(output, samp * stride, sum0, sum1, sum2, 3);
+    fn resample_2_3<const N: usize>(&mut self, ssg: &mut SsgEngine, frame: &mut [i32; N]) {
+        let mut sum0: i32 = 0;
+        let mut sum1: i32 = 0;
+        let mut sum2: i32 = 0;
+        if bitfield(self.sampindex, 0, 1) == 0 {
+            self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 2);
+            self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 1);
+        } else {
+            self.add_last(&mut sum0, &mut sum1, &mut sum2, 1);
+            self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 2);
         }
+        self.write_to_output(frame, sum0, sum1, sum2, 3);
     }
 
-    fn resample_4_3(&mut self, ssg: &mut SsgEngine, output: &mut [i32], num_outputs: usize) {
-        let stride = self.output_stride();
-        for samp in 0..num_outputs {
-            let mut sum0: i32 = 0;
-            let mut sum1: i32 = 0;
-            let mut sum2: i32 = 0;
-            let step = bitfield(self.sampindex, 0, 2) as i32;
-            self.add_last(&mut sum0, &mut sum1, &mut sum2, step);
-            if step != 3 {
-                self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 3 - step);
-            }
-            self.write_to_output(output, samp * stride, sum0, sum1, sum2, 3);
+    fn resample_4_3<const N: usize>(&mut self, ssg: &mut SsgEngine, frame: &mut [i32; N]) {
+        let mut sum0: i32 = 0;
+        let mut sum1: i32 = 0;
+        let mut sum2: i32 = 0;
+        let step = bitfield(self.sampindex, 0, 2) as i32;
+        self.add_last(&mut sum0, &mut sum1, &mut sum2, step);
+        if step != 3 {
+            self.clock_and_add(ssg, &mut sum0, &mut sum1, &mut sum2, 3 - step);
         }
+        self.write_to_output(frame, sum0, sum1, sum2, 3);
     }
 }
