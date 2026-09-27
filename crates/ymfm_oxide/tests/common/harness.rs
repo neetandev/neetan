@@ -1,7 +1,7 @@
 use ymfm_oxide::{
     OpllFamily, Opn2Family, Y8950, Ym2149, Ym2151, Ym2164, Ym2203, Ym2413, Ym2414, Ym2608,
-    Ym2610Family, Ym3526, Ym3806, Ym3812, Ymf262, Ymf288, Ymf289b, YmfmOpnFidelity, YmfmOutput1,
-    YmfmOutput2, YmfmOutput3, YmfmOutput4,
+    Ym2610Family, Ym3526, Ym3806, Ym3812, Ymf262, Ymf278b, Ymf288, Ymf289b, YmfmOpnFidelity,
+    YmfmOutput1, YmfmOutput2, YmfmOutput3, YmfmOutput4, YmfmOutput6,
 };
 
 /// Redistributable YM2413 instrument table adapted from emu2413.
@@ -2680,4 +2680,880 @@ pub fn start_ym2610_adpcm_b<const FM_CHANNEL_MASK: u32>(chip: &mut Ym2610Family<
     ] {
         write_reg_2610(chip, addr, data);
     }
+}
+
+// --- OPL4 (YMF278B) helpers ---
+
+/// Base address of the YMF278B test wave RAM.
+pub const YMF278B_RAM_BASE: u32 = 0x20_0000;
+
+/// Size of the YMF278B test wave ROM.
+pub const YMF278B_ROM_SIZE: usize = 0x4000;
+
+/// Size of the YMF278B test wave RAM.
+pub const YMF278B_RAM_SIZE: usize = 0x1000;
+
+/// Offset of the free test RAM area that scenarios upload data into.
+pub const YMF278B_RAM_UPLOAD_OFFSET: u32 = 0xC00;
+
+/// Writes a 12-byte wave table header at `offset`. `end` is the sample count.
+fn write_ymf278b_header(
+    memory: &mut [u8],
+    offset: usize,
+    format: u8,
+    base: u32,
+    loop_start: u16,
+    end: u16,
+    registers: [u8; 5],
+) {
+    let negated_end = end.wrapping_neg();
+    memory[offset] = (format << 6) | ((base >> 16) & 0x3F) as u8;
+    memory[offset + 1] = (base >> 8) as u8;
+    memory[offset + 2] = base as u8;
+    memory[offset + 3] = (loop_start >> 8) as u8;
+    memory[offset + 4] = loop_start as u8;
+    memory[offset + 5] = (negated_end >> 8) as u8;
+    memory[offset + 6] = negated_end as u8;
+    memory[offset + 7..offset + 12].copy_from_slice(&registers);
+}
+
+/// Returns a triangle wave value in `-(1 << (bits - 1))..(1 << (bits - 1))`.
+fn triangle(index: usize, period: usize, bits: u32) -> i32 {
+    let phase = index % period;
+    let half = period / 2;
+    let full_scale = 1i32 << bits;
+    let rising = if phase < half { phase } else { period - phase };
+    (rising as i32 * full_scale / half as i32).min(full_scale - 1) - (full_scale >> 1)
+}
+
+/// Stores 12-bit samples packed two into three bytes.
+fn write_ymf278b_12bit(memory: &mut [u8], offset: usize, samples: &[i32]) {
+    for (pair, chunk) in samples.chunks(2).enumerate() {
+        let first = chunk[0] as u32 & 0xFFF;
+        let second = chunk.get(1).copied().unwrap_or(0) as u32 & 0xFFF;
+        let address = offset + pair * 3;
+        memory[address] = (first >> 4) as u8;
+        memory[address + 1] = ((first & 0x0F) | ((second & 0x0F) << 4)) as u8;
+        memory[address + 2] = (second >> 4) as u8;
+    }
+}
+
+/// Stores 16-bit samples high byte first.
+fn write_ymf278b_16bit(memory: &mut [u8], offset: usize, samples: &[i32]) {
+    for (index, sample) in samples.iter().enumerate() {
+        memory[offset + index * 2] = (*sample >> 8) as u8;
+        memory[offset + index * 2 + 1] = *sample as u8;
+    }
+}
+
+/// Builds the YMF278B test wave ROM.
+///
+/// Waves 0 to 6 cover the 8-bit, 12-bit and 16-bit formats with different
+/// loops and envelope defaults. Wave 7 plays 16-bit data from the test RAM.
+/// Wave 384 has its bank 0 header at 0x1200.
+pub fn create_ymf278b_rom() -> Vec<u8> {
+    let mut rom = vec![0u8; YMF278B_ROM_SIZE];
+    let plain = [0x00, 0xF0, 0x00, 0xF7, 0x00];
+
+    write_ymf278b_header(&mut rom, 0, 0, 0x2000, 0, 256, plain);
+    for index in 0..256 {
+        rom[0x2000 + index] = triangle(index, 256, 8) as u8;
+    }
+
+    write_ymf278b_header(&mut rom, 12, 1, 0x2200, 0, 256, plain);
+    let samples: Vec<i32> = (0..256).map(|index| triangle(index, 128, 12)).collect();
+    write_ymf278b_12bit(&mut rom, 0x2200, &samples);
+
+    write_ymf278b_header(&mut rom, 24, 2, 0x2400, 0, 256, plain);
+    let samples: Vec<i32> = (0..256).map(|index| (index * 251) as i16 as i32).collect();
+    write_ymf278b_16bit(&mut rom, 0x2400, &samples);
+
+    write_ymf278b_header(
+        &mut rom,
+        36,
+        0,
+        0x2600,
+        192,
+        256,
+        [0x00, 0xE4, 0x32, 0xF6, 0x00],
+    );
+    let mut random = XorShift32::new(0x2780_1234);
+    for index in 0..256 {
+        rom[0x2600 + index] = random.next_u32() as u8;
+    }
+
+    write_ymf278b_header(
+        &mut rom,
+        48,
+        2,
+        0x2800,
+        32,
+        64,
+        [0x3A, 0xF0, 0x00, 0xF7, 0x03],
+    );
+    let samples: Vec<i32> = (0..64).map(|index| triangle(index, 32, 16)).collect();
+    write_ymf278b_16bit(&mut rom, 0x2800, &samples);
+
+    write_ymf278b_header(
+        &mut rom,
+        60,
+        1,
+        0x2900,
+        101,
+        255,
+        [0x09, 0xD3, 0x21, 0xE8, 0x01],
+    );
+    let samples: Vec<i32> = (0..255).map(|index| triangle(index, 85, 12)).collect();
+    write_ymf278b_12bit(&mut rom, 0x2900, &samples);
+
+    write_ymf278b_header(&mut rom, 72, 3, 0x2B00, 0, 128, plain);
+    let samples: Vec<i32> = (0..128).map(|index| triangle(index, 64, 12)).collect();
+    write_ymf278b_12bit(&mut rom, 0x2B00, &samples);
+
+    write_ymf278b_header(&mut rom, 84, 2, YMF278B_RAM_BASE + 0x400, 64, 128, plain);
+
+    write_ymf278b_header(&mut rom, 12 * 384, 0, 0x2C00, 0, 64, plain);
+    for index in 0..64 {
+        rom[0x2C00 + index] = if index < 32 { 0x60 } else { 0xA0 };
+    }
+    rom
+}
+
+/// Builds the YMF278B test wave RAM, mapped at [`YMF278B_RAM_BASE`].
+///
+/// The RAM starts with the bank 4 headers of waves 384 and 385 and holds the
+/// data of wave 7 at 0x400 and of wave 384 at 0x800.
+pub fn create_ymf278b_ram() -> Vec<u8> {
+    let mut ram = vec![0u8; YMF278B_RAM_SIZE];
+    let plain = [0x00, 0xF0, 0x00, 0xF7, 0x00];
+
+    write_ymf278b_header(&mut ram, 0, 2, YMF278B_RAM_BASE + 0x800, 0, 64, plain);
+    write_ymf278b_header(
+        &mut ram,
+        12,
+        1,
+        0x2000,
+        0,
+        128,
+        [0x12, 0xF2, 0x44, 0xF9, 0x02],
+    );
+
+    let samples: Vec<i32> = (0..128).map(|index| triangle(index, 128, 16)).collect();
+    write_ymf278b_16bit(&mut ram, 0x400, &samples);
+
+    let samples: Vec<i32> = (0..64)
+        .map(|index| (index * 1024 - 32768) as i16 as i32)
+        .collect();
+    write_ymf278b_16bit(&mut ram, 0x800, &samples);
+    ram
+}
+
+pub fn write_reg_ymf278b(chip: &mut Ymf278b, addr: u16, data: u8) {
+    if addr >= 0x100 {
+        chip.write_address_hi(addr as u8);
+    } else {
+        chip.write_address(addr as u8);
+    }
+    chip.write_data(data);
+}
+
+pub fn write_pcm_ymf278b(chip: &mut Ymf278b, reg: u8, data: u8) {
+    chip.write_address_pcm(reg);
+    chip.write_data_pcm(data);
+}
+
+pub fn generate_6_ymf278b(chip: &mut Ymf278b, count: usize) -> Vec<[i32; 6]> {
+    let mut output = vec![YmfmOutput6 { data: [0; 6] }; count];
+    chip.generate(&mut output);
+    output.iter().map(|s| s.data).collect()
+}
+
+pub fn assert_samples_6(actual: &[[i32; 6]], expected: &[[i32; 6]]) {
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "sample count mismatch: got {}, expected {}",
+        actual.len(),
+        expected.len()
+    );
+    for (i, (got, exp)) in actual.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(
+            got, exp,
+            "sample {i} mismatch: got {got:?}, expected {exp:?}"
+        );
+    }
+}
+
+/// Creates a YMF278B with the test wave memory in OPL4 mode (NEW and NEW2 set).
+pub fn setup_ymf278b() -> Ymf278b {
+    let mut chip = setup_ymf278b_compatible();
+    write_reg_ymf278b(&mut chip, 0x105, 0x03);
+    chip
+}
+
+/// Creates a YMF278B with the test wave memory in OPL2 compatibility mode.
+pub fn setup_ymf278b_compatible() -> Ymf278b {
+    let mut chip = Ymf278b::new();
+    chip.set_pcm_rom(create_ymf278b_rom());
+    chip.set_pcm_ram(YMF278B_RAM_BASE, create_ymf278b_ram());
+    chip.reset();
+    chip
+}
+
+/// Sets up a 2-operator FM tone. `outputs` holds the output enable bits 4 to 7
+/// of register 0xC0.
+pub fn setup_ymf278b_fm_tone(
+    chip: &mut Ymf278b,
+    channel: u8,
+    algorithm: u8,
+    feedback: u8,
+    outputs: u8,
+) {
+    let bank = if channel < 9 { 0x000 } else { 0x100 };
+    let local = channel % 9;
+    write_reg_ymf278b(
+        chip,
+        bank + 0xC0 + local as u16,
+        outputs | (feedback << 1) | (algorithm & 1),
+    );
+    for op in 0..2u8 {
+        let offset = bank + opl_op_offset(local, op) as u16;
+        write_reg_ymf278b(chip, 0x20 + offset, 0x21);
+        write_reg_ymf278b(chip, 0x40 + offset, 0x00);
+        write_reg_ymf278b(chip, 0x60 + offset, 0xF0);
+        write_reg_ymf278b(chip, 0x80 + offset, 0x0F);
+        write_reg_ymf278b(chip, 0xE0 + offset, 0x00);
+    }
+    write_reg_ymf278b(chip, bank + 0xA0 + local as u16, 0x41);
+    write_reg_ymf278b(chip, bank + 0xB0 + local as u16, 0x11);
+}
+
+/// Keys an FM channel on or off.
+pub fn key_ymf278b_fm(chip: &mut Ymf278b, channel: u8, on: bool) {
+    let bank = if channel < 9 { 0x000 } else { 0x100 };
+    let data = if on { 0x31 } else { 0x11 };
+    write_reg_ymf278b(chip, bank + 0xB0 + (channel % 9) as u16, data);
+}
+
+/// Sets the pitch of a PCM channel and the high bit of its wave number.
+pub fn set_ymf278b_pcm_pitch(chip: &mut Ymf278b, channel: u8, wave: u16, octave: i8, fnum: u16) {
+    write_pcm_ymf278b(
+        chip,
+        0x20 + channel,
+        (((fnum & 0x7F) as u8) << 1) | (wave >> 8) as u8,
+    );
+    write_pcm_ymf278b(
+        chip,
+        0x38 + channel,
+        ((octave as u8 & 0x0F) << 4) | (fnum >> 7) as u8,
+    );
+}
+
+/// Selects wave `wave` on a PCM channel at full level without keying it on.
+pub fn load_ymf278b_pcm(chip: &mut Ymf278b, channel: u8, wave: u16, octave: i8, fnum: u16) {
+    set_ymf278b_pcm_pitch(chip, channel, wave, octave, fnum);
+    write_pcm_ymf278b(chip, 0x50 + channel, 0x01);
+    write_pcm_ymf278b(chip, 0x08 + channel, wave as u8);
+}
+
+/// Writes the key control register (key on, damp, LFO reset, output channel, pan).
+pub fn key_ymf278b_pcm(chip: &mut Ymf278b, channel: u8, control: u8) {
+    write_pcm_ymf278b(chip, 0x68 + channel, control);
+}
+
+/// Selects a wave at full level and keys it on with centered pan.
+pub fn play_ymf278b_pcm(chip: &mut Ymf278b, channel: u8, wave: u16, octave: i8, fnum: u16) {
+    load_ymf278b_pcm(chip, channel, wave, octave, fnum);
+    key_ymf278b_pcm(chip, channel, 0x80);
+}
+
+/// Writes `data` into wave memory at `address` through the memory port.
+pub fn upload_ymf278b_memory(chip: &mut Ymf278b, address: u32, data: &[u8]) {
+    write_pcm_ymf278b(chip, 0x02, 0x03);
+    write_pcm_ymf278b(chip, 0x03, (address >> 16) as u8);
+    write_pcm_ymf278b(chip, 0x04, (address >> 8) as u8);
+    write_pcm_ymf278b(chip, 0x05, address as u8);
+    for byte in data {
+        write_pcm_ymf278b(chip, 0x06, *byte);
+    }
+    write_pcm_ymf278b(chip, 0x02, 0x02);
+}
+
+/// Number of samples in each YMF278B golden scenario.
+pub const YMF278B_SCENARIO_SAMPLES: usize = 256;
+
+/// Names of the YMF278B FM golden scenarios with full sample vectors.
+pub const YMF278B_FM_SCENARIOS: &[&str] = &[
+    "SILENCE",
+    "FM_TONE",
+    "FM_FEEDBACK",
+    "FM_OUTPUTS_2_3",
+    "FM_ALL_OUTPUTS",
+    "FM_HIGH_BANK",
+    "FM_FOUR_OP",
+    "FM_WAVEFORM_5",
+    "FM_COMPATIBILITY_MODE",
+    "FM_RELEASE",
+];
+
+/// Runs the named YMF278B FM scenario and returns its samples.
+pub fn ymf278b_fm_scenario(name: &str) -> Vec<[i32; 6]> {
+    let mut chip = if name == "FM_COMPATIBILITY_MODE" {
+        setup_ymf278b_compatible()
+    } else {
+        setup_ymf278b()
+    };
+    let chip = &mut chip;
+    let samples = YMF278B_SCENARIO_SAMPLES;
+    match name {
+        "SILENCE" => {}
+        "FM_TONE" => {
+            setup_ymf278b_fm_tone(chip, 0, 0, 0, 0x30);
+            key_ymf278b_fm(chip, 0, true);
+        }
+        "FM_COMPATIBILITY_MODE" => {
+            setup_ymf278b_fm_tone(chip, 0, 0, 0, 0xC0);
+            write_reg_ymf278b(chip, 0x01, 0x20);
+            for op in 0..2u8 {
+                write_reg_ymf278b(chip, 0xE0 + opl_op_offset(0, op) as u16, 0x05);
+            }
+            key_ymf278b_fm(chip, 0, true);
+        }
+        "FM_FEEDBACK" => {
+            setup_ymf278b_fm_tone(chip, 1, 0, 5, 0x30);
+            key_ymf278b_fm(chip, 1, true);
+        }
+        "FM_OUTPUTS_2_3" => {
+            setup_ymf278b_fm_tone(chip, 2, 1, 0, 0xC0);
+            key_ymf278b_fm(chip, 2, true);
+        }
+        "FM_ALL_OUTPUTS" => {
+            setup_ymf278b_fm_tone(chip, 3, 0, 3, 0xF0);
+            key_ymf278b_fm(chip, 3, true);
+        }
+        "FM_HIGH_BANK" => {
+            setup_ymf278b_fm_tone(chip, 13, 0, 2, 0x50);
+            key_ymf278b_fm(chip, 13, true);
+        }
+        "FM_FOUR_OP" => {
+            write_reg_ymf278b(chip, 0x104, 0x01);
+            setup_ymf278b_fm_tone(chip, 0, 1, 0, 0x30);
+            setup_ymf278b_fm_tone(chip, 3, 0, 0, 0x30);
+            key_ymf278b_fm(chip, 0, true);
+        }
+        "FM_WAVEFORM_5" => {
+            setup_ymf278b_fm_tone(chip, 4, 0, 0, 0x30);
+            for op in 0..2u8 {
+                write_reg_ymf278b(chip, 0xE0 + opl_op_offset(4, op) as u16, 0x05);
+            }
+            key_ymf278b_fm(chip, 4, true);
+        }
+        "FM_RELEASE" => {
+            setup_ymf278b_fm_tone(chip, 5, 0, 0, 0x30);
+            for op in 0..2u8 {
+                write_reg_ymf278b(chip, 0x80 + opl_op_offset(5, op) as u16, 0x07);
+            }
+            key_ymf278b_fm(chip, 5, true);
+            let mut result = generate_6_ymf278b(chip, 64);
+            key_ymf278b_fm(chip, 5, false);
+            result.extend(generate_6_ymf278b(chip, samples - 64));
+            return result;
+        }
+        _ => panic!("unknown YMF278B FM scenario {name}"),
+    }
+    generate_6_ymf278b(chip, samples)
+}
+
+/// Names of the YMF278B PCM golden scenarios with full sample vectors.
+pub const YMF278B_PCM_SCENARIOS: &[&str] = &[
+    "PCM_8BIT",
+    "PCM_12BIT",
+    "PCM_16BIT",
+    "PCM_FORMAT_3",
+    "PCM_SHORT_LOOP",
+    "PCM_ODD_LOOP",
+    "PCM_OCTAVE_MINUS_8",
+    "PCM_OCTAVE_MINUS_3",
+    "PCM_OCTAVE_PLUS_2",
+    "PCM_OCTAVE_PLUS_7",
+    "PCM_FNUMBER",
+    "PCM_PAN_0",
+    "PCM_PAN_1",
+    "PCM_PAN_2",
+    "PCM_PAN_3",
+    "PCM_PAN_4",
+    "PCM_PAN_5",
+    "PCM_PAN_6",
+    "PCM_PAN_7",
+    "PCM_PAN_8",
+    "PCM_PAN_9",
+    "PCM_PAN_10",
+    "PCM_PAN_11",
+    "PCM_PAN_12",
+    "PCM_PAN_13",
+    "PCM_PAN_14",
+    "PCM_PAN_15",
+    "PCM_OUTPUT_CHANNEL",
+    "MIX_0",
+    "MIX_1",
+    "MIX_2",
+    "MIX_3",
+    "MIX_4",
+    "MIX_5",
+    "MIX_6",
+    "MIX_7",
+    "PCM_ATTACK_8",
+    "PCM_ATTACK_12",
+    "PCM_ATTACK_14",
+    "PCM_DECAY_SUSTAIN",
+    "PCM_RELEASE",
+    "PCM_DAMP",
+    "PCM_REVERB",
+    "PCM_RATE_CORRECTION",
+    "PCM_LEVEL_DIRECT",
+    "PCM_LEVEL_INTERPOLATION",
+    "PCM_VIBRATO",
+    "PCM_TREMOLO",
+    "PCM_LFO_RESET",
+    "PCM_HEADER_DEFAULTS",
+    "PCM_BANK_ROM_HEADER",
+    "PCM_BANK_RAM_HEADER",
+    "PCM_BANK_RAM_REFORMAT",
+    "PCM_RAM_SAMPLE",
+    "PCM_MEMORY_UPLOAD",
+    "PCM_KEY_ON_OFF_PENDING",
+    "PCM_RETRIGGER",
+    "PCM_WAVE_CHANGE",
+    "PCM_ALL_CHANNELS",
+    "PCM_AND_FM",
+    "PCM_NEW2_OFF",
+];
+
+/// Overrides the envelope registers of a PCM channel.
+pub fn set_ymf278b_pcm_envelope(
+    chip: &mut Ymf278b,
+    channel: u8,
+    attack_decay: u8,
+    sustain: u8,
+    correction_release: u8,
+) {
+    write_pcm_ymf278b(chip, 0x98 + channel, attack_decay);
+    write_pcm_ymf278b(chip, 0xB0 + channel, sustain);
+    write_pcm_ymf278b(chip, 0xC8 + channel, correction_release);
+}
+
+/// Runs the named YMF278B PCM scenario and returns its samples.
+pub fn ymf278b_pcm_scenario(name: &str) -> Vec<[i32; 6]> {
+    let mut chip = setup_ymf278b();
+    let chip = &mut chip;
+    let samples = YMF278B_SCENARIO_SAMPLES;
+    if let Some(pan) = name.strip_prefix("PCM_PAN_") {
+        load_ymf278b_pcm(chip, 0, 4, 0, 0x100);
+        key_ymf278b_pcm(chip, 0, 0x80 | pan.parse::<u8>().unwrap());
+        return generate_6_ymf278b(chip, samples);
+    }
+    if let Some(mix) = name.strip_prefix("MIX_") {
+        let mix: u8 = mix.parse().unwrap();
+        setup_ymf278b_fm_tone(chip, 0, 0, 0, 0x30);
+        key_ymf278b_fm(chip, 0, true);
+        play_ymf278b_pcm(chip, 0, 0, 0, 0x200);
+        write_pcm_ymf278b(chip, 0xF8, mix | ((7 - mix) << 3));
+        write_pcm_ymf278b(chip, 0xF9, (7 - mix) | (mix << 3));
+        return generate_6_ymf278b(chip, samples);
+    }
+    match name {
+        "PCM_8BIT" => play_ymf278b_pcm(chip, 0, 0, 0, 0),
+        "PCM_12BIT" => play_ymf278b_pcm(chip, 1, 1, 0, 0x080),
+        "PCM_16BIT" => play_ymf278b_pcm(chip, 2, 2, 0, 0x100),
+        "PCM_FORMAT_3" => play_ymf278b_pcm(chip, 3, 6, 1, 0),
+        "PCM_SHORT_LOOP" => play_ymf278b_pcm(chip, 4, 4, 1, 0x155),
+        "PCM_ODD_LOOP" => play_ymf278b_pcm(chip, 5, 5, 2, 0x2AA),
+        "PCM_OCTAVE_MINUS_8" => play_ymf278b_pcm(chip, 6, 4, -8, 0x3FF),
+        "PCM_OCTAVE_MINUS_3" => play_ymf278b_pcm(chip, 7, 4, -3, 0x123),
+        "PCM_OCTAVE_PLUS_2" => play_ymf278b_pcm(chip, 8, 4, 2, 0x321),
+        "PCM_OCTAVE_PLUS_7" => play_ymf278b_pcm(chip, 9, 4, 7, 0x3FF),
+        "PCM_FNUMBER" => play_ymf278b_pcm(chip, 10, 0, 0, 0x155),
+        "PCM_OUTPUT_CHANNEL" => {
+            load_ymf278b_pcm(chip, 11, 2, 0, 0x100);
+            key_ymf278b_pcm(chip, 11, 0x93);
+        }
+        "PCM_ATTACK_8" | "PCM_ATTACK_12" | "PCM_ATTACK_14" => {
+            let rate: u8 = name.strip_prefix("PCM_ATTACK_").unwrap().parse().unwrap();
+            load_ymf278b_pcm(chip, 12, 0, 0, 0x200);
+            set_ymf278b_pcm_envelope(chip, 12, rate << 4, 0x00, 0xF7);
+            key_ymf278b_pcm(chip, 12, 0x80);
+        }
+        "PCM_DECAY_SUSTAIN" => {
+            load_ymf278b_pcm(chip, 13, 2, 0, 0x100);
+            set_ymf278b_pcm_envelope(chip, 13, 0xFC, 0x3B, 0xF7);
+            key_ymf278b_pcm(chip, 13, 0x80);
+        }
+        "PCM_RELEASE" => {
+            load_ymf278b_pcm(chip, 14, 2, 0, 0x100);
+            set_ymf278b_pcm_envelope(chip, 14, 0xF0, 0x00, 0xFC);
+            key_ymf278b_pcm(chip, 14, 0x80);
+            let mut result = generate_6_ymf278b(chip, 64);
+            key_ymf278b_pcm(chip, 14, 0x00);
+            result.extend(generate_6_ymf278b(chip, samples - 64));
+            return result;
+        }
+        "PCM_DAMP" => {
+            load_ymf278b_pcm(chip, 15, 2, 0, 0x100);
+            key_ymf278b_pcm(chip, 15, 0x80);
+            let mut result = generate_6_ymf278b(chip, 48);
+            key_ymf278b_pcm(chip, 15, 0xC0);
+            result.extend(generate_6_ymf278b(chip, samples - 48));
+            return result;
+        }
+        "PCM_REVERB" => {
+            load_ymf278b_pcm(chip, 16, 2, 0, 0x100);
+            write_pcm_ymf278b(chip, 0x38 + 16, 0x08 | 0x02);
+            set_ymf278b_pcm_envelope(chip, 16, 0xFD, 0xF0, 0xFD);
+            key_ymf278b_pcm(chip, 16, 0x80);
+        }
+        "PCM_RATE_CORRECTION" => {
+            load_ymf278b_pcm(chip, 17, 4, 3, 0x280);
+            set_ymf278b_pcm_envelope(chip, 17, 0xF9, 0xF6, 0x55);
+            key_ymf278b_pcm(chip, 17, 0x80);
+        }
+        "PCM_LEVEL_DIRECT" => {
+            play_ymf278b_pcm(chip, 18, 2, 0, 0x100);
+            let mut result = generate_6_ymf278b(chip, 64);
+            write_pcm_ymf278b(chip, 0x50 + 18, 0x41);
+            result.extend(generate_6_ymf278b(chip, samples - 64));
+            return result;
+        }
+        "PCM_LEVEL_INTERPOLATION" => {
+            play_ymf278b_pcm(chip, 19, 2, 0, 0x100);
+            let mut result = generate_6_ymf278b(chip, 32);
+            write_pcm_ymf278b(chip, 0x50 + 19, 0x10);
+            result.extend(generate_6_ymf278b(chip, 96));
+            write_pcm_ymf278b(chip, 0x50 + 19, 0x00);
+            result.extend(generate_6_ymf278b(chip, samples - 128));
+            return result;
+        }
+        "PCM_VIBRATO" => {
+            load_ymf278b_pcm(chip, 20, 0, 1, 0x100);
+            write_pcm_ymf278b(chip, 0x80 + 20, 0x3F);
+            key_ymf278b_pcm(chip, 20, 0x80);
+        }
+        "PCM_TREMOLO" => {
+            load_ymf278b_pcm(chip, 21, 0, 1, 0x100);
+            write_pcm_ymf278b(chip, 0x80 + 21, 0x38);
+            write_pcm_ymf278b(chip, 0xE0 + 21, 0x07);
+            key_ymf278b_pcm(chip, 21, 0x80);
+        }
+        "PCM_LFO_RESET" => {
+            load_ymf278b_pcm(chip, 22, 0, 1, 0x100);
+            write_pcm_ymf278b(chip, 0x80 + 22, 0x3D);
+            write_pcm_ymf278b(chip, 0xE0 + 22, 0x05);
+            key_ymf278b_pcm(chip, 22, 0x80);
+            let mut result = generate_6_ymf278b(chip, 100);
+            key_ymf278b_pcm(chip, 22, 0x00);
+            result.extend(generate_6_ymf278b(chip, 4));
+            key_ymf278b_pcm(chip, 22, 0xA0);
+            result.extend(generate_6_ymf278b(chip, samples - 104));
+            return result;
+        }
+        "PCM_HEADER_DEFAULTS" => {
+            set_ymf278b_pcm_pitch(chip, 23, 3, 0, 0x200);
+            write_pcm_ymf278b(chip, 0x50 + 23, 0x01);
+            write_pcm_ymf278b(chip, 0x08 + 23, 3);
+            key_ymf278b_pcm(chip, 23, 0x80);
+            let mut result = generate_6_ymf278b(chip, 128);
+            key_ymf278b_pcm(chip, 23, 0x00);
+            result.extend(generate_6_ymf278b(chip, samples - 128));
+            return result;
+        }
+        "PCM_BANK_ROM_HEADER" => play_ymf278b_pcm(chip, 0, 384, 0, 0x200),
+        "PCM_BANK_RAM_HEADER" => {
+            write_pcm_ymf278b(chip, 0x02, 0x12);
+            play_ymf278b_pcm(chip, 1, 384, 0, 0x200);
+        }
+        "PCM_BANK_RAM_REFORMAT" => {
+            write_pcm_ymf278b(chip, 0x02, 0x12);
+            play_ymf278b_pcm(chip, 2, 385, 0, 0x100);
+        }
+        "PCM_RAM_SAMPLE" => play_ymf278b_pcm(chip, 3, 7, 0, 0x100),
+        "PCM_MEMORY_UPLOAD" => {
+            let data_address = YMF278B_RAM_BASE + YMF278B_RAM_UPLOAD_OFFSET + 0x100;
+            let mut data = Vec::new();
+            for index in 0..96 {
+                data.push((triangle(index, 48, 8) as u8) ^ (index as u8 & 0x0F));
+            }
+            upload_ymf278b_memory(chip, data_address, &data);
+            let mut header = [0u8; 12];
+            write_ymf278b_header(
+                &mut header,
+                0,
+                0,
+                data_address,
+                16,
+                96,
+                [0x00, 0xF0, 0x00, 0xF7, 0x00],
+            );
+            // wave 386 reads its header from bank 4 at offset 24
+            upload_ymf278b_memory(chip, YMF278B_RAM_BASE + 24, &header);
+            write_pcm_ymf278b(chip, 0x02, 0x12);
+            play_ymf278b_pcm(chip, 4, 386, 0, 0x200);
+        }
+        "PCM_KEY_ON_OFF_PENDING" => {
+            load_ymf278b_pcm(chip, 5, 3, 0, 0x100);
+            key_ymf278b_pcm(chip, 5, 0x80);
+            key_ymf278b_pcm(chip, 5, 0x00);
+            let mut result = generate_6_ymf278b(chip, 96);
+            key_ymf278b_pcm(chip, 5, 0x00);
+            result.extend(generate_6_ymf278b(chip, 64));
+            key_ymf278b_pcm(chip, 5, 0x80);
+            key_ymf278b_pcm(chip, 5, 0x00);
+            result.extend(generate_6_ymf278b(chip, samples - 160));
+            return result;
+        }
+        "PCM_RETRIGGER" => {
+            load_ymf278b_pcm(chip, 6, 2, 0, 0x100);
+            set_ymf278b_pcm_envelope(chip, 6, 0xF0, 0x00, 0xFA);
+            key_ymf278b_pcm(chip, 6, 0x80);
+            let mut result = generate_6_ymf278b(chip, 80);
+            key_ymf278b_pcm(chip, 6, 0x00);
+            result.extend(generate_6_ymf278b(chip, 40));
+            key_ymf278b_pcm(chip, 6, 0x80);
+            result.extend(generate_6_ymf278b(chip, samples - 120));
+            return result;
+        }
+        "PCM_WAVE_CHANGE" => {
+            play_ymf278b_pcm(chip, 7, 0, 0, 0x100);
+            let mut result = generate_6_ymf278b(chip, 100);
+            write_pcm_ymf278b(chip, 0x08 + 7, 2);
+            result.extend(generate_6_ymf278b(chip, samples - 100));
+            return result;
+        }
+        "PCM_ALL_CHANNELS" => {
+            for channel in 0..24u8 {
+                let wave = [0u16, 1, 2, 3, 4, 5, 6, 7][channel as usize % 8];
+                let octave = (channel % 5) as i8 - 2;
+                load_ymf278b_pcm(chip, channel, wave, octave, u16::from(channel) * 37);
+                write_pcm_ymf278b(chip, 0x50 + channel, 0x41);
+                key_ymf278b_pcm(chip, channel, 0x80 | (channel % 16) | ((channel & 1) << 4));
+            }
+        }
+        "PCM_AND_FM" => {
+            setup_ymf278b_fm_tone(chip, 0, 0, 1, 0xF0);
+            key_ymf278b_fm(chip, 0, true);
+            play_ymf278b_pcm(chip, 0, 1, 0, 0x100);
+            load_ymf278b_pcm(chip, 1, 2, 1, 0x040);
+            key_ymf278b_pcm(chip, 1, 0x90);
+        }
+        "PCM_NEW2_OFF" => {
+            write_reg_ymf278b(chip, 0x105, 0x01);
+            setup_ymf278b_fm_tone(chip, 0, 0, 2, 0x30);
+            key_ymf278b_fm(chip, 0, true);
+            play_ymf278b_pcm(chip, 0, 2, 0, 0x100);
+        }
+        _ => panic!("unknown YMF278B PCM scenario {name}"),
+    }
+    generate_6_ymf278b(chip, samples)
+}
+
+/// Names of the long YMF278B scenarios stored as block checksums.
+pub const YMF278B_LONG_SCENARIOS: &[&str] = &[
+    "PCM_FULL_ENVELOPE",
+    "PCM_REVERB_LONG",
+    "PCM_DAMP_LONG",
+    "PCM_LEVEL_SWEEP",
+    "PCM_LFO_SPEEDS",
+    "PCM_RATE_CORRECTIONS",
+    "PCM_PREPARE_SWEEP",
+    "FM_RESAMPLING",
+];
+
+/// Number of samples in each long YMF278B scenario.
+pub const YMF278B_LONG_SCENARIO_SAMPLES: usize = 8192;
+
+/// Number of samples hashed into each long scenario checksum.
+pub const YMF278B_CHECKSUM_BLOCK: usize = 256;
+
+/// Runs the named long YMF278B scenario and returns its samples.
+pub fn ymf278b_long_scenario(name: &str) -> Vec<[i32; 6]> {
+    let mut chip = setup_ymf278b();
+    let chip = &mut chip;
+    let samples = YMF278B_LONG_SCENARIO_SAMPLES;
+    match name {
+        "PCM_FULL_ENVELOPE" => {
+            load_ymf278b_pcm(chip, 0, 4, 0, 0x100);
+            set_ymf278b_pcm_envelope(chip, 0, 0x64, 0x83, 0xF5);
+            key_ymf278b_pcm(chip, 0, 0x80);
+            let mut result = generate_6_ymf278b(chip, samples / 2);
+            key_ymf278b_pcm(chip, 0, 0x00);
+            result.extend(generate_6_ymf278b(chip, samples / 2));
+            return result;
+        }
+        "PCM_REVERB_LONG" => {
+            load_ymf278b_pcm(chip, 1, 4, 0, 0x100);
+            write_pcm_ymf278b(chip, 0x38 + 1, 0x08);
+            set_ymf278b_pcm_envelope(chip, 1, 0xF4, 0x42, 0xF6);
+            key_ymf278b_pcm(chip, 1, 0x80);
+            let mut result = generate_6_ymf278b(chip, 2048);
+            key_ymf278b_pcm(chip, 1, 0x00);
+            result.extend(generate_6_ymf278b(chip, samples - 2048));
+            return result;
+        }
+        "PCM_DAMP_LONG" => {
+            load_ymf278b_pcm(chip, 2, 4, 0, 0x100);
+            set_ymf278b_pcm_envelope(chip, 2, 0xF0, 0x00, 0xF2);
+            key_ymf278b_pcm(chip, 2, 0x80);
+            let mut result = generate_6_ymf278b(chip, 512);
+            key_ymf278b_pcm(chip, 2, 0xC0);
+            result.extend(generate_6_ymf278b(chip, 1024));
+            key_ymf278b_pcm(chip, 2, 0x40);
+            result.extend(generate_6_ymf278b(chip, 64));
+            key_ymf278b_pcm(chip, 2, 0x80);
+            result.extend(generate_6_ymf278b(chip, 2496));
+            key_ymf278b_pcm(chip, 2, 0x00);
+            result.extend(generate_6_ymf278b(chip, samples - 4096));
+            return result;
+        }
+        "PCM_LEVEL_SWEEP" => {
+            load_ymf278b_pcm(chip, 3, 4, 0, 0x100);
+            write_pcm_ymf278b(chip, 0x50 + 3, 0x00);
+            key_ymf278b_pcm(chip, 3, 0x80);
+            let mut result = generate_6_ymf278b(chip, 4096);
+            write_pcm_ymf278b(chip, 0x50 + 3, 0xFE);
+            result.extend(generate_6_ymf278b(chip, samples - 4096));
+            return result;
+        }
+        "PCM_LFO_SPEEDS" => {
+            for channel in 0..8u8 {
+                load_ymf278b_pcm(chip, channel, 0, 0, 0x080 + u16::from(channel) * 0x40);
+                write_pcm_ymf278b(chip, 0x50 + channel, 0x21);
+                write_pcm_ymf278b(chip, 0x80 + channel, (channel << 3) | (7 - channel));
+                write_pcm_ymf278b(chip, 0xE0 + channel, channel);
+                key_ymf278b_pcm(
+                    chip,
+                    channel,
+                    0x80 | if channel < 4 { channel } else { 16 - channel },
+                );
+            }
+        }
+        "PCM_RATE_CORRECTIONS" => {
+            for channel in 0..16u8 {
+                let octave = (channel % 8) as i8 - 4;
+                load_ymf278b_pcm(chip, channel, 4, octave, 0x3FF - u16::from(channel) * 0x40);
+                write_pcm_ymf278b(chip, 0x50 + channel, 0x31);
+                set_ymf278b_pcm_envelope(chip, channel, 0x86, 0x74, (channel << 4) | 0x07);
+                key_ymf278b_pcm(chip, channel, 0x80 | ((channel & 1) << 4));
+            }
+            let mut result = generate_6_ymf278b(chip, 4096);
+            for channel in 0..16u8 {
+                key_ymf278b_pcm(chip, channel, (channel & 1) << 4);
+            }
+            result.extend(generate_6_ymf278b(chip, samples - 4096));
+            return result;
+        }
+        "PCM_PREPARE_SWEEP" => {
+            load_ymf278b_pcm(chip, 4, 2, 0, 0x100);
+            set_ymf278b_pcm_envelope(chip, 4, 0xF3, 0x43, 0xF4);
+            key_ymf278b_pcm(chip, 4, 0x80);
+            key_ymf278b_pcm(chip, 4, 0x00);
+            let mut result = Vec::new();
+            for _ in 0..samples / 128 {
+                result.extend(generate_6_ymf278b(chip, 128));
+            }
+            return result;
+        }
+        "FM_RESAMPLING" => {
+            setup_ymf278b_fm_tone(chip, 0, 0, 4, 0xF0);
+            write_reg_ymf278b(chip, 0xBD, 0xC0);
+            for op in 0..2u8 {
+                write_reg_ymf278b(chip, 0x20 + opl_op_offset(0, op) as u16, 0xE1);
+            }
+            key_ymf278b_fm(chip, 0, true);
+            play_ymf278b_pcm(chip, 0, 4, 0, 0x100);
+        }
+        _ => panic!("unknown long YMF278B scenario {name}"),
+    }
+    generate_6_ymf278b(chip, samples)
+}
+
+/// Number of fuzz seeds for the YMF278B.
+pub const YMF278B_FUZZ_SEEDS: u32 = 8;
+
+/// Number of blocks in each YMF278B fuzz run.
+pub const YMF278B_FUZZ_BLOCKS: usize = 16;
+
+/// Number of samples in each YMF278B fuzz block.
+pub const YMF278B_FUZZ_BLOCK_SAMPLES: usize = 256;
+
+/// Runs a YMF278B fuzz stream and returns one checksum per block.
+///
+/// The stream starts with FM tones on four channels and keyed PCM waves on
+/// eight channels. Before each block it writes a random set of FM and PCM
+/// registers with random sample gaps in between. Timer control and the
+/// memory access registers are left out.
+pub fn ymf278b_fuzz(seed: u32) -> Vec<u64> {
+    let mut random = XorShift32::new(seed.wrapping_mul(0x9E37_79B9) | 1);
+    let mut chip = setup_ymf278b();
+    for channel in 0..4u8 {
+        setup_ymf278b_fm_tone(
+            &mut chip,
+            channel * 4,
+            channel & 1,
+            channel,
+            0x30 << (channel & 1),
+        );
+        key_ymf278b_fm(&mut chip, channel * 4, true);
+    }
+    for channel in 0..8u8 {
+        load_ymf278b_pcm(&mut chip, channel * 3, u16::from(channel), 0, 0x100);
+        write_pcm_ymf278b(&mut chip, 0x50 + channel * 3, 0x21);
+        key_ymf278b_pcm(&mut chip, channel * 3, 0x80 | channel);
+    }
+    let mut checksums = Vec::new();
+    for _ in 0..YMF278B_FUZZ_BLOCKS {
+        let mut samples = Vec::new();
+        let writes = 1 + random.below(12);
+        for _ in 0..writes {
+            match random.below(8) {
+                0 => {
+                    let address = 0x20 + random.below(0xE0) as u16;
+                    write_reg_ymf278b(&mut chip, address, random.next_u32() as u8);
+                }
+                1 => {
+                    let address = 0x120 + random.below(0xE0) as u16;
+                    write_reg_ymf278b(&mut chip, address, random.next_u32() as u8);
+                }
+                2 => {
+                    let channel = random.below(24) as u8;
+                    let wave =
+                        [0u16, 1, 2, 3, 4, 5, 6, 7, 384, 385, 100][random.below(11) as usize];
+                    set_ymf278b_pcm_pitch(&mut chip, channel, wave, 0, random.below(0x400) as u16);
+                    write_pcm_ymf278b(&mut chip, 0x08 + channel, wave as u8);
+                }
+                3 => {
+                    let channel = random.below(24) as u8;
+                    key_ymf278b_pcm(&mut chip, channel, random.next_u32() as u8);
+                }
+                4 => {
+                    let data = (random.next_u32() as u8) & 0x1E;
+                    write_pcm_ymf278b(&mut chip, 0x02, data);
+                }
+                5 => {
+                    let register = [0xF8, 0xF9][random.below(2) as usize];
+                    write_pcm_ymf278b(&mut chip, register, random.next_u32() as u8);
+                }
+                _ => {
+                    let register = 0x20 + random.below(0xD8) as u8;
+                    write_pcm_ymf278b(&mut chip, register, random.next_u32() as u8);
+                }
+            }
+            if random.below(4) == 0 {
+                let gap =
+                    (random.below(24) as usize).min(YMF278B_FUZZ_BLOCK_SAMPLES - samples.len());
+                samples.extend(generate_6_ymf278b(&mut chip, gap));
+            }
+        }
+        let remaining = YMF278B_FUZZ_BLOCK_SAMPLES - samples.len();
+        samples.extend(generate_6_ymf278b(&mut chip, remaining));
+        checksums.push(fnv1a_samples(&samples));
+    }
+    checksums
 }
