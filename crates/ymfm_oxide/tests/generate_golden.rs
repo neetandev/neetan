@@ -48,6 +48,15 @@ fn fmt3(name: &str, data: &[[i32; 3]]) -> String {
     s
 }
 
+fn fmt_checksums(name: &str, checksums: &[u64]) -> String {
+    let mut s = format!("pub const {name}: &[u64] = &[\n");
+    for checksum in checksums {
+        writeln!(s, "    0x{checksum:016X},").unwrap();
+    }
+    s.push_str("];\n\n");
+    s
+}
+
 fn header() -> String {
     "// Auto-generated golden vectors from C++ ymfm reference implementation.\n\
      // Regenerate: cargo test -p ymfm_oxide --test generate_golden -- --ignored --nocapture\n\n"
@@ -1082,6 +1091,31 @@ fn gen_ym2149_ssg(dir: &str) {
     }
     std::fs::write(format!("{dir}/ym2149_ssg.rs"), f).unwrap();
     println!("  wrote ym2149_ssg.rs");
+}
+
+fn gen_ym3806_fm(dir: &str) {
+    let mut f = header();
+    for name in YM3806_SCENARIOS {
+        f.push_str(&fmt2(name, &ym3806_scenario(name)));
+    }
+    for name in YM3806_LONG_SCENARIOS {
+        let samples = ym3806_long_scenario(name);
+        f.push_str(&fmt_checksums(
+            name,
+            &block_checksums(&samples, YM3806_CHECKSUM_BLOCK),
+        ));
+    }
+    std::fs::write(format!("{dir}/ym3806_fm.rs"), f).unwrap();
+    println!("  wrote ym3806_fm.rs");
+}
+
+fn gen_ym3806_fuzz(dir: &str) {
+    let mut f = header();
+    for seed in 1..=YM3806_FUZZ_SEEDS {
+        f.push_str(&fmt_checksums(&format!("SEED_{seed}"), &ym3806_fuzz(seed)));
+    }
+    std::fs::write(format!("{dir}/ym3806_fuzz.rs"), f).unwrap();
+    println!("  wrote ym3806_fuzz.rs");
 }
 
 fn gen_opn2_fm<const VARIANT: u8>(dir: &str, file_name: &str) {
@@ -2361,5 +2395,7 @@ fn generate_golden_vectors() {
     gen_ym2151_fm(&dir);
     gen_ym2164_fm(&dir);
     gen_ym2149_ssg(&dir);
+    gen_ym3806_fm(&dir);
+    gen_ym3806_fuzz(&dir);
     println!("Done!");
 }
