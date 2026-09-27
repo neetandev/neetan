@@ -1,6 +1,6 @@
 use ymfm_oxide::{
     OpllFamily, Opn2Family, Y8950, Ym2149, Ym2151, Ym2164, Ym2203, Ym2413, Ym2608, Ym2610Family,
-    Ym3526, Ym3812, Ymf262, Ymf288, Ymf289b, YmfmOpnFidelity, YmfmOutput1, YmfmOutput2,
+    Ym3526, Ym3806, Ym3812, Ymf262, Ymf288, Ymf289b, YmfmOpnFidelity, YmfmOutput1, YmfmOutput2,
     YmfmOutput3, YmfmOutput4,
 };
 
@@ -1054,6 +1054,423 @@ pub fn ym2164_scenario(name: &str) -> Ym2164 {
         _ => panic!("unknown YM2164 scenario {name}"),
     }
     chip
+}
+
+// --- Checksum and fuzz helpers ---
+
+/// Deterministic xorshift32 stream shared by the fuzz scenarios.
+pub struct XorShift32(u32);
+
+impl XorShift32 {
+    /// Creates a stream from a non-zero seed.
+    pub fn new(seed: u32) -> Self {
+        Self(seed)
+    }
+
+    /// Returns the next value of the stream.
+    pub fn next_u32(&mut self) -> u32 {
+        let mut value = self.0;
+        value ^= value << 13;
+        value ^= value >> 17;
+        value ^= value << 5;
+        self.0 = value;
+        value
+    }
+
+    /// Returns the next value of the stream, reduced to `0..limit`.
+    pub fn below(&mut self, limit: u32) -> u32 {
+        self.next_u32() % limit
+    }
+}
+
+/// FNV-1a-64 over the little-endian bytes of every sample value.
+pub fn fnv1a_samples<const N: usize>(samples: &[[i32; N]]) -> u64 {
+    let mut hash: u64 = 0xCBF2_9CE4_8422_2325;
+    for value in samples.iter().flatten() {
+        for byte in value.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+        }
+    }
+    hash
+}
+
+/// Splits `samples` into blocks of `block` samples and hashes each block.
+pub fn block_checksums<const N: usize>(samples: &[[i32; N]], block: usize) -> Vec<u64> {
+    samples.chunks(block).map(fnv1a_samples).collect()
+}
+
+// --- OPQ (YM3806) helpers ---
+
+pub fn write_reg_ym3806(chip: &mut Ym3806, addr: u8, data: u8) {
+    chip.write(addr, data);
+}
+
+pub fn generate_2_ym3806(chip: &mut Ym3806, count: usize) -> Vec<[i32; 2]> {
+    let mut output = vec![YmfmOutput2 { data: [0; 2] }; count];
+    chip.generate(&mut output);
+    output.iter().map(|s| s.data).collect()
+}
+
+pub fn setup_ym3806() -> Ym3806 {
+    let mut chip = Ym3806::new();
+    chip.reset();
+    chip
+}
+
+// Operator register offset for OPQ: channel in bits 0-2, operator in bits 3-4.
+pub fn opq_op_offset(channel: u8, op: u8) -> u8 {
+    channel + (op << 3)
+}
+
+/// A 4-operator OPQ tone with zero detune, multiple 1 and the same
+/// frequency in both frequency register pairs.
+pub fn setup_ym3806_tone(chip: &mut Ym3806, channel: u8, algorithm: u8, feedback: u8) {
+    write_reg_ym3806(chip, 0x10 + channel, 0xC0 | (feedback << 3) | algorithm);
+    for op in 0..4u8 {
+        let offset = opq_op_offset(channel, op);
+        write_reg_ym3806(chip, 0x40 + offset, 0x20); // detune 0
+        write_reg_ym3806(chip, 0x40 + offset, 0x81); // multiple 1
+        write_reg_ym3806(chip, 0x60 + offset, 0x00); // TL 0
+        write_reg_ym3806(chip, 0x80 + offset, 0x1F); // KSR 0, AR 31
+        write_reg_ym3806(chip, 0xA0 + offset, 0x00); // DR 0, sine
+        write_reg_ym3806(chip, 0xC0 + offset, 0x00); // SR 0
+        write_reg_ym3806(chip, 0xE0 + offset, 0x0F); // SL 0, RR 15
+    }
+    set_ym3806_frequency(chip, channel, 0x28, 4, 0x480);
+    set_ym3806_frequency(chip, channel, 0x20, 4, 0x480);
+}
+
+/// Writes a block and 12-bit FNUM to the register pair at `high` (0x20 or 0x28).
+pub fn set_ym3806_frequency(chip: &mut Ym3806, channel: u8, high: u8, block: u8, fnum: u16) {
+    write_reg_ym3806(chip, high + channel, (block << 4) | (fnum >> 8) as u8);
+    write_reg_ym3806(chip, high + 0x10 + channel, fnum as u8);
+}
+
+/// Keys on the given operators (bit 0 = operator 1) of a channel.
+pub fn key_on_ym3806(chip: &mut Ym3806, channel: u8, operators: u8) {
+    write_reg_ym3806(chip, 0x05, (operators << 3) | channel);
+}
+
+/// Number of samples in each YM3806 golden scenario.
+pub const YM3806_SCENARIO_SAMPLES: usize = 256;
+
+/// Names of the YM3806 golden scenarios with full sample vectors.
+pub const YM3806_SCENARIOS: &[&str] = &[
+    "SILENCE",
+    "ALGORITHM_0",
+    "ALGORITHM_1",
+    "ALGORITHM_2",
+    "ALGORITHM_3",
+    "ALGORITHM_4",
+    "ALGORITHM_5",
+    "ALGORITHM_6",
+    "ALGORITHM_7",
+    "FEEDBACK",
+    "HALF_SINE",
+    "DETUNE_MIN",
+    "DETUNE_ZERO",
+    "DETUNE_MAX",
+    "MULTIPLES",
+    "FREQUENCY_REGISTERS",
+    "BLOCKS",
+    "PAN",
+    "PARTIAL_KEY_ON",
+    "KEY_SCALE_RATE",
+    "ENVELOPE_RATES",
+];
+
+/// Names of the long YM3806 scenarios stored as block checksums.
+pub const YM3806_LONG_SCENARIOS: &[&str] = &[
+    "RELEASE",
+    "REVERB",
+    "LFO_RATE_0",
+    "LFO_RATE_1",
+    "LFO_RATE_2",
+    "LFO_RATE_3",
+    "LFO_RATE_4",
+    "LFO_RATE_5",
+    "LFO_RATE_6",
+    "LFO_RATE_7",
+    "LFO_PM_SENSITIVITY_1",
+    "LFO_PM_SENSITIVITY_2",
+    "LFO_PM_SENSITIVITY_3",
+    "LFO_PM_SENSITIVITY_4",
+    "LFO_PM_SENSITIVITY_5",
+    "LFO_PM_SENSITIVITY_6",
+    "LFO_PM_SENSITIVITY_7",
+    "LFO_AM_SENSITIVITY_1",
+    "LFO_AM_SENSITIVITY_2",
+    "LFO_AM_SENSITIVITY_3",
+    "LFO_DISABLED",
+    "LFO_RESTART",
+];
+
+/// Number of samples in each long YM3806 scenario.
+pub const YM3806_LONG_SCENARIO_SAMPLES: usize = 4096;
+
+/// Number of samples hashed into each long scenario checksum.
+pub const YM3806_CHECKSUM_BLOCK: usize = 256;
+
+/// Runs the named YM3806 scenario and returns its samples.
+pub fn ym3806_scenario(name: &str) -> Vec<[i32; 2]> {
+    let mut chip = setup_ym3806();
+    let chip = &mut chip;
+    if let Some(algorithm) = name.strip_prefix("ALGORITHM_") {
+        setup_ym3806_tone(chip, 0, algorithm.parse().unwrap(), 0);
+        key_on_ym3806(chip, 0, 0x0F);
+        return generate_2_ym3806(chip, YM3806_SCENARIO_SAMPLES);
+    }
+    match name {
+        "SILENCE" => {}
+        "FEEDBACK" => {
+            setup_ym3806_tone(chip, 1, 0, 6);
+            key_on_ym3806(chip, 1, 0x0F);
+        }
+        "HALF_SINE" => {
+            setup_ym3806_tone(chip, 2, 4, 3);
+            for op in 0..4u8 {
+                write_reg_ym3806(chip, 0xA0 + opq_op_offset(2, op), 0x40);
+            }
+            key_on_ym3806(chip, 2, 0x0F);
+        }
+        "DETUNE_MIN" | "DETUNE_ZERO" | "DETUNE_MAX" => {
+            let detune = match name {
+                "DETUNE_MIN" => 0x00,
+                "DETUNE_ZERO" => 0x20,
+                _ => 0x3F,
+            };
+            for (channel, block) in [(0u8, 1u8), (1, 4), (2, 7)] {
+                setup_ym3806_tone(chip, channel, 7, 0);
+                set_ym3806_frequency(chip, channel, 0x28, block, 0xF00);
+                set_ym3806_frequency(chip, channel, 0x20, block, 0xF00);
+                for op in 0..4u8 {
+                    let offset = opq_op_offset(channel, op);
+                    write_reg_ym3806(chip, 0x40 + offset, detune);
+                    write_reg_ym3806(chip, 0x40 + offset, 0x80 | (op * 4 + 3));
+                    write_reg_ym3806(chip, 0x60 + offset, 0x10);
+                }
+                key_on_ym3806(chip, channel, 0x0F);
+            }
+        }
+        "MULTIPLES" => {
+            for channel in 0..4u8 {
+                setup_ym3806_tone(chip, channel, 7, 0);
+                set_ym3806_frequency(chip, channel, 0x28, 3, 0x300);
+                set_ym3806_frequency(chip, channel, 0x20, 3, 0x300);
+                for op in 0..4u8 {
+                    let offset = opq_op_offset(channel, op);
+                    write_reg_ym3806(chip, 0x40 + offset, 0x80 | (channel * 4 + op));
+                    write_reg_ym3806(chip, 0x60 + offset, 0x18);
+                }
+                key_on_ym3806(chip, channel, 0x0F);
+            }
+        }
+        "FREQUENCY_REGISTERS" => {
+            setup_ym3806_tone(chip, 3, 7, 0);
+            set_ym3806_frequency(chip, 3, 0x28, 3, 0x2AB);
+            set_ym3806_frequency(chip, 3, 0x20, 5, 0x9CD);
+            key_on_ym3806(chip, 3, 0x0F);
+        }
+        "BLOCKS" => {
+            for channel in 0..8u8 {
+                setup_ym3806_tone(chip, channel, 7, 0);
+                set_ym3806_frequency(chip, channel, 0x28, channel, 0xFFF);
+                set_ym3806_frequency(chip, channel, 0x20, 7 - channel, 0x801);
+                for op in 0..4u8 {
+                    write_reg_ym3806(chip, 0x60 + opq_op_offset(channel, op), 0x20);
+                }
+                key_on_ym3806(chip, channel, 0x0F);
+            }
+        }
+        "PAN" => {
+            for (channel, pan) in [(0u8, 0x40u8), (1, 0x80), (2, 0x00), (3, 0xC0)] {
+                setup_ym3806_tone(chip, channel, 7, 0);
+                set_ym3806_frequency(chip, channel, 0x28, 3 + channel, 0x500);
+                set_ym3806_frequency(chip, channel, 0x20, 3 + channel, 0x500);
+                write_reg_ym3806(chip, 0x10 + channel, pan | 0x07);
+                key_on_ym3806(chip, channel, 0x0F);
+            }
+        }
+        "PARTIAL_KEY_ON" => {
+            setup_ym3806_tone(chip, 4, 7, 0);
+            set_ym3806_frequency(chip, 4, 0x20, 5, 0x600);
+            key_on_ym3806(chip, 4, 0x06);
+            let mut samples = generate_2_ym3806(chip, YM3806_SCENARIO_SAMPLES / 2);
+            key_on_ym3806(chip, 4, 0x09);
+            samples.extend(generate_2_ym3806(chip, YM3806_SCENARIO_SAMPLES / 2));
+            return samples;
+        }
+        "KEY_SCALE_RATE" => {
+            for channel in 0..4u8 {
+                setup_ym3806_tone(chip, channel, 7, 0);
+                set_ym3806_frequency(chip, channel, 0x28, 7, 0xE00);
+                set_ym3806_frequency(chip, channel, 0x20, 7, 0xE00);
+                for op in 0..4u8 {
+                    let offset = opq_op_offset(channel, op);
+                    write_reg_ym3806(chip, 0x80 + offset, (channel << 6) | 0x08);
+                    write_reg_ym3806(chip, 0xA0 + offset, 0x0C);
+                    write_reg_ym3806(chip, 0xE0 + offset, 0x3F);
+                }
+                key_on_ym3806(chip, channel, 0x0F);
+            }
+        }
+        "ENVELOPE_RATES" => {
+            setup_ym3806_tone(chip, 5, 7, 0);
+            for (op, (attack, decay, sustain, level)) in [
+                (0x14u8, 0x10u8, 0x08u8, 0x2u8),
+                (0x1A, 0x14, 0x0C, 0x5),
+                (0x10, 0x1F, 0x1F, 0x9),
+                (0x1F, 0x08, 0x10, 0xF),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let offset = opq_op_offset(5, op as u8);
+                write_reg_ym3806(chip, 0x80 + offset, attack);
+                write_reg_ym3806(chip, 0xA0 + offset, decay);
+                write_reg_ym3806(chip, 0xC0 + offset, sustain);
+                write_reg_ym3806(chip, 0xE0 + offset, (level << 4) | 0x0F);
+            }
+            key_on_ym3806(chip, 5, 0x0F);
+        }
+        _ => panic!("unknown YM3806 scenario {name}"),
+    }
+    generate_2_ym3806(chip, YM3806_SCENARIO_SAMPLES)
+}
+
+/// Sets up an LFO test tone on channel 0 with the given sensitivities.
+fn setup_ym3806_lfo_tone(chip: &mut Ym3806, rate: u8, pm_sensitivity: u8, am_sensitivity: u8) {
+    write_reg_ym3806(chip, 0x04, rate);
+    setup_ym3806_tone(chip, 0, 7, 0);
+    set_ym3806_frequency(chip, 0, 0x28, 5, 0xC00);
+    set_ym3806_frequency(chip, 0, 0x20, 4, 0x700);
+    write_reg_ym3806(chip, 0x18, (pm_sensitivity << 4) | am_sensitivity);
+    for op in [0u8, 2] {
+        write_reg_ym3806(chip, 0xA0 + opq_op_offset(0, op), 0x80);
+    }
+    for op in 0..4u8 {
+        write_reg_ym3806(chip, 0x60 + opq_op_offset(0, op), 0x08);
+    }
+    key_on_ym3806(chip, 0, 0x0F);
+}
+
+/// Runs the named long YM3806 scenario and returns its samples.
+pub fn ym3806_long_scenario(name: &str) -> Vec<[i32; 2]> {
+    let mut chip = setup_ym3806();
+    let chip = &mut chip;
+    let samples = YM3806_LONG_SCENARIO_SAMPLES;
+    if let Some(rate) = name.strip_prefix("LFO_RATE_") {
+        setup_ym3806_lfo_tone(chip, rate.parse().unwrap(), 7, 3);
+        return generate_2_ym3806(chip, samples);
+    }
+    if let Some(sensitivity) = name.strip_prefix("LFO_PM_SENSITIVITY_") {
+        setup_ym3806_lfo_tone(chip, 6, sensitivity.parse().unwrap(), 0);
+        return generate_2_ym3806(chip, samples);
+    }
+    if let Some(sensitivity) = name.strip_prefix("LFO_AM_SENSITIVITY_") {
+        setup_ym3806_lfo_tone(chip, 7, 0, sensitivity.parse().unwrap());
+        return generate_2_ym3806(chip, samples);
+    }
+    match name {
+        "RELEASE" | "REVERB" => {
+            for channel in 0..4u8 {
+                setup_ym3806_tone(chip, channel, 7, 0);
+                set_ym3806_frequency(chip, channel, 0x28, 3 + channel, 0x480);
+                set_ym3806_frequency(chip, channel, 0x20, 3 + channel, 0x480);
+                let reverb = if name == "REVERB" { 0x80 } else { 0x00 };
+                write_reg_ym3806(chip, 0x18 + channel, reverb);
+                for op in 0..4u8 {
+                    let offset = opq_op_offset(channel, op);
+                    write_reg_ym3806(chip, 0x80 + offset, (channel << 6) | 0x1F);
+                    write_reg_ym3806(chip, 0xE0 + offset, 0x06 + channel * 3);
+                }
+                key_on_ym3806(chip, channel, 0x0F);
+            }
+            let mut output = generate_2_ym3806(chip, 256);
+            for channel in 0..4u8 {
+                key_on_ym3806(chip, channel, 0x00);
+            }
+            output.extend(generate_2_ym3806(chip, samples - 256));
+            return output;
+        }
+        "LFO_DISABLED" => {
+            setup_ym3806_lfo_tone(chip, 0x0F, 7, 3);
+        }
+        "LFO_RESTART" => {
+            setup_ym3806_lfo_tone(chip, 5, 5, 2);
+            let mut output = generate_2_ym3806(chip, samples / 4);
+            write_reg_ym3806(chip, 0x04, 0x0D);
+            output.extend(generate_2_ym3806(chip, samples / 4));
+            write_reg_ym3806(chip, 0x04, 0x03);
+            output.extend(generate_2_ym3806(chip, samples / 2));
+            return output;
+        }
+        _ => panic!("unknown long YM3806 scenario {name}"),
+    }
+    generate_2_ym3806(chip, samples)
+}
+
+/// Number of fuzz seeds for the YM3806.
+pub const YM3806_FUZZ_SEEDS: u32 = 8;
+
+/// Number of blocks in each YM3806 fuzz run.
+pub const YM3806_FUZZ_BLOCKS: usize = 16;
+
+/// Number of samples in each YM3806 fuzz block.
+pub const YM3806_FUZZ_BLOCK_SAMPLES: usize = 256;
+
+/// Runs a YM3806 fuzz stream and returns one checksum per block.
+///
+/// The stream starts with a keyed tone on every channel. Before each block
+/// it writes a random set of registers with random sample gaps in between.
+/// Timer control writes are left out.
+pub fn ym3806_fuzz(seed: u32) -> Vec<u64> {
+    let mut random = XorShift32::new(seed.wrapping_mul(0x9E37_79B9) | 1);
+    let mut chip = setup_ym3806();
+    for channel in 0..8u8 {
+        setup_ym3806_tone(&mut chip, channel, channel, channel % 4);
+        set_ym3806_frequency(
+            &mut chip,
+            channel,
+            0x28,
+            2 + channel % 5,
+            0x300 + 0x123 * channel as u16,
+        );
+        for op in 0..4u8 {
+            write_reg_ym3806(&mut chip, 0x60 + opq_op_offset(channel, op), 0x10);
+        }
+        key_on_ym3806(&mut chip, channel, 0x0F);
+    }
+    let mut checksums = Vec::new();
+    for _ in 0..YM3806_FUZZ_BLOCKS {
+        let mut samples = Vec::new();
+        let writes = 1 + random.below(12);
+        for _ in 0..writes {
+            let address = match random.below(8) {
+                0 => 0x04,
+                1 => 0x05,
+                2 => 0x10 + random.below(0x10) as u8,
+                3 => 0x20 + random.below(0x20) as u8,
+                4 => 0x60 + random.below(0x20) as u8,
+                _ => 0x40 + random.below(0xC0) as u8,
+            };
+            let mut data = random.next_u32() as u8;
+            if (0x60..0x80).contains(&address) {
+                data &= 0x3F;
+            }
+            write_reg_ym3806(&mut chip, address, data);
+            if random.below(4) == 0 {
+                let gap =
+                    (random.below(24) as usize).min(YM3806_FUZZ_BLOCK_SAMPLES - samples.len());
+                samples.extend(generate_2_ym3806(&mut chip, gap));
+            }
+        }
+        let remaining = YM3806_FUZZ_BLOCK_SAMPLES - samples.len();
+        samples.extend(generate_2_ym3806(&mut chip, remaining));
+        checksums.push(fnv1a_samples(&samples));
+    }
+    checksums
 }
 
 // --- SSG (YM2149) helpers ---
