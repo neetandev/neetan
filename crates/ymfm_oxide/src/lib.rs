@@ -73,7 +73,7 @@ use fm::{FmEngine, FmRegisters};
 use opl::{OPLL_INSTRUMENT_DATA_SIZE, Opl2Registers, Opl3Registers, OplRegisters, OpllRegisters};
 use opm::OpmRegisters;
 use opn::{OpnRegisters, OpnaRegisters, SsgResampler};
-use ssg::SsgEngine;
+use ssg::{SsgEngine, SsgOutput};
 pub use sys::{
     YmfmOpnFidelity, YmfmOutput1, YmfmOutput2, YmfmOutput3, YmfmOutput4, YmfmOutput6,
     YmfmTimerUpdate,
@@ -2940,6 +2940,151 @@ impl Default for Ym2151 {
     }
 }
 
+/// Yamaha YM2164 (OPP). It behaves exactly like the YM2151.
+pub type Ym2164 = Ym2151;
+
+save_state::runtime_state! {
+/// Yamaha YM2149 (SSG) authoritative state and emulator.
+#[derive(Clone)]
+pub struct Ym2149 {
+    ssg: SsgEngine,
+    address: u8,
+    io_input: [u8; 2],
+    io_output: [Option<u8>; 2],
+}}
+
+impl Ym2149 {
+    /// Creates a new YM2149 instance.
+    ///
+    /// The chip is not automatically reset; call [`reset`](Self::reset)
+    /// before first use.
+    pub fn new() -> Self {
+        Self {
+            ssg: SsgEngine::new(),
+            address: 0,
+            io_input: [0; 2],
+            io_output: [None; 2],
+        }
+    }
+
+    /// Captures the complete chip state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores the complete chip state.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &())
+    }
+
+    /// Resets the SSG engine. The address latch keeps its value.
+    pub fn reset(&mut self) {
+        self.ssg.reset();
+    }
+
+    /// Returns the output sample rate in Hz for the given `input_clock` in Hz.
+    pub fn sample_rate(&self, input_clock: u32) -> u32 {
+        input_clock / 8 / 8
+    }
+
+    /// Sets the value read back from a parallel I/O port when that port is
+    /// configured as an input. Port 0 is A, port 1 is B.
+    pub fn set_io_input(&mut self, port: u8, value: u8) {
+        if let Some(input) = self.io_input.get_mut(port as usize) {
+            *input = value;
+        }
+    }
+
+    /// Returns and clears the last value written to a parallel I/O port that
+    /// is configured as an output. Port 0 is A, port 1 is B.
+    pub fn take_io_output(&mut self, port: u8) -> Option<u8> {
+        self.io_output.get_mut(port as usize).and_then(Option::take)
+    }
+
+    /// Reads the currently addressed register.
+    pub fn read_data(&mut self) -> u8 {
+        let register = self.address as u32 & 0x0F;
+        if register == 0x0E && self.ssg.read(0x07) & 0x40 == 0 {
+            return self.io_input[0];
+        }
+        if register == 0x0F && self.ssg.read(0x07) & 0x80 == 0 {
+            return self.io_input[1];
+        }
+        self.ssg.read(register)
+    }
+
+    /// Reads through the bus interface. Offset bits 1 and 0 are BC2 and BC1.
+    pub fn read(&mut self, offset: u32) -> u8 {
+        match offset & 3 {
+            3 => self.read_data(),
+            _ => 0xFF,
+        }
+    }
+
+    /// Latches the register address for a subsequent
+    /// [`write_data`](Self::write_data) or [`read_data`](Self::read_data).
+    pub fn write_address(&mut self, data: u8) {
+        self.address = data;
+    }
+
+    /// Writes a value to the previously addressed register.
+    pub fn write_data(&mut self, data: u8) {
+        let register = self.address as u32 & 0x0F;
+        self.ssg.write(register, data);
+        if register == 0x0E && self.ssg.read(0x07) & 0x40 != 0 {
+            self.io_output[0] = Some(data);
+        } else if register == 0x0F && self.ssg.read(0x07) & 0x80 != 0 {
+            self.io_output[1] = Some(data);
+        }
+    }
+
+    /// Writes through the bus interface. Offset bits 1 and 0 are BC2 and BC1.
+    pub fn write(&mut self, offset: u32, data: u8) {
+        match offset & 3 {
+            0 | 3 => self.write_address(data),
+            2 => self.write_data(data),
+            _ => {}
+        }
+    }
+
+    /// Generates audio samples into `output`.
+    ///
+    /// Each sample holds the three unmixed SSG channels `[A, B, C]`.
+    pub fn generate(&mut self, output: &mut [YmfmOutput3]) {
+        let mut sample = SsgOutput { data: [0; 3] };
+        for out in output.iter_mut() {
+            self.ssg.clock();
+            self.ssg.output(&mut sample);
+            out.data = sample.data;
+        }
+    }
+}
+
+impl Default for Ym2149 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl save_state::ValidateState for Ym2149 {
+    fn validate_state(&self, _context: &()) -> Result<(), save_state::StateValidationError> {
+        Ok(())
+    }
+}
+
+impl save_state::AfterRestore for Ym2149 {
+    fn after_restore(&mut self) {}
+}
+
+impl save_state::RestoreTarget for Ym2149 {
+    type State = Self;
+    type ValidationContext = ();
+
+    fn replace_state(&mut self, state: Self::State) {
+        *self = state;
+    }
+}
+
 impl save_state::ValidateState<save_state::ResourceIdentity> for Ym2608State {
     fn validate_state(
         &self,
@@ -3281,6 +3426,43 @@ mod state_tests {
                 .iter()
                 .zip(actual)
                 .all(|(left, right)| left.data == right.data)
+        );
+    }
+
+    #[test]
+    fn ym2149_state_replays_exact_samples() {
+        let mut chip = Ym2149::new();
+        chip.reset();
+        for (address, data) in [
+            (0x00, 0x21),
+            (0x06, 0x07),
+            (0x07, 0x30),
+            (0x08, 0x0F),
+            (0x09, 0x10),
+            (0x0A, 0x09),
+            (0x0B, 0x05),
+            (0x0D, 0x0E),
+        ] {
+            chip.write_address(address);
+            chip.write_data(data);
+        }
+        chip.generate(&mut [YmfmOutput3 { data: [0; 3] }; 77]);
+
+        let encoded = save_state::encode_runtime_state(&chip.capture_state());
+        let decoded = save_state::decode_runtime_state::<Ym2149>(&encoded, 1 << 20).unwrap();
+        let mut restored = Ym2149::new();
+        restored.restore_state(decoded).unwrap();
+
+        let mut expected = [YmfmOutput3 { data: [0; 3] }; 256];
+        let mut actual = [YmfmOutput3 { data: [0; 3] }; 256];
+        chip.generate(&mut expected);
+        restored.generate(&mut actual);
+        assert!(expected.iter().any(|sample| sample.data != [0; 3]));
+        assert!(
+            expected
+                .iter()
+                .zip(actual)
+                .all(|(expected, actual)| expected.data == actual.data)
         );
     }
 
