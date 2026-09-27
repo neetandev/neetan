@@ -3,7 +3,10 @@ mod common;
 use std::fmt::Write;
 
 use common::{harness::*, signals::*};
-use ymfm_oxide::{Y8950, Ym2203, Ym2608, Ym2610, Ym2610b, Ym3526, Ymf262, YmfmOpnFidelity};
+use ymfm_oxide::{
+    OPN2_VARIANT_YM2612, OPN2_VARIANT_YM3438, OPN2_VARIANT_YMF276, Y8950, Ym2203, Ym2608, Ym2610,
+    Ym2610b, Ym3526, Ymf262, YmfmOpnFidelity,
+};
 
 const SAMPLES: usize = 256;
 
@@ -46,7 +49,7 @@ fn fmt3(name: &str, data: &[[i32; 3]]) -> String {
 
 fn header() -> String {
     "// Auto-generated golden vectors from C++ ymfm reference implementation.\n\
-     // Regenerate: cargo test -p ymfm --test generate_golden -- --ignored --nocapture\n\n"
+     // Regenerate: cargo test -p ymfm_oxide --test generate_golden -- --ignored --nocapture\n\n"
         .to_string()
 }
 
@@ -1020,111 +1023,34 @@ fn fmt1(name: &str, data: &[[i32; 1]]) -> String {
     s
 }
 
-fn gen_ymf276_fm(dir: &str) {
+fn gen_ymf288_fm(dir: &str) {
     let mut f = header();
-
-    // silence
-    {
-        let mut chip = setup_ymf276();
-        f.push_str(&fmt2("SILENCE", &generate_2(&mut chip, SAMPLES)));
+    for name in YMF288_FM_SCENARIOS {
+        let mut chip = ymf288_fm_scenario(name);
+        f.push_str(&fmt3(name, &generate_3_ymf288(&mut chip, SAMPLES)));
     }
+    std::fs::write(format!("{dir}/ymf288_fm.rs"), f).unwrap();
+    println!("  wrote ymf288_fm.rs");
+}
 
-    // single tone (channel 0, algorithm 7)
-    {
-        let mut chip = setup_ymf276();
-        setup_ymf276_simple_tone(&mut chip, 0, 7, 0);
-        key_on_ymf276(&mut chip, 0);
-        f.push_str(&fmt2("SINGLE_TONE", &generate_2(&mut chip, SAMPLES)));
+fn gen_ymf288_adpcm(dir: &str) {
+    let mut f = header();
+    for name in YMF288_RHYTHM_SCENARIOS {
+        let mut chip = ymf288_rhythm_scenario(name);
+        f.push_str(&fmt3(name, &generate_3_ymf288(&mut chip, SAMPLES * 4)));
     }
+    std::fs::write(format!("{dir}/ymf288_adpcm.rs"), f).unwrap();
+    println!("  wrote ymf288_adpcm.rs");
+}
 
-    // all 8 algorithms (moderate TL on modulators)
-    for algo in 0..8u8 {
-        let mut chip = setup_ymf276();
-        write_reg_ymf276(&mut chip, 0xB0, algo);
-        for (op_offset, tl) in [(0x00, 0x20), (0x04, 0x20), (0x08, 0x20), (0x0C, 0x00)] {
-            write_reg_ymf276(&mut chip, 0x30 + op_offset, 0x01);
-            write_reg_ymf276(&mut chip, 0x40 + op_offset, tl);
-            write_reg_ymf276(&mut chip, 0x50 + op_offset, 0x1F);
-            write_reg_ymf276(&mut chip, 0x60 + op_offset, 0x00);
-            write_reg_ymf276(&mut chip, 0x70 + op_offset, 0x00);
-            write_reg_ymf276(&mut chip, 0x80 + op_offset, 0x0F);
-            write_reg_ymf276(&mut chip, 0x90 + op_offset, 0x00);
-        }
-        write_reg_ymf276(&mut chip, 0xA4, 0x22);
-        write_reg_ymf276(&mut chip, 0xA0, 0x69);
-        write_reg_ymf276(&mut chip, 0xB4, 0xC0);
-        key_on_ymf276(&mut chip, 0);
-        f.push_str(&fmt2(
-            &format!("ALGO_{algo}"),
-            &generate_2(&mut chip, SAMPLES),
-        ));
+fn gen_opn2_fm<const VARIANT: u8>(dir: &str, file_name: &str) {
+    let mut f = header();
+    for name in OPN2_SCENARIOS {
+        let mut chip = opn2_scenario::<VARIANT>(name);
+        f.push_str(&fmt2(name, &generate_2_opn2(&mut chip, SAMPLES)));
     }
-
-    // all 6 channels simultaneously
-    {
-        let mut chip = setup_ymf276();
-        let freqs: [(u8, u8); 6] = [
-            (0x22, 0x69),
-            (0x24, 0x80),
-            (0x26, 0xD5),
-            (0x22, 0x40),
-            (0x28, 0x50),
-            (0x2A, 0xA0),
-        ];
-        for ch in 0..6u8 {
-            setup_ymf276_simple_tone(&mut chip, ch, 7, 0);
-            let (hi, lo) = freqs[ch as usize];
-            if ch < 3 {
-                write_reg_ymf276(&mut chip, 0xA4 + ch, hi);
-                write_reg_ymf276(&mut chip, 0xA0 + ch, lo);
-            } else {
-                write_reg_ymf276_hi(&mut chip, 0xA4 + (ch - 3), hi);
-                write_reg_ymf276_hi(&mut chip, 0xA0 + (ch - 3), lo);
-            }
-            key_on_ymf276(&mut chip, ch);
-        }
-        f.push_str(&fmt2("ALL_6_CHANNELS", &generate_2(&mut chip, SAMPLES)));
-    }
-
-    // LFO off and on
-    for lfo in [false, true] {
-        let mut chip = setup_ymf276();
-        write_reg_ymf276(&mut chip, 0xB0, 0x00);
-        for (op_offset, tl) in [(0x00, 0x20), (0x04, 0x20), (0x08, 0x20), (0x0C, 0x00)] {
-            write_reg_ymf276(&mut chip, 0x30 + op_offset, 0x01);
-            write_reg_ymf276(&mut chip, 0x40 + op_offset, tl);
-            write_reg_ymf276(&mut chip, 0x50 + op_offset, 0x1F);
-            write_reg_ymf276(&mut chip, 0x60 + op_offset, 0x00);
-            write_reg_ymf276(&mut chip, 0x70 + op_offset, 0x00);
-            write_reg_ymf276(&mut chip, 0x80 + op_offset, 0x0F);
-            write_reg_ymf276(&mut chip, 0x90 + op_offset, 0x00);
-        }
-        write_reg_ymf276(&mut chip, 0xA4, 0x22);
-        write_reg_ymf276(&mut chip, 0xA0, 0x69);
-        if lfo {
-            write_reg_ymf276(&mut chip, 0x22, 0x08); // LFO enable, rate 0
-            write_reg_ymf276(&mut chip, 0xB4, 0xC0 | 0x27); // AMS=2, PMS=7, L+R
-            write_reg_ymf276(&mut chip, 0x60, 0x80); // AM enable on operator 1
-        } else {
-            write_reg_ymf276(&mut chip, 0xB4, 0xC0);
-        }
-        key_on_ymf276(&mut chip, 0);
-        f.push_str(&fmt2(
-            if lfo { "LFO_ON" } else { "LFO_OFF" },
-            &generate_2(&mut chip, SAMPLES),
-        ));
-    }
-
-    // channel-6 DAC mode with a fixed positive sample value
-    {
-        let mut chip = setup_ymf276();
-        write_reg_ymf276(&mut chip, 0x2B, 0x80); // DAC enable
-        write_reg_ymf276(&mut chip, 0x2A, 0xC0); // DAC data (positive)
-        write_reg_ymf276_hi(&mut chip, 0xB6, 0xC0); // channel 6 pan L+R
-        f.push_str(&fmt2("DAC_MODE", &generate_2(&mut chip, SAMPLES)));
-    }
-
-    std::fs::write(format!("{dir}/ymf276_fm.rs"), f).unwrap();
+    std::fs::write(format!("{dir}/{file_name}"), f).unwrap();
+    println!("  wrote {file_name}");
 }
 
 fn gen_ym3526_fm(dir: &str) {
@@ -2309,9 +2235,6 @@ fn gen_ym2413_fm(dir: &str) {
     println!("  wrote ym2413_fm.rs");
 }
 
-// The OPM golden is authored by the standalone C++ harness in tests/cpp
-// (gen_opm_golden.cpp); this Rust generator mirrors the same register
-// sequences and must reproduce it byte-for-byte.
 fn gen_ym2151_fm(dir: &str) {
     let mut f = header();
 
@@ -2376,7 +2299,11 @@ fn generate_golden_vectors() {
     gen_ym2608_adpcm(&dir);
     gen_ym2610_fm(&dir);
     gen_ym2610_adpcm(&dir);
-    gen_ymf276_fm(&dir);
+    gen_opn2_fm::<OPN2_VARIANT_YM2612>(&dir, "ym2612_fm.rs");
+    gen_opn2_fm::<OPN2_VARIANT_YM3438>(&dir, "ym3438_fm.rs");
+    gen_opn2_fm::<OPN2_VARIANT_YMF276>(&dir, "ymf276_fm.rs");
+    gen_ymf288_fm(&dir);
+    gen_ymf288_adpcm(&dir);
     gen_ym2203_fidelity(&dir);
     gen_ym2413_fm(&dir);
     gen_ym3526_fm(&dir);

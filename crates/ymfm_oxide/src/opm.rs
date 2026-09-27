@@ -70,12 +70,12 @@ const EG_RELEASE: usize = 4;
 // Detune 2 delta, in 1/64ths of a semitone. The manual gives the coarse
 // detune values in cents (0, 600, 781, 950); each is converted as
 // (cents * 64 + 50) / 100 and rounded, giving 0, 384, 500, 608.
-const DETUNE2_DELTA: [i16; 4] = [0, 384, 500, 608];
+pub(crate) const DETUNE2_DELTA: [i16; 4] = [0, 384, 500, 608];
 
 // Converts an OPM concatenated block (3 bits), keycode (4 bits) and key
 // fraction (6 bits) to a 0.10 phase step after applying the given delta. The
 // table comes from David Viens' analysis of a real chip.
-fn opm_key_code_to_phase_step(block_freq: u32, delta: i32) -> u32 {
+pub(crate) fn opm_key_code_to_phase_step(block_freq: u32, delta: i32) -> u32 {
     static PHASE_STEP: [u32; 12 * 64] = [
         41568, 41600, 41632, 41664, 41696, 41728, 41760, 41792, 41856, 41888, 41920, 41952, 42016,
         42048, 42080, 42112, 42176, 42208, 42240, 42272, 42304, 42336, 42368, 42400, 42464, 42496,
@@ -589,7 +589,7 @@ impl FmRegisters for OpmRegisters {
     }
 
     fn compute_phase_step(
-        &self,
+        &mut self,
         choffs: u32,
         opoffs: u32,
         cache: &OpdataCache,

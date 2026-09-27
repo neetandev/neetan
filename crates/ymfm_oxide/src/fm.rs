@@ -152,7 +152,7 @@ pub(crate) trait FmRegisters: Sized {
 
     fn cache_operator_data(&self, choffs: u32, opoffs: u32, cache: &mut OpdataCache);
     fn compute_phase_step(
-        &self,
+        &mut self,
         choffs: u32,
         opoffs: u32,
         cache: &OpdataCache,
@@ -235,7 +235,12 @@ impl FmOperator {
         self.env_state != terminal_state || self.env_attenuation < EG_QUIET as u16
     }
 
-    pub(crate) fn clock<R: FmRegisters>(&mut self, env_counter: u32, lfo_raw_pm: i32, regs: &R) {
+    pub(crate) fn clock<R: FmRegisters>(
+        &mut self,
+        env_counter: u32,
+        lfo_raw_pm: i32,
+        regs: &mut R,
+    ) {
         // Clock the SSG-EG state (OPN/OPNA).
         if regs.op_ssg_eg_enable(self.opoffs) != 0 {
             self.clock_ssg_eg_state::<R>(regs);
@@ -505,7 +510,7 @@ impl FmOperator {
 
     // Clock the 10.10 phase value; the OPN version of the logic has been
     // verified against the Nuked phase generator.
-    fn clock_phase<R: FmRegisters>(&mut self, lfo_raw_pm: i32, regs: &R) {
+    fn clock_phase<R: FmRegisters>(&mut self, lfo_raw_pm: i32, regs: &mut R) {
         // Read from the cache, or recalculate if PM active.
         let mut phase_step = self.cache.phase_step;
         if phase_step == OpdataCache::PHASE_STEP_DYNAMIC {
@@ -611,7 +616,7 @@ impl FmChannel {
         env_counter: u32,
         lfo_raw_pm: i32,
         operators: &mut [FmOperator],
-        regs: &R,
+        regs: &mut R,
     ) {
         self.feedback[0] = self.feedback[1];
         self.feedback[1] = self.feedback_in;
@@ -1084,7 +1089,7 @@ impl<R: FmRegisters> FmEngine<R> {
                     self.env_counter,
                     lfo_raw_pm,
                     &mut self.operators,
-                    &self.regs,
+                    &mut self.regs,
                 );
             }
         }
