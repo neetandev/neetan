@@ -1118,6 +1118,31 @@ fn gen_ym3806_fuzz(dir: &str) {
     println!("  wrote ym3806_fuzz.rs");
 }
 
+fn gen_ym2414_fm(dir: &str) {
+    let mut f = header();
+    for name in YM2414_SCENARIOS {
+        f.push_str(&fmt2(name, &ym2414_scenario(name)));
+    }
+    for name in YM2414_LONG_SCENARIOS {
+        let samples = ym2414_long_scenario(name);
+        f.push_str(&fmt_checksums(
+            name,
+            &block_checksums(&samples, YM2414_CHECKSUM_BLOCK),
+        ));
+    }
+    std::fs::write(format!("{dir}/ym2414_fm.rs"), f).unwrap();
+    println!("  wrote ym2414_fm.rs");
+}
+
+fn gen_ym2414_fuzz(dir: &str) {
+    let mut f = header();
+    for seed in 1..=YM2414_FUZZ_SEEDS {
+        f.push_str(&fmt_checksums(&format!("SEED_{seed}"), &ym2414_fuzz(seed)));
+    }
+    std::fs::write(format!("{dir}/ym2414_fuzz.rs"), f).unwrap();
+    println!("  wrote ym2414_fuzz.rs");
+}
+
 fn gen_opn2_fm<const VARIANT: u8>(dir: &str, file_name: &str) {
     let mut f = header();
     for name in OPN2_SCENARIOS {
@@ -2397,5 +2422,7 @@ fn generate_golden_vectors() {
     gen_ym2149_ssg(&dir);
     gen_ym3806_fm(&dir);
     gen_ym3806_fuzz(&dir);
+    gen_ym2414_fm(&dir);
+    gen_ym2414_fuzz(&dir);
     println!("Done!");
 }
