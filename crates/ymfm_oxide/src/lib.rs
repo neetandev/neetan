@@ -65,6 +65,7 @@ pub(crate) mod opl;
 pub(crate) mod opm;
 pub(crate) mod opn;
 pub(crate) mod opq;
+pub(crate) mod opz;
 pub(crate) mod ssg;
 mod sys;
 pub(crate) mod tables;
@@ -75,6 +76,7 @@ use opl::{OPLL_INSTRUMENT_DATA_SIZE, Opl2Registers, Opl3Registers, OplRegisters,
 use opm::OpmRegisters;
 use opn::{OpnRegisters, OpnaRegisters, SsgResampler};
 use opq::OpqRegisters;
+use opz::OpzRegisters;
 use ssg::{SsgEngine, SsgOutput};
 pub use sys::{
     YmfmOpnFidelity, YmfmOutput1, YmfmOutput2, YmfmOutput3, YmfmOutput4, YmfmOutput6,
@@ -3180,6 +3182,156 @@ impl Default for Ym3806 {
 /// Yamaha YM3533 (OPQ). It behaves exactly like the YM3806.
 pub type Ym3533 = Ym3806;
 
+save_state::runtime_state! {
+/// Yamaha YM2414 (OPZ) authoritative state and emulator.
+#[derive(Clone)]
+pub struct Ym2414 {
+    fm: FmEngine<OpzRegisters>,
+    address: u8,
+    ct_state: u8,
+    ct_update: Option<u8>,
+}}
+
+impl Ym2414 {
+    /// Creates a new YM2414 instance.
+    ///
+    /// The chip is not automatically reset; call [`reset`](Self::reset)
+    /// before first use.
+    pub fn new() -> Self {
+        Self {
+            fm: FmEngine::new(),
+            address: 0,
+            ct_state: 0,
+            ct_update: None,
+        }
+    }
+
+    /// Captures the complete chip state.
+    pub fn capture_state(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores the complete chip state.
+    pub fn restore_state(&mut self, state: Self) -> Result<(), save_state::StateValidationError> {
+        save_state::restore_root(self, state, &())
+    }
+
+    /// Resets the FM engine. The CT output lines and the address latch keep
+    /// their values.
+    pub fn reset(&mut self) {
+        self.fm.reset();
+    }
+
+    /// Returns the output sample rate in Hz for the given `input_clock` in Hz.
+    pub fn sample_rate(&self, input_clock: u32) -> u32 {
+        input_clock / (OpzRegisters::OPERATORS as u32 * self.fm.clock_prescale())
+    }
+
+    /// Reads the chip status register.
+    ///
+    /// Bit 0 = Timer A flag, bit 1 = Timer B flag, bit 7 = busy flag.
+    pub fn read_status(&mut self, busy: bool) -> u8 {
+        let mut result = self.fm.status();
+        if busy {
+            result |= OpzRegisters::STATUS_BUSY;
+        }
+        result
+    }
+
+    /// Reads through the bus interface. Odd offsets read the status and even
+    /// offsets read 0xFF.
+    pub fn read(&mut self, offset: u32, busy: bool) -> u8 {
+        match offset & 1 {
+            1 => self.read_status(busy),
+            _ => 0xFF,
+        }
+    }
+
+    /// Latches the register address for a subsequent
+    /// [`write_data`](Self::write_data).
+    pub fn write_address(&mut self, data: u8) -> u32 {
+        self.address = data;
+        0
+    }
+
+    /// Writes a value to the previously addressed register.
+    pub fn write_data(&mut self, data: u8) -> u32 {
+        self.fm.write(self.address as u16, data);
+        if self.address == 0x1B {
+            let ct = data >> 6;
+            if ct != self.ct_state {
+                self.ct_state = ct;
+                self.ct_update = Some(ct);
+            }
+        }
+        32 * self.fm.clock_prescale()
+    }
+
+    /// Writes through the bus interface. Even offsets write the address and
+    /// odd offsets write the data.
+    pub fn write(&mut self, offset: u32, data: u8) -> u32 {
+        match offset & 1 {
+            0 => self.write_address(data),
+            _ => self.write_data(data),
+        }
+    }
+
+    /// Generates audio samples into `output`.
+    ///
+    /// Each sample is a stereo `[left, right]` pair.
+    pub fn generate(&mut self, output: &mut [YmfmOutput2]) {
+        for out in output.iter_mut() {
+            self.fm.clock(OpzRegisters::ALL_CHANNELS);
+
+            // OPZ is full 14-bit with no intermediate clipping
+            out.data = [0; 2];
+            self.fm
+                .output_mut(&mut out.data, 0, 32767, OpzRegisters::ALL_CHANNELS);
+
+            // simulate the 10.3 float truncation of a YM3012 style DAC
+            out.data[0] = helpers::roundtrip_fp(out.data[0]) as i32;
+            out.data[1] = helpers::roundtrip_fp(out.data[1]) as i32;
+        }
+    }
+
+    /// Notifies the chip that the specified timer has expired.
+    pub fn timer_expired(&mut self, timer_id: u32) {
+        self.fm.engine_timer_expired(timer_id);
+    }
+
+    /// Returns and clears the pending update for a timer.
+    pub fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        self.fm.take_timer_update(timer_id)
+    }
+
+    /// Returns and clears the pending IRQ output update.
+    pub fn take_irq_update(&mut self) -> Option<bool> {
+        self.fm.take_irq_update()
+    }
+
+    /// Returns whether the chip IRQ output is currently asserted.
+    pub fn irq_asserted(&self) -> bool {
+        self.fm.irq_asserted()
+    }
+
+    /// Returns the current CT output pair; bit 0 is register 0x1B bit 6 and
+    /// bit 1 is register 0x1B bit 7.
+    pub fn ct_state(&self) -> u8 {
+        self.ct_state
+    }
+
+    /// Returns and clears the pending CT output update.
+    pub fn take_ct_update(&mut self) -> Option<u8> {
+        self.ct_update.take()
+    }
+}
+
+impl Default for Ym2414 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl save_state::ValidateState for Ym2149 {
     fn validate_state(&self, _context: &()) -> Result<(), save_state::StateValidationError> {
         Ok(())
@@ -3346,6 +3498,7 @@ macro_rules! impl_direct_chip_restore {
 impl_direct_chip_restore!(Opn2Family<const VARIANT: u8>, OpnaRegisters, "OPN2");
 impl_direct_chip_restore!(Ym2151, OpmRegisters, "YM2151");
 impl_direct_chip_restore!(Ym3806, OpqRegisters, "YM3806");
+impl_direct_chip_restore!(Ym2414, OpzRegisters, "YM2414");
 impl_direct_chip_restore!(OpllFamily<const VARIANT: u8>, OpllRegisters, "OPLL");
 impl_direct_chip_restore!(Ym3526, OplRegisters, "YM3526");
 impl_direct_chip_restore!(Ym3812, Opl2Registers, "YM3812");
@@ -3620,6 +3773,61 @@ mod state_tests {
 
         let mut expected = [YmfmOutput2 { data: [0; 2] }; 512];
         let mut actual = [YmfmOutput2 { data: [0; 2] }; 512];
+        chip.generate(&mut expected);
+        restored.generate(&mut actual);
+        assert!(expected.iter().any(|sample| sample.data != [0; 2]));
+        assert!(
+            expected
+                .iter()
+                .zip(actual)
+                .all(|(expected, actual)| expected.data == actual.data)
+        );
+    }
+
+    #[test]
+    fn ym2414_state_replays_exact_samples() {
+        let mut chip = Ym2414::new();
+        chip.reset();
+        let mut writes = alloc::vec![
+            (0x08, 0x02),
+            (0x18, 0xC5),
+            (0x19, 0x40),
+            (0x19, 0xB0),
+            (0x16, 0xA7),
+            (0x17, 0x30),
+            (0x17, 0xC0),
+            (0x1B, 0x16),
+            (0x28 + 2, 0x4C),
+            (0x30 + 2, 0x55),
+            (0x38 + 2, 0x61),
+            (0x38 + 2, 0xD2),
+        ];
+        for op in 0..4u8 {
+            let offset = 2 + op * 8;
+            writes.extend([
+                (0x40 + offset, 0x31 + op * 0x11),
+                (0x40 + offset, 0x80 | (op << 4) | 0x03),
+                (0x60 + offset, 0x0C),
+                (0x80 + offset, if op & 1 != 0 { 0x3F } else { 0x1F }),
+                (0xA0 + offset, 0x80 | 0x06),
+                (0xC0 + offset, 0x20 | (op << 6) | 0x03),
+                (0xE0 + offset, 0x47),
+            ]);
+        }
+        writes.push((0x20 + 2, 0xC4));
+        for (address, data) in writes {
+            chip.write_address(address);
+            chip.write_data(data);
+        }
+        chip.generate(&mut [YmfmOutput2 { data: [0; 2] }; 431]);
+
+        let encoded = save_state::encode_runtime_state(&chip.capture_state());
+        let decoded = save_state::decode_runtime_state::<Ym2414>(&encoded, 1 << 20).unwrap();
+        let mut restored = Ym2414::new();
+        restored.restore_state(decoded).unwrap();
+
+        let mut expected = [YmfmOutput2 { data: [0; 2] }; 1024];
+        let mut actual = [YmfmOutput2 { data: [0; 2] }; 1024];
         chip.generate(&mut expected);
         restored.generate(&mut actual);
         assert!(expected.iter().any(|sample| sample.data != [0; 2]));

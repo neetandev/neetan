@@ -1,7 +1,7 @@
 use ymfm_oxide::{
-    OpllFamily, Opn2Family, Y8950, Ym2149, Ym2151, Ym2164, Ym2203, Ym2413, Ym2608, Ym2610Family,
-    Ym3526, Ym3806, Ym3812, Ymf262, Ymf288, Ymf289b, YmfmOpnFidelity, YmfmOutput1, YmfmOutput2,
-    YmfmOutput3, YmfmOutput4,
+    OpllFamily, Opn2Family, Y8950, Ym2149, Ym2151, Ym2164, Ym2203, Ym2413, Ym2414, Ym2608,
+    Ym2610Family, Ym3526, Ym3806, Ym3812, Ymf262, Ymf288, Ymf289b, YmfmOpnFidelity, YmfmOutput1,
+    YmfmOutput2, YmfmOutput3, YmfmOutput4,
 };
 
 /// Redistributable YM2413 instrument table adapted from emu2413.
@@ -1468,6 +1468,529 @@ pub fn ym3806_fuzz(seed: u32) -> Vec<u64> {
         }
         let remaining = YM3806_FUZZ_BLOCK_SAMPLES - samples.len();
         samples.extend(generate_2_ym3806(&mut chip, remaining));
+        checksums.push(fnv1a_samples(&samples));
+    }
+    checksums
+}
+
+// --- OPZ (YM2414) helpers ---
+
+pub fn write_reg_ym2414(chip: &mut Ym2414, addr: u8, data: u8) {
+    chip.write_address(addr);
+    chip.write_data(data);
+}
+
+pub fn generate_2_ym2414(chip: &mut Ym2414, count: usize) -> Vec<[i32; 2]> {
+    let mut output = vec![YmfmOutput2 { data: [0; 2] }; count];
+    chip.generate(&mut output);
+    output.iter().map(|s| s.data).collect()
+}
+
+pub fn setup_ym2414() -> Ym2414 {
+    let mut chip = Ym2414::new();
+    chip.reset();
+    chip
+}
+
+// Operator register offset for OPZ: channel in bits 0-2, operator in bits 3-4.
+pub fn opz_op_offset(channel: u8, op: u8) -> u8 {
+    channel + (op << 3)
+}
+
+/// Selects `channel` for key-on writes. The write also loads the preset of
+/// the channel, so it comes before the tone setup.
+pub fn select_ym2414_channel(chip: &mut Ym2414, channel: u8) {
+    write_reg_ym2414(chip, 0x08, channel);
+}
+
+/// A 4-operator OPZ tone on the selected channel with multiple 1, zero
+/// detune and output on both sides, left keyed off.
+pub fn setup_ym2414_tone(chip: &mut Ym2414, channel: u8, algorithm: u8, feedback: u8) {
+    for op in 0..4u8 {
+        let offset = opz_op_offset(channel, op);
+        write_reg_ym2414(chip, 0x40 + offset, 0x01); // DT1 0, MUL 1
+        write_reg_ym2414(chip, 0x60 + offset, 0x00); // TL 0
+        write_reg_ym2414(chip, 0x80 + offset, 0x1F); // KSR 0, AR 31
+        write_reg_ym2414(chip, 0xA0 + offset, 0x00); // D1R 0
+        write_reg_ym2414(chip, 0xC0 + offset, 0x00); // DT2 0, D2R 0
+        write_reg_ym2414(chip, 0xE0 + offset, 0x0F); // D1L 0, RR 15
+    }
+    write_reg_ym2414(chip, 0x28 + channel, 0x4A); // key code
+    write_reg_ym2414(chip, 0x30 + channel, 0x01); // key fraction 0, output on
+    write_reg_ym2414(chip, 0x20 + channel, 0x80 | (feedback << 3) | algorithm);
+}
+
+/// Keys the selected channel on or off through its 20-27 register.
+pub fn key_ym2414(chip: &mut Ym2414, channel: u8, algorithm: u8, feedback: u8, on: bool) {
+    let key = if on { 0x40 } else { 0x00 };
+    write_reg_ym2414(
+        chip,
+        0x20 + channel,
+        0x80 | key | (feedback << 3) | algorithm,
+    );
+}
+
+/// Selects, sets up and keys on a tone on `channel`.
+pub fn play_ym2414_tone(chip: &mut Ym2414, channel: u8, algorithm: u8, feedback: u8) {
+    select_ym2414_channel(chip, channel);
+    setup_ym2414_tone(chip, channel, algorithm, feedback);
+    key_ym2414(chip, channel, algorithm, feedback, true);
+}
+
+/// Number of samples in each YM2414 golden scenario.
+pub const YM2414_SCENARIO_SAMPLES: usize = 256;
+
+/// Names of the YM2414 golden scenarios with full sample vectors.
+pub const YM2414_SCENARIOS: &[&str] = &[
+    "SILENCE",
+    "ALGORITHM_0",
+    "ALGORITHM_1",
+    "ALGORITHM_2",
+    "ALGORITHM_3",
+    "ALGORITHM_4",
+    "ALGORITHM_5",
+    "ALGORITHM_6",
+    "ALGORITHM_7",
+    "FEEDBACK",
+    "WAVEFORM_0",
+    "WAVEFORM_1",
+    "WAVEFORM_2",
+    "WAVEFORM_3",
+    "WAVEFORM_4",
+    "WAVEFORM_5",
+    "WAVEFORM_6",
+    "WAVEFORM_7",
+    "FINE_MULTIPLE",
+    "HALF_MULTIPLE",
+    "DETUNE",
+    "DETUNE2",
+    "FIXED_FREQUENCY_LOW",
+    "FIXED_FREQUENCY_MID",
+    "FIXED_FREQUENCY_HIGH",
+    "FIXED_FREQUENCY_ZERO",
+    "FIXED_AND_KEYED",
+    "EG_SHIFT",
+    "PAN",
+    "NOISE",
+    "KEY_SCALE_RATE",
+    "KEY_ON_CHANNEL_MATCH",
+    "PRESET_LOAD",
+];
+
+/// Runs the named YM2414 scenario and returns its samples.
+pub fn ym2414_scenario(name: &str) -> Vec<[i32; 2]> {
+    let mut chip = setup_ym2414();
+    let chip = &mut chip;
+    let samples = YM2414_SCENARIO_SAMPLES;
+    if let Some(algorithm) = name.strip_prefix("ALGORITHM_") {
+        play_ym2414_tone(chip, 0, algorithm.parse().unwrap(), 0);
+        return generate_2_ym2414(chip, samples);
+    }
+    if let Some(waveform) = name.strip_prefix("WAVEFORM_") {
+        let waveform: u8 = waveform.parse().unwrap();
+        select_ym2414_channel(chip, 1);
+        setup_ym2414_tone(chip, 1, 4, 0);
+        for op in 0..4u8 {
+            write_reg_ym2414(chip, 0x40 + opz_op_offset(1, op), 0x80 | (waveform << 4));
+        }
+        key_ym2414(chip, 1, 4, 0, true);
+        return generate_2_ym2414(chip, samples);
+    }
+    if let Some(range) = name.strip_prefix("FIXED_FREQUENCY_") {
+        let (range, frequency, fine) = match range {
+            "LOW" => (4u8, 0x1u8, 0x5u8),
+            "MID" => (5, 0xA, 0x3),
+            "HIGH" => (7, 0xF, 0xF),
+            _ => (6, 0x0, 0x0),
+        };
+        select_ym2414_channel(chip, 2);
+        setup_ym2414_tone(chip, 2, 7, 0);
+        for op in 0..4u8 {
+            let offset = opz_op_offset(2, op);
+            write_reg_ym2414(chip, 0x40 + offset, ((range + op) & 7) << 4 | frequency);
+            write_reg_ym2414(chip, 0x40 + offset, 0x80 | fine);
+            write_reg_ym2414(chip, 0x80 + offset, 0x3F);
+            write_reg_ym2414(chip, 0x60 + offset, 0x10);
+        }
+        key_ym2414(chip, 2, 7, 0, true);
+        return generate_2_ym2414(chip, samples);
+    }
+    match name {
+        "SILENCE" => {}
+        "FEEDBACK" => play_ym2414_tone(chip, 3, 0, 6),
+        "FINE_MULTIPLE" | "HALF_MULTIPLE" => {
+            select_ym2414_channel(chip, 4);
+            setup_ym2414_tone(chip, 4, 7, 0);
+            for op in 0..4u8 {
+                let offset = opz_op_offset(4, op);
+                let multiple = if name == "HALF_MULTIPLE" {
+                    0
+                } else {
+                    1 + op * 3
+                };
+                write_reg_ym2414(chip, 0x40 + offset, multiple);
+                write_reg_ym2414(chip, 0x40 + offset, 0x80 | (op * 5));
+                write_reg_ym2414(chip, 0x60 + offset, 0x0C);
+            }
+            key_ym2414(chip, 4, 7, 0, true);
+        }
+        "DETUNE" | "DETUNE2" => {
+            select_ym2414_channel(chip, 5);
+            setup_ym2414_tone(chip, 5, 7, 0);
+            write_reg_ym2414(chip, 0x28 + 5, 0x6E);
+            for op in 0..4u8 {
+                let offset = opz_op_offset(5, op);
+                if name == "DETUNE" {
+                    write_reg_ym2414(chip, 0x40 + offset, (op * 2 + 1) << 4 | 0x03);
+                } else {
+                    write_reg_ym2414(chip, 0xC0 + offset, op << 6);
+                }
+                write_reg_ym2414(chip, 0x60 + offset, 0x0C);
+            }
+            key_ym2414(chip, 5, 7, 0, true);
+        }
+        "FIXED_AND_KEYED" => {
+            select_ym2414_channel(chip, 6);
+            setup_ym2414_tone(chip, 6, 4, 2);
+            for op in [1u8, 3] {
+                let offset = opz_op_offset(6, op);
+                write_reg_ym2414(chip, 0x40 + offset, 0x45);
+                write_reg_ym2414(chip, 0x80 + offset, 0x3F);
+            }
+            key_ym2414(chip, 6, 4, 2, true);
+        }
+        "EG_SHIFT" => {
+            select_ym2414_channel(chip, 0);
+            setup_ym2414_tone(chip, 0, 7, 0);
+            for op in 0..4u8 {
+                let offset = opz_op_offset(0, op);
+                write_reg_ym2414(chip, 0x80 + offset, 0x14);
+                write_reg_ym2414(chip, 0xA0 + offset, 0x0C);
+                write_reg_ym2414(chip, 0xE0 + offset, 0xCF);
+                write_reg_ym2414(chip, 0xC0 + offset, 0x20 | (op << 6));
+            }
+            key_ym2414(chip, 0, 7, 0, true);
+        }
+        "PAN" => {
+            for (channel, right, mono) in [
+                (0u8, 0x00u8, 0x00u8),
+                (1, 0x80, 0x00),
+                (2, 0x00, 0x01),
+                (3, 0x80, 0x01),
+            ] {
+                select_ym2414_channel(chip, channel);
+                setup_ym2414_tone(chip, channel, 7, 0);
+                write_reg_ym2414(chip, 0x28 + channel, 0x3A + channel * 8);
+                write_reg_ym2414(chip, 0x30 + channel, 0x40 | mono);
+                write_reg_ym2414(chip, 0x20 + channel, right | 0x40 | 0x07);
+            }
+        }
+        "NOISE" => {
+            write_reg_ym2414(chip, 0x0F, 0x8A);
+            play_ym2414_tone(chip, 7, 7, 0);
+        }
+        "KEY_SCALE_RATE" => {
+            for channel in 0..4u8 {
+                select_ym2414_channel(chip, channel);
+                setup_ym2414_tone(chip, channel, 7, 0);
+                write_reg_ym2414(chip, 0x28 + channel, 0x7C);
+                for op in 0..4u8 {
+                    let offset = opz_op_offset(channel, op);
+                    write_reg_ym2414(chip, 0x80 + offset, (channel << 6) | 0x08);
+                    write_reg_ym2414(chip, 0xA0 + offset, 0x0C);
+                    write_reg_ym2414(chip, 0xE0 + offset, 0x3F);
+                }
+                key_ym2414(chip, channel, 7, 0, true);
+            }
+        }
+        "KEY_ON_CHANNEL_MATCH" => {
+            select_ym2414_channel(chip, 0);
+            setup_ym2414_tone(chip, 0, 7, 0);
+            select_ym2414_channel(chip, 3);
+            key_ym2414(chip, 0, 7, 0, true);
+            let mut output = generate_2_ym2414(chip, samples / 2);
+            write_reg_ym2414(chip, 0x08, 0xF8);
+            key_ym2414(chip, 0, 7, 0, true);
+            output.extend(generate_2_ym2414(chip, samples / 2));
+            return output;
+        }
+        "PRESET_LOAD" => {
+            select_ym2414_channel(chip, 1);
+            setup_ym2414_tone(chip, 1, 7, 0);
+            for op in 0..4u8 {
+                let offset = opz_op_offset(1, op);
+                write_reg_ym2414(chip, 0x40 + offset, 0x80 | (op << 4));
+                write_reg_ym2414(chip, 0xC0 + offset, 0x20 | 0x03);
+                write_reg_ym2414(chip, 0xE0 + offset, 0x24 + op);
+            }
+            key_ym2414(chip, 1, 7, 0, true);
+            let mut output = generate_2_ym2414(chip, samples / 4);
+            for op in 0..4u8 {
+                write_reg_ym2414(chip, 0xE0 + opz_op_offset(1, op), 0xFF);
+                write_reg_ym2414(chip, 0xC0 + opz_op_offset(1, op), 0x20 | 0x07);
+            }
+            key_ym2414(chip, 1, 7, 0, false);
+            output.extend(generate_2_ym2414(chip, samples / 4));
+            select_ym2414_channel(chip, 1);
+            key_ym2414(chip, 1, 7, 0, true);
+            output.extend(generate_2_ym2414(chip, samples / 4));
+            key_ym2414(chip, 1, 7, 0, false);
+            output.extend(generate_2_ym2414(chip, samples / 4));
+            return output;
+        }
+        _ => panic!("unknown YM2414 scenario {name}"),
+    }
+    generate_2_ym2414(chip, samples)
+}
+
+/// Names of the long YM2414 scenarios stored as block checksums.
+pub const YM2414_LONG_SCENARIOS: &[&str] = &[
+    "RELEASE",
+    "REVERB_RATES",
+    "LFO_WAVEFORM_0",
+    "LFO_WAVEFORM_1",
+    "LFO_WAVEFORM_2",
+    "LFO_WAVEFORM_3",
+    "LFO2_WAVEFORM_0",
+    "LFO2_WAVEFORM_1",
+    "LFO2_WAVEFORM_2",
+    "LFO2_WAVEFORM_3",
+    "LFO_PM_SENSITIVITIES",
+    "LFO2_PM_SENSITIVITIES",
+    "BOTH_LFOS",
+    "LFO_SYNC",
+    "LFO2_SYNC",
+    "FIXED_FREQUENCY_SWEEP",
+    "FIXED_FREQUENCY_WITH_LFO",
+    "CSM",
+];
+
+/// Number of samples in each long YM2414 scenario.
+pub const YM2414_LONG_SCENARIO_SAMPLES: usize = 4096;
+
+/// Number of samples hashed into each long scenario checksum.
+pub const YM2414_CHECKSUM_BLOCK: usize = 256;
+
+/// Plays an LFO test tone on channel `channel` with the given sensitivity
+/// register (0x38 with bit 7 clear for LFO 1, set for LFO 2).
+fn play_ym2414_lfo_tone(chip: &mut Ym2414, channel: u8, sensitivity: u8) {
+    select_ym2414_channel(chip, channel);
+    setup_ym2414_tone(chip, channel, 7, 0);
+    write_reg_ym2414(chip, 0x28 + channel, 0x5C);
+    write_reg_ym2414(chip, 0x38 + channel, sensitivity);
+    for op in 0..4u8 {
+        let offset = opz_op_offset(channel, op);
+        write_reg_ym2414(chip, 0x60 + offset, 0x08);
+        if op & 1 == 0 {
+            write_reg_ym2414(chip, 0xA0 + offset, 0x80);
+        }
+    }
+    key_ym2414(chip, channel, 7, 0, true);
+}
+
+/// Runs the named long YM2414 scenario and returns its samples.
+pub fn ym2414_long_scenario(name: &str) -> Vec<[i32; 2]> {
+    let mut chip = setup_ym2414();
+    let chip = &mut chip;
+    let samples = YM2414_LONG_SCENARIO_SAMPLES;
+    if let Some(waveform) = name.strip_prefix("LFO_WAVEFORM_") {
+        write_reg_ym2414(chip, 0x18, 0xC4);
+        write_reg_ym2414(chip, 0x19, 0x60);
+        write_reg_ym2414(chip, 0x19, 0xFF);
+        write_reg_ym2414(chip, 0x1B, waveform.parse().unwrap());
+        play_ym2414_lfo_tone(chip, 0, 0x62);
+        return generate_2_ym2414(chip, samples);
+    }
+    if let Some(waveform) = name.strip_prefix("LFO2_WAVEFORM_") {
+        let waveform: u8 = waveform.parse().unwrap();
+        write_reg_ym2414(chip, 0x16, 0xB9);
+        write_reg_ym2414(chip, 0x17, 0x50);
+        write_reg_ym2414(chip, 0x17, 0xE0);
+        write_reg_ym2414(chip, 0x1B, waveform << 2);
+        play_ym2414_lfo_tone(chip, 1, 0x80 | 0x63);
+        return generate_2_ym2414(chip, samples);
+    }
+    match name {
+        "RELEASE" | "REVERB_RATES" => {
+            for channel in 0..8u8 {
+                select_ym2414_channel(chip, channel);
+                setup_ym2414_tone(chip, channel, 7, 0);
+                write_reg_ym2414(chip, 0x28 + channel, 0x2A + channel * 10);
+                for op in 0..4u8 {
+                    let offset = opz_op_offset(channel, op);
+                    write_reg_ym2414(chip, 0x60 + offset, 0x10);
+                    write_reg_ym2414(chip, 0x80 + offset, ((channel & 3) << 6) | 0x1F);
+                    write_reg_ym2414(chip, 0xE0 + offset, 0x0A + (channel & 1) * 3);
+                    if name == "REVERB_RATES" {
+                        write_reg_ym2414(chip, 0xC0 + offset, 0x20 | channel);
+                    }
+                }
+                key_ym2414(chip, channel, 7, 0, true);
+            }
+            let mut output = generate_2_ym2414(chip, 256);
+            for channel in 0..8u8 {
+                // the select loads the empty preset; restore the release
+                // and reverb rates before the key off
+                select_ym2414_channel(chip, channel);
+                for op in 0..4u8 {
+                    let offset = opz_op_offset(channel, op);
+                    write_reg_ym2414(chip, 0xE0 + offset, 0x0A + (channel & 1) * 3);
+                    if name == "REVERB_RATES" {
+                        write_reg_ym2414(chip, 0xC0 + offset, 0x20 | channel);
+                    }
+                }
+                key_ym2414(chip, channel, 7, 0, false);
+            }
+            output.extend(generate_2_ym2414(chip, samples - 256));
+            return output;
+        }
+        "LFO_PM_SENSITIVITIES" | "LFO2_PM_SENSITIVITIES" => {
+            let lfo2 = name == "LFO2_PM_SENSITIVITIES";
+            write_reg_ym2414(chip, 0x18, 0xD2);
+            write_reg_ym2414(chip, 0x19, 0xFF);
+            write_reg_ym2414(chip, 0x16, 0xD8);
+            write_reg_ym2414(chip, 0x17, 0xC0);
+            write_reg_ym2414(chip, 0x1B, 0x06);
+            for channel in 0..8u8 {
+                let sensitivity = (channel << 4) | if lfo2 { 0x80 } else { 0x00 };
+                play_ym2414_lfo_tone(chip, channel, sensitivity);
+                write_reg_ym2414(chip, 0x28 + channel, 0x1C + channel * 12);
+            }
+        }
+        "BOTH_LFOS" => {
+            write_reg_ym2414(chip, 0x18, 0xB7);
+            write_reg_ym2414(chip, 0x19, 0x7F);
+            write_reg_ym2414(chip, 0x19, 0xC0);
+            write_reg_ym2414(chip, 0x16, 0xC9);
+            write_reg_ym2414(chip, 0x17, 0x40);
+            write_reg_ym2414(chip, 0x17, 0xA0);
+            write_reg_ym2414(chip, 0x1B, 0x09);
+            play_ym2414_lfo_tone(chip, 2, 0x53);
+            write_reg_ym2414(chip, 0x38 + 2, 0x80 | 0x32);
+        }
+        "LFO_SYNC" | "LFO2_SYNC" => {
+            let sync = if name == "LFO_SYNC" { 0x10 } else { 0x20 };
+            write_reg_ym2414(chip, 0x18, 0xA5);
+            write_reg_ym2414(chip, 0x19, 0xFF);
+            write_reg_ym2414(chip, 0x16, 0xA5);
+            write_reg_ym2414(chip, 0x17, 0xFF);
+            write_reg_ym2414(chip, 0x1B, sync | 0x0A);
+            play_ym2414_lfo_tone(chip, 3, 0x70);
+            write_reg_ym2414(chip, 0x38 + 3, 0x80 | 0x70);
+            let mut output = Vec::new();
+            for step in 0..8 {
+                output.extend(generate_2_ym2414(chip, samples / 8));
+                key_ym2414(chip, 3, 7, 0, step & 1 != 0);
+            }
+            return output;
+        }
+        "FIXED_FREQUENCY_SWEEP" => {
+            select_ym2414_channel(chip, 4);
+            setup_ym2414_tone(chip, 4, 7, 0);
+            for op in 0..4u8 {
+                let offset = opz_op_offset(4, op);
+                write_reg_ym2414(chip, 0x80 + offset, 0x3F);
+                write_reg_ym2414(chip, 0x60 + offset, 0x10);
+            }
+            key_ym2414(chip, 4, 7, 0, true);
+            let mut output = Vec::new();
+            for step in 0..16u8 {
+                for op in 0..4u8 {
+                    let offset = opz_op_offset(4, op);
+                    write_reg_ym2414(chip, 0x40 + offset, ((step + op) & 7) << 4 | step);
+                    write_reg_ym2414(chip, 0x40 + offset, 0x80 | (15 - step));
+                }
+                output.extend(generate_2_ym2414(chip, samples / 16));
+            }
+            return output;
+        }
+        "FIXED_FREQUENCY_WITH_LFO" => {
+            write_reg_ym2414(chip, 0x18, 0xC8);
+            write_reg_ym2414(chip, 0x19, 0x7F);
+            write_reg_ym2414(chip, 0x19, 0xFF);
+            play_ym2414_lfo_tone(chip, 5, 0x72);
+            for op in 0..4u8 {
+                let offset = opz_op_offset(5, op);
+                write_reg_ym2414(chip, 0x40 + offset, 0x5A);
+                write_reg_ym2414(chip, 0x80 + offset, 0x3F);
+            }
+        }
+        "CSM" => {
+            select_ym2414_channel(chip, 6);
+            setup_ym2414_tone(chip, 6, 7, 0);
+            for op in 0..4u8 {
+                write_reg_ym2414(chip, 0xE0 + opz_op_offset(6, op), 0x08);
+            }
+            write_reg_ym2414(chip, 0x10, 0xF0);
+            write_reg_ym2414(chip, 0x14, 0x85);
+            let mut output = Vec::new();
+            for _ in 0..8 {
+                output.extend(generate_2_ym2414(chip, samples / 8));
+                chip.timer_expired(0);
+            }
+            return output;
+        }
+        _ => panic!("unknown long YM2414 scenario {name}"),
+    }
+    generate_2_ym2414(chip, samples)
+}
+
+/// Number of fuzz seeds for the YM2414.
+pub const YM2414_FUZZ_SEEDS: u32 = 8;
+
+/// Number of blocks in each YM2414 fuzz run.
+pub const YM2414_FUZZ_BLOCKS: usize = 16;
+
+/// Number of samples in each YM2414 fuzz block.
+pub const YM2414_FUZZ_BLOCK_SAMPLES: usize = 256;
+
+/// Runs a YM2414 fuzz stream and returns one checksum per block.
+///
+/// The stream starts with a keyed tone on every channel. Before each block
+/// it writes a random set of registers with random sample gaps in between.
+/// Timer control and CT writes are left out.
+pub fn ym2414_fuzz(seed: u32) -> Vec<u64> {
+    let mut random = XorShift32::new(seed.wrapping_mul(0x85EB_CA6B) | 1);
+    let mut chip = setup_ym2414();
+    for channel in 0..8u8 {
+        select_ym2414_channel(&mut chip, channel);
+        setup_ym2414_tone(&mut chip, channel, channel, channel % 4);
+        write_reg_ym2414(&mut chip, 0x28 + channel, 0x20 + channel * 11);
+        for op in 0..4u8 {
+            write_reg_ym2414(&mut chip, 0x60 + opz_op_offset(channel, op), 0x10);
+        }
+        key_ym2414(&mut chip, channel, channel, channel % 4, true);
+    }
+    let mut checksums = Vec::new();
+    for _ in 0..YM2414_FUZZ_BLOCKS {
+        let mut samples = Vec::new();
+        let writes = 1 + random.below(12);
+        for _ in 0..writes {
+            let address = match random.below(10) {
+                0 => 0x08,
+                1 => [0x0F, 0x16, 0x17, 0x18, 0x19][random.below(5) as usize],
+                2 => 0x1B,
+                3 => 0x20 + random.below(0x08) as u8,
+                4 => 0x28 + random.below(0x18) as u8,
+                5 => 0x60 + random.below(0x20) as u8,
+                _ => 0x40 + random.below(0xC0) as u8,
+            };
+            let mut data = random.next_u32() as u8;
+            if (0x60..0x80).contains(&address) {
+                data &= 0x3F;
+            }
+            if address == 0x1B {
+                data &= 0x3F;
+            }
+            write_reg_ym2414(&mut chip, address, data);
+            if random.below(4) == 0 {
+                let gap =
+                    (random.below(24) as usize).min(YM2414_FUZZ_BLOCK_SAMPLES - samples.len());
+                samples.extend(generate_2_ym2414(&mut chip, gap));
+            }
+        }
+        let remaining = YM2414_FUZZ_BLOCK_SAMPLES - samples.len();
+        samples.extend(generate_2_ym2414(&mut chip, remaining));
         checksums.push(fnv1a_samples(&samples));
     }
     checksums
