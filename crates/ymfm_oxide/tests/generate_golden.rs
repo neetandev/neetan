@@ -1065,6 +1065,25 @@ fn gen_ymf289b_fm(dir: &str) {
     println!("  wrote ymf289b_fm.rs");
 }
 
+fn gen_ym2164_fm(dir: &str) {
+    let mut f = header();
+    for name in YM2164_SCENARIOS {
+        let mut chip = ym2164_scenario(name);
+        f.push_str(&fmt2(name, &generate_2_ym2164(&mut chip, SAMPLES)));
+    }
+    std::fs::write(format!("{dir}/ym2164_fm.rs"), f).unwrap();
+    println!("  wrote ym2164_fm.rs");
+}
+
+fn gen_ym2149_ssg(dir: &str) {
+    let mut f = header();
+    for name in YM2149_SCENARIOS {
+        f.push_str(&fmt3(name, &ym2149_scenario(name)));
+    }
+    std::fs::write(format!("{dir}/ym2149_ssg.rs"), f).unwrap();
+    println!("  wrote ym2149_ssg.rs");
+}
+
 fn gen_opn2_fm<const VARIANT: u8>(dir: &str, file_name: &str) {
     let mut f = header();
     for name in OPN2_SCENARIOS {
@@ -2340,5 +2359,7 @@ fn generate_golden_vectors() {
     gen_ymf262_fm(&dir);
     gen_ymf262_stereo(&dir);
     gen_ym2151_fm(&dir);
+    gen_ym2164_fm(&dir);
+    gen_ym2149_ssg(&dir);
     println!("Done!");
 }

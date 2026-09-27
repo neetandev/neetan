@@ -1,6 +1,7 @@
 use ymfm_oxide::{
-    OpllFamily, Opn2Family, Y8950, Ym2151, Ym2203, Ym2413, Ym2608, Ym2610Family, Ym3526, Ym3812,
-    Ymf262, Ymf288, Ymf289b, YmfmOpnFidelity, YmfmOutput1, YmfmOutput2, YmfmOutput3, YmfmOutput4,
+    OpllFamily, Opn2Family, Y8950, Ym2149, Ym2151, Ym2164, Ym2203, Ym2413, Ym2608, Ym2610Family,
+    Ym3526, Ym3812, Ymf262, Ymf288, Ymf289b, YmfmOpnFidelity, YmfmOutput1, YmfmOutput2,
+    YmfmOutput3, YmfmOutput4,
 };
 
 /// Redistributable YM2413 instrument table adapted from emu2413.
@@ -941,24 +942,282 @@ pub fn opm_op_offset(channel: u8, op: u8) -> u8 {
     channel + (op << 3)
 }
 
-pub fn setup_ym2151_simple_tone(chip: &mut Ym2151, channel: u8, algorithm: u8, feedback: u8) {
+/// Issues the register writes of a simple 4-operator OPM tone through `write`.
+pub fn opm_simple_tone(write: &mut impl FnMut(u8, u8), channel: u8, algorithm: u8, feedback: u8) {
     let pan_fb_algo = 0xC0 | (feedback << 3) | (algorithm & 0x07);
-    write_reg_ym2151(chip, 0x20 + channel, pan_fb_algo);
+    write(0x20 + channel, pan_fb_algo);
     for op in 0..4u8 {
         let off = opm_op_offset(channel, op);
-        write_reg_ym2151(chip, 0x40 + off, 0x01); // DT1=0, MUL=1
-        write_reg_ym2151(chip, 0x60 + off, 0x00); // TL=0
-        write_reg_ym2151(chip, 0x80 + off, 0x1F); // KS=0, AR=31
-        write_reg_ym2151(chip, 0xA0 + off, 0x00); // AMS-EN=0, D1R=0
-        write_reg_ym2151(chip, 0xC0 + off, 0x00); // DT2=0, D2R=0
-        write_reg_ym2151(chip, 0xE0 + off, 0x0F); // D1L=0, RR=15
+        write(0x40 + off, 0x01); // DT1=0, MUL=1
+        write(0x60 + off, 0x00); // TL=0
+        write(0x80 + off, 0x1F); // KS=0, AR=31
+        write(0xA0 + off, 0x00); // AMS-EN=0, D1R=0
+        write(0xC0 + off, 0x00); // DT2=0, D2R=0
+        write(0xE0 + off, 0x0F); // D1L=0, RR=15
     }
-    write_reg_ym2151(chip, 0x28 + channel, 0x4A); // key code
-    write_reg_ym2151(chip, 0x30 + channel, 0x00); // key fraction
+    write(0x28 + channel, 0x4A); // key code
+    write(0x30 + channel, 0x00); // key fraction
+}
+
+pub fn setup_ym2151_simple_tone(chip: &mut Ym2151, channel: u8, algorithm: u8, feedback: u8) {
+    opm_simple_tone(
+        &mut |address, data| write_reg_ym2151(chip, address, data),
+        channel,
+        algorithm,
+        feedback,
+    );
 }
 
 pub fn key_on_ym2151(chip: &mut Ym2151, channel: u8) {
     write_reg_ym2151(chip, 0x08, 0x78 | (channel & 0x07));
+}
+
+// --- OPP (YM2164) helpers ---
+
+pub fn write_reg_ym2164(chip: &mut Ym2164, addr: u8, data: u8) {
+    chip.write_address(addr);
+    chip.write_data(data);
+}
+
+pub fn generate_2_ym2164(chip: &mut Ym2164, count: usize) -> Vec<[i32; 2]> {
+    let mut output = vec![YmfmOutput2 { data: [0; 2] }; count];
+    chip.generate(&mut output);
+    output.iter().map(|s| s.data).collect()
+}
+
+pub fn setup_ym2164() -> Ym2164 {
+    let mut chip = Ym2164::new();
+    chip.reset();
+    chip
+}
+
+/// Names of the YM2164 golden scenarios.
+pub const YM2164_SCENARIOS: &[&str] = &[
+    "SILENCE",
+    "TONE_ALGO7",
+    "ALL_ALGORITHMS",
+    "LOW_REGISTERS",
+    "LFO_AM_PM",
+    "NOISE",
+    "DETUNE",
+];
+
+/// Builds the named YM2164 scenario with all channels keyed on.
+pub fn ym2164_scenario(name: &str) -> Ym2164 {
+    let mut chip = setup_ym2164();
+    let mut write = |address: u8, data: u8| write_reg_ym2164(&mut chip, address, data);
+    match name {
+        "SILENCE" => {}
+        "TONE_ALGO7" => {
+            opm_simple_tone(&mut write, 0, 7, 0);
+            write(0x08, 0x78);
+        }
+        "ALL_ALGORITHMS" => {
+            for channel in 0..8u8 {
+                opm_simple_tone(&mut write, channel, channel, 3);
+                write(0x28 + channel, 0x3A + channel * 4);
+                write(0x08, 0x78 | channel);
+            }
+        }
+        "LOW_REGISTERS" => {
+            for address in 0x00..0x08u8 {
+                write(address, 0xFF);
+            }
+            opm_simple_tone(&mut write, 2, 5, 2);
+            write(0x08, 0x78 | 2);
+        }
+        "LFO_AM_PM" => {
+            write(0x18, 0xF0);
+            write(0x19, 0x40);
+            write(0x19, 0xFF);
+            write(0x1B, 0x02);
+            opm_simple_tone(&mut write, 1, 7, 0);
+            write(0x38 + 1, 0x71);
+            for op in [0u8, 2] {
+                write(0xA0 + opm_op_offset(1, op), 0x80);
+            }
+            write(0x08, 0x78 | 1);
+        }
+        "NOISE" => {
+            write(0x0F, 0x88);
+            opm_simple_tone(&mut write, 7, 7, 0);
+            write(0x08, 0x78 | 7);
+        }
+        "DETUNE" => {
+            opm_simple_tone(&mut write, 3, 7, 0);
+            for (op, dt1_mul) in [(0u8, 0x31u8), (1, 0x72), (2, 0x13), (3, 0x54)] {
+                write(0x40 + opm_op_offset(3, op), dt1_mul);
+                write(0xC0 + opm_op_offset(3, op), op << 6);
+            }
+            write(0x08, 0x78 | 3);
+        }
+        _ => panic!("unknown YM2164 scenario {name}"),
+    }
+    chip
+}
+
+// --- SSG (YM2149) helpers ---
+
+pub fn write_reg_ym2149(chip: &mut Ym2149, addr: u8, data: u8) {
+    chip.write_address(addr);
+    chip.write_data(data);
+}
+
+pub fn generate_3_ym2149(chip: &mut Ym2149, count: usize) -> Vec<[i32; 3]> {
+    let mut output = vec![YmfmOutput3 { data: [0; 3] }; count];
+    chip.generate(&mut output);
+    output.iter().map(|s| s.data).collect()
+}
+
+pub fn setup_ym2149() -> Ym2149 {
+    let mut chip = Ym2149::new();
+    chip.reset();
+    chip
+}
+
+/// Names of the YM2149 golden scenarios.
+pub const YM2149_SCENARIOS: &[&str] = &[
+    "SILENCE",
+    "TONE_A",
+    "THREE_CHANNELS",
+    "TONE_PERIOD_ZERO",
+    "NOISE",
+    "NOISE_PERIOD_ZERO",
+    "TONE_AND_NOISE",
+    "AMPLITUDES",
+    "ENVELOPE_SHAPE_0",
+    "ENVELOPE_SHAPE_1",
+    "ENVELOPE_SHAPE_2",
+    "ENVELOPE_SHAPE_3",
+    "ENVELOPE_SHAPE_4",
+    "ENVELOPE_SHAPE_5",
+    "ENVELOPE_SHAPE_6",
+    "ENVELOPE_SHAPE_7",
+    "ENVELOPE_SHAPE_8",
+    "ENVELOPE_SHAPE_9",
+    "ENVELOPE_SHAPE_A",
+    "ENVELOPE_SHAPE_B",
+    "ENVELOPE_SHAPE_C",
+    "ENVELOPE_SHAPE_D",
+    "ENVELOPE_SHAPE_E",
+    "ENVELOPE_SHAPE_F",
+    "ENVELOPE_PERIOD_ZERO",
+    "ENVELOPE_TONE",
+    "ENVELOPE_RESTART",
+    "BUS_INTERFACE",
+];
+
+/// Number of samples in each YM2149 golden scenario.
+pub const YM2149_SCENARIO_SAMPLES: usize = 512;
+
+/// Runs the named YM2149 scenario and returns its samples.
+pub fn ym2149_scenario(name: &str) -> Vec<[i32; 3]> {
+    let mut chip = setup_ym2149();
+    if let Some(shape) = name.strip_prefix("ENVELOPE_SHAPE_") {
+        let shape = u8::from_str_radix(shape, 16).unwrap();
+        write_reg_ym2149(&mut chip, 0x07, 0x3F);
+        write_reg_ym2149(&mut chip, 0x08, 0x10);
+        write_reg_ym2149(&mut chip, 0x0B, 0x02);
+        write_reg_ym2149(&mut chip, 0x0C, 0x00);
+        write_reg_ym2149(&mut chip, 0x0D, shape);
+        return generate_3_ym2149(&mut chip, YM2149_SCENARIO_SAMPLES);
+    }
+    match name {
+        "SILENCE" => {}
+        "TONE_A" => {
+            write_reg_ym2149(&mut chip, 0x00, 0x10);
+            write_reg_ym2149(&mut chip, 0x01, 0x00);
+            write_reg_ym2149(&mut chip, 0x07, 0x3E);
+            write_reg_ym2149(&mut chip, 0x08, 0x0F);
+        }
+        "THREE_CHANNELS" => {
+            write_reg_ym2149(&mut chip, 0x00, 0x10);
+            write_reg_ym2149(&mut chip, 0x02, 0x23);
+            write_reg_ym2149(&mut chip, 0x03, 0x00);
+            write_reg_ym2149(&mut chip, 0x04, 0x07);
+            write_reg_ym2149(&mut chip, 0x05, 0xF1);
+            write_reg_ym2149(&mut chip, 0x07, 0xF8);
+            write_reg_ym2149(&mut chip, 0x08, 0x0F);
+            write_reg_ym2149(&mut chip, 0x09, 0x0A);
+            write_reg_ym2149(&mut chip, 0x0A, 0x05);
+        }
+        "TONE_PERIOD_ZERO" => {
+            write_reg_ym2149(&mut chip, 0x07, 0x3C);
+            write_reg_ym2149(&mut chip, 0x08, 0x0F);
+            write_reg_ym2149(&mut chip, 0x02, 0x01);
+            write_reg_ym2149(&mut chip, 0x09, 0x0F);
+        }
+        "NOISE" => {
+            write_reg_ym2149(&mut chip, 0x06, 0x05);
+            write_reg_ym2149(&mut chip, 0x07, 0x07);
+            write_reg_ym2149(&mut chip, 0x08, 0x0F);
+            write_reg_ym2149(&mut chip, 0x09, 0x0C);
+            write_reg_ym2149(&mut chip, 0x0A, 0x08);
+        }
+        "NOISE_PERIOD_ZERO" => {
+            write_reg_ym2149(&mut chip, 0x06, 0x00);
+            write_reg_ym2149(&mut chip, 0x07, 0x37);
+            write_reg_ym2149(&mut chip, 0x08, 0x0F);
+        }
+        "TONE_AND_NOISE" => {
+            write_reg_ym2149(&mut chip, 0x00, 0x0C);
+            write_reg_ym2149(&mut chip, 0x06, 0x1F);
+            write_reg_ym2149(&mut chip, 0x07, 0x36);
+            write_reg_ym2149(&mut chip, 0x08, 0x0F);
+        }
+        "AMPLITUDES" => {
+            write_reg_ym2149(&mut chip, 0x07, 0x3F);
+            let mut samples = Vec::new();
+            for amplitude in 0..16u8 {
+                write_reg_ym2149(&mut chip, 0x08, amplitude);
+                write_reg_ym2149(&mut chip, 0x09, 15 - amplitude);
+                write_reg_ym2149(&mut chip, 0x0A, amplitude | 0xE0);
+                samples.extend(generate_3_ym2149(&mut chip, YM2149_SCENARIO_SAMPLES / 16));
+            }
+            return samples;
+        }
+        "ENVELOPE_PERIOD_ZERO" => {
+            write_reg_ym2149(&mut chip, 0x07, 0x3F);
+            write_reg_ym2149(&mut chip, 0x09, 0x10);
+            write_reg_ym2149(&mut chip, 0x0D, 0x0E);
+        }
+        "ENVELOPE_TONE" => {
+            write_reg_ym2149(&mut chip, 0x04, 0x05);
+            write_reg_ym2149(&mut chip, 0x07, 0x3B);
+            write_reg_ym2149(&mut chip, 0x0A, 0x10);
+            write_reg_ym2149(&mut chip, 0x0B, 0x04);
+            write_reg_ym2149(&mut chip, 0x0D, 0x0A);
+        }
+        "ENVELOPE_RESTART" => {
+            write_reg_ym2149(&mut chip, 0x07, 0x3F);
+            write_reg_ym2149(&mut chip, 0x08, 0x10);
+            write_reg_ym2149(&mut chip, 0x0B, 0x03);
+            write_reg_ym2149(&mut chip, 0x0D, 0x0D);
+            let mut samples = generate_3_ym2149(&mut chip, 50);
+            write_reg_ym2149(&mut chip, 0x0D, 0x0D);
+            samples.extend(generate_3_ym2149(&mut chip, 70));
+            write_reg_ym2149(&mut chip, 0x0D, 0x04);
+            samples.extend(generate_3_ym2149(&mut chip, YM2149_SCENARIO_SAMPLES - 120));
+            return samples;
+        }
+        "BUS_INTERFACE" => {
+            for (address, data) in [(0x00, 0x0E), (0x07, 0x3E), (0x08, 0x0F)] {
+                chip.write(0, address);
+                chip.write(2, data);
+            }
+            chip.write(3, 0x08);
+            chip.write(1, 0x09);
+            chip.write(2, 0x0B);
+            chip.write(1, 0x00);
+            let mut samples = generate_3_ym2149(&mut chip, YM2149_SCENARIO_SAMPLES / 2);
+            chip.write(0, 0x18);
+            chip.write(2, 0x06);
+            samples.extend(generate_3_ym2149(&mut chip, YM2149_SCENARIO_SAMPLES / 2));
+            return samples;
+        }
+        _ => panic!("unknown YM2149 scenario {name}"),
+    }
+    generate_3_ym2149(&mut chip, YM2149_SCENARIO_SAMPLES)
 }
 
 // --- OPL helpers ---
