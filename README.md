@@ -417,8 +417,8 @@ cargo build --no-default-features --features auto,pc98      # PC-98 only, headle
 ### Optional MIDI features
 
 The Roland MT-32 and SC-55 emulations are optional build features, both enabled by
-default. Distributions that cannot comply with their licenses (see
-[License](#license)) can disable one or both at build time:
+default. Both use copyleft licenses (see [License](#license)). A build that must stay
+BSD 3-Clause licensed can disable one or both:
 
 ```bash
 # neither
@@ -481,16 +481,17 @@ This project is licensed under the [3-clause BSD](https://opensource.org/license
 
 When optional features are enabled, the license terms of the resulting binary change:
 
-| Build configuration             | Binary license                |
-|---------------------------------|-------------------------------|
-| Default (no optional features)  | BSD 3-Clause                  |
-| `sc55` feature enabled          | BSD 3-Clause + non-commercial |
-| `mt32` feature enabled          | LGPL 2.1                      |
-| `sc55` + `mt32` enabled         | LGPL 2.1 + non-commercial     |
+| Build configuration             | Binary license   |
+|---------------------------------|------------------|
+| Default (no optional features)  | BSD 3-Clause     |
+| `mt32` feature enabled          | LGPL 2.1         |
+| `sc55` feature enabled          | GPL 2.0 or later |
+| `sc55` + `mt32` enabled         | GPL 2.0 or later |
 
-The `sc55` feature links the Nuked-SC55 port, which is licensed under the original
-MAME license (non-commercial use only). The `mt32` feature links the munt port, which
-is licensed under [LGPL 2.1](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html).
+The `sc55` feature links the Nuked-SC55 port, which is licensed under
+[GPL 2.0 or later](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html). The `mt32`
+feature links the munt port, which is licensed under
+[LGPL 2.1](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html).
 
 The source code of the BSD 3-Clause licensed components remains available under BSD
 3-Clause regardless of the build configuration.
