@@ -62,7 +62,7 @@
 //! This project is licensed under [3-clause BSD](https://opensource.org/license/bsd-3-clause) license.
 
 #![deny(missing_docs)]
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
@@ -415,7 +415,6 @@ impl Ym2203 {
     /// Fills `output.len()` samples, each containing four channels:
     /// `[FM, SSG-A, SSG-B, SSG-C]`.
     pub fn generate(&mut self, output: &mut [YmfmOutput4]) {
-        let numsamples = output.len();
         let sampindex = self.ssg_resampler.sampindex();
 
         // FM output is just repeated the prescale number of times;
@@ -443,15 +442,11 @@ impl Ym2203 {
             }
         }
 
-        // SAFETY: YmfmOutput4 is #[repr(C)] with a single [i32; 4] field,
-        // so &mut [YmfmOutput4] has the same layout as &mut [[i32; 4]].
-        #[allow(unsafe_code)]
-        let output_nested = unsafe { &mut *(output as *mut [YmfmOutput4] as *mut [[i32; 4]]) };
-        const _: () = assert!(size_of::<YmfmOutput4>() == size_of::<[i32; 4]>());
-
-        let output_flat = output_nested.as_flattened_mut();
-        self.ssg_resampler
-            .resample(&mut self.ssg, output_flat, numsamples);
+        // Resample the SSG as configured.
+        self.ssg_resampler.resample(
+            &mut self.ssg,
+            output.iter_mut().map(|sample| &mut sample.data),
+        );
     }
 
     /// Notifies the chip that the specified timer has expired.
@@ -876,7 +871,6 @@ impl Ym2608 {
     ///
     /// Each sample contains three channels: `[FM_L, FM_R, SSG]`.
     pub fn generate(&mut self, output: &mut [YmfmOutput3]) {
-        let numsamples = output.len();
         let sampindex = self.ssg_resampler.sampindex();
 
         // FM output is just repeated the prescale number of times;
@@ -908,15 +902,10 @@ impl Ym2608 {
         }
 
         // Resample the SSG as configured.
-        // SAFETY: YmfmOutput3 is #[repr(C)] with a single [i32; 3] field,
-        // so &mut [YmfmOutput3] has the same layout as &mut [[i32; 3]].
-        #[allow(unsafe_code)]
-        let output_nested = unsafe { &mut *(output as *mut [YmfmOutput3] as *mut [[i32; 3]]) };
-        const _: () = assert!(size_of::<YmfmOutput3>() == size_of::<[i32; 3]>());
-
-        let output_flat = output_nested.as_flattened_mut();
-        self.ssg_resampler
-            .resample(&mut self.ssg, output_flat, numsamples);
+        self.ssg_resampler.resample(
+            &mut self.ssg,
+            output.iter_mut().map(|sample| &mut sample.data),
+        );
     }
 
     /// Notifies the chip that the specified timer has expired.
@@ -1296,7 +1285,6 @@ impl Ymf288 {
     ///
     /// Each sample contains three channels: `[FM_L, FM_R, SSG]`.
     pub fn generate(&mut self, output: &mut [YmfmOutput3]) {
-        let numsamples = output.len();
         let sampindex = self.ssg_resampler.sampindex();
 
         for (samp, out) in output.iter_mut().enumerate() {
@@ -1308,15 +1296,10 @@ impl Ymf288 {
         }
 
         // Resample the SSG as configured.
-        // SAFETY: YmfmOutput3 is #[repr(C)] with a single [i32; 3] field,
-        // so &mut [YmfmOutput3] has the same layout as &mut [[i32; 3]].
-        #[allow(unsafe_code)]
-        let output_nested = unsafe { &mut *(output as *mut [YmfmOutput3] as *mut [[i32; 3]]) };
-        const _: () = assert!(size_of::<YmfmOutput3>() == size_of::<[i32; 3]>());
-
-        let output_flat = output_nested.as_flattened_mut();
-        self.ssg_resampler
-            .resample(&mut self.ssg, output_flat, numsamples);
+        self.ssg_resampler.resample(
+            &mut self.ssg,
+            output.iter_mut().map(|sample| &mut sample.data),
+        );
     }
 
     /// Notifies the chip that the specified timer has expired.
@@ -1739,7 +1722,6 @@ impl<const FM_CHANNEL_MASK: u32> Ym2610Family<FM_CHANNEL_MASK> {
     ///
     /// Each sample contains three channels: `[FM_L, FM_R, SSG]`.
     pub fn generate(&mut self, output: &mut [YmfmOutput3]) {
-        let numsamples = output.len();
         let sampindex = self.ssg_resampler.sampindex();
 
         for (samp, out) in output.iter_mut().enumerate() {
@@ -1750,15 +1732,11 @@ impl<const FM_CHANNEL_MASK: u32> Ym2610Family<FM_CHANNEL_MASK> {
             out.data[1] = self.last_fm[1];
         }
 
-        // SAFETY: YmfmOutput3 is #[repr(C)] with a single [i32; 3] field,
-        // so &mut [YmfmOutput3] has the same layout as &mut [[i32; 3]].
-        #[allow(unsafe_code)]
-        let output_nested = unsafe { &mut *(output as *mut [YmfmOutput3] as *mut [[i32; 3]]) };
-        const _: () = assert!(size_of::<YmfmOutput3>() == size_of::<[i32; 3]>());
-
-        let output_flat = output_nested.as_flattened_mut();
-        self.ssg_resampler
-            .resample(&mut self.ssg, output_flat, numsamples);
+        // Resample the SSG as configured.
+        self.ssg_resampler.resample(
+            &mut self.ssg,
+            output.iter_mut().map(|sample| &mut sample.data),
+        );
     }
 
     /// Notifies the chip that the specified timer has expired.
