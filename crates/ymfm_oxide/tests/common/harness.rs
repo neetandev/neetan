@@ -1,6 +1,6 @@
 use ymfm_oxide::{
-    Y8950, Ym2151, Ym2203, Ym2413, Ym2608, Ym2610Family, Ym3526, Ym3812, Ymf262, Ymf276,
-    YmfmOpnFidelity, YmfmOutput1, YmfmOutput2, YmfmOutput3, YmfmOutput4,
+    Opn2Family, Y8950, Ym2151, Ym2203, Ym2413, Ym2608, Ym2610Family, Ym3526, Ym3812, Ymf262,
+    Ymf288, YmfmOpnFidelity, YmfmOutput1, YmfmOutput2, YmfmOutput3, YmfmOutput4,
 };
 
 /// Redistributable YM2413 instrument table adapted from emu2413.
@@ -239,19 +239,22 @@ pub fn add_fm_bg_2203(chip: &mut Ym2203) {
     key_on_2203(chip, 2);
 }
 
-// --- OPN2 (YMF276) helpers ---
+// --- OPN2 (YM2612 / YM3438 / YMF276) helpers ---
 
-pub fn write_reg_ymf276(chip: &mut Ymf276, addr: u8, data: u8) {
+pub fn write_reg_opn2<const VARIANT: u8>(chip: &mut Opn2Family<VARIANT>, addr: u8, data: u8) {
     chip.write_address(addr);
     chip.write_data(data);
 }
 
-pub fn write_reg_ymf276_hi(chip: &mut Ymf276, addr: u8, data: u8) {
+pub fn write_reg_opn2_hi<const VARIANT: u8>(chip: &mut Opn2Family<VARIANT>, addr: u8, data: u8) {
     chip.write_address_hi(addr);
     chip.write_data_hi(data);
 }
 
-pub fn generate_2(chip: &mut Ymf276, count: usize) -> Vec<[i32; 2]> {
+pub fn generate_2_opn2<const VARIANT: u8>(
+    chip: &mut Opn2Family<VARIANT>,
+    count: usize,
+) -> Vec<[i32; 2]> {
     let mut output = vec![YmfmOutput2 { data: [0; 2] }; count];
     chip.generate(&mut output);
     output.iter().map(|s| s.data).collect()
@@ -273,57 +276,415 @@ pub fn assert_samples_2(actual: &[[i32; 2]], expected: &[[i32; 2]]) {
     }
 }
 
-pub fn setup_ymf276() -> Ymf276 {
-    let mut chip = Ymf276::new();
+pub fn setup_opn2<const VARIANT: u8>() -> Opn2Family<VARIANT> {
+    let mut chip = Opn2Family::<VARIANT>::new();
     chip.reset();
     chip
 }
 
 /// A simple 4-operator tone on the given channel (0-5), routed to the correct
 /// register bank (channels 0-2 low, 3-5 high).
-pub fn setup_ymf276_simple_tone(chip: &mut Ymf276, channel: u8, algorithm: u8, feedback: u8) {
+pub fn setup_opn2_simple_tone<const VARIANT: u8>(
+    chip: &mut Opn2Family<VARIANT>,
+    channel: u8,
+    algorithm: u8,
+    feedback: u8,
+) {
     let fb_algo = (feedback << 3) | (algorithm & 0x07);
-    if channel < 3 {
-        write_reg_ymf276(chip, 0xB0 + channel, fb_algo);
-        for op_offset in [0x00, 0x04, 0x08, 0x0C] {
-            let reg_base = channel + op_offset;
-            write_reg_ymf276(chip, 0x30 + reg_base, 0x01);
-            write_reg_ymf276(chip, 0x40 + reg_base, 0x00);
-            write_reg_ymf276(chip, 0x50 + reg_base, 0x1F);
-            write_reg_ymf276(chip, 0x60 + reg_base, 0x00);
-            write_reg_ymf276(chip, 0x70 + reg_base, 0x00);
-            write_reg_ymf276(chip, 0x80 + reg_base, 0x0F);
-            write_reg_ymf276(chip, 0x90 + reg_base, 0x00);
+    let high = channel >= 3;
+    let ch = if high { channel - 3 } else { channel };
+    let mut write = |addr: u8, data: u8| {
+        if high {
+            write_reg_opn2_hi(chip, addr, data);
+        } else {
+            write_reg_opn2(chip, addr, data);
         }
-        write_reg_ymf276(chip, 0xA4 + channel, 0x22);
-        write_reg_ymf276(chip, 0xA0 + channel, 0x69);
-        write_reg_ymf276(chip, 0xB4 + channel, 0xC0);
-    } else {
-        let ch = channel - 3;
-        write_reg_ymf276_hi(chip, 0xB0 + ch, fb_algo);
-        for op_offset in [0x00, 0x04, 0x08, 0x0C] {
-            let reg_base = ch + op_offset;
-            write_reg_ymf276_hi(chip, 0x30 + reg_base, 0x01);
-            write_reg_ymf276_hi(chip, 0x40 + reg_base, 0x00);
-            write_reg_ymf276_hi(chip, 0x50 + reg_base, 0x1F);
-            write_reg_ymf276_hi(chip, 0x60 + reg_base, 0x00);
-            write_reg_ymf276_hi(chip, 0x70 + reg_base, 0x00);
-            write_reg_ymf276_hi(chip, 0x80 + reg_base, 0x0F);
-            write_reg_ymf276_hi(chip, 0x90 + reg_base, 0x00);
-        }
-        write_reg_ymf276_hi(chip, 0xA4 + ch, 0x22);
-        write_reg_ymf276_hi(chip, 0xA0 + ch, 0x69);
-        write_reg_ymf276_hi(chip, 0xB4 + ch, 0xC0);
+    };
+    write(0xB0 + ch, fb_algo);
+    for op_offset in [0x00, 0x04, 0x08, 0x0C] {
+        let reg_base = ch + op_offset;
+        write(0x30 + reg_base, 0x01);
+        write(0x40 + reg_base, 0x00);
+        write(0x50 + reg_base, 0x1F);
+        write(0x60 + reg_base, 0x00);
+        write(0x70 + reg_base, 0x00);
+        write(0x80 + reg_base, 0x0F);
+        write(0x90 + reg_base, 0x00);
     }
+    write(0xA4 + ch, 0x22);
+    write(0xA0 + ch, 0x69);
+    write(0xB4 + ch, 0xC0);
 }
 
-pub fn key_on_ymf276(chip: &mut Ymf276, channel: u8) {
+pub fn key_on_opn2<const VARIANT: u8>(chip: &mut Opn2Family<VARIANT>, channel: u8) {
     let ch_bits = if channel < 3 {
         channel
     } else {
         channel - 3 + 4
     };
-    write_reg_ymf276(chip, 0x28, 0xF0 | ch_bits);
+    write_reg_opn2(chip, 0x28, 0xF0 | ch_bits);
+}
+
+/// Writes one 4-operator voice on channel 0 with moderate modulator levels.
+fn setup_opn2_moderate_voice<const VARIANT: u8>(chip: &mut Opn2Family<VARIANT>, fb_algo: u8) {
+    write_reg_opn2(chip, 0xB0, fb_algo);
+    for (op_offset, tl) in [(0x00, 0x20), (0x04, 0x20), (0x08, 0x20), (0x0C, 0x00)] {
+        write_reg_opn2(chip, 0x30 + op_offset, 0x01);
+        write_reg_opn2(chip, 0x40 + op_offset, tl);
+        write_reg_opn2(chip, 0x50 + op_offset, 0x1F);
+        write_reg_opn2(chip, 0x60 + op_offset, 0x00);
+        write_reg_opn2(chip, 0x70 + op_offset, 0x00);
+        write_reg_opn2(chip, 0x80 + op_offset, 0x0F);
+        write_reg_opn2(chip, 0x90 + op_offset, 0x00);
+    }
+    write_reg_opn2(chip, 0xA4, 0x22);
+    write_reg_opn2(chip, 0xA0, 0x69);
+}
+
+/// Names of the OPN2 golden scenarios shared by all three variants.
+pub const OPN2_SCENARIOS: &[&str] = &[
+    "SILENCE",
+    "SINGLE_TONE",
+    "ALGO_0",
+    "ALGO_1",
+    "ALGO_2",
+    "ALGO_3",
+    "ALGO_4",
+    "ALGO_5",
+    "ALGO_6",
+    "ALGO_7",
+    "ALL_6_CHANNELS",
+    "LFO_OFF",
+    "LFO_ON",
+    "PAN_LEFT",
+    "PAN_RIGHT",
+    "DAC_MODE",
+    "DAC_NEGATIVE",
+    "DAC_LOW_BIT",
+    "DAC_LEFT_ONLY",
+    "DAC_WITH_FM",
+    "DAC_KEPT_BY_RESET",
+    "CSM_KEY_ON",
+];
+
+/// Builds the named OPN2 scenario and returns the chip ready to generate.
+pub fn opn2_scenario<const VARIANT: u8>(name: &str) -> Opn2Family<VARIANT> {
+    let mut chip = setup_opn2::<VARIANT>();
+    match name {
+        "SILENCE" => {}
+        "SINGLE_TONE" => {
+            setup_opn2_simple_tone(&mut chip, 0, 7, 0);
+            key_on_opn2(&mut chip, 0);
+        }
+        "ALGO_0" | "ALGO_1" | "ALGO_2" | "ALGO_3" | "ALGO_4" | "ALGO_5" | "ALGO_6" | "ALGO_7" => {
+            let algorithm = name.as_bytes()[5] - b'0';
+            setup_opn2_moderate_voice(&mut chip, algorithm);
+            write_reg_opn2(&mut chip, 0xB4, 0xC0);
+            key_on_opn2(&mut chip, 0);
+        }
+        "ALL_6_CHANNELS" => {
+            let freqs: [(u8, u8); 6] = [
+                (0x22, 0x69),
+                (0x24, 0x80),
+                (0x26, 0xD5),
+                (0x22, 0x40),
+                (0x28, 0x50),
+                (0x2A, 0xA0),
+            ];
+            for ch in 0..6u8 {
+                setup_opn2_simple_tone(&mut chip, ch, 7, 0);
+                let (hi, lo) = freqs[ch as usize];
+                if ch < 3 {
+                    write_reg_opn2(&mut chip, 0xA4 + ch, hi);
+                    write_reg_opn2(&mut chip, 0xA0 + ch, lo);
+                } else {
+                    write_reg_opn2_hi(&mut chip, 0xA4 + (ch - 3), hi);
+                    write_reg_opn2_hi(&mut chip, 0xA0 + (ch - 3), lo);
+                }
+                key_on_opn2(&mut chip, ch);
+            }
+        }
+        "LFO_OFF" => {
+            setup_opn2_moderate_voice(&mut chip, 0x00);
+            write_reg_opn2(&mut chip, 0xB4, 0xC0);
+            key_on_opn2(&mut chip, 0);
+        }
+        "LFO_ON" => {
+            setup_opn2_moderate_voice(&mut chip, 0x00);
+            write_reg_opn2(&mut chip, 0x22, 0x08); // LFO enable, rate 0
+            write_reg_opn2(&mut chip, 0xB4, 0xC0 | 0x27); // AMS=2, PMS=7, L+R
+            write_reg_opn2(&mut chip, 0x60, 0x80); // AM enable on operator 1
+            key_on_opn2(&mut chip, 0);
+        }
+        "PAN_LEFT" | "PAN_RIGHT" => {
+            setup_opn2_simple_tone(&mut chip, 0, 7, 0);
+            write_reg_opn2(
+                &mut chip,
+                0xB4,
+                if name == "PAN_LEFT" { 0x80 } else { 0x40 },
+            );
+            key_on_opn2(&mut chip, 0);
+        }
+        "DAC_MODE" => {
+            write_reg_opn2(&mut chip, 0x2B, 0x80); // DAC enable
+            write_reg_opn2(&mut chip, 0x2A, 0xC0); // DAC data (positive)
+            write_reg_opn2_hi(&mut chip, 0xB6, 0xC0); // channel 6 pan L+R
+        }
+        "DAC_NEGATIVE" => {
+            write_reg_opn2(&mut chip, 0x2B, 0x80);
+            write_reg_opn2(&mut chip, 0x2A, 0x20);
+            write_reg_opn2_hi(&mut chip, 0xB6, 0xC0);
+        }
+        "DAC_LOW_BIT" => {
+            write_reg_opn2(&mut chip, 0x2B, 0x80);
+            write_reg_opn2(&mut chip, 0x2A, 0x83);
+            write_reg_opn2(&mut chip, 0x2C, 0x08); // low DAC bit
+            write_reg_opn2_hi(&mut chip, 0xB6, 0xC0);
+        }
+        "DAC_LEFT_ONLY" => {
+            write_reg_opn2(&mut chip, 0x2B, 0x80);
+            write_reg_opn2(&mut chip, 0x2A, 0xE0);
+            write_reg_opn2_hi(&mut chip, 0xB6, 0x80);
+        }
+        "DAC_WITH_FM" => {
+            for ch in 0..6u8 {
+                setup_opn2_simple_tone(&mut chip, ch, 7, 0);
+                key_on_opn2(&mut chip, ch);
+            }
+            write_reg_opn2(&mut chip, 0x2B, 0x80);
+            write_reg_opn2(&mut chip, 0x2A, 0x10);
+        }
+        "DAC_KEPT_BY_RESET" => {
+            write_reg_opn2(&mut chip, 0x2A, 0xF0);
+            write_reg_opn2(&mut chip, 0x2B, 0x80);
+            chip.reset();
+            write_reg_opn2_hi(&mut chip, 0xB6, 0xC0);
+        }
+        "CSM_KEY_ON" => {
+            setup_opn2_simple_tone(&mut chip, 2, 4, 5);
+            write_reg_opn2(&mut chip, 0x24, 0xFF);
+            write_reg_opn2(&mut chip, 0x25, 0x03);
+            write_reg_opn2(&mut chip, 0x27, 0x85); // CSM mode, enable and load timer A
+            chip.timer_expired(0);
+        }
+        _ => panic!("unknown OPN2 scenario {name}"),
+    }
+    chip
+}
+
+// --- OPN3L (YMF288) helpers ---
+
+pub fn write_reg_ymf288(chip: &mut Ymf288, addr: u8, data: u8) {
+    chip.write_address(addr);
+    chip.write_data(data);
+}
+
+pub fn write_reg_ymf288_hi(chip: &mut Ymf288, addr: u8, data: u8) {
+    chip.write_address_hi(addr);
+    chip.write_data_hi(data);
+}
+
+pub fn generate_3_ymf288(chip: &mut Ymf288, count: usize) -> Vec<[i32; 3]> {
+    let mut output = vec![YmfmOutput3 { data: [0; 3] }; count];
+    chip.generate(&mut output);
+    output.iter().map(|s| s.data).collect()
+}
+
+pub fn setup_ymf288(fidelity: YmfmOpnFidelity) -> Ymf288 {
+    let mut chip = Ymf288::new();
+    chip.reset();
+    chip.set_fidelity(fidelity);
+    chip
+}
+
+/// A simple 4-operator tone on the given channel (0-5).
+pub fn setup_ymf288_simple_tone(chip: &mut Ymf288, channel: u8, algorithm: u8, feedback: u8) {
+    let fb_algo = (feedback << 3) | (algorithm & 0x07);
+    let high = channel >= 3;
+    let ch = if high { channel - 3 } else { channel };
+    let mut write = |addr: u8, data: u8| {
+        if high {
+            write_reg_ymf288_hi(chip, addr, data);
+        } else {
+            write_reg_ymf288(chip, addr, data);
+        }
+    };
+    write(0xB0 + ch, fb_algo);
+    for op_offset in [0x00, 0x04, 0x08, 0x0C] {
+        let reg_base = ch + op_offset;
+        write(0x30 + reg_base, 0x01);
+        write(0x40 + reg_base, 0x00);
+        write(0x50 + reg_base, 0x1F);
+        write(0x60 + reg_base, 0x00);
+        write(0x70 + reg_base, 0x00);
+        write(0x80 + reg_base, 0x0F);
+        write(0x90 + reg_base, 0x00);
+    }
+    write(0xA4 + ch, 0x22);
+    write(0xA0 + ch, 0x69);
+    write(0xB4 + ch, 0xC0);
+}
+
+pub fn key_on_ymf288(chip: &mut Ymf288, channel: u8) {
+    let ch_bits = if channel < 3 { channel } else { channel + 1 };
+    write_reg_ymf288(chip, 0x28, 0xF0 | ch_bits);
+}
+
+/// Names of the YMF288 FM and SSG golden scenarios.
+pub const YMF288_FM_SCENARIOS: &[&str] = &[
+    "SILENCE",
+    "TONE_CH0",
+    "THREE_CHANNEL_MODE",
+    "SIX_CHANNEL_MODE",
+    "ALGO_0",
+    "ALGO_1",
+    "ALGO_2",
+    "ALGO_3",
+    "ALGO_4",
+    "ALGO_5",
+    "ALGO_6",
+    "ALGO_7",
+    "PAN_LEFT",
+    "PAN_RIGHT",
+    "LFO_ON",
+    "SSG_TONE",
+    "SSG_ENVELOPE",
+    "FIDELITY_MIN",
+    "FIDELITY_MED",
+    "YMF288_MODE_TONE",
+    "CSM_IGNORED",
+    "PRESCALER_IGNORED",
+];
+
+/// Builds the named YMF288 FM or SSG scenario.
+pub fn ymf288_fm_scenario(name: &str) -> Ymf288 {
+    let fidelity = match name {
+        "FIDELITY_MIN" => YmfmOpnFidelity::Min,
+        "FIDELITY_MED" => YmfmOpnFidelity::Med,
+        _ => YmfmOpnFidelity::Max,
+    };
+    let mut chip = setup_ymf288(fidelity);
+    match name {
+        "SILENCE" => {}
+        "TONE_CH0" | "FIDELITY_MIN" | "FIDELITY_MED" => {
+            setup_ymf288_simple_tone(&mut chip, 0, 7, 0);
+            key_on_ymf288(&mut chip, 0);
+        }
+        "THREE_CHANNEL_MODE" | "SIX_CHANNEL_MODE" => {
+            if name == "SIX_CHANNEL_MODE" {
+                write_reg_ymf288(&mut chip, 0x29, 0x83);
+            }
+            for ch in 0..6u8 {
+                setup_ymf288_simple_tone(&mut chip, ch, 7, 0);
+                key_on_ymf288(&mut chip, ch);
+            }
+        }
+        "ALGO_0" | "ALGO_1" | "ALGO_2" | "ALGO_3" | "ALGO_4" | "ALGO_5" | "ALGO_6" | "ALGO_7" => {
+            let algorithm = name.as_bytes()[5] - b'0';
+            setup_ymf288_simple_tone(&mut chip, 0, algorithm, 3);
+            for op_offset in [0x00, 0x04, 0x08] {
+                write_reg_ymf288(&mut chip, 0x40 + op_offset, 0x20);
+            }
+            key_on_ymf288(&mut chip, 0);
+        }
+        "PAN_LEFT" | "PAN_RIGHT" => {
+            setup_ymf288_simple_tone(&mut chip, 1, 7, 0);
+            write_reg_ymf288(
+                &mut chip,
+                0xB5,
+                if name == "PAN_LEFT" { 0x80 } else { 0x40 },
+            );
+            key_on_ymf288(&mut chip, 1);
+        }
+        "LFO_ON" => {
+            setup_ymf288_simple_tone(&mut chip, 0, 4, 2);
+            write_reg_ymf288(&mut chip, 0x22, 0x0B);
+            write_reg_ymf288(&mut chip, 0xB4, 0xC0 | 0x37);
+            write_reg_ymf288(&mut chip, 0x60, 0x80);
+            key_on_ymf288(&mut chip, 0);
+        }
+        "SSG_TONE" => {
+            write_reg_ymf288(&mut chip, 0x00, 0x10);
+            write_reg_ymf288(&mut chip, 0x01, 0x00);
+            write_reg_ymf288(&mut chip, 0x02, 0x03);
+            write_reg_ymf288(&mut chip, 0x03, 0x00);
+            write_reg_ymf288(&mut chip, 0x07, 0x3C);
+            write_reg_ymf288(&mut chip, 0x08, 0x0F);
+            write_reg_ymf288(&mut chip, 0x09, 0x0A);
+        }
+        "SSG_ENVELOPE" => {
+            write_reg_ymf288(&mut chip, 0x00, 0x08);
+            write_reg_ymf288(&mut chip, 0x07, 0x3E);
+            write_reg_ymf288(&mut chip, 0x08, 0x10);
+            write_reg_ymf288(&mut chip, 0x0B, 0x01);
+            write_reg_ymf288(&mut chip, 0x0C, 0x00);
+            write_reg_ymf288(&mut chip, 0x0D, 0x0E);
+        }
+        "YMF288_MODE_TONE" => {
+            write_reg_ymf288(&mut chip, 0x20, 0x02);
+            setup_ymf288_simple_tone(&mut chip, 2, 5, 6);
+            key_on_ymf288(&mut chip, 2);
+        }
+        "CSM_IGNORED" => {
+            setup_ymf288_simple_tone(&mut chip, 2, 7, 0);
+            write_reg_ymf288(&mut chip, 0x24, 0xFF);
+            write_reg_ymf288(&mut chip, 0x25, 0x03);
+            write_reg_ymf288(&mut chip, 0x27, 0x85);
+            chip.timer_expired(0);
+        }
+        "PRESCALER_IGNORED" => {
+            chip.write_address(0x2F);
+            setup_ymf288_simple_tone(&mut chip, 0, 7, 0);
+            key_on_ymf288(&mut chip, 0);
+        }
+        _ => panic!("unknown YMF288 scenario {name}"),
+    }
+    chip
+}
+
+/// Names of the YMF288 rhythm golden scenarios.
+pub const YMF288_RHYTHM_SCENARIOS: &[&str] = &[
+    "RHYTHM_BASS_DRUM",
+    "RHYTHM_ALL",
+    "RHYTHM_PANNED",
+    "RHYTHM_WITH_FM",
+    "RHYTHM_MISSING_ROM",
+];
+
+/// Builds the named YMF288 rhythm scenario.
+pub fn ymf288_rhythm_scenario(name: &str) -> Ymf288 {
+    let mut chip = Ymf288::new();
+    if name != "RHYTHM_MISSING_ROM" {
+        chip.set_adpcm_a_rom(&create_adpcm_rom());
+    }
+    chip.reset();
+    chip.set_fidelity(YmfmOpnFidelity::Max);
+    write_reg_ymf288(&mut chip, 0x11, 0x3F);
+    match name {
+        "RHYTHM_BASS_DRUM" | "RHYTHM_MISSING_ROM" => {
+            write_reg_ymf288(&mut chip, 0x18, 0xDF);
+            write_reg_ymf288(&mut chip, 0x10, 0x01);
+        }
+        "RHYTHM_ALL" => {
+            for register in 0x18..0x1E {
+                write_reg_ymf288(&mut chip, register, 0xDF);
+            }
+            write_reg_ymf288(&mut chip, 0x10, 0x3F);
+        }
+        "RHYTHM_PANNED" => {
+            write_reg_ymf288(&mut chip, 0x18, 0x9F);
+            write_reg_ymf288(&mut chip, 0x19, 0x5F);
+            write_reg_ymf288(&mut chip, 0x10, 0x03);
+        }
+        "RHYTHM_WITH_FM" => {
+            setup_ymf288_simple_tone(&mut chip, 0, 7, 0);
+            key_on_ymf288(&mut chip, 0);
+            write_reg_ymf288(&mut chip, 0x1A, 0xDF);
+            write_reg_ymf288(&mut chip, 0x10, 0x04);
+        }
+        _ => panic!("unknown YMF288 rhythm scenario {name}"),
+    }
+    chip
 }
 
 pub fn add_ssg_bg_2608(chip: &mut Ym2608) {
@@ -389,9 +750,6 @@ pub fn generate_2_ym2413(chip: &mut Ym2413, count: usize) -> Vec<[i32; 2]> {
 }
 
 // --- OPM (YM2151) helpers ---
-//
-// These mirror the C++ golden generator (tests/cpp/gen_opm_golden.cpp) exactly;
-// the sample sequences must stay in lockstep for the golden comparison.
 
 pub fn write_reg_ym2151(chip: &mut Ym2151, addr: u8, data: u8) {
     chip.write_address(addr);

@@ -541,7 +541,7 @@ impl FmRegisters for OpnRegisters {
     }
 
     fn compute_phase_step(
-        &self,
+        &mut self,
         choffs: u32,
         _opoffs: u32,
         cache: &OpdataCache,
@@ -588,6 +588,13 @@ pub(crate) struct OpnaRegisters {
     regdata: [u8; 0x200],
     waveform: [u16; WAVEFORM_LENGTH],
 }}
+
+impl OpnaRegisters {
+    /// Returns the raw value of register `index`.
+    pub(crate) fn read(&self, index: u16) -> u8 {
+        self.regdata[index as usize]
+    }
+}
 
 impl FmRegisters for OpnaRegisters {
     const OUTPUTS: usize = 2;
@@ -766,7 +773,7 @@ impl FmRegisters for OpnaRegisters {
     }
 
     fn compute_phase_step(
-        &self,
+        &mut self,
         choffs: u32,
         _opoffs: u32,
         cache: &OpdataCache,

@@ -75,7 +75,8 @@ use opm::OpmRegisters;
 use opn::{OpnRegisters, OpnaRegisters, SsgResampler};
 use ssg::SsgEngine;
 pub use sys::{
-    YmfmOpnFidelity, YmfmOutput1, YmfmOutput2, YmfmOutput3, YmfmOutput4, YmfmTimerUpdate,
+    YmfmOpnFidelity, YmfmOutput1, YmfmOutput2, YmfmOutput3, YmfmOutput4, YmfmOutput6,
+    YmfmTimerUpdate,
 };
 
 const YM2608_ADPCM_A_ROM_SIZE: usize = 8192;
@@ -146,13 +147,13 @@ impl Ym2413 {
     /// Latches the register address for a subsequent data write.
     pub fn write_address(&mut self, data: u8) -> u32 {
         self.address = data;
-        12 * self.fm.clock_prescale()
+        12
     }
 
     /// Writes a value to the latched register.
     pub fn write_data(&mut self, data: u8) -> u32 {
         self.fm.write(self.address as u16, data);
-        84 * self.fm.clock_prescale()
+        84
     }
 
     /// Generates separate melodic and rhythm samples.
@@ -944,6 +945,432 @@ impl Ym2608 {
     }
 }
 
+/// Busy time in input clocks of a YMF288 register access in YMF288 mode.
+const YMF288_MODE_BUSY_CLOCKS: u32 = 16;
+/// ID code the YMF288 returns from register 0xFF.
+const YMF288_ID: u8 = 2;
+
+save_state::runtime_state! {
+/// Complete mutable state of a YMF288 chip.
+#[derive(Clone)]
+pub struct Ymf288State {
+    fm: FmEngine<OpnaRegisters>,
+    ssg: SsgEngine,
+    ssg_resampler: SsgResampler,
+    adpcm_a: AdpcmAEngine,
+    fidelity: YmfmOpnFidelity,
+    address: u16,
+    fm_samples_per_output: u32,
+    last_fm: [i32; 2],
+    irq_enable: u8,
+    flag_control: u8,
+    adpcm_a_rom_identity: save_state::ResourceIdentity,
+}}
+
+/// Yamaha YMF288 (OPN3L) emulator.
+///
+/// The YMF288 is a YM2608 without the ADPCM-B unit, the prescaler, CSM and the
+/// I/O ports. It has shorter busy times, and in YMF288 mode every register
+/// can be read back.
+#[derive(Clone)]
+pub struct Ymf288 {
+    fm: FmEngine<OpnaRegisters>,
+    ssg: SsgEngine,
+    ssg_resampler: SsgResampler,
+    adpcm_a: AdpcmAEngine,
+    adpcm_a_rom: Vec<u8>,
+    fidelity: YmfmOpnFidelity,
+    address: u16,
+    fm_samples_per_output: u32,
+    last_fm: [i32; 2],
+    irq_enable: u8,
+    flag_control: u8,
+}
+
+impl Ymf288 {
+    /// Creates a new YMF288 instance.
+    pub fn new() -> Self {
+        let mut chip = Self {
+            fm: FmEngine::new(),
+            ssg: SsgEngine::new(),
+            ssg_resampler: SsgResampler::new(true, 2),
+            adpcm_a: AdpcmAEngine::new(0),
+            adpcm_a_rom: SILENT_ADPCM_MEMORY.to_vec(),
+            fidelity: YmfmOpnFidelity::Max,
+            address: 0,
+            fm_samples_per_output: 0,
+            last_fm: [0, 0],
+            irq_enable: 0x03,
+            flag_control: 0x03,
+        };
+        chip.update_prescale();
+        chip
+    }
+
+    /// Captures mutable chip state and the retained rhythm ROM identity.
+    pub fn capture_state(&self) -> Ymf288State {
+        Ymf288State {
+            fm: self.fm.clone(),
+            ssg: self.ssg.clone(),
+            ssg_resampler: self.ssg_resampler.clone(),
+            adpcm_a: self.adpcm_a.clone(),
+            fidelity: self.fidelity,
+            address: self.address,
+            fm_samples_per_output: self.fm_samples_per_output,
+            last_fm: self.last_fm,
+            irq_enable: self.irq_enable,
+            flag_control: self.flag_control,
+            adpcm_a_rom_identity: save_state::ResourceIdentity::from_bytes(&self.adpcm_a_rom),
+        }
+    }
+
+    /// Restores mutable state while retaining the rhythm ROM.
+    pub fn restore_state(
+        &mut self,
+        state: Ymf288State,
+    ) -> Result<(), save_state::StateValidationError> {
+        let identity = save_state::ResourceIdentity::from_bytes(&self.adpcm_a_rom);
+        save_state::restore_root(self, state, &identity)
+    }
+
+    /// Resets the chip to its initial power-on state.
+    pub fn reset(&mut self) {
+        self.fm.reset();
+        self.ssg.reset();
+        self.adpcm_a.reset();
+
+        // Configure ADPCM percussion sounds; these are present in an embedded ROM.
+        self.adpcm_a.set_start_end(0, 0x0000, 0x01BF); // bass drum
+        self.adpcm_a.set_start_end(1, 0x01C0, 0x043F); // snare drum
+        self.adpcm_a.set_start_end(2, 0x0440, 0x1B7F); // top cymbal
+        self.adpcm_a.set_start_end(3, 0x1B80, 0x1CFF); // high hat
+        self.adpcm_a.set_start_end(4, 0x1D00, 0x1F7F); // tom tom
+        self.adpcm_a.set_start_end(5, 0x1F80, 0x1FFF); // rim shot
+
+        // Initialize our special interrupt states, then read the upper status
+        // register, which updates the IRQs.
+        self.irq_enable = 0x03;
+        self.flag_control = 0x00;
+        self.read_status_hi(false);
+    }
+
+    /// Copies ADPCM-A rhythm ROM data into the chip.
+    ///
+    /// Panics if `data` is empty. Short data is zero-padded to the rhythm ROM
+    /// size, and oversized data is truncated.
+    pub fn set_adpcm_a_rom(&mut self, data: &[u8]) {
+        assert!(!data.is_empty(), "ADPCM-A ROM data must not be empty");
+        self.adpcm_a_rom.clear();
+        self.adpcm_a_rom.resize(YM2608_ADPCM_A_ROM_SIZE, 0);
+        let length = data.len().min(YM2608_ADPCM_A_ROM_SIZE);
+        self.adpcm_a_rom[..length].copy_from_slice(&data[..length]);
+    }
+
+    /// Clears ADPCM-A rhythm ROM data. Reads from missing ROM data return zero.
+    pub fn clear_adpcm_a_rom(&mut self) {
+        self.adpcm_a_rom.clear();
+        self.adpcm_a_rom.extend_from_slice(&SILENT_ADPCM_MEMORY);
+    }
+
+    /// Sets the output fidelity level.
+    pub fn set_fidelity(&mut self, fidelity: YmfmOpnFidelity) {
+        self.fidelity = fidelity;
+        self.update_prescale();
+    }
+
+    /// Returns the output sample rate in Hz for the given `input_clock` in Hz.
+    pub fn sample_rate(&self, input_clock: u32) -> u32 {
+        match self.fidelity {
+            YmfmOpnFidelity::Min | YmfmOpnFidelity::Med => input_clock / 144,
+            YmfmOpnFidelity::Max => input_clock / 16,
+        }
+    }
+
+    /// Returns the effective SSG clock in Hz for the given `input_clock` in Hz.
+    pub fn ssg_effective_clock(&self, input_clock: u32) -> u32 {
+        input_clock / 4
+    }
+
+    /// Reads the chip status register (low).
+    pub fn read_status(&mut self, busy: bool) -> u8 {
+        let mut result =
+            self.fm.status() & (OpnaRegisters::STATUS_TIMERA | OpnaRegisters::STATUS_TIMERB);
+        if busy {
+            result |= OpnaRegisters::STATUS_BUSY;
+        }
+        result
+    }
+
+    /// Reads data from the currently addressed register.
+    ///
+    /// In YMF288 mode every register reads back its value.
+    pub fn read_data(&mut self) -> u8 {
+        if self.address < 0x0E {
+            // 00-0D: Read from SSG
+            self.ssg.read(self.address as u32 & 0x0F)
+        } else if self.address < 0x10 {
+            // 0E-0F: I/O ports not supported
+            0xFF
+        } else if self.address == 0xFF {
+            YMF288_ID
+        } else if self.ymf288_mode() {
+            self.fm.regs.read(self.address)
+        } else {
+            0
+        }
+    }
+
+    /// Reads the extended status register, which holds the timer flags only.
+    pub fn read_status_hi(&mut self, busy: bool) -> u8 {
+        let mut status =
+            self.fm.status() & (OpnaRegisters::STATUS_TIMERA | OpnaRegisters::STATUS_TIMERB);
+
+        // Turn off any bits that have been requested to be masked.
+        status &= !(self.flag_control & 0x03);
+
+        // Update the status so that IRQs are propagated.
+        self.fm.set_reset_status(status, !status);
+
+        if busy {
+            status |= OpnaRegisters::STATUS_BUSY;
+        }
+        status
+    }
+
+    /// Latches the register address for the low bank.
+    pub fn write_address(&mut self, data: u8) -> u32 {
+        self.address = data as u16;
+        self.address_busy_clocks()
+    }
+
+    /// Writes a value to the previously addressed register (low bank).
+    pub fn write_data(&mut self, data: u8) -> u32 {
+        // Ignore if paired with upper address (port 1 data to port 0).
+        if helpers::bit(self.address as u32, 8) != 0 {
+            return 0;
+        }
+
+        let mut busy_clocks = self.data_busy_clocks();
+        if self.address < 0x0E {
+            // 00-0D: write to SSG
+            self.ssg.write(self.address as u32 & 0x0F, data);
+        } else if self.address < 0x10 {
+            // 0E-0F: I/O ports not supported
+        } else if self.address < 0x20 {
+            // 10-1F: write to ADPCM-A
+            self.adpcm_a.write(self.address as u32 & 0x0F, data);
+            busy_clocks = 32 * self.fm.clock_prescale();
+        } else if self.address == 0x27 {
+            // 27: mode register; CSM is not supported
+            self.fm.write(self.address, data & 0x7F);
+        } else if self.address == 0x29 {
+            // 29: special IRQ mask register
+            self.irq_enable = data;
+            self.fm
+                .set_irq_mask(self.irq_enable & !self.flag_control & 0x03);
+        } else {
+            // 20-26, 28, 2A-FF: write to FM
+            self.fm.write(self.address, data);
+        }
+        busy_clocks
+    }
+
+    /// Latches the register address for the high bank.
+    pub fn write_address_hi(&mut self, data: u8) -> u32 {
+        self.address = 0x100 | data as u16;
+        self.address_busy_clocks()
+    }
+
+    /// Writes a value to the previously addressed register (high bank).
+    pub fn write_data_hi(&mut self, data: u8) -> u32 {
+        // Ignore if paired with lower address (port 0 data to port 1).
+        if helpers::bit(self.address as u32, 8) == 0 {
+            return 0;
+        }
+
+        let busy_clocks = self.data_busy_clocks();
+        if self.address == 0x110 {
+            // 110: IRQ flag control
+            if helpers::bit(data as u32, 7) != 0 {
+                self.fm.set_reset_status(0, 0xFF);
+            } else {
+                self.flag_control = data;
+                self.fm
+                    .set_irq_mask(self.irq_enable & !self.flag_control & 0x03);
+            }
+        } else {
+            // 100-10F, 111-1FF: write to FM
+            self.fm.write(self.address, data);
+        }
+        busy_clocks
+    }
+
+    /// Generates audio samples into `output`.
+    ///
+    /// Each sample contains three channels: `[FM_L, FM_R, SSG]`.
+    pub fn generate(&mut self, output: &mut [YmfmOutput3]) {
+        let numsamples = output.len();
+        let sampindex = self.ssg_resampler.sampindex();
+
+        for (samp, out) in output.iter_mut().enumerate() {
+            if (sampindex + samp as u32).is_multiple_of(self.fm_samples_per_output) {
+                self.clock_fm_and_adpcm();
+            }
+            out.data[0] = self.last_fm[0];
+            out.data[1] = self.last_fm[1];
+        }
+
+        // Resample the SSG as configured.
+        // SAFETY: YmfmOutput3 is #[repr(C)] with a single [i32; 3] field,
+        // so &mut [YmfmOutput3] has the same layout as &mut [[i32; 3]].
+        #[allow(unsafe_code)]
+        let output_nested = unsafe { &mut *(output as *mut [YmfmOutput3] as *mut [[i32; 3]]) };
+        const _: () = assert!(size_of::<YmfmOutput3>() == size_of::<[i32; 3]>());
+
+        let output_flat = output_nested.as_flattened_mut();
+        self.ssg_resampler
+            .resample(&mut self.ssg, output_flat, numsamples);
+    }
+
+    /// Notifies the chip that the specified timer has expired.
+    pub fn timer_expired(&mut self, timer_id: u32) {
+        self.fm.engine_timer_expired(timer_id);
+    }
+
+    /// Returns and clears the pending update for a timer.
+    pub fn take_timer_update(&mut self, timer_id: u8) -> Option<YmfmTimerUpdate> {
+        self.fm.take_timer_update(timer_id)
+    }
+
+    /// Returns and clears the pending IRQ output update.
+    pub fn take_irq_update(&mut self) -> Option<bool> {
+        self.fm.take_irq_update()
+    }
+
+    /// Returns whether the chip IRQ output is currently asserted.
+    pub fn irq_asserted(&self) -> bool {
+        self.fm.irq_asserted()
+    }
+
+    /// Returns whether YMF288 mode (register 0x20 bit 1) is enabled.
+    fn ymf288_mode(&self) -> bool {
+        self.fm.regs.read(0x20) & 0x02 != 0
+    }
+
+    /// Returns the busy time of an address write.
+    fn address_busy_clocks(&self) -> u32 {
+        if self.ymf288_mode() {
+            YMF288_MODE_BUSY_CLOCKS
+        } else {
+            0
+        }
+    }
+
+    /// Returns the busy time of a data write outside the ADPCM-A registers.
+    fn data_busy_clocks(&self) -> u32 {
+        if self.ymf288_mode() {
+            YMF288_MODE_BUSY_CLOCKS
+        } else {
+            32 * self.fm.clock_prescale()
+        }
+    }
+
+    fn clock_fm_and_adpcm(&mut self) {
+        // Top bit of the IRQ enable flags controls 3-channel vs 6-channel mode.
+        let fmmask = if helpers::bit(self.irq_enable as u32, 7) != 0 {
+            0x3F
+        } else {
+            0x07
+        };
+
+        let env_counter = self.fm.clock(OpnaRegisters::ALL_CHANNELS);
+
+        // Clock the ADPCM-A engine on every envelope cycle
+        // (channels 4 and 5 clock every 2 envelope clocks).
+        if helpers::bitfield(env_counter, 0, 2) == 0 {
+            let chanmask = if helpers::bitfield(env_counter, 2, 1) != 0 {
+                0x0F
+            } else {
+                0x3F
+            };
+            self.adpcm_a.clock(chanmask, &self.adpcm_a_rom);
+        }
+
+        // Update the FM content; OPNA is 13-bit with no intermediate clipping.
+        self.last_fm = [0, 0];
+        self.fm.output_mut(&mut self.last_fm, 1, 32767, fmmask);
+
+        // Mix in the ADPCM.
+        self.adpcm_a.output::<2>(&mut self.last_fm, 0x3F);
+    }
+
+    fn update_prescale(&mut self) {
+        // Fidelity:   ---- minimum ----    ---- medium -----    ---- maximum-----
+        //              rate = clock/144     rate = clock/144     rate = clock/16
+        // Prescale    FM rate  SSG rate    FM rate  SSG rate    FM rate  SSG rate
+        //     6          1:1     2:9          1:1     2:9         9:1     2:1
+        match self.fidelity {
+            YmfmOpnFidelity::Min | YmfmOpnFidelity::Med => {
+                self.fm_samples_per_output = 1;
+                self.ssg_resampler.configure(2, 9);
+            }
+            YmfmOpnFidelity::Max => {
+                self.fm_samples_per_output = 9;
+                self.ssg_resampler.configure(2, 1);
+            }
+        }
+    }
+}
+
+impl Default for Ymf288 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl save_state::ValidateState<save_state::ResourceIdentity> for Ymf288State {
+    fn validate_state(
+        &self,
+        current_rom_identity: &save_state::ResourceIdentity,
+    ) -> Result<(), save_state::StateValidationError> {
+        if &self.adpcm_a_rom_identity != current_rom_identity {
+            return Err(save_state::StateValidationError::new(
+                "YMF288 rhythm ROM identity differs",
+            ));
+        }
+        if self.fm.operators.len() != OpnaRegisters::OPERATORS
+            || self.fm.channels.len() != OpnaRegisters::CHANNELS
+        {
+            return Err(save_state::StateValidationError::new(
+                "YMF288 state topology is invalid",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl save_state::AfterRestore for Ymf288 {
+    fn after_restore(&mut self) {}
+}
+
+impl save_state::RestoreTarget for Ymf288 {
+    type State = Ymf288State;
+    type ValidationContext = save_state::ResourceIdentity;
+
+    fn replace_state(&mut self, state: Self::State) {
+        self.fm = state.fm;
+        self.ssg = state.ssg;
+        self.ssg_resampler = state.ssg_resampler;
+        self.adpcm_a = state.adpcm_a;
+        self.fidelity = state.fidelity;
+        self.address = state.address;
+        self.fm_samples_per_output = state.fm_samples_per_output;
+        self.last_fm = state.last_fm;
+        self.irq_enable = state.irq_enable;
+        self.flag_control = state.flag_control;
+    }
+}
+
 /// FM channel mask of the YM2610. The chip has FM channels 1, 2, 4 and 5.
 pub const YM2610_FM_CHANNEL_MASK: u32 = 0x36;
 /// FM channel mask of the YM2610B. All six channels are present.
@@ -1386,18 +1813,35 @@ impl<const FM_CHANNEL_MASK: u32> save_state::RestoreTarget for Ym2610Family<FM_C
     }
 }
 
+/// OPN2 variant with the 9-bit DAC ladder effect (YM2612).
+pub const OPN2_VARIANT_YM2612: u8 = 0;
+/// OPN2 variant with a multiplexed 9-bit DAC and no ladder effect (YM3438).
+pub const OPN2_VARIANT_YM3438: u8 = 1;
+/// OPN2 variant with a properly mixed 14-bit output (YMF276).
+pub const OPN2_VARIANT_YMF276: u8 = 2;
+
 save_state::runtime_state! {
-/// Yamaha YMF276 authoritative state and emulator.
+/// Yamaha OPN2 family authoritative state and emulator.
+///
+/// The YM2612, YM3438 and YMF276 share the OPNA FM core and the 9-bit DAC on
+/// channel 6. They differ only in how the channel outputs reach the pins.
 #[derive(Clone)]
-pub struct Ymf276 {
+pub struct Opn2Family<const VARIANT: u8> {
     fm: FmEngine<OpnaRegisters>,
     address: u16,
     dac_data: u16,
     dac_enable: bool,
 }}
 
-impl Ymf276 {
-    /// Creates a new YMF276 instance.
+/// Yamaha YM2612 (OPN2) emulator.
+pub type Ym2612 = Opn2Family<OPN2_VARIANT_YM2612>;
+/// Yamaha YM3438 (OPN2C) emulator.
+pub type Ym3438 = Opn2Family<OPN2_VARIANT_YM3438>;
+/// Yamaha YMF276 (OPN2L) emulator.
+pub type Ymf276 = Opn2Family<OPN2_VARIANT_YMF276>;
+
+impl<const VARIANT: u8> Opn2Family<VARIANT> {
+    /// Creates a new OPN2 family instance.
     pub fn new() -> Self {
         Self {
             fm: FmEngine::new(),
@@ -1417,11 +1861,9 @@ impl Ymf276 {
         save_state::restore_root(self, state, &())
     }
 
-    /// Resets the chip to its initial power-on state.
+    /// Resets the FM engine. The DAC data and the DAC enable keep their values.
     pub fn reset(&mut self) {
         self.fm.reset();
-        self.dac_data = 0;
-        self.dac_enable = false;
     }
 
     /// Returns the output sample rate in Hz for the given `input_clock` in Hz.
@@ -1429,13 +1871,12 @@ impl Ymf276 {
     /// The OPN2 has a fixed prescaler of 6 and 24 operators, so the native FM
     /// rate is `input_clock / (prescale * 24)`.
     pub fn sample_rate(&self, input_clock: u32) -> u32 {
-        input_clock / (self.fm.clock_prescale() * 24)
+        input_clock / (self.fm.clock_prescale() * OpnaRegisters::OPERATORS as u32)
     }
 
     /// Reads the chip status register.
     pub fn read_status(&mut self, busy: bool) -> u8 {
-        let mut result =
-            self.fm.status() & (OpnaRegisters::STATUS_TIMERA | OpnaRegisters::STATUS_TIMERB);
+        let mut result = self.fm.status();
         if busy {
             result |= OpnaRegisters::STATUS_BUSY;
         }
@@ -1493,42 +1934,100 @@ impl Ymf276 {
         32 * self.fm.clock_prescale()
     }
 
-    /// Generates audio samples into `output` using the clean output path.
+    /// Generates audio samples into `output`.
     ///
     /// Each sample is a stereo `[FM_L, FM_R]` pair.
     pub fn generate(&mut self, output: &mut [YmfmOutput2]) {
         for out in output.iter_mut() {
             self.fm.clock(OpnaRegisters::ALL_CHANNELS);
-
-            let mut data = [0i32; 2];
-            if !self.dac_enable {
-                // DAC disabled: all six channels sum together.
-                self.fm
-                    .output_mut(&mut data, 5, 256, OpnaRegisters::ALL_CHANNELS);
-            } else {
-                // DAC enabled: seed with the DAC value on channel 6, then add
-                // the other five channels. The DAC value is a sign-extended
-                // 9-bit sample.
-                let dac_value = i32::from(((self.dac_data << 7) as i16) >> 7);
-                data[0] = if self.fm.regs.ch_output_0(0x102) != 0 {
-                    dac_value
-                } else {
-                    0
-                };
-                data[1] = if self.fm.regs.ch_output_1(0x102) != 0 {
-                    dac_value
-                } else {
-                    0
-                };
-                self.fm
-                    .output_mut(&mut data, 5, 256, OpnaRegisters::ALL_CHANNELS ^ (1 << 5));
-            }
-
-            // The output is technically multiplexed rather than mixed; average
-            // over the six channels (the external DAC means no discontinuity).
-            out.data[0] = (data[0] * 128) / 6;
-            out.data[1] = (data[1] * 128) / 6;
+            out.data = match VARIANT {
+                OPN2_VARIANT_YM2612 => self.ladder_output(),
+                OPN2_VARIANT_YM3438 => self.multiplexed_output(),
+                _ => self.mixed_output(),
+            };
         }
+    }
+
+    /// Returns the sign-extended 9-bit DAC sample.
+    fn dac_value(&self) -> i32 {
+        i32::from(((self.dac_data << 7) as i16) >> 7)
+    }
+
+    /// Returns the DAC value routed to the left and right outputs of channel 6.
+    fn dac_outputs(&self, value: i32, silent: i32) -> [i32; 2] {
+        [
+            if self.fm.regs.ch_output_0(0x102) != 0 {
+                value
+            } else {
+                silent
+            },
+            if self.fm.regs.ch_output_1(0x102) != 0 {
+                value
+            } else {
+                silent
+            },
+        ]
+    }
+
+    /// YM2612 output: each channel is clipped to 9 bits and passes the DAC
+    /// discontinuity on its own.
+    fn ladder_output(&mut self) -> [i32; 2] {
+        let mut data = [0i32; 2];
+        let last_fm_channel = if self.dac_enable { 5 } else { 6 };
+        for channel in 0..last_fm_channel {
+            let mut temp = [0i32; 2];
+            self.fm.output_mut(&mut temp, 5, 256, 1 << channel);
+            data[0] += dac_discontinuity(temp[0]);
+            data[1] += dac_discontinuity(temp[1]);
+        }
+
+        if self.dac_enable {
+            let dac = self.dac_outputs(dac_discontinuity(self.dac_value()), dac_discontinuity(0));
+            data[0] += dac[0];
+            data[1] += dac[1];
+        }
+
+        // The six channels are multiplexed; average them and apply 64/65 to
+        // compensate for the discontinuity.
+        [
+            (data[0] * 128) * 64 / (6 * 65),
+            (data[1] * 128) * 64 / (6 * 65),
+        ]
+    }
+
+    /// YM3438 output: 9-bit channels multiplexed without the discontinuity.
+    fn multiplexed_output(&mut self) -> [i32; 2] {
+        let mut data = if self.dac_enable {
+            self.dac_outputs(self.dac_value(), 0)
+        } else {
+            [0; 2]
+        };
+        let channel_mask = if self.dac_enable {
+            OpnaRegisters::ALL_CHANNELS ^ (1 << 5)
+        } else {
+            OpnaRegisters::ALL_CHANNELS
+        };
+        self.fm.output_mut(&mut data, 5, 256, channel_mask);
+        [(data[0] * 128) / 6, (data[1] * 128) / 6]
+    }
+
+    /// YMF276 output: 14-bit channels mixed, then shifted down by one bit.
+    fn mixed_output(&mut self) -> [i32; 2] {
+        let mut data = if self.dac_enable {
+            self.dac_outputs(self.dac_value(), 0)
+        } else {
+            [0; 2]
+        };
+        let channel_mask = if self.dac_enable {
+            OpnaRegisters::ALL_CHANNELS ^ (1 << 5)
+        } else {
+            OpnaRegisters::ALL_CHANNELS
+        };
+        self.fm.output_mut(&mut data, 0, 8191, channel_mask);
+        [
+            helpers::clamp(data[0] >> 1, -32768, 32767),
+            helpers::clamp(data[1] >> 1, -32768, 32767),
+        ]
     }
 
     /// Notifies the chip that the specified timer has expired.
@@ -1552,10 +2051,15 @@ impl Ymf276 {
     }
 }
 
-impl Default for Ymf276 {
+impl<const VARIANT: u8> Default for Opn2Family<VARIANT> {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Simulates the YM2612 DAC discontinuity between negative and positive values.
+const fn dac_discontinuity(value: i32) -> i32 {
+    if value < 0 { value - 3 } else { value + 4 }
 }
 
 const Y8950_STATUS_ADPCM_B_PLAYING: u8 = 0x01;
@@ -2130,11 +2634,9 @@ impl Ym2151 {
         save_state::restore_root(self, state, &())
     }
 
-    /// Resets the chip to its initial power-on state.
+    /// Resets the FM engine. The CT output lines keep their levels.
     pub fn reset(&mut self) {
         self.fm.reset();
-        self.ct_state = 0;
-        self.ct_update = None;
     }
 
     /// Returns the output sample rate in Hz for the given `input_clock` in Hz.
@@ -2335,8 +2837,8 @@ impl save_state::RestoreTarget for Ymf262 {
 /// Use this for chips whose object is entirely authoritative and whose only
 /// decoded invariant is the fixed operator and channel topology.
 macro_rules! impl_direct_chip_restore {
-    ($chip:ty, $registers:ty, $name:literal) => {
-        impl save_state::ValidateState for $chip {
+    (@impl [$($generics:tt)*] $chip:ty, $registers:ty, $name:literal) => {
+        impl<$($generics)*> save_state::ValidateState for $chip {
             fn validate_state(
                 &self,
                 _context: &(),
@@ -2353,11 +2855,11 @@ macro_rules! impl_direct_chip_restore {
             }
         }
 
-        impl save_state::AfterRestore for $chip {
+        impl<$($generics)*> save_state::AfterRestore for $chip {
             fn after_restore(&mut self) {}
         }
 
-        impl save_state::RestoreTarget for $chip {
+        impl<$($generics)*> save_state::RestoreTarget for $chip {
             type State = Self;
             type ValidationContext = ();
 
@@ -2366,9 +2868,17 @@ macro_rules! impl_direct_chip_restore {
             }
         }
     };
+    ($chip:ident<const $parameter:ident: $parameter_type:ty>, $registers:ty, $name:literal) => {
+        impl_direct_chip_restore!(
+            @impl [const $parameter: $parameter_type] $chip<$parameter>, $registers, $name
+        );
+    };
+    ($chip:ty, $registers:ty, $name:literal) => {
+        impl_direct_chip_restore!(@impl [] $chip, $registers, $name);
+    };
 }
 
-impl_direct_chip_restore!(Ymf276, OpnaRegisters, "YMF276");
+impl_direct_chip_restore!(Opn2Family<const VARIANT: u8>, OpnaRegisters, "OPN2");
 impl_direct_chip_restore!(Ym2151, OpmRegisters, "YM2151");
 impl_direct_chip_restore!(Ym2413, OpllRegisters, "YM2413");
 impl_direct_chip_restore!(Ym3526, OplRegisters, "YM3526");
@@ -2446,6 +2956,87 @@ mod state_tests {
         chip.set_adpcm_a_rom(&[0x11; YM2608_ADPCM_A_ROM_SIZE]);
         let state = chip.capture_state();
         let mut restored = Ym2608::new();
+        restored.set_adpcm_a_rom(&[0x22; YM2608_ADPCM_A_ROM_SIZE]);
+        assert!(restored.restore_state(state).is_err());
+    }
+
+    #[test]
+    fn ym2612_state_replays_exact_samples() {
+        let mut chip = Ym2612::new();
+        chip.reset();
+        for (address, data) in [(0xA0, 0x41), (0xA4, 0x24), (0xB4, 0xC0), (0x28, 0xF0)] {
+            chip.write_address(address);
+            chip.write_data(data);
+        }
+        chip.write_address(0x2A);
+        chip.write_data(0xC4);
+        chip.write_address(0x2B);
+        chip.write_data(0x80);
+        chip.generate(&mut [YmfmOutput2 { data: [0; 2] }; 29]);
+
+        let encoded = save_state::encode_runtime_state(&chip.capture_state());
+        let decoded = save_state::decode_runtime_state::<Ym2612>(&encoded, 1 << 20).unwrap();
+        let mut restored = Ym2612::new();
+        restored.restore_state(decoded).unwrap();
+
+        let mut expected = [YmfmOutput2 { data: [0; 2] }; 64];
+        let mut actual = [YmfmOutput2 { data: [0; 2] }; 64];
+        chip.generate(&mut expected);
+        restored.generate(&mut actual);
+        assert!(
+            expected
+                .iter()
+                .zip(actual)
+                .all(|(left, right)| left.data == right.data)
+        );
+    }
+
+    #[test]
+    fn ymf288_state_replays_exact_samples_and_retains_rom() {
+        let rhythm_rom = [0x5Au8; YM2608_ADPCM_A_ROM_SIZE];
+        let mut chip = Ymf288::new();
+        chip.set_adpcm_a_rom(&rhythm_rom);
+        chip.reset();
+        for (address, data) in [
+            (0xA0, 0x41),
+            (0xA4, 0x24),
+            (0x28, 0xF0),
+            (0x11, 0x3F),
+            (0x18, 0xDF),
+            (0x10, 0x01),
+            (0x08, 0x0F),
+            (0x00, 0x20),
+        ] {
+            chip.write_address(address);
+            chip.write_data(data);
+        }
+        chip.generate(&mut [YmfmOutput3 { data: [0; 3] }; 41]);
+
+        let encoded = save_state::encode_runtime_state(&chip.capture_state());
+        let decoded = save_state::decode_runtime_state::<Ymf288State>(&encoded, 1 << 20).unwrap();
+        let mut restored = Ymf288::new();
+        restored.set_adpcm_a_rom(&rhythm_rom);
+        restored.restore_state(decoded).unwrap();
+
+        let mut expected = [YmfmOutput3 { data: [0; 3] }; 64];
+        let mut actual = [YmfmOutput3 { data: [0; 3] }; 64];
+        chip.generate(&mut expected);
+        restored.generate(&mut actual);
+        assert!(expected.iter().any(|sample| sample.data != [0; 3]));
+        assert!(
+            expected
+                .iter()
+                .zip(actual)
+                .all(|(left, right)| left.data == right.data)
+        );
+    }
+
+    #[test]
+    fn ymf288_rejects_a_different_retained_rom() {
+        let mut chip = Ymf288::new();
+        chip.set_adpcm_a_rom(&[0x11; YM2608_ADPCM_A_ROM_SIZE]);
+        let state = chip.capture_state();
+        let mut restored = Ymf288::new();
         restored.set_adpcm_a_rom(&[0x22; YM2608_ADPCM_A_ROM_SIZE]);
         assert!(restored.restore_state(state).is_err());
     }

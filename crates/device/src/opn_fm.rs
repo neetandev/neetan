@@ -405,8 +405,8 @@ impl OpnChip for Ymf276 {
     }
 
     fn mix_sample(sample: &Self::Native, out: &mut [f32]) {
-        // The OPN2 output already spans the full 16-bit range after its
-        // `* 128 / 6` scaling, so normalize straight to [-1.0, 1.0].
+        // The YMF276 output is clamped to the 16-bit range, so normalize
+        // straight to [-1.0, 1.0].
         const FM_SCALE: f32 = 1.0 / 32768.0;
         out[0] = sample.data[0] as f32 * FM_SCALE;
         out[1] = sample.data[1] as f32 * FM_SCALE;

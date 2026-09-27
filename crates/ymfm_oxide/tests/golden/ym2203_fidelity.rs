@@ -1,5 +1,5 @@
 // Auto-generated golden vectors from C++ ymfm reference implementation.
-// Regenerate: cargo test -p ymfm --test generate_golden -- --ignored --nocapture
+// Regenerate: cargo test -p ymfm_oxide --test generate_golden -- --ignored --nocapture
 
 pub const FIDELITY_MAX: &[[i32; 4]] = &[
     [900, 0, 0, 0],

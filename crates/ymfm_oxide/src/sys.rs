@@ -70,6 +70,19 @@ pub struct YmfmOutput3 {
     pub data: [i32; 3],
 }}
 
+save_state::runtime_state! {
+/// Six-channel output sample from the YMF278B (OPL4).
+///
+/// Contains `[FM_2, FM_3, PCM_2, PCM_3, MIX_L, MIX_R]`: the FM outputs 2 and 3,
+/// the PCM outputs 2 and 3, and the left and right mix of the FM outputs 0 and 1
+/// with the PCM outputs 0 and 1. Values are signed 32-bit integers.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct YmfmOutput6 {
+    /// Per-channel sample data: `[FM_2, FM_3, PCM_2, PCM_3, MIX_L, MIX_R]`.
+    pub data: [i32; 6],
+}}
+
 /// Timer change requested by a YMFM chip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum YmfmTimerUpdate {

@@ -2,16 +2,16 @@ mod common;
 
 #[allow(dead_code)]
 mod golden {
-    include!("golden/ymf276_fm.rs");
+    include!("golden/ym2612_fm.rs");
 }
 
 use common::harness::*;
-use ymfm_oxide::{OPN2_VARIANT_YMF276, Ymf276};
+use ymfm_oxide::{OPN2_VARIANT_YM2612, Ym2612};
 
 const CLOCK: u32 = 7_670_454;
 
 fn check(name: &str, expected: &[[i32; 2]]) {
-    let mut chip = opn2_scenario::<OPN2_VARIANT_YMF276>(name);
+    let mut chip = opn2_scenario::<OPN2_VARIANT_YM2612>(name);
     let samples = generate_2_opn2(&mut chip, expected.len());
     assert_samples_2(&samples, expected);
 }
@@ -19,13 +19,13 @@ fn check(name: &str, expected: &[[i32; 2]]) {
 #[test]
 fn sample_rate() {
     // Fixed prescaler 6, 24 operators: native FM rate is clock / 144.
-    let chip: Ymf276 = setup_opn2();
+    let chip: Ym2612 = setup_opn2();
     assert_eq!(chip.sample_rate(CLOCK), CLOCK / 144);
 }
 
 #[test]
 fn data_write_reports_busy_duration() {
-    let mut chip: Ymf276 = setup_opn2();
+    let mut chip: Ym2612 = setup_opn2();
     chip.write_address(0x30);
     assert_eq!(chip.write_data(0x01), 32 * 6);
     chip.write_address_hi(0x30);
@@ -34,7 +34,7 @@ fn data_write_reports_busy_duration() {
 
 #[test]
 fn data_write_to_other_bank_is_ignored() {
-    let mut chip: Ymf276 = setup_opn2();
+    let mut chip: Ym2612 = setup_opn2();
     chip.write_address_hi(0x30);
     assert_eq!(chip.write_data(0x01), 0);
     chip.write_address(0x30);
@@ -43,14 +43,14 @@ fn data_write_to_other_bank_is_ignored() {
 
 #[test]
 fn data_port_reads_zero() {
-    let mut chip: Ymf276 = setup_opn2();
+    let mut chip: Ym2612 = setup_opn2();
     chip.write_address(0x30);
     assert_eq!(chip.read_data(), 0);
 }
 
 #[test]
 fn status_reports_timer_flags_and_busy() {
-    let mut chip: Ymf276 = setup_opn2();
+    let mut chip: Ym2612 = setup_opn2();
     write_reg_opn2(&mut chip, 0x24, 0xFF);
     write_reg_opn2(&mut chip, 0x25, 0x03);
     write_reg_opn2(&mut chip, 0x26, 0xFF);

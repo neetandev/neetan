@@ -617,7 +617,7 @@ impl FmRegisters for OpllRegisters {
     }
 
     fn compute_phase_step(
-        &self,
+        &mut self,
         _choffs: u32,
         opoffs: u32,
         cache: &OpdataCache,
@@ -847,7 +847,7 @@ impl FmRegisters for OplRegisters {
     }
 
     fn compute_phase_step(
-        &self,
+        &mut self,
         _choffs: u32,
         opoffs: u32,
         cache: &OpdataCache,
@@ -1095,7 +1095,7 @@ impl FmRegisters for Opl2Registers {
     }
 
     fn compute_phase_step(
-        &self,
+        &mut self,
         _choffs: u32,
         opoffs: u32,
         cache: &OpdataCache,
@@ -1480,7 +1480,7 @@ impl FmRegisters for Opl3Registers {
     }
 
     fn compute_phase_step(
-        &self,
+        &mut self,
         _choffs: u32,
         opoffs: u32,
         cache: &OpdataCache,

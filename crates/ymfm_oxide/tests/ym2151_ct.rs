@@ -63,12 +63,13 @@ fn other_registers_do_not_touch_ct_outputs() {
 }
 
 #[test]
-fn reset_clears_ct_outputs() {
+fn reset_keeps_ct_outputs() {
     let mut chip = Ym2151::new();
     chip.reset();
 
     write_reg_ym2151(&mut chip, 0x1B, 0xC0);
+    assert_eq!(chip.take_ct_update(), Some(3));
     chip.reset();
-    assert_eq!(chip.ct_state(), 0);
+    assert_eq!(chip.ct_state(), 3);
     assert_eq!(chip.take_ct_update(), None);
 }
