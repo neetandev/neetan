@@ -10,12 +10,16 @@ use save_state::{AfterRestore, StateValidationError};
 
 use crate::{
     ResampleError, SampleRate,
-    window::{WindowType, calculate_cutoff_kaiser, make_sincs_for_kaiser},
+    window::{calculate_cutoff_kaiser, make_polyphase_sincs_for_kaiser},
 };
 
 const PHASES: usize = 1024;
 const INPUT_CAPACITY: usize = 4096;
 const BUFFER_SIZE: usize = INPUT_CAPACITY * 2;
+/// The SIMD convolutions process up to 16 taps at once and have no tail handling.
+const TAP_ALIGNMENT: usize = 16;
+/// The longest downsampling filter. Longer filters leave too little of the input buffer.
+const MAX_TAPS: usize = INPUT_CAPACITY / 2;
 
 type ConvolveFn =
     fn(input: &[f32], coeffs1: &[f32], coeffs2: &[f32], frac: f32, taps: usize) -> f32;
@@ -126,6 +130,10 @@ impl Attenuation {
 /// Determines the number of filter taps, which affects both rolloff and algorithmic delay.
 /// Higher tap counts provide shaper rolloff but increased latency.
 ///
+/// The delay counts samples of the lower of the two sample rates. When upsampling, the filter
+/// spans the listed taps of the input. When downsampling, it spans the listed taps of the
+/// output, which keeps the rolloff relative to the output Nyquist frequency the same.
+///
 /// The enum variants are named by their algorithmic delay in samples (taps / 2):
 /// - `Sample8`: 8 samples delay (16 taps)
 /// - `Sample16`: 16 samples delay (32 taps)
@@ -149,7 +157,7 @@ pub enum Latency {
 impl Latency {
     /// Returns the number of filter taps for this latency setting.
     pub const fn taps(self) -> usize {
-        // Taps need to be a power of two for convolve filter to run (there is no tail handling).
+        // Taps need to be a multiple of 16 for convolve filter to run (there is no tail handling).
         match self {
             Latency::Sample8 => 16,
             Latency::Sample16 => 32,
@@ -195,7 +203,8 @@ struct ResamplerFirResources {
     /// Number of audio channels.
     channels: usize,
     /// Polyphase coefficient table stored contiguously: all phases x taps in a single allocation.
-    /// Layout: [phase0_tap0..N, phase1_tap0..N, ..., phase1023_tap0..N]
+    /// Layout: [phase0_tap0..N, phase1_tap0..N, ..., phase1024_tap0..N]. Phase 1024 is phase 0
+    /// one sample later.
     coeffs: Arc<AlignedMemory>,
     /// Resampling ratio (input_rate / output_rate).
     ratio: f64,
@@ -321,15 +330,21 @@ impl ResamplerFir {
         let output_rate_hz = output_rate_hz as f64;
         let ratio = input_rate_hz / output_rate_hz;
 
-        let taps = latency.taps();
         let beta = attenuation.to_kaiser_beta();
-        let base_cutoff = calculate_cutoff_kaiser(taps, beta);
-        let cutoff = if input_rate_hz <= output_rate_hz {
+        let (taps, cutoff) = if input_rate_hz <= output_rate_hz {
             // Upsampling: preserve full input bandwidth.
-            base_cutoff
+            let taps = latency.taps();
+            (taps, calculate_cutoff_kaiser(taps as f64, beta))
         } else {
-            // Downsampling: scale cutoff to output Nyquist (anti-aliasing filter).
-            base_cutoff * (output_rate_hz / input_rate_hz)
+            // Downsampling: the filter spans `latency.taps()` output samples. Its transition band
+            // relative to the output Nyquist frequency matches the upsampling case.
+            let taps = ((latency.taps() as f64 * ratio).ceil() as usize)
+                .next_multiple_of(TAP_ALIGNMENT)
+                .min(MAX_TAPS);
+            (
+                taps,
+                calculate_cutoff_kaiser(taps as f64 / ratio, beta) / ratio,
+            )
         };
 
         let coeffs = Self::get_or_create_fir_coeffs(cutoff as f32, taps, attenuation);
@@ -417,12 +432,11 @@ impl ResamplerFir {
     }
 
     fn create_fir_coeffs(cutoff: f32, taps: usize, beta: f64) -> FirCacheData {
-        let polyphase_coeffs =
-            make_sincs_for_kaiser(taps, PHASES, cutoff, beta, WindowType::Symmetric);
+        let polyphase_coeffs = make_polyphase_sincs_for_kaiser(taps, PHASES, cutoff, beta);
 
         // Flatten the polyphase coefficients into a single contiguous allocation.
-        // Layout: [phase0_tap0..N, phase1_tap0..N, ..., phase1023_tap0..N]
-        let total_size = PHASES * taps;
+        // Layout: [phase0_tap0..N, phase1_tap0..N, ..., phase1024_tap0..N]
+        let total_size = (PHASES + 1) * taps;
         let mut flattened = Vec::with_capacity(total_size);
         for phase_coeffs in polyphase_coeffs {
             flattened.extend_from_slice(&phase_coeffs);
@@ -554,10 +568,9 @@ impl ResamplerFir {
 
             let position_fract = self.state.position.fract();
 
-            let phase_f = (position_fract * self.resources.phases as f64)
-                .min((self.resources.phases - 1) as f64);
+            let phase_f = position_fract * self.resources.phases as f64;
             let phase1 = phase_f as usize;
-            let phase2 = (phase1 + 1).min(self.resources.phases - 1);
+            let phase2 = phase1 + 1;
             let frac = (phase_f - phase1 as f64) as f32;
 
             for channel in 0..self.resources.channels {
