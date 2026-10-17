@@ -154,3 +154,24 @@ fn csi_parameter_with_non_digit_low_nibble_aborts_sequence_via_int29h() {
     assert_eq!(text_cell(&machine, 5, 0), (b'm', 0xE1));
     assert_eq!(text_cell(&machine, 5, 1), (b'A', 0xE1));
 }
+
+#[test]
+fn each_sgr_sequence_builds_attribute_from_white_via_int29h() {
+    let mut machine = harness::boot_hle();
+    set_cursor(&mut machine, 5, 0);
+
+    emit_int29_bytes(
+        &mut machine,
+        &[
+            0x1B, b'[', b'4', b'3', b'm', b'A', 0x1B, b'[', b'3', b'7', b'm', b'B', 0x1B, b'[',
+            b'7', b';', b'3', b'6', b'm', b'C', 0x1B, b'[', b'4', b'3', b'm', 0x1B, b'[', b'7',
+            b'm', b'D', 0x1B, b'[', b'5', b'm', 0x1B, b'[', b'3', b'6', b'm', b'E',
+        ],
+    );
+
+    assert_eq!(text_cell(&machine, 5, 0), (b'A', 0xC5));
+    assert_eq!(text_cell(&machine, 5, 1), (b'B', 0xE1));
+    assert_eq!(text_cell(&machine, 5, 2), (b'C', 0xA5));
+    assert_eq!(text_cell(&machine, 5, 3), (b'D', 0xE5));
+    assert_eq!(text_cell(&machine, 5, 4), (b'E', 0xA1));
+}

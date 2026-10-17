@@ -14,6 +14,9 @@ use crate::{
     },
 };
 
+/// Text attribute of white, visible text with no effects.
+const SGR_DEFAULT_ATTRIBUTE: u8 = 0xE1;
+
 /// Escape-relevant console state captured ahead of a dispatched sequence.
 struct EscapeTraceBefore {
     attribute: u8,
@@ -566,46 +569,32 @@ impl Console {
         }
     }
 
+    /// Applies an SGR sequence.
     fn set_graphic_rendition(&self, memory: &mut dyn MemoryAccess) {
-        if self.esc_parser.param_count == 0 {
-            self.set_attribute(memory, 0xE1);
-            return;
-        }
-
-        for index in 0..self.esc_parser.param_count {
-            let parameter = self.esc_parser.params[index];
-            match parameter {
-                0 | 39 => self.set_attribute(memory, 0xE1),
-                4 => self.update_attribute(memory, 0x08, 0x00),
-                5 => self.update_attribute(memory, 0x02, 0x00),
-                7 => self.update_attribute(memory, 0x04, 0x00),
-                8 => self.update_attribute(memory, 0x00, 0x01),
-                24 => self.update_attribute(memory, 0x00, 0x08),
-                25 => self.update_attribute(memory, 0x00, 0x02),
-                27 => self.update_attribute(memory, 0x00, 0x04),
-                28 => self.update_attribute(memory, 0x01, 0x00),
+        let mut attribute = SGR_DEFAULT_ATTRIBUTE;
+        for &parameter in &self.esc_parser.params[..self.esc_parser.param_count] {
+            attribute = match parameter {
+                0 | 39 => SGR_DEFAULT_ATTRIBUTE,
+                4 => attribute | 0x08,
+                5 => attribute | 0x02,
+                7 => attribute | 0x04,
+                8 => attribute & !0x01,
+                24 => attribute & !0x08,
+                25 => attribute & !0x02,
+                27 => attribute & !0x04,
+                28 => attribute | 0x01,
                 30..=37 => {
                     let color = ansi_foreground_to_pc98_color(parameter as u8);
-                    let lower_bits = memory
-                        .read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DISPLAY_ATTR)
-                        & 0x1F;
-                    self.set_attribute(memory, (color << 5) | lower_bits);
+                    (color << 5) | (attribute & 0x1F)
                 }
                 40..=47 => {
                     let color = ansi_foreground_to_pc98_color(parameter as u8 - 10);
-                    let lower_bits = memory
-                        .read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DISPLAY_ATTR)
-                        & 0x1F;
-                    self.set_attribute(memory, (color << 5) | lower_bits | 0x04);
+                    (color << 5) | (attribute & 0x1F) | 0x04
                 }
-                _ => {}
-            }
+                _ => attribute,
+            };
         }
-    }
-
-    fn update_attribute(&self, memory: &mut dyn MemoryAccess, set: u8, clear: u8) {
-        let attribute = memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DISPLAY_ATTR);
-        self.set_attribute(memory, (attribute | set) & !clear);
+        self.set_attribute(memory, attribute);
     }
 
     fn esc_dispatch_csi_question(&self, memory: &mut dyn MemoryAccess, final_byte: u8) {
