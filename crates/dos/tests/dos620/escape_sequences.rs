@@ -115,3 +115,42 @@ fn esc_m_scrolls_at_top_via_int29h() {
     );
     assert!(harness::text_vram_row_to_string(&machine.bus, 1).contains("TOP-M"));
 }
+
+fn text_cell(machine: &machine_98::Pc9801Ra, row: u32, col: u32) -> (u8, u8) {
+    let offset = (row * COLUMNS + col) * 2;
+    (
+        machine.bus.read_byte_direct(TEXT_CHAR_BASE + offset),
+        machine.bus.read_byte_direct(TEXT_ATTR_BASE + offset),
+    )
+}
+
+#[test]
+fn sgr_reads_raw_value_bytes_as_parameter_digits_via_int29h() {
+    let mut machine = harness::boot_hle();
+    set_cursor(&mut machine, 5, 0);
+
+    emit_int29_bytes(
+        &mut machine,
+        &[
+            0x1B, b'[', b'3', 0x06, b'm', b'A', 0x1B, b'[', b'3', 0x13, b'm', b'B', 0x1B, b'[',
+            b'4', b'&', b'm', b'C', 0x1B, b'[', 0x00, b';', 0x07, b'm', b'D',
+        ],
+    );
+
+    assert_eq!(text_cell(&machine, 5, 0), (b'A', 0xA1));
+    assert_eq!(text_cell(&machine, 5, 1), (b'B', 0xC1));
+    assert_eq!(text_cell(&machine, 5, 2), (b'C', 0xA5));
+    assert_eq!(text_cell(&machine, 5, 3), (b'D', 0xE5));
+    assert_eq!(cursor(&machine), (5, 4));
+}
+
+#[test]
+fn csi_parameter_with_non_digit_low_nibble_aborts_sequence_via_int29h() {
+    let mut machine = harness::boot_hle();
+    set_cursor(&mut machine, 5, 0);
+
+    emit_int29_bytes(&mut machine, &[0x1B, b'[', b'3', 0x0C, b'm', b'A']);
+
+    assert_eq!(text_cell(&machine, 5, 0), (b'm', 0xE1));
+    assert_eq!(text_cell(&machine, 5, 1), (b'A', 0xE1));
+}

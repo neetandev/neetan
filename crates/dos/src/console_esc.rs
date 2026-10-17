@@ -50,6 +50,19 @@ fn csi_command_name(final_byte: u8) -> &'static str {
     }
 }
 
+/// Returns the decimal value of a CSI parameter byte, or `None` for a non-digit.
+///
+/// The NEC console reads every byte below 0x40 with a low nibble of 0 to 9 as
+/// the digit in that nibble. The string quotes 0x22 and 0x27 are excluded.
+/// A raw value byte in a parameter such as `ESC[3\x06m` selects color 36.
+fn csi_parameter_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'"' | b'\'' => None,
+        0x00..=0x3F if byte & 0x0F <= 9 => Some(byte & 0x0F),
+        _ => None,
+    }
+}
+
 save_state::runtime_state_enum! {
     /// Current phase of the DOS console escape-sequence parser.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -102,6 +115,14 @@ impl EscParser {
         self.param_count = 0;
         self.current_param = 0;
         self.has_digit = false;
+    }
+
+    fn push_digit(&mut self, digit: u8) {
+        self.current_param = self
+            .current_param
+            .saturating_mul(10)
+            .saturating_add(u16::from(digit));
+        self.has_digit = true;
     }
 
     fn push_param(&mut self) {
@@ -294,10 +315,8 @@ impl Console {
             b'>' => {
                 self.esc_parser.state = EscState::GotCsiGreater;
             }
-            b'0'..=b'9' => {
-                self.esc_parser.current_param =
-                    self.esc_parser.current_param * 10 + (byte - b'0') as u16;
-                self.esc_parser.has_digit = true;
+            _ if let Some(digit) = csi_parameter_digit(byte) => {
+                self.esc_parser.push_digit(digit);
             }
             b';' => {
                 self.esc_parser.push_param();
@@ -324,10 +343,8 @@ impl Console {
         is_question: bool,
     ) {
         match byte {
-            b'0'..=b'9' => {
-                self.esc_parser.current_param =
-                    self.esc_parser.current_param * 10 + (byte - b'0') as u16;
-                self.esc_parser.has_digit = true;
+            _ if let Some(digit) = csi_parameter_digit(byte) => {
+                self.esc_parser.push_digit(digit);
             }
             b';' => {
                 self.esc_parser.push_param();
