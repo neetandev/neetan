@@ -1,7 +1,11 @@
 use std::marker::PhantomData;
 
 use sdl3_sys::{
+    blendmode::{
+        SDL_BLENDMODE_BLEND, SDL_BLENDMODE_BLEND_PREMULTIPLIED, SDL_BLENDMODE_NONE, SDL_BlendMode,
+    },
     pixels::SDL_PixelFormat,
+    properties::SDL_GetNumberProperty,
     rect::{SDL_FRect, SDL_Rect},
     render as ffi,
     surface::{SDL_SCALEMODE_LINEAR, SDL_SCALEMODE_NEAREST, SDL_SCALEMODE_PIXELART, SDL_ScaleMode},
@@ -27,6 +31,28 @@ impl ScaleMode {
             Self::Nearest => SDL_SCALEMODE_NEAREST,
             Self::Linear => SDL_SCALEMODE_LINEAR,
             Self::Pixelart => SDL_SCALEMODE_PIXELART,
+        }
+    }
+}
+
+/// Blend mode used when a texture is drawn onto the rendering target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlendMode {
+    /// No blending: the texture replaces the target.
+    None,
+    /// Alpha blending of straight alpha color.
+    Blend,
+    /// Alpha blending of premultiplied alpha color.
+    BlendPremultiplied,
+}
+
+impl BlendMode {
+    /// Returns the matching SDL blend mode.
+    fn to_ffi(self) -> SDL_BlendMode {
+        match self {
+            Self::None => SDL_BLENDMODE_NONE,
+            Self::Blend => SDL_BLENDMODE_BLEND,
+            Self::BlendPremultiplied => SDL_BLENDMODE_BLEND_PREMULTIPLIED,
         }
     }
 }
@@ -128,6 +154,25 @@ impl Renderer {
             return Err(crate::get_error());
         }
         Ok((w as u32, h as u32))
+    }
+
+    /// Returns the largest texture width and height the renderer supports.
+    /// `None` when the renderer does not report a limit.
+    pub fn max_texture_size(&self) -> Option<u32> {
+        // Safety: renderer pointer is valid.
+        let properties = unsafe { ffi::SDL_GetRendererProperties(self.ptr) };
+        if properties.0 == 0 {
+            return None;
+        }
+        // Safety: the property id is valid; the name is a static C string.
+        let size = unsafe {
+            SDL_GetNumberProperty(
+                properties,
+                ffi::SDL_PROP_RENDERER_MAX_TEXTURE_SIZE_NUMBER,
+                0,
+            )
+        };
+        u32::try_from(size).ok().filter(|&size| size > 0)
     }
 
     /// Creates a streaming texture suitable for frequent CPU updates.
@@ -248,6 +293,16 @@ impl Texture {
     pub fn set_scale_mode(&self, mode: ScaleMode) -> Result<(), Error> {
         // Safety: texture pointer is valid.
         let ok = unsafe { ffi::SDL_SetTextureScaleMode(self.ptr, mode.to_ffi()) };
+        if !ok {
+            return Err(crate::get_error());
+        }
+        Ok(())
+    }
+
+    /// Sets the blend mode used when drawing this texture.
+    pub fn set_blend_mode(&self, mode: BlendMode) -> Result<(), Error> {
+        // Safety: texture pointer is valid.
+        let ok = unsafe { ffi::SDL_SetTextureBlendMode(self.ptr, mode.to_ffi()) };
         if !ok {
             return Err(crate::get_error());
         }

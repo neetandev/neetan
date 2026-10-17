@@ -21,6 +21,12 @@
   (check-true (machine-capability? machine 'inspect))
   (check-true (machine-capability? machine 'mutate)))
 
+(test-case "capabilities report the removable media drives"
+  (check-true (machine-capability? machine 'floppy-drives))
+  (check-false (machine-capability? machine 'cdrom))
+  (check-equal 2 (cdr (assq 'floppy-drives (machine-capabilities machine))))
+  (check-false (cdr (assq 'cdrom (machine-capabilities machine)))))
+
 (test-case "processor and space discovery"
   (check-equal '(cpu.main) (processors machine))
   (check-equal '(cpu.main.memory cpu.main.io) (address-spaces machine))

@@ -117,7 +117,9 @@ fn pick_composition(device: &GpuDevice, window: &Window) -> SDL_GPUSwapchainComp
     SDL_GPU_SWAPCHAINCOMPOSITION_SDR
 }
 
-fn create_device() -> Result<GpuDevice> {
+/// Creates the GPU device with the features and the shader formats the
+/// backend uses. It claims no window.
+pub(crate) fn create_device() -> Result<GpuDevice> {
     let properties = Properties::new().context("SDL_CreateProperties failed")?;
 
     #[cfg(not(debug_assertions))]

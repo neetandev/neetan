@@ -2,12 +2,17 @@ use std::{ffi::CStr, marker::PhantomData, os::raw::c_void};
 
 pub use sdl3_sys::gpu::{
     // Enum values.
+    SDL_GPU_BLENDFACTOR_ONE,
+    SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+    SDL_GPU_BLENDOP_ADD,
+    SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
     SDL_GPU_CULLMODE_NONE,
     SDL_GPU_FILLMODE_FILL,
     SDL_GPU_FILTER_LINEAR,
     SDL_GPU_FILTER_NEAREST,
     SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE,
     SDL_GPU_LOADOP_CLEAR,
+    SDL_GPU_LOADOP_LOAD,
     SDL_GPU_PRESENTMODE_IMMEDIATE,
     SDL_GPU_PRESENTMODE_VSYNC,
     SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
@@ -25,11 +30,20 @@ pub use sdl3_sys::gpu::{
     SDL_GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084,
     SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
     SDL_GPU_SWAPCHAINCOMPOSITION_SDR_LINEAR,
+    SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
+    SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_R8_UNORM,
+    SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
     SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB,
     SDL_GPU_TEXTURETYPE_2D,
     SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
     SDL_GPU_TEXTUREUSAGE_SAMPLER,
+    SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
     SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+    SDL_GPUBlendFactor,
+    SDL_GPUBlendOp,
+    SDL_GPUBufferCreateInfo,
+    SDL_GPUBufferUsageFlags,
     SDL_GPUColorComponentFlags,
     SDL_GPUColorTargetBlendState,
     SDL_GPUColorTargetDescription,
@@ -266,6 +280,27 @@ impl GpuDevice {
         Ok(GpuTexture {
             ptr,
             device: self.ptr,
+            texture_type: info.r#type,
+            format: info.format,
+            width: info.width,
+            height: info.height,
+            layer_count_or_depth: info.layer_count_or_depth,
+            level_count: info.num_levels,
+            _marker: PhantomData,
+        })
+    }
+
+    /// Creates a GPU buffer from the given description.
+    pub fn create_buffer(&self, info: &SDL_GPUBufferCreateInfo) -> Result<GpuBuffer, Error> {
+        // Safety: device pointer is valid; info is a valid borrow.
+        let ptr = unsafe { ffi::SDL_CreateGPUBuffer(self.ptr, info as *const _) };
+        if ptr.is_null() {
+            return Err(crate::get_error());
+        }
+        Ok(GpuBuffer {
+            ptr,
+            device: self.ptr,
+            size: info.size,
             _marker: PhantomData,
         })
     }
@@ -307,6 +342,16 @@ impl GpuDevice {
     pub fn unmap_transfer_buffer(&self, buffer: &GpuTransferBuffer) {
         // Safety: device and buffer pointers are valid.
         unsafe { ffi::SDL_UnmapGPUTransferBuffer(self.ptr, buffer.ptr) }
+    }
+
+    /// Blocks the thread until the GPU has finished all submitted work.
+    pub fn wait_for_idle(&self) -> Result<(), Error> {
+        // Safety: device pointer is valid.
+        let ok = unsafe { ffi::SDL_WaitForGPUIdle(self.ptr) };
+        if !ok {
+            return Err(crate::get_error());
+        }
+        Ok(())
     }
 
     /// Acquires a command buffer from the device's command pool.
@@ -394,6 +439,18 @@ impl Drop for GpuSampler {
 pub struct GpuTexture {
     ptr: *mut ffi::SDL_GPUTexture,
     device: *mut ffi::SDL_GPUDevice,
+    /// The type the texture was created with.
+    texture_type: ffi::SDL_GPUTextureType,
+    /// The pixel format.
+    format: ffi::SDL_GPUTextureFormat,
+    /// The width of mip level 0 in pixels.
+    width: u32,
+    /// The height of mip level 0 in pixels.
+    height: u32,
+    /// The number of layers, or the depth of mip level 0 of a 3D texture.
+    layer_count_or_depth: u32,
+    /// The number of mip levels.
+    level_count: u32,
     _marker: PhantomData<*mut ()>,
 }
 
@@ -407,6 +464,33 @@ impl Drop for GpuTexture {
     fn drop(&mut self) {
         // Safety: device and texture pointers are valid.
         unsafe { ffi::SDL_ReleaseGPUTexture(self.device, self.ptr) }
+    }
+}
+
+/// A GPU buffer, for example a storage buffer of a shader. Released back to
+/// the device on drop.
+pub struct GpuBuffer {
+    ptr: *mut ffi::SDL_GPUBuffer,
+    device: *mut ffi::SDL_GPUDevice,
+    size: u32,
+    _marker: PhantomData<*mut ()>,
+}
+
+impl GpuBuffer {
+    fn raw_handle(&self) -> *mut ffi::SDL_GPUBuffer {
+        self.ptr
+    }
+
+    /// Returns the size in bytes.
+    pub fn size(&self) -> u32 {
+        self.size
+    }
+}
+
+impl Drop for GpuBuffer {
+    fn drop(&mut self) {
+        // Safety: device and buffer pointers are valid.
+        unsafe { ffi::SDL_ReleaseGPUBuffer(self.device, self.ptr) }
     }
 }
 
@@ -500,7 +584,7 @@ impl GpuCommandBuffer {
         color_target: &ColorTargetDescriptor<'_>,
     ) -> GpuRenderPass<'_> {
         let info = ffi::SDL_GPUColorTargetInfo {
-            texture: color_target.texture.raw_handle(),
+            texture: sealed::Sealed::raw_texture(color_target.texture),
             clear_color: color_target.clear_color,
             load_op: color_target.load_op,
             store_op: color_target.store_op,
@@ -511,7 +595,21 @@ impl GpuCommandBuffer {
             unsafe { ffi::SDL_BeginGPURenderPass(self.ptr, &raw const info, 1, std::ptr::null()) };
         GpuRenderPass {
             ptr,
+            command_buffer: self.ptr,
             _marker: PhantomData,
+        }
+    }
+
+    /// Pushes vertex uniform data for the given slot.
+    pub fn push_vertex_uniform_data(&self, slot_index: u32, data: &[u8]) {
+        // Safety: cb pointer is valid; data slice covers `data.len()` bytes.
+        unsafe {
+            ffi::SDL_PushGPUVertexUniformData(
+                self.ptr,
+                slot_index,
+                data.as_ptr() as *const c_void,
+                data.len() as u32,
+            )
         }
     }
 
@@ -547,12 +645,14 @@ pub struct GpuCopyPass<'a> {
 
 impl GpuCopyPass<'_> {
     /// Uploads data from a transfer buffer region into a texture region.
+    /// Debug builds assert that both ranges lie inside their resources.
     pub fn upload_to_texture(
         &self,
         source: &TextureTransferInfo<'_>,
         destination: &TextureRegion<'_>,
         cycle: bool,
     ) {
+        debug_assert_texture_copy(destination, source);
         let source_info = ffi::SDL_GPUTextureTransferInfo {
             transfer_buffer: source.transfer_buffer.raw_handle(),
             offset: source.offset,
@@ -581,6 +681,175 @@ impl GpuCopyPass<'_> {
             )
         }
     }
+
+    /// Uploads data from a transfer buffer into a region of a GPU buffer.
+    /// `cycle=true` gives the buffer a fresh backing when it is still in use,
+    /// which discards the bytes outside the region. Debug builds assert that
+    /// both ranges lie inside their buffers.
+    pub fn upload_to_buffer(
+        &self,
+        source: &TransferBufferLocation<'_>,
+        destination: &BufferRegion<'_>,
+        cycle: bool,
+    ) {
+        debug_assert!(
+            u64::from(source.offset) + u64::from(destination.size)
+                <= u64::from(source.transfer_buffer.size()),
+            "the source range {}+{} exceeds the transfer buffer of {} bytes",
+            source.offset,
+            destination.size,
+            source.transfer_buffer.size()
+        );
+        debug_assert!(
+            u64::from(destination.offset) + u64::from(destination.size)
+                <= u64::from(destination.buffer.size()),
+            "the destination range {}+{} exceeds the buffer of {} bytes",
+            destination.offset,
+            destination.size,
+            destination.buffer.size()
+        );
+        let source_location = ffi::SDL_GPUTransferBufferLocation {
+            transfer_buffer: source.transfer_buffer.raw_handle(),
+            offset: source.offset,
+        };
+        let destination_region = ffi::SDL_GPUBufferRegion {
+            buffer: destination.buffer.raw_handle(),
+            offset: destination.offset,
+            size: destination.size,
+        };
+        // Safety: copy pass pointer is valid; the FFI structs were built from
+        // live wrapper handles.
+        unsafe {
+            ffi::SDL_UploadToGPUBuffer(
+                self.ptr,
+                &raw const source_location,
+                &raw const destination_region,
+                cycle,
+            )
+        }
+    }
+
+    /// Downloads a texture region into a transfer buffer created with the
+    /// download usage. The data is readable after the command buffer finished.
+    /// Debug builds assert that both ranges lie inside their resources.
+    pub fn download_from_texture(
+        &self,
+        source: &TextureRegion<'_>,
+        destination: &TextureTransferInfo<'_>,
+    ) {
+        debug_assert_texture_copy(source, destination);
+        let source_region = ffi::SDL_GPUTextureRegion {
+            texture: source.texture.raw_handle(),
+            mip_level: source.mip_level,
+            layer: source.layer,
+            x: source.x,
+            y: source.y,
+            z: source.z,
+            w: source.w,
+            h: source.h,
+            d: source.d,
+        };
+        let destination_info = ffi::SDL_GPUTextureTransferInfo {
+            transfer_buffer: destination.transfer_buffer.raw_handle(),
+            offset: destination.offset,
+            pixels_per_row: destination.pixels_per_row,
+            rows_per_layer: destination.rows_per_layer,
+        };
+        // Safety: copy pass pointer is valid; the FFI structs were built from
+        // live wrapper handles.
+        unsafe {
+            ffi::SDL_DownloadFromGPUTexture(
+                self.ptr,
+                &raw const source_region,
+                &raw const destination_info,
+            )
+        }
+    }
+}
+
+/// Asserts in debug builds that a copy between `region` and `transfer` stays inside the
+/// texture and inside the transfer buffer.
+fn debug_assert_texture_copy(region: &TextureRegion<'_>, transfer: &TextureTransferInfo<'_>) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    let texture = region.texture;
+    debug_assert!(
+        region.mip_level < texture.level_count,
+        "the mip level {} exceeds the {} levels of the texture",
+        region.mip_level,
+        texture.level_count
+    );
+    let level_width = (texture.width >> region.mip_level).max(1);
+    let level_height = (texture.height >> region.mip_level).max(1);
+    debug_assert!(
+        u64::from(region.x) + u64::from(region.w) <= u64::from(level_width)
+            && u64::from(region.y) + u64::from(region.h) <= u64::from(level_height),
+        "the region {}x{} at {},{} exceeds the level of {level_width}x{level_height} pixels",
+        region.w,
+        region.h,
+        region.x,
+        region.y
+    );
+    if texture.texture_type == ffi::SDL_GPU_TEXTURETYPE_3D {
+        let level_depth = (texture.layer_count_or_depth >> region.mip_level).max(1);
+        debug_assert!(
+            region.layer == 0
+                && u64::from(region.z) + u64::from(region.d) <= u64::from(level_depth),
+            "the region of depth {} at layer {} and z {} exceeds the depth of {level_depth}",
+            region.d,
+            region.layer,
+            region.z
+        );
+    } else {
+        debug_assert!(
+            region.layer < texture.layer_count_or_depth
+                && u64::from(region.z) + u64::from(region.d) <= 1,
+            "the region of depth {} at layer {} and z {} exceeds the {} layers of the texture",
+            region.d,
+            region.layer,
+            region.z,
+            texture.layer_count_or_depth
+        );
+    }
+
+    if region.w == 0 || region.h == 0 || region.d == 0 {
+        return;
+    }
+    let row_length = if transfer.pixels_per_row == 0 {
+        region.w
+    } else {
+        transfer.pixels_per_row
+    };
+    let image_height = if transfer.rows_per_layer == 0 {
+        region.h
+    } else {
+        transfer.rows_per_layer
+    };
+    debug_assert!(
+        row_length >= region.w && image_height >= region.h,
+        "the transfer layout of {row_length}x{image_height} pixels is smaller than the region of {}x{}",
+        region.w,
+        region.h
+    );
+    // Safety: the function only computes a size from its arguments.
+    let (full_layers, last_layer) = unsafe {
+        (
+            ffi::SDL_CalculateGPUTextureFormatSize(
+                texture.format,
+                row_length,
+                image_height,
+                region.d - 1,
+            ),
+            ffi::SDL_CalculateGPUTextureFormatSize(texture.format, row_length, region.h, 1),
+        )
+    };
+    let required = u64::from(transfer.offset) + u64::from(full_layers) + u64::from(last_layer);
+    debug_assert!(
+        required <= u64::from(transfer.transfer_buffer.size()),
+        "the copy needs {required} bytes of the transfer buffer of {} bytes",
+        transfer.transfer_buffer.size()
+    );
 }
 
 impl Drop for GpuCopyPass<'_> {
@@ -593,6 +862,7 @@ impl Drop for GpuCopyPass<'_> {
 /// Active render pass scope. Ends on drop.
 pub struct GpuRenderPass<'a> {
     ptr: *mut ffi::SDL_GPURenderPass,
+    command_buffer: *mut ffi::SDL_GPUCommandBuffer,
     _marker: PhantomData<&'a mut GpuCommandBuffer>,
 }
 
@@ -651,6 +921,64 @@ impl GpuRenderPass<'_> {
         }
     }
 
+    /// Pushes vertex uniform data for the given slot. The draws after this
+    /// call read it, the draws before keep their data.
+    pub fn push_vertex_uniform_data(&self, slot_index: u32, data: &[u8]) {
+        // Safety: the command buffer of the pass is valid while the pass is;
+        // data slice covers `data.len()` bytes.
+        unsafe {
+            ffi::SDL_PushGPUVertexUniformData(
+                self.command_buffer,
+                slot_index,
+                data.as_ptr() as *const c_void,
+                data.len() as u32,
+            )
+        }
+    }
+
+    /// Pushes fragment uniform data for the given slot. The draws after this
+    /// call read it, the draws before keep their data.
+    pub fn push_fragment_uniform_data(&self, slot_index: u32, data: &[u8]) {
+        // Safety: the command buffer of the pass is valid while the pass is;
+        // data slice covers `data.len()` bytes.
+        unsafe {
+            ffi::SDL_PushGPUFragmentUniformData(
+                self.command_buffer,
+                slot_index,
+                data.as_ptr() as *const c_void,
+                data.len() as u32,
+            )
+        }
+    }
+
+    /// Binds storage buffers of the vertex stage starting at `first_slot`.
+    pub fn bind_vertex_storage_buffers(&self, first_slot: u32, buffers: &[&GpuBuffer]) {
+        let handles = storage_buffer_handles(buffers);
+        // Safety: render pass pointer is valid; the handle array outlives the FFI call.
+        unsafe {
+            ffi::SDL_BindGPUVertexStorageBuffers(
+                self.ptr,
+                first_slot,
+                handles.as_ptr(),
+                buffers.len() as u32,
+            )
+        }
+    }
+
+    /// Binds storage buffers of the fragment stage starting at `first_slot`.
+    pub fn bind_fragment_storage_buffers(&self, first_slot: u32, buffers: &[&GpuBuffer]) {
+        let handles = storage_buffer_handles(buffers);
+        // Safety: render pass pointer is valid; the handle array outlives the FFI call.
+        unsafe {
+            ffi::SDL_BindGPUFragmentStorageBuffers(
+                self.ptr,
+                first_slot,
+                handles.as_ptr(),
+                buffers.len() as u32,
+            )
+        }
+    }
+
     /// Issues a non-indexed draw call.
     pub fn draw_primitives(
         &self,
@@ -670,6 +998,28 @@ impl GpuRenderPass<'_> {
             )
         }
     }
+}
+
+/// The most storage buffers one bind call takes. SDL allows 8 for each stage.
+const MAX_STORAGE_BUFFER_BINDINGS: usize = 8;
+
+/// The SDL handles of `buffers` in a stack array.
+///
+/// # Panics
+///
+/// Panics when `buffers` holds more than [`MAX_STORAGE_BUFFER_BINDINGS`] entries.
+fn storage_buffer_handles(
+    buffers: &[&GpuBuffer],
+) -> [*mut ffi::SDL_GPUBuffer; MAX_STORAGE_BUFFER_BINDINGS] {
+    assert!(
+        buffers.len() <= MAX_STORAGE_BUFFER_BINDINGS,
+        "SDL binds at most {MAX_STORAGE_BUFFER_BINDINGS} storage buffers for each stage"
+    );
+    let mut handles = [std::ptr::null_mut(); MAX_STORAGE_BUFFER_BINDINGS];
+    for (handle, buffer) in handles.iter_mut().zip(buffers) {
+        *handle = buffer.raw_handle();
+    }
+    handles
 }
 
 impl Drop for GpuRenderPass<'_> {
@@ -707,6 +1057,37 @@ pub struct SwapchainTexture {
     height: u32,
 }
 
+/// Keeps [`ColorTexture`] closed to the textures of this module.
+mod sealed {
+    use sdl3_sys::gpu as ffi;
+
+    /// Gives access to the SDL handle of a texture.
+    pub trait Sealed {
+        /// The SDL handle of the texture.
+        fn raw_texture(&self) -> *mut ffi::SDL_GPUTexture;
+    }
+}
+
+/// A texture a render pass draws into: the swapchain texture or a
+/// [`GpuTexture`] created with the color target usage.
+pub trait ColorTexture: sealed::Sealed {}
+
+impl sealed::Sealed for SwapchainTexture {
+    fn raw_texture(&self) -> *mut ffi::SDL_GPUTexture {
+        self.handle
+    }
+}
+
+impl ColorTexture for SwapchainTexture {}
+
+impl sealed::Sealed for GpuTexture {
+    fn raw_texture(&self) -> *mut ffi::SDL_GPUTexture {
+        self.ptr
+    }
+}
+
+impl ColorTexture for GpuTexture {}
+
 impl SwapchainTexture {
     /// Returns the swapchain texture width in pixels.
     pub fn width(&self) -> u32 {
@@ -717,16 +1098,12 @@ impl SwapchainTexture {
     pub fn height(&self) -> u32 {
         self.height
     }
-
-    fn raw_handle(&self) -> *mut ffi::SDL_GPUTexture {
-        self.handle
-    }
 }
 
 /// Description of a render pass's single color target.
 pub struct ColorTargetDescriptor<'a> {
-    /// Swapchain texture to render into.
-    pub texture: &'a SwapchainTexture,
+    /// Texture to render into.
+    pub texture: &'a dyn ColorTexture,
     /// Clear color used when `load_op` is `SDL_GPU_LOADOP_CLEAR`.
     pub clear_color: SDL_FColor,
     /// Load operation at the start of the pass.
@@ -761,6 +1138,24 @@ pub struct TextureSamplerBinding<'a> {
     pub texture: &'a GpuTexture,
     /// Sampler describing filtering and addressing.
     pub sampler: &'a GpuSampler,
+}
+
+/// Source position of a `upload_to_buffer` copy.
+pub struct TransferBufferLocation<'a> {
+    /// Staging buffer containing the source bytes.
+    pub transfer_buffer: &'a GpuTransferBuffer,
+    /// Byte offset into the transfer buffer.
+    pub offset: u32,
+}
+
+/// Destination region of a `upload_to_buffer` copy.
+pub struct BufferRegion<'a> {
+    /// Destination buffer.
+    pub buffer: &'a GpuBuffer,
+    /// Byte offset into the buffer.
+    pub offset: u32,
+    /// Number of bytes to copy.
+    pub size: u32,
 }
 
 /// Source range of a `upload_to_texture` copy.

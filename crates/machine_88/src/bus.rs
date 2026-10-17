@@ -862,11 +862,6 @@ impl<T: TraceSink> Pc8801Bus<T> {
         (self.display_width, self.display_height)
     }
 
-    /// Returns the character-generator ROM (the level-1 kanji ROM).
-    pub fn font_rom_data(&self) -> &[u8] {
-        &self.kanji1
-    }
-
     fn update_next_event_cycle(&mut self) {
         self.next_event_cycle = self.scheduler.next_event_cycle().unwrap_or(u64::MAX);
     }

@@ -1889,11 +1889,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.memory.state.e_plane_vram.as_slice()
     }
 
-    /// Returns the kanji font ROM data (512 KB, double-byte 16×16 glyphs).
-    pub fn font_rom_data(&self) -> &[u8] {
-        self.memory.font_rom_data()
-    }
-
     /// Returns `true` if gaiji were written since the last call, and clears the flag.
     pub fn take_font_rom_dirty(&mut self) -> bool {
         self.memory.take_font_rom_dirty()

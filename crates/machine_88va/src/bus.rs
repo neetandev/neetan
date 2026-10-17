@@ -557,11 +557,6 @@ impl<T: TraceSink> Pc88VaBus<T> {
         (self.display_width, self.display_height)
     }
 
-    /// The VA kanji / font ROM image.
-    pub fn font_rom_data(&self) -> &[u8] {
-        self.memory.font_rom()
-    }
-
     /// Handles a write to the system-memory-bank port (`0x153`). A change to
     /// the GMSP bit resets the graphics controller; setting it additionally
     /// resets the SGP, matching `memctrlva_o153`.

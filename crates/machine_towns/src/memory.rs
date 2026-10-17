@@ -727,11 +727,6 @@ impl TownsMemory {
         (self.ram.len() / BYTES_PER_MEGABYTE) as u8
     }
 
-    /// The FONT ROM image (for the video/text path in a later phase).
-    pub(crate) fn font_rom(&self) -> &[u8] {
-        &self.font_rom
-    }
-
     /// The serial machine-identity ROM, read through the I/O 0x0032 interface.
     pub(crate) fn serial_rom(&self) -> &[u8] {
         &self.serial_rom

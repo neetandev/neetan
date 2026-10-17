@@ -5,7 +5,10 @@
 
 use common::{CpuZ80, HostKey, KeyModifiers, NoTrace, TraceSink};
 
-use crate::bus::{MainBusView, Pc6000Bus};
+use crate::{
+    bus::{MainBusView, Pc6000Bus},
+    config::Pc6000Model,
+};
 
 save_state::runtime_state! {
 /// Machine-root state for one PC-6000 family snapshot.
@@ -319,6 +322,10 @@ impl<T: TraceSink> common::Machine for Pc6000Machine<T> {
     fn startup_capabilities(&self) -> common::StartupCapabilities {
         common::StartupCapabilities {
             cassette: true,
+            floppy_drives: match self.bus.model() {
+                Pc6000Model::Pc6001 | Pc6000Model::Pc6001Mk2 | Pc6000Model::Pc6001Mk2Sr => 0,
+                Pc6000Model::Pc6601 | Pc6000Model::Pc6601Sr => 2,
+            },
             ..common::StartupCapabilities::default()
         }
     }
@@ -481,10 +488,6 @@ impl<T: TraceSink> common::Machine for Pc6000Machine<T> {
         self.bus.generate_audio_samples(volume, output)
     }
 
-    fn font_rom_data(&self) -> &[u8] {
-        self.bus.font_rom_data()
-    }
-
     fn insert_floppy(
         &mut self,
         drive: usize,
@@ -533,7 +536,7 @@ mod tests {
     use common::{CpuZ80, Machine, TraceAccessKind, TraceEvent, TraceSink};
 
     use super::*;
-    use crate::{config::Pc6000Model, rom::LoadedRoms};
+    use crate::rom::LoadedRoms;
 
     fn loaded_roms_with_boot(model: Pc6000Model, boot: Vec<u8>) -> LoadedRoms {
         LoadedRoms {

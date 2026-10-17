@@ -906,6 +906,8 @@ impl<C: Pc98RuntimeCpu, T: TraceSink> common::Machine for Pc98Machine<C, T> {
             printer: true,
             mt32: true,
             sc55: true,
+            floppy_drives: 2,
+            cdrom: self.bus.machine_model().has_ide(),
             ..Default::default()
         }
     }
@@ -1064,10 +1066,6 @@ impl<C: Pc98RuntimeCpu, T: TraceSink> common::Machine for Pc98Machine<C, T> {
 
     fn cd_audio_status(&self) -> Option<common::CdAudioStatus> {
         self.bus.cd_audio_status()
-    }
-
-    fn font_rom_data(&self) -> &[u8] {
-        self.bus.font_rom_data()
     }
 
     fn insert_floppy(

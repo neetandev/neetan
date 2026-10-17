@@ -9,4 +9,5 @@ rust-version.workspace = true
 
 [dependencies]
 common = { workspace = true, features = ["std"] }
+gui.workspace = true
 sdl3.workspace = true

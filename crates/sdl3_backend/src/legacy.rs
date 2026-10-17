@@ -2,24 +2,56 @@
 //!
 //! Kept as a fallback for hosts where the SDL3 GPU API is unavailable or
 //! the [`SdlGpuBackend`](crate::ModernSdlGpuBackend) fails to initialize. Functionally
-//! a simple streaming-texture blit with letterboxing.
+//! a simple streaming-texture blit with letterboxing. The overlay is drawn by
+//! the CPU rasterizer of the `gui` crate into a second streaming texture.
 
-use common::{Context, OptionContext, error, info, warn};
+use common::{Context, OptionContext, bail, error, info, warn};
+use gui::Rasterizer;
 use sdl3::{
     info::version as sdl_version,
-    render::{PixelFormat, Rect, Renderer, ScaleMode, Texture},
+    render::{BlendMode, PixelFormat, Rect, Renderer, ScaleMode, Texture},
     video::Window,
 };
 
 use crate::{
-    DisplayAspectMode, GraphicsEngine, RenderInstructions, Result, Scaling,
+    DisplayAspectMode, GraphicsEngine, Overlay, RenderInstructions, Result, Scaling,
     compute_color_target_extent, native_target_size,
 };
 
 /// Renderer state that exists only between `on_resume` and `on_destroy_surface`.
 struct SdlState {
+    /// The streaming texture of the emulator frame.
     texture: Texture,
+    /// The streaming texture of the overlay.
+    overlay: OverlaySlot,
+    /// The renderer. It drops after the textures.
     renderer: Renderer,
+}
+
+/// The overlay texture of the renderer.
+enum OverlaySlot {
+    /// No overlay texture exists.
+    Empty,
+    /// A texture in the size of the render output.
+    Ready(OverlayTexture),
+    /// The overlay failed at this output size. It stays off until the size
+    /// changes.
+    Disabled {
+        /// The output width in pixels.
+        width: u32,
+        /// The output height in pixels.
+        height: u32,
+    },
+}
+
+/// A streaming texture that holds the rasterized overlay.
+struct OverlayTexture {
+    /// The texture in the size of the render output.
+    texture: Texture,
+    /// The width in pixels.
+    width: u32,
+    /// The height in pixels.
+    height: u32,
 }
 
 /// SDL 2D rendering backend.
@@ -30,6 +62,10 @@ pub struct LegacySdlBackend {
     scaling: Scaling,
     /// `SDL_SCALEMODE_PIXELART` was introduced in SDL 3.4.
     pixelart_supported: bool,
+    /// Draws the overlay scene on the CPU.
+    overlay_rasterizer: Rasterizer,
+    /// The overlay pixels of the last rasterized frame.
+    overlay_pixels: Vec<u8>,
 }
 
 impl LegacySdlBackend {
@@ -49,9 +85,12 @@ impl LegacySdlBackend {
             state: None,
             scaling: Scaling::Pixelart,
             pixelart_supported,
+            overlay_rasterizer: Rasterizer::new(),
+            overlay_pixels: Vec::new(),
         }
     }
 
+    /// Returns the SDL scale mode of the emulator frame texture.
     fn sdl_scale_mode(&self, scaling: Scaling) -> ScaleMode {
         match scaling {
             Scaling::Nearest => ScaleMode::Nearest,
@@ -90,7 +129,11 @@ impl GraphicsEngine for LegacySdlBackend {
 
         info!("SDL Renderer backend initialized");
 
-        self.state = Some(SdlState { texture, renderer });
+        self.state = Some(SdlState {
+            texture,
+            overlay: OverlaySlot::Empty,
+            renderer,
+        });
 
         Ok(())
     }
@@ -103,6 +146,7 @@ impl GraphicsEngine for LegacySdlBackend {
         &mut self,
         _window: &Window,
         render_instructions: Option<&RenderInstructions>,
+        overlay: Option<Overlay<'_>>,
     ) -> Result<()> {
         let state = self
             .state
@@ -166,6 +210,32 @@ impl GraphicsEngine for LegacySdlBackend {
                 .context("SDL_RenderTexture failed")?;
         }
 
+        match overlay {
+            Some(overlay) => {
+                if let Err(error) = draw_overlay(
+                    state,
+                    &mut self.overlay_rasterizer,
+                    &mut self.overlay_pixels,
+                    overlay,
+                    output_width,
+                    output_height,
+                ) {
+                    error!("Overlay disabled at {output_width}x{output_height}: {error:#}");
+                    state.overlay = OverlaySlot::Disabled {
+                        width: output_width,
+                        height: output_height,
+                    };
+                    self.overlay_pixels = Vec::new();
+                    self.overlay_rasterizer.invalidate();
+                }
+            }
+            None => {
+                state.overlay = OverlaySlot::Empty;
+                self.overlay_pixels = Vec::new();
+                self.overlay_rasterizer.invalidate();
+            }
+        }
+
         state
             .renderer
             .present()
@@ -185,6 +255,89 @@ impl GraphicsEngine for LegacySdlBackend {
     }
 }
 
+/// Rasterizes the overlay and draws it 1:1 over the whole render output.
+///
+/// The renderer uses no logical presentation, viewport or render scale. Its
+/// render coordinates are the pixels of the output. The texture is uploaded
+/// only when the rasterized pixels changed or the texture was recreated.
+fn draw_overlay(
+    state: &mut SdlState,
+    rasterizer: &mut Rasterizer,
+    pixels: &mut Vec<u8>,
+    overlay: Overlay<'_>,
+    output_width: u32,
+    output_height: u32,
+) -> Result<()> {
+    if overlay.scene.is_empty() && overlay.scene.clear_color().a == 0 {
+        return Ok(());
+    }
+
+    match &state.overlay {
+        OverlaySlot::Ready(existing)
+            if existing.width == output_width && existing.height == output_height => {}
+        OverlaySlot::Disabled { width, height }
+            if *width == output_width && *height == output_height =>
+        {
+            return Ok(());
+        }
+        _ => {
+            state.overlay = OverlaySlot::Empty;
+            let texture = create_overlay_texture(&state.renderer, output_width, output_height)?;
+            rasterizer.invalidate();
+            state.overlay = OverlaySlot::Ready(texture);
+        }
+    }
+    let OverlaySlot::Ready(overlay_texture) = &mut state.overlay else {
+        return Ok(());
+    };
+
+    pixels.resize(output_width as usize * output_height as usize * 4, 0);
+    let changed = rasterizer.rasterize(
+        overlay.scene,
+        overlay.slug,
+        output_width,
+        output_height,
+        pixels,
+    );
+    if changed {
+        overlay_texture
+            .texture
+            .update(None, pixels, output_width * 4)
+            .context("SDL_UpdateTexture failed for the overlay")?;
+    }
+
+    state
+        .renderer
+        .render_texture(&overlay_texture.texture, None, None)
+        .context("SDL_RenderTexture failed for the overlay")?;
+    Ok(())
+}
+
+/// Creates the overlay texture with premultiplied blending in the size of the
+/// render output. Fails when the output exceeds the maximum texture size.
+fn create_overlay_texture(renderer: &Renderer, width: u32, height: u32) -> Result<OverlayTexture> {
+    if let Some(maximum) = renderer.max_texture_size()
+        && (width > maximum || height > maximum)
+    {
+        bail!("the output exceeds the maximum texture size of {maximum} pixels");
+    }
+    let texture = renderer
+        .create_streaming_texture(PixelFormat::Rgba32, width, height)
+        .context("SDL_CreateTexture failed for the overlay")?;
+    texture
+        .set_blend_mode(BlendMode::BlendPremultiplied)
+        .context("SDL_SetTextureBlendMode failed")?;
+    texture
+        .set_scale_mode(ScaleMode::Nearest)
+        .context("SDL_SetTextureScaleMode failed")?;
+    Ok(OverlayTexture {
+        texture,
+        width,
+        height,
+    })
+}
+
+/// Returns the letterboxed destination of the emulator frame in output pixels.
 fn fitted_destination_rect(output_width: u32, output_height: u32, aspect_ratio: f64) -> Rect {
     let (fitted_width, fitted_height) =
         compute_color_target_extent(output_width, output_height, aspect_ratio);

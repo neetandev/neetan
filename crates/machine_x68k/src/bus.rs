@@ -916,11 +916,6 @@ impl<T: TraceSink> X68kBus<T> {
         self.sram.data()
     }
 
-    /// Returns the loaded character-generator ROM.
-    pub fn cgrom_data(&self) -> &[u8] {
-        &self.cgrom
-    }
-
     /// Returns text VRAM for diagnostics and reference-ROM tests.
     pub fn text_vram_data(&self) -> &[u8] {
         &self.text_vram

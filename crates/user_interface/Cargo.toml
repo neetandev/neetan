@@ -35,7 +35,7 @@ dos = { workspace = true }
 save_state = { workspace = true }
 sdl3 = { workspace = true }
 sdl3_backend = { workspace = true }
-software_renderer = { workspace = true }
+gui = { workspace = true }
 text_extractor = { workspace = true }
 
 [dev-dependencies]

@@ -415,6 +415,14 @@ impl<T: TraceSink> common::Machine for Pc8801Machine<T> {
         self.bus.set_host_date_time_source(source);
     }
 
+    fn startup_capabilities(&self) -> common::StartupCapabilities {
+        common::StartupCapabilities {
+            floppy_drives: 2,
+            cdrom: true,
+            ..common::StartupCapabilities::default()
+        }
+    }
+
     fn cpu_clock_hz(&self) -> f64 {
         f64::from(self.bus.cpu_clock_hz())
     }
@@ -565,10 +573,6 @@ impl<T: TraceSink> common::Machine for Pc8801Machine<T> {
 
     fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
         self.bus.generate_audio_samples(volume, output)
-    }
-
-    fn font_rom_data(&self) -> &[u8] {
-        self.bus.font_rom_data()
     }
 
     fn insert_floppy(

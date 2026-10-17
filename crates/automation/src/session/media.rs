@@ -91,7 +91,7 @@ impl AutomationSession {
                 kind.slot_count()
             )));
         }
-        Self::check_media_supported(active, kind)?;
+        Self::check_media_supported(active, kind, slot)?;
         if active.mounts.contains_key(&(kind, slot)) {
             Self::eject_from(active, kind, slot);
         }
@@ -244,14 +244,17 @@ impl AutomationSession {
         Ok(mount)
     }
 
-    /// Rejects a media kind the current machine does not support.
-    ///
-    /// Floppy and CD-ROM have no `StartupCapabilities` flag, so an unsupported
-    /// drive surfaces later as the insert failure rather than here.
-    fn check_media_supported(active: &ActiveMachine, kind: MediaKind) -> Result<(), OpError> {
+    /// Rejects a media kind or a floppy drive `slot` the current machine
+    /// does not have.
+    fn check_media_supported(
+        active: &ActiveMachine,
+        kind: MediaKind,
+        slot: usize,
+    ) -> Result<(), OpError> {
         let capabilities = active.machine.startup_capabilities();
         let supported = match kind {
-            MediaKind::Floppy | MediaKind::Cdrom => true,
+            MediaKind::Floppy => slot < usize::from(capabilities.floppy_drives),
+            MediaKind::Cdrom => capabilities.cdrom,
             MediaKind::Hdd => capabilities.hard_disk,
             MediaKind::Cartridge => capabilities.cartridge,
             MediaKind::Cassette => capabilities.cassette,

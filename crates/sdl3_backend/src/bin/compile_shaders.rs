@@ -118,6 +118,7 @@ fn metallib_command(shader_file: &Path, output_file: &Path, modules_dir: &Path) 
         .arg("-O3")
         .arg("-I")
         .arg(modules_dir)
+        .arg("-DTARGET_METAL=1")
         .arg("-o")
         .arg(output_file)
         .arg(shader_file);

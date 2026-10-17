@@ -632,11 +632,6 @@ impl<T: TraceSink> X1Bus<T> {
         self.renderer.render_debug_layer(&inputs, layer)
     }
 
-    /// The character-generator ROM data (for host-side font tooling).
-    pub fn font_rom_data(&self) -> &[u8] {
-        &self.cg_rom
-    }
-
     /// Injects a host keyboard event. The byte is a host key sub-id with bit 7
     /// set on release.
     pub fn push_keyboard_scancode(&mut self, code: u8) {

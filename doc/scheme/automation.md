@@ -62,11 +62,12 @@ from `call-with-machine` or `with-machine`.
   `ticks-per-second-denominator`), `audio-sample-rate`, and `capabilities`.
 - `(machine-capabilities machine)` -> alist. Capability descriptor: `keyboard`,
   `mouse`, `mouse-buttons`, `joystick`, `joystick-ports`, `cartridge`,
-  `cassette`, `hard-disk`, `printer`, `mt32`, `sc55`, `trace`, and
-  `trace-schema-version`.
+  `cassette`, `hard-disk`, `printer`, `mt32`, `sc55`, `floppy-drives`,
+  `cdrom`, `trace`, and `trace-schema-version`.
 - `(machine-capability? machine capability)` -> boolean. Convenience predicate
   over the descriptor. Recognized symbols: `keyboard`, `mouse`, `joystick`,
-  `cartridge`, `cassette`, `hard-disk`, `printer`, `mt32`, `sc55`, `save-state`,
+  `cartridge`, `cassette`, `hard-disk`, `printer`, `mt32`, `sc55`,
+  `floppy-drives` (at least one floppy drive), `cdrom`, `save-state`,
   `inspect`, `mutate`, `trace`.
 
 ## Timeline counters
