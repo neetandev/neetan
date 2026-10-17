@@ -2486,8 +2486,8 @@ mod tests {
     fn parser_resets_on_unknown_csi() {
         let mut console = make_console();
         let mut memory = make_memory();
-        // ESC[ followed by '!' (not digit, ?, >, ;, or letter) should reset.
-        feed_str(&mut console, &mut memory, "\x1b[!");
+        // ESC[ followed by '*' (low nibble above 9, not ?, >, ;, or letter) should reset.
+        feed_str(&mut console, &mut memory, "\x1b[*");
         assert_eq!(
             console.esc_parser.state,
             crate::console_esc::EscState::Normal
