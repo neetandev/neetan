@@ -743,11 +743,6 @@ impl<T: TraceSink> TownsBus<T> {
         self.gameport.set_pad_type(kind);
     }
 
-    /// The FONT ROM image, exposed to the app's image selector.
-    pub(crate) fn font_rom_data(&self) -> &[u8] {
-        self.memory.font_rom()
-    }
-
     /// Whether a power-off has been requested through I/O 0x0020/0x0022.
     pub(crate) fn power_off_requested(&self) -> bool {
         self.power_off_requested

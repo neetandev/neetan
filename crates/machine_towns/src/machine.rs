@@ -548,6 +548,8 @@ impl<const CPU_MODEL: u8, T: TraceSink> Machine for TownsMachine<CPU_MODEL, T> {
             hard_disk: true,
             mt32: true,
             sc55: true,
+            floppy_drives: 2,
+            cdrom: true,
             ..Default::default()
         }
     }
@@ -698,10 +700,6 @@ impl<const CPU_MODEL: u8, T: TraceSink> Machine for TownsMachine<CPU_MODEL, T> {
 
     fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
         self.bus.generate_audio_samples(volume, output)
-    }
-
-    fn font_rom_data(&self) -> &[u8] {
-        self.bus.font_rom_data()
     }
 
     fn insert_floppy(

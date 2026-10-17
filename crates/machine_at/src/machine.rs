@@ -527,10 +527,6 @@ impl<T: TraceSink> Machine for AtMachine<T> {
         self.bus.generate_audio_samples(volume, output)
     }
 
-    fn font_rom_data(&self) -> &[u8] {
-        &[]
-    }
-
     fn insert_floppy(
         &mut self,
         drive: usize,
@@ -562,6 +558,8 @@ impl<T: TraceSink> Machine for AtMachine<T> {
             hard_disk: true,
             mt32: true,
             sc55: true,
+            floppy_drives: 2,
+            cdrom: true,
             ..StartupCapabilities::default()
         }
     }

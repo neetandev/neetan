@@ -33,6 +33,8 @@ fn capability_present(session: &Rc<RefCell<AutomationSession>>, name: &str) -> b
         "printer" => media.printer,
         "mt32" => media.mt32,
         "sc55" => media.sc55,
+        "floppy-drives" => media.floppy_drives > 0,
+        "cdrom" => media.cdrom,
         "save-state" => borrowed.has_machine(),
         "inspect" => borrowed.supports_inspection(),
         "mutate" => borrowed.supports_mutation(),
@@ -56,6 +58,7 @@ fn capabilities_value(
     let supports_tracing = session.borrow().supports_tracing();
     let mouse_buttons = context.integer(i128::from(input.mouse_buttons))?;
     let joystick_ports = context.integer(i128::from(input.joystick_ports))?;
+    let floppy_drives = context.integer(i128::from(media.floppy_drives))?;
     let trace_schema_version = context.integer(i128::from(common::TRACE_SCHEMA_VERSION))?;
     make_alist(
         context,
@@ -71,6 +74,8 @@ fn capabilities_value(
             ("printer", Value::boolean(media.printer)),
             ("mt32", Value::boolean(media.mt32)),
             ("sc55", Value::boolean(media.sc55)),
+            ("floppy-drives", floppy_drives),
+            ("cdrom", Value::boolean(media.cdrom)),
             ("trace", Value::boolean(supports_tracing)),
             ("trace-schema-version", trace_schema_version),
         ],

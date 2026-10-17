@@ -4,7 +4,9 @@
 mod device;
 mod gpu;
 mod legacy;
+mod overlay;
 mod pipeline;
+mod ui_pipeline;
 
 pub use common::Error;
 pub use gpu::ModernSdlGpuBackend;
@@ -46,6 +48,18 @@ pub struct RenderInstructions<'a> {
     pub composite_phase: u32,
 }
 
+/// The user interface drawn over the emulator frame.
+///
+/// The scene is laid out in the physical pixels of the render output and
+/// covers the whole output, independent of the scaling of the emulator frame.
+#[derive(Clone, Copy)]
+pub struct Overlay<'a> {
+    /// The draw items in painter's order.
+    pub scene: &'a gui::Scene,
+    /// The glyph and path data the scene refers to.
+    pub slug: &'a gui::SlugData,
+}
+
 /// Returns the backing texture dimensions for a backend configuration.
 pub fn native_target_size(large_native_target: bool) -> (u32, u32) {
     if large_native_target {
@@ -69,11 +83,12 @@ pub trait GraphicsEngine {
     /// Called when the rendering surface should be torn down (e.g., Android suspend).
     fn on_destroy_surface(&mut self);
 
-    /// Renders the next frame.
+    /// Renders the next frame and draws the overlay over it.
     fn render_frame(
         &mut self,
         window: &Window,
         render_instructions: Option<&RenderInstructions>,
+        overlay: Option<Overlay<'_>>,
     ) -> Result<()>;
 
     /// Selects the scaling method applied.

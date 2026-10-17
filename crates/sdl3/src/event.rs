@@ -39,8 +39,26 @@ pub enum Event {
         /// Whether this is a key-repeat event.
         repeat: bool,
     },
+    /// Text was committed by the keyboard or an input method.
+    TextInput {
+        /// The committed text.
+        text: String,
+    },
+    /// The composition of an input method changed.
+    TextEditing {
+        /// The composed text that is not committed yet.
+        text: String,
+        /// The cursor position in the composition, in characters.
+        start: i32,
+        /// The length of the selected part of the composition, in characters.
+        length: i32,
+    },
     /// The mouse was moved.
     MouseMotion {
+        /// The X position in window coordinates.
+        x: f32,
+        /// The Y position in window coordinates.
+        y: f32,
         /// Relative X motion.
         xrel: f32,
         /// Relative Y motion.
@@ -50,11 +68,36 @@ pub enum Event {
     MouseButtonDown {
         /// The button that was pressed.
         mouse_btn: MouseButton,
+        /// The number of quick presses in a row: 1 for a single click, 2 for
+        /// a double click.
+        clicks: u8,
+        /// The X position in window coordinates.
+        x: f32,
+        /// The Y position in window coordinates.
+        y: f32,
     },
     /// A mouse button was released.
     MouseButtonUp {
         /// The button that was released.
         mouse_btn: MouseButton,
+        /// The number of quick presses in a row.
+        clicks: u8,
+        /// The X position in window coordinates.
+        x: f32,
+        /// The Y position in window coordinates.
+        y: f32,
+    },
+    /// The mouse wheel was turned.
+    MouseWheel {
+        /// The horizontal scroll amount. Positive values scroll to the right.
+        x: f32,
+        /// The vertical scroll amount. Positive values scroll away from the
+        /// user.
+        y: f32,
+        /// The pointer X position in window coordinates.
+        mouse_x: f32,
+        /// The pointer Y position in window coordinates.
+        mouse_y: f32,
     },
     /// A gamepad was connected.
     GamepadAdded {
@@ -103,6 +146,9 @@ pub enum WindowEvent {
     FocusLost,
     /// The window gained keyboard focus.
     FocusGained,
+    /// The display scale of the window changed, for example after a move to
+    /// another display.
+    DisplayScaleChanged,
     /// A window event not handled by this wrapper.
     Other,
 }
@@ -187,6 +233,10 @@ fn convert_event(raw: &events::SDL_Event) -> Event {
             win_event: WindowEvent::FocusGained,
         },
 
+        events::SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED => Event::Window {
+            win_event: WindowEvent::DisplayScaleChanged,
+        },
+
         events::SDL_EVENT_DISPLAY_CONTENT_SCALE_CHANGED => Event::Display {
             display_event: DisplayEvent::ContentScaleChanged,
         },
@@ -208,9 +258,29 @@ fn convert_event(raw: &events::SDL_Event) -> Event {
             }
         }
 
+        events::SDL_EVENT_TEXT_INPUT => {
+            let input = unsafe { &raw.text };
+            Event::TextInput {
+                // Safety: SDL keeps the text valid until the next poll.
+                text: unsafe { owned_text(input.text) },
+            }
+        }
+
+        events::SDL_EVENT_TEXT_EDITING => {
+            let editing = unsafe { &raw.edit };
+            Event::TextEditing {
+                // Safety: SDL keeps the text valid until the next poll.
+                text: unsafe { owned_text(editing.text) },
+                start: editing.start,
+                length: editing.length,
+            }
+        }
+
         events::SDL_EVENT_MOUSE_MOTION => {
             let motion = unsafe { &raw.motion };
             Event::MouseMotion {
+                x: motion.x,
+                y: motion.y,
                 xrel: motion.xrel,
                 yrel: motion.yrel,
             }
@@ -220,6 +290,9 @@ fn convert_event(raw: &events::SDL_Event) -> Event {
             let button = unsafe { &raw.button };
             Event::MouseButtonDown {
                 mouse_btn: MouseButton::from_raw(button.button),
+                clicks: button.clicks,
+                x: button.x,
+                y: button.y,
             }
         }
 
@@ -227,6 +300,19 @@ fn convert_event(raw: &events::SDL_Event) -> Event {
             let button = unsafe { &raw.button };
             Event::MouseButtonUp {
                 mouse_btn: MouseButton::from_raw(button.button),
+                clicks: button.clicks,
+                x: button.x,
+                y: button.y,
+            }
+        }
+
+        events::SDL_EVENT_MOUSE_WHEEL => {
+            let wheel = unsafe { &raw.wheel };
+            Event::MouseWheel {
+                x: wheel.x,
+                y: wheel.y,
+                mouse_x: wheel.mouse_x,
+                mouse_y: wheel.mouse_y,
             }
         }
 
@@ -271,4 +357,20 @@ fn convert_event(raw: &events::SDL_Event) -> Event {
 
         _ => Event::Unknown,
     }
+}
+
+/// Copies a UTF-8 C string of an event into an owned string. A null pointer
+/// gives an empty string.
+///
+/// # Safety
+///
+/// `text` must be null or point to a valid NUL terminated string.
+unsafe fn owned_text(text: *const std::ffi::c_char) -> String {
+    if text.is_null() {
+        return String::new();
+    }
+    // Safety: The caller guarantees a valid NUL terminated string.
+    unsafe { std::ffi::CStr::from_ptr(text) }
+        .to_string_lossy()
+        .into_owned()
 }

@@ -1887,6 +1887,10 @@ pub struct StartupCapabilities {
     pub mt32: bool,
     /// Whether the machine supports an SC-55 module.
     pub sc55: bool,
+    /// The number of floppy drives of the machine.
+    pub floppy_drives: u8,
+    /// Whether the machine has a CD-ROM drive.
+    pub cdrom: bool,
 }
 
 /// Abstract machine that can be stepped by a host loop.
@@ -2000,10 +2004,6 @@ pub trait Machine {
     fn cd_audio_status(&self) -> Option<CdAudioStatus> {
         None
     }
-
-    /// Returns the font ROM data. Used by the image selector to seed its
-    /// own software renderer with the same font ROM the bus is using.
-    fn font_rom_data(&self) -> &[u8];
 
     /// Sets the host date and time source used by this machine's RTC.
     fn set_host_date_time_source(&mut self, _source: SharedHostDateTimeSource) {}
@@ -2233,7 +2233,6 @@ mod tests {
     /// mouse hardware compile against the trait defaults.
     struct MinimalMachine {
         framebuffer: Vec<u8>,
-        font_rom: Vec<u8>,
     }
 
     impl Machine for MinimalMachine {
@@ -2263,10 +2262,6 @@ mod tests {
             0
         }
 
-        fn font_rom_data(&self) -> &[u8] {
-            &self.font_rom
-        }
-
         #[cfg(feature = "std")]
         fn insert_floppy(
             &mut self,
@@ -2286,7 +2281,6 @@ mod tests {
     fn machine_trait_defaults_cover_optional_hardware() {
         let mut machine = MinimalMachine {
             framebuffer: Vec::new(),
-            font_rom: Vec::new(),
         };
 
         #[cfg(feature = "std")]

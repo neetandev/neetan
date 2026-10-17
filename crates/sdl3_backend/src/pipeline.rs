@@ -157,31 +157,60 @@ impl PresentUniforms {
     }
 }
 
-// Per-target shader artifacts committed under shaders/, produced by the
-// `compile_shaders` developer tool (cargo run -p sdl3_backend --bin compile_shaders).
-#[cfg(target_os = "windows")]
-mod shader_bytes {
-    pub(super) const VERT_DXIL: &[u8] = include_bytes!("../shaders/present.vert.dxil");
-    pub(super) const FRAG_DXIL: &[u8] = include_bytes!("../shaders/present.frag.dxil");
-    pub(super) const VERT_SPIRV: &[u8] = include_bytes!("../shaders/present.vert.spv");
-    pub(super) const FRAG_SPIRV: &[u8] = include_bytes!("../shaders/present.frag.spv");
+/// The committed binaries of the vertex and the fragment shader of one pass
+/// in the shader formats of the target platform.
+pub(crate) struct PassBinaries {
+    /// The DXIL vertex shader.
+    #[cfg(target_os = "windows")]
+    pub(crate) vertex_dxil: &'static [u8],
+    /// The DXIL fragment shader.
+    #[cfg(target_os = "windows")]
+    pub(crate) fragment_dxil: &'static [u8],
+    /// The SPIR-V vertex shader.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    pub(crate) vertex_spirv: &'static [u8],
+    /// The SPIR-V fragment shader.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    pub(crate) fragment_spirv: &'static [u8],
+    /// The metallib vertex shader.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    pub(crate) vertex_metallib: &'static [u8],
+    /// The metallib fragment shader.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    pub(crate) fragment_metallib: &'static [u8],
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-mod shader_bytes {
-    pub(super) const VERT_METALLIB: &[u8] = include_bytes!("../shaders/present.vert.metallib");
-    pub(super) const FRAG_METALLIB: &[u8] = include_bytes!("../shaders/present.frag.metallib");
+/// The [`PassBinaries`] of the pass `$name`. The binaries are committed under
+/// `shaders/` and produced by the `compile_shaders` developer tool
+/// (`cargo run -p sdl3_backend --bin compile_shaders`).
+macro_rules! pass_binaries {
+    ($name:literal) => {
+        $crate::pipeline::PassBinaries {
+            #[cfg(target_os = "windows")]
+            vertex_dxil: include_bytes!(concat!("../shaders/", $name, ".vert.dxil")),
+            #[cfg(target_os = "windows")]
+            fragment_dxil: include_bytes!(concat!("../shaders/", $name, ".frag.dxil")),
+            #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+            vertex_spirv: include_bytes!(concat!("../shaders/", $name, ".vert.spv")),
+            #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+            fragment_spirv: include_bytes!(concat!("../shaders/", $name, ".frag.spv")),
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            vertex_metallib: include_bytes!(concat!("../shaders/", $name, ".vert.metallib")),
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            fragment_metallib: include_bytes!(concat!("../shaders/", $name, ".frag.metallib")),
+        }
+    };
 }
+pub(crate) use pass_binaries;
 
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios")))]
-mod shader_bytes {
-    pub(super) const VERT_SPIRV: &[u8] = include_bytes!("../shaders/present.vert.spv");
-    pub(super) const FRAG_SPIRV: &[u8] = include_bytes!("../shaders/present.frag.spv");
-}
+/// The binaries of the present pass.
+const PRESENT_BINARIES: PassBinaries = pass_binaries!("present");
 
-/// Selects the shader format that the device accepts and returns the matching bytecode.
-fn pick_shader_bytecode(
+/// Selects the shader format that the device accepts and returns the matching
+/// vertex and fragment bytecode of `binaries`.
+pub(crate) fn pick_shader_bytecode(
     device: &GpuDevice,
+    binaries: &PassBinaries,
 ) -> Result<(sdl3::gpu::SDL_GPUShaderFormat, &'static [u8], &'static [u8])> {
     let formats = device.shader_formats();
 
@@ -189,8 +218,8 @@ fn pick_shader_bytecode(
     if (formats.0 & sdl3::gpu::SDL_GPU_SHADERFORMAT_METALLIB.0) != 0 {
         return Ok((
             sdl3::gpu::SDL_GPU_SHADERFORMAT_METALLIB,
-            shader_bytes::VERT_METALLIB,
-            shader_bytes::FRAG_METALLIB,
+            binaries.vertex_metallib,
+            binaries.fragment_metallib,
         ));
     }
 
@@ -198,8 +227,8 @@ fn pick_shader_bytecode(
     if (formats.0 & sdl3::gpu::SDL_GPU_SHADERFORMAT_DXIL.0) != 0 {
         return Ok((
             sdl3::gpu::SDL_GPU_SHADERFORMAT_DXIL,
-            shader_bytes::VERT_DXIL,
-            shader_bytes::FRAG_DXIL,
+            binaries.vertex_dxil,
+            binaries.fragment_dxil,
         ));
     }
 
@@ -210,12 +239,12 @@ fn pick_shader_bytecode(
     if (formats.0 & sdl3::gpu::SDL_GPU_SHADERFORMAT_SPIRV.0) != 0 {
         return Ok((
             sdl3::gpu::SDL_GPU_SHADERFORMAT_SPIRV,
-            shader_bytes::VERT_SPIRV,
-            shader_bytes::FRAG_SPIRV,
+            binaries.vertex_spirv,
+            binaries.fragment_spirv,
         ));
     }
 
-    let _ = formats;
+    let _ = (formats, binaries);
     Err(Error::Message(common::StringError(
         "SDL3 GPU device does not accept any shader format produced by compile_shaders".to_string(),
     )))
@@ -226,7 +255,7 @@ pub(crate) fn build(
     device: &GpuDevice,
     swapchain_format: SDL_GPUTextureFormat,
 ) -> Result<GpuGraphicsPipeline> {
-    let (format, vert_code, frag_code) = pick_shader_bytecode(device)?;
+    let (format, vert_code, frag_code) = pick_shader_bytecode(device, &PRESENT_BINARIES)?;
 
     let vertex_shader = device
         .create_shader(&ShaderDescriptor {

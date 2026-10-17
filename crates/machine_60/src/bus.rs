@@ -697,11 +697,6 @@ impl<T: TraceSink> Pc6000Bus<T> {
         display_dimensions(self.model)
     }
 
-    /// The character generator ROM data.
-    pub fn font_rom_data(&self) -> &[u8] {
-        self.memory.cgrom()
-    }
-
     /// Injects a host keyboard event (bit 7 set marks a release).
     pub fn push_keyboard_scancode(&mut self, code: u8) {
         self.sub.push_scancode(code);

@@ -1,6 +1,6 @@
 use std::{ffi::CString, marker::PhantomData};
 
-use sdl3_sys::{init, mouse as mouse_ffi, video as ffi};
+use sdl3_sys::{init, keyboard as keyboard_ffi, mouse as mouse_ffi, rect::SDL_Rect, video as ffi};
 
 use crate::Error;
 
@@ -139,10 +139,72 @@ impl Window {
         (w as u32, h as u32)
     }
 
+    /// Returns the window's size in physical pixels.
+    pub fn size_in_pixels(&self) -> (u32, u32) {
+        let mut w: i32 = 0;
+        let mut h: i32 = 0;
+        // Safety: Window pointer is valid; w and h are valid pointers.
+        unsafe {
+            ffi::SDL_GetWindowSizeInPixels(self.ptr, &raw mut w, &raw mut h);
+        }
+        (w as u32, h as u32)
+    }
+
     /// Returns the display scale factor for this window.
     pub fn display_scale(&self) -> f32 {
         // Safety: Window pointer is valid.
         unsafe { ffi::SDL_GetWindowDisplayScale(self.ptr) }
+    }
+
+    /// Returns the physical pixels for each window coordinate.
+    pub fn pixel_density(&self) -> f32 {
+        // Safety: Window pointer is valid.
+        unsafe { ffi::SDL_GetWindowPixelDensity(self.ptr) }
+    }
+
+    /// Starts the text input and input method events for this window.
+    pub fn start_text_input(&self) -> Result<(), Error> {
+        // Safety: Window pointer is valid.
+        let ok = unsafe { keyboard_ffi::SDL_StartTextInput(self.ptr) };
+        if !ok {
+            return Err(crate::get_error());
+        }
+        Ok(())
+    }
+
+    /// Stops the text input and input method events for this window.
+    pub fn stop_text_input(&self) -> Result<(), Error> {
+        // Safety: Window pointer is valid.
+        let ok = unsafe { keyboard_ffi::SDL_StopTextInput(self.ptr) };
+        if !ok {
+            return Err(crate::get_error());
+        }
+        Ok(())
+    }
+
+    /// Sets the area of the text being edited in window coordinates, for the
+    /// candidate window of an input method. `cursor` is the offset of the
+    /// text cursor from the left edge of the area.
+    pub fn set_text_input_area(
+        &self,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        cursor: i32,
+    ) -> Result<(), Error> {
+        let rect = SDL_Rect {
+            x,
+            y,
+            w: width,
+            h: height,
+        };
+        // Safety: Window pointer is valid; rect is a valid pointer for the call.
+        let ok = unsafe { keyboard_ffi::SDL_SetTextInputArea(self.ptr, &raw const rect, cursor) };
+        if !ok {
+            return Err(crate::get_error());
+        }
+        Ok(())
     }
 
     /// Locks the window's aspect ratio to the given value for both min and max.

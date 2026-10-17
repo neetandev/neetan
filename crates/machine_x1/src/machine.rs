@@ -321,6 +321,7 @@ impl<T: TraceSink> common::Machine for X1Machine<T> {
     fn startup_capabilities(&self) -> common::StartupCapabilities {
         common::StartupCapabilities {
             cassette: true,
+            floppy_drives: 2,
             ..common::StartupCapabilities::default()
         }
     }
@@ -449,10 +450,6 @@ impl<T: TraceSink> common::Machine for X1Machine<T> {
 
     fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
         self.bus.generate_audio_samples(volume, output)
-    }
-
-    fn font_rom_data(&self) -> &[u8] {
-        self.bus.font_rom_data()
     }
 
     fn insert_floppy(

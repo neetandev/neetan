@@ -25,12 +25,12 @@ static const uint SCALE_MODE_PIXELART = 2;
 static const uint SCALE_MODE_CRT = 3;
 static const uint SCALE_MODE_CRT_COMPOSITE = 4;
 
-// Bindings follows the SDL3 GPU SPIR-V binding convention.
+// Bindings follow the SDL3 GPU binding convention of a fragment shader.
 //
 // Reference: https://wiki.libsdl.org/SDL3/SDL_CreateGPUShader
-[[vk::binding(0, 2)]] var native_nearest: Sampler2D;
-[[vk::binding(1, 2)]] var native_linear: Sampler2D;
-[[vk::binding(0, 3)]] ConstantBuffer<PresentUniforms> uniforms;
+[[vk::binding(0, 2)]] Sampler2D native_nearest : register(t0, space2) : register(s0, space2);
+[[vk::binding(1, 2)]] Sampler2D native_linear : register(t1, space2) : register(s1, space2);
+[[vk::binding(0, 3)]] ConstantBuffer<PresentUniforms> uniforms : register(b0, space3);
 
 [[shader("pixel")]]
 float4 fs_main(FullscreenVertex input) : SV_Target {

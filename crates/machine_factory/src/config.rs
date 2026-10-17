@@ -190,34 +190,6 @@ impl Target {
         }
     }
 
-    /// Returns whether this family's font ROM already uses the PC-98 CG-ROM
-    /// layout, which the host image selector renders with.
-    #[must_use]
-    pub fn has_pc98_cgrom_layout(self) -> bool {
-        match self {
-            #[cfg(feature = "pc98")]
-            Target::Pc98 => true,
-            #[cfg(feature = "pc88")]
-            Target::Pc88 => false,
-            #[cfg(feature = "pc88va")]
-            Target::Pc88Va => false,
-            #[cfg(feature = "pc60")]
-            Target::Pc60 => false,
-            #[cfg(feature = "msx")]
-            Target::Msx => false,
-            #[cfg(feature = "towns")]
-            Target::Towns => false,
-            #[cfg(feature = "x1")]
-            Target::X1 => false,
-            #[cfg(feature = "fm7")]
-            Target::Fm7 => false,
-            #[cfg(feature = "x68k")]
-            Target::X68k => false,
-            #[cfg(feature = "at")]
-            Target::At => false,
-        }
-    }
-
     /// Returns whether this family drives a composite monitor whose artifact
     /// colours the renderer has to emulate.
     #[must_use]

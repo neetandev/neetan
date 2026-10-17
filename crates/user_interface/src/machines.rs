@@ -1,12 +1,7 @@
-//! Host-side machine services: the SDL wall clock and image-selector font ROM.
+//! Host-side machine services: the SDL wall clock.
 
-use common::{BUILTIN_FONT_ROM, HostDateTime, Machine};
+use common::HostDateTime;
 pub use machine_factory::machines::initialize_machine;
-
-use crate::config::EmulatorConfig;
-
-/// Bytes of the expanded CG-ROM the image selector reads.
-const SELECTOR_FONT_ROM_BYTES: usize = 0x83000;
 
 /// Host date-time source backed by the SDL local wall clock.
 struct SdlHostDateTime;
@@ -43,56 +38,5 @@ fn host_date_time() -> HostDateTime {
         hour: dt.hour as u8,
         minute: dt.minute as u8,
         second: dt.second as u8,
-    }
-}
-
-pub(crate) fn selector_font_rom_data(config: &EmulatorConfig, machine: &dyn Machine) -> Vec<u8> {
-    if config.target.has_pc98_cgrom_layout() {
-        return machine.font_rom_data().to_vec();
-    }
-
-    expand_selector_font_rom(BUILTIN_FONT_ROM)
-}
-
-fn expand_selector_font_rom(raw_font_rom: &[u8]) -> Vec<u8> {
-    let mut font_rom = vec![0u8; software_renderer::PC98_CGROM_SIZE].into_boxed_slice();
-    let buffer: &mut [u8; software_renderer::PC98_CGROM_SIZE] =
-        (&mut font_rom[..]).try_into().expect("CG-ROM buffer size");
-    software_renderer::expand_v98_font_rom(buffer, raw_font_rom);
-    font_rom[..SELECTOR_FONT_ROM_BYTES].to_vec()
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use common::BUILTIN_FONT_ROM;
-
-    use super::expand_selector_font_rom;
-    use crate::image_selector::{ImageEntry, ImageSelector, MediaType};
-
-    #[test]
-    fn selector_font_rom_expands_builtin_font_into_cgrom_layout() {
-        let font_rom = expand_selector_font_rom(BUILTIN_FONT_ROM);
-
-        assert_eq!(font_rom.len(), 0x83000);
-        assert!(
-            font_rom[0x80000..0x83000].iter().any(|&byte| byte != 0),
-            "expanded ANK font area must not be blank"
-        );
-
-        let mut selector = ImageSelector::new(MediaType::Floppy(0), 0, 2, &font_rom);
-        let entries = [ImageEntry::new(PathBuf::from("disk.d88"))];
-        selector.ensure_render(&entries, Some(0));
-
-        assert!(
-            selector
-                .framebuffer()
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .any(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0),
-            "image selector framebuffer must not be blank"
-        );
     }
 }

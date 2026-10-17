@@ -19,6 +19,7 @@ cpu = { path = "crates/cpu" }
 cpu_68k = { path = "crates/cpu_68k" }
 device = { path = "crates/device" }
 dos = { path = "crates/dos" }
+gui = { path = "crates/gui" }
 machine_98 = { path = "crates/machine_98" }
 machine_at = { path = "crates/machine_at" }
 machine_60 = { path = "crates/machine_60" }
@@ -143,6 +144,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.dos]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.gui]
 opt-level = 3
 codegen-units = 1
 

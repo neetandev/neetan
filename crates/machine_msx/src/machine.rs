@@ -323,6 +323,7 @@ impl<T: TraceSink> common::Machine for MsxMachine<T> {
         common::StartupCapabilities {
             cartridge: true,
             cassette: true,
+            floppy_drives: self.bus.model().drive_count(),
             ..common::StartupCapabilities::default()
         }
     }
@@ -493,10 +494,6 @@ impl<T: TraceSink> common::Machine for MsxMachine<T> {
 
     fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
         self.bus.generate_audio_samples(volume, output)
-    }
-
-    fn font_rom_data(&self) -> &[u8] {
-        &[]
     }
 
     fn insert_cartridge(&mut self, path: &std::path::Path) -> Result<String, String> {

@@ -1,21 +1,23 @@
 //! Primary SDL3 rendering backend built on the SDL3 GPU API.
 
-use common::{Context, OptionContext, info};
+use common::{Context, OptionContext, error, info};
 use sdl3::{
     gpu::{
-        ColorTargetDescriptor, GpuGraphicsPipeline, RawWindow, SDL_FColor, SDL_GPU_LOADOP_CLEAR,
-        SDL_GPU_STOREOP_STORE, SDL_GPUSwapchainComposition, TextureRegion, TextureSamplerBinding,
-        TextureTransferInfo,
+        ColorTargetDescriptor, GpuCopyPass, GpuGraphicsPipeline, RawWindow, SDL_FColor,
+        SDL_GPU_LOADOP_CLEAR, SDL_GPU_STOREOP_STORE, SDL_GPUSwapchainComposition, TextureRegion,
+        TextureSamplerBinding, TextureTransferInfo,
     },
     info::version as sdl_version,
     video::Window,
 };
 
 use crate::{
-    DisplayAspectMode, Error, GraphicsEngine, PC98_NATIVE_HEIGHT, PC98_NATIVE_WIDTH,
+    DisplayAspectMode, Error, GraphicsEngine, Overlay, PC98_NATIVE_HEIGHT, PC98_NATIVE_WIDTH,
     RenderInstructions, Result, Scaling,
     device::{DeviceResources, create as create_device_resources},
-    native_target_size, pipeline,
+    native_target_size,
+    overlay::OverlayRenderer,
+    pipeline,
     pipeline::{PresentUniforms, ScaleMode},
 };
 
@@ -40,6 +42,9 @@ struct FrameSource<'a> {
 /// Resources owned only between `on_resume` and `on_destroy_surface`.
 struct RenderState {
     pipeline: GpuGraphicsPipeline,
+    /// The overlay resources. `None` after a failure, and the overlay stays
+    /// off until the surface is created again. They drop before the device.
+    overlay: Option<OverlayRenderer>,
     resources: DeviceResources,
     swapchain_is_srgb: bool,
     /// Raw pointer to the `SDL_Window` claimed by `resources.device`. The
@@ -105,12 +110,24 @@ impl GraphicsEngine for ModernSdlGpuBackend {
         let pipeline = pipeline::build(&resources.device, resources.swapchain_format)?;
         let swapchain_is_srgb =
             resources.swapchain_composition == SDL_GPUSwapchainComposition::SDR_LINEAR;
+        let overlay = match OverlayRenderer::new(
+            &resources.device,
+            resources.swapchain_format,
+            !swapchain_is_srgb,
+        ) {
+            Ok(renderer) => Some(renderer),
+            Err(error) => {
+                error!("Overlay disabled: {error:#}");
+                None
+            }
+        };
 
         info!("SDL3 GPU API backend initialized");
 
         self.state = Some(RenderState {
             resources,
             pipeline,
+            overlay,
             swapchain_is_srgb,
             window_ptr: window.raw(),
         });
@@ -128,6 +145,7 @@ impl GraphicsEngine for ModernSdlGpuBackend {
         &mut self,
         window: &Window,
         render_instructions: Option<&RenderInstructions>,
+        overlay: Option<Overlay<'_>>,
     ) -> Result<()> {
         let frame_source = render_instructions
             .map(|instructions| self.frame_source(instructions))
@@ -183,9 +201,33 @@ impl GraphicsEngine for ModernSdlGpuBackend {
             .as_ref()
             .map_or(0, |source| source.composite_phase);
 
-        if let Some(source) = frame_source.as_ref() {
-            upload_framebuffer(state, &mut command_buffer, source)?;
-        }
+        let overlay_draw = {
+            let copy_pass = command_buffer.begin_copy_pass();
+            if let Some(source) = frame_source.as_ref()
+                && let Err(error) = upload_framebuffer(&state.resources, &copy_pass, source)
+            {
+                error!("Framebuffer upload failed: {error:#}");
+            }
+            match (overlay, &mut state.overlay) {
+                (Some(overlay), Some(renderer)) => {
+                    match renderer.upload(
+                        &state.resources.device,
+                        &copy_pass,
+                        overlay,
+                        output_width,
+                        output_height,
+                    ) {
+                        Ok(draw) => draw,
+                        Err(error) => {
+                            error!("Overlay disabled: {error:#}");
+                            state.overlay = None;
+                            None
+                        }
+                    }
+                }
+                _ => None,
+            }
+        };
 
         let (max_width, max_height) = native_target_size(self.large_native_target);
         let scale_mode = scale_mode_for(self.scaling, crt_enabled, composite_enabled);
@@ -198,7 +240,8 @@ impl GraphicsEngine for ModernSdlGpuBackend {
             state.swapchain_is_srgb,
             composite_phase,
         );
-        // Fragment uniform data is per-command-buffer; push before draw.
+        // Pushed uniform data applies to the draws that follow until the next push to the
+        // same slot. The overlay pushes its own data to fragment slot 0 after the present draw.
         command_buffer.push_fragment_uniform_data(0, uniforms.as_bytes());
 
         let color_target = ColorTargetDescriptor {
@@ -228,6 +271,10 @@ impl GraphicsEngine for ModernSdlGpuBackend {
             ];
             render_pass.bind_fragment_samplers(0, &bindings);
             render_pass.draw_primitives(3, 1, 0, 0);
+
+            if let (Some(draw), Some(renderer)) = (&overlay_draw, &state.overlay) {
+                renderer.draw(&render_pass, draw);
+            }
         }
 
         command_buffer
@@ -266,18 +313,17 @@ impl ModernSdlGpuBackend {
 }
 
 fn upload_framebuffer(
-    state: &RenderState,
-    command_buffer: &mut sdl3::gpu::GpuCommandBuffer,
+    resources: &DeviceResources,
+    copy_pass: &GpuCopyPass<'_>,
     source_frame: &FrameSource,
 ) -> Result<()> {
     let expected_bytes = (source_frame.width * source_frame.height * 4) as usize;
     assert!(source_frame.framebuffer.len() >= expected_bytes);
 
     // Map the staging buffer, copy framebuffer bytes, unmap.
-    let ptr = state
-        .resources
+    let ptr = resources
         .device
-        .map_transfer_buffer(&state.resources.transfer_buffer, true)
+        .map_transfer_buffer(&resources.transfer_buffer, true)
         .context("SDL_MapGPUTransferBuffer failed")?;
     // Safety: ptr points to at least expected_bytes of writable memory inside
     // a transfer buffer sized for the largest configured target; framebuffer
@@ -285,19 +331,18 @@ fn upload_framebuffer(
     unsafe {
         std::ptr::copy_nonoverlapping(source_frame.framebuffer.as_ptr(), ptr, expected_bytes);
     }
-    state
-        .resources
+    resources
         .device
-        .unmap_transfer_buffer(&state.resources.transfer_buffer);
+        .unmap_transfer_buffer(&resources.transfer_buffer);
 
     let source = TextureTransferInfo {
-        transfer_buffer: &state.resources.transfer_buffer,
+        transfer_buffer: &resources.transfer_buffer,
         offset: 0,
         pixels_per_row: source_frame.width,
         rows_per_layer: source_frame.height,
     };
     let destination = TextureRegion {
-        texture: &state.resources.native_target,
+        texture: &resources.native_target,
         mip_level: 0,
         layer: 0,
         x: 0,
@@ -308,8 +353,6 @@ fn upload_framebuffer(
         d: 1,
     };
 
-    let copy_pass = command_buffer.begin_copy_pass();
     copy_pass.upload_to_texture(&source, &destination, false);
-    drop(copy_pass);
     Ok(())
 }

@@ -391,6 +391,8 @@ impl<T: TraceSink> Machine for X68kMachine<T> {
             hard_disk: true,
             mt32: true,
             sc55: true,
+            floppy_drives: 2,
+            cdrom: self.bus.model().has_internal_scsi(),
             ..Default::default()
         }
     }
@@ -556,11 +558,6 @@ impl<T: TraceSink> Machine for X68kMachine<T> {
     /// Generates mixed motherboard audio.
     fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
         self.bus.generate_audio_samples(volume, output)
-    }
-
-    /// Returns the character-generator ROM.
-    fn font_rom_data(&self) -> &[u8] {
-        self.bus.cgrom_data()
     }
 
     /// Loads and mounts a floppy image into `drive`.

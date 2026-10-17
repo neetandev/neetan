@@ -21,7 +21,7 @@ use sdl3::{
     audio::AudioSubsystem,
     event::{DisplayEvent, Event, WindowEvent},
     gamepad::{Gamepad, GamepadAxis, GamepadButton, GamepadSubsystem},
-    keyboard::Scancode,
+    keyboard::{Mod, Scancode},
     mouse::MouseButton,
     video::{VideoSubsystem, Window, WindowBuilder},
 };
@@ -32,18 +32,23 @@ use sdl3_backend::{
 
 use crate::{
     config::{AspectMode, Backend, EmulatorConfig, ScalingMode, WindowMode},
-    image_selector::{ImageEntry, ImageSelector, MediaType},
+    gui_host::{GuiEvent, GuiHost, key_event, pointer_or_text_event},
     input::{JoystickKey, KeyOverrides, KeyboardForwardingState, host_key_from_scancode},
-    machines::{initialize_machine, selector_font_rom_data},
+    machines::initialize_machine,
+    media_dialog::{
+        DialogAction, Drive, DriveMedia, HotkeyAction, ImageEntry, MediaDialog, available_drives,
+        hotkey_action,
+    },
 };
 
 pub mod config;
 pub mod convert;
 pub mod copy;
 pub mod create;
-mod image_selector;
+mod gui_host;
 mod input;
 mod machines;
+mod media_dialog;
 
 const COMPANY_NAME: &str = "neetan";
 pub const GAME_NAME: &str = "neetan";
@@ -368,10 +373,16 @@ struct Application {
     cdrom_entries: Vec<ImageEntry>,
     /// Current index into cdrom_entries, or `None` if no disc is loaded.
     cdrom_index: Option<usize>,
-    /// Active image selection screen, if open.
-    image_selector: Option<ImageSelector>,
-    /// Expanded PC-98 CGROM data used by the image selector overlay.
-    selector_font_rom: Vec<u8>,
+    /// The host of the graphical user interface. `None` when the font did
+    /// not load, which disables the media dialog.
+    gui: Option<GuiHost>,
+    /// The open media dialog.
+    media_dialog: Option<MediaDialog>,
+    /// Whether the right Ctrl key is held.
+    right_control_held: bool,
+    /// Whether a media hotkey already logged that the media dialog is
+    /// disabled.
+    gui_disabled_reported: bool,
     /// Whether the CRT effect is enabled.
     crt_enabled: bool,
     /// Composite subcarrier phase select (0..3), cycled with Right Ctrl + P. Swaps the
@@ -676,7 +687,6 @@ impl Application {
             audio_engine::SAMPLE_RATE as u32,
             crate::machines::sdl_host_date_time_source(),
         )?;
-        let selector_font_rom = selector_font_rom_data(&config, machine.as_ref());
 
         if config.enable_extractor {
             machine.install_text_extractor(Box::new(text_extractor::ClipboardExtractor::new()));
@@ -757,8 +767,10 @@ impl Application {
             fdd2_index,
             cdrom_entries,
             cdrom_index,
-            image_selector: None,
-            selector_font_rom,
+            gui: GuiHost::load(),
+            media_dialog: None,
+            right_control_held: false,
+            gui_disabled_reported: false,
             crt_enabled,
             composite_phase,
             scaling,
@@ -801,6 +813,7 @@ impl Application {
                     height as f32 / self.scale_factor,
                 );
                 self.logical_size = logical_size;
+                self.update_gui_window(window);
             }
             Event::Window {
                 win_event: WindowEvent::FocusLost,
@@ -808,21 +821,32 @@ impl Application {
             } => {
                 self.set_fast_forward(false);
                 self.audio_engine.pause();
+                self.right_control_held = false;
+                if let Some(gui) = self.gui.as_mut() {
+                    gui.gamepad.clear();
+                }
             }
             Event::Window {
                 win_event: WindowEvent::FocusGained,
                 ..
-            } if self.image_selector.is_none() => {
+            } if self.media_dialog.is_none() => {
                 self.audio_engine.resume();
             }
-            Event::Display {
+            Event::Window {
+                win_event: WindowEvent::DisplayScaleChanged,
+                ..
+            }
+            | Event::Display {
                 display_event: DisplayEvent::ContentScaleChanged,
                 ..
             } => {
-                if let Some(scale) = window.map(|w| w.display_scale()) {
+                if let Some(scale) = window.map(|w| w.display_scale())
+                    && scale != self.scale_factor
+                {
                     self.scale_factor = scale;
                     info!("Scale factor changed to: {scale}");
                 }
+                self.update_gui_window(window);
             }
             Event::KeyDown {
                 scancode,
@@ -830,10 +854,11 @@ impl Application {
                 repeat,
                 ..
             } => {
-                if self.image_selector.is_some() {
-                    if !repeat {
-                        self.handle_selector_key(*scancode, keymod.rctrl());
-                    }
+                if *scancode == Some(Scancode::RCtrl) || keymod.rctrl() {
+                    self.right_control_held = true;
+                }
+                if self.media_dialog.is_some() {
+                    self.handle_dialog_key(*scancode, keymod, *repeat, window);
                 } else {
                     let modifiers = KeyModifiers {
                         shift: keymod.shift(),
@@ -884,12 +909,11 @@ impl Application {
                         self.quick_save();
                     } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::_9) {
                         self.quick_load();
-                    } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::_1) {
-                        self.open_or_toggle_selector(MediaType::Floppy(0));
-                    } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::_2) {
-                        self.open_or_toggle_selector(MediaType::Floppy(1));
-                    } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::_3) {
-                        self.open_or_toggle_selector(MediaType::CdRom);
+                    } else if !repeat
+                        && keymod.rctrl()
+                        && let Some(drive) = media_hotkey_drive(*scancode)
+                    {
+                        self.media_hotkey(drive, window);
                     } else if !repeat && keymod.rctrl() && *scancode == Some(Scancode::R) {
                         self.hard_reset();
                     } else if keymod.rctrl() && *scancode == Some(Scancode::F) {
@@ -900,12 +924,15 @@ impl Application {
             Event::KeyUp {
                 scancode, repeat, ..
             } => {
+                if *scancode == Some(Scancode::RCtrl) {
+                    self.right_control_held = false;
+                }
                 if self.fast_forward
                     && matches!(scancode, Some(Scancode::F) | Some(Scancode::RCtrl))
                 {
                     self.set_fast_forward(false);
                 }
-                if self.image_selector.is_none() {
+                if self.media_dialog.is_none() {
                     self.keyboard_forwarding_state
                         .handle_key_up(*scancode, *repeat);
                     self.keyboard_forwarding_state
@@ -914,6 +941,19 @@ impl Application {
                         key.apply(&mut self.keyboard_joystick, false);
                         self.update_joystick();
                     }
+                }
+            }
+            Event::TextInput { .. } if self.right_control_held => {}
+            Event::TextInput { .. }
+            | Event::TextEditing { .. }
+            | Event::MouseMotion { .. }
+            | Event::MouseButtonDown { .. }
+            | Event::MouseButtonUp { .. }
+            | Event::MouseWheel { .. }
+                if self.media_dialog.is_some() =>
+            {
+                if let Some(gui_event) = pointer_or_text_event(event) {
+                    self.handle_gui_event(gui_event, window);
                 }
             }
             Event::MouseMotion { xrel, yrel, .. } if self.mouse_captured => {
@@ -960,16 +1000,19 @@ impl Application {
                     self.gamepad_axis_x = 0;
                     self.gamepad_axis_y = 0;
                     self.update_joystick();
+                    if let Some(gui) = self.gui.as_mut() {
+                        gui.gamepad.clear();
+                    }
                 }
             }
             Event::GamepadButtonDown { which, button } => {
-                self.handle_gamepad_button(*which, *button, true);
+                self.handle_gamepad_button(*which, *button, true, window);
             }
             Event::GamepadButtonUp { which, button } => {
-                self.handle_gamepad_button(*which, *button, false);
+                self.handle_gamepad_button(*which, *button, false, window);
             }
             Event::GamepadAxisMotion { which, axis, value } => {
-                self.handle_gamepad_axis(*which, *axis, *value);
+                self.handle_gamepad_axis(*which, *axis, *value, window);
             }
             _ => {}
         }
@@ -994,13 +1037,30 @@ impl Application {
         }
     }
 
-    /// Records a gamepad button change and updates the joystick port.
-    fn handle_gamepad_button(&mut self, which: u32, button: GamepadButton, pressed: bool) {
+    /// Records a gamepad button change and updates the joystick port. While
+    /// the media dialog is open, the button goes to the dialog.
+    fn handle_gamepad_button(
+        &mut self,
+        which: u32,
+        button: GamepadButton,
+        pressed: bool,
+        window: Option<&Window>,
+    ) {
         if self
             .gamepad
             .as_ref()
             .is_none_or(|pad| pad.instance_id() != which)
         {
+            return;
+        }
+        if self.media_dialog.is_some() {
+            let gui_event = self
+                .gui
+                .as_mut()
+                .and_then(|gui| gui.gamepad.button(button, pressed, Instant::now()));
+            if let Some(gui_event) = gui_event {
+                self.handle_gui_event(gui_event, window);
+            }
             return;
         }
         match button {
@@ -1023,13 +1083,30 @@ impl Application {
         self.update_joystick();
     }
 
-    /// Records a left-stick axis change and updates the joystick port.
-    fn handle_gamepad_axis(&mut self, which: u32, axis: GamepadAxis, value: i16) {
+    /// Records a left-stick axis change and updates the joystick port. While
+    /// the media dialog is open, the stick goes to the dialog.
+    fn handle_gamepad_axis(
+        &mut self,
+        which: u32,
+        axis: GamepadAxis,
+        value: i16,
+        window: Option<&Window>,
+    ) {
         if self
             .gamepad
             .as_ref()
             .is_none_or(|pad| pad.instance_id() != which)
         {
+            return;
+        }
+        if self.media_dialog.is_some() {
+            let gui_event = self
+                .gui
+                .as_mut()
+                .and_then(|gui| gui.gamepad.axis(axis, value, Instant::now()));
+            if let Some(gui_event) = gui_event {
+                self.handle_gui_event(gui_event, window);
+            }
             return;
         }
         match axis {
@@ -1182,40 +1259,188 @@ impl Application {
         Ok(())
     }
 
-    fn open_or_toggle_selector(&mut self, media_type: MediaType) {
-        if let Some(ref selector) = self.image_selector
-            && *selector.media_type() == media_type
-        {
-            self.close_selector();
-            return;
-        }
+    /// The removable media drives of the machine, in the tab order of the
+    /// media dialog.
+    fn media_drives(&self) -> Vec<Drive> {
+        let capabilities = self.machine.startup_capabilities();
+        available_drives(capabilities.floppy_drives, capabilities.cdrom)
+    }
 
-        let (entries, current_index) = match &media_type {
-            MediaType::Floppy(0) => (&self.fdd1_entries, self.fdd1_index),
-            MediaType::Floppy(_) => (&self.fdd2_entries, self.fdd2_index),
-            MediaType::CdRom => (&self.cdrom_entries, self.cdrom_index),
-        };
-
-        // Display position: None (empty) -> 0, Some(n) -> n + 1.
-        let display_cursor = current_index.map_or(0, |n| n + 1);
-        let display_count = entries.len() + 1;
-
-        if let Some(ref mut selector) = self.image_selector {
-            selector.switch_media(media_type, display_cursor, display_count);
-        } else {
-            self.audio_engine.pause();
-            self.image_selector = Some(ImageSelector::new(
-                media_type,
-                display_cursor,
-                display_count,
-                &self.selector_font_rom,
-            ));
+    /// The index of the loaded image of `drive`.
+    fn loaded_image(&self, drive: Drive) -> Option<usize> {
+        match drive {
+            Drive::Floppy(0) => self.fdd1_index,
+            Drive::Floppy(_) => self.fdd2_index,
+            Drive::CdRom => self.cdrom_index,
         }
     }
 
-    fn close_selector(&mut self) {
-        self.image_selector = None;
+    /// Opens the media dialog on the tab of `drive`, switches to that tab or
+    /// closes the dialog when it shows that tab already.
+    fn media_hotkey(&mut self, drive: Drive, window: Option<&Window>) {
+        if self.gui.is_none() {
+            if !self.gui_disabled_reported {
+                warn!("The media dialog is disabled because the GUI font did not load");
+                self.gui_disabled_reported = true;
+            }
+            return;
+        }
+        let drives = self.media_drives();
+        let open_tab = self.media_dialog.as_ref().map(MediaDialog::tab);
+        match hotkey_action(&drives, open_tab, drive) {
+            HotkeyAction::Open(tab) => self.open_media_dialog(drives, tab, window),
+            HotkeyAction::Switch(tab) => {
+                let loaded = self.loaded_image(drive);
+                if let Some(dialog) = self.media_dialog.as_mut() {
+                    dialog.switch_tab(tab, loaded);
+                }
+                self.media_pass(window);
+            }
+            HotkeyAction::Close => self.close_media_dialog(window),
+            HotkeyAction::Unavailable => {
+                info!("This machine has no {} drive", drive.log_name());
+            }
+        }
+    }
+
+    /// Opens the media dialog over `drives` on the tab `tab`. Pauses the
+    /// emulation and the audio, releases the relative mouse mode and the held
+    /// joystick and mouse buttons of the machine.
+    fn open_media_dialog(&mut self, drives: Vec<Drive>, tab: usize, window: Option<&Window>) {
+        let loaded = self.loaded_image(drives[tab]);
+        self.set_fast_forward(false);
+        self.audio_engine.pause();
+        if self.mouse_captured
+            && let Some(window) = window
+            && let Err(error) = window.set_relative_mouse_mode(false)
+        {
+            warn!("Failed to release the relative mouse mode: {error}");
+        }
+        self.mouse_left = false;
+        self.mouse_right = false;
+        self.mouse_middle = false;
+        self.mouse_dx = 0.0;
+        self.mouse_dy = 0.0;
+        self.machine.set_mouse_buttons(false, false, false);
+        self.gamepad_buttons = JoystickState::default();
+        self.gamepad_axis_x = 0;
+        self.gamepad_axis_y = 0;
+        self.keyboard_joystick = JoystickState::default();
+        self.update_joystick();
+        if let Some(gui) = self.gui.as_mut() {
+            gui.reset();
+        }
+        self.media_dialog = Some(MediaDialog::new(drives, tab, loaded));
+        self.update_gui_window(window);
+        self.media_pass(window);
+    }
+
+    /// Closes the media dialog. Restores the relative mouse mode and resumes
+    /// the audio.
+    fn close_media_dialog(&mut self, window: Option<&Window>) {
+        self.media_dialog = None;
+        if let Some(gui) = self.gui.as_mut() {
+            gui.stop_text_input(window);
+            gui.gamepad.clear();
+        }
+        if self.mouse_captured
+            && let Some(window) = window
+            && let Err(error) = window.set_relative_mouse_mode(true)
+        {
+            warn!("Failed to restore the relative mouse mode: {error}");
+        }
         self.audio_engine.resume();
+    }
+
+    /// Handles a key press while the media dialog is open: the media hotkeys
+    /// and the keys of the dialog.
+    fn handle_dialog_key(
+        &mut self,
+        scancode: Option<Scancode>,
+        keymod: &Mod,
+        repeat: bool,
+        window: Option<&Window>,
+    ) {
+        let Some(scancode) = scancode else {
+            return;
+        };
+        if keymod.rctrl() {
+            if !repeat && let Some(drive) = media_hotkey_drive(Some(scancode)) {
+                self.media_hotkey(drive, window);
+            }
+            return;
+        }
+        if let Some(gui_event) = key_event(scancode, keymod, repeat) {
+            self.handle_gui_event(gui_event, window);
+        }
+    }
+
+    /// Adds `gui_event` to the input of the media dialog and runs a pass when
+    /// the event is discrete.
+    fn handle_gui_event(&mut self, gui_event: GuiEvent, window: Option<&Window>) {
+        let Some(gui) = self.gui.as_mut() else {
+            return;
+        };
+        if gui.apply(gui_event) {
+            self.media_pass(window);
+        }
+    }
+
+    /// Takes the size and the scale of `window` into the user interface.
+    fn update_gui_window(&mut self, window: Option<&Window>) {
+        if let (Some(gui), Some(window)) = (self.gui.as_mut(), window) {
+            gui.update_window(window);
+        }
+    }
+
+    /// Runs one pass of the media dialog and applies the change it asks for.
+    fn media_pass(&mut self, window: Option<&Window>) {
+        let (Some(gui), Some(dialog)) = (self.gui.as_mut(), self.media_dialog.as_mut()) else {
+            return;
+        };
+        let media: Vec<DriveMedia> = dialog
+            .drives()
+            .iter()
+            .map(|drive| match drive {
+                Drive::Floppy(0) => DriveMedia {
+                    entries: &self.fdd1_entries,
+                    loaded: self.fdd1_index,
+                },
+                Drive::Floppy(_) => DriveMedia {
+                    entries: &self.fdd2_entries,
+                    loaded: self.fdd2_index,
+                },
+                Drive::CdRom => DriveMedia {
+                    entries: &self.cdrom_entries,
+                    loaded: self.cdrom_index,
+                },
+            })
+            .collect();
+        let mut action = gui.pass(|context| dialog.show(context, &media));
+        while action == DialogAction::None && dialog.take_stale() {
+            action = gui.pass(|context| dialog.show(context, &media));
+        }
+        if let Some(window) = window {
+            gui.sync_text_input(window);
+        }
+        match action {
+            DialogAction::None => {}
+            DialogAction::Close => self.close_media_dialog(window),
+            DialogAction::Insert { drive, index } => {
+                let _ = match drive {
+                    Drive::Floppy(number) => self.select_floppy(number, index),
+                    Drive::CdRom => self.select_cdrom(index),
+                };
+                self.close_media_dialog(window);
+            }
+            DialogAction::Eject { drive } => {
+                match drive {
+                    Drive::Floppy(number) => self.eject_floppy(number),
+                    Drive::CdRom => self.eject_cdrom(),
+                }
+                self.close_media_dialog(window);
+            }
+        }
     }
 
     fn toggle_crt(&mut self) {
@@ -1243,64 +1468,6 @@ impl Application {
         self.graphics_engine
             .set_scaling(graphics_scaling(self.scaling));
         info!("Scaling set to {}", self.scaling);
-    }
-
-    fn handle_selector_key(&mut self, scancode: Option<Scancode>, rctrl_held: bool) {
-        let Some(code) = scancode else { return };
-
-        match code {
-            Scancode::Up => {
-                if let Some(ref mut selector) = self.image_selector {
-                    selector.move_up();
-                }
-            }
-            Scancode::Down => {
-                if let Some(ref mut selector) = self.image_selector {
-                    let count = match selector.media_type() {
-                        MediaType::Floppy(0) => self.fdd1_entries.len() + 1,
-                        MediaType::Floppy(_) => self.fdd2_entries.len() + 1,
-                        MediaType::CdRom => self.cdrom_entries.len() + 1,
-                    };
-                    selector.move_down(count);
-                }
-            }
-            Scancode::Return | Scancode::KpEnter => {
-                if let Some(ref selector) = self.image_selector {
-                    let media_type = selector.media_type().clone();
-                    let cursor = selector.cursor();
-                    match &media_type {
-                        MediaType::Floppy(drive) => {
-                            if cursor == 0 {
-                                self.eject_floppy(*drive);
-                            } else {
-                                let _ = self.select_floppy(*drive, cursor - 1);
-                            }
-                        }
-                        MediaType::CdRom => {
-                            if cursor == 0 {
-                                self.eject_cdrom();
-                            } else {
-                                let _ = self.select_cdrom(cursor - 1);
-                            }
-                        }
-                    }
-                }
-                self.close_selector();
-            }
-            Scancode::Escape => {
-                self.close_selector();
-            }
-            Scancode::_1 if rctrl_held => {
-                self.open_or_toggle_selector(MediaType::Floppy(0));
-            }
-            Scancode::_2 if rctrl_held => {
-                self.open_or_toggle_selector(MediaType::Floppy(1));
-            }
-            Scancode::_3 if rctrl_held => {
-                self.open_or_toggle_selector(MediaType::CdRom);
-            }
-            _ => {}
-        }
     }
 
     fn hard_reset(&mut self) {
@@ -1565,7 +1732,7 @@ impl Application {
     }
 
     fn run_emulation(&mut self) {
-        if self.image_selector.is_some() {
+        if self.media_dialog.is_some() {
             return;
         }
 
@@ -1644,38 +1811,48 @@ impl Application {
     }
 
     fn render_frame(&mut self, window: &Window) -> Result<()> {
-        let render_instructions = if let Some(ref mut selector) = self.image_selector {
-            let (entries, loaded_index) = match selector.media_type() {
-                MediaType::Floppy(0) => (&self.fdd1_entries, self.fdd1_index),
-                MediaType::Floppy(_) => (&self.fdd2_entries, self.fdd2_index),
-                MediaType::CdRom => (&self.cdrom_entries, self.cdrom_index),
-            };
-            selector.ensure_render(entries, loaded_index);
-            RenderInstructions {
-                framebuffer: selector.framebuffer(),
-                width: 640,
-                height: 400,
-                crt: self.crt_enabled,
-                composite: false,
-                composite_phase: 0,
+        if self.media_dialog.is_some() {
+            let repeat = self
+                .gui
+                .as_mut()
+                .and_then(|gui| gui.gamepad.poll(Instant::now()));
+            if let Some(gui_event) = repeat {
+                self.handle_gui_event(gui_event, Some(window));
             }
-        } else {
-            let (width, height) = self.machine.display_dimensions();
-            RenderInstructions {
-                framebuffer: self.machine.display_framebuffer(),
-                width,
-                height,
-                crt: self.crt_enabled,
-                composite: self.config.target.has_composite_video(),
-                composite_phase: self.composite_phase,
+            if self.gui.as_ref().is_some_and(GuiHost::pending) {
+                self.media_pass(Some(window));
             }
+        }
+
+        let (width, height) = self.machine.display_dimensions();
+        let render_instructions = RenderInstructions {
+            framebuffer: self.machine.display_framebuffer(),
+            width,
+            height,
+            crt: self.crt_enabled,
+            composite: self.config.target.has_composite_video(),
+            composite_phase: self.composite_phase,
+        };
+        let overlay = match (&self.gui, &self.media_dialog) {
+            (Some(gui), Some(_)) => Some(gui.overlay()),
+            _ => None,
         };
 
         self.graphics_engine
-            .render_frame(window, Some(&render_instructions))
+            .render_frame(window, Some(&render_instructions), overlay)
             .context("Graphics engine failed to render frame")?;
 
         Ok(())
+    }
+}
+
+/// The drive of the media hotkey on `scancode`: right Ctrl with 1, 2 or 3.
+fn media_hotkey_drive(scancode: Option<Scancode>) -> Option<Drive> {
+    match scancode {
+        Some(Scancode::_1) => Some(Drive::Floppy(0)),
+        Some(Scancode::_2) => Some(Drive::Floppy(1)),
+        Some(Scancode::_3) => Some(Drive::CdRom),
+        _ => None,
     }
 }
 
@@ -1689,8 +1866,8 @@ mod tests {
 
     use super::{
         RemovableMediaAction, RemovableMediaRollback, RemovableMediaSelection,
-        RemovableMediaTransaction, apply_media_and_state_transactionally,
-        image_selector::ImageEntry, plan_removable_media_actions,
+        RemovableMediaTransaction, apply_media_and_state_transactionally, media_dialog::ImageEntry,
+        plan_removable_media_actions,
     };
 
     fn media_binding(

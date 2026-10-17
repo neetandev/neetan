@@ -1241,11 +1241,6 @@ impl<T: TraceSink> Fm7Bus<T> {
         count
     }
 
-    /// Returns the font ROM data exposed to the image selector.
-    pub fn font_rom_data(&self) -> &[u8] {
-        &[]
-    }
-
     /// Converts elapsed main-clock cycles into the sub CPU cycles it owes,
     /// carrying the fractional remainder so the rational clock ratio holds exactly.
     pub(crate) fn sub_cycles_for_main_units(&mut self, main_units: u64) -> u64 {
