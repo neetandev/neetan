@@ -23,6 +23,8 @@ pub enum Shortcut {
     Insert,
     /// The F2 key.
     F2,
+    /// The F5 key.
+    F5,
     /// The F10 key.
     F10,
     /// The backspace key.
@@ -40,7 +42,9 @@ impl Shortcut {
     /// inactive while a text widget holds the focus.
     pub fn has_modifier(self) -> bool {
         match self {
-            Self::Delete | Self::Insert | Self::F2 | Self::F10 | Self::Backspace => false,
+            Self::Delete | Self::Insert | Self::F2 | Self::F5 | Self::F10 | Self::Backspace => {
+                false
+            }
             Self::ControlF | Self::ControlD | Self::ControlS => true,
         }
     }

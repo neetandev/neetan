@@ -6,7 +6,8 @@ use super::{
     context::{UiContext, UiId},
     icons::Icon,
     label::{Align, wrapped_height, wrapped_label},
-    modal::{MODAL_HEADER_HEIGHT, modal_in},
+    modal::{HEADER_HEIGHT, modal_in},
+    status_line::{ACTIVATE_KEYS, CANCEL_KEYS, Hint},
 };
 use crate::Rect;
 
@@ -24,6 +25,8 @@ pub struct ConfirmResponse {
     /// The cancel button, the close button or a cancel asked to close the
     /// dialog without the action.
     pub cancelled: bool,
+    /// The action button holds the focus.
+    pub action_focused: bool,
 }
 
 /// A modal that asks before an action: a title, a wrapping message, an
@@ -121,6 +124,30 @@ impl<'a> ConfirmDialog<'a> {
         self.id.child("action")
     }
 
+    /// The hints of the status line for the answer `response` of the last
+    /// pass. They show no two hints with the same result: with the focus on
+    /// the cancel button only its hint, with the focus on the action the
+    /// hint of the action and the cancel keys.
+    pub fn hints(&self, response: ConfirmResponse) -> Vec<Hint<'a>> {
+        if response.action_focused {
+            vec![
+                Hint {
+                    keys: ACTIVATE_KEYS,
+                    label: self.action,
+                },
+                Hint {
+                    keys: CANCEL_KEYS,
+                    label: self.cancel,
+                },
+            ]
+        } else {
+            vec![Hint {
+                keys: ACTIVATE_KEYS,
+                label: self.cancel,
+            }]
+        }
+    }
+
     /// Draws one pass of the dialog and returns the answer of the pass.
     pub fn show(self, context: &mut UiContext) -> ConfirmResponse {
         context.layer(self.id, |context| {
@@ -147,7 +174,7 @@ impl<'a> ConfirmDialog<'a> {
             None => 0.0,
         };
         let top = theme.gap * 0.25;
-        let height = MODAL_HEADER_HEIGHT
+        let height = HEADER_HEIGHT
             + top
             + message_height
             + detail_height
@@ -208,6 +235,7 @@ impl<'a> ConfirmDialog<'a> {
         ConfirmResponse {
             confirmed,
             cancelled: (modal.closed || cancelled) && !confirmed,
+            action_focused: context.has_focus(self.action_id()),
         }
     }
 }
@@ -259,6 +287,28 @@ mod tests {
         assert!(response.confirmed && !response.cancelled);
         assert_eq!(harness.state.open_modals(), 0);
         assert_eq!(harness.state.focused(), Some(UiId::from("below")));
+    }
+
+    /// Verifies that the hints follow the focused button.
+    #[test]
+    fn the_hints_follow_the_focused_button() {
+        let mut harness = Harness::new();
+        let dialog = delete();
+        let response = draw(&mut harness, dialog);
+        assert!(!response.action_focused);
+        let hints = dialog.hints(response);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].label, "Cancel");
+        assert_eq!(hints[0].keys, ACTIVATE_KEYS);
+        harness.navigate(Navigation::Right);
+        let response = draw(&mut harness, dialog);
+        assert!(response.action_focused);
+        let hints = dialog.hints(response);
+        assert_eq!(
+            hints.iter().map(|hint| hint.label).collect::<Vec<_>>(),
+            ["Delete", "Cancel"]
+        );
+        assert_eq!(hints[1].keys, CANCEL_KEYS);
     }
 
     #[test]

@@ -149,7 +149,7 @@ impl<'a> Button<'a> {
             context.focusable(self.id, rect, NavigationSet::EMPTY);
         }
         let pointer = context.button_behavior(self.id, rect);
-        let focused = context.has_focus(self.id);
+        let focused = context.shows_focus(self.id);
         let activated = pointer.clicked || context.confirmed(self.id);
         let pressed = pointer.held && pointer.hovered;
         let hovered = pointer.hovered || pointer.held;

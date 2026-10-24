@@ -11,6 +11,14 @@ use crate::{Color, Fonts, Path, Scene, SlugShape};
 /// The units of the icon grid along each side.
 const GRID: f32 = 16.0;
 
+/// The angle where the arc of [`Icon::Refresh`] starts, above the right of
+/// its center.
+const REFRESH_ARC_START: f32 = -std::f32::consts::FRAC_PI_3;
+
+/// The clockwise sweep of the arc of [`Icon::Refresh`]. It ends at the
+/// arrowhead above the left of its center.
+const REFRESH_ARC_SWEEP: f32 = 1.6 * std::f32::consts::PI;
+
 /// An icon of the user interface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Icon {
@@ -40,6 +48,8 @@ pub enum Icon {
     Delete,
     /// Two sliders for settings.
     Settings,
+    /// A circular arrow for reading the files again.
+    Refresh,
     /// A triangle with an exclamation mark for errors and warnings.
     Alert,
     /// A chevron that points up, for ascending order and for shifting an
@@ -58,7 +68,7 @@ pub enum Icon {
 
 impl Icon {
     /// Every icon.
-    pub const ALL: [Icon; 19] = [
+    pub const ALL: [Icon; 20] = [
         Icon::Close,
         Icon::Check,
         Icon::Eject,
@@ -72,6 +82,7 @@ impl Icon {
         Icon::Duplicate,
         Icon::Delete,
         Icon::Settings,
+        Icon::Refresh,
         Icon::Alert,
         Icon::Up,
         Icon::Down,
@@ -345,6 +356,17 @@ impl Icons {
                 scene.line(at(6.25, 2.0), at(9.75, 2.0), stroke, color);
                 path(scene, self.delete);
             }
+            Icon::Refresh => {
+                scene.arc(
+                    at(8.0, 8.0),
+                    5.0 * unit,
+                    stroke,
+                    (REFRESH_ARC_START, REFRESH_ARC_SWEEP),
+                    color,
+                );
+                scene.line(at(1.65, 4.39), at(4.65, 4.28), stroke, color);
+                scene.line(at(4.65, 4.28), at(4.23, 7.25), stroke, color);
+            }
             Icon::Settings => {
                 scene.line(at(2.5, 4.5), at(7.5, 4.5), stroke, color);
                 scene.line(at(12.5, 4.5), at(13.5, 4.5), stroke, color);
@@ -445,7 +467,7 @@ mod tests {
 
     #[test]
     fn stroked_icons_cover_their_strokes() {
-        let cases: [(Icon, Points, Points); 5] = [
+        let cases: [(Icon, Points, Points); 6] = [
             (Icon::Add, &[(8.0, 4.0), (4.0, 8.0)], &[(4.0, 4.0)]),
             (
                 Icon::Duplicate,
@@ -458,6 +480,11 @@ mod tests {
                 &[(10.0, 4.5)],
             ),
             (Icon::Up, &[(8.0, 6.2), (5.0, 9.0)], &[(8.0, 9.0)]),
+            (
+                Icon::Refresh,
+                &[(13.0, 8.0), (8.0, 13.0), (3.0, 8.0), (2.5, 4.4), (4.4, 6.0)],
+                &[(8.0, 8.0), (8.0, 3.0), (13.5, 13.5)],
+            ),
             (Icon::Down, &[(8.0, 9.8), (5.0, 7.0)], &[(8.0, 7.0)]),
         ];
         for (icon, filled, empty) in cases {

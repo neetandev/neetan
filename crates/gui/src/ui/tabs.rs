@@ -196,7 +196,7 @@ pub fn tab_bar(
         );
         context.text_left(caption, &style, tab.caption);
     }
-    if context.has_focus(id) {
+    if context.shows_focus(id) {
         let area = tab_area(context, rect, tabs, *selected);
         context.focus_ring(
             Rect::new(

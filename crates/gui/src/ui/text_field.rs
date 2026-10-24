@@ -297,8 +297,9 @@ impl<'a> TextField<'a> {
             hovered = context.button_behavior(id, rect).hovered;
         }
         let focused = interactive && context.has_focus(id);
+        let focus_look = interactive && context.shows_focus(id);
         let look = FieldLook {
-            focused,
+            focused: focus_look,
             hovered,
             error: self.error,
             enabled: self.enabled,
@@ -308,7 +309,7 @@ impl<'a> TextField<'a> {
         let left = match self.icon {
             Some(icon) => {
                 let slot = Rect::new(rect.x + theme.gap, rect.y, theme.icon_size, rect.height);
-                let color = if focused {
+                let color = if focus_look {
                     theme.text_dim
                 } else {
                     theme.text_disabled
@@ -348,7 +349,7 @@ impl<'a> TextField<'a> {
             };
             context.icon(clear_rect, Icon::Close, CLEAR_ICON_SIZE, color);
         }
-        if focused {
+        if focus_look {
             context.focus_ring(rect, theme.radius);
         }
         response

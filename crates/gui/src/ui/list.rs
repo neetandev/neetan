@@ -12,6 +12,10 @@ use crate::{Rect, RectStyle};
 /// The gap between the edge of a list and its rows.
 pub(super) const LIST_PADDING: f32 = 4.0;
 
+/// The height of a line of small text beside a list, such as the folder of
+/// the listed files or a status.
+pub const PATH_LINE_HEIGHT: f32 = 24.0;
+
 /// The rows one wheel step scrolls.
 const WHEEL_ROWS: f32 = 3.0;
 
@@ -132,7 +136,8 @@ impl RowLayout {
 /// into view. Up on the first row and down on the last row let the focus
 /// leave the list. The wheel scrolls the list, and so does a drag of the
 /// scroll bar. A press on the scroll bar track centers the thumb under the
-/// pointer and drags it.
+/// pointer and drags it. A list without a row that takes the selection
+/// leaves the focus ring.
 #[derive(Clone, Copy, Debug)]
 pub struct List<'a> {
     /// The id of the list.
@@ -356,7 +361,7 @@ impl<'a> List<'a> {
         } else {
             NavigationSet::EMPTY
         };
-        if self.enabled {
+        if self.enabled && any_selectable {
             context.focusable(id, rect, captures);
         }
 
@@ -371,7 +376,7 @@ impl<'a> List<'a> {
                 &RectStyle::filled(theme.well, theme.radius).with_stroke(theme.stroke, edge),
             );
         }
-        let focused = context.has_focus(id);
+        let focused = context.shows_focus(id);
         context.scene.push_clip(view);
         if let Some(separator) = layout.separator {
             let y = view.y + LIST_PADDING + layout.top(separator + 1) - layout.separator_height
@@ -462,48 +467,118 @@ fn settle_scroll(
     state.scroll = context.snap(state.scroll.clamp(0.0, overflow));
 }
 
-/// Draws the standard content of `row`: an optional `icon`, `text` cut in
-/// the middle when it does not fit, and an optional `marker` icon in the
-/// marker color at the end. A disabled row draws its icon and its text in
-/// the disabled color. Returns whether the text was cut.
-pub fn list_row(
-    context: &mut UiContext,
-    row: &ListRow,
+/// The mark at the end of a row of a list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowMark {
+    /// No icon. The row keeps the room of the mark, so the counts of the
+    /// rows line up.
+    Blank,
+    /// An icon in the marker color, such as a check for the item in use.
+    Marker(Icon),
+    /// The alert icon in the error color.
+    Alert,
+}
+
+/// The standard content of a list row: an optional icon, the text, an
+/// optional count in small secondary text and an optional mark at the end.
+///
+/// The icon and the count of a selected row draw in the primary color. The
+/// mark keeps its color. A disabled row draws everything in the disabled
+/// color. A text that does not fit gives way in the middle.
+#[derive(Clone, Copy, Debug)]
+pub struct RowContent<'a> {
+    /// The icon before the text.
     icon: Option<Icon>,
-    text: &str,
-    marker: Option<Icon>,
-) -> bool {
-    let theme = context.theme;
-    let mut area = Rect::new(
-        row.rect.x + theme.gap,
-        row.rect.y,
-        row.rect.width - theme.gap * 2.0,
-        row.rect.height,
-    );
-    let (icon_color, text_color) = if !row.enabled {
-        (theme.text_disabled, theme.text_disabled)
-    } else if row.selected {
-        (theme.text, theme.text)
-    } else {
-        (theme.text_dim, theme.text)
-    };
-    if let Some(icon) = icon {
-        let (slot, rest) = area.cut_left(theme.icon_size);
-        context.icon(slot, icon, theme.icon_size, icon_color);
-        area = rest.cut_left(theme.gap).1;
+    /// The text.
+    text: &'a str,
+    /// The count after the text.
+    count: Option<&'a str>,
+    /// The mark at the end.
+    mark: Option<RowMark>,
+}
+
+impl<'a> RowContent<'a> {
+    /// The content with `text` only.
+    pub fn new(text: &'a str) -> Self {
+        Self {
+            icon: None,
+            text,
+            count: None,
+            mark: None,
+        }
     }
-    if let Some(marker) = marker {
-        let (slot, rest) = area.cut_right(theme.icon_size);
-        let color = if row.enabled {
-            theme.marker
+
+    /// The same content with `icon` before the text, or no icon.
+    pub fn icon(self, icon: Option<Icon>) -> Self {
+        Self { icon, ..self }
+    }
+
+    /// The same content with the count `count` after the text.
+    pub fn count(self, count: &'a str) -> Self {
+        Self {
+            count: Some(count),
+            ..self
+        }
+    }
+
+    /// The same content with `mark` at the end, or no mark.
+    pub fn mark(self, mark: Option<RowMark>) -> Self {
+        Self { mark, ..self }
+    }
+
+    /// Draws the content into `row`. Returns whether the text was cut.
+    pub fn show(self, context: &mut UiContext, row: &ListRow) -> bool {
+        let theme = context.theme;
+        let mut area = Rect::new(
+            row.rect.x + theme.gap,
+            row.rect.y,
+            row.rect.width - theme.gap * 2.0,
+            row.rect.height,
+        );
+        let (icon_color, text_color) = if !row.enabled {
+            (theme.text_disabled, theme.text_disabled)
+        } else if row.selected {
+            (theme.text, theme.text)
         } else {
-            theme.text_disabled
+            (theme.text_dim, theme.text)
         };
-        context.icon(slot, marker, theme.icon_size, color);
-        area = rest.cut_right(theme.gap).1;
+        if let Some(icon) = self.icon {
+            let (slot, rest) = area.cut_left(theme.icon_size);
+            context.icon(slot, icon, theme.icon_size, icon_color);
+            area = rest.cut_left(theme.gap).1;
+        }
+        if let Some(mark) = self.mark {
+            let (slot, rest) = area.cut_right(theme.icon_size);
+            let shown = match mark {
+                RowMark::Blank => None,
+                RowMark::Marker(icon) => Some((icon, theme.marker)),
+                RowMark::Alert => Some((Icon::Alert, theme.danger_text)),
+            };
+            if let Some((icon, color)) = shown {
+                let color = if row.enabled {
+                    color
+                } else {
+                    theme.text_disabled
+                };
+                context.icon(slot, icon, theme.icon_size, color);
+            }
+            area = rest.cut_right(theme.gap).1;
+        }
+        if let Some(count) = self.count {
+            let color = if row.enabled {
+                icon_color
+            } else {
+                theme.text_disabled
+            };
+            let style = theme.small().with_color(color);
+            let width = context.measure(&style, count).min(area.width);
+            let (slot, rest) = area.cut_right(width);
+            context.text_in(slot, &style, count, Align::End, Truncation::End);
+            area = rest.cut_right(theme.gap).1;
+        }
+        let style = theme.body().with_color(text_color);
+        context.text_in(area, &style, self.text, Align::Start, Truncation::Middle)
     }
-    let style = theme.body().with_color(text_color);
-    context.text_in(area, &style, text, Align::Start, Truncation::Middle)
 }
 
 /// Draws `text` as the caption of the caption row `row`: small secondary
@@ -535,7 +610,9 @@ mod tests {
     fn draw(harness: &mut Harness, rows: usize, state: &mut ListState) -> ListResponse {
         harness.frame(|context| {
             list(context, "files", LIST, rows, state, |context, row| {
-                list_row(context, row, Some(Icon::Disk), "image.d88", None);
+                RowContent::new("image.d88")
+                    .icon(Some(Icon::Disk))
+                    .show(context, row);
             })
         })
     }
@@ -862,7 +939,7 @@ mod tests {
                     if row.kind == RowKind::Caption {
                         caption_row(context, row, "Caption");
                     } else {
-                        list_row(context, row, None, "image.d88", None);
+                        RowContent::new("image.d88").icon(None).show(context, row);
                     }
                 },
             )
@@ -1052,5 +1129,120 @@ mod tests {
         let theme = &harness.theme;
         assert_ne!(edge, srgb(theme.well_edge));
         assert!(edge[0] < theme.well_edge.r && edge[0] > theme.panel.r / 4);
+    }
+
+    /// Verifies that an empty list and a list of captions and disabled rows leave the focus ring.
+    #[test]
+    fn a_list_without_a_selectable_row_leaves_the_ring() {
+        let mut harness = Harness::new();
+        let mut state = ListState::new();
+        harness.state.set_focus(UiId::from("files"));
+        draw(&mut harness, 0, &mut state);
+        assert_eq!(harness.state.focused(), None);
+        let kinds = [RowKind::Caption, RowKind::Disabled];
+        harness.state.set_focus(UiId::from("files"));
+        harness.frame(|context| {
+            List::new("files", kinds.len()).kinds(&kinds).show(
+                context,
+                LIST,
+                &mut state,
+                |_, _| {},
+            );
+        });
+        assert_eq!(harness.state.focused(), None);
+        harness.state.set_focus(UiId::from("files"));
+        draw(&mut harness, 1, &mut state);
+        assert_eq!(harness.state.focused(), Some(UiId::from("files")));
+    }
+
+    /// Draws three rows with a count and the marks marker, alert and blank,
+    /// with the second row selected and the list focused.
+    fn draw_marks(harness: &mut Harness, state: &mut ListState) {
+        let marks = [RowMark::Marker(Icon::Check), RowMark::Alert, RowMark::Blank];
+        harness.state.set_focus(UiId::from("systems"));
+        harness.frame(|context| {
+            list(
+                context,
+                "systems",
+                LIST,
+                marks.len(),
+                state,
+                |context, row| {
+                    RowContent::new("PC-98")
+                        .icon(Some(Icon::SystemDesktop))
+                        .count("18")
+                        .mark(Some(marks[row.index]))
+                        .show(context, row);
+                },
+            );
+        });
+    }
+
+    /// Verifies the colors of the marker and the alert mark and that a blank mark draws nothing.
+    #[test]
+    fn row_marks_keep_their_colors_and_a_blank_mark_draws_nothing() {
+        let mut harness = Harness::new();
+        let mut state = ListState::new();
+        state.select(1);
+        draw_marks(&mut harness, &mut state);
+        let theme = &harness.theme;
+        let colors: Vec<_> = harness
+            .scene
+            .instances()
+            .iter()
+            .map(|instance| instance.color)
+            .collect();
+        assert!(colors.contains(&theme.marker.to_linear()));
+        assert!(colors.contains(&theme.danger_text.to_linear()));
+
+        let pixels = harness.render();
+        let width = harness.viewport.width;
+        let mark_x = LIST.right() - theme.stroke - LIST_PADDING - theme.gap - theme.icon_size * 0.5;
+        let (_, blank_y) = row_center(theme, 2, 0.0);
+        let blank = Rect::new(
+            mark_x - theme.icon_size * 0.5,
+            blank_y - theme.icon_size * 0.5,
+            theme.icon_size,
+            theme.icon_size,
+        );
+        for step in 0..16 {
+            let x = blank.x + step as f32;
+            for row in 0..16 {
+                assert_eq!(
+                    pixel(&pixels, width, x, blank.y + row as f32),
+                    srgb(theme.well),
+                    "the blank mark draws at {x}"
+                );
+            }
+        }
+    }
+
+    /// Verifies that the count ends one gap before the room of the mark.
+    #[test]
+    fn the_count_sits_before_the_mark() {
+        let mut harness = Harness::new();
+        let mut state = ListState::new();
+        draw_marks(&mut harness, &mut state);
+        let theme = &harness.theme;
+        let pixels = harness.render();
+        let width = harness.viewport.width;
+        let (_, row_y) = row_center(theme, 2, 0.0);
+        let row_right = LIST.right() - theme.stroke - LIST_PADDING - theme.gap;
+        let count_right = row_right - theme.icon_size - theme.gap;
+        let lit = |from: f32, to: f32| {
+            let mut x = from;
+            let mut found = false;
+            while x < to {
+                for offset in -4..=4 {
+                    if pixel(&pixels, width, x, row_y + offset as f32) != srgb(theme.well) {
+                        found = true;
+                    }
+                }
+                x += 1.0;
+            }
+            found
+        };
+        assert!(lit(count_right - 14.0, count_right));
+        assert!(!lit(count_right + 1.0, row_right));
     }
 }

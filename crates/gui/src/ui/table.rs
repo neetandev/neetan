@@ -5,10 +5,13 @@ use super::{
     context::{UiContext, UiId},
     focus::{Navigation, NavigationSet},
     icons::Icon,
-    label::{Align, Truncation},
+    label::{Align, Truncation, wrapped_line_height},
     list::{LIST_PADDING, List, ListRow, ListState, RowKind},
 };
 use crate::{Rect, RectStyle};
+
+/// The size of the sort chevron beside a column caption.
+pub(super) const SORT_ICON_SIZE: f32 = 12.0;
 
 /// The width of a column of a [`Table`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -155,7 +158,7 @@ impl TableRow<'_> {
     }
 }
 
-/// The look of the text of a cell.
+/// The look of the text or the icon of a cell.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CellTone {
     /// Primary text.
@@ -163,33 +166,102 @@ pub enum CellTone {
     Normal,
     /// Secondary text. A selected row shows it as primary text.
     Dim,
+    /// The error color. A selected row shows it as primary text.
+    Error,
 }
 
-/// Draws `text` into the cell of `column` of `row` in `tone`, placed as the
-/// column says and cut at the end.
-pub fn table_cell(
-    context: &mut UiContext,
-    row: &TableRow,
-    column: usize,
-    text: &str,
+/// The content of a cell of a [`TableRow`]: a text with an optional icon
+/// before it.
+///
+/// The cell is placed as its first column says. A text that does not fit
+/// gives way at the end, or in the middle for a file name. A cell can span
+/// several columns.
+#[derive(Clone, Copy, Debug)]
+pub struct TableCell<'a> {
+    /// The text.
+    text: &'a str,
+    /// The look of the text.
     tone: CellTone,
-) {
-    let theme = context.theme;
-    let color = match tone {
-        CellTone::Dim if !row.row.selected => theme.text_dim,
-        CellTone::Normal | CellTone::Dim => theme.text,
-    };
-    let align = row
-        .columns
-        .get(column)
-        .map_or(Align::Start, |column| column.align);
-    context.text_in(
-        row.cell(column),
-        &theme.body().with_color(color),
-        text,
-        align,
-        Truncation::End,
-    );
+    /// The icon before the text and its look.
+    icon: Option<(Icon, CellTone)>,
+    /// The cut of a text that does not fit.
+    truncation: Truncation,
+}
+
+impl<'a> TableCell<'a> {
+    /// A cell with `text` in primary text, cut at the end.
+    pub fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            tone: CellTone::Normal,
+            icon: None,
+            truncation: Truncation::End,
+        }
+    }
+
+    /// The same cell with the text in `tone`.
+    pub fn tone(self, tone: CellTone) -> Self {
+        Self { tone, ..self }
+    }
+
+    /// The same cell with `icon` in `tone` before the text.
+    pub fn icon(self, icon: Icon, tone: CellTone) -> Self {
+        Self {
+            icon: Some((icon, tone)),
+            ..self
+        }
+    }
+
+    /// The same cell, cut as `truncation` says when the text does not fit.
+    pub fn truncation(self, truncation: Truncation) -> Self {
+        Self { truncation, ..self }
+    }
+
+    /// Draws the cell into the columns `first` to `last` of `row`.
+    pub fn show(self, context: &mut UiContext, row: &TableRow, first: usize, last: usize) {
+        let theme = context.theme;
+        let color = |tone: CellTone| match tone {
+            CellTone::Dim if !row.row.selected => theme.text_dim,
+            CellTone::Error if !row.row.selected => theme.danger_text,
+            CellTone::Normal | CellTone::Dim | CellTone::Error => theme.text,
+        };
+        let align = row
+            .columns
+            .get(first)
+            .map_or(Align::Start, |column| column.align);
+        let mut area = row.cells(first, last);
+        if let Some((icon, tone)) = self.icon {
+            let (slot, rest) = area.cut_left(theme.icon_size);
+            context.icon(slot, icon, theme.icon_size, color(tone));
+            area = rest.cut_left(theme.gap).1;
+        }
+        context.text_in(
+            area,
+            &theme.body().with_color(color(self.tone)),
+            self.text,
+            align,
+            self.truncation,
+        );
+    }
+}
+
+/// The hint that a [`Table`] without rows shows in the area of its rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EmptyHint<'a> {
+    /// No hint.
+    #[default]
+    None,
+    /// A line of primary text over a line of small secondary text, both in
+    /// the middle of the area, for a table that has no rows at all.
+    Centered {
+        /// The line of primary text.
+        title: &'a str,
+        /// The line of small secondary text.
+        detail: &'a str,
+    },
+    /// A line of small secondary text one row below the top of the area,
+    /// for a filter without a match.
+    Top(&'a str),
 }
 
 /// A table: a column header over a list of rows with cells.
@@ -211,6 +283,8 @@ pub struct Table<'a> {
     rows: usize,
     /// The kinds of the rows.
     kinds: &'a [RowKind],
+    /// The hint of a table without rows.
+    empty_hint: EmptyHint<'a>,
 }
 
 impl<'a> Table<'a> {
@@ -221,6 +295,7 @@ impl<'a> Table<'a> {
             columns,
             rows,
             kinds: &[],
+            empty_hint: EmptyHint::None,
         }
     }
 
@@ -228,6 +303,14 @@ impl<'a> Table<'a> {
     /// the end of `kinds` are normal rows.
     pub fn kinds(self, kinds: &'a [RowKind]) -> Self {
         Self { kinds, ..self }
+    }
+
+    /// The same table, which shows `hint` while it has no rows.
+    pub fn empty_hint(self, hint: EmptyHint<'a>) -> Self {
+        Self {
+            empty_hint: hint,
+            ..self
+        }
     }
 
     /// The id of the header.
@@ -355,7 +438,7 @@ impl<'a> Table<'a> {
             rect,
             &RectStyle::filled(theme.well, theme.radius).with_stroke(theme.stroke, theme.well_edge),
         );
-        let header_focused = context.has_focus(header_id);
+        let header_focused = context.shows_focus(header_id);
         let picking = header_focused && context.focus_visible();
         let caption_style = theme.small();
         for (index, column) in self.columns.iter().enumerate() {
@@ -395,8 +478,8 @@ impl<'a> Table<'a> {
             let spacing = theme.gap * 0.5;
             let caption_width = context
                 .measure(&style, column.caption)
-                .min((width - theme.icon_size - spacing).max(0.0));
-            let group = caption_width + spacing + theme.icon_size;
+                .min((width - SORT_ICON_SIZE - spacing).max(0.0));
+            let group = caption_width + spacing + SORT_ICON_SIZE;
             let left = match column.align {
                 Align::Start => cell.x,
                 Align::Center => cell.x + (cell.width - group) * 0.5,
@@ -418,11 +501,11 @@ impl<'a> Table<'a> {
                 Rect::new(
                     left + caption_width + spacing,
                     cell.y,
-                    theme.icon_size,
+                    SORT_ICON_SIZE,
                     cell.height,
                 ),
                 icon,
-                theme.icon_size,
+                SORT_ICON_SIZE,
                 icon_color,
             );
         }
@@ -447,16 +530,68 @@ impl<'a> Table<'a> {
                     },
                 );
             });
+        if self.rows == 0 {
+            draw_empty_hint(context, body, self.empty_hint);
+        }
         if header_focused {
             context.focus_ring(header, theme.radius);
         }
-        if context.has_focus(self.id) {
+        if context.shows_focus(self.id) {
             context.focus_ring(rect, theme.radius);
         }
         response.activated = list.activated;
         response.clicked = list.clicked;
         response.selection_changed = list.selection_changed;
         response
+    }
+}
+
+/// Draws `hint` into the area `body` of the rows of a table.
+fn draw_empty_hint(context: &mut UiContext, body: Rect, hint: EmptyHint) {
+    let theme = context.theme;
+    let detail_style = theme.small();
+    let detail_height = wrapped_line_height(&detail_style);
+    match hint {
+        EmptyHint::None => {}
+        EmptyHint::Centered { title, detail } => {
+            let title_style = theme.body();
+            let title_height = wrapped_line_height(&title_style);
+            let spacing = theme.gap * 0.5;
+            let top = body.y + (body.height - title_height - spacing - detail_height) * 0.5;
+            context.text_in(
+                Rect::new(body.x, top, body.width, title_height),
+                &title_style,
+                title,
+                Align::Center,
+                Truncation::End,
+            );
+            context.text_in(
+                Rect::new(
+                    body.x,
+                    top + title_height + spacing,
+                    body.width,
+                    detail_height,
+                ),
+                &detail_style,
+                detail,
+                Align::Center,
+                Truncation::Middle,
+            );
+        }
+        EmptyHint::Top(text) => {
+            context.text_in(
+                Rect::new(
+                    body.x,
+                    body.y + theme.row_height + theme.gap,
+                    body.width,
+                    detail_height,
+                ),
+                &detail_style,
+                text,
+                Align::Center,
+                Truncation::End,
+            );
+        }
     }
 }
 
@@ -535,7 +670,9 @@ mod tests {
                         } else {
                             CellTone::Normal
                         };
-                        table_cell(context, row, column, text, tone);
+                        TableCell::new(text)
+                            .tone(tone)
+                            .show(context, row, column, column);
                     }
                 })
         })
@@ -660,12 +797,25 @@ mod tests {
             pixel(&pixels, width, TABLE.x + 10.0, row_y),
             srgb(theme.selection_focused)
         );
-        let accent = harness
+        let chevron: Vec<[f32; 4]> = harness
             .scene
             .instances()
             .iter()
-            .any(|instance| instance.color == harness.theme.accent.to_linear());
-        assert!(accent);
+            .filter(|instance| instance.color == harness.theme.accent.to_linear())
+            .map(|instance| instance.rect)
+            .collect();
+        assert_eq!(chevron.len(), 2);
+        let left = chevron.iter().map(|rect| rect[0]).fold(f32::MAX, f32::min);
+        let right = chevron
+            .iter()
+            .map(|rect| rect[0] + rect[2])
+            .fold(f32::MIN, f32::max);
+        let unit = SORT_ICON_SIZE / 16.0;
+        let stroke = (1.75 * unit).max(1.25);
+        assert!(
+            (right - left - (8.0 * unit + stroke)).abs() < 0.01,
+            "{chevron:?}"
+        );
 
         harness.state.set_focus(header);
         state.picked = 1;
@@ -729,7 +879,9 @@ mod tests {
                     state,
                     |context, row| {
                         enabled.push(row.row.enabled);
-                        table_cell(context, row, 0, "Game", CellTone::Normal);
+                        TableCell::new("Game")
+                            .tone(CellTone::Normal)
+                            .show(context, row, 0, 0);
                     },
                 )
             })
@@ -764,5 +916,157 @@ mod tests {
         assert_eq!(response.activated, None);
         assert!(!response.selection_changed);
         assert_eq!(state.list.selected, 0);
+    }
+
+    /// Draws one broken row with an alert icon in the first column and the
+    /// error over the second and the third column.
+    fn draw_broken(harness: &mut Harness, state: &mut TableState) {
+        harness.frame(|context| {
+            Table::new("games", &COLUMNS, 2).show(context, TABLE, state, |context, row| {
+                TableCell::new("nemesis-90.conf")
+                    .icon(Icon::Alert, CellTone::Error)
+                    .truncation(Truncation::Middle)
+                    .show(context, row, 0, 0);
+                TableCell::new("line 4: unknown machine X68030")
+                    .tone(CellTone::Error)
+                    .show(context, row, 1, 2);
+            });
+        });
+    }
+
+    /// Verifies that an error cell draws in the error color.
+    #[test]
+    fn an_error_cell_draws_in_the_error_color_and_a_selected_one_in_text() {
+        let mut harness = Harness::new();
+        let mut state = TableState::new();
+        harness.state.set_focus(UiId::from("games"));
+        draw_broken(&mut harness, &mut state);
+        let theme = &harness.theme;
+        let colors: Vec<_> = harness
+            .scene
+            .instances()
+            .iter()
+            .map(|instance| instance.color)
+            .collect();
+        assert!(colors.contains(&theme.danger_text.to_linear()));
+        assert!(colors.contains(&theme.text.to_linear()));
+    }
+
+    /// Verifies that a cell over two columns spans both and the gap between them.
+    #[test]
+    fn a_spanning_cell_covers_its_columns_and_the_gaps_between() {
+        let mut harness = Harness::new();
+        let mut spans = Vec::new();
+        let mut state = TableState::new();
+        harness.frame(|context| {
+            Table::new("games", &COLUMNS, 1).show(context, TABLE, &mut state, |_, row| {
+                spans.push((row.cell(1), row.cell(2), row.cells(1, 2)));
+            });
+        });
+        let (first, last, both) = spans[0];
+        assert_eq!(both.x, first.x);
+        assert_eq!(both.right(), last.right());
+    }
+
+    /// Draws an empty table with `hint` and returns the rendered pixels.
+    fn draw_empty(harness: &mut Harness, hint: EmptyHint) -> Vec<u8> {
+        let mut state = TableState::new();
+        harness.frame(|context| {
+            Table::new("games", &COLUMNS, 0).empty_hint(hint).show(
+                context,
+                TABLE,
+                &mut state,
+                |_, _| {},
+            );
+        });
+        harness.render()
+    }
+
+    /// Whether a pixel of the row band from `top` to `bottom` in the middle
+    /// of the table differs from the well.
+    fn band_lit(harness: &Harness, pixels: &[u8], top: f32, bottom: f32) -> bool {
+        let width = harness.viewport.width;
+        let well = srgb(harness.theme.well);
+        let mut y = top;
+        while y < bottom {
+            let mut x = TABLE.center().0 - 60.0;
+            while x < TABLE.center().0 + 60.0 {
+                if pixel(pixels, width, x, y) != well {
+                    return true;
+                }
+                x += 1.0;
+            }
+            y += 1.0;
+        }
+        false
+    }
+
+    /// Verifies where the hints of an empty table draw.
+    #[test]
+    fn the_hints_of_an_empty_table_draw_in_the_middle_or_at_the_top() {
+        let mut harness = Harness::new();
+        let theme = &harness.theme;
+        let body_top =
+            TABLE.y + theme.stroke + LIST_PADDING * 2.0 + theme.row_height + theme.stroke;
+        let row_height = theme.row_height;
+        let pixels = draw_empty(&mut harness, EmptyHint::None);
+        assert!(!band_lit(
+            &harness,
+            &pixels,
+            body_top + 2.0,
+            TABLE.bottom() - 4.0
+        ));
+
+        let pixels = draw_empty(&mut harness, EmptyHint::Top("No games match the filter"));
+        assert!(band_lit(
+            &harness,
+            &pixels,
+            body_top + row_height,
+            body_top + row_height * 2.0
+        ));
+        assert!(!band_lit(
+            &harness,
+            &pixels,
+            body_top + row_height * 2.0,
+            TABLE.bottom() - 4.0
+        ));
+
+        let pixels = draw_empty(
+            &mut harness,
+            EmptyHint::Centered {
+                title: "No games for PC-6000",
+                detail: "Place game files in config/pc6000/",
+            },
+        );
+        let middle = body_top + (TABLE.bottom() - body_top) * 0.5;
+        assert!(band_lit(&harness, &pixels, middle - 20.0, middle));
+        assert!(band_lit(&harness, &pixels, middle, middle + 20.0));
+        assert!(!band_lit(&harness, &pixels, body_top + 2.0, middle - 30.0));
+    }
+
+    /// Verifies that a table with rows shows no hint.
+    #[test]
+    fn a_table_with_rows_shows_no_hint() {
+        let mut harness = Harness::new();
+        let mut state = TableState::new();
+        let hint = EmptyHint::Top("No games match the filter");
+        harness.frame(|context| {
+            Table::new("games", &COLUMNS, 1).empty_hint(hint).show(
+                context,
+                TABLE,
+                &mut state,
+                |_, _| {},
+            );
+        });
+        let pixels = harness.render();
+        let theme = &harness.theme;
+        let body_top =
+            TABLE.y + theme.stroke + LIST_PADDING * 2.0 + theme.row_height + theme.stroke;
+        assert!(!band_lit(
+            &harness,
+            &pixels,
+            body_top + theme.row_height + LIST_PADDING + 2.0,
+            body_top + theme.row_height * 2.0
+        ));
     }
 }

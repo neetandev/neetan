@@ -68,10 +68,9 @@ neetan <COMMAND>
 
 ### Startup
 
-`neetan` without arguments opens the game manager. The manager lists the game files
-of every system below the config folder and starts the selected game in the same
-window. A game file that fails to parse shows dimmed with its first error and does
-not start.
+`neetan` without arguments opens the game manager. The manager lists the systems
+in a sidebar with their game count and ROM status, and the game files of the
+selected system in a table. It starts the selected game in the same window.
 
 A `--machine` option or a `--config` file starts the game directly. A media option
 such as `--fdd1`, `--cdrom` or `--cartridge` needs `--machine` or `--config`. Host
@@ -356,16 +355,20 @@ the emulated software because quick saves do not replace disk or application sav
 
 ### Game manager controls
 
-| Key                       | Gamepad              | Action                                |
-|---------------------------|----------------------|---------------------------------------|
-| Up, Down                  | D-pad, left stick    | Select the previous or the next game  |
-| Page Up, Page Down        |                      | Select a game one page up or down     |
-| Home, End                 |                      | Select the first or the last game     |
-| Tab, Shift + Tab          |                      | Focus the next or the previous widget |
-| Enter                     | A                    | Launch the selected game              |
-| Enter, Esc                | A, B                 | Close the error dialog                |
-| Right Ctrl + Enter        |                      | Toggle fullscreen                     |
-| Right Ctrl + Q            |                      | Quit the emulator                     |
+| Key                                        | Gamepad           | Action                                |
+|--------------------------------------------|-------------------|---------------------------------------|
+| Arrows                                     | D-pad, left stick | Select a game or focus another widget |
+| Page Up, Page Down                         |                   | Select a game one page up or down     |
+| Home, End                                  |                   | Select the first or the last game     |
+| Tab, Shift + Tab                           |                   | Focus the next or the previous widget |
+| Left Ctrl + Page Up, Left Ctrl + Page Down | LB, RB            | Select the previous or next system    |
+| Left Ctrl + F                              | Y                 | Focus the filter                      |
+| Enter                                      | A                 | Launch the selected game              |
+| Delete                                     |                   | Delete the selected game file         |
+| F5                                         |                   | Check the ROMs and scan the games     |
+| Esc                                        | B                 | Clear the filter or close the dialog  |
+| Right Ctrl + Enter                         |                   | Toggle fullscreen                     |
+| Right Ctrl + Q                             |                   | Quit the emulator                     |
 
 ## Automation
 

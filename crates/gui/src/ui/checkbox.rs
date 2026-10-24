@@ -85,7 +85,7 @@ impl<'a> Checkbox<'a> {
         };
         let caption = rest.cut_left(theme.gap * 0.75).1;
         context.text_left(caption, &theme.body().with_color(color), self.caption);
-        if self.enabled && context.has_focus(self.id) {
+        if self.enabled && context.shows_focus(self.id) {
             context.focus_ring(area, theme.radius);
         }
         flipped

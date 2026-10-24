@@ -131,6 +131,7 @@ pub(crate) fn key_event(scancode: Scancode, keymod: &Mod, repeat: bool) -> Optio
         Scancode::Delete => Shortcut::Delete,
         Scancode::Insert => Shortcut::Insert,
         Scancode::F2 => Shortcut::F2,
+        Scancode::F5 => Shortcut::F5,
         Scancode::F10 => Shortcut::F10,
         Scancode::F if control => Shortcut::ControlF,
         Scancode::D if control => Shortcut::ControlD,
@@ -901,6 +902,10 @@ mod tests {
         assert_eq!(
             key(Scancode::F2, &NO_MODIFIERS),
             Some(GuiEvent::Shortcut(Shortcut::F2))
+        );
+        assert_eq!(
+            key(Scancode::F5, &NO_MODIFIERS),
+            Some(GuiEvent::Shortcut(Shortcut::F5))
         );
         assert_eq!(
             key(Scancode::F10, &NO_MODIFIERS),

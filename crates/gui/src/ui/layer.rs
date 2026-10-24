@@ -407,6 +407,64 @@ mod tests {
         assert_eq!(harness.frame(|context| draw(context, &dialogs)), Some(0));
     }
 
+    /// Draws the button below and, once it opened, the dialog with its OK
+    /// button. Returns whether OK was activated.
+    fn draw_opened(context: &mut UiContext, open: &mut bool) -> bool {
+        if button(context, "below", BELOW) {
+            *open = true;
+        }
+        *open
+            && context.layer("dialog", |context| {
+                button(context, "ok", Rect::new(200.0, 200.0, 100.0, 30.0))
+            })
+    }
+
+    /// Verifies that the widget that takes the focus back from a modal keeps
+    /// its focus look while the modal blocks it, and that the others do not.
+    #[test]
+    fn the_return_focus_of_a_modal_keeps_its_focus_look() {
+        let mut harness = Harness::new();
+        let draw = |context: &mut UiContext, open: bool| {
+            button(context, "below", BELOW);
+            button(context, "other", Rect::new(20.0, 100.0, 100.0, 30.0));
+            let looks = (
+                context.shows_focus(UiId::from("below")),
+                context.shows_focus(UiId::from("other")),
+            );
+            if open {
+                context.layer("dialog", |context| {
+                    button(context, "ok", Rect::new(200.0, 200.0, 100.0, 30.0));
+                });
+            }
+            looks
+        };
+        harness.state.set_focus(UiId::from("below"));
+        assert_eq!(harness.frame(|context| draw(context, false)), (true, false));
+        harness.frame(|context| draw(context, true));
+        assert_eq!(harness.state.focused(), Some(UiId::from("ok")));
+        assert_eq!(harness.frame(|context| draw(context, true)), (true, false));
+        harness.frame(|context| draw(context, false));
+        assert_eq!(harness.state.focused(), Some(UiId::from("below")));
+    }
+
+    /// Verifies that a modal opened by a confirm takes the focus and ignores that confirm.
+    #[test]
+    fn a_modal_that_opens_in_a_pass_ignores_the_key_of_that_pass() {
+        let mut harness = Harness::new();
+        let mut open = false;
+        harness.state.set_focus(UiId::from("below"));
+        harness.frame(|context| draw_opened(context, &mut open));
+        harness.input.confirm = true;
+        assert!(!harness.frame(|context| draw_opened(context, &mut open)));
+        assert!(open);
+        assert_eq!(harness.state.open_modals(), 1);
+        assert_eq!(harness.state.focused(), Some(UiId::from("ok")));
+        assert!(harness.state.take_pass_request());
+        assert!(!harness.frame(|context| draw_opened(context, &mut open)));
+        harness.input.confirm = true;
+        assert!(harness.frame(|context| draw_opened(context, &mut open)));
+    }
+
     #[test]
     fn a_modal_prefers_its_primary_button_over_the_close_button() {
         let mut harness = Harness::new();

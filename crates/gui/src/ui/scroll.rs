@@ -338,6 +338,9 @@ mod tests {
         harness.press(100.0, VIEW.bottom() - 2.0);
         draw(&mut harness, &mut state);
         assert_eq!(state.offset, 10.0);
+        harness.state.take_pass_request();
+        draw(&mut harness, &mut state);
+        assert_eq!(state.offset, 10.0);
         assert!(!harness.state.take_pass_request());
         harness.release();
         assert!(draw(&mut harness, &mut state));
