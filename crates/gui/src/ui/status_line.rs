@@ -34,6 +34,12 @@ pub struct Hint<'a> {
     pub label: &'a str,
 }
 
+/// The keys that activate the focused widget: Enter and the A button.
+pub const ACTIVATE_KEYS: &[HintKey<'static>] = &[HintKey::Key("Enter"), HintKey::Pad("A")];
+
+/// The keys that cancel: Escape and the B button.
+pub const CANCEL_KEYS: &[HintKey<'static>] = &[HintKey::Key("Esc"), HintKey::Pad("B")];
+
 /// The text at the end of the status line.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StatusEnd<'a> {

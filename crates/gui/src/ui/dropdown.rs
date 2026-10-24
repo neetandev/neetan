@@ -214,7 +214,7 @@ impl<'a> Dropdown<'a> {
             Align::Start,
             Truncation::End,
         );
-        if self.enabled && context.has_focus(id) {
+        if self.enabled && context.shows_focus(id) {
             context.focus_ring(rect, theme.radius);
         }
 

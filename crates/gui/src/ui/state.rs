@@ -78,6 +78,9 @@ pub struct UiState {
     pub(super) routed: Option<(UiId, super::Navigation)>,
     /// The focused widget that takes the cancel of this pass.
     pub(super) cancel_taker: Option<UiId>,
+    /// The widget that held the focus when the pass started with confirm.
+    /// Only it takes the confirm of the pass.
+    pub(super) confirm_target: Option<UiId>,
     /// The last area of a focused widget that left the ring. The next
     /// directional move starts from it.
     pub(super) lost: Option<Rect>,
@@ -115,6 +118,7 @@ impl Default for UiState {
             previous_ring: Vec::new(),
             routed: None,
             cancel_taker: None,
+            confirm_target: None,
             lost: None,
             text_area: None,
             text_caret: None,
@@ -247,6 +251,7 @@ impl UiState {
         self.previous_ring.clear();
         self.routed = None;
         self.cancel_taker = None;
+        self.confirm_target = None;
         self.lost = None;
         self.text_area = None;
         self.text_caret = None;
@@ -279,6 +284,7 @@ impl UiState {
         self.ring.clear();
         self.routed = None;
         self.cancel_taker = None;
+        self.confirm_target = if input.confirm { self.focus } else { None };
         self.text_area = None;
         self.text_caret = None;
         self.active_seen = false;
@@ -343,7 +349,8 @@ impl UiState {
     /// Closes a pass that drew layers down to `deepest`. A modal that the
     /// pass did not draw leaves the stack and gives the focus back, and so
     /// does a popup. A focus on a widget outside the ring of the pass is
-    /// dropped, and its last area stays for the next directional move. A
+    /// dropped, its last area stays for the next directional move, and the
+    /// state asks for another pass, so a widget can take the focus. A
     /// pressed widget that skipped its pointer behavior loses the press and
     /// its drag.
     pub(super) fn end_frame(&mut self, deepest: u32) {
@@ -364,6 +371,7 @@ impl UiState {
                 .find(|entry| entry.id == focus)
                 .map(|entry| entry.rect);
             self.focus = None;
+            self.pass_requested = true;
         }
         if !self.active_seen {
             self.active = None;

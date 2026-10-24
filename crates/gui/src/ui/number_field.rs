@@ -357,9 +357,10 @@ impl<'a> NumberField<'a> {
             hovered = context.button_behavior(id, rect).hovered;
         }
         let focused = self.enabled && context.has_focus(id);
+        let focus_look = self.enabled && context.shows_focus(id);
         let invalid = self.flagged(text, focused);
         let look = FieldLook {
-            focused,
+            focused: focus_look,
             hovered,
             error: self.error || invalid,
             enabled: self.enabled,
@@ -398,7 +399,7 @@ impl<'a> NumberField<'a> {
             };
             context.icon(area, icon, theme.icon_size, color);
         }
-        if focused {
+        if focus_look {
             context.focus_ring(rect, theme.radius);
         }
         response

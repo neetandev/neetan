@@ -1,42 +1,57 @@
-//! The rows of the game list and the view of the manager that outlives a
-//! game.
+//! The game files of one system as the library shows them.
 
 use std::path::{Path, PathBuf};
 
-use gui::ui::ListState;
 use machine_factory::config::systems::System;
 
-use crate::catalog::{Catalog, CatalogEntry};
+use crate::catalog::{CatalogEntry, SystemCatalog};
 
-/// One game file of the list.
+/// One game file of the library.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GameRow {
     /// The system of the game.
     pub(crate) system: &'static System,
     /// The path below the config folder, for example `pc98/edge.conf`.
     pub(crate) identity: String,
-    /// The title to show.
+    /// The file name, for example `edge.conf`.
+    pub(crate) file_name: String,
+    /// The title to show: `meta.title`, else the file stem.
     pub(crate) title: String,
+    /// The title in its original script, `meta.title-original`.
+    pub(crate) title_original: String,
+    /// The developer, `meta.developer`.
+    pub(crate) developer: String,
+    /// The release year as the file writes it, `meta.year`.
+    pub(crate) year_text: String,
+    /// The release year, when `meta.year` holds a valid year.
+    pub(crate) year: Option<u16>,
     /// The absolute path of the game file.
     pub(crate) path: PathBuf,
     /// The path of the game file to show: below the root when the file lies there.
     pub(crate) shown_path: String,
-    /// The first error of the file with its location. A file with an error cannot start.
+    /// The first error of the file without its location. A file with an error cannot start.
     pub(crate) error: Option<String>,
+    /// The first error of the file with the shown path and the line.
+    pub(crate) located_error: Option<String>,
 }
 
 impl GameRow {
     /// Returns the row of `entry` of `system`. `root` shortens the shown path.
     fn new(system: &'static System, entry: &CatalogEntry, root: &Path) -> Self {
         let shown_path = shown_path(&entry.path, root);
+        let first_error = entry.first_error();
         Self {
             system,
             identity: entry.identity.clone(),
+            file_name: entry.file_name.clone(),
             title: entry.title.clone(),
+            title_original: entry.metadata.title_original.clone(),
+            developer: entry.metadata.developer.clone(),
+            year_text: entry.metadata.year.trim().to_owned(),
+            year: entry.metadata.year(),
             path: entry.path.clone(),
-            error: entry
-                .first_error()
-                .map(|diagnostic| diagnostic.located(&shown_path)),
+            error: first_error.map(ToString::to_string),
+            located_error: first_error.map(|diagnostic| diagnostic.located(&shown_path)),
             shown_path,
         }
     }
@@ -44,6 +59,16 @@ impl GameRow {
     /// Returns whether the game can start.
     pub(crate) fn launchable(&self) -> bool {
         self.error.is_none()
+    }
+
+    /// The name of the row in a question: the title of a game, the file
+    /// name of a file with an error.
+    pub(crate) fn name(&self) -> &str {
+        if self.launchable() {
+            &self.title
+        } else {
+            &self.file_name
+        }
     }
 }
 
@@ -55,127 +80,58 @@ pub(crate) fn shown_path(path: &Path, root: &Path) -> String {
         .into_owned()
 }
 
-/// Returns the rows of every game file of `catalog`: the systems in the
-/// order of the systems table, in each system the games and then the files
-/// with errors.
-pub(crate) fn catalog_rows(catalog: &Catalog, root: &Path) -> Vec<GameRow> {
+/// Returns the rows of the games and the files with errors of `catalog`.
+pub(crate) fn system_rows(catalog: &SystemCatalog, root: &Path) -> Vec<GameRow> {
     catalog
-        .systems
+        .games
         .iter()
-        .flat_map(|system_catalog| {
-            system_catalog
-                .games
-                .iter()
-                .chain(&system_catalog.files_with_errors)
-                .map(|entry| GameRow::new(system_catalog.system, entry, root))
-        })
+        .chain(&catalog.files_with_errors)
+        .map(|entry| GameRow::new(catalog.system, entry, root))
         .collect()
 }
 
-/// The view of the manager: the selected game and the scroll position of
-/// the list. It stays in memory while a game runs.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct ManagerView {
-    /// The selected row and the scroll offset of the list.
-    pub(crate) list: ListState,
-    /// The identity of the selected game.
-    pub(crate) selected: Option<String>,
-}
-
-impl ManagerView {
-    /// Selects the selected game again in the new `rows`. A game that is
-    /// gone leaves the selection on the nearest row. The scroll position
-    /// stays while the game keeps its row.
-    pub(crate) fn restore(&mut self, rows: &[GameRow]) {
-        let Some(last) = rows.len().checked_sub(1) else {
-            *self = Self::default();
-            return;
-        };
-        let found = self
-            .selected
-            .as_ref()
-            .and_then(|identity| rows.iter().position(|row| &row.identity == identity));
-        match found {
-            Some(index) if index == self.list.selected => {}
-            Some(index) => self.list.select(index),
-            None => self.list.select(self.list.selected.min(last)),
-        }
-        self.record(rows);
-    }
-
-    /// Records the identity of the selected row of `rows`.
-    pub(crate) fn record(&mut self, rows: &[GameRow]) {
-        self.selected = rows.get(self.list.selected).map(|row| row.identity.clone());
-    }
-
-    /// Returns the selected row of `rows`.
-    pub(crate) fn selected_row<'a>(&self, rows: &'a [GameRow]) -> Option<&'a GameRow> {
-        rows.get(self.list.selected)
-    }
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use machine_factory::config::systems::compiled_systems;
 
     use super::*;
 
-    /// Returns a launchable row of the first compiled system.
-    fn row(identity: &str) -> GameRow {
+    /// Returns a launchable row of the first compiled system with the file
+    /// stem `stem`, the title `title`, the original title `original`, the
+    /// developer `developer` and the year `year`.
+    pub(crate) fn game(
+        stem: &str,
+        title: &str,
+        original: &str,
+        developer: &str,
+        year: &str,
+    ) -> GameRow {
+        let system = compiled_systems().next().expect("one system is compiled");
+        let identity = format!("{}/{stem}.conf", system.name);
         GameRow {
-            system: compiled_systems().next().expect("one system is compiled"),
-            identity: identity.to_owned(),
-            title: identity.to_owned(),
-            path: PathBuf::from("/root/config").join(identity),
+            system,
+            file_name: format!("{stem}.conf"),
+            title: if title.is_empty() { stem } else { title }.to_owned(),
+            title_original: original.to_owned(),
+            developer: developer.to_owned(),
+            year_text: year.to_owned(),
+            year: year.parse().ok(),
+            path: PathBuf::from("/root/config").join(&identity),
             shown_path: format!("config/{identity}"),
+            identity,
             error: None,
+            located_error: None,
         }
     }
 
-    /// Returns rows with the identities `identities`.
-    fn rows(identities: &[&str]) -> Vec<GameRow> {
-        identities.iter().map(|identity| row(identity)).collect()
-    }
-
-    /// Verifies that a rescan keeps the selected game and its scroll position.
-    #[test]
-    fn the_view_keeps_the_selected_game_and_its_scroll_position() {
-        let before = rows(&["pc98/a.conf", "pc98/b.conf", "pc98/c.conf"]);
-        let mut view = ManagerView::default();
-        view.list.select(1);
-        view.list.scroll = 12.0;
-        view.record(&before);
-        assert_eq!(view.selected.as_deref(), Some("pc98/b.conf"));
-
-        let after = before.clone();
-        view.restore(&after);
-        assert_eq!(view.list.selected, 1);
-        assert_eq!(view.list.scroll, 12.0);
-
-        let moved = rows(&["pc98/0.conf", "pc98/a.conf", "pc98/b.conf"]);
-        view.restore(&moved);
-        assert_eq!(view.list.selected, 2);
-        assert_eq!(view.selected.as_deref(), Some("pc98/b.conf"));
-    }
-
-    /// Verifies that a removed game selects the nearest row and that an empty list resets the view.
-    #[test]
-    fn a_removed_game_selects_the_nearest_row() {
-        let before = rows(&["pc98/a.conf", "pc98/b.conf", "pc98/c.conf"]);
-        let mut view = ManagerView::default();
-        view.list.select(2);
-        view.record(&before);
-
-        view.restore(&rows(&["pc98/a.conf", "pc98/b.conf"]));
-        assert_eq!(view.list.selected, 1);
-        assert_eq!(view.selected.as_deref(), Some("pc98/b.conf"));
-
-        view.restore(&rows(&["pc98/a.conf", "pc98/x.conf"]));
-        assert_eq!(view.list.selected, 1);
-        assert_eq!(view.selected.as_deref(), Some("pc98/x.conf"));
-
-        view.restore(&[]);
-        assert_eq!(view, ManagerView::default());
+    /// Returns a row of the first compiled system with the file stem `stem` and an error.
+    pub(crate) fn broken(stem: &str) -> GameRow {
+        let row = game(stem, "", "", "", "");
+        GameRow {
+            error: Some("line 1: unknown machine X68030".to_owned()),
+            located_error: Some(format!("{} line 1: unknown machine X68030", row.shown_path)),
+            ..row
+        }
     }
 
     /// Verifies that a shown path is relative to the root when the file lies below it.
@@ -189,5 +145,13 @@ mod tests {
             shown_path(Path::new("/elsewhere/a.conf"), Path::new("/root")),
             "/elsewhere/a.conf"
         );
+    }
+
+    /// Verifies that a question shows the title of a game and the file name of a file with an error.
+    #[test]
+    fn a_question_shows_the_title_or_the_file_name() {
+        assert_eq!(game("edge", "Edge", "", "", "").name(), "Edge");
+        assert_eq!(game("edge", "", "", "", "").name(), "edge");
+        assert_eq!(broken("nemesis-90").name(), "nemesis-90.conf");
     }
 }

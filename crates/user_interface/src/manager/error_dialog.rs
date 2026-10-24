@@ -1,11 +1,12 @@
 //! The error dialogs of the manager: a launch that failed, a game that
-//! stopped after a panic of its core and disk images that were not saved.
+//! stopped after a panic of its core, disk images that were not saved and a
+//! game file that was not deleted.
 
 use common::FlushError;
 use gui::{
     Rect, RectStyle,
     ui::{
-        Align, Button, ButtonKind, MODAL_HEADER_HEIGHT, UiContext, UiId, modal_in, wrapped_height,
+        Align, Button, ButtonKind, HEADER_HEIGHT, UiContext, UiId, modal_in, wrapped_height,
         wrapped_label,
     },
 };
@@ -33,6 +34,9 @@ pub(super) const GAME_STOPPED_TITLE: &str = "The game stopped";
 
 /// The title of the dialog of disk images that were not saved.
 pub(super) const MEDIA_NOT_SAVED_TITLE: &str = "The disk images were not saved";
+
+/// The title of the dialog of a game file that was not deleted.
+pub(super) const DELETE_FAILED_TITLE: &str = "Could not delete the game";
 
 /// An open error dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +96,15 @@ impl ErrorDialog {
         }
     }
 
+    /// The dialog of the game `name` whose file was not removed with `error`.
+    pub(crate) fn delete_failed(name: &str, error: &str) -> Self {
+        Self {
+            title: DELETE_FAILED_TITLE,
+            message: format!("{name} was not deleted."),
+            detail: error.to_owned(),
+        }
+    }
+
     /// The title of the panel.
     #[cfg(test)]
     pub(crate) fn title(&self) -> &str {
@@ -147,7 +160,7 @@ impl ErrorDialog {
             detail_width,
             MAXIMUM_DETAIL_LINES,
         ) + detail_padding.1 * 2.0;
-        let height = MODAL_HEADER_HEIGHT
+        let height = HEADER_HEIGHT
             + message_height
             + theme.gap
             + detail_height
@@ -247,6 +260,15 @@ mod tests {
             "Edge ended. Some of its disk images were not saved."
         );
         assert_eq!(dialog.detail(), "first\nsecond");
+    }
+
+    /// Verifies the dialog of a game file that was not deleted.
+    #[test]
+    fn the_delete_dialog_shows_the_game_and_the_error() {
+        let dialog = ErrorDialog::delete_failed("Edge", "config/pc98/edge.conf: Permission denied");
+        assert_eq!(dialog.title(), DELETE_FAILED_TITLE);
+        assert_eq!(dialog.message(), "Edge was not deleted.");
+        assert_eq!(dialog.detail(), "config/pc98/edge.conf: Permission denied");
     }
 
     /// Verifies that OK holds the focus, that confirm and cancel close the dialog and that navigation does not.

@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use gui::{
     Rect,
     ui::{
-        Align, Button, ButtonKind, Icon, ListState, Tab, Truncation, UiContext, UiId, label, list,
-        list_row, modal, tab_bar, text_field,
+        Align, Button, ButtonKind, Icon, ListState, PATH_LINE_HEIGHT, RowContent, RowMark, Tab,
+        Truncation, UiContext, UiId, label, list, modal, tab_bar, text_field,
     },
 };
 
@@ -17,9 +17,6 @@ const PANEL_SIZE: (f32, f32) = (640.0, 540.0);
 
 /// The height of the tab bar in logical units.
 const TAB_BAR_HEIGHT: f32 = 40.0;
-
-/// The height of the line with the path of the selected image.
-const PATH_LINE_HEIGHT: f32 = 24.0;
 
 /// The id of the image list.
 const LIST_ID: &str = "images";
@@ -373,17 +370,17 @@ impl MediaDialog {
                         Some(_) => (drive.eject_caption(), None),
                         None => (drive.empty_caption(), Some(Icon::Check)),
                     };
-                    list_row(context, row, Some(Icon::Eject), caption, marker);
+                    RowContent::new(caption)
+                        .icon(Some(Icon::Eject))
+                        .mark(marker.map(RowMark::Marker))
+                        .show(context, row);
                 } else {
                     let entry = rows[row.index - 1];
                     let marker = (loaded == Some(entry)).then_some(Icon::Check);
-                    list_row(
-                        context,
-                        row,
-                        Some(drive.icon()),
-                        &entries[entry].name,
-                        marker,
-                    );
+                    RowContent::new(&entries[entry].name)
+                        .icon(Some(drive.icon()))
+                        .mark(marker.map(RowMark::Marker))
+                        .show(context, row);
                 }
             },
         );

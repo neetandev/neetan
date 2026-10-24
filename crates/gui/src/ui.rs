@@ -67,15 +67,20 @@ pub use input::{ActionButton, Input, Shortcut, Viewport};
 pub use label::{
     Align, Truncation, WRAP_LINE_HEIGHT, label, wrapped_height, wrapped_label, wrapped_line_height,
 };
-pub use list::{List, ListResponse, ListRow, ListState, RowKind, caption_row, list, list_row};
-pub use modal::{MODAL_HEADER_HEIGHT, ModalResponse, modal, modal_in};
+pub use list::{
+    List, ListResponse, ListRow, ListState, PATH_LINE_HEIGHT, RowContent, RowKind, RowMark,
+    caption_row, list,
+};
+pub use modal::{HEADER_HEIGHT, ModalResponse, modal, modal_in};
 pub use number_field::{NUMBER_FIELD_WIDTH, NumberError, NumberField};
 pub use scroll::{ScrollState, scroll_area};
 pub use state::UiState;
-pub use status_line::{Hint, HintKey, STATUS_LINE_HEIGHT, StatusEnd, status_line};
+pub use status_line::{
+    ACTIVATE_KEYS, CANCEL_KEYS, Hint, HintKey, STATUS_LINE_HEIGHT, StatusEnd, status_line,
+};
 pub use table::{
-    CellTone, Column, ColumnWidth, Sort, SortDirection, Table, TableResponse, TableRow, TableState,
-    table_cell,
+    CellTone, Column, ColumnWidth, EmptyHint, Sort, SortDirection, Table, TableCell, TableResponse,
+    TableRow, TableState,
 };
 pub use tabs::{Tab, tab_bar};
 pub use text_field::{TEXT_FIELD_LIMIT, TextField, TextFieldResponse, text_field};
@@ -332,10 +337,15 @@ pub(crate) mod tests {
             &mut sample.list,
             |context, row| {
                 if row.index == 0 {
-                    list_row(context, row, Some(Icon::Eject), "Eject disk", None);
+                    RowContent::new("Eject disk")
+                        .icon(Some(Icon::Eject))
+                        .show(context, row);
                 } else {
                     let marker = (row.index == LOADED_ROW).then_some(Icon::Check);
-                    list_row(context, row, Some(Icon::Disk), FILES[row.index - 1], marker);
+                    RowContent::new(FILES[row.index - 1])
+                        .icon(Some(Icon::Disk))
+                        .mark(marker.map(RowMark::Marker))
+                        .show(context, row);
                 }
             },
         );
@@ -1044,13 +1054,9 @@ pub(crate) mod tests {
                         Rect::new(area.x, area.y, 250.0, 70.0),
                         &mut list_state,
                         |context, row| {
-                            list_row(
-                                context,
-                                row,
-                                Some(Icon::Disk),
-                                "Brandish (Disk 1 of 4).hdm",
-                                None,
-                            );
+                            RowContent::new("Brandish (Disk 1 of 4).hdm")
+                                .icon(Some(Icon::Disk))
+                                .show(context, row);
                         },
                     );
                 },
@@ -1072,13 +1078,10 @@ pub(crate) mod tests {
                                 caption_row(context, row, "Files that fail to parse")
                             }
                             RowKind::Normal | RowKind::Disabled => {
-                                list_row(
-                                    context,
-                                    row,
-                                    Some(Icon::Disk),
-                                    "Lemmings.d88",
-                                    Some(Icon::Check),
-                                );
+                                RowContent::new("Lemmings.d88")
+                                    .icon(Some(Icon::Disk))
+                                    .mark(Some(RowMark::Marker(Icon::Check)))
+                                    .show(context, row);
                             }
                         },
                     );
@@ -1204,7 +1207,9 @@ pub(crate) mod tests {
                         } else {
                             CellTone::Normal
                         };
-                        table_cell(context, row, column, text, tone);
+                        TableCell::new(text)
+                            .tone(tone)
+                            .show(context, row, column, column);
                     }
                 }
             };

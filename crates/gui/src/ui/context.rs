@@ -524,9 +524,11 @@ impl<'a> UiContext<'a> {
             .is_some_and(|entry| entry.text)
     }
 
-    /// Whether `id` holds the focus and confirm was pressed in this pass.
+    /// Whether `id` holds the focus and confirm was pressed in this pass
+    /// while `id` held the focus at the start of the pass. A widget that
+    /// takes the focus during a pass never gets the confirm of that pass.
     pub fn confirmed(&self, id: UiId) -> bool {
-        self.input.confirm && self.has_focus(id)
+        self.input.confirm && self.state.confirm_target == Some(id) && self.has_focus(id)
     }
 
     /// Whether cancel was pressed in this pass and the focused widget left
@@ -546,10 +548,27 @@ impl<'a> UiContext<'a> {
         self.state.focus == Some(id) && !self.is_blocked()
     }
 
+    /// Whether `id` draws its focus look: it holds the focus and is not
+    /// blocked, or it is blocked and takes the focus back when the modal
+    /// directly above its layer closes.
+    pub fn shows_focus(&self, id: UiId) -> bool {
+        if !self.is_blocked() {
+            return self.has_focus(id);
+        }
+        self.state
+            .modals
+            .get(self.depth as usize)
+            .is_some_and(|modal| modal.return_focus == Some(id))
+    }
+
     /// Gives `id` the keyboard focus. The focus stays when the pass draws
-    /// the widget.
+    /// the widget. A change of the focus asks for another pass, so the
+    /// widgets drawn before the change show their new look.
     pub fn set_focus(&mut self, id: UiId) {
-        self.state.focus = Some(id);
+        if self.state.focus != Some(id) {
+            self.state.focus = Some(id);
+            self.request_pass();
+        }
     }
 
     /// Gives `id` the keyboard focus when no widget of this layer or a layer
@@ -699,11 +718,56 @@ mod tests {
             context.focusable(id, Rect::new(0.0, 0.0, 10.0, 10.0), NavigationSet::EMPTY);
         });
         assert_eq!(harness.state.focused(), Some(id));
+        harness.state.take_pass_request();
         harness.frame(|_| {});
         assert_eq!(harness.state.focused(), None);
         assert!(!harness.state.has_keyboard_focus());
+        assert!(harness.state.take_pass_request());
         harness.frame(|context| context.default_focus(ui_id("ghost")));
         assert_eq!(harness.state.focused(), None);
+    }
+
+    /// Verifies that a focus change asks for another pass and that the same focus does not.
+    #[test]
+    fn a_focus_change_asks_for_a_pass() {
+        let mut harness = Harness::new();
+        let id = ui_id("field");
+        let draw = |context: &mut UiContext| {
+            context.set_focus(id);
+            context.focusable(id, Rect::new(0.0, 0.0, 10.0, 10.0), NavigationSet::EMPTY);
+        };
+        harness.frame(draw);
+        assert!(harness.state.take_pass_request());
+        harness.frame(draw);
+        assert!(!harness.state.take_pass_request());
+    }
+
+    /// Verifies that confirm reaches only the widget that held the focus at the start of the pass.
+    #[test]
+    fn a_widget_that_takes_the_focus_in_a_pass_never_gets_its_confirm() {
+        let mut harness = Harness::new();
+        let first = ui_id("first");
+        let second = ui_id("second");
+        let draw = |context: &mut UiContext, hand_over: bool| {
+            context.focusable(first, Rect::new(0.0, 0.0, 10.0, 10.0), NavigationSet::EMPTY);
+            let first_confirmed = context.confirmed(first);
+            if hand_over && first_confirmed {
+                context.set_focus(second);
+            }
+            context.focusable(
+                second,
+                Rect::new(0.0, 20.0, 10.0, 10.0),
+                NavigationSet::EMPTY,
+            );
+            (first_confirmed, context.confirmed(second))
+        };
+        harness.state.set_focus(first);
+        harness.frame(|context| draw(context, true));
+        harness.input.confirm = true;
+        assert_eq!(harness.frame(|context| draw(context, true)), (true, false));
+        assert_eq!(harness.state.focused(), Some(second));
+        harness.input.confirm = true;
+        assert_eq!(harness.frame(|context| draw(context, true)), (false, true));
     }
 
     #[test]
