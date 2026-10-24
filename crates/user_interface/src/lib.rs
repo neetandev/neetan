@@ -9,6 +9,8 @@
 
 #![deny(unsafe_code)]
 
+use std::path::PathBuf;
+
 pub use common::Error;
 
 use crate::{
@@ -55,8 +57,13 @@ pub(crate) const fn on_off(enabled: bool) -> &'static str {
 }
 
 /// Opens the window and runs the game of `config` until the user quits.
-pub fn run(config: EmulatorConfig, key_overrides: KeyOverrides) -> Result<()> {
-    let mut shell = Shell::new(ShellOptions::for_config(&config))?;
+/// The GUI font is the first file of `gui_font_paths` that exists.
+pub fn run(
+    config: EmulatorConfig,
+    key_overrides: KeyOverrides,
+    gui_font_paths: Vec<PathBuf>,
+) -> Result<()> {
+    let mut shell = Shell::new(ShellOptions::for_config(&config, gui_font_paths))?;
     shell.start_session(config, key_overrides)?;
     shell.run()
 }

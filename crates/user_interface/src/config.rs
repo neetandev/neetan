@@ -12,6 +12,7 @@ use machine_factory::config::{
     systems::{compiled_systems, rom_folders},
 };
 
+use self::layers::build_host_configuration;
 pub use self::{
     discovery::{
         Locations, SETTINGS_FILE_NAME, SettingsLocation, discover_settings, resolve_path,
@@ -392,8 +393,9 @@ fn print_version() {
 
 /// The action of a command line.
 pub enum Action {
-    /// Starts the game of the configuration directly.
-    Run(Box<EmulatorConfig>, KeyOverrides),
+    /// Starts the game of the configuration directly. The paths are the
+    /// paths searched for the font file of the user interface.
+    Run(Box<EmulatorConfig>, KeyOverrides, Vec<PathBuf>),
     /// Opens the game manager.
     Manager(Box<ManagerStart>),
     CreateFdd {
@@ -734,8 +736,13 @@ fn launch_action(mut request: LaunchRequest, locations: &Locations) -> crate::Re
     }
     match startup_mode(&request).map_err(StringError)? {
         StartupMode::Direct => {
-            let (config, key_map) = build_configuration(&request, locations)?;
-            Ok(Action::Run(Box::new(config), key_map))
+            let host = HostLayers::read(&request, locations)?;
+            let (config, key_map) = build_host_configuration(&host, &request)?;
+            Ok(Action::Run(
+                Box::new(config),
+                key_map,
+                host.gui_font_paths(),
+            ))
         }
         StartupMode::Manager => Ok(Action::Manager(Box::new(ManagerStart {
             request,

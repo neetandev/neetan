@@ -251,8 +251,9 @@ the folder of its system below the ROM folder, for example `pc98-roms` to
 `roms/pc98`. The derived folders of the PC-98, the PC/AT, the MT-32 and the SC-55
 apply only when they exist. See [ROMs](doc/roms.md) for the ROM sets of each folder.
 `gui-font` selects the font file of the user interface. Its default
-`font/SarasaUiJ-Regular.ttf` lies in the resource folder of the installation: the
-folder of the executable, `../share/neetan` on Linux and `../Resources` on macOS.
+`font/SarasaUiJ-Regular.ttf` is searched below the root and then in the resource folder
+of the installation: the folder of the executable, `../share/neetan` on Linux and
+`../Resources` on macOS.
 
 A relative path inside a configuration file resolves against the root. A relative
 path given as a command line option resolves against the current directory.

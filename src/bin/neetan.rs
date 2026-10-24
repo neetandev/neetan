@@ -26,11 +26,11 @@ fn main() {
     };
 
     match action {
-        user_interface::config::Action::Run(config, key_overrides) => {
+        user_interface::config::Action::Run(config, key_overrides, gui_font_paths) => {
             info!("{GAME_NAME}");
             info!("Build version: {CARGO_PKG_VERSION}");
 
-            if let Err(error) = user_interface::run(*config, key_overrides) {
+            if let Err(error) = user_interface::run(*config, key_overrides, gui_font_paths) {
                 error!("Error while executing the emulator: {error:#}");
                 std::process::exit(1);
             }

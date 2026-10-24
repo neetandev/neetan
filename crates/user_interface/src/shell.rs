@@ -63,13 +63,14 @@ pub(crate) struct ShellOptions {
     display_aspect_mode: DisplayAspectMode,
     /// Whether the graphics engine needs the large native surface.
     large_native_target: bool,
-    /// The font file of the user interface.
-    gui_font: PathBuf,
+    /// The paths searched for the font file of the user interface in search order.
+    gui_font_paths: Vec<PathBuf>,
 }
 
 impl ShellOptions {
-    /// The shell settings for the game of `config`.
-    pub(crate) fn for_config(config: &EmulatorConfig) -> Self {
+    /// The shell settings for the game of `config` with the GUI font
+    /// search paths `gui_font_paths`.
+    pub(crate) fn for_config(config: &EmulatorConfig, gui_font_paths: Vec<PathBuf>) -> Self {
         Self {
             backend: config.backend,
             audio_volume: config.audio_volume,
@@ -77,7 +78,7 @@ impl ShellOptions {
             fullscreen: config.window_mode == WindowMode::Fullscreen,
             display_aspect_mode: graphics_display_aspect_mode(config.aspect_mode),
             large_native_target: wants_large_native_target(config),
-            gui_font: config.gui_font.clone(),
+            gui_font_paths,
         }
     }
 
@@ -98,7 +99,7 @@ impl ShellOptions {
             fullscreen: window_mode == WindowMode::Fullscreen,
             display_aspect_mode: DisplayAspectMode::Aspect4By3,
             large_native_target: false,
-            gui_font: host.gui_font(),
+            gui_font_paths: host.gui_font_paths(),
         }
     }
 }
@@ -210,7 +211,7 @@ impl Shell {
             audio_engine,
             gamepad_subsystem,
             fullscreen: options.fullscreen,
-            gui_font: options.gui_font,
+            gui_font_paths: options.gui_font_paths,
         });
 
         Ok(Self {
@@ -528,13 +529,14 @@ mod tests {
             audio_volume: 0.5,
             ..first_model_config()
         };
-        let options = ShellOptions::for_config(&config);
+        let gui_font_paths = vec![std::path::PathBuf::from("/fonts/ui.ttf")];
+        let options = ShellOptions::for_config(&config, gui_font_paths.clone());
         assert_eq!(options.window_size, WindowSize::Screen((1280, 800)));
         assert!(options.fullscreen);
         assert_eq!(options.backend, Backend::Legacy);
         assert_eq!(options.audio_volume, 0.5);
         assert_eq!(options.display_aspect_mode, DisplayAspectMode::Aspect1By1);
-        assert_eq!(options.gui_font, config.gui_font);
+        assert_eq!(options.gui_font_paths, gui_font_paths);
     }
 
     /// Verifies that the manager window follows the window mode, the backend, the volume and the font of the settings file.
@@ -553,7 +555,10 @@ mod tests {
             WindowSize::Logical(MANAGER_WINDOW_SIZE)
         );
         assert!(!options.large_native_target);
-        assert_eq!(options.gui_font, root.join("fonts").join("ui.ttf"));
+        assert_eq!(
+            options.gui_font_paths,
+            vec![root.join("fonts").join("ui.ttf")]
+        );
     }
 
     /// Verifies that the manager keeps the built-in defaults for unset and invalid values.
@@ -565,8 +570,8 @@ mod tests {
         assert_eq!(options.backend, Backend::Modern);
         assert_eq!(options.audio_volume, 1.0);
         assert_eq!(
-            options.gui_font,
-            root.join(machine_factory::config::DEFAULT_GUI_FONT)
+            options.gui_font_paths,
+            vec![root.join(machine_factory::config::DEFAULT_GUI_FONT)]
         );
     }
 }
