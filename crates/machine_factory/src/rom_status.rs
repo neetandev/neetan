@@ -35,7 +35,7 @@ pub struct RomCheck {
     pub status: RomStatus,
     /// Whether the folder exists.
     pub folder_exists: bool,
-    /// The models that lack their ROM set, as `machine` names them. Empty for a MIDI module.
+    /// The models that lack their ROM set, in the form of the `machine` values. Empty for a MIDI module.
     pub models_without_set: Vec<&'static str>,
 }
 

@@ -301,7 +301,7 @@ pub(crate) fn read_game_document(
     reading
 }
 
-/// Returns whether the machine `value` names another family than `target`.
+/// Returns whether the machine `value` selects another family than `target`.
 pub(crate) fn is_foreign_machine(value: &str, target: Target) -> bool {
     !value
         .parse::<MachineSelection>()
@@ -407,7 +407,7 @@ mod tests {
         );
     }
 
-    /// Verifies that a game file in a system folder must name a machine of that family.
+    /// Verifies that a game file in a system folder must select a machine of that family.
     #[cfg(all(feature = "pc98", feature = "x68k"))]
     #[test]
     fn game_files_name_a_machine_of_their_folder() {

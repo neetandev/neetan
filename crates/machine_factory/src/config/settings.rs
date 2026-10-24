@@ -186,7 +186,7 @@ impl Families {
 pub struct ModelLimit {
     /// The family the limit applies to.
     pub family: Families,
-    /// The model names of the family that read the setting, as `machine` names them.
+    /// The model names of the family that read the setting, in the form of the `machine` values.
     pub models: &'static [&'static str],
 }
 
@@ -222,7 +222,7 @@ impl NumberRange {
     }
 }
 
-/// What a path setting names.
+/// The kind of path that a path setting holds.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum PathKind {
     /// A file, for example a disk image.
@@ -2043,7 +2043,7 @@ mod tests {
         }
     }
 
-    /// Returns whether `name` names a model of `family` in the model list.
+    /// Returns whether `name` is a model of `family` in the model list.
     fn is_model_of(name: &str, family: Families) -> bool {
         MODEL_CHOICES
             .iter()
@@ -2230,7 +2230,7 @@ mod tests {
                 for model in limit.models {
                     assert!(
                         is_model_of(model, limit.family),
-                        "{} names the unknown model {model}",
+                        "{} lists the unknown model {model}",
                         setting.key
                     );
                 }

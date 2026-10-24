@@ -259,7 +259,7 @@ impl CommonConfig {
         if key == ROMS_FOLDER_KEY {
             if value.is_empty() {
                 return Err(format!(
-                    "{}:{line_number}: '{key}' names no folder",
+                    "{}:{line_number}: '{key}' is empty",
                     path.display()
                 ));
             }

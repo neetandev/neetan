@@ -788,7 +788,7 @@ mod tests {
             .collect()
     }
 
-    /// Returns the sample values of every setting. Path samples name `existing_path`.
+    /// Returns the sample values of every setting. Path samples refer to `existing_path`.
     fn sample_values(setting: &Setting, existing_path: &Path) -> Vec<String> {
         let path = existing_path.to_string_lossy().into_owned();
         match setting.kind {
@@ -930,7 +930,7 @@ mod tests {
         let _ = test.parse(&with_first_model(&arguments));
     }
 
-    /// Verifies that the reference configuration names table keys and documents every grouped setting.
+    /// Verifies that the reference configuration lists the table keys and documents every grouped setting.
     #[test]
     fn reference_configuration_documents_every_editor_setting() {
         let reference = include_str!("../../../configuration/default.conf");

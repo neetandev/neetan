@@ -14,7 +14,7 @@ use crate::config::HostLayers;
 pub struct RomFolderPath {
     /// The absolute folder.
     pub path: PathBuf,
-    /// Whether a host layer names the folder. Otherwise it derives from the ROM folder.
+    /// Whether a host layer sets the folder. Otherwise it derives from the ROM folder.
     pub explicit: bool,
 }
 

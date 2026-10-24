@@ -7,7 +7,7 @@
 //! and the built-in default. A `machine` of another family in the settings
 //! file or the system defaults does not count. The system defaults of the
 //! family join as the third layer. The machine applies first, the remaining
-//! lines follow in layer order. The built configuration names only images
+//! lines follow in layer order. The built configuration refers only to images
 //! that exist.
 
 use std::path::{Path, PathBuf};
@@ -84,7 +84,7 @@ fn read_layer(
     Ok((layer, reading.diagnostics))
 }
 
-/// Returns the `machine` values of `layer` that name another family than `target`.
+/// Returns the `machine` values of `layer` that select another family than `target`.
 fn foreign_machines(layer: &Layer, target: Target) -> Vec<&str> {
     layer
         .lines
