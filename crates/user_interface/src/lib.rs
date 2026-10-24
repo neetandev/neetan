@@ -41,6 +41,7 @@ use crate::{
     },
 };
 
+pub mod catalog;
 pub mod config;
 pub mod convert;
 pub mod copy;
@@ -49,6 +50,7 @@ mod gui_host;
 mod input;
 mod machines;
 mod media_dialog;
+pub mod rom_folders;
 
 const COMPANY_NAME: &str = "neetan";
 pub const GAME_NAME: &str = "neetan";

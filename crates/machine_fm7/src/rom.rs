@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use rom_loader::{RomError, RomSlot, ScanOptions};
+use rom_loader::{RomError, RomIndex, RomSlot, ScanOptions};
 
 use crate::config::Fm7Model;
 
@@ -125,7 +125,19 @@ const ROM_SIZES: &[usize] = &[
 /// both boot ROMs and SUBSYS_C (kanji is optional); the FM-77AV needs the
 /// initiator, F-BASIC, all four sub monitors and the kanji ROM.
 pub fn load_rom_set(model: Fm7Model, rom_dir: &Path) -> Result<LoadedRoms, RomError> {
-    let index = rom_loader::scan_directory(rom_dir, &ScanOptions::sizes(ROM_SIZES))?;
+    load_rom_set_from_index(model, &scan_rom_directory(rom_dir)?)
+}
+
+/// Scans `rom_dir` for the ROMs of every model. Each accepted file is read and hashed once.
+pub fn scan_rom_directory(rom_dir: &Path) -> Result<RomIndex, RomError> {
+    Ok(rom_loader::scan_directory(
+        rom_dir,
+        &ScanOptions::sizes(ROM_SIZES),
+    )?)
+}
+
+/// Loads and validates the ROM set of `model` from a scanned ROM directory.
+pub fn load_rom_set_from_index(model: Fm7Model, index: &RomIndex) -> Result<LoadedRoms, RomError> {
     let take = |slot: &RomSlot| index.take(slot);
 
     let fbasic = take(&FBASIC_SLOT)?;

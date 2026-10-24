@@ -15,7 +15,7 @@
 
 use std::path::Path;
 
-use rom_loader::{RomError, RomSlot, ScanOptions};
+use rom_loader::{RomError, RomIndex, RomSlot, ScanOptions};
 
 use crate::config::TownsModel;
 
@@ -117,13 +117,45 @@ pub fn load_rom_set(model: TownsModel, rom_dir: &Path) -> Result<LoadedRoms, Rom
     load_rom_set_with_tables(rom_dir, tables_for(model))
 }
 
-fn load_rom_set_with_tables(rom_dir: &Path, tables: &RomTables) -> Result<LoadedRoms, RomError> {
+/// Scans `rom_dir` for the ROMs of every model. Each accepted file is read and hashed once.
+pub fn scan_rom_directory(rom_dir: &Path) -> Result<RomIndex, RomError> {
+    let mut sizes: Vec<usize> = [
+        TownsModel::FmTowns,
+        TownsModel::FmTownsIICx,
+        TownsModel::FmTownsIIMx,
+    ]
+    .into_iter()
+    .flat_map(|model| rom_sizes(tables_for(model)))
+    .collect();
+    sizes.sort_unstable();
+    sizes.dedup();
+    scan_with_sizes(rom_dir, &sizes)
+}
+
+/// Loads and validates the ROM set of `model` from a scanned ROM directory.
+pub fn load_rom_set_from_index(
+    model: TownsModel,
+    index: &RomIndex,
+) -> Result<LoadedRoms, RomError> {
+    take_tables(index, tables_for(model))
+}
+
+/// Scans `rom_dir` for files of the sizes `sizes`, with packed BIOS images split into their parts.
+fn scan_with_sizes(rom_dir: &Path, sizes: &[usize]) -> Result<RomIndex, RomError> {
     let options = ScanOptions {
-        accepted_sizes: &rom_sizes(tables),
+        accepted_sizes: sizes,
         subdirectory_depth: 0,
         expand: Some(expand_packed_bios),
     };
-    let index = rom_loader::scan_directory(rom_dir, &options)?;
+    Ok(rom_loader::scan_directory(rom_dir, &options)?)
+}
+
+fn load_rom_set_with_tables(rom_dir: &Path, tables: &RomTables) -> Result<LoadedRoms, RomError> {
+    take_tables(&scan_with_sizes(rom_dir, &rom_sizes(tables))?, tables)
+}
+
+/// Takes the slots of `tables` from a scanned ROM directory.
+fn take_tables(index: &RomIndex, tables: &RomTables) -> Result<LoadedRoms, RomError> {
     let take = |slot: &RomSlot| index.take(slot);
 
     Ok(LoadedRoms {

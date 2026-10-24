@@ -110,6 +110,11 @@ impl RomSet {
     }
 }
 
+/// Returns whether `rom_directory` holds the files of a known SC-55 family ROM set.
+pub fn rom_set_present(rom_directory: &Path) -> bool {
+    detect_romset(rom_directory).is_some()
+}
+
 fn detect_romset(rom_directory: &Path) -> Option<RomSet> {
     for (set_index, filenames) in ROMS.iter().enumerate() {
         let all_found = filenames[..5]

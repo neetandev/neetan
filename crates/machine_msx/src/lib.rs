@@ -28,4 +28,7 @@ pub use config::{
 };
 pub use machine::{MsxMachine, build_automated_machine, build_untraced_machine};
 pub use memory::FirmwareInstallError;
-pub use rom::{FirmwareError, LoadedFirmware, LoadedFirmwareRegion, load_firmware_set};
+pub use rom::{
+    FirmwareError, FirmwareIndex, LoadedFirmware, LoadedFirmwareRegion, load_firmware_from_index,
+    load_firmware_set, scan_firmware_directory,
+};

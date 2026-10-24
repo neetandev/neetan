@@ -406,6 +406,33 @@ pub fn load_firmware_set(
     load_from_manifest(model, directory, images, regions)
 }
 
+/// The firmware images of one directory, keyed by their BLAKE3 digest.
+pub struct FirmwareIndex {
+    /// The image bytes of each digest.
+    by_digest: HashMap<String, Arc<[u8]>>,
+}
+
+/// Scans `directory` for the firmware images of every model. Each accepted file is read and hashed once.
+pub fn scan_firmware_directory(directory: &Path) -> Result<FirmwareIndex, FirmwareError> {
+    let sizes: Vec<usize> = MsxModel::ALL
+        .into_iter()
+        .flat_map(|model| model_manifest(model).0.iter().map(|slot| slot.size))
+        .collect();
+    Ok(FirmwareIndex {
+        by_digest: hash_directory(directory, &sizes)?,
+    })
+}
+
+/// Loads and validates every firmware region required by `model` from a scanned directory.
+pub fn load_firmware_from_index(
+    model: MsxModel,
+    index: &FirmwareIndex,
+) -> Result<LoadedFirmware, FirmwareError> {
+    let (images, regions) = model_manifest(model);
+    validate_manifest(model, images, regions)?;
+    load_from_digests(model, &index.by_digest, images, regions)
+}
+
 /// Loads a validated manifest from a directory-wide digest map.
 fn load_from_manifest(
     model: MsxModel,
@@ -414,7 +441,18 @@ fn load_from_manifest(
     regions: &[FirmwareRegionSpec<'_>],
 ) -> Result<LoadedFirmware, FirmwareError> {
     validate_manifest(model, images, regions)?;
-    let by_digest = hash_directory(directory, images)?;
+    let sizes: Vec<usize> = images.iter().map(|slot| slot.size).collect();
+    let by_digest = hash_directory(directory, &sizes)?;
+    load_from_digests(model, &by_digest, images, regions)
+}
+
+/// Loads the images and regions of a validated manifest from a digest map.
+fn load_from_digests(
+    model: MsxModel,
+    by_digest: &HashMap<String, Arc<[u8]>>,
+    images: &[RomSlot<'_>],
+    regions: &[FirmwareRegionSpec<'_>],
+) -> Result<LoadedFirmware, FirmwareError> {
     let mut loaded_images = Vec::with_capacity(images.len());
 
     for slot in images {
@@ -516,7 +554,7 @@ fn validate_manifest(
 /// Maps every known-size ROM in `directory` by its BLAKE3 digest.
 fn hash_directory(
     directory: &Path,
-    slots: &[RomSlot<'_>],
+    sizes: &[usize],
 ) -> Result<HashMap<String, Arc<[u8]>>, FirmwareError> {
     let entries = std::fs::read_dir(directory).map_err(|error| FirmwareError::Read {
         directory: directory.display().to_string(),
@@ -536,7 +574,7 @@ fn hash_directory(
         let Ok(bytes) = std::fs::read(&path) else {
             continue;
         };
-        if !slots.iter().any(|slot| slot.size == bytes.len()) {
+        if !sizes.contains(&bytes.len()) {
             continue;
         }
         by_digest

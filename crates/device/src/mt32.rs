@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use munt_oxide::MuntActor;
-pub use munt_oxide::{MuntActorState, MuntError};
+pub use munt_oxide::{MuntActorState, MuntError, rom_set_present};
 use save_state::ResourceBinding;
 
 /// Roland MT-32 sound module.

@@ -131,9 +131,18 @@ impl From<DirectoryScanError> for RomError {
 
 /// Loads the ROMs required by `model` from one non-recursive directory scan.
 pub fn load_rom_set(model: X68kModel, rom_directory: &Path) -> Result<LoadedRoms, RomError> {
+    load_rom_set_from_index(model, &scan_rom_directory(rom_directory)?)
+}
+
+/// Scans `rom_directory` for the ROMs of every model. Each accepted file is read and hashed once.
+pub fn scan_rom_directory(rom_directory: &Path) -> Result<RomIndex, RomError> {
     let options = ScanOptions::sizes(&[CGROM_SIZE, IPL_SIZE, SPLIT_IPL_SIZE, SCSI_ROM_SIZE]);
-    let index = rom_loader::scan_directory(rom_directory, &options)?;
-    load_from_files(model, &index, &production_slots())
+    Ok(rom_loader::scan_directory(rom_directory, &options)?)
+}
+
+/// Loads the ROMs required by `model` from a scanned ROM directory.
+pub fn load_rom_set_from_index(model: X68kModel, index: &RomIndex) -> Result<LoadedRoms, RomError> {
+    load_from_files(model, index, &production_slots())
 }
 
 struct ModelSlots {

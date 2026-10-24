@@ -37,7 +37,10 @@ pub use crate::{
     bus::Pc9801Bus,
     config::ClockConfig,
     memory::Pc9801MemoryState,
-    rom::{LoadedRoms, accepted_bios_digests, load_rom_set, required_mame_set},
+    rom::{
+        LoadedRoms, accepted_bios_digests, load_rom_set, load_rom_set_from_index,
+        required_mame_set, scan_rom_directory,
+    },
     scheduler::{Event98, Pc98SchedulerState},
 };
 

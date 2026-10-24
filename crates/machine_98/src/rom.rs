@@ -220,10 +220,21 @@ pub fn accepted_bios_digests(model: MachineModel) -> Vec<String> {
 /// font and sound ROMs are matched directly. File names do not matter. All
 /// slots are optional here; missing ROMs come back as `None`.
 pub fn load_rom_set(model: MachineModel, rom_dir: &Path) -> Result<LoadedRoms, RomError> {
-    let index = rom_loader::scan_directory(rom_dir, &ScanOptions::ANY_SIZE)?;
+    load_rom_set_from_index(model, &scan_rom_directory(rom_dir)?)
+}
 
+/// Scans `rom_dir` for the ROMs of every model. Each accepted file is read and hashed once.
+pub fn scan_rom_directory(rom_dir: &Path) -> Result<RomIndex, RomError> {
+    Ok(rom_loader::scan_directory(rom_dir, &ScanOptions::ANY_SIZE)?)
+}
+
+/// Loads and validates the ROM set of `model` from a scanned ROM directory.
+pub fn load_rom_set_from_index(
+    model: MachineModel,
+    index: &RomIndex,
+) -> Result<LoadedRoms, RomError> {
     let bios = bios_chips(model).and_then(|(_chips, expected)| {
-        let image = assemble_bios(model, &index)?;
+        let image = assemble_bios(model, index)?;
         (rom_loader::blake3_hex(&image) == expected).then_some(image)
     });
 
