@@ -3,7 +3,9 @@
 use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
 use machine_factory::config::{
-    EmulatorConfig, apply_spec_setting, resolve_model, target_from_name, target_symbol_name,
+    EmulatorConfig, resolve_model,
+    settings::{ExplicitSettings, Scope, Setting, ValueKind, apply_derived_defaults, find_setting},
+    target_from_name, target_symbol_name,
 };
 use r7rs::{Engine, Error, LibraryName, NativeContext, NativeValues, Value};
 
@@ -232,6 +234,81 @@ fn collect_media(
     Ok(requests)
 }
 
+/// Reads the symbol value of a choice or on/off setting from a specification entry.
+///
+/// The inner `Err` reports a value kind that `specification_setting` rejects.
+fn setting_value(
+    context: &NativeContext,
+    setting: &Setting,
+    value: Value,
+) -> Result<Result<String, String>, Error> {
+    match setting.kind {
+        ValueKind::Choice(_) | ValueKind::OnOff => {
+            Ok(Ok(context.to_symbol_name(value)?.to_owned()))
+        }
+        ValueKind::Number(_) | ValueKind::Path(_) | ValueKind::PathList => Ok(Err(format!(
+            "internal error: the machine specification reads no value of '{}'",
+            setting.key
+        ))),
+    }
+}
+
+/// Looks up a machine setting of the specification.
+///
+/// The specification accepts the settings of the emulated machine with a
+/// choice or on/off value. The `model` key selects the machine. The
+/// `media` entry mounts every image, the printer output included.
+fn specification_setting(key: &str) -> Result<&'static Setting, String> {
+    let Some(setting) = find_setting(key) else {
+        return Err(format!("unknown machine specification key '{key}'"));
+    };
+    if setting.key == MACHINE_KEY {
+        return Err(format!(
+            "unknown machine specification key '{key}', the model key selects the machine"
+        ));
+    }
+    match setting.scope {
+        Scope::System => {}
+        Scope::Host => {
+            return Err(format!(
+                "'{key}' is a host setting, a machine specification cannot set it"
+            ));
+        }
+        Scope::Game => {
+            return Err(format!(
+                "'{key}' is a media setting, mount media with the media entry"
+            ));
+        }
+    }
+    if setting.frontend_only {
+        return Err(format!("'{key}' has no effect in a headless session"));
+    }
+    match setting.kind {
+        ValueKind::Path(_) | ValueKind::PathList if key == PRINTER_KEY => {
+            return Err(format!(
+                "'{key}' is a media setting, mount the output with the printer media kind"
+            ));
+        }
+        ValueKind::Path(_) | ValueKind::PathList => {
+            return Err(format!(
+                "'{key}' takes a path, a machine specification cannot set it"
+            ));
+        }
+        ValueKind::Number(_) => {
+            return Err(format!(
+                "'{key}' takes a number, a machine specification cannot set it"
+            ));
+        }
+        ValueKind::Choice(_) | ValueKind::OnOff => {}
+    }
+    Ok(setting)
+}
+
+/// Key of the machine model setting in configuration files.
+const MACHINE_KEY: &str = "machine";
+/// Key of the printer output setting in configuration files.
+const PRINTER_KEY: &str = "printer";
+
 /// Parses a `call-with-machine` specification alist into an `EmulatorConfig` plus
 /// the list of media mount requests.
 ///
@@ -245,7 +322,7 @@ fn parse_specification(
 ) -> Result<Result<(EmulatorConfig, Vec<MediaRequest>), (String, String)>, Error> {
     let mut target_name: Option<String> = None;
     let mut model_name: Option<String> = None;
-    let mut settings: Vec<(String, String)> = Vec::new();
+    let mut settings: Vec<(&'static Setting, String)> = Vec::new();
     let mut media: Vec<(String, i128, String)> = Vec::new();
     let mut keys = BTreeSet::new();
 
@@ -276,11 +353,21 @@ fn parse_specification(
             }
             "target" => target_name = Some(context.to_symbol_name(value)?.to_owned()),
             "model" => model_name = Some(context.to_symbol_name(value)?.to_owned()),
-            _ => settings.push((key, context.to_symbol_name(value)?.to_owned())),
+            _ => {
+                let setting = match specification_setting(&key) {
+                    Ok(setting) => setting,
+                    Err(message) => return Ok(Err(("neetan/argument".to_owned(), message))),
+                };
+                match setting_value(context, setting, value)? {
+                    Ok(text) => settings.push((setting, text)),
+                    Err(message) => return Ok(Err(("neetan/argument".to_owned(), message))),
+                }
+            }
         }
     }
 
     let mut config = EmulatorConfig::default();
+    let mut explicit = ExplicitSettings::default();
     seed_rom_directories(&mut config, common);
 
     if let Some(model) = &model_name {
@@ -302,11 +389,12 @@ fn parse_specification(
         )));
     }
 
-    for (key, value) in &settings {
-        if let Err(message) = apply_spec_setting(&mut config, key, value) {
+    for (setting, value) in &settings {
+        if let Err(message) = explicit.apply(&mut config, setting, value) {
             return Ok(Err(("neetan/argument".to_owned(), message)));
         }
     }
+    apply_derived_defaults(&mut config, explicit);
 
     let media_requests = match collect_media(media) {
         Ok(requests) => requests,

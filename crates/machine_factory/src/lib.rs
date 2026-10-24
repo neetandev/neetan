@@ -1,8 +1,8 @@
 //! Machine construction shared by the interactive and headless frontends.
 //!
-//! The `config` module holds the pure-data configuration types and the model
-//! resolver. The `machines` module builds fully configured machines from an
-//! `EmulatorConfig`.
+//! The `config` module holds the pure-data configuration types, the model
+//! resolver and the settings table. The `machines` module builds fully
+//! configured machines from an `EmulatorConfig`.
 
 #[cfg(not(any(
     feature = "pc98",

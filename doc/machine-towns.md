@@ -27,11 +27,11 @@ set (see [ROM set](#rom-set)).
 
 ## Platform options
 
-| Option                     | Description                                                     | Default |
-|----------------------------|-----------------------------------------------------------------|---------|
-| `--towns-roms <PATH>`      | Directory with the FM Towns ROM set (required)                  | -       |
-| `--towns-pad <2\|6>`       | Game pad type: `2` (2-button) or `6` (6-button)                 | `6`     |
-| `--cdrom-compat <on\|off>` | Slow/compatible CD-ROM drive timing                             | `off`   |
+| Option                     | Description                                     | Default |
+|----------------------------|-------------------------------------------------|---------|
+| `--towns-roms <PATH>`      | Directory with the FM Towns ROM set (required)  | -       |
+| `--towns-pad <2\|6>`       | Game pad type: `2` (2-button) or `6` (6-button) | `6`     |
+| `--cdrom-compat [on\|off]` | Slow/compatible CD-ROM drive timing             | `off`   |
 
 CD-ROM disc images are supplied with the shared `--cdrom` option (repeatable), and
 floppy images with `--fdd1` / `--fdd2`.

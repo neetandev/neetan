@@ -121,7 +121,73 @@
     (call-with-machine
       '((model . pc9801vm) (7 . invalid))
       (lambda (machine) machine)))
+  'neetan/argument)
+
+(expect-symbol "unknown specification key"
+  (lambda ()
+    (call-with-machine
+      '((model . pc9801vm) (sound-board . |26k|))
+      (lambda (machine) machine)))
+  'neetan/argument)
+
+(expect-symbol "host setting in a specification"
+  (lambda ()
+    (call-with-machine
+      '((model . pc9801vm) (backend . legacy))
+      (lambda (machine) machine)))
+  'neetan/argument)
+
+(expect-symbol "media setting in a specification"
+  (lambda ()
+    (call-with-machine
+      '((model . pc9801vm) (fdd1 . "disk.d88"))
+      (lambda (machine) machine)))
+  'neetan/argument)
+
+(expect-symbol "invalid setting value"
+  (lambda ()
+    (call-with-machine
+      '((model . pc9801vm) (soundboard . |99|))
+      (lambda (machine) machine)))
+  'neetan/argument)
+
+(expect-symbol "printer path in a specification"
+  (lambda ()
+    (call-with-machine
+      '((model . pc9801vm) (printer . "printer.txt"))
+      (lambda (machine) machine)))
+  'neetan/argument)
+
+(expect-symbol "presentation setting in a specification"
+  (lambda ()
+    (call-with-machine
+      '((model . pc9801vm) (window-mode . fullscreen))
+      (lambda (machine) machine)))
+  'neetan/argument)
+
+(expect-symbol "configuration file machine key in a specification"
+  (lambda ()
+    (call-with-machine
+      '((model . pc9801vm) (machine . pc9801vx))
+      (lambda (machine) machine)))
+  'neetan/argument)
+
+(expect-symbol "target and model disagree"
+  (lambda ()
+    (call-with-machine
+      '((target . msx) (model . pc9801vm))
+      (lambda (machine) machine)))
   'neetan/argument))
+
+;; A specification takes the machine settings of the configuration file.
+(test-case "accepts the machine settings of the configuration file"
+  (with-machine (machine '((target . pc98)
+                           (model . pc9801vm)
+                           (soundboard . |26k|)
+                           (graphicboard . none)
+                           (bios . off)
+                           (boot-device . auto)))
+    (check-true (machine? machine))))
 
 ;; A successful scope immediately after every unwind proves the slot is free.
 (test-case "allows a successful scope after every unwind"
