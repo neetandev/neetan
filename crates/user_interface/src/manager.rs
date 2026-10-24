@@ -3,38 +3,33 @@
 
 mod error_dialog;
 mod rows;
-mod status_line;
 
 use std::path::PathBuf;
 
 use common::{FlushError, info};
 use gui::{
     Rect,
-    ui::{Align, Button, ButtonKind, Truncation, UiContext, UiId, label, list},
+    ui::{
+        Align, Button, ButtonKind, Hint, HintKey, STATUS_LINE_HEIGHT, StatusEnd, Truncation,
+        UiContext, UiId, label, list, status_line,
+    },
 };
 use machine_factory::config::systems::System;
 
+use self::rows::catalog_rows;
 pub(crate) use self::{
     error_dialog::ErrorDialog,
     rows::{GameRow, ManagerView},
-};
-use self::{
-    rows::catalog_rows,
-    status_line::{Hint, HintKey, STATUS_LINE_HEIGHT, status_line},
 };
 use crate::{
     Result,
     catalog::Catalog,
     config::{EmulatorConfig, HostLayers, LaunchRequest, ManagerStart, build_configuration},
-    gui_host::GuiEvent,
     input::KeyOverrides,
 };
 
 /// The height of the header in logical units.
 const HEADER_HEIGHT: f32 = 52.0;
-
-/// The width of the launch button in logical units.
-const LAUNCH_WIDTH: f32 = 104.0;
 
 /// The width of the system column of the list in logical units.
 const SYSTEM_COLUMN_WIDTH: f32 = 96.0;
@@ -49,19 +44,19 @@ const LIST_ID: &str = "games";
 const LAUNCH_ID: &str = "launch";
 
 /// The hint of the launch action.
-const LAUNCH_HINT: Hint = Hint {
+const LAUNCH_HINT: Hint<'static> = Hint {
     keys: &[HintKey::Key("Enter"), HintKey::Pad("A")],
     label: "Launch",
 };
 
 /// The hint of the quit action.
-const QUIT_HINT: Hint = Hint {
+const QUIT_HINT: Hint<'static> = Hint {
     keys: &[HintKey::Key("Right Ctrl+Q")],
     label: "Quit",
 };
 
 /// The hint of the OK button of a dialog.
-const OK_HINT: Hint = Hint {
+const OK_HINT: Hint<'static> = Hint {
     keys: &[HintKey::Key("Enter"), HintKey::Pad("A")],
     label: "OK",
 };
@@ -155,19 +150,23 @@ impl Manager {
     }
 
     /// Opens the error dialog of `launch` that did not start with `error`.
-    pub(crate) fn launch_failed(&mut self, launch: &Launch, error: &str) {
-        self.open_dialog(ErrorDialog::launch_failed(&launch.title, error));
+    /// Returns the id of the modal layer of the dialog, which the caller
+    /// opens in the state of the user interface.
+    pub(crate) fn launch_failed(&mut self, launch: &Launch, error: &str) -> UiId {
+        self.open_dialog(ErrorDialog::launch_failed(&launch.title, error))
     }
 
     /// Returns from the running game: scans the catalog again. After a
     /// panic with `panic_message` it opens the panic dialog. After a failed
     /// write back of the disk images in `flush` it opens the dialog of the
-    /// images that were not saved.
+    /// images that were not saved. Returns the id of the modal layer of an
+    /// opened dialog, which the caller opens in the state of the user
+    /// interface.
     pub(crate) fn game_ended(
         &mut self,
         panic_message: Option<&str>,
         flush: std::result::Result<(), FlushError>,
-    ) {
+    ) -> Option<UiId> {
         let running = self.running.take();
         self.rescan();
         self.focus_list = true;
@@ -186,26 +185,19 @@ impl Manager {
             }
             (None, Ok(())) => None,
         };
-        if let Some(dialog) = dialog {
-            self.open_dialog(dialog);
-        }
+        dialog.map(|dialog| self.open_dialog(dialog))
     }
 
-    /// Opens `dialog` over the list.
-    fn open_dialog(&mut self, dialog: ErrorDialog) {
+    /// Opens `dialog` over the list and returns the id of its modal layer.
+    fn open_dialog(&mut self, dialog: ErrorDialog) -> UiId {
         self.dialog = Some(dialog);
+        UiId::from(error_dialog::LAYER_ID)
     }
 
     /// The open error dialog.
     #[cfg(test)]
     pub(crate) fn dialog(&self) -> Option<&ErrorDialog> {
         self.dialog.as_ref()
-    }
-
-    /// Returns whether `event` reaches the widgets. An open dialog keeps the
-    /// focus on its OK button and takes no navigation.
-    pub(crate) fn accepts(&self, event: &GuiEvent) -> bool {
-        self.dialog.is_none() || !matches!(event, GuiEvent::Navigation(_))
     }
 
     /// Draws one pass of the manager. Returns the game to start, if the user
@@ -216,18 +208,13 @@ impl Manager {
         context.fill(bounds, theme.panel);
         let (status_area, screen) = bounds.cut_bottom(STATUS_LINE_HEIGHT);
         let dialog_open = self.dialog.is_some();
-        if dialog_open {
-            context.block_input();
-        }
-        let mut launch = self.show_library(context, screen);
-        if let Some(dialog) = self.dialog.as_mut()
-            && context.layer(|context| dialog.show(context))
+        let launch = self.show_library(context, screen);
+        if self
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.show(context, screen))
         {
             self.dialog = None;
-            self.focus_list = true;
-        }
-        if dialog_open {
-            launch = None;
         }
         self.show_status_line(context, status_area, dialog_open);
         launch
@@ -255,10 +242,11 @@ impl Manager {
             .view
             .selected_row(&self.rows)
             .is_some_and(GameRow::launchable);
-        let launch_pressed = Button::new(LAUNCH_ID, "Launch")
+        let launch_button = Button::new(LAUNCH_ID, "Launch")
             .kind(ButtonKind::Primary)
-            .enabled(selected_launchable)
-            .show(context, toolbar.cut_left(LAUNCH_WIDTH).0);
+            .enabled(selected_launchable);
+        let launch_area = toolbar.cut_left(launch_button.width(context)).0;
+        let launch_pressed = launch_button.show(context, launch_area);
 
         let list_id = UiId::from(LIST_ID);
         if std::mem::take(&mut self.focus_list) {
@@ -359,7 +347,6 @@ impl Manager {
 
     /// Draws the status line into `area`.
     fn show_status_line(&self, context: &mut UiContext, area: Rect, dialog_open: bool) {
-        let theme = context.theme;
         let selected = self.view.selected_row(&self.rows);
         let hints: &[Hint] = if dialog_open {
             &[OK_HINT]
@@ -368,8 +355,8 @@ impl Manager {
         } else {
             &[QUIT_HINT]
         };
-        let end = selected.map_or("", |row| row.shown_path.as_str());
-        status_line(context, area, hints, end, theme.text_dim);
+        let end = selected.map_or(StatusEnd::None, |row| StatusEnd::Path(&row.shown_path));
+        status_line(context, area, hints, end);
     }
 }
 
@@ -568,12 +555,48 @@ mod tests {
         assert!(harness.frame(|context| manager.show(context)).is_none());
     }
 
-    /// Verifies that the error dialog blocks the navigation, closes on confirm and returns the focus to the list.
+    /// Verifies that a queued key after a dialog that opens between passes does not reach the list.
+    #[test]
+    fn a_queued_key_after_a_dialog_opened_between_passes_stays_out_of_the_list() {
+        let test = TestRoot::new("queued_key");
+        let system = first_system();
+        for name in ["a", "b", "c"] {
+            test.game(
+                &format!("{}/{name}.conf", system.name),
+                &format!("meta.title = {name}\n"),
+            );
+        }
+        let mut manager = test.manager();
+        let mut harness = GuiHarness::new(960, 600);
+        harness.settle(|context| manager.show(context));
+        let selected = manager.view.list.selected;
+        let launch = Launch {
+            request: manager.launch_request(&manager.rows[0].clone()),
+            title: "a".to_owned(),
+            system,
+        };
+        let layer = manager.launch_failed(&launch, "fdd1 image not found: /a.d88");
+        harness.state.open_layer(layer);
+        for navigation in [Navigation::Down, Navigation::PageDown] {
+            harness.input.navigation = Some(navigation);
+            assert!(harness.frame(|context| manager.show(context)).is_none());
+            assert_eq!(manager.view.list.selected, selected);
+        }
+        harness.input.confirm = true;
+        assert!(harness.frame(|context| manager.show(context)).is_none());
+        assert!(manager.dialog().is_none());
+        harness.input.navigation = Some(Navigation::Down);
+        harness.settle(|context| manager.show(context));
+        assert_eq!(manager.view.list.selected, selected + 1);
+    }
+
+    /// Verifies that the error dialog keeps the navigation from the list, closes on confirm and returns the focus to the list.
     #[test]
     fn the_error_dialog_takes_the_input_until_it_closes() {
         let test = TestRoot::new("dialog");
         let system = first_system();
         test.game(&format!("{}/a.conf", system.name), "meta.title = A\n");
+        test.game(&format!("{}/b.conf", system.name), "meta.title = B\n");
         let mut manager = test.manager();
         let launch = Launch {
             request: manager.launch_request(&manager.rows[0].clone()),
@@ -585,15 +608,21 @@ mod tests {
             manager.dialog().map(ErrorDialog::message),
             Some("A did not start.")
         );
-        assert!(!manager.accepts(&GuiEvent::Navigation(Navigation::Down)));
-        assert!(manager.accepts(&GuiEvent::Confirm));
         let mut harness = GuiHarness::new(960, 600);
         assert!(harness.frame(|context| manager.show(context)).is_none());
+        let selected = manager.view.list.selected;
+        harness.input.navigation = Some(Navigation::Down);
+        assert!(harness.frame(|context| manager.show(context)).is_none());
+        assert_eq!(manager.view.list.selected, selected);
+        assert!(manager.dialog().is_some());
         harness.input.confirm = true;
         assert!(harness.frame(|context| manager.show(context)).is_none());
         assert!(manager.dialog().is_none());
+        assert_eq!(harness.state.focused(), Some(UiId::from(LIST_ID)));
+        harness.input.navigation = Some(Navigation::Down);
         harness.frame(|context| manager.show(context));
         assert_eq!(harness.state.focused(), Some(UiId::from(LIST_ID)));
+        assert_eq!(manager.view.list.selected, selected + 1);
 
         manager.game_started(launch);
         manager.game_ended(Some("core halted"), Ok(()));
@@ -688,9 +717,9 @@ mod tests {
         let render = |harness: &GuiHarness, name: &str| {
             harness.write_screenshot(&format!("manager_{name}_{scale}x"));
         };
-        harness.frame(|context| manager.show(context));
+        harness.settle(|context| manager.show(context));
         harness.input.navigation = Some(Navigation::Down);
-        harness.frame(|context| manager.show(context));
+        harness.settle(|context| manager.show(context));
         render(&harness, "library");
 
         let error_row = manager
@@ -699,34 +728,38 @@ mod tests {
             .position(|row| !row.launchable())
             .expect("one file has an error");
         manager.view.list.select(error_row);
-        harness.frame(|context| manager.show(context));
+        harness.settle(|context| manager.show(context));
         render(&harness, "error_file");
 
         harness.input.navigation = Some(Navigation::Home);
-        harness.frame(|context| manager.show(context));
+        harness.settle(|context| manager.show(context));
         let launch = Launch {
             request: manager.launch_request(&manager.rows[4].clone()),
             title: manager.rows[4].title.clone(),
             system: manager.rows[4].system,
         };
-        manager.launch_failed(
+        let layer = manager.launch_failed(
             &launch,
             "fdd1 image not found: /home/user/Games/Neetan/games/98/YU-NO/YU-NO (Disk 3 of 4).hdm",
         );
-        harness.frame(|context| manager.show(context));
+        harness.state.open_layer(layer);
+        harness.settle(|context| manager.show(context));
         render(&harness, "launch_error");
         harness.input.confirm = true;
-        harness.frame(|context| manager.show(context));
+        harness.settle(|context| manager.show(context));
 
         manager.game_started(launch);
-        manager.game_ended(
+        let layer = manager.game_ended(
             Some("panicked at crates/sample/src/screenshot.rs:1:1:\nsample panic message of the screenshot test"),
             Ok(()),
         );
-        harness.frame(|context| manager.show(context));
+        harness
+            .state
+            .open_layer(layer.expect("the panic dialog opens"));
+        harness.settle(|context| manager.show(context));
         render(&harness, "game_stopped");
         harness.input.confirm = true;
-        harness.frame(|context| manager.show(context));
+        harness.settle(|context| manager.show(context));
 
         let launch = Launch {
             request: manager.launch_request(&manager.rows[3].clone()),
@@ -734,19 +767,22 @@ mod tests {
             system: manager.rows[3].system,
         };
         manager.game_started(launch);
-        manager.game_ended(
+        let layer = manager.game_ended(
             None,
             Err(FlushError::new(
                 "hard disk image /home/user/Games/Neetan/games/98/Touhou/reiiden.hdi could not be written: Permission denied (os error 13)",
             )),
         );
-        harness.frame(|context| manager.show(context));
+        harness
+            .state
+            .open_layer(layer.expect("the media dialog opens"));
+        harness.settle(|context| manager.show(context));
         render(&harness, "media_not_saved");
 
         let empty = TestRoot::new(&format!("screenshots_empty_{scale}"));
         let mut manager = empty.manager();
         let mut harness = GuiHarness::with_viewport(Viewport::new(width, height, scale));
-        harness.frame(|context| manager.show(context));
+        harness.settle(|context| manager.show(context));
         render(&harness, "empty");
     }
 

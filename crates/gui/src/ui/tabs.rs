@@ -69,9 +69,9 @@ fn tab_area(context: &mut UiContext, rect: Rect, tabs: &[Tab], index: usize) -> 
 /// A click selects a tab. While the bar holds the focus, left and right
 /// select the neighbor tab, and the focus leaves the bar past its first and
 /// last tab. [`Navigation::PreviousTab`] and [`Navigation::NextTab`] select
-/// the neighbor tab with wrap around whatever widget holds the focus. A
-/// selection past the last tab moves to the last tab without counting as a
-/// change.
+/// the neighbor tab with wrap around whatever widget holds the focus, unless
+/// a layer above blocks the bar. A selection past the last tab selects the
+/// last tab without counting as a change.
 pub fn tab_bar(
     context: &mut UiContext,
     id: impl Into<UiId>,
@@ -86,17 +86,21 @@ pub fn tab_bar(
     }
     *selected = (*selected).min(count - 1);
     let before = *selected;
-    let shoulder = context
-        .input
-        .navigation
-        .filter(|navigation| matches!(navigation, Navigation::PreviousTab | Navigation::NextTab));
+    let shoulder = context.tab_navigation();
     if let Some(navigation) = context.navigation(id).or(shoulder) {
         *selected = match navigation {
             Navigation::Left => selected.saturating_sub(1),
             Navigation::Right => (*selected + 1).min(count - 1),
             Navigation::PreviousTab => (*selected + count - 1) % count,
             Navigation::NextTab => (*selected + 1) % count,
-            _ => *selected,
+            Navigation::Up
+            | Navigation::Down
+            | Navigation::PageUp
+            | Navigation::PageDown
+            | Navigation::Home
+            | Navigation::End
+            | Navigation::Next
+            | Navigation::Previous => *selected,
         };
     }
     for index in 0..count {
@@ -315,5 +319,21 @@ mod tests {
         harness.frame(|context| tab_bar(context, "tabs", BAR, &TABS, &mut selected));
         assert_eq!(selected, 1);
         assert_eq!(harness.state.focused(), None);
+    }
+
+    #[test]
+    fn a_blocked_tab_bar_ignores_the_shoulder_buttons() {
+        let mut harness = Harness::new();
+        let mut selected = 0;
+        let mut draw = |harness: &mut Harness| {
+            harness.frame(|context| {
+                tab_bar(context, "tabs", BAR, &TABS, &mut selected);
+                context.layer("dialog", |_| {});
+            });
+        };
+        draw(&mut harness);
+        harness.navigate(Navigation::NextTab);
+        draw(&mut harness);
+        assert_eq!(selected, 0);
     }
 }

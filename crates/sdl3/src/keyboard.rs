@@ -719,6 +719,12 @@ impl Mod {
         self.0 & 0x00C0 != 0
     }
 
+    /// Returns `true` if the Left Ctrl key specifically is held.
+    #[inline]
+    pub const fn lctrl(&self) -> bool {
+        self.0 & 0x0040 != 0
+    }
+
     /// Returns `true` if the Right Ctrl key specifically is held.
     #[inline]
     pub const fn rctrl(&self) -> bool {

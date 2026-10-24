@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use gui::{
     Rect,
     ui::{
-        Align, Button, ButtonKind, Icon, ListState, Tab, Truncation, UiContext, UiId, button,
-        label, list, list_row, modal, tab_bar, text_field,
+        Align, Button, ButtonKind, Icon, ListState, Tab, Truncation, UiContext, UiId, label, list,
+        list_row, modal, tab_bar, text_field,
     },
 };
 
@@ -20,12 +20,6 @@ const TAB_BAR_HEIGHT: f32 = 40.0;
 
 /// The height of the line with the path of the selected image.
 const PATH_LINE_HEIGHT: f32 = 24.0;
-
-/// The width of the insert button.
-const INSERT_WIDTH: f32 = 104.0;
-
-/// The width of the cancel button.
-const CANCEL_WIDTH: f32 = 96.0;
 
 /// The id of the image list.
 const LIST_ID: &str = "images";
@@ -300,6 +294,11 @@ impl MediaDialog {
     /// Draws one pass of the dialog. `media` holds the images of each drive
     /// in the order of the tabs. Returns the change the pass asks for.
     pub(crate) fn show(&mut self, context: &mut UiContext, media: &[DriveMedia]) -> DialogAction {
+        context.layer("media", |context| self.panel(context, media))
+    }
+
+    /// Draws the panel of the dialog in its modal layer.
+    fn panel(&mut self, context: &mut UiContext, media: &[DriveMedia]) -> DialogAction {
         let Some(&drive) = self.drives.get(self.tab) else {
             return DialogAction::Close;
         };
@@ -431,19 +430,20 @@ impl MediaDialog {
             );
         }
 
-        let (insert_area, footer) = footer.cut_right(INSERT_WIDTH);
-        let cancel_area = footer.cut_right(gap).1.cut_right(CANCEL_WIDTH).0;
-        if button(context, "cancel", cancel_area, "Cancel") {
-            action = DialogAction::Close;
-        }
         let (caption, icon) = match self.selection {
             Some(_) => ("Insert", Icon::Check),
             None => ("Eject", Icon::Eject),
         };
         let insert = Button::new("insert", caption)
             .icon(icon)
-            .kind(ButtonKind::Primary)
-            .show(context, insert_area);
+            .kind(ButtonKind::Primary);
+        let cancel = Button::new("cancel", "Cancel");
+        let (insert_area, footer) = footer.cut_right(insert.width(context));
+        let cancel_area = footer.cut_right(gap).1.cut_right(cancel.width(context)).0;
+        if cancel.show(context, cancel_area) {
+            action = DialogAction::Close;
+        }
+        let insert = insert.show(context, insert_area);
 
         let filter_activates = filter.submitted && (self.filter.is_empty() || !rows.is_empty());
         if insert || list_response.activated.is_some() || filter_activates {
