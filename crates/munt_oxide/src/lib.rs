@@ -76,4 +76,5 @@ mod tva;
 mod tvf;
 mod tvp;
 
+pub use context::rom_set_present;
 pub use thread::{MuntActor, MuntActorState, MuntError, MuntWorkerState};

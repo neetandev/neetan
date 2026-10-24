@@ -62,5 +62,6 @@ mod state;
 mod submcu;
 mod thread;
 
+pub use context::rom_set_present;
 use state::Sc55State;
 pub use thread::{Sc55Actor, Sc55ActorState, Sc55Error, Sc55WorkerState};

@@ -8,9 +8,22 @@ use super::{
     settings::{Families, find_setting},
 };
 
+/// The reader of a ROM folder.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum RomOwner {
+    /// The machines of one family.
+    System(Families),
+    /// The Roland MT-32 sound module.
+    Mt32,
+    /// The Roland SC-55 sound module.
+    Sc55,
+}
+
 /// One folder below the ROM folder and the key that names it.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct RomFolder {
+    /// The reader of the ROM set.
+    pub owner: RomOwner,
     /// The folder name below the ROM folder, for example `pc98`.
     pub name: &'static str,
     /// The display name of the system or module that reads the ROM set.
@@ -43,6 +56,7 @@ impl System {
     #[must_use]
     pub const fn rom_folder(&self) -> RomFolder {
         RomFolder {
+            owner: RomOwner::System(self.family),
             name: self.name,
             label: self.label,
             key: self.rom_key,
@@ -168,12 +182,14 @@ pub const SYSTEMS: [System; 10] = [
 /// The ROM folders of the MIDI modules. A machine uses them only with the matching `midi` value.
 pub const MIDI_ROM_FOLDERS: [RomFolder; 2] = [
     RomFolder {
+        owner: RomOwner::Mt32,
         name: "mt32",
         label: "MT-32",
         key: "mt32-roms",
         required: false,
     },
     RomFolder {
+        owner: RomOwner::Sc55,
         name: "sc55",
         label: "SC-55",
         key: "sc55-roms",

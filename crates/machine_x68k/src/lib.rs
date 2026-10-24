@@ -23,7 +23,7 @@ pub use bus::{X68K_DEFAULT_MAIN_RAM_SIZE, X68K_MAX_MAIN_RAM_SIZE, X68kBus, X68kR
 pub use interrupt::{InterruptSource, IocSource};
 pub use machine::{X68kMachine, build_automated_machine, build_untraced_machine};
 pub use model::{X68kModel, X68kStorageController, X68kVideoController};
-pub use rom::{LoadedRoms, RomError, load_rom_set};
+pub use rom::{LoadedRoms, RomError, load_rom_set, load_rom_set_from_index, scan_rom_directory};
 pub use sram::{
     BOOT_DEVICE_OFFSET, ROM_BOOT_HANDLE_OFFSET, SASI_HDMAX_OFFSET, SRAM_SIZE, initial_sram,
 };

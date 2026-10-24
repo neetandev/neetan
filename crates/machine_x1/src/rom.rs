@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use rom_loader::{RomError, RomSlot, ScanOptions};
+use rom_loader::{RomError, RomIndex, RomSlot, ScanOptions};
 
 use crate::config::X1Model;
 
@@ -93,7 +93,19 @@ const ROM_SIZES: &[usize] = &[ROM_SIZE_2K, ROM_SIZE_4K, ROM_SIZE_8K, ROM_SIZE_32
 /// the IPL, 8x8 CG and ANK fonts; the turbo additionally requires the four kanji
 /// ROMs, concatenated into the linear 128 KiB kanji region.
 pub fn load_rom_set(model: X1Model, rom_dir: &Path) -> Result<LoadedRoms, RomError> {
-    let index = rom_loader::scan_directory(rom_dir, &ScanOptions::sizes(ROM_SIZES))?;
+    load_rom_set_from_index(model, &scan_rom_directory(rom_dir)?)
+}
+
+/// Scans `rom_dir` for the ROMs of every model. Each accepted file is read and hashed once.
+pub fn scan_rom_directory(rom_dir: &Path) -> Result<RomIndex, RomError> {
+    Ok(rom_loader::scan_directory(
+        rom_dir,
+        &ScanOptions::sizes(ROM_SIZES),
+    )?)
+}
+
+/// Loads and validates the ROM set of `model` from a scanned ROM directory.
+pub fn load_rom_set_from_index(model: X1Model, index: &RomIndex) -> Result<LoadedRoms, RomError> {
     let take = |slot: &RomSlot| index.take(slot);
 
     let ipl_slot = match model {

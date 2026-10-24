@@ -12,7 +12,7 @@
 
 use std::path::Path;
 
-use rom_loader::{RomError, RomSlot, ScanOptions};
+use rom_loader::{RomError, RomIndex, RomSlot, ScanOptions};
 
 use crate::config::Pc6000Model;
 
@@ -179,7 +179,22 @@ const ROM_SIZES: &[usize] = &[
 /// model needs to boot are required; the remaining character/kanji/voice ROMs
 /// are loaded when present.
 pub fn load_rom_set(model: Pc6000Model, rom_dir: &Path) -> Result<LoadedRoms, RomError> {
-    let index = rom_loader::scan_directory(rom_dir, &ScanOptions::sizes(ROM_SIZES))?;
+    load_rom_set_from_index(model, &scan_rom_directory(rom_dir)?)
+}
+
+/// Scans `rom_dir` for the ROMs of every model. Each accepted file is read and hashed once.
+pub fn scan_rom_directory(rom_dir: &Path) -> Result<RomIndex, RomError> {
+    Ok(rom_loader::scan_directory(
+        rom_dir,
+        &ScanOptions::sizes(ROM_SIZES),
+    )?)
+}
+
+/// Loads and validates the ROM set of `model` from a scanned ROM directory.
+pub fn load_rom_set_from_index(
+    model: Pc6000Model,
+    index: &RomIndex,
+) -> Result<LoadedRoms, RomError> {
     let take = |slot: &RomSlot| index.take(slot);
     let take_optional = |slot: &RomSlot| index.take_optional(slot);
 

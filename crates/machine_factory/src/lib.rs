@@ -2,7 +2,8 @@
 //!
 //! The `config` module holds the pure-data configuration types, the model
 //! resolver, the settings table and the systems table. The `machines` module builds fully
-//! configured machines from an `EmulatorConfig`.
+//! configured machines from an `EmulatorConfig`. The `rom_status` module checks
+//! whether a ROM folder holds the ROM set of its system.
 
 #[cfg(not(any(
     feature = "pc98",
@@ -23,6 +24,7 @@ compile_error!(
 
 pub mod config;
 pub mod machines;
+pub mod rom_status;
 
 /// Error kind for machine construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

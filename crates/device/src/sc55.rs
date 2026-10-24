@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use nuked_sc55_oxide::Sc55Actor;
-pub use nuked_sc55_oxide::{Sc55ActorState, Sc55Error};
+pub use nuked_sc55_oxide::{Sc55ActorState, Sc55Error, rom_set_present};
 use save_state::ResourceBinding;
 
 /// Roland SC-55 sound module.

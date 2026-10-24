@@ -1,0 +1,202 @@
+//! Settings discovery, the root folder and the resolution of relative paths.
+
+use std::path::{Component, Path, PathBuf};
+
+use common::{Context, bail};
+use machine_factory::config::settings::{Setting, ValueKind};
+
+/// File name of the settings file.
+pub const SETTINGS_FILE_NAME: &str = "neetan.conf";
+
+/// Folders that the settings discovery searches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Locations {
+    /// The current directory of the process.
+    pub current_directory: PathBuf,
+    /// The folder of the executable, when it is known.
+    pub executable_directory: Option<PathBuf>,
+    /// The SDL pref path, when SDL provides one.
+    pub pref_path: Option<PathBuf>,
+}
+
+impl Locations {
+    /// Returns the folders of the running process.
+    pub fn of_process() -> crate::Result<Self> {
+        let current_directory =
+            std::env::current_dir().context("Failed to read the current directory")?;
+        let executable_directory = std::env::current_exe()
+            .ok()
+            .and_then(|executable| executable.parent().map(Path::to_path_buf));
+        let pref_path = sdl3::filesystem::get_pref_path(crate::COMPANY_NAME, crate::GAME_NAME);
+        Ok(Self {
+            current_directory,
+            executable_directory,
+            pref_path,
+        })
+    }
+}
+
+/// The settings file of a launch and its root folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsLocation {
+    /// The settings file. `None` when the discovery found no file.
+    pub file: Option<PathBuf>,
+    /// The folder of the settings file. Without a file it is the SDL pref path.
+    pub root: PathBuf,
+}
+
+/// Finds the settings file and the root folder.
+///
+/// The settings file is the first match of the explicit file, `neetan.conf` in
+/// the current directory, `neetan.conf` beside the executable and `neetan.conf`
+/// in the SDL pref path. An explicit file must exist. Without a match the root
+/// is the SDL pref path, or the current directory when SDL has no pref path.
+pub fn discover_settings(
+    explicit: Option<&Path>,
+    locations: &Locations,
+) -> crate::Result<SettingsLocation> {
+    if let Some(file) = explicit {
+        let file = resolve_path(&locations.current_directory, file);
+        if !file.is_file() {
+            bail!("settings file not found: {}", file.display());
+        }
+        return Ok(SettingsLocation {
+            root: parent_folder(&file),
+            file: Some(file),
+        });
+    }
+    let candidates = [
+        Some(&locations.current_directory),
+        locations.executable_directory.as_ref(),
+        locations.pref_path.as_ref(),
+    ];
+    for folder in candidates.into_iter().flatten() {
+        let file = folder.join(SETTINGS_FILE_NAME);
+        if file.is_file() {
+            return Ok(SettingsLocation {
+                root: resolve_path(&locations.current_directory, folder),
+                file: Some(file),
+            });
+        }
+    }
+    let root = locations
+        .pref_path
+        .as_ref()
+        .unwrap_or(&locations.current_directory);
+    Ok(SettingsLocation {
+        file: None,
+        root: resolve_path(&locations.current_directory, root),
+    })
+}
+
+/// Returns the folder that holds `file`.
+fn parent_folder(file: &Path) -> PathBuf {
+    file.parent().map_or_else(PathBuf::new, Path::to_path_buf)
+}
+
+/// Returns `path` as an absolute path. A relative path lies below `base`.
+#[must_use]
+pub fn resolve_path(base: &Path, path: &Path) -> PathBuf {
+    base.join(path)
+        .components()
+        .filter(|component| !matches!(component, Component::CurDir))
+        .collect()
+}
+
+/// Returns the value of `setting` with a relative path resolved against `base`.
+///
+/// An empty value and a value of a kind without a path stay as written.
+#[must_use]
+pub fn resolve_value(setting: &Setting, base: &Path, value: &str) -> String {
+    match setting.kind {
+        ValueKind::Path(_) | ValueKind::PathList if !value.is_empty() => {
+            resolve_path(base, Path::new(value))
+                .to_string_lossy()
+                .into_owned()
+        }
+        ValueKind::Choice(_)
+        | ValueKind::OnOff
+        | ValueKind::Number(_)
+        | ValueKind::Path(_)
+        | ValueKind::PathList => value.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies the discovery order: the explicit file, the current directory, the executable folder and the pref path.
+    #[test]
+    fn settings_discovery_takes_the_first_match() {
+        let base =
+            std::env::temp_dir().join(format!("neetan_discovery_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let current = base.join("current");
+        let executable = base.join("executable");
+        let pref = base.join("pref");
+        for folder in [&current, &executable, &pref] {
+            std::fs::create_dir_all(folder).expect("folder is created");
+        }
+        let locations = &Locations {
+            current_directory: current.clone(),
+            executable_directory: Some(executable.clone()),
+            pref_path: Some(pref.clone()),
+        };
+
+        let found = discover_settings(None, locations).expect("discovery succeeds");
+        assert_eq!(found.file, None);
+        assert_eq!(found.root, pref);
+
+        let without_pref = Locations {
+            pref_path: None,
+            ..locations.clone()
+        };
+        let found = discover_settings(None, &without_pref).expect("discovery succeeds");
+        assert_eq!(found.root, current);
+
+        for folder in [&pref, &executable, &current] {
+            std::fs::write(folder.join(SETTINGS_FILE_NAME), "").expect("file is written");
+            let found = discover_settings(None, locations).expect("discovery succeeds");
+            assert_eq!(found.file, Some(folder.join(SETTINGS_FILE_NAME)));
+            assert_eq!(&found.root, folder);
+        }
+
+        let explicit = current.join("custom").join("other.conf");
+        std::fs::create_dir_all(current.join("custom")).expect("folder is created");
+        std::fs::write(&explicit, "").expect("file is written");
+        let found = discover_settings(Some(Path::new("custom/other.conf")), locations)
+            .expect("an explicit file wins");
+        assert_eq!(found.file, Some(explicit));
+        assert_eq!(found.root, current.join("custom"));
+
+        let missing = discover_settings(Some(Path::new("missing.conf")), locations)
+            .expect_err("a missing explicit file is an error");
+        assert_eq!(
+            missing.to_string(),
+            format!(
+                "settings file not found: {}",
+                current.join("missing.conf").display()
+            )
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Verifies that a relative path lies below the base and that `.` components go.
+    #[test]
+    fn relative_paths_resolve_below_the_base() {
+        let base = Path::new("/games/neetan");
+        assert_eq!(
+            resolve_path(base, Path::new("./config/pc98")),
+            PathBuf::from("/games/neetan/config/pc98")
+        );
+        assert_eq!(
+            resolve_path(base, Path::new("/absolute/roms")),
+            PathBuf::from("/absolute/roms")
+        );
+        assert_eq!(
+            resolve_path(base, Path::new(".")),
+            PathBuf::from("/games/neetan")
+        );
+    }
+}

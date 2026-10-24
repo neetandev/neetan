@@ -51,77 +51,7 @@ pub(crate) struct MuntContext {
 
 impl MuntContext {
     pub(crate) fn new(rom_directory: &Path) -> Result<Self, MuntContextError> {
-        if !rom_directory.is_dir() {
-            return Err(MuntContextError::DirectoryNotFound(
-                rom_directory.to_path_buf(),
-            ));
-        }
-
-        let entries = fs::read_dir(rom_directory).map_err(|error| {
-            MuntContextError::DirectoryReadFailed(rom_directory.to_path_buf(), error)
-        })?;
-
-        let mut control_rom: Option<(Vec<u8>, &'static RomInfo)> = None;
-        let mut pcm_rom: Option<(Vec<u8>, &'static RomInfo)> = None;
-
-        // Collect all identified partial ROMs for potential pairing.
-        let mut partial_control_roms: Vec<(Vec<u8>, &'static RomInfo)> = Vec::new();
-        let mut partial_pcm_roms: Vec<(Vec<u8>, &'static RomInfo)> = Vec::new();
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let is_rom = path
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("rom"));
-            if !is_rom {
-                continue;
-            }
-
-            let data = match fs::read(&path) {
-                Ok(data) => data,
-                Err(_) => continue,
-            };
-
-            let Some(info) = rom_info::get_rom_info(&data) else {
-                continue;
-            };
-
-            match info.pair_type {
-                PairType::Full => match info.rom_type {
-                    RomType::Control => {
-                        if control_rom.is_none() {
-                            control_rom = Some((data, info));
-                        }
-                    }
-                    RomType::Pcm => {
-                        if pcm_rom.is_none() {
-                            pcm_rom = Some((data, info));
-                        }
-                    }
-                },
-                _ => match info.rom_type {
-                    RomType::Control => {
-                        partial_control_roms.push((data, info));
-                    }
-                    RomType::Pcm => {
-                        partial_pcm_roms.push((data, info));
-                    }
-                },
-            }
-        }
-
-        // Try to assemble full ROMs from partial halves if we are missing a full one.
-        if control_rom.is_none() {
-            control_rom = try_merge_partials(&partial_control_roms);
-        }
-        if pcm_rom.is_none() {
-            pcm_rom = try_merge_partials(&partial_pcm_roms);
-        }
-
-        let (control_data, control_info) =
-            control_rom.ok_or(MuntContextError::NoRomsFound(rom_directory.to_path_buf()))?;
-        let (pcm_data, pcm_info) =
-            pcm_rom.ok_or(MuntContextError::NoRomsFound(rom_directory.to_path_buf()))?;
+        let ((control_data, control_info), (pcm_data, pcm_info)) = find_rom_pair(rom_directory)?;
 
         let resource_bindings = vec![
             ResourceBinding {
@@ -243,6 +173,90 @@ impl Drop for MuntContext {
     fn drop(&mut self) {
         crate::synth::close(&mut self.state);
     }
+}
+
+/// A ROM image with its identification.
+type IdentifiedRom = (Vec<u8>, &'static RomInfo);
+
+/// Returns whether `rom_directory` holds an MT-32 control ROM and PCM ROM.
+pub fn rom_set_present(rom_directory: &Path) -> bool {
+    find_rom_pair(rom_directory).is_ok()
+}
+
+/// Finds the control ROM and the PCM ROM in the `.rom` files of `rom_directory`.
+///
+/// A full image wins. Two matching halves form an image when the full image is absent.
+fn find_rom_pair(rom_directory: &Path) -> Result<(IdentifiedRom, IdentifiedRom), MuntContextError> {
+    if !rom_directory.is_dir() {
+        return Err(MuntContextError::DirectoryNotFound(
+            rom_directory.to_path_buf(),
+        ));
+    }
+
+    let entries = fs::read_dir(rom_directory).map_err(|error| {
+        MuntContextError::DirectoryReadFailed(rom_directory.to_path_buf(), error)
+    })?;
+
+    let mut control_rom: Option<IdentifiedRom> = None;
+    let mut pcm_rom: Option<IdentifiedRom> = None;
+
+    // Collect all identified partial ROMs for potential pairing.
+    let mut partial_control_roms: Vec<IdentifiedRom> = Vec::new();
+    let mut partial_pcm_roms: Vec<IdentifiedRom> = Vec::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_rom = path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("rom"));
+        if !is_rom {
+            continue;
+        }
+
+        let data = match fs::read(&path) {
+            Ok(data) => data,
+            Err(_) => continue,
+        };
+
+        let Some(info) = rom_info::get_rom_info(&data) else {
+            continue;
+        };
+
+        match info.pair_type {
+            PairType::Full => match info.rom_type {
+                RomType::Control => {
+                    if control_rom.is_none() {
+                        control_rom = Some((data, info));
+                    }
+                }
+                RomType::Pcm => {
+                    if pcm_rom.is_none() {
+                        pcm_rom = Some((data, info));
+                    }
+                }
+            },
+            _ => match info.rom_type {
+                RomType::Control => {
+                    partial_control_roms.push((data, info));
+                }
+                RomType::Pcm => {
+                    partial_pcm_roms.push((data, info));
+                }
+            },
+        }
+    }
+
+    // Try to assemble full ROMs from partial halves if we are missing a full one.
+    if control_rom.is_none() {
+        control_rom = try_merge_partials(&partial_control_roms);
+    }
+    if pcm_rom.is_none() {
+        pcm_rom = try_merge_partials(&partial_pcm_roms);
+    }
+
+    let control = control_rom.ok_or(MuntContextError::NoRomsFound(rom_directory.to_path_buf()))?;
+    let pcm = pcm_rom.ok_or(MuntContextError::NoRomsFound(rom_directory.to_path_buf()))?;
+    Ok((control, pcm))
 }
 
 fn try_merge_partials(
