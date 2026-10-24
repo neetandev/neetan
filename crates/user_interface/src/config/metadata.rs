@@ -1,7 +1,7 @@
 //! The metadata of a game: the `meta.*` keys of its game file.
 //!
-//! The emulator ignores every `meta.*` key. The metadata names the game, its
-//! makers, its year and its genre, and holds free notes.
+//! The emulator ignores every `meta.*` key. The metadata gives the title of
+//! the game, its makers, its year and its genre, and holds free notes.
 
 use super::{document::ConfigDocument, reading::Diagnostic};
 

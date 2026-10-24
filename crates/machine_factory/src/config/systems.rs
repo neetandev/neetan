@@ -19,7 +19,7 @@ pub enum RomOwner {
     Sc55,
 }
 
-/// One folder below the ROM folder and the key that names it.
+/// One folder below the ROM folder and the key that sets it.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct RomFolder {
     /// The reader of the ROM set.
@@ -243,8 +243,8 @@ pub fn rom_folders() -> impl Iterator<Item = RomFolder> {
 /// Returns the derived folder of `folder` below `roms_folder`.
 ///
 /// The folder of an optional ROM set counts only when it exists. The folder of
-/// a required ROM set always counts. A missing required set then names the
-/// folder that the machine searched.
+/// a required ROM set always counts. The error of a missing required set then
+/// shows the folder that the machine searched.
 #[must_use]
 pub fn derived_rom_folder(folder: &RomFolder, roms_folder: &Path) -> Option<PathBuf> {
     let path = roms_folder.join(folder.name);
@@ -338,7 +338,7 @@ mod tests {
         }
     }
 
-    /// Verifies that the default model of each system names a model of its family.
+    /// Verifies that the default model of each system is a model of its family.
     #[test]
     fn default_models_belong_to_their_family() {
         for system in SYSTEMS {

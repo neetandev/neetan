@@ -155,7 +155,7 @@ roms/
 ## Example configuration
 
 The default layout needs no ROM keys. A settings file `neetan.conf` (see
-`configuration/default.conf` for the full template) can name another ROM folder or
+`configuration/default.conf` for the full template) can set another ROM folder or
 point single ROM keys anywhere. A ROM key overrides its derived folder:
 
 ```ini

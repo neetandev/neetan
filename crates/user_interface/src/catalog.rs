@@ -33,7 +33,7 @@ pub struct CatalogEntry {
     pub title: String,
     /// The metadata of the file.
     pub metadata: GameMetadata,
-    /// The machine model, as `machine` names it.
+    /// The machine model, in the form of the `machine` values.
     pub model: &'static str,
     /// The source of the machine model.
     pub model_source: ModelSource,
@@ -122,7 +122,7 @@ impl Catalog {
         }
     }
 
-    /// Returns the catalog of the system named `name`.
+    /// Returns the catalog of the system with the folder name `name`.
     #[must_use]
     pub fn system(&self, name: &str) -> Option<&SystemCatalog> {
         self.systems

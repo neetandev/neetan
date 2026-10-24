@@ -175,5 +175,5 @@ fn empty_rom_values_unset_or_fail() {
 
     let config = write(&dir, "empty.conf", "roms-folder =\n");
     let error = CommonConfig::load(None, Some(&config)).unwrap_err();
-    assert!(error.contains("names no folder"), "{error}");
+    assert!(error.contains("'roms-folder' is empty"), "{error}");
 }

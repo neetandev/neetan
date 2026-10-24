@@ -99,7 +99,7 @@ fn temporary_path(path: &Path) -> std::io::Result<PathBuf> {
     let Some(file_name) = path.file_name() else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("{} names no file", path.display()),
+            format!("{} has no file name", path.display()),
         ));
     };
     let mut temporary_name = std::ffi::OsString::from(".");
