@@ -1,7 +1,7 @@
 //! Machine construction shared by the interactive and headless frontends.
 //!
 //! The `config` module holds the pure-data configuration types, the model
-//! resolver and the settings table. The `machines` module builds fully
+//! resolver, the settings table and the systems table. The `machines` module builds fully
 //! configured machines from an `EmulatorConfig`.
 
 #[cfg(not(any(

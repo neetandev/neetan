@@ -4,7 +4,11 @@ use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
 use machine_factory::config::{
     EmulatorConfig, resolve_model,
-    settings::{ExplicitSettings, Scope, Setting, ValueKind, apply_derived_defaults, find_setting},
+    settings::{
+        ExplicitSettings, MACHINE_KEY, ROMS_FOLDER_KEY, Scope, Setting, ValueKind,
+        apply_derived_defaults, find_setting,
+    },
+    systems::rom_folders,
     target_from_name, target_symbol_name,
 };
 use r7rs::{Engine, Error, LibraryName, NativeContext, NativeValues, Value};
@@ -133,21 +137,13 @@ fn host_config_value(
 ) -> Result<Value, Error> {
     let common = session.borrow().common_config().clone();
     let mut entries: Vec<(&str, Value)> = Vec::new();
-    for (key, directory) in [
-        ("pc6000-roms", &common.pc6000_roms),
-        ("pc88-roms", &common.pc88_roms),
-        ("pc88va-roms", &common.pc88va_roms),
-        ("pc98-roms", &common.pc98_roms),
-        ("msx-roms", &common.msx_roms),
-        ("towns-roms", &common.towns_roms),
-        ("x1-roms", &common.x1_roms),
-        ("x68k-roms", &common.x68k_roms),
-        ("fm7-roms", &common.fm7_roms),
-        ("at-roms", &common.at_roms),
-        ("mt32-roms", &common.mt32_roms),
-        ("sc55-roms", &common.sc55_roms),
-        ("artifact-root", &common.artifact_root),
-    ] {
+    let directories = rom_folders()
+        .map(|folder| (folder.key, common.rom_folders.get(folder.key)))
+        .chain([
+            (ROMS_FOLDER_KEY, common.roms_folder.as_ref()),
+            ("artifact-root", common.artifact_root.as_ref()),
+        ]);
+    for (key, directory) in directories {
         if let Some(path) = directory {
             let value = context.string_utf8(path.display().to_string())?;
             entries.push((key, value));
@@ -171,20 +167,15 @@ fn format_guest_time(common: &CommonConfig) -> String {
     )
 }
 
-/// Copies the common ROM directories into every matching config field.
-fn seed_rom_directories(config: &mut EmulatorConfig, common: &CommonConfig) {
-    config.pc6000_roms = common.pc6000_roms.clone();
-    config.pc88_roms = common.pc88_roms.clone();
-    config.pc88va_roms = common.pc88va_roms.clone();
-    config.pc98_roms = common.pc98_roms.clone();
-    config.msx_roms = common.msx_roms.clone();
-    config.towns_roms = common.towns_roms.clone();
-    config.x1_roms = common.x1_roms.clone();
-    config.x68k_roms = common.x68k_roms.clone();
-    config.fm7_roms = common.fm7_roms.clone();
-    config.at_roms = common.at_roms.clone();
-    config.mt32_roms = common.mt32_roms.clone();
-    config.sc55_roms = common.sc55_roms.clone();
+/// Copies the common ROM directories into the configuration through the settings table.
+fn seed_rom_directories(config: &mut EmulatorConfig, common: &CommonConfig) -> Result<(), String> {
+    for (key, directory) in &common.rom_folders {
+        let Some(setting) = find_setting(key) else {
+            return Err(format!("internal error: '{key}' is not a settings key"));
+        };
+        (setting.apply)(config, &directory.to_string_lossy())?;
+    }
+    Ok(())
 }
 
 /// Validates the parsed media entries into mount requests for the session.
@@ -304,8 +295,6 @@ fn specification_setting(key: &str) -> Result<&'static Setting, String> {
     Ok(setting)
 }
 
-/// Key of the machine model setting in configuration files.
-const MACHINE_KEY: &str = "machine";
 /// Key of the printer output setting in configuration files.
 const PRINTER_KEY: &str = "printer";
 
@@ -368,7 +357,9 @@ fn parse_specification(
 
     let mut config = EmulatorConfig::default();
     let mut explicit = ExplicitSettings::default();
-    seed_rom_directories(&mut config, common);
+    if let Err(message) = seed_rom_directories(&mut config, common) {
+        return Ok(Err(("neetan/argument".to_owned(), message)));
+    }
 
     if let Some(model) = &model_name {
         if let Err(message) = resolve_model(&mut config, model) {

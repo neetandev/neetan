@@ -3,17 +3,22 @@
 //! The `--config` layer supplies only common host settings, chiefly the
 //! per-family ROM directories. It does not select a machine. Layering is
 //! `defaults -> --global-config -> --config -> command line`. The normal
-//! OS-global Neetan configuration is never loaded implicitly. The parser rejects
+//! Neetan settings file is never loaded implicitly. The parser rejects
 //! malformed lines, unknown keys, invalid values, and duplicate keys within a
 //! single file. Relative paths resolve against that file's directory.
+//! A `roms-folder` value derives every ROM directory that no file sets.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use common::{FixedHostDateTime, HostDateTime, SharedHostDateTimeSource};
+use machine_factory::config::{
+    settings::{ROMS_FOLDER_KEY, Scope, find_setting},
+    systems::{derived_rom_folder, rom_folders},
+};
 
 /// The default per-script wall-clock timeout in seconds.
 pub const DEFAULT_TIMEOUT_SECONDS: u64 = 600;
@@ -128,30 +133,10 @@ fn day_of_week(year: u16, month: u8, day: u8) -> u8 {
 /// Common host settings shared by every script.
 #[derive(Clone, Debug, Default)]
 pub struct CommonConfig {
-    /// PC-6000 / PC-6600 ROM directory.
-    pub pc6000_roms: Option<PathBuf>,
-    /// PC-88 ROM directory.
-    pub pc88_roms: Option<PathBuf>,
-    /// PC-88VA ROM directory.
-    pub pc88va_roms: Option<PathBuf>,
-    /// PC-98 ROM directory.
-    pub pc98_roms: Option<PathBuf>,
-    /// MSX ROM directory.
-    pub msx_roms: Option<PathBuf>,
-    /// FM Towns ROM directory.
-    pub towns_roms: Option<PathBuf>,
-    /// Sharp X1 ROM directory.
-    pub x1_roms: Option<PathBuf>,
-    /// Sharp X68000 ROM directory.
-    pub x68k_roms: Option<PathBuf>,
-    /// Fujitsu FM-7 ROM directory.
-    pub fm7_roms: Option<PathBuf>,
-    /// IBM PC/AT (DOS/V) ROM directory.
-    pub at_roms: Option<PathBuf>,
-    /// Roland MT-32 ROM directory.
-    pub mt32_roms: Option<PathBuf>,
-    /// Roland SC-55 ROM directory.
-    pub sc55_roms: Option<PathBuf>,
+    /// The ROM directories by their settings key, for example `pc98-roms`.
+    pub rom_folders: BTreeMap<&'static str, PathBuf>,
+    /// The folder that derives every ROM directory that no file sets.
+    pub roms_folder: Option<PathBuf>,
     /// Explicit artifact root override. When absent, the root is derived
     /// per-script as `<script-dir>/artifacts/<stem>`.
     pub artifact_root: Option<PathBuf>,
@@ -182,7 +167,23 @@ impl CommonConfig {
         if let Some(path) = config {
             result.apply_file(path)?;
         }
+        result.derive_rom_folders();
         Ok(result)
+    }
+
+    /// Fills every unset ROM directory with its folder below `roms-folder`.
+    fn derive_rom_folders(&mut self) {
+        let Some(roms_folder) = &self.roms_folder else {
+            return;
+        };
+        for folder in rom_folders() {
+            if self.rom_folders.contains_key(folder.key) {
+                continue;
+            }
+            if let Some(path) = derived_rom_folder(&folder, roms_folder) {
+                self.rom_folders.insert(folder.key, path);
+            }
+        }
     }
 
     /// The fixed audio output rate.
@@ -255,24 +256,30 @@ impl CommonConfig {
         path: &Path,
         line_number: usize,
     ) -> Result<(), String> {
-        let rom_target: Option<&mut Option<PathBuf>> = match key {
-            "pc6000-roms" => Some(&mut self.pc6000_roms),
-            "pc88-roms" => Some(&mut self.pc88_roms),
-            "pc88va-roms" => Some(&mut self.pc88va_roms),
-            "pc98-roms" => Some(&mut self.pc98_roms),
-            "msx-roms" => Some(&mut self.msx_roms),
-            "towns-roms" => Some(&mut self.towns_roms),
-            "x1-roms" => Some(&mut self.x1_roms),
-            "x68k-roms" => Some(&mut self.x68k_roms),
-            "fm7-roms" => Some(&mut self.fm7_roms),
-            "at-roms" => Some(&mut self.at_roms),
-            "mt32-roms" => Some(&mut self.mt32_roms),
-            "sc55-roms" => Some(&mut self.sc55_roms),
-            _ => None,
-        };
-        if let Some(target) = rom_target {
-            *target = Some(resolve_relative(base_dir, value));
+        if key == ROMS_FOLDER_KEY {
+            if value.is_empty() {
+                return Err(format!(
+                    "{}:{line_number}: '{key}' names no folder",
+                    path.display()
+                ));
+            }
+            self.roms_folder = Some(resolve_relative(base_dir, value));
             return Ok(());
+        }
+        if let Some(folder) = rom_folders().find(|folder| folder.key == key) {
+            if value.is_empty() {
+                self.rom_folders.remove(folder.key);
+            } else {
+                self.rom_folders
+                    .insert(folder.key, resolve_relative(base_dir, value));
+            }
+            return Ok(());
+        }
+        if find_setting(key).is_some_and(|setting| setting.scope == Scope::Host) {
+            return Err(format!(
+                "{}:{line_number}: host key '{key}' has no effect in a headless session",
+                path.display()
+            ));
         }
         match key {
             "artifacts" => {
