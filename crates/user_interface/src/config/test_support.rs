@@ -1,10 +1,8 @@
 //! Shared helpers of the configuration tests: temporary locations and file writers.
 
-use std::{
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::path::{Path, PathBuf};
 
+use common::temporary::TemporaryFolder;
 use machine_factory::config::systems::compiled_systems;
 
 use super::{
@@ -44,30 +42,22 @@ pub(crate) fn with_first_model<'a>(args: &[&'a str]) -> Vec<&'a str> {
     arguments
 }
 
-/// Counter that keeps the temporary folders of the tests apart.
-static FOLDER_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
 /// The temporary locations of one test. Dropping the value removes its folders.
 pub(crate) struct TestLocations {
     /// The folder that holds every folder of the locations.
-    pub(crate) base: PathBuf,
-    /// The current directory, the executable folder and the pref path below `base`.
+    _base: TemporaryFolder,
+    /// The current directory, the executable folder and the pref path below `_base`.
     pub(crate) locations: Locations,
 }
 
 impl TestLocations {
     /// Creates empty folders for a new set of locations.
     pub(crate) fn new(name: &str) -> Self {
-        let base = std::env::temp_dir().join(format!(
-            "neetan_config_test_{}_{}_{name}",
-            std::process::id(),
-            FOLDER_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = TemporaryFolder::new(&format!("config_test_{name}"));
         let locations = Locations {
-            current_directory: base.join("current"),
-            executable_directory: Some(base.join("executable")),
-            pref_path: Some(base.join("pref")),
+            current_directory: base.path().join("current"),
+            executable_directory: Some(base.path().join("executable")),
+            pref_path: Some(base.path().join("pref")),
         };
         for folder in [
             Some(&locations.current_directory),
@@ -79,7 +69,10 @@ impl TestLocations {
         {
             std::fs::create_dir_all(folder).expect("temporary folder is created");
         }
-        Self { base, locations }
+        Self {
+            _base: base,
+            locations,
+        }
     }
 
     /// Returns the current directory.
@@ -143,12 +136,6 @@ impl TestLocations {
         build_configuration(request, &self.locations)
             .expect("configuration builds")
             .0
-    }
-}
-
-impl Drop for TestLocations {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.base);
     }
 }
 

@@ -1996,6 +1996,8 @@ fn mirror_konami_scc_address(address: u16) -> u16 {
 
 #[cfg(test)]
 mod tests {
+    use common::temporary::TemporaryFolder;
+
     use super::*;
 
     fn banked_image(bank_size: usize, banks: usize) -> Vec<u8> {
@@ -2316,10 +2318,8 @@ mod tests {
 
     #[test]
     fn persistence_loads_marks_and_flushes() {
-        let directory =
-            std::env::temp_dir().join(format!("neetan-msx-persistence-{}", std::process::id(),));
-        let _ = std::fs::remove_dir_all(&directory);
-        std::fs::create_dir_all(&directory).unwrap();
+        let temporary = TemporaryFolder::new("msx_persistence");
+        let directory = temporary.path();
         let rom_path = directory.join("title.rom");
         let save_path = directory.join("title.sav");
         let mut persistence = CartridgePersistence::load(4, 0xFF, Some(&rom_path)).unwrap();
@@ -2345,7 +2345,6 @@ mod tests {
         in_memory.write(0, 1);
         in_memory.flush().unwrap();
         assert!(!in_memory.is_dirty());
-        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

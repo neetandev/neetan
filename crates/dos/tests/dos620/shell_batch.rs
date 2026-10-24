@@ -1,5 +1,7 @@
 use std::fs;
 
+use common::temporary::TemporaryFolder;
+
 use crate::{file_copy_harness::*, harness::*};
 
 fn boot_with_batch_file(batch_content: &[u8]) -> machine_98::Pc9801Ra {
@@ -664,7 +666,8 @@ fn batch_if_exist_sees_swapped_floppy_on_drive_c_with_hdd_present() {
         b"@ECHO OFF\r\nPAUSE\r\nIF EXIST C:\\ADISK.DAT ECHO FOUND\r\nIF NOT EXIST C:\\ADISK.DAT ECHO MISSING\r\n",
     );
     let second_floppy_image = create_test_floppy_with_program(b"ADISK   DAT", b"SECOND\r\n");
-    let hdd_path = make_temp_hdd_path("batch-swap-c");
+    let hdd_folder = TemporaryFolder::new("batch-swap-c");
+    let hdd_path = hdd_folder.path().join("disk.nhd");
     fs::write(&hdd_path, create_empty_hdd(256).to_bytes()).expect("write temp HDD image");
     let mut machine = boot_hle_with_temp_hdd_and_floppy(&hdd_path, first_floppy_image);
 
@@ -699,7 +702,8 @@ fn batch_copy_wildcard_from_swapped_drive_c_to_hdd_directory() {
         b"@ECHO OFF\r\nPAUSE\r\nCOPY C:\\*.* A:\\ALI_ONLY > NUL\r\nIF EXIST A:\\ALI_ONLY\\ADISK.DAT ECHO COPIED\r\nIF NOT EXIST A:\\ALI_ONLY\\ADISK.DAT ECHO MISSING\r\n",
     );
     let second_floppy_image = create_test_floppy_with_program(b"ADISK   DAT", b"SECOND\r\n");
-    let hdd_path = make_temp_hdd_path("batch-copy-c-wildcard");
+    let hdd_folder = TemporaryFolder::new("batch-copy-c-wildcard");
+    let hdd_path = hdd_folder.path().join("disk.nhd");
     fs::write(&hdd_path, create_empty_hdd(256).to_bytes()).expect("write temp HDD image");
     let mut machine = boot_hle_with_temp_hdd_and_floppy(&hdd_path, first_floppy_image);
 

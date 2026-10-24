@@ -477,24 +477,10 @@ impl SasiController {
 
 #[cfg(test)]
 mod tests {
+    use common::temporary::TemporaryFile;
+
     use super::*;
     use crate::disk::{HddFormat, HddGeometry};
-
-    fn tempfile_with(bytes: &[u8], suffix: &str) -> PathBuf {
-        let dir = std::env::temp_dir();
-        let unique = format!(
-            "neetan_sasi_test_{}_{}{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-            suffix
-        );
-        let path = dir.join(unique);
-        std::fs::write(&path, bytes).expect("write temp file");
-        path
-    }
 
     fn make_test_drive() -> HddImage {
         let geometry = HddGeometry {
@@ -536,7 +522,8 @@ mod tests {
     #[test]
     fn flush_all_drives_persists_successful_write_before_drop() {
         let image = make_test_drive();
-        let path = tempfile_with(&image.to_bytes(), ".thd");
+        let file = TemporaryFile::new("sasi_test", "image.thd", &image.to_bytes());
+        let path = file.path().to_path_buf();
 
         let mut sasi = SasiController::new();
         sasi.insert_drive(0, image, Some(path.clone()));
@@ -548,8 +535,6 @@ mod tests {
         let raw = std::fs::read(&path).unwrap();
         let offset = 256 + 12 * 256;
         assert_eq!(&raw[offset..offset + 256], &pattern[..]);
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]

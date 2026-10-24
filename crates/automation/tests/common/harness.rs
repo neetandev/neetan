@@ -19,6 +19,7 @@ use automation::{
 };
 use common::{
     AutomatedMachine, CpuMode, FixedHostDateTime, HostDateTime, MachineModel,
+    temporary::TemporaryFolder,
     tracing::{ApplicationTraceSink, TraceLimits},
 };
 
@@ -135,8 +136,8 @@ pub struct Run {
     pub termination: RunTermination,
     /// The process exit code mapped from the termination.
     pub exit_code: i32,
-    /// The artifact root the script wrote under.
-    pub artifact_root: PathBuf,
+    /// The artifact root the script wrote under. Dropping the run removes it.
+    pub artifact_root: TemporaryFolder,
 }
 
 /// Runs a committed script through the executor with a private artifact root and
@@ -145,17 +146,10 @@ pub fn run_committed_script(name: &str, timeout_seconds: u64) -> Run {
     // Keep artifacts out of the source tree, and give every invocation its own
     // clean root so concurrently running tests of the same script never clear
     // or read each other's artifacts.
-    static INVOCATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let invocation = INVOCATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let artifact_root = std::env::temp_dir().join("neetan-auto-tests").join(format!(
-        "{}-{}-{invocation}",
-        name,
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&artifact_root);
+    let artifact_root = TemporaryFolder::new(&format!("auto_{name}"));
     let mut config = CommonConfig::with_defaults();
     config.timeout_seconds = timeout_seconds;
-    config.artifact_root = Some(artifact_root.clone());
+    config.artifact_root = Some(artifact_root.path().to_path_buf());
 
     let (sender, receiver) = mpsc::channel();
     execute_script(
@@ -218,14 +212,6 @@ pub fn assert_completed_ok(termination: &RunTermination) {
         "expected Completed(Ok), got {termination:?}"
     );
     assert_eq!(termination.exit_code(), 0);
-}
-
-/// A fresh, empty temporary directory for one test.
-pub fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("neetan-auto-tests").join(tag);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create temp dir");
-    dir
 }
 
 /// Creates a session rooted at the given read and artifact directories, returning

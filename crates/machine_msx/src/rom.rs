@@ -619,26 +619,16 @@ fn model_manifest(
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::fs;
+
+    use common::temporary::TemporaryFolder;
 
     use super::*;
-    fn temp_directory(tag: &str) -> PathBuf {
-        let unique = format!(
-            "neetan_msx_{tag}_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
-        let directory = std::env::temp_dir().join(unique);
-        fs::create_dir_all(&directory).unwrap();
-        directory
-    }
 
     #[test]
     fn synthetic_manifest_splits_shared_image_without_copying() {
-        let directory = temp_directory("split");
+        let temporary = TemporaryFolder::new("msx_split");
+        let directory = temporary.path();
         let bytes = b"abcdefgh";
         fs::write(directory.join("arbitrary-name.dat"), bytes).unwrap();
         let image_hash = rom_loader::blake3_hex(bytes);
@@ -668,7 +658,7 @@ mod tests {
             },
         ];
 
-        let loaded = load_from_manifest(MsxModel::Msx, &directory, &images, &regions).unwrap();
+        let loaded = load_from_manifest(MsxModel::Msx, directory, &images, &regions).unwrap();
         assert_eq!(
             loaded.region(FirmwareRegion::Bios).unwrap().bytes(),
             b"abcd"
@@ -683,14 +673,13 @@ mod tests {
                 .unwrap()
                 .shares_image_with(loaded.region(FirmwareRegion::SubRom).unwrap())
         );
-
-        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
     fn missing_slot_reports_label_and_accepted_digests() {
-        let directory = temp_directory("missing");
-        let error = load_firmware_set(MsxModel::Msx, &directory).unwrap_err();
+        let temporary = TemporaryFolder::new("msx_missing");
+        let directory = temporary.path();
+        let error = load_firmware_set(MsxModel::Msx, directory).unwrap_err();
         let FirmwareError::Missing {
             label, accepted, ..
         } = error
@@ -699,7 +688,6 @@ mod tests {
         };
         assert_eq!(label, HB201_IMAGES[0].label);
         assert_eq!(accepted, HB201_IMAGES[0].accepted);
-        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

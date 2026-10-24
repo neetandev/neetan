@@ -132,18 +132,9 @@ fn write_synced(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use common::temporary::TemporaryFolder;
 
-    /// Returns an empty and unique temporary folder.
-    fn temporary_folder(name: &str) -> PathBuf {
-        let folder = std::env::temp_dir().join(format!(
-            "neetan_atomic_file_test_{}_{name}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&folder);
-        std::fs::create_dir_all(&folder).expect("folder is created");
-        folder
-    }
+    use super::*;
 
     /// Verifies that a write follows a symbolic link, keeps the permissions and creates the folder.
     #[cfg(unix)]
@@ -151,7 +142,8 @@ mod tests {
     fn writes_follow_links_and_keep_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
-        let folder = temporary_folder("link");
+        let temporary = TemporaryFolder::new("atomic_file_test_link");
+        let folder = temporary.path();
         let real = folder.join("real.conf");
         std::fs::write(&real, "machine=X1\n").expect("file is written");
         std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o640))
@@ -182,13 +174,13 @@ mod tests {
             std::fs::read_to_string(&nested).expect("file reads"),
             "bios = on\n"
         );
-        let _ = std::fs::remove_dir_all(&folder);
     }
 
     /// Verifies that a write replaces the target, returns the metadata of the placed file and leaves no temporary file.
     #[test]
     fn writes_replace_the_target() {
-        let folder = temporary_folder("replace");
+        let temporary = TemporaryFolder::new("atomic_file_test_replace");
+        let folder = temporary.path();
         let path = folder.join("game.conf");
         std::fs::write(&path, "machine=X1\n").expect("file is written");
         write_atomically(&path, b"machine = X1TURBO\n").expect("file writes");
@@ -204,12 +196,11 @@ mod tests {
             std::fs::read_to_string(&path).expect("file reads"),
             "machine = X1\n"
         );
-        let names: Vec<_> = std::fs::read_dir(&folder)
+        let names: Vec<_> = std::fs::read_dir(folder)
             .expect("folder reads")
             .map(|entry| entry.expect("entry reads").file_name())
             .collect();
         assert_eq!(names, vec![std::ffi::OsString::from("game.conf")]);
-        let _ = std::fs::remove_dir_all(&folder);
     }
 
     /// Verifies that the temporary names of two writes differ.

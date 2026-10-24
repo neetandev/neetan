@@ -794,37 +794,9 @@ impl Error for FloppyError {}
 
 #[cfg(test)]
 mod tests {
+    use common::temporary::TemporaryFile;
+
     use super::*;
-
-    fn tempfile_with(bytes: &[u8], suffix: &str) -> PathBuf {
-        use std::{
-            fs::OpenOptions,
-            io::Write,
-            sync::atomic::{AtomicU64, Ordering},
-        };
-
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-        let dir = std::env::temp_dir();
-        let unique = format!(
-            "neetan_floppy_test_{}_{}_{}{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-            COUNTER.fetch_add(1, Ordering::Relaxed),
-            suffix
-        );
-        let path = dir.join(unique);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .expect("create temp file");
-        file.write_all(bytes).expect("write temp file");
-        path
-    }
 
     fn build_minimal_d88(payload_byte: u8) -> Vec<u8> {
         // One track, one 256-byte sector (N=1), C=0 H=0 R=1.
@@ -856,7 +828,8 @@ mod tests {
         // D77 is the FM-7 disk format sharing the D88 container, so a `.d77` file
         // parses through the D88 path but keeps its own format tag.
         let original = build_minimal_d88(0x5A);
-        let path = tempfile_with(&original, ".d77");
+        let file = TemporaryFile::new("floppy_test", "image.d77", &original);
+        let path = file.path().to_path_buf();
 
         let image = load_floppy_image(&path, &original).expect("load d77");
         assert_eq!(image.format, FloppyFormat::D77);
@@ -867,7 +840,8 @@ mod tests {
     #[test]
     fn mounted_floppy_d88_sector_write_through() {
         let original = build_minimal_d88(0x00);
-        let path = tempfile_with(&original, ".d88");
+        let file = TemporaryFile::new("floppy_test", "image.d88", &original);
+        let path = file.path().to_path_buf();
 
         let image = FloppyImage::from_d88_bytes(&original).unwrap();
         let mut mounted = MountedFloppy::new(image, Some(path.clone()));
@@ -882,14 +856,13 @@ mod tests {
         let reparsed = FloppyImage::from_d88_bytes(&raw).unwrap();
         let s = reparsed.find_sector(0, 0, 1, 1).unwrap();
         assert!(s.data.iter().all(|&b| b == 0x42));
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn mounted_floppy_d88_format_track_reemits_file() {
         let original = build_minimal_d88(0x00);
-        let path = tempfile_with(&original, ".d88");
+        let file = TemporaryFile::new("floppy_test", "image.d88", &original);
+        let path = file.path().to_path_buf();
 
         let image = FloppyImage::from_d88_bytes(&original).unwrap();
         let mut mounted = MountedFloppy::new(image, Some(path.clone()));
@@ -917,8 +890,6 @@ mod tests {
             Some(&save_state::MediaSourcePath::from_path(&path))
         );
         drop(remounted);
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -928,7 +899,8 @@ mod tests {
         for (i, byte) in original.iter_mut().enumerate() {
             *byte = (i & 0xFF) as u8;
         }
-        let path = tempfile_with(&original, ".hdm");
+        let file = TemporaryFile::new("floppy_test", "image.hdm", &original);
+        let path = file.path().to_path_buf();
 
         let image = FloppyImage::from_hdm_bytes(&original).unwrap();
         let mut mounted = MountedFloppy::new(image, Some(path.clone()));
@@ -944,8 +916,6 @@ mod tests {
         assert!(raw[..1024].iter().all(|&b| b == 0xCC));
         // Subsequent sectors unchanged.
         assert_eq!(raw[1024], (1024 & 0xFF) as u8);
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -954,7 +924,8 @@ mod tests {
         for (i, byte) in original.iter_mut().enumerate() {
             *byte = (i & 0xFF) as u8;
         }
-        let path = tempfile_with(&original, ".hdm");
+        let file = TemporaryFile::new("floppy_test", "image.hdm", &original);
+        let path = file.path().to_path_buf();
 
         let image = FloppyImage::from_hdm_bytes(&original).unwrap();
         let mut mounted = MountedFloppy::new(image, Some(path.clone()));
@@ -968,7 +939,6 @@ mod tests {
         assert_eq!(raw, original);
 
         drop(mounted);
-        std::fs::remove_file(&path).ok();
     }
 
     /// Constants and layout helpers shared by the NFD R1 mount tests.
@@ -1021,7 +991,8 @@ mod tests {
     #[test]
     fn mounted_floppy_nfd_format_track_reemits_file() {
         let original = build_mount_r1(0, 0);
-        let path = tempfile_with(&original, ".nfd");
+        let file = TemporaryFile::new("floppy_test", "image.nfd", &original);
+        let path = file.path().to_path_buf();
         let image = FloppyImage::from_nfd_bytes(&original).unwrap();
         let mut mounted = MountedFloppy::new(image, Some(path.clone()));
 
@@ -1036,15 +1007,14 @@ mod tests {
         assert_eq!(reparsed.sector_count(0), 2);
         // The preserved comment survives the re-emit.
         assert_eq!(&raw[0x10..0x1A], b"KEEP-TITLE");
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn mounted_floppy_nfd_gated_format_stays_dirty_and_leaves_file_unchanged() {
         // A nonzero dwAddInfo keeps the image re-emit gated.
         let original = build_mount_r1(0, 0x1234);
-        let path = tempfile_with(&original, ".nfd");
+        let file = TemporaryFile::new("floppy_test", "image.nfd", &original);
+        let path = file.path().to_path_buf();
         let image = FloppyImage::from_nfd_bytes(&original).unwrap();
         let mut mounted = MountedFloppy::new(image, Some(path.clone()));
 
@@ -1055,14 +1025,14 @@ mod tests {
         assert_eq!(raw, original);
 
         drop(mounted);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn mounted_floppy_nfd_write_updates_retry_copies() {
         let original = build_mount_r1(1, 0);
         let head_size = original.len() - 512;
-        let path = tempfile_with(&original, ".nfd");
+        let file = TemporaryFile::new("floppy_test", "image.nfd", &original);
+        let path = file.path().to_path_buf();
         let image = FloppyImage::from_nfd_bytes(&original).unwrap();
         let mut mounted = MountedFloppy::new(image, Some(path.clone()));
 
@@ -1080,14 +1050,13 @@ mod tests {
                 .iter()
                 .all(|&b| b == 0x77)
         );
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn mounted_floppy_write_sector_preserves_existing_dirty_bit() {
         let original = build_minimal_d88(0x00);
-        let path = tempfile_with(&original, ".d88");
+        let file = TemporaryFile::new("floppy_test", "image.d88", &original);
+        let path = file.path().to_path_buf();
 
         let image = FloppyImage::from_d88_bytes(&original).unwrap();
         let mut mounted = MountedFloppy::new(image, Some(path.clone()));
@@ -1103,13 +1072,13 @@ mod tests {
         );
 
         drop(mounted);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn mounted_floppy_format_track_clears_dirty_only_on_full_success() {
         let original = build_minimal_d88(0x00);
-        let path = tempfile_with(&original, ".d88");
+        let file = TemporaryFile::new("floppy_test", "image.d88", &original);
+        let path = file.path().to_path_buf();
 
         let image = FloppyImage::from_d88_bytes(&original).unwrap();
         let mut mounted = MountedFloppy::new(image, Some(path.clone()));
@@ -1124,7 +1093,6 @@ mod tests {
         );
 
         drop(mounted);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1165,7 +1133,8 @@ mod tests {
     #[test]
     fn write_through_backing_persists_to_host_file() {
         let original = build_minimal_d88(0x00);
-        let path = tempfile_with(&original, ".d88");
+        let file = TemporaryFile::new("floppy_test", "image.d88", &original);
+        let path = file.path().to_path_buf();
         let image = FloppyImage::from_d88_bytes(&original).unwrap();
         let mut mounted =
             mounted_from_backing(image, common::MediaBacking::WriteThrough(path.clone()));
@@ -1180,20 +1149,18 @@ mod tests {
         let reparsed = FloppyImage::from_d88_bytes(&raw).unwrap();
         let sector = reparsed.find_sector(0, 0, 1, 1).unwrap();
         assert!(sector.data.iter().all(|&byte| byte == 0x42));
-
-        std::fs::remove_file(&path).ok();
     }
 
     /// Verifies that the changes to a read-only host file make the flush fail and leave the file as it was.
     #[test]
     fn a_read_only_host_file_makes_the_flush_fail() {
         let original = build_minimal_d88(0x00);
-        let path = tempfile_with(&original, ".d88");
+        let file = TemporaryFile::new("floppy_test", "image.d88", &original);
+        let path = file.path().to_path_buf();
         let mut permissions = std::fs::metadata(&path).unwrap().permissions();
         permissions.set_readonly(true);
         std::fs::set_permissions(&path, permissions.clone()).unwrap();
         if std::fs::OpenOptions::new().write(true).open(&path).is_ok() {
-            std::fs::remove_file(&path).ok();
             return;
         }
         let image = FloppyImage::from_d88_bytes(&original).unwrap();
@@ -1219,6 +1186,5 @@ mod tests {
         #[allow(clippy::permissions_set_readonly_false)]
         permissions.set_readonly(false);
         std::fs::set_permissions(&path, permissions).unwrap();
-        std::fs::remove_file(&path).ok();
     }
 }

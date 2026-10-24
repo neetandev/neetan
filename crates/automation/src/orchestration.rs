@@ -474,24 +474,13 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
-        sync::atomic::{AtomicU64, Ordering},
         time::Duration,
     };
 
+    use common::temporary::TemporaryFolder;
+
     use super::{discover_scripts, orchestrate_with_interval};
     use crate::CommonConfig;
-
-    static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-
-    fn temporary_directory(name: &str) -> PathBuf {
-        let identifier = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir()
-            .join("neetan-orchestration-tests")
-            .join(format!("{name}-{}-{identifier}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).expect("create test directory");
-        path
-    }
 
     fn write_script(directory: &Path, name: &str, body: &str) {
         let path = directory.join(name);
@@ -510,13 +499,14 @@ mod tests {
 
     #[test]
     fn discovery_is_recursive_sorted_and_unicode_safe() {
-        let directory = temporary_directory("discovery");
-        write_script(&directory, "z last.scm", "(display \"z\")");
+        let temporary = TemporaryFolder::new("orchestration_discovery");
+        let directory = temporary.path();
+        write_script(directory, "z last.scm", "(display \"z\")");
         let unicode_name = format!("nested/{} test.scm", '\u{65e5}');
-        write_script(&directory, &unicode_name, "(display \"unicode\")");
-        write_script(&directory, "nested/ignored.txt", "not Scheme");
+        write_script(directory, &unicode_name, "(display \"unicode\")");
+        write_script(directory, "nested/ignored.txt", "not Scheme");
 
-        let scripts = discover_scripts(&directory).expect("discover scripts");
+        let scripts = discover_scripts(directory).expect("discover scripts");
         let relative: Vec<PathBuf> = scripts
             .iter()
             .map(|script| script.relative.clone())
@@ -529,9 +519,10 @@ mod tests {
 
     #[test]
     fn report_prints_case_outcomes_and_only_failed_output() {
-        let directory = temporary_directory("report");
+        let temporary = TemporaryFolder::new("orchestration_report");
+        let directory = temporary.path();
         write_script(
-            &directory,
+            directory,
             "pass.scm",
             "(import (scheme base) (neetan test 1))\n\
              (test-suite \"Passing Suite\"\n\
@@ -540,7 +531,7 @@ mod tests {
                  (check-true #t)))\n",
         );
         write_script(
-            &directory,
+            directory,
             "fail.scm",
             "(import (scheme base) (neetan test 1))\n\
              (test-suite \"Failing Suite\"\n\
@@ -551,7 +542,7 @@ mod tests {
 
         let mut report = Vec::new();
         let exit_code = orchestrate_with_interval(
-            &directory,
+            directory,
             CommonConfig::with_defaults(),
             2,
             &mut report,
@@ -577,9 +568,10 @@ mod tests {
 
     #[test]
     fn progress_uses_discovered_file_count() {
-        let directory = temporary_directory("progress");
+        let temporary = TemporaryFolder::new("orchestration_progress");
+        let directory = temporary.path();
         write_script(
-            &directory,
+            directory,
             "hang.scm",
             "(import (scheme base))\n(let loop () (loop))\n",
         );
@@ -587,7 +579,7 @@ mod tests {
         config.timeout_seconds = 1;
         let mut report = Vec::new();
         let exit_code = orchestrate_with_interval(
-            &directory,
+            directory,
             config,
             1,
             &mut report,

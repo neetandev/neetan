@@ -1,11 +1,8 @@
-use std::{
-    path::PathBuf,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::path::PathBuf;
 
 use common::{
     BUILTIN_FONT_ROM, Bus, CpuMode, JisChar, Machine as _, MachineModel, SharedHostDateTimeSource,
-    TraceSink,
+    TraceSink, temporary::TemporaryFolder,
 };
 use device::{
     disk::{HddFormat, HddGeometry, HddImage},
@@ -45,7 +42,6 @@ const FLOPPY_TOTAL_SECTORS: usize = FLOPPY_CYLINDERS * FLOPPY_HEADS * FLOPPY_SEC
 const HDD_CYLINDERS: u16 = 20;
 const HDD_HEADS: u8 = 8;
 const HDD_SECTORS_PER_TRACK: u8 = 17;
-static TEMP_CDROM_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy)]
 struct TestFileSpec<'a> {
@@ -73,23 +69,10 @@ enum FatKind {
     Fat16,
 }
 
+/// A CUE sheet and its track files inside a temporary folder. Dropping the value removes them.
 pub struct TempCdromCueFiles {
     pub cue_path: PathBuf,
-    bin_paths: Vec<PathBuf>,
-}
-
-impl Drop for TempCdromCueFiles {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.cue_path);
-        for bin_path in &self.bin_paths {
-            let _ = std::fs::remove_file(bin_path);
-        }
-    }
-}
-
-fn next_temp_cdrom_stem(name: &str) -> String {
-    let sequence = TEMP_CDROM_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("neetan_test_{name}_{}_{}", std::process::id(), sequence)
+    _folder: TemporaryFolder,
 }
 
 fn set_fat12_entry(fat: &mut [u8], cluster: u16, value: u16) {
@@ -1825,10 +1808,10 @@ pub fn write_temp_mode2_multi_file_cdrom(name: &str) -> TempCdromCueFiles {
     const DATA_TRACK_SECTOR_COUNT: u32 = 150;
     const AUDIO_TRACK_TOTAL_SECTOR_COUNT: u32 = 152;
 
-    let temp_stem = next_temp_cdrom_stem(name);
-    let cue_path = std::env::temp_dir().join(format!("{temp_stem}.cue"));
-    let data_track_path = std::env::temp_dir().join(format!("{temp_stem}_track01.bin"));
-    let audio_track_path = std::env::temp_dir().join(format!("{temp_stem}_track02.bin"));
+    let folder = TemporaryFolder::new(&format!("test_{name}"));
+    let cue_path = folder.path().join(format!("{name}.cue"));
+    let data_track_path = folder.path().join(format!("{name}_track01.bin"));
+    let audio_track_path = folder.path().join(format!("{name}_track02.bin"));
 
     let cue_content = format!(
         "FILE \"{}\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\nFILE \"{}\" BINARY\n  TRACK 02 AUDIO\n    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n",
@@ -1930,7 +1913,7 @@ pub fn write_temp_mode2_multi_file_cdrom(name: &str) -> TempCdromCueFiles {
 
     TempCdromCueFiles {
         cue_path,
-        bin_paths: vec![data_track_path, audio_track_path],
+        _folder: folder,
     }
 }
 

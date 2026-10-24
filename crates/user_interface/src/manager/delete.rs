@@ -114,6 +114,7 @@ impl DeleteRequest {
 
 #[cfg(test)]
 mod tests {
+    use common::temporary::TemporaryFolder;
     use gui::ui::{Navigation, UiId};
 
     use super::*;
@@ -122,20 +123,14 @@ mod tests {
     /// A folder with one game file. Dropping the value removes it.
     struct TestFolder {
         /// The folder.
-        folder: PathBuf,
+        folder: TemporaryFolder,
     }
 
     impl TestFolder {
-        /// Creates the folder `name` with the game file `edge.conf`.
+        /// Creates a folder from `name` with the game file `edge.conf`.
         fn new(name: &str) -> Self {
-            let folder = std::env::temp_dir().join(format!(
-                "neetan_manager_delete_{}_{name}",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&folder);
-            std::fs::create_dir_all(&folder).expect("folder is created");
-            std::fs::write(folder.join("edge.conf"), "meta.title = Edge\n")
-                .expect("file is written");
+            let folder = TemporaryFolder::new(&format!("manager_delete_{name}"));
+            folder.write_file("edge.conf", b"meta.title = Edge\n");
             Self { folder }
         }
 
@@ -143,15 +138,9 @@ mod tests {
         fn request(&self) -> DeleteRequest {
             let row = game("edge", "Edge", "", "", "");
             DeleteRequest::new(&GameRow {
-                path: self.folder.join("edge.conf"),
+                path: self.folder.path().join("edge.conf"),
                 ..row
             })
-        }
-    }
-
-    impl Drop for TestFolder {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.folder);
         }
     }
 
@@ -202,12 +191,12 @@ mod tests {
         assert_eq!(request.hints(response).len(), 1);
         harness.input.confirm = true;
         assert_eq!(answer(&mut harness, &request), DeleteOutcome::Kept);
-        assert!(folder.folder.join("edge.conf").is_file());
+        assert!(folder.folder.path().join("edge.conf").is_file());
 
         draw(&mut harness, &request);
         harness.input.cancel = true;
         assert_eq!(answer(&mut harness, &request), DeleteOutcome::Kept);
-        assert!(folder.folder.join("edge.conf").is_file());
+        assert!(folder.folder.path().join("edge.conf").is_file());
     }
 
     /// Verifies that confirm on the action removes the file.
@@ -227,7 +216,7 @@ mod tests {
         assert_eq!(request.hints(response).len(), 2);
         harness.input.confirm = true;
         assert_eq!(answer(&mut harness, &request), DeleteOutcome::Deleted);
-        assert!(!folder.folder.join("edge.conf").exists());
+        assert!(!folder.folder.path().join("edge.conf").exists());
     }
 
     /// Verifies that the delete of a game file that is a symbolic link removes the link and keeps its target.
@@ -235,9 +224,10 @@ mod tests {
     #[test]
     fn a_link_loses_only_itself() {
         let folder = TestFolder::new("link");
-        let target = folder.folder.join("target.conf");
-        std::fs::rename(folder.folder.join("edge.conf"), &target).expect("the file is renamed");
-        std::os::unix::fs::symlink(&target, folder.folder.join("edge.conf")).expect("link");
+        let target = folder.folder.path().join("target.conf");
+        std::fs::rename(folder.folder.path().join("edge.conf"), &target)
+            .expect("the file is renamed");
+        std::os::unix::fs::symlink(&target, folder.folder.path().join("edge.conf")).expect("link");
         let request = folder.request();
         let mut harness = GuiHarness::new(960, 600);
         draw(&mut harness, &request);
@@ -245,7 +235,7 @@ mod tests {
         draw(&mut harness, &request);
         harness.input.confirm = true;
         assert_eq!(answer(&mut harness, &request), DeleteOutcome::Deleted);
-        assert!(std::fs::symlink_metadata(folder.folder.join("edge.conf")).is_err());
+        assert!(std::fs::symlink_metadata(folder.folder.path().join("edge.conf")).is_err());
         assert!(target.is_file());
     }
 

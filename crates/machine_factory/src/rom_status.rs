@@ -219,42 +219,20 @@ fn sc55_rom_set_present(_path: &Path) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use common::temporary::TemporaryFolder;
 
     use super::*;
     use crate::config::systems::{MIDI_ROM_FOLDERS, SYSTEMS, compiled_systems};
 
-    /// A temporary folder. Dropping the value removes the folder.
-    struct TemporaryFolder(PathBuf);
-
-    impl TemporaryFolder {
-        /// Creates an empty and unique temporary folder.
-        fn new(name: &str) -> Self {
-            let folder = std::env::temp_dir().join(format!(
-                "neetan_rom_status_test_{}_{name}",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&folder);
-            std::fs::create_dir_all(&folder).expect("temporary folder is created");
-            Self(folder)
-        }
-    }
-
-    impl Drop for TemporaryFolder {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
     /// Verifies the status rule on folders without a ROM set.
     #[test]
     fn folders_without_a_set_follow_the_required_flag() {
-        let empty = TemporaryFolder::new("empty");
-        std::fs::write(empty.0.join("stray.bin"), [0u8; 16]).expect("file is written");
-        let absent = empty.0.join("absent");
+        let empty = TemporaryFolder::new("rom_status_test_empty");
+        std::fs::write(empty.path().join("stray.bin"), [0u8; 16]).expect("file is written");
+        let absent = empty.path().join("absent");
         for system in compiled_systems() {
             let folder = system.rom_folder();
-            for (path, exists) in [(&empty.0, true), (&absent, false)] {
+            for (path, exists) in [(empty.path(), true), (absent.as_path(), false)] {
                 let check = check_rom_folder(&folder, path);
                 let expected = if folder.required {
                     RomStatus::Missing
@@ -271,7 +249,7 @@ mod tests {
             }
         }
         for folder in MIDI_ROM_FOLDERS {
-            let check = check_rom_folder(&folder, &empty.0);
+            let check = check_rom_folder(&folder, empty.path());
             assert!(
                 matches!(check.status, RomStatus::NotFound | RomStatus::Unsupported),
                 "{}",
@@ -296,13 +274,13 @@ mod tests {
     #[cfg(feature = "sc55")]
     #[test]
     fn sc55_set_is_found_by_its_file_names() {
-        let folder = TemporaryFolder::new("sc55");
+        let folder = TemporaryFolder::new("rom_status_test_sc55");
         let sc55 = MIDI_ROM_FOLDERS
             .iter()
             .find(|folder| folder.owner == RomOwner::Sc55)
             .expect("SC-55 folder");
         assert_eq!(
-            check_rom_folder(sc55, &folder.0).status,
+            check_rom_folder(sc55, folder.path()).status,
             RomStatus::NotFound
         );
         for name in [
@@ -312,9 +290,9 @@ mod tests {
             "sc55_waverom2.bin",
             "sc55_waverom3.bin",
         ] {
-            std::fs::write(folder.0.join(name), [0u8; 4]).expect("file is written");
+            std::fs::write(folder.path().join(name), [0u8; 4]).expect("file is written");
         }
-        let check = check_rom_folder(sc55, &folder.0);
+        let check = check_rom_folder(sc55, folder.path());
         assert_eq!(check.status, RomStatus::Found);
         assert!(check.folder_exists);
     }
@@ -322,13 +300,13 @@ mod tests {
     /// Verifies that a system outside the build reports no support.
     #[test]
     fn systems_outside_the_build_are_unsupported() {
-        let empty = TemporaryFolder::new("unsupported");
+        let empty = TemporaryFolder::new("rom_status_test_unsupported");
         let compiled = Families::compiled();
         for system in SYSTEMS
             .iter()
             .filter(|system| !compiled.includes(system.family))
         {
-            let check = check_rom_folder(&system.rom_folder(), &empty.0);
+            let check = check_rom_folder(&system.rom_folder(), empty.path());
             assert_eq!(check.status, RomStatus::Unsupported, "{}", system.name);
         }
     }

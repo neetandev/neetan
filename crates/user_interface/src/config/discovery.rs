@@ -162,24 +162,23 @@ pub fn resolve_value(setting: &Setting, base: &Path, value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use common::temporary::TemporaryFolder;
+
     use super::*;
+    use crate::config::test_support::TestLocations;
 
     /// Verifies that the resource folder follows a symbolic link to the folder of the executable.
     #[cfg(unix)]
     #[test]
     fn the_resource_folder_follows_a_linked_executable_folder() {
-        let base = std::env::temp_dir().join(format!(
-            "neetan_resource_folder_test_{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&base);
+        let temporary = TemporaryFolder::new("resource_folder_test");
+        let base = temporary.path();
         let binaries = base.join("install").join("usr").join("bin");
         std::fs::create_dir_all(&binaries).expect("folder is created");
         let link = base.join("linked-bin");
         std::os::unix::fs::symlink(&binaries, &link).expect("link is created");
         let real = std::fs::canonicalize(&binaries).expect("folder exists");
         let folder = resource_folder(&link);
-        let _ = std::fs::remove_dir_all(&base);
         assert_eq!(folder, resource_folder(&real));
         assert!(folder.starts_with(real.parent().expect("bin has a parent")));
     }
@@ -199,34 +198,12 @@ mod tests {
         assert_eq!(folder, PathBuf::from("/nonexistent/neetan/usr/bin"));
     }
 
-    /// Creates the current directory, the executable folder and the pref path
-    /// below a new temporary folder `name` and returns the folder and the locations.
-    fn test_locations(name: &str) -> (PathBuf, Locations) {
-        let base = std::env::temp_dir().join(format!("neetan_{name}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let locations = Locations {
-            current_directory: base.join("current"),
-            executable_directory: Some(base.join("executable")),
-            pref_path: Some(base.join("pref")),
-        };
-        for folder in [
-            Some(&locations.current_directory),
-            locations.executable_directory.as_ref(),
-            locations.pref_path.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            std::fs::create_dir_all(folder).expect("folder is created");
-        }
-        (base, locations)
-    }
-
     /// Verifies that the root is the current directory without a settings file.
     #[test]
     fn a_missing_settings_file_gives_the_current_directory_as_the_root() {
-        let (base, locations) = test_locations("discovery_missing_test");
-        let found = discover_settings(None, &locations).expect("discovery succeeds");
+        let test = TestLocations::new("discovery_missing_test");
+        let locations = &test.locations;
+        let found = discover_settings(None, locations).expect("discovery succeeds");
         assert_eq!(found.file, None);
         assert_eq!(found.root, locations.current_directory);
 
@@ -237,29 +214,28 @@ mod tests {
         let found = discover_settings(None, &without_pref).expect("discovery succeeds");
         assert_eq!(found.file, None);
         assert_eq!(found.root, locations.current_directory);
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Verifies that the settings file of the pref path gives the current directory as the root.
     #[test]
     fn the_pref_path_settings_file_gives_the_current_directory_as_the_root() {
-        let (base, locations) = test_locations("discovery_pref_test");
+        let test = TestLocations::new("discovery_pref_test");
+        let locations = &test.locations;
         let pref = locations
             .pref_path
             .clone()
             .expect("locations have a pref path");
         std::fs::write(pref.join(SETTINGS_FILE_NAME), "").expect("file is written");
-        let found = discover_settings(None, &locations).expect("discovery succeeds");
+        let found = discover_settings(None, locations).expect("discovery succeeds");
         assert_eq!(found.file, Some(pref.join(SETTINGS_FILE_NAME)));
         assert_eq!(found.root, locations.current_directory);
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Verifies the discovery order: the explicit file, the current directory, the executable folder and the pref path.
     #[test]
     fn settings_discovery_takes_the_first_match() {
-        let (base, locations) = test_locations("discovery_order_test");
-        let locations = &locations;
+        let test = TestLocations::new("discovery_order_test");
+        let locations = &test.locations;
         let current = locations.current_directory.clone();
         let executable = locations
             .executable_directory
@@ -298,7 +274,6 @@ mod tests {
                 current.join("missing.conf").display()
             )
         );
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Verifies that a relative path lies below the base and that `.` components go.

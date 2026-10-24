@@ -13,6 +13,9 @@ host-capabilities = []
 
 [dependencies]
 
+[dev-dependencies]
+common = { workspace = true, features = ["std"] }
+
 [[bin]]
 name = "repl"
 path = "src/bin/repl.rs"

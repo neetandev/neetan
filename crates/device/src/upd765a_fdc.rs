@@ -1809,23 +1809,9 @@ impl save_state::RestoreTarget for FloppyController {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use common::temporary::TemporaryFile;
 
-    fn tempfile_with(bytes: &[u8], suffix: &str) -> PathBuf {
-        let dir = std::env::temp_dir();
-        let unique = format!(
-            "neetan_fdc_test_{}_{}{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-            suffix
-        );
-        let path = dir.join(unique);
-        std::fs::write(&path, bytes).expect("write temp file");
-        path
-    }
+    use super::*;
 
     fn single_sector_floppy_image(fill: u8) -> FloppyImage {
         let sector = crate::floppy::D88Sector {
@@ -2411,7 +2397,8 @@ mod tests {
     fn flush_all_drives_persists_successful_write_before_drop() {
         let first_image = single_sector_floppy_image(0x00);
         let first_bytes = first_image.to_bytes();
-        let path = tempfile_with(&first_bytes, ".d88");
+        let file = TemporaryFile::new("fdc_test", "image.d88", &first_bytes);
+        let path = file.path().to_path_buf();
         let parsed = FloppyImage::from_d88_bytes(&first_bytes).unwrap();
 
         let mut controller = FloppyController::new();
@@ -2425,14 +2412,13 @@ mod tests {
         let reparsed = FloppyImage::from_d88_bytes(&raw).unwrap();
         let sector = reparsed.find_sector(0, 0, 1, 0).unwrap();
         assert_eq!(sector.data.as_slice(), &pattern);
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn inserting_drive_flushes_dirty_previous_mount() {
         let first_image = single_sector_floppy_image(0x00);
-        let first_path = tempfile_with(&first_image.to_bytes(), ".d88");
+        let first_path_file = TemporaryFile::new("fdc_test", "image.d88", &first_image.to_bytes());
+        let first_path = first_path_file.path().to_path_buf();
 
         let mut controller = FloppyController::new();
         controller.insert_drive(0, first_image, Some(first_path.clone()));
@@ -2441,16 +2427,15 @@ mod tests {
         assert!(controller.write_sector_data(0, 0, 0, 0, 1, 0, &pattern));
 
         let second_image = single_sector_floppy_image(0xAA);
-        let second_path = tempfile_with(&second_image.to_bytes(), ".d88");
+        let second_path_file =
+            TemporaryFile::new("fdc_test", "image.d88", &second_image.to_bytes());
+        let second_path = second_path_file.path().to_path_buf();
         controller.insert_drive(0, second_image, Some(second_path.clone()));
 
         let raw = std::fs::read(&first_path).unwrap();
         let reparsed = FloppyImage::from_d88_bytes(&raw).unwrap();
         let sector = reparsed.find_sector(0, 0, 1, 0).unwrap();
         assert_eq!(sector.data.as_slice(), &pattern);
-
-        std::fs::remove_file(&first_path).ok();
-        std::fs::remove_file(&second_path).ok();
     }
 
     #[test]
@@ -2563,16 +2548,9 @@ mod tests {
 
     #[test]
     fn controller_state_accepts_updated_floppy_at_same_source_path() {
-        let path = std::env::temp_dir().join(format!(
-            "neetan_floppy_state_identity_{}_{}.d88",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
         let original = single_sector_floppy_image(0x11);
-        std::fs::write(&path, original.to_bytes()).unwrap();
+        let file = TemporaryFile::new("floppy_state_identity", "image.d88", &original.to_bytes());
+        let path = file.path().to_path_buf();
 
         let mut controller = FloppyController::new();
         controller.insert_drive(0, original, Some(path.clone()));
@@ -2589,6 +2567,5 @@ mod tests {
         );
 
         controller.eject_drive(0);
-        std::fs::remove_file(path).ok();
     }
 }

@@ -1,5 +1,7 @@
 use std::fs;
 
+use common::temporary::TemporaryFolder;
+
 use crate::{file_copy_harness::*, harness::*};
 
 fn run_command(machine: &mut machine_98::Pc9801Ra, command: &[u8]) {
@@ -221,7 +223,8 @@ fn copy_multicluster_file_from_floppy_to_formatted_hdd_without_corruption() {
     let source_bytes = prng_bytes(RANDOM_FILE_SIZE);
     let floppy = create_random_file_floppy(&source_bytes);
 
-    let hdd_path = make_temp_hdd_path("copy-repro");
+    let hdd_folder = TemporaryFolder::new("copy-repro");
+    let hdd_path = hdd_folder.path().join("disk.nhd");
     let hdd = create_empty_hdd(256);
     fs::write(&hdd_path, hdd.to_bytes()).expect("write temp HDD image");
 
@@ -264,7 +267,8 @@ fn copy_explicit_destination_path_uses_basename() {
     let destination_name = *b"TARGET  BIN";
     let floppy = create_random_file_floppy_with_name(&source_name, &source_bytes);
 
-    let hdd_path = make_temp_hdd_path("copy-destination-path");
+    let hdd_folder = TemporaryFolder::new("copy-destination-path");
+    let hdd_path = hdd_folder.path().join("disk.nhd");
     let hdd = create_empty_hdd(256);
     fs::write(&hdd_path, hdd.to_bytes()).expect("write temp HDD image");
 
@@ -299,7 +303,8 @@ fn copy_broken_source_chain_reports_read_error() {
     let broken_name = *b"BROKEN  BIN";
     let floppy = create_broken_chain_floppy_with_name(&broken_name, 4096);
 
-    let hdd_path = make_temp_hdd_path("copy-broken-chain");
+    let hdd_folder = TemporaryFolder::new("copy-broken-chain");
+    let hdd_path = hdd_folder.path().join("disk.nhd");
     let hdd = create_empty_hdd(256);
     fs::write(&hdd_path, hdd.to_bytes()).expect("write temp HDD image");
 
@@ -352,35 +357,6 @@ fn copy_from_cdrom_to_floppy() {
     );
 }
 
-fn make_host_temp_path(prefix: &str, suffix: &str) -> std::path::PathBuf {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "neetan-{prefix}-{}-{nanos}{suffix}",
-        std::process::id()
-    ))
-}
-
-fn make_short_host_temp_path(prefix: &str, suffix: &str) -> std::path::PathBuf {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let base = if std::path::Path::new("/tmp").is_dir() {
-        std::path::PathBuf::from("/tmp")
-    } else {
-        std::env::temp_dir()
-    };
-    base.join(format!(
-        "nt-{prefix}-{}-{nanos}{suffix}",
-        std::process::id()
-    ))
-}
-
 fn text_codes(text: &str) -> Vec<u16> {
     text.bytes().map(u16::from).collect()
 }
@@ -421,7 +397,8 @@ fn copy_recursive_dos_to_dos() {
 
 #[test]
 fn copy_host_to_dos_single_file() {
-    let host_src = make_host_temp_path("copy-h2d", ".txt");
+    let host_src_folder = TemporaryFolder::new("copy-h2d");
+    let host_src = host_src_folder.path().join("file.txt");
     fs::write(&host_src, b"HELLO FROM HOST").expect("write host source");
 
     let mut machine = boot_hle_with_floppy();
@@ -442,17 +419,17 @@ fn copy_host_to_dos_single_file() {
         find_string_in_text_vram(&machine.bus, &hello),
         "Host-to-DOS COPY should write the host file contents"
     );
-
-    let _ = fs::remove_file(&host_src);
 }
 
 #[test]
 fn copy_host_to_dos_multicluster_binary_with_verify() {
     let source_bytes = prng_bytes(RANDOM_FILE_SIZE);
-    let host_source = make_short_host_temp_path("h2dm", ".bin");
+    let host_source_folder = TemporaryFolder::new("h2dm");
+    let host_source = host_source_folder.path().join("file.bin");
     fs::write(&host_source, &source_bytes).expect("write host binary source");
 
-    let hard_disk_path = make_temp_hdd_path("copy-host-to-dos-multi");
+    let hard_disk_folder = TemporaryFolder::new("copy-host-to-dos-multi");
+    let hard_disk_path = hard_disk_folder.path().join("disk.nhd");
     let hard_disk = create_empty_hdd(256);
     fs::write(&hard_disk_path, hard_disk.to_bytes()).expect("write temp HDD image");
 
@@ -473,15 +450,12 @@ fn copy_host_to_dos_multicluster_binary_with_verify() {
     let copied_bytes = extract_root_file(&hard_disk_path, b"HOSTBIN BIN")
         .expect("HOSTBIN.BIN should be readable from the HDD image");
     assert_eq!(copied_bytes, source_bytes);
-
-    let _ = fs::remove_file(&host_source);
-    let _ = fs::remove_file(&hard_disk_path);
 }
 
 #[test]
 fn copy_dos_to_host_single_file() {
-    let host_dst = make_host_temp_path("copy-d2h", ".txt");
-    let _ = fs::remove_file(&host_dst);
+    let host_dst_folder = TemporaryFolder::new("copy-d2h");
+    let host_dst = host_dst_folder.path().join("file.txt");
 
     let mut machine = boot_hle_with_floppy();
     run_command(&mut machine, b"A:\r");
@@ -502,16 +476,14 @@ fn copy_dos_to_host_single_file() {
         written.starts_with(b"HELLO WORLD"),
         "Host file should contain the DOS file's bytes, got {written:?}"
     );
-
-    let _ = fs::remove_file(&host_dst);
 }
 
 #[test]
 fn copy_dos_to_host_multicluster_binary() {
     let source_bytes = prng_bytes(RANDOM_FILE_SIZE);
     let floppy = create_random_file_floppy(&source_bytes);
-    let host_destination = make_host_temp_path("copy-d2h-multi", ".bin");
-    let _ = fs::remove_file(&host_destination);
+    let host_destination_folder = TemporaryFolder::new("copy-d2h-multi");
+    let host_destination = host_destination_folder.path().join("file.bin");
 
     let mut machine = boot_hle_with_floppy_image(floppy);
     run_command(&mut machine, b"A:\r");
@@ -527,13 +499,12 @@ fn copy_dos_to_host_multicluster_binary() {
     );
     let written = fs::read(&host_destination).expect("host binary destination should exist");
     assert_eq!(written, source_bytes);
-
-    let _ = fs::remove_file(&host_destination);
 }
 
 #[test]
 fn copy_dos_to_host_existing_directory_uses_source_basename() {
-    let host_directory = make_host_temp_path("copy-d2h-dir", "");
+    let host_directory_folder = TemporaryFolder::new("copy-d2h-dir");
+    let host_directory = host_directory_folder.path().join("folder");
     fs::create_dir_all(&host_directory).expect("create host destination directory");
 
     let mut machine = boot_hle_with_floppy();
@@ -547,13 +518,12 @@ fn copy_dos_to_host_existing_directory_uses_source_basename() {
     let copied_file = host_directory.join("TESTFILE.TXT");
     let written = fs::read(&copied_file).expect("host directory should receive TESTFILE.TXT");
     assert_eq!(written, TEST_FILE_CONTENT);
-
-    let _ = fs::remove_dir_all(&host_directory);
 }
 
 #[test]
 fn copy_dos_to_host_existing_destination_prompt_decline_preserves_file() {
-    let host_destination = make_host_temp_path("copy-d2h-decline", ".txt");
+    let host_destination_folder = TemporaryFolder::new("copy-d2h-decline");
+    let host_destination = host_destination_folder.path().join("file.txt");
     fs::write(&host_destination, b"keep me").expect("seed host destination");
 
     let mut machine = boot_hle_with_floppy();
@@ -574,13 +544,12 @@ fn copy_dos_to_host_existing_destination_prompt_decline_preserves_file() {
     machine.run_for(5_000_000);
 
     assert_eq!(fs::read(&host_destination).unwrap(), b"keep me");
-
-    let _ = fs::remove_file(&host_destination);
 }
 
 #[test]
 fn copy_dos_to_host_existing_destination_prompt_yes_overwrites() {
-    let host_destination = make_host_temp_path("copy-d2h-yes", ".txt");
+    let host_destination_folder = TemporaryFolder::new("copy-d2h-yes");
+    let host_destination = host_destination_folder.path().join("file.txt");
     fs::write(&host_destination, b"replace me").expect("seed host destination");
 
     let mut machine = boot_hle_with_floppy();
@@ -601,14 +570,14 @@ fn copy_dos_to_host_existing_destination_prompt_yes_overwrites() {
     machine.run_for(5_000_000);
 
     assert_eq!(fs::read(&host_destination).unwrap(), TEST_FILE_CONTENT);
-
-    let _ = fs::remove_file(&host_destination);
 }
 
 #[test]
 fn copy_host_to_host_is_rejected() {
-    let host_src = make_host_temp_path("copy-h2h-src", ".txt");
-    let host_dst = make_host_temp_path("copy-h2h-dst", ".txt");
+    let host_src_folder = TemporaryFolder::new("copy-h2h-src");
+    let host_src = host_src_folder.path().join("file.txt");
+    let host_dst_folder = TemporaryFolder::new("copy-h2h-dst");
+    let host_dst = host_dst_folder.path().join("file.txt");
     fs::write(&host_src, b"NOPE").expect("write host source");
 
     let mut machine = boot_hle_with_floppy();
@@ -632,13 +601,12 @@ fn copy_host_to_host_is_rejected() {
         !host_dst.exists(),
         "Host-to-host COPY must not create destination"
     );
-
-    let _ = fs::remove_file(&host_src);
 }
 
 #[test]
 fn copy_host_dir_to_dos_recursive_preserves_tree() {
-    let host_root = make_host_temp_path("copy-h2d-tree", "");
+    let host_root_folder = TemporaryFolder::new("copy-h2d-tree");
+    let host_root = host_root_folder.path().join("folder");
     fs::create_dir_all(host_root.join("sub")).expect("create host subdir");
     fs::create_dir_all(host_root.join("empty")).expect("create host empty dir");
     fs::write(host_root.join("mixed.txt"), b"Root text\r\n").expect("write root text");
@@ -646,7 +614,8 @@ fn copy_host_dir_to_dos_recursive_preserves_tree() {
     let binary_bytes = prng_bytes(4099);
     fs::write(host_root.join("data.bin"), &binary_bytes).expect("write host binary");
 
-    let hard_disk_path = make_temp_hdd_path("copy-host-tree");
+    let hard_disk_folder = TemporaryFolder::new("copy-host-tree");
+    let hard_disk_path = hard_disk_folder.path().join("disk.nhd");
     let hard_disk = create_empty_hdd(256);
     fs::write(&hard_disk_path, hard_disk.to_bytes()).expect("write temp HDD image");
 
@@ -676,14 +645,12 @@ fn copy_host_dir_to_dos_recursive_preserves_tree() {
         hard_disk_directory_exists(&hard_disk_path, &["HOSTTREE", "EMPTY"]).unwrap(),
         "empty host directories should be represented in DOS"
     );
-
-    let _ = fs::remove_dir_all(&host_root);
-    let _ = fs::remove_file(&hard_disk_path);
 }
 
 #[test]
 fn copy_host_dir_to_dos_rejects_long_filename_preflight() {
-    let host_root = make_host_temp_path("copy-pref", "");
+    let host_root_folder = TemporaryFolder::new("copy-pref");
+    let host_root = host_root_folder.path().join("folder");
     fs::create_dir_all(&host_root).expect("create host dir");
     fs::write(host_root.join("OK.TXT"), b"ok").expect("write ok file");
     fs::write(
@@ -722,13 +689,12 @@ fn copy_host_dir_to_dos_rejects_long_filename_preflight() {
         !find_string_in_text_vram(&machine.bus, &ok_marker),
         "pre-flight failure should keep valid earlier entries out of HOSTDST"
     );
-
-    let _ = fs::remove_dir_all(&host_root);
 }
 
 #[test]
 fn copy_dos_to_host_dir_recursive() {
-    let host_root = make_host_temp_path("copy-d2hdir", "");
+    let host_root_folder = TemporaryFolder::new("copy-d2hdir");
+    let host_root = host_root_folder.path().join("folder");
     fs::create_dir_all(&host_root).expect("create host dst dir");
 
     let mut machine = boot_hle_with_floppy();
@@ -758,13 +724,12 @@ fn copy_dos_to_host_dir_recursive() {
     let deep_bytes = fs::read(&deep).expect("TREE/SUB/DEEP.TXT should exist on host");
     assert!(top_bytes.starts_with(b"HELLO WORLD"), "top contents");
     assert!(deep_bytes.starts_with(b"HELLO WORLD"), "deep contents");
-
-    let _ = fs::remove_dir_all(&host_root);
 }
 
 #[test]
 fn copy_dos_wildcard_to_host_directory_copies_all_matches() {
-    let host_directory = make_host_temp_path("copy-wild-host", "");
+    let host_directory_folder = TemporaryFolder::new("copy-wild-host");
+    let host_directory = host_directory_folder.path().join("folder");
     fs::create_dir_all(&host_directory).expect("create host destination directory");
 
     let mut machine = boot_hle_with_floppy();
@@ -790,14 +755,12 @@ fn copy_dos_wildcard_to_host_directory_copies_all_matches() {
         fs::read(host_directory.join("TWO.TXT")).unwrap(),
         TEST_FILE_CONTENT
     );
-
-    let _ = fs::remove_dir_all(&host_directory);
 }
 
 #[test]
 fn copy_cdrom_to_host_preserves_exact_bytes() {
-    let host_destination = make_host_temp_path("copy-cdrom-host", ".txt");
-    let _ = fs::remove_file(&host_destination);
+    let host_destination_folder = TemporaryFolder::new("copy-cdrom-host");
+    let host_destination = host_destination_folder.path().join("file.txt");
 
     let mut machine = boot_hle_with_cdrom_image(create_test_cdimage());
 
@@ -807,8 +770,6 @@ fn copy_cdrom_to_host_preserves_exact_bytes() {
     run_command_ap(&mut machine, &command);
 
     assert_eq!(fs::read(&host_destination).unwrap(), TEST_CDROM_README);
-
-    let _ = fs::remove_file(&host_destination);
 }
 
 #[test]

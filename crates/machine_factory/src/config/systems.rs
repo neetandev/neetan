@@ -274,6 +274,8 @@ pub fn apply_rom_folder_defaults(
 mod tests {
     use std::collections::BTreeSet;
 
+    use common::temporary::TemporaryFolder;
+
     use super::{
         super::{
             MachineSelection, first_system_config, model_name, resolve_model,
@@ -281,26 +283,6 @@ mod tests {
         },
         *,
     };
-
-    /// A temporary folder. Dropping the value removes the folder.
-    struct TemporaryFolder(PathBuf);
-
-    impl TemporaryFolder {
-        /// Creates an empty and unique temporary folder.
-        fn new(name: &str) -> Self {
-            let folder = std::env::temp_dir()
-                .join(format!("neetan_systems_test_{}_{name}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&folder);
-            std::fs::create_dir_all(&folder).expect("temporary folder is created");
-            Self(folder)
-        }
-    }
-
-    impl Drop for TemporaryFolder {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     /// Verifies that the names, families and ROM keys of the systems are unique and complete.
     #[test]
@@ -369,8 +351,8 @@ mod tests {
     /// Verifies that an explicit ROM key wins and that a missing optional folder stays unset.
     #[test]
     fn derived_rom_folders_fill_only_unset_keys() {
-        let folder = TemporaryFolder::new("derived");
-        let roms = &folder.0;
+        let folder = TemporaryFolder::new("systems_test_derived");
+        let roms = folder.path();
         std::fs::create_dir_all(roms.join("at")).expect("folder is created");
         let mut config = EmulatorConfig {
             x1_roms: Some(PathBuf::from("/explicit/x1")),

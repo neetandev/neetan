@@ -4,10 +4,10 @@
 mod harness;
 
 use automation::RunTermination;
-use common::AutomatedMachine;
+use common::{AutomatedMachine, temporary::TemporaryFolder};
 use harness::{
     assert_completed_ok, build_fm7, build_msx, build_pc98, build_x68k, machine_ready, make_session,
-    run_committed_script, temp_dir,
+    run_committed_script,
 };
 
 #[test]
@@ -80,8 +80,8 @@ fn machine_scope_unwinds_and_construction_is_transactional() {
 
 #[test]
 fn logical_machine_lifecycle_is_backend_independent() {
-    let root = temp_dir("cross-backend-lifecycle");
-    let (mut session, _receiver) = make_session(&root, &root);
+    let root = TemporaryFolder::new("auto_cross-backend-lifecycle");
+    let (mut session, _receiver) = make_session(root.path(), root.path());
     let builders = [
         ("pc98", build_pc98 as fn() -> Box<dyn AutomatedMachine>),
         ("msx", build_msx),

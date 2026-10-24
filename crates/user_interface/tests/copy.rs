@@ -1,10 +1,8 @@
 //! End-to-end tests for the `neetan copy` subcommand.
 
-use std::{
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::path::{Path, PathBuf};
 
+use common::temporary::TemporaryFolder;
 use device::{
     disk::{HddFormat, HddGeometry, HddImage},
     floppy::{
@@ -266,17 +264,6 @@ fn make_blank_at_hdd_image(dir: &Path, name: &str) -> PathBuf {
     path
 }
 
-/// Returns a unique tempdir for a test, creating it on disk.
-fn unique_tempdir(label: &str) -> PathBuf {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let pid = std::process::id();
-    let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("neetan_copy_{label}_{pid}_{counter}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
 fn make_blank_image(dir: &Path, name: &str) -> PathBuf {
     let path = dir.join(name);
     std::fs::write(&path, build_blank_fat12_floppy()).unwrap();
@@ -308,8 +295,9 @@ fn image(image_path: impl Into<PathBuf>, dos_path: impl Into<Vec<u8>>) -> CopyAr
 
 #[test]
 fn host_to_image_roundtrip_preserves_a_single_file() {
-    let dir = unique_tempdir("roundtrip");
-    let image_path = make_blank_image(&dir, "disk.hdm");
+    let folder = TemporaryFolder::new("copy_roundtrip");
+    let dir = folder.path();
+    let image_path = make_blank_image(dir, "disk.hdm");
     let src = dir.join("input.txt");
     std::fs::write(&src, b"hello round trip\n").unwrap();
 
@@ -323,8 +311,9 @@ fn host_to_image_roundtrip_preserves_a_single_file() {
 
 #[test]
 fn host_directory_is_copied_recursively_with_subdirs() {
-    let dir = unique_tempdir("recursive");
-    let image_path = make_blank_image(&dir, "disk.hdm");
+    let folder = TemporaryFolder::new("copy_recursive");
+    let dir = folder.path();
+    let image_path = make_blank_image(dir, "disk.hdm");
     let src = dir.join("srcdir");
     std::fs::create_dir_all(src.join("SUB")).unwrap();
     std::fs::write(src.join("A.TXT"), b"alpha\n").unwrap();
@@ -353,8 +342,9 @@ fn host_directory_is_copied_recursively_with_subdirs() {
 
 #[test]
 fn intermediate_directories_are_created_for_nested_targets() {
-    let dir = unique_tempdir("mkdir_p");
-    let image_path = make_blank_image(&dir, "disk.hdm");
+    let folder = TemporaryFolder::new("copy_mkdir_p");
+    let dir = folder.path();
+    let image_path = make_blank_image(dir, "disk.hdm");
     let src = dir.join("payload.txt");
     std::fs::write(&src, b"contents\n").unwrap();
 
@@ -375,9 +365,10 @@ fn intermediate_directories_are_created_for_nested_targets() {
 
 #[test]
 fn image_to_image_copies_a_subtree_across_images() {
-    let dir = unique_tempdir("img2img");
-    let source_image = make_blank_image(&dir, "src.hdm");
-    let dest_image = make_blank_image(&dir, "dst.hdm");
+    let folder = TemporaryFolder::new("copy_img2img");
+    let dir = folder.path();
+    let source_image = make_blank_image(dir, "src.hdm");
+    let dest_image = make_blank_image(dir, "dst.hdm");
 
     // Stage a small tree on the source image first.
     let stage = dir.join("stage");
@@ -408,7 +399,8 @@ fn image_to_image_copies_a_subtree_across_images() {
 
 #[test]
 fn host_to_host_is_rejected() {
-    let dir = unique_tempdir("hh_reject");
+    let folder = TemporaryFolder::new("copy_hh_reject");
+    let dir = folder.path();
     let a = dir.join("a");
     let b = dir.join("b");
     std::fs::write(&a, b"x").unwrap();
@@ -420,8 +412,9 @@ fn host_to_host_is_rejected() {
 
 #[test]
 fn pre_flight_rejects_long_filenames_before_writing() {
-    let dir = unique_tempdir("preflight");
-    let image_path = make_blank_image(&dir, "disk.hdm");
+    let folder = TemporaryFolder::new("copy_preflight");
+    let dir = folder.path();
+    let image_path = make_blank_image(dir, "disk.hdm");
     let tree = dir.join("tree");
     std::fs::create_dir_all(&tree).unwrap();
     std::fs::write(tree.join("short.txt"), b"ok").unwrap();
@@ -439,8 +432,9 @@ fn pre_flight_rejects_long_filenames_before_writing() {
 
 #[test]
 fn missing_source_in_image_returns_error() {
-    let dir = unique_tempdir("missing");
-    let image_path = make_blank_image(&dir, "disk.hdm");
+    let folder = TemporaryFolder::new("copy_missing");
+    let dir = folder.path();
+    let image_path = make_blank_image(dir, "disk.hdm");
     let out = dir.join("out.txt");
     let result = copy(image(&image_path, b"A:\\NOSUCH.TXT".to_vec()), host(&out));
     assert!(result.is_err());
@@ -449,7 +443,8 @@ fn missing_source_in_image_returns_error() {
 
 #[test]
 fn unknown_image_extension_is_rejected() {
-    let dir = unique_tempdir("ext");
+    let folder = TemporaryFolder::new("copy_ext");
+    let dir = folder.path();
     let bogus = dir.join("nope.xyz");
     std::fs::write(&bogus, b"not an image").unwrap();
     let out = dir.join("out.txt");
@@ -459,8 +454,9 @@ fn unknown_image_extension_is_rejected() {
 
 #[test]
 fn overwriting_an_existing_file_replaces_its_contents() {
-    let dir = unique_tempdir("overwrite");
-    let image_path = make_blank_image(&dir, "disk.hdm");
+    let folder = TemporaryFolder::new("copy_overwrite");
+    let dir = folder.path();
+    let image_path = make_blank_image(dir, "disk.hdm");
     let v1 = dir.join("v1.txt");
     let v2 = dir.join("v2.txt");
     std::fs::write(&v1, b"first").unwrap();
@@ -476,8 +472,9 @@ fn overwriting_an_existing_file_replaces_its_contents() {
 
 #[test]
 fn lowercase_host_filename_is_normalized_to_uppercase() {
-    let dir = unique_tempdir("lower");
-    let image_path = make_blank_image(&dir, "disk.hdm");
+    let folder = TemporaryFolder::new("copy_lower");
+    let dir = folder.path();
+    let image_path = make_blank_image(dir, "disk.hdm");
     let src = dir.join("mixed.txt");
     std::fs::write(&src, b"mixed case").unwrap();
 
@@ -491,8 +488,9 @@ fn lowercase_host_filename_is_normalized_to_uppercase() {
 
 #[test]
 fn file_sizes_around_cluster_boundaries_roundtrip() {
-    let dir = unique_tempdir("sizes");
-    let image_path = make_blank_image(&dir, "disk.hdm");
+    let folder = TemporaryFolder::new("copy_sizes");
+    let dir = folder.path();
+    let image_path = make_blank_image(dir, "disk.hdm");
     let sizes = [0usize, 1, 1023, 1024, 1025, 4097];
 
     for (index, size) in sizes.into_iter().enumerate() {
@@ -513,9 +511,10 @@ fn file_sizes_around_cluster_boundaries_roundtrip() {
 
 #[test]
 fn empty_directories_survive_host_and_image_copies() {
-    let dir = unique_tempdir("empty_dirs");
-    let source_image = make_blank_image(&dir, "src.hdm");
-    let dest_image = make_blank_image(&dir, "dst.hdm");
+    let folder = TemporaryFolder::new("copy_empty_dirs");
+    let dir = folder.path();
+    let source_image = make_blank_image(dir, "src.hdm");
+    let dest_image = make_blank_image(dir, "dst.hdm");
     let src = dir.join("tree");
     std::fs::create_dir_all(src.join("EMPTY")).unwrap();
     std::fs::create_dir_all(src.join("NEST/EMPTY2")).unwrap();
@@ -555,8 +554,9 @@ fn empty_directories_survive_host_and_image_copies() {
 
 #[test]
 fn files_are_placed_inside_existing_directories() {
-    let dir = unique_tempdir("existing_dirs");
-    let image_path = make_blank_image(&dir, "disk.hdm");
+    let folder = TemporaryFolder::new("copy_existing_dirs");
+    let dir = folder.path();
+    let image_path = make_blank_image(dir, "disk.hdm");
     let seed = dir.join("seed.txt");
     let payload = dir.join("payload.bin");
     std::fs::write(&seed, b"seed").unwrap();
@@ -592,8 +592,9 @@ fn files_are_placed_inside_existing_directories() {
 
 #[test]
 fn trailing_slash_missing_image_destination_leaves_image_unchanged() {
-    let dir = unique_tempdir("slash_missing");
-    let image_path = make_blank_image(&dir, "disk.hdm");
+    let folder = TemporaryFolder::new("copy_slash_missing");
+    let dir = folder.path();
+    let image_path = make_blank_image(dir, "disk.hdm");
     let src = dir.join("input.txt");
     std::fs::write(&src, b"input").unwrap();
 
@@ -605,8 +606,9 @@ fn trailing_slash_missing_image_destination_leaves_image_unchanged() {
 
 #[test]
 fn file_parent_component_rejects_copy_without_image_mutation() {
-    let dir = unique_tempdir("file_parent");
-    let image_path = make_blank_image(&dir, "disk.hdm");
+    let folder = TemporaryFolder::new("copy_file_parent");
+    let dir = folder.path();
+    let image_path = make_blank_image(dir, "disk.hdm");
     let blocker = dir.join("blocker.txt");
     let src = dir.join("input.txt");
     std::fs::write(&blocker, b"blocker").unwrap();
@@ -624,8 +626,9 @@ fn file_parent_component_rejects_copy_without_image_mutation() {
 
 #[test]
 fn host_directory_to_existing_image_file_is_rejected_without_mutation() {
-    let dir = unique_tempdir("dir_to_file");
-    let image_path = make_blank_image(&dir, "disk.hdm");
+    let folder = TemporaryFolder::new("copy_dir_to_file");
+    let dir = folder.path();
+    let image_path = make_blank_image(dir, "disk.hdm");
     let existing = dir.join("existing.txt");
     let src = dir.join("tree");
     std::fs::create_dir_all(&src).unwrap();
@@ -641,8 +644,9 @@ fn host_directory_to_existing_image_file_is_rejected_without_mutation() {
 
 #[test]
 fn image_directory_to_existing_host_file_is_rejected_without_overwrite() {
-    let dir = unique_tempdir("image_dir_to_file");
-    let image_path = make_blank_image(&dir, "disk.hdm");
+    let folder = TemporaryFolder::new("copy_image_dir_to_file");
+    let dir = folder.path();
+    let image_path = make_blank_image(dir, "disk.hdm");
     let src = dir.join("tree");
     let dest = dir.join("dest");
     std::fs::create_dir_all(&src).unwrap();
@@ -657,7 +661,8 @@ fn image_directory_to_existing_host_file_is_rejected_without_overwrite() {
 
 #[test]
 fn disk_full_error_leaves_image_bytes_unchanged() {
-    let dir = unique_tempdir("disk_full");
+    let folder = TemporaryFolder::new("copy_disk_full");
+    let dir = folder.path();
     let image_path = dir.join("full.hdm");
     let mut image_bytes = build_blank_fat12_floppy();
     mark_floppy_data_clusters_used(&mut image_bytes);
@@ -672,8 +677,9 @@ fn disk_full_error_leaves_image_bytes_unchanged() {
 
 #[test]
 fn invalid_image_source_path_does_not_truncate_for_image_to_host() {
-    let dir = unique_tempdir("bad_source_host");
-    let image_path = make_blank_image(&dir, "disk.hdm");
+    let folder = TemporaryFolder::new("copy_bad_source_host");
+    let dir = folder.path();
+    let image_path = make_blank_image(dir, "disk.hdm");
     let src = dir.join("source.txt");
     let out = dir.join("out.txt");
     std::fs::write(&src, b"must not copy").unwrap();
@@ -689,9 +695,10 @@ fn invalid_image_source_path_does_not_truncate_for_image_to_host() {
 
 #[test]
 fn invalid_image_source_path_does_not_truncate_for_image_to_image() {
-    let dir = unique_tempdir("bad_source_image");
-    let source_image = make_blank_image(&dir, "src.hdm");
-    let dest_image = make_blank_image(&dir, "dst.hdm");
+    let folder = TemporaryFolder::new("copy_bad_source_image");
+    let dir = folder.path();
+    let source_image = make_blank_image(dir, "src.hdm");
+    let dest_image = make_blank_image(dir, "dst.hdm");
     let src = dir.join("source.txt");
     std::fs::write(&src, b"must not copy").unwrap();
 
@@ -715,8 +722,9 @@ fn invalid_image_source_path_does_not_truncate_for_image_to_image() {
 #[cfg(unix)]
 #[test]
 fn host_name_collisions_are_rejected_before_writing() {
-    let dir = unique_tempdir("collisions");
-    let image_path = make_blank_image(&dir, "disk.hdm");
+    let folder = TemporaryFolder::new("copy_collisions");
+    let dir = folder.path();
+    let image_path = make_blank_image(dir, "disk.hdm");
     let tree = dir.join("tree");
     std::fs::create_dir_all(&tree).unwrap();
     std::fs::write(tree.join("FILE"), b"first").unwrap();
@@ -730,8 +738,9 @@ fn host_name_collisions_are_rejected_before_writing() {
 
 #[test]
 fn d88_floppy_roundtrip_preserves_file_contents() {
-    let dir = unique_tempdir("d88");
-    let image_path = make_blank_d88_image(&dir, "disk.d88");
+    let folder = TemporaryFolder::new("copy_d88");
+    let dir = folder.path();
+    let image_path = make_blank_d88_image(dir, "disk.d88");
     let src = dir.join("source.txt");
     let out = dir.join("out.txt");
     std::fs::write(&src, b"d88 data").unwrap();
@@ -743,8 +752,9 @@ fn d88_floppy_roundtrip_preserves_file_contents() {
 
 #[test]
 fn partitioned_nhd_roundtrip_preserves_file_contents() {
-    let dir = unique_tempdir("nhd");
-    let image_path = make_blank_nhd_image(&dir, "disk.nhd");
+    let folder = TemporaryFolder::new("copy_nhd");
+    let dir = folder.path();
+    let image_path = make_blank_nhd_image(dir, "disk.nhd");
     let src = dir.join("source.txt");
     let out = dir.join("out.txt");
     std::fs::write(&src, b"nhd data").unwrap();
@@ -756,8 +766,9 @@ fn partitioned_nhd_roundtrip_preserves_file_contents() {
 
 #[test]
 fn mbr_partitioned_at_hdd_roundtrip_preserves_file_contents() {
-    let dir = unique_tempdir("athdd");
-    let image_path = make_blank_at_hdd_image(&dir, "disk.hdd");
+    let folder = TemporaryFolder::new("copy_athdd");
+    let dir = folder.path();
+    let image_path = make_blank_at_hdd_image(dir, "disk.hdd");
     let src = dir.join("source.txt");
     let out = dir.join("out.txt");
     std::fs::write(&src, b"mbr partition data").unwrap();
@@ -781,7 +792,8 @@ fn mbr_partitioned_at_hdd_roundtrip_preserves_file_contents() {
 
 #[test]
 fn dosv_144mb_img_floppy_roundtrip() {
-    let dir = unique_tempdir("imgfdd");
+    let folder = TemporaryFolder::new("copy_imgfdd");
+    let dir = folder.path();
     // A blank 1.44 MB DOS floppy: FAT12, 18 sectors per track, 2 heads.
     let mut data = vec![0u8; 1_474_560];
     data[11..13].copy_from_slice(&512u16.to_le_bytes());
@@ -813,7 +825,8 @@ fn dosv_144mb_img_floppy_roundtrip() {
 
 #[test]
 fn msx_720kb_dsk_floppy_roundtrip() {
-    let dir = unique_tempdir("msxdsk");
+    let folder = TemporaryFolder::new("copy_msxdsk");
+    let dir = folder.path();
     let mut data = vec![0u8; 737_280];
     data[11..13].copy_from_slice(&512u16.to_le_bytes());
     data[13] = 2;

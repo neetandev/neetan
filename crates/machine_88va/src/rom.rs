@@ -120,40 +120,9 @@ fn rom_sizes(tables: &RomTables) -> [usize; 6] {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        path::PathBuf,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
+    use common::temporary::TemporaryFolder;
 
     use super::*;
-
-    static TEMP_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
-
-    struct TempRomDir {
-        path: PathBuf,
-    }
-
-    impl TempRomDir {
-        fn new(name: &str) -> Self {
-            let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "neetan_va_rom_{name}_{}_{sequence}",
-                std::process::id()
-            ));
-            std::fs::create_dir_all(&path).expect("create temp ROM dir");
-            Self { path }
-        }
-
-        fn write(&self, file_name: &str, data: &[u8]) {
-            std::fs::write(self.path.join(file_name), data).expect("write temp ROM file");
-        }
-    }
-
-    impl Drop for TempRomDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
-    }
 
     fn fake(size: usize, fill: u8) -> Vec<u8> {
         vec![fill; size]
@@ -210,18 +179,18 @@ mod tests {
     #[test]
     fn matches_slots_by_digest_and_ignores_stray_files() {
         let (rom00, rom08, rom1, font, dictionary, subsys) = full_rom_set();
-        let dir = TempRomDir::new("match");
-        dir.write("a.bin", &rom00);
-        dir.write("b.bin", &rom08);
-        dir.write("c.bin", &rom1);
-        dir.write("d.bin", &font);
-        dir.write("e.bin", &dictionary);
-        dir.write("f.bin", &subsys);
-        dir.write("readme.txt", b"unknown size stray file");
-        dir.write("g.bin", &fake(ROM1_SIZE, 0xEE));
+        let dir = TemporaryFolder::new("va_rom_match");
+        dir.write_file("a.bin", &rom00);
+        dir.write_file("b.bin", &rom08);
+        dir.write_file("c.bin", &rom1);
+        dir.write_file("d.bin", &font);
+        dir.write_file("e.bin", &dictionary);
+        dir.write_file("f.bin", &subsys);
+        dir.write_file("readme.txt", b"unknown size stray file");
+        dir.write_file("g.bin", &fake(ROM1_SIZE, 0xEE));
 
         let tables = tables_from_bytes(&rom00, &rom08, &rom1, &font, &dictionary, &subsys);
-        let loaded = load_rom_set_with_tables(&dir.path, &tables).expect("load");
+        let loaded = load_rom_set_with_tables(dir.path(), &tables).expect("load");
 
         assert_eq!(loaded.rom00, rom00);
         assert_eq!(loaded.rom08, rom08);
@@ -234,15 +203,15 @@ mod tests {
     #[test]
     fn missing_required_file_reports_the_right_slot() {
         let (rom00, rom08, rom1, font, dictionary, subsys) = full_rom_set();
-        let dir = TempRomDir::new("missing");
-        dir.write("a.bin", &rom00);
-        dir.write("b.bin", &rom08);
-        dir.write("c.bin", &rom1);
-        dir.write("e.bin", &dictionary);
-        dir.write("f.bin", &subsys);
+        let dir = TemporaryFolder::new("va_rom_missing");
+        dir.write_file("a.bin", &rom00);
+        dir.write_file("b.bin", &rom08);
+        dir.write_file("c.bin", &rom1);
+        dir.write_file("e.bin", &dictionary);
+        dir.write_file("f.bin", &subsys);
 
         let tables = tables_from_bytes(&rom00, &rom08, &rom1, &font, &dictionary, &subsys);
-        match load_rom_set_with_tables(&dir.path, &tables) {
+        match load_rom_set_with_tables(dir.path(), &tables) {
             Err(RomError::Missing { label, .. }) => assert_eq!(label, "font"),
             other => panic!("expected Missing(font), got {other:?}"),
         }
@@ -251,15 +220,15 @@ mod tests {
     #[test]
     fn missing_subsys_reports_the_subsys_slot() {
         let (rom00, rom08, rom1, font, dictionary, subsys) = full_rom_set();
-        let dir = TempRomDir::new("nosubsys");
-        dir.write("a.bin", &rom00);
-        dir.write("b.bin", &rom08);
-        dir.write("c.bin", &rom1);
-        dir.write("d.bin", &font);
-        dir.write("e.bin", &dictionary);
+        let dir = TemporaryFolder::new("va_rom_nosubsys");
+        dir.write_file("a.bin", &rom00);
+        dir.write_file("b.bin", &rom08);
+        dir.write_file("c.bin", &rom1);
+        dir.write_file("d.bin", &font);
+        dir.write_file("e.bin", &dictionary);
 
         let tables = tables_from_bytes(&rom00, &rom08, &rom1, &font, &dictionary, &subsys);
-        match load_rom_set_with_tables(&dir.path, &tables) {
+        match load_rom_set_with_tables(dir.path(), &tables) {
             Err(RomError::Missing { label, .. }) => assert_eq!(label, "subsys"),
             other => panic!("expected Missing(subsys), got {other:?}"),
         }
@@ -268,15 +237,15 @@ mod tests {
     #[test]
     fn wrong_size_file_is_skipped_and_reports_missing() {
         let (rom00, rom08, rom1, font, dictionary, subsys) = full_rom_set();
-        let dir = TempRomDir::new("wrongsize");
-        dir.write("a.bin", &rom00);
-        dir.write("b.bin", &rom08);
-        dir.write("c.bin", &rom1);
-        dir.write("d.bin", &fake(FONT_SIZE - 1, 0x04));
-        dir.write("e.bin", &dictionary);
+        let dir = TemporaryFolder::new("va_rom_wrongsize");
+        dir.write_file("a.bin", &rom00);
+        dir.write_file("b.bin", &rom08);
+        dir.write_file("c.bin", &rom1);
+        dir.write_file("d.bin", &fake(FONT_SIZE - 1, 0x04));
+        dir.write_file("e.bin", &dictionary);
 
         let tables = tables_from_bytes(&rom00, &rom08, &rom1, &font, &dictionary, &subsys);
-        match load_rom_set_with_tables(&dir.path, &tables) {
+        match load_rom_set_with_tables(dir.path(), &tables) {
             Err(RomError::Missing { label, .. }) => assert_eq!(label, "font"),
             other => panic!("expected Missing(font), got {other:?}"),
         }
@@ -284,7 +253,7 @@ mod tests {
 
     #[test]
     fn distinct_tables_select_matching_contents() {
-        let dir = TempRomDir::new("twomodels");
+        let dir = TemporaryFolder::new("va_rom_twomodels");
         let rom00_a = fake(ROM00_SIZE, 0x11);
         let rom00_b = fake(ROM00_SIZE, 0x22);
         let rom08 = fake(ROM08_SIZE, 0x02);
@@ -292,25 +261,25 @@ mod tests {
         let font = fake(FONT_SIZE, 0x04);
         let dictionary = fake(DICTIONARY_SIZE, 0x05);
         let subsys = fake(SUBSYS_SIZE, 0x06);
-        dir.write("rom00_a.bin", &rom00_a);
-        dir.write("rom00_b.bin", &rom00_b);
-        dir.write("b.bin", &rom08);
-        dir.write("c.bin", &rom1);
-        dir.write("d.bin", &font);
-        dir.write("e.bin", &dictionary);
-        dir.write("f.bin", &subsys);
+        dir.write_file("rom00_a.bin", &rom00_a);
+        dir.write_file("rom00_b.bin", &rom00_b);
+        dir.write_file("b.bin", &rom08);
+        dir.write_file("c.bin", &rom1);
+        dir.write_file("d.bin", &font);
+        dir.write_file("e.bin", &dictionary);
+        dir.write_file("f.bin", &subsys);
 
         let tables_a = tables_from_bytes(&rom00_a, &rom08, &rom1, &font, &dictionary, &subsys);
         let tables_b = tables_from_bytes(&rom00_b, &rom08, &rom1, &font, &dictionary, &subsys);
 
         assert_eq!(
-            load_rom_set_with_tables(&dir.path, &tables_a)
+            load_rom_set_with_tables(dir.path(), &tables_a)
                 .expect("load a")
                 .rom00,
             rom00_a
         );
         assert_eq!(
-            load_rom_set_with_tables(&dir.path, &tables_b)
+            load_rom_set_with_tables(dir.path(), &tables_b)
                 .expect("load b")
                 .rom00,
             rom00_b

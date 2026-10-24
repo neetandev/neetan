@@ -667,6 +667,7 @@ fn count_text(games: (usize, usize), errors: (usize, usize), filtering: bool) ->
 
 #[cfg(test)]
 mod tests {
+    use common::temporary::TemporaryFolder;
     use gui::ui::{Navigation, Viewport};
     use machine_factory::rom_status::RomStatus;
 
@@ -679,23 +680,20 @@ mod tests {
     /// A root folder with a settings file and game files. Dropping the value removes it.
     struct TestRoot {
         /// The root folder.
-        root: PathBuf,
+        root: TemporaryFolder,
     }
 
     impl TestRoot {
         /// Creates a root folder with an empty settings file.
         fn new(name: &str) -> Self {
-            let root = std::env::temp_dir()
-                .join(format!("neetan_manager_test_{}_{name}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&root);
-            std::fs::create_dir_all(&root).expect("root is created");
-            std::fs::write(root.join(SETTINGS_FILE_NAME), "").expect("settings are written");
+            let root = TemporaryFolder::new(&format!("manager_test_{name}"));
+            root.write_file(SETTINGS_FILE_NAME, b"");
             Self { root }
         }
 
         /// Writes the game file `identity` below the config folder with `contents`.
         fn game(&self, identity: &str, contents: &str) {
-            let path = self.root.join("config").join(identity);
+            let path = self.root.path().join("config").join(identity);
             std::fs::create_dir_all(path.parent().expect("game files lie in a folder"))
                 .expect("folder is created");
             std::fs::write(path, contents).expect("game file is written");
@@ -703,14 +701,14 @@ mod tests {
 
         /// Removes the game file `identity`.
         fn remove(&self, identity: &str) {
-            std::fs::remove_file(self.root.join("config").join(identity))
+            std::fs::remove_file(self.root.path().join("config").join(identity))
                 .expect("game file is removed");
         }
 
         /// The manager of the root.
         fn manager(&self) -> Manager {
             let locations = Locations {
-                current_directory: self.root.clone(),
+                current_directory: self.root.path().to_path_buf(),
                 executable_directory: None,
                 pref_path: None,
             };
@@ -719,12 +717,6 @@ mod tests {
                 locations,
             })
             .expect("manager starts")
-        }
-    }
-
-    impl Drop for TestRoot {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.root);
         }
     }
 
@@ -775,7 +767,7 @@ mod tests {
         let request = manager.launch_request(&row);
         assert_eq!(
             request.game_files,
-            vec![test.root.join("config").join(&identity)]
+            vec![test.root.path().join("config").join(&identity)]
         );
         assert_eq!(request.system, Some(system));
         assert_eq!(request.flags.len(), 1);
@@ -949,6 +941,7 @@ mod tests {
         assert!(
             !test
                 .root
+                .path()
                 .join("config")
                 .join(first_system().name)
                 .join("c.conf")

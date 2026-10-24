@@ -1,9 +1,8 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::path::{Path, PathBuf};
 
-use common::{Bus, CdAudioState, CpuMode, Machine, MachineModel, NoTrace};
+use common::{
+    Bus, CdAudioState, CpuMode, Machine, MachineModel, NoTrace, temporary::TemporaryFolder,
+};
 use device::cdrom::CdImage;
 use machine_98::Pc9801Bus;
 
@@ -48,14 +47,14 @@ fn create_machine_ap() -> machine_98::Pc9821Ap {
     )
 }
 
-/// Writes a CUE file and BIN file to temp directory, returns the CUE path.
-fn write_temp_cue_bin(name: &str, sector_count: u32) -> PathBuf {
-    let cue_path = std::env::temp_dir().join(format!("neetan_test_{name}.cue"));
-    let bin_path = std::env::temp_dir().join(format!("neetan_test_{name}.bin"));
+/// Writes a CUE file and a BIN file into a new temporary folder.
+fn write_temp_cue_bin(name: &str, sector_count: u32) -> TempCdromCueFiles {
+    let folder = TemporaryFolder::new(&format!("test_{name}"));
+    let cue_path = folder.path().join(format!("{name}.cue"));
+    let bin_path = folder.path().join(format!("{name}.bin"));
 
-    let cue_content = format!(
-        "FILE \"neetan_test_{name}.bin\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n"
-    );
+    let cue_content =
+        format!("FILE \"{name}.bin\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n");
     std::fs::write(&cue_path, &cue_content).expect("failed to write temp CUE");
 
     let mut bin_data = vec![0u8; sector_count as usize * 2048];
@@ -66,35 +65,18 @@ fn write_temp_cue_bin(name: &str, sector_count: u32) -> PathBuf {
     }
     std::fs::write(&bin_path, &bin_data).expect("failed to write temp BIN");
 
-    cue_path
-}
-
-fn cleanup_temp_cue_bin(name: &str) {
-    let cue_path = std::env::temp_dir().join(format!("neetan_test_{name}.cue"));
-    let bin_path = std::env::temp_dir().join(format!("neetan_test_{name}.bin"));
-    let _ = std::fs::remove_file(cue_path);
-    let _ = std::fs::remove_file(bin_path);
-}
-
-static TEMP_CDROM_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
-
-struct TempCdromCueFiles {
-    cue_path: PathBuf,
-    bin_paths: Vec<PathBuf>,
-}
-
-impl Drop for TempCdromCueFiles {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.cue_path);
-        for bin_path in &self.bin_paths {
-            let _ = std::fs::remove_file(bin_path);
-        }
+    TempCdromCueFiles {
+        cue_path,
+        _folder: folder,
     }
 }
 
-fn next_temp_cdrom_stem(name: &str) -> String {
-    let sequence = TEMP_CDROM_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("neetan_test_{name}_{}_{}", std::process::id(), sequence)
+/// A CUE sheet and its track files inside a temporary folder. Dropping the value removes them.
+struct TempCdromCueFiles {
+    /// Path of the CUE sheet.
+    cue_path: PathBuf,
+    /// Folder that holds the CUE sheet and its track files.
+    _folder: TemporaryFolder,
 }
 
 fn write_temp_mode2_multi_file_cdrom(name: &str) -> TempCdromCueFiles {
@@ -154,10 +136,10 @@ fn write_temp_mode2_multi_file_cdrom(name: &str) -> TempCdromCueFiles {
         sector
     }
 
-    let temp_stem = next_temp_cdrom_stem(name);
-    let cue_path = std::env::temp_dir().join(format!("{temp_stem}.cue"));
-    let data_track_path = std::env::temp_dir().join(format!("{temp_stem}_track01.bin"));
-    let audio_track_path = std::env::temp_dir().join(format!("{temp_stem}_track02.bin"));
+    let folder = TemporaryFolder::new(&format!("test_{name}"));
+    let cue_path = folder.path().join(format!("{name}.cue"));
+    let data_track_path = folder.path().join(format!("{name}_track01.bin"));
+    let audio_track_path = folder.path().join(format!("{name}_track02.bin"));
 
     let cue_content = format!(
         "FILE \"{}\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\nFILE \"{}\" BINARY\n  TRACK 02 AUDIO\n    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n",
@@ -259,7 +241,7 @@ fn write_temp_mode2_multi_file_cdrom(name: &str) -> TempCdromCueFiles {
 
     TempCdromCueFiles {
         cue_path,
-        bin_paths: vec![data_track_path, audio_track_path],
+        _folder: folder,
     }
 }
 
@@ -793,11 +775,11 @@ fn hdd_and_cdrom_coexist_on_separate_channels() {
 
 #[test]
 fn machine_insert_cdrom_from_file() {
-    let cue_path = write_temp_cue_bin("cdrom_machine", 100);
+    let cue_files = write_temp_cue_bin("cdrom_machine", 100);
+    let cue_path = &cue_files.cue_path;
 
     let mut machine = create_machine_ap();
-    let result = machine.insert_cdrom(&cue_path);
-    cleanup_temp_cue_bin("cdrom_machine");
+    let result = machine.insert_cdrom(cue_path);
 
     let desc = result.expect("insert_cdrom should succeed");
     assert!(
@@ -809,13 +791,13 @@ fn machine_insert_cdrom_from_file() {
 
 #[test]
 fn machine_eject_cdrom() {
-    let cue_path = write_temp_cue_bin("cdrom_eject", 50);
+    let cue_files = write_temp_cue_bin("cdrom_eject", 50);
+    let cue_path = &cue_files.cue_path;
 
     let mut machine = create_machine_ap();
     machine
-        .insert_cdrom(&cue_path)
+        .insert_cdrom(cue_path)
         .expect("insert should succeed");
-    cleanup_temp_cue_bin("cdrom_eject");
 
     assert!(machine.bus.has_cdrom());
     machine.eject_cdrom();
@@ -836,26 +818,27 @@ fn machine_insert_cdrom_nonexistent_file() {
 
 #[test]
 fn machine_insert_cdrom_invalid_cue() {
-    let cue_path = std::env::temp_dir().join("neetan_test_invalid_cdrom.cue");
-    std::fs::write(&cue_path, "not a valid cue sheet").expect("write temp");
+    let folder = TemporaryFolder::new("test_invalid_cdrom");
+    let cue_path = folder.write_file("invalid.cue", b"not a valid cue sheet");
 
     let mut machine = create_machine_ap();
     let result = machine.insert_cdrom(&cue_path);
-    let _ = std::fs::remove_file(&cue_path);
 
     assert!(result.is_err());
 }
 
 #[test]
 fn machine_swap_cdrom() {
-    let cue_path_a = write_temp_cue_bin("cdrom_swap_a", 50);
-    let cue_path_b = write_temp_cue_bin("cdrom_swap_b", 200);
+    let cue_files_a = write_temp_cue_bin("cdrom_swap_a", 50);
+    let cue_path_a = &cue_files_a.cue_path;
+    let cue_files_b = write_temp_cue_bin("cdrom_swap_b", 200);
+    let cue_path_b = &cue_files_b.cue_path;
 
     let mut machine = create_machine_ap();
 
     // Insert disc A.
     let desc_a = machine
-        .insert_cdrom(&cue_path_a)
+        .insert_cdrom(cue_path_a)
         .expect("insert A should succeed");
     assert!(desc_a.contains("50 sectors"));
 
@@ -865,13 +848,10 @@ fn machine_swap_cdrom() {
 
     // Insert disc B.
     let desc_b = machine
-        .insert_cdrom(&cue_path_b)
+        .insert_cdrom(cue_path_b)
         .expect("insert B should succeed");
     assert!(desc_b.contains("200 sectors"));
     assert!(machine.bus.has_cdrom());
-
-    cleanup_temp_cue_bin("cdrom_swap_a");
-    cleanup_temp_cue_bin("cdrom_swap_b");
 }
 
 #[test]

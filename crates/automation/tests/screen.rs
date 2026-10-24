@@ -13,8 +13,8 @@ use std::path::Path;
 use automation::{
     AutomationSession, ExecutionResult, MessageProtocol, RunTermination, SessionBudgets, screen,
 };
-use common::RunTarget;
-use harness::{build_msx, build_pc98, make_session, run_committed_script, temp_dir};
+use common::{RunTarget, temporary::TemporaryFolder};
+use harness::{build_msx, build_pc98, make_session, run_committed_script};
 use sdl3::surface::Surface;
 
 /// Creates a session rooted at the given read and artifact directories, with the
@@ -34,9 +34,11 @@ fn write_png(dir: &Path, name: &str, width: u32, height: u32, rgba: &[u8]) {
 
 #[test]
 fn pc98_screen_pipeline_end_to_end() {
-    let read_root = temp_dir("pc98-read");
-    let artifact_root = temp_dir("pc98-artifacts");
-    let mut session = rooted_session(&read_root, &artifact_root);
+    let read_root_folder = TemporaryFolder::new("auto_pc98-read");
+    let read_root = read_root_folder.path();
+    let artifact_root_folder = TemporaryFolder::new("auto_pc98-artifacts");
+    let artifact_root = artifact_root_folder.path();
+    let mut session = rooted_session(read_root, artifact_root);
 
     session.install_machine(build_pc98());
     // The screen is unavailable until the first presentation.
@@ -60,7 +62,7 @@ fn pc98_screen_pipeline_end_to_end() {
     // The hash is 64 lowercase hex characters and deterministic across sessions.
     let hash = session.screen_hash().expect("hash");
     assert_eq!(hash.len(), 64);
-    let mut other = rooted_session(&read_root, &artifact_root);
+    let mut other = rooted_session(read_root, artifact_root);
     other.install_machine(build_pc98());
     other
         .run(RunTarget::Frames(30), 50_000_000, 1_000_000)
@@ -77,12 +79,12 @@ fn pc98_screen_pipeline_end_to_end() {
     assert_eq!(decoded.to_rgba8().expect("decode pixels"), rgba);
 
     // Matching against the exact screenshot is a perfect match.
-    write_png(&read_root, "expected.png", width, height, &rgba);
+    write_png(read_root, "expected.png", width, height, &rgba);
     assert!(session.screen_matches("expected.png", 0.0).expect("match"));
 
     // A clearly different image fails at zero tolerance and passes at full.
     let contrasting: Vec<u8> = rgba.iter().map(|byte| byte ^ 0xFF).collect();
-    write_png(&read_root, "other.png", width, height, &contrasting);
+    write_png(read_root, "other.png", width, height, &contrasting);
     assert!(!session.screen_matches("other.png", 0.0).expect("mismatch"));
     assert!(
         session
@@ -91,7 +93,7 @@ fn pc98_screen_pipeline_end_to_end() {
     );
 
     // Dimension mismatch is a hard argument error, not a false result.
-    write_png(&read_root, "small.png", 8, 8, &vec![0u8; 8 * 8 * 4]);
+    write_png(read_root, "small.png", 8, 8, &vec![0u8; 8 * 8 * 4]);
     assert!(session.screen_matches("small.png", 0.5).is_err());
 
     // A region matches its own extracted pixels.
@@ -100,7 +102,7 @@ fn pc98_screen_pipeline_end_to_end() {
     let region = screen::extract_region(&rgba, width, height, 0, 0, region_width, region_height)
         .expect("region");
     write_png(
-        &read_root,
+        read_root,
         "region.png",
         region_width,
         region_height,
@@ -123,9 +125,11 @@ fn pc98_screen_pipeline_end_to_end() {
 
 #[test]
 fn msx_screen_is_available_and_deterministic() {
-    let read_root = temp_dir("msx-read");
-    let artifact_root = temp_dir("msx-artifacts");
-    let mut session = rooted_session(&read_root, &artifact_root);
+    let read_root_folder = TemporaryFolder::new("auto_msx-read");
+    let read_root = read_root_folder.path();
+    let artifact_root_folder = TemporaryFolder::new("auto_msx-artifacts");
+    let artifact_root = artifact_root_folder.path();
+    let mut session = rooted_session(read_root, artifact_root);
 
     session.install_machine(build_msx());
     session
@@ -138,12 +142,12 @@ fn msx_screen_is_available_and_deterministic() {
     assert_eq!(rgba.len(), (width * height * 4) as usize);
 
     // A round-trip screenshot matches itself exactly.
-    write_png(&read_root, "msx.png", width, height, &rgba);
+    write_png(read_root, "msx.png", width, height, &rgba);
     assert!(session.screen_matches("msx.png", 0.0).expect("match"));
 
     // The hash repeats across an identical MSX session.
     let hash = session.screen_hash().expect("hash");
-    let mut other = rooted_session(&read_root, &artifact_root);
+    let mut other = rooted_session(read_root, artifact_root);
     other.install_machine(build_msx());
     other
         .run(RunTarget::Frames(20), 50_000_000, 1_000_000)
@@ -153,16 +157,18 @@ fn msx_screen_is_available_and_deterministic() {
 
 #[test]
 fn wait_for_screen_matches_without_advancing_an_identical_screen() {
-    let read_root = temp_dir("wait-immediate-read");
-    let artifact_root = temp_dir("wait-immediate-artifacts");
-    let mut session = rooted_session(&read_root, &artifact_root);
+    let read_root_folder = TemporaryFolder::new("auto_wait-immediate-read");
+    let read_root = read_root_folder.path();
+    let artifact_root_folder = TemporaryFolder::new("auto_wait-immediate-artifacts");
+    let artifact_root = artifact_root_folder.path();
+    let mut session = rooted_session(read_root, artifact_root);
     session.install_machine(build_pc98());
     session
         .run(RunTarget::Frames(30), 50_000_000, 1_000_000)
         .expect("frame run");
     let (width, height) = session.screen_size().expect("size");
     let rgba = session.screen_rgba().expect("rgba");
-    write_png(&read_root, "current.png", width, height, &rgba);
+    write_png(read_root, "current.png", width, height, &rgba);
     let before = session.timeline();
 
     assert!(
@@ -176,16 +182,18 @@ fn wait_for_screen_matches_without_advancing_an_identical_screen() {
 
 #[test]
 fn wait_for_screen_timeout_writes_and_reports_comparison() {
-    let read_root = temp_dir("wait-timeout-read");
-    let artifact_root = temp_dir("wait-timeout-artifacts");
-    let (mut session, receiver) = make_session(&read_root, &artifact_root);
+    let read_root_folder = TemporaryFolder::new("auto_wait-timeout-read");
+    let read_root = read_root_folder.path();
+    let artifact_root_folder = TemporaryFolder::new("auto_wait-timeout-artifacts");
+    let artifact_root = artifact_root_folder.path();
+    let (mut session, receiver) = make_session(read_root, artifact_root);
     session.install_machine(build_pc98());
     session
         .run(RunTarget::Frames(1), 50_000_000, 1_000_000)
         .expect("frame run");
     let (width, height) = session.screen_size().expect("size");
     let contrasting = vec![0xFF; width as usize * height as usize * 4];
-    write_png(&read_root, "missing.png", width, height, &contrasting);
+    write_png(read_root, "missing.png", width, height, &contrasting);
     let start_frame = session.timeline().epoch_frames;
 
     assert!(
@@ -207,16 +215,18 @@ fn wait_for_screen_timeout_writes_and_reports_comparison() {
 
 #[test]
 fn wait_for_screen_tick_bound_returns_false_without_a_presentation() {
-    let read_root = temp_dir("wait-tick-read");
-    let artifact_root = temp_dir("wait-tick-artifacts");
-    let mut session = rooted_session(&read_root, &artifact_root);
+    let read_root_folder = TemporaryFolder::new("auto_wait-tick-read");
+    let read_root = read_root_folder.path();
+    let artifact_root_folder = TemporaryFolder::new("auto_wait-tick-artifacts");
+    let artifact_root = artifact_root_folder.path();
+    let mut session = rooted_session(read_root, artifact_root);
     session.install_machine(build_pc98());
     session
         .run(RunTarget::Frames(1), 50_000_000, 1_000_000)
         .expect("frame run");
     let (width, height) = session.screen_size().expect("size");
     write_png(
-        &read_root,
+        read_root,
         "tick-miss.png",
         width,
         height,
@@ -235,15 +245,17 @@ fn wait_for_screen_tick_bound_returns_false_without_a_presentation() {
 
 #[test]
 fn wait_for_screen_dimension_mismatch_is_a_miss_with_an_artifact() {
-    let read_root = temp_dir("wait-dimension-read");
-    let artifact_root = temp_dir("wait-dimension-artifacts");
-    let mut session = rooted_session(&read_root, &artifact_root);
+    let read_root_folder = TemporaryFolder::new("auto_wait-dimension-read");
+    let read_root = read_root_folder.path();
+    let artifact_root_folder = TemporaryFolder::new("auto_wait-dimension-artifacts");
+    let artifact_root = artifact_root_folder.path();
+    let mut session = rooted_session(read_root, artifact_root);
     session.install_machine(build_pc98());
     session
         .run(RunTarget::Frames(1), 50_000_000, 1_000_000)
         .expect("frame run");
     let (width, height) = session.screen_size().expect("size");
-    write_png(&read_root, "small.png", 8, 8, &vec![0u8; 8 * 8 * 4]);
+    write_png(read_root, "small.png", 8, 8, &vec![0u8; 8 * 8 * 4]);
 
     assert!(
         !session
@@ -258,16 +270,18 @@ fn wait_for_screen_dimension_mismatch_is_a_miss_with_an_artifact() {
 
 #[test]
 fn wait_for_screen_artifact_failure_does_not_replace_false_result() {
-    let read_root = temp_dir("wait-budget-read");
-    let artifact_root = temp_dir("wait-budget-artifacts");
-    let mut session = rooted_session(&read_root, &artifact_root);
+    let read_root_folder = TemporaryFolder::new("auto_wait-budget-read");
+    let read_root = read_root_folder.path();
+    let artifact_root_folder = TemporaryFolder::new("auto_wait-budget-artifacts");
+    let artifact_root = artifact_root_folder.path();
+    let mut session = rooted_session(read_root, artifact_root);
     session.install_machine(build_pc98());
     session
         .run(RunTarget::Frames(1), 50_000_000, 1_000_000)
         .expect("frame run");
     let (width, height) = session.screen_size().expect("size");
     write_png(
-        &read_root,
+        read_root,
         "unmatched.png",
         width,
         height,
@@ -298,7 +312,12 @@ fn pc98_boot_to_title_matches_baseline() {
         run.termination
     );
     // The script's own screenshot artifact is written under the artifact root.
-    assert!(run.artifact_root.join("pc98-title-actual.png").exists());
+    assert!(
+        run.artifact_root
+            .path()
+            .join("pc98-title-actual.png")
+            .exists()
+    );
 }
 
 #[test]
@@ -320,7 +339,7 @@ fn pc98_check_screen_failure_writes_comparison_image() {
     }
     assert_eq!(run.exit_code, 1);
     // The side-by-side comparison image is written under the artifact root.
-    let comparison = run.artifact_root.join("pc98-wrong-compare.png");
+    let comparison = run.artifact_root.path().join("pc98-wrong-compare.png");
     assert!(comparison.exists(), "comparison image should be written");
     let decoded = Surface::load_png(&std::fs::read(&comparison).expect("read comparison"))
         .expect("decode comparison");
@@ -339,5 +358,10 @@ fn public_wait_for_screen_contract_and_artifact_hold() {
         "expected Completed(Ok), got {:?}",
         run.termination
     );
-    assert!(run.artifact_root.join("pc98-wrong-compare.png").exists());
+    assert!(
+        run.artifact_root
+            .path()
+            .join("pc98-wrong-compare.png")
+            .exists()
+    );
 }

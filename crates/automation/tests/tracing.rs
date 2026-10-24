@@ -100,12 +100,12 @@ fn pc98_console_diagnose_script_passes() {
     );
     // The memory artifact holds the exact guest bytes: the saved byte is the
     // IRET opcode the script installed as the INT 29h handler.
-    let iret = std::fs::read(run.artifact_root.join("diagnose-iret.bin"))
+    let iret = std::fs::read(run.artifact_root.path().join("diagnose-iret.bin"))
         .expect("memory artifact written");
     assert_eq!(iret, [0xCF]);
     // The trace artifact reads back with `read`, one datum per event, and the
     // read-back values reproduce the written external form exactly.
-    let trace = std::fs::read(run.artifact_root.join("diagnose-trace.scm"))
+    let trace = std::fs::read(run.artifact_root.path().join("diagnose-trace.scm"))
         .expect("trace artifact written");
     assert!(count_artifact_datums(&trace) > 0);
     assert_artifact_round_trips(&trace);
@@ -140,7 +140,7 @@ fn pc98_capture_script_passes_and_is_deterministic() {
         "capture script did not pass: {:?}",
         first.termination
     );
-    let artifact = first.artifact_root.join("capture.scm");
+    let artifact = first.artifact_root.path().join("capture.scm");
     let first_bytes = std::fs::read(&artifact).expect("capture artifact written");
     assert_eq!(
         count_artifact_datums(&first_bytes),
@@ -148,13 +148,14 @@ fn pc98_capture_script_passes_and_is_deterministic() {
         "artifact must hold one datum per retained event"
     );
     assert!(
-        !first.artifact_root.join("untriggered.scm").exists(),
+        !first.artifact_root.path().join("untriggered.scm").exists(),
         "an unfired trigger must not write an artifact"
     );
     assert!(
-        !first.artifact_root.join("escape.scm").exists()
+        !first.artifact_root.path().join("escape.scm").exists()
             && !first
                 .artifact_root
+                .path()
                 .parent()
                 .expect("artifact root parent")
                 .join("escape.scm")
@@ -167,8 +168,8 @@ fn pc98_capture_script_passes_and_is_deterministic() {
         second.termination,
         RunTermination::Completed(ExecutionResult::Ok)
     ));
-    let second_bytes =
-        std::fs::read(second.artifact_root.join("capture.scm")).expect("capture artifact written");
+    let second_bytes = std::fs::read(second.artifact_root.path().join("capture.scm"))
+        .expect("capture artifact written");
     assert_eq!(
         first_bytes, second_bytes,
         "identical runs must produce identical capture artifacts"

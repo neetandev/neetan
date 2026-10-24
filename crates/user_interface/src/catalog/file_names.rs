@@ -102,36 +102,9 @@ pub fn copy_title(title: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use common::temporary::TemporaryFolder;
 
     use super::*;
-
-    /// A temporary folder. Dropping the value removes the folder.
-    struct TemporaryFolder(PathBuf);
-
-    impl TemporaryFolder {
-        /// Creates an empty and unique temporary folder.
-        fn new(name: &str) -> Self {
-            let folder = std::env::temp_dir().join(format!(
-                "neetan_file_names_test_{}_{name}",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&folder);
-            std::fs::create_dir_all(&folder).expect("temporary folder is created");
-            Self(folder)
-        }
-
-        /// Writes an empty file `name` into the folder.
-        fn touch(&self, name: &str) {
-            std::fs::write(self.0.join(name), b"").expect("file is written");
-        }
-    }
-
-    impl Drop for TemporaryFolder {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     /// Verifies the file names of the examples table of the design document.
     #[test]
@@ -179,18 +152,18 @@ mod tests {
     /// Verifies that the existing files of a folder take the suffix without regard to case.
     #[test]
     fn new_file_names_avoid_existing_files() {
-        let folder = TemporaryFolder::new("file_names");
+        let folder = TemporaryFolder::new("file_names_test");
         assert_eq!(
-            new_game_file_name(&folder.0, &copy_title("Brandish")),
+            new_game_file_name(folder.path(), &copy_title("Brandish")),
             "brandish-copy.conf"
         );
-        folder.touch("Brandish-Copy.conf");
+        folder.write_file("Brandish-Copy.conf", b"");
         assert_eq!(
-            new_game_file_name(&folder.0, &copy_title("Brandish")),
+            new_game_file_name(folder.path(), &copy_title("Brandish")),
             "brandish-copy-2.conf"
         );
         assert_eq!(
-            new_game_file_name(&folder.0.join("absent"), "Edge"),
+            new_game_file_name(&folder.path().join("absent"), "Edge"),
             "edge.conf"
         );
     }

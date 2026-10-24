@@ -1,7 +1,6 @@
 //! Integration tests for the DIM floppy container.
 
-use std::path::PathBuf;
-
+use common::temporary::TemporaryFile;
 use device::floppy::{FloppyFormat, MountedFloppy, dim, load_floppy_image};
 
 /// Geometry row used by the tests: (media type, cylinders, sectors, size, N).
@@ -38,36 +37,6 @@ fn build_dim(media_type: u8, saved_tracks: &[usize], fill: u8) -> Vec<u8> {
         image[base] = track as u8;
     }
     image
-}
-
-fn tempfile_with(bytes: &[u8], suffix: &str) -> PathBuf {
-    use std::{
-        fs::OpenOptions,
-        io::Write,
-        sync::atomic::{AtomicU64, Ordering},
-    };
-
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    let dir = std::env::temp_dir();
-    let unique = format!(
-        "neetan_dim_test_{}_{}_{}{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-        COUNTER.fetch_add(1, Ordering::Relaxed),
-        suffix
-    );
-    let path = dir.join(unique);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .expect("create temp file");
-    file.write_all(bytes).expect("write temp file");
-    path
 }
 
 #[test]
@@ -257,7 +226,8 @@ fn writing_an_absent_track_adds_its_flag_on_reemit() {
 #[test]
 fn mounted_dim_write_through_hits_saved_tracks() {
     let data = build_dim(0x00, &[0], 0x00);
-    let path = tempfile_with(&data, ".dim");
+    let file = TemporaryFile::new("dim_test", "image.dim", &data);
+    let path = file.path().to_path_buf();
 
     let image = load_floppy_image(&path, &data).unwrap();
     assert_eq!(image.format, FloppyFormat::Dim);
@@ -272,13 +242,13 @@ fn mounted_dim_write_through_hits_saved_tracks() {
     assert!(raw[256 + 1024..256 + 2048].iter().all(|&byte| byte == 0x5A));
 
     drop(mounted);
-    std::fs::remove_file(&path).ok();
 }
 
 #[test]
 fn mounted_dim_flush_extends_file_for_new_tracks_and_refreshes_offsets() {
     let data = build_dim(0x00, &[0, 5], 0x00);
-    let path = tempfile_with(&data, ".dim");
+    let file = TemporaryFile::new("dim_test", "image.dim", &data);
+    let path = file.path().to_path_buf();
 
     let image = load_floppy_image(&path, &data).unwrap();
     let mut mounted = MountedFloppy::new(image, Some(path.clone()));
@@ -308,13 +278,13 @@ fn mounted_dim_flush_extends_file_for_new_tracks_and_refreshes_offsets() {
     );
 
     drop(mounted);
-    std::fs::remove_file(&path).ok();
 }
 
 #[test]
 fn mounted_dim_format_track_updates_flags() {
     let data = build_dim(0x00, &[0], 0x00);
-    let path = tempfile_with(&data, ".dim");
+    let file = TemporaryFile::new("dim_test", "image.dim", &data);
+    let path = file.path().to_path_buf();
 
     let image = load_floppy_image(&path, &data).unwrap();
     let mut mounted = MountedFloppy::new(image, Some(path.clone()));
@@ -329,13 +299,13 @@ fn mounted_dim_format_track_updates_flags() {
     assert_eq!(raw.len(), 256 + 2 * 8 * 1024);
 
     drop(mounted);
-    std::fs::remove_file(&path).ok();
 }
 
 #[test]
 fn incompatible_format_stays_dirty_and_leaves_file_unchanged() {
     let data = build_dim(0x00, &[0], 0x00);
-    let path = tempfile_with(&data, ".dim");
+    let file = TemporaryFile::new("dim_test", "image.dim", &data);
+    let path = file.path().to_path_buf();
 
     let image = load_floppy_image(&path, &data).unwrap();
     let mut mounted = MountedFloppy::new(image, Some(path.clone()));
@@ -346,28 +316,27 @@ fn incompatible_format_stays_dirty_and_leaves_file_unchanged() {
     assert_eq!(std::fs::read(&path).unwrap(), data);
 
     drop(mounted);
-    std::fs::remove_file(&path).ok();
 }
 
 #[test]
 fn xdf_and_2hd_extensions_load_as_xdf() {
     let data = vec![0u8; 1_261_568];
     for extension in [".xdf", ".2hd"] {
-        let path = tempfile_with(&data, extension);
+        let file = TemporaryFile::new("dim_test", &format!("image{extension}"), &data);
+        let path = file.path().to_path_buf();
         let image = load_floppy_image(&path, &data).unwrap();
         assert_eq!(image.format, FloppyFormat::Xdf);
         assert_eq!(image.format_name(), "XDF");
         assert_eq!(image.to_bytes(), data);
-        std::fs::remove_file(&path).ok();
     }
 }
 
 #[test]
 fn xdf_rejects_wrong_size() {
     let data = vec![0u8; 1_261_569];
-    let path = tempfile_with(&data, ".xdf");
+    let file = TemporaryFile::new("dim_test", "image.xdf", &data);
+    let path = file.path().to_path_buf();
     assert!(load_floppy_image(&path, &data).is_err());
-    std::fs::remove_file(&path).ok();
 }
 
 #[test]
@@ -376,7 +345,8 @@ fn mounted_xdf_write_through() {
     for (index, byte) in data.iter_mut().enumerate() {
         *byte = (index & 0xFF) as u8;
     }
-    let path = tempfile_with(&data, ".xdf");
+    let file = TemporaryFile::new("dim_test", "image.xdf", &data);
+    let path = file.path().to_path_buf();
 
     let image = load_floppy_image(&path, &data).unwrap();
     let mut mounted = MountedFloppy::new(image, Some(path.clone()));
@@ -390,5 +360,4 @@ fn mounted_xdf_write_through() {
     assert_eq!(raw[1024], (1024 & 0xFF) as u8);
 
     drop(mounted);
-    std::fs::remove_file(&path).ok();
 }

@@ -1,5 +1,7 @@
 use std::fs;
 
+use common::temporary::TemporaryFolder;
+
 use crate::{file_copy_harness::*, harness::*};
 
 #[test]
@@ -7,7 +9,8 @@ fn xcopy_copies_multicluster_file() {
     let source_bytes = prng_bytes(RANDOM_FILE_SIZE);
     let floppy = create_random_file_floppy(&source_bytes);
 
-    let hdd_path = make_temp_hdd_path("xcopy-repro");
+    let hdd_folder = TemporaryFolder::new("xcopy-repro");
+    let hdd_path = hdd_folder.path().join("disk.nhd");
     let hdd = create_empty_hdd(256);
     fs::write(&hdd_path, hdd.to_bytes()).expect("write temp HDD image");
 
@@ -52,7 +55,8 @@ fn xcopy_broken_source_chain_reports_read_error() {
     let broken_name = *b"BROKEN  BIN";
     let floppy = create_broken_chain_floppy_with_name(&broken_name, 4096);
 
-    let hdd_path = make_temp_hdd_path("xcopy-broken-chain");
+    let hdd_folder = TemporaryFolder::new("xcopy-broken-chain");
+    let hdd_path = hdd_folder.path().join("disk.nhd");
     let hdd = create_empty_hdd(256);
     fs::write(&hdd_path, hdd.to_bytes()).expect("write temp HDD image");
 
@@ -82,7 +86,8 @@ fn xcopy_broken_source_chain_reports_read_error() {
 
 #[test]
 fn xcopy_recursive_wildcard_path_copies_directory_tree() {
-    let hdd_path = make_temp_hdd_path("xcopy-wildcard-tree");
+    let hdd_folder = TemporaryFolder::new("xcopy-wildcard-tree");
+    let hdd_path = hdd_folder.path().join("disk.nhd");
     let hdd = create_empty_hdd(256);
     fs::write(&hdd_path, hdd.to_bytes()).expect("write temp HDD image");
 

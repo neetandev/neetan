@@ -295,6 +295,9 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 [[package]]
 name = "r7rs"
 version = "2026.10.0"
+dependencies = [
+ "common",
+]
 
 [[package]]
 name = "resampler"
@@ -308,6 +311,7 @@ name = "rom_loader"
 version = "2026.10.0"
 dependencies = [
  "blake3",
+ "common",
 ]
 
 [[package]]

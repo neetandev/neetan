@@ -658,7 +658,7 @@ impl<T: TraceSink> Machine for X68kMachine<T> {
 
 #[cfg(test)]
 mod tests {
-    use common::{CpuMode, TraceAccessKind, TraceEvent, TraceSink};
+    use common::{CpuMode, TraceAccessKind, TraceEvent, TraceSink, temporary::TemporaryFile};
 
     use super::*;
 
@@ -761,8 +761,12 @@ mod tests {
             D88MediaType::Disk2HD,
             vec![Some(vec![sector])],
         );
-        let path = std::env::temp_dir().join("neetan_machine_insert.d88");
-        std::fs::write(&path, FloppyImage::from_d88(disk).to_bytes()).unwrap();
+        let file = TemporaryFile::new(
+            "machine_insert",
+            "image.d88",
+            &FloppyImage::from_d88(disk).to_bytes(),
+        );
+        let path = file.path().to_path_buf();
 
         let mut machine: X68kMachine =
             crate::bus::test_support::machine(X68kModel::X68000, CpuMode::High, roms());
@@ -777,7 +781,6 @@ mod tests {
         );
         machine.flush_floppies().expect("flush succeeds");
         machine.eject_floppy(0);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
