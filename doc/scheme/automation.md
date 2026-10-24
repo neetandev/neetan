@@ -49,7 +49,10 @@ from `call-with-machine` or `with-machine`.
 - `(call-with-machine specification procedure)` -> the procedure's values.
   Builds a machine from the `specification` alist, calls
   `(procedure machine)`, and closes the machine on every unwind via
-  `dynamic-wind`. See the machine-spec keys table in the API index.
+  `dynamic-wind`. The specification takes `target`, `model`, `media` and
+  the machine settings of the configuration file under their file keys, for
+  example `(soundboard . |26k|)`. See the machine-spec keys table in the API
+  index.
 - `(with-machine (machine specification) body ...)` -> the body's values.
   (syntax) Sugar over `call-with-machine` that binds `machine` over `body`.
 - `(machine? value)` -> boolean. Whether `value` is a machine handle.

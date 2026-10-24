@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use common::{Context, CpuMode, MonitorTiming, StringError, bail, info, warn};
-#[cfg(feature = "pc88")]
-use common::{EightMhzWaitMode, MemoryWaitSwitch};
+use common::{Context, StringError, bail, info, warn};
+use machine_factory::config::settings::{
+    ExplicitSettings, Families, PathKind, SETTINGS, Setting, ValueKind, apply_derived_defaults,
+    find_setting,
+};
 pub use machine_factory::config::{
     AspectMode, Backend, BootMode, EmulatorConfig, ForceGdcClock, GraphicboardType, MidiDevice,
     ScalingMode, SoundboardType, Target, WindowMode,
@@ -19,19 +21,105 @@ fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> crate::Res
     }
 }
 
-fn parse_on_off(val: &str, flag: &str) -> crate::Result<bool> {
-    match val {
-        "on" => Ok(true),
-        "off" => Ok(false),
-        _ => bail!("invalid value '{val}' for {flag}, expected on or off"),
+/// Returns the value of a flag: the inline `--flag=value` text or the next argument.
+fn flag_value(
+    flag: &str,
+    inline_value: Option<String>,
+    args: &mut impl Iterator<Item = String>,
+) -> crate::Result<String> {
+    match inline_value {
+        Some(value) => Ok(value),
+        None => next_value(flag, args),
     }
 }
 
-fn parse_composite_phase(val: &str) -> crate::Result<u32> {
-    match val.parse::<u32>() {
-        Ok(phase) if phase <= 3 => Ok(phase),
-        _ => bail!("invalid composite phase '{val}', expected 0, 1, 2 or 3"),
+/// Returns the value of an on/off flag. A flag without `=value` takes the next
+/// argument when it is `on` or `off` and turns the setting on otherwise.
+fn on_off_flag_value<I: Iterator<Item = String>>(
+    inline_value: Option<String>,
+    args: &mut std::iter::Peekable<I>,
+) -> String {
+    if let Some(value) = inline_value {
+        return value;
     }
+    args.next_if(|next| next == "on" || next == "off")
+        .unwrap_or_else(|| "on".to_owned())
+}
+
+/// Returns the value placeholder of a setting in the `--help` list.
+fn value_placeholder(setting: &Setting) -> &'static str {
+    match setting.kind {
+        ValueKind::Choice(_) => "<VALUE>",
+        ValueKind::OnOff => "[on|off]",
+        ValueKind::Number(_) => "<NUMBER>",
+        ValueKind::Path(PathKind::File) | ValueKind::PathList => "<PATH>",
+        ValueKind::Path(PathKind::Folder) => "<FOLDER>",
+    }
+}
+
+/// Returns the description of a setting in the `--help` list: the help text,
+/// the values, the families that read it and the built-in default.
+fn setting_description(setting: &Setting, defaults: &EmulatorConfig) -> String {
+    let mut description = setting.help.to_owned();
+    match setting.kind {
+        ValueKind::Choice(choices) => {
+            let compiled = Families::compiled();
+            let values: Vec<&str> = choices
+                .iter()
+                .filter(|choice| choice.families.intersects(compiled))
+                .map(|choice| choice.value)
+                .collect();
+            description.push_str(&format!(" Values: {}.", values.join(", ")));
+        }
+        ValueKind::Number(range) => {
+            description.push_str(&format!(
+                " Range {} to {}.",
+                format_range_end(range.minimum, range.integer),
+                format_range_end(range.maximum, range.integer)
+            ));
+        }
+        ValueKind::OnOff | ValueKind::Path(_) | ValueKind::PathList => {}
+    }
+    if setting.families != Families::ALL {
+        let families: Vec<&str> = setting.families.names().collect();
+        description.push_str(&format!(" Families: {}.", families.join(", ")));
+    }
+    let default = (setting.format)(defaults);
+    if !default.is_empty() {
+        description.push_str(&format!(" Default: {}.", default.join(", ")));
+    }
+    description
+}
+
+/// Formats one end of a number range: a whole number, or a decimal number with one fractional digit.
+fn format_range_end(value: f64, integer: bool) -> String {
+    if integer {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.1}")
+    }
+}
+
+/// Builds the option list of `--help` from the settings table and the flags outside it.
+fn option_lines() -> String {
+    let defaults = EmulatorConfig::default();
+    let mut rows: Vec<(String, String)> = vec![(
+        "-c, --config <PATH>".to_owned(),
+        "Load configuration from file".to_owned(),
+    )];
+    for setting in SETTINGS {
+        rows.push((
+            format!("    --{} {}", setting.key, value_placeholder(setting)),
+            setting_description(setting, &defaults),
+        ));
+    }
+    rows.push(("-h, --help".to_owned(), "Print help".to_owned()));
+    rows.push(("-V, --version".to_owned(), "Print version".to_owned()));
+    let width = rows.iter().map(|(flag, _)| flag.len()).max().unwrap_or(0);
+    rows.iter()
+        .map(|(flag, description)| format!("  {flag:<width$}  {description}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn print_help() {
@@ -49,55 +137,11 @@ Commands:
   copy <SOURCE> <DEST>          Copy files between host and FAT disk images
 
 Options:
-  -c, --config <PATH>           Load configuration from file
-      --machine <TYPE>          Machine type: {}
-      --cpu-mode <MODE>         CPU speed mode: low or high (PC-88 derives from boot mode; X68000 XVI 10/16.67 MHz; FM Towns base fixed 16 MHz, CX 16/20 MHz, MX 33/66 MHz)
-      --boot-mode <MODE>        Boot mode; each machine accepts only its own values: PC-8801 v1s, v1h, v2 (default), n, n80, n80sr; FM-7 basic (default), dos
-      --monitor <MODE>          Monitor timing: auto, 15k, 24k (default: auto; PC-8801 and X1 turbo)
-      --pc88-memory-wait <MODE> PC-8801 memory wait: fast or compatible (default derives from boot mode)
-      --pc88-8mhz-wait <MODE>   PC-8801 8 MHz wait: fast or compatible (default: fast; PC-8801 only)
-      --pc98-roms <PATH>        Directory with the PC-98 ROM set (optional)
-      --bios                    Use the real BIOS from --pc98-roms / --at-roms instead of HLE
-      --pc88-roms <PATH>        Directory with the PC-8801MC ROM set (required)
-      --pc88va-roms <PATH>      Directory with the PC-88VA2 ROM set (required)
-      --pc6000-roms <PATH>      Directory with the PC-6000 ROM set (required)
-      --msx-roms <PATH>         Directory with the MSX ROM set (required)
-      --x1-roms <PATH>          Directory with the Sharp X1 ROM set (required)
-      --x1-keyboard <A|B>       X1 turbo keyboard mode switch (default: A)
-      --fm7-roms <PATH>         Directory with the FM-7 / FM-77AV ROM set (required)
-      --towns-roms <PATH>       Directory with the FM Towns ROM set (required)
-      --x68k-roms <PATH>        Directory with the X68000 ROM set (required)
-      --at-roms <PATH>          Directory with the PC/AT (ct486) ROM set (optional)
-      --towns-pad <2|6>         FM Towns game pad type (default 6-button)
-      --pc6000-phase <0-3>      Initial composite artifact-color phase; cycle with Right Ctrl + P (PC-6000 only)
-      --fdd1 <PATH>             Floppy disk image for drive 1 (repeatable)
-      --fdd2 <PATH>             Floppy disk image for drive 2 (repeatable)
-      --hdd1 <PATH>             Hard disk image for drive 1 (PC-98 .hdi/.nhd/.thd, FM Towns .h0-.h4, X68000 .hdf, PC/AT .hdd)
-      --hdd2 <PATH>             Hard disk image for drive 2 (PC-98 .hdi/.nhd/.thd, FM Towns .h0-.h4, X68000 .hdf, PC/AT .hdd)
-      --cdrom <PATH>            CD-ROM disc image .cue or .ccd file (repeatable, PC-9821, PC/AT, FM Towns and X68000 SUPER/XVI)
-      --cdrom-compat <on|off>   Slow/compatible CD-ROM drive timing (default: off; FM Towns only)
-      --cartridge <PATH>        Cartridge ROM image to insert
-      --cassette <PATH>         Cassette image (MSX .cas, PC-6000 .cas/.p6/.p6t, X1 .tap, FM-7 .t77)
-      --audio-volume <FLOAT>    Audio volume 0.0-1.0
-      --aspect-mode <MODE>      Display aspect mode: 4:3 or 1:1
-      --crt <on|off>            Enable CRT effect (default: on; modern backend only)
-      --scaling <MODE>          Scaling method: nearest, bilinear, pixelart (default: pixelart)
-      --backend <BACKEND>       Rendering backend: modern or legacy (default: modern)
-      --window-mode <MODE>      Window mode: windowed or fullscreen
-      --force-gdc-clock <2.5|5> Force GDC clock to 2.5 or 5 MHz (default: auto)
-      --graphicboard <TYPE>     Graphics accelerator board: none, ga1280a
-      --soundboard <TYPE>       Sound board type: none, 14, 26k, 86, 86+26k, sb16, sb16+26k
-      --adpcm-ram <on|off>      ADPCM RAM option for PC-9801-86 (default: on)
-      --ems <on|off>            Enable EMS expanded memory (default: on)
-      --xms <on|off>            Enable XMS extended memory (default: on)
-      --midi <DEVICE>           MIDI device: none, mt32, sc55 (default: none)
-      --mt32-roms <PATH>        Path to MT-32 ROM directory
-      --sc55-roms <PATH>        Path to SC55 ROM directory
-      --boot-device <DEVICE>    Boot device: auto, fdd1, fdd2, hdd1, hdd2, dos (default: auto)
-      --printer <PATH>          Output file for printer (must exist)
-      --enable-extractor        Copy on-screen text to the system clipboard
-  -h, --help                    Print help
-  -V, --version                 Print version
+{}
+
+An option takes its value as --name value or --name=value.
+An on/off option without a value turns the setting on.
+Every option except --config, --help and --version has a configuration file key of the same name.
 
 Global configuration:
   A global config is loaded from the OS data directory if it exists.
@@ -105,7 +149,7 @@ Global configuration:
 
 Run 'neetan <COMMAND> --help' for more information on a command.",
         crate::GAME_NAME,
-        machine_factory::config::compiled_model_names().join(", "),
+        option_lines(),
     );
 }
 
@@ -478,7 +522,7 @@ fn parse_args_from(
         info!("Loaded global config: {}", global_path.display());
     }
 
-    let mut args = args.into_iter();
+    let mut args = args.into_iter().peekable();
 
     while let Some(arg) = args.next() {
         if arg == "create-fdd" {
@@ -498,14 +542,6 @@ fn parse_args_from(
             None => (arg, None),
         };
 
-        let mut value = |flag: &str| -> crate::Result<String> {
-            if let Some(v) = inline_value.clone() {
-                Ok(v)
-            } else {
-                next_value(flag, &mut args)
-            }
-        };
-
         match flag.as_str() {
             "--help" | "-h" => {
                 print_help();
@@ -516,131 +552,23 @@ fn parse_args_from(
                 std::process::exit(0);
             }
             "-c" | "--config" => {
-                let path = value(&flag)?;
+                let path = flag_value(&flag, inline_value, &mut args)?;
                 apply_config_file(&mut config, &mut explicit, &mut key_map, Path::new(&path))?;
             }
-            "--machine" => {
-                let val = value(&flag)?;
-                apply_machine_selection(&mut config, &mut key_map, &val).map_err(StringError)?;
+            other => {
+                let Some(setting) = other.strip_prefix("--").and_then(find_setting) else {
+                    bail!("unknown argument: {other}");
+                };
+                let value = match setting.kind {
+                    ValueKind::OnOff => on_off_flag_value(inline_value, &mut args),
+                    ValueKind::Choice(_)
+                    | ValueKind::Number(_)
+                    | ValueKind::Path(_)
+                    | ValueKind::PathList => flag_value(&flag, inline_value, &mut args)?,
+                };
+                apply_setting(&mut config, &mut explicit, &mut key_map, setting, &value)
+                    .map_err(|message| StringError(format!("{flag}: {message}")))?;
             }
-            "--cpu-mode" => {
-                let val = value(&flag)?;
-                config.cpu_mode = val.parse::<CpuMode>().map_err(StringError)?;
-                explicit.cpu_mode = true;
-            }
-            "--boot-mode" => {
-                let val = value(&flag)?;
-                config.boot_mode = Some(val.parse::<BootMode>().map_err(StringError)?);
-            }
-            "--monitor" => {
-                let val = value(&flag)?;
-                config.monitor = val.parse::<MonitorTiming>().map_err(StringError)?;
-            }
-            #[cfg(feature = "pc88")]
-            "--pc88-memory-wait" => {
-                let val = value(&flag)?;
-                config.pc88_memory_wait = val.parse::<MemoryWaitSwitch>().map_err(StringError)?;
-                explicit.pc88_memory_wait = true;
-            }
-            #[cfg(feature = "pc88")]
-            "--pc88-8mhz-wait" => {
-                let val = value(&flag)?;
-                config.pc88_8mhz_wait = val.parse::<EightMhzWaitMode>().map_err(StringError)?;
-            }
-            "--pc98-roms" => config.pc98_roms = Some(PathBuf::from(value(&flag)?)),
-            "--bios" => config.bios = true,
-            "--debug-bios" => config.debug_bios = Some(PathBuf::from(value(&flag)?)),
-            "--pc88-roms" => config.pc88_roms = Some(PathBuf::from(value(&flag)?)),
-            "--pc88va-roms" => config.pc88va_roms = Some(PathBuf::from(value(&flag)?)),
-            "--towns-roms" => config.towns_roms = Some(PathBuf::from(value(&flag)?)),
-            "--x68k-roms" => config.x68k_roms = Some(PathBuf::from(value(&flag)?)),
-            "--at-roms" => config.at_roms = Some(PathBuf::from(value(&flag)?)),
-            "--towns-pad" => config.towns_pad = value(&flag)?.parse().map_err(StringError)?,
-            "--pc6000-roms" => config.pc6000_roms = Some(PathBuf::from(value(&flag)?)),
-            "--msx-roms" => config.msx_roms = Some(PathBuf::from(value(&flag)?)),
-            "--x1-roms" => config.x1_roms = Some(PathBuf::from(value(&flag)?)),
-            "--fm7-roms" => config.fm7_roms = Some(PathBuf::from(value(&flag)?)),
-            "--x1-keyboard" => {
-                config.x1_keyboard = value(&flag)?.parse().map_err(StringError)?;
-            }
-            "--cartridge" => config.cartridge = Some(PathBuf::from(value(&flag)?)),
-            "--cassette" => config.cassette = Some(PathBuf::from(value(&flag)?)),
-            "--pc6000-phase" => {
-                let val = value(&flag)?;
-                config.pc60_composite_phase = parse_composite_phase(&val)?;
-            }
-            "--fdd1" => config.fdd1.push(PathBuf::from(value(&flag)?)),
-            "--fdd2" => config.fdd2.push(PathBuf::from(value(&flag)?)),
-            "--hdd1" => config.hdd1 = Some(PathBuf::from(value(&flag)?)),
-            "--hdd2" => config.hdd2 = Some(PathBuf::from(value(&flag)?)),
-            "--cdrom" => config.cdrom.push(PathBuf::from(value(&flag)?)),
-            "--cdrom-compat" => {
-                let val = value(&flag)?;
-                config.cdrom_compat = parse_on_off(&val, &flag)?;
-            }
-            "--audio-volume" => {
-                let val = value(&flag)?;
-                config.audio_volume = val
-                    .parse::<f32>()
-                    .map_err(|e| StringError(format!("invalid audio volume '{val}': {e}")))?;
-            }
-            "--aspect-mode" => {
-                let val = value(&flag)?;
-                config.aspect_mode = val.parse::<AspectMode>().map_err(StringError)?;
-            }
-            "--crt" => {
-                let val = value(&flag)?;
-                config.crt = parse_on_off(&val, &flag)?;
-            }
-            "--scaling" => {
-                let val = value(&flag)?;
-                config.scaling = val.parse::<ScalingMode>().map_err(StringError)?;
-            }
-            "--window-mode" => {
-                let val = value(&flag)?;
-                config.window_mode = val.parse::<WindowMode>().map_err(StringError)?;
-            }
-            "--soundboard" => {
-                let val = value(&flag)?;
-                config.soundboard = val.parse::<SoundboardType>().map_err(StringError)?;
-            }
-            "--adpcm-ram" => {
-                let val = value(&flag)?;
-                config.adpcm_ram = parse_on_off(&val, &flag)?;
-            }
-            "--ems" => {
-                let val = value(&flag)?;
-                config.ems = parse_on_off(&val, &flag)?;
-            }
-            "--xms" => {
-                let val = value(&flag)?;
-                config.xms = parse_on_off(&val, &flag)?;
-            }
-            "--backend" => {
-                let val = value(&flag)?;
-                config.backend = val.parse::<Backend>().map_err(StringError)?;
-            }
-            "--force-gdc-clock" => {
-                let val = value(&flag)?;
-                config.force_gdc_clock = Some(val.parse::<ForceGdcClock>().map_err(StringError)?);
-            }
-            "--graphicboard" => {
-                let val = value(&flag)?;
-                config.graphicboard = val.parse::<GraphicboardType>().map_err(StringError)?;
-            }
-            "--printer" => config.printer = Some(PathBuf::from(value(&flag)?)),
-            "--mt32-roms" => config.mt32_roms = Some(PathBuf::from(value(&flag)?)),
-            "--sc55-roms" => config.sc55_roms = Some(PathBuf::from(value(&flag)?)),
-            "--midi" => {
-                let val = value(&flag)?;
-                config.midi = val.parse::<MidiDevice>().map_err(StringError)?;
-            }
-            "--boot-device" => {
-                let val = value(&flag)?;
-                config.boot_device = val.parse::<common::BootDevice>().map_err(StringError)?;
-            }
-            "--enable-extractor" => config.enable_extractor = true,
-            other => bail!("unknown argument: {other}"),
         }
     }
 
@@ -679,13 +607,6 @@ fn validate_paths(config: &EmulatorConfig) -> crate::Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct ExplicitSettings {
-    cpu_mode: bool,
-    #[cfg(feature = "pc88")]
-    pc88_memory_wait: bool,
-}
-
 pub fn parse_config_file(path: &Path) -> crate::Result<EmulatorConfig> {
     let mut config = EmulatorConfig::default();
     let mut explicit = ExplicitSettings::default();
@@ -714,200 +635,39 @@ fn apply_config_file(
         };
         let key = key.trim();
         let val = val.trim();
-        match key {
-            "machine" => {
-                if let Err(message) = apply_machine_selection(config, key_map, val) {
-                    warn!("Unknown machine type in config: {val} ({message})");
+        if let Some(host_name) = key.strip_prefix("key.") {
+            match parse_key_binding(config.target, host_name, val) {
+                Some((host, code)) => key_map.set(host, code),
+                None => warn!("Invalid key binding: {key}={val}"),
+            }
+            continue;
+        }
+        match find_setting(key) {
+            Some(setting) => {
+                if let Err(message) = apply_setting(config, explicit, key_map, setting, val) {
+                    warn!("Invalid {key} in config: {message}");
                 }
             }
-            "cpu-mode" => match val.parse::<CpuMode>() {
-                Ok(mode) => {
-                    config.cpu_mode = mode;
-                    explicit.cpu_mode = true;
-                }
-                Err(_) => warn!("Unknown CPU mode in config: {val}"),
-            },
-            "boot-mode" => match val.parse::<BootMode>() {
-                Ok(mode) => config.boot_mode = Some(mode),
-                Err(_) => warn!("Unknown boot mode in config: {val}"),
-            },
-            "monitor" => match val.parse::<MonitorTiming>() {
-                Ok(timing) => config.monitor = timing,
-                Err(_) => warn!("Unknown monitor timing in config: {val}"),
-            },
-            #[cfg(feature = "pc88")]
-            "pc88-memory-wait" => match val.parse::<MemoryWaitSwitch>() {
-                Ok(switch) => {
-                    config.pc88_memory_wait = switch;
-                    explicit.pc88_memory_wait = true;
-                }
-                Err(_) => warn!("Unknown PC-88 memory wait in config: {val}"),
-            },
-            #[cfg(feature = "pc88")]
-            "pc88-8mhz-wait" => match val.parse::<EightMhzWaitMode>() {
-                Ok(mode) => config.pc88_8mhz_wait = mode,
-                Err(_) => warn!("Unknown PC-88 8 MHz wait in config: {val}"),
-            },
-            "pc98-roms" => config.pc98_roms = Some(PathBuf::from(val)),
-            "bios" => match val {
-                "on" => config.bios = true,
-                "off" => config.bios = false,
-                _ => warn!("Invalid bios in config: {val}, expected on or off"),
-            },
-            "debug-bios" => config.debug_bios = Some(PathBuf::from(val)),
-            "pc88-roms" => config.pc88_roms = Some(PathBuf::from(val)),
-            "pc88va-roms" => config.pc88va_roms = Some(PathBuf::from(val)),
-            "towns-roms" => config.towns_roms = Some(PathBuf::from(val)),
-            "x68k-roms" => config.x68k_roms = Some(PathBuf::from(val)),
-            "at-roms" => config.at_roms = Some(PathBuf::from(val)),
-            "towns-pad" => match val.parse() {
-                Ok(pad) => config.towns_pad = pad,
-                Err(error) => warn!("Invalid towns-pad in config: {error}"),
-            },
-            "pc6000-roms" => config.pc6000_roms = Some(PathBuf::from(val)),
-            "msx-roms" => config.msx_roms = Some(PathBuf::from(val)),
-            "x1-roms" => config.x1_roms = Some(PathBuf::from(val)),
-            "fm7-roms" => config.fm7_roms = Some(PathBuf::from(val)),
-            "x1-keyboard" => match val.parse() {
-                Ok(mode) => config.x1_keyboard = mode,
-                Err(error) => warn!("Invalid x1-keyboard in config: {error}"),
-            },
-            "cartridge" => config.cartridge = Some(PathBuf::from(val)),
-            "cassette" => config.cassette = Some(PathBuf::from(val)),
-            "pc6000-phase" => match parse_composite_phase(val) {
-                Ok(phase) => config.pc60_composite_phase = phase,
-                Err(error) => warn!("Invalid PC-6000 composite phase in config: {error}"),
-            },
-            "fdd1" => config.fdd1.push(PathBuf::from(val)),
-            "fdd2" => config.fdd2.push(PathBuf::from(val)),
-            "hdd1" => config.hdd1 = Some(PathBuf::from(val)),
-            "hdd2" => config.hdd2 = Some(PathBuf::from(val)),
-            "cdrom" => config.cdrom.push(PathBuf::from(val)),
-            "cdrom-compat" => match val {
-                "on" => config.cdrom_compat = true,
-                "off" => config.cdrom_compat = false,
-                _ => warn!("Invalid cdrom-compat in config: {val}, expected on or off"),
-            },
-            "aspect-mode" => match val.parse::<AspectMode>() {
-                Ok(mode) => config.aspect_mode = mode,
-                Err(_) => warn!("Unknown aspect mode in config: {val}"),
-            },
-            "crt" => match val {
-                "on" => config.crt = true,
-                "off" => config.crt = false,
-                _ => warn!("Invalid crt in config: {val}, expected on or off"),
-            },
-            "scaling" => match val.parse::<ScalingMode>() {
-                Ok(mode) => config.scaling = mode,
-                Err(_) => warn!("Unknown scaling in config: {val}"),
-            },
-            "window-mode" => match val.parse::<WindowMode>() {
-                Ok(mode) => config.window_mode = mode,
-                Err(_) => warn!("Unknown window mode in config: {val}"),
-            },
-            "audio-volume" => match val.parse::<f32>() {
-                Ok(v) => config.audio_volume = v,
-                Err(_) => warn!("Invalid audio-volume in config: {val}"),
-            },
-            "soundboard" => match val.parse::<SoundboardType>() {
-                Ok(sb) => config.soundboard = sb,
-                Err(_) => warn!("Unknown soundboard type in config: {val}"),
-            },
-            "adpcm-ram" => match val {
-                "on" => config.adpcm_ram = true,
-                "off" => config.adpcm_ram = false,
-                _ => warn!("Invalid adpcm-ram in config: {val}, expected on or off"),
-            },
-            "ems" => match val {
-                "on" => config.ems = true,
-                "off" => config.ems = false,
-                _ => warn!("Invalid ems in config: {val}, expected on or off"),
-            },
-            "xms" => match val {
-                "on" => config.xms = true,
-                "off" => config.xms = false,
-                _ => warn!("Invalid xms in config: {val}, expected on or off"),
-            },
-            "backend" => match val.parse::<Backend>() {
-                Ok(backend) => config.backend = backend,
-                Err(_) => warn!("Invalid backend in config: {val}, expected modern or legacy"),
-            },
-            "force-gdc-clock" => match val.parse::<ForceGdcClock>() {
-                Ok(mode) => config.force_gdc_clock = Some(mode),
-                Err(_) => warn!("Invalid force-gdc-clock in config: {val}, expected 2.5 or 5"),
-            },
-            "graphicboard" => match val.parse::<GraphicboardType>() {
-                Ok(gb) => config.graphicboard = gb,
-                Err(_) => warn!("Unknown graphicboard type in config: {val}"),
-            },
-            "printer" => config.printer = Some(PathBuf::from(val)),
-            "mt32-roms" => config.mt32_roms = Some(PathBuf::from(val)),
-            "sc55-roms" => config.sc55_roms = Some(PathBuf::from(val)),
-            "midi" => match val.parse::<MidiDevice>() {
-                Ok(device) => config.midi = device,
-                Err(_) => warn!("Unknown MIDI device in config: {val}"),
-            },
-            "boot-device" => match val.parse::<common::BootDevice>() {
-                Ok(device) => config.boot_device = device,
-                Err(_) => warn!("Unknown boot device in config: {val}"),
-            },
-            "enable-extractor" => match val {
-                "on" => config.enable_extractor = true,
-                "off" => config.enable_extractor = false,
-                _ => warn!("Invalid enable-extractor in config: {val}, expected on or off"),
-            },
-            key if key.starts_with("key.") => {
-                let host_name = &key[4..];
-                match parse_key_binding(config.target, host_name, val) {
-                    Some((host, code)) => key_map.set(host, code),
-                    None => warn!("Invalid key binding: {key}={val}"),
-                }
-            }
-            _ => warn!("Unknown config key: {key}"),
+            None => warn!("Unknown config key: {key}"),
         }
     }
 
     Ok(())
 }
 
-#[cfg(feature = "pc88")]
-fn apply_derived_defaults(config: &mut EmulatorConfig, explicit: ExplicitSettings) {
-    if config.target != Target::Pc88 {
-        return;
-    }
-    // With no boot mode set the PC-88 starts in V2, which runs at full speed.
-    // A mismatched value is reported when the PC-88 machine is built.
-    if !config
-        .boot_mode
-        .is_some_and(BootMode::wants_pc88_compatibility_speed)
-    {
-        return;
-    }
-    if !explicit.cpu_mode {
-        config.cpu_mode = CpuMode::Low;
-    }
-    if !explicit.pc88_memory_wait {
-        config.pc88_memory_wait = MemoryWaitSwitch::Compatible;
-    }
-}
-
-/// The PC-88 is the only family with speed defaults derived from the boot mode.
-#[cfg(not(feature = "pc88"))]
-fn apply_derived_defaults(_config: &mut EmulatorConfig, _explicit: ExplicitSettings) {}
-
-/// Resolves a `--machine` / `machine=` value to a family and model, then clears
-/// the native key overrides when the family changed so later `key.*` overrides
-/// are parsed against the new target.
-fn apply_machine_selection(
+/// Applies one value of `setting` and records an explicit value. A family
+/// change clears the key overrides, since native override codes belong to one
+/// family and later `key.*` lines parse against the new family.
+fn apply_setting(
     config: &mut EmulatorConfig,
+    explicit: &mut ExplicitSettings,
     key_map: &mut KeyOverrides,
+    setting: &Setting,
     value: &str,
 ) -> Result<(), String> {
     let previous = config.target;
-    machine_factory::config::resolve_model(config, value)?;
+    explicit.apply(config, setting, value)?;
     if config.target != previous {
-        // Native override codes are target specific, so a family change clears
-        // any bindings parsed against the previous target.
         *key_map = KeyOverrides::new();
     }
     Ok(())
@@ -922,8 +682,12 @@ fn global_config_path() -> Option<PathBuf> {
 mod tests {
     #[cfg(feature = "pc98")]
     use common::MachineModel;
+    use common::MonitorTiming;
+    #[cfg(feature = "pc88")]
+    use common::{CpuMode, MemoryWaitSwitch};
     #[cfg(feature = "pc60")]
     use machine_60::Pc6000Model;
+    use machine_factory::config::settings::NumberRange;
     #[cfg(feature = "msx")]
     use machine_msx::MsxModel;
     #[cfg(feature = "x68k")]
@@ -940,12 +704,253 @@ mod tests {
         }
     }
 
+    /// Returns the error of an argument list that must fail to parse.
+    fn parse_error(args: &[&str]) -> String {
+        match parse_args_from(args.iter().map(|arg| (*arg).to_owned()), false) {
+            Ok(_) => panic!("{args:?} should fail to parse"),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    /// Writes `contents` to a unique temporary file and returns its path.
+    fn temporary_file(name: &str, contents: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("neetan_config_test_{}_{name}", std::process::id()));
+        std::fs::write(&path, contents).expect("temporary file should be written");
+        path
+    }
+
+    /// Parses a configuration file holding `contents`.
+    fn parse_file_contents(name: &str, contents: &str) -> EmulatorConfig {
+        let path = temporary_file(name, contents);
+        let config = parse_config_file(&path).expect("config file should parse");
+        let _ = std::fs::remove_file(path);
+        config
+    }
+
+    /// Selects a machine through the settings table.
+    fn select_machine(
+        config: &mut EmulatorConfig,
+        key_map: &mut KeyOverrides,
+        value: &str,
+    ) -> Result<(), String> {
+        let setting = find_setting("machine").expect("machine is a table key");
+        apply_setting(
+            config,
+            &mut ExplicitSettings::default(),
+            key_map,
+            setting,
+            value,
+        )
+    }
+
+    /// Keys that exist only in builds with the PC-88 family.
+    const PC88_FEATURE_KEYS: &[&str] = &["pc88-memory-wait", "pc88-8mhz-wait"];
+
+    /// Returns sample values of a number range: both ends and the middle.
+    fn number_samples(range: NumberRange) -> Vec<String> {
+        let middle = ((range.minimum + range.maximum) / 2.0 / range.step).round() * range.step;
+        [range.minimum, middle, range.maximum]
+            .iter()
+            .map(|value| {
+                if range.integer {
+                    format!("{value:.0}")
+                } else {
+                    format!("{value:?}")
+                }
+            })
+            .collect()
+    }
+
+    /// Returns the sample values of every setting. Path samples name `existing_path`.
+    fn sample_values(setting: &Setting, existing_path: &Path) -> Vec<String> {
+        let path = existing_path.to_string_lossy().into_owned();
+        match setting.kind {
+            ValueKind::Choice(choices) => {
+                let compiled = Families::compiled();
+                choices
+                    .iter()
+                    .filter(|choice| choice.families.intersects(compiled))
+                    .map(|choice| choice.value.to_owned())
+                    .collect()
+            }
+            ValueKind::OnOff => vec!["on".to_owned(), "off".to_owned()],
+            ValueKind::Number(range) => number_samples(range),
+            ValueKind::Path(_) | ValueKind::PathList => vec![path],
+        }
+    }
+
+    /// Verifies that every key parses to the same configuration from a flag and from a file.
+    #[test]
+    fn every_setting_parses_the_same_from_a_flag_and_from_a_file() {
+        let existing_path = temporary_file("existing.img", "");
+        for setting in SETTINGS {
+            for value in sample_values(setting, &existing_path) {
+                let flag = format!("--{}", setting.key);
+                let (separate, _) = parse_run_config(&[&flag, &value]);
+                let inline_flag = format!("--{}={value}", setting.key);
+                let (inline, _) = parse_run_config(&[&inline_flag]);
+                let from_file = parse_file_contents(
+                    &format!("{}.conf", setting.key),
+                    &format!("{} = {value}\n", setting.key),
+                );
+                assert_eq!(separate, from_file, "{} = {value}", setting.key);
+                assert_eq!(inline, from_file, "{} = {value}", setting.key);
+                assert_eq!(
+                    (setting.format)(&from_file),
+                    vec![value.clone()],
+                    "{} formats its value",
+                    setting.key
+                );
+            }
+        }
+        let _ = std::fs::remove_file(existing_path);
+    }
+
+    /// Verifies that repeated media flags and file lines append their images in order.
+    #[test]
+    fn path_list_flags_and_file_lines_append_in_order() {
+        let first = temporary_file("first.d88", "");
+        let second = temporary_file("second.d88", "");
+        let first_text = first.to_string_lossy().into_owned();
+        let second_text = second.to_string_lossy().into_owned();
+        for key in ["fdd1", "fdd2", "cdrom"] {
+            let flag = format!("--{key}");
+            let (from_flags, _) = parse_run_config(&[&flag, &first_text, &flag, &second_text]);
+            let from_file = parse_file_contents(
+                &format!("{key}_list.conf"),
+                &format!("{key} = {first_text}\n{key} = {second_text}\n"),
+            );
+            assert_eq!(from_flags, from_file, "{key}");
+            let setting = find_setting(key).expect("media key is a table key");
+            assert_eq!(
+                (setting.format)(&from_file),
+                vec![first_text.clone(), second_text.clone()],
+                "{key}"
+            );
+        }
+        let _ = std::fs::remove_file(first);
+        let _ = std::fs::remove_file(second);
+    }
+
+    /// Verifies that an on/off flag accepts the bare form and both value forms.
+    #[test]
+    fn on_off_flags_accept_the_bare_flag_and_both_value_forms() {
+        assert!(parse_run_config(&["--bios"]).0.bios);
+        assert!(parse_run_config(&["--bios", "on"]).0.bios);
+        assert!(!parse_run_config(&["--bios", "off"]).0.bios);
+        assert!(!parse_run_config(&["--bios=off"]).0.bios);
+        assert!(parse_run_config(&["--enable-extractor"]).0.enable_extractor);
+
+        let (config, _) = parse_run_config(&["--crt", "--bios", "--monitor", "15k"]);
+        assert!(config.crt);
+        assert!(config.bios);
+        assert_eq!(config.monitor, MonitorTiming::Fixed15kHz);
+
+        let (config, _) = parse_run_config(&["--crt", "off", "--adpcm-ram=off"]);
+        assert!(!config.crt);
+        assert!(!config.adpcm_ram);
+    }
+
+    /// Verifies that unknown flags and invalid flag values end with an error.
+    #[test]
+    fn unknown_flags_and_invalid_values_are_errors() {
+        assert_eq!(parse_error(&["--foo"]), "unknown argument: --foo");
+        assert_eq!(parse_error(&["--foo=bar"]), "unknown argument: --foo");
+        assert_eq!(parse_error(&["foo"]), "unknown argument: foo");
+        assert_eq!(parse_error(&["--cpu-mode"]), "missing value for --cpu-mode");
+        assert_eq!(
+            parse_error(&["--bios=maybe"]),
+            "--bios: invalid value 'maybe', expected on or off"
+        );
+        assert_eq!(
+            parse_error(&["--pc6000-phase", "4"]),
+            "--pc6000-phase: invalid composite phase '4', expected 0, 1, 2 or 3"
+        );
+        assert!(parse_error(&["--audio-volume", "1.5"]).starts_with("--audio-volume: "));
+        assert!(parse_error(&["--force-gdc-clock", "3"]).starts_with("--force-gdc-clock: "));
+        assert!(parse_error(&["--machine", "FOOBAR"]).starts_with("--machine: "));
+    }
+
+    /// Verifies that the file parser skips unknown keys and invalid values.
+    #[test]
+    fn config_file_skips_unknown_keys_and_invalid_values() {
+        let config = parse_file_contents(
+            "invalid.conf",
+            "fdd3 = disk.d88\ncpu-mode = turbo\ncrt = maybe\nscaling = nearest\n",
+        );
+        let expected = EmulatorConfig {
+            scaling: ScalingMode::Nearest,
+            ..EmulatorConfig::default()
+        };
+        assert_eq!(config, expected);
+    }
+
+    /// Verifies that every key parses on the default machine, whatever families read it.
+    #[test]
+    fn family_filter_rejects_nothing_at_parse_time() {
+        let existing_path = temporary_file("filter.img", "");
+        let mut args: Vec<String> = Vec::new();
+        for setting in SETTINGS.iter().filter(|setting| setting.key != "machine") {
+            if let Some(value) = sample_values(setting, &existing_path).into_iter().next() {
+                args.push(format!("--{}={value}", setting.key));
+            }
+        }
+        let arguments: Vec<&str> = args.iter().map(String::as_str).collect();
+        let _ = parse_run_config(&arguments);
+        let _ = std::fs::remove_file(existing_path);
+    }
+
+    /// Verifies that the reference configuration names table keys and documents every grouped setting.
+    #[test]
+    fn reference_configuration_documents_every_editor_setting() {
+        let reference = include_str!("../../../configuration/default.conf");
+        let mut documented: Vec<&str> = Vec::new();
+        for line in reference.lines() {
+            let line = line.trim_start_matches(';').trim();
+            let Some((key, _)) = line.split_once(" = ") else {
+                continue;
+            };
+            if key.starts_with("key.") || key.contains(' ') {
+                continue;
+            }
+            if !cfg!(feature = "pc88") && PC88_FEATURE_KEYS.contains(&key) {
+                continue;
+            }
+            assert!(find_setting(key).is_some(), "{key} is not a table key");
+            documented.push(key);
+        }
+        for setting in SETTINGS.iter().filter(|setting| setting.section.is_some()) {
+            assert!(
+                documented.contains(&setting.key),
+                "{} is missing from configuration/default.conf",
+                setting.key
+            );
+        }
+    }
+
+    /// Verifies that the help lists every table key and the flags outside the table.
+    #[test]
+    fn help_lists_every_setting() {
+        let options = option_lines();
+        for setting in SETTINGS {
+            assert!(
+                options.contains(&format!("--{} ", setting.key)),
+                "--{} is missing from the help",
+                setting.key
+            );
+        }
+        assert!(options.contains("--config <PATH>"));
+        assert!(options.contains("--help"));
+        assert!(options.contains("--version"));
+    }
+
     #[cfg(feature = "pc88")]
     #[test]
     fn machine_flag_selects_the_pc88_target() {
         let mut config = EmulatorConfig::default();
         let mut key_map = KeyOverrides::new();
-        apply_machine_selection(&mut config, &mut key_map, "PC8801MC").expect("PC8801MC is valid");
+        select_machine(&mut config, &mut key_map, "PC8801MC").expect("PC8801MC is valid");
         assert_eq!(config.target, Target::Pc88);
     }
 
@@ -954,8 +959,7 @@ mod tests {
     fn machine_flag_selects_the_pc60_target() {
         let mut config = EmulatorConfig::default();
         let mut key_map = KeyOverrides::new();
-        apply_machine_selection(&mut config, &mut key_map, "PC6001MK2SR")
-            .expect("PC6001MK2SR is valid");
+        select_machine(&mut config, &mut key_map, "PC6001MK2SR").expect("PC6001MK2SR is valid");
         assert_eq!(config.target, Target::Pc60);
         assert_eq!(config.pc60_model, Pc6000Model::Pc6001Mk2Sr);
     }
@@ -987,13 +991,10 @@ mod tests {
     #[cfg(feature = "msx")]
     #[test]
     fn machine_flag_selects_msx_and_its_rom_directory() {
-        let (config, key_map) = parse_run_config(&["--machine", "msx", "--msx-roms", "roms/msx"]);
+        let (config, _key_map) = parse_run_config(&["--machine", "msx", "--msx-roms", "roms/msx"]);
         assert_eq!(config.target, Target::Msx);
         assert_eq!(config.msx_model, MsxModel::Msx);
         assert_eq!(config.msx_roms, Some(PathBuf::from("roms/msx")));
-        // The host-to-native key table now lives in each machine crate's
-        // `translate_host_key`; the keyboard.rs cross-check test guards it.
-        let _ = key_map;
     }
 
     #[cfg(feature = "msx")]
@@ -1001,11 +1002,11 @@ mod tests {
     fn machine_flag_exposes_msx2_and_msx2_plus() {
         let mut config = EmulatorConfig::default();
         let mut key_map = KeyOverrides::new();
-        apply_machine_selection(&mut config, &mut key_map, "MSX2").expect("MSX2 is valid");
+        select_machine(&mut config, &mut key_map, "MSX2").expect("MSX2 is valid");
         assert_eq!(config.target, Target::Msx);
         assert_eq!(config.msx_model, MsxModel::Msx2);
 
-        apply_machine_selection(&mut config, &mut key_map, "MSX2PLUS").expect("MSX2PLUS is valid");
+        select_machine(&mut config, &mut key_map, "MSX2PLUS").expect("MSX2PLUS is valid");
         assert_eq!(config.target, Target::Msx);
         assert_eq!(config.msx_model, MsxModel::Msx2Plus);
     }
@@ -1015,7 +1016,7 @@ mod tests {
     fn machine_flag_selects_the_pc98_target() {
         let mut config = EmulatorConfig::default();
         let mut key_map = KeyOverrides::new();
-        apply_machine_selection(&mut config, &mut key_map, "PC9801VX").expect("PC9801VX is valid");
+        select_machine(&mut config, &mut key_map, "PC9801VX").expect("PC9801VX is valid");
         assert_eq!(config.target, Target::Pc98);
         assert_eq!(config.machine, MachineModel::PC9801VX);
     }
@@ -1023,24 +1024,17 @@ mod tests {
     #[cfg(feature = "x68k")]
     #[test]
     fn machine_flag_selects_x68000_and_its_rom_directory() {
-        let (config, key_map) =
+        let (config, _key_map) =
             parse_run_config(&["--machine", "x68000xvi", "--x68k-roms", "roms/x68kxvi"]);
         assert_eq!(config.target, Target::X68k);
         assert_eq!(config.x68k_model, X68kModel::X68000Xvi);
         assert_eq!(config.x68k_roms, Some(PathBuf::from("roms/x68kxvi")));
-        let _ = key_map;
     }
 
     #[cfg(feature = "at")]
     #[test]
     fn config_file_applies_named_pc_at_key_binding() {
-        let path = std::env::temp_dir().join(format!(
-            "neetan_config_test_{}_at_key.conf",
-            std::process::id()
-        ));
-        std::fs::write(&path, "machine=AT486DX66\nkey.B=A\n")
-            .expect("config file should be written");
-
+        let path = temporary_file("at_key.conf", "machine=AT486DX66\nkey.B=A\n");
         let (config, key_map) =
             parse_run_config(&["--config", path.to_str().expect("path is UTF-8")]);
         let _ = std::fs::remove_file(path);
@@ -1049,11 +1043,27 @@ mod tests {
         assert_eq!(key_map.get(sdl3::keyboard::Scancode::B), Some(0x1E));
     }
 
+    #[cfg(all(feature = "at", feature = "msx"))]
+    /// Verifies that a family change clears the key overrides of the previous family.
+    #[test]
+    fn family_change_clears_key_overrides() {
+        let path = temporary_file(
+            "family_change.conf",
+            "machine=AT486DX66\nkey.B=A\nmachine=MSX\n",
+        );
+        let (config, key_map) =
+            parse_run_config(&["--config", path.to_str().expect("path is UTF-8")]);
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(config.target, Target::Msx);
+        assert_eq!(key_map.get(sdl3::keyboard::Scancode::B), None);
+    }
+
     #[test]
     fn unknown_machine_is_rejected() {
         let mut config = EmulatorConfig::default();
         let mut key_map = KeyOverrides::new();
-        assert!(apply_machine_selection(&mut config, &mut key_map, "FOOBAR").is_err());
+        assert!(select_machine(&mut config, &mut key_map, "FOOBAR").is_err());
     }
 
     #[test]
@@ -1128,16 +1138,10 @@ mod tests {
     #[cfg(feature = "pc88")]
     #[test]
     fn config_file_explicit_pc88_values_override_boot_mode_default() {
-        let path = std::env::temp_dir().join(format!(
-            "neetan_config_test_{}_pc88_explicit.conf",
-            std::process::id()
-        ));
-        std::fs::write(
-            &path,
+        let path = temporary_file(
+            "pc88_explicit.conf",
             "machine=PC8801MC\nboot-mode=n\ncpu-mode=high\npc88-memory-wait=fast\n",
-        )
-        .expect("config file should be written");
-
+        );
         let (config, _key_map) =
             parse_run_config(&["--config", path.to_str().expect("path is UTF-8")]);
         let _ = std::fs::remove_file(path);
@@ -1155,13 +1159,10 @@ mod tests {
 
     #[test]
     fn config_file_cdrom_compat_parses_on() {
-        let path = std::env::temp_dir().join(format!(
-            "neetan_config_test_{}_cdrom_compat.conf",
-            std::process::id()
-        ));
-        std::fs::write(&path, "machine=FMTownsIICX\ncdrom-compat=on\n")
-            .expect("config file should be written");
-
+        let path = temporary_file(
+            "cdrom_compat.conf",
+            "machine=FMTownsIICX\ncdrom-compat=on\n",
+        );
         let (config, _key_map) =
             parse_run_config(&["--config", path.to_str().expect("path is UTF-8")]);
         let _ = std::fs::remove_file(path);

@@ -118,7 +118,7 @@ music by matching a traced I/O write:
 (test-suite "PC-98 Dragon Knight"
   (with-machine (machine '((target . pc98)
                            (model . pc9801vm)
-                           (sound-board . |26k|)
+                           (soundboard . |26k|)
                            (media . ((floppy 0 "disk-a.hdm")
                                      (floppy 1 "disk-b.hdm")))))
 
@@ -153,14 +153,32 @@ A specification is an alist passed to `call-with-machine` / `with-machine`.
 target        machine family symbol (see targets below)
 model         concrete model symbol. Selects the family on its own
 media         list of (type slot path) entries
-cpu-mode      family-specific CPU mode
-sound-board   family-specific sound board (e.g. |26k|, |86|)
-graphic-board family-specific graphics board
-boot-device   family-specific boot device
-boot-mode     family-specific boot mode
-bios          on or off
-midi          family-specific MIDI device
 ```
+
+Every other key is a machine setting of the configuration file, with the same
+name and the same values: `cpu-mode`, `boot-mode`, `boot-device`, `bios`, `ems`,
+`xms`, `monitor`, `pc88-memory-wait`, `pc88-8mhz-wait`, `x1-keyboard`,
+`towns-pad`, `cdrom-compat`, `soundboard`, `adpcm-ram`, `midi`,
+`force-gdc-clock` and `graphicboard`. See
+[`configuration/default.conf`](../configuration/default.conf) for their values.
+A value is a symbol, for example `(soundboard . |86+26k|)` or `(bios . on)`.
+
+The specification rejects these keys of the configuration file:
+
+- `machine`. The `model` key selects the machine.
+- The host settings `backend`, `audio-volume` and the ROM folders. The `--config`
+  file of `neetan-auto` holds the ROM folders.
+- The media keys `fdd1`, `fdd2`, `hdd1`, `hdd2`, `cdrom`, `cartridge` and
+  `cassette`. The `media` entry mounts every image.
+- The path settings `printer` and `debug-bios`. The `printer` media kind mounts
+  the printer output.
+- The presentation settings `aspect-mode`, `window-mode`, `crt`, `scaling`,
+  `pc6000-phase` and `enable-extractor`. They have no effect in a headless session.
+
+The specification applies the PC-88 derived defaults of the configuration file.
+The boot modes `v1s`, `n`, `n80` and `n80sr` select `cpu-mode` `low` and the
+`compatible` memory wait, unless the specification sets `cpu-mode` or
+`pc88-memory-wait`.
 
 `target` and `model` must agree when both are given. Valid values for the
 family-specific keys are documented per machine in the `doc/machine-*.md` files.

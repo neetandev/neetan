@@ -39,10 +39,10 @@ floppy images (IBM PC DOS J5.0x/V through PC DOS 7.0/V, and MS-DOS 5.0/V and
 
 ## Platform options
 
-| Option             | Description                                                        | Default   |
-|--------------------|--------------------------------------------------------------------|-----------|
-| `--at-roms <PATH>` | Directory with the `ct486` and `et4000` ROM sets, by content hash  | -         |
-| `--bios`           | Boot the real BIOS from `--at-roms` instead of the HLE BIOS        | HLE BIOS  |
+| Option             | Description                                                       | Default  |
+|--------------------|-------------------------------------------------------------------|----------|
+| `--at-roms <PATH>` | Directory with the `ct486` and `et4000` ROM sets, by content hash | -        |
+| `--bios [on\|off]` | Boot the real BIOS from `--at-roms` instead of the HLE BIOS       | HLE BIOS |
 
 Floppy images attach with `--fdd1` / `--fdd2`, hard disks with `--hdd1` /
 `--hdd2` (flat `.hdd` images with an MBR partition table), and CD-ROM images with

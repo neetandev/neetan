@@ -1,5 +1,7 @@
 //! Pure-data emulator configuration types and the machine model resolver.
 
+pub mod settings;
+
 use std::path::PathBuf;
 
 use common::{CpuMode, MachineModel, MonitorTiming};
@@ -329,7 +331,7 @@ impl std::str::FromStr for BootMode {
 }
 
 /// The complete startup configuration for building a machine.
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EmulatorConfig {
     pub target: Target,
     pub machine: MachineModel,
@@ -476,68 +478,6 @@ impl Default for EmulatorConfig {
     }
 }
 
-/// Machine model names accepted by the families compiled into this build.
-const COMPILED_MODEL_NAMES: &[&str] = &[
-    #[cfg(feature = "pc98")]
-    "PC9801F",
-    #[cfg(feature = "pc98")]
-    "PC9801VM",
-    #[cfg(feature = "pc98")]
-    "PC9801VX",
-    #[cfg(feature = "pc98")]
-    "PC9801RS",
-    #[cfg(feature = "pc98")]
-    "PC9801RA",
-    #[cfg(feature = "pc98")]
-    "PC9821AS",
-    #[cfg(feature = "pc98")]
-    "PC9821AP",
-    #[cfg(feature = "pc88")]
-    "PC8801MC",
-    #[cfg(feature = "pc88va")]
-    "PC88VA2",
-    #[cfg(feature = "pc60")]
-    "PC6001",
-    #[cfg(feature = "pc60")]
-    "PC6001MK2",
-    #[cfg(feature = "pc60")]
-    "PC6601",
-    #[cfg(feature = "pc60")]
-    "PC6001MK2SR",
-    #[cfg(feature = "pc60")]
-    "PC6601SR",
-    #[cfg(feature = "msx")]
-    "MSX",
-    #[cfg(feature = "msx")]
-    "MSX2",
-    #[cfg(feature = "msx")]
-    "MSX2PLUS",
-    #[cfg(feature = "towns")]
-    "FMTowns",
-    #[cfg(feature = "towns")]
-    "FMTownsIICX",
-    #[cfg(feature = "towns")]
-    "FMTownsIIMX",
-    #[cfg(feature = "x68k")]
-    "X68000",
-    #[cfg(feature = "x68k")]
-    "X68000SUPER",
-    #[cfg(feature = "x68k")]
-    "X68000XVI",
-    #[cfg(feature = "x1")]
-    "X1",
-    #[cfg(feature = "x1")]
-    "X1TURBO",
-    #[cfg(feature = "fm7")]
-    "FM7",
-    #[cfg(feature = "fm7")]
-    "FM77AV",
-    #[cfg(feature = "at")]
-    "AT486DX50",
-    #[cfg(feature = "at")]
-    "AT486DX66",
-];
-
 /// Family symbol names for the families compiled into this build.
 const COMPILED_TARGET_NAMES: &[&str] = &[
     #[cfg(feature = "pc98")]
@@ -569,12 +509,6 @@ fn join_alternatives(names: &[&str]) -> String {
         [only] => (*only).to_owned(),
         [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
     }
-}
-
-/// Returns the machine model names this build accepts.
-#[must_use]
-pub fn compiled_model_names() -> &'static [&'static str] {
-    COMPILED_MODEL_NAMES
 }
 
 /// Returns the family symbol names this build accepts.
@@ -648,8 +582,72 @@ pub fn resolve_model(config: &mut EmulatorConfig, value: &str) -> Result<(), Str
     }
     Err(format!(
         "unknown machine type '{value}', expected {}",
-        join_alternatives(COMPILED_MODEL_NAMES)
+        join_alternatives(&settings::compiled_model_names())
     ))
+}
+
+/// Returns the model name of the selected machine as `machine` names it.
+#[must_use]
+pub fn model_name(config: &EmulatorConfig) -> &'static str {
+    match config.target {
+        #[cfg(feature = "pc98")]
+        Target::Pc98 => match config.machine {
+            MachineModel::PC9801F => "PC9801F",
+            MachineModel::PC9801VM => "PC9801VM",
+            MachineModel::PC9801VX => "PC9801VX",
+            MachineModel::PC9801RS => "PC9801RS",
+            MachineModel::PC9801RA => "PC9801RA",
+            MachineModel::PC9821AS => "PC9821AS",
+            MachineModel::PC9821AP => "PC9821AP",
+        },
+        #[cfg(feature = "pc88")]
+        Target::Pc88 => "PC8801MC",
+        #[cfg(feature = "pc88va")]
+        Target::Pc88Va => match config.pc88va_model {
+            Pc88VaModel::PC88VA2 => "PC88VA2",
+        },
+        #[cfg(feature = "pc60")]
+        Target::Pc60 => match config.pc60_model {
+            Pc6000Model::Pc6001 => "PC6001",
+            Pc6000Model::Pc6001Mk2 => "PC6001MK2",
+            Pc6000Model::Pc6601 => "PC6601",
+            Pc6000Model::Pc6001Mk2Sr => "PC6001MK2SR",
+            Pc6000Model::Pc6601Sr => "PC6601SR",
+        },
+        #[cfg(feature = "msx")]
+        Target::Msx => match config.msx_model {
+            MsxModel::Msx => "MSX",
+            MsxModel::Msx2 => "MSX2",
+            MsxModel::Msx2Plus => "MSX2PLUS",
+        },
+        #[cfg(feature = "towns")]
+        Target::Towns => match config.towns_model {
+            TownsModel::FmTowns => "FMTowns",
+            TownsModel::FmTownsIICx => "FMTownsIICX",
+            TownsModel::FmTownsIIMx => "FMTownsIIMX",
+        },
+        #[cfg(feature = "x1")]
+        Target::X1 => match config.x1_model {
+            X1Model::X1 => "X1",
+            X1Model::X1Turbo => "X1TURBO",
+        },
+        #[cfg(feature = "fm7")]
+        Target::Fm7 => match config.fm7_model {
+            Fm7Model::Fm7 => "FM7",
+            Fm7Model::Fm77Av => "FM77AV",
+        },
+        #[cfg(feature = "x68k")]
+        Target::X68k => match config.x68k_model {
+            X68kModel::X68000 => "X68000",
+            X68kModel::X68000Super => "X68000SUPER",
+            X68kModel::X68000Xvi => "X68000XVI",
+        },
+        #[cfg(feature = "at")]
+        Target::At => match config.at_model {
+            AtModel::At486Dx50 => "AT486DX50",
+            AtModel::At486Dx66 => "AT486DX66",
+        },
+    }
 }
 
 /// Returns the stable lowercase symbol name for a target family.
@@ -707,39 +705,6 @@ pub fn target_from_name(name: &str) -> Result<Target, String> {
             join_alternatives(COMPILED_TARGET_NAMES)
         )),
     }
-}
-
-/// Applies one scalar specification setting, given as a key and a value string.
-///
-/// Handles the non-media automation machine specification keys. The caller resolves `target`
-/// and `model` separately because a model selects the family. An unknown key or
-/// an invalid value is returned as a human-readable error.
-pub fn apply_spec_setting(
-    config: &mut EmulatorConfig,
-    key: &str,
-    value: &str,
-) -> Result<(), String> {
-    match key {
-        "cpu-mode" => config.cpu_mode = value.parse()?,
-        "sound-board" => config.soundboard = value.parse()?,
-        "bios" => {
-            config.bios = match value {
-                "on" => true,
-                "off" => false,
-                _ => {
-                    return Err(format!(
-                        "unknown BIOS setting '{value}', expected on or off"
-                    ));
-                }
-            };
-        }
-        "boot-device" => config.boot_device = value.parse()?,
-        "boot-mode" => config.boot_mode = Some(value.parse()?),
-        "graphic-board" => config.graphicboard = value.parse()?,
-        "midi" => config.midi = value.parse()?,
-        _ => return Err(format!("unknown specification key '{key}'")),
-    }
-    Ok(())
 }
 
 /// Forced GDC clock speed.
@@ -1013,31 +978,5 @@ impl std::str::FromStr for MidiDevice {
                 "unknown MIDI device '{s}', expected none, mt32 or sc55"
             )),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{EmulatorConfig, apply_spec_setting};
-
-    /// Verifies that the automation BIOS setting accepts its public symbols.
-    #[test]
-    fn applies_bios_setting() {
-        let mut config = EmulatorConfig::default();
-
-        apply_spec_setting(&mut config, "bios", "on").expect("enable BIOS");
-        assert!(config.bios);
-
-        apply_spec_setting(&mut config, "bios", "off").expect("disable BIOS");
-        assert!(!config.bios);
-    }
-
-    /// Verifies that the automation BIOS setting rejects unknown symbols.
-    #[test]
-    fn rejects_unknown_bios_setting() {
-        let mut config = EmulatorConfig::default();
-        let error = apply_spec_setting(&mut config, "bios", "maybe").unwrap_err();
-
-        assert_eq!(error, "unknown BIOS setting 'maybe', expected on or off");
     }
 }

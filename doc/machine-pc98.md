@@ -48,13 +48,13 @@ The MT-32 and SC-55 modules are configured separately via `--midi`; see
 | Option                       | Description                                                           | Default  |
 |------------------------------|-----------------------------------------------------------------------|----------|
 | `--soundboard <TYPE>`        | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`  | `86+26k` |
-| `--adpcm-ram <on\|off>`      | ADPCM RAM option for the PC-9801-86                                   | `on`     |
-| `--ems <on\|off>`            | Enable EMS expanded memory                                            | `on`     |
-| `--xms <on\|off>`            | Enable XMS extended memory                                            | `on`     |
+| `--adpcm-ram [on\|off]`      | ADPCM RAM option for the PC-9801-86                                   | `on`     |
+| `--ems [on\|off]`            | Enable EMS expanded memory                                            | `on`     |
+| `--xms [on\|off]`            | Enable XMS extended memory                                            | `on`     |
 | `--force-gdc-clock <2.5\|5>` | Force GDC clock to 2.5 or 5 MHz (VX and later only)                   | auto     |
 | `--graphicboard <TYPE>`      | Graphics accelerator board: `none`, `ga1280a`                         | `none`   |
 | `--pc98-roms <PATH>`         | Directory with the PC-98 ROM set (BIOS, font, sound), by content hash | -        |
-| `--bios`                     | Boot the real BIOS from `--pc98-roms` instead of the HLE BIOS         | HLE BIOS |
+| `--bios [on\|off]`           | Boot the real BIOS from `--pc98-roms` instead of the HLE BIOS         | HLE BIOS |
 
 CD-ROM disc images (`--cdrom`) are supported on the PC-9821 targets only.
 

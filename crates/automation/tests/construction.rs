@@ -75,7 +75,7 @@ fn machine_scope_unwinds_and_construction_is_transactional() {
         .iter()
         .filter(|message| matches!(message, automation::MessageProtocol::MachineReady { .. }))
         .count();
-    assert_eq!(ready_count, 5);
+    assert_eq!(ready_count, 6);
 }
 
 #[test]
