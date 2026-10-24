@@ -22,8 +22,13 @@
 
 neetan loads its ROMs from officially MAME ROM sets or ROMS of real machine
 that were correctly dumped and have the same BLAKE3 hash. You do not need to
-merge, split, or rename anything: extract the set(s) for your machine into a
-directory and point the matching `--*-roms` option at it.
+merge, split, or rename anything: extract the set(s) for your machine into the
+ROM folder of its system.
+
+Every ROM option defaults to `<roms-folder>/<system>`. The `roms-folder` key
+defaults to `roms` below the root, the folder of the settings file `neetan.conf`.
+A ROM set placed in the [default layout](#example-directory-layout) needs no ROM
+option at all. An explicit `--*-roms` option or key overrides the derived folder.
 
 Every machine points its ROM option at a single directory. neetan scans that
 directory (non-recursively), reads each file, and matches it by BLAKE3 content hash
@@ -34,19 +39,24 @@ directory and neetan picks out the files it needs.
 There is one exception where file names are used: every Roland SC-55 set is matched
 by file name (see that section).
 
-| Machine            | Option           | Required?                        |
-|--------------------|------------------|----------------------------------|
-| PC-9801 / PC-9821  | `--pc98-roms`    | Optional (HLE BIOS by default)   |
-| PC-8001 / PC-8801  | `--pc88-roms`    | Required                         |
-| PC-88VA2           | `--pc88va-roms`  | Required                         |
-| PC-6001 / PC-6601  | `--pc6000-roms`  | Required                         |
-| FM Towns           | `--towns-roms`   | Required                         |
-| Sharp X68000       | `--x68k-roms`    | Required                         |
-| MSX                | `--msx-roms`     | Required                         |
-| Sharp X1           | `--x1-roms`      | Required                         |
-| FM-7 / FM-77AV     | `--fm7-roms`     | Required                         |
-| Roland MT-32       | `--mt32-roms`    | Required for `--midi mt32`       |
-| Roland SC-55       | `--sc55-roms`    | Required for `--midi sc55`       |
+| Machine            | Option           | Default folder | Required?                        |
+|--------------------|------------------|----------------|----------------------------------|
+| PC-9801 / PC-9821  | `--pc98-roms`    | `roms/pc98`    | Optional (HLE BIOS by default)   |
+| PC-8001 / PC-8801  | `--pc88-roms`    | `roms/pc88`    | Required                         |
+| PC-88VA2           | `--pc88va-roms`  | `roms/pc88va`  | Required                         |
+| PC-6001 / PC-6601  | `--pc6000-roms`  | `roms/pc6000`  | Required                         |
+| FM Towns           | `--towns-roms`   | `roms/towns`   | Required                         |
+| Sharp X68000       | `--x68k-roms`    | `roms/x68k`    | Required                         |
+| MSX                | `--msx-roms`     | `roms/msx`     | Required                         |
+| Sharp X1           | `--x1-roms`      | `roms/x1`      | Required                         |
+| FM-7 / FM-77AV     | `--fm7-roms`     | `roms/fm7`     | Required                         |
+| PC/AT (DOS/V)      | `--at-roms`      | `roms/at`      | Optional (HLE BIOS by default)   |
+| Roland MT-32       | `--mt32-roms`    | `roms/mt32`    | Required for `--midi mt32`       |
+| Roland SC-55       | `--sc55-roms`    | `roms/sc55`    | Required for `--midi sc55`       |
+
+The derived folders of the PC-98, the PC/AT, the MT-32 and the SC-55 apply only when
+they exist. A missing derived folder of another system ends with an error at the start
+of the machine.
 
 ## Which MAME ROM set do I need?
 
@@ -90,8 +100,8 @@ you boot.
 
 ## Example directory layout
 
-One sub-directory per `--*-roms` option. The PC-98 directory holds every PC-98 set
-together; the others hold their single set.
+The default layout below the root has one folder for each `--*-roms` option. The
+PC-98 folder holds every PC-98 set together. The others hold their single set.
 
 ```
 roms/
@@ -110,7 +120,7 @@ roms/
 |   `-- (sub-CPU ROM: not in the MAME set, source separately)
 |-- pc6000/        --pc6000-roms   pc6001 ... pc6601sr
 |   `-- basicrom.60, systemrom1.64, cgrom*.*, kanjirom.*, voicerom.*, ...
-|-- fmtowns/       --towns-roms    fmtownsmx
+|-- towns/         --towns-roms    fmtownsmx
 |   |-- fmtownsiimxbios.m79
 |   `-- mytownsmx.rom
 |-- x68k/          --x68k-roms                     one selected X68000 model set
@@ -144,8 +154,19 @@ roms/
 
 ## Example configuration
 
-A `.conf` file (see `configuration/default.conf` for the full template) that points
-every ROM option at the layout above:
+The default layout needs no ROM keys. A settings file `neetan.conf` (see
+`configuration/default.conf` for the full template) can name another ROM folder or
+point single ROM keys anywhere. A ROM key overrides its derived folder:
+
+```ini
+; All ROM sets below /mnt/archive/roms, for example /mnt/archive/roms/pc98.
+roms-folder = /mnt/archive/roms
+
+; The PC-88VA2 set lives elsewhere.
+pc88va-roms = /mnt/archive/mame/pc88va2
+```
+
+The explicit form of the default layout sets every ROM key:
 
 ```ini
 ; PC-98: one directory holding all PC-9801 MAME sets.
@@ -160,7 +181,7 @@ pc88va-roms = roms/pc88va
 pc6000-roms = roms/pc6000
 
 ; FM Towns.
-towns-roms = roms/fmtowns
+towns-roms = roms/towns
 
 ; Sharp X68000.
 x68k-roms = roms/x68k
@@ -281,9 +302,9 @@ f0af53e54b1b09b229d03efc9f65e65597a0c4f6aa9e3e7c0e553274ccd481fb  pc6000/kanjiro
 633e73f55479bee65ed344d818a35b15ab109f188ad5c09826c066d6ec2596c5  pc6000/voicerom.62
 88a747147725fd618668e07744b05f34288b4454698d6182c4db2e680c7b76d0  pc6000/voicerom.66
 8ed4a9a3e9ae2e4aa0fccc0f170081f3f61c09e293812b7973a7ab9c23e22b68  pc6000/voicerom.68
-# --- FM Towns II CX / MX (roms/fmtowns) ---
-f5c2cc7c2876a4b30f320fe6fb721bd32f3ba43bbb9b0b42c398fa6b59d72ce8  fmtowns/fmtownsiimxbios.m79
-d5dc70e34d072889c28bed51ef3ccaac7f6f3fdd9e448d89297847247a901538  fmtowns/mytownsmx.rom
+# --- FM Towns II CX / MX (roms/towns) ---
+f5c2cc7c2876a4b30f320fe6fb721bd32f3ba43bbb9b0b42c398fa6b59d72ce8  towns/fmtownsiimxbios.m79
+d5dc70e34d072889c28bed51ef3ccaac7f6f3fdd9e448d89297847247a901538  towns/mytownsmx.rom
 # --- Sharp X68000 (roms/x68k) ---
 095cfc5c21d704cce7340982b717dadc9fa20bfb86637ce9a594af88c87dc6b8  x68k/cgrom.dat
 50f6e84f88feb32e1cf2421ea6376fed44851c269f8bd48706c2e8061ceba313  x68k/rh-ix0897cezz.ic12

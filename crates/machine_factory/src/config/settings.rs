@@ -11,7 +11,7 @@ use common::CpuMode;
 use common::{EightMhzWaitMode, MemoryWaitSwitch};
 use device::gameport_towns::TownsPadType;
 
-use super::{BootMode, EmulatorConfig, Target, model_name, resolve_model};
+use super::{BootMode, EmulatorConfig, Target, model_name, resolve_model, systems::SYSTEMS};
 
 /// Layer scope of a setting: the application, the emulated machine or the media of a game.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -172,28 +172,14 @@ impl Families {
         families
     }
 
-    /// Returns the symbol names of the families in this set, in table order.
+    /// Returns the system names of the families in this set, in the order of the systems table.
     pub fn names(self) -> impl Iterator<Item = &'static str> {
-        FAMILY_NAMES
+        SYSTEMS
             .iter()
-            .filter(move |(family, _)| self.includes(*family))
-            .map(|(_, name)| *name)
+            .filter(move |system| self.includes(system.family))
+            .map(|system| system.name)
     }
 }
-
-/// Symbol name of each family, in the declaration order of `Target`.
-const FAMILY_NAMES: [(Families, &str); 10] = [
-    (Families::PC98, "pc98"),
-    (Families::PC88, "pc88"),
-    (Families::PC88VA, "pc88va"),
-    (Families::PC60, "pc60"),
-    (Families::MSX, "msx"),
-    (Families::TOWNS, "towns"),
-    (Families::X1, "x1"),
-    (Families::FM7, "fm7"),
-    (Families::X68K, "x68k"),
-    (Families::AT, "at"),
-];
 
 /// Models of one family that read a setting.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -273,6 +259,8 @@ pub enum Section {
     Display,
     /// Printer, text extractor and other rarely used settings.
     Advanced,
+    /// The config folder and the ROM folder.
+    Folders,
     /// ROM folders.
     Roms,
     /// Rendering backend and audio output.
@@ -409,6 +397,13 @@ pub fn apply_derived_defaults(config: &mut EmulatorConfig, explicit: ExplicitSet
 #[cfg(not(feature = "pc88"))]
 pub fn apply_derived_defaults(_config: &mut EmulatorConfig, _explicit: ExplicitSettings) {}
 
+/// Key of the machine model.
+pub const MACHINE_KEY: &str = "machine";
+/// Key of the config folder.
+pub const CONFIG_FOLDER_KEY: &str = "config-folder";
+/// Key of the ROM folder.
+pub const ROMS_FOLDER_KEY: &str = "roms-folder";
+
 /// Returns the settings table entry of `key`.
 #[must_use]
 pub fn find_setting(key: &str) -> Option<&'static Setting> {
@@ -479,6 +474,26 @@ fn format_path(path: Option<&PathBuf>) -> Vec<String> {
 /// Formats a path list, one value for each path.
 fn format_path_list(paths: &[PathBuf]) -> Vec<String> {
     paths.iter().map(|path| path_text(path)).collect()
+}
+
+/// Parses an optional path. An empty value is unset.
+fn parse_optional_path(value: &str) -> Option<PathBuf> {
+    (!value.is_empty()).then(|| PathBuf::from(value))
+}
+
+/// Parses a required folder. An empty value is an error.
+fn parse_folder(value: &str) -> Result<PathBuf, String> {
+    if value.is_empty() {
+        return Err("the value names no folder".to_owned());
+    }
+    Ok(PathBuf::from(value))
+}
+
+/// Appends a path to a path list. An empty value appends nothing.
+fn push_path(list: &mut Vec<PathBuf>, value: &str) {
+    if !value.is_empty() {
+        list.push(PathBuf::from(value));
+    }
 }
 
 /// Returns the text of a path as a configuration file writes it.
@@ -1020,7 +1035,7 @@ const BACKEND_CHOICES: &[Choice] = &[
 /// Every setting, ordered by section.
 pub static SETTINGS: &[Setting] = &[
     Setting {
-        key: "machine",
+        key: MACHINE_KEY,
         label: "Model",
         help: "Machine model. It selects the family.",
         scope: Scope::System,
@@ -1288,7 +1303,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: Some(|config| config.fdd1.clear()),
         apply: |config, value| {
-            config.fdd1.push(PathBuf::from(value));
+            push_path(&mut config.fdd1, value);
             Ok(())
         },
         format: |config| format_path_list(&config.fdd1),
@@ -1309,7 +1324,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: Some(|config| config.fdd2.clear()),
         apply: |config, value| {
-            config.fdd2.push(PathBuf::from(value));
+            push_path(&mut config.fdd2, value);
             Ok(())
         },
         format: |config| format_path_list(&config.fdd2),
@@ -1336,7 +1351,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: Some(|config| config.cdrom.clear()),
         apply: |config, value| {
-            config.cdrom.push(PathBuf::from(value));
+            push_path(&mut config.cdrom, value);
             Ok(())
         },
         format: |config| format_path_list(&config.cdrom),
@@ -1372,7 +1387,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.hdd1 = Some(PathBuf::from(value));
+            config.hdd1 = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.hdd1.as_ref()),
@@ -1390,7 +1405,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.hdd2 = Some(PathBuf::from(value));
+            config.hdd2 = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.hdd2.as_ref()),
@@ -1408,7 +1423,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.cartridge = Some(PathBuf::from(value));
+            config.cartridge = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.cartridge.as_ref()),
@@ -1429,7 +1444,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.cassette = Some(PathBuf::from(value));
+            config.cassette = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.cassette.as_ref()),
@@ -1630,7 +1645,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.printer = Some(PathBuf::from(value));
+            config.printer = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.printer.as_ref()),
@@ -1666,7 +1681,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.debug_bios = Some(PathBuf::from(value));
+            config.debug_bios = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.debug_bios.as_ref()),
@@ -1708,6 +1723,42 @@ pub static SETTINGS: &[Setting] = &[
         format: |config| format_decimal(config.audio_volume),
     },
     Setting {
+        key: CONFIG_FOLDER_KEY,
+        label: "Config folder",
+        help: "Folder of the system defaults and the game files. The default lies in the root.",
+        scope: Scope::Host,
+        kind: ValueKind::Path(PathKind::Folder),
+        families: Families::ALL,
+        model_limits: &[],
+        section: Some(Section::Folders),
+        explicit: None,
+        frontend_only: true,
+        clear: None,
+        apply: |config, value| {
+            config.config_folder = parse_folder(value)?;
+            Ok(())
+        },
+        format: |config| format_path(Some(&config.config_folder)),
+    },
+    Setting {
+        key: ROMS_FOLDER_KEY,
+        label: "ROM folder",
+        help: "Folder of the ROM folders of every system. The default lies in the root.",
+        scope: Scope::Host,
+        kind: ValueKind::Path(PathKind::Folder),
+        families: Families::ALL,
+        model_limits: &[],
+        section: Some(Section::Folders),
+        explicit: None,
+        frontend_only: false,
+        clear: None,
+        apply: |config, value| {
+            config.roms_folder = parse_folder(value)?;
+            Ok(())
+        },
+        format: |config| format_path(Some(&config.roms_folder)),
+    },
+    Setting {
         key: "at-roms",
         label: "PC/AT",
         help: "Folder with the PC/AT ROM set. Every ROM is optional.",
@@ -1720,7 +1771,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.at_roms = Some(PathBuf::from(value));
+            config.at_roms = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.at_roms.as_ref()),
@@ -1738,7 +1789,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.fm7_roms = Some(PathBuf::from(value));
+            config.fm7_roms = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.fm7_roms.as_ref()),
@@ -1756,7 +1807,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.msx_roms = Some(PathBuf::from(value));
+            config.msx_roms = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.msx_roms.as_ref()),
@@ -1774,7 +1825,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.mt32_roms = Some(PathBuf::from(value));
+            config.mt32_roms = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.mt32_roms.as_ref()),
@@ -1792,7 +1843,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.pc6000_roms = Some(PathBuf::from(value));
+            config.pc6000_roms = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.pc6000_roms.as_ref()),
@@ -1810,7 +1861,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.pc88_roms = Some(PathBuf::from(value));
+            config.pc88_roms = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.pc88_roms.as_ref()),
@@ -1828,7 +1879,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.pc88va_roms = Some(PathBuf::from(value));
+            config.pc88va_roms = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.pc88va_roms.as_ref()),
@@ -1846,7 +1897,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.pc98_roms = Some(PathBuf::from(value));
+            config.pc98_roms = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.pc98_roms.as_ref()),
@@ -1864,7 +1915,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.sc55_roms = Some(PathBuf::from(value));
+            config.sc55_roms = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.sc55_roms.as_ref()),
@@ -1882,7 +1933,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.towns_roms = Some(PathBuf::from(value));
+            config.towns_roms = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.towns_roms.as_ref()),
@@ -1900,7 +1951,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.x1_roms = Some(PathBuf::from(value));
+            config.x1_roms = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.x1_roms.as_ref()),
@@ -1918,7 +1969,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.x68k_roms = Some(PathBuf::from(value));
+            config.x68k_roms = parse_optional_path(value);
             Ok(())
         },
         format: |config| format_path(config.x68k_roms.as_ref()),
@@ -2051,6 +2102,31 @@ mod tests {
         }
     }
 
+    /// Verifies the empty value of every path kind: unset, nothing appended or an error for a folder key.
+    #[test]
+    fn empty_path_values_unset_or_fail() {
+        for setting in SETTINGS {
+            let mut config = EmulatorConfig::default();
+            match setting.kind {
+                ValueKind::Path(_)
+                    if [CONFIG_FOLDER_KEY, ROMS_FOLDER_KEY].contains(&setting.key) =>
+                {
+                    assert!((setting.apply)(&mut config, "").is_err(), "{}", setting.key);
+                }
+                ValueKind::Path(_) => {
+                    (setting.apply)(&mut config, "images/disk.img").expect("path applies");
+                    (setting.apply)(&mut config, "").expect("empty path applies");
+                    assert!((setting.format)(&config).is_empty(), "{}", setting.key);
+                }
+                ValueKind::PathList => {
+                    (setting.apply)(&mut config, "").expect("empty path applies");
+                    assert!((setting.format)(&config).is_empty(), "{}", setting.key);
+                }
+                ValueKind::Choice(_) | ValueKind::OnOff | ValueKind::Number(_) => {}
+            }
+        }
+    }
+
     /// Verifies that keys outside the table are not found.
     #[test]
     fn unknown_keys_are_not_found() {
@@ -2141,7 +2217,7 @@ mod tests {
     #[test]
     fn family_filter_rejects_nothing_at_apply_time() {
         let mut config = EmulatorConfig::default();
-        for setting in SETTINGS.iter().filter(|setting| setting.key != "machine") {
+        for setting in SETTINGS.iter().filter(|setting| setting.key != MACHINE_KEY) {
             for value in sample_values(setting) {
                 (setting.apply)(&mut config, &value).expect("every family accepts every key");
             }
@@ -2182,7 +2258,7 @@ mod tests {
         let mut config = EmulatorConfig::default();
         let mut explicit = ExplicitSettings::default();
         for (key, value) in [
-            ("machine", "PC8801MC"),
+            (MACHINE_KEY, "PC8801MC"),
             ("boot-mode", "v1s"),
             ("cpu-mode", "high"),
         ] {

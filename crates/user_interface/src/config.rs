@@ -1,18 +1,23 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use common::{Context, StringError, bail, info, warn};
-use machine_factory::config::settings::{
-    ExplicitSettings, Families, PathKind, SETTINGS, Setting, ValueKind, apply_derived_defaults,
-    find_setting,
-};
+use common::{StringError, bail};
 pub use machine_factory::config::{
     AspectMode, Backend, BootMode, EmulatorConfig, ForceGdcClock, GraphicboardType, MidiDevice,
     ScalingMode, SoundboardType, Target, WindowMode,
 };
+use machine_factory::config::{
+    settings::{Families, PathKind, SETTINGS, Setting, ValueKind, find_setting},
+    systems::rom_folders,
+};
 
-use crate::{config::keymap::parse_key_binding, input::KeyOverrides};
+pub use self::layers::{
+    LaunchRequest, Locations, SETTINGS_FILE_NAME, SettingsLocation, build_configuration,
+    check_value, discover_settings, resolve_path, resolve_value,
+};
+use crate::input::KeyOverrides;
 
 mod keymap;
+mod layers;
 
 fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> crate::Result<String> {
     match args.next() {
@@ -87,6 +92,8 @@ fn setting_description(setting: &Setting, defaults: &EmulatorConfig) -> String {
     let default = (setting.format)(defaults);
     if !default.is_empty() {
         description.push_str(&format!(" Default: {}.", default.join(", ")));
+    } else if let Some(folder) = rom_folders().find(|folder| folder.key == setting.key) {
+        description.push_str(&format!(" Default: <roms-folder>/{}.", folder.name));
     }
     description
 }
@@ -103,10 +110,16 @@ fn format_range_end(value: f64, integer: bool) -> String {
 /// Builds the option list of `--help` from the settings table and the flags outside it.
 fn option_lines() -> String {
     let defaults = EmulatorConfig::default();
-    let mut rows: Vec<(String, String)> = vec![(
-        "-c, --config <PATH>".to_owned(),
-        "Load configuration from file".to_owned(),
-    )];
+    let mut rows: Vec<(String, String)> = vec![
+        (
+            "-c, --config <PATH>".to_owned(),
+            "Game file to load. Repeat the option for more files.".to_owned(),
+        ),
+        (
+            "    --settings <PATH>".to_owned(),
+            "Settings file to load. Its folder is the root.".to_owned(),
+        ),
+    ];
     for setting in SETTINGS {
         rows.push((
             format!("    --{} {}", setting.key, value_placeholder(setting)),
@@ -141,11 +154,20 @@ Options:
 
 An option takes its value as --name value or --name=value.
 An on/off option without a value turns the setting on.
-Every option except --config, --help and --version has a configuration file key of the same name.
+Every option except --config, --settings, --help and --version has a configuration file key of the
+same name.
 
-Global configuration:
-  A global config is loaded from the OS data directory if it exists.
-  Layering: defaults -> global config -> --config file -> CLI arguments
+Settings file:
+  Neetan reads the first neetan.conf of: --settings <PATH>, the current directory, the folder of
+  the executable and the SDL pref path. The folder of the settings file is the root. Without a
+  settings file the root is the SDL pref path.
+  A relative path in a configuration file resolves against the root. A relative path in an option
+  resolves against the current directory.
+
+Layers:
+  A later layer overrides an earlier one: the built-in defaults, the settings file, the system
+  defaults <config-folder>/<system>.conf, the --config files and the options.
+  Host keys apply only from the settings file and the options.
 
 Run 'neetan <COMMAND> --help' for more information on a command.",
         crate::GAME_NAME,
@@ -502,40 +524,53 @@ fn parse_convert_hdd_args(args: &mut impl Iterator<Item = String>) -> crate::Res
     Ok(Action::ConvertHdd { input, output })
 }
 
+/// Parses the command line of the process into an action.
+///
+/// The process folders of the settings discovery are read only for a run.
 pub fn parse_args() -> crate::Result<Action> {
-    parse_args_from(std::env::args().skip(1), true)
+    match parse_command_line(std::env::args().skip(1))? {
+        CommandLine::Command(action) => Ok(action),
+        CommandLine::Launch(request) => launch_action(request, &Locations::of_process()?),
+    }
 }
 
-fn parse_args_from(
+/// Parses `args` into an action. A run action reads its layers from the
+/// settings file that the discovery finds in `locations`.
+pub fn parse_args_from(
     args: impl IntoIterator<Item = String>,
-    load_global_config: bool,
+    locations: &Locations,
 ) -> crate::Result<Action> {
-    let mut config = EmulatorConfig::default();
-    let mut explicit = ExplicitSettings::default();
-    let mut key_map = KeyOverrides::new();
-
-    if load_global_config
-        && let Some(global_path) = global_config_path()
-        && global_path.exists()
-    {
-        apply_config_file(&mut config, &mut explicit, &mut key_map, &global_path)?;
-        info!("Loaded global config: {}", global_path.display());
+    match parse_command_line(args)? {
+        CommandLine::Command(action) => Ok(action),
+        CommandLine::Launch(request) => launch_action(request, locations),
     }
+}
 
+/// A parsed command line: a command, or the inputs of a launch.
+enum CommandLine {
+    /// A command such as `create-fdd`.
+    Command(Action),
+    /// A launch. Its paths are still relative to the current directory.
+    Launch(LaunchRequest),
+}
+
+/// Splits `args` into a command or the inputs of a launch.
+///
+/// A flag value is checked against the settings table.
+fn parse_command_line(args: impl IntoIterator<Item = String>) -> crate::Result<CommandLine> {
+    let mut request = LaunchRequest::default();
     let mut args = args.into_iter().peekable();
 
     while let Some(arg) = args.next() {
-        if arg == "create-fdd" {
-            return parse_create_fdd_args(&mut args);
-        }
-        if arg == "create-hdd" {
-            return parse_create_hdd_args(&mut args);
-        }
-        if arg == "convert-hdd" {
-            return parse_convert_hdd_args(&mut args);
-        }
-        if arg == "copy" {
-            return parse_copy_args(&mut args);
+        let command = match arg.as_str() {
+            "create-fdd" => Some(parse_create_fdd_args(&mut args)),
+            "create-hdd" => Some(parse_create_hdd_args(&mut args)),
+            "convert-hdd" => Some(parse_convert_hdd_args(&mut args)),
+            "copy" => Some(parse_copy_args(&mut args)),
+            _ => None,
+        };
+        if let Some(command) = command {
+            return command.map(CommandLine::Command);
         }
         let (flag, inline_value) = match arg.split_once('=') {
             Some((f, v)) => (f.to_owned(), Some(v.to_owned())),
@@ -553,7 +588,11 @@ fn parse_args_from(
             }
             "-c" | "--config" => {
                 let path = flag_value(&flag, inline_value, &mut args)?;
-                apply_config_file(&mut config, &mut explicit, &mut key_map, Path::new(&path))?;
+                request.game_files.push(PathBuf::from(path));
+            }
+            "--settings" => {
+                let path = flag_value(&flag, inline_value, &mut args)?;
+                request.settings = Some(PathBuf::from(path));
             }
             other => {
                 let Some(setting) = other.strip_prefix("--").and_then(find_setting) else {
@@ -566,120 +605,35 @@ fn parse_args_from(
                     | ValueKind::Path(_)
                     | ValueKind::PathList => flag_value(&flag, inline_value, &mut args)?,
                 };
-                apply_setting(&mut config, &mut explicit, &mut key_map, setting, &value)
+                check_value(setting, &value)
                     .map_err(|message| StringError(format!("{flag}: {message}")))?;
+                request.flags.push((setting, value));
             }
         }
     }
+    Ok(CommandLine::Launch(request))
+}
 
-    apply_derived_defaults(&mut config, explicit);
-    validate_paths(&config)?;
-
+/// Resolves the relative paths of `request` against the current directory and builds the run action.
+fn launch_action(mut request: LaunchRequest, locations: &Locations) -> crate::Result<Action> {
+    let current_directory = &locations.current_directory;
+    for file in &mut request.game_files {
+        *file = resolve_path(current_directory, file);
+    }
+    for (setting, value) in &mut request.flags {
+        *value = resolve_value(setting, current_directory, value);
+    }
+    let (config, key_map) = build_configuration(&request, locations)?;
     Ok(Action::Run(Box::new(config), key_map))
-}
-
-fn validate_paths(config: &EmulatorConfig) -> crate::Result<()> {
-    for path in &config.fdd1 {
-        if !path.exists() {
-            bail!("fdd1 image not found: {}", path.display());
-        }
-    }
-    for path in &config.fdd2 {
-        if !path.exists() {
-            bail!("fdd2 image not found: {}", path.display());
-        }
-    }
-    for path in &config.cdrom {
-        if !path.exists() {
-            bail!("cdrom image not found: {}", path.display());
-        }
-    }
-    if let Some(ref path) = config.hdd1
-        && !path.exists()
-    {
-        bail!("hdd1 image not found: {}", path.display());
-    }
-    if let Some(ref path) = config.hdd2
-        && !path.exists()
-    {
-        bail!("hdd2 image not found: {}", path.display());
-    }
-    Ok(())
-}
-
-pub fn parse_config_file(path: &Path) -> crate::Result<EmulatorConfig> {
-    let mut config = EmulatorConfig::default();
-    let mut explicit = ExplicitSettings::default();
-    let mut key_map = KeyOverrides::new();
-    apply_config_file(&mut config, &mut explicit, &mut key_map, path)?;
-    apply_derived_defaults(&mut config, explicit);
-    Ok(config)
-}
-
-fn apply_config_file(
-    config: &mut EmulatorConfig,
-    explicit: &mut ExplicitSettings,
-    key_map: &mut KeyOverrides,
-    path: &Path,
-) -> crate::Result<()> {
-    let contents = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read {}", path.display()))?;
-
-    for line in contents.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
-            continue;
-        }
-        let Some((key, val)) = line.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        let val = val.trim();
-        if let Some(host_name) = key.strip_prefix("key.") {
-            match parse_key_binding(config.target, host_name, val) {
-                Some((host, code)) => key_map.set(host, code),
-                None => warn!("Invalid key binding: {key}={val}"),
-            }
-            continue;
-        }
-        match find_setting(key) {
-            Some(setting) => {
-                if let Err(message) = apply_setting(config, explicit, key_map, setting, val) {
-                    warn!("Invalid {key} in config: {message}");
-                }
-            }
-            None => warn!("Unknown config key: {key}"),
-        }
-    }
-
-    Ok(())
-}
-
-/// Applies one value of `setting` and records an explicit value. A family
-/// change clears the key overrides, since native override codes belong to one
-/// family and later `key.*` lines parse against the new family.
-fn apply_setting(
-    config: &mut EmulatorConfig,
-    explicit: &mut ExplicitSettings,
-    key_map: &mut KeyOverrides,
-    setting: &Setting,
-    value: &str,
-) -> Result<(), String> {
-    let previous = config.target;
-    explicit.apply(config, setting, value)?;
-    if config.target != previous {
-        *key_map = KeyOverrides::new();
-    }
-    Ok(())
-}
-
-fn global_config_path() -> Option<PathBuf> {
-    let pref_path = sdl3::filesystem::get_pref_path(crate::COMPANY_NAME, crate::GAME_NAME)?;
-    Some(pref_path.join("global.conf"))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        path::Path,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
     #[cfg(feature = "pc98")]
     use common::MachineModel;
     use common::MonitorTiming;
@@ -687,7 +641,9 @@ mod tests {
     use common::{CpuMode, MemoryWaitSwitch};
     #[cfg(feature = "pc60")]
     use machine_60::Pc6000Model;
-    use machine_factory::config::settings::NumberRange;
+    use machine_factory::config::settings::{CONFIG_FOLDER_KEY, MACHINE_KEY, NumberRange};
+    #[cfg(feature = "msx")]
+    use machine_factory::config::systems::system_of;
     #[cfg(feature = "msx")]
     use machine_msx::MsxModel;
     #[cfg(feature = "x68k")]
@@ -695,53 +651,131 @@ mod tests {
 
     use super::*;
 
+    /// Counter that keeps the temporary folders of the tests apart.
+    static FOLDER_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// The temporary locations of one test. Dropping the value removes its folders.
+    struct TestLocations {
+        /// The folder that holds every folder of the locations.
+        base: PathBuf,
+        /// The current directory, the executable folder and the pref path below `base`.
+        locations: Locations,
+    }
+
+    impl TestLocations {
+        /// Creates empty folders for a new set of locations.
+        fn new(name: &str) -> Self {
+            let base = std::env::temp_dir().join(format!(
+                "neetan_config_test_{}_{}_{name}",
+                std::process::id(),
+                FOLDER_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&base);
+            let locations = Locations {
+                current_directory: base.join("current"),
+                executable_directory: Some(base.join("executable")),
+                pref_path: Some(base.join("pref")),
+            };
+            for folder in [
+                Some(&locations.current_directory),
+                locations.executable_directory.as_ref(),
+                locations.pref_path.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                std::fs::create_dir_all(folder).expect("temporary folder is created");
+            }
+            Self { base, locations }
+        }
+
+        /// Returns the current directory.
+        fn current(&self) -> &Path {
+            &self.locations.current_directory
+        }
+
+        /// Returns the pref path.
+        fn pref(&self) -> &Path {
+            self.locations
+                .pref_path
+                .as_deref()
+                .expect("test locations have a pref path")
+        }
+
+        /// Parses `args` into a run configuration.
+        fn parse(&self, args: &[&str]) -> (EmulatorConfig, KeyOverrides) {
+            match parse_args_from(args.iter().map(|arg| (*arg).to_owned()), &self.locations)
+                .expect("arguments should parse")
+            {
+                Action::Run(config, key_map) => (*config, key_map),
+                _ => panic!("expected run action"),
+            }
+        }
+
+        /// Returns the error of an argument list that must fail to parse.
+        fn error(&self, args: &[&str]) -> String {
+            match parse_args_from(args.iter().map(|arg| (*arg).to_owned()), &self.locations) {
+                Ok(_) => panic!("{args:?} should fail to parse"),
+                Err(error) => error.to_string(),
+            }
+        }
+
+        /// Writes `contents` to `name` in the pref path and returns its path.
+        fn file(&self, name: &str, contents: &str) -> PathBuf {
+            let path = self.pref().join(name);
+            write_file(&path, contents);
+            path
+        }
+
+        /// Parses a settings file in the pref path that holds `contents`.
+        fn parse_settings(&self, name: &str, contents: &str) -> EmulatorConfig {
+            let path = self.file(name, contents);
+            self.parse(&["--settings", &path.to_string_lossy()]).0
+        }
+
+        /// Parses a game file in the pref path that holds `contents`.
+        fn parse_game(&self, name: &str, contents: &str) -> (EmulatorConfig, KeyOverrides) {
+            let path = self.file(name, contents);
+            self.parse(&["--config", &path.to_string_lossy()])
+        }
+
+        /// Builds the layered configuration of `request`.
+        fn build(&self, request: &LaunchRequest) -> EmulatorConfig {
+            build_configuration(request, &self.locations)
+                .expect("configuration builds")
+                .0
+        }
+    }
+
+    impl Drop for TestLocations {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.base);
+        }
+    }
+
+    /// Parses `args` with fresh locations into a run configuration.
     fn parse_run_config(args: &[&str]) -> (EmulatorConfig, KeyOverrides) {
-        match parse_args_from(args.iter().map(|arg| (*arg).to_owned()), false)
-            .expect("arguments should parse")
-        {
-            Action::Run(config, key_map) => (*config, key_map),
-            _ => panic!("expected run action"),
-        }
+        TestLocations::new("run").parse(args)
     }
 
-    /// Returns the error of an argument list that must fail to parse.
+    /// Returns the error of an argument list that must fail to parse with fresh locations.
     fn parse_error(args: &[&str]) -> String {
-        match parse_args_from(args.iter().map(|arg| (*arg).to_owned()), false) {
-            Ok(_) => panic!("{args:?} should fail to parse"),
-            Err(error) => error.to_string(),
+        TestLocations::new("error").error(args)
+    }
+
+    /// Writes `contents` to `path`, creating its folder.
+    fn write_file(path: &Path, contents: &str) {
+        if let Some(folder) = path.parent() {
+            std::fs::create_dir_all(folder).expect("folder is created");
         }
+        std::fs::write(path, contents).expect("file is written");
     }
 
-    /// Writes `contents` to a unique temporary file and returns its path.
-    fn temporary_file(name: &str, contents: &str) -> PathBuf {
-        let path =
-            std::env::temp_dir().join(format!("neetan_config_test_{}_{name}", std::process::id()));
-        std::fs::write(&path, contents).expect("temporary file should be written");
-        path
-    }
-
-    /// Parses a configuration file holding `contents`.
-    fn parse_file_contents(name: &str, contents: &str) -> EmulatorConfig {
-        let path = temporary_file(name, contents);
-        let config = parse_config_file(&path).expect("config file should parse");
-        let _ = std::fs::remove_file(path);
-        config
-    }
-
-    /// Selects a machine through the settings table.
-    fn select_machine(
-        config: &mut EmulatorConfig,
-        key_map: &mut KeyOverrides,
-        value: &str,
-    ) -> Result<(), String> {
-        let setting = find_setting("machine").expect("machine is a table key");
-        apply_setting(
-            config,
-            &mut ExplicitSettings::default(),
-            key_map,
-            setting,
-            value,
-        )
+    /// Creates an empty file at each path.
+    fn touch(paths: &[&Path]) {
+        for path in paths {
+            write_file(path, "");
+        }
     }
 
     /// Keys that exist only in builds with the PC-88 family.
@@ -780,17 +814,18 @@ mod tests {
         }
     }
 
-    /// Verifies that every key parses to the same configuration from a flag and from a file.
+    /// Verifies that every key parses to the same configuration from a flag and from a settings file.
     #[test]
     fn every_setting_parses_the_same_from_a_flag_and_from_a_file() {
-        let existing_path = temporary_file("existing.img", "");
+        let test = TestLocations::new("every_setting");
+        let existing_path = test.file("existing.img", "");
         for setting in SETTINGS {
             for value in sample_values(setting, &existing_path) {
                 let flag = format!("--{}", setting.key);
-                let (separate, _) = parse_run_config(&[&flag, &value]);
+                let (separate, _) = test.parse(&[&flag, &value]);
                 let inline_flag = format!("--{}={value}", setting.key);
-                let (inline, _) = parse_run_config(&[&inline_flag]);
-                let from_file = parse_file_contents(
+                let (inline, _) = test.parse(&[&inline_flag]);
+                let from_file = test.parse_settings(
                     &format!("{}.conf", setting.key),
                     &format!("{} = {value}\n", setting.key),
                 );
@@ -804,20 +839,18 @@ mod tests {
                 );
             }
         }
-        let _ = std::fs::remove_file(existing_path);
     }
 
     /// Verifies that repeated media flags and file lines append their images in order.
     #[test]
     fn path_list_flags_and_file_lines_append_in_order() {
-        let first = temporary_file("first.d88", "");
-        let second = temporary_file("second.d88", "");
-        let first_text = first.to_string_lossy().into_owned();
-        let second_text = second.to_string_lossy().into_owned();
+        let test = TestLocations::new("append");
+        let first_text = test.file("first.d88", "").to_string_lossy().into_owned();
+        let second_text = test.file("second.d88", "").to_string_lossy().into_owned();
         for key in ["fdd1", "fdd2", "cdrom"] {
             let flag = format!("--{key}");
-            let (from_flags, _) = parse_run_config(&[&flag, &first_text, &flag, &second_text]);
-            let from_file = parse_file_contents(
+            let (from_flags, _) = test.parse(&[&flag, &first_text, &flag, &second_text]);
+            let (from_file, _) = test.parse_game(
                 &format!("{key}_list.conf"),
                 &format!("{key} = {first_text}\n{key} = {second_text}\n"),
             );
@@ -829,8 +862,6 @@ mod tests {
                 "{key}"
             );
         }
-        let _ = std::fs::remove_file(first);
-        let _ = std::fs::remove_file(second);
     }
 
     /// Verifies that an on/off flag accepts the bare form and both value forms.
@@ -859,6 +890,7 @@ mod tests {
         assert_eq!(parse_error(&["--foo=bar"]), "unknown argument: --foo");
         assert_eq!(parse_error(&["foo"]), "unknown argument: foo");
         assert_eq!(parse_error(&["--cpu-mode"]), "missing value for --cpu-mode");
+        assert_eq!(parse_error(&["--settings"]), "missing value for --settings");
         assert_eq!(
             parse_error(&["--bios=maybe"]),
             "--bios: invalid value 'maybe', expected on or off"
@@ -870,35 +902,73 @@ mod tests {
         assert!(parse_error(&["--audio-volume", "1.5"]).starts_with("--audio-volume: "));
         assert!(parse_error(&["--force-gdc-clock", "3"]).starts_with("--force-gdc-clock: "));
         assert!(parse_error(&["--machine", "FOOBAR"]).starts_with("--machine: "));
+        assert_eq!(
+            parse_error(&["--config-folder="]),
+            "--config-folder: the value names no folder"
+        );
+        assert!(parse_error(&["--fdd1", "missing.d88"]).starts_with("fdd1 image not found: "));
     }
 
     /// Verifies that the file parser skips unknown keys and invalid values.
     #[test]
     fn config_file_skips_unknown_keys_and_invalid_values() {
-        let config = parse_file_contents(
+        let test = TestLocations::new("invalid");
+        let (config, _) = test.parse_game(
             "invalid.conf",
-            "fdd3 = disk.d88\ncpu-mode = turbo\ncrt = maybe\nscaling = nearest\n",
+            "fdd3 = disk.d88\ncpu-mode = turbo\ncrt = maybe\nmachine = FOOBAR\nscaling = nearest\n",
         );
-        let expected = EmulatorConfig {
-            scaling: ScalingMode::Nearest,
-            ..EmulatorConfig::default()
-        };
+        let (expected, _) = test.parse(&["--scaling", "nearest"]);
         assert_eq!(config, expected);
+    }
+
+    /// Verifies the empty values: a path list clears, a single path and a ROM key are unset, a folder key is invalid.
+    #[test]
+    fn empty_values_clear_unset_or_fail() {
+        let test = TestLocations::new("empty");
+        let root = test.current().to_path_buf();
+        std::fs::create_dir_all(root.join("roms").join("pc98")).expect("folder is created");
+        touch(&[&root.join("base.d88"), &root.join("disk.hdi")]);
+        write_file(
+            &root.join(SETTINGS_FILE_NAME),
+            "fdd1 = base.d88\nhdd1 = disk.hdi\npc98-roms = /explicit/pc98\n",
+        );
+        let config = test.build(&LaunchRequest::default());
+        assert_eq!(config.fdd1, vec![root.join("base.d88")]);
+        assert_eq!(config.hdd1, Some(root.join("disk.hdi")));
+        assert_eq!(config.pc98_roms, Some(PathBuf::from("/explicit/pc98")));
+
+        let game = root.join("game.conf");
+        write_file(&game, "fdd1 =\nhdd1 =\n");
+        let config = test.build(&LaunchRequest {
+            game_files: vec![game],
+            ..LaunchRequest::default()
+        });
+        assert!(config.fdd1.is_empty());
+        assert_eq!(config.hdd1, None);
+
+        write_file(
+            &root.join(SETTINGS_FILE_NAME),
+            &format!("pc98-roms =\n{CONFIG_FOLDER_KEY} =\nroms-folder =\n"),
+        );
+        let config = test.build(&LaunchRequest::default());
+        assert_eq!(config.pc98_roms, Some(root.join("roms").join("pc98")));
+        assert_eq!(config.config_folder, root.join("config"));
+        assert_eq!(config.roms_folder, root.join("roms"));
     }
 
     /// Verifies that every key parses on the default machine, whatever families read it.
     #[test]
     fn family_filter_rejects_nothing_at_parse_time() {
-        let existing_path = temporary_file("filter.img", "");
+        let test = TestLocations::new("filter");
+        let existing_path = test.file("filter.img", "");
         let mut args: Vec<String> = Vec::new();
-        for setting in SETTINGS.iter().filter(|setting| setting.key != "machine") {
+        for setting in SETTINGS.iter().filter(|setting| setting.key != MACHINE_KEY) {
             if let Some(value) = sample_values(setting, &existing_path).into_iter().next() {
                 args.push(format!("--{}={value}", setting.key));
             }
         }
         let arguments: Vec<&str> = args.iter().map(String::as_str).collect();
-        let _ = parse_run_config(&arguments);
-        let _ = std::fs::remove_file(existing_path);
+        let _ = test.parse(&arguments);
     }
 
     /// Verifies that the reference configuration names table keys and documents every grouped setting.
@@ -941,25 +1011,477 @@ mod tests {
             );
         }
         assert!(options.contains("--config <PATH>"));
+        assert!(options.contains("--settings <PATH>"));
         assert!(options.contains("--help"));
         assert!(options.contains("--version"));
+        assert!(options.contains("Default: <roms-folder>/pc6000."));
+        assert!(options.contains("Families: pc6000."));
+    }
+
+    /// Verifies the discovery order of the settings file and the root it selects.
+    #[test]
+    fn settings_discovery_takes_the_first_match() {
+        let test = TestLocations::new("discovery");
+        let locations = &test.locations;
+        let current = locations.current_directory.clone();
+        let executable = locations
+            .executable_directory
+            .clone()
+            .expect("test locations have an executable folder");
+        let pref = test.pref().to_path_buf();
+
+        let found = discover_settings(None, locations).expect("discovery succeeds");
+        assert_eq!(found.file, None);
+        assert_eq!(found.root, pref);
+
+        let without_pref = Locations {
+            pref_path: None,
+            ..locations.clone()
+        };
+        let found = discover_settings(None, &without_pref).expect("discovery succeeds");
+        assert_eq!(found.root, current);
+
+        for folder in [&pref, &executable, &current] {
+            write_file(&folder.join(SETTINGS_FILE_NAME), "");
+            let found = discover_settings(None, locations).expect("discovery succeeds");
+            assert_eq!(found.file, Some(folder.join(SETTINGS_FILE_NAME)));
+            assert_eq!(&found.root, folder);
+        }
+
+        let explicit = current.join("custom").join("other.conf");
+        write_file(&explicit, "");
+        let found = discover_settings(Some(Path::new("custom/other.conf")), locations)
+            .expect("an explicit file wins");
+        assert_eq!(found.file, Some(explicit));
+        assert_eq!(found.root, current.join("custom"));
+
+        let missing = discover_settings(Some(Path::new("missing.conf")), locations)
+            .expect_err("a missing explicit file is an error");
+        assert_eq!(
+            missing.to_string(),
+            format!(
+                "settings file not found: {}",
+                current.join("missing.conf").display()
+            )
+        );
+    }
+
+    /// Verifies that relative paths of files resolve against the root and those of flags against the current directory.
+    #[test]
+    fn relative_paths_resolve_against_the_root_and_the_current_directory() {
+        let test = TestLocations::new("paths");
+        let current = test.current().to_path_buf();
+        let root = current.join("root");
+        let settings = root.join("settings.conf");
+        write_file(&settings, "printer = out/printer.txt\n");
+        let game = current.join("games").join("game.conf");
+        write_file(&game, "fdd1 = disks/a.d88\nhdd1 = ./disks/c.hdi\n");
+        touch(&[
+            &root.join("disks/a.d88"),
+            &root.join("disks/c.hdi"),
+            &current.join("disks/b.d88"),
+        ]);
+        let fdd2 = find_setting("fdd2").expect("fdd2 is a table key");
+
+        let config = test.build(&LaunchRequest {
+            settings: Some(settings),
+            game_files: vec![game],
+            flags: vec![(fdd2, resolve_value(fdd2, &current, "disks/b.d88"))],
+            system: None,
+        });
+        assert_eq!(config.printer, Some(root.join("out/printer.txt")));
+        assert_eq!(config.fdd1, vec![root.join("disks/a.d88")]);
+        assert_eq!(config.hdd1, Some(root.join("disks/c.hdi")));
+        assert_eq!(config.fdd2, vec![current.join("disks/b.d88")]);
+        assert_eq!(config.config_folder, root.join("config"));
+        assert_eq!(config.roms_folder, root.join("roms"));
+
+        let (config, _) = test.parse(&["--roms-folder", "my-roms", "--x1-roms", "x1"]);
+        assert_eq!(config.roms_folder, current.join("my-roms"));
+        assert_eq!(config.x1_roms, Some(current.join("x1")));
+    }
+
+    #[cfg(feature = "pc98")]
+    /// Verifies that a relative `--config-folder` and a relative `-c` resolve against the current directory.
+    #[test]
+    fn relative_config_flags_resolve_against_the_current_directory() {
+        let test = TestLocations::new("config_flags");
+        let current = test.current().to_path_buf();
+        let settings = test.file("elsewhere.conf", "soundboard = 26k\n");
+        write_file(
+            &current.join("games").join("pc98.conf"),
+            "soundboard = 14\n",
+        );
+        write_file(&current.join("game.conf"), "machine = PC9801VM\n");
+        let settings_text = settings.to_string_lossy().into_owned();
+
+        let (config, _) = test.parse(&[
+            "--settings",
+            &settings_text,
+            "--config-folder",
+            "games",
+            "-c",
+            "game.conf",
+        ]);
+        assert_eq!(config.config_folder, current.join("games"));
+        assert_eq!(config.soundboard, SoundboardType::Sb14);
+        assert_eq!(config.machine, MachineModel::PC9801VM);
+    }
+
+    #[cfg(feature = "pc98")]
+    /// Verifies the layer order: settings file, system defaults, game file and flags.
+    #[test]
+    fn later_layers_override_earlier_layers() {
+        let test = TestLocations::new("layers");
+        let root = test.current().to_path_buf();
+        write_file(
+            &root.join(SETTINGS_FILE_NAME),
+            "scaling = nearest\naspect-mode = 1:1\ncrt = off\nwindow-mode = fullscreen\n",
+        );
+        write_file(
+            &root.join("config").join("pc98.conf"),
+            "scaling = bilinear\naspect-mode = 4:3\ncrt = on\n",
+        );
+        let game = root.join("config").join("pc98").join("game.conf");
+        write_file(
+            &game,
+            "machine = PC9801VX\nscaling = pixelart\naspect-mode = 1:1\n",
+        );
+        let game_text = game.to_string_lossy().into_owned();
+
+        let (config, _) = test.parse(&["--config", &game_text]);
+        assert_eq!(config.window_mode, WindowMode::Fullscreen);
+        assert!(config.crt);
+        assert_eq!(config.scaling, ScalingMode::Pixelart);
+        assert_eq!(config.aspect_mode, AspectMode::Aspect1By1);
+        assert_eq!(config.machine, MachineModel::PC9801VX);
+
+        let (config, _) = test.parse(&["--config", &game_text, "--aspect-mode", "4:3"]);
+        assert_eq!(config.aspect_mode, AspectMode::Aspect4By3);
+    }
+
+    /// Verifies that the first media value of a layer replaces the list of the earlier layers.
+    #[test]
+    fn path_lists_replace_the_list_of_earlier_layers() {
+        let test = TestLocations::new("lists");
+        let root = test.current().to_path_buf();
+        let images: Vec<PathBuf> = ["base", "a", "b", "c", "save", "x", "y"]
+            .iter()
+            .map(|name| root.join(format!("{name}.d88")))
+            .collect();
+        touch(&images.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+        write_file(&root.join(SETTINGS_FILE_NAME), "fdd1 = base.d88\n");
+        let first = root.join("first.conf");
+        write_file(&first, "fdd1 = a.d88\nfdd1 = b.d88\nfdd2 = save.d88\n");
+        let second = root.join("second.conf");
+        write_file(&second, "fdd1 = c.d88\n");
+        let fdd1 = find_setting("fdd1").expect("fdd1 is a table key");
+
+        let config = test.build(&LaunchRequest::default());
+        assert_eq!(config.fdd1, vec![root.join("base.d88")]);
+
+        let config = test.build(&LaunchRequest {
+            game_files: vec![first.clone()],
+            ..LaunchRequest::default()
+        });
+        assert_eq!(config.fdd1, vec![root.join("a.d88"), root.join("b.d88")]);
+
+        let config = test.build(&LaunchRequest {
+            game_files: vec![first.clone(), second],
+            ..LaunchRequest::default()
+        });
+        assert_eq!(config.fdd1, vec![root.join("c.d88")]);
+        assert_eq!(config.fdd2, vec![root.join("save.d88")]);
+
+        let config = test.build(&LaunchRequest {
+            game_files: vec![first],
+            flags: vec![
+                (fdd1, root.join("x.d88").to_string_lossy().into_owned()),
+                (fdd1, root.join("y.d88").to_string_lossy().into_owned()),
+            ],
+            ..LaunchRequest::default()
+        });
+        assert_eq!(config.fdd1, vec![root.join("x.d88"), root.join("y.d88")]);
+    }
+
+    #[cfg(feature = "pc98")]
+    /// Verifies that host keys apply only from the settings file and media keys never from the system defaults.
+    #[test]
+    fn layers_ignore_keys_outside_their_scope() {
+        let test = TestLocations::new("scopes");
+        let root = test.current().to_path_buf();
+        write_file(&root.join(SETTINGS_FILE_NAME), "");
+        write_file(
+            &root.join("config").join("pc98.conf"),
+            "backend = legacy\nfdd1 = system.d88\nsoundboard = 26k\nconfig-folder = elsewhere\n",
+        );
+        touch(&[&root.join("game.d88")]);
+        let game = root.join("game.conf");
+        write_file(
+            &game,
+            "machine = PC9801RA\naudio-volume = 0.5\npc98-roms = game-roms\nfdd1 = game.d88\n",
+        );
+
+        let config = test.build(&LaunchRequest {
+            game_files: vec![game],
+            ..LaunchRequest::default()
+        });
+        assert_eq!(config.backend, Backend::Modern);
+        assert!((config.audio_volume - 1.0).abs() < f32::EPSILON);
+        assert_eq!(config.pc98_roms, None);
+        assert_eq!(config.config_folder, root.join("config"));
+        assert_eq!(config.soundboard, SoundboardType::Sb26k);
+        assert_eq!(config.fdd1, vec![root.join("game.d88")]);
+
+        write_file(
+            &root.join(SETTINGS_FILE_NAME),
+            "backend = legacy\naudio-volume = 0.5\n",
+        );
+        let config = test.build(&LaunchRequest::default());
+        assert_eq!(config.backend, Backend::Legacy);
+        assert!((config.audio_volume - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[cfg(feature = "pc98")]
+    /// Verifies that the config folder of the settings file locates the system defaults.
+    #[test]
+    fn config_folder_locates_the_system_defaults() {
+        let test = TestLocations::new("config_folder");
+        let root = test.current().to_path_buf();
+        write_file(
+            &root.join(SETTINGS_FILE_NAME),
+            &format!("{CONFIG_FOLDER_KEY} = games\n"),
+        );
+        write_file(&root.join("games").join("pc98.conf"), "soundboard = 14\n");
+        write_file(&root.join("config").join("pc98.conf"), "soundboard = 86\n");
+
+        let config = test.build(&LaunchRequest::default());
+        assert_eq!(config.config_folder, root.join("games"));
+        assert_eq!(config.soundboard, SoundboardType::Sb14);
+    }
+
+    #[cfg(all(feature = "pc98", feature = "msx"))]
+    /// Verifies that the machine of the game file selects the system defaults of its family.
+    #[test]
+    fn machine_of_the_game_selects_the_system_defaults() {
+        let test = TestLocations::new("system_family");
+        let root = test.current().to_path_buf();
+        write_file(
+            &root.join(SETTINGS_FILE_NAME),
+            "machine = PC9801VM\ncrt = off\n",
+        );
+        write_file(
+            &root.join("config").join("pc98.conf"),
+            "machine = PC9801VX\nscaling = nearest\n",
+        );
+        write_file(
+            &root.join("config").join("msx.conf"),
+            "machine = MSX2PLUS\nscaling = bilinear\n",
+        );
+
+        let config = test.build(&LaunchRequest::default());
+        assert_eq!(config.machine, MachineModel::PC9801VX);
+        assert_eq!(config.scaling, ScalingMode::Nearest);
+        assert!(!config.crt);
+
+        let game = root.join("game.conf");
+        write_file(&game, "machine = MSX2\n");
+        let config = test.build(&LaunchRequest {
+            game_files: vec![game],
+            ..LaunchRequest::default()
+        });
+        assert_eq!(config.target, Target::Msx);
+        assert_eq!(config.msx_model, MsxModel::Msx2);
+        assert_eq!(config.scaling, ScalingMode::Bilinear);
+
+        write_file(
+            &root.join("config").join("msx.conf"),
+            "machine = PC9801RA\nscaling = bilinear\n",
+        );
+        let config = test.build(&LaunchRequest {
+            flags: vec![(
+                find_setting(MACHINE_KEY).expect("machine is a table key"),
+                "MSX".to_owned(),
+            )],
+            ..LaunchRequest::default()
+        });
+        assert_eq!(config.target, Target::Msx);
+        assert_eq!(config.msx_model, MsxModel::Msx);
+        assert_eq!(config.scaling, ScalingMode::Bilinear);
+    }
+
+    #[cfg(feature = "msx")]
+    /// Verifies that the system of the request selects the family when no layer sets `machine`.
+    #[test]
+    fn request_system_selects_the_family_without_a_machine() {
+        let test = TestLocations::new("request_system");
+        let root = test.current().to_path_buf();
+        write_file(&root.join(SETTINGS_FILE_NAME), "crt = off\n");
+        let msx = system_of(Target::Msx);
+
+        let config = test.build(&LaunchRequest {
+            system: Some(msx),
+            ..LaunchRequest::default()
+        });
+        assert_eq!(config.target, Target::Msx);
+        assert_eq!(config.msx_model, MsxModel::Msx);
+        assert!(!config.crt);
+
+        write_file(
+            &root.join("config").join("msx.conf"),
+            "machine = MSX2\nscaling = nearest\n",
+        );
+        let config = test.build(&LaunchRequest {
+            system: Some(msx),
+            ..LaunchRequest::default()
+        });
+        assert_eq!(config.msx_model, MsxModel::Msx2);
+        assert_eq!(config.scaling, ScalingMode::Nearest);
+
+        let game = root.join("game.conf");
+        write_file(&game, "machine = MSX2PLUS\n");
+        let config = test.build(&LaunchRequest {
+            game_files: vec![game],
+            system: Some(msx),
+            ..LaunchRequest::default()
+        });
+        assert_eq!(config.msx_model, MsxModel::Msx2Plus);
+    }
+
+    #[cfg(feature = "msx")]
+    /// Verifies that a game file in the folder of a system selects that system without a machine.
+    #[test]
+    fn game_folder_selects_the_system_without_a_machine() {
+        let test = TestLocations::new("game_folder");
+        let root = test.current().to_path_buf();
+        write_file(&root.join(SETTINGS_FILE_NAME), "");
+        write_file(&root.join("config").join("msx.conf"), "machine = MSX2\n");
+        write_file(&root.join("config").join("msx").join("game.conf"), "");
+
+        let (config, _) = test.parse(&["-c", "config/msx/game.conf"]);
+        assert_eq!(config.target, Target::Msx);
+        assert_eq!(config.msx_model, MsxModel::Msx2);
+
+        write_file(&root.join("config").join("game.conf"), "");
+        let (config, _) = test.parse(&["-c", "config/game.conf"]);
+        assert_eq!(config.target, EmulatorConfig::default().target);
+    }
+
+    #[cfg(all(feature = "pc98", feature = "msx"))]
+    /// Verifies that the system of the launch outranks the machine of the settings file.
+    #[test]
+    fn launch_system_outranks_the_settings_machine() {
+        let test = TestLocations::new("settings_machine");
+        let root = test.current().to_path_buf();
+        write_file(&root.join(SETTINGS_FILE_NAME), "machine = PC9801RA\n");
+        write_file(
+            &root.join("config").join("msx.conf"),
+            "machine = MSX2\nscaling = nearest\n",
+        );
+        write_file(&root.join("config").join("msx").join("game.conf"), "");
+
+        let config = test.build(&LaunchRequest {
+            system: Some(system_of(Target::Msx)),
+            ..LaunchRequest::default()
+        });
+        assert_eq!(config.target, Target::Msx);
+        assert_eq!(config.msx_model, MsxModel::Msx2);
+        assert_eq!(config.scaling, ScalingMode::Nearest);
+
+        let (config, _) = test.parse(&["-c", "config/msx/game.conf"]);
+        assert_eq!(config.target, Target::Msx);
+        assert_eq!(config.msx_model, MsxModel::Msx2);
+        assert_eq!(config.scaling, ScalingMode::Nearest);
+
+        std::fs::remove_file(root.join("config").join("msx.conf"))
+            .expect("system defaults are removed");
+        let (config, _) = test.parse(&["-c", "config/msx/game.conf"]);
+        assert_eq!(config.target, Target::Msx);
+        assert_eq!(config.msx_model, MsxModel::Msx);
+    }
+
+    #[cfg(feature = "pc98")]
+    /// Verifies that the machine of the settings file applies when the game and the system defaults set none.
+    #[test]
+    fn settings_machine_of_the_same_family_applies() {
+        let test = TestLocations::new("settings_same_family");
+        let root = test.current().to_path_buf();
+        write_file(&root.join(SETTINGS_FILE_NAME), "machine = PC9801VM\n");
+        write_file(&root.join("config").join("pc98.conf"), "soundboard = 14\n");
+        write_file(
+            &root.join("config").join("pc98").join("game.conf"),
+            "crt = off\n",
+        );
+
+        let (config, _) = test.parse(&["-c", "config/pc98/game.conf"]);
+        assert_eq!(config.target, Target::Pc98);
+        assert_eq!(config.machine, MachineModel::PC9801VM);
+        assert_eq!(config.soundboard, SoundboardType::Sb14);
+        assert!(!config.crt);
+    }
+
+    #[cfg(feature = "pc88")]
+    /// Verifies that an explicit CPU mode of the system defaults survives the derived defaults of the game.
+    #[test]
+    fn explicit_cpu_mode_survives_across_layers() {
+        let test = TestLocations::new("explicit");
+        let root = test.current().to_path_buf();
+        write_file(&root.join(SETTINGS_FILE_NAME), "");
+        write_file(&root.join("config").join("pc88.conf"), "cpu-mode = high\n");
+        let game = root.join("game.conf");
+        write_file(&game, "machine = PC8801MC\nboot-mode = v1s\n");
+        let request = LaunchRequest {
+            game_files: vec![game],
+            ..LaunchRequest::default()
+        };
+        let config = test.build(&request);
+        assert_eq!(config.cpu_mode, CpuMode::High);
+        assert_eq!(config.pc88_memory_wait, MemoryWaitSwitch::Compatible);
+
+        std::fs::remove_file(root.join("config").join("pc88.conf"))
+            .expect("system defaults are removed");
+        let config = test.build(&request);
+        assert_eq!(config.cpu_mode, CpuMode::Low);
+    }
+
+    /// Verifies the derived ROM folders: an explicit key wins and a missing optional folder stays unset.
+    #[test]
+    fn rom_keys_derive_from_the_rom_folder() {
+        let test = TestLocations::new("roms");
+        let root = test.current().to_path_buf();
+        std::fs::create_dir_all(root.join("roms").join("pc98")).expect("folder is created");
+        std::fs::create_dir_all(root.join("roms").join("mt32")).expect("folder is created");
+        write_file(&root.join(SETTINGS_FILE_NAME), "x1-roms = /explicit/x1\n");
+
+        let config = test.build(&LaunchRequest::default());
+        assert_eq!(config.pc98_roms, Some(root.join("roms").join("pc98")));
+        assert_eq!(config.mt32_roms, Some(root.join("roms").join("mt32")));
+        assert_eq!(config.at_roms, None);
+        assert_eq!(config.sc55_roms, None);
+        assert_eq!(config.x1_roms, Some(PathBuf::from("/explicit/x1")));
+        assert_eq!(config.pc88_roms, Some(root.join("roms").join("pc88")));
+
+        write_file(
+            &root.join(SETTINGS_FILE_NAME),
+            "roms-folder = /elsewhere\npc98-roms = mine\n",
+        );
+        let config = test.build(&LaunchRequest::default());
+        assert_eq!(config.pc98_roms, Some(root.join("mine")));
+        assert_eq!(config.mt32_roms, None);
+        assert_eq!(config.towns_roms, Some(PathBuf::from("/elsewhere/towns")));
     }
 
     #[cfg(feature = "pc88")]
     #[test]
     fn machine_flag_selects_the_pc88_target() {
-        let mut config = EmulatorConfig::default();
-        let mut key_map = KeyOverrides::new();
-        select_machine(&mut config, &mut key_map, "PC8801MC").expect("PC8801MC is valid");
+        let (config, _) = parse_run_config(&["--machine", "PC8801MC"]);
         assert_eq!(config.target, Target::Pc88);
     }
 
     #[cfg(feature = "pc60")]
     #[test]
     fn machine_flag_selects_the_pc60_target() {
-        let mut config = EmulatorConfig::default();
-        let mut key_map = KeyOverrides::new();
-        select_machine(&mut config, &mut key_map, "PC6001MK2SR").expect("PC6001MK2SR is valid");
+        let (config, _) = parse_run_config(&["--machine", "PC6001MK2SR"]);
         assert_eq!(config.target, Target::Pc60);
         assert_eq!(config.pc60_model, Pc6000Model::Pc6001Mk2Sr);
     }
@@ -991,22 +1513,21 @@ mod tests {
     #[cfg(feature = "msx")]
     #[test]
     fn machine_flag_selects_msx_and_its_rom_directory() {
-        let (config, _key_map) = parse_run_config(&["--machine", "msx", "--msx-roms", "roms/msx"]);
+        let test = TestLocations::new("msx_roms");
+        let (config, _key_map) = test.parse(&["--machine", "msx", "--msx-roms", "roms/msx"]);
         assert_eq!(config.target, Target::Msx);
         assert_eq!(config.msx_model, MsxModel::Msx);
-        assert_eq!(config.msx_roms, Some(PathBuf::from("roms/msx")));
+        assert_eq!(config.msx_roms, Some(test.current().join("roms/msx")));
     }
 
     #[cfg(feature = "msx")]
     #[test]
     fn machine_flag_exposes_msx2_and_msx2_plus() {
-        let mut config = EmulatorConfig::default();
-        let mut key_map = KeyOverrides::new();
-        select_machine(&mut config, &mut key_map, "MSX2").expect("MSX2 is valid");
+        let (config, _) = parse_run_config(&["--machine", "MSX2"]);
         assert_eq!(config.target, Target::Msx);
         assert_eq!(config.msx_model, MsxModel::Msx2);
 
-        select_machine(&mut config, &mut key_map, "MSX2PLUS").expect("MSX2PLUS is valid");
+        let (config, _) = parse_run_config(&["--machine", "MSX2", "--machine", "MSX2PLUS"]);
         assert_eq!(config.target, Target::Msx);
         assert_eq!(config.msx_model, MsxModel::Msx2Plus);
     }
@@ -1014,9 +1535,7 @@ mod tests {
     #[cfg(feature = "pc98")]
     #[test]
     fn machine_flag_selects_the_pc98_target() {
-        let mut config = EmulatorConfig::default();
-        let mut key_map = KeyOverrides::new();
-        select_machine(&mut config, &mut key_map, "PC9801VX").expect("PC9801VX is valid");
+        let (config, _) = parse_run_config(&["--machine", "PC9801VX"]);
         assert_eq!(config.target, Target::Pc98);
         assert_eq!(config.machine, MachineModel::PC9801VX);
     }
@@ -1024,46 +1543,41 @@ mod tests {
     #[cfg(feature = "x68k")]
     #[test]
     fn machine_flag_selects_x68000_and_its_rom_directory() {
+        let test = TestLocations::new("x68k_roms");
         let (config, _key_map) =
-            parse_run_config(&["--machine", "x68000xvi", "--x68k-roms", "roms/x68kxvi"]);
+            test.parse(&["--machine", "x68000xvi", "--x68k-roms", "roms/x68kxvi"]);
         assert_eq!(config.target, Target::X68k);
         assert_eq!(config.x68k_model, X68kModel::X68000Xvi);
-        assert_eq!(config.x68k_roms, Some(PathBuf::from("roms/x68kxvi")));
+        assert_eq!(config.x68k_roms, Some(test.current().join("roms/x68kxvi")));
     }
 
     #[cfg(feature = "at")]
     #[test]
     fn config_file_applies_named_pc_at_key_binding() {
-        let path = temporary_file("at_key.conf", "machine=AT486DX66\nkey.B=A\n");
-        let (config, key_map) =
-            parse_run_config(&["--config", path.to_str().expect("path is UTF-8")]);
-        let _ = std::fs::remove_file(path);
-
+        let test = TestLocations::new("at_key");
+        let (config, key_map) = test.parse_game("at_key.conf", "machine=AT486DX66\nkey.B=A\n");
         assert_eq!(config.target, Target::At);
         assert_eq!(key_map.get(sdl3::keyboard::Scancode::B), Some(0x1E));
     }
 
     #[cfg(all(feature = "at", feature = "msx"))]
-    /// Verifies that a family change clears the key overrides of the previous family.
+    /// Verifies that the key bindings of a file parse against the family of the final machine.
     #[test]
-    fn family_change_clears_key_overrides() {
-        let path = temporary_file(
-            "family_change.conf",
-            "machine=AT486DX66\nkey.B=A\nmachine=MSX\n",
-        );
+    fn key_bindings_parse_against_the_final_family() {
+        let test = TestLocations::new("final_family");
+        let path = test.file("final_family.conf", "machine=AT486DX66\nkey.B=A\n");
         let (config, key_map) =
-            parse_run_config(&["--config", path.to_str().expect("path is UTF-8")]);
-        let _ = std::fs::remove_file(path);
+            test.parse(&["--config", &path.to_string_lossy(), "--machine", "MSX"]);
 
         assert_eq!(config.target, Target::Msx);
-        assert_eq!(key_map.get(sdl3::keyboard::Scancode::B), None);
+        let expected = keymap::parse_key_binding(Target::Msx, "B", "A").map(|(_, code)| code);
+        assert!(expected.is_some());
+        assert_eq!(key_map.get(sdl3::keyboard::Scancode::B), expected);
     }
 
     #[test]
     fn unknown_machine_is_rejected() {
-        let mut config = EmulatorConfig::default();
-        let mut key_map = KeyOverrides::new();
-        assert!(select_machine(&mut config, &mut key_map, "FOOBAR").is_err());
+        assert!(parse_error(&["--machine", "FOOBAR"]).starts_with("--machine: unknown machine"));
     }
 
     #[test]
@@ -1138,14 +1652,11 @@ mod tests {
     #[cfg(feature = "pc88")]
     #[test]
     fn config_file_explicit_pc88_values_override_boot_mode_default() {
-        let path = temporary_file(
+        let test = TestLocations::new("pc88_explicit");
+        let (config, _key_map) = test.parse_game(
             "pc88_explicit.conf",
             "machine=PC8801MC\nboot-mode=n\ncpu-mode=high\npc88-memory-wait=fast\n",
         );
-        let (config, _key_map) =
-            parse_run_config(&["--config", path.to_str().expect("path is UTF-8")]);
-        let _ = std::fs::remove_file(path);
-
         assert_eq!(config.cpu_mode, CpuMode::High);
         assert_eq!(config.pc88_memory_wait, MemoryWaitSwitch::Fast);
     }
@@ -1157,16 +1668,14 @@ mod tests {
         assert!(!parse_run_config(&["--cdrom-compat", "off"]).0.cdrom_compat);
     }
 
+    #[cfg(feature = "towns")]
     #[test]
     fn config_file_cdrom_compat_parses_on() {
-        let path = temporary_file(
+        let test = TestLocations::new("cdrom_compat");
+        let (config, _key_map) = test.parse_game(
             "cdrom_compat.conf",
             "machine=FMTownsIICX\ncdrom-compat=on\n",
         );
-        let (config, _key_map) =
-            parse_run_config(&["--config", path.to_str().expect("path is UTF-8")]);
-        let _ = std::fs::remove_file(path);
-
         assert!(config.cdrom_compat);
     }
 }

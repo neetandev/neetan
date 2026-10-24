@@ -30,7 +30,13 @@ Options shared by both:
 `orchestrate` additionally accepts `--jobs <N>` (default: CPU count). The
 `--config` layer supplies only common host settings (chiefly the per-family ROM
 directories). Each script builds its own machine. Configuration order is
-`defaults -> --global-config -> --config`.
+`defaults -> --global-config -> --config`. A relative path resolves against the
+folder of its file. A `roms-folder` key derives every ROM directory that no file
+sets: `pc98-roms` becomes `<roms-folder>/pc98`, and so on for each system and for
+`mt32` and `sc55`. The derived folders of the PC-98, the PC/AT, the MT-32 and the
+SC-55 apply only when they exist. Without `roms-folder` only the explicit ROM keys
+apply. An empty ROM key is unset. Any other host setting, for example
+`backend`, ends with an error.
 
 ### Exit codes (run)
 
@@ -166,8 +172,9 @@ A value is a symbol, for example `(soundboard . |86+26k|)` or `(bios . on)`.
 The specification rejects these keys of the configuration file:
 
 - `machine`. The `model` key selects the machine.
-- The host settings `backend`, `audio-volume` and the ROM folders. The `--config`
-  file of `neetan-auto` holds the ROM folders.
+- The host settings `backend`, `audio-volume`, `config-folder`, `roms-folder` and
+  the ROM folders. The `--config` file of `neetan-auto` holds `roms-folder` and
+  the ROM folders.
 - The media keys `fdd1`, `fdd2`, `hdd1`, `hdd2`, `cdrom`, `cartridge` and
   `cassette`. The `media` entry mounts every image.
 - The path settings `printer` and `debug-bios`. The `printer` media kind mounts

@@ -1,6 +1,7 @@
 //! Pure-data emulator configuration types and the machine model resolver.
 
 pub mod settings;
+pub mod systems;
 
 use std::path::PathBuf;
 
@@ -330,6 +331,11 @@ impl std::str::FromStr for BootMode {
     }
 }
 
+/// Built-in name of the config folder below the root.
+pub const DEFAULT_CONFIG_FOLDER: &str = "config";
+/// Built-in name of the ROM folder below the root.
+pub const DEFAULT_ROMS_FOLDER: &str = "roms";
+
 /// The complete startup configuration for building a machine.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EmulatorConfig {
@@ -347,6 +353,10 @@ pub struct EmulatorConfig {
     pub scaling: ScalingMode,
     pub window_mode: WindowMode,
     pub audio_volume: f32,
+    /// Folder of the system defaults and the game files. A relative folder lies below the root.
+    pub config_folder: PathBuf,
+    /// Folder of the ROM folders of every system. A relative folder lies below the root.
+    pub roms_folder: PathBuf,
     pub pc98_roms: Option<PathBuf>,
     pub bios: bool,
     pub debug_bios: Option<PathBuf>,
@@ -422,6 +432,8 @@ impl Default for EmulatorConfig {
             scaling: ScalingMode::Pixelart,
             window_mode: WindowMode::Windowed,
             audio_volume: 1.0,
+            config_folder: PathBuf::from(DEFAULT_CONFIG_FOLDER),
+            roms_folder: PathBuf::from(DEFAULT_ROMS_FOLDER),
             pc98_roms: None,
             bios: false,
             debug_bios: None,

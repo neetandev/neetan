@@ -95,9 +95,10 @@ midi = mt32
 mt32-roms = /path/to/mt32_roms
 ```
 
-MIDI emulation is only activated when both the `--midi` device and the corresponding
-ROM path are set, so you can keep the ROM paths in your global config and toggle
-per-game by changing only `--midi`.
+MIDI emulation is only activated when the `--midi` device is set and its ROM folder
+holds a ROM set. The ROM folders default to `roms/mt32` and `roms/sc55` below the root.
+Keep the ROM paths in the settings file `neetan.conf` and toggle MIDI per game with
+`--midi`.
 
 See [MIDI: Roland MT-32](roms.md#midi-roland-mt-32) and
 [MIDI: Roland SC-55](roms.md#midi-roland-sc-55) for the ROM files. Both modules are

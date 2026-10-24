@@ -35,7 +35,7 @@ from `call-with-machine` or `with-machine`.
 - `(neetan-api-version)` -> two values `major minor`. The automation API version
   (`1 0`). Destructure with `receive` from `(r7rs receive)`.
 - `(host-config)` -> alist. All common host settings exposed by `--config`: the
-  per-family ROM directories, `mt32-roms`, `sc55-roms`, `artifact-root`,
+  per-family ROM directories, `mt32-roms`, `sc55-roms`, `roms-folder`, `artifact-root`,
   `guest-time`, `timeout`, and `audio-sample-rate`. Read-only.
 - `(config-value key)` / `(config-value key default)` -> value. Looks up one
   host-config `key`; returns `default` (or `#f`) when absent.
