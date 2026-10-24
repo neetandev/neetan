@@ -15,6 +15,8 @@ pub enum ButtonKind {
     Normal,
     /// The accent button of the main action of a panel.
     Primary,
+    /// The red button of a destructive action, such as a delete.
+    Danger,
     /// A flat button that shows its face only under the pointer, for icon
     /// buttons in a header.
     Quiet,
@@ -40,7 +42,15 @@ pub struct Button<'a> {
     selected: Option<bool>,
     /// Whether the button reacts to input.
     enabled: bool,
+    /// Whether a modal that opens may give the button the focus.
+    default_choice: bool,
 }
+
+/// The smallest width of a button with a caption.
+pub const BUTTON_MIN_WIDTH: f32 = 96.0;
+
+/// The smallest width of a primary or danger button with a caption.
+pub const PRIMARY_BUTTON_MIN_WIDTH: f32 = 104.0;
 
 impl<'a> Button<'a> {
     /// A normal button with the caption `caption`.
@@ -52,6 +62,16 @@ impl<'a> Button<'a> {
             kind: ButtonKind::Normal,
             selected: None,
             enabled: true,
+            default_choice: true,
+        }
+    }
+
+    /// The same button, which a modal that opens never gives the focus
+    /// unless `choice` is set, such as the close button of a header.
+    pub fn default_choice(self, choice: bool) -> Self {
+        Self {
+            default_choice: choice,
+            ..self
         }
     }
 
@@ -82,6 +102,30 @@ impl<'a> Button<'a> {
         Self { enabled, ..self }
     }
 
+    /// The width the button takes in a row of buttons: the icon, the gap
+    /// and the caption plus the padding on each side, and at least
+    /// [`BUTTON_MIN_WIDTH`], or [`PRIMARY_BUTTON_MIN_WIDTH`] for a primary
+    /// or danger button. A button without a caption is square.
+    pub fn width(&self, context: &mut UiContext) -> f32 {
+        let theme = context.theme;
+        if self.caption.is_empty() {
+            return theme.control_height;
+        }
+        let leading = match (self.selected, self.icon) {
+            (Some(_), _) => CHECK_BOX_SIZE + theme.gap * 0.75,
+            (None, Some(_)) => theme.icon_size + theme.gap * 0.75,
+            (None, None) => 0.0,
+        };
+        let caption = context.measure(&theme.body(), self.caption);
+        let minimum = match self.kind {
+            ButtonKind::Primary | ButtonKind::Danger => PRIMARY_BUTTON_MIN_WIDTH,
+            ButtonKind::Normal | ButtonKind::Quiet => BUTTON_MIN_WIDTH,
+        };
+        (leading + caption + theme.padding * 2.0)
+            .ceil()
+            .max(minimum)
+    }
+
     /// Draws the button in `rect` and returns whether a click or confirm
     /// activated it in this pass.
     pub fn show(self, context: &mut UiContext, rect: Rect) -> bool {
@@ -97,7 +141,9 @@ impl<'a> Button<'a> {
             self.content(context, rect, theme.text_disabled);
             return false;
         }
-        if self.kind == ButtonKind::Primary {
+        if !self.default_choice {
+            context.focusable_secondary(self.id, rect, NavigationSet::EMPTY);
+        } else if self.kind == ButtonKind::Primary {
             context.focusable_preferred(self.id, rect, NavigationSet::EMPTY);
         } else {
             context.focusable(self.id, rect, NavigationSet::EMPTY);
@@ -129,6 +175,20 @@ impl<'a> Button<'a> {
                     theme.accent_hover
                 } else {
                     theme.accent
+                };
+                (
+                    RectStyle::filled(fill, theme.radius)
+                        .with_stroke(theme.stroke, fill.mix(Color::WHITE, 0.12)),
+                    theme.accent_text,
+                )
+            }
+            ButtonKind::Danger => {
+                let fill = if pressed {
+                    theme.danger_pressed
+                } else if hovered {
+                    theme.danger_hover
+                } else {
+                    theme.danger
                 };
                 (
                     RectStyle::filled(fill, theme.radius)
@@ -190,8 +250,12 @@ impl<'a> Button<'a> {
         let slot = Rect::new(left, rect.y, leading, rect.height);
         match (self.selected, self.icon) {
             (Some(selected), _) => {
-                let enabled = self.enabled;
-                check_box(context, slot, selected, enabled);
+                let look = if self.enabled {
+                    CheckBoxLook::Idle
+                } else {
+                    CheckBoxLook::Disabled
+                };
+                check_box(context, slot, selected, look);
             }
             (None, Some(icon)) => context.icon(slot, icon, leading, color),
             (None, None) => {}
@@ -208,32 +272,51 @@ impl<'a> Button<'a> {
     }
 }
 
-/// The size of the check box of a toggle button.
-const CHECK_BOX_SIZE: f32 = 14.0;
+/// The size of the check box of a toggle button and a checkbox.
+pub(super) const CHECK_BOX_SIZE: f32 = 14.0;
 
-/// Draws the check box of a toggle button centered vertically in `slot`.
-fn check_box(context: &mut UiContext, slot: Rect, selected: bool, enabled: bool) {
+/// The corner radius of the check box.
+const CHECK_BOX_RADIUS: f32 = 3.0;
+
+/// The state of a check box beyond its value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum CheckBoxLook {
+    /// Without the pointer.
+    #[default]
+    Idle,
+    /// Under the pointer.
+    Hovered,
+    /// Under a press of the pointer.
+    Pressed,
+    /// Without input.
+    Disabled,
+}
+
+/// Draws a check box centered vertically in `slot`, checked when
+/// `selected`, in the state `look`.
+pub(super) fn check_box(context: &mut UiContext, slot: Rect, selected: bool, look: CheckBoxLook) {
     let theme = context.theme;
     let top = context.snap(slot.y + (slot.height - CHECK_BOX_SIZE) * 0.5);
     let area = Rect::new(slot.x, top, CHECK_BOX_SIZE, CHECK_BOX_SIZE);
-    let radius = 3.0;
     if selected {
-        let fill = if enabled {
-            theme.accent
-        } else {
-            theme.text_disabled
+        let fill = match look {
+            CheckBoxLook::Idle => theme.accent,
+            CheckBoxLook::Hovered => theme.accent_hover,
+            CheckBoxLook::Pressed => theme.accent_pressed,
+            CheckBoxLook::Disabled => theme.text_disabled,
         };
-        context.rect(area, &RectStyle::filled(fill, radius));
+        context.rect(area, &RectStyle::filled(fill, CHECK_BOX_RADIUS));
         context.icon(area, Icon::Check, CHECK_BOX_SIZE - 2.0, theme.accent_text);
     } else {
-        let edge = if enabled {
-            theme.text_dim
-        } else {
-            theme.text_disabled
+        let (fill, edge) = match look {
+            CheckBoxLook::Idle => (theme.field, theme.text_dim),
+            CheckBoxLook::Hovered => (theme.field, theme.text),
+            CheckBoxLook::Pressed => (theme.control_pressed, theme.text),
+            CheckBoxLook::Disabled => (theme.field, theme.text_disabled),
         };
         context.rect(
             area,
-            &RectStyle::filled(theme.field, radius).with_stroke(theme.stroke * 1.5, edge),
+            &RectStyle::filled(fill, CHECK_BOX_RADIUS).with_stroke(theme.stroke * 1.5, edge),
         );
     }
 }
@@ -271,7 +354,11 @@ pub fn icon_button(context: &mut UiContext, id: impl Into<UiId>, rect: Rect, ico
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{Navigation, tests::Harness, ui_id};
+    use crate::ui::{
+        Navigation,
+        tests::{Harness, pixel, srgb},
+        ui_id,
+    };
 
     /// The rectangles of two buttons side by side.
     const OK: Rect = Rect::new(10.0, 10.0, 80.0, 32.0);
@@ -393,5 +480,64 @@ mod tests {
         harness.press(40.0, 20.0);
         harness.frame(draw);
         assert_eq!(harness.scene.len(), unfocused);
+    }
+
+    #[test]
+    fn a_danger_button_takes_the_danger_fills() {
+        let theme = Harness::new().theme;
+        for (point, fill) in [
+            (None, theme.danger),
+            (Some((40.0, 20.0)), theme.danger_hover),
+        ] {
+            let mut harness = Harness::new();
+            if let Some((x, y)) = point {
+                harness.mouse(x, y);
+            }
+            harness.frame(|context| {
+                Button::new("delete", "Delete")
+                    .icon(Icon::Delete)
+                    .kind(ButtonKind::Danger)
+                    .show(context, OK)
+            });
+            let pixels = harness.render();
+            assert_eq!(
+                pixel(&pixels, harness.viewport.width, OK.x + 4.0, OK.y + 4.0),
+                srgb(fill)
+            );
+        }
+        let mut harness = Harness::new();
+        harness.press(40.0, 20.0);
+        harness.frame(|context| {
+            Button::new("delete", "Delete")
+                .kind(ButtonKind::Danger)
+                .show(context, OK)
+        });
+        let pixels = harness.render();
+        assert_eq!(
+            pixel(&pixels, harness.viewport.width, OK.x + 4.0, OK.y + 4.0),
+            srgb(theme.danger_pressed)
+        );
+    }
+
+    #[test]
+    fn the_width_follows_the_content_and_the_minimum() {
+        let mut harness = Harness::new();
+        let (cancel, delete, long, square) = harness.frame(|context| {
+            (
+                Button::new("cancel", "Cancel").width(context),
+                Button::new("delete", "Delete")
+                    .icon(Icon::Delete)
+                    .kind(ButtonKind::Danger)
+                    .width(context),
+                Button::new("defaults", "System defaults")
+                    .icon(Icon::Settings)
+                    .width(context),
+                Button::new("close", "").icon(Icon::Close).width(context),
+            )
+        });
+        assert_eq!(cancel, BUTTON_MIN_WIDTH);
+        assert_eq!(delete, PRIMARY_BUTTON_MIN_WIDTH);
+        assert!(long > BUTTON_MIN_WIDTH + 30.0, "{long}");
+        assert_eq!(square, harness.theme.control_height);
     }
 }

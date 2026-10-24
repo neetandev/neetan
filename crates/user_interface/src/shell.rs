@@ -249,8 +249,11 @@ impl Shell {
                     }
                     AfterSession::Manager { panic } => {
                         self.restore_manager_window();
-                        if let Some(manager) = self.manager.as_mut() {
-                            manager.game_ended(panic.as_deref(), flush);
+                        if let Some(manager) = self.manager.as_mut()
+                            && let Some(layer) = manager.game_ended(panic.as_deref(), flush)
+                            && let Some(gui) = self.host.gui.as_mut()
+                        {
+                            gui.open_layer(layer);
                         }
                     }
                 }

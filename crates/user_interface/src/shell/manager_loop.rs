@@ -26,15 +26,20 @@ const FRAME_RETRY_WAIT: Duration = Duration::from_millis(30);
 pub(super) const MAXIMUM_STALE_FRAMES: u32 = 8;
 
 /// Returns the longest wait for the next event at `now`: the time to the
-/// next repeat of a held gamepad direction, or the idle wait. A pending
-/// frame in a visible window shortens the wait to the retry wait. A window
-/// that cannot show a frame waits for its next window event.
+/// next repeat of a held gamepad direction, or the idle wait. A pass that
+/// the user interface asked for runs without a wait. A pending frame in a
+/// visible window shortens the wait to the retry wait. A window that cannot
+/// show a frame waits for its next window event.
 fn manager_wait(
+    pass_pending: bool,
     frame_pending: bool,
     window_visible: bool,
     next_repeat: Option<Instant>,
     now: Instant,
 ) -> Duration {
+    if pass_pending {
+        return Duration::ZERO;
+    }
     let longest = if frame_pending && window_visible {
         FRAME_RETRY_WAIT
     } else {
@@ -108,7 +113,9 @@ impl Shell {
                 .gui
                 .as_ref()
                 .and_then(|gui| gui.gamepad.next_repeat());
+            let pass_pending = self.host.gui.as_ref().is_some_and(GuiHost::pending);
             let wait = manager_wait(
+                pass_pending,
                 self.frame_pending,
                 self.window_visible,
                 next_repeat,
@@ -180,11 +187,7 @@ impl Shell {
     /// Adds `gui_event` to the input of the next pass and runs the pass when
     /// the event is discrete.
     fn manager_gui_event(&mut self, gui_event: GuiEvent) {
-        let accepted = self
-            .manager
-            .as_ref()
-            .is_some_and(|manager| manager.accepts(&gui_event));
-        if !accepted {
+        if self.manager.is_none() {
             return;
         }
         let Some(gui) = self.host.gui.as_mut() else {
@@ -231,10 +234,18 @@ mod tests {
     #[test]
     fn a_pending_frame_retries_only_in_a_visible_window() {
         let now = Instant::now();
-        assert_eq!(manager_wait(false, true, None, now), IDLE_WAIT);
-        assert_eq!(manager_wait(true, true, None, now), FRAME_RETRY_WAIT);
-        assert_eq!(manager_wait(true, false, None, now), IDLE_WAIT);
-        assert_eq!(manager_wait(false, false, None, now), IDLE_WAIT);
+        assert_eq!(manager_wait(false, false, true, None, now), IDLE_WAIT);
+        assert_eq!(manager_wait(false, true, true, None, now), FRAME_RETRY_WAIT);
+        assert_eq!(manager_wait(false, true, false, None, now), IDLE_WAIT);
+        assert_eq!(manager_wait(false, false, false, None, now), IDLE_WAIT);
+    }
+
+    /// Verifies that a pass that the user interface asked for runs without a wait.
+    #[test]
+    fn a_pending_pass_does_not_wait() {
+        let now = Instant::now();
+        assert_eq!(manager_wait(true, false, true, None, now), Duration::ZERO);
+        assert_eq!(manager_wait(true, true, false, None, now), Duration::ZERO);
     }
 
     /// Verifies that a held gamepad direction shortens the wait to its next repeat.
@@ -243,14 +254,17 @@ mod tests {
         let now = Instant::now();
         let soon = now + Duration::from_millis(5);
         assert_eq!(
-            manager_wait(false, true, Some(soon), now),
+            manager_wait(false, false, true, Some(soon), now),
             Duration::from_millis(5)
         );
         assert_eq!(
-            manager_wait(true, true, Some(now + IDLE_WAIT), now),
+            manager_wait(false, true, true, Some(now + IDLE_WAIT), now),
             FRAME_RETRY_WAIT
         );
-        assert_eq!(manager_wait(false, false, Some(now), now), Duration::ZERO);
+        assert_eq!(
+            manager_wait(false, false, false, Some(now), now),
+            Duration::ZERO
+        );
     }
 
     /// Verifies that a hidden window does not render and keeps its frame pending.

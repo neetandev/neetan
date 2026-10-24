@@ -48,6 +48,9 @@ pub struct Theme {
     pub small_text_size: f32,
     /// The size of titles.
     pub title_size: f32,
+    /// The smallest room the status line gives the path or the error at its
+    /// end. A smaller room leaves the end out.
+    pub status_end_min_width: f32,
     /// The veil over the emulator frame behind a modal panel.
     pub veil: Color,
     /// The fill of panels.
@@ -96,7 +99,13 @@ pub struct Theme {
     pub text_dim: Color,
     /// The text of disabled widgets and placeholders.
     pub text_disabled: Color,
-    /// The text and icon color of errors.
+    /// The fill of destructive buttons.
+    pub danger: Color,
+    /// The fill of hovered destructive buttons.
+    pub danger_hover: Color,
+    /// The fill of pressed destructive buttons.
+    pub danger_pressed: Color,
+    /// Error and warning text, alert icons and the error edge of a field.
     pub danger_text: Color,
     /// The shadow under panels.
     pub shadow: Color,
@@ -126,6 +135,7 @@ impl Theme {
             text_size: 14.0,
             small_text_size: 12.0,
             title_size: 17.0,
+            status_end_min_width: 120.0,
             veil: Color::BLACK.with_alpha(1.0 - srgb_to_linear(VEIL_BRIGHTNESS)),
             panel: Color::hex(0x1E2128),
             panel_edge: Color::hex(0x353A45),
@@ -150,6 +160,9 @@ impl Theme {
             text: Color::hex(0xE9ECF1),
             text_dim: Color::hex(0xA0A7B4),
             text_disabled: Color::hex(0x666D7A),
+            danger: Color::hex(0xC83A33),
+            danger_hover: Color::hex(0xCF423B),
+            danger_pressed: Color::hex(0xB3322C),
             danger_text: Color::hex(0xE8605A),
             shadow: Color::BLACK.with_alpha(0.55),
             icons: Icons::new(fonts),

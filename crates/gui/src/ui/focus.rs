@@ -76,6 +76,16 @@ impl NavigationSet {
     }
 }
 
+/// The scroll area that holds a focusable widget.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ScrollAnchor {
+    /// The id of the scroll area.
+    pub(crate) id: super::UiId,
+    /// The top of the content of the area in logical units, in the pass of
+    /// the widget.
+    pub(crate) origin: f32,
+}
+
 /// A focusable widget of a pass.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Focusable {
@@ -92,6 +102,31 @@ pub(crate) struct Focusable {
     /// Whether a directional move picks the widget over a neighbor at the
     /// same cost, as for the main action of a panel.
     pub(crate) preferred: bool,
+    /// The layer the widget draws in. The base of the pass is layer 0, and
+    /// every modal or popup above it adds one.
+    pub(crate) layer: u32,
+    /// The innermost scroll area around the widget.
+    pub(crate) scroll: Option<ScrollAnchor>,
+    /// Whether a modal that opens may give the widget the focus.
+    pub(crate) default_choice: bool,
+}
+
+impl Focusable {
+    /// A widget `id` at `rect` in the base layer that captures `captures`
+    /// and takes neither text nor cancel.
+    pub(crate) fn new(id: super::UiId, rect: Rect, captures: NavigationSet) -> Self {
+        Self {
+            id,
+            rect,
+            captures,
+            text: false,
+            takes_cancel: false,
+            preferred: false,
+            layer: 0,
+            scroll: None,
+            default_choice: true,
+        }
+    }
 }
 
 /// The weight of the distance across the direction of a move against the
@@ -148,7 +183,12 @@ pub(crate) fn next_focus(
                 Some(count - 1)
             }
             Navigation::PreviousTab | Navigation::NextTab => None,
-            _ => Some(0),
+            Navigation::Down
+            | Navigation::Right
+            | Navigation::Next
+            | Navigation::Home
+            | Navigation::PageUp
+            | Navigation::PageDown => Some(0),
         },
     }
 }
@@ -174,7 +214,14 @@ fn directional_cost(from: Rect, to: Rect, navigation: Navigation) -> Option<Cost
         Navigation::Up => (flip(from), flip(to)),
         Navigation::Right => (transpose(from), transpose(to)),
         Navigation::Left => (flip(transpose(from)), flip(transpose(to))),
-        _ => return None,
+        Navigation::PageUp
+        | Navigation::PageDown
+        | Navigation::Home
+        | Navigation::End
+        | Navigation::Next
+        | Navigation::Previous
+        | Navigation::PreviousTab
+        | Navigation::NextTab => return None,
     };
     let (_, from_center) = from.center();
     let (_, to_center) = to.center();
@@ -199,13 +246,8 @@ mod tests {
         rects
             .iter()
             .enumerate()
-            .map(|(index, &rect)| Focusable {
-                id: ui_id_indexed("widget", index),
-                rect,
-                captures: NavigationSet::EMPTY,
-                text: false,
-                takes_cancel: false,
-                preferred: false,
+            .map(|(index, &rect)| {
+                Focusable::new(ui_id_indexed("widget", index), rect, NavigationSet::EMPTY)
             })
             .collect()
     }

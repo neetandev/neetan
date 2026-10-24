@@ -3,30 +3,27 @@
 
 use common::FlushError;
 use gui::{
-    Line, Rect, RectStyle,
-    ui::{Button, ButtonKind, MODAL_HEADER_HEIGHT, TextStyle, UiContext, UiId, modal},
+    Rect, RectStyle,
+    ui::{
+        Align, Button, ButtonKind, MODAL_HEADER_HEIGHT, UiContext, UiId, modal_in, wrapped_height,
+        wrapped_label,
+    },
 };
 
 /// The width of the dialog panel in logical units.
 const DIALOG_WIDTH: f32 = 560.0;
 
-/// The height of one line of the message in logical units.
-const MESSAGE_LINE_HEIGHT: f32 = 22.0;
-
 /// The most lines of the message. Longer messages end after them.
 const MAXIMUM_MESSAGE_LINES: usize = 4;
-
-/// The height of one line of the detail text in logical units.
-const DETAIL_LINE_HEIGHT: f32 = 18.0;
 
 /// The most lines of the detail text. Longer texts end after them.
 const MAXIMUM_DETAIL_LINES: usize = 8;
 
-/// The width of the OK button.
-const OK_WIDTH: f32 = 104.0;
-
 /// The id of the OK button.
 const OK_ID: &str = "error ok";
+
+/// The id of the modal layer of the dialog.
+pub(super) const LAYER_ID: &str = "error";
 
 /// The title of the dialog of a launch that failed.
 pub(super) const LAUNCH_FAILED_TITLE: &str = "Could not start the game";
@@ -46,8 +43,6 @@ pub(crate) struct ErrorDialog {
     message: String,
     /// The error text.
     detail: String,
-    /// Whether the next pass gives the OK button the focus.
-    focus_pending: bool,
 }
 
 impl ErrorDialog {
@@ -57,7 +52,6 @@ impl ErrorDialog {
             title: LAUNCH_FAILED_TITLE,
             message: format!("{game_title} did not start."),
             detail: error.to_owned(),
-            focus_pending: true,
         }
     }
 
@@ -85,7 +79,6 @@ impl ErrorDialog {
             title: GAME_STOPPED_TITLE,
             message,
             detail,
-            focus_pending: true,
         }
     }
 
@@ -96,7 +89,6 @@ impl ErrorDialog {
             title: MEDIA_NOT_SAVED_TITLE,
             message: format!("{game_title} ended. Some of its disk images were not saved."),
             detail: error.to_string(),
-            focus_pending: true,
         }
     }
 
@@ -118,35 +110,43 @@ impl ErrorDialog {
         &self.detail
     }
 
-    /// Draws one pass of the dialog. Returns whether the dialog closes.
-    pub(crate) fn show(&mut self, context: &mut UiContext) -> bool {
+    /// Draws one pass of the dialog in its modal layer, centered in `area`.
+    /// The OK button holds the focus. Returns whether the dialog closes, and
+    /// closes the layer then.
+    pub(crate) fn show(&self, context: &mut UiContext, area: Rect) -> bool {
+        context.layer(LAYER_ID, |context| {
+            let closed = self.panel(context, area);
+            if closed {
+                context.close_layer();
+            }
+            closed
+        })
+    }
+
+    /// Draws the panel of the dialog centered in `area`. Returns whether the
+    /// close button, OK or cancel closed it.
+    fn panel(&self, context: &mut UiContext, area: Rect) -> bool {
         let theme = context.theme;
         let ok_id = UiId::from(OK_ID);
-        if std::mem::take(&mut self.focus_pending) {
-            context.set_focus(ok_id);
-        }
         let message_style = theme.body();
         let detail_style = theme.small().with_color(theme.text);
         let detail_padding = (theme.gap * 1.25, theme.gap);
         let message_width = DIALOG_WIDTH - theme.padding * 2.0;
         let detail_width = message_width - detail_padding.0 * 2.0;
-        let message_lines = wrap_lines(
+        let message_height = wrapped_height(
             context,
             &message_style,
             &self.message,
             message_width,
             MAXIMUM_MESSAGE_LINES,
         );
-        let detail_lines = wrap_lines(
+        let detail_height = wrapped_height(
             context,
             &detail_style,
             &self.detail,
             detail_width,
             MAXIMUM_DETAIL_LINES,
-        );
-        let message_height = message_lines.len().max(1) as f32 * MESSAGE_LINE_HEIGHT;
-        let detail_height =
-            detail_lines.len().max(1) as f32 * DETAIL_LINE_HEIGHT + detail_padding.1 * 2.0;
+        ) + detail_padding.1 * 2.0;
         let height = MODAL_HEADER_HEIGHT
             + message_height
             + theme.gap
@@ -154,20 +154,16 @@ impl ErrorDialog {
             + theme.gap * 2.0
             + theme.control_height
             + theme.padding;
-        let response = modal(context, "error", (DIALOG_WIDTH, height), self.title);
+        let response = modal_in(context, LAYER_ID, area, (DIALOG_WIDTH, height), self.title);
 
         let (message_area, rest) = response.content.cut_top(message_height);
-        draw_lines(
+        wrapped_label(
             context,
-            Rect::new(
-                message_area.x,
-                message_area.y,
-                message_width,
-                MESSAGE_LINE_HEIGHT,
-            ),
+            message_area,
             &message_style,
             &self.message,
-            &message_lines,
+            Align::Start,
+            MAXIMUM_MESSAGE_LINES,
         );
 
         let (detail_area, rest) = rest.cut_top(theme.gap).1.cut_top(detail_height);
@@ -175,53 +171,25 @@ impl ErrorDialog {
             detail_area,
             &RectStyle::filled(theme.well, theme.radius).with_stroke(theme.stroke, theme.well_edge),
         );
-        draw_lines(
+        wrapped_label(
             context,
             Rect::new(
                 detail_area.x + detail_padding.0,
                 detail_area.y + detail_padding.1,
                 detail_width,
-                DETAIL_LINE_HEIGHT,
+                detail_height - detail_padding.1 * 2.0,
             ),
             &detail_style,
             &self.detail,
-            &detail_lines,
+            Align::Start,
+            MAXIMUM_DETAIL_LINES,
         );
 
         let footer = rest.cut_bottom(theme.control_height).0;
-        let ok_area = footer.cut_right(OK_WIDTH).0;
-        let ok = Button::new(ok_id, "OK")
-            .kind(ButtonKind::Primary)
-            .show(context, ok_area);
+        let ok = Button::new(ok_id, "OK").kind(ButtonKind::Primary);
+        let ok_area = footer.cut_right(ok.width(context)).0;
+        let ok = ok.show(context, ok_area);
         response.closed || ok
-    }
-}
-
-/// Returns the lines of `text` in `style` no wider than `width`, at most
-/// `maximum` of them.
-fn wrap_lines(
-    context: &mut UiContext,
-    style: &TextStyle,
-    text: &str,
-    width: f32,
-    maximum: usize,
-) -> Vec<Line> {
-    let mut lines: Vec<Line> = Vec::new();
-    context
-        .fonts
-        .wrap(style.font, style.size, text, width, &mut lines);
-    lines.truncate(maximum);
-    lines
-}
-
-/// Draws the `lines` of `text` in `style`, the first one into `first` and
-/// each next one a line height below.
-fn draw_lines(context: &mut UiContext, first: Rect, style: &TextStyle, text: &str, lines: &[Line]) {
-    let mut line_area = first;
-    for line in lines {
-        let baseline = context.centered_baseline(line_area, style);
-        context.text(line_area.x, baseline, style, &text[line.bytes.clone()]);
-        line_area.y += first.height;
     }
 }
 
@@ -285,20 +253,44 @@ mod tests {
     #[test]
     fn ok_holds_the_focus_and_confirm_or_cancel_close_the_dialog() {
         let mut harness = GuiHarness::new(960, 600);
-        let mut dialog = ErrorDialog::launch_failed("Edge", "error");
-        assert!(!harness.frame(|context| dialog.show(context)));
+        let area = Rect::new(0.0, 0.0, 960.0, 600.0);
+        let dialog = ErrorDialog::launch_failed("Edge", "error");
+        assert!(!harness.frame(|context| dialog.show(context, area)));
         assert_eq!(harness.state.focused(), Some(UiId::from(OK_ID)));
         harness.input.confirm = true;
-        assert!(harness.frame(|context| dialog.show(context)));
+        assert!(harness.frame(|context| dialog.show(context, area)));
 
-        let mut dialog = ErrorDialog::game_stopped("X1", "halt", &Ok(()));
-        harness.frame(|context| dialog.show(context));
+        let dialog = ErrorDialog::game_stopped("X1", "halt", &Ok(()));
+        harness.frame(|context| dialog.show(context, area));
         harness.input.cancel = true;
-        assert!(harness.frame(|context| dialog.show(context)));
+        assert!(harness.frame(|context| dialog.show(context, area)));
 
-        let mut dialog = ErrorDialog::launch_failed("Edge", "error");
-        harness.frame(|context| dialog.show(context));
+        let dialog = ErrorDialog::launch_failed("Edge", "error");
+        harness.frame(|context| dialog.show(context, area));
         harness.input.navigation = Some(Navigation::Down);
-        assert!(!harness.frame(|context| dialog.show(context)));
+        assert!(!harness.frame(|context| dialog.show(context, area)));
+    }
+
+    /// Verifies that the panel centers in the area it receives and keeps the margin to its edges.
+    #[test]
+    fn the_dialog_centers_in_its_area() {
+        let mut harness = GuiHarness::new(960, 600);
+        let area = Rect::new(0.0, 0.0, 960.0, 572.0);
+        let dialog = ErrorDialog::launch_failed("Edge", &"error text ".repeat(60));
+        harness.frame(|context| dialog.show(context, area));
+        let panel = harness
+            .scene
+            .instances()
+            .iter()
+            .find(|instance| {
+                instance.kind[0] == gui::Instance::KIND_RECTANGLE
+                    && instance.rect[2] == DIALOG_WIDTH
+            })
+            .expect("the panel")
+            .rect;
+        let top = panel[1];
+        let bottom = panel[1] + panel[3];
+        assert!((top - (572.0 - bottom)).abs() <= 1.0, "{panel:?}");
+        assert!(bottom <= 572.0);
     }
 }

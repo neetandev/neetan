@@ -15,34 +15,70 @@
 //!
 //! Every widget works with the mouse, the keyboard and a gamepad. The
 //! focusable widgets of a pass form a focus ring in drawing order. The
-//! [`Navigation`] events of the input move the focus along the ring or in a
-//! direction, or reach the focused widget when it handles them itself. The
-//! focused widget reacts to confirm. A click moves the focus to the clicked
-//! widget. Mouse hover leaves the focus where it is.
+//! [`Navigation`] events of the input give the focus to another widget of
+//! the ring or in a direction, or reach the focused widget when it handles
+//! them itself. The focused widget reacts to confirm. A click gives the
+//! focus to the clicked widget. Mouse hover leaves the focus where it is.
+//!
+//! A pass draws in layers: the base, each open modal in
+//! [`UiContext::layer`] and a popup in [`UiContext::popup`]. The modals form
+//! a stack in the order they open. The top layer of the last pass blocks
+//! every widget of the layers below it from the start of a pass: a blocked
+//! widget draws and joins the focus ring, and ignores the pointer, the
+//! wheel, navigation, the shoulder buttons, the action buttons, the
+//! shortcuts, confirm and cancel. Navigation stays in the layer of the
+//! focused widget. A layer that opens takes the focus and asks for another
+//! pass. A layer that closes gives the focus back and asks for another
+//! pass.
 
 mod button;
+mod checkbox;
+mod confirm;
 mod context;
+mod dropdown;
 mod focus;
 mod icons;
+mod input;
 mod label;
+mod layer;
 mod list;
 mod modal;
+mod number_field;
+mod scroll;
+mod scroll_bar;
+mod state;
+mod status_line;
+mod table;
 mod tabs;
 mod text_field;
 mod theme;
 
-pub use button::{Button, ButtonKind, button, icon_button, toggle_button};
-pub use context::{
-    Input, Modifiers, PointerResponse, TextStyle, UiContext, UiId, UiState, Viewport, ui_id,
-    ui_id_indexed,
+pub use button::{
+    BUTTON_MIN_WIDTH, Button, ButtonKind, PRIMARY_BUTTON_MIN_WIDTH, button, icon_button,
+    toggle_button,
 };
+pub use checkbox::{Checkbox, checkbox};
+pub use confirm::{ConfirmDialog, ConfirmResponse, DIALOG_WIDTH};
+pub use context::{PointerResponse, TextStyle, UiContext, UiId, ui_id, ui_id_indexed};
+pub use dropdown::{Dropdown, POPUP_MAX_ROWS, dropdown};
 pub use focus::{Navigation, NavigationSet};
 pub use icons::{Icon, Icons};
-pub use label::{Align, Truncation, label};
-pub use list::{ListResponse, ListRow, ListState, list, list_row};
-pub use modal::{MODAL_HEADER_HEIGHT, ModalResponse, modal};
+pub use input::{ActionButton, Input, Shortcut, Viewport};
+pub use label::{
+    Align, Truncation, WRAP_LINE_HEIGHT, label, wrapped_height, wrapped_label, wrapped_line_height,
+};
+pub use list::{List, ListResponse, ListRow, ListState, RowKind, caption_row, list, list_row};
+pub use modal::{MODAL_HEADER_HEIGHT, ModalResponse, modal, modal_in};
+pub use number_field::{NUMBER_FIELD_WIDTH, NumberError, NumberField};
+pub use scroll::{ScrollState, scroll_area};
+pub use state::UiState;
+pub use status_line::{Hint, HintKey, STATUS_LINE_HEIGHT, StatusEnd, status_line};
+pub use table::{
+    CellTone, Column, ColumnWidth, Sort, SortDirection, Table, TableResponse, TableRow, TableState,
+    table_cell,
+};
 pub use tabs::{Tab, tab_bar};
-pub use text_field::{TEXT_FIELD_LIMIT, TextFieldResponse, text_field};
+pub use text_field::{TEXT_FIELD_LIMIT, TextField, TextFieldResponse, text_field};
 pub use theme::Theme;
 
 #[cfg(test)]
@@ -138,6 +174,24 @@ pub(crate) mod tests {
             Rasterizer::new().rasterize(&self.scene, self.fonts.slug(), width, height, &mut output);
             output
         }
+    }
+
+    /// The RGBA8 pixel of the output `pixels` of a target `width` pixels
+    /// wide at the pixel coordinates `(x, y)`.
+    pub(crate) fn pixel(pixels: &[u8], width: u32, x: f32, y: f32) -> [u8; 4] {
+        let index = (y.floor() as usize * width as usize + x.floor() as usize) * 4;
+        [
+            pixels[index],
+            pixels[index + 1],
+            pixels[index + 2],
+            pixels[index + 3],
+        ]
+    }
+
+    /// The RGBA8 pixel of the opaque color `color` in the output of the
+    /// rasterizer.
+    pub(crate) fn srgb(color: Color) -> [u8; 4] {
+        [color.r, color.g, color.b, 255]
     }
 
     /// The image files of the sample dialog.
@@ -493,5 +547,869 @@ pub(crate) mod tests {
         sample_screenshot(1.0);
         sample_screenshot(1.5);
         sample_screenshot(2.0);
+    }
+
+    /// The screenshot of every widget of the GUI additions in its states.
+    mod gallery {
+        use super::*;
+
+        /// The gap between two cells of the gallery.
+        const CELL_GAP: f32 = 12.0;
+
+        /// The height of the rows of the dropdowns, which leaves room for the
+        /// popup of the press.
+        const DROPDOWN_ROW_HEIGHT: f32 = 330.0;
+
+        /// The height of the state caption at the top of a cell.
+        const CAPTION_HEIGHT: f32 = 22.0;
+
+        /// The models of the PC-98 for the dropdowns.
+        const MODELS: [&str; 7] = [
+            "PC9801F", "PC9801VM", "PC9801VX", "PC9801RS", "PC9801RA", "PC9821AS", "PC9821AP",
+        ];
+
+        /// A state of a widget in a row of the gallery.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum State {
+            /// Without the pointer and the focus.
+            Idle,
+            /// Under the pointer.
+            Hover,
+            /// Under a held press.
+            Pressed,
+            /// With the focus.
+            Focus,
+            /// Disabled.
+            Disabled,
+        }
+
+        impl State {
+            /// Every state in the order of a row.
+            const ALL: [State; 5] = [
+                State::Idle,
+                State::Hover,
+                State::Pressed,
+                State::Focus,
+                State::Disabled,
+            ];
+
+            /// The caption of the state.
+            fn caption(self) -> &'static str {
+                match self {
+                    State::Idle => "Idle",
+                    State::Hover => "Hover",
+                    State::Pressed => "Pressed",
+                    State::Focus => "Focus",
+                    State::Disabled => "Disabled",
+                }
+            }
+        }
+
+        /// The columns of the game table.
+        const COLUMNS: [Column; 4] = [
+            Column {
+                caption: "Title",
+                width: ColumnWidth::Weight(3.0),
+                align: Align::Start,
+            },
+            Column {
+                caption: "Original title",
+                width: ColumnWidth::Weight(3.0),
+                align: Align::Start,
+            },
+            Column {
+                caption: "Developer",
+                width: ColumnWidth::Weight(2.0),
+                align: Align::Start,
+            },
+            Column {
+                caption: "Year",
+                width: ColumnWidth::Fixed(64.0),
+                align: Align::End,
+            },
+        ];
+
+        /// The games of the first table, sorted by title.
+        const GAMES: [[&str; 4]; 5] = [
+            ["Brandish", "ブランディッシュ", "Nihon Falcom", "1991"],
+            ["Dokyusei", "同級生", "Elf", "1992"],
+            [
+                "Dragon Slayer: The Legend of Heroes",
+                "ドラゴンスレイヤー英雄伝説",
+                "Nihon Falcom",
+                "1989",
+            ],
+            ["Edge", "エッジ", "TGL", "1993"],
+            [
+                "Gen'ei Toshi: Illusion City",
+                "幻影都市",
+                "Microcabin",
+                "1991",
+            ],
+        ];
+
+        /// The games of the second table, sorted by year with a caption row.
+        const GAMES_BY_YEAR: [[&str; 4]; 6] = [
+            ["Edge", "エッジ", "TGL", "1993"],
+            ["Dokyusei", "同級生", "Elf", "1992"],
+            ["Before 1992", "", "", ""],
+            ["Brandish", "ブランディッシュ", "Nihon Falcom", "1991"],
+            [
+                "Gen'ei Toshi: Illusion City",
+                "幻影都市",
+                "Microcabin",
+                "1991",
+            ],
+            [
+                "Dragon Slayer: The Legend of Heroes",
+                "ドラゴンスレイヤー英雄伝説",
+                "Nihon Falcom",
+                "1989",
+            ],
+        ];
+
+        /// The rows of the form in the scroll area: the label, the key and
+        /// the inherited value.
+        const FORM: [(&str, &str, &str); 6] = [
+            ("Aspect mode", "aspect-mode", "Built-in default: 4:3"),
+            ("Window mode", "window-mode", "Built-in default: windowed"),
+            ("CRT effect", "crt", "System default: off"),
+            ("Scaling", "scaling", "System default: nearest"),
+            ("GDC clock", "force-gdc-clock", "Built-in default: auto"),
+            ("Graphics board", "graphicboard", "Built-in default: none"),
+        ];
+
+        /// A function that runs one pass of a cell.
+        type Pass<'a> = dyn FnMut(&mut Harness) + 'a;
+
+        /// A text field variant of the gallery.
+        struct Variant {
+            /// The caption of the cell.
+            caption: &'static str,
+            /// The leading icon.
+            icon: Option<Icon>,
+            /// The text.
+            text: &'static str,
+            /// Whether the field draws the error edge.
+            error: bool,
+            /// Whether the field reacts to input.
+            enabled: bool,
+            /// Whether the field is read-only.
+            read_only: bool,
+        }
+
+        /// The pixels of the whole gallery.
+        struct Gallery {
+            /// The physical pixels for each logical unit.
+            scale: f32,
+            /// The width in physical pixels.
+            width: u32,
+            /// The height in physical pixels.
+            height: u32,
+            /// The RGBA8 pixels.
+            pixels: Vec<u8>,
+        }
+
+        impl Gallery {
+            /// A gallery of `width` x `height` logical units at `scale`.
+            fn new(width: f32, height: f32, scale: f32) -> Self {
+                let width = (width * scale) as u32;
+                let height = (height * scale) as u32;
+                let background = Color::hex(0x131519);
+                let pixels = [background.r, background.g, background.b, 255]
+                    .repeat(width as usize * height as usize);
+                Self {
+                    scale,
+                    width,
+                    height,
+                    pixels,
+                }
+            }
+
+            /// Renders a cell of `size` at `origin` with the state caption
+            /// `caption`. `draw` draws the widget into the area below the
+            /// caption in every pass. `script` runs the passes of the state
+            /// after a first pass, through the pass function it receives.
+            fn cell(
+                &mut self,
+                origin: (f32, f32),
+                size: (f32, f32),
+                caption: &str,
+                mut draw: impl FnMut(&mut UiContext, Rect),
+                script: impl FnOnce(&mut Harness, Rect, &mut Pass<'_>),
+            ) {
+                let scale = self.scale;
+                let width = (size.0 * scale) as u32;
+                let height = (size.1 * scale) as u32;
+                let mut harness = Harness::with_viewport(Viewport::new(width, height, scale));
+                let area = Rect::new(
+                    CELL_GAP,
+                    CAPTION_HEIGHT,
+                    size.0 - CELL_GAP * 2.0,
+                    size.1 - CAPTION_HEIGHT - CELL_GAP * 0.5,
+                );
+                let mut pass = |harness: &mut Harness| {
+                    harness.frame(|context| {
+                        let bounds = context.bounds();
+                        let theme = context.theme;
+                        context.fill(bounds, theme.panel);
+                        context.text_left(
+                            Rect::new(CELL_GAP, 2.0, bounds.width, CAPTION_HEIGHT - 4.0),
+                            &theme.small(),
+                            caption,
+                        );
+                        draw(context, area);
+                    });
+                };
+                pass(&mut harness);
+                script(&mut harness, area, &mut pass);
+                let pixels = harness.render();
+                let left = (origin.0 * scale) as usize;
+                let top = (origin.1 * scale) as usize;
+                for row in 0..height as usize {
+                    let target_row = top + row;
+                    if target_row >= self.height as usize {
+                        break;
+                    }
+                    let columns = (width as usize).min((self.width as usize).saturating_sub(left));
+                    let source = row * width as usize * 4;
+                    let target = (target_row * self.width as usize + left) * 4;
+                    self.pixels[target..target + columns * 4]
+                        .copy_from_slice(&pixels[source..source + columns * 4]);
+                }
+            }
+
+            /// Writes the gallery through the PPM helper.
+            fn write(&self, name: &str) {
+                write_ppm(name, self.width, self.height, &self.pixels);
+            }
+        }
+
+        /// Runs the state `state` of a widget at the area `area`: the
+        /// pointer at `points.0` from the top left of the area for the
+        /// hover, a held press at `points.1` for the press, the focus on
+        /// `focus` for the focus.
+        fn script(
+            state: State,
+            points: ((f32, f32), (f32, f32)),
+            focus: UiId,
+        ) -> impl FnOnce(&mut Harness, Rect, &mut Pass<'_>) {
+            move |harness, area, pass| {
+                let scale = harness.viewport.scale;
+                let at = |(x, y): (f32, f32)| ((area.x + x) * scale, (area.y + y) * scale);
+                match state {
+                    State::Hover => {
+                        let (x, y) = at(points.0);
+                        harness.mouse(x, y);
+                    }
+                    State::Pressed => {
+                        let (x, y) = at(points.1);
+                        harness.press(x, y);
+                    }
+                    State::Focus => {
+                        harness.state.set_focus(focus);
+                        pass(harness);
+                        harness.navigate(Navigation::Home);
+                    }
+                    State::Idle | State::Disabled => {}
+                }
+                pass(harness);
+            }
+        }
+
+        /// The widget area of a control in a cell area.
+        fn control(area: Rect, width: f32) -> Rect {
+            Rect::new(area.x, area.y, width.min(area.width), 32.0)
+        }
+
+        /// Renders the gallery at `scale`.
+        fn render(scale: f32) {
+            let mut gallery =
+                Gallery::new(1340.0, 1960.0 + (DROPDOWN_ROW_HEIGHT - 72.0) * 2.0, scale);
+            let row_height = 72.0;
+            let mut top = CELL_GAP;
+            let state_cells =
+                |gallery: &mut Gallery,
+                 top: f32,
+                 (width, height): (f32, f32),
+                 name: &str,
+                 points: ((f32, f32), (f32, f32)),
+                 draw: &dyn Fn(&mut UiContext, Rect, State)| {
+                    for (index, state) in State::ALL.into_iter().enumerate() {
+                        let x = CELL_GAP + index as f32 * (width + CELL_GAP);
+                        let caption = format!("{name}: {}", state.caption());
+                        gallery.cell(
+                            (x, top),
+                            (width, height),
+                            &caption,
+                            |context, area| draw(context, area, state),
+                            script(state, points, UiId::from("widget")),
+                        );
+                    }
+                };
+            let center = ((40.0, 16.0), (40.0, 16.0));
+
+            state_cells(
+                &mut gallery,
+                top,
+                (240.0, DROPDOWN_ROW_HEIGHT),
+                "Dropdown",
+                center,
+                &|context, area, state| {
+                    let mut value = Some(4);
+                    Dropdown::new("widget", &MODELS)
+                        .enabled(state != State::Disabled)
+                        .show(context, control(area, 216.0), &mut value);
+                },
+            );
+            top += DROPDOWN_ROW_HEIGHT + CELL_GAP;
+            state_cells(
+                &mut gallery,
+                top,
+                (240.0, DROPDOWN_ROW_HEIGHT),
+                "Dropdown, inherited",
+                center,
+                &|context, area, state| {
+                    let mut value = None;
+                    Dropdown::new("widget", &MODELS)
+                        .inherited("System default: PC9801RA")
+                        .enabled(state != State::Disabled)
+                        .show(context, control(area, 216.0), &mut value);
+                },
+            );
+            top += DROPDOWN_ROW_HEIGHT + CELL_GAP;
+            state_cells(
+                &mut gallery,
+                top,
+                (240.0, row_height),
+                "Checkbox",
+                center,
+                &|context, area, state| {
+                    let mut value = matches!(state, State::Focus | State::Disabled);
+                    Checkbox::new("widget", "Show all files")
+                        .enabled(state != State::Disabled)
+                        .show(context, control(area, 216.0), &mut value);
+                },
+            );
+            top += row_height + CELL_GAP;
+            state_cells(
+                &mut gallery,
+                top,
+                (240.0, row_height),
+                "Number field",
+                ((NUMBER_FIELD_WIDTH - 16.0, 16.0), (40.0, 16.0)),
+                &|context, area, state| {
+                    let mut text = match state {
+                        State::Pressed => String::new(),
+                        State::Focus => "3".to_owned(),
+                        State::Idle | State::Hover | State::Disabled => "1996".to_owned(),
+                    };
+                    let field =
+                        NumberField::new("widget", "Not set").enabled(state != State::Disabled);
+                    let field = if state == State::Focus {
+                        field.range(0.0, 3.0)
+                    } else {
+                        field.range(0.0, 9999.0)
+                    };
+                    field.show(context, control(area, NUMBER_FIELD_WIDTH), &mut text);
+                },
+            );
+            top += row_height + CELL_GAP;
+
+            let variants = [
+                Variant {
+                    caption: "Folder icon",
+                    icon: Some(Icon::Folder),
+                    text: "games/98/YU-NO/yu-no.hdi",
+                    error: false,
+                    enabled: true,
+                    read_only: false,
+                },
+                Variant {
+                    caption: "No icon",
+                    icon: None,
+                    text: "Install to HDD 1 first. Needs the 86 board for music.",
+                    error: false,
+                    enabled: true,
+                    read_only: false,
+                },
+                Variant {
+                    caption: "Error edge",
+                    icon: Some(Icon::Folder),
+                    text: "/mnt/archive/mame/pc88va2",
+                    error: true,
+                    enabled: true,
+                    read_only: false,
+                },
+                Variant {
+                    caption: "Disabled",
+                    icon: Some(Icon::Folder),
+                    text: "",
+                    error: false,
+                    enabled: false,
+                    read_only: false,
+                },
+                Variant {
+                    caption: "Read-only",
+                    icon: Some(Icon::Folder),
+                    text: "config/pc98/brandish-2-the-planet-buster.conf",
+                    error: false,
+                    enabled: true,
+                    read_only: true,
+                },
+            ];
+            for (index, variant) in variants.into_iter().enumerate() {
+                let x = CELL_GAP + index as f32 * (252.0 + CELL_GAP);
+                let mut text = variant.text.to_owned();
+                let truncation = if variant.icon.is_some() {
+                    Truncation::Middle
+                } else {
+                    Truncation::End
+                };
+                gallery.cell(
+                    (x, top),
+                    (252.0, row_height),
+                    &format!("Text field: {}", variant.caption),
+                    |context, area| {
+                        TextField::new("widget", "Not set")
+                            .icon(variant.icon)
+                            .clears_on_cancel(false)
+                            .error(variant.error)
+                            .enabled(variant.enabled)
+                            .read_only(variant.read_only)
+                            .truncation(truncation)
+                            .show(context, control(area, 228.0), &mut text);
+                    },
+                    |harness, _, pass| pass(harness),
+                );
+            }
+            top += row_height + CELL_GAP;
+            state_cells(
+                &mut gallery,
+                top,
+                (240.0, row_height),
+                "Danger button",
+                center,
+                &|context, area, state| {
+                    Button::new("widget", "Delete")
+                        .icon(Icon::Delete)
+                        .kind(ButtonKind::Danger)
+                        .enabled(state != State::Disabled)
+                        .show(context, control(area, 104.0));
+                },
+            );
+            top += row_height + CELL_GAP;
+
+            let texts = [
+                (
+                    "Wrapping label: body text",
+                    false,
+                    "The changes to YU-NO: A Girl Who Chants Love at the Bound of this World are not saved.",
+                ),
+                (
+                    "Wrapping label: small text",
+                    true,
+                    "The file config/pc98/yu-no.conf is removed. The disk images stay where they are.",
+                ),
+            ];
+            for (index, (caption, small, text)) in texts.into_iter().enumerate() {
+                gallery.cell(
+                    (CELL_GAP + index as f32 * (276.0 + CELL_GAP), top),
+                    (276.0, 110.0),
+                    caption,
+                    |context, area| {
+                        let theme = context.theme;
+                        let style = if small { theme.small() } else { theme.body() };
+                        wrapped_label(
+                            context,
+                            Rect::new(area.x, area.y, 250.0, 0.0),
+                            &style,
+                            text,
+                            Align::Start,
+                            usize::MAX,
+                        );
+                    },
+                    |harness, _, pass| pass(harness),
+                );
+            }
+            let kinds = [RowKind::Disabled, RowKind::Normal];
+            let mut list_state = ListState::new();
+            gallery.cell(
+                (CELL_GAP * 3.0 + 552.0, top),
+                (276.0, 110.0),
+                "List: disabled list and row",
+                |context, area| {
+                    List::new("disabled", 2).kinds(&kinds).enabled(false).show(
+                        context,
+                        Rect::new(area.x, area.y, 250.0, 70.0),
+                        &mut list_state,
+                        |context, row| {
+                            list_row(
+                                context,
+                                row,
+                                Some(Icon::Disk),
+                                "Brandish (Disk 1 of 4).hdm",
+                                None,
+                            );
+                        },
+                    );
+                },
+                |harness, _, pass| pass(harness),
+            );
+            let kinds = [RowKind::Caption, RowKind::Normal, RowKind::Disabled];
+            let mut list_state = ListState::new();
+            gallery.cell(
+                (CELL_GAP * 4.0 + 828.0, top),
+                (276.0, 140.0),
+                "List: caption, focused and disabled rows",
+                |context, area| {
+                    List::new("rows", 3).kinds(&kinds).show(
+                        context,
+                        Rect::new(area.x, area.y, 250.0, 100.0),
+                        &mut list_state,
+                        |context, row| match row.kind {
+                            RowKind::Caption => {
+                                caption_row(context, row, "Files that fail to parse")
+                            }
+                            RowKind::Normal | RowKind::Disabled => {
+                                list_row(
+                                    context,
+                                    row,
+                                    Some(Icon::Disk),
+                                    "Lemmings.d88",
+                                    Some(Icon::Check),
+                                );
+                            }
+                        },
+                    );
+                },
+                |harness, _, pass| {
+                    harness.state.set_focus(UiId::from("rows"));
+                    pass(harness);
+                },
+            );
+            top += 140.0 + CELL_GAP;
+
+            let mut value = Some(4);
+            gallery.cell(
+                (CELL_GAP, top),
+                (420.0, 360.0),
+                "Dropdown popup: open, PC9801VX highlighted",
+                |context, area| {
+                    Dropdown::new("model", &MODELS)
+                        .inherited("System default: PC9801RA")
+                        .show(context, control(area, 280.0), &mut value);
+                },
+                |harness, _, pass| {
+                    harness.state.set_focus(UiId::from("model"));
+                    pass(harness);
+                    harness.input.confirm = true;
+                    pass(harness);
+                    for _ in 0..2 {
+                        harness.navigate(Navigation::Up);
+                        pass(harness);
+                    }
+                },
+            );
+            let mut scroll = ScrollState::new();
+            scroll.offset = 52.0;
+            let mut values = [None; FORM.len()];
+            values[1] = Some(1);
+            let form = |context: &mut UiContext,
+                        content: Rect,
+                        values: &mut [Option<usize>; FORM.len()]| {
+                let theme = context.theme;
+                for (index, (label, key, inherited)) in FORM.iter().enumerate() {
+                    let row_top = content.y + index as f32 * 40.0 + 4.0;
+                    let label_area = Rect::new(content.x + 12.0, row_top, 172.0, 32.0);
+                    context.text_in(
+                        Rect::new(label_area.x, label_area.y, label_area.width, 18.0),
+                        &theme.body(),
+                        label,
+                        Align::Start,
+                        Truncation::End,
+                    );
+                    context.text_in(
+                        Rect::new(label_area.x, label_area.y + 16.0, label_area.width, 16.0),
+                        &theme.small(),
+                        key,
+                        Align::Start,
+                        Truncation::End,
+                    );
+                    Dropdown::new(
+                        UiId::from("form").indexed(index),
+                        &["windowed", "fullscreen"],
+                    )
+                    .inherited(inherited)
+                    .show(
+                        context,
+                        Rect::new(content.x + 200.0, row_top, 360.0, 32.0),
+                        &mut values[index],
+                    );
+                }
+                FORM.len() as f32 * 40.0
+            };
+            gallery.cell(
+                (CELL_GAP * 2.0 + 420.0, top),
+                (800.0, 250.0),
+                "Scroll area: Scaling holds the focus",
+                |context, area| {
+                    scroll_area(
+                        context,
+                        "scroll",
+                        Rect::new(area.x, area.y, 760.0, 200.0),
+                        &mut scroll,
+                        |context, content| form(context, content, &mut values),
+                    );
+                },
+                |harness, _, pass| {
+                    harness.state.set_focus(UiId::from("form").indexed(3));
+                    pass(harness);
+                },
+            );
+            let mut scroll = ScrollState::new();
+            scroll.offset = 52.0;
+            let mut values = [None; FORM.len()];
+            gallery.cell(
+                (CELL_GAP * 2.0 + 420.0, top + 250.0 + CELL_GAP),
+                (800.0, 250.0),
+                "Scroll area: hovered thumb",
+                |context, area| {
+                    scroll_area(
+                        context,
+                        "scroll",
+                        Rect::new(area.x, area.y, 760.0, 200.0),
+                        &mut scroll,
+                        |context, content| form(context, content, &mut values),
+                    );
+                },
+                |harness, area, pass| {
+                    let scale = harness.viewport.scale;
+                    harness.mouse((area.x + 755.0) * scale, (area.y + 100.0) * scale);
+                    pass(harness);
+                },
+            );
+            top += 512.0 + CELL_GAP;
+
+            let table_cell_draw = |games: &'static [[&'static str; 4]]| {
+                move |context: &mut UiContext, row: &TableRow| {
+                    let game = games[row.row.index];
+                    if row.row.kind == RowKind::Caption {
+                        caption_row(context, &row.row, game[0]);
+                        return;
+                    }
+                    for (column, text) in game.iter().enumerate() {
+                        let tone = if column >= 2 {
+                            CellTone::Dim
+                        } else {
+                            CellTone::Normal
+                        };
+                        table_cell(context, row, column, text, tone);
+                    }
+                }
+            };
+            let mut table = TableState {
+                sort: Some(Sort {
+                    column: 0,
+                    direction: SortDirection::Ascending,
+                }),
+                ..TableState::new()
+            };
+            table.list.select(1);
+            gallery.cell(
+                (CELL_GAP, top),
+                (640.0, 260.0),
+                "Table: sorted by title, Developer hovered, rows focused",
+                |context, area| {
+                    Table::new("games", &COLUMNS, GAMES.len()).show(
+                        context,
+                        Rect::new(area.x, area.y, 616.0, 225.0),
+                        &mut table,
+                        table_cell_draw(&GAMES),
+                    );
+                },
+                |harness, area, pass| {
+                    let scale = harness.viewport.scale;
+                    harness.state.set_focus(UiId::from("games"));
+                    harness.mouse((area.x + 420.0) * scale, (area.y + 20.0) * scale);
+                    pass(harness);
+                },
+            );
+            let kinds = [
+                RowKind::Normal,
+                RowKind::Normal,
+                RowKind::Caption,
+                RowKind::Normal,
+                RowKind::Normal,
+                RowKind::Normal,
+            ];
+            let mut table = TableState {
+                sort: Some(Sort {
+                    column: 3,
+                    direction: SortDirection::Descending,
+                }),
+                picked: 3,
+                ..TableState::new()
+            };
+            table.list.select(1);
+            let header = Table::new("games", &COLUMNS, 0).header_id();
+            gallery.cell(
+                (CELL_GAP * 2.0 + 640.0, top),
+                (640.0, 290.0),
+                "Table: sorted by year, header focused, caption row",
+                |context, area| {
+                    Table::new("games", &COLUMNS, GAMES_BY_YEAR.len())
+                        .kinds(&kinds)
+                        .show(
+                            context,
+                            Rect::new(area.x, area.y, 616.0, 255.0),
+                            &mut table,
+                            table_cell_draw(&GAMES_BY_YEAR),
+                        );
+                },
+                |harness, _, pass| {
+                    harness.state.set_focus(header);
+                    pass(harness);
+                },
+            );
+            top += 290.0 + CELL_GAP;
+
+            gallery.cell(
+                (CELL_GAP, top),
+                (580.0, 290.0),
+                "Confirm dialog: Cancel holds the focus",
+                |context, area| {
+                    let dialog = ConfirmDialog::new(
+                        "delete",
+                        "Delete game",
+                        "Delete YU-NO: A Girl Who Chants Love at the Bound of this World?",
+                        "Delete",
+                    )
+                    .detail(
+                        "The file config/pc98/yu-no.conf is removed. The disk images stay where they are.",
+                    )
+                    .action_icon(Icon::Delete)
+                    .danger(true)
+                    .area(area);
+                    dialog.show(context);
+                },
+                |harness, _, pass| {
+                    harness.navigate(Navigation::Home);
+                    pass(harness);
+                },
+            );
+            let lines: [(&str, &[Hint], StatusEnd); 3] = [
+                (
+                    "Status line: library",
+                    &[
+                        Hint {
+                            keys: &[HintKey::Key("Enter"), HintKey::Pad("A")],
+                            label: "Launch",
+                        },
+                        Hint {
+                            keys: &[HintKey::Key("F2"), HintKey::Pad("X")],
+                            label: "Edit",
+                        },
+                        Hint {
+                            keys: &[
+                                HintKey::Key("Ctrl+PgUp"),
+                                HintKey::Key("Ctrl+PgDn"),
+                                HintKey::Shoulder("LB"),
+                                HintKey::Shoulder("RB"),
+                            ],
+                            label: "System",
+                        },
+                        Hint {
+                            keys: &[HintKey::Key("F10"), HintKey::Key("Start")],
+                            label: "Settings",
+                        },
+                    ],
+                    StatusEnd::Path("config/pc98/yu-no.conf"),
+                ),
+                (
+                    "Status line: dialog",
+                    &[
+                        Hint {
+                            keys: &[HintKey::Key("Enter"), HintKey::Pad("A")],
+                            label: "Delete",
+                        },
+                        Hint {
+                            keys: &[HintKey::Key("Esc"), HintKey::Pad("B")],
+                            label: "Cancel",
+                        },
+                    ],
+                    StatusEnd::Path("config/pc98/yu-no.conf"),
+                ),
+                (
+                    "Status line: error",
+                    &[Hint {
+                        keys: &[HintKey::Key("Enter"), HintKey::Pad("A")],
+                        label: "Delete",
+                    }],
+                    StatusEnd::Error("config/x68k/nemesis-90.conf line 4: unknown machine X68030"),
+                ),
+            ];
+            for (index, (caption, hints, end)) in lines.into_iter().enumerate() {
+                gallery.cell(
+                    (
+                        CELL_GAP * 2.0 + 580.0,
+                        top + index as f32 * (62.0 + CELL_GAP),
+                    ),
+                    (700.0, 62.0),
+                    caption,
+                    |context, area| {
+                        status_line(
+                            context,
+                            Rect::new(
+                                0.0,
+                                area.y + 4.0,
+                                context.bounds().width,
+                                STATUS_LINE_HEIGHT,
+                            ),
+                            hints,
+                            end,
+                        );
+                    },
+                    |harness, _, pass| pass(harness),
+                );
+            }
+            top += 290.0 + CELL_GAP;
+
+            gallery.cell(
+                (CELL_GAP, top),
+                (1276.0, 150.0),
+                "Icons at 64, 16 and 12",
+                |context, area| {
+                    let theme = context.theme;
+                    for (index, icon) in Icon::ALL.into_iter().enumerate() {
+                        let x = area.x + index as f32 * 66.0;
+                        let big = Rect::new(x, area.y, 64.0, 64.0);
+                        context.fill(big, theme.well);
+                        context.icon(big, icon, 64.0, theme.text);
+                        context.icon(
+                            Rect::new(x + 8.0, area.y + 72.0, 16.0, 16.0),
+                            icon,
+                            16.0,
+                            theme.text,
+                        );
+                        context.icon(
+                            Rect::new(x + 36.0, area.y + 74.0, 12.0, 12.0),
+                            icon,
+                            12.0,
+                            theme.text,
+                        );
+                    }
+                },
+                |harness, _, pass| pass(harness),
+            );
+            gallery.write(&format!("gui_widgets_{scale}x"));
+        }
+
+        #[test]
+        #[ignore = "writes a screenshot into the directory of GUI_SHOTS"]
+        fn widget_gallery_screenshot() {
+            render(1.0);
+            render(2.0);
+        }
     }
 }

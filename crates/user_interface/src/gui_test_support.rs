@@ -71,6 +71,20 @@ impl GuiHarness {
         result
     }
 
+    /// Runs one pass of `draw` with the pending input and then the passes
+    /// that the widgets ask for, at most four, as the GUI host does.
+    /// Returns the result of the last pass.
+    pub(crate) fn settle<R>(&mut self, mut draw: impl FnMut(&mut UiContext) -> R) -> R {
+        let mut result = self.frame(&mut draw);
+        for _ in 0..4 {
+            if !self.state.take_pass_request() {
+                break;
+            }
+            result = self.frame(&mut draw);
+        }
+        result
+    }
+
     /// Draws the scene of the last pass through the CPU rasterizer into RGBA8 pixels.
     pub(crate) fn render(&self) -> Vec<u8> {
         let Viewport { width, height, .. } = self.viewport;

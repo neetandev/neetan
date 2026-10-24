@@ -108,6 +108,12 @@ pub struct Scene {
     instances: Vec<Instance>,
     /// The clip stack in physical pixels as left, top, right and bottom.
     clips: Vec<[f32; 4]>,
+    /// The items of the overlay, which follow every other item.
+    overlay: Vec<Instance>,
+    /// The number of open overlays.
+    overlay_depth: u32,
+    /// The clip stacks outside the open overlays.
+    outer_clips: Vec<Vec<[f32; 4]>>,
 }
 
 impl Default for Scene {
@@ -124,6 +130,9 @@ impl Scene {
             clear: Color::TRANSPARENT,
             instances: Vec::new(),
             clips: Vec::new(),
+            overlay: Vec::new(),
+            overlay_depth: 0,
+            outer_clips: Vec::new(),
         }
     }
 
@@ -134,6 +143,31 @@ impl Scene {
         self.clear = clear;
         self.instances.clear();
         self.clips.clear();
+        self.overlay.clear();
+        self.overlay_depth = 0;
+        self.outer_clips.clear();
+    }
+
+    /// Starts the overlay: the items until [`Scene::end_overlay`] follow
+    /// every other item of the frame once [`Scene::finish`] runs. The
+    /// overlay starts without a clip.
+    pub fn begin_overlay(&mut self) {
+        self.outer_clips.push(std::mem::take(&mut self.clips));
+        self.overlay_depth += 1;
+    }
+
+    /// Ends the overlay of the last [`Scene::begin_overlay`] and restores
+    /// the clip stack outside it.
+    pub fn end_overlay(&mut self) {
+        if let Some(clips) = self.outer_clips.pop() {
+            self.clips = clips;
+            self.overlay_depth -= 1;
+        }
+    }
+
+    /// Ends the frame: the items of the overlay follow the other items.
+    pub fn finish(&mut self) {
+        self.instances.append(&mut self.overlay);
     }
 
     /// The physical pixels for each logical unit.
@@ -225,7 +259,11 @@ impl Scene {
             return;
         }
         instance.clip = clip;
-        self.instances.push(instance);
+        if self.overlay_depth > 0 {
+            self.overlay.push(instance);
+        } else {
+            self.instances.push(instance);
+        }
     }
 
     /// Records `instance` without snapping its edges. `margin` is the
@@ -449,6 +487,30 @@ mod tests {
         assert_eq!(scene.len(), 2);
         assert_eq!(scene.instances()[0].clip, [20.0, 20.0, 60.0, 60.0]);
         assert_eq!(scene.instances()[1].clip[2], f32::MAX);
+    }
+
+    #[test]
+    fn the_overlay_follows_the_other_items_with_its_own_clip() {
+        let mut scene = Scene::new();
+        scene.begin(1.0, Color::BLACK);
+        scene.push_clip(Rect::new(0.0, 0.0, 10.0, 10.0));
+        scene.begin_overlay();
+        scene.fill(Rect::new(20.0, 20.0, 5.0, 5.0), 0.0, Color::WHITE);
+        scene.end_overlay();
+        scene.fill(Rect::new(1.0, 1.0, 5.0, 5.0), 0.0, Color::BLACK);
+        scene.fill(Rect::new(20.0, 20.0, 5.0, 5.0), 0.0, Color::BLACK);
+        scene.pop_clip();
+        assert_eq!(scene.len(), 1);
+        scene.finish();
+        assert_eq!(scene.len(), 2);
+        assert_eq!(scene.instances()[1].rect, [20.0, 20.0, 5.0, 5.0]);
+        assert_eq!(scene.instances()[1].color, Color::WHITE.to_linear());
+        scene.begin(1.0, Color::BLACK);
+        scene.begin_overlay();
+        scene.fill(Rect::new(1.0, 1.0, 5.0, 5.0), 0.0, Color::WHITE);
+        scene.begin(1.0, Color::BLACK);
+        scene.finish();
+        assert!(scene.is_empty());
     }
 
     #[test]

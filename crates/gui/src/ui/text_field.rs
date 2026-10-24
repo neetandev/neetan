@@ -3,8 +3,9 @@
 use super::{
     context::{UiContext, UiId},
     icons::Icon,
+    label::{Align, Truncation},
 };
-use crate::{Rect, RectStyle};
+use crate::{Color, Rect, RectStyle};
 
 /// The width of the text cursor.
 const CURSOR_WIDTH: f32 = 1.5;
@@ -24,108 +25,122 @@ pub struct TextFieldResponse {
     pub submitted: bool,
 }
 
-/// A single line text field in `rect` that edits `text`. An empty field
-/// shows `placeholder`.
-///
-/// A click gives the field the focus. While it holds the focus, the
-/// committed text of the input goes to the end of the text up to
-/// [`TEXT_FIELD_LIMIT`] characters, and backspace removes the last
-/// character. The composition of an input method shows underlined at the
-/// cursor. The cursor stays at the end, and the field takes left, right,
-/// home and end without a change. Cancel empties a field with text and
-/// leaves an empty field to the panel. A text wider than the field scrolls,
-/// so its end and the cursor stay visible. A clear button for the mouse
-/// empties a field with text.
-pub fn text_field(
-    context: &mut UiContext,
-    id: impl Into<UiId>,
-    rect: Rect,
-    text: &mut String,
-    placeholder: &str,
-) -> TextFieldResponse {
-    let id = id.into();
+/// The state of a field that sets the look of its frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct FieldLook {
+    /// The field holds the focus.
+    pub(super) focused: bool,
+    /// The pointer is over the field.
+    pub(super) hovered: bool,
+    /// The value of the field is wrong.
+    pub(super) error: bool,
+    /// The field reacts to input.
+    pub(super) enabled: bool,
+    /// The field shows a value the user cannot type.
+    pub(super) read_only: bool,
+}
+
+impl FieldLook {
+    /// The color of the value text.
+    pub(super) fn text_color(self, context: &UiContext) -> Color {
+        let theme = context.theme;
+        if !self.enabled {
+            theme.text_disabled
+        } else if self.read_only {
+            theme.text_dim
+        } else {
+            theme.text
+        }
+    }
+}
+
+/// Draws the frame of a field in `rect` with the look `look`.
+pub(super) fn field_frame(context: &mut UiContext, rect: Rect, look: FieldLook) {
     let theme = context.theme;
-    let mut response = TextFieldResponse::default();
-    if context.cancel_taken(id) && !text.is_empty() {
-        text.clear();
-        response.changed = true;
-    }
-    let clear_id = id.child("clear");
-    let clear_rect =
-        Rect::new(rect.right() - rect.height, rect.y, rect.height, rect.height).inset(4.0);
-    let mut clear_hot = false;
-    if !text.is_empty() {
-        let pointer = context.button_behavior(clear_id, clear_rect);
-        clear_hot = pointer.hovered || pointer.held;
-        if pointer.clicked {
-            text.clear();
-            response.changed = true;
-            context.set_focus(id);
+    let (fill, edge) = if !look.enabled {
+        (
+            theme.field.with_alpha(0.5),
+            theme.control_edge.with_alpha(0.5),
+        )
+    } else if look.read_only {
+        (theme.well, theme.well_edge)
+    } else if look.error {
+        (theme.field, theme.danger_text)
+    } else if look.focused {
+        (theme.field, theme.accent)
+    } else if look.hovered {
+        (theme.field, theme.control_edge.mix(theme.text_dim, 0.35))
+    } else {
+        (theme.field, theme.control_edge)
+    };
+    context.rect(
+        rect,
+        &RectStyle::filled(fill, theme.radius).with_stroke(theme.stroke, edge),
+    );
+}
+
+/// Adds the committed text of the input to `text` up to `limit`
+/// characters, keeping the characters that `accept` takes, and removes the
+/// last character on backspace. Returns whether `text` changed.
+pub(super) fn edit_text(
+    context: &UiContext,
+    text: &mut String,
+    limit: usize,
+    accept: impl Fn(&str, char) -> bool,
+) -> bool {
+    let input = context.input;
+    let before = text.clone();
+    for character in input.text.chars() {
+        if text.chars().count() >= limit {
+            break;
+        }
+        if !character.is_control() && accept(text, character) {
+            text.push(character);
         }
     }
-    if context.has_focus(id) {
-        let input = context.input;
-        let room = TEXT_FIELD_LIMIT.saturating_sub(text.chars().count());
-        let before = text.len();
-        text.extend(
-            input
-                .text
-                .chars()
-                .filter(|character| !character.is_control())
-                .take(room),
-        );
-        response.changed |= text.len() != before;
-        if input.backspace {
-            response.changed |= text.pop().is_some();
-        }
-        response.submitted = context.confirmed(id);
+    if input.backspace {
+        text.pop();
     }
-    context.text_focusable(id, rect, !text.is_empty());
-    let pointer = context.button_behavior(id, rect);
-    let focused = context.has_focus(id);
+    *text != before
+}
+
+/// Draws the value of a field: `text` in `inner` with the color `color`,
+/// or `placeholder` while the field is empty. `inner` spans the height of
+/// the field. A focused field shows the composition of the input method at
+/// the cursor and scrolls, so its end and the cursor stay visible. Without
+/// the focus a text wider than `inner` is cut as `truncation` says.
+pub(super) fn draw_value(
+    context: &mut UiContext,
+    inner: Rect,
+    text: &str,
+    placeholder: &str,
+    focused: bool,
+    color: Color,
+    truncation: Truncation,
+) {
+    let theme = context.theme;
     let composition = if focused {
         context.input.composition.as_str()
     } else {
         ""
     };
-
-    let edge = if focused {
-        theme.accent
-    } else if pointer.hovered {
-        theme.control_edge.mix(theme.text_dim, 0.35)
-    } else {
-        theme.control_edge
-    };
-    context.rect(
-        rect,
-        &RectStyle::filled(theme.field, theme.radius).with_stroke(theme.stroke, edge),
-    );
-    let icon_slot = Rect::new(rect.x + theme.gap, rect.y, theme.icon_size, rect.height);
-    let icon_color = if focused {
-        theme.text_dim
-    } else {
-        theme.text_disabled
-    };
-    context.icon(icon_slot, Icon::Search, theme.icon_size, icon_color);
-    let left = icon_slot.right() + theme.gap * 0.75;
-    let right = if text.is_empty() {
-        rect.right() - theme.gap
-    } else {
-        clear_rect.x - 2.0
-    };
-    let inner = Rect::new(left, rect.y, (right - left).max(0.0), rect.height);
-
-    let style = theme.body();
-    let baseline = context.centered_baseline(rect, &style);
+    let style = theme.body().with_color(color);
     if text.is_empty() && composition.is_empty() {
         context.text_left(inner, &style.with_color(theme.text_disabled), placeholder);
     }
+    if !focused {
+        if !text.is_empty() {
+            context.text_in(inner, &style, text, Align::Start, truncation);
+        }
+        return;
+    }
+    let baseline = context.centered_baseline(inner, &style);
     let cursor_width = context.snap(CURSOR_WIDTH).max(1.0 / context.scale());
     context.scene.push_clip(Rect::new(
         inner.x - cursor_width,
-        rect.y + theme.stroke,
+        inner.y + theme.stroke,
         inner.width + cursor_width * 2.0,
-        rect.height - theme.stroke * 2.0,
+        inner.height - theme.stroke * 2.0,
     ));
     let width = context.measure(&style, text);
     let composition_width = context.measure(&style, composition);
@@ -144,46 +159,224 @@ pub fn text_field(
             theme.text,
         );
     }
-    if focused {
-        let height = (style.size * 1.3).round();
-        let cursor_x = context.snap(x + width + composition_width);
-        context.set_text_caret(cursor_x);
-        context.scene.fill(
-            Rect::new(
-                cursor_x,
-                context.snap(rect.y + (rect.height - height) * 0.5),
-                cursor_width,
-                height,
-            ),
-            0.0,
-            theme.text,
-        );
-    }
+    let height = (theme.text_size * 1.3).round();
+    let cursor_x = context.snap(x + width + composition_width);
+    context.set_text_caret(cursor_x);
+    context.scene.fill(
+        Rect::new(
+            cursor_x,
+            context.snap(inner.y + (inner.height - height) * 0.5),
+            cursor_width,
+            height,
+        ),
+        0.0,
+        theme.text,
+    );
     context.scene.pop_clip();
+}
 
-    if !text.is_empty() {
-        if clear_hot {
-            context
-                .scene
-                .fill(clear_rect, clear_rect.height * 0.5, theme.control_hover);
+/// A single line text field with options.
+///
+/// A click gives the field the focus. While it holds the focus, the
+/// committed text of the input goes to the end of the text up to
+/// [`TEXT_FIELD_LIMIT`] characters, and backspace removes the last
+/// character. The composition of an input method shows underlined at the
+/// cursor. The cursor stays at the end, and the field takes left, right,
+/// home and end without a change. A text wider than the focused field
+/// scrolls, so its end and the cursor stay visible. Without the focus a long
+/// text is cut. A clear button for the mouse empties a field with text.
+///
+/// The default field is a search field: it shows the search icon, and
+/// cancel empties a field with text and leaves an empty field to the panel.
+/// A form field shows another icon or none and leaves cancel to the panel.
+#[derive(Clone, Copy, Debug)]
+pub struct TextField<'a> {
+    /// The id of the field.
+    id: UiId,
+    /// The text of an empty field.
+    placeholder: &'a str,
+    /// The icon before the text.
+    icon: Option<Icon>,
+    /// Whether cancel empties a field with text.
+    clears_on_cancel: bool,
+    /// Whether the field draws the error edge.
+    error: bool,
+    /// Whether the field reacts to input.
+    enabled: bool,
+    /// Whether the field shows a value the user cannot type.
+    read_only: bool,
+    /// The cut of a long text without the focus.
+    truncation: Truncation,
+}
+
+impl<'a> TextField<'a> {
+    /// A search field that shows `placeholder` while it is empty.
+    pub fn new(id: impl Into<UiId>, placeholder: &'a str) -> Self {
+        Self {
+            id: id.into(),
+            placeholder,
+            icon: Some(Icon::Search),
+            clears_on_cancel: true,
+            error: false,
+            enabled: true,
+            read_only: false,
+            truncation: Truncation::End,
         }
-        let color = if clear_hot {
-            theme.text
-        } else {
-            theme.text_dim
+    }
+
+    /// The same field with `icon` before the text, or no icon.
+    pub fn icon(self, icon: Option<Icon>) -> Self {
+        Self { icon, ..self }
+    }
+
+    /// The same field, which empties itself on the first cancel when
+    /// `clears` is set. A field that does not clear leaves cancel to the
+    /// panel.
+    pub fn clears_on_cancel(self, clears: bool) -> Self {
+        Self {
+            clears_on_cancel: clears,
+            ..self
+        }
+    }
+
+    /// The same field with the error edge when `error` is set.
+    pub fn error(self, error: bool) -> Self {
+        Self { error, ..self }
+    }
+
+    /// The same field, disabled unless `enabled`. A disabled field draws
+    /// dimmed, ignores input and leaves the focus ring.
+    pub fn enabled(self, enabled: bool) -> Self {
+        Self { enabled, ..self }
+    }
+
+    /// The same field, read-only when `read_only` is set. A read-only field
+    /// shows its text sunken and dimmed, ignores input and leaves the focus
+    /// ring.
+    pub fn read_only(self, read_only: bool) -> Self {
+        Self { read_only, ..self }
+    }
+
+    /// The same field, which cuts a long text without the focus as
+    /// `truncation` says. A path field cuts its text in the middle.
+    pub fn truncation(self, truncation: Truncation) -> Self {
+        Self { truncation, ..self }
+    }
+
+    /// Draws the field in `rect` over `text` and returns what it did in this
+    /// pass.
+    pub fn show(self, context: &mut UiContext, rect: Rect, text: &mut String) -> TextFieldResponse {
+        let id = self.id;
+        let theme = context.theme;
+        let interactive = self.enabled && !self.read_only;
+        let mut response = TextFieldResponse::default();
+        if interactive && self.clears_on_cancel && context.cancel_taken(id) && !text.is_empty() {
+            text.clear();
+            response.changed = true;
+        }
+        let clear_id = id.child("clear");
+        let clear_rect =
+            Rect::new(rect.right() - rect.height, rect.y, rect.height, rect.height).inset(4.0);
+        let mut clear_hot = false;
+        if interactive && !text.is_empty() {
+            let pointer = context.button_behavior(clear_id, clear_rect);
+            clear_hot = pointer.hovered || pointer.held;
+            if pointer.clicked {
+                text.clear();
+                response.changed = true;
+                context.set_focus(id);
+            }
+        }
+        let mut hovered = false;
+        if interactive {
+            if context.has_focus(id) {
+                response.changed |= edit_text(context, text, TEXT_FIELD_LIMIT, |_, _| true);
+                response.submitted = context.confirmed(id);
+            }
+            context.text_focusable(id, rect, self.clears_on_cancel && !text.is_empty());
+            hovered = context.button_behavior(id, rect).hovered;
+        }
+        let focused = interactive && context.has_focus(id);
+        let look = FieldLook {
+            focused,
+            hovered,
+            error: self.error,
+            enabled: self.enabled,
+            read_only: self.read_only,
         };
-        context.icon(clear_rect, Icon::Close, CLEAR_ICON_SIZE, color);
+        field_frame(context, rect, look);
+        let left = match self.icon {
+            Some(icon) => {
+                let slot = Rect::new(rect.x + theme.gap, rect.y, theme.icon_size, rect.height);
+                let color = if focused {
+                    theme.text_dim
+                } else {
+                    theme.text_disabled
+                };
+                context.icon(slot, icon, theme.icon_size, color);
+                slot.right() + theme.gap * 0.75
+            }
+            None => rect.x + theme.gap * 1.25,
+        };
+        let shows_clear = interactive && !text.is_empty();
+        let right = if shows_clear {
+            clear_rect.x - 2.0
+        } else {
+            rect.right() - theme.gap
+        };
+        let inner = Rect::new(left, rect.y, (right - left).max(0.0), rect.height);
+        let color = look.text_color(context);
+        draw_value(
+            context,
+            inner,
+            text,
+            self.placeholder,
+            focused,
+            color,
+            self.truncation,
+        );
+        if shows_clear {
+            if clear_hot {
+                context
+                    .scene
+                    .fill(clear_rect, clear_rect.height * 0.5, theme.control_hover);
+            }
+            let color = if clear_hot {
+                theme.text
+            } else {
+                theme.text_dim
+            };
+            context.icon(clear_rect, Icon::Close, CLEAR_ICON_SIZE, color);
+        }
+        if focused {
+            context.focus_ring(rect, theme.radius);
+        }
+        response
     }
-    if focused {
-        context.focus_ring(rect, theme.radius);
-    }
-    response
+}
+
+/// A search field in `rect` that edits `text` and shows `placeholder` while
+/// it is empty, with the behavior of [`TextField`].
+pub fn text_field(
+    context: &mut UiContext,
+    id: impl Into<UiId>,
+    rect: Rect,
+    text: &mut String,
+    placeholder: &str,
+) -> TextFieldResponse {
+    TextField::new(id, placeholder).show(context, rect, text)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Instance, ui::tests::Harness};
+    use crate::{
+        Instance,
+        ui::{
+            Navigation, NavigationSet,
+            tests::{Harness, pixel, srgb},
+        },
+    };
 
     /// The area of the field.
     const FIELD: Rect = Rect::new(10.0, 10.0, 200.0, 32.0);
@@ -380,5 +573,155 @@ mod tests {
         draw(&mut harness, &mut text);
         assert_eq!(text, "abかな");
         assert_eq!(cursor(&harness).unwrap()[0], composing[0]);
+    }
+
+    #[test]
+    fn a_form_field_leaves_cancel_to_the_panel() {
+        let mut harness = Harness::new();
+        let mut text = String::from("Edge");
+        let draw = |harness: &mut Harness, text: &mut String| {
+            harness.frame(|context| {
+                TextField::new("title", "Title")
+                    .icon(None)
+                    .clears_on_cancel(false)
+                    .show(context, FIELD, text);
+                context.cancelled()
+            })
+        };
+        harness.state.set_focus(UiId::from("title"));
+        draw(&mut harness, &mut text);
+        harness.input.cancel = true;
+        assert!(draw(&mut harness, &mut text));
+        assert_eq!(text, "Edge");
+    }
+
+    #[test]
+    fn disabled_and_read_only_fields_ignore_input_and_leave_the_ring() {
+        for (enabled, read_only) in [(false, false), (true, true)] {
+            let mut harness = Harness::new();
+            let mut text = String::from("config/pc98/edge.conf");
+            let draw = |harness: &mut Harness, text: &mut String| {
+                harness.frame(|context| {
+                    TextField::new("path", "Not set")
+                        .icon(Some(Icon::Folder))
+                        .enabled(enabled)
+                        .read_only(read_only)
+                        .show(context, FIELD, text)
+                })
+            };
+            harness.navigate(Navigation::Next);
+            draw(&mut harness, &mut text);
+            assert_eq!(harness.state.focused(), None);
+            harness.press(50.0, 20.0);
+            draw(&mut harness, &mut text);
+            harness.release();
+            harness.input.text.push('x');
+            harness.input.backspace = true;
+            assert!(!draw(&mut harness, &mut text).changed);
+            assert_eq!(text, "config/pc98/edge.conf");
+            assert!(!harness.state.wants_text_input());
+        }
+    }
+
+    #[test]
+    fn the_leading_icon_sets_the_start_of_the_text() {
+        let starts: Vec<f32> = [Some(Icon::Search), Some(Icon::Folder), None]
+            .into_iter()
+            .map(|icon| {
+                let mut harness = Harness::new();
+                let mut text = String::from("Brandish");
+                harness.frame(|context| {
+                    TextField::new("field", "Filter")
+                        .icon(icon)
+                        .show(context, FIELD, &mut text);
+                });
+                let color = harness.theme.text.to_linear();
+                harness
+                    .scene
+                    .instances()
+                    .iter()
+                    .filter(|instance| {
+                        instance.kind[0] == Instance::KIND_GLYPH && instance.color == color
+                    })
+                    .map(|instance| instance.rect[0])
+                    .fold(f32::MAX, f32::min)
+            })
+            .collect();
+        let theme = Harness::new().theme;
+        let after_icon = FIELD.x + theme.gap + theme.icon_size + theme.gap * 0.75;
+        assert!(
+            starts[0] >= after_icon && starts[0] < after_icon + 2.0,
+            "{starts:?}"
+        );
+        assert_eq!(starts[0], starts[1]);
+        let plain = FIELD.x + theme.gap * 1.25;
+        assert!(starts[2] >= plain && starts[2] < plain + 2.0, "{starts:?}");
+    }
+
+    #[test]
+    fn a_long_text_without_the_focus_ends_inside_the_field() {
+        let mut harness = Harness::new();
+        let mut text = String::from("games/98/YU-NO/YU-NO (Disk 3 of 4) with a very long name.hdm");
+        harness.frame(|context| {
+            TextField::new("path", "Not set")
+                .icon(Some(Icon::Folder))
+                .truncation(Truncation::Middle)
+                .show(context, FIELD, &mut text);
+        });
+        for instance in harness.scene.instances() {
+            assert!(
+                instance.rect[0] + instance.rect[2] <= FIELD.right(),
+                "{instance:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_edges_of_the_field_follow_its_state() {
+        let theme = Harness::new().theme;
+        let cases = [
+            (false, true, false, theme.danger_text),
+            (true, false, false, theme.well_edge),
+            (false, false, false, theme.control_edge),
+        ];
+        for (read_only, error, focused, edge) in cases {
+            let mut harness = Harness::new();
+            let mut text = String::from("roms/pc88va");
+            if focused {
+                harness.state.set_focus(UiId::from("field"));
+            }
+            harness.frame(|context| {
+                TextField::new("field", "Not set")
+                    .error(error)
+                    .read_only(read_only)
+                    .show(context, FIELD, &mut text);
+            });
+            let pixels = harness.render();
+            let width = harness.viewport.width;
+            assert_eq!(
+                pixel(&pixels, width, FIELD.center().0, FIELD.y + 0.5),
+                srgb(edge)
+            );
+        }
+        let mut harness = Harness::new();
+        let mut text = String::new();
+        harness.frame(|context| {
+            TextField::new("field", "Not set")
+                .read_only(true)
+                .show(context, FIELD, &mut text);
+            context.focusable(
+                UiId::from("other"),
+                Rect::new(300.0, 10.0, 50.0, 30.0),
+                NavigationSet::EMPTY,
+            );
+        });
+        let pixels = harness.render();
+        let fill = pixel(
+            &pixels,
+            harness.viewport.width,
+            FIELD.x + 4.0,
+            FIELD.center().1,
+        );
+        assert_eq!(fill, srgb(harness.theme.well));
     }
 }

@@ -10,7 +10,7 @@ use std::{
 use common::warn;
 use gui::{
     Fonts, Scene,
-    ui::{Input, Navigation, Theme, UiContext, UiState, Viewport},
+    ui::{ActionButton, Input, Navigation, Shortcut, Theme, UiContext, UiState, Viewport},
 };
 use sdl3::{
     event::Event,
@@ -26,6 +26,10 @@ const REPEAT_DELAY: Duration = Duration::from_millis(400);
 
 /// The interval between the repeats of a held gamepad direction.
 const REPEAT_INTERVAL: Duration = Duration::from_millis(80);
+
+/// The most passes in a row that the widgets ask for without an event in
+/// between. A widget that asks on every pass stops there.
+const MAXIMUM_CHAINED_PASSES: u32 = 4;
 
 /// The stick deflection that engages a direction.
 const STICK_PRESS: i16 = 16384;
@@ -71,6 +75,10 @@ pub(crate) enum GuiEvent {
     Confirm,
     /// The escape key or the cancel button of a gamepad.
     Cancel,
+    /// A gamepad button for an action of the screen: X, Y or Start.
+    Action(ActionButton),
+    /// A shortcut key.
+    Shortcut(Shortcut),
     /// The backspace key.
     Backspace,
     /// Committed text.
@@ -88,13 +96,18 @@ impl GuiEvent {
 }
 
 /// The event of a pressed key. A repeated key press counts only for the
-/// navigation keys and backspace.
+/// navigation keys and backspace. Left Ctrl + Page Up and Left Ctrl + Page
+/// Down switch the tab like the shoulder buttons. The right control key
+/// belongs to the shell and never forms a shortcut.
 pub(crate) fn key_event(scancode: Scancode, keymod: &Mod, repeat: bool) -> Option<GuiEvent> {
+    let control = keymod.lctrl();
     let navigation = match scancode {
         Scancode::Up => Some(Navigation::Up),
         Scancode::Down => Some(Navigation::Down),
         Scancode::Left => Some(Navigation::Left),
         Scancode::Right => Some(Navigation::Right),
+        Scancode::PageUp if control => Some(Navigation::PreviousTab),
+        Scancode::PageDown if control => Some(Navigation::NextTab),
         Scancode::PageUp => Some(Navigation::PageUp),
         Scancode::PageDown => Some(Navigation::PageDown),
         Scancode::Home => Some(Navigation::Home),
@@ -106,12 +119,25 @@ pub(crate) fn key_event(scancode: Scancode, keymod: &Mod, repeat: bool) -> Optio
     if let Some(navigation) = navigation {
         return Some(GuiEvent::Navigation(navigation));
     }
-    match scancode {
-        Scancode::Backspace => Some(GuiEvent::Backspace),
-        Scancode::Return | Scancode::KpEnter if !repeat => Some(GuiEvent::Confirm),
-        Scancode::Escape if !repeat => Some(GuiEvent::Cancel),
-        _ => None,
+    if scancode == Scancode::Backspace {
+        return Some(GuiEvent::Backspace);
     }
+    if repeat || keymod.rctrl() {
+        return None;
+    }
+    let shortcut = match scancode {
+        Scancode::Return | Scancode::KpEnter => return Some(GuiEvent::Confirm),
+        Scancode::Escape => return Some(GuiEvent::Cancel),
+        Scancode::Delete => Shortcut::Delete,
+        Scancode::Insert => Shortcut::Insert,
+        Scancode::F2 => Shortcut::F2,
+        Scancode::F10 => Shortcut::F10,
+        Scancode::F if control => Shortcut::ControlF,
+        Scancode::D if control => Shortcut::ControlD,
+        Scancode::S if control => Shortcut::ControlS,
+        _ => return None,
+    };
+    Some(GuiEvent::Shortcut(shortcut))
 }
 
 /// The event of a mouse, text or input method event of SDL. Keyboard and
@@ -175,8 +201,8 @@ struct Repeat {
 }
 
 /// The navigation of a gamepad: the D-pad and the left stick with a
-/// synthesized repeat while a direction is held, and the face and shoulder
-/// buttons.
+/// synthesized repeat while a direction is held, and the face, shoulder and
+/// start buttons.
 #[derive(Debug, Default)]
 pub(crate) struct GamepadNavigation {
     /// The held directions of the D-pad and the stick, the most recent last.
@@ -224,7 +250,8 @@ impl GamepadNavigation {
         }
     }
 
-    /// The event of a button change at `now`.
+    /// The event of a button change at `now`. A confirms, B cancels, the
+    /// shoulder buttons switch tabs, and X, Y and Start are action buttons.
     pub(crate) fn button(
         &mut self,
         button: GamepadButton,
@@ -253,6 +280,9 @@ impl GamepadNavigation {
             GamepadButton::East => Some(GuiEvent::Cancel),
             GamepadButton::LeftShoulder => Some(GuiEvent::Navigation(Navigation::PreviousTab)),
             GamepadButton::RightShoulder => Some(GuiEvent::Navigation(Navigation::NextTab)),
+            GamepadButton::West => Some(GuiEvent::Action(ActionButton::X)),
+            GamepadButton::North => Some(GuiEvent::Action(ActionButton::Y)),
+            GamepadButton::Start => Some(GuiEvent::Action(ActionButton::Start)),
             _ => None,
         }
     }
@@ -349,8 +379,11 @@ pub(crate) struct GuiHost {
     viewport: Viewport,
     /// The physical pixels for each window coordinate.
     pixel_density: f32,
-    /// Whether pointer motion, wheel steps or a window change wait for a pass.
+    /// Whether pointer motion, wheel steps, a window change or a widget wait
+    /// for a pass.
     pending: bool,
+    /// The passes in a row that the widgets asked for.
+    chained_passes: u32,
     /// Whether SDL text input runs.
     text_input: bool,
     /// The text input area and the cursor offset last passed to SDL, in
@@ -395,6 +428,7 @@ impl GuiHost {
             viewport: Viewport::new(0, 0, 1.0),
             pixel_density: 1.0,
             pending: true,
+            chained_passes: 0,
             text_input: false,
             text_area: None,
             gamepad: GamepadNavigation::default(),
@@ -411,6 +445,13 @@ impl GuiHost {
             ..Input::default()
         };
         self.gamepad.clear();
+        self.pending = true;
+    }
+
+    /// Opens the modal layer `id` before the next pass, for a dialog that
+    /// opens between passes, and waits for a pass.
+    pub(crate) fn open_layer(&mut self, id: gui::ui::UiId) {
+        self.state.open_layer(id);
         self.pending = true;
     }
 
@@ -446,6 +487,7 @@ impl GuiHost {
     /// needs a pass now.
     pub(crate) fn apply(&mut self, event: GuiEvent) -> bool {
         let discrete = event.is_discrete();
+        self.chained_passes = 0;
         let density = self.pixel_density;
         let input = &mut self.input;
         match event {
@@ -480,6 +522,8 @@ impl GuiHost {
             GuiEvent::Navigation(navigation) => input.navigation = Some(navigation),
             GuiEvent::Confirm => input.confirm = true,
             GuiEvent::Cancel => input.cancel = true,
+            GuiEvent::Action(button) => input.action = Some(button),
+            GuiEvent::Shortcut(shortcut) => input.shortcut = Some(shortcut),
             GuiEvent::Backspace => input.backspace = true,
             GuiEvent::Text(text) => {
                 input.text.push_str(&text);
@@ -493,13 +537,15 @@ impl GuiHost {
         discrete
     }
 
-    /// Whether pointer motion, wheel steps or a window change wait for a
-    /// pass.
+    /// Whether pointer motion, wheel steps, a window change or a widget that
+    /// asked for another pass wait for a pass.
     pub(crate) fn pending(&self) -> bool {
         self.pending
     }
 
-    /// Runs one pass of `draw` with the input so far and keeps its scene.
+    /// Runs one pass of `draw` with the input so far and keeps its scene. A
+    /// widget that asks for another pass leaves the host pending, up to
+    /// [`MAXIMUM_CHAINED_PASSES`] passes in a row without an event.
     pub(crate) fn pass<R>(&mut self, draw: impl FnOnce(&mut UiContext) -> R) -> R {
         let mut context = UiContext::new(
             &mut self.scene,
@@ -512,7 +558,14 @@ impl GuiHost {
         let result = draw(&mut context);
         context.finish();
         self.input.advance();
-        self.pending = false;
+        let requested = self.state.take_pass_request();
+        if requested && self.chained_passes < MAXIMUM_CHAINED_PASSES {
+            self.chained_passes += 1;
+            self.pending = true;
+        } else {
+            self.chained_passes = 0;
+            self.pending = false;
+        }
         result
     }
 
@@ -779,7 +832,137 @@ mod tests {
             gamepad.button(GamepadButton::RightShoulder, true, now),
             Some(GuiEvent::Navigation(Navigation::NextTab))
         );
-        assert_eq!(gamepad.button(GamepadButton::Start, true, now), None);
+        assert_eq!(
+            gamepad.button(GamepadButton::West, true, now),
+            Some(GuiEvent::Action(ActionButton::X))
+        );
+        assert_eq!(
+            gamepad.button(GamepadButton::North, true, now),
+            Some(GuiEvent::Action(ActionButton::Y))
+        );
+        assert_eq!(
+            gamepad.button(GamepadButton::Start, true, now),
+            Some(GuiEvent::Action(ActionButton::Start))
+        );
+        assert_eq!(gamepad.button(GamepadButton::Start, false, now), None);
+        assert_eq!(gamepad.button(GamepadButton::Back, true, now), None);
+    }
+
+    /// Verifies that an action button reaches the input of the next pass and needs a pass of its own.
+    #[test]
+    fn an_action_button_reaches_the_input() {
+        let mut host = host();
+        assert!(host.apply(GuiEvent::Action(ActionButton::Y)));
+        assert_eq!(host.input.action, Some(ActionButton::Y));
+        let seen = host.pass(|context| context.action_button());
+        assert_eq!(seen, Some(ActionButton::Y));
+        assert_eq!(host.input.action, None);
+    }
+
+    /// Verifies that a widget that asks for another pass leaves the host pending.
+    #[test]
+    fn a_pass_request_leaves_the_host_pending() {
+        let mut host = host();
+        host.pass(|context| context.request_pass());
+        assert!(host.pending());
+        host.pass(|_| ());
+        assert!(!host.pending());
+    }
+
+    /// Verifies that a widget that asks on every pass stops after the bound of chained passes.
+    #[test]
+    fn chained_pass_requests_are_bounded() {
+        let mut host = host();
+        let mut passes = 0;
+        while host.pending() && passes < 100 {
+            host.pass(|context| context.request_pass());
+            passes += 1;
+        }
+        assert_eq!(passes, MAXIMUM_CHAINED_PASSES + 1);
+        host.apply(GuiEvent::Confirm);
+        host.pass(|context| context.request_pass());
+        assert!(host.pending());
+    }
+
+    /// Verifies the shortcut keys, the left control key and that the right control key forms no shortcut.
+    #[test]
+    fn shortcut_keys_map_to_shortcuts() {
+        const LEFT_CONTROL: Mod = Mod(0x0040);
+        const RIGHT_CONTROL: Mod = Mod(0x0080);
+        let key = |scancode, keymod: &Mod| key_event(scancode, keymod, false);
+        assert_eq!(
+            key(Scancode::Delete, &NO_MODIFIERS),
+            Some(GuiEvent::Shortcut(Shortcut::Delete))
+        );
+        assert_eq!(
+            key(Scancode::Insert, &NO_MODIFIERS),
+            Some(GuiEvent::Shortcut(Shortcut::Insert))
+        );
+        assert_eq!(
+            key(Scancode::F2, &NO_MODIFIERS),
+            Some(GuiEvent::Shortcut(Shortcut::F2))
+        );
+        assert_eq!(
+            key(Scancode::F10, &NO_MODIFIERS),
+            Some(GuiEvent::Shortcut(Shortcut::F10))
+        );
+        assert_eq!(
+            key(Scancode::F, &LEFT_CONTROL),
+            Some(GuiEvent::Shortcut(Shortcut::ControlF))
+        );
+        assert_eq!(
+            key(Scancode::D, &LEFT_CONTROL),
+            Some(GuiEvent::Shortcut(Shortcut::ControlD))
+        );
+        assert_eq!(
+            key(Scancode::S, &LEFT_CONTROL),
+            Some(GuiEvent::Shortcut(Shortcut::ControlS))
+        );
+        assert_eq!(key(Scancode::S, &NO_MODIFIERS), None);
+        assert_eq!(key(Scancode::S, &RIGHT_CONTROL), None);
+        assert_eq!(key(Scancode::Delete, &RIGHT_CONTROL), None);
+        assert_eq!(key_event(Scancode::Delete, &NO_MODIFIERS, true), None);
+        assert_eq!(
+            key(Scancode::PageUp, &LEFT_CONTROL),
+            Some(GuiEvent::Navigation(Navigation::PreviousTab))
+        );
+        assert_eq!(
+            key(Scancode::PageDown, &LEFT_CONTROL),
+            Some(GuiEvent::Navigation(Navigation::NextTab))
+        );
+        assert_eq!(
+            key(Scancode::PageDown, &RIGHT_CONTROL),
+            Some(GuiEvent::Navigation(Navigation::PageDown))
+        );
+    }
+
+    /// Verifies that a shortcut reaches the input and that a text field holds back a shortcut without a modifier.
+    #[test]
+    fn a_shortcut_reaches_the_input_unless_a_text_field_holds_the_focus() {
+        let mut host = host();
+        host.set_window_metrics(800, 600, 1.0, 1.0);
+        let field = gui::Rect::new(0.0, 0.0, 200.0, 32.0);
+        let draw = |context: &mut UiContext, focus_field: bool| {
+            let mut text = String::new();
+            if focus_field {
+                context.set_focus(gui::ui::UiId::from("field"));
+            }
+            gui::ui::text_field(context, "field", field, &mut text, "Filter");
+            context.shortcut()
+        };
+        host.apply(GuiEvent::Shortcut(Shortcut::F2));
+        assert_eq!(
+            host.pass(|context| draw(context, false)),
+            Some(Shortcut::F2)
+        );
+        host.pass(|context| draw(context, true));
+        host.apply(GuiEvent::Shortcut(Shortcut::F2));
+        assert_eq!(host.pass(|context| draw(context, true)), None);
+        host.apply(GuiEvent::Shortcut(Shortcut::ControlF));
+        assert_eq!(
+            host.pass(|context| draw(context, true)),
+            Some(Shortcut::ControlF)
+        );
     }
 
     #[test]

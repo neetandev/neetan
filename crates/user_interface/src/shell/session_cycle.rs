@@ -126,7 +126,10 @@ impl Shell {
             Ok(()) => manager.game_started(launch),
             Err(message) => {
                 error!("Could not start {}: {message}", launch.title);
-                manager.launch_failed(&launch, &message);
+                let layer = manager.launch_failed(&launch, &message);
+                if let Some(gui) = self.host.gui.as_mut() {
+                    gui.open_layer(layer);
+                }
             }
         }
     }

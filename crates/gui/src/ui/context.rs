@@ -1,15 +1,14 @@
-//! The immediate mode context: the input of a frame, the hot, active and
-//! focused widget and the drawing helpers over the scene in logical units.
+//! The immediate mode context: the hot, active and focused widget of a pass
+//! and the drawing helpers over the scene in logical units.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 
 use super::{
-    focus::{Focusable, Navigation, NavigationSet, next_focus},
+    focus::{Focusable, Navigation, NavigationSet, ScrollAnchor},
     icons::Icon,
+    input::{ActionButton, Input, Shortcut, Viewport},
     label::{Align, Truncation},
+    state::{Drag, UiState},
     theme::Theme,
 };
 use crate::{Color, FontId, Fonts, Rect, RectStyle, Run, Scene};
@@ -63,349 +62,6 @@ pub fn ui_id_indexed(label: &str, index: usize) -> UiId {
     ui_id(label).indexed(index)
 }
 
-/// The keyboard modifiers of a pass.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Modifiers {
-    /// Either control key is held.
-    pub control: bool,
-    /// Either shift key is held.
-    pub shift: bool,
-    /// Either alt key is held.
-    pub alt: bool,
-}
-
-/// The input of one pass of the user interface.
-///
-/// The caller runs one pass for each discrete event: a press or a release of
-/// a mouse button, a navigation event, a text commit, a backspace, confirm
-/// or cancel. A pass holds at most one of them. Pointer motion and wheel
-/// steps add up until the next pass. The caller shows the scene of the last
-/// pass and calls [`Input::advance`] after each pass.
-///
-/// The pointer position is in physical pixels: the window coordinates of the
-/// platform times the pixel density of the window, as
-/// `SDL_GetWindowPixelDensity` reports it. The context divides it by the
-/// scale factor of the viewport.
-#[derive(Clone, Debug, Default)]
-pub struct Input {
-    /// The pointer x in physical pixels.
-    pub mouse_x: f32,
-    /// The pointer y in physical pixels.
-    pub mouse_y: f32,
-    /// The left button is held in this pass.
-    pub left: bool,
-    /// The right button is held in this pass.
-    pub right: bool,
-    /// The middle button is held in this pass.
-    pub middle: bool,
-    /// The left button was held in the last pass.
-    pub left_previous: bool,
-    /// The right button was held in the last pass.
-    pub right_previous: bool,
-    /// The middle button was held in the last pass.
-    pub middle_previous: bool,
-    /// The vertical wheel steps since the last pass. Positive values scroll
-    /// up.
-    pub wheel: f32,
-    /// The press of the left button in this pass is the second press of a
-    /// double click.
-    pub left_double: bool,
-    /// The text that the platform committed in this pass.
-    pub text: String,
-    /// The text that an input method composes and has not committed. The
-    /// caller replaces it on every change of the composition and empties it
-    /// with the commit. It stays from pass to pass.
-    pub composition: String,
-    /// The backspace key was pressed.
-    pub backspace: bool,
-    /// A confirm key or the confirm button of a gamepad was pressed.
-    pub confirm: bool,
-    /// The escape key or the cancel button of a gamepad was pressed.
-    pub cancel: bool,
-    /// The navigation event of this pass.
-    pub navigation: Option<Navigation>,
-    /// The keyboard modifiers.
-    pub modifiers: Modifiers,
-}
-
-impl Input {
-    /// Whether the left button went down in this pass.
-    pub fn left_pressed(&self) -> bool {
-        self.left && !self.left_previous
-    }
-
-    /// Whether the left button went up in this pass.
-    pub fn left_released(&self) -> bool {
-        !self.left && self.left_previous
-    }
-
-    /// Whether the right button went down in this pass.
-    pub fn right_pressed(&self) -> bool {
-        self.right && !self.right_previous
-    }
-
-    /// Whether the pass holds a key or gamepad event: a navigation event,
-    /// confirm, cancel, a text commit or a backspace.
-    pub fn has_key_event(&self) -> bool {
-        self.navigation.is_some()
-            || self.confirm
-            || self.cancel
-            || !self.text.is_empty()
-            || self.backspace
-    }
-
-    /// Carries the button state of this pass into the fields of the last
-    /// pass and clears the events of this pass. The composition stays.
-    pub fn advance(&mut self) {
-        self.left_previous = self.left;
-        self.right_previous = self.right;
-        self.middle_previous = self.middle;
-        self.wheel = 0.0;
-        self.left_double = false;
-        self.text.clear();
-        self.backspace = false;
-        self.confirm = false;
-        self.cancel = false;
-        self.navigation = None;
-    }
-}
-
-/// The target of a pass: its size in physical pixels and the physical
-/// pixels for each logical unit.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Viewport {
-    /// The width in physical pixels.
-    pub width: u32,
-    /// The height in physical pixels.
-    pub height: u32,
-    /// The physical pixels for each logical unit.
-    pub scale: f32,
-}
-
-impl Viewport {
-    /// A target of `width` x `height` physical pixels at `scale`. A scale
-    /// that is not a positive finite number counts as 1.
-    pub fn new(width: u32, height: u32, scale: f32) -> Self {
-        let scale = if scale.is_finite() && scale > 0.0 {
-            scale
-        } else {
-            1.0
-        };
-        Self {
-            width,
-            height,
-            scale,
-        }
-    }
-}
-
-/// The drag of the active widget.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Drag {
-    /// The distance from the grabbed edge to the pointer along the drag.
-    pub(crate) offset: f32,
-}
-
-/// The widget state that outlives a pass.
-///
-/// The hot widget under the pointer follows from each pass. The pressed
-/// widget, the focus and the focus ring persist, so a press in one pass and
-/// the release in a later pass reach the same widget and a navigation event
-/// finds the widgets of the last pass. The caller keeps one state between
-/// passes and lends it to each [`UiContext`].
-#[derive(Debug)]
-pub struct UiState {
-    /// The number of the window of the state, unique in the process. The
-    /// fonts that windows share tell their frames apart by it.
-    window: u64,
-    /// The widget the left button pressed.
-    active: Option<UiId>,
-    /// Whether the active widget ran its pointer behavior in this pass.
-    active_seen: bool,
-    /// The widget with the keyboard focus.
-    focus: Option<UiId>,
-    /// Whether the focus indicator shows. A key event shows it and a press
-    /// of the mouse hides it.
-    focus_visible: bool,
-    /// The focusable widgets of this pass in drawing order.
-    ring: Vec<Focusable>,
-    /// The focusable widgets of the last pass in drawing order.
-    previous_ring: Vec<Focusable>,
-    /// The navigation event of this pass that the focused widget handles.
-    routed: Option<(UiId, Navigation)>,
-    /// The focused widget that takes the cancel of this pass.
-    cancel_taker: Option<UiId>,
-    /// The last area of a focused widget that left the ring. The next
-    /// directional move starts from it.
-    lost: Option<Rect>,
-    /// The area of the focused text widget in physical pixels.
-    text_area: Option<Rect>,
-    /// The offset of the text cursor from the left edge of the text area in
-    /// physical pixels.
-    text_caret: Option<f32>,
-    /// The drag of the active widget.
-    drag: Option<Drag>,
-}
-
-impl Default for UiState {
-    fn default() -> Self {
-        static WINDOWS: AtomicU64 = AtomicU64::new(0);
-        Self {
-            window: WINDOWS.fetch_add(1, Ordering::Relaxed),
-            active: None,
-            active_seen: false,
-            focus: None,
-            focus_visible: true,
-            ring: Vec::new(),
-            previous_ring: Vec::new(),
-            routed: None,
-            cancel_taker: None,
-            lost: None,
-            text_area: None,
-            text_caret: None,
-            drag: None,
-        }
-    }
-}
-
-impl UiState {
-    /// The widget with the keyboard focus.
-    pub fn focused(&self) -> Option<UiId> {
-        self.focus
-    }
-
-    /// Whether a widget holds the keyboard focus.
-    pub fn has_keyboard_focus(&self) -> bool {
-        self.focus.is_some()
-    }
-
-    /// Gives `id` the keyboard focus before a pass, for the widget a dialog
-    /// opens with. The focus stays when the pass draws the widget.
-    pub fn set_focus(&mut self, id: UiId) {
-        self.focus = Some(id);
-    }
-
-    /// Whether the focused widget of the last pass takes typed text. The
-    /// platform layer accepts text input while it does.
-    pub fn wants_text_input(&self) -> bool {
-        let Some(focus) = self.focus else {
-            return false;
-        };
-        self.ring
-            .iter()
-            .any(|entry| entry.id == focus && entry.text)
-    }
-
-    /// The area of the focused text widget of the last pass in physical
-    /// pixels, for the candidate window of an input method
-    /// (`SDL_SetTextInputArea`).
-    pub fn text_input_area(&self) -> Option<Rect> {
-        self.text_area
-    }
-
-    /// The offset of the text cursor of the focused text widget of the last
-    /// pass from the left edge of [`UiState::text_input_area`], in physical
-    /// pixels.
-    pub fn text_input_caret(&self) -> Option<f32> {
-        self.text_caret
-    }
-
-    /// Whether the focus indicator shows.
-    pub fn focus_visible(&self) -> bool {
-        self.focus_visible
-    }
-
-    /// Drops the focus, so the next navigation event starts at the first
-    /// widget.
-    pub fn clear_focus(&mut self) {
-        self.focus = None;
-        self.lost = None;
-    }
-
-    /// Forgets the focus, the pressed widget, the drag and the focus ring,
-    /// for a dialog that opens.
-    pub fn reset(&mut self) {
-        self.active = None;
-        self.active_seen = false;
-        self.focus = None;
-        self.focus_visible = true;
-        self.ring.clear();
-        self.previous_ring.clear();
-        self.routed = None;
-        self.cancel_taker = None;
-        self.lost = None;
-        self.text_area = None;
-        self.text_caret = None;
-        self.drag = None;
-    }
-
-    /// Starts a pass: the ring of the last pass resolves the navigation
-    /// event of `input` into a focus change or an event for the focused
-    /// widget, and decides who takes cancel.
-    fn begin_frame(&mut self, input: &Input) {
-        std::mem::swap(&mut self.ring, &mut self.previous_ring);
-        self.ring.clear();
-        self.routed = None;
-        self.cancel_taker = None;
-        self.text_area = None;
-        self.text_caret = None;
-        self.active_seen = false;
-        let lost = self.lost.take();
-        if input.left_pressed() {
-            self.focus_visible = false;
-        }
-        if input.navigation.is_some() || input.confirm {
-            self.focus_visible = true;
-        }
-        let current = self.focus.and_then(|focus| {
-            self.previous_ring
-                .iter()
-                .position(|entry| entry.id == focus)
-        });
-        if input.cancel
-            && let Some(index) = current
-            && self.previous_ring[index].takes_cancel
-        {
-            self.cancel_taker = Some(self.previous_ring[index].id);
-        }
-        let Some(navigation) = input.navigation else {
-            return;
-        };
-        match current {
-            Some(index) if self.previous_ring[index].captures.contains(navigation) => {
-                self.routed = Some((self.previous_ring[index].id, navigation));
-            }
-            _ => {
-                let from = current.map(|index| self.previous_ring[index].rect).or(lost);
-                if let Some(next) = next_focus(&self.previous_ring, current, from, navigation) {
-                    self.focus = Some(self.previous_ring[next].id);
-                }
-            }
-        }
-    }
-
-    /// Closes a pass. A focus on a widget outside the ring of the pass is
-    /// dropped, and its last area stays for the next directional move. A
-    /// pressed widget that skipped its pointer behavior loses the press and
-    /// its drag.
-    fn end_frame(&mut self) {
-        if let Some(focus) = self.focus
-            && !self.ring.iter().any(|entry| entry.id == focus)
-        {
-            self.lost = self
-                .previous_ring
-                .iter()
-                .find(|entry| entry.id == focus)
-                .map(|entry| entry.rect);
-            self.focus = None;
-        }
-        if !self.active_seen {
-            self.active = None;
-            self.drag = None;
-        }
-    }
-}
-
 /// The font, the size and the color of a text.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextStyle {
@@ -443,6 +99,12 @@ pub struct PointerResponse {
 }
 
 /// The immediate mode context of one pass.
+///
+/// The pass draws in layers. The base is layer 0. A modal draws its panel
+/// in [`UiContext::layer`], in the layer of its place in the stack of open
+/// modals. A popup draws in [`UiContext::popup`], one layer above the
+/// widget that draws it. The widgets below the top layer are blocked: they
+/// draw as usual and ignore the pointer, the keys and the gamepad.
 pub struct UiContext<'a> {
     /// The scene the pass draws into.
     pub scene: &'a mut Scene,
@@ -453,20 +115,29 @@ pub struct UiContext<'a> {
     /// The input of this pass.
     pub input: &'a Input,
     /// The state between passes.
-    state: &'a mut UiState,
+    pub(super) state: &'a mut UiState,
     /// The target of the pass.
     viewport: Viewport,
     /// The widget under the pointer.
     hot: Option<UiId>,
     /// Set once a widget takes the pointer, so the widgets below ignore it.
     pub mouse_captured: bool,
+    /// The layer the widgets draw in.
+    pub(super) depth: u32,
+    /// The widgets of the layers below this layer are blocked.
+    pub(super) blocked: u32,
+    /// The deepest layer of the pass so far.
+    pub(super) deepest: u32,
+    /// The innermost scroll area around the widgets that draw.
+    pub(super) scroll: Option<ScrollAnchor>,
 }
 
 impl<'a> UiContext<'a> {
     /// Starts a pass: empties `scene` for the scale of `viewport` with a
     /// transparent background, starts the frame of the window of `state` in
-    /// `fonts` and resolves the navigation event of `input`. The caller ends
-    /// the pass with [`UiContext::finish`].
+    /// `fonts` and resolves the navigation event of `input`. The top layer of
+    /// the last pass blocks every layer below it from the first widget on.
+    /// The caller ends the pass with [`UiContext::finish`].
     pub fn new(
         scene: &'a mut Scene,
         fonts: &'a mut Fonts,
@@ -479,6 +150,7 @@ impl<'a> UiContext<'a> {
         scene.begin(viewport.scale, Color::TRANSPARENT);
         fonts.begin_frame(state.window);
         state.begin_frame(input);
+        let blocked = state.top_layer();
         Self {
             scene,
             fonts,
@@ -488,13 +160,19 @@ impl<'a> UiContext<'a> {
             viewport,
             hot: None,
             mouse_captured: false,
+            depth: 0,
+            blocked,
+            deepest: 0,
+            scroll: None,
         }
     }
 
     /// Ends the pass. A focus on a widget that the pass did not draw is
     /// dropped, and so is a press on a widget that the pass did not run.
+    /// The items of the popup layer follow every other item of the scene.
     pub fn finish(self) {
-        self.state.end_frame();
+        self.state.end_frame(self.deepest);
+        self.scene.finish();
     }
 
     /// The physical pixels for each logical unit.
@@ -619,18 +297,29 @@ impl<'a> UiContext<'a> {
         self.theme.icons.draw(self.scene, origin, size, icon, color);
     }
 
-    /// Whether the pointer is over `rect` and no widget above took it.
+    /// Whether the widgets drawn at this point are blocked by a layer above
+    /// them. A blocked widget draws as usual and ignores the pointer, the
+    /// keys and the gamepad.
+    pub fn is_blocked(&self) -> bool {
+        self.depth < self.blocked
+    }
+
+    /// Whether the pointer is over `rect`, no widget above took it and the
+    /// widgets at this point are not blocked.
     pub fn hovered(&self, rect: Rect) -> bool {
         let (x, y) = self.mouse();
-        !self.mouse_captured && rect.contains(x, y)
+        !self.mouse_captured && !self.is_blocked() && rect.contains(x, y)
     }
 
     /// Runs the hot and active tracking of a pressable widget `id` over
     /// `rect`. A press makes the widget active until the release, and a
     /// release over the widget completes a click. A press on a widget of the
     /// focus ring of this pass gives it the focus. A widget that skips this
-    /// call in a pass loses its press.
+    /// call in a pass loses its press, and so does a blocked widget.
     pub fn button_behavior(&mut self, id: UiId, rect: Rect) -> PointerResponse {
+        if self.is_blocked() {
+            return PointerResponse::default();
+        }
         let hovered = self.hovered(rect);
         let mut response = PointerResponse {
             hovered,
@@ -699,26 +388,25 @@ impl<'a> UiContext<'a> {
     /// navigation events in `captures` reach the widget through
     /// [`UiContext::navigation`] and leave the focus where it is.
     pub fn focusable(&mut self, id: UiId, rect: Rect, captures: NavigationSet) -> bool {
-        self.register(Focusable {
-            id,
-            rect,
-            captures,
-            text: false,
-            takes_cancel: false,
-            preferred: false,
-        })
+        self.register(Focusable::new(id, rect, captures))
     }
 
     /// Like [`UiContext::focusable`] for the main action of a panel. A
-    /// directional move picks it over a neighbor at the same distance.
+    /// directional move picks it over a neighbor at the same distance, and a
+    /// modal that opens gives it the focus.
     pub fn focusable_preferred(&mut self, id: UiId, rect: Rect, captures: NavigationSet) -> bool {
         self.register(Focusable {
-            id,
-            rect,
-            captures,
-            text: false,
-            takes_cancel: false,
             preferred: true,
+            ..Focusable::new(id, rect, captures)
+        })
+    }
+
+    /// Like [`UiContext::focusable`] for a widget that a modal that opens
+    /// never gives the focus, such as the close button in its header.
+    pub fn focusable_secondary(&mut self, id: UiId, rect: Rect, captures: NavigationSet) -> bool {
+        self.register(Focusable {
+            default_choice: false,
+            ..Focusable::new(id, rect, captures)
         })
     }
 
@@ -727,18 +415,16 @@ impl<'a> UiContext<'a> {
     /// captures left, right, home and end, and cancel when `takes_cancel` is
     /// set. Returns whether it holds the focus.
     pub fn text_focusable(&mut self, id: UiId, rect: Rect, takes_cancel: bool) -> bool {
+        let captures = NavigationSet::of(&[
+            Navigation::Left,
+            Navigation::Right,
+            Navigation::Home,
+            Navigation::End,
+        ]);
         let focused = self.register(Focusable {
-            id,
-            rect,
-            captures: NavigationSet::of(&[
-                Navigation::Left,
-                Navigation::Right,
-                Navigation::Home,
-                Navigation::End,
-            ]),
             text: true,
             takes_cancel,
-            preferred: false,
+            ..Focusable::new(id, rect, captures)
         });
         if focused {
             let scale = self.viewport.scale;
@@ -760,11 +446,16 @@ impl<'a> UiContext<'a> {
         }
     }
 
-    /// Adds `entry` to the focus ring of this pass and returns whether its
-    /// widget holds the focus.
+    /// Adds `entry` to the focus ring of this pass in the current layer and
+    /// the current scroll area, and returns whether its widget holds the
+    /// focus.
     fn register(&mut self, entry: Focusable) -> bool {
         let id = entry.id;
-        self.state.ring.push(entry);
+        self.state.ring.push(Focusable {
+            layer: self.depth,
+            scroll: self.scroll,
+            ..entry
+        });
         self.has_focus(id)
     }
 
@@ -772,31 +463,87 @@ impl<'a> UiContext<'a> {
     /// while it holds the focus and when it captured the event in the last
     /// pass.
     pub fn navigation(&self, id: UiId) -> Option<Navigation> {
+        if self.is_blocked() {
+            return None;
+        }
         self.state
             .routed
             .filter(|&(target, _)| target == id)
             .map(|(_, navigation)| navigation)
     }
 
+    /// The shoulder button of this pass, [`Navigation::PreviousTab`] or
+    /// [`Navigation::NextTab`], for a tab bar that switches its tab whatever
+    /// widget holds the focus. A blocked tab bar gets none.
+    pub fn tab_navigation(&self) -> Option<Navigation> {
+        if self.is_blocked() {
+            return None;
+        }
+        self.input.navigation.filter(|navigation| {
+            matches!(navigation, Navigation::PreviousTab | Navigation::NextTab)
+        })
+    }
+
+    /// The action button of this pass, unless the widgets at this point are
+    /// blocked.
+    pub fn action_button(&self) -> Option<ActionButton> {
+        if self.is_blocked() {
+            return None;
+        }
+        self.input.action
+    }
+
+    /// The shortcut of this pass, unless the widgets at this point are
+    /// blocked. A shortcut without the control key is inactive while a text
+    /// widget holds the focus. Backspace then edits the text.
+    pub fn shortcut(&self) -> Option<Shortcut> {
+        if self.is_blocked() {
+            return None;
+        }
+        let shortcut = self
+            .input
+            .shortcut
+            .or(self.input.backspace.then_some(Shortcut::Backspace))?;
+        if !shortcut.has_modifier() && self.text_widget_focused() {
+            return None;
+        }
+        Some(shortcut)
+    }
+
+    /// Whether the focused widget takes typed text, in the ring of this
+    /// pass or else of the last pass.
+    fn text_widget_focused(&self) -> bool {
+        let Some(focus) = self.state.focus else {
+            return false;
+        };
+        self.state
+            .ring
+            .iter()
+            .chain(&self.state.previous_ring)
+            .find(|entry| entry.id == focus)
+            .is_some_and(|entry| entry.text)
+    }
+
     /// Whether `id` holds the focus and confirm was pressed in this pass.
     pub fn confirmed(&self, id: UiId) -> bool {
-        self.input.confirm && self.state.focus == Some(id)
+        self.input.confirm && self.has_focus(id)
     }
 
     /// Whether cancel was pressed in this pass and the focused widget left
-    /// it to the panel and the caller.
+    /// it to the panel and the caller. A blocked panel gets no cancel.
     pub fn cancelled(&self) -> bool {
-        self.input.cancel && self.state.cancel_taker.is_none()
+        self.input.cancel && self.state.cancel_taker.is_none() && !self.is_blocked()
     }
 
     /// Whether the focused widget `id` takes the cancel of this pass.
     pub fn cancel_taken(&self, id: UiId) -> bool {
-        self.input.cancel && self.state.cancel_taker == Some(id)
+        self.input.cancel && self.state.cancel_taker == Some(id) && !self.is_blocked()
     }
 
-    /// Whether `id` holds the keyboard focus.
+    /// Whether `id` holds the keyboard focus and the widgets at this point
+    /// are not blocked.
     pub fn has_focus(&self, id: UiId) -> bool {
-        self.state.focus == Some(id)
+        self.state.focus == Some(id) && !self.is_blocked()
     }
 
     /// Gives `id` the keyboard focus. The focus stays when the pass draws
@@ -805,10 +552,21 @@ impl<'a> UiContext<'a> {
         self.state.focus = Some(id);
     }
 
-    /// Gives `id` the keyboard focus when no widget holds it, for the widget
-    /// a dialog starts with. The caller calls it before it draws the widget.
+    /// Gives `id` the keyboard focus when no widget of this layer or a layer
+    /// above holds it, for the widget a dialog starts with. The caller calls
+    /// it before it draws the widget.
     pub fn default_focus(&mut self, id: UiId) {
-        if self.state.focus.is_none() {
+        if self.is_blocked() {
+            return;
+        }
+        let take = match self.state.focus {
+            None => true,
+            Some(focus) => self
+                .state
+                .layer_of(focus)
+                .is_some_and(|layer| layer < self.depth),
+        };
+        if take {
             self.set_focus(id);
         }
     }
@@ -841,6 +599,13 @@ impl<'a> UiContext<'a> {
         );
     }
 
+    /// Asks the caller for another pass, for a widget that changed its look
+    /// after it drew, such as a scroll area that scrolls a widget into view.
+    /// See [`UiState::take_pass_request`].
+    pub fn request_pass(&mut self) {
+        self.state.pass_requested = true;
+    }
+
     /// The drag of the active widget.
     pub(crate) fn drag(&self) -> Option<Drag> {
         self.state.drag
@@ -850,30 +615,12 @@ impl<'a> UiContext<'a> {
     pub(crate) fn set_drag(&mut self, drag: Option<Drag>) {
         self.state.drag = drag;
     }
-
-    /// Stops every widget drawn from here on from seeing the pointer. A
-    /// caller calls it before it draws the widgets underneath a modal, so
-    /// they draw as usual and stay inert.
-    pub fn block_input(&mut self) {
-        self.mouse_captured = true;
-    }
-
-    /// Draws a layer above everything placed so far. The widgets of `draw`
-    /// see the pointer, and the widgets drawn after the layer stay inert for
-    /// the rest of the pass when they were inert before.
-    pub fn layer<R>(&mut self, draw: impl FnOnce(&mut Self) -> R) -> R {
-        let outer = self.mouse_captured;
-        self.mouse_captured = false;
-        let result = draw(self);
-        self.mouse_captured = outer;
-        result
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::tests::Harness;
+    use crate::ui::{Viewport, tests::Harness};
 
     #[test]
     fn ids_of_rows_and_parts_differ() {
@@ -884,30 +631,6 @@ mod tests {
         assert_ne!(id.child("bar"), id);
         assert_ne!(id.child("bar"), id.child("thumb"));
         assert_eq!(ui_id_indexed("list", 3), id.indexed(3));
-    }
-
-    #[test]
-    fn advance_clears_the_events_of_a_pass() {
-        let mut input = Input {
-            left: true,
-            wheel: 1.0,
-            text: "a".into(),
-            composition: "か".into(),
-            backspace: true,
-            confirm: true,
-            navigation: Some(Navigation::Down),
-            ..Input::default()
-        };
-        assert!(input.left_pressed());
-        assert!(input.has_key_event());
-        input.advance();
-        assert!(input.left_previous);
-        assert!(!input.left_pressed());
-        assert!(!input.has_key_event());
-        assert_eq!(input.wheel, 0.0);
-        assert_eq!(input.composition, "か");
-        input.left = false;
-        assert!(input.left_released());
     }
 
     #[test]
@@ -965,22 +688,6 @@ mod tests {
             context.button_behavior(id, rect)
         });
         assert!(!response.clicked);
-    }
-
-    #[test]
-    fn a_captured_pointer_skips_the_widgets_below() {
-        let mut harness = Harness::new();
-        let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
-        harness.mouse(50.0, 50.0);
-        let (first, second, layered) = harness.frame(|context| {
-            let first = context.button_behavior(ui_id("top"), rect);
-            let second = context.button_behavior(ui_id("below"), rect);
-            let layered = context.layer(|context| context.hovered(rect));
-            (first, second, layered)
-        });
-        assert!(first.hovered);
-        assert!(!second.hovered);
-        assert!(layered);
     }
 
     #[test]
@@ -1173,5 +880,49 @@ mod tests {
         harness.frame(draw);
         assert_eq!(harness.state.focused(), Some(first));
         assert!(harness.state.focus_visible());
+    }
+
+    #[test]
+    fn a_shortcut_is_blocked_under_a_modal_and_held_back_by_a_text_field() {
+        let mut harness = Harness::new();
+        let field = ui_id("field");
+        let draw = |context: &mut UiContext, open: bool| {
+            let base = context.shortcut();
+            context.text_focusable(field, Rect::new(0.0, 0.0, 100.0, 20.0), false);
+            let top = if open {
+                context.layer("dialog", |context| context.shortcut())
+            } else {
+                None
+            };
+            (base, top)
+        };
+        harness.input.shortcut = Some(crate::ui::Shortcut::Delete);
+        assert_eq!(
+            harness.frame(|context| draw(context, false)),
+            (Some(crate::ui::Shortcut::Delete), None)
+        );
+        harness.frame(|context| draw(context, true));
+        harness.input.shortcut = Some(crate::ui::Shortcut::ControlS);
+        assert_eq!(
+            harness.frame(|context| draw(context, true)),
+            (None, Some(crate::ui::Shortcut::ControlS))
+        );
+        harness.frame(|context| draw(context, false));
+        harness.state.set_focus(field);
+        harness.frame(|context| draw(context, false));
+        harness.input.backspace = true;
+        assert_eq!(harness.frame(|context| draw(context, false)), (None, None));
+        harness.input.shortcut = Some(crate::ui::Shortcut::ControlF);
+        assert_eq!(
+            harness.frame(|context| draw(context, false)),
+            (Some(crate::ui::Shortcut::ControlF), None)
+        );
+        harness.state.clear_focus();
+        harness.frame(|context| draw(context, false));
+        harness.input.backspace = true;
+        assert_eq!(
+            harness.frame(|context| draw(context, false)),
+            (Some(crate::ui::Shortcut::Backspace), None)
+        );
     }
 }
