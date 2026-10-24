@@ -438,6 +438,10 @@ pub struct SectorWriteBack {
 pub struct MountedFloppy {
     image: FloppyImage,
     backend: Option<DiskBackend>,
+    /// The host file that could not be opened for writing and the reason.
+    unwritable_path: Option<(PathBuf, String)>,
+    /// The error of the last flush. An eject does not log it again.
+    last_flush_error: Option<common::FlushError>,
     dirty: bool,
     read_only: bool,
     identity: save_state::ResourceIdentity,
@@ -489,6 +493,7 @@ impl MountedFloppy {
                 crate::media_identity::anonymous_identity("neetan-floppy-source-v1", 0, &structure)
             }
         };
+        let mut unwritable_path = None;
         let backend = path.and_then(|p| match DiskBackend::open(p.clone()) {
             Ok(b) => Some(b),
             Err(err) => {
@@ -496,12 +501,15 @@ impl MountedFloppy {
                     "Failed to open floppy {} for write-through: {err}",
                     p.display()
                 );
+                unwritable_path = Some((p, err.to_string()));
                 None
             }
         });
         Self {
             image,
             backend,
+            unwritable_path,
+            last_flush_error: None,
             dirty: false,
             read_only: false,
             identity,
@@ -619,48 +627,78 @@ impl MountedFloppy {
     /// Re-emits the entire image if dirty and reparses it so per-sector
     /// source offsets match the rewritten file. The dirty flag remains set
     /// only when a write-through or re-emit step reported an error.
-    pub fn flush_if_dirty(&mut self) {
+    ///
+    /// Returns an error when the changes of a file-backed image could not
+    /// be written. Changes of an image without a host file stay in memory
+    /// and count as written.
+    pub fn flush_if_dirty(&mut self) -> Result<(), common::FlushError> {
         if !self.dirty {
-            return;
+            return Ok(());
         }
         let Some(backend) = self.backend.as_mut() else {
-            return;
+            return match self.unwritable_path.as_ref() {
+                Some((path, reason)) => Err(common::FlushError::new(format!(
+                    "floppy image {} could not be opened for writing: {reason}. Its changes are lost",
+                    path.display()
+                ))),
+                None => Ok(()),
+            };
         };
         if let Some(reason) = self.image.lossless_reemit_error() {
-            error!(
-                "Floppy dirty flush cannot write back {} without loss: {reason}",
+            return Err(common::FlushError::new(format!(
+                "floppy image {} cannot be written back as {} without loss: {reason}",
+                backend.path().display(),
                 self.image.format_name()
-            );
-            return;
+            )));
         }
         let bytes = self.image.to_bytes();
         if let Err(err) = backend.replace_atomic(&bytes) {
-            error!("Floppy eject-time flush failed: {err}");
-            return;
+            return Err(common::FlushError::new(format!(
+                "floppy image {} could not be written: {err}",
+                backend.path().display()
+            )));
         }
         match load_floppy_image(backend.path(), &bytes) {
             Ok(reparsed) => {
                 self.image = reparsed;
                 self.dirty = false;
+                Ok(())
             }
-            Err(err) => error!("Floppy reparse after dirty flush failed: {err}"),
+            Err(err) => Err(common::FlushError::new(format!(
+                "floppy image {} could not be read back after the write: {err}",
+                backend.path().display()
+            ))),
         }
     }
 
     /// Flushes dirty fallback data and any buffered successful writes.
-    pub fn flush(&mut self) {
-        self.flush_if_dirty();
-        if let Some(backend) = self.backend.as_mut()
-            && let Err(err) = backend.flush()
-        {
-            self.dirty = true;
-            error!("Floppy flush failed: {err}");
-        }
+    /// Returns the error of a write that failed.
+    pub fn flush(&mut self) -> Result<(), common::FlushError> {
+        let dirty_result = self.flush_if_dirty();
+        let buffered_result = match self.backend.as_mut() {
+            Some(backend) => backend.flush().map_err(|err| {
+                self.dirty = true;
+                common::FlushError::new(format!(
+                    "floppy image {} could not be written: {err}",
+                    backend.path().display()
+                ))
+            }),
+            None => Ok(()),
+        };
+        let result = common::FlushError::combine([dirty_result, buffered_result]);
+        self.last_flush_error = result.clone().err();
+        result
     }
 
-    /// Flushes any pending writes and drops the backend handle.
+    /// Flushes any pending writes and drops the backend handle. Logs a
+    /// failed write unless the last flush already reported the same error.
     pub fn eject(mut self) {
-        self.flush();
+        let reported = self.last_flush_error.take();
+        if let Err(err) = self.flush()
+            && reported.as_ref() != Some(&err)
+        {
+            error!("Floppy eject flush failed: {err}");
+        }
     }
 }
 
@@ -838,7 +876,7 @@ mod tests {
         assert!(mounted.write_sector_data(0, 0, 0, 1, 1, &pattern));
 
         // Flush the BufWriter before re-reading the file.
-        mounted.flush();
+        mounted.flush().expect("flush succeeds");
         drop(mounted);
         let raw = std::fs::read(&path).unwrap();
         let reparsed = FloppyImage::from_d88_bytes(&raw).unwrap();
@@ -865,7 +903,7 @@ mod tests {
         let pattern = [0x55u8; 256];
         assert!(mounted.write_sector_data(0, 0, 0, 2, 1, &pattern));
 
-        mounted.flush();
+        mounted.flush().expect("flush succeeds");
         drop(mounted);
         let raw = std::fs::read(&path).unwrap();
         let reparsed = FloppyImage::from_d88_bytes(&raw).unwrap();
@@ -899,7 +937,7 @@ mod tests {
         let pattern = [0xCCu8; 1024];
         assert!(mounted.write_sector_data(0, 0, 0, 1, 3, &pattern));
 
-        mounted.flush();
+        mounted.flush().expect("flush succeeds");
         drop(mounted);
         let raw = std::fs::read(&path).unwrap();
         // First 1024 bytes should now be 0xCC.
@@ -990,7 +1028,7 @@ mod tests {
         mounted.format_track(0, &[(0, 0, 1, 1), (0, 0, 2, 1)], 1, 0xE5);
 
         assert!(!mounted.is_dirty());
-        mounted.flush();
+        mounted.flush().expect("flush succeeds");
         drop(mounted);
 
         let raw = std::fs::read(&path).unwrap();
@@ -1031,7 +1069,7 @@ mod tests {
         let pattern = [0x77u8; 256];
         assert!(mounted.write_sector_data(0, 0, 0, 1, 1, &pattern));
 
-        mounted.flush();
+        mounted.flush().expect("flush succeeds");
         drop(mounted);
 
         let raw = std::fs::read(&path).unwrap();
@@ -1135,7 +1173,7 @@ mod tests {
 
         let pattern = [0x42u8; 256];
         assert!(mounted.write_sector_data(0, 0, 0, 1, 1, &pattern));
-        mounted.flush();
+        mounted.flush().expect("flush succeeds");
         drop(mounted);
 
         let raw = std::fs::read(&path).unwrap();
@@ -1143,6 +1181,44 @@ mod tests {
         let sector = reparsed.find_sector(0, 0, 1, 1).unwrap();
         assert!(sector.data.iter().all(|&byte| byte == 0x42));
 
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Verifies that the changes to a read-only host file make the flush fail and leave the file as it was.
+    #[test]
+    fn a_read_only_host_file_makes_the_flush_fail() {
+        let original = build_minimal_d88(0x00);
+        let path = tempfile_with(&original, ".d88");
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions.clone()).unwrap();
+        if std::fs::OpenOptions::new().write(true).open(&path).is_ok() {
+            std::fs::remove_file(&path).ok();
+            return;
+        }
+        let image = FloppyImage::from_d88_bytes(&original).unwrap();
+        let mut mounted =
+            mounted_from_backing(image, common::MediaBacking::WriteThrough(path.clone()));
+        assert!(mounted.flush().is_ok());
+
+        assert!(mounted.write_sector_data(0, 0, 0, 1, 1, &[0x42u8; 256]));
+        let error = mounted.flush().expect_err("the host file is read-only");
+        let [message] = error.messages.as_slice() else {
+            panic!("one image failed: {error}");
+        };
+        let prefix = format!(
+            "floppy image {} could not be opened for writing: ",
+            path.display()
+        );
+        assert!(message.starts_with(&prefix), "{message}");
+        assert!(message.ends_with(". Its changes are lost"), "{message}");
+        #[cfg(unix)]
+        assert!(message.contains("Permission denied"), "{message}");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&path, permissions).unwrap();
         std::fs::remove_file(&path).ok();
     }
 }

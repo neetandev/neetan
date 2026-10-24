@@ -560,14 +560,14 @@ impl<T: TraceSink> common::Machine for MsxMachine<T> {
         self.bus.eject_floppy(drive);
     }
 
-    fn flush_floppies(&mut self) {
-        self.bus.flush_floppies();
+    fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+        self.bus.flush_floppies()
     }
 
-    fn flush_cartridges(&mut self) {
-        if let Err(error) = self.bus.flush_cartridges() {
-            common::error!("Failed to flush MSX cartridge data: {error}");
-        }
+    fn flush_cartridges(&mut self) -> Result<(), common::FlushError> {
+        self.bus.flush_cartridges().map_err(|error| {
+            common::FlushError::new(format!("MSX cartridge data could not be written: {error}"))
+        })
     }
 }
 

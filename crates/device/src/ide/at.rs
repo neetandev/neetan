@@ -132,11 +132,10 @@ impl AtIdeController {
         }
     }
 
-    /// Flushes all dirty drive images to their backing files.
-    pub fn flush(&mut self) {
-        for drive in self.drives.iter_mut().flatten() {
-            drive.flush();
-        }
+    /// Flushes all dirty drive images to their backing files. Returns the
+    /// errors of the failed writes.
+    pub fn flush(&mut self) -> Result<(), common::FlushError> {
+        common::FlushError::combine(self.drives.iter_mut().flatten().map(|drive| drive.flush()))
     }
 
     /// Returns whether a drive is attached.

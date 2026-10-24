@@ -202,8 +202,8 @@ impl<T: TraceSink> AtBus<T> {
     }
 
     /// Flushes every attached hard disk to its backing file.
-    pub fn flush_hdds(&mut self) {
-        self.ide.flush();
+    pub fn flush_hdds(&mut self) -> Result<(), common::FlushError> {
+        self.ide.flush()
     }
 
     /// Selects the BIOS boot device order in the CMOS.

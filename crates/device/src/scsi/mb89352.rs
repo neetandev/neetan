@@ -423,8 +423,10 @@ impl Mb89352Spc {
     /// Attaches a target at the given SCSI ID, flushing any replaced one.
     pub fn insert_target(&mut self, id: usize, target: ScsiTarget) {
         if id < SCSI_ID_COUNT {
-            if let Some(previous) = self.targets[id].as_mut() {
-                previous.flush();
+            if let Some(previous) = self.targets[id].as_mut()
+                && let Err(err) = previous.flush()
+            {
+                common::error!("SCSI flush of the replaced target failed: {err}");
             }
             self.targets[id] = Some(target);
         }
@@ -438,7 +440,9 @@ impl Mb89352Spc {
     /// Detaches and flushes the target at the given SCSI ID, if any.
     pub fn eject_target(&mut self, id: usize) {
         if let Some(Some(target)) = self.targets.get_mut(id) {
-            target.flush();
+            if let Err(err) = target.flush() {
+                common::error!("SCSI eject flush failed: {err}");
+            }
             self.targets[id] = None;
         }
     }
@@ -453,11 +457,15 @@ impl Mb89352Spc {
         self.targets.get(id).is_some_and(Option::is_some)
     }
 
-    /// Flushes every attached target to its backing file.
-    pub fn flush(&mut self) {
-        for target in self.targets.iter_mut().flatten() {
-            target.flush();
-        }
+    /// Flushes every attached target to its backing file. Returns the errors
+    /// of the failed writes.
+    pub fn flush(&mut self) -> Result<(), common::FlushError> {
+        common::FlushError::combine(
+            self.targets
+                .iter_mut()
+                .flatten()
+                .map(|target| target.flush()),
+        )
     }
 
     /// The first attached CD-ROM target, if any.

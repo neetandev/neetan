@@ -20,7 +20,7 @@ fn xcopy_copies_multicluster_file() {
 
     type_string_long(&mut machine, b"XCOPY C:RAND.BIN A:\\\r");
     run_until_prompt(&mut machine);
-    machine.bus.flush_hdd(0);
+    machine.bus.flush_hdd(0).expect("flush succeeds");
 
     let copied = [0x0063, 0x006F, 0x0070, 0x0069, 0x0065, 0x0064]; // "copied"
     assert!(
@@ -65,7 +65,7 @@ fn xcopy_broken_source_chain_reports_read_error() {
 
     type_string_long(&mut machine, b"XCOPY C:BROKEN.BIN A:\\\r");
     run_until_prompt(&mut machine);
-    machine.bus.flush_hdd(0);
+    machine.bus.flush_hdd(0).expect("flush succeeds");
 
     let read_error = [
         0x0052, 0x0065, 0x0061, 0x0064, 0x0020, 0x0065, 0x0072, 0x0072, 0x006F, 0x0072,

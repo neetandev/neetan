@@ -69,9 +69,10 @@ impl ScsiDisk {
         })
     }
 
-    /// Flushes pending writes to the backing file.
-    pub fn flush(&mut self) {
-        self.drive.flush();
+    /// Flushes pending writes to the backing file. Returns the error of a
+    /// failed write.
+    pub fn flush(&mut self) -> Result<(), common::FlushError> {
+        self.drive.flush()
     }
 
     /// Total number of 512-byte blocks on the disk.

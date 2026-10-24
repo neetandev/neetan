@@ -35,6 +35,15 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        user_interface::config::Action::Manager(start) => {
+            info!("{GAME_NAME}");
+            info!("Build version: {CARGO_PKG_VERSION}");
+
+            if let Err(error) = user_interface::run_manager(*start) {
+                error!("Error while executing the game manager: {error:#}");
+                std::process::exit(1);
+            }
+        }
         user_interface::config::Action::CreateFdd { path, fdd_type } => {
             if let Err(error) = user_interface::create::create_fdd_image(&path, fdd_type) {
                 error!("{error:#}");

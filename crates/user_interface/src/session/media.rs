@@ -12,8 +12,9 @@ use crate::{
 };
 
 impl Session {
-    /// Ejects the floppy of `drive`.
+    /// Writes the floppy disks back and ejects the floppy of `drive`.
     pub(super) fn eject_floppy(&mut self, drive: usize) {
+        self.flush_floppies_before_swap();
         self.machine.eject_floppy(drive);
         match drive {
             0 => self.fdd1_index = None,
@@ -23,7 +24,8 @@ impl Session {
         info!("Ejected FDD{}", drive + 1);
     }
 
-    /// Inserts the configured floppy image `index` into `drive`.
+    /// Writes the floppy disks back and inserts the configured floppy image
+    /// `index` into `drive`.
     pub(super) fn select_floppy(
         &mut self,
         drive: usize,
@@ -39,8 +41,9 @@ impl Session {
             return Err(format!("floppy image index {index} is not available"));
         }
 
-        let path = &entries[index].path;
-        match self.machine.insert_floppy_from_path(drive, path) {
+        let path = entries[index].path.clone();
+        self.flush_floppies_before_swap();
+        match self.machine.insert_floppy_from_path(drive, &path) {
             Ok(description) => {
                 info!(
                     "Selected FDD{}: {description} from {}",

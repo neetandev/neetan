@@ -1893,6 +1893,56 @@ pub struct StartupCapabilities {
     pub cdrom: bool,
 }
 
+/// The failed write back of one or more media to their host files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlushError {
+    /// One message for each medium that could not be written.
+    pub messages: alloc::vec::Vec<String>,
+}
+
+impl FlushError {
+    /// The error of one medium with `message`.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            messages: alloc::vec![message.into()],
+        }
+    }
+
+    /// Combines `results` into one result that holds the messages of every
+    /// failed flush in order. A repeated message keeps its first place only.
+    pub fn combine(
+        results: impl IntoIterator<Item = Result<(), FlushError>>,
+    ) -> Result<(), FlushError> {
+        let mut messages: alloc::vec::Vec<String> = alloc::vec::Vec::new();
+        for message in results
+            .into_iter()
+            .filter_map(Result::err)
+            .flat_map(|error| error.messages)
+        {
+            if !messages.contains(&message) {
+                messages.push(message);
+            }
+        }
+        if messages.is_empty() {
+            Ok(())
+        } else {
+            Err(Self { messages })
+        }
+    }
+}
+
+impl core::fmt::Display for FlushError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for (index, message) in self.messages.iter().enumerate() {
+            if index > 0 {
+                formatter.write_str("\n")?;
+            }
+            formatter.write_str(message)?;
+        }
+        Ok(())
+    }
+}
+
 /// Abstract machine that can be stepped by a host loop.
 pub trait Machine {
     /// Captures a bounded canonical machine-state payload at a safe point.
@@ -2174,20 +2224,30 @@ pub trait Machine {
     fn eject_cdrom(&mut self) {}
 
     /// Flushes any dirty floppy disk images to their backing files.
-    fn flush_floppies(&mut self);
+    /// Returns the error of every image that could not be written.
+    fn flush_floppies(&mut self) -> Result<(), FlushError>;
 
     /// Flushes any dirty hard disk images to their backing files.
+    /// Returns the error of every image that could not be written.
     ///
     /// The default is a no-op for machines without hard disk support.
-    fn flush_hdds(&mut self) {}
+    fn flush_hdds(&mut self) -> Result<(), FlushError> {
+        Ok(())
+    }
 
-    /// Flushes battery-backed cartridge data.
-    fn flush_cartridges(&mut self) {}
+    /// Flushes battery-backed cartridge data. Returns the error of a
+    /// cartridge that could not be written.
+    fn flush_cartridges(&mut self) -> Result<(), FlushError> {
+        Ok(())
+    }
 
-    /// Flushes the printer output file, if attached.
+    /// Flushes the printer output file, if attached. Returns the error of a
+    /// failed write.
     ///
     /// The default is a no-op for machines without printer support.
-    fn flush_printer(&mut self) {}
+    fn flush_printer(&mut self) -> Result<(), FlushError> {
+        Ok(())
+    }
 
     /// Installs a text extractor sink that receives glyphs fetched from
     /// the CGROM. Default implementation is a no-op for machines that
@@ -2222,11 +2282,28 @@ pub const fn unlikely(b: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bus, CpuMode, M68000AccessSize, M68000BusAccess, M68000CycleKind, M68000FunctionCode,
-        Machine, MachineModel, SaveStateError,
+        Bus, CpuMode, FlushError, M68000AccessSize, M68000BusAccess, M68000CycleKind,
+        M68000FunctionCode, Machine, MachineModel, SaveStateError,
     };
     #[cfg(feature = "std")]
     use super::{MediaBacking, MediaImage};
+
+    /// Verifies that combined flush results keep every failed flush message once, in order.
+    #[test]
+    fn flush_errors_combine_in_order() {
+        assert_eq!(FlushError::combine([Ok(()), Ok(())]), Ok(()));
+        let combined = FlushError::combine([
+            Err(FlushError::new("first")),
+            Ok(()),
+            Err(FlushError {
+                messages: vec!["second".into(), "first".into(), "third".into()],
+            }),
+            Err(FlushError::new("second")),
+        ])
+        .expect_err("two flushes failed");
+        assert_eq!(combined.messages, ["first", "second", "third"]);
+        assert_eq!(combined.to_string(), "first\nsecond\nthird");
+    }
 
     /// A machine that implements only the required [`Machine`] methods,
     /// verifying that machines without CD-ROM, hard disk, printer, or
@@ -2274,7 +2351,9 @@ mod tests {
 
         fn eject_floppy(&mut self, _drive: usize) {}
 
-        fn flush_floppies(&mut self) {}
+        fn flush_floppies(&mut self) -> Result<(), FlushError> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -2290,8 +2369,9 @@ mod tests {
                 .is_err()
         );
         machine.eject_cdrom();
-        machine.flush_hdds();
-        machine.flush_printer();
+        assert_eq!(machine.flush_hdds(), Ok(()));
+        assert_eq!(machine.flush_printer(), Ok(()));
+        assert_eq!(machine.flush_cartridges(), Ok(()));
         machine.push_mouse_delta(1, -1);
         machine.set_mouse_buttons(true, false, false);
         assert!(machine.cd_audio_status().is_none());

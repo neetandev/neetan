@@ -452,8 +452,8 @@ impl<T: TraceSink> Pc6000Bus<T> {
     }
 
     /// Flushes any dirty mounted floppies back to their source files.
-    pub fn flush_floppies(&mut self) {
-        self.floppy.flush_all_drives();
+    pub fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+        self.floppy.flush_all_drives()
     }
 
     /// The configured machine model.

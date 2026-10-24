@@ -1,12 +1,22 @@
 //! The shell: the SDL3 context, the window, the engines and the GUI host of
-//! the process, the event loop and the start and the end of a session.
+//! the process, the game manager, the event loops and the start and the end
+//! of a session.
 
+mod manager_loop;
+mod session_cycle;
 mod setup;
 
-use std::time::{Duration, Instant};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use audio_engine::AudioEngine;
 use common::{Context, Error, StringError, error, info, warn};
+use machine_factory::config::{
+    DEFAULT_AUDIO_VOLUME, DEFAULT_BACKEND, DEFAULT_WINDOW_MODE,
+    settings::{AUDIO_VOLUME_KEY, BACKEND_KEY, WINDOW_MODE_KEY, parse_audio_volume},
+};
 use sdl3::{
     Sdl,
     event::{DisplayEvent, Event, EventPump, WindowEvent},
@@ -15,27 +25,29 @@ use sdl3::{
 };
 use sdl3_backend::DisplayAspectMode;
 
-use self::setup::{
-    SdlSubsystems, build_window, initialize_sdl3, print_system_info, select_graphics_backend,
+use self::{
+    session_cycle::{AfterSession, after_session},
+    setup::{
+        SdlSubsystems, build_window, initialize_sdl3, print_system_info, select_graphics_backend,
+    },
 };
 use crate::{
     GAME_NAME, Result,
-    config::{Backend, EmulatorConfig, GraphicboardType, WindowMode},
+    config::{Backend, EmulatorConfig, HostLayers, WindowMode},
     gui_host::GuiHost,
     host::{
-        Host, HostParts, WindowState, aspect_ratio_for_mode, graphics_display_aspect_mode,
-        graphics_scaling, initial_window_size,
+        Host, HostParts, MANAGER_WINDOW_SIZE, WindowState, fit_window_size,
+        graphics_display_aspect_mode, initial_window_size, wants_large_native_target,
     },
-    input::KeyOverrides,
-    on_off,
-    session::{Session, SessionExit, catch_panic},
+    manager::{Launch, Manager},
+    session::Session,
 };
 
 /// The interval of the CPU usage in the window title.
 const WINDOW_TITLE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// The settings of the window and the engines of a new shell.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ShellOptions {
     /// The requested graphics backend.
     backend: Backend,
@@ -49,6 +61,8 @@ pub(crate) struct ShellOptions {
     display_aspect_mode: DisplayAspectMode,
     /// Whether the graphics engine needs the large native surface.
     large_native_target: bool,
+    /// The font file of the user interface.
+    gui_font: PathBuf,
 }
 
 impl ShellOptions {
@@ -60,19 +74,69 @@ impl ShellOptions {
             window_size: initial_window_size(config.aspect_mode),
             fullscreen: config.window_mode == WindowMode::Fullscreen,
             display_aspect_mode: graphics_display_aspect_mode(config.aspect_mode),
-            large_native_target: config.graphicboard != GraphicboardType::None
-                || config.target.wants_large_native_surface(),
+            large_native_target: wants_large_native_target(config),
+            gui_font: config.gui_font.clone(),
+        }
+    }
+
+    /// The shell settings for the game manager: the backend, the volume, the
+    /// window mode and the GUI font of the settings file and the command
+    /// line of `host`. A missing or invalid value keeps the built-in default.
+    pub(crate) fn for_manager(host: &HostLayers) -> Self {
+        let window_mode = host_setting(host, WINDOW_MODE_KEY, str::parse, DEFAULT_WINDOW_MODE);
+        Self {
+            backend: host_setting(host, BACKEND_KEY, str::parse, DEFAULT_BACKEND),
+            audio_volume: host_setting(
+                host,
+                AUDIO_VOLUME_KEY,
+                parse_audio_volume,
+                DEFAULT_AUDIO_VOLUME,
+            ),
+            window_size: MANAGER_WINDOW_SIZE,
+            fullscreen: window_mode == WindowMode::Fullscreen,
+            display_aspect_mode: DisplayAspectMode::Aspect4By3,
+            large_native_target: false,
+            gui_font: host.gui_font(),
         }
     }
 }
 
-/// The process wide part of the application. It owns the session.
+/// Returns the value of `key` of `host` parsed by `parse`, or `default`
+/// when the key is unset or its value is invalid.
+fn host_setting<T>(
+    host: &HostLayers,
+    key: &str,
+    parse: impl Fn(&str) -> std::result::Result<T, String>,
+    default: T,
+) -> T {
+    let Some(value) = host.host_value(key) else {
+        return default;
+    };
+    parse(value).unwrap_or_else(|message| {
+        warn!("Invalid {key}: {message}");
+        default
+    })
+}
+
+/// The process wide part of the application. It owns the game manager and
+/// the session.
 ///
 /// The field order is the drop order: the session flushes its media before
 /// the engines, the window and SDL3 go.
 pub(crate) struct Shell {
     /// The running game.
     session: Option<Session>,
+    /// The game manager. `None` for a game of the command line.
+    manager: Option<Manager>,
+    /// The game that the manager asked to start.
+    pending_launch: Option<Launch>,
+    /// Whether the manager needs a new frame.
+    frame_pending: bool,
+    /// Whether the window can show a frame. It cannot while it is
+    /// minimized, hidden or occluded.
+    window_visible: bool,
+    /// The stale manager frames in a row since the last window event.
+    stale_frames: u32,
     /// The window, the engines, the gamepad and the GUI host.
     host: Host,
     /// The window state before the session started.
@@ -91,7 +155,8 @@ pub(crate) struct Shell {
 
 impl Shell {
     /// Initializes SDL3 and creates the hidden window, the graphics engine,
-    /// the paused audio engine and the GUI host.
+    /// the paused audio engine and the GUI host. The window fits the
+    /// display and keeps the minimum size.
     pub(crate) fn new(options: ShellOptions) -> Result<Self> {
         let SdlSubsystems {
             context: sdl_context,
@@ -102,7 +167,10 @@ impl Shell {
 
         print_system_info();
 
-        let (width, height) = options.window_size;
+        let (width, height) = fit_window_size(
+            options.window_size,
+            video_subsystem.primary_display_usable_size(),
+        );
         let mut window = build_window(&video_subsystem, width, height, options.fullscreen)?;
 
         let (graphics_engine, backend) = select_graphics_backend(
@@ -122,10 +190,16 @@ impl Shell {
             audio_engine,
             gamepad_subsystem,
             fullscreen: options.fullscreen,
+            gui_font: options.gui_font,
         });
 
         Ok(Self {
             session: None,
+            manager: None,
+            pending_launch: None,
+            frame_pending: true,
+            window_visible: true,
+            stale_frames: 0,
             window_before_session: None,
             host,
             _video_subsystem: video_subsystem,
@@ -136,93 +210,20 @@ impl Shell {
         })
     }
 
-    /// Creates the session of `config` and applies its window and display
-    /// settings. A panic while the machine starts becomes an error.
-    pub(crate) fn start_session(
-        &mut self,
-        config: EmulatorConfig,
-        key_overrides: KeyOverrides,
-    ) -> Result<()> {
-        let backend = self.host.backend;
-        let session = match catch_panic(|| Session::new(config, key_overrides, backend)) {
-            Ok(result) => result?,
-            Err(message) => {
-                return Err(Error::from(StringError(format!(
-                    "the machine panicked while starting: {message}"
-                ))));
-            }
-        };
-        self.begin_session(session);
+    /// Keeps `manager` as the first screen. Fails without the GUI font.
+    pub(crate) fn open_manager(&mut self, manager: Manager) -> Result<()> {
+        if let Some(message) = self.host.gui_error.as_ref() {
+            return Err(Error::from(StringError(format!(
+                "the game manager needs the GUI font: {message}"
+            ))));
+        }
+        self.manager = Some(manager);
         Ok(())
     }
 
-    /// Records the window state, applies the window mode, the aspect ratio
-    /// lock and the display settings of `session`, resumes the audio and keeps
-    /// the session.
-    fn begin_session(&mut self, session: Session) {
-        let host = &mut self.host;
-        self.window_before_session = Some(host.window_state());
-        let fullscreen = session.window_mode() == WindowMode::Fullscreen;
-        if fullscreen != host.fullscreen {
-            host.set_fullscreen(fullscreen);
-        }
-        if !fullscreen {
-            let aspect_ratio = aspect_ratio_for_mode(session.aspect_mode());
-            if let Err(error) = host.window.set_aspect_ratio(aspect_ratio) {
-                warn!("Failed to lock window aspect ratio to {aspect_ratio}: {error}");
-            }
-        }
-        host.graphics_engine
-            .set_scaling(graphics_scaling(session.scaling()));
-        match host.backend {
-            Backend::Legacy => {
-                if session.crt_requested() {
-                    warn!("CRT filter is not supported by the legacy SDL backend");
-                }
-            }
-            Backend::Modern => info!("CRT effect set to {}", on_off(session.crt_enabled())),
-        }
-        info!("Scaling set to {}", session.scaling());
-        host.audio_engine.resume();
-        self.session = Some(session);
-    }
-
-    /// Ends the session: flushes and drops it, releases the mouse capture,
-    /// clears the aspect ratio lock, restores the window size and fullscreen
-    /// state of the time before the session, stops the audio, resets the GUI host and
-    /// restores the window title. Returns the reason the session ended, or
-    /// `None` without a session or when the session ended without a reason.
-    pub(crate) fn end_session(&mut self) -> Option<SessionExit> {
-        let session = self.session.take()?;
-        let exit = session.exit().cloned();
-        if let Err(message) = catch_panic(move || drop(session)) {
-            error!("Closing the session panicked: {message}");
-        }
-
-        let host = &mut self.host;
-        if let Err(error) = host.window.set_relative_mouse_mode(false) {
-            warn!("Failed to release the relative mouse mode: {error}");
-        }
-        if let Err(error) = host.window.clear_aspect_ratio() {
-            warn!("Failed to clear the window aspect ratio lock: {error}");
-        }
-        if let Some(state) = self.window_before_session.take() {
-            host.restore_window_state(state);
-        }
-        host.audio_engine.stop();
-        if let Some(gui) = host.gui.as_mut() {
-            gui.stop_text_input(Some(&host.window));
-            gui.reset();
-        }
-        host.window.set_title(GAME_NAME);
-        self.busy_duration = Duration::ZERO;
-        self.window_title_last_update = Instant::now();
-        exit
-    }
-
-    /// Shows the window and runs the event loop until the application quits
-    /// or the session ends. Ends the session. Returns an error when the
-    /// session ended with a panic.
+    /// Shows the window and runs the manager and the sessions until the
+    /// application quits. A session of the command line ends the
+    /// application. Returns an error when such a session ended with a panic.
     pub(crate) fn run(&mut self) -> Result<()> {
         self.host.window.show();
 
@@ -231,13 +232,37 @@ impl Shell {
             .event_pump()
             .context("Failed to get the SDL3 event pump")?;
 
-        self.run_session_loop(&mut event_pump);
-
-        match self.end_session() {
-            Some(SessionExit::Panic { message }) => Err(Error::from(StringError(format!(
-                "the session ended after a panic of the emulator: {message}"
-            )))),
-            Some(SessionExit::Quit | SessionExit::GuestShutdown) | None => Ok(()),
+        loop {
+            if self.session.is_some() {
+                self.run_session_loop(&mut event_pump);
+                let exit = self.session.as_ref().and_then(Session::exit).cloned();
+                let flush = self.end_session();
+                let after = after_session(
+                    exit.as_ref(),
+                    self.should_quit,
+                    self.manager.is_some(),
+                    &flush,
+                );
+                match after {
+                    AfterSession::Quit(result) => {
+                        return result.map_err(|message| Error::from(StringError(message)));
+                    }
+                    AfterSession::Manager { panic } => {
+                        self.restore_manager_window();
+                        if let Some(manager) = self.manager.as_mut() {
+                            manager.game_ended(panic.as_deref(), flush);
+                        }
+                    }
+                }
+                continue;
+            }
+            if self.manager.is_none() {
+                return Ok(());
+            }
+            match self.run_manager_loop(&mut event_pump) {
+                Some(launch) => self.launch(launch),
+                None => return Ok(()),
+            }
         }
     }
 
@@ -271,6 +296,13 @@ impl Shell {
         }
     }
 
+    /// Asks the manager for a new frame and starts the count of stale
+    /// frames again.
+    fn window_changed(&mut self) {
+        self.frame_pending = true;
+        self.stale_frames = 0;
+    }
+
     /// Whether the session has a reason to end.
     fn session_ending(&self) -> bool {
         self.session
@@ -295,7 +327,8 @@ impl Shell {
     }
 
     /// Handles the window, focus and gamepad connection events and passes
-    /// every other event to the session.
+    /// every other event to the session, or without a session to the
+    /// manager.
     fn handle_event(&mut self, event: &Event) {
         let host = &mut self.host;
         match event {
@@ -307,6 +340,20 @@ impl Shell {
                 ..
             } => {
                 host.update_gui_window();
+                self.window_changed();
+            }
+            Event::Window {
+                win_event: WindowEvent::Exposed | WindowEvent::Shown | WindowEvent::Restored,
+                ..
+            } => {
+                self.window_visible = true;
+                self.window_changed();
+            }
+            Event::Window {
+                win_event: WindowEvent::Hidden | WindowEvent::Minimized | WindowEvent::Occluded,
+                ..
+            } => {
+                self.window_visible = false;
             }
             Event::Window {
                 win_event: WindowEvent::FocusLost,
@@ -347,6 +394,7 @@ impl Shell {
                     info!("Scale factor changed to: {scale}");
                 }
                 host.update_gui_window();
+                self.window_changed();
             }
             Event::GamepadAdded { which } => {
                 host.open_gamepad(*which);
@@ -375,6 +423,8 @@ impl Shell {
                 }
                 if let Some(session) = self.session.as_mut() {
                     session.guarded(|session| session.handle_event(event, host));
+                } else if self.manager.is_some() {
+                    self.handle_manager_input(event);
                 }
             }
         }
@@ -394,6 +444,7 @@ fn render_session_frame(session: &mut Session, host: &mut Host) {
             };
             host.graphics_engine
                 .render_frame(&host.window, Some(&instructions), overlay)
+                .map(|_| ())
                 .context("Graphics engine failed to render frame")
         }
         Err(message) => {
@@ -411,8 +462,35 @@ mod tests {
     use sdl3_backend::DisplayAspectMode;
 
     use super::ShellOptions;
-    use crate::config::{AspectMode, Backend, EmulatorConfig, GraphicboardType, WindowMode};
+    use crate::{
+        config::{
+            AspectMode, Backend, EmulatorConfig, HostLayers, LaunchRequest, Locations,
+            SETTINGS_FILE_NAME, WindowMode, test_support::first_model_config,
+        },
+        host::MANAGER_WINDOW_SIZE,
+    };
 
+    /// Returns the host layers of a root folder with a settings file that
+    /// holds `settings`. Removes the folder before it returns.
+    fn host_layers(name: &str, settings: &str) -> (HostLayers, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "neetan_shell_options_test_{}_{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root is created");
+        std::fs::write(root.join(SETTINGS_FILE_NAME), settings).expect("settings are written");
+        let locations = Locations {
+            current_directory: root.clone(),
+            executable_directory: None,
+            pref_path: None,
+        };
+        let host = HostLayers::read(&LaunchRequest::default(), &locations).expect("settings read");
+        let _ = std::fs::remove_dir_all(&root);
+        (host, root)
+    }
+
+    /// Verifies that the options of a game follow its window, engine and font settings.
     #[test]
     fn options_follow_the_window_settings_of_the_game() {
         let config = EmulatorConfig {
@@ -420,7 +498,7 @@ mod tests {
             window_mode: WindowMode::Fullscreen,
             backend: Backend::Legacy,
             audio_volume: 0.5,
-            ..EmulatorConfig::default()
+            ..first_model_config()
         };
         let options = ShellOptions::for_config(&config);
         assert_eq!(options.window_size, (1280, 800));
@@ -428,18 +506,36 @@ mod tests {
         assert_eq!(options.backend, Backend::Legacy);
         assert_eq!(options.audio_volume, 0.5);
         assert_eq!(options.display_aspect_mode, DisplayAspectMode::Aspect1By1);
+        assert_eq!(options.gui_font, config.gui_font);
     }
 
+    /// Verifies that the manager window follows the window mode, the backend, the volume and the font of the settings file.
     #[test]
-    fn a_graphic_board_needs_the_large_native_target() {
-        let config = EmulatorConfig::default();
-        assert!(!config.target.wants_large_native_surface());
-        assert!(!ShellOptions::for_config(&config).large_native_target);
+    fn manager_options_follow_the_settings_file() {
+        let (host, root) = host_layers(
+            "settings",
+            "window-mode = fullscreen\nbackend = legacy\naudio-volume = 0.25\ngui-font = fonts/ui.ttf\n",
+        );
+        let options = ShellOptions::for_manager(&host);
+        assert!(options.fullscreen);
+        assert_eq!(options.backend, Backend::Legacy);
+        assert_eq!(options.audio_volume, 0.25);
+        assert_eq!(options.window_size, MANAGER_WINDOW_SIZE);
+        assert!(!options.large_native_target);
+        assert_eq!(options.gui_font, root.join("fonts").join("ui.ttf"));
+    }
 
-        let with_board = EmulatorConfig {
-            graphicboard: GraphicboardType::Ga1280a,
-            ..EmulatorConfig::default()
-        };
-        assert!(ShellOptions::for_config(&with_board).large_native_target);
+    /// Verifies that the manager keeps the built-in defaults for unset and invalid values.
+    #[test]
+    fn manager_options_keep_the_defaults_for_invalid_values() {
+        let (host, root) = host_layers("invalid", "backend = vulkan\naudio-volume = 7\n");
+        let options = ShellOptions::for_manager(&host);
+        assert!(!options.fullscreen);
+        assert_eq!(options.backend, Backend::Modern);
+        assert_eq!(options.audio_volume, 1.0);
+        assert_eq!(
+            options.gui_font,
+            root.join(machine_factory::config::DEFAULT_GUI_FONT)
+        );
     }
 }

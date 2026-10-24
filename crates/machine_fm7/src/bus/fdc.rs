@@ -289,7 +289,7 @@ impl<T: TraceSink> Fm7Bus<T> {
     }
 
     /// Flushes every mounted floppy to its backing file.
-    pub fn flush_floppies(&mut self) {
-        self.fdc.flush_all();
+    pub fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+        self.fdc.flush_all()
     }
 }

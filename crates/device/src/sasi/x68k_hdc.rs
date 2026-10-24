@@ -262,11 +262,10 @@ impl X68kSasiHdc {
         self.drives.iter().flatten().count() as u8
     }
 
-    /// Flushes every attached drive to its backing file.
-    pub fn flush(&mut self) {
-        for drive in self.drives.iter_mut().flatten() {
-            drive.flush();
-        }
+    /// Flushes every attached drive to its backing file. Returns the errors
+    /// of the failed writes.
+    pub fn flush(&mut self) -> Result<(), common::FlushError> {
+        common::FlushError::combine(self.drives.iter_mut().flatten().map(|drive| drive.flush()))
     }
 
     /// Reads the bus status register.

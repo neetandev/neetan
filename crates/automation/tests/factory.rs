@@ -10,13 +10,14 @@ mod harness;
 
 use std::sync::Arc;
 
-use common::{FixedHostDateTime, SharedHostDateTimeSource};
+use common::{FixedHostDateTime, MachineModel, SharedHostDateTimeSource};
 use harness::{fixed_date_time, trace_sink};
 use machine_factory::{
     InitErrorKind,
-    config::{EmulatorConfig, Target},
+    config::{EmulatorConfig, MachineSelection},
     machines::initialize_automated_machine,
 };
+use machine_msx::MsxModel;
 
 /// Returns the fixed guest real-time-clock source.
 fn fixed_rtc() -> SharedHostDateTimeSource {
@@ -25,7 +26,7 @@ fn fixed_rtc() -> SharedHostDateTimeSource {
 
 #[test]
 fn builds_pc98_hle_without_roms() {
-    let config = EmulatorConfig::default();
+    let config = EmulatorConfig::for_model(MachineSelection::Pc98(MachineModel::PC9801VM));
     let machine = initialize_automated_machine(config, fixed_rtc(), 48_000, trace_sink())
         .expect("PC-98 HLE constructs without a ROM directory");
     let descriptor = machine.automation_descriptor();
@@ -35,11 +36,7 @@ fn builds_pc98_hle_without_roms() {
 
 #[test]
 fn msx_without_roms_reports_a_clean_error() {
-    let config = EmulatorConfig {
-        target: Target::Msx,
-        msx_roms: None,
-        ..Default::default()
-    };
+    let config = EmulatorConfig::for_model(MachineSelection::Msx(MsxModel::Msx));
     let error = match initialize_automated_machine(config, fixed_rtc(), 48_000, trace_sink()) {
         Ok(_) => panic!("MSX must require a ROM directory through the factory"),
         Err(error) => error,

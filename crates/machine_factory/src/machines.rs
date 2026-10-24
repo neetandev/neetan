@@ -1168,7 +1168,7 @@ mod tests {
     #[cfg(feature = "at")]
     use super::resolve_at_boot_device;
     #[cfg(feature = "msx")]
-    use crate::config::{EmulatorConfig, Target};
+    use crate::config::{EmulatorConfig, MachineSelection};
 
     #[cfg(feature = "at")]
     #[test]
@@ -1194,10 +1194,7 @@ mod tests {
     #[cfg(feature = "msx")]
     #[test]
     fn msx_requires_its_rom_directory() {
-        let config = EmulatorConfig {
-            target: Target::Msx,
-            ..EmulatorConfig::default()
-        };
+        let config = EmulatorConfig::for_model(MachineSelection::Msx(machine_msx::MsxModel::Msx));
         let error = initialize_machine(&config, 48_000, common::default_host_date_time_source())
             .err()
             .expect("MSX without a ROM directory must fail");

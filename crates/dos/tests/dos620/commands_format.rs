@@ -258,7 +258,7 @@ fn format_sasi_hdd_supports_multicluster_file_copy_after_format() {
 
     type_string_long(&mut machine, b"COPY C:RAND.BIN A:\\\r");
     run_until_prompt(&mut machine);
-    machine.bus.flush_hdd(0);
+    machine.bus.flush_hdd(0).expect("flush succeeds");
 
     let copied_bytes = extract_root_file(&hdd_path, &RANDOM_FILE_FCB)
         .expect("destination file should be readable");

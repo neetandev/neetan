@@ -513,8 +513,8 @@ impl<T: TraceSink> AtBus<T> {
     }
 
     /// Flushes every mounted floppy to its backing file.
-    pub fn flush_floppies(&mut self) {
-        self.fdc.flush_all_drives();
+    pub fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+        self.fdc.flush_all_drives()
     }
 
     /// Derives the CMOS floppy drive types from the mounted media. Drive A

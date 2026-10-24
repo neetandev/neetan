@@ -259,7 +259,7 @@ pub enum Section {
     Display,
     /// Printer, text extractor and other rarely used settings.
     Advanced,
-    /// The config folder and the ROM folder.
+    /// The config folder, the ROM folder and the GUI font.
     Folders,
     /// ROM folders.
     Roms,
@@ -403,6 +403,14 @@ pub const MACHINE_KEY: &str = "machine";
 pub const CONFIG_FOLDER_KEY: &str = "config-folder";
 /// Key of the ROM folder.
 pub const ROMS_FOLDER_KEY: &str = "roms-folder";
+/// Key of the font file of the user interface.
+pub const GUI_FONT_KEY: &str = "gui-font";
+/// Key of the rendering backend.
+pub const BACKEND_KEY: &str = "backend";
+/// Key of the audio volume.
+pub const AUDIO_VOLUME_KEY: &str = "audio-volume";
+/// Key of the window mode.
+pub const WINDOW_MODE_KEY: &str = "window-mode";
 
 /// Returns the settings table entry of `key`.
 #[must_use]
@@ -484,7 +492,15 @@ fn parse_optional_path(value: &str) -> Option<PathBuf> {
 /// Parses a required folder. An empty value is an error.
 fn parse_folder(value: &str) -> Result<PathBuf, String> {
     if value.is_empty() {
-        return Err("the value names no folder".to_owned());
+        return Err("the value is empty, a folder is needed".to_owned());
+    }
+    Ok(PathBuf::from(value))
+}
+
+/// Parses a required file path. An empty value is an error.
+fn parse_file(value: &str) -> Result<PathBuf, String> {
+    if value.is_empty() {
+        return Err("the value is empty, a file is needed".to_owned());
     }
     Ok(PathBuf::from(value))
 }
@@ -512,7 +528,7 @@ fn parse_composite_phase(value: &str) -> Result<u32, String> {
 }
 
 /// Parses the audio volume.
-fn parse_audio_volume(value: &str) -> Result<f32, String> {
+pub fn parse_audio_volume(value: &str) -> Result<f32, String> {
     match value.parse::<f32>() {
         Ok(volume) if AUDIO_VOLUME_RANGE.contains(f64::from(volume)) => Ok(volume),
         _ => Err(format!(
@@ -1522,7 +1538,7 @@ pub static SETTINGS: &[Setting] = &[
         format: |config| format_value(config.aspect_mode),
     },
     Setting {
-        key: "window-mode",
+        key: WINDOW_MODE_KEY,
         label: "Window mode",
         help: "Window mode.",
         scope: Scope::System,
@@ -1687,7 +1703,7 @@ pub static SETTINGS: &[Setting] = &[
         format: |config| format_path(config.debug_bios.as_ref()),
     },
     Setting {
-        key: "backend",
+        key: BACKEND_KEY,
         label: "Backend",
         help: "Rendering backend. The legacy backend has no shader effects.",
         scope: Scope::Host,
@@ -1705,7 +1721,7 @@ pub static SETTINGS: &[Setting] = &[
         format: |config| format_value(config.backend),
     },
     Setting {
-        key: "audio-volume",
+        key: AUDIO_VOLUME_KEY,
         label: "Audio volume",
         help: "Audio volume.",
         scope: Scope::Host,
@@ -1757,6 +1773,24 @@ pub static SETTINGS: &[Setting] = &[
             Ok(())
         },
         format: |config| format_path(Some(&config.roms_folder)),
+    },
+    Setting {
+        key: GUI_FONT_KEY,
+        label: "GUI font",
+        help: "Font file of the user interface. The default lies in the resource folder of the installation.",
+        scope: Scope::Host,
+        kind: ValueKind::Path(PathKind::File),
+        families: Families::ALL,
+        model_limits: &[],
+        section: Some(Section::Folders),
+        explicit: None,
+        frontend_only: true,
+        clear: None,
+        apply: |config, value| {
+            config.gui_font = parse_file(value)?;
+            Ok(())
+        },
+        format: |config| format_path(Some(&config.gui_font)),
     },
     Setting {
         key: "at-roms",
@@ -1980,7 +2014,7 @@ pub static SETTINGS: &[Setting] = &[
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::*;
+    use super::{super::first_system_config, *};
 
     /// Returns sample values of a setting that its apply function accepts.
     fn sample_values(setting: &Setting) -> Vec<String> {
@@ -2038,12 +2072,12 @@ mod tests {
     fn format_round_trips_every_key() {
         for setting in SETTINGS {
             for value in sample_values(setting) {
-                let mut config = EmulatorConfig::default();
+                let mut config = first_system_config();
                 (setting.apply)(&mut config, &value).expect("sample value applies");
                 let formatted = (setting.format)(&config);
                 assert_eq!(formatted, vec![value.clone()], "{} = {value}", setting.key);
 
-                let mut reparsed = EmulatorConfig::default();
+                let mut reparsed = first_system_config();
                 for formatted_value in &formatted {
                     (setting.apply)(&mut reparsed, formatted_value)
                         .expect("formatted value applies");
@@ -2060,7 +2094,7 @@ mod tests {
             .iter()
             .filter(|setting| setting.kind == ValueKind::PathList)
         {
-            let mut config = EmulatorConfig::default();
+            let mut config = first_system_config();
             assert!((setting.format)(&config).is_empty(), "{}", setting.key);
             (setting.apply)(&mut config, "first.img").expect("path applies");
             (setting.apply)(&mut config, "second.img").expect("path applies");
@@ -2087,7 +2121,7 @@ mod tests {
                 continue;
             };
             assert_eq!(setting.kind, ValueKind::PathList, "{}", setting.key);
-            let mut config = EmulatorConfig::default();
+            let mut config = first_system_config();
             (setting.apply)(&mut config, "first.img").expect("path applies");
             (setting.apply)(&mut config, "second.img").expect("path applies");
             clear(&mut config);
@@ -2106,10 +2140,11 @@ mod tests {
     #[test]
     fn empty_path_values_unset_or_fail() {
         for setting in SETTINGS {
-            let mut config = EmulatorConfig::default();
+            let mut config = first_system_config();
             match setting.kind {
                 ValueKind::Path(_)
-                    if [CONFIG_FOLDER_KEY, ROMS_FOLDER_KEY].contains(&setting.key) =>
+                    if [CONFIG_FOLDER_KEY, ROMS_FOLDER_KEY, GUI_FONT_KEY]
+                        .contains(&setting.key) =>
                 {
                     assert!((setting.apply)(&mut config, "").is_err(), "{}", setting.key);
                 }
@@ -2145,14 +2180,14 @@ mod tests {
                 ValueKind::Number(_) => "99",
                 ValueKind::Path(_) | ValueKind::PathList => continue,
             };
-            let mut config = EmulatorConfig::default();
+            let mut config = first_system_config();
             assert!(
                 (setting.apply)(&mut config, invalid).is_err(),
                 "{} accepts {invalid}",
                 setting.key
             );
         }
-        let mut config = EmulatorConfig::default();
+        let mut config = first_system_config();
         let bios = find_setting("bios").expect("bios is a table key");
         assert_eq!(
             (bios.apply)(&mut config, "maybe"),
@@ -2167,11 +2202,11 @@ mod tests {
     #[test]
     fn every_compiled_model_resolves_to_its_own_name() {
         for name in compiled_model_names() {
-            let mut config = EmulatorConfig::default();
+            let mut config = first_system_config();
             resolve_model(&mut config, name).expect("model name resolves");
             assert_eq!(model_name(&config), name);
             let lowercase = name.to_ascii_lowercase();
-            let mut config = EmulatorConfig::default();
+            let mut config = first_system_config();
             resolve_model(&mut config, &lowercase).expect("model names ignore case");
             assert_eq!(model_name(&config), name);
             let choice = MODEL_CHOICES
@@ -2216,7 +2251,7 @@ mod tests {
     /// Verifies that every family accepts every key at apply time.
     #[test]
     fn family_filter_rejects_nothing_at_apply_time() {
-        let mut config = EmulatorConfig::default();
+        let mut config = first_system_config();
         for setting in SETTINGS.iter().filter(|setting| setting.key != MACHINE_KEY) {
             for value in sample_values(setting) {
                 (setting.apply)(&mut config, &value).expect("every family accepts every key");
@@ -2255,7 +2290,7 @@ mod tests {
     /// Verifies that an explicit CPU mode survives the PC-88 derived defaults.
     #[test]
     fn explicit_settings_keep_their_value_over_derived_defaults() {
-        let mut config = EmulatorConfig::default();
+        let mut config = first_system_config();
         let mut explicit = ExplicitSettings::default();
         for (key, value) in [
             (MACHINE_KEY, "PC8801MC"),

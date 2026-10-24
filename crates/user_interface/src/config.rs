@@ -2,12 +2,14 @@ use std::path::PathBuf;
 
 use common::{StringError, bail};
 pub use machine_factory::config::{
-    AspectMode, Backend, BootMode, EmulatorConfig, ForceGdcClock, GraphicboardType, MidiDevice,
-    ScalingMode, SoundboardType, Target, WindowMode,
+    AspectMode, Backend, BootMode, EmulatorConfig, ForceGdcClock, GraphicboardType,
+    MachineSelection, MidiDevice, ScalingMode, SoundboardType, Target, WindowMode,
 };
 use machine_factory::config::{
-    settings::{Families, PathKind, SETTINGS, Setting, ValueKind, find_setting},
-    systems::rom_folders,
+    settings::{
+        Families, MACHINE_KEY, PathKind, SETTINGS, Scope, Setting, ValueKind, find_setting,
+    },
+    systems::{compiled_systems, rom_folders},
 };
 
 pub use self::{
@@ -30,7 +32,7 @@ pub(crate) mod layers;
 pub mod metadata;
 pub(crate) mod reading;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> crate::Result<String> {
     match args.next() {
@@ -75,9 +77,57 @@ fn value_placeholder(setting: &Setting) -> &'static str {
     }
 }
 
+/// Returns the built-in configuration of the default model of each compiled system.
+fn system_defaults() -> Vec<(&'static str, EmulatorConfig)> {
+    compiled_systems()
+        .filter_map(|system| {
+            MachineSelection::of_system(system)
+                .map(|model| (system.name, EmulatorConfig::for_model(model)))
+        })
+        .collect()
+}
+
+/// Returns the built-in default of a setting in the `--help` list.
+///
+/// A default that differs between the systems that read the setting lists
+/// the value of each of them. A setting that no compiled system reads shows
+/// the default of every compiled system.
+fn default_description(setting: &Setting, defaults: &[(&'static str, EmulatorConfig)]) -> String {
+    let reading: Vec<&(&'static str, EmulatorConfig)> = defaults
+        .iter()
+        .filter(|(_, config)| setting.families.contains_target(config.target))
+        .collect();
+    let shown: Vec<&(&'static str, EmulatorConfig)> = if reading.is_empty() {
+        defaults.iter().collect()
+    } else {
+        reading
+    };
+    let values: Vec<(&str, String)> = shown
+        .iter()
+        .map(|(name, config)| (*name, (setting.format)(config).join(", ")))
+        .collect();
+    let Some((_, first)) = values.first() else {
+        return String::new();
+    };
+    if values.iter().all(|(_, value)| value == first) {
+        if !first.is_empty() {
+            return format!(" Default: {first}.");
+        }
+        return match rom_folders().find(|folder| folder.key == setting.key) {
+            Some(folder) => format!(" Default: <roms-folder>/{}.", folder.name),
+            None => String::new(),
+        };
+    }
+    let listed: Vec<String> = values
+        .iter()
+        .map(|(name, value)| format!("{value} ({name})"))
+        .collect();
+    format!(" Default: {}.", listed.join(", "))
+}
+
 /// Returns the description of a setting in the `--help` list: the help text,
 /// the values, the families that read it and the built-in default.
-fn setting_description(setting: &Setting, defaults: &EmulatorConfig) -> String {
+fn setting_description(setting: &Setting, defaults: &[(&'static str, EmulatorConfig)]) -> String {
     let mut description = setting.help.to_owned();
     match setting.kind {
         ValueKind::Choice(choices) => {
@@ -102,12 +152,7 @@ fn setting_description(setting: &Setting, defaults: &EmulatorConfig) -> String {
         let families: Vec<&str> = setting.families.names().collect();
         description.push_str(&format!(" Families: {}.", families.join(", ")));
     }
-    let default = (setting.format)(defaults);
-    if !default.is_empty() {
-        description.push_str(&format!(" Default: {}.", default.join(", ")));
-    } else if let Some(folder) = rom_folders().find(|folder| folder.key == setting.key) {
-        description.push_str(&format!(" Default: <roms-folder>/{}.", folder.name));
-    }
+    description.push_str(&default_description(setting, defaults));
     description
 }
 
@@ -122,7 +167,7 @@ fn format_range_end(value: f64, integer: bool) -> String {
 
 /// Builds the option list of `--help` from the settings table and the flags outside it.
 fn option_lines() -> String {
-    let defaults = EmulatorConfig::default();
+    let defaults = system_defaults();
     let mut rows: Vec<(String, String)> = vec![
         (
             "-c, --config <PATH>".to_owned(),
@@ -169,6 +214,10 @@ An option takes its value as --name value or --name=value.
 An on/off option without a value turns the setting on.
 Every option except --config, --settings, --help and --version has a configuration file key of the
 same name.
+
+Startup:
+  With --machine or --config, neetan starts the game directly. Without either option, it opens
+  the game manager. A media option such as --fdd1 needs --machine or --config.
 
 Settings file:
   Neetan reads the first neetan.conf of: --settings <PATH>, the current directory, the folder of
@@ -341,8 +390,12 @@ fn print_version() {
     println!("neetan {}", crate::CARGO_PKG_VERSION);
 }
 
+/// The action of a command line.
 pub enum Action {
+    /// Starts the game of the configuration directly.
     Run(Box<EmulatorConfig>, KeyOverrides),
+    /// Opens the game manager.
+    Manager(Box<ManagerStart>),
     CreateFdd {
         path: PathBuf,
         fdd_type: FddType,
@@ -359,6 +412,48 @@ pub enum Action {
         source: CopyArg,
         dest: CopyArg,
     },
+}
+
+/// The inputs of the game manager: the command line of the launch and the
+/// folders of the settings discovery.
+#[derive(Debug, Clone)]
+pub struct ManagerStart {
+    /// The command line inputs. Their paths are absolute.
+    pub request: LaunchRequest,
+    /// The folders that the settings discovery searches.
+    pub locations: Locations,
+}
+
+/// The start of the application that a command line asks for.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum StartupMode {
+    /// The game of the command line starts directly.
+    Direct,
+    /// The game manager opens.
+    Manager,
+}
+
+/// Returns the start of the application for `request`.
+///
+/// A `--machine` flag or a `--config` file starts the game directly. A media
+/// flag without both is an error. Every other command line opens the
+/// manager. The `machine` of the settings file does not count.
+pub fn startup_mode(request: &LaunchRequest) -> Result<StartupMode, String> {
+    let has_machine = request
+        .flags
+        .iter()
+        .any(|(setting, _)| setting.key == MACHINE_KEY);
+    if has_machine || !request.game_files.is_empty() {
+        return Ok(StartupMode::Direct);
+    }
+    if let Some((setting, _)) = request
+        .flags
+        .iter()
+        .find(|(setting, _)| setting.scope == Scope::Game)
+    {
+        return Err(format!("--{} needs --machine or --config", setting.key));
+    }
+    Ok(StartupMode::Manager)
 }
 
 #[derive(Debug, Clone)]
@@ -627,7 +722,8 @@ fn parse_command_line(args: impl IntoIterator<Item = String>) -> crate::Result<C
     Ok(CommandLine::Launch(request))
 }
 
-/// Resolves the relative paths of `request` against the current directory and builds the run action.
+/// Resolves the relative paths of `request` against the current directory and
+/// builds the run action or the manager action of its startup mode.
 fn launch_action(mut request: LaunchRequest, locations: &Locations) -> crate::Result<Action> {
     let current_directory = &locations.current_directory;
     for file in &mut request.game_files {
@@ -636,8 +732,16 @@ fn launch_action(mut request: LaunchRequest, locations: &Locations) -> crate::Re
     for (setting, value) in &mut request.flags {
         *value = resolve_value(setting, current_directory, value);
     }
-    let (config, key_map) = build_configuration(&request, locations)?;
-    Ok(Action::Run(Box::new(config), key_map))
+    match startup_mode(&request).map_err(StringError)? {
+        StartupMode::Direct => {
+            let (config, key_map) = build_configuration(&request, locations)?;
+            Ok(Action::Run(Box::new(config), key_map))
+        }
+        StartupMode::Manager => Ok(Action::Manager(Box::new(ManagerStart {
+            request,
+            locations: locations.clone(),
+        }))),
+    }
 }
 
 #[cfg(test)]
@@ -660,7 +764,9 @@ mod tests {
     #[cfg(feature = "pc98")]
     use super::test_support::write_file;
     use super::{
-        test_support::{TestLocations, parse_error, parse_run_config},
+        test_support::{
+            TestLocations, first_model, parse_error, parse_run_config, with_first_model,
+        },
         *,
     };
 
@@ -700,7 +806,10 @@ mod tests {
         }
     }
 
-    /// Verifies that every key parses to the same configuration from a flag and from a settings file.
+    /// Verifies that every key parses to the same configuration from a flag and from a file.
+    ///
+    /// The file is the settings file. The `machine` key reads from a game
+    /// file, because the `--machine` of the command line outranks the settings file.
     #[test]
     fn every_setting_parses_the_same_from_a_flag_and_from_a_file() {
         let test = TestLocations::new("every_setting");
@@ -708,13 +817,16 @@ mod tests {
         for setting in SETTINGS {
             for value in sample_values(setting, &existing_path) {
                 let flag = format!("--{}", setting.key);
-                let (separate, _) = test.parse(&[&flag, &value]);
+                let (separate, _) = test.parse(&with_first_model(&[&flag, &value]));
                 let inline_flag = format!("--{}={value}", setting.key);
-                let (inline, _) = test.parse(&[&inline_flag]);
-                let from_file = test.parse_settings(
-                    &format!("{}.conf", setting.key),
-                    &format!("{} = {value}\n", setting.key),
-                );
+                let (inline, _) = test.parse(&with_first_model(&[&inline_flag]));
+                let file_name = format!("{}.conf", setting.key);
+                let file_line = format!("{} = {value}\n", setting.key);
+                let from_file = if setting.key == MACHINE_KEY {
+                    test.parse_game(&file_name, &file_line).0
+                } else {
+                    test.parse_settings(&file_name, &file_line)
+                };
                 assert_eq!(separate, from_file, "{} = {value}", setting.key);
                 assert_eq!(inline, from_file, "{} = {value}", setting.key);
                 assert_eq!(
@@ -735,10 +847,18 @@ mod tests {
         let second_text = test.file("second.d88", "").to_string_lossy().into_owned();
         for key in ["fdd1", "fdd2", "cdrom"] {
             let flag = format!("--{key}");
-            let (from_flags, _) = test.parse(&[&flag, &first_text, &flag, &second_text]);
+            let (from_flags, _) = test.parse(&with_first_model(&[
+                &flag,
+                &first_text,
+                &flag,
+                &second_text,
+            ]));
             let (from_file, _) = test.parse_game(
                 &format!("{key}_list.conf"),
-                &format!("{key} = {first_text}\n{key} = {second_text}\n"),
+                &format!(
+                    "machine = {}\n{key} = {first_text}\n{key} = {second_text}\n",
+                    first_model()
+                ),
             );
             assert_eq!(from_flags, from_file, "{key}");
             let setting = find_setting(key).expect("media key is a table key");
@@ -790,7 +910,7 @@ mod tests {
         assert!(parse_error(&["--machine", "FOOBAR"]).starts_with("--machine: "));
         assert_eq!(
             parse_error(&["--config-folder="]),
-            "--config-folder: the value names no folder"
+            "--config-folder: the value is empty, a folder is needed"
         );
         assert!(parse_error(&["--fdd1", "missing.d88"]).starts_with("fdd1 image not found: "));
     }
@@ -807,7 +927,7 @@ mod tests {
             }
         }
         let arguments: Vec<&str> = args.iter().map(String::as_str).collect();
-        let _ = test.parse(&arguments);
+        let _ = test.parse(&with_first_model(&arguments));
     }
 
     /// Verifies that the reference configuration names table keys and documents every grouped setting.
@@ -897,6 +1017,90 @@ mod tests {
         let (config, _) = parse_run_config(&["--machine", "PC6001MK2SR"]);
         assert_eq!(config.target, Target::Pc60);
         assert_eq!(config.pc60_model, Pc6000Model::Pc6001Mk2Sr);
+    }
+
+    /// Verifies the startup decision: a machine or a game file starts the game, media alone is an error, the rest opens the manager.
+    #[test]
+    fn startup_mode_follows_the_machine_and_the_game_files() {
+        let setting = |key: &str| find_setting(key).expect("table key");
+        let request =
+            |flags: Vec<(&'static Setting, &str)>, game_files: Vec<PathBuf>| LaunchRequest {
+                flags: flags
+                    .into_iter()
+                    .map(|(setting, value)| (setting, value.to_owned()))
+                    .collect(),
+                game_files,
+                ..LaunchRequest::default()
+            };
+        assert_eq!(
+            startup_mode(&request(Vec::new(), Vec::new())),
+            Ok(StartupMode::Manager)
+        );
+        assert_eq!(
+            startup_mode(&request(
+                vec![
+                    (setting("roms-folder"), "/roms"),
+                    (setting("window-mode"), "fullscreen"),
+                    (setting("crt"), "off"),
+                ],
+                Vec::new()
+            )),
+            Ok(StartupMode::Manager)
+        );
+        assert_eq!(
+            startup_mode(&request(vec![(setting(MACHINE_KEY), "X1")], Vec::new())),
+            Ok(StartupMode::Direct)
+        );
+        assert_eq!(
+            startup_mode(&request(Vec::new(), vec![PathBuf::from("/game.conf")])),
+            Ok(StartupMode::Direct)
+        );
+        assert_eq!(
+            startup_mode(&request(
+                vec![(setting("fdd1"), "/disk.d88")],
+                vec![PathBuf::from("/game.conf")]
+            )),
+            Ok(StartupMode::Direct)
+        );
+        for key in [
+            "fdd1",
+            "fdd2",
+            "cdrom",
+            "hdd1",
+            "hdd2",
+            "cartridge",
+            "cassette",
+        ] {
+            assert_eq!(
+                startup_mode(&request(vec![(setting(key), "/image")], Vec::new())),
+                Err(format!("--{key} needs --machine or --config")),
+                "{key}"
+            );
+        }
+    }
+
+    /// Verifies that a command line without a machine opens the manager and that the machine of the settings file does not launch.
+    #[test]
+    fn a_command_line_without_a_machine_opens_the_manager() {
+        let test = TestLocations::new("manager");
+        let settings = test.file("neetan.conf", &format!("machine = {}\n", first_model()));
+        let settings_text = settings.to_string_lossy().into_owned();
+        let Action::Manager(start) =
+            test.action(&["--settings", &settings_text, "--roms-folder", "roms"])
+        else {
+            panic!("expected the manager action");
+        };
+        assert_eq!(start.request.settings, Some(settings));
+        assert_eq!(start.locations, test.locations);
+        let (setting, value) = &start.request.flags[0];
+        assert_eq!(setting.key, "roms-folder");
+        assert_eq!(PathBuf::from(value), test.current().join("roms"));
+        assert!(matches!(test.action(&[]), Action::Manager(_)));
+        let disk = test.file("disk.d88", "").to_string_lossy().into_owned();
+        assert_eq!(
+            test.error(&["--fdd1", &disk]),
+            "--fdd1 needs --machine or --config"
+        );
     }
 
     #[test]

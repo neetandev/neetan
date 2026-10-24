@@ -156,10 +156,13 @@ music by matching a traced I/O write:
 A specification is an alist passed to `call-with-machine` / `with-machine`.
 
 ```text
-target        machine family symbol (see targets below)
+target        machine family symbol (see targets below). Selects the default model of the family
 model         concrete model symbol. Selects the family on its own
 media         list of (type slot path) entries
 ```
+
+A specification holds `target`, `model` or both. A specification without either
+raises `neetan/argument`.
 
 Every other key is a machine setting of the configuration file, with the same
 name and the same values: `cpu-mode`, `boot-mode`, `boot-device`, `bios`, `ems`,
@@ -187,7 +190,9 @@ The boot modes `v1s`, `n`, `n80` and `n80sr` select `cpu-mode` `low` and the
 `compatible` memory wait, unless the specification sets `cpu-mode` or
 `pc88-memory-wait`.
 
-`target` and `model` must agree when both are given. Valid values for the
+`target` and `model` must agree when both are given. The default model of each
+family is the model of its system in the systems table, for example `pc9801ra`
+for `pc98` and `fmtownsiimx` for `towns`. Valid values for the
 family-specific keys are documented per machine in the `doc/machine-*.md` files.
 Targets: `pc98`, `pc88`, `pc88va`, `pc60`, `msx`, `towns`, `x1`, `fm7`, `x68k`,
 `at`.

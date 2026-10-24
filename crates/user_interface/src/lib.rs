@@ -1,6 +1,7 @@
 //! The user interface for the emulator Neetan.
 //!
 //! Includes the following user facing UI through the "neetan" binary:
+//! - Game manager
 //! - Main emulator UI
 //! - Copy command
 //! - Create FDD / HDD command
@@ -11,8 +12,9 @@
 pub use common::Error;
 
 use crate::{
-    config::EmulatorConfig,
+    config::{EmulatorConfig, ManagerStart},
     input::KeyOverrides,
+    manager::Manager,
     shell::{Shell, ShellOptions},
 };
 
@@ -22,9 +24,12 @@ pub mod convert;
 pub mod copy;
 pub mod create;
 mod gui_host;
+#[cfg(test)]
+mod gui_test_support;
 mod host;
 mod input;
 mod machines;
+mod manager;
 mod media_dialog;
 pub mod rom_folders;
 mod session;
@@ -34,6 +39,8 @@ mod shell;
 const COMPANY_NAME: &str = "neetan";
 /// The name of the application.
 pub const GAME_NAME: &str = "neetan";
+/// The name of the application in the user interface.
+pub(crate) const APPLICATION_TITLE: &str = "Neetan";
 /// The version of the application.
 pub const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -49,5 +56,14 @@ pub(crate) const fn on_off(enabled: bool) -> &'static str {
 pub fn run(config: EmulatorConfig, key_overrides: KeyOverrides) -> Result<()> {
     let mut shell = Shell::new(ShellOptions::for_config(&config))?;
     shell.start_session(config, key_overrides)?;
+    shell.run()
+}
+
+/// Opens the window with the game manager of `start` and runs it and the
+/// games it starts until the user quits.
+pub fn run_manager(start: ManagerStart) -> Result<()> {
+    let manager = Manager::new(start)?;
+    let mut shell = Shell::new(ShellOptions::for_manager(manager.host()))?;
+    shell.open_manager(manager)?;
     shell.run()
 }

@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use crate::config::{
-    EmulatorConfig, Target, resolve_model,
+    EmulatorConfig, MachineSelection, Target,
     settings::{Families, MODEL_CHOICES},
     systems::{RomFolder, RomOwner},
 };
@@ -75,9 +75,8 @@ fn check_system_folder(folder: &RomFolder, family: Families, path: &Path) -> Rom
         .iter()
         .filter(|choice| choice.families == family)
         .filter_map(|choice| {
-            let mut config = EmulatorConfig::default();
-            resolve_model(&mut config, choice.value).ok()?;
-            Some((choice.value, config))
+            let model = choice.value.parse::<MachineSelection>().ok()?;
+            Some((choice.value, EmulatorConfig::for_model(model)))
         })
         .collect();
     let Some((_, first)) = models.first() else {

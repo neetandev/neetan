@@ -83,16 +83,27 @@ pub trait GraphicsEngine {
     /// Called when the rendering surface should be torn down (e.g., Android suspend).
     fn on_destroy_surface(&mut self);
 
-    /// Renders the next frame and draws the overlay over it.
+    /// Renders the next frame and draws the overlay over it. Without render
+    /// instructions only the overlay draws over black. Returns whether the
+    /// frame is stale: drawn at an output size that differs from the pixel
+    /// size of the window, or skipped because the window had no image to
+    /// draw into, for example while it is minimized.
     fn render_frame(
         &mut self,
         window: &Window,
         render_instructions: Option<&RenderInstructions>,
         overlay: Option<Overlay<'_>>,
-    ) -> Result<()>;
+    ) -> Result<bool>;
 
     /// Selects the scaling method applied.
     fn set_scaling(&mut self, scaling: Scaling);
+
+    /// Selects the display aspect mode of the emulator frame.
+    fn set_display_aspect_mode(&mut self, aspect_mode: DisplayAspectMode);
+
+    /// Selects the large native target or the PC-98 sized one. A change
+    /// rebuilds the native target texture and its upload buffer.
+    fn set_large_native_target(&mut self, large_native_target: bool) -> Result<()>;
 }
 
 /// Scaling method used to scale the native image.

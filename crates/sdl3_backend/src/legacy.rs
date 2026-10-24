@@ -144,10 +144,10 @@ impl GraphicsEngine for LegacySdlBackend {
 
     fn render_frame(
         &mut self,
-        _window: &Window,
+        window: &Window,
         render_instructions: Option<&RenderInstructions>,
         overlay: Option<Overlay<'_>>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let state = self
             .state
             .as_mut()
@@ -159,8 +159,9 @@ impl GraphicsEngine for LegacySdlBackend {
             .context("SDL_GetRenderOutputSize failed")?;
 
         if output_width == 0 || output_height == 0 {
-            return Ok(());
+            return Ok(true);
         }
+        let stale = (output_width, output_height) != window.size_in_pixels();
 
         state
             .renderer
@@ -178,7 +179,7 @@ impl GraphicsEngine for LegacySdlBackend {
 
             let expected_bytes = (width * height * 4) as usize;
             if instructions.framebuffer.len() < expected_bytes {
-                return Ok(());
+                return Ok(true);
             }
 
             let update_rect = Rect {
@@ -241,7 +242,7 @@ impl GraphicsEngine for LegacySdlBackend {
             .present()
             .context("SDL_RenderPresent failed")?;
 
-        Ok(())
+        Ok(stale)
     }
 
     fn set_scaling(&mut self, scaling: Scaling) {
@@ -252,6 +253,32 @@ impl GraphicsEngine for LegacySdlBackend {
         {
             error!("Failed to set SDL texture scale mode: {error}");
         }
+    }
+
+    fn set_display_aspect_mode(&mut self, aspect_mode: DisplayAspectMode) {
+        self.aspect_mode = aspect_mode;
+    }
+
+    fn set_large_native_target(&mut self, large_native_target: bool) -> Result<()> {
+        if large_native_target == self.large_native_target {
+            return Ok(());
+        }
+        let scale_mode = self.sdl_scale_mode(self.scaling);
+        if let Some(state) = self.state.as_mut() {
+            let (width, height) = native_target_size(large_native_target);
+            let texture = state
+                .renderer
+                .create_streaming_texture(PixelFormat::Rgba32, width, height)
+                .context("SDL_CreateTexture failed")?;
+            texture
+                .set_scale_mode(scale_mode)
+                .context("SDL_SetTextureScaleMode failed")?;
+            state.texture = texture;
+        }
+        self.large_native_target = large_native_target;
+        let (width, height) = native_target_size(large_native_target);
+        info!("Native target set to {width}x{height}");
+        Ok(())
     }
 }
 

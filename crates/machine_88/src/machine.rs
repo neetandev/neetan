@@ -597,8 +597,8 @@ impl<T: TraceSink> common::Machine for Pc8801Machine<T> {
         self.bus.eject_floppy(drive);
     }
 
-    fn flush_floppies(&mut self) {
-        self.bus.flush_floppies();
+    fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+        self.bus.flush_floppies()
     }
 
     fn insert_cdrom(&mut self, path: &std::path::Path) -> Result<String, String> {

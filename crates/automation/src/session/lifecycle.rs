@@ -4,7 +4,10 @@ use common::{
     AutomatedMachine, AutomationDescriptor, SaveStateError,
     tracing::{ApplicationTraceSink, TraceHandle, TraceLimits},
 };
-use machine_factory::{InitError, config::EmulatorConfig};
+use machine_factory::{
+    InitError,
+    config::{EmulatorConfig, MachineSelection},
+};
 
 use super::{
     ActiveMachine, AutomationSession, MachineId, OpError, RuntimeState, StateId, TrackedControls,
@@ -29,7 +32,15 @@ fn map_save_state_error(error: SaveStateError) -> OpError {
 
 impl AutomationSession {
     /// Installs a directly constructed machine for Rust-side conformance tests.
+    ///
+    /// The startup specification is the built-in configuration of the model of
+    /// the machine.
     pub fn install_machine(&mut self, machine: Box<dyn AutomatedMachine>) {
+        let model: MachineSelection = machine
+            .automation_descriptor()
+            .model
+            .parse()
+            .expect("the model of an automated machine is a model of this build");
         let id = MachineId(
             self.machine_ids
                 .allocate()
@@ -43,7 +54,7 @@ impl AutomationSession {
             epoch: 0,
             session_ticks_base: 0,
             session_frames_base: 0,
-            startup_spec: EmulatorConfig::default(),
+            startup_spec: EmulatorConfig::for_model(model),
             mounts: Default::default(),
             startup_media: Vec::new(),
             tracked: TrackedControls::default(),
@@ -157,9 +168,16 @@ impl AutomationSession {
                 None,
             ) {
                 candidate.trace.stop();
-                candidate.machine.flush_floppies();
-                candidate.machine.flush_hdds();
-                candidate.machine.flush_printer();
+                let flushed = common::FlushError::combine([
+                    candidate.machine.flush_floppies(),
+                    candidate.machine.flush_hdds(),
+                    candidate.machine.flush_printer(),
+                ]);
+                if let Err(flush_error) = flushed {
+                    common::error!(
+                        "Flushing the media of the failed machine failed: {flush_error}"
+                    );
+                }
                 return Err(error);
             }
         }

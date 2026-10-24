@@ -7,9 +7,8 @@
 //! unhinted TTF file of the official release 1.0.42. The license text is
 //! `licenses/LICENSE_sarasa`.
 //!
-//! The font ships in the folder [`FONT_DIRECTORY`] next to the executable,
-//! and the repository holds it in a folder of the same name. The caller
-//! locates and reads the file and passes the bytes to [`Fonts::add`].
+//! The repository holds the font in its `font` folder. The caller locates
+//! and reads the file and passes the bytes to [`Fonts::add`].
 //!
 //! Shaping maps every character to one glyph through the `cmap` table and
 //! places the glyphs one after another by their advance widths and the pair
@@ -31,12 +30,6 @@ use crate::{
     Path, ShapeStore, SlugData, SlugShape,
     truetype::{Font, FontError, GlyphId},
 };
-
-/// The folder next to the executable that holds the font.
-pub const FONT_DIRECTORY: &str = "font";
-
-/// The file name of the font in [`FONT_DIRECTORY`].
-pub const FONT_FILE: &str = "SarasaUiJ-Regular.ttf";
 
 /// The character that ends a cut text.
 const ELLIPSIS: char = '\u{2026}';
@@ -582,15 +575,21 @@ pub(crate) mod tests {
         truetype::tests::{font_file, kern_table, small_font_tables},
     };
 
+    /// The path of the font file below the repository root.
+    const REPOSITORY_FONT_PATH: &str = "font/SarasaUiJ-Regular.ttf";
+
+    /// Returns the path of the font file in the repository.
+    fn repository_font_path() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(REPOSITORY_FONT_PATH)
+    }
+
     /// The bytes of the font file in the repository.
     pub(crate) fn font_data() -> &'static [u8] {
         static DATA: OnceLock<Vec<u8>> = OnceLock::new();
         DATA.get_or_init(|| {
-            std::fs::read(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../font/SarasaUiJ-Regular.ttf"
-            ))
-            .expect("the font file is missing")
+            std::fs::read(repository_font_path()).expect("the font file is missing")
         })
     }
 
@@ -639,11 +638,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_font_file_name_matches_the_repository() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join(FONT_DIRECTORY)
-            .join(FONT_FILE);
-        assert!(path.is_file());
+        assert!(repository_font_path().is_file());
         assert!(font().glyph_index('A').is_some());
     }
 

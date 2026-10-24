@@ -142,11 +142,15 @@ impl ScsiTarget {
         }
     }
 
-    /// Flushes pending writes to the backing file.
-    pub fn flush(&mut self) {
+    /// Flushes pending writes to the backing file. Returns the error of a
+    /// failed write.
+    pub fn flush(&mut self) -> Result<(), common::FlushError> {
         match self {
             ScsiTarget::Disk(disk) => disk.flush(),
-            ScsiTarget::Cdrom(cdrom) => cdrom.flush(),
+            ScsiTarget::Cdrom(cdrom) => {
+                cdrom.flush();
+                Ok(())
+            }
         }
     }
 }

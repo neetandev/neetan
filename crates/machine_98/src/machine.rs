@@ -1144,16 +1144,16 @@ impl<C: Pc98RuntimeCpu, T: TraceSink> common::Machine for Pc98Machine<C, T> {
         self.bus.eject_cdrom();
     }
 
-    fn flush_floppies(&mut self) {
-        self.bus.flush_all_floppies();
+    fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+        self.bus.flush_all_floppies()
     }
 
-    fn flush_hdds(&mut self) {
-        self.bus.flush_all_hdds();
+    fn flush_hdds(&mut self) -> Result<(), common::FlushError> {
+        self.bus.flush_all_hdds()
     }
 
-    fn flush_printer(&mut self) {
-        self.bus.flush_printer();
+    fn flush_printer(&mut self) -> Result<(), common::FlushError> {
+        self.bus.flush_printer()
     }
 
     fn install_text_extractor(&mut self, extractor: Box<dyn common::TextExtractor>) {

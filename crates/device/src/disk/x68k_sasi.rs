@@ -88,7 +88,7 @@ mod tests {
         let image = HddImage::from_x68k_sasi(data).unwrap();
         let mut mounted = MountedHdd::new(image, Some(path.clone()));
         assert!(mounted.write_sector(1, &[0xA5u8; 256]));
-        mounted.flush();
+        mounted.flush().expect("flush succeeds");
 
         let written = std::fs::read(&path).unwrap();
         assert_eq!(written.len(), X68K_SASI_HDF_10MB_BYTES);

@@ -146,7 +146,7 @@ impl GraphicsEngine for ModernSdlGpuBackend {
         window: &Window,
         render_instructions: Option<&RenderInstructions>,
         overlay: Option<Overlay<'_>>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let frame_source = render_instructions
             .map(|instructions| self.frame_source(instructions))
             .transpose()?;
@@ -173,7 +173,7 @@ impl GraphicsEngine for ModernSdlGpuBackend {
                 command_buffer
                     .submit()
                     .context("SDL_SubmitGPUCommandBuffer (no swapchain) failed")?;
-                return Ok(());
+                return Ok(true);
             }
         };
 
@@ -183,8 +183,9 @@ impl GraphicsEngine for ModernSdlGpuBackend {
             command_buffer
                 .submit()
                 .context("SDL_SubmitGPUCommandBuffer (zero size) failed")?;
-            return Ok(());
+            return Ok(true);
         }
+        let stale = (output_width, output_height) != window.size_in_pixels();
 
         let source_size = frame_source.as_ref().map_or(
             self.aspect_mode
@@ -258,19 +259,21 @@ impl GraphicsEngine for ModernSdlGpuBackend {
 
         {
             let render_pass = command_buffer.begin_render_pass(&color_target);
-            render_pass.bind_graphics_pipeline(&state.pipeline);
-            let bindings = [
-                TextureSamplerBinding {
-                    texture: &state.resources.native_target,
-                    sampler: &state.resources.nearest_sampler,
-                },
-                TextureSamplerBinding {
-                    texture: &state.resources.native_target,
-                    sampler: &state.resources.linear_sampler,
-                },
-            ];
-            render_pass.bind_fragment_samplers(0, &bindings);
-            render_pass.draw_primitives(3, 1, 0, 0);
+            if frame_source.is_some() {
+                render_pass.bind_graphics_pipeline(&state.pipeline);
+                let bindings = [
+                    TextureSamplerBinding {
+                        texture: &state.resources.native_target,
+                        sampler: &state.resources.nearest_sampler,
+                    },
+                    TextureSamplerBinding {
+                        texture: &state.resources.native_target,
+                        sampler: &state.resources.linear_sampler,
+                    },
+                ];
+                render_pass.bind_fragment_samplers(0, &bindings);
+                render_pass.draw_primitives(3, 1, 0, 0);
+            }
 
             if let (Some(draw), Some(renderer)) = (&overlay_draw, &state.overlay) {
                 renderer.draw(&render_pass, draw);
@@ -281,11 +284,28 @@ impl GraphicsEngine for ModernSdlGpuBackend {
             .submit()
             .context("SDL_SubmitGPUCommandBuffer failed")?;
 
-        Ok(())
+        Ok(stale)
     }
 
     fn set_scaling(&mut self, scaling: Scaling) {
         self.scaling = scaling;
+    }
+
+    fn set_display_aspect_mode(&mut self, aspect_mode: DisplayAspectMode) {
+        self.aspect_mode = aspect_mode;
+    }
+
+    fn set_large_native_target(&mut self, large_native_target: bool) -> Result<()> {
+        if large_native_target == self.large_native_target {
+            return Ok(());
+        }
+        if let Some(state) = self.state.as_mut() {
+            state.resources.rebuild_native_target(large_native_target)?;
+        }
+        self.large_native_target = large_native_target;
+        let (width, height) = native_target_size(large_native_target);
+        info!("Native target set to {width}x{height}");
+        Ok(())
     }
 }
 

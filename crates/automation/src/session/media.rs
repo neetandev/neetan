@@ -376,14 +376,18 @@ impl AutomationSession {
     }
 
     /// Flushes writable media and printer output, then clears the dirty flags.
+    /// A failed write raises `neetan/io` and keeps the dirty flags.
     ///
     /// Cartridges are deliberately not flushed so a read-only cartridge is never
     /// written back to its baseline.
     pub fn media_flush(&mut self) -> Result<(), OpError> {
         let active = self.active.as_mut().ok_or(OpError::NoMachine)?;
-        active.machine.flush_floppies();
-        active.machine.flush_hdds();
-        active.machine.flush_printer();
+        common::FlushError::combine([
+            active.machine.flush_floppies(),
+            active.machine.flush_hdds(),
+            active.machine.flush_printer(),
+        ])
+        .map_err(|error| OpError::Io(error.to_string()))?;
         for mount in active.mounts.values_mut() {
             mount.dirty = false;
         }
@@ -404,8 +408,10 @@ impl AutomationSession {
     /// Called on every orderly termination path. Cartridges are excluded from the
     /// flush; RAM-backed disks have nothing to write through.
     pub fn flush_and_release_media(&mut self) {
-        if self.has_machine() {
-            let _ = self.media_flush();
+        if self.has_machine()
+            && let Err(error) = self.media_flush()
+        {
+            common::error!("Flushing the media on teardown failed: {error:?}");
         }
         if let Some(active) = self.active.as_mut() {
             active.mounts.clear();

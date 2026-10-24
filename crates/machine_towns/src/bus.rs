@@ -1286,8 +1286,8 @@ impl<T: TraceSink> TownsBus<T> {
     }
 
     /// Flushes all mounted floppies to their backing files.
-    pub(crate) fn flush_floppies(&mut self) {
-        self.fdc.flush_all();
+    pub(crate) fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+        self.fdc.flush_all()
     }
 
     /// Reasserts or clears the SCSI interrupt line (IRQ 8, slave PIC).
@@ -1399,8 +1399,8 @@ impl<T: TraceSink> TownsBus<T> {
     }
 
     /// Flushes all attached hard disks to their backing files.
-    pub(crate) fn flush_hdds(&mut self) {
-        self.scsi.flush();
+    pub(crate) fn flush_hdds(&mut self) -> Result<(), common::FlushError> {
+        self.scsi.flush()
     }
 
     /// Reasserts or clears the shared sound IRQ 13 line (slave IR5). The OPN2 FM

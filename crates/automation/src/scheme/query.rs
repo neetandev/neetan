@@ -3,7 +3,7 @@
 use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
 use machine_factory::config::{
-    EmulatorConfig, resolve_model,
+    EmulatorConfig, MachineSelection,
     settings::{
         ExplicitSettings, MACHINE_KEY, ROMS_FOLDER_KEY, Scope, Setting, ValueKind,
         apply_derived_defaults, find_setting,
@@ -355,29 +355,34 @@ fn parse_specification(
         }
     }
 
-    let mut config = EmulatorConfig::default();
-    let mut explicit = ExplicitSettings::default();
-    if let Err(message) = seed_rom_directories(&mut config, common) {
-        return Ok(Err(("neetan/argument".to_owned(), message)));
-    }
-
-    if let Some(model) = &model_name {
-        if let Err(message) = resolve_model(&mut config, model) {
-            return Ok(Err(("neetan/argument".to_owned(), message)));
-        }
-    } else if let Some(target) = &target_name {
-        match target_from_name(target) {
-            Ok(target) => config.target = target,
+    let model = match (&target_name, &model_name) {
+        (_, Some(model)) => match model.parse::<MachineSelection>() {
+            Ok(model) => model,
             Err(message) => return Ok(Err(("neetan/argument".to_owned(), message))),
+        },
+        (Some(target), None) => match target_from_name(target) {
+            Ok(target) => MachineSelection::default_of(target),
+            Err(message) => return Ok(Err(("neetan/argument".to_owned(), message))),
+        },
+        (None, None) => {
+            return Ok(Err((
+                "neetan/argument".to_owned(),
+                "the machine specification has no target and no model".to_owned(),
+            )));
         }
-    }
+    };
     if let (Some(target), Some(_)) = (&target_name, &model_name)
-        && target_symbol_name(config.target) != target
+        && target_symbol_name(model.target()) != target
     {
         return Ok(Err((
             "neetan/argument".to_owned(),
             format!("target '{target}' and the selected model disagree"),
         )));
+    }
+    let mut config = EmulatorConfig::for_model(model);
+    let mut explicit = ExplicitSettings::default();
+    if let Err(message) = seed_rom_directories(&mut config, common) {
+        return Ok(Err(("neetan/argument".to_owned(), message)));
     }
 
     for (setting, value) in &settings {

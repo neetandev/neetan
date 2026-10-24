@@ -265,7 +265,7 @@ fn mounted_dim_write_through_hits_saved_tracks() {
 
     let pattern = [0x5Au8; 1024];
     assert!(mounted.write_sector_data(0, 0, 0, 2, 3, &pattern));
-    mounted.flush();
+    mounted.flush().expect("flush succeeds");
     assert!(!mounted.is_dirty());
 
     let raw = std::fs::read(&path).unwrap();
@@ -287,7 +287,7 @@ fn mounted_dim_flush_extends_file_for_new_tracks_and_refreshes_offsets() {
     let pattern = [0x99u8; 1024];
     assert!(mounted.write_sector_data(2, 1, 0, 1, 3, &pattern));
     assert!(mounted.is_dirty());
-    mounted.flush();
+    mounted.flush().expect("flush succeeds");
     assert!(!mounted.is_dirty());
 
     // The file now stores tracks 0, 2, and 5.
@@ -298,7 +298,7 @@ fn mounted_dim_flush_extends_file_for_new_tracks_and_refreshes_offsets() {
     // After the reparse the shifted track 5 must still write through in place.
     let pattern = [0x33u8; 1024];
     assert!(mounted.write_sector_data(5, 2, 1, 1, 3, &pattern));
-    mounted.flush();
+    mounted.flush().expect("flush succeeds");
     let raw = std::fs::read(&path).unwrap();
     let track5_offset = 256 + 2 * 8 * 1024;
     assert!(
@@ -383,7 +383,7 @@ fn mounted_xdf_write_through() {
 
     let pattern = [0xCCu8; 1024];
     assert!(mounted.write_sector_data(0, 0, 0, 1, 3, &pattern));
-    mounted.flush();
+    mounted.flush().expect("flush succeeds");
 
     let raw = std::fs::read(&path).unwrap();
     assert!(raw[..1024].iter().all(|&byte| byte == 0xCC));

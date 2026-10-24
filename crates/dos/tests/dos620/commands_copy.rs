@@ -230,7 +230,7 @@ fn copy_multicluster_file_from_floppy_to_formatted_hdd_without_corruption() {
     format_drive_a(&mut machine);
 
     run_command(&mut machine, b"COPY /V C:RAND.BIN A:\\\r");
-    machine.bus.flush_hdd(0);
+    machine.bus.flush_hdd(0).expect("flush succeeds");
 
     let copied = [0x0063, 0x006F, 0x0070, 0x0069, 0x0065, 0x0064]; // "copied"
     assert!(
@@ -273,7 +273,7 @@ fn copy_explicit_destination_path_uses_basename() {
     format_drive_a(&mut machine);
 
     run_command(&mut machine, b"COPY /V C:COPYONE.BIN A:\\TARGET.BIN\r");
-    machine.bus.flush_hdd(0);
+    machine.bus.flush_hdd(0).expect("flush succeeds");
 
     let copied_bytes = extract_root_file(&hdd_path, &destination_name)
         .expect("destination file should be created with the explicit basename");
@@ -308,7 +308,7 @@ fn copy_broken_source_chain_reports_read_error() {
     format_drive_a(&mut machine);
 
     run_command(&mut machine, b"COPY C:BROKEN.BIN A:\\BROKEN.BIN\r");
-    machine.bus.flush_hdd(0);
+    machine.bus.flush_hdd(0).expect("flush succeeds");
 
     let read_error = [
         0x0052, 0x0065, 0x0061, 0x0064, 0x0020, 0x0065, 0x0072, 0x0072, 0x006F, 0x0072,
@@ -464,7 +464,7 @@ fn copy_host_to_dos_multicluster_binary_with_verify() {
     command.extend_from_slice(host_source.to_str().unwrap().as_bytes());
     command.extend_from_slice(b" A:\\HOSTBIN.BIN\r");
     run_command(&mut machine, &command);
-    machine.bus.flush_hdd(0);
+    machine.bus.flush_hdd(0).expect("flush succeeds");
 
     assert!(
         find_string_in_text_vram(&machine.bus, &text_codes("copied")),
@@ -658,7 +658,7 @@ fn copy_host_dir_to_dos_recursive_preserves_tree() {
     command.extend_from_slice(host_root.to_str().unwrap().as_bytes());
     command.extend_from_slice(b" A:\\HOSTTREE\r");
     run_command(&mut machine, &command);
-    machine.bus.flush_hdd(0);
+    machine.bus.flush_hdd(0).expect("flush succeeds");
 
     assert_eq!(
         extract_hard_disk_file(&hard_disk_path, &["HOSTTREE", "MIXED.TXT"]).unwrap(),

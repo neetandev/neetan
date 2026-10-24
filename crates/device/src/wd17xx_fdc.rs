@@ -548,11 +548,10 @@ impl<const PLATFORM: u8> Wd17xxFdc<PLATFORM> {
         self.disk_changed[drive] = true;
     }
 
-    /// Flushes every mounted floppy to its backing file.
-    pub fn flush_all(&mut self) {
-        for drive in self.drives.iter_mut().flatten() {
-            drive.flush();
-        }
+    /// Flushes every mounted floppy to its backing file. Returns the errors
+    /// of the failed writes.
+    pub fn flush_all(&mut self) -> Result<(), common::FlushError> {
+        common::FlushError::combine(self.drives.iter_mut().flatten().map(|drive| drive.flush()))
     }
 
     /// Whether any drive currently holds a floppy.

@@ -1,6 +1,8 @@
 //! The window, the engines and the input devices of the shell that outlive a
 //! session.
 
+use std::path::PathBuf;
+
 use audio_engine::AudioEngine;
 use common::{info, warn};
 use sdl3::{
@@ -10,7 +12,7 @@ use sdl3::{
 use sdl3_backend::{DisplayAspectMode, GraphicsEngine, Scaling};
 
 use crate::{
-    config::{AspectMode, Backend, ScalingMode},
+    config::{AspectMode, Backend, EmulatorConfig, GraphicboardType, ScalingMode},
     gui_host::GuiHost,
 };
 
@@ -20,6 +22,17 @@ const INITIAL_WINDOW_WIDTH: u32 = 1280;
 const INITIAL_WINDOW_HEIGHT_ASPECT_4_BY_3: u32 = 960;
 /// The height of a new window with the 1:1 aspect mode.
 const INITIAL_WINDOW_HEIGHT_ASPECT_1_BY_1: u32 = 800;
+
+/// The smallest width of the window in screen coordinates.
+pub(crate) const MINIMUM_WINDOW_WIDTH: u32 = 960;
+/// The smallest height of the window in screen coordinates.
+pub(crate) const MINIMUM_WINDOW_HEIGHT: u32 = 600;
+
+/// The size of the window of the game manager in screen coordinates.
+pub(crate) const MANAGER_WINDOW_SIZE: (u32, u32) = (1280, 800);
+
+/// The part of the usable display area that a new window fills at most.
+const DISPLAY_FILL: f32 = 0.9;
 
 /// The window, the engines, the gamepad and the GUI host. They stay across
 /// sessions.
@@ -31,8 +44,10 @@ pub(crate) struct Host {
     /// The audio engine. Its consumption rate paces the emulation.
     pub(crate) audio_engine: AudioEngine,
     /// The host of the graphical user interface. `None` when the font did
-    /// not load, which disables the media dialog.
+    /// not load, which disables the media dialog and the game manager.
     pub(crate) gui: Option<GuiHost>,
+    /// The reason the font did not load.
+    pub(crate) gui_error: Option<String>,
     /// The opened gamepad, if one is connected.
     pub(crate) gamepad: Option<Gamepad>,
     /// The SDL3 gamepad subsystem, if it initialized.
@@ -74,6 +89,8 @@ pub(crate) struct HostParts {
     pub(crate) gamepad_subsystem: Option<GamepadSubsystem>,
     /// Whether the window starts in fullscreen mode.
     pub(crate) fullscreen: bool,
+    /// The font file of the user interface.
+    pub(crate) gui_font: PathBuf,
 }
 
 impl Host {
@@ -86,13 +103,19 @@ impl Host {
             audio_engine,
             gamepad_subsystem,
             fullscreen,
+            gui_font,
         } = parts;
         let scale_factor = window.display_scale();
         info!("Window created with scale factor: {scale_factor}");
+        let (gui, gui_error) = match GuiHost::load(&gui_font) {
+            Ok(gui) => (Some(gui), None),
+            Err(message) => (None, Some(message)),
+        };
         Self {
             graphics_engine,
             audio_engine,
-            gui: GuiHost::load(),
+            gui,
+            gui_error,
             gamepad: None,
             gamepad_subsystem,
             window,
@@ -186,7 +209,7 @@ impl Host {
             return true;
         }
         if !self.gui_disabled_reported {
-            warn!("The media dialog is disabled because the GUI font did not load");
+            warn!("The media dialog is unavailable because the GUI font did not load");
             self.gui_disabled_reported = true;
         }
         false
@@ -200,6 +223,31 @@ pub(crate) fn initial_window_size(aspect_mode: AspectMode) -> (u32, u32) {
         AspectMode::Aspect1By1 => INITIAL_WINDOW_HEIGHT_ASPECT_1_BY_1,
     };
     (INITIAL_WINDOW_WIDTH, initial_height)
+}
+
+/// The size of a window of `requested` size on a display with the usable
+/// area `usable`. A window that does not fit shrinks with its aspect ratio
+/// to the fill part of the display, and never below the minimum size.
+pub(crate) fn fit_window_size(requested: (u32, u32), usable: Option<(u32, u32)>) -> (u32, u32) {
+    let Some((usable_width, usable_height)) = usable else {
+        return requested;
+    };
+    let (width, height) = requested;
+    let room_width = usable_width as f32 * DISPLAY_FILL;
+    let room_height = usable_height as f32 * DISPLAY_FILL;
+    let factor = (room_width / width as f32).min(room_height / height as f32);
+    if factor >= 1.0 {
+        return requested;
+    }
+    (
+        ((width as f32 * factor) as u32).max(MINIMUM_WINDOW_WIDTH),
+        ((height as f32 * factor) as u32).max(MINIMUM_WINDOW_HEIGHT),
+    )
+}
+
+/// Whether the frames of the machine of `config` need the large native target.
+pub(crate) fn wants_large_native_target(config: &EmulatorConfig) -> bool {
+    config.graphicboard != GraphicboardType::None || config.target.wants_large_native_surface()
 }
 
 /// The window aspect ratio of `aspect_mode`.
@@ -229,8 +277,39 @@ pub(crate) fn graphics_scaling(mode: ScalingMode) -> Scaling {
 
 #[cfg(test)]
 mod tests {
-    use super::{aspect_ratio_for_mode, initial_window_size};
-    use crate::config::AspectMode;
+    use super::*;
+    use crate::config::test_support::first_model_config;
+
+    /// Verifies that a window shrinks with its aspect ratio to the display and keeps the minimum size.
+    #[test]
+    fn a_window_shrinks_with_its_aspect_ratio_to_fit_the_display() {
+        assert_eq!(fit_window_size((1280, 800), None), (1280, 800));
+        assert_eq!(
+            fit_window_size((1280, 800), Some((2560, 1400))),
+            (1280, 800)
+        );
+        assert_eq!(
+            fit_window_size((1280, 960), Some((1920, 1000))),
+            (1200, 900)
+        );
+        assert_eq!(
+            fit_window_size((1280, 800), Some((800, 500))),
+            (MINIMUM_WINDOW_WIDTH, MINIMUM_WINDOW_HEIGHT)
+        );
+    }
+
+    /// Verifies that a graphics board selects the large native target.
+    #[test]
+    fn a_graphic_board_needs_the_large_native_target() {
+        let config = first_model_config();
+        let large = config.target.wants_large_native_surface();
+        assert_eq!(wants_large_native_target(&config), large);
+        let with_board = EmulatorConfig {
+            graphicboard: GraphicboardType::Ga1280a,
+            ..config
+        };
+        assert!(wants_large_native_target(&with_board));
+    }
 
     #[test]
     fn a_new_window_has_the_locked_aspect_ratio() {

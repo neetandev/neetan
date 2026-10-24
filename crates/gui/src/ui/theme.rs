@@ -96,6 +96,8 @@ pub struct Theme {
     pub text_dim: Color,
     /// The text of disabled widgets and placeholders.
     pub text_disabled: Color,
+    /// The text and icon color of errors.
+    pub danger_text: Color,
     /// The shadow under panels.
     pub shadow: Color,
     /// The icons.
@@ -148,6 +150,7 @@ impl Theme {
             text: Color::hex(0xE9ECF1),
             text_dim: Color::hex(0xA0A7B4),
             text_disabled: Color::hex(0x666D7A),
+            danger_text: Color::hex(0xE8605A),
             shadow: Color::BLACK.with_alpha(0.55),
             icons: Icons::new(fonts),
         }

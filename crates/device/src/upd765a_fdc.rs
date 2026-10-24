@@ -1422,18 +1422,19 @@ impl FloppyController {
         self.fdc_640k.state.drive_write_protected &= !mask;
     }
 
-    /// Flushes the floppy image to its source file.
-    pub fn flush_drive(&mut self, drive: usize) {
-        if let Some(mounted) = self.drives[drive].as_mut() {
-            mounted.flush();
+    /// Flushes the floppy image to its source file. Returns the error of a
+    /// failed write.
+    pub fn flush_drive(&mut self, drive: usize) -> Result<(), common::FlushError> {
+        match self.drives[drive].as_mut() {
+            Some(mounted) => mounted.flush(),
+            None => Ok(()),
         }
     }
 
-    /// Flushes all dirty floppy images to disk.
-    pub fn flush_all_drives(&mut self) {
-        for drive in 0..4 {
-            self.flush_drive(drive);
-        }
+    /// Flushes all dirty floppy images to disk. Returns the errors of the
+    /// failed writes.
+    pub fn flush_all_drives(&mut self) -> Result<(), common::FlushError> {
+        common::FlushError::combine((0..4).map(|drive| self.flush_drive(drive)))
     }
 
     /// Returns a reference to the disk image in the given drive, if present.
@@ -2418,7 +2419,7 @@ mod tests {
 
         let pattern = [0x7Au8; 128];
         assert!(controller.write_sector_data(0, 0, 0, 0, 1, 0, &pattern));
-        controller.flush_all_drives();
+        controller.flush_all_drives().expect("flush succeeds");
 
         let raw = std::fs::read(&path).unwrap();
         let reparsed = FloppyImage::from_d88_bytes(&raw).unwrap();

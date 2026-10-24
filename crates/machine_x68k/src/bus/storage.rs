@@ -200,9 +200,8 @@ impl<T: TraceSink> X68kBus<T> {
     }
 
     /// Flushes every mounted hard disk to its backing file.
-    pub fn flush_hdds(&mut self) {
-        self.hdc.flush();
-        self.spc.flush();
+    pub fn flush_hdds(&mut self) -> Result<(), common::FlushError> {
+        common::FlushError::combine([self.hdc.flush(), self.spc.flush()])
     }
 
     /// Inserts CD-ROM media into the internal SCSI drive at ID 6, raising

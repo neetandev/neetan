@@ -156,7 +156,7 @@ fn d88_writes_flush_back_into_the_source_container() {
     }
 
     run_until_fdc_completion(&mut machine);
-    machine.flush_floppies();
+    machine.flush_floppies().expect("flush succeeds");
 
     let flushed = std::fs::read(&path).unwrap();
     let reloaded = device::floppy::load_floppy_image(&path, &flushed).unwrap();

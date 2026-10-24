@@ -40,7 +40,7 @@ pub use focus::{Navigation, NavigationSet};
 pub use icons::{Icon, Icons};
 pub use label::{Align, Truncation, label};
 pub use list::{ListResponse, ListRow, ListState, list, list_row};
-pub use modal::{ModalResponse, modal};
+pub use modal::{MODAL_HEADER_HEIGHT, ModalResponse, modal};
 pub use tabs::{Tab, tab_bar};
 pub use text_field::{TEXT_FIELD_LIMIT, TextFieldResponse, text_field};
 pub use theme::Theme;

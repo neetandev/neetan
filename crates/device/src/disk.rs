@@ -598,6 +598,10 @@ impl Error for HddError {}
 pub struct MountedHdd {
     image: HddImage,
     backend: Option<DiskBackend>,
+    /// The host file that could not be opened for writing and the reason.
+    unwritable_path: Option<(PathBuf, String)>,
+    /// The error of the last flush. An eject does not log it again.
+    last_flush_error: Option<common::FlushError>,
     dirty: bool,
     read_only: bool,
     identity: save_state::ResourceIdentity,
@@ -652,6 +656,7 @@ impl MountedHdd {
                 &structure,
             ),
         };
+        let mut unwritable_path = None;
         let backend = path.and_then(|p| match DiskBackend::open(p.clone()) {
             Ok(b) => Some(b),
             Err(err) => {
@@ -659,12 +664,15 @@ impl MountedHdd {
                     "Failed to open HDD {} for write-through: {err}",
                     p.display()
                 );
+                unwritable_path = Some((p, err.to_string()));
                 None
             }
         });
         Self {
             image,
             backend,
+            unwritable_path,
+            last_flush_error: None,
             dirty: false,
             read_only: false,
             identity,
@@ -751,35 +759,62 @@ impl MountedHdd {
     /// Re-emits the entire image if dirty. The dirty flag remains set
     /// only when an earlier per-sector write-through reported an error,
     /// so under normal use this is a no-op.
-    pub fn flush_if_dirty(&mut self) {
+    ///
+    /// Returns an error when the changes of a file-backed image could not
+    /// be written. Changes of an image without a host file stay in memory
+    /// and count as written.
+    pub fn flush_if_dirty(&mut self) -> Result<(), common::FlushError> {
         if !self.dirty {
-            return;
+            return Ok(());
         }
         let Some(backend) = self.backend.as_mut() else {
-            return;
+            return match self.unwritable_path.as_ref() {
+                Some((path, reason)) => Err(common::FlushError::new(format!(
+                    "hard disk image {} could not be opened for writing: {reason}. Its changes are lost",
+                    path.display()
+                ))),
+                None => Ok(()),
+            };
         };
         let bytes = self.image.to_bytes();
         if let Err(err) = backend.replace_atomic(&bytes) {
-            error!("HDD eject-time flush failed: {err}");
-            return;
+            return Err(common::FlushError::new(format!(
+                "hard disk image {} could not be written: {err}",
+                backend.path().display()
+            )));
         }
         self.dirty = false;
+        Ok(())
     }
 
     /// Flushes dirty fallback data and any buffered successful writes.
-    pub fn flush(&mut self) {
-        self.flush_if_dirty();
-        if let Some(backend) = self.backend.as_mut()
-            && let Err(err) = backend.flush()
-        {
-            self.dirty = true;
-            error!("HDD flush failed: {err}");
-        }
+    /// Returns the error of a write that failed.
+    pub fn flush(&mut self) -> Result<(), common::FlushError> {
+        let dirty_result = self.flush_if_dirty();
+        let buffered_result = match self.backend.as_mut() {
+            Some(backend) => backend.flush().map_err(|err| {
+                self.dirty = true;
+                common::FlushError::new(format!(
+                    "hard disk image {} could not be written: {err}",
+                    backend.path().display()
+                ))
+            }),
+            None => Ok(()),
+        };
+        let result = common::FlushError::combine([dirty_result, buffered_result]);
+        self.last_flush_error = result.clone().err();
+        result
     }
 
-    /// Flushes pending writes and releases the backend.
+    /// Flushes pending writes and releases the backend. Logs a failed write
+    /// unless the last flush already reported the same error.
     pub fn eject(mut self) {
-        self.flush();
+        let reported = self.last_flush_error.take();
+        if let Err(err) = self.flush()
+            && reported.as_ref() != Some(&err)
+        {
+            error!("HDD eject flush failed: {err}");
+        }
     }
 }
 
@@ -1128,7 +1163,7 @@ mod tests {
 
         let pattern = [0x42u8; 512];
         assert!(mounted.write_sector(7, &pattern));
-        mounted.flush();
+        mounted.flush().expect("flush succeeds");
         drop(mounted);
 
         let raw = std::fs::read(&path).unwrap();
