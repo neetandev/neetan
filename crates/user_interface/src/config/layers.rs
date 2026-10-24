@@ -843,6 +843,23 @@ mod tests {
         assert_eq!(test.error(&["-c", "config/game.conf"]), NO_MACHINE_MESSAGE);
     }
 
+    /// Verifies that the relative paths of the pref path settings file and the default folders resolve against the current directory.
+    #[test]
+    fn the_pref_path_settings_file_resolves_against_the_current_directory() {
+        let test = TestLocations::new("pref_root");
+        let current = test.current().to_path_buf();
+        write_file(
+            &test.pref().join(SETTINGS_FILE_NAME),
+            "gui-font = fonts/ui.ttf\n",
+        );
+        let host =
+            HostLayers::read(&LaunchRequest::default(), &test.locations).expect("settings read");
+        assert_eq!(host.root(), current);
+        assert_eq!(host.config_folder(), current.join("config"));
+        assert_eq!(host.roms_folder(), current.join("roms"));
+        assert_eq!(host.gui_font(), current.join("fonts").join("ui.ttf"));
+    }
+
     /// Verifies that the default GUI font lies below the root when the folder of the executable is unknown.
     #[test]
     fn the_default_gui_font_lies_below_the_root_without_an_executable_folder() {

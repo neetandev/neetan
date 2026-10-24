@@ -117,14 +117,14 @@ impl TestLocations {
         }
     }
 
-    /// Writes `contents` to `name` in the pref path and returns its path.
+    /// Writes `contents` to `name` in the current directory and returns its path.
     pub(crate) fn file(&self, name: &str, contents: &str) -> PathBuf {
-        let path = self.pref().join(name);
+        let path = self.current().join(name);
         write_file(&path, contents);
         path
     }
 
-    /// Parses a settings file in the pref path that holds `contents`, with the
+    /// Parses a settings file in the current directory that holds `contents`, with the
     /// default model of the first compiled system on the command line.
     pub(crate) fn parse_settings(&self, name: &str, contents: &str) -> EmulatorConfig {
         let path = self.file(name, contents);
@@ -132,7 +132,7 @@ impl TestLocations {
         self.parse(&with_first_model(&["--settings", &path_text])).0
     }
 
-    /// Parses a game file in the pref path that holds `contents`.
+    /// Parses a game file in the current directory that holds `contents`.
     pub(crate) fn parse_game(&self, name: &str, contents: &str) -> (EmulatorConfig, KeyOverrides) {
         let path = self.file(name, contents);
         self.parse(&["--config", &path.to_string_lossy()])

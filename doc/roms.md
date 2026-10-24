@@ -26,7 +26,9 @@ merge, split, or rename anything: extract the set(s) for your machine into the
 ROM folder of its system.
 
 Every ROM option defaults to `<roms-folder>/<system>`. The `roms-folder` key
-defaults to `roms` below the root, the folder of the settings file `neetan.conf`.
+defaults to `roms` below the root. The root is the folder of the settings file
+`neetan.conf`. For the settings file of the SDL pref path and without a settings
+file the root is the current directory.
 A ROM set placed in the [default layout](#example-directory-layout) needs no ROM
 option at all. An explicit `--*-roms` option or key overrides the derived folder.
 
