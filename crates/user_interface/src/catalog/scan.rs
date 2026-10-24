@@ -261,8 +261,7 @@ fn read_entry(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
+    use common::temporary::TemporaryFolder;
     use machine_factory::config::systems::compiled_systems;
     #[cfg(feature = "pc98")]
     use machine_factory::config::{EmulatorConfig, model_name};
@@ -272,9 +271,6 @@ mod tests {
         catalog::Catalog,
         config::{LaunchRequest, LineContent, Locations, SETTINGS_FILE_NAME, parse_line},
     };
-
-    /// Counter that keeps the temporary folders of the tests apart.
-    static FOLDER_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     /// A game file with Japanese comments, compact and spaced separators, a
     /// repeated `fdd1`, commented-out keys and no final newline.
@@ -310,36 +306,24 @@ mod tests {
     cargo run --release -- --machine PC9821AP\n";
 
     /// A temporary config folder. Dropping the value removes the folder.
-    struct ConfigFolder(PathBuf);
+    struct ConfigFolder(TemporaryFolder);
 
     impl ConfigFolder {
         /// Creates an empty and unique temporary folder.
         fn new(name: &str) -> Self {
-            let folder = std::env::temp_dir().join(format!(
-                "neetan_catalog_test_{}_{}_{name}",
-                std::process::id(),
-                FOLDER_COUNTER.fetch_add(1, Ordering::Relaxed)
-            ));
-            let _ = std::fs::remove_dir_all(&folder);
-            std::fs::create_dir_all(&folder).expect("temporary folder is created");
-            Self(folder)
+            Self(TemporaryFolder::new(&format!("catalog_test_{name}")))
         }
 
         /// Writes `bytes` into the file `name` below the folder.
         fn write(&self, name: &str, bytes: &[u8]) -> PathBuf {
-            let path = self.0.join(name);
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).expect("folder is created");
-            }
-            std::fs::write(&path, bytes).expect("file is written");
-            path
+            self.0.write_file(name, bytes)
         }
 
         /// Returns the host layers of a settings file in the folder that holds `settings`.
         fn host(&self, settings: &str) -> HostLayers {
             let file = self.write(SETTINGS_FILE_NAME, settings.as_bytes());
             let locations = Locations {
-                current_directory: self.0.clone(),
+                current_directory: self.0.path().to_path_buf(),
                 executable_directory: None,
                 pref_path: None,
             };
@@ -358,12 +342,6 @@ mod tests {
         /// Scans the folder as the root and the config folder with more settings lines.
         fn scan_with(&self, settings: &str) -> Catalog {
             Catalog::scan(&self.host(&format!("config-folder = .\n{settings}")))
-        }
-    }
-
-    impl Drop for ConfigFolder {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 
@@ -475,6 +453,7 @@ mod tests {
                 system.defaults_file,
                 folder
                     .0
+                    .path()
                     .join("absent")
                     .join(format!("{}.conf", system.system.name))
             );
@@ -562,7 +541,10 @@ mod tests {
             .expect("dragon knight is listed");
         assert!(dragon_knight.diagnostics.is_empty());
         assert_eq!(dragon_knight.metadata.title_original, "ドラゴンナイト");
-        assert_eq!(dragon_knight.path, folder.0.join("pc98/dragon_knight.conf"));
+        assert_eq!(
+            dragon_knight.path,
+            folder.0.path().join("pc98/dragon_knight.conf")
+        );
         assert_eq!(dragon_knight.file_name, "dragon_knight.conf");
 
         let ys2 = pc98.find("pc98/ys2.conf").expect("ys2 is listed");
@@ -729,12 +711,12 @@ mod tests {
     #[cfg(feature = "pc98")]
     fn launch(folder: &ConfigFolder, game: &Path) -> crate::Result<EmulatorConfig> {
         let locations = Locations {
-            current_directory: folder.0.clone(),
+            current_directory: folder.0.path().to_path_buf(),
             executable_directory: None,
             pref_path: None,
         };
         let request = LaunchRequest {
-            settings: Some(folder.0.join(SETTINGS_FILE_NAME)),
+            settings: Some(folder.0.path().join(SETTINGS_FILE_NAME)),
             game_files: vec![game.to_path_buf()],
             ..LaunchRequest::default()
         };
@@ -815,7 +797,7 @@ mod tests {
         let pc98 = catalog.system("pc98").expect("pc98 is compiled");
         assert_eq!(pc98.game_count(), 0);
         let entry = &pc98.files_with_errors[0];
-        let defaults_file = folder.0.join("pc98.conf");
+        let defaults_file = folder.0.path().join("pc98.conf");
         assert_eq!(
             entry.first_error().map(ToString::to_string),
             Some(format!(

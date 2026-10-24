@@ -199,40 +199,9 @@ fn rom_sizes(tables: &RomTables) -> [usize; 6] {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        path::PathBuf,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
+    use common::temporary::TemporaryFolder;
 
     use super::*;
-
-    static TEMP_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
-
-    struct TempRomDir {
-        path: PathBuf,
-    }
-
-    impl TempRomDir {
-        fn new(name: &str) -> Self {
-            let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "neetan_towns_rom_{name}_{}_{sequence}",
-                std::process::id()
-            ));
-            std::fs::create_dir_all(&path).expect("create temp ROM dir");
-            Self { path }
-        }
-
-        fn write(&self, file_name: &str, data: &[u8]) {
-            std::fs::write(self.path.join(file_name), data).expect("write temp ROM file");
-        }
-    }
-
-    impl Drop for TempRomDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
-    }
 
     /// Builds a distinct fill pattern per slot so the sliced digests differ.
     fn pattern(size: usize, seed: u8) -> Vec<u8> {
@@ -301,12 +270,12 @@ mod tests {
     #[test]
     fn loads_from_packed_bios_and_serial() {
         let roms = fake_roms();
-        let dir = TempRomDir::new("packed");
-        dir.write("fmtownsiimxbios.m79", &packed(&roms));
-        dir.write("mytownsmx.rom", &roms.serial);
+        let dir = TemporaryFolder::new("towns_rom_packed");
+        dir.write_file("fmtownsiimxbios.m79", &packed(&roms));
+        dir.write_file("mytownsmx.rom", &roms.serial);
 
         let tables = tables_from(&roms);
-        let loaded = load_rom_set_with_tables(&dir.path, &tables).expect("load");
+        let loaded = load_rom_set_with_tables(dir.path(), &tables).expect("load");
         assert_eq!(loaded.dos, roms.dos);
         assert_eq!(loaded.font, roms.font);
         assert_eq!(loaded.system, roms.system);
@@ -318,17 +287,17 @@ mod tests {
     #[test]
     fn loads_from_loose_files() {
         let roms = fake_roms();
-        let dir = TempRomDir::new("loose");
-        dir.write("FMT_DOS.ROM", &roms.dos);
-        dir.write("FMT_FNT.ROM", &roms.font);
-        dir.write("FMT_SYS.ROM", &roms.system);
-        dir.write("FMT_F20.ROM", &roms.f20);
-        dir.write("FMT_DIC.ROM", &roms.dictionary);
-        dir.write("mytownsmx.rom", &roms.serial);
-        dir.write("readme.txt", b"stray");
+        let dir = TemporaryFolder::new("towns_rom_loose");
+        dir.write_file("FMT_DOS.ROM", &roms.dos);
+        dir.write_file("FMT_FNT.ROM", &roms.font);
+        dir.write_file("FMT_SYS.ROM", &roms.system);
+        dir.write_file("FMT_F20.ROM", &roms.f20);
+        dir.write_file("FMT_DIC.ROM", &roms.dictionary);
+        dir.write_file("mytownsmx.rom", &roms.serial);
+        dir.write_file("readme.txt", b"stray");
 
         let tables = tables_from(&roms);
-        let loaded = load_rom_set_with_tables(&dir.path, &tables).expect("load");
+        let loaded = load_rom_set_with_tables(dir.path(), &tables).expect("load");
         assert_eq!(loaded.dos, roms.dos);
         assert_eq!(loaded.system, roms.system);
         assert_eq!(loaded.serial, roms.serial);
@@ -337,11 +306,11 @@ mod tests {
     #[test]
     fn missing_serial_reports_the_serial_slot() {
         let roms = fake_roms();
-        let dir = TempRomDir::new("noserial");
-        dir.write("fmtownsiimxbios.m79", &packed(&roms));
+        let dir = TemporaryFolder::new("towns_rom_noserial");
+        dir.write_file("fmtownsiimxbios.m79", &packed(&roms));
 
         let tables = tables_from(&roms);
-        match load_rom_set_with_tables(&dir.path, &tables) {
+        match load_rom_set_with_tables(dir.path(), &tables) {
             Err(RomError::Missing { label, .. }) => assert_eq!(label, "serial"),
             other => panic!("expected Missing(serial), got {other:?}"),
         }

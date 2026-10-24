@@ -71,6 +71,7 @@ pub fn check_all_folders(host: &HostLayers) -> Vec<RomFolderStatus> {
 
 #[cfg(test)]
 mod tests {
+    use common::temporary::TemporaryFolder;
     use machine_factory::{
         config::{
             settings::find_setting,
@@ -85,10 +86,8 @@ mod tests {
     /// Verifies the folders of the settings file and the command line, and the status of absent folders.
     #[test]
     fn host_layers_name_the_folders() {
-        let root =
-            std::env::temp_dir().join(format!("neetan_rom_folders_test_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("folder is created");
+        let folder = TemporaryFolder::new("rom_folders_test");
+        let root = folder.path().to_path_buf();
         let file = root.join("neetan.conf");
         std::fs::write(
             &file,
@@ -156,6 +155,5 @@ mod tests {
                 status.folder.name
             );
         }
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

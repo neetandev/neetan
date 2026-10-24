@@ -333,6 +333,8 @@ fn assemble_bios(model: MachineModel, index: &RomIndex) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use common::temporary::TemporaryFolder;
+
     use super::*;
 
     #[test]
@@ -442,16 +444,12 @@ mod tests {
 
     #[test]
     fn load_rom_set_ignores_stray_files() {
-        let dir = std::env::temp_dir().join(format!("neetan_pc98_rom_test_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        std::fs::write(dir.join("stray.bin"), vec![0u8; 123]).expect("write stray");
+        let dir = TemporaryFolder::new("pc98_rom_test");
+        dir.write_file("stray.bin", &[0u8; 123]);
 
-        let roms = load_rom_set(MachineModel::PC9801VM, &dir).expect("scan succeeds");
+        let roms = load_rom_set(MachineModel::PC9801VM, dir.path()).expect("scan succeeds");
         assert!(roms.bios.is_none());
         assert!(roms.font.is_none());
         assert!(roms.sound.is_none());
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

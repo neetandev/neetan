@@ -5,9 +5,7 @@
 
 mod harness;
 
-use std::path::PathBuf;
-
-use common::Machine;
+use common::{Machine, temporary::TemporaryFile};
 use device::floppy::{D88Disk, D88MediaType, D88Sector, FloppyImage};
 use harness::build_machine_with;
 use machine_88::Pc8801Machine;
@@ -45,19 +43,6 @@ fn synthetic_2d_image() -> FloppyImage {
     FloppyImage::from_d88(disk)
 }
 
-fn temp_path(suffix: &str) -> PathBuf {
-    let unique = format!(
-        "neetan_pc88_fdc_{}_{}{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-        suffix
-    );
-    std::env::temp_dir().join(unique)
-}
-
 /// Advances the main clock until the FDC asserts RQM, then returns true. Reading
 /// the main status register has no side effects, so it is safe to poll.
 fn wait_for_rqm(machine: &mut Pc8801Machine) -> bool {
@@ -87,12 +72,12 @@ fn mailbox_carries_data_both_directions() {
 #[test]
 fn fdc_reads_mounted_sector_over_pio() {
     let image = synthetic_2d_image();
-    let path = temp_path(".d88");
-    std::fs::write(&path, image.to_bytes()).expect("write temp image");
+    let file = TemporaryFile::new("pc88_fdc", "image.d88", &image.to_bytes());
+    let path = file.path();
 
     let mut machine = build_machine_with(|_| {});
     machine
-        .insert_floppy_from_path(0, &path)
+        .insert_floppy_from_path(0, path)
         .expect("mount synthetic image");
 
     // Drive 0 is a 2D disk; select 2D so the density check matches.
@@ -127,8 +112,6 @@ fn fdc_reads_mounted_sector_over_pio() {
     // After the sector, the FDC enters the result phase with a normal status.
     let st0 = machine.bus.sub_io_read(0xFB).0;
     assert_eq!(st0 & 0xC0, 0x00, "ST0 reports normal termination");
-
-    std::fs::remove_file(&path).ok();
 }
 
 #[test]

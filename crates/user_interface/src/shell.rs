@@ -488,6 +488,7 @@ fn render_session_frame(session: &mut Session, host: &mut Host) {
 
 #[cfg(test)]
 mod tests {
+    use common::temporary::TemporaryFolder;
     use sdl3_backend::DisplayAspectMode;
 
     use super::ShellOptions;
@@ -502,12 +503,8 @@ mod tests {
     /// Returns the host layers of a root folder with a settings file that
     /// holds `settings`. Removes the folder before it returns.
     fn host_layers(name: &str, settings: &str) -> (HostLayers, std::path::PathBuf) {
-        let root = std::env::temp_dir().join(format!(
-            "neetan_shell_options_test_{}_{name}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("root is created");
+        let folder = TemporaryFolder::new(&format!("shell_options_test_{name}"));
+        let root = folder.path().to_path_buf();
         std::fs::write(root.join(SETTINGS_FILE_NAME), settings).expect("settings are written");
         let locations = Locations {
             current_directory: root.clone(),
@@ -515,7 +512,7 @@ mod tests {
             pref_path: None,
         };
         let host = HostLayers::read(&LaunchRequest::default(), &locations).expect("settings read");
-        let _ = std::fs::remove_dir_all(&root);
+        drop(folder);
         (host, root)
     }
 

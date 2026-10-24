@@ -1,24 +1,16 @@
 //! Tests for the `neetan create-hdd` subcommand.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
+use common::temporary::TemporaryFolder;
 use device::disk::{
     HddFormat, HddImage, X68K_SASI_HDF_10MB_BYTES, X68K_SASI_HDF_20MB_BYTES,
     X68K_SASI_HDF_40MB_BYTES, load_hdd_image,
 };
 use user_interface::{config::HddSizeType, create::create_hdd_image};
 
-static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn temp_path(label: &str, extension: &str) -> std::path::PathBuf {
-    let pid = std::process::id();
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("neetan_create_{label}_{pid}_{counter}.{extension}"))
-}
-
 #[test]
 fn creates_raw_scsi_20mb_image() {
-    let path = temp_path("scsi20", "h0");
+    let folder = TemporaryFolder::new("create_scsi20");
+    let path = folder.path().join("scsi20.h0");
     create_hdd_image(&path, HddSizeType::ScsiMb20).expect("create 20 MB SCSI image");
 
     let data = std::fs::read(&path).expect("read created image");
@@ -29,13 +21,12 @@ fn creates_raw_scsi_20mb_image() {
     assert_eq!(image.format, HddFormat::Raw);
     assert_eq!(image.geometry.sector_size, 512);
     assert_eq!(image.geometry.total_sectors() as usize, data.len() / 512);
-
-    std::fs::remove_file(&path).ok();
 }
 
 #[test]
 fn creates_raw_scsi_100mb_image() {
-    let path = temp_path("scsi100", "h1");
+    let folder = TemporaryFolder::new("create_scsi100");
+    let path = folder.path().join("scsi100.h1");
     create_hdd_image(&path, HddSizeType::ScsiMb100).expect("create 100 MB SCSI image");
 
     let data = std::fs::read(&path).expect("read created image");
@@ -44,22 +35,20 @@ fn creates_raw_scsi_100mb_image() {
     let image = load_hdd_image(&path, &data).expect("parse created image");
     assert_eq!(image.format, HddFormat::Raw);
     assert_eq!(image.geometry.total_sectors() as usize, data.len() / 512);
-
-    std::fs::remove_file(&path).ok();
 }
 
 #[test]
 fn scsi_type_rejects_hdi_extension() {
-    let path = temp_path("scsi_wrong_ext", "hdi");
+    let folder = TemporaryFolder::new("create_scsi_wrong_ext");
+    let path = folder.path().join("scsi_wrong_ext.hdi");
     assert!(create_hdd_image(&path, HddSizeType::ScsiMb20).is_err());
-    std::fs::remove_file(&path).ok();
 }
 
 #[test]
 fn sasi_type_rejects_raw_extension() {
-    let path = temp_path("sasi_wrong_ext", "h0");
+    let folder = TemporaryFolder::new("create_sasi_wrong_ext");
+    let path = folder.path().join("sasi_wrong_ext.h0");
     assert!(create_hdd_image(&path, HddSizeType::Mb5).is_err());
-    std::fs::remove_file(&path).ok();
 }
 
 #[test]
@@ -70,7 +59,8 @@ fn creates_x68k_sasi_hdf_images_with_exact_sizes() {
         (HddSizeType::X68kSasiMb40, X68K_SASI_HDF_40MB_BYTES),
     ];
     for (hdd_type, expected_bytes) in cases {
-        let path = temp_path("x68sasi", "hdf");
+        let folder = TemporaryFolder::new("create_x68sasi");
+        let path = folder.path().join("x68sasi.hdf");
         create_hdd_image(&path, hdd_type).expect("create X68000 SASI image");
 
         let data = std::fs::read(&path).expect("read created image");
@@ -79,8 +69,6 @@ fn creates_x68k_sasi_hdf_images_with_exact_sizes() {
         let image = HddImage::from_x68k_sasi(data).expect("parse created image");
         assert_eq!(image.format, HddFormat::Raw);
         assert_eq!(image.geometry.sector_size, 256);
-
-        std::fs::remove_file(&path).ok();
     }
 }
 
@@ -91,7 +79,8 @@ fn creates_x68k_scsi_hdf_images() {
         (HddSizeType::X68kScsiMb40, 40 * 1024 * 1024),
     ];
     for (hdd_type, expected_bytes) in cases {
-        let path = temp_path("x68scsi", "hdf");
+        let folder = TemporaryFolder::new("create_x68scsi");
+        let path = folder.path().join("x68scsi.hdf");
         create_hdd_image(&path, hdd_type).expect("create X68000 SCSI image");
 
         let data = std::fs::read(&path).expect("read created image");
@@ -100,8 +89,6 @@ fn creates_x68k_scsi_hdf_images() {
         let image = HddImage::from_raw_flat(data).expect("parse created image");
         assert_eq!(image.format, HddFormat::Raw);
         assert_eq!(image.geometry.sector_size, 512);
-
-        std::fs::remove_file(&path).ok();
     }
 }
 
@@ -114,7 +101,8 @@ fn creates_at_flat_images_with_derived_geometry() {
         (HddSizeType::AtMb504, 1023),
     ];
     for (hdd_type, expected_cylinders) in cases {
-        let path = temp_path("atflat", "hdd");
+        let folder = TemporaryFolder::new("create_atflat");
+        let path = folder.path().join("atflat.hdd");
         create_hdd_image(&path, hdd_type).expect("create AT flat image");
 
         let data = std::fs::read(&path).expect("read created image");
@@ -126,25 +114,23 @@ fn creates_at_flat_images_with_derived_geometry() {
         assert_eq!(image.geometry.heads, 16);
         assert_eq!(image.geometry.sectors_per_track, 63);
         assert_eq!(image.geometry.sector_size, 512);
-
-        std::fs::remove_file(&path).ok();
     }
 }
 
 #[test]
 fn at_type_rejects_other_extensions() {
-    let path = temp_path("at_wrong_ext", "hdi");
+    let folder = TemporaryFolder::new("create_at_wrong_ext");
+    let path = folder.path().join("at_wrong_ext.hdi");
     assert!(create_hdd_image(&path, HddSizeType::AtMb40).is_err());
-    let path = temp_path("at_wrong_ext", "img");
+    let path = folder.path().join("at_wrong_ext.img");
     assert!(create_hdd_image(&path, HddSizeType::AtMb100).is_err());
-    std::fs::remove_file(&path).ok();
 }
 
 #[test]
 fn x68k_type_rejects_other_extensions() {
-    let path = temp_path("x68_wrong_ext", "hdi");
+    let folder = TemporaryFolder::new("create_x68_wrong_ext");
+    let path = folder.path().join("x68_wrong_ext.hdi");
     assert!(create_hdd_image(&path, HddSizeType::X68kSasiMb10).is_err());
-    let path = temp_path("x68_wrong_ext", "h0");
+    let path = folder.path().join("x68_wrong_ext.h0");
     assert!(create_hdd_image(&path, HddSizeType::X68kScsiMb20).is_err());
-    std::fs::remove_file(&path).ok();
 }

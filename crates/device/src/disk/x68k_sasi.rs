@@ -50,8 +50,10 @@ impl HddImage {
 
 #[cfg(test)]
 mod tests {
+    use common::temporary::TemporaryFile;
+
     use super::*;
-    use crate::disk::{MountedHdd, test_support::tempfile_with};
+    use crate::disk::MountedHdd;
 
     #[test]
     fn sasi_sizes_map_to_drive_geometries() {
@@ -83,7 +85,8 @@ mod tests {
     fn sasi_flushes_headerless_round_trip() {
         let mut data = vec![0u8; X68K_SASI_HDF_10MB_BYTES];
         data[0] = 0x60;
-        let path = tempfile_with(&data, ".hdf");
+        let file = TemporaryFile::new("x68k_sasi_test", "image.hdf", &data);
+        let path = file.path().to_path_buf();
 
         let image = HddImage::from_x68k_sasi(data).unwrap();
         let mut mounted = MountedHdd::new(image, Some(path.clone()));
@@ -96,6 +99,5 @@ mod tests {
         assert_eq!(written[256], 0xA5);
 
         drop(mounted);
-        std::fs::remove_file(&path).ok();
     }
 }

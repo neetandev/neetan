@@ -1,5 +1,6 @@
-use std::{env, fs};
+use std::fs;
 
+use common::temporary::TemporaryFolder;
 use sdl3::surface::Surface;
 use software_renderer::{
     GdcGraphicsInput, GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer,
@@ -111,10 +112,8 @@ fn renders_text_cell_color_and_writes_png() {
     assert_eq!(pixel_at(fb, 1, 0), [0x00, 0x00, 0x00, 0xFF]);
     assert_eq!(pixel_at(fb, 0, 401), [0x00, 0x00, 0x00, 0xFF]);
 
-    let path = env::temp_dir().join(format!(
-        "neetan-software-renderer-{}.png",
-        std::process::id()
-    ));
+    let folder = TemporaryFolder::new("software_renderer");
+    let path = folder.path().join("frame.png");
     SoftwareRenderer::write_png(
         &path,
         fb,
@@ -135,16 +134,12 @@ fn renders_text_cell_color_and_writes_png() {
     );
     let pixels = decoded.to_rgba8().unwrap();
     assert_eq!(&pixels[..4], &[0xFF, 0x00, 0x00, 0xFF]);
-
-    fs::remove_file(path).unwrap();
 }
 
 #[test]
 fn rejects_short_png_framebuffer() {
-    let path = env::temp_dir().join(format!(
-        "neetan-software-renderer-short-{}.png",
-        std::process::id()
-    ));
+    let folder = TemporaryFolder::new("software_renderer_short");
+    let path = folder.path().join("frame.png");
     let error = SoftwareRenderer::write_png(&path, &[0; 7], 2, 1).unwrap_err();
 
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);

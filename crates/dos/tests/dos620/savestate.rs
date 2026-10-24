@@ -1,4 +1,4 @@
-use common::Machine;
+use common::{Machine, temporary::TemporaryFolder};
 
 use crate::harness::*;
 
@@ -149,10 +149,8 @@ fn batch_child_wait_restores_from_an_active_save_point() {
 
 #[test]
 fn hle_dos_active_host_copy_rebinds_its_source() {
-    let source_path = std::env::temp_dir().join(format!(
-        "neetan_savestate_host_copy_{}.bin",
-        std::process::id()
-    ));
+    let source_folder = TemporaryFolder::new("savestate_host_copy");
+    let source_path = source_folder.path().join("source.bin");
     let source_bytes: Vec<u8> = (0..128 * 1024)
         .map(|index| (index as u8).wrapping_mul(37))
         .collect();
@@ -173,6 +171,4 @@ fn hle_dos_active_host_copy_rebinds_its_source() {
     machine.restore_state(&pending).unwrap();
     run_until_prompt(&mut machine);
     assert!(find_row_containing(&machine.bus, "copied").is_some());
-
-    let _ = std::fs::remove_file(source_path);
 }

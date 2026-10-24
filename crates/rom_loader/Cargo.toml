@@ -9,3 +9,6 @@ rust-version.workspace = true
 
 [dependencies]
 blake3.workspace = true
+
+[dev-dependencies]
+common = { workspace = true, features = ["std"] }

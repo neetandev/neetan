@@ -34,6 +34,6 @@ sdl3 = { workspace = true, optional = true }
 
 [dev-dependencies]
 software_renderer = { path = ".", features = ["write_png", "all-machines"] }
-common.workspace = true
+common = { workspace = true, features = ["std"] }
 cpu.workspace = true
 machine_98.workspace = true

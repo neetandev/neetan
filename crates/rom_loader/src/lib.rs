@@ -312,24 +312,15 @@ pub fn blake3_hex(data: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use common::temporary::TemporaryFolder;
+
     use super::*;
 
-    fn write_directory(files: &[(&str, &[u8])]) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "rom_loader_test_{}",
-            blake3_hex(
-                files
-                    .iter()
-                    .map(|(name, _)| *name)
-                    .collect::<String>()
-                    .as_bytes()
-            )
-        ));
-        let _ = std::fs::remove_dir_all(&root);
+    /// Writes `files` into a new temporary folder and returns the folder.
+    fn write_directory(files: &[(&str, &[u8])]) -> TemporaryFolder {
+        let root = TemporaryFolder::new("rom_loader_test");
         for (name, data) in files {
-            let path = root.join(name);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, data).unwrap();
+            root.write_file(name, data);
         }
         root
     }
@@ -343,7 +334,7 @@ mod tests {
     #[test]
     fn empty_accepted_sizes_keeps_every_file() {
         let root = write_directory(&[("a.rom", &[1, 2, 3]), ("b.rom", &[4, 5, 6, 7])]);
-        let index = scan_directory(&root, &ScanOptions::ANY_SIZE).unwrap();
+        let index = scan_directory(root.path(), &ScanOptions::ANY_SIZE).unwrap();
         assert_eq!(index.bytes(&blake3_hex(&[1, 2, 3])), Some(&[1, 2, 3][..]));
         assert_eq!(
             index.bytes(&blake3_hex(&[4, 5, 6, 7])),
@@ -354,7 +345,7 @@ mod tests {
     #[test]
     fn size_filter_drops_unrelated_files() {
         let root = write_directory(&[("a.rom", &[1, 2, 3]), ("stray.txt", &[4, 5, 6, 7])]);
-        let index = scan_directory(&root, &ScanOptions::sizes(&[3])).unwrap();
+        let index = scan_directory(root.path(), &ScanOptions::sizes(&[3])).unwrap();
         assert!(index.bytes(&blake3_hex(&[1, 2, 3])).is_some());
         assert!(index.bytes(&blake3_hex(&[4, 5, 6, 7])).is_none());
     }
@@ -362,11 +353,11 @@ mod tests {
     #[test]
     fn subdirectory_depth_controls_recursion() {
         let root = write_directory(&[("nested/a.rom", &[1, 2, 3])]);
-        let flat = scan_directory(&root, &ScanOptions::sizes(&[3])).unwrap();
+        let flat = scan_directory(root.path(), &ScanOptions::sizes(&[3])).unwrap();
         assert!(flat.bytes(&blake3_hex(&[1, 2, 3])).is_none());
 
         let recursive = scan_directory(
-            &root,
+            root.path(),
             &ScanOptions {
                 accepted_sizes: &[3],
                 subdirectory_depth: 1,
@@ -389,7 +380,7 @@ mod tests {
 
         let root = write_directory(&[("packed.rom", &[1, 2, 3, 4])]);
         let index = scan_directory(
-            &root,
+            root.path(),
             &ScanOptions {
                 accepted_sizes: &[2],
                 subdirectory_depth: 0,

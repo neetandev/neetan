@@ -1,33 +1,20 @@
 #![cfg(feature = "host-capabilities")]
 
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::{cell::RefCell, rc::Rc};
 
+use common::temporary::TemporaryFolder;
 use r7rs::{Engine, EngineConfig, HostIoError, PortResource, Value};
-
-static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 
 fn run(engine: &mut Engine, source: &str) -> Value {
     let module = engine.compile("host-capabilities.scm", source).unwrap();
     engine.eval(&module).unwrap().into_one().unwrap().value()
 }
 
-fn temporary_path(extension: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "r7rs-host-{}-{}.{extension}",
-        std::process::id(),
-        NEXT_PATH.fetch_add(1, Ordering::Relaxed)
-    ))
-}
-
 #[test]
 fn standalone_profile_installs_file_source_process_and_clock_capabilities() {
-    let data = temporary_path("txt");
-    let source = temporary_path("scm");
-    std::fs::write(&source, "(define loaded-value 42)").unwrap();
+    let folder = TemporaryFolder::new("r7rs_host");
+    let data = folder.path().join("data.txt");
+    let source = folder.write_file("source.scm", b"(define loaded-value 42)");
     let mut engine = Engine::new(EngineConfig::standalone()).unwrap();
     let program = format!(
         "(begin
@@ -41,8 +28,6 @@ fn standalone_profile_installs_file_source_process_and_clock_capabilities() {
                0))"
     );
     assert_eq!(run(&mut engine, &program), Value::integer(42));
-    std::fs::remove_file(data).unwrap();
-    std::fs::remove_file(source).unwrap();
 }
 
 /// A textual output resource recording every write and flush, standing in for

@@ -1,6 +1,4 @@
-//! Shared test-only image builders and temp-file helper for the disk modules.
-
-use std::path::PathBuf;
+//! Shared test-only image builders for the disk modules.
 
 use crate::disk::{
     hdi::HDI_HEADER_SIZE,
@@ -71,22 +69,4 @@ pub(crate) fn build_thd_image(cylinders: u16) -> Vec<u8> {
 
     header.extend_from_slice(&data);
     header
-}
-
-/// Writes `bytes` to a uniquely-named file in the system temp directory and
-/// returns its path.
-pub(crate) fn tempfile_with(bytes: &[u8], suffix: &str) -> PathBuf {
-    let dir = std::env::temp_dir();
-    let unique = format!(
-        "neetan_hdd_test_{}_{}{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-        suffix
-    );
-    let path = dir.join(unique);
-    std::fs::write(&path, bytes).expect("write temp file");
-    path
 }

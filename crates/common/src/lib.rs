@@ -26,6 +26,8 @@ mod jis;
 pub mod log;
 mod scheduler;
 mod stack_vec;
+#[cfg(any(test, feature = "std"))]
+pub mod temporary;
 mod text_extractor;
 mod trace;
 #[cfg(feature = "std")]

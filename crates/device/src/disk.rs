@@ -837,10 +837,12 @@ fn hdd_identity_structure(image: &HddImage) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use common::temporary::TemporaryFile;
+
     use super::{
         hdi::HDI_HEADER_SIZE,
         nhd::NHD_HEADER_SIZE,
-        test_support::{build_hdi_image, build_nhd_image, build_thd_image, tempfile_with},
+        test_support::{build_hdi_image, build_nhd_image, build_thd_image},
         thd::{THD_HEADER_SIZE, THD_SECTOR_SIZE},
         *,
     };
@@ -999,7 +1001,8 @@ mod tests {
     #[test]
     fn mounted_hdd_nhd_sector_write_through() {
         let image_bytes = build_nhd_image(50, 4, 17, 512);
-        let path = tempfile_with(&image_bytes, ".nhd");
+        let file = TemporaryFile::new("hdd_test", "image.nhd", &image_bytes);
+        let path = file.path().to_path_buf();
 
         let image = HddImage::from_nhd(&image_bytes).unwrap();
         let mut mounted = MountedHdd::new(image, Some(path.clone()));
@@ -1019,14 +1022,13 @@ mod tests {
             Some(&save_state::MediaSourcePath::from_path(&path))
         );
         drop(remounted);
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn mounted_hdd_hdi_format_track_writes_e5() {
         let image_bytes = build_hdi_image(20, 4, 17, 256);
-        let path = tempfile_with(&image_bytes, ".hdi");
+        let file = TemporaryFile::new("hdd_test", "image.hdi", &image_bytes);
+        let path = file.path().to_path_buf();
 
         let image = HddImage::from_hdi(&image_bytes).unwrap();
         let mut mounted = MountedHdd::new(image, Some(path.clone()));
@@ -1042,14 +1044,13 @@ mod tests {
             raw[track_start..track_end].iter().all(|&b| b == 0xE5),
             "track region should be filled with 0xE5"
         );
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn mounted_hdd_thd_sector_write_through() {
         let image_bytes = build_thd_image(50);
-        let path = tempfile_with(&image_bytes, ".thd");
+        let file = TemporaryFile::new("hdd_test", "image.thd", &image_bytes);
+        let path = file.path().to_path_buf();
 
         let image = HddImage::from_thd(&image_bytes).unwrap();
         let mut mounted = MountedHdd::new(image, Some(path.clone()));
@@ -1064,14 +1065,13 @@ mod tests {
             &raw[offset..offset + THD_SECTOR_SIZE as usize],
             &pattern[..]
         );
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn mounted_hdd_write_sector_preserves_existing_dirty_bit() {
         let image_bytes = build_nhd_image(50, 4, 17, 512);
-        let path = tempfile_with(&image_bytes, ".nhd");
+        let file = TemporaryFile::new("hdd_test", "image.nhd", &image_bytes);
+        let path = file.path().to_path_buf();
 
         let image = HddImage::from_nhd(&image_bytes).unwrap();
         let mut mounted = MountedHdd::new(image, Some(path.clone()));
@@ -1090,13 +1090,13 @@ mod tests {
         );
 
         drop(mounted);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn mounted_hdd_format_track_preserves_existing_dirty_bit() {
         let image_bytes = build_nhd_image(50, 4, 17, 512);
-        let path = tempfile_with(&image_bytes, ".nhd");
+        let file = TemporaryFile::new("hdd_test", "image.nhd", &image_bytes);
+        let path = file.path().to_path_buf();
 
         let image = HddImage::from_nhd(&image_bytes).unwrap();
         let mut mounted = MountedHdd::new(image, Some(path.clone()));
@@ -1114,7 +1114,6 @@ mod tests {
         );
 
         drop(mounted);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1155,7 +1154,8 @@ mod tests {
     #[test]
     fn write_through_backing_persists_to_host_file() {
         let image_bytes = build_nhd_image(50, 4, 17, 512);
-        let path = tempfile_with(&image_bytes, ".nhd");
+        let file = TemporaryFile::new("hdd_test", "image.nhd", &image_bytes);
+        let path = file.path().to_path_buf();
         let image = HddImage::from_nhd(&image_bytes).unwrap();
         let mut mounted =
             mounted_hdd_from_backing(image, common::MediaBacking::WriteThrough(path.clone()));
@@ -1169,7 +1169,5 @@ mod tests {
         let raw = std::fs::read(&path).unwrap();
         let reparsed = HddImage::from_nhd(&raw).unwrap();
         assert_eq!(reparsed.read_sector(7), Some(&pattern[..]));
-
-        std::fs::remove_file(&path).ok();
     }
 }

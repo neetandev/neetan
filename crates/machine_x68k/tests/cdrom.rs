@@ -8,7 +8,7 @@ mod harness;
 #[path = "common/spc.rs"]
 mod spc;
 
-use common::Machine;
+use common::{Machine, temporary::TemporaryFolder};
 use harness::machine;
 use machine_x68k::{X68kMachine, X68kModel};
 use spc::{read_data_in, read_status_and_message, select, send_command};
@@ -29,12 +29,14 @@ const DATA_TRACK_SECTORS: usize = 16;
 /// Sectors in the audio track starting at LBA 16.
 const AUDIO_TRACK_SECTORS: usize = 75;
 
-/// Writes a mixed-mode CUE/BIN disc into a per-test temporary directory and
-/// returns the CUE path. The data track stamps each sector's first byte with
-/// its number plus one; the audio track holds a constant nonzero PCM level.
-fn write_mixed_cd(test_name: &str) -> std::path::PathBuf {
-    let directory = std::env::temp_dir().join(format!("neetan_x68k_cdrom_{test_name}"));
-    std::fs::create_dir_all(&directory).unwrap();
+/// File name of the CUE sheet of the mixed-mode disc.
+const DISC_CUE_FILE_NAME: &str = "disc.cue";
+
+/// Writes a mixed-mode CUE/BIN disc into a new temporary folder and returns the folder. The data
+/// track stamps each sector's first byte with its number plus one. The audio track holds a
+/// constant nonzero PCM level.
+fn write_mixed_cd(test_name: &str) -> TemporaryFolder {
+    let directory = TemporaryFolder::new(&format!("x68k_cdrom_{test_name}"));
     let mut bin = vec![0u8; DATA_TRACK_SECTORS * 2048 + AUDIO_TRACK_SECTORS * 2352];
     for sector in 0..DATA_TRACK_SECTORS {
         bin[sector * 2048] = sector as u8 + 1;
@@ -42,17 +44,18 @@ fn write_mixed_cd(test_name: &str) -> std::path::PathBuf {
     for byte in &mut bin[DATA_TRACK_SECTORS * 2048..] {
         *byte = 0x40;
     }
-    std::fs::write(directory.join("disc.bin"), &bin).unwrap();
+    directory.write_file("disc.bin", &bin);
     let cue = "FILE \"disc.bin\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    INDEX 01 00:00:16\n";
-    let cue_path = directory.join("disc.cue");
-    std::fs::write(&cue_path, cue).unwrap();
-    cue_path
+    directory.write_file(DISC_CUE_FILE_NAME, cue.as_bytes());
+    directory
 }
 
 /// Builds the SUPER machine with the mixed-mode disc inserted at SCSI ID 6.
 fn super_machine_with_cdrom(test_name: &str) -> X68kMachine {
     let mut machine = machine(X68kModel::X68000Super);
-    let description = machine.insert_cdrom(&write_mixed_cd(test_name)).unwrap();
+    let description = machine
+        .insert_cdrom(&write_mixed_cd(test_name).path().join(DISC_CUE_FILE_NAME))
+        .unwrap();
     assert!(!description.is_empty());
     machine
 }
@@ -80,7 +83,11 @@ fn acknowledge_unit_attention(machine: &mut X68kMachine) {
 fn plain_x68000_rejects_cdrom_insertion() {
     let mut machine = machine(X68kModel::X68000);
     let error = machine
-        .insert_cdrom(&write_mixed_cd("sasi_reject"))
+        .insert_cdrom(
+            &write_mixed_cd("sasi_reject")
+                .path()
+                .join(DISC_CUE_FILE_NAME),
+        )
         .unwrap_err();
     assert!(error.contains("CD-ROM"), "{error}");
     machine.eject_cdrom();
@@ -189,7 +196,11 @@ fn eject_and_reinsert_signal_media_change() {
     assert_eq!(sense[12], ASC_MEDIUM_NOT_PRESENT);
 
     machine
-        .insert_cdrom(&write_mixed_cd("media_change"))
+        .insert_cdrom(
+            &write_mixed_cd("media_change")
+                .path()
+                .join(DISC_CUE_FILE_NAME),
+        )
         .unwrap();
     acknowledge_unit_attention(&mut machine);
     select(&mut machine, 6);

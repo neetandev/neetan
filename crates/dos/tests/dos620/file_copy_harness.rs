@@ -1,8 +1,4 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, path::Path};
 
 use common::Bus;
 use device::{
@@ -297,17 +293,6 @@ pub fn create_broken_chain_floppy_with_name(
 
     let d88 = D88Disk::from_tracks("BROKEN".to_string(), false, D88MediaType::Disk2HD, tracks);
     FloppyImage::from_d88(d88)
-}
-
-pub fn make_temp_hdd_path(prefix: &str) -> PathBuf {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time should be after unix epoch");
-    std::env::temp_dir().join(format!(
-        "neetan-{prefix}-{}-{}.nhd",
-        std::process::id(),
-        now.as_nanos()
-    ))
 }
 
 pub fn load_hdd_from_path(path: &Path) -> HddImage {

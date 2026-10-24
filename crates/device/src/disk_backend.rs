@@ -150,41 +150,25 @@ impl std::fmt::Debug for DiskBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use common::temporary::TemporaryFile;
 
-    fn tempfile_with(bytes: &[u8]) -> PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir();
-        let unique = format!(
-            "neetan_disk_backend_test_{}_{}_{}.tmp",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-            counter,
-        );
-        let path = dir.join(unique);
-        std::fs::write(&path, bytes).expect("write temp file");
-        path
-    }
+    use super::*;
 
     #[test]
     fn write_at_persists() {
-        let path = tempfile_with(&[0u8; 1024]);
+        let file = TemporaryFile::new("disk_backend_test", "image.tmp", &[0u8; 1024]);
+        let path = file.path().to_path_buf();
         let mut backend = DiskBackend::open(path.clone()).expect("open");
         backend.write_at(256, &[0xAB, 0xCD, 0xEF]).expect("write");
         backend.flush().expect("flush");
         let raw = std::fs::read(&path).expect("read");
         assert_eq!(&raw[256..259], &[0xAB, 0xCD, 0xEF]);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn replace_atomic_swaps_content() {
-        let path = tempfile_with(b"first content");
+        let file = TemporaryFile::new("disk_backend_test", "image.tmp", b"first content");
+        let path = file.path().to_path_buf();
         let mut backend = DiskBackend::open(path.clone()).expect("open");
         backend
             .replace_atomic(b"second content goes here")
@@ -196,12 +180,12 @@ mod tests {
         backend.flush().expect("flush");
         let raw = std::fs::read(&path).expect("read");
         assert_eq!(&raw[..5], b"THIRD");
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn replace_atomic_does_not_touch_existing_tmp_sibling() {
-        let tmp_seed = tempfile_with(b"seed");
+        let tmp_seed_file = TemporaryFile::new("disk_backend_test", "image.tmp", b"seed");
+        let tmp_seed = tmp_seed_file.path().to_path_buf();
         let path = tmp_seed.with_extension("img");
         std::fs::rename(&tmp_seed, &path).expect("rename seed to image path");
 
@@ -216,21 +200,18 @@ mod tests {
         assert_eq!(raw, b"second content");
         let sibling = std::fs::read(&tmp_sibling).expect("read sibling tmp");
         assert_eq!(sibling, b"keep me");
-
-        std::fs::remove_file(&path).ok();
-        std::fs::remove_file(&tmp_sibling).ok();
     }
 
     #[test]
     fn write_at_returns_error_on_seek_past_end_then_succeeds() {
         // BufWriter+File: writing past current end extends the file.
-        let path = tempfile_with(&[0u8; 16]);
+        let file = TemporaryFile::new("disk_backend_test", "image.tmp", &[0u8; 16]);
+        let path = file.path().to_path_buf();
         let mut backend = DiskBackend::open(path.clone()).expect("open");
         backend.write_at(100, b"x").expect("write past end");
         backend.flush().expect("flush");
         let raw = std::fs::read(&path).expect("read");
         assert!(raw.len() >= 101);
         assert_eq!(raw[100], b'x');
-        std::fs::remove_file(&path).ok();
     }
 }

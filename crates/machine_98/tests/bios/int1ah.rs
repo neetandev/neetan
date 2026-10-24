@@ -1,3 +1,5 @@
+use common::temporary::TemporaryFolder;
+
 use super::{
     TEST_CODE, boot_and_run_f, boot_and_run_ra, boot_and_run_vm, boot_and_run_vx, create_machine_f,
     create_machine_ra, create_machine_vm, create_machine_vx, read_ivt_vector, read_ram_u16,
@@ -526,15 +528,17 @@ fn int1ah_printer_buffer_zero_count_ra() {
 // Printer with attached output - helpers
 // ============================================================================
 
-fn make_temp_printer_file() -> (std::fs::File, std::path::PathBuf) {
-    let path = std::env::temp_dir().join(format!("neetan_printer_test_{}", std::process::id()));
-    let file = std::fs::File::create(&path).expect("failed to create temp file");
-    (file, path)
+/// Creates an empty printer output file inside a new temporary folder.
+fn make_temp_printer_file() -> (std::fs::File, TemporaryFolder) {
+    let folder = TemporaryFolder::new("printer_test");
+    let file = std::fs::File::create(folder.path().join("printer.out"))
+        .expect("failed to create temp file");
+    (file, folder)
 }
 
-fn boot_and_run_printer_f(code: &[u8], budget: u64) -> (machine_98::Pc9801F, std::path::PathBuf) {
+fn boot_and_run_printer_f(code: &[u8], budget: u64) -> (machine_98::Pc9801F, TemporaryFolder) {
     let mut machine = create_machine_f();
-    let (file, path) = make_temp_printer_file();
+    let (file, folder) = make_temp_printer_file();
     machine.bus.attach_printer(file);
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, TEST_CODE, code);
@@ -548,12 +552,12 @@ fn boot_and_run_printer_f(code: &[u8], budget: u64) -> (machine_98::Pc9801F, std
         s
     });
     machine.run_for(budget);
-    (machine, path)
+    (machine, folder)
 }
 
-fn boot_and_run_printer_vm(code: &[u8], budget: u64) -> (machine_98::Pc9801Vm, std::path::PathBuf) {
+fn boot_and_run_printer_vm(code: &[u8], budget: u64) -> (machine_98::Pc9801Vm, TemporaryFolder) {
     let mut machine = create_machine_vm();
-    let (file, path) = make_temp_printer_file();
+    let (file, folder) = make_temp_printer_file();
     machine.bus.attach_printer(file);
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, TEST_CODE, code);
@@ -565,12 +569,12 @@ fn boot_and_run_printer_vm(code: &[u8], budget: u64) -> (machine_98::Pc9801Vm, s
         s
     });
     machine.run_for(budget);
-    (machine, path)
+    (machine, folder)
 }
 
-fn boot_and_run_printer_vx(code: &[u8], budget: u64) -> (machine_98::Pc9801Vx, std::path::PathBuf) {
+fn boot_and_run_printer_vx(code: &[u8], budget: u64) -> (machine_98::Pc9801Vx, TemporaryFolder) {
     let mut machine = create_machine_vx();
-    let (file, path) = make_temp_printer_file();
+    let (file, folder) = make_temp_printer_file();
     machine.bus.attach_printer(file);
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, TEST_CODE, code);
@@ -581,12 +585,12 @@ fn boot_and_run_printer_vx(code: &[u8], budget: u64) -> (machine_98::Pc9801Vx, s
         s
     });
     machine.run_for(budget);
-    (machine, path)
+    (machine, folder)
 }
 
-fn boot_and_run_printer_ra(code: &[u8], budget: u64) -> (machine_98::Pc9801Ra, std::path::PathBuf) {
+fn boot_and_run_printer_ra(code: &[u8], budget: u64) -> (machine_98::Pc9801Ra, TemporaryFolder) {
     let mut machine = create_machine_ra();
-    let (file, path) = make_temp_printer_file();
+    let (file, folder) = make_temp_printer_file();
     machine.bus.attach_printer(file);
     boot_to_halt!(machine);
     write_bytes(&mut machine.bus, TEST_CODE, code);
@@ -599,7 +603,7 @@ fn boot_and_run_printer_ra(code: &[u8], budget: u64) -> (machine_98::Pc9801Ra, s
         s
     });
     machine.run_for(budget);
-    (machine, path)
+    (machine, folder)
 }
 
 // ============================================================================
@@ -615,7 +619,7 @@ fn assert_printer_init_attached(ram: &[u8; 0xA0000]) {
 #[test]
 fn int1ah_printer_init_attached_f() {
     let code = make_int1ah_call_store_ax(0x10);
-    let (machine, _path) = boot_and_run_printer_f(&code, INT1AH_BUDGET);
+    let (machine, _printer_folder) = boot_and_run_printer_f(&code, INT1AH_BUDGET);
     let state = machine.inspection_state();
     assert_printer_init_attached(&state.memory.ram);
 }
@@ -623,7 +627,7 @@ fn int1ah_printer_init_attached_f() {
 #[test]
 fn int1ah_printer_init_attached_vm() {
     let code = make_int1ah_call_store_ax(0x10);
-    let (machine, _path) = boot_and_run_printer_vm(&code, INT1AH_BUDGET);
+    let (machine, _printer_folder) = boot_and_run_printer_vm(&code, INT1AH_BUDGET);
     let state = machine.inspection_state();
     assert_printer_init_attached(&state.memory.ram);
 }
@@ -631,7 +635,7 @@ fn int1ah_printer_init_attached_vm() {
 #[test]
 fn int1ah_printer_init_attached_vx() {
     let code = make_int1ah_call_store_ax(0x10);
-    let (machine, _path) = boot_and_run_printer_vx(&code, INT1AH_BUDGET);
+    let (machine, _printer_folder) = boot_and_run_printer_vx(&code, INT1AH_BUDGET);
     let state = machine.inspection_state();
     assert_printer_init_attached(&state.memory.ram);
 }
@@ -639,7 +643,7 @@ fn int1ah_printer_init_attached_vx() {
 #[test]
 fn int1ah_printer_init_attached_ra() {
     let code = make_int1ah_call_store_ax(0x10);
-    let (machine, _path) = boot_and_run_printer_ra(&code, INT1AH_BUDGET);
+    let (machine, _printer_folder) = boot_and_run_printer_ra(&code, INT1AH_BUDGET);
     let state = machine.inspection_state();
     assert_printer_init_attached(&state.memory.ram);
 }
@@ -657,7 +661,7 @@ fn assert_printer_print_char_attached(ram: &[u8; 0xA0000]) {
 #[test]
 fn int1ah_printer_print_char_attached_f() {
     let code = make_int1ah_call_al_store_ax(0x11, 0x41);
-    let (machine, _path) = boot_and_run_printer_f(&code, INT1AH_BUDGET);
+    let (machine, _printer_folder) = boot_and_run_printer_f(&code, INT1AH_BUDGET);
     let state = machine.inspection_state();
     assert_printer_print_char_attached(&state.memory.ram);
 }
@@ -665,7 +669,7 @@ fn int1ah_printer_print_char_attached_f() {
 #[test]
 fn int1ah_printer_print_char_attached_vm() {
     let code = make_int1ah_call_al_store_ax(0x11, 0x41);
-    let (machine, _path) = boot_and_run_printer_vm(&code, INT1AH_BUDGET);
+    let (machine, _printer_folder) = boot_and_run_printer_vm(&code, INT1AH_BUDGET);
     let state = machine.inspection_state();
     assert_printer_print_char_attached(&state.memory.ram);
 }
@@ -673,7 +677,7 @@ fn int1ah_printer_print_char_attached_vm() {
 #[test]
 fn int1ah_printer_print_char_attached_vx() {
     let code = make_int1ah_call_al_store_ax(0x11, 0x41);
-    let (machine, _path) = boot_and_run_printer_vx(&code, INT1AH_BUDGET);
+    let (machine, _printer_folder) = boot_and_run_printer_vx(&code, INT1AH_BUDGET);
     let state = machine.inspection_state();
     assert_printer_print_char_attached(&state.memory.ram);
 }
@@ -681,7 +685,7 @@ fn int1ah_printer_print_char_attached_vx() {
 #[test]
 fn int1ah_printer_print_char_attached_ra() {
     let code = make_int1ah_call_al_store_ax(0x11, 0x41);
-    let (machine, _path) = boot_and_run_printer_ra(&code, INT1AH_BUDGET);
+    let (machine, _printer_folder) = boot_and_run_printer_ra(&code, INT1AH_BUDGET);
     let state = machine.inspection_state();
     assert_printer_print_char_attached(&state.memory.ram);
 }
@@ -699,7 +703,7 @@ fn assert_printer_status_attached(ram: &[u8; 0xA0000]) {
 #[test]
 fn int1ah_printer_status_attached_f() {
     let code = make_int1ah_call_store_ax(0x12);
-    let (machine, _path) = boot_and_run_printer_f(&code, INT1AH_BUDGET);
+    let (machine, _printer_folder) = boot_and_run_printer_f(&code, INT1AH_BUDGET);
     let state = machine.inspection_state();
     assert_printer_status_attached(&state.memory.ram);
 }
@@ -707,7 +711,7 @@ fn int1ah_printer_status_attached_f() {
 #[test]
 fn int1ah_printer_status_attached_vm() {
     let code = make_int1ah_call_store_ax(0x12);
-    let (machine, _path) = boot_and_run_printer_vm(&code, INT1AH_BUDGET);
+    let (machine, _printer_folder) = boot_and_run_printer_vm(&code, INT1AH_BUDGET);
     let state = machine.inspection_state();
     assert_printer_status_attached(&state.memory.ram);
 }
@@ -715,7 +719,7 @@ fn int1ah_printer_status_attached_vm() {
 #[test]
 fn int1ah_printer_status_attached_vx() {
     let code = make_int1ah_call_store_ax(0x12);
-    let (machine, _path) = boot_and_run_printer_vx(&code, INT1AH_BUDGET);
+    let (machine, _printer_folder) = boot_and_run_printer_vx(&code, INT1AH_BUDGET);
     let state = machine.inspection_state();
     assert_printer_status_attached(&state.memory.ram);
 }
@@ -723,7 +727,7 @@ fn int1ah_printer_status_attached_vx() {
 #[test]
 fn int1ah_printer_status_attached_ra() {
     let code = make_int1ah_call_store_ax(0x12);
-    let (machine, _path) = boot_and_run_printer_ra(&code, INT1AH_BUDGET);
+    let (machine, _printer_folder) = boot_and_run_printer_ra(&code, INT1AH_BUDGET);
     let state = machine.inspection_state();
     assert_printer_status_attached(&state.memory.ram);
 }
@@ -735,7 +739,7 @@ fn int1ah_printer_status_attached_ra() {
 #[test]
 fn int1ah_printer_buffer_attached_f() {
     let code = make_int1ah_print_buffer(3);
-    let (machine, _path) = boot_and_run_printer_f(&code, INT1AH_BUDGET);
+    let (machine, _printer_folder) = boot_and_run_printer_f(&code, INT1AH_BUDGET);
     let state = machine.inspection_state();
     assert_printer_buffer(&state.memory.ram, 0x00, 0);
 }
@@ -743,7 +747,7 @@ fn int1ah_printer_buffer_attached_f() {
 #[test]
 fn int1ah_printer_buffer_attached_vm() {
     let code = make_int1ah_print_buffer(3);
-    let (machine, _path) = boot_and_run_printer_vm(&code, INT1AH_BUDGET);
+    let (machine, _printer_folder) = boot_and_run_printer_vm(&code, INT1AH_BUDGET);
     let state = machine.inspection_state();
     assert_printer_buffer(&state.memory.ram, 0x00, 0);
 }
@@ -751,7 +755,7 @@ fn int1ah_printer_buffer_attached_vm() {
 #[test]
 fn int1ah_printer_buffer_attached_vx() {
     let code = make_int1ah_print_buffer(3);
-    let (machine, _path) = boot_and_run_printer_vx(&code, INT1AH_BUDGET);
+    let (machine, _printer_folder) = boot_and_run_printer_vx(&code, INT1AH_BUDGET);
     let state = machine.inspection_state();
     assert_printer_buffer(&state.memory.ram, 0x00, 0);
 }
@@ -759,7 +763,7 @@ fn int1ah_printer_buffer_attached_vx() {
 #[test]
 fn int1ah_printer_buffer_attached_ra() {
     let code = make_int1ah_print_buffer(3);
-    let (machine, _path) = boot_and_run_printer_ra(&code, INT1AH_BUDGET);
+    let (machine, _printer_folder) = boot_and_run_printer_ra(&code, INT1AH_BUDGET);
     let state = machine.inspection_state();
     assert_printer_buffer(&state.memory.ram, 0x00, 0);
 }

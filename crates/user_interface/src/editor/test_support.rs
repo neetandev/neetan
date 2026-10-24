@@ -1,11 +1,9 @@
 //! Shared helpers of the editor tests: a temporary root folder with a
 //! settings file, system defaults and game files.
 
-use std::{
-    path::PathBuf,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::path::PathBuf;
 
+use common::temporary::TemporaryFolder;
 use machine_factory::config::{
     MachineSelection, Target,
     systems::{System, compiled_systems},
@@ -13,15 +11,14 @@ use machine_factory::config::{
 
 use crate::config::{HostLayers, LaunchRequest, Locations, SETTINGS_FILE_NAME};
 
-/// Counter that keeps the temporary folders of the tests apart.
-static FOLDER_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
 /// A root folder with a settings file. Dropping the value removes it.
 pub(crate) struct EditorRoot {
     /// The root folder.
     pub(crate) root: PathBuf,
     /// The system of the games of the test.
     system: &'static System,
+    /// The temporary folder that holds the root.
+    _folder: TemporaryFolder,
 }
 
 impl EditorRoot {
@@ -42,15 +39,14 @@ impl EditorRoot {
 
     /// Creates the root folder `name` for `system`.
     fn create(name: &str, system: &'static System) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "neetan_editor_test_{}_{}_{name}",
-            std::process::id(),
-            FOLDER_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("root is created");
+        let folder = TemporaryFolder::new(&format!("editor_test_{name}"));
+        let root = folder.path().to_path_buf();
         std::fs::write(root.join(SETTINGS_FILE_NAME), "").expect("settings are written");
-        Self { root, system }
+        Self {
+            root,
+            system,
+            _folder: folder,
+        }
     }
 
     /// The system of the games of the test.
@@ -99,11 +95,5 @@ impl EditorRoot {
             executable_directory: None,
             pref_path: None,
         }
-    }
-}
-
-impl Drop for EditorRoot {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
     }
 }

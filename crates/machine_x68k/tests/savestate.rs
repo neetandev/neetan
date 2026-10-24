@@ -5,7 +5,7 @@ mod harness;
 #[path = "common/spc.rs"]
 mod spc;
 
-use common::Machine;
+use common::{Machine, temporary::TemporaryFile};
 use harness::{
     machine, machine_from_roms, patterned_sasi_hdf, patterned_scsi_hdf, read_byte, test_roms,
     write_byte,
@@ -164,8 +164,8 @@ fn partial_internal_scsi_command_replays_exactly() {
 
 #[test]
 fn partial_floppy_command_replays_exactly() {
-    let path = std::env::temp_dir().join("neetan_x68k_savestate.xdf");
-    std::fs::write(&path, vec![0x5A; 1_261_568]).unwrap();
+    let file = TemporaryFile::new("x68k_savestate", "image.xdf", &vec![0x5A; 1_261_568]);
+    let path = file.path().to_path_buf();
     let mut machine = machine(X68kModel::X68000);
     machine.insert_floppy_from_path(0, &path).unwrap();
     write_byte(&mut machine, 0xE94007, 0x80);
@@ -189,7 +189,6 @@ fn partial_floppy_command_replays_exactly() {
     let actual = finish(&mut machine);
 
     assert_eq!(expected, actual);
-    let _ = std::fs::remove_file(path);
 }
 
 #[test]

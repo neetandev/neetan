@@ -5,7 +5,7 @@
 #[path = "common/harness.rs"]
 mod harness;
 
-use common::{Bus, Machine};
+use common::{Bus, Machine, temporary::TemporaryFile};
 use device::floppy::{D88Disk, D88MediaType, D88Sector, FloppyImage};
 use harness::{byte_write_script, machine, read_byte, scripted_machine, write_byte};
 use machine_x68k::{X68kMachine, X68kModel};
@@ -100,8 +100,8 @@ fn xdf_images_load_by_extension_and_read_through_dma() {
     for (index, byte) in image[..SECTOR_BYTES].iter_mut().enumerate() {
         *byte = index as u8;
     }
-    let path = std::env::temp_dir().join("neetan_fdc_read.xdf");
-    std::fs::write(&path, &image).unwrap();
+    let file = TemporaryFile::new("fdc_read", "image.xdf", &image);
+    let path = file.path().to_path_buf();
 
     let mut machine = transfer_machine(&READ_SECTOR_ONE, true);
     let label = machine.insert_floppy_from_path(0, &path).unwrap();
@@ -119,7 +119,6 @@ fn xdf_images_load_by_extension_and_read_through_dma() {
         );
     }
     assert_eq!(machine.bus.m68000_acknowledge_interrupt(1), 0x40);
-    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
@@ -143,8 +142,12 @@ fn d88_writes_flush_back_into_the_source_container() {
         D88MediaType::Disk2HD,
         vec![Some(vec![sector])],
     );
-    let path = std::env::temp_dir().join("neetan_fdc_write.d88");
-    std::fs::write(&path, FloppyImage::from_d88(disk).to_bytes()).unwrap();
+    let file = TemporaryFile::new(
+        "fdc_write",
+        "image.d88",
+        &FloppyImage::from_d88(disk).to_bytes(),
+    );
+    let path = file.path().to_path_buf();
 
     let mut machine = transfer_machine(&WRITE_SECTOR_ONE, false);
     machine.insert_floppy_from_path(0, &path).unwrap();
@@ -167,15 +170,14 @@ fn d88_writes_flush_back_into_the_source_container() {
             .any(|window| window == payload),
         "the written sector data must reach the source file"
     );
-    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn trait_insert_and_eject_latch_the_disk_change_interrupt() {
     let mut image = vec![0u8; XDF_IMAGE_BYTES];
     image[0] = 0x5A;
-    let path = std::env::temp_dir().join("neetan_fdc_eject.xdf");
-    std::fs::write(&path, &image).unwrap();
+    let file = TemporaryFile::new("fdc_eject", "image.xdf", &image);
+    let path = file.path().to_path_buf();
 
     let mut machine = machine(X68kModel::X68000);
     write_byte(&mut machine, 0xE9C001, 0x0F);
@@ -189,5 +191,4 @@ fn trait_insert_and_eject_latch_the_disk_change_interrupt() {
     assert_eq!(machine.bus.m68000_interrupt_level(), 1);
     assert_eq!(machine.bus.m68000_acknowledge_interrupt(1), 0x41);
     assert_eq!(machine.bus.m68000_interrupt_level(), 0);
-    let _ = std::fs::remove_file(&path);
 }

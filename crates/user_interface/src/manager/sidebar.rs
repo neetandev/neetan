@@ -209,6 +209,7 @@ fn show_rom_line(context: &mut UiContext, area: Rect, entry: &SystemEntry) {
 
 #[cfg(test)]
 mod tests {
+    use common::temporary::TemporaryFolder;
     use gui::ui::LIST_PADDING;
     use machine_factory::config::systems::{SYSTEMS, compiled_systems};
 
@@ -314,15 +315,10 @@ mod tests {
     /// Verifies that the entry of a system checks its ROM folder below the root and shows its folders relative to it.
     #[test]
     fn a_missing_rom_folder_reads_as_missing_or_not_found() {
-        let root = std::env::temp_dir().join(format!(
-            "neetan_manager_sidebar_test_{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("root is created");
-        std::fs::write(root.join(crate::config::SETTINGS_FILE_NAME), "").expect("settings");
+        let root = TemporaryFolder::new("manager_sidebar_test");
+        root.write_file(crate::config::SETTINGS_FILE_NAME, b"");
         let locations = Locations {
-            current_directory: root.clone(),
+            current_directory: root.path().to_path_buf(),
             executable_directory: None,
             pref_path: None,
         };
@@ -344,7 +340,6 @@ mod tests {
             entry.check_roms(&host);
             assert_eq!(entry.rom_status, expected, "{}", system.name);
         }
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Whether a pixel of the area from `left` to `right` and `top` to

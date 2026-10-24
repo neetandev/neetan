@@ -12,18 +12,12 @@
 #[path = "common/harness.rs"]
 mod harness;
 
-use std::{
-    path::PathBuf,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc,
-    },
-    time::Duration,
-};
+use std::{sync::mpsc, time::Duration};
 
 use automation::{
     CommonConfig, MessageProtocol, RunTermination, execute_script, watchdog::CancelHandle,
 };
+use common::temporary::TemporaryFolder;
 use harness::assert_completed_ok;
 
 /// Builds a minimal one-track, one-sector D88 floppy image.
@@ -52,44 +46,33 @@ fn minimal_d88(payload_byte: u8) -> Vec<u8> {
 
 /// A temporary workspace holding a script and its fixtures under one root.
 struct Workspace {
-    dir: PathBuf,
+    dir: TemporaryFolder,
 }
 
 impl Workspace {
     fn new(tag: &str) -> Self {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let unique = format!(
-            "neetan-auto-media-{}-{}-{}",
-            std::process::id(),
-            tag,
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
-        let dir = std::env::temp_dir().join(unique);
-        std::fs::create_dir_all(&dir).expect("create workspace dir");
-        Self { dir }
+        Self {
+            dir: TemporaryFolder::new(&format!("auto_media_{tag}")),
+        }
     }
 
     fn write(&self, name: &str, bytes: &[u8]) {
-        let path = self.dir.join(name);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("create fixture parent");
-        }
-        std::fs::write(path, bytes).expect("write fixture");
+        self.dir.write_file(name, bytes);
     }
 
     fn read(&self, name: &str) -> Vec<u8> {
-        std::fs::read(self.dir.join(name)).expect("read fixture")
+        std::fs::read(self.dir.path().join(name)).expect("read fixture")
     }
 
     fn run(&self, script_name: &str, timeout_seconds: u64) -> RunTermination {
         let mut config = CommonConfig::with_defaults();
         config.timeout_seconds = timeout_seconds;
-        config.artifact_root = Some(self.dir.join("artifacts"));
+        config.artifact_root = Some(self.dir.path().join("artifacts"));
 
         let (sender, receiver) = mpsc::channel();
         let cancel = CancelHandle::new();
         execute_script(
-            self.dir.join(script_name),
+            self.dir.path().join(script_name),
             config,
             Vec::new(),
             sender,
@@ -101,12 +84,6 @@ impl Workspace {
             Some(MessageProtocol::Finished(termination)) => termination.clone(),
             other => panic!("expected a Finished message, got {other:?}"),
         }
-    }
-}
-
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.dir).ok();
     }
 }
 
@@ -185,7 +162,7 @@ fn writable_floppy_stays_byte_identical_on_cancellation() {
 
     let mut config = CommonConfig::with_defaults();
     config.timeout_seconds = 60;
-    config.artifact_root = Some(workspace.dir.join("artifacts"));
+    config.artifact_root = Some(workspace.dir.path().join("artifacts"));
     let (sender, receiver) = mpsc::channel();
     let cancel = CancelHandle::new();
     let requester = cancel.clone();
@@ -194,7 +171,7 @@ fn writable_floppy_stays_byte_identical_on_cancellation() {
         requester.request_cancel();
     });
     execute_script(
-        workspace.dir.join("script.scm"),
+        workspace.dir.path().join("script.scm"),
         config,
         Vec::new(),
         sender,
@@ -300,9 +277,9 @@ fn parent_escape_source_is_rejected() {
 fn symlink_escape_source_is_rejected() {
     let workspace = Workspace::new("symlink");
     // Place a real fixture outside the workspace and a symlink to it inside.
-    let outside = workspace.dir.join("outside.d88");
+    let outside = workspace.dir.path().join("outside.d88");
     std::fs::write(&outside, minimal_d88(0x00)).expect("write outside fixture");
-    let link = workspace.dir.join("scripts");
+    let link = workspace.dir.path().join("scripts");
     std::fs::create_dir_all(&link).ok();
     let script_dir = link;
     // Symlink scripts/link.d88 -> ../outside.d88, then resolve it from the
@@ -324,7 +301,7 @@ fn symlink_escape_source_is_rejected() {
     // Run with the script directory (scripts/) as the read root.
     let mut config = CommonConfig::with_defaults();
     config.timeout_seconds = 60;
-    config.artifact_root = Some(workspace.dir.join("artifacts"));
+    config.artifact_root = Some(workspace.dir.path().join("artifacts"));
     let (sender, receiver) = mpsc::channel();
     execute_script(
         script_dir.join("script.scm"),
