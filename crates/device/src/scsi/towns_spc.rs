@@ -345,16 +345,21 @@ impl TownsScsiController {
     /// Detaches and flushes the drive at the given SCSI ID, if any.
     pub fn eject_drive(&mut self, id: usize) {
         if let Some(Some(disk)) = self.targets.get_mut(id) {
-            disk.flush();
+            if let Err(err) = disk.flush() {
+                common::error!("SCSI eject flush failed: {err}");
+            }
             self.targets[id] = None;
         }
     }
 
-    /// Flushes every attached drive.
-    pub fn flush(&mut self) {
-        for target in self.targets.iter_mut().flatten() {
-            target.flush();
-        }
+    /// Flushes every attached drive. Returns the errors of the failed writes.
+    pub fn flush(&mut self) -> Result<(), common::FlushError> {
+        common::FlushError::combine(
+            self.targets
+                .iter_mut()
+                .flatten()
+                .map(|target| target.flush()),
+        )
     }
 
     /// Whether any drive is attached.

@@ -164,7 +164,8 @@ See the joystick-control table in the API index for the `control` vocabulary.
   zero-based `slot`. Writable fixtures are mounted through a private copy or
   overlay beneath the artifact root, never by their baseline path.
 - `(media-eject! machine type slot)` -> unspecified. Ejects media from a slot.
-- `(media-flush! machine)` -> unspecified. Flushes dirty writable media to disk.
+- `(media-flush! machine)` -> unspecified. Flushes dirty writable media to disk. A
+  failed write raises `neetan/io`.
 - `(media-info machine type slot)` -> media alist or `#f`. Reports `type`,
   `slot`, `format`, `description`, `source`, `private` backing path,
   `write-protected`, and `dirty`; `#f` when the slot is empty.

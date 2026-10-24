@@ -23,12 +23,11 @@ const ISA_16BIT_CYCLES: u32 = 3;
 const ISA_VRAM_CYCLES: u32 = 2;
 
 /// PC/AT machine model. Both variants are i486DX2 parts on the CS4031 board.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AtModel {
     /// i486DX2-50 (25 MHz bus, 50 MHz core).
     At486Dx50,
     /// i486DX2-66 (33 MHz bus, 66 MHz core).
-    #[default]
     At486Dx66,
 }
 

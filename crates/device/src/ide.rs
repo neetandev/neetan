@@ -281,18 +281,19 @@ impl IdeController {
         }
     }
 
-    /// Flushes the HDD image to its source file.
-    pub fn flush_drive(&mut self, drive: usize) {
-        if let Some(mounted) = self.drives[drive].as_mut() {
-            mounted.flush();
+    /// Flushes the HDD image to its source file. Returns the error of a
+    /// failed write.
+    pub fn flush_drive(&mut self, drive: usize) -> Result<(), common::FlushError> {
+        match self.drives[drive].as_mut() {
+            Some(mounted) => mounted.flush(),
+            None => Ok(()),
         }
     }
 
-    /// Flushes all dirty HDD images to disk.
-    pub fn flush_all_drives(&mut self) {
-        for drive in 0..2 {
-            self.flush_drive(drive);
-        }
+    /// Flushes all dirty HDD images to disk. Returns the errors of the
+    /// failed writes.
+    pub fn flush_all_drives(&mut self) -> Result<(), common::FlushError> {
+        common::FlushError::combine((0..2).map(|drive| self.flush_drive(drive)))
     }
 
     /// Executes a BIOS read: reads sectors and writes to memory via closure.

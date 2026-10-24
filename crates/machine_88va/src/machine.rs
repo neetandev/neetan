@@ -383,8 +383,8 @@ impl<T: TraceSink> Pc88VaMachine<T> {
     }
 
     /// Flushes any dirty mounted floppies back to their source files.
-    pub fn flush_floppies(&mut self) {
-        self.bus.flush_floppies();
+    pub fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+        self.bus.flush_floppies()
     }
 
     fn capture_machine_blob(
@@ -646,8 +646,8 @@ impl<T: TraceSink> common::Machine for Pc88VaMachine<T> {
         Pc88VaMachine::eject_floppy(self, drive);
     }
 
-    fn flush_floppies(&mut self) {
-        Pc88VaMachine::flush_floppies(self);
+    fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+        Pc88VaMachine::flush_floppies(self)
     }
 
     fn insert_cdrom(&mut self, _path: &std::path::Path) -> Result<String, String> {

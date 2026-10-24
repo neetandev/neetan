@@ -585,13 +585,13 @@ impl<T: TraceSink> Machine for X68kMachine<T> {
     }
 
     /// Flushes every mounted floppy to its backing file.
-    fn flush_floppies(&mut self) {
-        self.bus.flush_floppies();
+    fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+        self.bus.flush_floppies()
     }
 
     /// Flushes every mounted hard disk to its backing file.
-    fn flush_hdds(&mut self) {
-        self.bus.flush_hdds();
+    fn flush_hdds(&mut self) -> Result<(), common::FlushError> {
+        self.bus.flush_hdds()
     }
 
     fn insert_hdd(
@@ -775,7 +775,7 @@ mod tests {
             machine.insert_floppy_from_path(2, &path).is_err(),
             "the X68000 only installs drives 0 and 1"
         );
-        machine.flush_floppies();
+        machine.flush_floppies().expect("flush succeeds");
         machine.eject_floppy(0);
         let _ = std::fs::remove_file(&path);
     }

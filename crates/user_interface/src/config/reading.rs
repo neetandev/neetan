@@ -5,9 +5,9 @@
 use std::{collections::HashMap, fmt, path::Path};
 
 use machine_factory::config::{
-    EmulatorConfig, Target, resolve_model,
+    EmulatorConfig, MachineSelection, Target,
     settings::{MACHINE_KEY, Scope, Setting, ValueKind, find_setting},
-    systems::{System, system_of},
+    systems::{System, compiled_systems, system_of},
 };
 
 use super::{
@@ -99,16 +99,19 @@ impl Layer {
     }
 }
 
-/// Returns the family that the model `value` belongs to.
-pub(crate) fn machine_target(value: &str) -> Result<Target, String> {
-    let mut config = EmulatorConfig::default();
-    resolve_model(&mut config, value)?;
-    Ok(config.target)
-}
-
 /// Checks a value of `setting` against the settings table.
+///
+/// The value applies to a scratch configuration of a compiled system that
+/// reads the setting. A setting that no compiled system reads checks against
+/// the first compiled system.
 pub fn check_value(setting: &Setting, value: &str) -> Result<(), String> {
-    (setting.apply)(&mut EmulatorConfig::default(), value)
+    let system = compiled_systems()
+        .find(|system| setting.families.intersects(system.family))
+        .or_else(|| compiled_systems().next())
+        .ok_or_else(|| "no system is compiled".to_owned())?;
+    let model = MachineSelection::of_system(system)
+        .ok_or_else(|| format!("the system {} is not compiled", system.name))?;
+    (setting.apply)(&mut EmulatorConfig::for_model(model), value)
 }
 
 /// How much a diagnostic affects a configuration file.
@@ -233,7 +236,7 @@ pub(crate) fn read_document(
             diagnostics.push(Diagnostic::warning(line, out_of_scope_message(setting)));
             continue;
         }
-        if setting.key == MACHINE_KEY && machine_target(value).is_err() {
+        if setting.key == MACHINE_KEY && value.parse::<MachineSelection>().is_err() {
             let message = format!("unknown machine {value}");
             diagnostics.push(match kind {
                 LayerKind::GameFile => Diagnostic::error(line, message),
@@ -285,7 +288,9 @@ pub(crate) fn read_game_document(
             LayerLine::Setting(..) | LayerLine::KeyBinding(..) => None,
         });
     if let (Some(system), Some((line, value))) = (folder_system, last_machine)
-        && machine_target(value).is_ok_and(|target| system_of(target) != system)
+        && value
+            .parse::<MachineSelection>()
+            .is_ok_and(|model| system_of(model.target()) != system)
     {
         let diagnostic = Diagnostic::error(line, foreign_machine_message(value));
         reading.diagnostics.push(diagnostic);
@@ -298,7 +303,9 @@ pub(crate) fn read_game_document(
 
 /// Returns whether the machine `value` names another family than `target`.
 pub(crate) fn is_foreign_machine(value: &str, target: Target) -> bool {
-    !machine_target(value).is_ok_and(|family| family == target)
+    !value
+        .parse::<MachineSelection>()
+        .is_ok_and(|model| model.target() == target)
 }
 
 /// Returns the message of a line whose scope the layer does not set.

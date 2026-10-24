@@ -10,7 +10,11 @@ use sdl3::{
 };
 use sdl3_backend::{DisplayAspectMode, GraphicsEngine, LegacySdlBackend, ModernSdlGpuBackend};
 
-use crate::{GAME_NAME, Result, config::Backend};
+use crate::{
+    GAME_NAME, Result,
+    config::Backend,
+    host::{MINIMUM_WINDOW_HEIGHT, MINIMUM_WINDOW_WIDTH},
+};
 
 /// The SDL3 context and its subsystems.
 pub(super) struct SdlSubsystems {
@@ -87,7 +91,7 @@ pub(super) fn print_system_info() {
     info!("System has {system_ram_mib} MiB");
 }
 
-/// Builds the hidden, resizable and centered window.
+/// Builds the hidden, resizable and centered window with the minimum size.
 pub(super) fn build_window(
     video_subsystem: &VideoSubsystem,
     initial_width: u32,
@@ -108,6 +112,11 @@ pub(super) fn build_window(
     let window = builder
         .build()
         .context("Failed to create window with SDL3")?;
+    if let Err(error) = window.set_minimum_size(MINIMUM_WINDOW_WIDTH, MINIMUM_WINDOW_HEIGHT) {
+        warn!(
+            "Failed to set the minimum window size {MINIMUM_WINDOW_WIDTH} x {MINIMUM_WINDOW_HEIGHT}: {error}"
+        );
+    }
 
     Ok(window)
 }

@@ -2,11 +2,11 @@
 
 use std::{cell::RefCell, rc::Rc, time::Instant};
 
-use common::{JoystickState, Machine, MediaBacking, MediaImage};
+use common::{FlushError, JoystickState, Machine, MediaBacking, MediaImage};
 
-use super::Session;
+use super::{LaunchOrigin, Session};
 use crate::{
-    config::{EmulatorConfig, ScalingMode},
+    config::{ScalingMode, test_support::first_model_config},
     input::{KeyOverrides, KeyboardForwardingState},
 };
 
@@ -23,6 +23,10 @@ pub(super) struct FakeMachine {
     pub(super) panic_on_floppy_flush: bool,
     /// Whether reading the frame panics.
     pub(super) panic_on_framebuffer: bool,
+    /// The error of the flush of the hard disks.
+    pub(super) hard_disk_flush_error: Option<&'static str>,
+    /// The error of the flush of the floppy disks.
+    pub(super) floppy_flush_error: Option<&'static str>,
 }
 
 impl Machine for FakeMachine {
@@ -64,27 +68,37 @@ impl Machine for FakeMachine {
 
     fn eject_floppy(&mut self, _drive: usize) {}
 
-    fn flush_floppies(&mut self) {
+    fn flush_floppies(&mut self) -> Result<(), FlushError> {
         self.log.borrow_mut().push("floppies");
         assert!(!self.panic_on_floppy_flush, "the floppy image is gone");
+        match self.floppy_flush_error {
+            Some(message) => Err(FlushError::new(message)),
+            None => Ok(()),
+        }
     }
 
-    fn flush_hdds(&mut self) {
+    fn flush_hdds(&mut self) -> Result<(), FlushError> {
         self.log.borrow_mut().push("hard disks");
+        match self.hard_disk_flush_error {
+            Some(message) => Err(FlushError::new(message)),
+            None => Ok(()),
+        }
     }
 
-    fn flush_cartridges(&mut self) {
+    fn flush_cartridges(&mut self) -> Result<(), FlushError> {
         self.log.borrow_mut().push("cartridges");
+        Ok(())
     }
 
-    fn flush_printer(&mut self) {
+    fn flush_printer(&mut self) -> Result<(), FlushError> {
         self.log.borrow_mut().push("printer");
+        Ok(())
     }
 }
 
 /// A session over `machine` without media.
 pub(super) fn session_with(machine: FakeMachine) -> Session {
-    let config = EmulatorConfig::default();
+    let config = first_model_config();
     Session {
         machine: Box::new(machine),
         runtime_snapshot: None,
@@ -115,6 +129,9 @@ pub(super) fn session_with(machine: FakeMachine) -> Session {
         fast_forward: false,
         last_emulation_tick: Instant::now(),
         exit: None,
+        origin: LaunchOrigin::Manager,
+        media_flushed: false,
+        earlier_flush_errors: Vec::new(),
         config,
     }
 }
@@ -126,5 +143,7 @@ pub(super) fn fake_machine(log: &CallLog) -> FakeMachine {
         framebuffer: vec![0; 8],
         panic_on_floppy_flush: false,
         panic_on_framebuffer: false,
+        hard_disk_flush_error: None,
+        floppy_flush_error: None,
     }
 }

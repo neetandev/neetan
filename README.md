@@ -55,14 +55,35 @@ and platform-specific flags.
 | [Fujitsu FM-7](doc/machine-fm7.md)             | FM-7, FM-77AV                                                              | Real ROM set required    |
 | [IBM PC/AT (DOS/V)](doc/machine-at.md)         | AT 486DX2-50, AT 486DX2-66                                                 | Real ROM set required    |
 
-The default machine is `PC9801RA`. Games of the PC-98 normally do not require any ROM
-files. The other families need a real ROM set. See [ROMs](doc/roms.md) for details.
+Each system has a default model, for example `PC9801RA` for the PC-98. Games of the
+PC-98 normally do not require any ROM files. The other families need a real ROM set.
+See [ROMs](doc/roms.md) for details.
 
 ## Usage
 
 ```bash
 neetan [OPTIONS]
 neetan <COMMAND>
+```
+
+### Startup
+
+`neetan` without arguments opens the game manager. The manager lists the game files
+of every system below the config folder and starts the selected game in the same
+window. A game file that fails to parse shows dimmed with its first error and does
+not start.
+
+A `--machine` option or a `--config` file starts the game directly. A media option
+such as `--fdd1`, `--cdrom` or `--cartridge` needs `--machine` or `--config`. Host
+options such as `--settings`, `--roms-folder` or `--window-mode` alone open the
+manager with these settings. A `machine` key in the settings file does not start a
+game.
+
+```bash
+neetan                                        # opens the game manager
+neetan --settings ~/neetan/neetan.conf        # opens the game manager of that root
+neetan --config config/pc98/albatross.conf    # starts the game directly
+neetan --machine PC9801RA --fdd1 disk.d88     # starts the machine directly
 ```
 
 ### Options
@@ -80,67 +101,72 @@ except `--config`, `--settings`, `--help` and `--version` has a configuration fi
 key of the same name. A relative path in an option resolves against the current
 directory.
 
-| Option                         | System                                                            | Description                                                                                      | Default           |
-|--------------------------------|-------------------------------------------------------------------|--------------------------------------------------------------------------------------------------|-------------------|
-| `-c, --config <PATH>`          | All                                                               | Load a game file (repeatable)                                                                    | -                 |
-| `--settings <PATH>`            | All                                                               | Load this settings file. Its folder is the root                                                  | discovered        |
-| `--config-folder <PATH>`       | All                                                               | Folder of the system defaults and the game files                                                 | `config`          |
-| `--roms-folder <PATH>`         | All                                                               | Folder of the ROM folders of every system                                                        | `roms`            |
-| `--machine <TYPE>`             | All                                                               | Machine type (see the list of values below the table)                                            | `PC9801RA`        |
-| `--cpu-mode <MODE>`            | PC-98, PC-88, FM Towns, X68000, PC/AT                             | CPU speed mode: `low` or `high`                                                                  | `high`            |
-| `--boot-mode <MODE>`           | PC-88, FM-7                                                       | Boot mode; PC-88: `v1s`, `v1h`, `v2`, `n`, `n80`, `n80sr`; FM-7: `basic`, `dos`                  | `v2` / `basic`    |
-| `--monitor <MODE>`             | PC-88, X1                                                         | Monitor timing: `auto`, `15k`, `24k`                                                             | `auto`            |
-| `--pc88-memory-wait <MODE>`    | PC-88                                                             | Memory wait: `fast` or `compatible`                                                              | derives from mode |
-| `--pc88-8mhz-wait <MODE>`      | PC-88                                                             | 8 MHz wait: `fast` or `compatible`                                                               | `fast`            |
-| `--pc88-roms <PATH>`           | PC-88                                                             | Directory with the PC-8801MC ROM set (required for `PC8801MC`)                                   | `roms/pc88`       |
-| `--pc88va-roms <PATH>`         | PC-88VA                                                           | Directory with the PC-88VA2 ROM set (required for `PC88VA2`)                                     | `roms/pc88va`     |
-| `--pc6000-roms <PATH>`         | PC-6000                                                           | Directory with the PC-6000 ROM set (required for the PC-6000 targets)                            | `roms/pc6000`     |
-| `--pc6000-phase <0-3>`         | PC-6000                                                           | Initial composite artifact-color phase; swaps the fake-color pair Mode 4 titles rely on.         | `0`               |
-| `--msx-roms <PATH>`            | MSX                                                               | Directory with the MSX machine and FS-CA1 ROM sets                                               | `roms/msx`        |
-| `--towns-roms <PATH>`          | FM Towns                                                          | Directory with the FM Towns ROM set (required for the FM Towns targets)                          | `roms/towns`      |
-| `--towns-pad <2\|6>`           | FM Towns                                                          | FM Towns game pad type: `2` (2-button) or `6` (6-button)                                         | `6`               |
-| `--x68k-roms <PATH>`           | X68000                                                            | Directory with the selected X68000 model ROM set                                                 | `roms/x68k`       |
-| `--x1-roms <PATH>`             | X1                                                                | Directory with the Sharp X1 ROM set (required for the X1 targets)                                | `roms/x1`         |
-| `--x1-keyboard <A\|B>`         | X1                                                                | X1 turbo keyboard mode switch: `A` (standard) or `B` (game-key matrix, mode-B kana layout)       | `A`               |
-| `--fm7-roms <PATH>`            | FM-7                                                              | Directory with the FM-7 / FM-77AV ROM set (required for the FM-7 targets)                        | `roms/fm7`        |
-| `--at-roms <PATH>`             | PC/AT                                                             | Directory with the PC/AT ROM set, matched by content hash. All ROMs optional                     | `roms/at`         |
-| `--fdd1 <PATH>`                | All                                                               | Floppy disk image for drive 1 (repeatable)                                                       | -                 |
-| `--fdd2 <PATH>`                | PC-98, PC-88, PC-88VA, PC-6000, FM Towns, X68000, X1, FM-7, PC/AT | Floppy disk image for drive 2 (repeatable)                                                       | -                 |
-| `--hdd1 <PATH>`                | PC-98, FM Towns, X68000, PC/AT                                    | Hard disk image for hard disk drive 1                                                            | -                 |
-| `--hdd2 <PATH>`                | PC-98, FM Towns, X68000, PC/AT                                    | Hard disk image for hard disk drive 2                                                            | -                 |
-| `--cdrom <PATH>`               | PC-9821, PC-88, PC/AT, FM Towns, X68000                           | CD-ROM disc image .cue or .ccd file (repeatable)                                                 | -                 |
-| `--cdrom-compat [on\|off]`     | FM Towns                                                          | Slow/compatible CD-ROM drive timing                                                              | `off`             |
-| `--cartridge <PATH>`           | PC-6000, MSX                                                      | One cartridge ROM image to insert; MSX mapper selection is automatic                             | -                 |
-| `--cassette <PATH>`            | PC-6000, MSX, X1, FM-7                                            | Cassette tape image (`MSX .cas`; PC-6000 `.cas`/`.p6`/`.p6t`; X1 `.tap`; FM-7 `.t77`)            | -                 |
-| `--audio-volume <FLOAT>`       | All                                                               | Audio volume 0.0-1.0                                                                             | `1.0`             |
-| `--aspect-mode <MODE>`         | All                                                               | Display aspect mode: `4:3` or `1:1`                                                              | `4:3`             |
-| `--crt [on\|off]`              | All                                                               | Enable the CRT effect. Not available when using the legacy backend.                              | `on`              |
-| `--scaling <MODE>`             | All                                                               | Scaling method: `nearest`, `bilinear`, `pixelart`                                                | `pixelart`        |
-| `--backend <BACKEND>`          | All                                                               | Rendering backend: `modern` or `legacy`                                                          | `modern`          |
-| `--window-mode <MODE>`         | All                                                               | Window mode: `windowed` or `fullscreen`                                                          | `windowed`        |
-| `--force-gdc-clock <2.5\|5>`   | PC-98                                                             | Force GDC clock to 2.5 or 5 MHz. VX and later only                                               | auto              |
-| `--graphicboard <TYPE>`        | PC-98                                                             | Graphics accelerator board: `none`, `ga1280a`                                                    | `none`            |
-| `--pc98-roms <PATH>`           | PC-98                                                             | Directory with the PC-98 ROM set (BIOS, font, sound), matched by content hash. All ROMs optional | `roms/pc98`       |
-| `--bios [on\|off]`             | PC-98, PC/AT                                                      | Boot the real BIOS from `--pc98-roms` / `--at-roms` instead of the HLE BIOS. Ignored on PC-9821  | HLE BIOS          |
-| `--soundboard <TYPE>`          | PC-98                                                             | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`                             | `86+26k`          |
-| `--adpcm-ram [on\|off]`        | PC-98                                                             | ADPCM RAM option for the PC-9801-86                                                              | `on`              |
-| `--ems [on\|off]`              | PC-98                                                             | Enable EMS expanded memory                                                                       | `on`              |
-| `--xms [on\|off]`              | PC-98                                                             | Enable XMS extended memory                                                                       | `on`              |
-| `--midi <DEVICE>`              | PC-98, PC/AT, FM Towns, X68000                                    | MIDI device: `none`, `mt32`, `sc55`                                                              | `none`            |
-| `--mt32-roms <PATH>`           | PC-98, PC/AT, FM Towns, X68000                                    | Path to MT-32 ROM directory (requires `mt32` feature)                                            | `roms/mt32`       |
-| `--sc55-roms <PATH>`           | PC-98, PC/AT, FM Towns, X68000                                    | Path to SC-55 ROM directory (requires `sc55` feature)                                            | `roms/sc55`       |
-| `--boot-device <DEVICE>`       | PC-98, FM Towns, PC/AT                                            | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `dos`                                       | `auto`            |
-| `--printer <PATH>`             | PC-98                                                             | Output file for printer (must exist)                                                             | -                 |
-| `--enable-extractor [on\|off]` | PC-98                                                             | Copy on-screen Japanese text to the system clipboard, one line at a time                         | off               |
-| `--debug-bios <PATH>`          | PC-98                                                             | PC-98 BIOS ROM image for hardware test programs. Excludes `--bios`                               | -                 |
-| `-h, --help`                   | All                                                               | Print help                                                                                       | -                 |
-| `-V, --version`                | All                                                               | Print version                                                                                    | -                 |
+| Option                         | System                                                            | Description                                                                                      | Default                      |
+|--------------------------------|-------------------------------------------------------------------|--------------------------------------------------------------------------------------------------|------------------------------|
+| `-c, --config <PATH>`          | All                                                               | Load a game file (repeatable)                                                                    | -                            |
+| `--settings <PATH>`            | All                                                               | Load this settings file. Its folder is the root                                                  | discovered                   |
+| `--config-folder <PATH>`       | All                                                               | Folder of the system defaults and the game files                                                 | `config`                     |
+| `--roms-folder <PATH>`         | All                                                               | Folder of the ROM folders of every system                                                        | `roms`                       |
+| `--gui-font <PATH>`            | All                                                               | Font file of the user interface                                                                  | `font/SarasaUiJ-Regular.ttf` |
+| `--machine <TYPE>`             | All                                                               | Machine type (see the list of values below the table). Starts the game directly                  | per system                   |
+| `--cpu-mode <MODE>`            | PC-98, PC-88, FM Towns, X68000, PC/AT                             | CPU speed mode: `low` or `high`                                                                  | `high`                       |
+| `--boot-mode <MODE>`           | PC-88, FM-7                                                       | Boot mode; PC-88: `v1s`, `v1h`, `v2`, `n`, `n80`, `n80sr`; FM-7: `basic`, `dos`                  | `v2` / `basic`               |
+| `--monitor <MODE>`             | PC-88, X1                                                         | Monitor timing: `auto`, `15k`, `24k`                                                             | `auto`                       |
+| `--pc88-memory-wait <MODE>`    | PC-88                                                             | Memory wait: `fast` or `compatible`                                                              | derives from mode            |
+| `--pc88-8mhz-wait <MODE>`      | PC-88                                                             | 8 MHz wait: `fast` or `compatible`                                                               | `fast`                       |
+| `--pc88-roms <PATH>`           | PC-88                                                             | Directory with the PC-8801MC ROM set (required for `PC8801MC`)                                   | `roms/pc88`                  |
+| `--pc88va-roms <PATH>`         | PC-88VA                                                           | Directory with the PC-88VA2 ROM set (required for `PC88VA2`)                                     | `roms/pc88va`                |
+| `--pc6000-roms <PATH>`         | PC-6000                                                           | Directory with the PC-6000 ROM set (required for the PC-6000 targets)                            | `roms/pc6000`                |
+| `--pc6000-phase <0-3>`         | PC-6000                                                           | Initial composite artifact-color phase; swaps the fake-color pair Mode 4 titles rely on.         | `0`                          |
+| `--msx-roms <PATH>`            | MSX                                                               | Directory with the MSX machine and FS-CA1 ROM sets                                               | `roms/msx`                   |
+| `--towns-roms <PATH>`          | FM Towns                                                          | Directory with the FM Towns ROM set (required for the FM Towns targets)                          | `roms/towns`                 |
+| `--towns-pad <2\|6>`           | FM Towns                                                          | FM Towns game pad type: `2` (2-button) or `6` (6-button)                                         | `6`                          |
+| `--x68k-roms <PATH>`           | X68000                                                            | Directory with the selected X68000 model ROM set                                                 | `roms/x68k`                  |
+| `--x1-roms <PATH>`             | X1                                                                | Directory with the Sharp X1 ROM set (required for the X1 targets)                                | `roms/x1`                    |
+| `--x1-keyboard <A\|B>`         | X1                                                                | X1 turbo keyboard mode switch: `A` (standard) or `B` (game-key matrix, mode-B kana layout)       | `A`                          |
+| `--fm7-roms <PATH>`            | FM-7                                                              | Directory with the FM-7 / FM-77AV ROM set (required for the FM-7 targets)                        | `roms/fm7`                   |
+| `--at-roms <PATH>`             | PC/AT                                                             | Directory with the PC/AT ROM set, matched by content hash. All ROMs optional                     | `roms/at`                    |
+| `--fdd1 <PATH>`                | All                                                               | Floppy disk image for drive 1 (repeatable)                                                       | -                            |
+| `--fdd2 <PATH>`                | PC-98, PC-88, PC-88VA, PC-6000, FM Towns, X68000, X1, FM-7, PC/AT | Floppy disk image for drive 2 (repeatable)                                                       | -                            |
+| `--hdd1 <PATH>`                | PC-98, FM Towns, X68000, PC/AT                                    | Hard disk image for hard disk drive 1                                                            | -                            |
+| `--hdd2 <PATH>`                | PC-98, FM Towns, X68000, PC/AT                                    | Hard disk image for hard disk drive 2                                                            | -                            |
+| `--cdrom <PATH>`               | PC-9821, PC-88, PC/AT, FM Towns, X68000                           | CD-ROM disc image .cue or .ccd file (repeatable)                                                 | -                            |
+| `--cdrom-compat [on\|off]`     | FM Towns                                                          | Slow/compatible CD-ROM drive timing                                                              | `off`                        |
+| `--cartridge <PATH>`           | PC-6000, MSX                                                      | One cartridge ROM image to insert; MSX mapper selection is automatic                             | -                            |
+| `--cassette <PATH>`            | PC-6000, MSX, X1, FM-7                                            | Cassette tape image (`MSX .cas`; PC-6000 `.cas`/`.p6`/`.p6t`; X1 `.tap`; FM-7 `.t77`)            | -                            |
+| `--audio-volume <FLOAT>`       | All                                                               | Audio volume 0.0-1.0                                                                             | `1.0`                        |
+| `--aspect-mode <MODE>`         | All                                                               | Display aspect mode: `4:3` or `1:1`                                                              | `4:3`                        |
+| `--crt [on\|off]`              | All                                                               | Enable the CRT effect. Not available when using the legacy backend.                              | `on`                         |
+| `--scaling <MODE>`             | All                                                               | Scaling method: `nearest`, `bilinear`, `pixelart`                                                | `pixelart`                   |
+| `--backend <BACKEND>`          | All                                                               | Rendering backend: `modern` or `legacy`                                                          | `modern`                     |
+| `--window-mode <MODE>`         | All                                                               | Window mode: `windowed` or `fullscreen`                                                          | `windowed`                   |
+| `--force-gdc-clock <2.5\|5>`   | PC-98                                                             | Force GDC clock to 2.5 or 5 MHz. VX and later only                                               | auto                         |
+| `--graphicboard <TYPE>`        | PC-98                                                             | Graphics accelerator board: `none`, `ga1280a`                                                    | `none`                       |
+| `--pc98-roms <PATH>`           | PC-98                                                             | Directory with the PC-98 ROM set (BIOS, font, sound), matched by content hash. All ROMs optional | `roms/pc98`                  |
+| `--bios [on\|off]`             | PC-98, PC/AT                                                      | Boot the real BIOS from `--pc98-roms` / `--at-roms` instead of the HLE BIOS. Ignored on PC-9821  | HLE BIOS                     |
+| `--soundboard <TYPE>`          | PC-98                                                             | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`                             | `86+26k`                     |
+| `--adpcm-ram [on\|off]`        | PC-98                                                             | ADPCM RAM option for the PC-9801-86                                                              | `on`                         |
+| `--ems [on\|off]`              | PC-98                                                             | Enable EMS expanded memory                                                                       | `on`                         |
+| `--xms [on\|off]`              | PC-98                                                             | Enable XMS extended memory                                                                       | `on`                         |
+| `--midi <DEVICE>`              | PC-98, PC/AT, FM Towns, X68000                                    | MIDI device: `none`, `mt32`, `sc55`                                                              | `none`                       |
+| `--mt32-roms <PATH>`           | PC-98, PC/AT, FM Towns, X68000                                    | Path to MT-32 ROM directory (requires `mt32` feature)                                            | `roms/mt32`                  |
+| `--sc55-roms <PATH>`           | PC-98, PC/AT, FM Towns, X68000                                    | Path to SC-55 ROM directory (requires `sc55` feature)                                            | `roms/sc55`                  |
+| `--boot-device <DEVICE>`       | PC-98, FM Towns, PC/AT                                            | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `dos`                                       | `auto`                       |
+| `--printer <PATH>`             | PC-98                                                             | Output file for printer (must exist)                                                             | -                            |
+| `--enable-extractor [on\|off]` | PC-98                                                             | Copy on-screen Japanese text to the system clipboard, one line at a time                         | off                          |
+| `--debug-bios <PATH>`          | PC-98                                                             | PC-98 BIOS ROM image for hardware test programs. Excludes `--bios`                               | -                            |
+| `-h, --help`                   | All                                                               | Print help                                                                                       | -                            |
+| `-V, --version`                | All                                                               | Print version                                                                                    | -                            |
 
 The `--machine <TYPE>` values are: `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RS`,
 `PC9801RA`, `PC9821AS`, `PC9821AP`, `PC8801MC`, `PC88VA2`, `PC6001`, `PC6001MK2`, `PC6601`,
 `PC6001MK2SR`, `PC6601SR`, `MSX`, `MSX2`, `MSX2PLUS`, `FM7`, `FM77AV`, `FMTowns`,
 `FMTownsIICX`, `FMTownsIIMX`, `X68000`, `X68000SUPER`, `X68000XVI`, `X1`, `X1TURBO`,
-`AT486DX50`, `AT486DX66`. The default is `PC9801RA`.
+`AT486DX50`, `AT486DX66`. A game file without a `machine` key in a system folder of the
+config folder runs the `machine` of `<config-folder>/<system>.conf`, else a `machine` of
+the same system in the settings file, else the default model of the system. For a
+`--config` file outside the system folders, the `machine` of the settings file selects
+the system. The `machine` of `<config-folder>/<system>.conf` then wins over it.
 
 On the PC/AT, the real AMI BIOS exposes only `A: then C:` or `C: then A:`.
 `auto` and `fdd1` select the first order, while `hdd1` selects the second.
@@ -223,11 +249,14 @@ The folder that holds the settings file `neetan.conf` is the root:
 ```
 
 The system names are `at`, `fm7`, `msx`, `pc6000`, `pc88`, `pc88va`, `pc98`, `towns`,
-`x1` and `x68k`. `config-folder` names the config folder and defaults to `config`.
-`roms-folder` names the ROM folder and defaults to `roms`. Every ROM key defaults to
+`x1` and `x68k`. `config-folder` selects the config folder and defaults to `config`.
+`roms-folder` selects the ROM folder and defaults to `roms`. Every ROM key defaults to
 the folder of its system below the ROM folder, for example `pc98-roms` to
 `roms/pc98`. The derived folders of the PC-98, the PC/AT, the MT-32 and the SC-55
 apply only when they exist. See [ROMs](doc/roms.md) for the ROM sets of each folder.
+`gui-font` selects the font file of the user interface. Its default
+`font/SarasaUiJ-Regular.ttf` lies in the resource folder of the installation: the
+folder of the executable, `../share/neetan` on Linux and `../Resources` on macOS.
 
 A relative path inside a configuration file resolves against the root. A relative
 path given as a command line option resolves against the current directory.
@@ -248,7 +277,7 @@ The settings file is the first match of:
 | macOS   | `~/Library/Application Support/neetan/neetan/`   |
 
 Without a settings file the root is the SDL pref path and every setting keeps its
-built-in default. The log names the settings file and the root at startup.
+built-in default. The log shows the settings file and the root at startup.
 
 ### Layers
 
@@ -297,21 +326,22 @@ option. The images resolve against the root.
 
 ## Emulator controls
 
-| Key                | Action                           |
-|--------------------|----------------------------------|
-| Right Ctrl + M     | Toggle mouse capture             |
-| Right Ctrl + Q     | Quit the emulator                |
-| Right Ctrl + Enter | Toggle fullscreen                |
-| Right Ctrl + R     | Hard reset                       |
-| Right Ctrl + F     | Fast forward 8x (hold)           |
-| Right Ctrl + C     | Toggle CRT effect                |
-| Right Ctrl + S     | Cycle scaling method             |
-| Right Ctrl + P     | Cycle composite phase (PC-6000)  |
-| Right Ctrl + 1     | Open floppy selector for drive 1 |
-| Right Ctrl + 2     | Open floppy selector for drive 2 |
-| Right Ctrl + 3     | Open CD-ROM selector             |
-| Right Ctrl + 5     | Capture quick save               |
-| Right Ctrl + 9     | Restore quick save               |
+| Key                | Action                                                       |
+|--------------------|--------------------------------------------------------------|
+| Right Ctrl + M     | Toggle mouse capture                                         |
+| Right Ctrl + Q     | Quit the emulator. A game of the manager returns to it       |
+| Right Ctrl + Esc   | Return to the game manager. Only in a game of the manager    |
+| Right Ctrl + Enter | Toggle fullscreen                                            |
+| Right Ctrl + R     | Hard reset                                                   |
+| Right Ctrl + F     | Fast forward 8x (hold)                                       |
+| Right Ctrl + C     | Toggle CRT effect                                            |
+| Right Ctrl + S     | Cycle scaling method                                         |
+| Right Ctrl + P     | Cycle composite phase (PC-6000)                              |
+| Right Ctrl + 1     | Open floppy selector for drive 1                             |
+| Right Ctrl + 2     | Open floppy selector for drive 2                             |
+| Right Ctrl + 3     | Open CD-ROM selector                                         |
+| Right Ctrl + 5     | Capture quick save                                           |
+| Right Ctrl + 9     | Restore quick save                                           |
 
 Right Ctrl is reserved as the emulator's shortcut modifier. The emulated machine uses
 Left Ctrl.
@@ -322,6 +352,19 @@ Quick load switches removable drives back to the floppy, CD-ROM and cassette ima
 mounted when the snapshot was captured. Guest writes to writable media remain persistent.
 The snapshot is not written to disk and is lost when Neetan exits. Save normally inside
 the emulated software because quick saves do not replace disk or application saves.
+
+### Game manager controls
+
+| Key                       | Gamepad              | Action                                |
+|---------------------------|----------------------|---------------------------------------|
+| Up, Down                  | D-pad, left stick    | Select the previous or the next game  |
+| Page Up, Page Down        |                      | Select a game one page up or down     |
+| Home, End                 |                      | Select the first or the last game     |
+| Tab, Shift + Tab          |                      | Focus the next or the previous widget |
+| Enter                     | A                    | Launch the selected game              |
+| Enter, Esc                | A, B                 | Close the error dialog                |
+| Right Ctrl + Enter        |                      | Toggle fullscreen                     |
+| Right Ctrl + Q            |                      | Quit the emulator                     |
 
 ## Automation
 

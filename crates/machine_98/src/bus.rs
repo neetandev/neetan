@@ -700,13 +700,13 @@ impl<T: TraceSink> Pc9801Bus<T> {
     }
 
     /// Writes the floppy image back to its file if it has been modified.
-    pub fn flush_floppy(&mut self, drive: usize) {
-        self.floppy.flush_drive(drive);
+    pub fn flush_floppy(&mut self, drive: usize) -> Result<(), common::FlushError> {
+        self.floppy.flush_drive(drive)
     }
 
     /// Flushes all dirty floppy images to disk.
-    pub fn flush_all_floppies(&mut self) {
-        self.floppy.flush_all_drives();
+    pub fn flush_all_floppies(&mut self) -> Result<(), common::FlushError> {
+        self.floppy.flush_all_drives()
     }
 
     /// Inserts a hard disk image into the specified drive (0-1).
@@ -767,34 +767,26 @@ impl<T: TraceSink> Pc9801Bus<T> {
     }
 
     /// Writes the HDD image back to its file if it has been modified.
-    pub fn flush_hdd(&mut self, drive: usize) {
+    pub fn flush_hdd(&mut self, drive: usize) -> Result<(), common::FlushError> {
         match self.machine_model {
             MachineModel::PC9801F
             | MachineModel::PC9801VM
             | MachineModel::PC9801VX
             | MachineModel::PC9801RS
-            | MachineModel::PC9801RA => {
-                self.sasi.flush_drive(drive);
-            }
-            MachineModel::PC9821AS | MachineModel::PC9821AP => {
-                self.ide.flush_drive(drive);
-            }
+            | MachineModel::PC9801RA => self.sasi.flush_drive(drive),
+            MachineModel::PC9821AS | MachineModel::PC9821AP => self.ide.flush_drive(drive),
         }
     }
 
     /// Flushes all dirty HDD images to disk.
-    pub fn flush_all_hdds(&mut self) {
+    pub fn flush_all_hdds(&mut self) -> Result<(), common::FlushError> {
         match self.machine_model {
             MachineModel::PC9801F
             | MachineModel::PC9801VM
             | MachineModel::PC9801VX
             | MachineModel::PC9801RS
-            | MachineModel::PC9801RA => {
-                self.sasi.flush_all_drives();
-            }
-            MachineModel::PC9821AS | MachineModel::PC9821AP => {
-                self.ide.flush_all_drives();
-            }
+            | MachineModel::PC9801RA => self.sasi.flush_all_drives(),
+            MachineModel::PC9821AS | MachineModel::PC9821AP => self.ide.flush_all_drives(),
         }
     }
 
@@ -845,8 +837,8 @@ impl<T: TraceSink> Pc9801Bus<T> {
     }
 
     /// Flushes the printer output file.
-    pub fn flush_printer(&mut self) {
-        self.printer.flush();
+    pub fn flush_printer(&mut self) -> Result<(), common::FlushError> {
+        self.printer.flush()
     }
 
     /// Installs a text extractor sink that receives JIS codes observed at

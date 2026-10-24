@@ -207,9 +207,10 @@ impl<T: TraceSink> MsxBus<T> {
     }
 
     /// Flushes every mounted floppy.
-    pub fn flush_floppies(&mut self) {
-        if let Some(controller) = self.fdc.as_mut() {
-            controller.flush_all();
+    pub fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+        match self.fdc.as_mut() {
+            Some(controller) => controller.flush_all(),
+            None => Ok(()),
         }
     }
 }

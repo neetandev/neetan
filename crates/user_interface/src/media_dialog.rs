@@ -458,14 +458,15 @@ impl MediaDialog {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use gui::{
-        Color, Fonts, Rasterizer, Scene,
-        ui::{Input, Navigation, Theme, UiState, Viewport},
+        Color,
+        ui::{Navigation, Viewport},
     };
 
     use super::*;
+    use crate::gui_test_support::GuiHarness;
 
     /// The image files of the test dialog.
     const FILES: [&str; 12] = [
@@ -491,20 +492,10 @@ mod tests {
             .collect()
     }
 
-    /// The fonts, the theme and the pass state of a dialog without a window.
+    /// The pass state of a dialog without a window and the dialog.
     struct Harness {
-        /// The fonts with the font of the repository.
-        fonts: Fonts,
-        /// The theme on that font.
-        theme: Theme,
-        /// The scene of the last pass.
-        scene: Scene,
-        /// The state between passes.
-        state: UiState,
-        /// The input of the next pass.
-        input: Input,
-        /// The target of the passes.
-        viewport: Viewport,
+        /// The fonts, the theme and the pass state.
+        gui: GuiHarness,
         /// The dialog.
         dialog: MediaDialog,
         /// The images of the floppy drives and the CD-ROM drive.
@@ -516,20 +507,8 @@ mod tests {
     impl Harness {
         /// A dialog on the first floppy drive at `viewport`.
         fn new(viewport: Viewport) -> Self {
-            let font_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
-                .join(gui::fonts::FONT_DIRECTORY)
-                .join(gui::fonts::FONT_FILE);
-            let mut fonts = Fonts::new();
-            let font = fonts.add(std::fs::read(font_path).unwrap()).unwrap();
-            let theme = Theme::new(&mut fonts, font);
             Self {
-                fonts,
-                theme,
-                scene: Scene::new(),
-                state: UiState::default(),
-                input: Input::default(),
-                viewport,
+                gui: GuiHarness::with_viewport(viewport),
                 dialog: MediaDialog::new(available_drives(2, true), 0, Some(3)),
                 media: [entries(&FILES), entries(&FILES[..4]), Vec::new()],
                 loaded: [Some(3), None, None],
@@ -544,43 +523,35 @@ mod tests {
                 .zip(self.loaded)
                 .map(|(entries, loaded)| DriveMedia { entries, loaded })
                 .collect();
-            let mut context = UiContext::new(
-                &mut self.scene,
-                &mut self.fonts,
-                &self.theme,
-                &self.input,
-                &mut self.state,
-                self.viewport,
-            );
-            let bounds = context.bounds();
-            context.fill(bounds, Color::hex(0x204080));
-            let action = self.dialog.show(&mut context, &media);
-            context.finish();
-            self.input.advance();
-            action
+            let dialog = &mut self.dialog;
+            self.gui.frame(|context| {
+                let bounds = context.bounds();
+                context.fill(bounds, Color::hex(0x204080));
+                dialog.show(context, &media)
+            })
         }
 
         /// Runs one pass with the navigation event `navigation`.
         fn navigate(&mut self, navigation: Navigation) -> DialogAction {
-            self.input.navigation = Some(navigation);
+            self.gui.input.navigation = Some(navigation);
             self.pass()
         }
 
         /// Runs one pass with the committed text `text`.
         fn type_text(&mut self, text: &str) -> DialogAction {
-            self.input.text.push_str(text);
+            self.gui.input.text.push_str(text);
             self.pass()
         }
 
         /// Runs one pass with confirm.
         fn confirm(&mut self) -> DialogAction {
-            self.input.confirm = true;
+            self.gui.input.confirm = true;
             self.pass()
         }
 
         /// Runs one pass with cancel.
         fn cancel(&mut self) -> DialogAction {
-            self.input.cancel = true;
+            self.gui.input.cancel = true;
             self.pass()
         }
     }
@@ -651,7 +622,7 @@ mod tests {
         let mut harness = Harness::new(Viewport::new(1024, 768, 1.0));
         assert_eq!(harness.pass(), DialogAction::None);
         assert_eq!(harness.dialog.list.selected, 4);
-        assert_eq!(harness.state.focused(), Some(UiId::from(LIST_ID)));
+        assert_eq!(harness.gui.state.focused(), Some(UiId::from(LIST_ID)));
         assert_eq!(
             harness.confirm(),
             DialogAction::Insert {
@@ -680,7 +651,7 @@ mod tests {
         let mut harness = Harness::new(Viewport::new(1024, 768, 1.0));
         harness.pass();
         harness.navigate(Navigation::Previous);
-        assert_eq!(harness.state.focused(), Some(UiId::from("filter")));
+        assert_eq!(harness.gui.state.focused(), Some(UiId::from("filter")));
         assert_eq!(harness.dialog.selection, Some(3));
         harness.type_text("英雄");
         assert_eq!(harness.dialog.selection, Some(3));
@@ -702,7 +673,7 @@ mod tests {
         let mut harness = Harness::new(Viewport::new(1024, 768, 1.0));
         harness.pass();
         harness.navigate(Navigation::Previous);
-        assert_eq!(harness.state.focused(), Some(UiId::from("filter")));
+        assert_eq!(harness.gui.state.focused(), Some(UiId::from("filter")));
         harness.type_text("zzz");
         assert_eq!(harness.dialog.selection, None);
         assert_eq!(harness.confirm(), DialogAction::None);
@@ -719,7 +690,7 @@ mod tests {
         harness.type_text("zzz");
         assert_eq!(harness.dialog.selection, None);
         for _ in 0..3 {
-            harness.input.backspace = true;
+            harness.gui.input.backspace = true;
             harness.pass();
         }
         assert!(harness.dialog.filter.is_empty());
@@ -801,7 +772,7 @@ mod tests {
         harness.pass();
         harness.navigate(Navigation::End);
         harness.navigate(Navigation::Down);
-        assert_eq!(harness.state.focused(), Some(UiId::from("insert")));
+        assert_eq!(harness.gui.state.focused(), Some(UiId::from("insert")));
         assert_eq!(
             harness.confirm(),
             DialogAction::Insert {
@@ -810,24 +781,8 @@ mod tests {
             }
         );
         harness.navigate(Navigation::Left);
-        assert_eq!(harness.state.focused(), Some(UiId::from("cancel")));
+        assert_eq!(harness.gui.state.focused(), Some(UiId::from("cancel")));
         assert_eq!(harness.confirm(), DialogAction::Close);
-    }
-
-    /// Writes the RGBA8 `pixels` as `<name>.ppm` into the directory of the
-    /// `GUI_SHOTS` environment variable, composited over black.
-    fn write_ppm(name: &str, width: u32, height: u32, pixels: &[u8]) {
-        let Some(directory) = std::env::var_os("GUI_SHOTS") else {
-            eprintln!("GUI_SHOTS is not set, {name} is not written");
-            return;
-        };
-        let directory = PathBuf::from(directory);
-        std::fs::create_dir_all(&directory).unwrap();
-        let mut bytes = format!("P6\n{width} {height}\n255\n").into_bytes();
-        for pixel in pixels.as_chunks::<4>().0 {
-            bytes.extend_from_slice(&pixel[..3]);
-        }
-        std::fs::write(directory.join(format!("{name}.ppm")), bytes).unwrap();
     }
 
     /// Renders the dialog at `scale` on each tab and with a filter.
@@ -839,20 +794,9 @@ mod tests {
         harness.pass();
         harness.navigate(Navigation::Down);
         let render = |harness: &Harness, name: &str| {
-            let mut pixels = vec![0; width as usize * height as usize * 4];
-            Rasterizer::new().rasterize(
-                &harness.scene,
-                harness.fonts.slug(),
-                width,
-                height,
-                &mut pixels,
-            );
-            write_ppm(
-                &format!("media_dialog_{name}_{scale}x"),
-                width,
-                height,
-                &pixels,
-            );
+            harness
+                .gui
+                .write_screenshot(&format!("media_dialog_{name}_{scale}x"));
         };
         render(&harness, "fdd1");
         harness.navigate(Navigation::NextTab);
@@ -864,7 +808,7 @@ mod tests {
         harness.navigate(Navigation::NextTab);
         harness.navigate(Navigation::Previous);
         harness.type_text("ディスク");
-        harness.input.composition.push_str("いち");
+        harness.gui.input.composition.push_str("いち");
         harness.pass();
         render(&harness, "filter");
     }

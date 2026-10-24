@@ -239,11 +239,10 @@ impl Upd765aFdc<UPD765_PLATFORM_ISA_AT> {
         self.disk_change[drive] = true;
     }
 
-    /// Flushes all dirty AT floppy images.
-    pub fn flush_all_drives(&mut self) {
-        for drive in self.drives.iter_mut().flatten() {
-            drive.flush();
-        }
+    /// Flushes all dirty AT floppy images. Returns the errors of the failed
+    /// writes.
+    pub fn flush_all_drives(&mut self) -> Result<(), common::FlushError> {
+        common::FlushError::combine(self.drives.iter_mut().flatten().map(|drive| drive.flush()))
     }
 
     /// Returns an AT floppy image.

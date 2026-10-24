@@ -3,14 +3,13 @@
 //! mapping of the SDL events to the input.
 
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     time::{Duration, Instant},
 };
 
-use common::{error, warn};
+use common::warn;
 use gui::{
     Fonts, Scene,
-    fonts::{FONT_DIRECTORY, FONT_FILE},
     ui::{Input, Navigation, Theme, UiContext, UiState, Viewport},
 };
 use sdl3::{
@@ -33,48 +32,6 @@ const STICK_PRESS: i16 = 16384;
 
 /// The stick deflection below which an engaged direction releases.
 const STICK_RELEASE: i16 = 11000;
-
-/// The paths to look for the font file, in order: next to the executable
-/// (Windows archive), in `share/neetan` beside the executable folder
-/// (AppImage and FHS installs), in the `Resources` folder of a macOS bundle,
-/// and in the font folder of the package that `cargo run` started.
-fn font_candidates(
-    executable_directory: Option<&Path>,
-    cargo_manifest_directory: Option<&Path>,
-) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(directory) = executable_directory {
-        candidates.push(directory.join(FONT_DIRECTORY).join(FONT_FILE));
-        if let Some(parent) = directory.parent() {
-            candidates.push(
-                parent
-                    .join("share")
-                    .join("neetan")
-                    .join(FONT_DIRECTORY)
-                    .join(FONT_FILE),
-            );
-            candidates.push(
-                parent
-                    .join("Resources")
-                    .join(FONT_DIRECTORY)
-                    .join(FONT_FILE),
-            );
-        }
-    }
-    if let Some(directory) = cargo_manifest_directory {
-        candidates.push(directory.join(FONT_DIRECTORY).join(FONT_FILE));
-    }
-    candidates
-}
-
-/// Formats `paths` as a comma separated list for a log line.
-fn path_list(paths: &[PathBuf]) -> String {
-    paths
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
 
 /// A discrete or accumulating input event of the user interface.
 #[derive(Clone, Debug, PartialEq)]
@@ -354,6 +311,12 @@ impl GamepadNavigation {
         engaged.map(|navigation| self.press(DirectionSource::Stick, navigation, now))
     }
 
+    /// The time of the next repeat of the held direction, or `None` while no
+    /// direction is held.
+    pub(crate) fn next_repeat(&self) -> Option<Instant> {
+        self.repeat.map(|repeat| repeat.next)
+    }
+
     /// The repeat event of the held direction that is due at `now`.
     pub(crate) fn poll(&mut self, now: Instant) -> Option<GuiEvent> {
         let repeat = self.repeat.as_mut()?;
@@ -398,39 +361,24 @@ pub(crate) struct GuiHost {
 }
 
 impl GuiHost {
-    /// Locates and loads the font. On failure logs one error with every path
-    /// tried and returns `None`.
-    pub(crate) fn load() -> Option<Self> {
-        let executable_directory = std::env::current_exe()
-            .and_then(std::fs::canonicalize)
-            .ok()
-            .and_then(|path| path.parent().map(Path::to_path_buf));
-        let cargo_manifest_directory = std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from);
-        let candidates = font_candidates(
-            executable_directory.as_deref(),
-            cargo_manifest_directory.as_deref(),
-        );
-        let Some(path) = candidates.iter().find(|path| path.is_file()) else {
-            error!(
-                "GUI font {FONT_FILE} not found, the media dialog is disabled. Tried: {}",
-                path_list(&candidates)
-            );
-            return None;
-        };
-        let result = std::fs::read(path)
-            .map_err(|error| error.to_string())
-            .and_then(|data| Self::new(data).map_err(|error| error.to_string()));
-        match result {
-            Ok(host) => Some(host),
-            Err(error) => {
-                error!(
-                    "Failed to load the GUI font {FONT_FILE} from {}: {error}. The media dialog is disabled. Tried: {}",
-                    path.display(),
-                    path_list(&candidates)
-                );
-                None
-            }
+    /// Loads the font file `path`. Returns a message for the user when the
+    /// file is missing or does not parse.
+    pub(crate) fn load(path: &Path) -> Result<Self, String> {
+        if !path.is_file() {
+            return Err(format!(
+                "the GUI font {} was not found. The gui-font setting selects the font file",
+                path.display()
+            ));
         }
+        let data = std::fs::read(path).map_err(|error| {
+            format!("the GUI font {} could not be read: {error}", path.display())
+        })?;
+        Self::new(data).map_err(|error| {
+            format!(
+                "the GUI font {} could not be loaded: {error}",
+                path.display()
+            )
+        })
     }
 
     /// A host with the font file `data`.
@@ -645,29 +593,21 @@ mod tests {
 
     /// A host with the font of the repository.
     fn host() -> GuiHost {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join(FONT_DIRECTORY)
-            .join(FONT_FILE);
-        GuiHost::new(std::fs::read(path).unwrap()).unwrap()
+        GuiHost::new(crate::gui_test_support::repository_font())
+            .expect("the repository font parses")
     }
 
+    /// Verifies that a missing font file gives the path and the setting that selects it.
     #[test]
-    fn the_font_lookup_follows_the_install_layouts() {
-        let candidates = font_candidates(
-            Some(Path::new("/opt/neetan/bin")),
-            Some(Path::new("/home/user/neetan")),
-        );
+    fn a_missing_font_mentions_its_path_and_the_setting() {
+        let path = Path::new("/nonexistent/neetan/font.ttf");
+        let Err(message) = GuiHost::load(path) else {
+            panic!("a missing font does not load");
+        };
         assert_eq!(
-            candidates,
-            [
-                PathBuf::from("/opt/neetan/bin/font/SarasaUiJ-Regular.ttf"),
-                PathBuf::from("/opt/neetan/share/neetan/font/SarasaUiJ-Regular.ttf"),
-                PathBuf::from("/opt/neetan/Resources/font/SarasaUiJ-Regular.ttf"),
-                PathBuf::from("/home/user/neetan/font/SarasaUiJ-Regular.ttf"),
-            ]
+            message,
+            "the GUI font /nonexistent/neetan/font.ttf was not found. The gui-font setting selects the font file"
         );
-        assert!(font_candidates(None, None).is_empty());
     }
 
     #[test]
@@ -861,7 +801,9 @@ mod tests {
             gamepad.poll(first + REPEAT_INTERVAL),
             Some(GuiEvent::Navigation(Navigation::Down))
         );
+        assert_eq!(gamepad.next_repeat(), Some(first + REPEAT_INTERVAL * 2));
         assert_eq!(gamepad.button(GamepadButton::DpadDown, false, first), None);
+        assert_eq!(gamepad.next_repeat(), None);
         assert_eq!(gamepad.poll(first + Duration::from_secs(1)), None);
     }
 

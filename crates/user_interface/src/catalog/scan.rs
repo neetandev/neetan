@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use machine_factory::config::{
-    EmulatorConfig, Target, model_name, resolve_model,
+    MachineSelection, Target,
     settings::MACHINE_KEY,
     systems::{System, system_of},
 };
@@ -22,18 +22,6 @@ use crate::config::{
 
 /// The separator of the identity of a game.
 const IDENTITY_SEPARATOR: char = '/';
-
-/// Returns the family of `system`. `None` for a system outside this build.
-fn system_target(system: &System) -> Option<Target> {
-    resolve_machine(system.default_model).map(|(target, _)| target)
-}
-
-/// Resolves the machine value `value` into its family and canonical model name.
-fn resolve_machine(value: &str) -> Option<(Target, &'static str)> {
-    let mut config = EmulatorConfig::default();
-    resolve_model(&mut config, value).ok()?;
-    Some((config.target, model_name(&config)))
-}
 
 /// Adds a warning for each key binding of `reading` that the family `target` does not know.
 fn check_key_bindings(reading: &FileReading, target: Target, diagnostics: &mut Vec<Diagnostic>) {
@@ -126,7 +114,7 @@ pub(super) fn scan_system(
     config_folder: &Path,
     host: &HostLayers,
 ) -> Option<SystemCatalog> {
-    let target = system_target(system)?;
+    let target = MachineSelection::of_system(system)?.target();
     let root = host.root();
     let folder = config_folder.join(system.name);
     let defaults_file = config_folder
@@ -140,8 +128,9 @@ pub(super) fn scan_system(
         &[],
         host.command_line_layer(),
     );
-    let default_model =
-        resolve_machine(default_value).map_or(system.default_model, |(_, model)| model);
+    let default_model = default_value
+        .parse::<MachineSelection>()
+        .map_or(system.default_model, MachineSelection::name);
 
     let mut games = Vec::new();
     let mut files_with_errors = Vec::new();
@@ -240,8 +229,8 @@ fn read_entry(
                     &game,
                     host.command_line_layer(),
                 );
-                if let Some((_, resolved)) = resolve_machine(value) {
-                    model = resolved;
+                if let Ok(resolved) = value.parse::<MachineSelection>() {
+                    model = resolved.name();
                     model_source = source;
                 }
                 check_key_bindings(&reading, target, &mut diagnostics);
@@ -278,7 +267,7 @@ fn read_entry(
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use machine_factory::config::systems::compiled_systems;
+    use machine_factory::config::{EmulatorConfig, model_name, systems::compiled_systems};
 
     use super::*;
     use crate::{

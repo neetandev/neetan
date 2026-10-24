@@ -167,18 +167,19 @@ impl SasiController {
             .map(MountedHdd::image_bytes)
     }
 
-    /// Flushes the HDD image to its source file.
-    pub fn flush_drive(&mut self, drive: usize) {
-        if let Some(mounted) = self.drives[drive].as_mut() {
-            mounted.flush();
+    /// Flushes the HDD image to its source file. Returns the error of a
+    /// failed write.
+    pub fn flush_drive(&mut self, drive: usize) -> Result<(), common::FlushError> {
+        match self.drives[drive].as_mut() {
+            Some(mounted) => mounted.flush(),
+            None => Ok(()),
         }
     }
 
-    /// Flushes all dirty HDD images to disk.
-    pub fn flush_all_drives(&mut self) {
-        for drive in 0..2 {
-            self.flush_drive(drive);
-        }
+    /// Flushes all dirty HDD images to disk. Returns the errors of the
+    /// failed writes.
+    pub fn flush_all_drives(&mut self) -> Result<(), common::FlushError> {
+        common::FlushError::combine((0..2).map(|drive| self.flush_drive(drive)))
     }
 
     /// Executes a BIOS read: reads sectors and writes to memory via closure.
@@ -542,7 +543,7 @@ mod tests {
 
         let pattern = vec![0x39u8; 256];
         assert!(sasi.write_sector_raw(0, 12, &pattern));
-        sasi.flush_all_drives();
+        sasi.flush_all_drives().expect("flush succeeds");
 
         let raw = std::fs::read(&path).unwrap();
         let offset = 256 + 12 * 256;

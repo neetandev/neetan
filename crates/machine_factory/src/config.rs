@@ -1,5 +1,6 @@
 //! Pure-data emulator configuration types and the machine model resolver.
 
+mod selection;
 pub mod settings;
 pub mod systems;
 
@@ -27,6 +28,7 @@ use machine_towns::TownsModel;
 use machine_x1::X1Model;
 #[cfg(feature = "x68k")]
 use machine_x68k::X68kModel;
+pub use selection::MachineSelection;
 
 /// Selected machine family. Each family is constructed from its own crate, so
 /// the family is tracked explicitly while the model and per-family settings
@@ -64,104 +66,6 @@ pub enum Target {
     /// IBM PC/AT series (the `machine_at` crate).
     #[cfg(feature = "at")]
     At,
-}
-
-/// Returns the default machine family: the first one compiled in, in the
-/// declaration order of [`Target`].
-#[must_use]
-pub const fn default_target() -> Target {
-    #[cfg(feature = "pc98")]
-    return Target::Pc98;
-    #[cfg(all(not(feature = "pc98"), feature = "pc88"))]
-    return Target::Pc88;
-    #[cfg(all(not(any(feature = "pc98", feature = "pc88")), feature = "pc88va"))]
-    return Target::Pc88Va;
-    #[cfg(all(
-        not(any(feature = "pc98", feature = "pc88", feature = "pc88va")),
-        feature = "pc60"
-    ))]
-    return Target::Pc60;
-    #[cfg(all(
-        not(any(
-            feature = "pc98",
-            feature = "pc88",
-            feature = "pc88va",
-            feature = "pc60"
-        )),
-        feature = "msx"
-    ))]
-    return Target::Msx;
-    #[cfg(all(
-        not(any(
-            feature = "pc98",
-            feature = "pc88",
-            feature = "pc88va",
-            feature = "pc60",
-            feature = "msx"
-        )),
-        feature = "towns"
-    ))]
-    return Target::Towns;
-    #[cfg(all(
-        not(any(
-            feature = "pc98",
-            feature = "pc88",
-            feature = "pc88va",
-            feature = "pc60",
-            feature = "msx",
-            feature = "towns"
-        )),
-        feature = "x1"
-    ))]
-    return Target::X1;
-    #[cfg(all(
-        not(any(
-            feature = "pc98",
-            feature = "pc88",
-            feature = "pc88va",
-            feature = "pc60",
-            feature = "msx",
-            feature = "towns",
-            feature = "x1"
-        )),
-        feature = "fm7"
-    ))]
-    return Target::Fm7;
-    #[cfg(all(
-        not(any(
-            feature = "pc98",
-            feature = "pc88",
-            feature = "pc88va",
-            feature = "pc60",
-            feature = "msx",
-            feature = "towns",
-            feature = "x1",
-            feature = "fm7"
-        )),
-        feature = "x68k"
-    ))]
-    return Target::X68k;
-    #[cfg(all(
-        not(any(
-            feature = "pc98",
-            feature = "pc88",
-            feature = "pc88va",
-            feature = "pc60",
-            feature = "msx",
-            feature = "towns",
-            feature = "x1",
-            feature = "fm7",
-            feature = "x68k"
-        )),
-        feature = "at"
-    ))]
-    return Target::At;
-}
-
-impl Default for Target {
-    fn default() -> Self {
-        default_target()
-    }
 }
 
 impl Target {
@@ -335,6 +239,15 @@ impl std::str::FromStr for BootMode {
 pub const DEFAULT_CONFIG_FOLDER: &str = "config";
 /// Built-in name of the ROM folder below the root.
 pub const DEFAULT_ROMS_FOLDER: &str = "roms";
+/// Built-in path of the font file of the user interface below the resource
+/// folder of the installation.
+pub const DEFAULT_GUI_FONT: &str = "font/SarasaUiJ-Regular.ttf";
+/// Built-in rendering backend.
+pub const DEFAULT_BACKEND: Backend = Backend::Modern;
+/// Built-in audio volume.
+pub const DEFAULT_AUDIO_VOLUME: f32 = 1.0;
+/// Built-in window mode.
+pub const DEFAULT_WINDOW_MODE: WindowMode = WindowMode::Windowed;
 
 /// The complete startup configuration for building a machine.
 #[derive(Debug, Clone, PartialEq)]
@@ -357,6 +270,12 @@ pub struct EmulatorConfig {
     pub config_folder: PathBuf,
     /// Folder of the ROM folders of every system. A relative folder lies below the root.
     pub roms_folder: PathBuf,
+    /// Font file of the user interface. A settings file value lies below the
+    /// root and a flag value below the current directory. The built-in
+    /// default lies below the resource folder of the installation: the
+    /// folder of the executable, `../share/neetan` on Linux and
+    /// `../Resources` on macOS.
+    pub gui_font: PathBuf,
     pub pc98_roms: Option<PathBuf>,
     pub bios: bool,
     pub debug_bios: Option<PathBuf>,
@@ -415,10 +334,15 @@ pub struct EmulatorConfig {
     pub pc60_composite_phase: u32,
 }
 
-impl Default for EmulatorConfig {
-    fn default() -> Self {
-        Self {
-            target: default_target(),
+impl EmulatorConfig {
+    /// Returns the built-in configuration of the machine `model`.
+    ///
+    /// The model fields of the other families hold a fixed model of their
+    /// family. Only the model field of the selected family is read.
+    #[must_use]
+    pub fn for_model(model: MachineSelection) -> Self {
+        let mut config = Self {
+            target: model.target(),
             machine: MachineModel::PC9801RA,
             cpu_mode: CpuMode::High,
             fdd1: Vec::new(),
@@ -430,10 +354,11 @@ impl Default for EmulatorConfig {
             aspect_mode: AspectMode::Aspect4By3,
             crt: true,
             scaling: ScalingMode::Pixelart,
-            window_mode: WindowMode::Windowed,
-            audio_volume: 1.0,
+            window_mode: DEFAULT_WINDOW_MODE,
+            audio_volume: DEFAULT_AUDIO_VOLUME,
             config_folder: PathBuf::from(DEFAULT_CONFIG_FOLDER),
             roms_folder: PathBuf::from(DEFAULT_ROMS_FOLDER),
+            gui_font: PathBuf::from(DEFAULT_GUI_FONT),
             pc98_roms: None,
             bios: false,
             debug_bios: None,
@@ -448,7 +373,7 @@ impl Default for EmulatorConfig {
             boot_device: common::BootDevice::Auto,
             ems: true,
             xms: true,
-            backend: Backend::Modern,
+            backend: DEFAULT_BACKEND,
             enable_extractor: false,
             boot_mode: None,
             monitor: MonitorTiming::Auto,
@@ -480,14 +405,80 @@ impl Default for EmulatorConfig {
             x68k_model: X68kModel::X68000,
             x68k_roms: None,
             #[cfg(feature = "at")]
-            at_model: AtModel::default(),
+            at_model: AtModel::At486Dx66,
             at_roms: None,
             towns_pad: TownsPadType::SixButton,
             cartridge: None,
             cassette: None,
             pc60_composite_phase: 0,
+        };
+        config.set_model(model);
+        config
+    }
+
+    /// Selects the machine `model` and its family.
+    pub fn set_model(&mut self, model: MachineSelection) {
+        self.target = model.target();
+        match model {
+            #[cfg(feature = "pc98")]
+            MachineSelection::Pc98(model) => self.machine = model,
+            #[cfg(feature = "pc88")]
+            MachineSelection::Pc88(_) => {}
+            #[cfg(feature = "pc88va")]
+            MachineSelection::Pc88Va(model) => self.pc88va_model = model,
+            #[cfg(feature = "pc60")]
+            MachineSelection::Pc60(model) => self.pc60_model = model,
+            #[cfg(feature = "msx")]
+            MachineSelection::Msx(model) => self.msx_model = model,
+            #[cfg(feature = "towns")]
+            MachineSelection::Towns(model) => self.towns_model = model,
+            #[cfg(feature = "x1")]
+            MachineSelection::X1(model) => self.x1_model = model,
+            #[cfg(feature = "fm7")]
+            MachineSelection::Fm7(model) => self.fm7_model = model,
+            #[cfg(feature = "x68k")]
+            MachineSelection::X68k(model) => self.x68k_model = model,
+            #[cfg(feature = "at")]
+            MachineSelection::At(model) => self.at_model = model,
         }
     }
+
+    /// Returns the selected machine model.
+    #[must_use]
+    pub fn model(&self) -> MachineSelection {
+        match self.target {
+            #[cfg(feature = "pc98")]
+            Target::Pc98 => MachineSelection::Pc98(self.machine),
+            #[cfg(feature = "pc88")]
+            Target::Pc88 => MachineSelection::Pc88(Pc8801Model::PC8801MC),
+            #[cfg(feature = "pc88va")]
+            Target::Pc88Va => MachineSelection::Pc88Va(self.pc88va_model),
+            #[cfg(feature = "pc60")]
+            Target::Pc60 => MachineSelection::Pc60(self.pc60_model),
+            #[cfg(feature = "msx")]
+            Target::Msx => MachineSelection::Msx(self.msx_model),
+            #[cfg(feature = "towns")]
+            Target::Towns => MachineSelection::Towns(self.towns_model),
+            #[cfg(feature = "x1")]
+            Target::X1 => MachineSelection::X1(self.x1_model),
+            #[cfg(feature = "fm7")]
+            Target::Fm7 => MachineSelection::Fm7(self.fm7_model),
+            #[cfg(feature = "x68k")]
+            Target::X68k => MachineSelection::X68k(self.x68k_model),
+            #[cfg(feature = "at")]
+            Target::At => MachineSelection::At(self.at_model),
+        }
+    }
+}
+
+/// Returns the built-in configuration of the default model of the first
+/// compiled system of the systems table.
+#[cfg(test)]
+pub(crate) fn first_system_config() -> EmulatorConfig {
+    let system = systems::compiled_systems()
+        .next()
+        .expect("one system is compiled");
+    EmulatorConfig::for_model(MachineSelection::of_system(system).expect("compiled system"))
 }
 
 /// Family symbol names for the families compiled into this build.
@@ -529,137 +520,18 @@ pub fn compiled_target_names() -> &'static [&'static str] {
     COMPILED_TARGET_NAMES
 }
 
-/// Resolves a `--machine` / `machine=` value to a family and model. Each
-/// compiled-in family is offered the value in turn; the PC-98 models are tried
-/// last. Returns a human-readable error if no compiled-in family recognises it.
+/// Resolves a `--machine` / `machine=` value to a family and model and
+/// selects it in `config`. Returns a human-readable error if no compiled-in
+/// family recognises it.
 pub fn resolve_model(config: &mut EmulatorConfig, value: &str) -> Result<(), String> {
-    #[cfg(feature = "pc88")]
-    if value.parse::<Pc8801Model>().is_ok() {
-        config.target = Target::Pc88;
-        return Ok(());
-    }
-    #[cfg(feature = "pc88va")]
-    if let Ok(model) = value.parse::<Pc88VaModel>() {
-        config.target = Target::Pc88Va;
-        config.pc88va_model = model;
-        return Ok(());
-    }
-    #[cfg(feature = "pc60")]
-    if let Ok(model) = value.parse::<Pc6000Model>() {
-        config.target = Target::Pc60;
-        config.pc60_model = model;
-        return Ok(());
-    }
-    #[cfg(feature = "msx")]
-    if let Ok(model) = value.parse::<MsxModel>() {
-        config.target = Target::Msx;
-        config.msx_model = model;
-        return Ok(());
-    }
-    #[cfg(feature = "x1")]
-    if let Ok(model) = value.parse::<X1Model>() {
-        config.target = Target::X1;
-        config.x1_model = model;
-        return Ok(());
-    }
-    #[cfg(feature = "fm7")]
-    if let Ok(model) = value.parse::<Fm7Model>() {
-        config.target = Target::Fm7;
-        config.fm7_model = model;
-        return Ok(());
-    }
-    #[cfg(feature = "towns")]
-    if let Ok(model) = value.parse::<TownsModel>() {
-        config.target = Target::Towns;
-        config.towns_model = model;
-        return Ok(());
-    }
-    #[cfg(feature = "x68k")]
-    if let Ok(model) = value.parse::<X68kModel>() {
-        config.target = Target::X68k;
-        config.x68k_model = model;
-        return Ok(());
-    }
-    #[cfg(feature = "at")]
-    if let Ok(model) = value.parse::<AtModel>() {
-        config.target = Target::At;
-        config.at_model = model;
-        return Ok(());
-    }
-    #[cfg(feature = "pc98")]
-    if let Ok(model) = value.parse::<MachineModel>() {
-        config.target = Target::Pc98;
-        config.machine = model;
-        return Ok(());
-    }
-    Err(format!(
-        "unknown machine type '{value}', expected {}",
-        join_alternatives(&settings::compiled_model_names())
-    ))
+    config.set_model(value.parse()?);
+    Ok(())
 }
 
-/// Returns the model name of the selected machine as `machine` names it.
+/// Returns the model name of the selected machine in the form of the `machine` values.
 #[must_use]
 pub fn model_name(config: &EmulatorConfig) -> &'static str {
-    match config.target {
-        #[cfg(feature = "pc98")]
-        Target::Pc98 => match config.machine {
-            MachineModel::PC9801F => "PC9801F",
-            MachineModel::PC9801VM => "PC9801VM",
-            MachineModel::PC9801VX => "PC9801VX",
-            MachineModel::PC9801RS => "PC9801RS",
-            MachineModel::PC9801RA => "PC9801RA",
-            MachineModel::PC9821AS => "PC9821AS",
-            MachineModel::PC9821AP => "PC9821AP",
-        },
-        #[cfg(feature = "pc88")]
-        Target::Pc88 => "PC8801MC",
-        #[cfg(feature = "pc88va")]
-        Target::Pc88Va => match config.pc88va_model {
-            Pc88VaModel::PC88VA2 => "PC88VA2",
-        },
-        #[cfg(feature = "pc60")]
-        Target::Pc60 => match config.pc60_model {
-            Pc6000Model::Pc6001 => "PC6001",
-            Pc6000Model::Pc6001Mk2 => "PC6001MK2",
-            Pc6000Model::Pc6601 => "PC6601",
-            Pc6000Model::Pc6001Mk2Sr => "PC6001MK2SR",
-            Pc6000Model::Pc6601Sr => "PC6601SR",
-        },
-        #[cfg(feature = "msx")]
-        Target::Msx => match config.msx_model {
-            MsxModel::Msx => "MSX",
-            MsxModel::Msx2 => "MSX2",
-            MsxModel::Msx2Plus => "MSX2PLUS",
-        },
-        #[cfg(feature = "towns")]
-        Target::Towns => match config.towns_model {
-            TownsModel::FmTowns => "FMTowns",
-            TownsModel::FmTownsIICx => "FMTownsIICX",
-            TownsModel::FmTownsIIMx => "FMTownsIIMX",
-        },
-        #[cfg(feature = "x1")]
-        Target::X1 => match config.x1_model {
-            X1Model::X1 => "X1",
-            X1Model::X1Turbo => "X1TURBO",
-        },
-        #[cfg(feature = "fm7")]
-        Target::Fm7 => match config.fm7_model {
-            Fm7Model::Fm7 => "FM7",
-            Fm7Model::Fm77Av => "FM77AV",
-        },
-        #[cfg(feature = "x68k")]
-        Target::X68k => match config.x68k_model {
-            X68kModel::X68000 => "X68000",
-            X68kModel::X68000Super => "X68000SUPER",
-            X68kModel::X68000Xvi => "X68000XVI",
-        },
-        #[cfg(feature = "at")]
-        Target::At => match config.at_model {
-            AtModel::At486Dx50 => "AT486DX50",
-            AtModel::At486Dx66 => "AT486DX66",
-        },
-    }
+    config.model().name()
 }
 
 /// Returns the stable lowercase symbol name for a target family.

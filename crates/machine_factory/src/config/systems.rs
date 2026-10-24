@@ -47,7 +47,7 @@ pub struct System {
     pub rom_key: &'static str,
     /// Whether the machines of the system need their ROM set to start.
     pub roms_required: bool,
-    /// The built-in model of the system, as `machine` names it.
+    /// The built-in model of the system in the form of the `machine` values.
     pub default_model: &'static str,
 }
 
@@ -276,7 +276,7 @@ mod tests {
 
     use super::{
         super::{
-            model_name, resolve_model,
+            MachineSelection, first_system_config, model_name, resolve_model,
             settings::{MODEL_CHOICES, PathKind, SETTINGS, Scope, Section, ValueKind},
         },
         *,
@@ -352,18 +352,17 @@ mod tests {
         }
     }
 
-    /// Verifies that the default model of each compiled system is the built-in model of its family.
+    /// Verifies that the configuration of the default model of each compiled system holds that model.
     #[test]
-    fn default_models_match_the_built_in_configuration() {
+    fn default_models_build_their_configuration() {
         for system in compiled_systems() {
-            let mut config = EmulatorConfig::default();
-            resolve_model(&mut config, system.default_model).expect("default model resolves");
+            let model = MachineSelection::of_system(system).expect("default model resolves");
+            let config = EmulatorConfig::for_model(model);
             assert_eq!(system_of(config.target), system);
-            let defaults = EmulatorConfig {
-                target: config.target,
-                ..EmulatorConfig::default()
-            };
-            assert_eq!(model_name(&defaults), system.default_model);
+            assert_eq!(model_name(&config), system.default_model);
+            let mut resolved = first_system_config();
+            resolve_model(&mut resolved, system.default_model).expect("default model resolves");
+            assert_eq!(resolved.target, config.target);
         }
     }
 
@@ -375,7 +374,7 @@ mod tests {
         std::fs::create_dir_all(roms.join("at")).expect("folder is created");
         let mut config = EmulatorConfig {
             x1_roms: Some(PathBuf::from("/explicit/x1")),
-            ..EmulatorConfig::default()
+            ..first_system_config()
         };
         apply_rom_folder_defaults(&mut config, roms).expect("derivation applies");
         assert_eq!(config.x1_roms, Some(PathBuf::from("/explicit/x1")));

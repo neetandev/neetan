@@ -590,10 +590,13 @@ impl<T: TraceSink> X68kBus<T> {
     }
 
     /// Flushes every mounted floppy to its backing file.
-    pub fn flush_floppies(&mut self) {
-        for drive in self.floppy_drives.iter_mut().flatten() {
-            drive.flush();
-        }
+    pub fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+        common::FlushError::combine(
+            self.floppy_drives
+                .iter_mut()
+                .flatten()
+                .map(|drive| drive.flush()),
+        )
     }
 }
 

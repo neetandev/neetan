@@ -13,7 +13,8 @@ pub const SETTINGS_FILE_NAME: &str = "neetan.conf";
 pub struct Locations {
     /// The current directory of the process.
     pub current_directory: PathBuf,
-    /// The folder of the executable, when it is known.
+    /// The folder of the executable after following symbolic links to the
+    /// executable file, when it is known.
     pub executable_directory: Option<PathBuf>,
     /// The SDL pref path, when SDL provides one.
     pub pref_path: Option<PathBuf>,
@@ -25,6 +26,7 @@ impl Locations {
         let current_directory =
             std::env::current_dir().context("Failed to read the current directory")?;
         let executable_directory = std::env::current_exe()
+            .and_then(std::fs::canonicalize)
             .ok()
             .and_then(|executable| executable.parent().map(Path::to_path_buf));
         let pref_path = sdl3::filesystem::get_pref_path(crate::COMPANY_NAME, crate::GAME_NAME);
@@ -94,6 +96,38 @@ fn parent_folder(file: &Path) -> PathBuf {
     file.parent().map_or_else(PathBuf::new, Path::to_path_buf)
 }
 
+/// The resource folder of an installation relative to the folder of the
+/// executable: `share/neetan` beside the `bin` folder on Linux.
+#[cfg(target_os = "linux")]
+const RESOURCE_FOLDER: &str = "../share/neetan";
+/// The resource folder of an installation relative to the folder of the
+/// executable: the `Resources` folder of the application bundle on macOS.
+#[cfg(target_os = "macos")]
+const RESOURCE_FOLDER: &str = "../Resources";
+/// The resource folder of an installation relative to the folder of the
+/// executable: the folder of the executable itself.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const RESOURCE_FOLDER: &str = ".";
+
+/// Returns the resource folder of the installation whose executable lies in
+/// `executable_directory`. A symbolic link to the folder is followed first.
+#[must_use]
+pub fn resource_folder(executable_directory: &Path) -> PathBuf {
+    let directory = std::fs::canonicalize(executable_directory)
+        .unwrap_or_else(|_| executable_directory.to_path_buf());
+    let folder = resolve_path(&directory, Path::new(RESOURCE_FOLDER));
+    let mut normalized = PathBuf::new();
+    for component in folder.components() {
+        match component {
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other),
+        }
+    }
+    normalized
+}
+
 /// Returns `path` as an absolute path. A relative path lies below `base`.
 #[must_use]
 pub fn resolve_path(base: &Path, path: &Path) -> PathBuf {
@@ -125,6 +159,41 @@ pub fn resolve_value(setting: &Setting, base: &Path, value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verifies that the resource folder follows a symbolic link to the folder of the executable.
+    #[cfg(unix)]
+    #[test]
+    fn the_resource_folder_follows_a_linked_executable_folder() {
+        let base = std::env::temp_dir().join(format!(
+            "neetan_resource_folder_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let binaries = base.join("install").join("usr").join("bin");
+        std::fs::create_dir_all(&binaries).expect("folder is created");
+        let link = base.join("linked-bin");
+        std::os::unix::fs::symlink(&binaries, &link).expect("link is created");
+        let real = std::fs::canonicalize(&binaries).expect("folder exists");
+        let folder = resource_folder(&link);
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(folder, resource_folder(&real));
+        assert!(folder.starts_with(real.parent().expect("bin has a parent")));
+    }
+
+    /// Verifies that the resource folder of an installation follows the layout of the platform.
+    #[test]
+    fn the_resource_folder_follows_the_platform_layout() {
+        let folder = resource_folder(Path::new("/nonexistent/neetan/usr/bin"));
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            folder,
+            PathBuf::from("/nonexistent/neetan/usr/share/neetan")
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(folder, PathBuf::from("/nonexistent/neetan/usr/Resources"));
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        assert_eq!(folder, PathBuf::from("/nonexistent/neetan/usr/bin"));
+    }
 
     /// Verifies the discovery order: the explicit file, the current directory, the executable folder and the pref path.
     #[test]

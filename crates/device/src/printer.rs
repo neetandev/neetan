@@ -25,6 +25,8 @@ pub struct Printer {
     /// Embedded state for save/restore.
     pub state: PrinterState,
     output: Option<std::fs::File>,
+    /// The first write error since the last flush.
+    write_error: Option<String>,
 }
 
 impl Default for Printer {
@@ -43,6 +45,7 @@ impl Printer {
                 attached: false,
             },
             output: None,
+            write_error: None,
         }
     }
 
@@ -123,10 +126,20 @@ impl Printer {
         self.check_strobe(old, self.state.port_c);
     }
 
-    /// Flushes the output file if attached.
-    pub fn flush(&mut self) {
-        if let Some(ref mut file) = self.output {
-            let _ = file.flush();
+    /// Flushes the output file if attached. Returns the first write error
+    /// since the last flush.
+    pub fn flush(&mut self) -> Result<(), common::FlushError> {
+        if let Some(ref mut file) = self.output
+            && let Err(err) = file.flush()
+            && self.write_error.is_none()
+        {
+            self.write_error = Some(err.to_string());
+        }
+        match self.write_error.take() {
+            Some(message) => Err(common::FlushError::new(format!(
+                "printer output could not be written: {message}"
+            ))),
+            None => Ok(()),
         }
     }
 
@@ -135,8 +148,10 @@ impl Printer {
         if (old & 0x80 == 0)
             && (new & 0x80 != 0)
             && let Some(ref mut file) = self.output
+            && let Err(err) = file.write_all(&[self.state.data])
+            && self.write_error.is_none()
         {
-            let _ = file.write_all(&[self.state.data]);
+            self.write_error = Some(err.to_string());
         }
     }
 }

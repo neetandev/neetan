@@ -21,6 +21,15 @@ impl VideoSubsystem {
         })
     }
 
+    /// Returns the usable size of the primary display in screen coordinates:
+    /// the display without the task bars and docks of the desktop. `None`
+    /// when SDL does not know it.
+    pub fn primary_display_usable_size(&self) -> Option<(u32, u32)> {
+        // Safety: The video subsystem is initialized.
+        let display = unsafe { ffi::SDL_GetPrimaryDisplay() };
+        display_usable_size(display)
+    }
+
     /// Creates a [`WindowBuilder`] with the given title and dimensions.
     pub fn window(&self, title: &str, width: u32, height: u32) -> WindowBuilder {
         WindowBuilder {
@@ -38,6 +47,26 @@ impl Drop for VideoSubsystem {
         // Safety: Matches the SDL_InitSubSystem call in new().
         unsafe { init::SDL_QuitSubSystem(init::SDL_INIT_VIDEO) }
     }
+}
+
+/// Returns the usable size of `display` in screen coordinates, or `None`
+/// when SDL does not know it.
+fn display_usable_size(display: ffi::SDL_DisplayID) -> Option<(u32, u32)> {
+    if display.0 == 0 {
+        return None;
+    }
+    let mut bounds = SDL_Rect {
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 0,
+    };
+    // Safety: The display id came from SDL and `bounds` is a valid rectangle.
+    let ok = unsafe { ffi::SDL_GetDisplayUsableBounds(display, &mut bounds) };
+    if !ok || bounds.w <= 0 || bounds.h <= 0 {
+        return None;
+    }
+    Some((bounds.w as u32, bounds.h as u32))
 }
 
 /// Builder for creating an SDL3 window.
@@ -215,6 +244,22 @@ impl Window {
             return Err(crate::get_error());
         }
         Ok(())
+    }
+
+    /// Returns the usable size of the display of the window in screen
+    /// coordinates, or `None` when SDL does not know it.
+    pub fn display_usable_size(&self) -> Option<(u32, u32)> {
+        // Safety: Window pointer is valid.
+        let display = unsafe { ffi::SDL_GetDisplayForWindow(self.ptr) };
+        display_usable_size(display)
+    }
+
+    /// Waits until the window system applied the pending size, position
+    /// and fullscreen changes of the window. Returns `false` when the wait
+    /// timed out first.
+    pub fn sync(&self) -> bool {
+        // Safety: Window pointer is valid.
+        unsafe { ffi::SDL_SyncWindow(self.ptr) }
     }
 
     /// Removes the aspect ratio lock of the window.

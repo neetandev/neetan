@@ -13,13 +13,14 @@ mod test_support;
 
 use std::time::Instant;
 
-use common::{Error, JoystickState, Machine, StringError, error, info, warn};
+use common::{Error, FlushError, JoystickState, Machine, StringError, error, info, warn};
+use sdl3_backend::DisplayAspectMode;
 
 pub(crate) use self::panic_guard::catch_panic;
 use crate::{
     Result,
     config::{AspectMode, Backend, EmulatorConfig, ScalingMode, WindowMode},
-    host::Host,
+    host::{Host, graphics_display_aspect_mode, wants_large_native_target},
     input::{KeyOverrides, KeyboardForwardingState},
     machines::{initialize_machine, sdl_host_date_time_source},
     media_dialog::{ImageEntry, MediaDialog},
@@ -28,11 +29,20 @@ use crate::{
 /// Analog-stick magnitude past which a left-stick axis counts as a held direction.
 const GAMEPAD_AXIS_DEADZONE: i16 = 16384;
 
+/// The start of a session.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum LaunchOrigin {
+    /// The command line started the game.
+    CommandLine,
+    /// The game manager started the game.
+    Manager,
+}
+
 /// The reason a session ends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SessionExit {
-    /// The user pressed Right Ctrl + Q.
-    Quit,
+    /// The user pressed Right Ctrl + Q, or Right Ctrl + Esc in a game of the manager.
+    UserExit,
     /// The guest requested a system shutdown.
     GuestShutdown,
     /// Emulator code panicked.
@@ -106,23 +116,53 @@ pub(crate) struct Session {
     last_emulation_tick: Instant,
     /// The reason the session ends, once one is known.
     exit: Option<SessionExit>,
+    /// The start of the session.
+    origin: LaunchOrigin,
+    /// Whether the media of the machine were flushed.
+    media_flushed: bool,
+    /// The failed writes of the flushes before a media swap, an eject and a
+    /// hard reset. The flush at the end of the session reports them too.
+    earlier_flush_errors: Vec<FlushError>,
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
-        let machine = self.machine.as_mut();
-        flush_guarded("printer", || machine.flush_printer());
-        flush_guarded("cartridges", || machine.flush_cartridges());
-        flush_guarded("floppy disks", || machine.flush_floppies());
-        flush_guarded("hard disks", || machine.flush_hdds());
+        if !self.media_flushed {
+            let _ = self.flush_media();
+        }
     }
 }
 
-/// Runs one flush of the machine and logs a panic of it.
-fn flush_guarded(what: &str, flush: impl FnOnce()) {
-    if let Err(message) = catch_panic(flush) {
-        error!("Flushing the {what} panicked: {message}");
+/// Runs one flush of the machine and logs its error or its panic. A panic
+/// becomes an error of the flush.
+fn flush_guarded(
+    what: &str,
+    flush: impl FnOnce() -> std::result::Result<(), FlushError>,
+) -> std::result::Result<(), FlushError> {
+    let result = catch_panic(flush).unwrap_or_else(|message| {
+        Err(FlushError::new(format!(
+            "the flush of the {what} panicked: {message}"
+        )))
+    });
+    if let Err(error) = &result {
+        for message in &error.messages {
+            error!("Flushing the {what} failed: {message}");
+        }
     }
+    result
+}
+
+/// Writes the printer output, the cartridges, the floppy disks and the hard
+/// disks of `machine` back. Each flush runs under its own guard. Returns the
+/// errors of every flush that failed or panicked.
+pub(super) fn flush_machine_media(
+    machine: &mut dyn Machine,
+) -> std::result::Result<(), FlushError> {
+    let printer = flush_guarded("printer", || machine.flush_printer());
+    let cartridges = flush_guarded("cartridges", || machine.flush_cartridges());
+    let floppies = flush_guarded("floppy disks", || machine.flush_floppies());
+    let hard_disks = flush_guarded("hard disks", || machine.flush_hdds());
+    FlushError::combine([printer, cartridges, floppies, hard_disks])
 }
 
 impl Session {
@@ -132,6 +172,7 @@ impl Session {
         config: EmulatorConfig,
         key_overrides: KeyOverrides,
         backend: Backend,
+        origin: LaunchOrigin,
     ) -> Result<Self> {
         let fdd1_entries: Vec<ImageEntry> =
             config.fdd1.iter().cloned().map(ImageEntry::new).collect();
@@ -214,8 +255,48 @@ impl Session {
             fast_forward: false,
             last_emulation_tick: Instant::now(),
             exit: None,
+            origin,
+            media_flushed: false,
+            earlier_flush_errors: Vec::new(),
             config,
         })
+    }
+
+    /// Writes the printer output, the cartridges, the floppy disks and the
+    /// hard disks of the machine back. Each flush runs under its own guard.
+    /// Returns the errors of every flush that failed or panicked, after the
+    /// errors of the earlier flushes of the session.
+    pub(crate) fn flush_media(&mut self) -> std::result::Result<(), FlushError> {
+        self.media_flushed = true;
+        let earlier = std::mem::take(&mut self.earlier_flush_errors);
+        let last = flush_machine_media(self.machine.as_mut());
+        FlushError::combine(earlier.into_iter().map(Err).chain(std::iter::once(last)))
+    }
+
+    /// Keeps the error of a flush during the session for the end of the
+    /// session.
+    pub(super) fn keep_flush_result(&mut self, result: std::result::Result<(), FlushError>) {
+        if let Err(error) = result {
+            self.earlier_flush_errors.push(error);
+        }
+    }
+
+    /// Writes the floppy disks back before a floppy swap or eject and keeps
+    /// a failed write for the end of the session.
+    pub(super) fn flush_floppies_before_swap(&mut self) {
+        let machine = self.machine.as_mut();
+        let result = flush_guarded("floppy disks", || machine.flush_floppies());
+        self.keep_flush_result(result);
+    }
+
+    /// The display aspect mode of the graphics engine for the game.
+    pub(crate) fn display_aspect_mode(&self) -> DisplayAspectMode {
+        graphics_display_aspect_mode(self.config.aspect_mode)
+    }
+
+    /// Whether the frames of the game need the large native target.
+    pub(crate) fn large_native_target(&self) -> bool {
+        wants_large_native_target(&self.config)
     }
 
     /// The aspect mode of the game.
@@ -408,9 +489,9 @@ mod tests {
     fn a_panic_replaces_an_earlier_exit_reason() {
         let log = CallLog::default();
         let mut session = session_with(fake_machine(&log));
-        session.request_exit(SessionExit::Quit);
+        session.request_exit(SessionExit::UserExit);
         session.request_exit(SessionExit::GuestShutdown);
-        assert_eq!(session.exit(), Some(&SessionExit::Quit));
+        assert_eq!(session.exit(), Some(&SessionExit::UserExit));
 
         let _: Option<()> = session.guarded(|_| panic!("late panic"));
         assert_eq!(
@@ -451,7 +532,89 @@ mod tests {
             panic_on_floppy_flush: true,
             ..fake_machine(&log)
         };
-        drop(session_with(machine));
+        let mut session = session_with(machine);
+        let error = session
+            .flush_media()
+            .expect_err("the floppy flush panicked");
+        assert_eq!(
+            error.messages,
+            ["the flush of the floppy disks panicked: the floppy image is gone"]
+        );
+        drop(session);
+        assert_eq!(
+            *log.borrow(),
+            ["printer", "cartridges", "floppies", "hard disks"]
+        );
+    }
+
+    /// Verifies that a failed write of a medium reaches the result of the flush.
+    #[test]
+    fn a_failed_write_reaches_the_flush_result() {
+        let log = CallLog::default();
+        let machine = FakeMachine {
+            hard_disk_flush_error: Some("hard disk image /games/a.hdi could not be written"),
+            ..fake_machine(&log)
+        };
+        let mut session = session_with(machine);
+        let error = session
+            .flush_media()
+            .expect_err("the hard disk flush failed");
+        assert_eq!(
+            error.messages,
+            ["hard disk image /games/a.hdi could not be written"]
+        );
+    }
+
+    /// Verifies that a failed write before an eject reaches the flush at the end of the session.
+    #[test]
+    fn a_failed_write_before_an_eject_reaches_the_end_of_the_session() {
+        let log = CallLog::default();
+        let machine = FakeMachine {
+            floppy_flush_error: Some("floppy image /games/b.d88 could not be written"),
+            ..fake_machine(&log)
+        };
+        let mut session = session_with(machine);
+        session.eject_floppy(0);
+        let error = session.flush_media().expect_err("the writes failed");
+        assert_eq!(
+            error.messages,
+            ["floppy image /games/b.d88 could not be written"]
+        );
+    }
+
+    /// Verifies that three swaps with one unwritable image in another drive report it once.
+    #[test]
+    fn repeated_swaps_report_an_unwritable_image_once() {
+        let log = CallLog::default();
+        let machine = FakeMachine {
+            floppy_flush_error: Some("floppy image /games/b.d88 could not be written"),
+            ..fake_machine(&log)
+        };
+        let mut session = session_with(machine);
+        for _ in 0..3 {
+            session.eject_floppy(0);
+        }
+        assert_eq!(
+            log.borrow()
+                .iter()
+                .filter(|call| **call == "floppies")
+                .count(),
+            3
+        );
+        let error = session.flush_media().expect_err("the writes failed");
+        assert_eq!(
+            error.messages,
+            ["floppy image /games/b.d88 could not be written"]
+        );
+    }
+
+    /// Verifies that the drop of a flushed session flushes nothing again.
+    #[test]
+    fn an_explicit_flush_replaces_the_flush_of_the_drop() {
+        let log = CallLog::default();
+        let mut session = session_with(fake_machine(&log));
+        assert_eq!(session.flush_media(), Ok(()));
+        drop(session);
         assert_eq!(
             *log.borrow(),
             ["printer", "cartridges", "floppies", "hard disks"]

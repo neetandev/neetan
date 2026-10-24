@@ -8,7 +8,7 @@ use super::{
 use crate::{Rect, RectStyle};
 
 /// The height of the header of a modal panel.
-const HEADER_HEIGHT: f32 = 52.0;
+pub const MODAL_HEADER_HEIGHT: f32 = 52.0;
 
 /// The smallest distance between a modal panel and the edge of the target.
 const MARGIN: f32 = 16.0;
@@ -68,7 +68,7 @@ pub fn modal(
         &RectStyle::filled(theme.panel, theme.panel_radius)
             .with_stroke(theme.stroke, theme.panel_edge),
     );
-    let (header, body) = panel.cut_top(HEADER_HEIGHT);
+    let (header, body) = panel.cut_top(MODAL_HEADER_HEIGHT);
     let close_area = Rect::new(
         header.right() - theme.padding * 0.75 - CLOSE_SIZE,
         header.y + (header.height - CLOSE_SIZE) * 0.5,
@@ -109,7 +109,7 @@ mod tests {
         let response = harness.frame(|context| modal(context, "media", (400.0, 300.0), "Media"));
         assert_eq!(response.panel, Rect::new(200.0, 150.0, 400.0, 300.0));
         assert_eq!(response.content.x, 216.0);
-        assert_eq!(response.content.y, 150.0 + HEADER_HEIGHT);
+        assert_eq!(response.content.y, 150.0 + MODAL_HEADER_HEIGHT);
         assert_eq!(response.content.bottom(), 434.0);
         assert!(!response.closed);
         let veil = harness.scene.instances()[0];

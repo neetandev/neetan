@@ -722,12 +722,12 @@ impl<const CPU_MODEL: u8, T: TraceSink> Machine for TownsMachine<CPU_MODEL, T> {
         self.refresh_boot_device();
     }
 
-    fn flush_floppies(&mut self) {
-        self.bus.flush_floppies();
+    fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+        self.bus.flush_floppies()
     }
 
-    fn flush_hdds(&mut self) {
-        self.bus.flush_hdds();
+    fn flush_hdds(&mut self) -> Result<(), common::FlushError> {
+        self.bus.flush_hdds()
     }
 
     fn hdd_image_bytes(&self, drive: usize) -> Option<Vec<u8>> {

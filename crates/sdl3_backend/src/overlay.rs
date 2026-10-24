@@ -620,12 +620,14 @@ mod tests {
             .close()
     }
 
+    /// The path of the font file below the repository root.
+    const REPOSITORY_FONT_PATH: &str = "font/SarasaUiJ-Regular.ttf";
+
     /// Loads the font of the user interface from the repository.
     fn load_fonts() -> (Fonts, gui::FontId) {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join(gui::fonts::FONT_DIRECTORY)
-            .join(gui::fonts::FONT_FILE);
+            .join(REPOSITORY_FONT_PATH);
         let data = std::fs::read(&path).expect("the font of the repository can be read");
         let mut fonts = Fonts::new();
         let font = fonts.add(data).expect("the font parses");

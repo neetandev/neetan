@@ -836,8 +836,8 @@ impl<T: TraceSink> Pc88VaBus<T> {
     }
 
     /// Flushes any dirty mounted floppies back to their source files.
-    pub(crate) fn flush_floppies(&mut self) {
-        self.floppy.flush_all_drives();
+    pub(crate) fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+        self.floppy.flush_all_drives()
     }
 }
 

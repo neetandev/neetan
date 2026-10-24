@@ -549,8 +549,8 @@ impl<T: TraceSink> Machine for AtMachine<T> {
         self.bus.eject_floppy(drive);
     }
 
-    fn flush_floppies(&mut self) {
-        self.bus.flush_floppies();
+    fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+        self.bus.flush_floppies()
     }
 
     fn startup_capabilities(&self) -> StartupCapabilities {
@@ -603,8 +603,8 @@ impl<T: TraceSink> Machine for AtMachine<T> {
         self.bus.hdd_image_bytes(drive)
     }
 
-    fn flush_hdds(&mut self) {
-        self.bus.flush_hdds();
+    fn flush_hdds(&mut self) -> Result<(), common::FlushError> {
+        self.bus.flush_hdds()
     }
 
     fn insert_cdrom(&mut self, path: &std::path::Path) -> Result<String, String> {

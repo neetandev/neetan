@@ -5,10 +5,44 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use machine_factory::config::systems::compiled_systems;
+
 use super::{
     Action, EmulatorConfig, LaunchRequest, Locations, build_configuration, parse_args_from,
 };
 use crate::input::KeyOverrides;
+
+/// Returns the default model of the first compiled system of the systems table.
+pub(crate) fn first_model() -> &'static str {
+    compiled_systems()
+        .next()
+        .expect("one system is compiled")
+        .default_model
+}
+
+/// Returns the built-in configuration of the default model of the first
+/// compiled system of the systems table.
+pub(crate) fn first_model_config() -> EmulatorConfig {
+    EmulatorConfig::for_model(first_model().parse().expect("the model is compiled"))
+}
+
+/// Returns `request` with `--machine` and the default model of the first
+/// compiled system before its flags.
+pub(crate) fn with_machine(mut request: LaunchRequest) -> LaunchRequest {
+    let machine = machine_factory::config::settings::find_setting(
+        machine_factory::config::settings::MACHINE_KEY,
+    )
+    .expect("machine is a table key");
+    request.flags.insert(0, (machine, first_model().to_owned()));
+    request
+}
+
+/// Returns `args` after `--machine` with the default model of the first compiled system.
+pub(crate) fn with_first_model<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut arguments = vec!["--machine", first_model()];
+    arguments.extend_from_slice(args);
+    arguments
+}
 
 /// Counter that keeps the temporary folders of the tests apart.
 static FOLDER_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -61,11 +95,15 @@ impl TestLocations {
             .expect("test locations have a pref path")
     }
 
+    /// Parses `args` into an action.
+    pub(crate) fn action(&self, args: &[&str]) -> Action {
+        parse_args_from(args.iter().map(|arg| (*arg).to_owned()), &self.locations)
+            .expect("arguments should parse")
+    }
+
     /// Parses `args` into a run configuration.
     pub(crate) fn parse(&self, args: &[&str]) -> (EmulatorConfig, KeyOverrides) {
-        match parse_args_from(args.iter().map(|arg| (*arg).to_owned()), &self.locations)
-            .expect("arguments should parse")
-        {
+        match self.action(args) {
             Action::Run(config, key_map) => (*config, key_map),
             _ => panic!("expected run action"),
         }
@@ -86,10 +124,12 @@ impl TestLocations {
         path
     }
 
-    /// Parses a settings file in the pref path that holds `contents`.
+    /// Parses a settings file in the pref path that holds `contents`, with the
+    /// default model of the first compiled system on the command line.
     pub(crate) fn parse_settings(&self, name: &str, contents: &str) -> EmulatorConfig {
         let path = self.file(name, contents);
-        self.parse(&["--settings", &path.to_string_lossy()]).0
+        let path_text = path.to_string_lossy();
+        self.parse(&with_first_model(&["--settings", &path_text])).0
     }
 
     /// Parses a game file in the pref path that holds `contents`.
@@ -112,14 +152,17 @@ impl Drop for TestLocations {
     }
 }
 
-/// Parses `args` with fresh locations into a run configuration.
+/// Parses `args` after `--machine` with the default model of the first
+/// compiled system with fresh locations into a run configuration.
 pub(crate) fn parse_run_config(args: &[&str]) -> (EmulatorConfig, KeyOverrides) {
-    TestLocations::new("run").parse(args)
+    TestLocations::new("run").parse(&with_first_model(args))
 }
 
-/// Returns the error of an argument list that must fail to parse with fresh locations.
+/// Returns the error of an argument list after `--machine` with the default
+/// model of the first compiled system that must fail to parse with fresh
+/// locations.
 pub(crate) fn parse_error(args: &[&str]) -> String {
-    TestLocations::new("error").error(args)
+    TestLocations::new("error").error(&with_first_model(args))
 }
 
 /// Writes `contents` to `path`, creating its folder.

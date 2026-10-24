@@ -149,6 +149,18 @@ pub enum WindowEvent {
     /// The display scale of the window changed, for example after a move to
     /// another display.
     DisplayScaleChanged,
+    /// The window content was lost and needs a new frame.
+    Exposed,
+    /// The window was shown.
+    Shown,
+    /// The window was hidden.
+    Hidden,
+    /// The window was minimized.
+    Minimized,
+    /// The window was restored from the minimized or maximized state.
+    Restored,
+    /// The window is fully covered by other windows.
+    Occluded,
     /// A window event not handled by this wrapper.
     Other,
 }
@@ -259,6 +271,30 @@ fn convert_event(raw: &events::SDL_Event) -> Event {
 
         events::SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED => Event::Window {
             win_event: WindowEvent::DisplayScaleChanged,
+        },
+
+        events::SDL_EVENT_WINDOW_EXPOSED => Event::Window {
+            win_event: WindowEvent::Exposed,
+        },
+
+        events::SDL_EVENT_WINDOW_SHOWN => Event::Window {
+            win_event: WindowEvent::Shown,
+        },
+
+        events::SDL_EVENT_WINDOW_HIDDEN => Event::Window {
+            win_event: WindowEvent::Hidden,
+        },
+
+        events::SDL_EVENT_WINDOW_MINIMIZED => Event::Window {
+            win_event: WindowEvent::Minimized,
+        },
+
+        events::SDL_EVENT_WINDOW_RESTORED => Event::Window {
+            win_event: WindowEvent::Restored,
+        },
+
+        events::SDL_EVENT_WINDOW_OCCLUDED => Event::Window {
+            win_event: WindowEvent::Occluded,
         },
 
         events::SDL_EVENT_DISPLAY_CONTENT_SCALE_CHANGED => Event::Display {

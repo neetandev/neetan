@@ -172,6 +172,13 @@
       (lambda (machine) machine)))
   'neetan/argument)
 
+(expect-symbol "specification without a machine"
+  (lambda ()
+    (call-with-machine
+      '((soundboard . |26k|))
+      (lambda (machine) machine)))
+  'neetan/argument)
+
 (expect-symbol "target and model disagree"
   (lambda ()
     (call-with-machine

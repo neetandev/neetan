@@ -490,8 +490,8 @@ impl<T: TraceSink> common::Machine for X1Machine<T> {
         self.bus.eject_cassette();
     }
 
-    fn flush_floppies(&mut self) {
-        self.bus.flush_floppies();
+    fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+        self.bus.flush_floppies()
     }
 }
 

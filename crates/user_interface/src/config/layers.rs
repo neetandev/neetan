@@ -14,22 +14,22 @@ use std::path::{Path, PathBuf};
 
 use common::{StringError, bail, info, warn};
 use machine_factory::config::{
-    EmulatorConfig, Target,
+    DEFAULT_CONFIG_FOLDER, DEFAULT_GUI_FONT, DEFAULT_ROMS_FOLDER, EmulatorConfig, MachineSelection,
+    Target,
     settings::{
-        CONFIG_FOLDER_KEY, ExplicitSettings, MACHINE_KEY, ROMS_FOLDER_KEY, Setting,
-        apply_derived_defaults, find_setting,
+        CONFIG_FOLDER_KEY, ExplicitSettings, GUI_FONT_KEY, MACHINE_KEY, ROMS_FOLDER_KEY, Setting,
+        apply_derived_defaults,
     },
     systems::{System, apply_rom_folder_defaults, compiled_systems, system_of},
 };
 
 use super::{
-    discovery::{Locations, SettingsLocation, discover_settings, resolve_path},
+    discovery::{Locations, SettingsLocation, discover_settings, resolve_path, resource_folder},
     document::ConfigDocument,
     keymap::parse_key_binding,
     reading::{
         Diagnostic, Layer, LayerKind, LayerLine, Severity, foreign_machine_message,
-        invalid_key_binding_message, is_foreign_machine, machine_target, read_document,
-        read_game_document,
+        invalid_key_binding_message, is_foreign_machine, read_document, read_game_document,
     },
 };
 use crate::input::KeyOverrides;
@@ -115,11 +115,17 @@ pub enum ModelSource {
     BuiltIn,
 }
 
+/// The error of a launch without a machine.
+pub(crate) const NO_MACHINE_MESSAGE: &str = "the game needs a machine: set machine in the game \
+     file or in the settings file, pass --machine, or put the game file into the folder of its \
+     system";
+
 /// Returns the family of a launch.
 ///
 /// The family comes from the first source of: the `machine` of the command
-/// line or of the last game file that sets one, the system of the launch, the
-/// `machine` of the settings file and the built-in default.
+/// line or of the last game file that sets one, the system of the launch and
+/// the `machine` of the settings file. A launch without any of them is an
+/// error.
 pub(crate) fn launch_target(
     command_line: &Layer,
     games: &[Layer],
@@ -134,8 +140,10 @@ pub(crate) fn launch_target(
         .or(launch_system.map(|system| system.default_model))
         .or(settings_machine);
     match family_model {
-        Some(model) => machine_target(model),
-        None => Ok(EmulatorConfig::default().target),
+        Some(model) => model
+            .parse::<MachineSelection>()
+            .map(MachineSelection::target),
+        None => Err(NO_MACHINE_MESSAGE.to_owned()),
     }
 }
 
@@ -196,6 +204,9 @@ pub struct HostLayers {
     settings_diagnostics: Vec<Diagnostic>,
     /// The layer of the command line flags.
     command_line: Layer,
+    /// The resource folder of the installation, when the folder of the
+    /// executable is known.
+    resource_folder: Option<PathBuf>,
 }
 
 impl HostLayers {
@@ -220,6 +231,10 @@ impl HostLayers {
             settings,
             settings_diagnostics,
             command_line: Layer::command_line(&request.flags),
+            resource_folder: locations
+                .executable_directory
+                .as_deref()
+                .map(resource_folder),
         })
     }
 
@@ -241,7 +256,8 @@ impl HostLayers {
         &self.settings_diagnostics
     }
 
-    /// Returns the last value of the host key `key`: the command line first, then the settings file.
+    /// Returns the last value of `key` on the command line, or else in the
+    /// settings file. It reads the keys of every scope.
     #[must_use]
     pub fn host_value(&self, key: &str) -> Option<&str> {
         std::iter::once(&self.command_line)
@@ -254,7 +270,7 @@ impl HostLayers {
     pub fn config_folder(&self) -> PathBuf {
         let folder = self
             .host_value(CONFIG_FOLDER_KEY)
-            .map_or_else(|| EmulatorConfig::default().config_folder, PathBuf::from);
+            .map_or_else(|| PathBuf::from(DEFAULT_CONFIG_FOLDER), PathBuf::from);
         resolve_path(self.root(), &folder)
     }
 
@@ -263,8 +279,25 @@ impl HostLayers {
     pub fn roms_folder(&self) -> PathBuf {
         let folder = self
             .host_value(ROMS_FOLDER_KEY)
-            .map_or_else(|| EmulatorConfig::default().roms_folder, PathBuf::from);
+            .map_or_else(|| PathBuf::from(DEFAULT_ROMS_FOLDER), PathBuf::from);
         resolve_path(self.root(), &folder)
+    }
+
+    /// Returns the font file of the user interface as an absolute path.
+    ///
+    /// A value of the settings file lies below the root and a flag value
+    /// below the current directory. The built-in default lies below the
+    /// resource folder of the installation, or below the root when the
+    /// folder of the executable is unknown.
+    #[must_use]
+    pub fn gui_font(&self) -> PathBuf {
+        match self.host_value(GUI_FONT_KEY) {
+            Some(value) => resolve_path(self.root(), Path::new(value)),
+            None => resolve_path(
+                self.resource_folder.as_deref().unwrap_or(self.root()),
+                Path::new(DEFAULT_GUI_FONT),
+            ),
+        }
     }
 
     /// Returns the layer of the settings file.
@@ -340,10 +373,6 @@ pub fn build_configuration(
         None
     };
 
-    let mut config = EmulatorConfig::default();
-    let mut explicit = ExplicitSettings::default();
-    let mut key_map = KeyOverrides::new();
-
     let (machine, _) = launch_model(
         target,
         host.settings_layer(),
@@ -351,11 +380,10 @@ pub fn build_configuration(
         &game_layers,
         host.command_line_layer(),
     );
-    if let Some(setting) = find_setting(MACHINE_KEY) {
-        explicit
-            .apply(&mut config, setting, machine)
-            .map_err(StringError)?;
-    }
+    let model = machine.parse::<MachineSelection>().map_err(StringError)?;
+    let mut config = EmulatorConfig::for_model(model);
+    let mut explicit = ExplicitSettings::default();
+    let mut key_map = KeyOverrides::new();
 
     let layers = host
         .settings_layer()
@@ -369,6 +397,7 @@ pub fn build_configuration(
 
     config.config_folder = resolve_path(root, &config.config_folder);
     config.roms_folder = resolve_path(root, &config.roms_folder);
+    config.gui_font = host.gui_font();
     let roms_folder = config.roms_folder.clone();
     apply_rom_folder_defaults(&mut config, &roms_folder).map_err(StringError)?;
     apply_derived_defaults(&mut config, explicit);
@@ -468,7 +497,9 @@ mod tests {
 
     use super::*;
     use crate::config::{
-        test_support::{TestLocations, touch, write_file},
+        test_support::{
+            TestLocations, first_model, touch, with_first_model, with_machine, write_file,
+        },
         *,
     };
 
@@ -478,9 +509,12 @@ mod tests {
         let test = TestLocations::new("invalid");
         let (config, _) = test.parse_game(
             "invalid.conf",
-            "fdd3 = disk.d88\ncpu-mode = turbo\ncrt = maybe\nscaling = nearest\n",
+            &format!(
+                "machine = {}\nfdd3 = disk.d88\ncpu-mode = turbo\ncrt = maybe\nscaling = nearest\n",
+                first_model()
+            ),
         );
-        let (expected, _) = test.parse(&["--scaling", "nearest"]);
+        let (expected, _) = test.parse(&with_first_model(&["--scaling", "nearest"]));
         assert_eq!(config, expected);
     }
 
@@ -507,17 +541,17 @@ mod tests {
             &root.join(SETTINGS_FILE_NAME),
             "fdd1 = base.d88\nhdd1 = disk.hdi\npc98-roms = /explicit/pc98\n",
         );
-        let config = test.build(&LaunchRequest::default());
+        let config = test.build(&with_machine(LaunchRequest::default()));
         assert_eq!(config.fdd1, vec![root.join("base.d88")]);
         assert_eq!(config.hdd1, Some(root.join("disk.hdi")));
         assert_eq!(config.pc98_roms, Some(PathBuf::from("/explicit/pc98")));
 
         let game = root.join("game.conf");
         write_file(&game, "fdd1 =\nhdd1 =\n");
-        let config = test.build(&LaunchRequest {
+        let config = test.build(&with_machine(LaunchRequest {
             game_files: vec![game],
             ..LaunchRequest::default()
-        });
+        }));
         assert!(config.fdd1.is_empty());
         assert_eq!(config.hdd1, None);
 
@@ -525,7 +559,7 @@ mod tests {
             &root.join(SETTINGS_FILE_NAME),
             &format!("pc98-roms =\n{CONFIG_FOLDER_KEY} =\nroms-folder =\n"),
         );
-        let config = test.build(&LaunchRequest::default());
+        let config = test.build(&with_machine(LaunchRequest::default()));
         assert_eq!(config.pc98_roms, Some(root.join("roms").join("pc98")));
         assert_eq!(config.config_folder, root.join("config"));
         assert_eq!(config.roms_folder, root.join("roms"));
@@ -548,12 +582,12 @@ mod tests {
         ]);
         let fdd2 = find_setting("fdd2").expect("fdd2 is a table key");
 
-        let config = test.build(&LaunchRequest {
+        let config = test.build(&with_machine(LaunchRequest {
             settings: Some(settings),
             game_files: vec![game],
             flags: vec![(fdd2, resolve_value(fdd2, &current, "disks/b.d88"))],
             system: None,
-        });
+        }));
         assert_eq!(config.printer, Some(root.join("out/printer.txt")));
         assert_eq!(config.fdd1, vec![root.join("disks/a.d88")]);
         assert_eq!(config.hdd1, Some(root.join("disks/c.hdi")));
@@ -561,7 +595,12 @@ mod tests {
         assert_eq!(config.config_folder, root.join("config"));
         assert_eq!(config.roms_folder, root.join("roms"));
 
-        let (config, _) = test.parse(&["--roms-folder", "my-roms", "--x1-roms", "x1"]);
+        let (config, _) = test.parse(&with_first_model(&[
+            "--roms-folder",
+            "my-roms",
+            "--x1-roms",
+            "x1",
+        ]));
         assert_eq!(config.roms_folder, current.join("my-roms"));
         assert_eq!(config.x1_roms, Some(current.join("x1")));
     }
@@ -615,30 +654,30 @@ mod tests {
         write_file(&second, "fdd1 = c.d88\n");
         let fdd1 = find_setting("fdd1").expect("fdd1 is a table key");
 
-        let config = test.build(&LaunchRequest::default());
+        let config = test.build(&with_machine(LaunchRequest::default()));
         assert_eq!(config.fdd1, vec![root.join("base.d88")]);
 
-        let config = test.build(&LaunchRequest {
+        let config = test.build(&with_machine(LaunchRequest {
             game_files: vec![first.clone()],
             ..LaunchRequest::default()
-        });
+        }));
         assert_eq!(config.fdd1, vec![root.join("a.d88"), root.join("b.d88")]);
 
-        let config = test.build(&LaunchRequest {
+        let config = test.build(&with_machine(LaunchRequest {
             game_files: vec![first.clone(), second],
             ..LaunchRequest::default()
-        });
+        }));
         assert_eq!(config.fdd1, vec![root.join("c.d88")]);
         assert_eq!(config.fdd2, vec![root.join("save.d88")]);
 
-        let config = test.build(&LaunchRequest {
+        let config = test.build(&with_machine(LaunchRequest {
             game_files: vec![first],
             flags: vec![
                 (fdd1, root.join("x.d88").to_string_lossy().into_owned()),
                 (fdd1, root.join("y.d88").to_string_lossy().into_owned()),
             ],
             ..LaunchRequest::default()
-        });
+        }));
         assert_eq!(config.fdd1, vec![root.join("x.d88"), root.join("y.d88")]);
     }
 
@@ -660,10 +699,10 @@ mod tests {
             "machine = PC9801RA\naudio-volume = 0.5\npc98-roms = game-roms\nfdd1 = game.d88\n",
         );
 
-        let config = test.build(&LaunchRequest {
+        let config = test.build(&with_machine(LaunchRequest {
             game_files: vec![game],
             ..LaunchRequest::default()
-        });
+        }));
         assert_eq!(config.backend, Backend::Modern);
         assert!((config.audio_volume - 1.0).abs() < f32::EPSILON);
         assert_eq!(config.pc98_roms, None);
@@ -675,7 +714,7 @@ mod tests {
             &root.join(SETTINGS_FILE_NAME),
             "backend = legacy\naudio-volume = 0.5\n",
         );
-        let config = test.build(&LaunchRequest::default());
+        let config = test.build(&with_machine(LaunchRequest::default()));
         assert_eq!(config.backend, Backend::Legacy);
         assert!((config.audio_volume - 0.5).abs() < f32::EPSILON);
     }
@@ -693,7 +732,7 @@ mod tests {
         write_file(&root.join("games").join("pc98.conf"), "soundboard = 14\n");
         write_file(&root.join("config").join("pc98.conf"), "soundboard = 86\n");
 
-        let config = test.build(&LaunchRequest::default());
+        let config = test.build(&with_machine(LaunchRequest::default()));
         assert_eq!(config.config_folder, root.join("games"));
         assert_eq!(config.soundboard, SoundboardType::Sb14);
     }
@@ -801,8 +840,79 @@ mod tests {
         assert_eq!(config.msx_model, MsxModel::Msx2);
 
         write_file(&root.join("config").join("game.conf"), "");
-        let (config, _) = test.parse(&["-c", "config/game.conf"]);
-        assert_eq!(config.target, EmulatorConfig::default().target);
+        assert_eq!(test.error(&["-c", "config/game.conf"]), NO_MACHINE_MESSAGE);
+    }
+
+    /// Verifies that the default GUI font lies below the root when the folder of the executable is unknown.
+    #[test]
+    fn the_default_gui_font_lies_below_the_root_without_an_executable_folder() {
+        let test = TestLocations::new("gui_font_root");
+        let root = test.current().to_path_buf();
+        write_file(&root.join(SETTINGS_FILE_NAME), "");
+        let locations = Locations {
+            executable_directory: None,
+            ..test.locations.clone()
+        };
+        let host = HostLayers::read(&LaunchRequest::default(), &locations).expect("settings read");
+        assert_eq!(host.gui_font(), root.join(DEFAULT_GUI_FONT));
+    }
+
+    /// Verifies the GUI font: the default resolves against the resource
+    /// folder of the installation, a settings file value against the root,
+    /// a flag value against the current directory, and a game file cannot
+    /// set it.
+    #[test]
+    fn the_gui_font_resolves_like_every_path_of_its_layer() {
+        let test = TestLocations::new("gui_font");
+        let current = test.current().to_path_buf();
+        let root = current.join("root");
+        let settings = root.join(SETTINGS_FILE_NAME);
+        let settings_text = settings.to_string_lossy().into_owned();
+        let host_font = |args: &[&str]| match test.action(args) {
+            Action::Manager(start) => HostLayers::read(&start.request, &start.locations)
+                .expect("settings read")
+                .gui_font(),
+            _ => panic!("expected the manager action"),
+        };
+
+        write_file(&settings, "");
+        let executable = test
+            .locations
+            .executable_directory
+            .clone()
+            .expect("test locations have an executable folder");
+        let default_font = resource_folder(&executable).join(DEFAULT_GUI_FONT);
+        assert!(!default_font.starts_with(&root));
+        assert_eq!(host_font(&["--settings", &settings_text]), default_font);
+        let (config, _) = test.parse(&with_first_model(&["--settings", &settings_text]));
+        assert_eq!(config.gui_font, default_font);
+
+        write_file(&settings, "gui-font = fonts/ui.ttf\n");
+        let settings_font = root.join("fonts").join("ui.ttf");
+        assert_eq!(host_font(&["--settings", &settings_text]), settings_font);
+        let (config, _) = test.parse(&with_first_model(&["--settings", &settings_text]));
+        assert_eq!(config.gui_font, settings_font);
+
+        let flag_font = current.join("my.ttf");
+        assert_eq!(
+            host_font(&["--settings", &settings_text, "--gui-font", "my.ttf"]),
+            flag_font
+        );
+        let (config, _) = test.parse(&with_first_model(&[
+            "--settings",
+            &settings_text,
+            "--gui-font=my.ttf",
+        ]));
+        assert_eq!(config.gui_font, flag_font);
+
+        let game = root.join("game.conf");
+        write_file(
+            &game,
+            &format!("machine = {}\ngui-font = game.ttf\n", first_model()),
+        );
+        let game_text = game.to_string_lossy().into_owned();
+        let (config, _) = test.parse(&["--settings", &settings_text, "-c", &game_text]);
+        assert_eq!(config.gui_font, settings_font);
     }
 
     #[cfg(all(feature = "pc98", feature = "msx"))]
@@ -891,7 +1001,7 @@ mod tests {
         std::fs::create_dir_all(root.join("roms").join("mt32")).expect("folder is created");
         write_file(&root.join(SETTINGS_FILE_NAME), "x1-roms = /explicit/x1\n");
 
-        let config = test.build(&LaunchRequest::default());
+        let config = test.build(&with_machine(LaunchRequest::default()));
         assert_eq!(config.pc98_roms, Some(root.join("roms").join("pc98")));
         assert_eq!(config.mt32_roms, Some(root.join("roms").join("mt32")));
         assert_eq!(config.at_roms, None);
@@ -903,7 +1013,7 @@ mod tests {
             &root.join(SETTINGS_FILE_NAME),
             "roms-folder = /elsewhere\npc98-roms = mine\n",
         );
-        let config = test.build(&LaunchRequest::default());
+        let config = test.build(&with_machine(LaunchRequest::default()));
         assert_eq!(config.pc98_roms, Some(root.join("mine")));
         assert_eq!(config.mt32_roms, None);
         assert_eq!(config.towns_roms, Some(PathBuf::from("/elsewhere/towns")));

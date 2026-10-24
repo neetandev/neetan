@@ -33,12 +33,10 @@ impl Session {
     }
 
     /// Flushes the media of the machine, creates the machine again and
-    /// inserts the first image of every drive.
+    /// inserts the first image of every drive. A failed flush is logged.
     pub(super) fn hard_reset(&mut self, host: &mut Host) {
-        self.machine.flush_printer();
-        self.machine.flush_cartridges();
-        self.machine.flush_floppies();
-        self.machine.flush_hdds();
+        let result = super::flush_machine_media(self.machine.as_mut());
+        self.keep_flush_result(result);
 
         let mut machine = match initialize_machine(
             &self.config,

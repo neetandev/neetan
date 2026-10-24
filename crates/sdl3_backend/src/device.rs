@@ -37,6 +37,20 @@ pub(crate) struct DeviceResources {
     pub(crate) device: GpuDevice,
 }
 
+impl DeviceResources {
+    /// Replaces the native target and the transfer buffer with the ones of
+    /// the large or the PC-98 sized target.
+    pub(crate) fn rebuild_native_target(&mut self, large_native_target: bool) -> Result<()> {
+        let native_target = create_native_target(&self.device, large_native_target)
+            .context("Failed to create native target")?;
+        let transfer_buffer = create_transfer_buffer(&self.device, large_native_target)
+            .context("Failed to create framebuffer transfer buffer")?;
+        self.native_target = native_target;
+        self.transfer_buffer = transfer_buffer;
+        Ok(())
+    }
+}
+
 /// Builds a [`DeviceResources`] bundle: device + samplers + native target + transfer buffer.
 pub(crate) fn create(
     window: &Window,
