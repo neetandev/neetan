@@ -217,6 +217,42 @@ impl Window {
         Ok(())
     }
 
+    /// Removes the aspect ratio lock of the window.
+    pub fn clear_aspect_ratio(&self) -> Result<(), Error> {
+        // Safety: Window pointer is valid. 0.0 means no limit for both bounds.
+        let ok = unsafe { ffi::SDL_SetWindowAspectRatio(self.ptr, 0.0, 0.0) };
+        if !ok {
+            return Err(crate::get_error());
+        }
+        Ok(())
+    }
+
+    /// Requests the size of the client area in screen coordinates. The
+    /// window system may deny the request or apply a different size.
+    pub fn set_size(&self, width: u32, height: u32) -> Result<(), Error> {
+        let width = i32::try_from(width).unwrap_or(i32::MAX);
+        let height = i32::try_from(height).unwrap_or(i32::MAX);
+        // Safety: Window pointer is valid.
+        let ok = unsafe { ffi::SDL_SetWindowSize(self.ptr, width, height) };
+        if !ok {
+            return Err(crate::get_error());
+        }
+        Ok(())
+    }
+
+    /// Sets the minimum size of the client area in screen coordinates. A zero
+    /// dimension means no limit.
+    pub fn set_minimum_size(&self, width: u32, height: u32) -> Result<(), Error> {
+        let width = i32::try_from(width).unwrap_or(i32::MAX);
+        let height = i32::try_from(height).unwrap_or(i32::MAX);
+        // Safety: Window pointer is valid.
+        let ok = unsafe { ffi::SDL_SetWindowMinimumSize(self.ptr, width, height) };
+        if !ok {
+            return Err(crate::get_error());
+        }
+        Ok(())
+    }
+
     /// Enables or disables fullscreen (borderless desktop) mode on this window.
     pub fn set_fullscreen(&self, fullscreen: bool) -> Result<(), Error> {
         let ok = unsafe { ffi::SDL_SetWindowFullscreen(self.ptr, fullscreen) };

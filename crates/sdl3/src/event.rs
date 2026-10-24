@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, mem::MaybeUninit};
+use std::{marker::PhantomData, mem::MaybeUninit, time::Duration};
 
 use sdl3_sys::events;
 
@@ -161,6 +161,9 @@ pub enum DisplayEvent {
     Other,
 }
 
+/// The nanoseconds of one millisecond.
+const NANOSECONDS_PER_MILLISECOND: u128 = 1_000_000;
+
 /// Polls SDL3 events. Obtained via [`crate::Sdl::event_pump`].
 pub struct EventPump {
     _marker: PhantomData<*mut ()>,
@@ -176,6 +179,27 @@ impl EventPump {
     /// Returns an iterator that drains all pending events.
     pub fn poll_iter(&mut self) -> EventPollIterator<'_> {
         EventPollIterator { _pump: self }
+    }
+
+    /// Waits up to `timeout` for the next event and removes it from the queue.
+    /// Returns `None` when the timeout elapses without an event. The wait
+    /// time is rounded up to whole milliseconds and saturates at `i32::MAX`
+    /// milliseconds.
+    pub fn wait_event_timeout(&mut self, timeout: Duration) -> Option<Event> {
+        let timeout_milliseconds =
+            i32::try_from(timeout.as_nanos().div_ceil(NANOSECONDS_PER_MILLISECOND))
+                .unwrap_or(i32::MAX);
+        let mut raw = MaybeUninit::<events::SDL_Event>::uninit();
+        // Safety: SDL_WaitEventTimeout writes into the provided pointer and
+        // returns true when an event is available.
+        let has_event =
+            unsafe { events::SDL_WaitEventTimeout(raw.as_mut_ptr(), timeout_milliseconds) };
+        if !has_event {
+            return None;
+        }
+        // Safety: SDL_WaitEventTimeout returned true, so the event is initialized.
+        let raw = unsafe { raw.assume_init() };
+        Some(convert_event(&raw))
     }
 }
 
