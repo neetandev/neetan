@@ -11,7 +11,8 @@ use super::{
 };
 use crate::Rect;
 
-/// The width of every number field.
+/// The smallest width of a number field. A field whose placeholder needs
+/// more room grows to fit it, see [`NumberField::width`].
 pub const NUMBER_FIELD_WIDTH: f32 = 128.0;
 
 /// The tolerance of the comparisons of decimal numbers in the reach of a
@@ -20,6 +21,21 @@ const TOLERANCE: f64 = 1e-9;
 
 /// The size of a step button inside the number field.
 const STEPPER_SIZE: f32 = 24.0;
+
+/// The space between the left edge and the text in units of the gap.
+const TEXT_INSET_GAPS: f32 = 1.25;
+
+/// The space between the text and the step-down button in units of the gap.
+const TEXT_STEPPER_GAPS: f32 = 1.0;
+
+/// The space between the step-up button and the right edge in units of the gap.
+const STEPPER_INSET_GAPS: f32 = 0.5;
+
+/// The width of a number field that the text does not take: the insets, the
+/// space before the step buttons and the step buttons.
+fn chrome_width(gap: f32) -> f32 {
+    gap * (TEXT_INSET_GAPS + TEXT_STEPPER_GAPS + STEPPER_INSET_GAPS) + STEPPER_SIZE * 2.0
+}
 
 /// The reason why the text of a [`NumberField`] holds no number of its
 /// range.
@@ -281,13 +297,23 @@ impl<'a> NumberField<'a> {
         }
     }
 
+    /// The width of the field: [`NUMBER_FIELD_WIDTH`], or the room that the
+    /// placeholder needs beside the step buttons when it is wider. The width
+    /// depends only on the placeholder. The field keeps it while the user
+    /// types a value.
+    pub fn width(&self, context: &mut UiContext) -> f32 {
+        let theme = context.theme;
+        let placeholder = context.measure(&theme.body(), self.placeholder);
+        NUMBER_FIELD_WIDTH.max((placeholder + chrome_width(theme.gap)).ceil())
+    }
+
     /// Draws the field in `rect` over `text` and returns what it did in this
     /// pass.
     pub fn show(self, context: &mut UiContext, rect: Rect, text: &mut String) -> TextFieldResponse {
         let id = self.id;
         let theme = context.theme;
         let mut response = TextFieldResponse::default();
-        let steppers_right = rect.right() - theme.gap * 0.5;
+        let steppers_right = rect.right() - theme.gap * STEPPER_INSET_GAPS;
         let step_top = rect.y + (rect.height - STEPPER_SIZE) * 0.5;
         let down_rect = Rect::new(
             steppers_right - STEPPER_SIZE * 2.0,
@@ -367,8 +393,8 @@ impl<'a> NumberField<'a> {
             read_only: false,
         };
         field_frame(context, rect, look);
-        let left = rect.x + theme.gap * 1.25;
-        let right = down_rect.x - theme.gap;
+        let left = rect.x + theme.gap * TEXT_INSET_GAPS;
+        let right = down_rect.x - theme.gap * TEXT_STEPPER_GAPS;
         let inner = Rect::new(left, rect.y, (right - left).max(0.0), rect.height);
         let color = look.text_color(context);
         draw_value(
@@ -409,9 +435,12 @@ impl<'a> NumberField<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{
-        NavigationSet,
-        tests::{Harness, pixel, srgb},
+    use crate::{
+        Instance,
+        ui::{
+            NavigationSet,
+            tests::{Harness, pixel, srgb},
+        },
     };
 
     /// The area of the field.
@@ -420,6 +449,68 @@ mod tests {
     /// The field of the PC-6000 color phase from 0 to 3.
     fn phase() -> NumberField<'static> {
         NumberField::new("phase", "Not set").range(0.0, 3.0)
+    }
+
+    /// Verifies that a short placeholder keeps the smallest width and that a long one widens the field to fit beside the step buttons.
+    #[test]
+    fn a_long_placeholder_widens_the_field() {
+        let mut harness = Harness::new();
+        let (short, long, measured) = harness.frame(|context| {
+            let long_text = "Built-in default: 0.25";
+            let style = context.theme.body();
+            (
+                phase().width(context),
+                NumberField::new("phase", long_text).width(context),
+                context.measure(&style, long_text),
+            )
+        });
+        assert_eq!(short, NUMBER_FIELD_WIDTH);
+        assert!(long > NUMBER_FIELD_WIDTH, "{long}");
+        let theme = &harness.theme;
+        let inner = long - chrome_width(theme.gap);
+        assert!(inner >= measured, "{inner} {measured}");
+    }
+
+    /// Verifies that a field at its width draws its whole placeholder left
+    /// of the step buttons, with a short and with a long placeholder.
+    #[test]
+    fn the_width_fits_the_whole_placeholder_beside_the_steppers() {
+        for placeholder in ["Not set", "Built-in default: 0", "Settings default: 0.25"] {
+            let mut harness = Harness::new();
+            let field = NumberField::new("phase", placeholder).range(0.0, 3.0);
+            let width = harness.frame(|context| {
+                let width = field.width(context);
+                let mut text = String::new();
+                field.show(context, Rect::new(0.0, 0.0, width, 32.0), &mut text);
+                width
+            });
+            let theme = &harness.theme;
+            let text_right = width
+                - theme.gap * STEPPER_INSET_GAPS
+                - STEPPER_SIZE * 2.0
+                - theme.gap * TEXT_STEPPER_GAPS;
+            let glyphs: Vec<[f32; 4]> = harness
+                .scene
+                .instances()
+                .iter()
+                .filter(|instance| instance.kind[0] == Instance::KIND_GLYPH)
+                .map(|instance| instance.rect)
+                .filter(|rect| rect[0] < text_right)
+                .collect();
+            let characters = placeholder
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .count();
+            assert_eq!(glyphs.len(), characters, "{placeholder} at {width}");
+            let right = glyphs
+                .iter()
+                .map(|rect| rect[0] + rect[2])
+                .fold(0.0, f32::max);
+            assert!(
+                right <= text_right + 0.5,
+                "{placeholder}: {right} {text_right}"
+            );
+        }
     }
 
     /// Draws `field` over `text` with a neighbor on each side.

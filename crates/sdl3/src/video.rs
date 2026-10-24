@@ -285,6 +285,22 @@ impl Window {
         Ok(())
     }
 
+    /// Requests the position that centers the window on its display.
+    pub fn center(&self) -> Result<(), Error> {
+        // Safety: Window pointer is valid.
+        let ok = unsafe {
+            ffi::SDL_SetWindowPosition(
+                self.ptr,
+                ffi::SDL_WINDOWPOS_CENTERED,
+                ffi::SDL_WINDOWPOS_CENTERED,
+            )
+        };
+        if !ok {
+            return Err(crate::get_error());
+        }
+        Ok(())
+    }
+
     /// Sets the minimum size of the client area in screen coordinates. A zero
     /// dimension means no limit.
     pub fn set_minimum_size(&self, width: u32, height: u32) -> Result<(), Error> {

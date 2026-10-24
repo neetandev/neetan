@@ -10,7 +10,10 @@ use super::Shell;
 use crate::{
     GAME_NAME, Result,
     config::{Backend, EmulatorConfig, WindowMode},
-    host::{aspect_ratio_for_mode, fit_window_size, graphics_scaling, initial_window_size},
+    host::{
+        SESSION_MINIMUM_WINDOW_SIZE, aspect_ratio_for_mode, fit_window_size, graphics_scaling,
+        initial_window_size,
+    },
     input::KeyOverrides,
     manager::Launch,
     on_off,
@@ -135,10 +138,11 @@ impl Shell {
     }
 
     /// Applies the display aspect mode and the native target of `session`
-    /// to the graphics engine, records the window state, applies the window
-    /// mode, the window size and the aspect ratio lock of the game, resumes
-    /// the audio and keeps the session. Fails when the graphics engine
-    /// cannot rebuild its native target.
+    /// to the graphics engine, records the window state, applies the
+    /// minimum size of a session window, the window mode, the window size
+    /// and the aspect ratio lock of the game, resumes the audio and keeps
+    /// the session. Fails when the graphics engine cannot rebuild its
+    /// native target.
     fn begin_session(&mut self, session: Session) -> Result<()> {
         let host = &mut self.host;
         host.graphics_engine
@@ -147,6 +151,7 @@ impl Shell {
             .set_large_native_target(session.large_native_target())
             .context("Failed to resize the native target")?;
         self.window_before_session = Some(host.window_state());
+        host.apply_session_minimum_size();
         let fullscreen = session.window_mode() == WindowMode::Fullscreen;
         if fullscreen != host.fullscreen {
             host.set_fullscreen(fullscreen);
@@ -159,6 +164,7 @@ impl Shell {
             let (width, height) = fit_window_size(
                 initial_window_size(session.aspect_mode()),
                 host.window.display_usable_size(),
+                SESSION_MINIMUM_WINDOW_SIZE,
             );
             if host.window.size() != (width, height)
                 && let Err(error) = host.window.set_size(width, height)
@@ -196,10 +202,11 @@ impl Shell {
     }
 
     /// Prepares the window for the manager after a session: releases the
-    /// mouse capture, clears the aspect ratio lock, restores the window size
-    /// and fullscreen state of the time before the session, waits until the
-    /// window system applied it, stops the audio, resets the GUI host and
-    /// restores the window title.
+    /// mouse capture, clears the aspect ratio lock, sets the minimum size of
+    /// the manager window, restores the window size and fullscreen state of
+    /// the time before the session, waits until the window system applied
+    /// it, stops the audio, resets the GUI host and restores the window
+    /// title.
     pub(super) fn restore_manager_window(&mut self) {
         let host = &mut self.host;
         if let Err(error) = host.window.set_relative_mouse_mode(false) {
@@ -208,6 +215,7 @@ impl Shell {
         if let Err(error) = host.window.clear_aspect_ratio() {
             warn!("Failed to clear the window aspect ratio lock: {error}");
         }
+        host.apply_manager_minimum_size();
         if let Some(state) = self.window_before_session.take() {
             host.restore_window_state(state);
         }

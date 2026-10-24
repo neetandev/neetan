@@ -1,8 +1,9 @@
 //! The game manager: the library with the systems in a sidebar and the games
-//! of the selected system in a table, the launch of a game, the delete of a
-//! game file and the error dialogs.
+//! of the selected system in a table, the launch of a game, the editor of a
+//! game file, the delete of a game file and the error dialogs.
 
 mod delete;
+mod editing;
 mod entries;
 mod error_dialog;
 mod filter;
@@ -28,18 +29,26 @@ use machine_factory::config::systems::{System, compiled_systems};
 use self::{
     delete::{DeleteOutcome, DeleteRequest},
     entries::{TableEntry, table_entries},
+    error_dialog::{DialogAnswer, EditTarget},
     filter::Filter,
     game_table::{GAME_TABLE_ID, show_game_table},
-    hints::{LibraryFocus, OK_HINT, library_hints, status_end},
+    hints::{LibraryFocus, library_hints, status_end},
     rows::system_rows,
     sidebar::{SYSTEM_LIST_ID, SystemEntry, show_sidebar},
-    toolbar::{DELETE_ID, LAUNCH_ID, REFRESH_ID, show_toolbar},
+    toolbar::{
+        ADD_ID, DELETE_ID, DUPLICATE_ID, EDIT_ID, LAUNCH_ID, REFRESH_ID, ToolbarState, show_toolbar,
+    },
 };
-pub(crate) use self::{error_dialog::ErrorDialog, rows::GameRow, view::ManagerView};
+pub(crate) use self::{
+    error_dialog::ErrorDialog,
+    rows::{GameRow, shown_path},
+    view::ManagerView,
+};
 use crate::{
     Result,
     catalog::Catalog,
     config::{EmulatorConfig, HostLayers, LaunchRequest, ManagerStart, build_configuration},
+    editor::Editor,
     input::KeyOverrides,
 };
 
@@ -87,8 +96,10 @@ pub(crate) struct Manager {
     delete: Option<DeleteRequest>,
     /// The open error dialog.
     dialog: Option<ErrorDialog>,
+    /// The open game editor. It takes the whole window while it is open.
+    editor: Option<Editor>,
     /// Whether the next pass gives the focus to the game table, or to the
-    /// system list while the table has no entry.
+    /// add button while the table has no entry.
     give_start_focus: bool,
     /// The game that runs.
     running: Option<Launch>,
@@ -112,6 +123,7 @@ impl Manager {
             view: ManagerView::default(),
             delete: None,
             dialog: None,
+            editor: None,
             give_start_focus: true,
             running: None,
         };
@@ -245,7 +257,15 @@ impl Manager {
     /// Returns the id of the modal layer of the dialog, which the caller
     /// opens in the state of the user interface.
     pub(crate) fn launch_failed(&mut self, launch: &Launch, error: &str) -> UiId {
-        self.open_dialog(ErrorDialog::launch_failed(&launch.title, error))
+        let dialog = ErrorDialog::launch_failed(&launch.title, error);
+        let dialog = match launch.request.game_files.first() {
+            Some(path) => dialog.with_edit(EditTarget {
+                system: launch.system,
+                path: path.clone(),
+            }),
+            None => dialog,
+        };
+        self.open_dialog(dialog)
     }
 
     /// Returns from the running game with the view of the manager as it
@@ -294,6 +314,10 @@ impl Manager {
     /// Draws one pass of the manager. Returns the game to start, if the user
     /// asked for one.
     pub(crate) fn show(&mut self, context: &mut UiContext) -> Option<Launch> {
+        if self.editor.is_some() {
+            self.show_editor(context);
+            return None;
+        }
         let theme = context.theme;
         let bounds = context.bounds();
         context.fill(bounds, theme.panel);
@@ -303,7 +327,7 @@ impl Manager {
         let start_focus = if self.has_entries() {
             UiId::from(GAME_TABLE_ID)
         } else {
-            UiId::from(SYSTEM_LIST_ID)
+            UiId::from(ADD_ID)
         };
         if std::mem::take(&mut self.give_start_focus) {
             context.set_focus(start_focus);
@@ -397,9 +421,12 @@ impl Manager {
         self.show_title(context, header.cut_right(filter_area.width + theme.gap).1);
 
         let selected = self.selected_row();
-        let launchable = selected.is_some_and(GameRow::launchable);
-        let deletable = selected.is_some();
-        let toolbar = show_toolbar(context, toolbar_area, launchable, deletable);
+        let state = ToolbarState {
+            addable: self.current().is_some(),
+            launchable: selected.is_some_and(GameRow::launchable),
+            deletable: selected.is_some(),
+        };
+        let toolbar = show_toolbar(context, toolbar_area, state);
         if toolbar.refresh || context.shortcut() == Some(Shortcut::F5) {
             self.refresh();
             context.request_pass();
@@ -408,7 +435,7 @@ impl Manager {
         let (empty_title, empty_detail) = self.current().map_or_else(Default::default, |entry| {
             (
                 format!("No games for {}", entry.system.label),
-                format!("Place game files in {}/", entry.folder),
+                format!("Add a game, or place game files in {}/", entry.folder),
             )
         });
         let hint = if self.rows().is_empty() {
@@ -439,14 +466,31 @@ impl Manager {
             context.request_pass();
         }
 
-        let delete_shortcut = context.shortcut() == Some(Shortcut::Delete);
+        let shortcut = context.shortcut();
+        let delete_shortcut = shortcut == Some(Shortcut::Delete);
+        let edit = toolbar.edit
+            || shortcut == Some(Shortcut::F2)
+            || context.action_button() == Some(ActionButton::X);
+        let duplicate = toolbar.duplicate || shortcut == Some(Shortcut::ControlD);
+        if (toolbar.add || shortcut == Some(Shortcut::Insert)) && state.addable {
+            self.open_new_game(context);
+            return None;
+        }
         let activated = response.activated.is_some();
-        let row = self.selected_row()?;
+        let row = self.selected_row()?.clone();
         if row.launchable() && (activated || toolbar.launch) {
-            return Some(self.launch(row));
+            return Some(self.launch(&row));
+        }
+        if row.launchable() && edit {
+            self.open_game(context, &row);
+            return None;
+        }
+        if row.launchable() && duplicate {
+            self.open_duplicate(context, &row);
+            return None;
         }
         if delete_shortcut || toolbar.delete || activated {
-            self.delete = Some(DeleteRequest::new(row));
+            self.delete = Some(DeleteRequest::new(&row));
         }
         None
     }
@@ -509,12 +553,22 @@ impl Manager {
                 }
             }
         }
-        if self
+        let answer = self
             .dialog
             .as_ref()
-            .is_some_and(|dialog| dialog.show(context, screen))
-        {
-            self.dialog = None;
+            .map_or(DialogAnswer::Open, |dialog| dialog.show(context, screen));
+        match answer {
+            DialogAnswer::Open => {}
+            DialogAnswer::Closed | DialogAnswer::Overwrite => self.dialog = None,
+            DialogAnswer::Edit => {
+                let target = self
+                    .dialog
+                    .take()
+                    .and_then(|dialog| dialog.edit_target().cloned());
+                if let Some(target) = target {
+                    self.open_target(context, &target);
+                }
+            }
         }
         delete_response
     }
@@ -534,6 +588,12 @@ impl Manager {
             }
         } else if focused(LAUNCH_ID) {
             LibraryFocus::Launch
+        } else if focused(ADD_ID) {
+            LibraryFocus::Add
+        } else if focused(EDIT_ID) {
+            LibraryFocus::Edit
+        } else if focused(DUPLICATE_ID) {
+            LibraryFocus::Duplicate
         } else if focused(DELETE_ID) {
             LibraryFocus::Delete
         } else if focused(REFRESH_ID) {
@@ -561,10 +621,9 @@ impl Manager {
             .current()
             .map(|entry| format!("{}/", entry.folder))
             .unwrap_or_default();
-        let hints = if self.dialog.is_some() {
-            vec![OK_HINT]
-        } else {
-            library_hints(self.library_focus(context), selected)
+        let hints = match &self.dialog {
+            Some(dialog) => dialog.hints(context),
+            None => library_hints(self.library_focus(context), selected),
         };
         status_line(context, area, &hints, status_end(selected, &folder));
     }
@@ -960,9 +1019,9 @@ mod tests {
         assert_eq!(harness.state.focused(), Some(UiId::from(FILTER_ID)));
     }
 
-    /// Verifies that a switch from the table into a system without games gives the focus to the system list.
+    /// Verifies that a switch from the table into a system without games gives the focus to Add.
     #[test]
-    fn a_switch_into_an_empty_system_focuses_the_system_list() {
+    fn a_switch_into_an_empty_system_focuses_add() {
         if compiled_systems().count() < 2 {
             return;
         }
@@ -975,16 +1034,16 @@ mod tests {
         harness.input.navigation = Some(Navigation::NextTab);
         harness.settle(|context| manager.show(context));
         assert_eq!(manager.view.systems.selected, 1);
-        assert_eq!(harness.state.focused(), Some(UiId::from(SYSTEM_LIST_ID)));
+        assert_eq!(harness.state.focused(), Some(UiId::from(ADD_ID)));
         harness.input.navigation = Some(Navigation::PreviousTab);
         harness.settle(|context| manager.show(context));
         assert_eq!(manager.view.systems.selected, 0);
-        assert_eq!(harness.state.focused(), Some(UiId::from(SYSTEM_LIST_ID)));
+        assert_eq!(harness.state.focused(), Some(UiId::from(ADD_ID)));
     }
 
-    /// Verifies that the delete of the last game gives the focus to the system list.
+    /// Verifies that the delete of the last game gives the focus to Add.
     #[test]
-    fn the_delete_of_the_last_game_focuses_the_system_list() {
+    fn the_delete_of_the_last_game_focuses_add() {
         let test = TestRoot::new("delete_last");
         games(&test, &["a"]);
         let mut manager = test.manager();
@@ -997,7 +1056,7 @@ mod tests {
         harness.input.confirm = true;
         harness.settle(|context| manager.show(context));
         assert!(titles(&manager).is_empty());
-        assert_eq!(harness.state.focused(), Some(UiId::from(SYSTEM_LIST_ID)));
+        assert_eq!(harness.state.focused(), Some(UiId::from(ADD_ID)));
     }
 
     /// Verifies that the delete of the game before the caption gives the selection to the game before it.
@@ -1202,7 +1261,9 @@ mod tests {
         let mut manager = test.manager();
         let mut harness = GuiHarness::new(960, 600);
         harness.settle(|context| manager.show(context));
-        assert_eq!(harness.state.focused(), Some(UiId::from(SYSTEM_LIST_ID)));
+        assert_eq!(harness.state.focused(), Some(UiId::from(ADD_ID)));
+        harness.state.set_focus(UiId::from(SYSTEM_LIST_ID));
+        harness.settle(|context| manager.show(context));
         harness.input.navigation = Some(Navigation::Down);
         harness.settle(|context| manager.show(context));
         assert_eq!(manager.view.system, Some(second.name));

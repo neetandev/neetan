@@ -242,8 +242,8 @@ impl ConfigDocument {
     ///
     /// A symbolic link at `path` is followed to its real target. An existing
     /// target keeps its permissions. The folder of the target is created when
-    /// it is absent.
-    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+    /// it is absent. Returns the metadata of the written file.
+    pub fn save(&self, path: &Path) -> std::io::Result<std::fs::Metadata> {
         write_atomically(path, self.to_text().as_bytes())
     }
 

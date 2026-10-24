@@ -10,7 +10,7 @@ use super::{
 use crate::{Rect, RectStyle};
 
 /// The gap between the edge of a list and its rows.
-pub(super) const LIST_PADDING: f32 = 4.0;
+pub const LIST_PADDING: f32 = 4.0;
 
 /// The height of a line of small text beside a list, such as the folder of
 /// the listed files or a status.
@@ -479,14 +479,19 @@ pub enum RowMark {
     Alert,
 }
 
-/// The standard content of a list row: an optional icon, the text, an
-/// optional count in small secondary text and an optional mark at the end.
+/// The standard content of a list row: an optional number in small
+/// secondary text, an optional icon, the text, an optional count in small
+/// secondary text and an optional mark at the end.
 ///
-/// The icon and the count of a selected row draw in the primary color. The
-/// mark keeps its color. A disabled row draws everything in the disabled
-/// color. A text that does not fit gives way in the middle.
+/// The number takes the width of an icon and ends at its right edge. The
+/// numbers of the rows line up. The number, the icon and the count of a
+/// selected row draw in the primary color. The mark keeps its color. A
+/// disabled row draws everything in the disabled color. A text that does
+/// not fit gives way in the middle.
 #[derive(Clone, Copy, Debug)]
 pub struct RowContent<'a> {
+    /// The number before the icon.
+    number: Option<&'a str>,
     /// The icon before the text.
     icon: Option<Icon>,
     /// The text.
@@ -501,10 +506,20 @@ impl<'a> RowContent<'a> {
     /// The content with `text` only.
     pub fn new(text: &'a str) -> Self {
         Self {
+            number: None,
             icon: None,
             text,
             count: None,
             mark: None,
+        }
+    }
+
+    /// The same content with the number `number` before the icon, such as
+    /// the place of the row in an ordered list.
+    pub fn number(self, number: &'a str) -> Self {
+        Self {
+            number: Some(number),
+            ..self
         }
     }
 
@@ -542,6 +557,12 @@ impl<'a> RowContent<'a> {
         } else {
             (theme.text_dim, theme.text)
         };
+        if let Some(number) = self.number {
+            let (slot, rest) = area.cut_left(theme.icon_size);
+            let style = theme.small().with_color(icon_color);
+            context.text_in(slot, &style, number, Align::End, Truncation::End);
+            area = rest.cut_left(theme.gap).1;
+        }
         if let Some(icon) = self.icon {
             let (slot, rest) = area.cut_left(theme.icon_size);
             context.icon(slot, icon, theme.icon_size, icon_color);
@@ -1244,5 +1265,54 @@ mod tests {
         };
         assert!(lit(count_right - 14.0, count_right));
         assert!(!lit(count_right + 1.0, row_right));
+    }
+
+    /// Verifies that the number ends at the room of an icon before the icon and that a selected row draws it in the primary color.
+    #[test]
+    fn the_number_sits_before_the_icon() {
+        let mut harness = Harness::new();
+        let mut state = ListState::new();
+        harness.state.set_focus(UiId::from("images"));
+        harness.frame(|context| {
+            list(context, "images", LIST, 2, &mut state, |context, row| {
+                RowContent::new("YU-NO (Disk 1 of 4).hdm")
+                    .number(if row.index == 0 { "1" } else { "2" })
+                    .icon(Some(Icon::Disk))
+                    .show(context, row);
+            });
+        });
+        let theme = &harness.theme;
+        let colors: Vec<_> = harness
+            .scene
+            .instances()
+            .iter()
+            .map(|instance| instance.color)
+            .collect();
+        assert!(colors.contains(&theme.text_dim.to_linear()));
+        let pixels = harness.render();
+        let width = harness.viewport.width;
+        let (_, row_y) = row_center(theme, 1, 0.0);
+        let row_left = LIST.x + theme.stroke + LIST_PADDING + theme.gap;
+        let number_right = row_left + theme.icon_size;
+        let lit = |from: f32, to: f32| {
+            let mut x = from;
+            let mut found = false;
+            while x < to {
+                for offset in -4..=4 {
+                    if pixel(&pixels, width, x, row_y + offset as f32) != srgb(theme.well) {
+                        found = true;
+                    }
+                }
+                x += 1.0;
+            }
+            found
+        };
+        assert!(!lit(row_left, number_right - 9.0));
+        assert!(lit(number_right - 9.0, number_right));
+        assert!(!lit(number_right + 1.0, number_right + theme.gap - 1.0));
+        assert!(lit(
+            number_right + theme.gap,
+            number_right + theme.gap + theme.icon_size
+        ));
     }
 }

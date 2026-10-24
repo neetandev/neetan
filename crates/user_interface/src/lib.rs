@@ -23,6 +23,8 @@ pub mod config;
 pub mod convert;
 pub mod copy;
 pub mod create;
+mod editor;
+mod file_browser;
 mod gui_host;
 #[cfg(test)]
 mod gui_test_support;

@@ -21,16 +21,48 @@ pub const YEAR_KEY: &str = "meta.year";
 pub const GENRE_KEY: &str = "meta.genre";
 /// Key of the notes.
 pub const NOTES_KEY: &str = "meta.notes";
+
+/// A metadata key with its label.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct MetadataField {
+    /// The key, for example `meta.title`.
+    pub key: &'static str,
+    /// The short human-readable name of the key.
+    pub label: &'static str,
+}
+
 /// Every metadata key in display order.
-pub const METADATA_KEYS: [&str; 7] = [
-    TITLE_KEY,
-    TITLE_ORIGINAL_KEY,
-    DEVELOPER_KEY,
-    PUBLISHER_KEY,
-    YEAR_KEY,
-    GENRE_KEY,
-    NOTES_KEY,
+pub const METADATA_FIELDS: [MetadataField; 7] = [
+    MetadataField {
+        key: TITLE_KEY,
+        label: "Title",
+    },
+    MetadataField {
+        key: TITLE_ORIGINAL_KEY,
+        label: "Original title",
+    },
+    MetadataField {
+        key: DEVELOPER_KEY,
+        label: "Developer",
+    },
+    MetadataField {
+        key: PUBLISHER_KEY,
+        label: "Publisher",
+    },
+    MetadataField {
+        key: YEAR_KEY,
+        label: "Year",
+    },
+    MetadataField {
+        key: GENRE_KEY,
+        label: "Genre",
+    },
+    MetadataField {
+        key: NOTES_KEY,
+        label: "Notes",
+    },
 ];
+
 /// The earliest accepted release year.
 pub const FIRST_YEAR: u16 = 1970;
 /// The latest accepted release year.
@@ -238,5 +270,27 @@ mod tests {
         assert!(diagnostics.is_empty());
         assert_eq!(parse_year("1970"), Ok(1970));
         assert_eq!(parse_year("2100"), Ok(2100));
+    }
+
+    /// Verifies that the metadata fields hold every key of the struct once, with the prefix and a label.
+    #[test]
+    fn metadata_fields_hold_every_key_once() {
+        let keys: Vec<&str> = METADATA_FIELDS.iter().map(|field| field.key).collect();
+        assert_eq!(
+            keys,
+            [
+                TITLE_KEY,
+                TITLE_ORIGINAL_KEY,
+                DEVELOPER_KEY,
+                PUBLISHER_KEY,
+                YEAR_KEY,
+                GENRE_KEY,
+                NOTES_KEY
+            ]
+        );
+        for field in METADATA_FIELDS {
+            assert!(field.key.starts_with(META_PREFIX), "{}", field.key);
+            assert!(!field.label.is_empty(), "{}", field.key);
+        }
     }
 }

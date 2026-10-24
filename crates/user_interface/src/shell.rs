@@ -36,8 +36,10 @@ use crate::{
     config::{Backend, EmulatorConfig, HostLayers, WindowMode},
     gui_host::GuiHost,
     host::{
-        Host, HostParts, MANAGER_WINDOW_SIZE, WindowState, fit_window_size,
-        graphics_display_aspect_mode, initial_window_size, wants_large_native_target,
+        Host, HostParts, MANAGER_WINDOW_SIZE, MINIMUM_WINDOW_SIZE, SESSION_MINIMUM_WINDOW_SIZE,
+        WindowSize, WindowState, fit_window_size, graphics_display_aspect_mode,
+        initial_window_size, logical_to_screen, manager_minimum_size,
+        screen_units_per_logical_unit, wants_large_native_target,
     },
     manager::{Launch, Manager},
     session::Session,
@@ -53,8 +55,8 @@ pub(crate) struct ShellOptions {
     backend: Backend,
     /// The playback volume (0.0 to 1.0).
     audio_volume: f32,
-    /// The size of the new window in screen coordinates.
-    window_size: (u32, u32),
+    /// The size of the new window.
+    window_size: WindowSize,
     /// Whether the window starts in fullscreen mode.
     fullscreen: bool,
     /// The display aspect mode of the graphics engine.
@@ -71,7 +73,7 @@ impl ShellOptions {
         Self {
             backend: config.backend,
             audio_volume: config.audio_volume,
-            window_size: initial_window_size(config.aspect_mode),
+            window_size: WindowSize::Screen(initial_window_size(config.aspect_mode)),
             fullscreen: config.window_mode == WindowMode::Fullscreen,
             display_aspect_mode: graphics_display_aspect_mode(config.aspect_mode),
             large_native_target: wants_large_native_target(config),
@@ -92,7 +94,7 @@ impl ShellOptions {
                 parse_audio_volume,
                 DEFAULT_AUDIO_VOLUME,
             ),
-            window_size: MANAGER_WINDOW_SIZE,
+            window_size: WindowSize::Logical(MANAGER_WINDOW_SIZE),
             fullscreen: window_mode == WindowMode::Fullscreen,
             display_aspect_mode: DisplayAspectMode::Aspect4By3,
             large_native_target: false,
@@ -156,7 +158,8 @@ pub(crate) struct Shell {
 impl Shell {
     /// Initializes SDL3 and creates the hidden window, the graphics engine,
     /// the paused audio engine and the GUI host. The window fits the
-    /// display and keeps the minimum size.
+    /// display. The manager and each session set the minimum size of the
+    /// window.
     pub(crate) fn new(options: ShellOptions) -> Result<Self> {
         let SdlSubsystems {
             context: sdl_context,
@@ -167,11 +170,28 @@ impl Shell {
 
         print_system_info();
 
-        let (width, height) = fit_window_size(
-            options.window_size,
-            video_subsystem.primary_display_usable_size(),
-        );
+        let usable = video_subsystem.primary_display_usable_size();
+        let (requested, minimum) = match options.window_size {
+            WindowSize::Screen(size) => (size, SESSION_MINIMUM_WINDOW_SIZE),
+            WindowSize::Logical(size) => (size, MINIMUM_WINDOW_SIZE),
+        };
+        let (width, height) = fit_window_size(requested, usable, minimum);
         let mut window = build_window(&video_subsystem, width, height, options.fullscreen)?;
+        if let WindowSize::Logical(size) = options.window_size {
+            let factor =
+                screen_units_per_logical_unit(window.display_scale(), window.pixel_density());
+            let usable = window.display_usable_size().or(usable);
+            let minimum = manager_minimum_size(factor, usable);
+            let (width, height) = fit_window_size(logical_to_screen(size, factor), usable, minimum);
+            if window.size() != (width, height) {
+                if let Err(error) = window.set_size(width, height) {
+                    warn!("Failed to set the window size {width} x {height}: {error}");
+                }
+                if let Err(error) = window.center() {
+                    warn!("Failed to center the window: {error}");
+                }
+            }
+        }
 
         let (graphics_engine, backend) = select_graphics_backend(
             options.display_aspect_mode,
@@ -210,13 +230,15 @@ impl Shell {
         })
     }
 
-    /// Keeps `manager` as the first screen. Fails without the GUI font.
+    /// Keeps `manager` as the first screen and sets the minimum size of the
+    /// manager window. Fails without the GUI font.
     pub(crate) fn open_manager(&mut self, manager: Manager) -> Result<()> {
         if let Some(message) = self.host.gui_error.as_ref() {
             return Err(Error::from(StringError(format!(
                 "the game manager needs the GUI font: {message}"
             ))));
         }
+        self.host.apply_manager_minimum_size();
         self.manager = Some(manager);
         Ok(())
     }
@@ -396,6 +418,9 @@ impl Shell {
                     host.scale_factor = scale;
                     info!("Scale factor changed to: {scale}");
                 }
+                if self.session.is_none() {
+                    host.apply_manager_minimum_size();
+                }
                 host.update_gui_window();
                 self.window_changed();
             }
@@ -470,7 +495,7 @@ mod tests {
             AspectMode, Backend, EmulatorConfig, HostLayers, LaunchRequest, Locations,
             SETTINGS_FILE_NAME, WindowMode, test_support::first_model_config,
         },
-        host::MANAGER_WINDOW_SIZE,
+        host::{MANAGER_WINDOW_SIZE, WindowSize},
     };
 
     /// Returns the host layers of a root folder with a settings file that
@@ -504,7 +529,7 @@ mod tests {
             ..first_model_config()
         };
         let options = ShellOptions::for_config(&config);
-        assert_eq!(options.window_size, (1280, 800));
+        assert_eq!(options.window_size, WindowSize::Screen((1280, 800)));
         assert!(options.fullscreen);
         assert_eq!(options.backend, Backend::Legacy);
         assert_eq!(options.audio_volume, 0.5);
@@ -523,7 +548,10 @@ mod tests {
         assert!(options.fullscreen);
         assert_eq!(options.backend, Backend::Legacy);
         assert_eq!(options.audio_volume, 0.25);
-        assert_eq!(options.window_size, MANAGER_WINDOW_SIZE);
+        assert_eq!(
+            options.window_size,
+            WindowSize::Logical(MANAGER_WINDOW_SIZE)
+        );
         assert!(!options.large_native_target);
         assert_eq!(options.gui_font, root.join("fonts").join("ui.ttf"));
     }

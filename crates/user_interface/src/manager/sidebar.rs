@@ -209,6 +209,7 @@ fn show_rom_line(context: &mut UiContext, area: Rect, entry: &SystemEntry) {
 
 #[cfg(test)]
 mod tests {
+    use gui::ui::LIST_PADDING;
     use machine_factory::config::systems::{SYSTEMS, compiled_systems};
 
     use super::*;
@@ -218,8 +219,19 @@ mod tests {
         manager::rows::tests::{broken, game},
     };
 
-    /// The padding between the edge of a list and its rows.
-    const LIST_PADDING: f32 = 4.0;
+    /// The icon of each system by its folder name.
+    const SYSTEM_ICONS: [(&str, Icon); 10] = [
+        ("pc98", Icon::SystemDesktop),
+        ("pc88", Icon::SystemDesktop),
+        ("pc88va", Icon::SystemDesktop),
+        ("pc6000", Icon::SystemKeyboard),
+        ("msx", Icon::SystemKeyboard),
+        ("towns", Icon::SystemTower),
+        ("x1", Icon::SystemDesktop),
+        ("fm7", Icon::SystemKeyboard),
+        ("x68k", Icon::SystemTower),
+        ("at", Icon::SystemTower),
+    ];
 
     /// Returns the entry of `system` with the ROM status `status`.
     fn entry(system: &'static System, status: RomStatus) -> SystemEntry {
@@ -441,9 +453,12 @@ mod tests {
                 entry.system.label
             );
         }
-        assert_eq!(
-            system_icon(compiled_systems().next().expect("one system")),
-            Icon::SystemDesktop
-        );
+        for system in compiled_systems() {
+            let expected = SYSTEM_ICONS
+                .iter()
+                .find(|(name, _)| *name == system.name)
+                .map(|(_, icon)| *icon);
+            assert_eq!(Some(system_icon(system)), expected, "{}", system.name);
+        }
     }
 }

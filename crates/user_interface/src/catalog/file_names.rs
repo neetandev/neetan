@@ -54,7 +54,8 @@ pub fn title_file_stem(title: &str) -> String {
 }
 
 /// Returns whether Windows reserves `stem` as a device name.
-fn is_reserved_stem(stem: &str) -> bool {
+#[must_use]
+pub fn is_reserved_stem(stem: &str) -> bool {
     RESERVED_FILE_STEMS.contains(&stem)
 }
 

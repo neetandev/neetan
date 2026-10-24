@@ -14,7 +14,7 @@ pub const HEADER_HEIGHT: f32 = 52.0;
 const MARGIN: f32 = 16.0;
 
 /// The size of the close button in the header.
-const CLOSE_SIZE: f32 = 32.0;
+pub const CLOSE_SIZE: f32 = 32.0;
 
 /// The vertical offset of the panel shadow.
 pub(super) const SHADOW_OFFSET: f32 = 6.0;
@@ -115,7 +115,7 @@ pub fn modal_in(
             (body.height - theme.padding).max(0.0),
         ),
         closed: close || context.cancelled(),
-        outside_press: !context.is_blocked()
+        outside_press: context.takes_input()
             && context.input.left_pressed()
             && !panel.contains(x, y),
     }

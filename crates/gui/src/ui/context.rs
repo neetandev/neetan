@@ -126,6 +126,9 @@ pub struct UiContext<'a> {
     pub(super) depth: u32,
     /// The widgets of the layers below this layer are blocked.
     pub(super) blocked: u32,
+    /// Whether the layer the widgets draw in opened in this pass. A fresh
+    /// layer takes no input of the pass.
+    pub(super) fresh_layer: bool,
     /// The deepest layer of the pass so far.
     pub(super) deepest: u32,
     /// The innermost scroll area around the widgets that draw.
@@ -161,6 +164,7 @@ impl<'a> UiContext<'a> {
             hot: None,
             mouse_captured: false,
             depth: 0,
+            fresh_layer: false,
             blocked,
             deepest: 0,
             scroll: None,
@@ -304,11 +308,19 @@ impl<'a> UiContext<'a> {
         self.depth < self.blocked
     }
 
+    /// Whether the widgets drawn at this point take the input of the pass:
+    /// they are not blocked, and their layer was open when the pass started.
+    /// A modal or a popup that opens during a pass takes the input of the
+    /// next pass on.
+    pub(super) fn takes_input(&self) -> bool {
+        !self.is_blocked() && !self.fresh_layer
+    }
+
     /// Whether the pointer is over `rect`, no widget above took it and the
     /// widgets at this point are not blocked.
     pub fn hovered(&self, rect: Rect) -> bool {
         let (x, y) = self.mouse();
-        !self.mouse_captured && !self.is_blocked() && rect.contains(x, y)
+        !self.mouse_captured && self.takes_input() && rect.contains(x, y)
     }
 
     /// Runs the hot and active tracking of a pressable widget `id` over
@@ -317,7 +329,7 @@ impl<'a> UiContext<'a> {
     /// focus ring of this pass gives it the focus. A widget that skips this
     /// call in a pass loses its press, and so does a blocked widget.
     pub fn button_behavior(&mut self, id: UiId, rect: Rect) -> PointerResponse {
-        if self.is_blocked() {
+        if !self.takes_input() {
             return PointerResponse::default();
         }
         let hovered = self.hovered(rect);
@@ -474,9 +486,10 @@ impl<'a> UiContext<'a> {
 
     /// The shoulder button of this pass, [`Navigation::PreviousTab`] or
     /// [`Navigation::NextTab`], for a tab bar that switches its tab whatever
-    /// widget holds the focus. A blocked tab bar gets none.
+    /// widget holds the focus. A blocked tab bar gets none, and so does a
+    /// tab bar in a layer that opened in this pass.
     pub fn tab_navigation(&self) -> Option<Navigation> {
-        if self.is_blocked() {
+        if !self.takes_input() {
             return None;
         }
         self.input.navigation.filter(|navigation| {
@@ -485,19 +498,20 @@ impl<'a> UiContext<'a> {
     }
 
     /// The action button of this pass, unless the widgets at this point are
-    /// blocked.
+    /// blocked or their layer opened in this pass.
     pub fn action_button(&self) -> Option<ActionButton> {
-        if self.is_blocked() {
+        if !self.takes_input() {
             return None;
         }
         self.input.action
     }
 
     /// The shortcut of this pass, unless the widgets at this point are
-    /// blocked. A shortcut without the control key is inactive while a text
-    /// widget holds the focus. Backspace then edits the text.
+    /// blocked or their layer opened in this pass. A shortcut without the
+    /// control key is inactive while a text widget holds the focus.
+    /// Backspace then edits the text.
     pub fn shortcut(&self) -> Option<Shortcut> {
-        if self.is_blocked() {
+        if !self.takes_input() {
             return None;
         }
         let shortcut = self
@@ -532,14 +546,20 @@ impl<'a> UiContext<'a> {
     }
 
     /// Whether cancel was pressed in this pass and the focused widget left
-    /// it to the panel and the caller. A blocked panel gets no cancel.
+    /// it to the panel and the caller. A blocked panel gets no cancel, and
+    /// neither does a panel that opened in this pass.
     pub fn cancelled(&self) -> bool {
-        self.input.cancel && self.state.cancel_taker.is_none() && !self.is_blocked()
+        self.input.cancel && self.state.cancel_taker.is_none() && self.takes_input()
     }
 
     /// Whether the focused widget `id` takes the cancel of this pass.
     pub fn cancel_taken(&self, id: UiId) -> bool {
-        self.input.cancel && self.state.cancel_taker == Some(id) && !self.is_blocked()
+        self.input.cancel && self.state.cancel_taker == Some(id) && self.takes_input()
+    }
+
+    /// The widget that holds the keyboard focus, in any layer.
+    pub fn focused(&self) -> Option<UiId> {
+        self.state.focus
     }
 
     /// Whether `id` holds the keyboard focus and the widgets at this point
@@ -988,5 +1008,24 @@ mod tests {
             harness.frame(|context| draw(context, false)),
             (Some(crate::ui::Shortcut::Backspace), None)
         );
+    }
+
+    /// Verifies that the base layer below a modal reads the focused widget of the modal while the modal blocks it.
+    #[test]
+    fn the_focused_widget_shows_through_a_modal() {
+        let mut harness = Harness::new();
+        let draw = |context: &mut UiContext| {
+            let area = Rect::new(0.0, 0.0, 10.0, 10.0);
+            context.focusable(UiId::from("base"), area, NavigationSet::EMPTY);
+            context.layer("dialog", |context| {
+                context.focusable(UiId::from("ok"), area, NavigationSet::EMPTY);
+            });
+            (context.focused(), context.has_focus(UiId::from("ok")))
+        };
+        harness.frame(draw);
+        harness.frame(draw);
+        let (focused, seen_from_below) = harness.frame(draw);
+        assert_eq!(focused, Some(UiId::from("ok")));
+        assert!(!seen_from_below);
     }
 }
