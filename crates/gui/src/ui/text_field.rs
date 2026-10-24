@@ -81,13 +81,18 @@ pub(super) fn field_frame(context: &mut UiContext, rect: Rect, look: FieldLook) 
 
 /// Adds the committed text of the input to `text` up to `limit`
 /// characters, keeping the characters that `accept` takes, and removes the
-/// last character on backspace. Returns whether `text` changed.
+/// last character on backspace. A field that is blocked or that draws in a
+/// layer that opened in this pass keeps its text. Returns whether `text`
+/// changed.
 pub(super) fn edit_text(
     context: &UiContext,
     text: &mut String,
     limit: usize,
     accept: impl Fn(&str, char) -> bool,
 ) -> bool {
+    if !context.takes_input() {
+        return false;
+    }
     let input = context.input;
     let before = text.clone();
     for character in input.text.chars() {
@@ -422,6 +427,36 @@ mod tests {
         assert!(response.changed);
         assert_eq!(text, "ディスクA");
         assert!(cursor(&harness).is_some());
+    }
+
+    /// Verifies that a field that takes the focus in a layer that opens in
+    /// a pass gets no text and no backspace of that pass.
+    #[test]
+    fn a_field_in_a_layer_that_opens_in_the_pass_takes_no_text() {
+        let mut harness = Harness::new();
+        let mut text = String::from("kept");
+        let mut open = false;
+        let draw = |harness: &mut Harness, open: bool, text: &mut String| {
+            harness.frame(|context| {
+                if !open {
+                    return TextFieldResponse::default();
+                }
+                context.layer("dialog", |context| {
+                    context.default_focus(UiId::from("filter"));
+                    text_field(context, "filter", FIELD, text, "Filter")
+                })
+            })
+        };
+        draw(&mut harness, open, &mut text);
+        open = true;
+        harness.input.text.push_str("typed");
+        harness.input.backspace = true;
+        assert!(!draw(&mut harness, open, &mut text).changed);
+        assert_eq!(text, "kept");
+        assert_eq!(harness.state.focused(), Some(UiId::from("filter")));
+        harness.input.text.push('!');
+        assert!(draw(&mut harness, open, &mut text).changed);
+        assert_eq!(text, "kept!");
     }
 
     #[test]

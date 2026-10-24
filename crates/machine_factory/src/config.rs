@@ -1,5 +1,6 @@
 //! Pure-data emulator configuration types and the machine model resolver.
 
+pub mod phrases;
 mod selection;
 pub mod settings;
 pub mod systems;
@@ -505,15 +506,6 @@ const COMPILED_TARGET_NAMES: &[&str] = &[
     "at",
 ];
 
-/// Renders a name list as `a, b or c` for an error message.
-fn join_alternatives(names: &[&str]) -> String {
-    match names {
-        [] => "(none)".to_owned(),
-        [only] => (*only).to_owned(),
-        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
-    }
-}
-
 /// Returns the family symbol names this build accepts.
 #[must_use]
 pub fn compiled_target_names() -> &'static [&'static str] {
@@ -584,10 +576,10 @@ pub fn target_from_name(name: &str) -> Result<Target, String> {
         "x68k" => Ok(Target::X68k),
         #[cfg(feature = "at")]
         "at" => Ok(Target::At),
-        _ => Err(format!(
-            "unknown target '{name}', expected {}",
-            join_alternatives(COMPILED_TARGET_NAMES)
-        )),
+        _ => {
+            let expected = phrases::expected_names(COMPILED_TARGET_NAMES);
+            Err(format!("unknown target '{name}', expected {expected}"))
+        }
     }
 }
 

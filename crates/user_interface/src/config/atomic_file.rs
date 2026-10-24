@@ -24,7 +24,10 @@ static TEMPORARY_COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// well. The folder of the target is created when it is absent. On Unix the
 /// folder is flushed after the rename as a best effort. A failed flush ends
 /// with a warning. A failed write removes the temporary file.
-pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+///
+/// Returns the metadata of the written file. The open temporary file gives
+/// it after the sync, before the rename puts the file in place.
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<std::fs::Metadata> {
     let target = link_target(path)?;
     if let Some(folder) = target
         .parent()
@@ -36,23 +39,21 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()>
     let permissions = std::fs::metadata(&target)
         .ok()
         .map(|metadata| metadata.permissions());
-    let result = write_synced(&temporary, bytes)
-        .and_then(|()| match permissions {
-            Some(permissions) => std::fs::set_permissions(&temporary, permissions),
-            None => Ok(()),
-        })
-        .and_then(|()| std::fs::rename(&temporary, &target));
+    let result = write_synced(&temporary, bytes, permissions).and_then(|metadata| {
+        std::fs::rename(&temporary, &target)?;
+        Ok(metadata)
+    });
     if result.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
-    result?;
+    let metadata = result?;
     if let Err(error) = sync_folder(&target) {
         warn!(
             "Failed to flush the folder of {}: {error}",
             target.display()
         );
     }
-    Ok(())
+    Ok(metadata)
 }
 
 /// Returns the file that a save of `path` writes: the end of a chain of symbolic links.
@@ -112,11 +113,21 @@ fn temporary_path(path: &Path) -> std::io::Result<PathBuf> {
     Ok(path.with_file_name(temporary_name))
 }
 
-/// Writes `bytes` into a new file at `path` and flushes it to the disk.
-fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Writes `bytes` into a new file at `path`, gives it `permissions` when
+/// there are some and flushes it to the disk. Returns the metadata of the
+/// open file after the flush.
+fn write_synced(
+    path: &Path,
+    bytes: &[u8],
+    permissions: Option<std::fs::Permissions>,
+) -> std::io::Result<std::fs::Metadata> {
     let mut file = std::fs::File::create(path)?;
     file.write_all(bytes)?;
-    file.sync_all()
+    if let Some(permissions) = permissions {
+        file.set_permissions(permissions)?;
+    }
+    file.sync_all()?;
+    file.metadata()
 }
 
 #[cfg(test)]
@@ -174,14 +185,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&folder);
     }
 
-    /// Verifies that a write replaces the target and leaves no temporary file.
+    /// Verifies that a write replaces the target, returns the metadata of the placed file and leaves no temporary file.
     #[test]
     fn writes_replace_the_target() {
         let folder = temporary_folder("replace");
         let path = folder.join("game.conf");
         std::fs::write(&path, "machine=X1\n").expect("file is written");
         write_atomically(&path, b"machine = X1TURBO\n").expect("file writes");
-        write_atomically(&path, b"machine = X1\n").expect("file writes again");
+        let written = write_atomically(&path, b"machine = X1\n").expect("file writes again");
+        let placed = std::fs::metadata(&path).expect("file exists");
+        assert_eq!(written.len(), b"machine = X1\n".len() as u64);
+        assert_eq!(written.len(), placed.len());
+        assert_eq!(
+            written.modified().expect("the file system keeps the time"),
+            placed.modified().expect("the file system keeps the time")
+        );
         assert_eq!(
             std::fs::read_to_string(&path).expect("file reads"),
             "machine = X1\n"

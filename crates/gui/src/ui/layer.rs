@@ -7,7 +7,9 @@
 //! on, see [`UiContext::is_blocked`]. The focus ring keeps the widgets of
 //! every layer, and navigation, tab switching and cancel reach only the
 //! layer of the focused widget. A layer that opens takes the focus and a
-//! layer that closes gives it back.
+//! layer that closes gives it back. A modal or a popup that opens during a
+//! pass is fresh: it draws in that pass and takes its input from the next
+//! pass on.
 
 use super::{
     context::{UiContext, UiId},
@@ -42,6 +44,7 @@ impl UiContext<'_> {
                     return_focus: self.state.focus,
                     seen: false,
                     drawn: false,
+                    fresh: true,
                 });
                 self.request_pass();
                 self.state.modals.len() - 1
@@ -55,11 +58,14 @@ impl UiContext<'_> {
                 modal.return_focus = self.state.focus;
             }
         }
+        let fresh = modal.fresh;
         let depth = index as u32 + 1;
         let outer_depth = self.depth;
+        let outer_fresh = self.fresh_layer;
         let outer_capture = self.mouse_captured;
         let start = self.state.ring.len();
         self.depth = depth;
+        self.fresh_layer = outer_fresh || fresh;
         self.deepest = self.deepest.max(depth);
         self.blocked = self.blocked.max(depth);
         self.mouse_captured = false;
@@ -68,6 +74,7 @@ impl UiContext<'_> {
             self.take_focus_into_layer(start);
         }
         self.depth = outer_depth;
+        self.fresh_layer = outer_fresh;
         self.mouse_captured = outer_capture;
         result
     }
@@ -188,21 +195,23 @@ impl UiContext<'_> {
             open.seen = true;
         }
         let outer_depth = self.depth;
+        let outer_fresh = self.fresh_layer;
         let outer_capture = self.mouse_captured;
         let outer_scroll = self.scroll.take();
         self.depth = popup.layer;
+        self.fresh_layer = outer_fresh || popup.fresh;
         self.deepest = self.deepest.max(popup.layer);
         self.mouse_captured = false;
         self.scene.begin_overlay();
         let result = draw(self);
         self.scene.end_overlay();
         let (x, y) = self.mouse();
-        let outside_press =
-            !popup.fresh && !self.is_blocked() && self.input.left_pressed() && !rect.contains(x, y);
+        let outside_press = self.takes_input() && self.input.left_pressed() && !rect.contains(x, y);
         if self.popup_open(owner) && (outside_press || self.cancelled()) {
             self.close_popup();
         }
         self.depth = outer_depth;
+        self.fresh_layer = outer_fresh;
         self.scroll = outer_scroll;
         self.mouse_captured = outer_capture || rect.contains(x, y);
         Some(result)
@@ -345,6 +354,95 @@ mod tests {
             harness.frame(|context| draw(context, false)),
             [true, false, false]
         );
+    }
+
+    /// Verifies that a modal that a cancel opens during a pass takes none of
+    /// the input of that pass and stays open, and that the next cancel
+    /// reaches it.
+    #[test]
+    fn a_modal_that_opens_in_a_pass_takes_the_input_of_the_next_pass() {
+        let mut harness = Harness::new();
+        let mut open = false;
+        let draw = |context: &mut UiContext, open: &mut bool| {
+            button(context, "below", BELOW);
+            if context.cancelled() {
+                *open = true;
+            }
+            if !*open {
+                return (false, None, None);
+            }
+            context.layer("question", |context| {
+                button(context, "first", FIRST);
+                let cancelled = context.cancelled();
+                if cancelled {
+                    *open = false;
+                    context.close_layer();
+                }
+                (
+                    cancelled,
+                    context.shortcut(),
+                    context
+                        .action_button()
+                        .or(context.tab_navigation().map(|_| ActionButton::Start)),
+                )
+            })
+        };
+        harness.frame(|context| draw(context, &mut open));
+        harness.input.cancel = true;
+        harness.input.shortcut = Some(crate::ui::Shortcut::ControlS);
+        harness.input.action = Some(ActionButton::X);
+        assert_eq!(
+            harness.frame(|context| draw(context, &mut open)),
+            (false, None, None)
+        );
+        assert!(open);
+        assert_eq!(harness.state.open_modals(), 1);
+        harness.frame(|context| draw(context, &mut open));
+        assert_eq!(harness.state.focused(), Some(UiId::from("first")));
+        harness.input.cancel = true;
+        let (cancelled, _, _) = harness.frame(|context| draw(context, &mut open));
+        assert!(cancelled);
+        assert!(!open);
+        assert_eq!(harness.state.open_modals(), 0);
+    }
+
+    /// Verifies that a modal that opens at the stack index of a modal that
+    /// closes in the same pass takes none of the input of that pass.
+    #[test]
+    fn a_modal_that_replaces_a_closed_modal_takes_the_input_of_the_next_pass() {
+        let mut harness = Harness::new();
+        let mut shown = "first";
+        let draw = |context: &mut UiContext, shown: &mut &'static str| {
+            button(context, "below", BELOW);
+            let mut replacement_cancelled = false;
+            if *shown == "first" {
+                context.layer("first", |context| {
+                    button(context, "first", FIRST);
+                    if context.cancelled() {
+                        context.close_layer();
+                        *shown = "second";
+                    }
+                });
+            }
+            if *shown == "second" {
+                replacement_cancelled = context.layer("second", |context| {
+                    button(context, "second", SECOND);
+                    context.cancelled()
+                });
+            }
+            replacement_cancelled
+        };
+        harness.frame(|context| draw(context, &mut shown));
+        harness.frame(|context| draw(context, &mut shown));
+        assert_eq!(harness.state.focused(), Some(UiId::from("first")));
+        harness.input.cancel = true;
+        assert!(!harness.frame(|context| draw(context, &mut shown)));
+        assert_eq!(shown, "second");
+        assert_eq!(harness.state.open_modals(), 1);
+        harness.frame(|context| draw(context, &mut shown));
+        assert_eq!(harness.state.focused(), Some(UiId::from("second")));
+        harness.input.cancel = true;
+        assert!(harness.frame(|context| draw(context, &mut shown)));
     }
 
     /// Draws two sibling modals with one button each, `a` and then `b`.
@@ -645,6 +743,51 @@ mod tests {
         assert_eq!(harness.state.focused(), Some(UiId::from("owner")));
         harness.input.cancel = true;
         assert!(harness.frame(|context| draw(context, false)));
+    }
+
+    /// Verifies that a popup that opens inside a modal that opens in the
+    /// same pass takes none of the input of that pass, and that the next
+    /// cancel closes only the popup.
+    #[test]
+    fn a_popup_in_a_fresh_modal_takes_the_input_of_the_next_pass() {
+        let mut harness = Harness::new();
+        let draw = |context: &mut UiContext, open_popup: bool| {
+            button(context, "below", BELOW);
+            context.layer("dialog", |context| {
+                let closed = modal(context, "dialog", (500.0, 400.0), "Dialog").closed;
+                let owner = UiId::from("owner");
+                context.focusable(
+                    owner,
+                    Rect::new(100.0, 60.0, 200.0, 30.0),
+                    NavigationSet::EMPTY,
+                );
+                if open_popup && !context.popup_open(owner) {
+                    context.open_popup(owner);
+                    context.set_focus(UiId::from("entry"));
+                }
+                let entry = context
+                    .popup(owner, POPUP, |context| button(context, "entry", POPUP))
+                    .unwrap_or(false);
+                (closed, entry)
+            })
+        };
+        harness.state.set_focus(UiId::from("below"));
+        harness.frame(|context| button(context, "below", BELOW));
+        harness.input.cancel = true;
+        harness.input.confirm = true;
+        assert_eq!(harness.frame(|context| draw(context, true)), (false, false));
+        assert!(harness.state.popup_open());
+        assert_eq!(harness.state.open_modals(), 1);
+        assert_eq!(harness.state.focused(), Some(UiId::from("entry")));
+        harness.input.confirm = true;
+        assert_eq!(harness.frame(|context| draw(context, false)), (false, true));
+        harness.input.cancel = true;
+        assert_eq!(
+            harness.frame(|context| draw(context, false)),
+            (false, false)
+        );
+        assert!(!harness.state.popup_open());
+        assert_eq!(harness.state.open_modals(), 1);
     }
 
     #[test]

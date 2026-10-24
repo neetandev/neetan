@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 
 use machine_factory::config::{
     MachineSelection, Target,
-    settings::MACHINE_KEY,
     systems::{System, system_of},
 };
 
@@ -13,10 +12,9 @@ use super::{CatalogEntry, ModelSource, SystemCatalog};
 use crate::config::{
     CONFIG_FILE_EXTENSION, ConfigDocument, Diagnostic, GameMetadata, HostLayers, Severity,
     keymap::parse_key_binding,
-    layers::{launch_model, launch_target},
+    layers::{launch_model, launch_target, read_system_defaults, system_defaults_file},
     reading::{
-        FileReading, Layer, LayerKind, LayerLine, foreign_machine_message,
-        invalid_key_binding_message, is_foreign_machine, read_document, read_game_document,
+        FileReading, Layer, LayerKind, LayerLine, invalid_key_binding_message, read_game_document,
     },
 };
 
@@ -53,39 +51,18 @@ struct SystemDefaults {
 }
 
 /// Reads the system defaults file `file` of the family `target`.
-fn read_system_defaults(file: &Path, target: Target, root: &Path) -> SystemDefaults {
+fn system_defaults(file: &Path, target: Target, root: &Path) -> SystemDefaults {
     let mut defaults = SystemDefaults {
         layer: None,
         diagnostics: Vec::new(),
         blocking: None,
     };
-    if !file.is_file() {
-        return defaults;
-    }
-    match ConfigDocument::load(file) {
-        Ok(document) => {
-            let reading = read_document(LayerKind::SystemDefaults, &document, root);
-            let layer = Layer::from_reading(
-                LayerKind::SystemDefaults,
-                file.display().to_string(),
-                &reading,
-            );
-            defaults
-                .diagnostics
-                .extend(reading.diagnostics.iter().cloned());
-            for (line, content) in &reading.lines {
-                if let LayerLine::Setting(setting, value) = content
-                    && setting.key == MACHINE_KEY
-                    && is_foreign_machine(value, target)
-                {
-                    defaults.diagnostics.push(Diagnostic::warning(
-                        *line,
-                        format!("{}. The line is ignored.", foreign_machine_message(value)),
-                    ));
-                }
-            }
-            check_key_bindings(&reading, target, &mut defaults.diagnostics);
-            defaults.layer = Some(layer);
+    match read_system_defaults(file, target, root) {
+        Ok(None) => {}
+        Ok(Some(file)) => {
+            defaults.diagnostics = file.reading.diagnostics.clone();
+            check_key_bindings(&file.reading, target, &mut defaults.diagnostics);
+            defaults.layer = Some(file.layer);
         }
         Err(error) => {
             let diagnostic = Diagnostic {
@@ -117,10 +94,8 @@ pub(super) fn scan_system(
     let target = MachineSelection::of_system(system)?.target();
     let root = host.root();
     let folder = config_folder.join(system.name);
-    let defaults_file = config_folder
-        .join(system.name)
-        .with_extension(CONFIG_FILE_EXTENSION);
-    let defaults = read_system_defaults(&defaults_file, target, root);
+    let defaults_file = system_defaults_file(config_folder, target);
+    let defaults = system_defaults(&defaults_file, target, root);
     let (default_value, default_model_source) = launch_model(
         target,
         host.settings_layer(),
@@ -154,6 +129,27 @@ pub(super) fn scan_system(
         games,
         files_with_errors,
     })
+}
+
+/// Reads the one game file `path` of `system` with the system defaults below `config_folder`,
+/// as the scan of the system reads it.
+pub(super) fn read_game(
+    system: &'static System,
+    path: &Path,
+    config_folder: &Path,
+    host: &HostLayers,
+) -> Option<CatalogEntry> {
+    let target = MachineSelection::of_system(system)?.target();
+    let defaults_file = system_defaults_file(config_folder, target);
+    let defaults = system_defaults(&defaults_file, target, host.root());
+    let file_name = path.file_name()?.to_string_lossy().into_owned();
+    Some(read_entry(
+        system,
+        path.to_path_buf(),
+        file_name,
+        host,
+        &defaults,
+    ))
 }
 
 /// Returns the `.conf` files directly inside `folder` with their file names.
@@ -267,7 +263,9 @@ fn read_entry(
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use machine_factory::config::{EmulatorConfig, model_name, systems::compiled_systems};
+    use machine_factory::config::systems::compiled_systems;
+    #[cfg(feature = "pc98")]
+    use machine_factory::config::{EmulatorConfig, model_name};
 
     use super::*;
     use crate::{
@@ -699,6 +697,32 @@ mod tests {
          fdd1 = games/98/Ys II (Disk A).d88\r\n\
          fdd1 = games/98/Ys II (Disk B).d88\r\n"
         );
+    }
+
+    /// Verifies that the read of one game file gives the entry of the scan and follows a change of the file.
+    #[cfg(feature = "pc98")]
+    #[test]
+    fn one_game_reads_as_the_scan_reads_it() {
+        let folder = ConfigFolder::new("read_game");
+        let path = folder.write("pc98/ys2.conf", CRLF_WITH_BYTE_ORDER_MARK.as_bytes());
+        let host = folder.host("config-folder = .\n");
+        let system = compiled_systems()
+            .find(|system| system.name == "pc98")
+            .expect("pc98 is compiled");
+        let scanned = folder
+            .scan()
+            .system("pc98")
+            .and_then(|catalog| catalog.find("pc98/ys2.conf"))
+            .cloned()
+            .expect("ys2 is listed");
+        let read = crate::catalog::read_game(&host, system, &path).expect("the game reads");
+        assert_eq!(read, scanned);
+        std::fs::write(&path, "meta.title = Ys II Eternal\nmachine = PC9801RA\n")
+            .expect("file is written");
+        let read = crate::catalog::read_game(&host, system, &path).expect("the game reads");
+        assert_eq!(read.title, "Ys II Eternal");
+        assert_eq!(read.model, "PC9801RA");
+        assert_eq!(read.identity, "pc98/ys2.conf");
     }
 
     /// Returns the result of a `--config` launch of `game` with the settings file of `folder`.

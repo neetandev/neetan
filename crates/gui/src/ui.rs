@@ -68,15 +68,16 @@ pub use label::{
     Align, Truncation, WRAP_LINE_HEIGHT, label, wrapped_height, wrapped_label, wrapped_line_height,
 };
 pub use list::{
-    List, ListResponse, ListRow, ListState, PATH_LINE_HEIGHT, RowContent, RowKind, RowMark,
-    caption_row, list,
+    LIST_PADDING, List, ListResponse, ListRow, ListState, PATH_LINE_HEIGHT, RowContent, RowKind,
+    RowMark, caption_row, list,
 };
-pub use modal::{HEADER_HEIGHT, ModalResponse, modal, modal_in};
+pub use modal::{CLOSE_SIZE, HEADER_HEIGHT, ModalResponse, modal, modal_in};
 pub use number_field::{NUMBER_FIELD_WIDTH, NumberError, NumberField};
 pub use scroll::{ScrollState, scroll_area};
 pub use state::UiState;
 pub use status_line::{
-    ACTIVATE_KEYS, CANCEL_KEYS, Hint, HintKey, STATUS_LINE_HEIGHT, StatusEnd, status_line,
+    ACTIVATE_KEYS, CANCEL_KEYS, Hint, HintKey, STATUS_LINE_HEIGHT, StatusEnd, distinct_hints,
+    status_line,
 };
 pub use table::{
     CellTone, Column, ColumnWidth, EmptyHint, Sort, SortDirection, Table, TableCell, TableResponse,
@@ -835,7 +836,7 @@ pub(crate) mod tests {
         /// Renders the gallery at `scale`.
         fn render(scale: f32) {
             let mut gallery =
-                Gallery::new(1340.0, 1960.0 + (DROPDOWN_ROW_HEIGHT - 72.0) * 2.0, scale);
+                Gallery::new(1340.0, 2044.0 + (DROPDOWN_ROW_HEIGHT - 72.0) * 2.0, scale);
             let row_height = 72.0;
             let mut top = CELL_GAP;
             let state_cells =
@@ -924,6 +925,25 @@ pub(crate) mod tests {
                     field.show(context, control(area, NUMBER_FIELD_WIDTH), &mut text);
                 },
             );
+            top += row_height + CELL_GAP;
+            for (index, (caption, value)) in [("Grown, unset", ""), ("Grown, set", "1")]
+                .into_iter()
+                .enumerate()
+            {
+                let mut text = value.to_owned();
+                gallery.cell(
+                    (CELL_GAP + index as f32 * (240.0 + CELL_GAP), top),
+                    (240.0, row_height),
+                    &format!("Number field: {caption}"),
+                    |context, area| {
+                        let field =
+                            NumberField::new("widget", "Built-in default: 0").range(0.0, 3.0);
+                        let width = field.width(context);
+                        field.show(context, control(area, width), &mut text);
+                    },
+                    |harness, _, pass| pass(harness),
+                );
+            }
             top += row_height + CELL_GAP;
 
             let variants = [

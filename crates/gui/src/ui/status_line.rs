@@ -14,6 +14,9 @@ pub const STATUS_LINE_HEIGHT: f32 = 28.0;
 /// The height of a key cap in the status line.
 const KEYCAP_HEIGHT: f32 = 18.0;
 
+/// The padding of a key cap on both sides together in units of the gap.
+const KEYCAP_PADDING_GAPS: f32 = 1.25;
+
 /// A key of the keyboard or a button of a gamepad in a [`Hint`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HintKey<'a> {
@@ -39,6 +42,22 @@ pub const ACTIVATE_KEYS: &[HintKey<'static>] = &[HintKey::Key("Enter"), HintKey:
 
 /// The keys that cancel: Escape and the B button.
 pub const CANCEL_KEYS: &[HintKey<'static>] = &[HintKey::Key("Esc"), HintKey::Pad("B")];
+
+/// Returns the hints of `hints` without each hint whose action an earlier
+/// hint already has. Each hint comes with its action. Two hints of one
+/// action lead to one result, such as Enter on a close button and Esc, and
+/// the status line shows the first of them.
+pub fn distinct_hints<'a, A: PartialEq>(
+    hints: impl IntoIterator<Item = (A, Hint<'a>)>,
+) -> Vec<Hint<'a>> {
+    let mut distinct: Vec<(A, Hint<'a>)> = Vec::new();
+    for (action, hint) in hints {
+        if !distinct.iter().any(|(shown, _)| *shown == action) {
+            distinct.push((action, hint));
+        }
+    }
+    distinct.into_iter().map(|(_, hint)| hint).collect()
+}
 
 /// The text at the end of the status line.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -130,14 +149,16 @@ fn hint_width(context: &mut UiContext, hint: &Hint) -> f32 {
     keys + theme.gap * 0.25 + context.measure(&style, hint.label)
 }
 
-/// The width of the key cap of `key`.
+/// The width of the key cap of `key`: its text, the padding on both sides
+/// and the border on both sides, at least the height of the cap.
 fn keycap_width(context: &mut UiContext, key: HintKey) -> f32 {
     let theme = context.theme;
     let style = theme.small().with_color(theme.text);
     match key {
         HintKey::Pad(_) => KEYCAP_HEIGHT,
         HintKey::Key(text) | HintKey::Shoulder(text) => {
-            (context.measure(&style, text) + theme.gap * 1.25).max(KEYCAP_HEIGHT)
+            (context.measure(&style, text) + theme.gap * KEYCAP_PADDING_GAPS + theme.stroke * 2.0)
+                .max(KEYCAP_HEIGHT)
         }
     }
 }
@@ -231,6 +252,45 @@ mod tests {
             .find(|instance| instance.radii[0] != instance.radii[2])
             .expect("a shoulder cap");
         assert_eq!(shoulder.radii[0], KEYCAP_HEIGHT * 0.5);
+    }
+
+    /// Verifies that a key cap holds its text, the padding of `gap * 0.625` and the border on each side, and that a short key keeps the width of the height.
+    #[test]
+    fn a_key_cap_holds_its_text_its_padding_and_its_border() {
+        let mut harness = Harness::new();
+        let (text, wide, short) = harness.frame(|context| {
+            let style = context.theme.small().with_color(context.theme.text);
+            (
+                context.measure(&style, "Ctrl+PgUp"),
+                keycap_width(context, HintKey::Key("Ctrl+PgUp")),
+                keycap_width(context, HintKey::Shoulder("I")),
+            )
+        });
+        let theme = &harness.theme;
+        let expected = text + theme.gap * 0.625 * 2.0 + theme.stroke * 2.0;
+        assert!((wide - expected).abs() < 0.01, "{wide} {expected}");
+        assert_eq!(short, KEYCAP_HEIGHT);
+        harness.frame(|context| {
+            status_line(
+                context,
+                LINE,
+                &HINTS[1..],
+                StatusEnd::Path("config/pc98/yu-no.conf"),
+            );
+        });
+        let first = harness
+            .scene
+            .instances()
+            .iter()
+            .find(|instance| {
+                instance.kind[0] == Instance::KIND_RECTANGLE && instance.rect[3] == KEYCAP_HEIGHT
+            })
+            .expect("the first cap")
+            .rect;
+        assert!(
+            (first[2] - expected.round()).abs() <= 1.0,
+            "{first:?} {expected}"
+        );
     }
 
     #[test]
@@ -354,5 +414,38 @@ mod tests {
             .filter(|instance| instance.kind[0] == Instance::KIND_GLYPH)
             .any(|instance| instance.color == harness.theme.danger_text.to_linear());
         assert!(alert);
+    }
+
+    /// Verifies that a hint with the action of an earlier hint leaves the line whatever its label, and that the order stays.
+    #[test]
+    fn a_repeated_result_shows_once() {
+        let close_button = Hint {
+            keys: ACTIVATE_KEYS,
+            label: "Cancel",
+        };
+        let section = Hint {
+            keys: &[HintKey::Shoulder("LB")],
+            label: "Section",
+        };
+        let close = Hint {
+            keys: CANCEL_KEYS,
+            label: "Close",
+        };
+        assert_eq!(
+            distinct_hints([
+                ("close", close_button),
+                ("section", section),
+                ("close", close)
+            ]),
+            [close_button, section]
+        );
+        let other = Hint {
+            keys: &[HintKey::Pad("X")],
+            label: "Section",
+        };
+        assert_eq!(
+            distinct_hints([("section", section), ("clear", other)]),
+            [section, other]
+        );
     }
 }

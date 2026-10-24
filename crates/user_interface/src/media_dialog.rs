@@ -13,10 +13,10 @@ use gui::{
 };
 
 /// The size of the dialog panel in logical units.
-const PANEL_SIZE: (f32, f32) = (640.0, 540.0);
+pub(crate) const PANEL_SIZE: (f32, f32) = (640.0, 540.0);
 
 /// The height of the tab bar in logical units.
-const TAB_BAR_HEIGHT: f32 = 40.0;
+pub(crate) const TAB_BAR_HEIGHT: f32 = 40.0;
 
 /// The id of the image list.
 const LIST_ID: &str = "images";
@@ -95,11 +95,12 @@ pub(crate) fn available_drives(floppy_drives: u8, cdrom: bool) -> Vec<Drive> {
 }
 
 /// A disk image that the configuration offers for a drive.
+#[derive(Debug, Clone)]
 pub(crate) struct ImageEntry {
     /// The path of the image file.
     pub(crate) path: PathBuf,
     /// The file name that the list shows.
-    name: String,
+    pub(crate) name: String,
     /// The file name in lowercase for the filter.
     folded_name: String,
 }
@@ -182,7 +183,7 @@ pub(crate) fn hotkey_action(
 
 /// The indices of the entries whose file name holds `filter`, ignoring the
 /// case.
-fn filtered_entries(entries: &[ImageEntry], filter: &str) -> Vec<usize> {
+pub(crate) fn filtered_entries(entries: &[ImageEntry], filter: &str) -> Vec<usize> {
     let folded_filter = filter.trim().to_lowercase();
     entries
         .iter()

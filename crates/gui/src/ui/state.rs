@@ -47,6 +47,9 @@ pub(crate) struct OpenModal {
     pub(crate) seen: bool,
     /// Whether a pass drew the modal since it opened.
     pub(crate) drawn: bool,
+    /// Whether the modal opened in this pass. A fresh modal takes no input
+    /// of the pass.
+    pub(crate) fresh: bool,
 }
 
 /// The widget state that outlives a pass.
@@ -203,6 +206,7 @@ impl UiState {
                 return_focus: self.focus,
                 seen: false,
                 drawn: false,
+                fresh: false,
             });
         }
         self.pass_requested = true;
@@ -296,6 +300,7 @@ impl UiState {
         }
         for modal in &mut self.modals {
             modal.seen = false;
+            modal.fresh = false;
         }
         let lost = self.lost.take();
         if input.left_pressed() {

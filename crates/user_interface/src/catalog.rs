@@ -6,12 +6,12 @@
 //! and joins the files with errors of its system. The catalog reads only the
 //! configuration files. It never touches ROMs or images.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use machine_factory::config::systems::{System, compiled_systems};
 
 pub use self::file_names::{
-    COPY_TITLE_SUFFIX, FALLBACK_FILE_STEM, MAXIMUM_FILE_STEM_LENGTH, copy_title,
+    COPY_TITLE_SUFFIX, FALLBACK_FILE_STEM, MAXIMUM_FILE_STEM_LENGTH, copy_title, is_reserved_stem,
     new_game_file_name, title_file_stem, unique_file_name,
 };
 pub use crate::config::ModelSource;
@@ -93,6 +93,14 @@ impl SystemCatalog {
             .chain(&self.files_with_errors)
             .find(|entry| entry.identity == identity)
     }
+}
+
+/// Reads the one game file `path` of `system` below the config folder of `host`, as
+/// [`Catalog::scan`] reads it. `None` for a system outside this build or a path without a file
+/// name.
+#[must_use]
+pub fn read_game(host: &HostLayers, system: &'static System, path: &Path) -> Option<CatalogEntry> {
+    scan::read_game(system, path, &host.config_folder(), host)
 }
 
 /// The games of every system compiled into this build.

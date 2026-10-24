@@ -11,7 +11,25 @@ use common::CpuMode;
 use common::{EightMhzWaitMode, MemoryWaitSwitch};
 use device::gameport_towns::TownsPadType;
 
-use super::{BootMode, EmulatorConfig, Target, model_name, resolve_model, systems::SYSTEMS};
+pub mod file_types;
+pub mod model_limits;
+
+use self::{
+    file_types::{
+        CARTRIDGE_FILES, CASSETTE_FILES, CDROM_FILES, FLOPPY_FILES, FileTypes, HARD_DISK_FILES,
+    },
+    model_limits::{
+        ChoiceFact, LimitReason, MSX_FDD_MODELS, ModelLimit, PC60_FDD_MODELS, PC98_CDROM_MODELS,
+        PC98_CPU_MODE_MODELS, PC98_REAL_BIOS_MODELS, PC98_VX_AND_LATER_MODELS,
+        TOWNS_CPU_MODE_MODELS, X1_TURBO_MODELS, X68K_CDROM_MODELS, X68K_CPU_MODE_MODELS,
+    },
+};
+use super::{
+    BootMode, EmulatorConfig, MachineSelection, Target, model_name,
+    phrases::{format_megahertz, join_names},
+    resolve_model,
+    systems::SYSTEMS,
+};
 
 /// Layer scope of a setting: the application, the emulated machine or the media of a game.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -181,13 +199,14 @@ impl Families {
     }
 }
 
-/// Models of one family that read a setting.
+/// The value that the machines of a set of families take for an optional setting that no layer
+/// sets.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct ModelLimit {
-    /// The family the limit applies to.
-    pub family: Families,
-    /// The model names of the family that read the setting, in the form of the `machine` values.
-    pub models: &'static [&'static str],
+pub struct UnsetValue {
+    /// The families that take the value.
+    pub families: Families,
+    /// The value as the configuration file writes it, or a word for a value that the machine picks.
+    pub text: &'static str,
 }
 
 /// One value of a choice setting.
@@ -298,6 +317,12 @@ pub struct Setting {
     pub section: Option<Section>,
     /// The explicit choice that a value of this setting records.
     pub explicit: Option<ExplicitKey>,
+    /// The files that a path setting takes, one entry for each set of families.
+    pub file_types: &'static [FileTypes],
+    /// The values that the machines take while no layer sets an optional setting.
+    pub unset_values: &'static [UnsetValue],
+    /// The fact that the note of a choice setting adds.
+    pub fact: ChoiceFact,
     /// Whether only the interactive frontend reads the setting.
     pub frontend_only: bool,
     /// Empties a path list. Every other kind has `None`.
@@ -308,6 +333,12 @@ pub struct Setting {
     pub format: fn(&EmulatorConfig) -> Vec<String>,
 }
 
+/// The families whose machines derive the defaults of the settings with an [`ExplicitKey`].
+const DERIVED_DEFAULT_FAMILIES: Families = Families::PC88;
+
+/// The note of a setting whose default derives from the boot mode.
+pub const DERIVED_DEFAULT_NOTE: &str = "The default follows the boot mode.";
+
 impl Setting {
     /// Returns whether the machine `model` of the family `target` reads this setting.
     #[must_use]
@@ -315,15 +346,39 @@ impl Setting {
         if !self.families.contains_target(target) {
             return false;
         }
+        self.limit_for(target).is_none_or(|limit| {
+            limit
+                .models
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(model))
+        })
+    }
+
+    /// Returns the model limit of the family `target`. A family without a limit reads the setting
+    /// on every model.
+    #[must_use]
+    pub fn limit_for(&self, target: Target) -> Option<&'static ModelLimit> {
         self.model_limits
             .iter()
             .find(|limit| limit.family.contains_target(target))
-            .is_none_or(|limit| {
-                limit
-                    .models
-                    .iter()
-                    .any(|name| name.eq_ignore_ascii_case(model))
-            })
+    }
+
+    /// Returns the files that the path setting takes on the family `target`.
+    #[must_use]
+    pub fn file_types_for(&self, target: Target) -> Option<&'static FileTypes> {
+        self.file_types
+            .iter()
+            .find(|types| types.families.contains_target(target))
+    }
+
+    /// Returns the value that the machines of the family `target` take while no layer sets
+    /// the setting.
+    #[must_use]
+    pub fn unset_text(&self, target: Target) -> Option<&'static str> {
+        self.unset_values
+            .iter()
+            .find(|unset| unset.families.contains_target(target))
+            .map(|unset| unset.text)
     }
 
     /// Returns the choices of a choice setting that the family `target` accepts.
@@ -337,6 +392,39 @@ impl Setting {
         choices
             .iter()
             .filter(move |choice| choice.families.contains_target(target))
+    }
+
+    /// Returns the fact that the note of the choice setting adds on `model` while the file holds
+    /// `value`.
+    #[must_use]
+    pub fn choice_fact(&self, model: MachineSelection, value: Option<&str>) -> Option<String> {
+        match self.fact {
+            ChoiceFact::None => None,
+            ChoiceFact::Choices => {
+                let values: Vec<&str> = self
+                    .choices_for(model.target())
+                    .map(|choice| choice.value)
+                    .collect();
+                (!values.is_empty())
+                    .then(|| format!("The choices are {}.", join_names(&values, "and")))
+            }
+            ChoiceFact::CpuClock => {
+                let value = value?;
+                let mode = value.parse::<CpuMode>().ok()?;
+                let hertz = model.cpu_clock_hz(mode)?;
+                Some(format!(
+                    "At {value} the CPU runs at {}.",
+                    format_megahertz(hertz)
+                ))
+            }
+        }
+    }
+
+    /// Returns whether the default of the setting derives from other settings on the family
+    /// `target`.
+    #[must_use]
+    pub fn has_derived_default(&self, target: Target) -> bool {
+        self.explicit.is_some() && DERIVED_DEFAULT_FAMILIES.contains_target(target)
     }
 }
 
@@ -376,7 +464,7 @@ impl ExplicitSettings {
 /// `pc88-memory-wait` keeps its value.
 #[cfg(feature = "pc88")]
 pub fn apply_derived_defaults(config: &mut EmulatorConfig, explicit: ExplicitSettings) {
-    if config.target != Target::Pc88 {
+    if !DERIVED_DEFAULT_FAMILIES.contains_target(config.target) {
         return;
     }
     if !config
@@ -576,27 +664,23 @@ const BOOT_DEVICE_FAMILIES: Families = Families::PC98.with(Families::TOWNS).with
 /// Families with a boot device selection beyond the PC/AT boot orders.
 const FULL_BOOT_DEVICE_FAMILIES: Families = Families::PC98.with(Families::TOWNS);
 
-/// PC-98 models with a selectable CPU clock.
-const PC98_CPU_MODE_MODELS: &[&str] = &["PC9801F", "PC9801VM", "PC9801VX"];
-/// PC-98 models with EMS, XMS and the 5 MHz GDC clock.
-const PC98_VX_AND_LATER_MODELS: &[&str] =
-    &["PC9801VX", "PC9801RS", "PC9801RA", "PC9821AS", "PC9821AP"];
-/// PC-98 models that boot a real BIOS.
-const PC98_REAL_BIOS_MODELS: &[&str] = &["PC9801F", "PC9801VM", "PC9801VX", "PC9801RS", "PC9801RA"];
-/// PC-98 models with a CD-ROM drive.
-const PC98_CDROM_MODELS: &[&str] = &["PC9821AS", "PC9821AP"];
-/// PC-6000 models with built-in floppy drives.
-const PC60_FDD_MODELS: &[&str] = &["PC6601", "PC6601SR"];
-/// MSX models with a floppy drive.
-const MSX_FDD_MODELS: &[&str] = &["MSX2", "MSX2PLUS"];
-/// FM Towns models with a selectable CPU clock.
-const TOWNS_CPU_MODE_MODELS: &[&str] = &["FMTownsIICX", "FMTownsIIMX"];
-/// X68000 models with a selectable CPU clock.
-const X68K_CPU_MODE_MODELS: &[&str] = &["X68000XVI"];
-/// X68000 models with a CD-ROM capable SCSI interface.
-const X68K_CDROM_MODELS: &[&str] = &["X68000SUPER", "X68000XVI"];
-/// X1 models with the turbo monitor and keyboard switches.
-const X1_TURBO_MODELS: &[&str] = &["X1TURBO"];
+/// The boot modes that the machines take without `boot-mode`.
+const BOOT_MODE_UNSET: &[UnsetValue] = &[
+    UnsetValue {
+        families: Families::PC88,
+        text: "v2",
+    },
+    UnsetValue {
+        families: Families::FM7,
+        text: "basic",
+    },
+];
+
+/// The GDC clock without `force-gdc-clock`: the machine picks it.
+const GDC_CLOCK_UNSET: &[UnsetValue] = &[UnsetValue {
+    families: Families::PC98,
+    text: "auto",
+}];
 
 /// Every machine model, with the family that builds it.
 pub const MODEL_CHOICES: &[Choice] = &[
@@ -1060,6 +1144,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Machine),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: resolve_model,
@@ -1080,18 +1167,24 @@ pub static SETTINGS: &[Setting] = &[
             ModelLimit {
                 family: Families::PC98,
                 models: PC98_CPU_MODE_MODELS,
+                reason: LimitReason::FixedClock,
             },
             ModelLimit {
                 family: Families::TOWNS,
                 models: TOWNS_CPU_MODE_MODELS,
+                reason: LimitReason::FixedClock,
             },
             ModelLimit {
                 family: Families::X68K,
                 models: X68K_CPU_MODE_MODELS,
+                reason: LimitReason::FixedClock,
             },
         ],
         section: Some(Section::Machine),
         explicit: Some(ExplicitKey::CpuMode),
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::CpuClock,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1110,6 +1203,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Machine),
         explicit: None,
+        file_types: &[],
+        unset_values: BOOT_MODE_UNSET,
+        fact: ChoiceFact::Choices,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1128,6 +1224,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Machine),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1146,9 +1245,13 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[ModelLimit {
             family: Families::PC98,
             models: PC98_REAL_BIOS_MODELS,
+            reason: LimitReason::Phrase("boots only the built-in BIOS"),
         }],
         section: Some(Section::Machine),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1167,9 +1270,13 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[ModelLimit {
             family: Families::PC98,
             models: PC98_VX_AND_LATER_MODELS,
+            reason: LimitReason::Phrase("has no EMS memory"),
         }],
         section: Some(Section::Machine),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1188,9 +1295,13 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[ModelLimit {
             family: Families::PC98,
             models: PC98_VX_AND_LATER_MODELS,
+            reason: LimitReason::Phrase("has no XMS memory"),
         }],
         section: Some(Section::Machine),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1209,9 +1320,13 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[ModelLimit {
             family: Families::X1,
             models: X1_TURBO_MODELS,
+            reason: LimitReason::Phrase("has a fixed monitor timing"),
         }],
         section: Some(Section::Machine),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::Choices,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1231,6 +1346,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Machine),
         explicit: Some(ExplicitKey::Pc88MemoryWait),
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1250,6 +1368,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Machine),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1268,9 +1389,13 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[ModelLimit {
             family: Families::X1,
             models: X1_TURBO_MODELS,
+            reason: LimitReason::Phrase("has no keyboard mode switch"),
         }],
         section: Some(Section::Machine),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1289,6 +1414,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Machine),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1308,14 +1436,19 @@ pub static SETTINGS: &[Setting] = &[
             ModelLimit {
                 family: Families::PC60,
                 models: PC60_FDD_MODELS,
+                reason: LimitReason::Phrase("has no floppy drive"),
             },
             ModelLimit {
                 family: Families::MSX,
                 models: MSX_FDD_MODELS,
+                reason: LimitReason::Phrase("has no floppy drive"),
             },
         ],
         section: Some(Section::Media),
         explicit: None,
+        file_types: FLOPPY_FILES,
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: Some(|config| config.fdd1.clear()),
         apply: |config, value| {
@@ -1334,9 +1467,13 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[ModelLimit {
             family: Families::PC60,
             models: PC60_FDD_MODELS,
+            reason: LimitReason::Phrase("has no floppy drive"),
         }],
         section: Some(Section::Media),
         explicit: None,
+        file_types: FLOPPY_FILES,
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: Some(|config| config.fdd2.clear()),
         apply: |config, value| {
@@ -1356,14 +1493,19 @@ pub static SETTINGS: &[Setting] = &[
             ModelLimit {
                 family: Families::PC98,
                 models: PC98_CDROM_MODELS,
+                reason: LimitReason::Phrase("has no CD-ROM drive"),
             },
             ModelLimit {
                 family: Families::X68K,
                 models: X68K_CDROM_MODELS,
+                reason: LimitReason::Phrase("has no CD-ROM drive"),
             },
         ],
         section: Some(Section::Media),
         explicit: None,
+        file_types: CDROM_FILES,
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: Some(|config| config.cdrom.clear()),
         apply: |config, value| {
@@ -1382,6 +1524,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Media),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1400,6 +1545,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Media),
         explicit: None,
+        file_types: HARD_DISK_FILES,
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1418,6 +1566,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Media),
         explicit: None,
+        file_types: HARD_DISK_FILES,
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1436,6 +1587,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Media),
         explicit: None,
+        file_types: CARTRIDGE_FILES,
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1457,6 +1611,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Media),
         explicit: None,
+        file_types: CASSETTE_FILES,
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1475,6 +1632,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Sound),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1493,6 +1653,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Sound),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1511,6 +1674,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Sound),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1529,6 +1695,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Display),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: true,
         clear: None,
         apply: |config, value| {
@@ -1547,6 +1716,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Display),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: true,
         clear: None,
         apply: |config, value| {
@@ -1565,6 +1737,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Display),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: true,
         clear: None,
         apply: |config, value| {
@@ -1583,6 +1758,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Display),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: true,
         clear: None,
         apply: |config, value| {
@@ -1601,6 +1779,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Display),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: true,
         clear: None,
         apply: |config, value| {
@@ -1619,9 +1800,13 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[ModelLimit {
             family: Families::PC98,
             models: PC98_VX_AND_LATER_MODELS,
+            reason: LimitReason::Phrase("has a fixed GDC clock"),
         }],
         section: Some(Section::Display),
         explicit: None,
+        file_types: &[],
+        unset_values: GDC_CLOCK_UNSET,
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1640,6 +1825,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Display),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1658,6 +1846,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Advanced),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1676,6 +1867,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Advanced),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: true,
         clear: None,
         apply: |config, value| {
@@ -1694,6 +1888,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: None,
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1712,6 +1909,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::VideoAndAudio),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: true,
         clear: None,
         apply: |config, value| {
@@ -1730,6 +1930,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::VideoAndAudio),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: true,
         clear: None,
         apply: |config, value| {
@@ -1748,6 +1951,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Folders),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: true,
         clear: None,
         apply: |config, value| {
@@ -1766,6 +1972,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Folders),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1784,6 +1993,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Folders),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: true,
         clear: None,
         apply: |config, value| {
@@ -1802,6 +2014,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Roms),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1820,6 +2035,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Roms),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1838,6 +2056,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Roms),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1856,6 +2077,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Roms),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1874,6 +2098,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Roms),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1892,6 +2119,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Roms),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1910,6 +2140,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Roms),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1928,6 +2161,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Roms),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1946,6 +2182,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Roms),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1964,6 +2203,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Roms),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -1982,6 +2224,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Roms),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -2000,6 +2245,9 @@ pub static SETTINGS: &[Setting] = &[
         model_limits: &[],
         section: Some(Section::Roms),
         explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
         frontend_only: false,
         clear: None,
         apply: |config, value| {
@@ -2305,5 +2553,122 @@ mod tests {
         apply_derived_defaults(&mut config, explicit);
         assert_eq!(config.cpu_mode, CpuMode::High);
         assert_eq!(config.pc88_memory_wait, MemoryWaitSwitch::Compatible);
+    }
+
+    /// Verifies that every model limit gives a reason in the form of a phrase after a model name.
+    #[test]
+    fn model_limits_give_a_reason() {
+        for setting in SETTINGS {
+            for limit in setting.model_limits {
+                for choice in MODEL_CHOICES {
+                    let Ok(model) = choice.value.parse::<MachineSelection>() else {
+                        continue;
+                    };
+                    if !limit.family.contains_target(model.target()) {
+                        continue;
+                    }
+                    let reason = limit.reason.phrase(model);
+                    assert!(!reason.is_empty(), "{}", setting.key);
+                    assert!(reason.is_ascii(), "{}", setting.key);
+                    assert!(!reason.ends_with('.'), "{}", setting.key);
+                    assert!(
+                        reason.starts_with(|first: char| first.is_ascii_lowercase()),
+                        "{}",
+                        setting.key
+                    );
+                }
+            }
+        }
+    }
+
+    /// Verifies that every image setting of a game lists its files for each family that reads it.
+    #[test]
+    fn image_settings_list_their_files_for_every_family() {
+        for setting in SETTINGS {
+            let images = setting.scope == Scope::Game
+                && matches!(
+                    setting.kind,
+                    ValueKind::PathList | ValueKind::Path(PathKind::File)
+                );
+            if !images {
+                assert!(setting.file_types.is_empty(), "{}", setting.key);
+                continue;
+            }
+            let mut covered = Families::NONE;
+            for types in setting.file_types {
+                assert!(
+                    setting.families.intersects(types.families),
+                    "{}",
+                    setting.key
+                );
+                assert!(!covered.intersects(types.families), "{}", setting.key);
+                covered = covered.with(types.families);
+            }
+            assert!(covered.includes(setting.families), "{}", setting.key);
+        }
+    }
+
+    /// Verifies that the unset values belong to optional settings of their families.
+    #[test]
+    fn unset_values_belong_to_optional_settings() {
+        for setting in SETTINGS {
+            let mut covered = Families::NONE;
+            for unset in setting.unset_values {
+                assert!(setting.families.includes(unset.families), "{}", setting.key);
+                assert!(!covered.intersects(unset.families), "{}", setting.key);
+                covered = covered.with(unset.families);
+            }
+            if !setting.unset_values.is_empty() {
+                let config = first_system_config();
+                assert!((setting.format)(&config).is_empty(), "{}", setting.key);
+            }
+        }
+    }
+
+    #[cfg(feature = "pc88")]
+    /// Verifies the unset boot mode of the PC-88 and that only the PC-88 derives defaults.
+    #[test]
+    fn the_pc88_derives_its_defaults_and_boots_v2_without_a_boot_mode() {
+        let boot_mode = find_setting("boot-mode").expect("boot-mode is a table key");
+        assert_eq!(boot_mode.unset_text(Target::Pc88), Some("v2"));
+        let cpu_mode = find_setting("cpu-mode").expect("cpu-mode is a table key");
+        assert!(cpu_mode.has_derived_default(Target::Pc88));
+        assert!(!boot_mode.has_derived_default(Target::Pc88));
+        let model = MachineSelection::default_of(Target::Pc88);
+        assert_eq!(
+            cpu_mode.choice_fact(model, Some("low")).as_deref(),
+            Some("At low the CPU runs at 4 MHz.")
+        );
+        assert_eq!(
+            boot_mode.choice_fact(model, None).as_deref(),
+            Some("The choices are v1s, v1h, v2, n, n80 and n80sr.")
+        );
+    }
+
+    #[cfg(feature = "pc98")]
+    /// Verifies the model limit and the reason of the PC-98 CD-ROM drive.
+    #[test]
+    fn the_pc98_cdrom_limit_gives_its_models_and_reason() {
+        let cdrom = find_setting("cdrom").expect("cdrom is a table key");
+        let limit = cdrom
+            .limit_for(Target::Pc98)
+            .expect("the PC-98 limits cdrom");
+        assert_eq!(limit.models, ["PC9821AS", "PC9821AP"]);
+        let model: MachineSelection = "PC9801RA".parse().expect("a PC-98 model");
+        assert_eq!(limit.reason.phrase(model), "has no CD-ROM drive");
+        assert!(!cdrom.has_derived_default(Target::Pc98));
+        let cpu_mode = find_setting("cpu-mode").expect("cpu-mode is a table key");
+        let limit = cpu_mode
+            .limit_for(Target::Pc98)
+            .expect("the PC-98 limits cpu-mode");
+        assert_eq!(limit.reason.phrase(model), "runs at a fixed 20 MHz");
+        let vm: MachineSelection = "PC9801VM".parse().expect("a PC-98 model");
+        assert_eq!(
+            cpu_mode.choice_fact(vm, Some("low")).as_deref(),
+            Some("At low the CPU runs at 8 MHz.")
+        );
+        assert_eq!(cpu_mode.choice_fact(vm, None), None);
+        let gdc = find_setting("force-gdc-clock").expect("force-gdc-clock is a table key");
+        assert_eq!(gdc.unset_text(Target::Pc98), Some("auto"));
     }
 }

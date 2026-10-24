@@ -25,10 +25,10 @@ use machine_factory::config::{
 
 use super::{
     discovery::{Locations, SettingsLocation, discover_settings, resolve_path, resource_folder},
-    document::ConfigDocument,
+    document::{ConfigDocument, DocumentError},
     keymap::parse_key_binding,
     reading::{
-        Diagnostic, Layer, LayerKind, LayerLine, Severity, foreign_machine_message,
+        Diagnostic, FileReading, Layer, LayerKind, LayerLine, Severity, foreign_machine_message,
         invalid_key_binding_message, is_foreign_machine, read_document, read_game_document,
     },
 };
@@ -53,6 +53,18 @@ pub struct LaunchRequest {
     pub system: Option<&'static System>,
 }
 
+/// Fails with the first error of `diagnostics`, the findings about the file
+/// at `source`, and logs each warning before it.
+fn check_diagnostics(diagnostics: &[Diagnostic], source: &str) -> crate::Result<()> {
+    for diagnostic in diagnostics {
+        match diagnostic.severity {
+            Severity::Error => bail!("{}", diagnostic.located(source)),
+            Severity::Warning => warn!("{}", diagnostic.located(source)),
+        }
+    }
+    Ok(())
+}
+
 /// Reads a configuration file into a layer.
 ///
 /// Relative path values resolve against `root`. A game file in the folder of
@@ -74,30 +86,9 @@ fn read_layer(
             read_document(kind, &document, root)
         }
     };
-    for diagnostic in &reading.diagnostics {
-        match diagnostic.severity {
-            Severity::Error => bail!("{}", diagnostic.located(&source)),
-            Severity::Warning => warn!("{}", diagnostic.located(&source)),
-        }
-    }
+    check_diagnostics(&reading.diagnostics, &source)?;
     let layer = Layer::from_reading(kind, source, &reading);
     Ok((layer, reading.diagnostics))
-}
-
-/// Returns the `machine` values of `layer` that select another family than `target`.
-fn foreign_machines(layer: &Layer, target: Target) -> Vec<&str> {
-    layer
-        .lines
-        .iter()
-        .filter_map(|line| match line {
-            LayerLine::Setting(setting, value)
-                if setting.key == MACHINE_KEY && is_foreign_machine(value, target) =>
-            {
-                Some(value.as_str())
-            }
-            LayerLine::Setting(..) | LayerLine::KeyBinding(..) => None,
-        })
-        .collect()
 }
 
 /// The source of the machine model of a launch.
@@ -355,22 +346,15 @@ pub fn build_configuration(
     )
     .map_err(StringError)?;
 
-    let system_file = config_folder
-        .join(system_of(target).name)
-        .with_extension(CONFIG_FILE_EXTENSION);
-    let system_layer = if system_file.is_file() {
-        info!("System defaults: {}", system_file.display());
-        let (layer, _) = read_layer(LayerKind::SystemDefaults, &system_file, root, None)?;
-        for value in foreign_machines(&layer, target) {
-            warn!(
-                "{}: {}. The line is ignored.",
-                layer.source,
-                foreign_machine_message(value)
-            );
+    let system_file = system_defaults_file(&config_folder, target);
+    let system_layer = match read_system_defaults(&system_file, target, root) {
+        Ok(None) => None,
+        Ok(Some(defaults)) => {
+            info!("System defaults: {}", system_file.display());
+            check_diagnostics(&defaults.reading.diagnostics, &defaults.layer.source)?;
+            Some(defaults.layer)
         }
-        Some(layer)
-    } else {
-        None
+        Err(error) => bail!("Failed to read {}: {error}", system_file.display()),
     };
 
     let (machine, _) = launch_model(
@@ -381,19 +365,13 @@ pub fn build_configuration(
         host.command_line_layer(),
     );
     let model = machine.parse::<MachineSelection>().map_err(StringError)?;
-    let mut config = EmulatorConfig::for_model(model);
-    let mut explicit = ExplicitSettings::default();
-    let mut key_map = KeyOverrides::new();
-
     let layers = host
         .settings_layer()
         .into_iter()
         .chain(system_layer.as_ref())
         .chain(&game_layers)
         .chain(std::iter::once(host.command_line_layer()));
-    for layer in layers {
-        apply_layer(&mut config, &mut explicit, &mut key_map, layer)?;
-    }
+    let (mut config, explicit, key_map) = apply_layers(model, layers)?;
 
     config.config_folder = resolve_path(root, &config.config_folder);
     config.roms_folder = resolve_path(root, &config.roms_folder);
@@ -403,6 +381,80 @@ pub fn build_configuration(
     apply_derived_defaults(&mut config, explicit);
     validate_images(&config)?;
     Ok((config, key_map))
+}
+
+/// Returns the configuration of `model` with the lines of `layers` applied in order, except
+/// `machine`, together with the settings that the layers set explicitly and the key bindings.
+///
+/// The defaults that derive from other settings are not applied yet, see
+/// [`apply_derived_defaults`].
+pub(crate) fn apply_layers<'a>(
+    model: MachineSelection,
+    layers: impl IntoIterator<Item = &'a Layer>,
+) -> crate::Result<(EmulatorConfig, ExplicitSettings, KeyOverrides)> {
+    let mut config = EmulatorConfig::for_model(model);
+    let mut explicit = ExplicitSettings::default();
+    let mut key_map = KeyOverrides::new();
+    for layer in layers {
+        apply_layer(&mut config, &mut explicit, &mut key_map, layer)?;
+    }
+    Ok((config, explicit, key_map))
+}
+
+/// The system defaults file of one family as it reads.
+#[derive(Debug, Clone)]
+pub(crate) struct SystemDefaultsFile {
+    /// The accepted lines with their line numbers and the findings about the file.
+    pub(crate) reading: FileReading,
+    /// The layer of the accepted lines.
+    pub(crate) layer: Layer,
+}
+
+/// Reads the system defaults file `file` of the family `target`. Relative path values resolve
+/// against `root`. A `machine` of another family gets a warning, and the launch ignores it. A
+/// file that does not exist gives `None`.
+pub(crate) fn read_system_defaults(
+    file: &Path,
+    target: Target,
+    root: &Path,
+) -> Result<Option<SystemDefaultsFile>, DocumentError> {
+    if !file.is_file() {
+        return Ok(None);
+    }
+    let document = ConfigDocument::load(file)?;
+    let mut reading = read_document(LayerKind::SystemDefaults, &document, root);
+    let foreign: Vec<Diagnostic> = reading
+        .lines
+        .iter()
+        .filter_map(|(line, content)| match content {
+            LayerLine::Setting(setting, value)
+                if setting.key == MACHINE_KEY && is_foreign_machine(value, target) =>
+            {
+                Some(Diagnostic::warning(
+                    *line,
+                    format!("{}. The line is ignored.", foreign_machine_message(value)),
+                ))
+            }
+            LayerLine::Setting(..) | LayerLine::KeyBinding(..) => None,
+        })
+        .collect();
+    reading.diagnostics.extend(foreign);
+    reading
+        .diagnostics
+        .sort_by_key(|diagnostic| diagnostic.line);
+    let layer = Layer::from_reading(
+        LayerKind::SystemDefaults,
+        file.display().to_string(),
+        &reading,
+    );
+    Ok(Some(SystemDefaultsFile { reading, layer }))
+}
+
+/// Returns the system defaults file of the family `target` below `config_folder`.
+pub(crate) fn system_defaults_file(config_folder: &Path, target: Target) -> PathBuf {
+    config_folder
+        .join(system_of(target).name)
+        .with_extension(CONFIG_FILE_EXTENSION)
 }
 
 /// Returns the system whose folder below `config_folder` holds the last game file of `game_files`.

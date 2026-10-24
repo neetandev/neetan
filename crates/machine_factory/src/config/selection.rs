@@ -1,6 +1,7 @@
 //! The machine selection: one model of one family, and the parser of the
 //! `machine` values.
 
+use common::CpuMode;
 #[cfg(feature = "pc98")]
 use common::MachineModel;
 #[cfg(feature = "pc60")]
@@ -23,7 +24,8 @@ use machine_x1::X1Model;
 use machine_x68k::X68kModel;
 
 use super::{
-    Target, join_alternatives,
+    Target,
+    phrases::expected_names,
     settings::compiled_model_names,
     systems::{System, system_of},
 };
@@ -157,6 +159,47 @@ impl MachineSelection {
         }
     }
 
+    /// Returns the clock of the main CPU in Hz in the CPU mode `mode`. `None` for a family
+    /// whose machine has no CPU mode.
+    #[must_use]
+    #[cfg_attr(
+        not(any(
+            feature = "pc98",
+            feature = "pc88",
+            feature = "towns",
+            feature = "x68k",
+            feature = "at"
+        )),
+        expect(unused_variables)
+    )]
+    pub fn cpu_clock_hz(self, mode: CpuMode) -> Option<u32> {
+        match self {
+            #[cfg(feature = "pc98")]
+            Self::Pc98(model) => Some(model.cpu_clock_hz(mode)),
+            #[cfg(feature = "pc88")]
+            Self::Pc88(model) => Some(match mode {
+                CpuMode::Low => model.main_clock_hz_4mhz(),
+                CpuMode::High => model.main_clock_hz_8mhz(),
+            }),
+            #[cfg(feature = "pc88va")]
+            Self::Pc88Va(_) => None,
+            #[cfg(feature = "pc60")]
+            Self::Pc60(_) => None,
+            #[cfg(feature = "msx")]
+            Self::Msx(_) => None,
+            #[cfg(feature = "towns")]
+            Self::Towns(model) => Some(model.cpu_clock_hz(mode)),
+            #[cfg(feature = "x1")]
+            Self::X1(_) => None,
+            #[cfg(feature = "fm7")]
+            Self::Fm7(_) => None,
+            #[cfg(feature = "x68k")]
+            Self::X68k(model) => Some(model.cpu_clock_hz(mode)),
+            #[cfg(feature = "at")]
+            Self::At(model) => Some(model.cpu_clock_hz(mode)),
+        }
+    }
+
     /// Returns the default model of `system`. `None` for a system outside this build.
     #[must_use]
     pub fn of_system(system: &System) -> Option<Self> {
@@ -218,9 +261,9 @@ impl std::str::FromStr for MachineSelection {
         if let Ok(model) = value.parse::<MachineModel>() {
             return Ok(Self::Pc98(model));
         }
+        let expected = expected_names(&compiled_model_names());
         Err(format!(
-            "unknown machine type '{value}', expected {}",
-            join_alternatives(&compiled_model_names())
+            "unknown machine type '{value}', expected {expected}"
         ))
     }
 }

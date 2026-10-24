@@ -37,7 +37,7 @@ pub(crate) struct GameRow {
 
 impl GameRow {
     /// Returns the row of `entry` of `system`. `root` shortens the shown path.
-    fn new(system: &'static System, entry: &CatalogEntry, root: &Path) -> Self {
+    pub(crate) fn new(system: &'static System, entry: &CatalogEntry, root: &Path) -> Self {
         let shown_path = shown_path(&entry.path, root);
         let first_error = entry.first_error();
         Self {

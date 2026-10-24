@@ -536,11 +536,20 @@ fn convert_glyph(
         .flatten()
 }
 
-/// The width in em of `width` logical units at `size`. A negative or NaN
-/// result counts as zero.
+/// The room in em that a width in logical units leaves above the exact
+/// quotient. A text then fits the width that [`Fonts::measure`] gave for it
+/// despite the rounding of the multiplication and the division.
+const FIT_TOLERANCE: f32 = 1e-4;
+
+/// The width in em of `width` logical units at `size`, with the tolerance
+/// of the rounding. A negative or NaN result counts as zero.
 fn em_limit(width: f32, size: f32) -> f32 {
     let limit = width / size;
-    if limit > 0.0 { limit } else { 0.0 }
+    if limit > 0.0 {
+        limit + FIT_TOLERANCE
+    } else {
+        0.0
+    }
 }
 
 /// The byte offset of the character of the glyph `index` of `run`, the shaped
@@ -713,6 +722,31 @@ pub(crate) mod tests {
         assert!(!short.truncated);
         assert_eq!(short, fonts.shape(font, "Disk"));
         assert!(fonts.fit(font, 10.0, text, 1.0).glyphs.is_empty());
+    }
+
+    /// Verifies that a text fits the width that its measure gave at every size.
+    #[test]
+    fn a_text_fits_its_own_measure() {
+        let (mut fonts, font) = fonts();
+        for text in [
+            "config/pc88/thexder.conf",
+            "config/pc98/yu-no.conf",
+            "YU-NO (Disk 3 of 4).hdm",
+            "ディスク画像",
+        ] {
+            for size in [10.0, 12.0, 13.5, 14.0, 17.0, 24.0] {
+                let width = fonts.measure(font, size, text);
+                assert!(
+                    !fonts.fit(font, size, text, width).truncated,
+                    "{text} {size}"
+                );
+                assert!(
+                    !fonts.fit_middle(font, size, text, width).truncated,
+                    "{text} {size}"
+                );
+                assert!(fonts.fit(font, size, text, width * 0.9).truncated);
+            }
+        }
     }
 
     #[test]
