@@ -8,5 +8,5 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-common.workspace = true
+common = { workspace = true, features = ["std"] }
 sdl3.workspace = true

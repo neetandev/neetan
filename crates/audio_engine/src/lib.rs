@@ -14,6 +14,10 @@ use common::{Context, Machine, info, warn};
 pub use common::{Error, Result};
 use sdl3::audio::{AudioFormat, AudioSpec, AudioStreamOwner, AudioSubsystem};
 
+use crate::playback::{DeviceChange, PlaybackState};
+
+mod playback;
+
 /// Audio sample rate in Hz used by the emulator.
 pub const SAMPLE_RATE: i32 = 48000;
 
@@ -26,23 +30,19 @@ pub const STEP_FRAMES: usize = 240;
 /// Bytes per stereo frame: 2 channels * 4 bytes per f32.
 const BYTES_PER_FRAME: i32 = 8;
 
-/// Number of stereo frames over which to fade in/out (250 ms at 48 kHz).
-const FADE_FRAMES: u32 = 12_000;
-
 /// Streams audio samples from the emulated machine to the host sound device.
 pub struct AudioEngine {
     stream: AudioStreamOwner,
     sample_buffer: Vec<f32>,
     silence_buffer: Vec<f32>,
     volume: f32,
-    /// Remaining stereo frames to fade out (counts down to 0, then SDL3 pauses).
-    fade_out_remaining: u32,
-    /// Remaining stereo frames to fade in (counts down to 0).
-    fade_in_remaining: u32,
+    /// The pause state of the device and the fades.
+    playback: PlaybackState,
 }
 
 impl AudioEngine {
-    /// Creates a new audio engine, consuming the audio subsystem.
+    /// Creates a new audio engine with a paused device, consuming the audio
+    /// subsystem. [`resume`](Self::resume) starts the playback.
     ///
     /// The subsystem lifetime is managed by the resulting audio stream.
     pub fn new(audio_subsystem: AudioSubsystem, volume: f32) -> Result<Self> {
@@ -60,12 +60,7 @@ impl AudioEngine {
             .open_device_stream(Some(&spec))
             .context("Failed to open audio device stream")?;
 
-        let silence = vec![0.0f32; TARGET_BUFFER_FRAMES * 2];
-        stream
-            .put_data_f32(&silence)
-            .context("Failed to pre-fill audio stream")?;
-
-        stream.resume().context("Failed to resume audio stream")?;
+        stream.pause().context("Failed to pause audio stream")?;
 
         info!(
             "Audio output initialized: {SAMPLE_RATE} Hz, stereo, f32 (push-based, target buffer: {TARGET_BUFFER_FRAMES} frames)"
@@ -76,8 +71,7 @@ impl AudioEngine {
             sample_buffer: vec![0.0; STEP_FRAMES * 2],
             silence_buffer: vec![0.0; TARGET_BUFFER_FRAMES * 2],
             volume,
-            fade_out_remaining: 0,
-            fade_in_remaining: 0,
+            playback: PlaybackState::paused(),
         })
     }
 
@@ -109,24 +103,32 @@ impl AudioEngine {
     }
 
     /// Begins a fade-out. The SDL3 device is paused once the fade completes
-    /// inside [`push_samples`].
+    /// inside [`push_samples`](Self::push_samples). A paused device stays
+    /// paused.
     pub fn pause(&mut self) {
-        self.fade_out_remaining = FADE_FRAMES;
-        self.fade_in_remaining = 0;
+        self.playback.pause();
     }
 
-    /// Resumes audio playback with a fade-in to prevent pops.
+    /// Resumes audio playback with a fade-in to prevent pops. A paused device
+    /// restarts with a silent buffer.
     pub fn resume(&mut self) {
-        if self.fade_out_remaining > 0 {
-            // Fade-out was still in progress; cancel it.
-            self.fade_out_remaining = 0;
-        } else {
-            // Device was actually paused; restart it.
+        if self.playback.resume() == DeviceChange::Restart {
             let _ = self.stream.clear();
             let _ = self.stream.put_data_f32(&self.silence_buffer);
             let _ = self.stream.resume();
         }
-        self.fade_in_remaining = FADE_FRAMES;
+    }
+
+    /// Discards all queued audio and pauses the device at once, without a
+    /// fade. [`resume`](Self::resume) restarts the device with a fade-in.
+    pub fn stop(&mut self) {
+        self.playback.stop();
+        if let Err(error) = self.stream.clear() {
+            warn!("Failed to clear the audio stream: {error}");
+        }
+        if let Err(error) = self.stream.pause() {
+            warn!("Failed to pause the audio stream: {error}");
+        }
     }
 
     /// Discards all queued audio and re-fills the buffer with silence.
@@ -152,42 +154,15 @@ impl AudioEngine {
                 .iter_mut()
                 .for_each(|sample| *sample = fast_tanh(*sample));
 
-            let frames = written / 2;
-            let was_fading_out = self.fade_out_remaining > 0;
-
-            // Apply fade-out ramp toward pause.
-            if was_fading_out {
-                for i in 0..frames {
-                    if self.fade_out_remaining > 0 {
-                        self.fade_out_remaining -= 1;
-                        let gain = self.fade_out_remaining as f32 / FADE_FRAMES as f32;
-                        self.sample_buffer[i * 2] *= gain;
-                        self.sample_buffer[i * 2 + 1] *= gain;
-                    } else {
-                        self.sample_buffer[i * 2] = 0.0;
-                        self.sample_buffer[i * 2 + 1] = 0.0;
-                    }
-                }
-            }
-
-            // Apply fade-in ramp after resume.
-            if self.fade_in_remaining > 0 {
-                for i in 0..frames {
-                    if self.fade_in_remaining > 0 {
-                        let gain = 1.0 - self.fade_in_remaining as f32 / FADE_FRAMES as f32;
-                        self.sample_buffer[i * 2] *= gain;
-                        self.sample_buffer[i * 2 + 1] *= gain;
-                        self.fade_in_remaining -= 1;
-                    }
-                }
-            }
+            let device_change = self
+                .playback
+                .apply_fades(&mut self.sample_buffer[..written]);
 
             if let Err(error) = self.stream.put_data_f32(&self.sample_buffer[..written]) {
                 warn!("Audio stream put_data_f32 failed: {error}");
             }
 
-            // Once the fade-out completes, pause the SDL3 device.
-            if was_fading_out && self.fade_out_remaining == 0 {
+            if device_change == DeviceChange::Pause {
                 let _ = self.stream.clear();
                 let _ = self.stream.put_data_f32(&self.silence_buffer);
                 let _ = self.stream.pause();
