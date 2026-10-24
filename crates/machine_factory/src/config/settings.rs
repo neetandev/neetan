@@ -1986,7 +1986,7 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         key: GUI_FONT_KEY,
         label: "GUI font",
-        help: "Font file of the user interface. The default lies in the resource folder of the installation.",
+        help: "Font file of the user interface. The default is searched below the root and then in the resource folder of the installation.",
         scope: Scope::Host,
         kind: ValueKind::Path(PathKind::File),
         families: Families::ALL,

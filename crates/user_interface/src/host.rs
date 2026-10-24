@@ -137,8 +137,8 @@ pub(crate) struct HostParts {
     pub(crate) gamepad_subsystem: Option<GamepadSubsystem>,
     /// Whether the window starts in fullscreen mode.
     pub(crate) fullscreen: bool,
-    /// The font file of the user interface.
-    pub(crate) gui_font: PathBuf,
+    /// The paths searched for the font file of the user interface in search order.
+    pub(crate) gui_font_paths: Vec<PathBuf>,
 }
 
 impl Host {
@@ -151,11 +151,11 @@ impl Host {
             audio_engine,
             gamepad_subsystem,
             fullscreen,
-            gui_font,
+            gui_font_paths,
         } = parts;
         let scale_factor = window.display_scale();
         info!("Window created with scale factor: {scale_factor}");
-        let (gui, gui_error) = match GuiHost::load(&gui_font) {
+        let (gui, gui_error) = match GuiHost::load(&gui_font_paths) {
             Ok(gui) => (Some(gui), None),
             Err(message) => (None, Some(message)),
         };

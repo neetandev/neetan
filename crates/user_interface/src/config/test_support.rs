@@ -104,7 +104,7 @@ impl TestLocations {
     /// Parses `args` into a run configuration.
     pub(crate) fn parse(&self, args: &[&str]) -> (EmulatorConfig, KeyOverrides) {
         match self.action(args) {
-            Action::Run(config, key_map) => (*config, key_map),
+            Action::Run(config, key_map, _) => (*config, key_map),
             _ => panic!("expected run action"),
         }
     }

@@ -274,21 +274,38 @@ impl HostLayers {
         resolve_path(self.root(), &folder)
     }
 
-    /// Returns the font file of the user interface as an absolute path.
+    /// Returns the absolute paths searched for the font file of the user
+    /// interface in search order.
     ///
     /// A value of the settings file lies below the root and a flag value
-    /// below the current directory. The built-in default lies below the
-    /// resource folder of the installation, or below the root when the
-    /// folder of the executable is unknown.
+    /// below the current directory. The built-in default lies below the root
+    /// and then below the resource folder of the installation, when the
+    /// folder of the executable is known.
+    #[must_use]
+    pub fn gui_font_paths(&self) -> Vec<PathBuf> {
+        match self.host_value(GUI_FONT_KEY) {
+            Some(value) => vec![resolve_path(self.root(), Path::new(value))],
+            None => {
+                let mut paths: Vec<PathBuf> = std::iter::once(self.root())
+                    .chain(self.resource_folder.as_deref())
+                    .map(|folder| resolve_path(folder, Path::new(DEFAULT_GUI_FONT)))
+                    .collect();
+                paths.dedup();
+                paths
+            }
+        }
+    }
+
+    /// Returns the font file of the user interface: the first path of
+    /// [`Self::gui_font_paths`] that exists, or else the first path.
     #[must_use]
     pub fn gui_font(&self) -> PathBuf {
-        match self.host_value(GUI_FONT_KEY) {
-            Some(value) => resolve_path(self.root(), Path::new(value)),
-            None => resolve_path(
-                self.resource_folder.as_deref().unwrap_or(self.root()),
-                Path::new(DEFAULT_GUI_FONT),
-            ),
-        }
+        let paths = self.gui_font_paths();
+        paths
+            .iter()
+            .find(|path| path.is_file())
+            .unwrap_or(&paths[0])
+            .clone()
     }
 
     /// Returns the layer of the settings file.
@@ -318,7 +335,14 @@ pub fn build_configuration(
     request: &LaunchRequest,
     locations: &Locations,
 ) -> crate::Result<(EmulatorConfig, KeyOverrides)> {
-    let host = HostLayers::read(request, locations)?;
+    build_host_configuration(&HostLayers::read(request, locations)?, request)
+}
+
+/// Builds the layered configuration of `request` on the read host layers `host`.
+pub(crate) fn build_host_configuration(
+    host: &HostLayers,
+    request: &LaunchRequest,
+) -> crate::Result<(EmulatorConfig, KeyOverrides)> {
     let root = host.root();
     let config_folder = host.config_folder();
     let game_layers = request
@@ -912,24 +936,98 @@ mod tests {
         assert_eq!(host.gui_font(), current.join("fonts").join("ui.ttf"));
     }
 
-    /// Verifies that the default GUI font lies below the root when the folder of the executable is unknown.
-    #[test]
-    fn the_default_gui_font_lies_below_the_root_without_an_executable_folder() {
-        let test = TestLocations::new("gui_font_root");
+    /// Returns the default GUI font below the root and below the resource
+    /// folder of `test`, whose settings file is empty.
+    fn default_font_paths(test: &TestLocations) -> (PathBuf, PathBuf) {
         let root = test.current().to_path_buf();
         write_file(&root.join(SETTINGS_FILE_NAME), "");
+        let executable = test
+            .locations
+            .executable_directory
+            .as_deref()
+            .expect("test locations have an executable folder");
+        let resource_font = resource_folder(executable).join(DEFAULT_GUI_FONT);
+        assert!(!resource_font.starts_with(&root));
+        (root.join(DEFAULT_GUI_FONT), resource_font)
+    }
+
+    /// Returns the host layers of `test` without command line flags.
+    fn default_host(test: &TestLocations) -> HostLayers {
+        HostLayers::read(&LaunchRequest::default(), &test.locations).expect("settings read")
+    }
+
+    /// Verifies that the default GUI font is found below the root.
+    #[test]
+    fn the_default_gui_font_is_found_below_the_root() {
+        let test = TestLocations::new("gui_font_root");
+        let (root_font, _) = default_font_paths(&test);
+        touch(&[&root_font]);
+        assert_eq!(default_host(&test).gui_font(), root_font);
+        let (config, _) = test.parse(&with_first_model(&[]));
+        assert_eq!(config.gui_font, root_font);
+    }
+
+    /// Verifies that the default GUI font is found below the resource folder when the root has none.
+    #[test]
+    fn the_default_gui_font_is_found_below_the_resource_folder() {
+        let test = TestLocations::new("gui_font_resource");
+        let (_, resource_font) = default_font_paths(&test);
+        touch(&[&resource_font]);
+        assert_eq!(default_host(&test).gui_font(), resource_font);
+        let (config, _) = test.parse(&with_first_model(&[]));
+        assert_eq!(config.gui_font, resource_font);
+    }
+
+    /// Verifies that the default GUI font below the root wins over the one below the resource folder.
+    #[test]
+    fn the_default_gui_font_below_the_root_wins() {
+        let test = TestLocations::new("gui_font_both");
+        let (root_font, resource_font) = default_font_paths(&test);
+        touch(&[&root_font, &resource_font]);
+        assert_eq!(default_host(&test).gui_font(), root_font);
+    }
+
+    /// Verifies that a missing default GUI font gives both searched paths in the error.
+    #[test]
+    fn a_missing_default_gui_font_lists_both_paths() {
+        let test = TestLocations::new("gui_font_missing");
+        let (root_font, resource_font) = default_font_paths(&test);
+        let host = default_host(&test);
+        assert_eq!(
+            host.gui_font_paths(),
+            vec![root_font.clone(), resource_font.clone()]
+        );
+        assert_eq!(host.gui_font(), root_font);
+        let Err(message) = crate::gui_host::GuiHost::load(&host.gui_font_paths()) else {
+            panic!("a missing font does not load");
+        };
+        assert_eq!(
+            message,
+            format!(
+                "the GUI font {} or {} was not found. The gui-font setting selects the font file",
+                root_font.display(),
+                resource_font.display()
+            )
+        );
+    }
+
+    /// Verifies that only the root is searched for the default GUI font when the folder of the executable is unknown.
+    #[test]
+    fn the_default_gui_font_lies_below_the_root_without_an_executable_folder() {
+        let test = TestLocations::new("gui_font_no_executable");
+        let (root_font, _) = default_font_paths(&test);
         let locations = Locations {
             executable_directory: None,
             ..test.locations.clone()
         };
         let host = HostLayers::read(&LaunchRequest::default(), &locations).expect("settings read");
-        assert_eq!(host.gui_font(), root.join(DEFAULT_GUI_FONT));
+        assert_eq!(host.gui_font_paths(), vec![root_font.clone()]);
+        assert_eq!(host.gui_font(), root_font);
     }
 
-    /// Verifies the GUI font: the default resolves against the resource
-    /// folder of the installation, a settings file value against the root,
-    /// a flag value against the current directory, and a game file cannot
-    /// set it.
+    /// Verifies the GUI font values: a settings file value resolves against
+    /// the root, a flag value against the current directory, neither is
+    /// searched below the resource folder, and a game file cannot set it.
     #[test]
     fn the_gui_font_resolves_like_every_path_of_its_layer() {
         let test = TestLocations::new("gui_font");
@@ -937,40 +1035,34 @@ mod tests {
         let root = current.join("root");
         let settings = root.join(SETTINGS_FILE_NAME);
         let settings_text = settings.to_string_lossy().into_owned();
-        let host_font = |args: &[&str]| match test.action(args) {
+        let (_, resource_font) = default_font_paths(&test);
+        touch(&[&resource_font]);
+        let host_font_paths = |args: &[&str]| match test.action(args) {
             Action::Manager(start) => HostLayers::read(&start.request, &start.locations)
                 .expect("settings read")
-                .gui_font(),
+                .gui_font_paths(),
             _ => panic!("expected the manager action"),
         };
 
-        write_file(&settings, "");
-        let executable = test
-            .locations
-            .executable_directory
-            .clone()
-            .expect("test locations have an executable folder");
-        let default_font = resource_folder(&executable).join(DEFAULT_GUI_FONT);
-        assert!(!default_font.starts_with(&root));
-        assert_eq!(host_font(&["--settings", &settings_text]), default_font);
-        let (config, _) = test.parse(&with_first_model(&["--settings", &settings_text]));
-        assert_eq!(config.gui_font, default_font);
-
-        write_file(&settings, "gui-font = fonts/ui.ttf\n");
-        let settings_font = root.join("fonts").join("ui.ttf");
-        assert_eq!(host_font(&["--settings", &settings_text]), settings_font);
+        write_file(&settings, &format!("gui-font = {DEFAULT_GUI_FONT}\n"));
+        let settings_font = root.join(DEFAULT_GUI_FONT);
+        assert_eq!(
+            host_font_paths(&["--settings", &settings_text]),
+            vec![settings_font.clone()]
+        );
         let (config, _) = test.parse(&with_first_model(&["--settings", &settings_text]));
         assert_eq!(config.gui_font, settings_font);
 
-        let flag_font = current.join("my.ttf");
+        let flag_font = current.join(DEFAULT_GUI_FONT);
         assert_eq!(
-            host_font(&["--settings", &settings_text, "--gui-font", "my.ttf"]),
-            flag_font
+            host_font_paths(&["--settings", &settings_text, "--gui-font", DEFAULT_GUI_FONT]),
+            vec![flag_font.clone()]
         );
+        let gui_font_flag = format!("--gui-font={DEFAULT_GUI_FONT}");
         let (config, _) = test.parse(&with_first_model(&[
             "--settings",
             &settings_text,
-            "--gui-font=my.ttf",
+            &gui_font_flag,
         ]));
         assert_eq!(config.gui_font, flag_font);
 

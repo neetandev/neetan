@@ -240,8 +240,8 @@ impl std::str::FromStr for BootMode {
 pub const DEFAULT_CONFIG_FOLDER: &str = "config";
 /// Built-in name of the ROM folder below the root.
 pub const DEFAULT_ROMS_FOLDER: &str = "roms";
-/// Built-in path of the font file of the user interface below the resource
-/// folder of the installation.
+/// Built-in path of the font file of the user interface below the root or the
+/// resource folder of the installation.
 pub const DEFAULT_GUI_FONT: &str = "font/SarasaUiJ-Regular.ttf";
 /// Built-in rendering backend.
 pub const DEFAULT_BACKEND: Backend = Backend::Modern;
@@ -273,9 +273,9 @@ pub struct EmulatorConfig {
     pub roms_folder: PathBuf,
     /// Font file of the user interface. A settings file value lies below the
     /// root and a flag value below the current directory. The built-in
-    /// default lies below the resource folder of the installation: the
-    /// folder of the executable, `../share/neetan` on Linux and
-    /// `../Resources` on macOS.
+    /// default is the first file found below the root and then below the
+    /// resource folder of the installation: the folder of the executable,
+    /// `../share/neetan` on Linux and `../Resources` on macOS.
     pub gui_font: PathBuf,
     pub pc98_roms: Option<PathBuf>,
     pub bios: bool,

@@ -3,11 +3,11 @@
 //! mapping of the SDL events to the input.
 
 use std::{
-    path::Path,
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
-use common::warn;
+use common::{info, warn};
 use gui::{
     Fonts, Scene,
     ui::{ActionButton, Input, Navigation, Shortcut, Theme, UiContext, UiState, Viewport},
@@ -395,24 +395,30 @@ pub(crate) struct GuiHost {
 }
 
 impl GuiHost {
-    /// Loads the font file `path`. Returns a message for the user when the
-    /// file is missing or does not parse.
-    pub(crate) fn load(path: &Path) -> Result<Self, String> {
-        if !path.is_file() {
+    /// Loads the first font file of `paths` that exists. Returns a message
+    /// for the user when no file exists or the file does not parse.
+    pub(crate) fn load(paths: &[PathBuf]) -> Result<Self, String> {
+        let Some(path) = paths.iter().find(|path| path.is_file()) else {
+            let searched: Vec<String> = paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect();
             return Err(format!(
                 "the GUI font {} was not found. The gui-font setting selects the font file",
-                path.display()
+                searched.join(" or ")
             ));
-        }
+        };
         let data = std::fs::read(path).map_err(|error| {
             format!("the GUI font {} could not be read: {error}", path.display())
         })?;
-        Self::new(data).map_err(|error| {
+        let host = Self::new(data).map_err(|error| {
             format!(
                 "the GUI font {} could not be loaded: {error}",
                 path.display()
             )
-        })
+        })?;
+        info!("GUI font: {}", path.display());
+        Ok(host)
     }
 
     /// A host with the font file `data`.
@@ -654,13 +660,29 @@ mod tests {
     /// Verifies that a missing font file gives the path and the setting that selects it.
     #[test]
     fn a_missing_font_mentions_its_path_and_the_setting() {
-        let path = Path::new("/nonexistent/neetan/font.ttf");
-        let Err(message) = GuiHost::load(path) else {
+        let paths = [PathBuf::from("/nonexistent/neetan/font.ttf")];
+        let Err(message) = GuiHost::load(&paths) else {
             panic!("a missing font does not load");
         };
         assert_eq!(
             message,
             "the GUI font /nonexistent/neetan/font.ttf was not found. The gui-font setting selects the font file"
+        );
+    }
+
+    /// Verifies that a missing font gives every searched path.
+    #[test]
+    fn a_missing_font_mentions_every_searched_path() {
+        let paths = [
+            PathBuf::from("/nonexistent/root/font.ttf"),
+            PathBuf::from("/nonexistent/share/font.ttf"),
+        ];
+        let Err(message) = GuiHost::load(&paths) else {
+            panic!("a missing font does not load");
+        };
+        assert_eq!(
+            message,
+            "the GUI font /nonexistent/root/font.ttf or /nonexistent/share/font.ttf was not found. The gui-font setting selects the font file"
         );
     }
 
