@@ -221,8 +221,8 @@ Startup:
 
 Settings file:
   Neetan reads the first neetan.conf of: --settings <PATH>, the current directory, the folder of
-  the executable and the SDL pref path. The folder of the settings file is the root. Without a
-  settings file the root is the SDL pref path.
+  the executable and the SDL pref path. The folder of the settings file is the root. For the
+  settings file of the SDL pref path and without a settings file the root is the current directory.
   A relative path in a configuration file resolves against the root. A relative path in an option
   resolves against the current directory.
 

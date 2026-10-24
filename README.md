@@ -232,7 +232,8 @@ a complete reference with all keys and their defaults.
 
 ### Folder layout
 
-The folder that holds the settings file `neetan.conf` is the root:
+The folder that holds the settings file `neetan.conf` is the root. The settings file of
+the SDL pref path uses the current directory as the root:
 
 ```
 <root>/
@@ -276,7 +277,7 @@ The settings file is the first match of:
 | Windows | `C:\Users\<user>\AppData\Roaming\neetan\neetan\` |
 | macOS   | `~/Library/Application Support/neetan/neetan/`   |
 
-Without a settings file the root is the SDL pref path and every setting keeps its
+Without a settings file the root is the current directory and every setting keeps its
 built-in default. The log shows the settings file and the root at startup.
 
 ### Layers
