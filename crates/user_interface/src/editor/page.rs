@@ -46,9 +46,6 @@ const TITLE_SHARE: f32 = 0.5;
 /// a warning.
 const WARNED_TITLE_SHARE: f32 = 0.4;
 
-/// The footer text without changes.
-const SAVED_TEXT: &str = "Changes apply at the next launch";
-
 /// The changes that a pass of the page asks for.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct PageActions {
@@ -286,7 +283,8 @@ impl Editor {
             .show(context, close_area)
     }
 
-    /// Draws the footer: the state of the changes, Cancel and Save.
+    /// Draws the footer: the validation error or the unsaved changes, Cancel
+    /// and Save.
     fn draw_footer(&mut self, context: &mut UiContext, footer: Rect, actions: &mut PageActions) {
         let theme = context.theme;
         let dirty = self.is_dirty();
@@ -325,8 +323,6 @@ impl Editor {
                 status.cut_left(DOT_SIZE + theme.gap).1,
                 &Note::plain(UNSAVED_TEXT),
             );
-        } else {
-            draw_note(context, status, &Note::plain(SAVED_TEXT));
         }
         self.widgets
             .push(EditorWidget::new(UiId::from(CANCEL_ID), WidgetKind::Cancel));
