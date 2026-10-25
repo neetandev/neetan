@@ -45,11 +45,11 @@ impl FieldLook {
     pub(super) fn text_color(self, context: &UiContext) -> Color {
         let theme = context.theme;
         if !self.enabled {
-            theme.text_disabled
+            theme.colors.text_disabled
         } else if self.read_only {
-            theme.text_dim
+            theme.colors.text_dim
         } else {
-            theme.text
+            theme.colors.text
         }
     }
 }
@@ -59,19 +59,22 @@ pub(super) fn field_frame(context: &mut UiContext, rect: Rect, look: FieldLook) 
     let theme = context.theme;
     let (fill, edge) = if !look.enabled {
         (
-            theme.field.with_alpha(0.5),
-            theme.control_edge.with_alpha(0.5),
+            theme.colors.field.with_alpha(0.5),
+            theme.colors.control_edge.with_alpha(0.5),
         )
     } else if look.read_only {
-        (theme.well, theme.well_edge)
+        (theme.colors.well, theme.colors.well_edge)
     } else if look.error {
-        (theme.field, theme.danger_text)
+        (theme.colors.field, theme.colors.danger_text)
     } else if look.focused {
-        (theme.field, theme.accent)
+        (theme.colors.field, theme.colors.accent)
     } else if look.hovered {
-        (theme.field, theme.control_edge.mix(theme.text_dim, 0.35))
+        (
+            theme.colors.field,
+            theme.colors.control_edge.mix(theme.colors.text_dim, 0.35),
+        )
     } else {
-        (theme.field, theme.control_edge)
+        (theme.colors.field, theme.colors.control_edge)
     };
     context.rect(
         rect,
@@ -134,7 +137,7 @@ pub(super) fn draw_value(
     if text.is_empty() && composition.is_empty() {
         context.text_in(
             inner,
-            &style.with_color(theme.text_disabled),
+            &style.with_color(theme.colors.text_disabled),
             placeholder,
             Align::Start,
             truncation,
@@ -168,7 +171,7 @@ pub(super) fn draw_value(
         context.scene.fill(
             Rect::new(start, baseline + 2.0, composition_width, underline),
             0.0,
-            theme.text,
+            theme.colors.text,
         );
     }
     let height = (theme.text_size * 1.3).round();
@@ -182,7 +185,7 @@ pub(super) fn draw_value(
             height,
         ),
         0.0,
-        theme.text,
+        theme.colors.text,
     );
     context.scene.pop_clip();
 }
@@ -322,9 +325,9 @@ impl<'a> TextField<'a> {
             Some(icon) => {
                 let slot = Rect::new(rect.x + theme.gap, rect.y, theme.icon_size, rect.height);
                 let color = if focus_look {
-                    theme.text_dim
+                    theme.colors.text_dim
                 } else {
-                    theme.text_disabled
+                    theme.colors.text_disabled
                 };
                 context.icon(slot, icon, theme.icon_size, color);
                 slot.right() + theme.gap * 0.75
@@ -350,14 +353,16 @@ impl<'a> TextField<'a> {
         );
         if shows_clear {
             if clear_hot {
-                context
-                    .scene
-                    .fill(clear_rect, clear_rect.height * 0.5, theme.control_hover);
+                context.scene.fill(
+                    clear_rect,
+                    clear_rect.height * 0.5,
+                    theme.colors.control_hover,
+                );
             }
             let color = if clear_hot {
-                theme.text
+                theme.colors.text
             } else {
-                theme.text_dim
+                theme.colors.text_dim
             };
             context.icon(clear_rect, Icon::Close, CLEAR_ICON_SIZE, color);
         }
@@ -678,7 +683,7 @@ mod tests {
                         .icon(icon)
                         .show(context, FIELD, &mut text);
                 });
-                let color = harness.theme.text.to_linear();
+                let color = harness.theme.colors.text.to_linear();
                 harness
                     .scene
                     .instances()
@@ -756,9 +761,9 @@ mod tests {
     fn the_edges_of_the_field_follow_its_state() {
         let theme = Harness::new().theme;
         let cases = [
-            (false, true, false, theme.danger_text),
-            (true, false, false, theme.well_edge),
-            (false, false, false, theme.control_edge),
+            (false, true, false, theme.colors.danger_text),
+            (true, false, false, theme.colors.well_edge),
+            (false, false, false, theme.colors.control_edge),
         ];
         for (read_only, error, focused, edge) in cases {
             let mut harness = Harness::new();
@@ -798,6 +803,6 @@ mod tests {
             FIELD.x + 4.0,
             FIELD.center().1,
         );
-        assert_eq!(fill, srgb(harness.theme.well));
+        assert_eq!(fill, srgb(harness.theme.colors.well));
     }
 }

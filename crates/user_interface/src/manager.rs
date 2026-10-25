@@ -344,7 +344,7 @@ impl Manager {
         }
         let theme = context.theme;
         let bounds = context.bounds();
-        context.fill(bounds, theme.panel);
+        context.fill(bounds, theme.colors.panel);
         let (status_area, screen) = bounds.cut_bottom(STATUS_LINE_HEIGHT);
         let (sidebar_area, main_area) = screen.cut_left(SIDEBAR_WIDTH);
 
@@ -726,7 +726,7 @@ fn count_text(games: (usize, usize), errors: (usize, usize), filtering: bool) ->
 #[cfg(test)]
 mod tests {
     use common::temporary::TemporaryFolder;
-    use gui::ui::{Navigation, Viewport};
+    use gui::ui::{Navigation, ThemeKind, Viewport};
     use machine_factory::rom_status::RomStatus;
 
     use super::{delete::DELETE_LAYER_ID, *};
@@ -1635,13 +1635,13 @@ mod tests {
 
     /// Renders the library at `width` x `height` logical units and `scale`:
     /// the library with data, a filtered library, an empty system, a system
-    /// with files with errors and the delete question.
-    fn screenshots(width: f32, height: f32, scale: f32, prefix: &str) {
+    /// with files with errors and the delete question, in the theme `kind`.
+    fn screenshots(width: f32, height: f32, scale: f32, prefix: &str, kind: ThemeKind) {
         let viewport = Viewport::new((width * scale) as u32, (height * scale) as u32, scale);
         let test = TestRoot::new(&format!("screenshots_{prefix}_{scale}"));
         sample_root(&test);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::with_viewport(viewport);
+        let mut harness = GuiHarness::with_viewport(viewport, kind);
         let render = |harness: &GuiHarness, name: &str| {
             harness.write_screenshot(&format!("manager_{prefix}{name}_{scale}x"));
         };
@@ -1728,14 +1728,16 @@ mod tests {
         render(&harness, "media_not_saved");
     }
 
-    /// Writes the screenshots of the manager at the scales 1 and 2, at the
-    /// minimum window size and at 1920 x 1080.
+    /// Writes the screenshots of the manager in both themes at the scales 1
+    /// and 2, at the minimum window size and at 1920 x 1080.
     #[test]
     #[ignore = "writes screenshots into the directory of GUI_SHOTS"]
     fn manager_screenshots() {
-        for scale in [1.0, 2.0] {
-            screenshots(960.0, 600.0, scale, "");
-            screenshots(1920.0, 1080.0, scale, "large_");
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            for scale in [1.0, 2.0] {
+                screenshots(960.0, 600.0, scale, "", kind);
+                screenshots(1920.0, 1080.0, scale, "large_", kind);
+            }
         }
     }
 }

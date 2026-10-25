@@ -57,7 +57,7 @@ pub(crate) fn draw_rule(context: &mut UiContext, content: Rect, y: f32, caption:
             (rule.right() - line_x).max(0.0),
             theme.stroke,
         ),
-        theme.panel_edge,
+        theme.colors.panel_edge,
     );
     rule.bottom()
 }
@@ -83,7 +83,7 @@ pub(crate) fn draw_kept_lines(
         Truncation::End,
     );
     top += line_height;
-    let line_style = theme.small().with_color(theme.text);
+    let line_style = theme.small().with_color(theme.colors.text);
     for line in lines {
         label(
             context,

@@ -367,13 +367,13 @@ impl<'a> List<'a> {
 
         if self.framed {
             let edge = if self.enabled {
-                theme.well_edge
+                theme.colors.well_edge
             } else {
-                theme.well_edge.with_alpha(0.5)
+                theme.colors.well_edge.with_alpha(0.5)
             };
             context.rect(
                 rect,
-                &RectStyle::filled(theme.well, theme.radius).with_stroke(theme.stroke, edge),
+                &RectStyle::filled(theme.colors.well, theme.radius).with_stroke(theme.stroke, edge),
             );
         }
         let focused = context.shows_focus(id);
@@ -384,7 +384,7 @@ impl<'a> List<'a> {
                 - state.scroll;
             context.fill(
                 Rect::new(view.x, y, view.width, theme.stroke),
-                theme.panel_edge,
+                theme.colors.panel_edge,
             );
         }
         for index in visible_rows(state.scroll) {
@@ -401,12 +401,12 @@ impl<'a> List<'a> {
             };
             let fill = if row.selected {
                 Some(if focused {
-                    theme.selection_focused
+                    theme.colors.selection_focused
                 } else {
-                    theme.selection
+                    theme.colors.selection
                 })
             } else if row.hovered {
-                Some(theme.row_hover)
+                Some(theme.colors.row_hover)
             } else {
                 None
             };
@@ -551,11 +551,11 @@ impl<'a> RowContent<'a> {
             row.rect.height,
         );
         let (icon_color, text_color) = if !row.enabled {
-            (theme.text_disabled, theme.text_disabled)
+            (theme.colors.text_disabled, theme.colors.text_disabled)
         } else if row.selected {
-            (theme.text, theme.text)
+            (theme.colors.text, theme.colors.text)
         } else {
-            (theme.text_dim, theme.text)
+            (theme.colors.text_dim, theme.colors.text)
         };
         if let Some(number) = self.number {
             let (slot, rest) = area.cut_left(theme.icon_size);
@@ -572,14 +572,14 @@ impl<'a> RowContent<'a> {
             let (slot, rest) = area.cut_right(theme.icon_size);
             let shown = match mark {
                 RowMark::Blank => None,
-                RowMark::Marker(icon) => Some((icon, theme.marker)),
-                RowMark::Alert => Some((Icon::Alert, theme.danger_text)),
+                RowMark::Marker(icon) => Some((icon, theme.colors.marker)),
+                RowMark::Alert => Some((Icon::Alert, theme.colors.danger_text)),
             };
             if let Some((icon, color)) = shown {
                 let color = if row.enabled {
                     color
                 } else {
-                    theme.text_disabled
+                    theme.colors.text_disabled
                 };
                 context.icon(slot, icon, theme.icon_size, color);
             }
@@ -589,7 +589,7 @@ impl<'a> RowContent<'a> {
             let color = if row.enabled {
                 icon_color
             } else {
-                theme.text_disabled
+                theme.colors.text_disabled
             };
             let style = theme.small().with_color(color);
             let width = context.measure(&style, count).min(area.width);
@@ -619,6 +619,7 @@ pub fn caption_row(context: &mut UiContext, row: &ListRow, text: &str) {
 mod tests {
     use super::*;
     use crate::ui::{
+        ThemeKind,
         scroll_bar::MINIMUM_THUMB,
         tests::{Harness, pixel, srgb},
     };
@@ -931,7 +932,8 @@ mod tests {
 
     #[test]
     fn the_list_works_at_twice_the_scale() {
-        let mut harness = Harness::with_viewport(crate::ui::Viewport::new(800, 800, 2.0));
+        let mut harness =
+            Harness::with_viewport(crate::ui::Viewport::new(800, 800, 2.0), ThemeKind::Dark);
         let mut state = ListState::new();
         draw(&mut harness, 5, &mut state);
         let (x, y) = row_center(&harness.theme, 3, 0.0);
@@ -1122,12 +1124,15 @@ mod tests {
         let width = harness.viewport.width;
         assert_eq!(
             pixel(&pixels, width, row_left, selected_y),
-            srgb(theme.selection_focused)
+            srgb(theme.colors.selection_focused)
         );
-        assert_eq!(pixel(&pixels, width, row_left, caption_y), srgb(theme.well));
+        assert_eq!(
+            pixel(&pixels, width, row_left, caption_y),
+            srgb(theme.colors.well)
+        );
         assert_eq!(
             pixel(&pixels, width, row_left, disabled_y),
-            srgb(theme.well)
+            srgb(theme.colors.well)
         );
     }
 
@@ -1148,8 +1153,8 @@ mod tests {
             LIST.y + 0.5,
         );
         let theme = &harness.theme;
-        assert_ne!(edge, srgb(theme.well_edge));
-        assert!(edge[0] < theme.well_edge.r && edge[0] > theme.panel.r / 4);
+        assert_ne!(edge, srgb(theme.colors.well_edge));
+        assert!(edge[0] < theme.colors.well_edge.r && edge[0] > theme.colors.panel.r / 4);
     }
 
     /// Verifies that an empty list and a list of captions and disabled rows leave the focus ring.
@@ -1213,8 +1218,8 @@ mod tests {
             .iter()
             .map(|instance| instance.color)
             .collect();
-        assert!(colors.contains(&theme.marker.to_linear()));
-        assert!(colors.contains(&theme.danger_text.to_linear()));
+        assert!(colors.contains(&theme.colors.marker.to_linear()));
+        assert!(colors.contains(&theme.colors.danger_text.to_linear()));
 
         let pixels = harness.render();
         let width = harness.viewport.width;
@@ -1231,7 +1236,7 @@ mod tests {
             for row in 0..16 {
                 assert_eq!(
                     pixel(&pixels, width, x, blank.y + row as f32),
-                    srgb(theme.well),
+                    srgb(theme.colors.well),
                     "the blank mark draws at {x}"
                 );
             }
@@ -1255,7 +1260,7 @@ mod tests {
             let mut found = false;
             while x < to {
                 for offset in -4..=4 {
-                    if pixel(&pixels, width, x, row_y + offset as f32) != srgb(theme.well) {
+                    if pixel(&pixels, width, x, row_y + offset as f32) != srgb(theme.colors.well) {
                         found = true;
                     }
                 }
@@ -1288,7 +1293,7 @@ mod tests {
             .iter()
             .map(|instance| instance.color)
             .collect();
-        assert!(colors.contains(&theme.text_dim.to_linear()));
+        assert!(colors.contains(&theme.colors.text_dim.to_linear()));
         let pixels = harness.render();
         let width = harness.viewport.width;
         let (_, row_y) = row_center(theme, 1, 0.0);
@@ -1299,7 +1304,7 @@ mod tests {
             let mut found = false;
             while x < to {
                 for offset in -4..=4 {
-                    if pixel(&pixels, width, x, row_y + offset as f32) != srgb(theme.well) {
+                    if pixel(&pixels, width, x, row_y + offset as f32) != srgb(theme.colors.well) {
                         found = true;
                     }
                 }

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use common::{StringError, bail};
 pub use machine_factory::config::{
-    AspectMode, Backend, BootMode, EmulatorConfig, ForceGdcClock, GraphicboardType,
+    AspectMode, Backend, BootMode, EmulatorConfig, ForceGdcClock, GraphicboardType, GuiTheme,
     MachineSelection, MidiDevice, ScalingMode, SoundboardType, Target, WindowMode,
 };
 use machine_factory::config::{

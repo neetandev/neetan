@@ -78,12 +78,12 @@ pub fn modal_in(
         theme.panel_radius,
         theme.shadow_blur,
         (0.0, SHADOW_OFFSET),
-        theme.shadow,
+        theme.colors.shadow,
     );
     context.rect(
         panel,
-        &RectStyle::filled(theme.panel, theme.panel_radius)
-            .with_stroke(theme.stroke, theme.panel_edge),
+        &RectStyle::filled(theme.colors.panel, theme.panel_radius)
+            .with_stroke(theme.stroke, theme.colors.panel_edge),
     );
     let (header, body) = panel.cut_top(HEADER_HEIGHT);
     let close_area = Rect::new(
@@ -124,7 +124,7 @@ pub fn modal_in(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{Viewport, tests::Harness};
+    use crate::ui::{ThemeKind, Viewport, tests::Harness};
 
     #[test]
     fn the_panel_centers_and_fits_the_target() {
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn the_panel_snaps_to_physical_pixels() {
-        let mut harness = Harness::with_viewport(Viewport::new(801, 601, 1.5));
+        let mut harness = Harness::with_viewport(Viewport::new(801, 601, 1.5), ThemeKind::Dark);
         let response = harness.frame(|context| modal(context, "media", (301.0, 201.0), "Media"));
         for edge in [
             response.panel.x,

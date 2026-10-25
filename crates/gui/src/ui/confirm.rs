@@ -374,12 +374,12 @@ mod tests {
             .scene
             .instances()
             .iter()
-            .find(|instance| instance.color == theme.danger.to_linear())
+            .find(|instance| instance.color == theme.colors.danger.to_linear())
             .expect("the danger button");
         let [x, y, _, height] = action.rect;
         assert_eq!(
             pixel(&pixels, width, x + 3.0, y + height * 0.5),
-            srgb(theme.danger)
+            srgb(theme.colors.danger)
         );
     }
 }

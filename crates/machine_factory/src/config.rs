@@ -245,6 +245,8 @@ pub const DEFAULT_ROMS_FOLDER: &str = "roms";
 pub const DEFAULT_GUI_FONT: &str = "font/SarasaUiJ-Regular.ttf";
 /// Built-in rendering backend.
 pub const DEFAULT_BACKEND: Backend = Backend::Modern;
+/// Built-in theme of the user interface.
+pub const DEFAULT_GUI_THEME: GuiTheme = GuiTheme::Dark;
 /// Built-in audio volume.
 pub const DEFAULT_AUDIO_VOLUME: f32 = 1.0;
 /// Built-in window mode.
@@ -292,6 +294,8 @@ pub struct EmulatorConfig {
     pub ems: bool,
     pub xms: bool,
     pub backend: Backend,
+    /// Colors of the user interface.
+    pub gui_theme: GuiTheme,
     pub enable_extractor: bool,
     /// Boot mode selected via `--boot-mode`, shared across machine families.
     /// `None` means each machine uses its own default.
@@ -375,6 +379,7 @@ impl EmulatorConfig {
             ems: true,
             xms: true,
             backend: DEFAULT_BACKEND,
+            gui_theme: DEFAULT_GUI_THEME,
             enable_extractor: false,
             boot_mode: None,
             monitor: MonitorTiming::Auto,
@@ -816,6 +821,37 @@ impl std::str::FromStr for Backend {
             "modern" => Ok(Self::Modern),
             "legacy" => Ok(Self::Legacy),
             _ => Err(format!("unknown backend '{s}', expected modern or legacy")),
+        }
+    }
+}
+
+/// Colors of the user interface.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub enum GuiTheme {
+    /// Dark panels with light text.
+    #[default]
+    Dark,
+    /// Light panels with dark text.
+    Light,
+}
+
+impl std::fmt::Display for GuiTheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dark => f.write_str("dark"),
+            Self::Light => f.write_str("light"),
+        }
+    }
+}
+
+impl std::str::FromStr for GuiTheme {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "dark" => Ok(Self::Dark),
+            "light" => Ok(Self::Light),
+            _ => Err(format!("unknown GUI theme '{s}', expected dark or light")),
         }
     }
 }

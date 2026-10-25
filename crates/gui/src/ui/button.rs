@@ -4,6 +4,7 @@ use super::{
     context::{UiContext, UiId},
     focus::NavigationSet,
     icons::Icon,
+    theme::BUTTON_EDGE_TINT_SHARE,
 };
 use crate::{Color, Rect, RectStyle};
 
@@ -134,11 +135,11 @@ impl<'a> Button<'a> {
             if self.kind != ButtonKind::Quiet {
                 context.rect(
                     rect,
-                    &RectStyle::filled(theme.control.with_alpha(0.5), theme.radius)
-                        .with_stroke(theme.stroke, theme.control_edge.with_alpha(0.5)),
+                    &RectStyle::filled(theme.colors.control.with_alpha(0.5), theme.radius)
+                        .with_stroke(theme.stroke, theme.colors.control_edge.with_alpha(0.5)),
                 );
             }
-            self.content(context, rect, theme.text_disabled);
+            self.content(context, rect, theme.colors.text_disabled);
             return false;
         }
         if !self.default_choice {
@@ -156,58 +157,62 @@ impl<'a> Button<'a> {
         let (style, color) = match self.kind {
             ButtonKind::Normal => {
                 let fill = if pressed {
-                    theme.control_pressed
+                    theme.colors.control_pressed
                 } else if hovered {
-                    theme.control_hover
+                    theme.colors.control_hover
                 } else {
-                    theme.control
+                    theme.colors.control
                 };
                 (
                     RectStyle::filled(fill, theme.radius)
-                        .with_stroke(theme.stroke, theme.control_edge),
-                    theme.text,
+                        .with_stroke(theme.stroke, theme.colors.control_edge),
+                    theme.colors.text,
                 )
             }
             ButtonKind::Primary => {
                 let fill = if pressed {
-                    theme.accent_pressed
+                    theme.colors.accent_pressed
                 } else if hovered {
-                    theme.accent_hover
+                    theme.colors.accent_hover
                 } else {
-                    theme.accent
+                    theme.colors.accent
                 };
                 (
-                    RectStyle::filled(fill, theme.radius)
-                        .with_stroke(theme.stroke, fill.mix(Color::WHITE, 0.12)),
-                    theme.accent_text,
+                    RectStyle::filled(fill, theme.radius).with_stroke(
+                        theme.stroke,
+                        fill.mix(theme.colors.button_edge_tint, BUTTON_EDGE_TINT_SHARE),
+                    ),
+                    theme.colors.accent_text,
                 )
             }
             ButtonKind::Danger => {
                 let fill = if pressed {
-                    theme.danger_pressed
+                    theme.colors.danger_pressed
                 } else if hovered {
-                    theme.danger_hover
+                    theme.colors.danger_hover
                 } else {
-                    theme.danger
+                    theme.colors.danger
                 };
                 (
-                    RectStyle::filled(fill, theme.radius)
-                        .with_stroke(theme.stroke, fill.mix(Color::WHITE, 0.12)),
-                    theme.accent_text,
+                    RectStyle::filled(fill, theme.radius).with_stroke(
+                        theme.stroke,
+                        fill.mix(theme.colors.button_edge_tint, BUTTON_EDGE_TINT_SHARE),
+                    ),
+                    theme.colors.accent_text,
                 )
             }
             ButtonKind::Quiet => {
                 let fill = if pressed {
-                    theme.control_pressed
+                    theme.colors.control_pressed
                 } else if hovered {
-                    theme.control_hover
+                    theme.colors.control_hover
                 } else {
                     Color::TRANSPARENT
                 };
                 let color = if hovered || focused {
-                    theme.text
+                    theme.colors.text
                 } else {
-                    theme.text_dim
+                    theme.colors.text_dim
                 };
                 (RectStyle::filled(fill, theme.radius), color)
             }
@@ -300,19 +305,24 @@ pub(super) fn check_box(context: &mut UiContext, slot: Rect, selected: bool, loo
     let area = Rect::new(slot.x, top, CHECK_BOX_SIZE, CHECK_BOX_SIZE);
     if selected {
         let fill = match look {
-            CheckBoxLook::Idle => theme.accent,
-            CheckBoxLook::Hovered => theme.accent_hover,
-            CheckBoxLook::Pressed => theme.accent_pressed,
-            CheckBoxLook::Disabled => theme.text_disabled,
+            CheckBoxLook::Idle => theme.colors.accent,
+            CheckBoxLook::Hovered => theme.colors.accent_hover,
+            CheckBoxLook::Pressed => theme.colors.accent_pressed,
+            CheckBoxLook::Disabled => theme.colors.text_disabled,
         };
         context.rect(area, &RectStyle::filled(fill, CHECK_BOX_RADIUS));
-        context.icon(area, Icon::Check, CHECK_BOX_SIZE - 2.0, theme.accent_text);
+        context.icon(
+            area,
+            Icon::Check,
+            CHECK_BOX_SIZE - 2.0,
+            theme.colors.accent_text,
+        );
     } else {
         let (fill, edge) = match look {
-            CheckBoxLook::Idle => (theme.field, theme.text_dim),
-            CheckBoxLook::Hovered => (theme.field, theme.text),
-            CheckBoxLook::Pressed => (theme.control_pressed, theme.text),
-            CheckBoxLook::Disabled => (theme.field, theme.text_disabled),
+            CheckBoxLook::Idle => (theme.colors.field, theme.colors.text_dim),
+            CheckBoxLook::Hovered => (theme.colors.field, theme.colors.text),
+            CheckBoxLook::Pressed => (theme.colors.control_pressed, theme.colors.text),
+            CheckBoxLook::Disabled => (theme.colors.field, theme.colors.text_disabled),
         };
         context.rect(
             area,
@@ -486,8 +496,8 @@ mod tests {
     fn a_danger_button_takes_the_danger_fills() {
         let theme = Harness::new().theme;
         for (point, fill) in [
-            (None, theme.danger),
-            (Some((40.0, 20.0)), theme.danger_hover),
+            (None, theme.colors.danger),
+            (Some((40.0, 20.0)), theme.colors.danger_hover),
         ] {
             let mut harness = Harness::new();
             if let Some((x, y)) = point {
@@ -515,7 +525,7 @@ mod tests {
         let pixels = harness.render();
         assert_eq!(
             pixel(&pixels, harness.viewport.width, OK.x + 4.0, OK.y + 4.0),
-            srgb(theme.danger_pressed)
+            srgb(theme.colors.danger_pressed)
         );
     }
 

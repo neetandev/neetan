@@ -148,14 +148,14 @@ pub(crate) fn draw_label(
         );
         context
             .scene
-            .fill(context.snap_rect(dot), DOT_SIZE * 0.5, theme.accent);
+            .fill(context.snap_rect(dot), DOT_SIZE * 0.5, theme.colors.accent);
     }
     let x = area.x + theme.gap * 1.5;
     let width = (area.width - theme.gap * 1.5).max(0.0);
     let name_color = if enabled {
-        theme.text
+        theme.colors.text
     } else {
-        theme.text_disabled
+        theme.colors.text_disabled
     };
     let name_style = theme.body().with_color(name_color);
     if key.is_empty() {
@@ -217,9 +217,9 @@ pub(crate) fn draw_note(context: &mut UiContext, area: Rect, note: &Note) -> f32
         return area.height;
     }
     let (icon, color) = match note.kind {
-        NoteKind::Plain | NoteKind::Unmarked => (None, theme.text_dim),
-        NoteKind::Warning => (Some(Icon::Alert), theme.danger_text),
-        NoteKind::Found => (Some(Icon::Check), theme.marker),
+        NoteKind::Plain | NoteKind::Unmarked => (None, theme.colors.text_dim),
+        NoteKind::Warning => (Some(Icon::Alert), theme.colors.danger_text),
+        NoteKind::Found => (Some(Icon::Check), theme.colors.marker),
     };
     let (icon_area, text_area) = match note.kind {
         NoteKind::Plain => (None, area),
@@ -903,7 +903,7 @@ mod tests {
                     .iter()
                     .filter(|instance| {
                         instance.kind[0] == gui::Instance::KIND_RECTANGLE
-                            && instance.color == theme.field.to_linear()
+                            && instance.color == theme.colors.field.to_linear()
                             && instance.rect[3] == theme.control_height
                     })
                     .map(|instance| instance.rect)

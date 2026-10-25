@@ -344,7 +344,7 @@ impl ErrorDialog {
         let theme = context.theme;
         let ok_id = UiId::from(OK_ID);
         let message_style = theme.body();
-        let detail_style = theme.small().with_color(theme.text);
+        let detail_style = theme.small().with_color(theme.colors.text);
         let detail_padding = (theme.gap * DETAIL_PADDING_FACTOR, theme.gap);
         let text_indent = theme.icon_size + theme.gap * ICON_GAP_FACTOR;
         let message_top = theme.gap * MESSAGE_TOP_FACTOR;
@@ -392,7 +392,7 @@ impl ErrorDialog {
             ),
             Icon::Alert,
             theme.icon_size,
-            theme.danger_text,
+            theme.colors.danger_text,
         );
         let (message_area, rest) = text_column.cut_top(message_height);
         wrapped_label(
@@ -407,7 +407,8 @@ impl ErrorDialog {
         let detail_area = rest.cut_top(theme.gap).1.cut_top(detail_height).0;
         context.rect(
             detail_area,
-            &RectStyle::filled(theme.well, theme.radius).with_stroke(theme.stroke, theme.well_edge),
+            &RectStyle::filled(theme.colors.well, theme.radius)
+                .with_stroke(theme.stroke, theme.colors.well_edge),
         );
         wrapped_label(
             context,
@@ -769,7 +770,7 @@ mod tests {
                 let theme = context.theme;
                 let size = theme.icon_size;
                 let box_area = Rect::new(0.0, 0.0, size, size);
-                context.icon(box_area, Icon::Alert, size, theme.danger_text);
+                context.icon(box_area, Icon::Alert, size, theme.colors.danger_text);
             });
             harness.scene.instances()[0].rect[1]
         };
@@ -788,7 +789,7 @@ mod tests {
                 .rect;
             let content_left = panel[0] + theme.padding;
             let text_left = content_left + theme.icon_size + theme.gap * ICON_GAP_FACTOR;
-            let danger = theme.danger_text.to_linear();
+            let danger = theme.colors.danger_text.to_linear();
             let icon = instances
                 .iter()
                 .find(|instance| {
@@ -806,7 +807,7 @@ mod tests {
                 .iter()
                 .find(|instance| {
                     instance.kind[0] == gui::Instance::KIND_RECTANGLE
-                        && instance.color == theme.well.to_linear()
+                        && instance.color == theme.colors.well.to_linear()
                 })
                 .expect("the detail well")
                 .rect;
@@ -834,7 +835,7 @@ mod tests {
                 .iter()
                 .filter(|instance| {
                     instance.kind[0] == gui::Instance::KIND_GLYPH
-                        && instance.color == theme.text.to_linear()
+                        && instance.color == theme.colors.text.to_linear()
                         && instance.rect[1] > panel[1] + HEADER_HEIGHT
                 })
                 .map(|instance| instance.rect[0])

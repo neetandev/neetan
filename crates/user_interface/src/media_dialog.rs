@@ -417,7 +417,12 @@ impl MediaDialog {
 
         if let Some(entry) = self.selection {
             let (icon_area, path_area) = path_line.cut_left(theme.icon_size);
-            context.icon(icon_area, Icon::Folder, theme.icon_size, theme.text_dim);
+            context.icon(
+                icon_area,
+                Icon::Folder,
+                theme.icon_size,
+                theme.colors.text_dim,
+            );
             label(
                 context,
                 path_area.cut_left(gap).1,
@@ -460,7 +465,7 @@ mod tests {
 
     use gui::{
         Color,
-        ui::{Navigation, Viewport},
+        ui::{Navigation, ThemeKind, Viewport},
     };
 
     use super::*;
@@ -503,10 +508,11 @@ mod tests {
     }
 
     impl Harness {
-        /// A dialog on the first floppy drive at `viewport`.
-        fn new(viewport: Viewport) -> Self {
+        /// A dialog on the first floppy drive at `viewport` in the theme
+        /// `kind`.
+        fn new(viewport: Viewport, kind: ThemeKind) -> Self {
             Self {
-                gui: GuiHarness::with_viewport(viewport),
+                gui: GuiHarness::with_viewport(viewport, kind),
                 dialog: MediaDialog::new(available_drives(2, true), 0, Some(3)),
                 media: [entries(&FILES), entries(&FILES[..4]), Vec::new()],
                 loaded: [Some(3), None, None],
@@ -617,7 +623,7 @@ mod tests {
 
     #[test]
     fn the_dialog_opens_on_the_loaded_image() {
-        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0));
+        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0), ThemeKind::Dark);
         assert_eq!(harness.pass(), DialogAction::None);
         assert_eq!(harness.dialog.list.selected, 4);
         assert_eq!(harness.gui.state.focused(), Some(UiId::from(LIST_ID)));
@@ -632,7 +638,7 @@ mod tests {
 
     #[test]
     fn the_eject_row_ejects() {
-        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0));
+        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0), ThemeKind::Dark);
         harness.pass();
         harness.navigate(Navigation::Home);
         assert_eq!(harness.dialog.selection, None);
@@ -646,7 +652,7 @@ mod tests {
 
     #[test]
     fn the_filter_keeps_the_selected_entry() {
-        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0));
+        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0), ThemeKind::Dark);
         harness.pass();
         harness.navigate(Navigation::Previous);
         assert_eq!(harness.gui.state.focused(), Some(UiId::from("filter")));
@@ -668,7 +674,7 @@ mod tests {
 
     #[test]
     fn confirm_in_a_filter_without_matches_does_nothing() {
-        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0));
+        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0), ThemeKind::Dark);
         harness.pass();
         harness.navigate(Navigation::Previous);
         assert_eq!(harness.gui.state.focused(), Some(UiId::from("filter")));
@@ -682,7 +688,7 @@ mod tests {
 
     #[test]
     fn a_filter_without_matches_keeps_the_preferred_entry() {
-        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0));
+        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0), ThemeKind::Dark);
         harness.pass();
         harness.navigate(Navigation::Previous);
         harness.type_text("zzz");
@@ -704,7 +710,7 @@ mod tests {
 
     #[test]
     fn a_filter_on_an_empty_drive_selects_the_first_match() {
-        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0));
+        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0), ThemeKind::Dark);
         harness.dialog = MediaDialog::new(available_drives(2, true), 0, None);
         harness.loaded = [None, None, None];
         harness.pass();
@@ -722,7 +728,7 @@ mod tests {
 
     #[test]
     fn a_picked_eject_row_stays_under_the_filter() {
-        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0));
+        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0), ThemeKind::Dark);
         harness.pass();
         harness.navigate(Navigation::Previous);
         harness.type_text("disk");
@@ -741,7 +747,7 @@ mod tests {
 
     #[test]
     fn a_tab_switch_selects_the_loaded_image() {
-        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0));
+        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0), ThemeKind::Dark);
         harness.loaded[1] = Some(2);
         harness.pass();
         harness.navigate(Navigation::NextTab);
@@ -766,7 +772,7 @@ mod tests {
 
     #[test]
     fn the_buttons_close_and_insert() {
-        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0));
+        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0), ThemeKind::Dark);
         harness.pass();
         harness.navigate(Navigation::End);
         harness.navigate(Navigation::Down);
@@ -783,11 +789,12 @@ mod tests {
         assert_eq!(harness.confirm(), DialogAction::Close);
     }
 
-    /// Renders the dialog at `scale` on each tab and with a filter.
-    fn screenshots(scale: f32) {
+    /// Renders the dialog at `scale` in the theme `kind` on each tab and
+    /// with a filter.
+    fn screenshots(scale: f32, kind: ThemeKind) {
         let width = (960.0 * scale) as u32;
         let height = (680.0 * scale) as u32;
-        let mut harness = Harness::new(Viewport::new(width, height, scale));
+        let mut harness = Harness::new(Viewport::new(width, height, scale), kind);
         harness.loaded[1] = Some(1);
         harness.pass();
         harness.navigate(Navigation::Down);
@@ -814,7 +821,9 @@ mod tests {
     #[test]
     #[ignore = "writes screenshots into the directory of GUI_SHOTS"]
     fn media_dialog_screenshots() {
-        screenshots(1.0);
-        screenshots(2.0);
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            screenshots(1.0, kind);
+            screenshots(2.0, kind);
+        }
     }
 }

@@ -154,7 +154,7 @@ impl Editor {
     pub(super) fn draw_page(&mut self, context: &mut UiContext, screen: Rect) -> PageActions {
         let theme = context.theme;
         let mut actions = PageActions::default();
-        context.fill(screen, theme.panel);
+        context.fill(screen, theme.colors.panel);
         let areas = PageAreas::new(theme, screen);
         if self.draw_header(context, areas.header) {
             actions.close = true;
@@ -224,7 +224,7 @@ impl Editor {
         );
         let title_style = theme.title();
         let small_style = theme.small();
-        let warning_style = theme.small().with_color(theme.danger_text);
+        let warning_style = theme.small().with_color(theme.colors.danger_text);
         let warning = self.system_files().and_then(|files| files.base.warning());
         let small_width = context.measure(&small_style, &small);
         let warning_width = warning.map_or(0.0, |warning| {
@@ -260,7 +260,12 @@ impl Editor {
             if let Some(warning) = warning {
                 let icon_x = small_x + small_width + theme.gap * 1.5;
                 let icon_area = Rect::new(icon_x, header.y, theme.icon_size, header.height);
-                context.icon(icon_area, Icon::Alert, theme.icon_size, theme.danger_text);
+                context.icon(
+                    icon_area,
+                    Icon::Alert,
+                    theme.icon_size,
+                    theme.colors.danger_text,
+                );
                 let text_x = icon_area.right() + theme.gap * 0.75;
                 let text_width = (small_x + small_room - text_x).max(0.0);
                 context.text_in(
@@ -317,7 +322,7 @@ impl Editor {
             );
             context
                 .scene
-                .fill(context.snap_rect(dot), DOT_SIZE * 0.5, theme.accent);
+                .fill(context.snap_rect(dot), DOT_SIZE * 0.5, theme.colors.accent);
             draw_note(
                 context,
                 status.cut_left(DOT_SIZE + theme.gap).1,
@@ -427,7 +432,7 @@ mod tests {
                 Editor::open(&root.host(), root.system(), &path).expect("the editor opens");
             let mut harness = GuiHarness::new(960, 600);
             harness.frame(|context| editor.show(context, Rect::new(0.0, 0.0, 960.0, 572.0)));
-            let danger = harness.theme.danger_text.to_linear();
+            let danger = harness.theme.colors.danger_text.to_linear();
             harness.scene.instances().iter().any(|instance| {
                 instance.kind[0] == gui::Instance::KIND_GLYPH
                     && instance.color == danger

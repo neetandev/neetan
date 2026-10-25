@@ -15,10 +15,10 @@ use std::path::{Path, PathBuf};
 use common::{StringError, bail, info, warn};
 use machine_factory::config::{
     DEFAULT_AUDIO_VOLUME, DEFAULT_BACKEND, DEFAULT_CONFIG_FOLDER, DEFAULT_GUI_FONT,
-    DEFAULT_ROMS_FOLDER, EmulatorConfig, MachineSelection, Target,
+    DEFAULT_GUI_THEME, DEFAULT_ROMS_FOLDER, EmulatorConfig, MachineSelection, Target,
     settings::{
         AUDIO_VOLUME_KEY, BACKEND_KEY, CONFIG_FOLDER_KEY, ExplicitSettings, GUI_FONT_KEY,
-        MACHINE_KEY, ROMS_FOLDER_KEY, Setting, apply_derived_defaults,
+        GUI_THEME_KEY, MACHINE_KEY, ROMS_FOLDER_KEY, Setting, apply_derived_defaults,
     },
     systems::{System, apply_rom_folder_defaults, compiled_systems, system_of},
 };
@@ -46,6 +46,7 @@ pub(crate) fn host_default(key: &str) -> Option<String> {
         ROMS_FOLDER_KEY => Some(DEFAULT_ROMS_FOLDER.to_owned()),
         GUI_FONT_KEY => Some(DEFAULT_GUI_FONT.to_owned()),
         BACKEND_KEY => Some(DEFAULT_BACKEND.to_string()),
+        GUI_THEME_KEY => Some(DEFAULT_GUI_THEME.to_string()),
         AUDIO_VOLUME_KEY => Some(format!("{DEFAULT_AUDIO_VOLUME:?}")),
         _ => None,
     }
@@ -1094,7 +1095,9 @@ mod tests {
             vec![root_font.clone(), resource_font.clone()]
         );
         assert_eq!(host.gui_font(), root_font);
-        let Err(message) = crate::gui_host::GuiHost::load(&host.gui_font_paths()) else {
+        let Err(message) =
+            crate::gui_host::GuiHost::load(&host.gui_font_paths(), gui::ui::ThemeKind::Dark)
+        else {
             panic!("a missing font does not load");
         };
         assert_eq!(

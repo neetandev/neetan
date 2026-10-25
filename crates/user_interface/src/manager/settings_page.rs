@@ -64,7 +64,7 @@ impl Manager {
 
 #[cfg(test)]
 mod tests {
-    use gui::ui::{ActionButton, Navigation, Shortcut, UiId, Viewport};
+    use gui::ui::{ActionButton, Navigation, Shortcut, ThemeKind, UiId, Viewport};
     use machine_factory::{
         config::settings::{
             AUDIO_VOLUME_KEY, BACKEND_KEY, CONFIG_FOLDER_KEY, ROMS_FOLDER_KEY, find_setting,
@@ -279,8 +279,8 @@ mod tests {
     /// logical units and `scale`: Folders with a missing GUI font, ROMs and
     /// Video and audio, and a run with a config folder flag, a ROM folder
     /// flag and a backend flag.
-    /// With `large` only the ROMs section.
-    fn screenshots(width: f32, height: f32, scale: f32, large: bool) {
+    /// With `large` only the ROMs section. The pages draw in the theme `kind`.
+    fn screenshots(width: f32, height: f32, scale: f32, large: bool, kind: ThemeKind) {
         let prefix = if large { "large_" } else { "" };
         let viewport = Viewport::new((width * scale) as u32, (height * scale) as u32, scale);
         let render = |harness: &GuiHarness, name: &str| {
@@ -292,7 +292,7 @@ mod tests {
         );
         let mut manager = manager_with(&root, &[]);
         manager.roms = sample_statuses(&manager.host);
-        let mut harness = GuiHarness::with_viewport(viewport);
+        let mut harness = GuiHarness::with_viewport(viewport, kind);
         settle(&mut harness, &mut manager);
         harness.state.set_focus(UiId::from(SETTINGS_ID));
         settle(&mut harness, &mut manager);
@@ -326,7 +326,7 @@ mod tests {
             ],
         );
         manager.roms = sample_statuses(&manager.host);
-        let mut harness = GuiHarness::with_viewport(viewport);
+        let mut harness = GuiHarness::with_viewport(viewport, kind);
         settle(&mut harness, &mut manager);
         harness.input.shortcut = Some(Shortcut::F10);
         settle(&mut harness, &mut manager);
@@ -341,14 +341,16 @@ mod tests {
         render(&harness, "video_flag");
     }
 
-    /// Writes the screenshots of the settings page at the scales 1 and 2,
-    /// at the minimum window size and at 1920 x 1080.
+    /// Writes the screenshots of the settings page in both themes at the
+    /// scales 1 and 2, at the minimum window size and at 1920 x 1080.
     #[test]
     #[ignore = "writes screenshots into the directory of GUI_SHOTS"]
     fn settings_screenshots() {
-        for scale in [1.0, 2.0] {
-            screenshots(960.0, 600.0, scale, false);
-            screenshots(1920.0, 1080.0, scale, true);
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            for scale in [1.0, 2.0] {
+                screenshots(960.0, 600.0, scale, false, kind);
+                screenshots(1920.0, 1080.0, scale, true, kind);
+            }
         }
     }
 }

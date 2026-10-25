@@ -85,7 +85,7 @@ pub use table::{
 };
 pub use tabs::{Tab, tab_bar};
 pub use text_field::{TEXT_FIELD_LIMIT, TextField, TextFieldResponse, text_field};
-pub use theme::Theme;
+pub use theme::{Palette, Theme, ThemeKind};
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -113,16 +113,17 @@ pub(crate) mod tests {
     }
 
     impl Harness {
-        /// A harness with a target of 800 x 600 pixels at scale 1.
+        /// A harness in the dark theme with a target of 800 x 600 pixels at
+        /// scale 1.
         pub(crate) fn new() -> Self {
-            Self::with_viewport(Viewport::new(800, 600, 1.0))
+            Self::with_viewport(Viewport::new(800, 600, 1.0), ThemeKind::Dark)
         }
 
-        /// A harness with the target `viewport`.
-        pub(crate) fn with_viewport(viewport: Viewport) -> Self {
+        /// A harness in the theme `kind` with the target `viewport`.
+        pub(crate) fn with_viewport(viewport: Viewport, kind: ThemeKind) -> Self {
             let mut fonts = Fonts::new();
             let font = fonts.add(font_data()).unwrap();
-            let theme = Theme::new(&mut fonts, font);
+            let theme = Theme::new(&mut fonts, font, kind);
             Self {
                 fonts,
                 theme,
@@ -179,6 +180,14 @@ pub(crate) mod tests {
             let mut output = vec![0; width as usize * height as usize * 4];
             Rasterizer::new().rasterize(&self.scene, self.fonts.slug(), width, height, &mut output);
             output
+        }
+    }
+
+    /// The start of the name of a screenshot in the theme `kind`.
+    pub(crate) fn screenshot_prefix(kind: ThemeKind) -> &'static str {
+        match kind {
+            ThemeKind::Dark => "",
+            ThemeKind::Light => "light_",
         }
     }
 
@@ -318,7 +327,7 @@ pub(crate) mod tests {
         let (footer, rest) = rest.cut_bottom(theme.control_height);
         let (folder, rest) = rest.cut_top(gap).1.cut_top(24.0);
         let (icon, path) = folder.cut_left(theme.icon_size);
-        context.icon(icon, Icon::Folder, theme.icon_size, theme.text_dim);
+        context.icon(icon, Icon::Folder, theme.icon_size, theme.colors.text_dim);
         label(
             context,
             path.cut_left(gap).1,
@@ -448,7 +457,7 @@ pub(crate) mod tests {
     #[test]
     fn the_sample_dialog_works_with_the_mouse_only() {
         let scale = 2.0;
-        let mut harness = Harness::with_viewport(Viewport::new(1600, 1200, scale));
+        let mut harness = Harness::with_viewport(Viewport::new(1600, 1200, scale), ThemeKind::Dark);
         let mut sample = Sample::default();
         let layout = pass(&mut harness, &mut sample);
         let (x, y) = row_point(&harness, &layout, 4, scale);
@@ -495,7 +504,7 @@ pub(crate) mod tests {
             Viewport::new(1, 1, 1000.0),
             Viewport::new(100, 50, 0.001),
         ] {
-            let mut harness = Harness::with_viewport(viewport);
+            let mut harness = Harness::with_viewport(viewport, ThemeKind::Dark);
             let mut sample = Sample::default();
             harness.mouse(5.0, 5.0);
             harness.input.wheel = -3.0;
@@ -516,11 +525,12 @@ pub(crate) mod tests {
     /// Renders the sample dialog at `scale` and writes it through the PPM
     /// helper: once with the focus on the list and the pointer over a row,
     /// once with the focus on the filter field, a composition in it and the
-    /// pointer over a button.
-    fn sample_screenshot(scale: f32) {
+    /// pointer over a button. The dialog draws in the theme `kind`.
+    fn sample_screenshot(scale: f32, kind: ThemeKind) {
         let width = (960.0 * scale) as u32;
         let height = (640.0 * scale) as u32;
-        let mut harness = Harness::with_viewport(Viewport::new(width, height, scale));
+        let mut harness = Harness::with_viewport(Viewport::new(width, height, scale), kind);
+        let prefix = screenshot_prefix(kind);
         let mut sample = Sample {
             write_protect: true,
             ..Sample::default()
@@ -531,7 +541,7 @@ pub(crate) mod tests {
         harness.mouse((layout.list.x + 200.0) * scale, hover_y);
         pass(&mut harness, &mut sample);
         write_ppm(
-            &format!("gui_panel_{scale}x"),
+            &format!("{prefix}gui_panel_{scale}x"),
             width,
             height,
             &harness.render(),
@@ -545,7 +555,7 @@ pub(crate) mod tests {
         harness.input.composition.push_str("でぃすく");
         pass(&mut harness, &mut sample);
         write_ppm(
-            &format!("gui_panel_{scale}x_filter"),
+            &format!("{prefix}gui_panel_{scale}x_filter"),
             width,
             height,
             &harness.render(),
@@ -555,9 +565,11 @@ pub(crate) mod tests {
     #[test]
     #[ignore = "writes a screenshot into the directory of GUI_SHOTS"]
     fn panel_screenshot() {
-        sample_screenshot(1.0);
-        sample_screenshot(1.5);
-        sample_screenshot(2.0);
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            sample_screenshot(1.0, kind);
+            sample_screenshot(1.5, kind);
+            sample_screenshot(2.0, kind);
+        }
     }
 
     /// The screenshot of every widget of the GUI additions in its states.
@@ -713,6 +725,8 @@ pub(crate) mod tests {
         struct Gallery {
             /// The physical pixels for each logical unit.
             scale: f32,
+            /// The kind of the theme.
+            kind: ThemeKind,
             /// The width in physical pixels.
             width: u32,
             /// The height in physical pixels.
@@ -722,15 +736,17 @@ pub(crate) mod tests {
         }
 
         impl Gallery {
-            /// A gallery of `width` x `height` logical units at `scale`.
-            fn new(width: f32, height: f32, scale: f32) -> Self {
+            /// A gallery of `width` x `height` logical units at `scale` in
+            /// the theme `kind`.
+            fn new(width: f32, height: f32, scale: f32, kind: ThemeKind) -> Self {
                 let width = (width * scale) as u32;
                 let height = (height * scale) as u32;
-                let background = Color::hex(0x131519);
+                let background = Palette::of(kind).field;
                 let pixels = [background.r, background.g, background.b, 255]
                     .repeat(width as usize * height as usize);
                 Self {
                     scale,
+                    kind,
                     width,
                     height,
                     pixels,
@@ -752,7 +768,8 @@ pub(crate) mod tests {
                 let scale = self.scale;
                 let width = (size.0 * scale) as u32;
                 let height = (size.1 * scale) as u32;
-                let mut harness = Harness::with_viewport(Viewport::new(width, height, scale));
+                let mut harness =
+                    Harness::with_viewport(Viewport::new(width, height, scale), self.kind);
                 let area = Rect::new(
                     CELL_GAP,
                     CAPTION_HEIGHT,
@@ -763,7 +780,7 @@ pub(crate) mod tests {
                     harness.frame(|context| {
                         let bounds = context.bounds();
                         let theme = context.theme;
-                        context.fill(bounds, theme.panel);
+                        context.fill(bounds, theme.colors.panel);
                         context.text_left(
                             Rect::new(CELL_GAP, 2.0, bounds.width, CAPTION_HEIGHT - 4.0),
                             &theme.small(),
@@ -792,7 +809,8 @@ pub(crate) mod tests {
 
             /// Writes the gallery through the PPM helper.
             fn write(&self, name: &str) {
-                write_ppm(name, self.width, self.height, &self.pixels);
+                let name = format!("{}{name}", screenshot_prefix(self.kind));
+                write_ppm(&name, self.width, self.height, &self.pixels);
             }
         }
 
@@ -833,10 +851,14 @@ pub(crate) mod tests {
             Rect::new(area.x, area.y, width.min(area.width), 32.0)
         }
 
-        /// Renders the gallery at `scale`.
-        fn render(scale: f32) {
-            let mut gallery =
-                Gallery::new(1340.0, 2044.0 + (DROPDOWN_ROW_HEIGHT - 72.0) * 2.0, scale);
+        /// Renders the gallery at `scale` in the theme `kind`.
+        fn render(scale: f32, kind: ThemeKind) {
+            let mut gallery = Gallery::new(
+                1340.0,
+                2044.0 + (DROPDOWN_ROW_HEIGHT - 72.0) * 2.0,
+                scale,
+                kind,
+            );
             let row_height = 72.0;
             let mut top = CELL_GAP;
             let state_cells =
@@ -1409,19 +1431,19 @@ pub(crate) mod tests {
                     for (index, icon) in Icon::ALL.into_iter().enumerate() {
                         let x = area.x + index as f32 * 66.0;
                         let big = Rect::new(x, area.y, 64.0, 64.0);
-                        context.fill(big, theme.well);
-                        context.icon(big, icon, 64.0, theme.text);
+                        context.fill(big, theme.colors.well);
+                        context.icon(big, icon, 64.0, theme.colors.text);
                         context.icon(
                             Rect::new(x + 8.0, area.y + 72.0, 16.0, 16.0),
                             icon,
                             16.0,
-                            theme.text,
+                            theme.colors.text,
                         );
                         context.icon(
                             Rect::new(x + 36.0, area.y + 74.0, 12.0, 12.0),
                             icon,
                             12.0,
-                            theme.text,
+                            theme.colors.text,
                         );
                     }
                 },
@@ -1433,8 +1455,10 @@ pub(crate) mod tests {
         #[test]
         #[ignore = "writes a screenshot into the directory of GUI_SHOTS"]
         fn widget_gallery_screenshot() {
-            render(1.0);
-            render(2.0);
+            for kind in [ThemeKind::Dark, ThemeKind::Light] {
+                render(1.0, kind);
+                render(2.0, kind);
+            }
         }
     }
 }

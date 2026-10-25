@@ -14,8 +14,8 @@ use std::{
 use audio_engine::AudioEngine;
 use common::{Context, Error, StringError, error, info, warn};
 use machine_factory::config::{
-    DEFAULT_AUDIO_VOLUME, DEFAULT_BACKEND, DEFAULT_WINDOW_MODE,
-    settings::{AUDIO_VOLUME_KEY, BACKEND_KEY, WINDOW_MODE_KEY, parse_audio_volume},
+    DEFAULT_AUDIO_VOLUME, DEFAULT_BACKEND, DEFAULT_GUI_THEME, DEFAULT_WINDOW_MODE,
+    settings::{AUDIO_VOLUME_KEY, BACKEND_KEY, GUI_THEME_KEY, WINDOW_MODE_KEY, parse_audio_volume},
 };
 use sdl3::{
     Sdl,
@@ -33,8 +33,8 @@ use self::{
 };
 use crate::{
     GAME_NAME, Result,
-    config::{Backend, EmulatorConfig, HostLayers, WindowMode},
-    gui_host::GuiHost,
+    config::{Backend, EmulatorConfig, GuiTheme, HostLayers, WindowMode},
+    gui_host::{GuiHost, theme_kind},
     host::{
         Host, HostParts, MANAGER_WINDOW_SIZE, MINIMUM_WINDOW_SIZE, SESSION_MINIMUM_WINDOW_SIZE,
         WindowSize, WindowState, fit_window_size, graphics_display_aspect_mode,
@@ -65,6 +65,8 @@ pub(crate) struct ShellOptions {
     large_native_target: bool,
     /// The paths searched for the font file of the user interface in search order.
     gui_font_paths: Vec<PathBuf>,
+    /// The theme of the user interface.
+    gui_theme: GuiTheme,
 }
 
 impl ShellOptions {
@@ -79,12 +81,14 @@ impl ShellOptions {
             display_aspect_mode: graphics_display_aspect_mode(config.aspect_mode),
             large_native_target: wants_large_native_target(config),
             gui_font_paths,
+            gui_theme: config.gui_theme,
         }
     }
 
     /// The shell settings for the game manager: the backend, the volume, the
-    /// window mode and the GUI font of the settings file and the command
-    /// line of `host`. A missing or invalid value keeps the built-in default.
+    /// window mode, the GUI font and the GUI theme of the settings file and
+    /// the command line of `host`. A missing or invalid value keeps the
+    /// built-in default.
     pub(crate) fn for_manager(host: &HostLayers) -> Self {
         let window_mode = host_setting(host, WINDOW_MODE_KEY, str::parse, DEFAULT_WINDOW_MODE);
         Self {
@@ -100,6 +104,7 @@ impl ShellOptions {
             display_aspect_mode: DisplayAspectMode::Aspect4By3,
             large_native_target: false,
             gui_font_paths: host.gui_font_paths(),
+            gui_theme: host_setting(host, GUI_THEME_KEY, str::parse, DEFAULT_GUI_THEME),
         }
     }
 }
@@ -212,6 +217,7 @@ impl Shell {
             gamepad_subsystem,
             fullscreen: options.fullscreen,
             gui_font_paths: options.gui_font_paths,
+            gui_theme: theme_kind(options.gui_theme),
         });
 
         Ok(Self {
@@ -494,7 +500,7 @@ mod tests {
     use super::ShellOptions;
     use crate::{
         config::{
-            AspectMode, Backend, EmulatorConfig, HostLayers, LaunchRequest, Locations,
+            AspectMode, Backend, EmulatorConfig, GuiTheme, HostLayers, LaunchRequest, Locations,
             SETTINGS_FILE_NAME, WindowMode, test_support::first_model_config,
         },
         host::{MANAGER_WINDOW_SIZE, WindowSize},
@@ -516,7 +522,7 @@ mod tests {
         (host, root)
     }
 
-    /// Verifies that the options of a game follow its window, engine and font settings.
+    /// Verifies that the options of a game follow its window, engine, font and theme settings.
     #[test]
     fn options_follow_the_window_settings_of_the_game() {
         let config = EmulatorConfig {
@@ -524,6 +530,7 @@ mod tests {
             window_mode: WindowMode::Fullscreen,
             backend: Backend::Legacy,
             audio_volume: 0.5,
+            gui_theme: GuiTheme::Light,
             ..first_model_config()
         };
         let gui_font_paths = vec![std::path::PathBuf::from("/fonts/ui.ttf")];
@@ -534,14 +541,15 @@ mod tests {
         assert_eq!(options.audio_volume, 0.5);
         assert_eq!(options.display_aspect_mode, DisplayAspectMode::Aspect1By1);
         assert_eq!(options.gui_font_paths, gui_font_paths);
+        assert_eq!(options.gui_theme, GuiTheme::Light);
     }
 
-    /// Verifies that the manager window follows the window mode, the backend, the volume and the font of the settings file.
+    /// Verifies that the manager window follows the window mode, the backend, the volume, the font and the theme of the settings file.
     #[test]
     fn manager_options_follow_the_settings_file() {
         let (host, root) = host_layers(
             "settings",
-            "window-mode = fullscreen\nbackend = legacy\naudio-volume = 0.25\ngui-font = fonts/ui.ttf\n",
+            "window-mode = fullscreen\nbackend = legacy\naudio-volume = 0.25\ngui-font = fonts/ui.ttf\ngui-theme = light\n",
         );
         let options = ShellOptions::for_manager(&host);
         assert!(options.fullscreen);
@@ -556,13 +564,20 @@ mod tests {
             options.gui_font_paths,
             vec![root.join("fonts").join("ui.ttf")]
         );
+        assert_eq!(options.gui_theme, GuiTheme::Light);
     }
 
     /// Verifies that the manager keeps the built-in defaults for unset and invalid values.
     #[test]
     fn manager_options_keep_the_defaults_for_invalid_values() {
-        let (host, root) = host_layers("invalid", "backend = vulkan\naudio-volume = 7\n");
+        let (host, root) = host_layers(
+            "invalid",
+            "backend = vulkan\naudio-volume = 7\ngui-theme = sepia\n",
+        );
         let options = ShellOptions::for_manager(&host);
+        assert_eq!(options.gui_theme, GuiTheme::Dark);
+        let (unset, _) = host_layers("unset", "");
+        assert_eq!(ShellOptions::for_manager(&unset).gui_theme, GuiTheme::Dark);
         assert!(!options.fullscreen);
         assert_eq!(options.backend, Backend::Modern);
         assert_eq!(options.audio_volume, 1.0);

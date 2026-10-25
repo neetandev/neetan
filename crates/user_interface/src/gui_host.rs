@@ -10,7 +10,9 @@ use std::{
 use common::{info, warn};
 use gui::{
     Fonts, Scene,
-    ui::{ActionButton, Input, Navigation, Shortcut, Theme, UiContext, UiState, Viewport},
+    ui::{
+        ActionButton, Input, Navigation, Shortcut, Theme, ThemeKind, UiContext, UiState, Viewport,
+    },
 };
 use sdl3::{
     event::Event,
@@ -20,6 +22,8 @@ use sdl3::{
     video::Window,
 };
 use sdl3_backend::Overlay;
+
+use crate::config::GuiTheme;
 
 /// The delay before a held gamepad direction repeats.
 const REPEAT_DELAY: Duration = Duration::from_millis(400);
@@ -364,6 +368,14 @@ impl GamepadNavigation {
     }
 }
 
+/// The theme kind of the GUI theme setting `theme`.
+pub(crate) fn theme_kind(theme: GuiTheme) -> ThemeKind {
+    match theme {
+        GuiTheme::Dark => ThemeKind::Dark,
+        GuiTheme::Light => ThemeKind::Light,
+    }
+}
+
 /// The host of the graphical user interface.
 pub(crate) struct GuiHost {
     /// The font and the icon paths.
@@ -395,9 +407,10 @@ pub(crate) struct GuiHost {
 }
 
 impl GuiHost {
-    /// Loads the first font file of `paths` that exists. Returns a message
-    /// for the user when no file exists or the file does not parse.
-    pub(crate) fn load(paths: &[PathBuf]) -> Result<Self, String> {
+    /// Loads the first font file of `paths` that exists and builds the theme
+    /// `kind`. Returns a message for the user when no file exists or the file
+    /// does not parse.
+    pub(crate) fn load(paths: &[PathBuf], kind: ThemeKind) -> Result<Self, String> {
         let Some(path) = paths.iter().find(|path| path.is_file()) else {
             let searched: Vec<String> = paths
                 .iter()
@@ -411,7 +424,7 @@ impl GuiHost {
         let data = std::fs::read(path).map_err(|error| {
             format!("the GUI font {} could not be read: {error}", path.display())
         })?;
-        let host = Self::new(data).map_err(|error| {
+        let host = Self::new(data, kind).map_err(|error| {
             format!(
                 "the GUI font {} could not be loaded: {error}",
                 path.display()
@@ -421,11 +434,11 @@ impl GuiHost {
         Ok(host)
     }
 
-    /// A host with the font file `data`.
-    pub(crate) fn new(data: Vec<u8>) -> Result<Self, gui::truetype::FontError> {
+    /// A host with the font file `data` and the theme `kind`.
+    pub(crate) fn new(data: Vec<u8>, kind: ThemeKind) -> Result<Self, gui::truetype::FontError> {
         let mut fonts = Fonts::new();
         let font = fonts.add(data)?;
-        let theme = Theme::new(&mut fonts, font);
+        let theme = Theme::new(&mut fonts, font, kind);
         Ok(Self {
             fonts,
             theme,
@@ -653,7 +666,7 @@ mod tests {
 
     /// A host with the font of the repository.
     fn host() -> GuiHost {
-        GuiHost::new(crate::gui_test_support::repository_font())
+        GuiHost::new(crate::gui_test_support::repository_font(), ThemeKind::Dark)
             .expect("the repository font parses")
     }
 
@@ -661,7 +674,7 @@ mod tests {
     #[test]
     fn a_missing_font_mentions_its_path_and_the_setting() {
         let paths = [PathBuf::from("/nonexistent/neetan/font.ttf")];
-        let Err(message) = GuiHost::load(&paths) else {
+        let Err(message) = GuiHost::load(&paths, ThemeKind::Dark) else {
             panic!("a missing font does not load");
         };
         assert_eq!(
@@ -677,13 +690,23 @@ mod tests {
             PathBuf::from("/nonexistent/root/font.ttf"),
             PathBuf::from("/nonexistent/share/font.ttf"),
         ];
-        let Err(message) = GuiHost::load(&paths) else {
+        let Err(message) = GuiHost::load(&paths, ThemeKind::Dark) else {
             panic!("a missing font does not load");
         };
         assert_eq!(
             message,
             "the GUI font /nonexistent/root/font.ttf or /nonexistent/share/font.ttf was not found. The gui-font setting selects the font file"
         );
+    }
+
+    /// Verifies that each GUI theme setting selects its theme kind.
+    #[test]
+    fn the_gui_theme_selects_the_theme_kind() {
+        assert_eq!(theme_kind(GuiTheme::Dark), ThemeKind::Dark);
+        assert_eq!(theme_kind(GuiTheme::Light), ThemeKind::Light);
+        let host = GuiHost::new(crate::gui_test_support::repository_font(), ThemeKind::Light)
+            .expect("the repository font parses");
+        assert_eq!(host.theme.colors, gui::ui::Palette::of(ThemeKind::Light));
     }
 
     #[test]

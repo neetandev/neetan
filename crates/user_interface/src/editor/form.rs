@@ -498,7 +498,7 @@ mod tests {
         );
         assert_eq!(
             keys(EditorSection::VideoAndAudio),
-            ["backend", "audio-volume"]
+            ["backend", "gui-theme", "audio-volume"]
         );
         let compiled = Families::compiled();
         let roms: Vec<&'static str> = SETTINGS

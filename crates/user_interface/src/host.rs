@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use audio_engine::AudioEngine;
 use common::{info, warn};
+use gui::ui::ThemeKind;
 use sdl3::{
     gamepad::{Gamepad, GamepadSubsystem},
     video::Window,
@@ -139,6 +140,8 @@ pub(crate) struct HostParts {
     pub(crate) fullscreen: bool,
     /// The paths searched for the font file of the user interface in search order.
     pub(crate) gui_font_paths: Vec<PathBuf>,
+    /// The theme of the user interface.
+    pub(crate) gui_theme: ThemeKind,
 }
 
 impl Host {
@@ -152,10 +155,11 @@ impl Host {
             gamepad_subsystem,
             fullscreen,
             gui_font_paths,
+            gui_theme,
         } = parts;
         let scale_factor = window.display_scale();
         info!("Window created with scale factor: {scale_factor}");
-        let (gui, gui_error) = match GuiHost::load(&gui_font_paths) {
+        let (gui, gui_error) = match GuiHost::load(&gui_font_paths, gui_theme) {
             Ok(gui) => (Some(gui), None),
             Err(message) => (None, Some(message)),
         };

@@ -127,18 +127,18 @@ pub fn tab_bar(
             theme.stroke,
         ),
         0.0,
-        theme.panel_edge,
+        theme.colors.panel_edge,
     );
     for (index, tab) in tabs.iter().enumerate() {
         let area = tab_area(context, rect, tabs, index);
         let chosen = index == *selected;
         let hot = context.is_hot(id.indexed(index));
         let color = if chosen {
-            theme.text
+            theme.colors.text
         } else if hot {
-            theme.text.mix(theme.text_dim, 0.35)
+            theme.colors.text.mix(theme.colors.text_dim, 0.35)
         } else {
-            theme.text_dim
+            theme.colors.text_dim
         };
         if hot && !chosen {
             context.scene.fill(
@@ -149,7 +149,7 @@ pub fn tab_bar(
                     area.height - 7.0,
                 ),
                 theme.radius,
-                theme.row_hover,
+                theme.colors.row_hover,
             );
         }
         if chosen {
@@ -161,7 +161,7 @@ pub fn tab_bar(
                     INDICATOR_HEIGHT,
                 ),
                 INDICATOR_HEIGHT * 0.5,
-                theme.accent,
+                theme.colors.accent,
             );
         }
         let inset = padding.min(area.width * 0.25);

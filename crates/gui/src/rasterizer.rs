@@ -1487,6 +1487,67 @@ pub(crate) mod tests {
         }
     }
 
+    /// The largest difference between two linear values that the 8 bit
+    /// outputs of the rasterizer allow.
+    const QUANTIZATION_TOLERANCE: f32 = 0.01;
+
+    /// The linear value of the 8 bit sRGB output channel `channel`.
+    fn linear_output(channel: u8) -> f32 {
+        crate::srgb_to_linear(f32::from(channel) / 255.0)
+    }
+
+    /// Renders a triangle path in `color` over a target cleared to `clear`.
+    fn triangle_render(color: Color, clear: Color) -> Vec<u8> {
+        let mut store = ShapeStore::new();
+        let triangle = store
+            .add_path(&Path::new().polygon(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]))
+            .unwrap();
+        let mut scene = Scene::new();
+        scene.begin(1.0, clear);
+        scene.path((10.25, 12.5), 40.0, triangle, color);
+        render(&scene, store.slug(), 64, 64)
+    }
+
+    /// The linear coverage of each pixel of the triangle path.
+    fn triangle_coverage() -> Vec<f32> {
+        triangle_render(Color::WHITE, Color::TRANSPARENT)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| f32::from(pixel[3]) / 255.0)
+            .collect()
+    }
+
+    /// Verifies that a black path on white covers every pixel at least as much
+    /// as the linear blend and the edges more.
+    #[test]
+    fn dark_text_on_a_light_fill_covers_more_than_the_linear_blend() {
+        let coverage = triangle_coverage();
+        let output = triangle_render(Color::BLACK, Color::WHITE);
+        let mut darkness_area = 0.0;
+        for (pixel, &expected) in output.as_chunks::<4>().0.iter().zip(&coverage) {
+            let darkness = 1.0 - linear_output(pixel[0]);
+            assert!(darkness >= expected - QUANTIZATION_TOLERANCE);
+            darkness_area += darkness;
+        }
+        let linear_area: f32 = coverage.iter().sum();
+        assert!(
+            darkness_area > linear_area * 1.02,
+            "{darkness_area} against {linear_area}"
+        );
+    }
+
+    /// Verifies that a white path on black keeps the linear coverage.
+    #[test]
+    fn light_text_on_a_dark_fill_keeps_the_linear_coverage() {
+        let coverage = triangle_coverage();
+        let output = triangle_render(Color::WHITE, Color::BLACK);
+        for (pixel, &expected) in output.as_chunks::<4>().0.iter().zip(&coverage) {
+            let brightness = linear_output(pixel[0]);
+            assert!((brightness - expected).abs() <= QUANTIZATION_TOLERANCE);
+        }
+    }
+
     #[test]
     fn occluded_runs_match_the_naive_renderer() {
         let mut store = ShapeStore::new();

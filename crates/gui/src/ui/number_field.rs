@@ -414,14 +414,14 @@ impl<'a> NumberField<'a> {
             (up_rect, Icon::Up, can_step_up, hot[1]),
         ] {
             let color = if !allowed {
-                theme.text_disabled
+                theme.colors.text_disabled
             } else if hot {
                 context
                     .scene
-                    .fill(area, theme.radius * 2.0 / 3.0, theme.control_hover);
-                theme.text
+                    .fill(area, theme.radius * 2.0 / 3.0, theme.colors.control_hover);
+                theme.colors.text
             } else {
-                theme.text_dim
+                theme.colors.text_dim
             };
             context.icon(area, icon, theme.icon_size, color);
         }
@@ -656,7 +656,7 @@ mod tests {
             up.0 - STEPPER_SIZE * 0.5 + 3.0,
             up.1 - STEPPER_SIZE * 0.5 + 3.0,
         );
-        assert_eq!(corner, srgb(harness.theme.control_hover));
+        assert_eq!(corner, srgb(harness.theme.colors.control_hover));
     }
 
     #[test]
@@ -768,16 +768,16 @@ mod tests {
             FIELD.x + 30.0,
             FIELD.y + 0.5,
         );
-        assert_eq!(edge, srgb(harness.theme.accent));
+        assert_eq!(edge, srgb(harness.theme.colors.accent));
     }
 
     #[test]
     fn a_text_outside_the_range_draws_the_error_edge() {
         let theme = Harness::new().theme;
         for (text, edge) in [
-            ("1", theme.danger_text),
-            ("15", theme.control_edge),
-            ("", theme.control_edge),
+            ("1", theme.colors.danger_text),
+            ("15", theme.colors.control_edge),
+            ("", theme.colors.control_edge),
         ] {
             let mut harness = Harness::new();
             let mut text = text.to_owned();

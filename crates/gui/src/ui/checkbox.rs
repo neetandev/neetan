@@ -79,9 +79,9 @@ impl<'a> Checkbox<'a> {
         let (slot, rest) = area.cut_left(CHECK_BOX_SIZE);
         check_box(context, slot, *value, look);
         let color = if self.enabled {
-            theme.text
+            theme.colors.text
         } else {
-            theme.text_disabled
+            theme.colors.text_disabled
         };
         let caption = rest.cut_left(theme.gap * 0.75).1;
         context.text_left(caption, &theme.body().with_color(color), self.caption);
@@ -179,7 +179,7 @@ mod tests {
         let pixels = harness.render();
         let (x, y) = box_center();
         let center = pixel(&pixels, harness.viewport.width, x - 4.0, y + 3.0);
-        assert_eq!(center, srgb(harness.theme.text_disabled));
+        assert_eq!(center, srgb(harness.theme.colors.text_disabled));
     }
 
     #[test]
@@ -188,7 +188,7 @@ mod tests {
         let mut value = true;
         draw(&mut harness, &mut value);
         let (x, y) = box_center();
-        let theme_accent = srgb(harness.theme.accent);
+        let theme_accent = srgb(harness.theme.colors.accent);
         let pixels = harness.render();
         assert_eq!(
             pixel(&pixels, harness.viewport.width, x - 4.0, y + 3.0),
@@ -200,7 +200,7 @@ mod tests {
         let pixels = harness.render();
         assert_eq!(
             pixel(&pixels, harness.viewport.width, x, y),
-            srgb(harness.theme.control_pressed)
+            srgb(harness.theme.colors.control_pressed)
         );
         harness.release();
         draw(&mut harness, &mut value);

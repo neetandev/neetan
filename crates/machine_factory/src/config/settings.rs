@@ -503,6 +503,8 @@ pub const ROMS_FOLDER_KEY: &str = "roms-folder";
 pub const GUI_FONT_KEY: &str = "gui-font";
 /// Key of the rendering backend.
 pub const BACKEND_KEY: &str = "backend";
+/// Key of the theme of the user interface.
+pub const GUI_THEME_KEY: &str = "gui-theme";
 /// Key of the audio volume.
 pub const AUDIO_VOLUME_KEY: &str = "audio-volume";
 /// Key of the window mode.
@@ -1136,6 +1138,20 @@ const BACKEND_CHOICES: &[Choice] = &[
     Choice {
         value: "legacy",
         label: "Legacy",
+        families: Families::ALL,
+    },
+];
+
+/// Themes of the user interface.
+const GUI_THEME_CHOICES: &[Choice] = &[
+    Choice {
+        value: "dark",
+        label: "Dark",
+        families: Families::ALL,
+    },
+    Choice {
+        value: "light",
+        label: "Light",
         families: Families::ALL,
     },
 ];
@@ -1927,6 +1943,27 @@ pub static SETTINGS: &[Setting] = &[
             Ok(())
         },
         format: |config| format_value(config.backend),
+    },
+    Setting {
+        key: GUI_THEME_KEY,
+        label: "GUI theme",
+        help: "Colors of the user interface.",
+        scope: Scope::Host,
+        kind: ValueKind::Choice(GUI_THEME_CHOICES),
+        families: Families::ALL,
+        model_limits: &[],
+        section: Some(Section::VideoAndAudio),
+        explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
+        frontend_only: true,
+        clear: None,
+        apply: |config, value| {
+            config.gui_theme = value.parse()?;
+            Ok(())
+        },
+        format: |config| format_value(config.gui_theme),
     },
     Setting {
         key: AUDIO_VOLUME_KEY,
