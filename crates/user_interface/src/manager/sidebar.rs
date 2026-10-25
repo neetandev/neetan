@@ -1,11 +1,12 @@
 //! The system sidebar of the library: the systems with their game count and
-//! ROM status, and the line with the ROM status of the selected system.
+//! ROM status, the line with the ROM status of the selected system and the
+//! button that opens its system defaults.
 
 use gui::{
     Rect,
     ui::{
-        Align, HEADER_HEIGHT, Icon, List, ListResponse, ListState, PATH_LINE_HEIGHT, RowContent,
-        RowMark, Truncation, UiContext, UiId,
+        Align, Button, HEADER_HEIGHT, Icon, List, ListResponse, ListState, PATH_LINE_HEIGHT,
+        RowContent, RowMark, Truncation, UiContext, UiId,
     },
 };
 use machine_factory::{
@@ -14,10 +15,29 @@ use machine_factory::{
 };
 
 use super::rows::{GameRow, shown_path};
-use crate::{APPLICATION_TITLE, config::HostLayers, rom_folders::check_folder};
+use crate::{
+    APPLICATION_TITLE,
+    config::HostLayers,
+    rom_folders::{RomFolderStatus, RomSeverity, rom_severity},
+};
 
 /// The id of the system list.
 pub(crate) const SYSTEM_LIST_ID: &str = "systems";
+
+/// The id of the button that opens the system defaults of the selected system.
+pub(crate) const SYSTEM_DEFAULTS_ID: &str = "system defaults";
+
+/// The caption of the button that opens the system defaults.
+const SYSTEM_DEFAULTS_CAPTION: &str = "System defaults";
+
+/// The response of the sidebar in a pass.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct SidebarResponse {
+    /// The response of the system list.
+    pub(crate) list: ListResponse,
+    /// The system defaults button was activated.
+    pub(crate) system_defaults: bool,
+}
 
 /// The subtitle beside the name of the application.
 const SUBTITLE: &str = "Game manager";
@@ -38,26 +58,35 @@ pub(crate) struct SystemEntry {
 }
 
 impl SystemEntry {
-    /// The entry of `system` without games, with the ROM status of its
-    /// ROM folder in `host`.
-    pub(crate) fn new(system: &'static System, host: &HostLayers) -> Self {
+    /// The entry of `system` without games in `host`, with its ROM status
+    /// from the ROM check `statuses`.
+    pub(crate) fn new(
+        system: &'static System,
+        host: &HostLayers,
+        statuses: &[RomFolderStatus],
+    ) -> Self {
         let mut entry = Self {
             system,
             rows: Vec::new(),
-            folder: shown_path(&host.config_folder().join(system.name), host.root()),
+            folder: String::new(),
             rom_status: RomStatus::Unsupported,
             rom_folder: String::new(),
         };
-        entry.check_roms(host);
+        entry.take_host(host, statuses);
         entry
     }
 
-    /// Checks the ROM folder of the system in `host` again. The check reads
-    /// and hashes the files of the folder once.
-    pub(crate) fn check_roms(&mut self, host: &HostLayers) {
-        let rom = check_folder(host, &self.system.rom_folder());
-        self.rom_status = rom.check.status;
-        self.rom_folder = shown_path(&rom.location.path, host.root());
+    /// Takes the folder of the game files of the system in `host` and the
+    /// ROM status of its ROM folder from the ROM check `statuses`.
+    pub(crate) fn take_host(&mut self, host: &HostLayers, statuses: &[RomFolderStatus]) {
+        self.folder = shown_path(&host.config_folder().join(self.system.name), host.root());
+        if let Some(rom) = statuses
+            .iter()
+            .find(|status| status.folder.key == self.system.rom_key)
+        {
+            self.rom_status = rom.check.status;
+            self.rom_folder = shown_path(&rom.location.path, host.root());
+        }
     }
 
     /// The number of games that can start.
@@ -71,17 +100,13 @@ impl SystemEntry {
     }
 
     /// The mark of the ROM status in the system list: a check for found
-    /// ROMs, an alert for missing ROMs that the system needs and no mark
-    /// for ROMs that the system runs without.
+    /// ROMs, an alert for partial or missing ROMs that the system needs and
+    /// no mark for ROMs that the system runs without.
     pub(crate) fn rom_mark(&self) -> RowMark {
-        let required = self.system.roms_required;
-        match self.rom_status {
-            RomStatus::Found => RowMark::Marker(Icon::Check),
-            RomStatus::Partial | RomStatus::Missing if required => RowMark::Alert,
-            RomStatus::Partial
-            | RomStatus::Missing
-            | RomStatus::NotFound
-            | RomStatus::Unsupported => RowMark::Blank,
+        match rom_severity(self.rom_status, self.system.roms_required) {
+            RomSeverity::Found => RowMark::Marker(Icon::Check),
+            RomSeverity::Warning => RowMark::Alert,
+            RomSeverity::Unmarked => RowMark::Blank,
         }
     }
 
@@ -128,14 +153,15 @@ pub(crate) fn system_icon(system: &System) -> Icon {
 }
 
 /// Draws the sidebar into `area`: the name of the application, the system
-/// list of `systems` with the selection in `state` and the ROM status of
-/// the selected system. Returns what the system list did.
+/// list of `systems` with the selection in `state`, the ROM status of the
+/// selected system and the system defaults button. Returns the response of
+/// the system list and whether the button was activated.
 pub(crate) fn show_sidebar(
     context: &mut UiContext,
     area: Rect,
     systems: &[SystemEntry],
     state: &mut ListState,
-) -> ListResponse {
+) -> SidebarResponse {
     let theme = context.theme;
     context.fill(
         Rect::new(
@@ -164,8 +190,9 @@ pub(crate) fn show_sidebar(
         SUBTITLE,
     );
 
-    let (rom_line, list_area) = rest.cut_bottom(PATH_LINE_HEIGHT + theme.gap);
-    let response = List::new(UiId::from(SYSTEM_LIST_ID), systems.len()).show(
+    let (button_area, rest) = rest.cut_bottom(theme.control_height);
+    let (rom_line, list_area) = rest.cut_bottom(PATH_LINE_HEIGHT + theme.gap * 2.0);
+    let list = List::new(UiId::from(SYSTEM_LIST_ID), systems.len()).show(
         context,
         list_area,
         state,
@@ -180,9 +207,22 @@ pub(crate) fn show_sidebar(
         },
     );
     if let Some(entry) = systems.get(state.selected) {
-        show_rom_line(context, rom_line.cut_top(theme.gap).1, entry);
+        let line = Rect::new(
+            rom_line.x,
+            rom_line.y + theme.gap,
+            rom_line.width,
+            PATH_LINE_HEIGHT,
+        );
+        show_rom_line(context, line, entry);
     }
-    response
+    let system_defaults = Button::new(SYSTEM_DEFAULTS_ID, SYSTEM_DEFAULTS_CAPTION)
+        .icon(Icon::Settings)
+        .enabled(systems.get(state.selected).is_some())
+        .show(context, button_area);
+    SidebarResponse {
+        list,
+        system_defaults,
+    }
 }
 
 /// Draws the ROM status of `entry` into `area`: the mark of the status and
@@ -218,6 +258,7 @@ mod tests {
         config::{LaunchRequest, Locations},
         gui_test_support::GuiHarness,
         manager::rows::tests::{broken, game},
+        rom_folders::check_all_folders,
     };
 
     /// The icon of each system by its folder name.
@@ -312,7 +353,7 @@ mod tests {
         );
     }
 
-    /// Verifies that the entry of a system checks its ROM folder below the root and shows its folders relative to it.
+    /// Verifies that the entry of a system takes the ROM status of its folder below the root from the ROM check and shows its folders relative to it.
     #[test]
     fn a_missing_rom_folder_reads_as_missing_or_not_found() {
         let root = TemporaryFolder::new("manager_sidebar_test");
@@ -323,8 +364,9 @@ mod tests {
             pref_path: None,
         };
         let host = HostLayers::read(&LaunchRequest::default(), &locations).expect("host layers");
+        let statuses = check_all_folders(&host);
         for system in compiled_systems() {
-            let mut entry = SystemEntry::new(system, &host);
+            let mut entry = SystemEntry::new(system, &host, &statuses);
             assert_eq!(entry.folder, format!("config/{}", system.name));
             assert_eq!(
                 std::path::PathBuf::from(&entry.rom_folder),
@@ -337,7 +379,7 @@ mod tests {
             };
             assert_eq!(entry.rom_status, expected, "{}", system.name);
             entry.rom_status = RomStatus::Found;
-            entry.check_roms(&host);
+            entry.take_host(&host, &statuses);
             assert_eq!(entry.rom_status, expected, "{}", system.name);
         }
     }

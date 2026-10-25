@@ -14,6 +14,9 @@ use super::{fields::InvalidValue, inherited::Inherited};
 /// The placeholder and the inherited label of a key without a value.
 pub(crate) const NOT_SET: &str = "Not set";
 
+/// The placeholder of a single image field that the file empties.
+pub(crate) const EMPTY_IMAGE: &str = "Empty";
+
 /// The note of a missing single image.
 pub(crate) const MISSING_IMAGE_NOTE: &str =
     "The image does not exist. The file saves, and the launch fails while it is missing.";
@@ -28,29 +31,83 @@ pub(crate) const REQUIRED_NOTE: &str = "The file inherits this value. The save w
 /// The noun of the images of a drive without file types.
 const DEFAULT_IMAGE_NOUN: &str = "disk";
 
-/// The text of a note and whether it is a warning.
+/// The look of a note.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub(crate) enum NoteKind {
+    /// Small secondary text.
+    #[default]
+    Plain,
+    /// A warning: the alert icon and the text in the error color.
+    Warning,
+    /// A thing that exists: the check icon and the text in the marker color.
+    Found,
+    /// A status without a mark: small secondary text after an empty icon
+    /// slot, in line with the text of a found or a warning status.
+    Unmarked,
+}
+
+/// The text of a note and its look.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Note {
     /// The text. An empty text draws no note.
     pub(crate) text: String,
-    /// Whether the note is a warning in the error color with the alert icon.
-    pub(crate) warning: bool,
+    /// The look of the note.
+    pub(crate) kind: NoteKind,
+    /// Whether the text is a path. A path keeps to one line and gives way
+    /// in the middle.
+    pub(crate) path: bool,
 }
 
 impl Note {
-    /// A plain note with `text`.
-    pub(crate) fn plain(text: impl Into<String>) -> Self {
+    /// A note with `text` of `kind`.
+    fn of_kind(text: impl Into<String>, kind: NoteKind) -> Self {
         Self {
             text: text.into(),
-            warning: false,
+            kind,
+            path: false,
         }
+    }
+
+    /// A plain note with `text`.
+    pub(crate) fn plain(text: impl Into<String>) -> Self {
+        Self::of_kind(text, NoteKind::Plain)
     }
 
     /// A warning with `text`.
     pub(crate) fn warning(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            warning: true,
+        Self::of_kind(text, NoteKind::Warning)
+    }
+
+    /// A note with `text` about a thing that exists.
+    pub(crate) fn found(text: impl Into<String>) -> Self {
+        Self::of_kind(text, NoteKind::Found)
+    }
+
+    /// A status note with `text` without a mark.
+    pub(crate) fn unmarked(text: impl Into<String>) -> Self {
+        Self::of_kind(text, NoteKind::Unmarked)
+    }
+
+    /// The same note with its text as a path.
+    pub(crate) fn shown_as_path(self) -> Self {
+        Self { path: true, ..self }
+    }
+
+    /// Whether the note is a warning.
+    pub(crate) fn is_warning(&self) -> bool {
+        self.kind == NoteKind::Warning
+    }
+
+    /// The note with the sentence `sentence` after its text. A warning
+    /// keeps its text.
+    pub(crate) fn followed_by(self, sentence: Option<String>) -> Self {
+        match sentence {
+            Some(sentence) if !self.is_warning() => Self {
+                text: sentences(&[Some(self.text), Some(sentence)]),
+                path: false,
+                ..self
+            },
+            Some(_) | None => self,
         }
     }
 }
@@ -214,9 +271,9 @@ pub(crate) fn extension_note(types: &FileTypes) -> String {
 /// The note of a single path field.
 ///
 /// A path that the model ignores tells why, and a missing image is a
-/// warning. A set path shows its inherited value. An unset path shows the
-/// inherited value as its placeholder. Without an inherited value to show,
-/// the note gives the extensions of the files.
+/// warning. A set path shows its inherited value as a path. An unset path
+/// shows the inherited value as its placeholder. Without an inherited value
+/// to show, the note gives the extensions of the files.
 pub(crate) fn path_note(
     ignored: Option<String>,
     missing: bool,
@@ -231,17 +288,21 @@ pub(crate) fn path_note(
         return Note::warning(MISSING_IMAGE_NOTE);
     }
     if set && let Some(inherited) = inherited_sentence(inherited) {
-        return Note::plain(inherited);
+        return Note::plain(inherited).shown_as_path();
     }
     types.map_or_else(Note::default, |types| Note::plain(extension_note(types)))
 }
 
 /// The note below a media list that the file sets, with images or as an
 /// empty list: the inherited list that the file overrides. A list without
-/// images of the file shows the inherited list in the list itself.
+/// images of the file shows the inherited list in the list itself. A note
+/// of one inherited image is a path. A note of several images wraps.
 pub(crate) fn media_note(set: bool, inherited: Option<&Inherited>) -> Note {
     match set.then(|| inherited_sentence(inherited)).flatten() {
-        Some(inherited) => Note::plain(inherited),
+        Some(text) if inherited.is_some_and(|inherited| inherited.values.len() == 1) => {
+            Note::plain(text).shown_as_path()
+        }
+        Some(text) => Note::plain(text),
         None => Note::default(),
     }
 }
@@ -312,6 +373,28 @@ mod tests {
             NOT_SET
         );
         assert_eq!(inherited_placeholder(None), NOT_SET);
+    }
+
+    /// Verifies that a sentence follows a plain note, starts an empty note and leaves a warning as it is.
+    #[test]
+    fn a_sentence_follows_a_plain_note_only() {
+        let models = Some("PC9821AS and AP only.".to_owned());
+        assert_eq!(
+            Note::plain("Built-in default: off.").followed_by(models.clone()),
+            Note::plain("Built-in default: off. PC9821AS and AP only.")
+        );
+        assert_eq!(
+            Note::default().followed_by(models.clone()),
+            Note::plain("PC9821AS and AP only.")
+        );
+        assert_eq!(
+            Note::warning(MISSING_IMAGE_NOTE).followed_by(models),
+            Note::warning(MISSING_IMAGE_NOTE)
+        );
+        assert_eq!(
+            Note::plain("Range 0 to 3").followed_by(None),
+            Note::plain("Range 0 to 3")
+        );
     }
 
     /// Verifies the choice note of an unset, a set and a required key, and the parts that win over them.
@@ -459,7 +542,7 @@ mod tests {
         let nothing = inherited(&[], InheritedSource::BuiltIn);
         assert_eq!(
             path_note(None, false, true, Some(&settings), types),
-            Note::plain("Settings default: games/boot.hdi.")
+            Note::plain("Settings default: games/boot.hdi.").shown_as_path()
         );
         let extensions =
             types.map_or_else(Note::default, |types| Note::plain(extension_note(types)));
@@ -493,14 +576,19 @@ mod tests {
         }
     }
 
-    /// Verifies the note below a media list: the inherited list of a set list only.
+    /// Verifies the note below a media list: the inherited list of a set list only, as a path for one image.
     #[test]
     fn media_notes_show_the_inherited_list_of_a_set_list() {
         let settings = inherited(&["games/boot.d88"], InheritedSource::SettingsFile);
         let nothing = inherited(&[], InheritedSource::BuiltIn);
         assert_eq!(
             media_note(true, Some(&settings)),
-            Note::plain("Settings default: games/boot.d88.")
+            Note::plain("Settings default: games/boot.d88.").shown_as_path()
+        );
+        let two = inherited(&["a.d88", "b.d88"], InheritedSource::SettingsFile);
+        assert_eq!(
+            media_note(true, Some(&two)),
+            Note::plain("Settings default: a.d88, b.d88.")
         );
         assert_eq!(media_note(false, Some(&settings)), Note::default());
         assert_eq!(media_note(true, Some(&nothing)), Note::default());

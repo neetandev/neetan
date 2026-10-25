@@ -63,7 +63,7 @@ impl Editor {
             )
             | None => PathKind::File,
         };
-        let types = setting.and_then(|setting| setting.file_types_for(self.target));
+        let types = setting.and_then(|setting| self.file_types(setting));
         let noun = match (kind, types) {
             (PathKind::Folder, _) => "folder",
             (PathKind::File, Some(_)) => "image",
@@ -81,30 +81,17 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    use machine_factory::config::settings::{MODEL_CHOICES, find_setting};
+    use machine_factory::config::settings::find_setting;
 
     use super::*;
-    use crate::editor::test_support::EditorRoot;
-
-    /// The index of the field of `key` in `editor`.
-    fn index_of(editor: &Editor, key: &str) -> usize {
-        editor
-            .fields
-            .iter()
-            .position(|field| field.key() == key)
-            .expect("the form has the key")
-    }
+    use crate::editor::test_support::{EditorRoot, fdd1_model, index_of};
 
     /// Verifies the request of a media list and of a single path: the title, the files and the current image.
     #[test]
     fn the_request_follows_the_field() {
         let root = EditorRoot::new("browse_request");
         let fdd1 = find_setting("fdd1").expect("fdd1 is a table key");
-        let model = MODEL_CHOICES
-            .iter()
-            .map(|choice| choice.value)
-            .find(|model| fdd1.is_read_by(root.target(), model))
-            .expect("a model of the family reads fdd1");
+        let model = fdd1_model(&root);
         let path = root.game(
             "edge",
             &format!("machine = {model}\nfdd1 = games/a.d88\nfdd1 = games/b.d88\n"),
@@ -128,12 +115,7 @@ mod tests {
     #[test]
     fn a_chosen_path_fills_its_field() {
         let root = EditorRoot::new("browse_apply");
-        let fdd1 = find_setting("fdd1").expect("fdd1 is a table key");
-        let model = MODEL_CHOICES
-            .iter()
-            .map(|choice| choice.value)
-            .find(|model| fdd1.is_read_by(root.target(), model))
-            .expect("a model of the family reads fdd1");
+        let model = fdd1_model(&root);
         let path = root.game("edge", &format!("machine = {model}\nfdd1 = games/a.d88\n"));
         let mut editor =
             Editor::open(&root.host(), root.system(), &path).expect("the editor opens");

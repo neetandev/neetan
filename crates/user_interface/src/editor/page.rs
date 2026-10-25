@@ -10,8 +10,7 @@ use gui::{
 };
 
 use super::{
-    BrowseTarget, Editor, EditorFile,
-    form::EDITOR_SECTIONS,
+    BrowseTarget, EditedFile, Editor, EditorFile, Subject,
     hints::{EditorWidget, WidgetKind},
     notes::Note,
     rows::{DOT_SIZE, draw_note},
@@ -116,32 +115,40 @@ pub(crate) fn form_area(theme: &Theme, screen: Rect) -> Rect {
     PageAreas::new(theme, screen).form
 }
 
-/// The title of the header and the line beside it.
+/// The title of the header and the line beside it for the file `file` of
+/// the kind `kind`.
 ///
 /// A game file shows its name and its system, with the model when the
 /// model differs from the model of a game without `machine`. A new game
 /// shows its system and the file it saves into. A copy shows its name and
-/// the file it copies.
+/// the file it copies. A system defaults file shows its system. The
+/// settings file shows its path.
 fn header_texts(
+    kind: &EditedFile,
     file: &EditorFile,
-    system_label: &str,
-    name: &str,
     model: Option<&str>,
     shown_path: &str,
 ) -> (String, String) {
-    match file {
-        EditorFile::Existing(_) => {
-            let line = match model {
-                Some(model) => format!("{system_label} game, {model}"),
-                None => format!("{system_label} game"),
-            };
-            (name.to_owned(), line)
-        }
-        EditorFile::New(_) => (
-            format!("New {system_label} game"),
-            format!("Saved as {shown_path}"),
+    match kind {
+        EditedFile::Game { system, name } => match file {
+            EditorFile::Existing(_) => {
+                let line = match model {
+                    Some(model) => format!("{} game, {model}", system.label),
+                    None => format!("{} game", system.label),
+                };
+                (name.clone(), line)
+            }
+            EditorFile::New(_) => (
+                format!("New {} game", system.label),
+                format!("Saved as {shown_path}"),
+            ),
+            EditorFile::Copy { source, .. } => (name.clone(), format!("Copy of {source}")),
+        },
+        EditedFile::SystemDefaults(system) => (
+            kind.display_name(),
+            format!("Every {} game starts from these values", system.label),
         ),
-        EditorFile::Copy { source, .. } => (name.to_owned(), format!("Copy of {source}")),
+        EditedFile::Settings => (kind.display_name(), shown_path.to_owned()),
     }
 }
 
@@ -156,7 +163,8 @@ impl Editor {
             actions.close = true;
         }
 
-        let tabs: Vec<Tab> = EDITOR_SECTIONS
+        let tabs: Vec<Tab> = self
+            .sections()
             .iter()
             .map(|section| Tab::new(section.caption(), None))
             .collect();
@@ -204,19 +212,23 @@ impl Editor {
             CLOSE_SIZE,
             CLOSE_SIZE,
         );
-        let model = self.model();
-        let shown_model = (model != self.base.model().0).then(|| model.name());
+        let shown_model = match &self.subject {
+            Subject::Game(files) | Subject::SystemDefaults(files) => {
+                let model = self.model_of(files);
+                (model != files.base.model().0).then(|| model.name())
+            }
+            Subject::Host(_) => None,
+        };
         let (title, small) = header_texts(
+            &self.edited_file(),
             &self.file,
-            self.system.label,
-            &self.display_name(),
             shown_model,
             &self.shown_path(),
         );
         let title_style = theme.title();
         let small_style = theme.small();
         let warning_style = theme.small().with_color(theme.danger_text);
-        let warning = self.base.warning();
+        let warning = self.system_files().and_then(|files| files.base.warning());
         let small_width = context.measure(&small_style, &small);
         let warning_width = warning.map_or(0.0, |warning| {
             theme.gap * 1.5
@@ -335,29 +347,36 @@ mod tests {
 
     use super::*;
     use crate::{
-        editor::{derived_file::DerivedFile, test_support::EditorRoot},
+        editor::{
+            derived_file::DerivedFile,
+            test_support::{EditorRoot, system_named},
+        },
         gui_test_support::GuiHarness,
     };
 
-    /// Verifies the header line of a game file, a game of another model, a new game and a copy.
+    /// Verifies the header line of a game file, a game of another model, a new game, a copy, a system defaults file and the settings file.
     #[test]
     fn the_header_line_follows_the_file() {
+        let pc98 = system_named("pc98");
+        let game = |name: &str| EditedFile::Game {
+            system: pc98,
+            name: name.to_owned(),
+        };
         let existing = EditorFile::Existing(PathBuf::from("/root/config/pc98/yu-no.conf"));
         assert_eq!(
-            header_texts(&existing, "PC-98", "YU-NO", None, "config/pc98/yu-no.conf"),
+            header_texts(&game("YU-NO"), &existing, None, "config/pc98/yu-no.conf"),
             ("YU-NO".to_owned(), "PC-98 game".to_owned())
         );
         assert_eq!(
-            header_texts(&existing, "PC-98", "Policenauts", Some("PC9821AP"), "a"),
+            header_texts(&game("Policenauts"), &existing, Some("PC9821AP"), "a"),
             ("Policenauts".to_owned(), "PC-98 game, PC9821AP".to_owned())
         );
         let folder = std::env::temp_dir().join("neetan-header-test-absent");
         let derived = DerivedFile::new(&folder, "Brandish 2");
         assert_eq!(
             header_texts(
+                &game("Brandish 2"),
                 &EditorFile::New(derived.clone()),
-                "PC-98",
-                "Brandish 2",
                 None,
                 "config/pc98/brandish-2.conf"
             ),
@@ -371,11 +390,33 @@ mod tests {
             file: derived,
         };
         assert_eq!(
-            header_texts(&copy, "PC-98", "Brandish (copy)", None, "x"),
+            header_texts(&game("Brandish (copy)"), &copy, None, "x"),
             (
                 "Brandish (copy)".to_owned(),
                 "Copy of config/pc98/brandish.conf".to_owned()
             )
+        );
+        let defaults = EditorFile::Existing(PathBuf::from("/root/config/pc98.conf"));
+        assert_eq!(
+            header_texts(
+                &EditedFile::SystemDefaults(pc98),
+                &defaults,
+                None,
+                "config/pc98.conf"
+            ),
+            (
+                "PC-98 system defaults".to_owned(),
+                "Every PC-98 game starts from these values".to_owned()
+            )
+        );
+        assert_eq!(
+            header_texts(
+                &EditedFile::Settings,
+                &EditorFile::Existing(PathBuf::from("/root/neetan.conf")),
+                None,
+                "/root/neetan.conf"
+            ),
+            ("Settings".to_owned(), "/root/neetan.conf".to_owned())
         );
     }
 

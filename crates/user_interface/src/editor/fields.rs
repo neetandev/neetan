@@ -3,9 +3,8 @@
 //! that a changed field writes into the document.
 
 use gui::ui::ListState;
-use machine_factory::config::{
-    Target,
-    settings::{Setting, ValueKind},
+use machine_factory::config::settings::{
+    Families, MACHINE_KEY, PathKind, Section, Setting, ValueKind,
 };
 
 use super::form::{EditorSection, FieldSource};
@@ -48,6 +47,9 @@ pub(crate) enum FieldValue {
     /// A path list that the file empties with one empty value, such as
     /// `fdd1 =`. It overrides the inherited list.
     EmptyList,
+    /// A single image of a drive that the file empties with an empty value,
+    /// such as `hdd1 =`. It overrides the inherited image.
+    EmptyPath,
 }
 
 /// One field of the editor.
@@ -70,17 +72,23 @@ pub(crate) struct Field {
     pub(crate) list: ListState,
 }
 
-/// Returns the values of the dropdown of `setting` on the family `target`.
-/// A field of another kind has none.
-pub(crate) fn choices_of(setting: &Setting, target: Target) -> Vec<&'static str> {
+/// Returns the values of the dropdown of `setting` that one of the
+/// families `families` accepts. A field of another kind has none.
+pub(crate) fn choices_of(setting: &Setting, families: Families) -> Vec<&'static str> {
     match setting.kind {
         ValueKind::Choice(_) => setting
-            .choices_for(target)
+            .choices_for_families(families)
             .map(|choice| choice.value)
             .collect(),
         ValueKind::OnOff => ON_OFF_CHOICES.to_vec(),
         ValueKind::Number(_) | ValueKind::Path(_) | ValueKind::PathList => Vec::new(),
     }
+}
+
+/// Returns whether `setting` is the single image of a drive, such as `hdd1`.
+/// An empty value of such a key empties the drive over the inherited image.
+pub(crate) fn is_single_image(setting: &Setting) -> bool {
+    setting.kind == ValueKind::Path(PathKind::File) && setting.section == Some(Section::Media)
 }
 
 /// Returns the dropdown value of the file value `value` of `setting` among
@@ -116,29 +124,34 @@ fn choice_value(setting: &Setting, choices: &[&str], value: &str) -> ChoiceValue
 }
 
 impl Field {
-    /// The field of `source` in `section` for the family `target`, with the
-    /// value of `document`. A `required` field saves its key in every case.
+    /// The field of `source` in `section` for the families `families`, with
+    /// the value of `document`. A `required` field saves its key in every
+    /// case.
     ///
-    /// A single key reads its last active line. A path list reads every
-    /// active line of its key in file order and leaves out empty values. A
-    /// path list of only empty values is an empty list that overrides the
-    /// inherited list.
+    /// A single key reads its last active line. A single image of a drive
+    /// whose last line holds an empty value is an empty image that
+    /// overrides the inherited image. A path list reads every active line
+    /// of its key in file order and leaves out empty values. A path list of
+    /// only empty values is an empty list that overrides the inherited list.
     pub(crate) fn read(
         section: EditorSection,
         source: FieldSource,
-        target: Target,
+        families: Families,
         document: &ConfigDocument,
         required: bool,
     ) -> Self {
         let key = source.key();
         let choices = source
             .setting()
-            .map(|setting| choices_of(setting, target))
+            .map(|setting| choices_of(setting, families))
             .unwrap_or_default();
         let text = || document.get(key).unwrap_or_default().to_owned();
         let value = match source.setting() {
             None => FieldValue::Text(text()),
             Some(setting) => match setting.kind {
+                ValueKind::Path(_) if is_single_image(setting) && document.get(key) == Some("") => {
+                    FieldValue::EmptyPath
+                }
                 ValueKind::Number(_) | ValueKind::Path(_) => FieldValue::Text(text()),
                 ValueKind::Choice(_) | ValueKind::OnOff => {
                     FieldValue::Choice(match document.get(key) {
@@ -183,7 +196,7 @@ impl Field {
             FieldValue::Choice(choice) => choice.selected.is_some() || choice.invalid.is_some(),
             FieldValue::Text(text) => !text.trim().is_empty(),
             FieldValue::List(values) => !values.is_empty(),
-            FieldValue::EmptyList => true,
+            FieldValue::EmptyList | FieldValue::EmptyPath => true,
         }
     }
 
@@ -202,13 +215,14 @@ impl Field {
     pub(crate) fn unset(&mut self) {
         self.value = match self.value {
             FieldValue::Choice(_) => FieldValue::Choice(ChoiceValue::default()),
-            FieldValue::Text(_) => FieldValue::Text(String::new()),
+            FieldValue::Text(_) | FieldValue::EmptyPath => FieldValue::Text(String::new()),
             FieldValue::List(_) | FieldValue::EmptyList => FieldValue::List(Vec::new()),
         };
     }
 
     /// The values that the current value writes into the file. An unset
-    /// field writes none, an empty list writes one empty value.
+    /// field writes none, an empty list and an empty image write one empty
+    /// value.
     pub(crate) fn values(&self) -> Vec<String> {
         match &self.value {
             FieldValue::Choice(choice) => match (choice.selected, &choice.invalid) {
@@ -229,7 +243,7 @@ impl Field {
                 }
             }
             FieldValue::List(values) => values.clone(),
-            FieldValue::EmptyList => vec![String::new()],
+            FieldValue::EmptyList | FieldValue::EmptyPath => vec![String::new()],
         }
     }
 
@@ -237,7 +251,10 @@ impl Field {
     pub(crate) fn text(&self) -> &str {
         match &self.value {
             FieldValue::Text(text) => text,
-            FieldValue::Choice(_) | FieldValue::List(_) | FieldValue::EmptyList => "",
+            FieldValue::Choice(_)
+            | FieldValue::List(_)
+            | FieldValue::EmptyList
+            | FieldValue::EmptyPath => "",
         }
     }
 
@@ -245,7 +262,10 @@ impl Field {
     pub(crate) fn text_mut(&mut self) -> Option<&mut String> {
         match &mut self.value {
             FieldValue::Text(text) => Some(text),
-            FieldValue::Choice(_) | FieldValue::List(_) | FieldValue::EmptyList => None,
+            FieldValue::Choice(_)
+            | FieldValue::List(_)
+            | FieldValue::EmptyList
+            | FieldValue::EmptyPath => None,
         }
     }
 
@@ -253,7 +273,10 @@ impl Field {
     pub(crate) fn images(&self) -> &[String] {
         match &self.value {
             FieldValue::List(values) => values,
-            FieldValue::Choice(_) | FieldValue::Text(_) | FieldValue::EmptyList => &[],
+            FieldValue::Choice(_)
+            | FieldValue::Text(_)
+            | FieldValue::EmptyList
+            | FieldValue::EmptyPath => &[],
         }
     }
 
@@ -262,11 +285,19 @@ impl Field {
         self.value == FieldValue::EmptyList
     }
 
+    /// Whether the single image is an empty image that overrides the inherited image.
+    pub(crate) fn is_empty_path(&self) -> bool {
+        self.value == FieldValue::EmptyPath
+    }
+
     /// The selected entry of a dropdown field. `None` inherits the value.
     pub(crate) fn selected(&self) -> Option<usize> {
         match &self.value {
             FieldValue::Choice(choice) => choice.selected,
-            FieldValue::Text(_) | FieldValue::List(_) | FieldValue::EmptyList => None,
+            FieldValue::Text(_)
+            | FieldValue::List(_)
+            | FieldValue::EmptyList
+            | FieldValue::EmptyPath => None,
         }
     }
 
@@ -284,7 +315,10 @@ impl Field {
             FieldValue::Choice(choice) => choice
                 .selected
                 .and_then(|index| self.choices.get(index).copied()),
-            FieldValue::Text(_) | FieldValue::List(_) | FieldValue::EmptyList => None,
+            FieldValue::Text(_)
+            | FieldValue::List(_)
+            | FieldValue::EmptyList
+            | FieldValue::EmptyPath => None,
         }
     }
 
@@ -292,7 +326,10 @@ impl Field {
     pub(crate) fn invalid_value(&self) -> Option<&InvalidValue> {
         match &self.value {
             FieldValue::Choice(choice) => choice.invalid.as_ref(),
-            FieldValue::Text(_) | FieldValue::List(_) | FieldValue::EmptyList => None,
+            FieldValue::Text(_)
+            | FieldValue::List(_)
+            | FieldValue::EmptyList
+            | FieldValue::EmptyPath => None,
         }
     }
 
@@ -300,11 +337,11 @@ impl Field {
     ///
     /// A set metadata key joins the other `meta.*` lines, a set path list
     /// replaces the group of its key, and a set single key updates its first
-    /// line. A required key that the file lacks joins the document after the
-    /// `meta.*` lines, or before the first key line of a file without them.
-    /// Another key that the file lacks joins it after its last line. An
-    /// unset field removes every active line of its key. A field without a
-    /// change leaves the document as it is.
+    /// line. A `machine` line that the file lacks joins the document after
+    /// the `meta.*` lines, or before the first key line of a file without
+    /// them. Another key that the file lacks joins it after its last line.
+    /// An unset field removes every active line of its key. A field without
+    /// a change leaves the document as it is.
     pub(crate) fn write(&self, document: &mut ConfigDocument) {
         if !self.changed() {
             return;
@@ -318,7 +355,7 @@ impl Field {
         match (values.first(), list) {
             (_, true) => document.set_all(key, &values),
             (None, false) => document.remove(key),
-            (Some(value), false) if self.source.setting().is_none() || self.required => {
+            (Some(value), false) if self.source.setting().is_none() || key == MACHINE_KEY => {
                 document.set_in_group(key, value, META_PREFIX);
             }
             (Some(value), false) => document.set(key, value),
@@ -354,9 +391,7 @@ impl Field {
 #[cfg(test)]
 mod tests {
     use machine_factory::config::{
-        MachineSelection,
-        settings::{MACHINE_KEY, find_setting},
-        systems::compiled_systems,
+        MachineSelection, Target, settings::find_setting, systems::compiled_systems,
     };
 
     use super::*;
@@ -377,7 +412,7 @@ mod tests {
         let field = Field::read(
             EditorSection::Machine,
             FieldSource::Setting(setting),
-            first_target(),
+            Families::of(first_target()),
             &document,
             false,
         );
@@ -461,7 +496,7 @@ mod tests {
             let mut field = Field::read(
                 EditorSection::Machine,
                 FieldSource::Setting(find_setting(MACHINE_KEY).expect("table key")),
-                first_target(),
+                Families::of(first_target()),
                 &document,
                 true,
             );
@@ -563,6 +598,32 @@ mod tests {
         assert_eq!(written(&field, document), "crt = on\nfdd1 =\n");
     }
 
+    /// Verifies that an empty value of a single image is an empty image that the file keeps, writes and drops on unset, and that an empty value of another single path is unset.
+    #[test]
+    fn an_empty_value_is_an_empty_image() {
+        let (mut field, document) = setting_field("hdd1", "hdd1 = a.hdi\nhdd1 =\ncrt = on\n");
+        assert!(field.is_empty_path() && field.is_set());
+        assert_eq!(field.text(), "");
+        assert_eq!(field.values(), [""]);
+        assert_eq!(
+            written(&field, document.clone()),
+            "hdd1 = a.hdi\nhdd1 =\ncrt = on\n"
+        );
+        field.unset();
+        assert!(!field.is_set());
+        assert_eq!(field.value, FieldValue::Text(String::new()));
+        assert_eq!(written(&field, document), "crt = on\n");
+
+        let (mut field, document) = setting_field("hdd1", "crt = on\n");
+        field.value = FieldValue::EmptyPath;
+        assert_eq!(written(&field, document), "crt = on\nhdd1 =\n");
+
+        let printer = find_setting("printer").expect("printer is a table key");
+        assert!(!is_single_image(printer));
+        let (field, _) = setting_field("printer", "printer =\n");
+        assert!(!field.is_set());
+    }
+
     /// Verifies that a number field checks its range and clears to unset.
     #[test]
     fn number_fields_check_their_range() {
@@ -573,7 +634,7 @@ mod tests {
         let mut field = Field::read(
             EditorSection::Display,
             FieldSource::Setting(setting),
-            first_target(),
+            Families::of(first_target()),
             &document,
             false,
         );
@@ -602,7 +663,7 @@ mod tests {
             Field::read(
                 EditorSection::Metadata,
                 FieldSource::Metadata(*metadata),
-                first_target(),
+                Families::of(first_target()),
                 &document,
                 false,
             )

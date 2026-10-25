@@ -25,6 +25,8 @@ pub(crate) struct GameRow {
     pub(crate) year_text: String,
     /// The release year, when `meta.year` holds a valid year.
     pub(crate) year: Option<u16>,
+    /// The machine model that a launch of the game takes, in the form of the `machine` values.
+    pub(crate) model: &'static str,
     /// The absolute path of the game file.
     pub(crate) path: PathBuf,
     /// The path of the game file to show: below the root when the file lies there.
@@ -49,6 +51,7 @@ impl GameRow {
             developer: entry.metadata.developer.clone(),
             year_text: entry.metadata.year.trim().to_owned(),
             year: entry.metadata.year(),
+            model: entry.model,
             path: entry.path.clone(),
             error: first_error.map(ToString::to_string),
             located_error: first_error.map(|diagnostic| diagnostic.located(&shown_path)),
@@ -116,6 +119,7 @@ pub(crate) mod tests {
             developer: developer.to_owned(),
             year_text: year.to_owned(),
             year: year.parse().ok(),
+            model: system.default_model,
             path: PathBuf::from("/root/config").join(&identity),
             shown_path: format!("config/{identity}"),
             identity,

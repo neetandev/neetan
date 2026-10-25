@@ -1,8 +1,8 @@
 //! The error dialogs of the manager: a launch that failed, a game that
 //! stopped after a panic of its core, disk images that were not saved, a
-//! game file that was not deleted, a game file that did not open in the
-//! editor or did not save, and a game file that changed outside the manager
-//! before a save.
+//! game file that was not deleted, a file of the editor that did not open
+//! or did not save, a file of the editor that changed outside the manager
+//! before a save, and a saved settings file that does not read.
 
 use std::path::PathBuf;
 
@@ -15,6 +15,8 @@ use gui::{
     },
 };
 use machine_factory::config::systems::System;
+
+use crate::editor::EditedFile;
 
 /// The width of the dialog panel in logical units.
 const DIALOG_WIDTH: f32 = 560.0;
@@ -94,6 +96,31 @@ pub(super) const OPEN_FAILED_TITLE: &str = "Could not open the game";
 /// The title of the dialog of a game file that did not save.
 pub(super) const SAVE_FAILED_TITLE: &str = "Could not save the game";
 
+/// The title of the dialog of a system defaults file that did not open in the editor.
+pub(super) const DEFAULTS_OPEN_FAILED_TITLE: &str = "Could not open the system defaults";
+
+/// The title of the dialog of a system defaults file that did not save.
+pub(super) const DEFAULTS_SAVE_FAILED_TITLE: &str = "Could not save the system defaults";
+
+/// The title of the dialog of a settings page that did not open.
+pub(super) const SETTINGS_OPEN_FAILED_TITLE: &str = "Could not open the settings";
+
+/// The title of the dialog of a settings file that did not save.
+pub(super) const SETTINGS_SAVE_FAILED_TITLE: &str = "Could not save the settings";
+
+/// The title of the dialog of a saved settings file that does not read.
+pub(super) const SETTINGS_NOT_APPLIED_TITLE: &str = "Could not apply the settings";
+
+/// The titles of the dialogs of the file of `subject` that did not open in
+/// the editor and that did not save.
+fn editor_titles(subject: &EditedFile) -> (&'static str, &'static str) {
+    match subject {
+        EditedFile::Game { .. } => (OPEN_FAILED_TITLE, SAVE_FAILED_TITLE),
+        EditedFile::SystemDefaults(_) => (DEFAULTS_OPEN_FAILED_TITLE, DEFAULTS_SAVE_FAILED_TITLE),
+        EditedFile::Settings => (SETTINGS_OPEN_FAILED_TITLE, SETTINGS_SAVE_FAILED_TITLE),
+    }
+}
+
 /// The answer of an error dialog in a pass.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum DialogAnswer {
@@ -144,6 +171,20 @@ impl ErrorDialog {
         }
     }
 
+    /// The dialog of a saved settings file that does not read with `error`.
+    /// The manager keeps the host settings that it read before.
+    pub(crate) fn settings_not_applied(error: &str) -> Self {
+        Self {
+            title: SETTINGS_NOT_APPLIED_TITLE,
+            message: "The settings file was saved but does not read. The manager keeps the \
+                      settings that it read before."
+                .to_owned(),
+            detail: error.to_owned(),
+            edit: None,
+            overwrite: false,
+        }
+    }
+
     /// The same dialog with a button that opens the game file of `target` in the editor.
     pub(crate) fn with_edit(self, target: EditTarget) -> Self {
         Self {
@@ -152,26 +193,29 @@ impl ErrorDialog {
         }
     }
 
-    /// The dialog of the game `name` whose file did not open in the editor with `error`.
-    pub(crate) fn open_failed(name: &str, error: &str) -> Self {
+    /// The dialog of the file of `subject` that did not open in the editor
+    /// with `error`.
+    pub(crate) fn open_failed(subject: &EditedFile, error: &str) -> Self {
         Self {
-            title: OPEN_FAILED_TITLE,
-            message: format!("{name} did not open in the editor."),
+            title: editor_titles(subject).0,
+            message: format!("{} did not open in the editor.", subject.sentence_start()),
             detail: error.to_owned(),
             edit: None,
             overwrite: false,
         }
     }
 
-    /// The dialog of the game `name` whose file changed outside the manager
+    /// The dialog of the file of `subject` that changed outside the manager
     /// since the editor read it, as `detail` says. Cancel returns to the
     /// editor, and Overwrite saves over the file.
-    pub(crate) fn changed_outside(name: &str, detail: &str) -> Self {
+    pub(crate) fn changed_outside(subject: &EditedFile, detail: &str) -> Self {
         Self {
-            title: SAVE_FAILED_TITLE,
+            title: editor_titles(subject).1,
             message: format!(
-                "{name} was not saved. Overwrite replaces the file with the changes of the \
-                 editor. Cancel returns to the editor with the changes."
+                "{} {} not saved. Overwrite replaces the file with the changes of the editor. \
+                 Cancel returns to the editor with the changes.",
+                subject.sentence_start(),
+                subject.was()
             ),
             detail: detail.to_owned(),
             edit: None,
@@ -179,11 +223,15 @@ impl ErrorDialog {
         }
     }
 
-    /// The dialog of the game `name` whose file did not save with `error`.
-    pub(crate) fn save_failed(name: &str, error: &str) -> Self {
+    /// The dialog of the file of `subject` that did not save with `error`.
+    pub(crate) fn save_failed(subject: &EditedFile, error: &str) -> Self {
         Self {
-            title: SAVE_FAILED_TITLE,
-            message: format!("{name} was not saved. The editor keeps the changes."),
+            title: editor_titles(subject).1,
+            message: format!(
+                "{} {} not saved. The editor keeps the changes.",
+                subject.sentence_start(),
+                subject.was()
+            ),
             detail: error.to_owned(),
             edit: None,
             overwrite: false,
@@ -430,7 +478,7 @@ mod tests {
     use gui::ui::Navigation;
 
     use super::*;
-    use crate::gui_test_support::GuiHarness;
+    use crate::{editor::test_support::system_named, gui_test_support::GuiHarness};
 
     /// Verifies the title, the message and the detail of the launch error dialog.
     #[test]
@@ -551,19 +599,90 @@ mod tests {
         );
     }
 
-    /// Verifies the texts of the dialogs of the editor.
+    /// The game file of the PC-98 game Edge.
+    fn game() -> EditedFile {
+        EditedFile::Game {
+            system: system_named("pc98"),
+            name: "Edge".to_owned(),
+        }
+    }
+
+    /// Verifies the titles and the texts of the dialogs of the editor for a game file, a system defaults file and the settings file.
     #[test]
-    fn the_editor_dialogs_show_the_game_and_the_error() {
-        let dialog = ErrorDialog::save_failed("Edge", "/root/config/pc98/edge.conf: denied");
-        assert_eq!(dialog.title(), SAVE_FAILED_TITLE);
+    fn the_editor_dialogs_follow_the_file_kind() {
+        let defaults = EditedFile::SystemDefaults(system_named("pc98"));
+        let settings = EditedFile::Settings;
+        let save = |subject: &EditedFile| {
+            let dialog = ErrorDialog::save_failed(subject, "/root/config/pc98/edge.conf: denied");
+            (dialog.title().to_owned(), dialog.message().to_owned())
+        };
         assert_eq!(
-            dialog.message(),
-            "Edge was not saved. The editor keeps the changes."
+            save(&game()),
+            (
+                "Could not save the game".to_owned(),
+                "Edge was not saved. The editor keeps the changes.".to_owned()
+            )
         );
-        let dialog = ErrorDialog::open_failed("Edge", "gone");
-        assert_eq!(dialog.title(), OPEN_FAILED_TITLE);
-        assert_eq!(dialog.message(), "Edge did not open in the editor.");
-        assert_eq!(dialog.detail(), "gone");
+        assert_eq!(
+            save(&defaults),
+            (
+                "Could not save the system defaults".to_owned(),
+                "The PC-98 system defaults were not saved. The editor keeps the changes."
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            save(&settings),
+            (
+                "Could not save the settings".to_owned(),
+                "The settings were not saved. The editor keeps the changes.".to_owned()
+            )
+        );
+        let open = |subject: &EditedFile| {
+            let dialog = ErrorDialog::open_failed(subject, "gone");
+            assert_eq!(dialog.detail(), "gone");
+            (dialog.title().to_owned(), dialog.message().to_owned())
+        };
+        assert_eq!(
+            open(&game()),
+            (
+                "Could not open the game".to_owned(),
+                "Edge did not open in the editor.".to_owned()
+            )
+        );
+        assert_eq!(
+            open(&defaults),
+            (
+                "Could not open the system defaults".to_owned(),
+                "The PC-98 system defaults did not open in the editor.".to_owned()
+            )
+        );
+        assert_eq!(
+            open(&settings),
+            (
+                "Could not open the settings".to_owned(),
+                "The settings did not open in the editor.".to_owned()
+            )
+        );
+        for (kind, title, subject) in [
+            (game(), SAVE_FAILED_TITLE, "Edge was"),
+            (
+                defaults,
+                DEFAULTS_SAVE_FAILED_TITLE,
+                "The PC-98 system defaults were",
+            ),
+            (settings, SETTINGS_SAVE_FAILED_TITLE, "The settings were"),
+        ] {
+            let dialog = ErrorDialog::changed_outside(&kind, "changed");
+            assert_eq!(dialog.title(), title);
+            assert!(
+                dialog
+                    .message()
+                    .starts_with(&format!("{subject} not saved. Overwrite replaces")),
+                "{}",
+                dialog.message()
+            );
+        }
     }
 
     /// Verifies that the dialog of a file that changed outside the manager starts on Cancel, that its hints follow the focus and that each button gives its answer.
@@ -572,7 +691,7 @@ mod tests {
         let mut harness = GuiHarness::new(960, 600);
         let area = Rect::new(0.0, 0.0, 960.0, 572.0);
         let dialog = ErrorDialog::changed_outside(
-            "Edge",
+            &game(),
             "config/pc98/edge.conf changed outside the manager since the editor read it.",
         );
         assert_eq!(dialog.title(), SAVE_FAILED_TITLE);
@@ -610,7 +729,7 @@ mod tests {
                 DialogAnswer::Closed
             );
         }
-        let plain = ErrorDialog::save_failed("Edge", "denied");
+        let plain = ErrorDialog::save_failed(&game(), "denied");
         let hints = harness.frame(|context| plain.hints(context));
         assert_eq!(hints, [OK_HINT]);
     }
@@ -640,9 +759,9 @@ mod tests {
             ErrorDialog::game_stopped("X1", "halt", &Ok(())),
             ErrorDialog::media_not_saved("Edge", &FlushError::new("lost")),
             ErrorDialog::delete_failed("Edge", "denied"),
-            ErrorDialog::open_failed("Edge", "gone"),
-            ErrorDialog::save_failed("Edge", "denied"),
-            ErrorDialog::changed_outside("Edge", "changed"),
+            ErrorDialog::open_failed(&game(), "gone"),
+            ErrorDialog::save_failed(&game(), "denied"),
+            ErrorDialog::changed_outside(&game(), "changed"),
         ];
         let icon_inset = {
             let mut harness = GuiHarness::new(960, 600);

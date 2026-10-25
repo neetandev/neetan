@@ -1,10 +1,13 @@
 //! The game editor: one form for a game file with the sections Metadata,
-//! Machine, Media, Sound, Display and Advanced.
+//! Machine, Media, Sound, Display and Advanced. The same form without the
+//! Metadata section edits the system defaults file of a system. The settings
+//! page is the same form on the host keys of the settings file, with the
+//! sections Folders, ROMs and Video and audio.
 //!
-//! The settings table generates the fields for the family of the game. An
-//! unset field shows the value that it inherits from the layers below the
-//! game file. The editor keeps every line of the file that it does not show
-//! as a field, and a save writes only the fields that changed.
+//! The settings table generates the fields for the family of the game or
+//! for the host. An unset field shows the value that it inherits from the
+//! layers below the file. The editor keeps every line of the file that it
+//! does not show as a field, and a save writes only the fields that changed.
 
 mod browse;
 mod derived_file;
@@ -13,14 +16,17 @@ mod fields;
 mod file;
 mod form;
 mod hints;
+mod host_settings;
 mod inherited;
 mod kept_lines;
 mod media_list;
 mod media_row;
 mod notes;
 mod page;
+mod rom_rows;
 mod rows;
 mod save;
+mod system_defaults;
 #[cfg(test)]
 pub(crate) mod test_support;
 
@@ -32,7 +38,9 @@ use gui::{
 };
 use machine_factory::config::{
     MachineSelection, Target,
-    settings::{MACHINE_KEY, PathKind, Setting, ValueKind},
+    settings::{
+        Families, GUI_FONT_KEY, MACHINE_KEY, PathKind, Setting, ValueKind, file_types::FileTypes,
+    },
     systems::System,
 };
 
@@ -42,9 +50,13 @@ use self::{
     derived_file::DerivedFile,
     discard::{DiscardOutcome, DiscardQuestion},
     fields::{Field, FieldValue},
-    file::{EditorFile, fill_required, write_game_file},
-    form::{EDITOR_SECTIONS, EditorSection, form_fields},
+    file::{EditorFile, fill_required, write_file},
+    form::{
+        DEFAULTS_SECTIONS, EDITOR_SECTIONS, EditorSection, SETTINGS_SECTIONS, form_fields,
+        host_fields, ignored_note, limit_note,
+    },
     hints::EditorWidget,
+    host_settings::HostSettings,
     inherited::{BaseLayers, Inherited},
     kept_lines::kept_lines,
     media_list::is_missing,
@@ -59,28 +71,213 @@ use crate::{
     manager::shown_path,
 };
 
+/// The name of the settings page in its header.
+pub(crate) const SETTINGS_NAME: &str = "Settings";
+
 /// The keys that every game file of the editor holds. Their dropdowns have
 /// no inherited entry, and a save writes their inherited value into a file
 /// without them.
 const GAME_REQUIRED_KEYS: &[&str] = &[MACHINE_KEY];
 
-/// What the editor did in a pass.
+/// The error of an editor on a system that this build does not compile.
+fn not_compiled(system: &System) -> String {
+    format!("the system {} is not compiled", system.name)
+}
+
+/// The kind of the file of an editor, with the system and the name of a
+/// game file or the system of a system defaults file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EditedFile {
+    /// A game file of `system`.
+    Game {
+        /// The system of the game.
+        system: &'static System,
+        /// The name of the game: its title, its file stem, or a phrase such
+        /// as `A new PC-98 game`.
+        name: String,
+    },
+    /// The system defaults file of the system.
+    SystemDefaults(&'static System),
+    /// The settings file.
+    Settings,
+}
+
+impl EditedFile {
+    /// The name of the file in the header: the name of a game, the system
+    /// defaults of a system such as `PC-98 system defaults`, or
+    /// [`SETTINGS_NAME`].
+    pub(crate) fn display_name(&self) -> String {
+        match self {
+            Self::Game { name, .. } => name.clone(),
+            Self::SystemDefaults(system) => format!("{} system defaults", system.label),
+            Self::Settings => SETTINGS_NAME.to_owned(),
+        }
+    }
+
+    /// The subject inside a sentence: the name of a game, or for example
+    /// `the PC-98 system defaults` and `the settings`.
+    pub(crate) fn text(&self) -> String {
+        match self {
+            Self::Game { name, .. } => name.clone(),
+            Self::SystemDefaults(system) => format!("the {} system defaults", system.label),
+            Self::Settings => "the settings".to_owned(),
+        }
+    }
+
+    /// The subject at the start of a sentence. A game name keeps its
+    /// letters, the other subjects start with a capital.
+    pub(crate) fn sentence_start(&self) -> String {
+        let text = self.text();
+        match self {
+            Self::Game { .. } => text,
+            Self::SystemDefaults(_) | Self::Settings => {
+                let mut letters = text.chars();
+                letters.next().map_or_else(String::new, |first| {
+                    first.to_uppercase().chain(letters).collect()
+                })
+            }
+        }
+    }
+
+    /// The past tense of `to be` that agrees with the subject: `was` for a
+    /// game and `were` for the plural subjects.
+    pub(crate) fn was(&self) -> &'static str {
+        match self {
+            Self::Game { .. } => "was",
+            Self::SystemDefaults(_) | Self::Settings => "were",
+        }
+    }
+}
+
+/// The state of the editor of a game file or of the system defaults file of
+/// one system.
+#[derive(Debug, Clone)]
+struct SystemFiles {
+    /// The system of the file.
+    system: &'static System,
+    /// The family of the system.
+    target: Target,
+    /// The layers below the file: the settings file, and the system defaults below a game.
+    base: BaseLayers,
+    /// The model that a new game starts with.
+    preset_model: Option<&'static str>,
+}
+
+impl SystemFiles {
+    /// The state of the editor of a game file of `system` in `host`, with
+    /// the settings file and the system defaults below the file. A system
+    /// that this build does not compile gives `None`.
+    fn game(host: &HostLayers, system: &'static System) -> Option<Self> {
+        let target = MachineSelection::of_system(system)?.target();
+        Some(Self {
+            system,
+            target,
+            base: BaseLayers::read(host, target),
+            preset_model: None,
+        })
+    }
+
+    /// The state of the editor of the system defaults file of `system` in
+    /// `host`, with the settings file below the file. A system that this
+    /// build does not compile gives `None`.
+    fn system_defaults(host: &HostLayers, system: &'static System) -> Option<Self> {
+        let target = MachineSelection::of_system(system)?.target();
+        Some(Self {
+            system,
+            target,
+            base: BaseLayers::read_below_system_defaults(host, target),
+            preset_model: None,
+        })
+    }
+}
+
+/// The subject of the editor: the kind of the edited file with the state
+/// that its form needs.
+#[derive(Debug, Clone)]
+enum Subject {
+    /// A game file of one system.
+    Game(SystemFiles),
+    /// The system defaults file of one system.
+    SystemDefaults(SystemFiles),
+    /// The host keys of the settings file.
+    Host(HostSettings),
+}
+
+impl Subject {
+    /// The state of the editor of a game file or of a system defaults file.
+    /// The settings page has none.
+    fn system_files(&self) -> Option<&SystemFiles> {
+        match self {
+            Self::Game(files) | Self::SystemDefaults(files) => Some(files),
+            Self::Host(_) => None,
+        }
+    }
+
+    /// The sections of the form in tab order. A system defaults file has no
+    /// Metadata section. The settings file has the sections of the settings
+    /// page.
+    fn sections(&self) -> &'static [EditorSection] {
+        match self {
+            Self::Game(_) => &EDITOR_SECTIONS,
+            Self::SystemDefaults(_) => &DEFAULTS_SECTIONS,
+            Self::Host(_) => &SETTINGS_SECTIONS,
+        }
+    }
+
+    /// The keys that every save writes into the file.
+    fn required_keys(&self) -> &'static [&'static str] {
+        match self {
+            Self::Game(_) => GAME_REQUIRED_KEYS,
+            Self::SystemDefaults(_) | Self::Host(_) => &[],
+        }
+    }
+
+    /// The fields of the form in tab order with the values of `document`:
+    /// the keys of the family of the system in the sections of the
+    /// subject, or the host keys of the settings page.
+    fn fields(&self, document: &ConfigDocument) -> Vec<Field> {
+        let Some(files) = self.system_files() else {
+            return host_fields()
+                .into_iter()
+                .map(|(section, source)| {
+                    Field::read(section, source, Families::compiled(), document, false)
+                })
+                .collect();
+        };
+        let sections = self.sections();
+        let required = self.required_keys();
+        form_fields(files.target)
+            .into_iter()
+            .filter(|(section, _)| sections.contains(section))
+            .map(|(section, source)| {
+                let required = required.contains(&source.key());
+                Field::read(
+                    section,
+                    source,
+                    Families::of(files.target),
+                    document,
+                    required,
+                )
+            })
+            .collect()
+    }
+}
+
+/// The response of the editor in a pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct EditorPass {
     /// The editor closes.
     pub(crate) closed: bool,
-    /// The game file at this path was saved.
+    /// The file at this path was saved.
     pub(crate) saved: Option<PathBuf>,
     /// The save failed.
     pub(crate) save_error: Option<SaveFailure>,
 }
 
-/// The open game editor.
+/// The open editor of a game file, a system defaults file or the settings file.
 pub(crate) struct Editor {
-    /// The system of the game.
-    system: &'static System,
-    /// The family of the game.
-    target: Target,
+    /// The kind of the edited file with the state of its form.
+    subject: Subject,
     /// The root folder.
     root: PathBuf,
     /// The file that a save writes.
@@ -88,21 +285,17 @@ pub(crate) struct Editor {
     /// The lines of the file when the editor opened or saved last.
     document: ConfigDocument,
     /// The modification time and the size of the file when the editor read
-    /// or saved it last. A new game has none.
+    /// or saved it last. A file that did not exist has none.
     stamp: Option<FileStamp>,
     /// The fields of the form in tab order.
     fields: Vec<Field>,
-    /// The settings file and the system defaults below the game.
-    base: BaseLayers,
-    /// The model that a new game starts with.
-    preset_model: Option<&'static str>,
     /// The inherited value of each field. A metadata field has none.
     inherited: Vec<Option<Inherited>>,
     /// Whether each image of each field is missing, in the order of its values.
     missing: Vec<Vec<bool>>,
     /// The lines of the file that no field shows.
     kept: Vec<String>,
-    /// The index of the selected section in `EDITOR_SECTIONS`.
+    /// The index of the selected section in the sections of the editor.
     section: usize,
     /// The scroll position of the form.
     scroll: ScrollState,
@@ -119,38 +312,27 @@ pub(crate) struct Editor {
 }
 
 impl Editor {
-    /// An editor on the lines `document` of `file` of a game of `system`,
-    /// with the stamp of the read of an existing file. The keys of
-    /// `required` are part of every file that the editor saves.
+    /// An editor of `subject` with the root `root` on the lines `document`
+    /// of `file`, with the stamp of the read of the file. A file that did
+    /// not exist has no stamp.
     fn with_document(
-        host: &HostLayers,
-        system: &'static System,
+        subject: Subject,
+        root: &Path,
         file: EditorFile,
         document: ConfigDocument,
         stamp: Option<FileStamp>,
-        required: &[&str],
-    ) -> Option<Self> {
-        let target = MachineSelection::of_system(system)?.target();
-        let fields: Vec<Field> = form_fields(target)
-            .into_iter()
-            .map(|(section, source)| {
-                let required = required.contains(&source.key());
-                Field::read(section, source, target, &document, required)
-            })
-            .collect();
+    ) -> Self {
+        let fields = subject.fields(&document);
         let kept = kept_lines(&document, &fields);
         let mut editor = Self {
-            system,
-            target,
-            root: host.root().to_path_buf(),
+            subject,
+            root: root.to_path_buf(),
             file,
             document,
             stamp,
             inherited: vec![None; fields.len()],
             missing: vec![Vec::new(); fields.len()],
             fields,
-            base: BaseLayers::read(host, target),
-            preset_model: None,
             kept,
             section: 0,
             scroll: ScrollState::new(),
@@ -161,7 +343,7 @@ impl Editor {
             hints: Vec::new(),
         };
         editor.refresh();
-        Some(editor)
+        editor
     }
 
     /// An editor on the game file at `path` of `system`.
@@ -171,37 +353,35 @@ impl Editor {
         path: &Path,
     ) -> Result<Self, String> {
         let (document, stamp) = read_document(path)?;
-        Self::with_document(
-            host,
-            system,
+        let files = SystemFiles::game(host, system).ok_or_else(|| not_compiled(system))?;
+        Ok(Self::with_document(
+            Subject::Game(files),
+            host.root(),
             EditorFile::Existing(path.to_path_buf()),
             document,
             Some(stamp),
-            GAME_REQUIRED_KEYS,
-        )
-        .ok_or_else(|| format!("the system {} is not compiled", system.name))
+        ))
     }
 
     /// An editor on a new game of `system`. Its machine starts with the
     /// model that a game of the system takes without `machine`.
     pub(crate) fn new_game(host: &HostLayers, system: &'static System) -> Option<Self> {
+        let mut files = SystemFiles::game(host, system)?;
+        let model = files.base.model().0.name();
+        files.preset_model = Some(model);
         let folder = host.config_folder().join(system.name);
-        let file = EditorFile::New(DerivedFile::new(&folder, ""));
         let mut editor = Self::with_document(
-            host,
-            system,
-            file,
+            Subject::Game(files),
+            host.root(),
+            EditorFile::New(DerivedFile::new(&folder, "")),
             ConfigDocument::new(),
             None,
-            GAME_REQUIRED_KEYS,
-        )?;
-        let model = editor.base.model().0.name();
+        );
         if let Some(field) = editor.field_mut(MACHINE_KEY)
             && let Some(index) = field.choices.iter().position(|choice| *choice == model)
         {
             field.select(Some(index));
         }
-        editor.preset_model = Some(model);
         editor.refresh();
         Some(editor)
     }
@@ -216,6 +396,7 @@ impl Editor {
     ) -> Result<Self, String> {
         let document = ConfigDocument::load(source)
             .map_err(|error| format!("{}: {error}", source.display()))?;
+        let files = SystemFiles::game(host, system).ok_or_else(|| not_compiled(system))?;
         let stem = source
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
@@ -231,8 +412,7 @@ impl Editor {
             file: DerivedFile::new(&folder, &title),
         };
         let mut editor =
-            Self::with_document(host, system, file, document, None, GAME_REQUIRED_KEYS)
-                .ok_or_else(|| format!("the system {} is not compiled", system.name))?;
+            Self::with_document(Subject::Game(files), host.root(), file, document, None);
         if let Some(field) = editor.field_mut(TITLE_KEY) {
             field.value = FieldValue::Text(title);
         }
@@ -250,9 +430,44 @@ impl Editor {
         self.fields.iter().find(|field| field.key() == key)
     }
 
-    /// The system of the game.
-    pub(crate) fn system(&self) -> &'static System {
-        self.system
+    /// The state of the editor of a game file or of a system defaults file.
+    /// The settings page has none.
+    fn system_files(&self) -> Option<&SystemFiles> {
+        self.subject.system_files()
+    }
+
+    /// The host keys that the settings page edits. The editor of a game or
+    /// of a system defaults file has none.
+    fn host_settings(&self) -> Option<&HostSettings> {
+        match &self.subject {
+            Subject::Game(_) | Subject::SystemDefaults(_) => None,
+            Subject::Host(host) => Some(host),
+        }
+    }
+
+    /// The files of the drive of `setting` on the family of the system. The
+    /// settings page has none.
+    fn file_types(&self, setting: &Setting) -> Option<&'static FileTypes> {
+        self.system_files()
+            .and_then(|files| setting.file_types_for(files.target))
+    }
+
+    /// The kind of the edited file with the name of a game: its title,
+    /// else its file stem.
+    pub(crate) fn edited_file(&self) -> EditedFile {
+        match &self.subject {
+            Subject::Game(files) => EditedFile::Game {
+                system: files.system,
+                name: self.game_name(),
+            },
+            Subject::SystemDefaults(files) => EditedFile::SystemDefaults(files.system),
+            Subject::Host(_) => EditedFile::Settings,
+        }
+    }
+
+    /// The sections of the editor in tab order.
+    fn sections(&self) -> &'static [EditorSection] {
+        self.subject.sections()
     }
 
     /// The path of the file that a save writes.
@@ -260,9 +475,13 @@ impl Editor {
         self.file.path()
     }
 
-    /// The path of the file to show: below the root when it lies there.
+    /// The path of the file to show: below the root when it lies there. The
+    /// settings page shows the whole path of the settings file.
     pub(crate) fn shown_path(&self) -> String {
-        shown_path(&self.path(), &self.root)
+        match &self.subject {
+            Subject::Game(_) | Subject::SystemDefaults(_) => shown_path(&self.path(), &self.root),
+            Subject::Host(_) => self.path().display().to_string(),
+        }
     }
 
     /// The hints of the status line of the last pass.
@@ -270,16 +489,17 @@ impl Editor {
         &self.hints
     }
 
-    /// The model of the game: the chosen model, else the inherited model.
-    fn model(&self) -> MachineSelection {
+    /// The model of the form of a game or of a system defaults file with
+    /// the state `files`: the chosen model, else the model of `files.base`.
+    fn model_of(&self, files: &SystemFiles) -> MachineSelection {
         self.field(MACHINE_KEY)
             .and_then(Field::chosen)
             .and_then(|name| name.parse().ok())
-            .unwrap_or_else(|| self.base.model().0)
+            .unwrap_or_else(|| files.base.model().0)
     }
 
-    /// The name of the game: its title, else its file stem.
-    pub(crate) fn display_name(&self) -> String {
+    /// The name of a game: its title, else its file stem.
+    fn game_name(&self) -> String {
         let title = self.field(TITLE_KEY).map_or("", Field::text).trim();
         if !title.is_empty() {
             return title.to_owned();
@@ -290,16 +510,18 @@ impl Editor {
             .unwrap_or_default()
     }
 
-    /// Whether a save would change the file: a field changed, or the file
-    /// does not exist yet.
+    /// Whether a save would change the file: a field changed, or the editor
+    /// holds a new game or a copy that has no file yet.
     fn is_dirty(&self) -> bool {
         self.file.derived().is_some() || self.fields.iter().any(Field::changed)
     }
 
-    /// Computes the inherited values, the missing images and the file of a
-    /// game without a save again after a change of a field.
+    /// Computes the inherited values, the missing files and the file of a
+    /// game without a save again after a change of a field. The settings
+    /// page checks only a set GUI font. Its value resolves against the root
+    /// alone.
     fn refresh(&mut self) {
-        let model = self.model();
+        let host = self.host_settings().is_some();
         let game: Vec<(&'static Setting, Vec<String>)> = self
             .fields
             .iter()
@@ -314,14 +536,25 @@ impl Editor {
             let Some(setting) = field.source.setting() else {
                 continue;
             };
-            self.inherited[index] = Some(self.base.inherited(setting, model, &game));
+            self.inherited[index] = match &self.subject {
+                Subject::Game(files) | Subject::SystemDefaults(files) => {
+                    Some(files.base.inherited(setting, self.model_of(files), &game))
+                }
+                Subject::Host(settings) => Some(settings.inherited(setting, &self.fields)),
+            };
             self.missing[index] = match setting.kind {
-                ValueKind::Path(PathKind::File) | ValueKind::PathList => field
-                    .values()
-                    .iter()
-                    .map(|value| is_missing(value, &self.root))
-                    .collect(),
-                ValueKind::Path(PathKind::Folder)
+                ValueKind::Path(PathKind::File) | ValueKind::PathList
+                    if !host || setting.key == GUI_FONT_KEY =>
+                {
+                    field
+                        .values()
+                        .iter()
+                        .map(|value| is_missing(value, &self.root))
+                        .collect()
+                }
+                ValueKind::Path(PathKind::File)
+                | ValueKind::PathList
+                | ValueKind::Path(PathKind::Folder)
                 | ValueKind::Choice(_)
                 | ValueKind::OnOff
                 | ValueKind::Number(_) => Vec::new(),
@@ -338,24 +571,25 @@ impl Editor {
 
     /// The selected section.
     fn current_section(&self) -> EditorSection {
-        EDITOR_SECTIONS[self.section.min(EDITOR_SECTIONS.len() - 1)]
+        let sections = self.sections();
+        sections[self.section.min(sections.len() - 1)]
     }
 
     /// Writes the changed fields into the file and returns its path.
     ///
     /// A required field without a value writes its inherited value. A
-    /// game file that changed since the editor read it stays as it is,
-    /// unless `overwrite` asks to write over the change. A new game or a
-    /// copy takes its derived file name once more before the write and
-    /// keeps it after. Its write never replaces a file. A failed save
-    /// leaves the fields as they are.
+    /// file that changed since the editor read it stays as it is, unless
+    /// `overwrite` asks to write over the change. A new game or a copy
+    /// takes its derived file name once more before the write and keeps it
+    /// after. Its write never replaces a file. A failed save leaves the
+    /// fields as they are.
     fn save(&mut self, overwrite: bool) -> Result<PathBuf, SaveFailure> {
         self.refresh();
         let mut fields = self.fields.clone();
         fill_required(&mut fields, &self.inherited);
         let edited = edited_document(&self.document, &fields);
         let title = self.field(TITLE_KEY).map_or("", Field::text).to_owned();
-        let written = write_game_file(
+        let written = write_file(
             &self.file, &edited, self.stamp, &title, &self.root, overwrite,
         )?;
         let path = written.path;
@@ -365,15 +599,19 @@ impl Editor {
         for field in &mut self.fields {
             field.mark_saved();
         }
-        self.file = EditorFile::Existing(path.clone());
-        self.preset_model = None;
+        if self.file.derived().is_some() {
+            self.file = EditorFile::Existing(path.clone());
+        }
+        if let Subject::Game(files) = &mut self.subject {
+            files.preset_model = None;
+        }
         self.kept = kept_lines(&self.document, &self.fields);
         self.refresh();
         Ok(path)
     }
 
-    /// Saves the changes over a game file that changed since the editor
-    /// read it, and takes the stamp of the written file.
+    /// Saves the changes over a file that changed since the editor read
+    /// it, and takes the stamp of the written file.
     pub(crate) fn overwrite(&mut self) -> Result<PathBuf, SaveFailure> {
         self.save(true)
     }
@@ -382,7 +620,7 @@ impl Editor {
     /// else the editor closes. Returns whether it closes.
     fn request_close(&mut self) -> bool {
         if self.is_dirty() {
-            self.discard = Some(DiscardQuestion::new(&self.display_name()));
+            self.discard = Some(DiscardQuestion::new(&self.edited_file()));
             false
         } else {
             true
@@ -397,6 +635,9 @@ impl Editor {
         let actions = self.draw_page(context, screen);
         if actions.changed {
             self.refresh();
+            context.request_pass();
+        }
+        if self.check_changed_roms(context) {
             context.request_pass();
         }
         if (actions.save || actions.save_shortcut)
@@ -438,6 +679,27 @@ impl Editor {
         pass
     }
 
+    /// Returns `None` when the editor enables `setting`, else the note that
+    /// tells why the model ignores it. The editor of a system defaults file
+    /// and the settings page enable every setting.
+    pub(super) fn ignored_note(&self, setting: &Setting) -> Option<String> {
+        match &self.subject {
+            Subject::Game(files) => ignored_note(setting, self.model_of(files)),
+            Subject::SystemDefaults(_) | Subject::Host(_) => None,
+        }
+    }
+
+    /// The sentences after the note of `setting`: the models that read it in
+    /// the editor of a system defaults file, and the command line value and
+    /// the restart of the settings page. The editor of a game gives `None`.
+    pub(super) fn extra_note(&self, setting: &Setting) -> Option<String> {
+        match &self.subject {
+            Subject::Game(_) => None,
+            Subject::SystemDefaults(files) => limit_note(setting, files.target),
+            Subject::Host(host) => host.extra_note(setting),
+        }
+    }
+
     /// The hints of the status line after a pass.
     fn status_hints(&self, context: &UiContext) -> Vec<Hint<'static>> {
         if let Some((browser, _)) = &self.browser {
@@ -455,23 +717,13 @@ mod tests {
     use gui::ui::{Navigation, Shortcut};
     use machine_factory::config::settings::find_setting;
 
-    use super::{media_list::MediaBrowse, rows::field_id, test_support::EditorRoot, *};
+    use super::{
+        media_list::MediaBrowse,
+        rows::field_id,
+        test_support::{EditorRoot, SCREEN, fdd1_model, index_of, show},
+        *,
+    };
     use crate::{config::check_value, gui_test_support::GuiHarness};
-
-    /// The window above the status line in the tests.
-    const SCREEN: Rect = Rect::new(0.0, 0.0, 960.0, 572.0);
-
-    /// Draws passes of `editor` until they settle and returns the answers of the passes.
-    fn show(harness: &mut GuiHarness, editor: &mut Editor) -> EditorPass {
-        let mut answer = EditorPass::default();
-        harness.settle(|context| {
-            let pass = editor.show(context, SCREEN);
-            answer.closed |= pass.closed;
-            answer.saved = answer.saved.clone().or(pass.saved);
-            answer.save_error = answer.save_error.clone().or(pass.save_error);
-        });
-        answer
-    }
 
     /// The editor on the game `stem` of `root` with `contents`.
     fn open(root: &EditorRoot, stem: &str, contents: &str) -> Editor {
@@ -574,22 +826,13 @@ mod tests {
     fn the_browser_adds_an_image_to_a_media_list() {
         let root = EditorRoot::new("editor_browse");
         root.write("games/disk.d88", "");
-        let fdd1_setting = find_setting("fdd1").expect("fdd1 is a table key");
-        let model = machine_factory::config::settings::MODEL_CHOICES
-            .iter()
-            .map(|choice| choice.value)
-            .find(|model| fdd1_setting.is_read_by(root.target(), model))
-            .expect("a model of the family reads fdd1");
+        let model = fdd1_model(&root);
         let mut editor = open(
             &root,
             "edge",
             &format!("machine = {model}\nfdd1 = games/missing.d88\n"),
         );
-        let fdd1 = editor
-            .fields
-            .iter()
-            .position(|field| field.key() == "fdd1")
-            .expect("fdd1 field");
+        let fdd1 = index_of(&editor, "fdd1");
         assert_eq!(editor.missing[fdd1], [true]);
         let mut harness = GuiHarness::new(960, 600);
         show(&mut harness, &mut editor);
@@ -722,10 +965,18 @@ mod tests {
     /// Verifies that a change of the model enables the settings that the new model reads.
     #[test]
     fn the_model_decides_the_enabled_settings() {
+        /// The model of the game form of `editor`.
+        fn game_model(editor: &Editor) -> MachineSelection {
+            let Subject::Game(files) = &editor.subject else {
+                panic!("the editor edits a game");
+            };
+            editor.model_of(files)
+        }
+
         let root = EditorRoot::with_system("editor_model", "pc98");
         let mut editor = open(&root, "edge", "machine = PC9801RA\n");
         let cpu_mode = find_setting("cpu-mode").expect("table key");
-        let model = editor.model();
+        let model = game_model(&editor);
         assert!(form::ignored_note(cpu_mode, model).is_some());
         let machine = editor.field_mut(MACHINE_KEY).expect("machine field");
         let index = machine
@@ -735,13 +986,10 @@ mod tests {
             .expect("a PC-98 model");
         machine.select(Some(index));
         editor.refresh();
-        assert_eq!(editor.model().name(), "PC9801VM");
-        assert!(form::ignored_note(cpu_mode, editor.model()).is_none());
-        let bios = editor
-            .fields
-            .iter()
-            .position(|field| field.key() == "bios")
-            .expect("bios field");
+        let model = game_model(&editor);
+        assert_eq!(model.name(), "PC9801VM");
+        assert!(form::ignored_note(cpu_mode, model).is_none());
+        let bios = index_of(&editor, "bios");
         assert_eq!(
             editor.inherited[bios]
                 .as_ref()
@@ -770,7 +1018,8 @@ mod tests {
         show(&mut harness, &mut editor);
         let machine = editor.field(MACHINE_KEY).expect("machine field");
         let first = machine.choices[0];
-        if first == editor.base.model().0.name() {
+        let files = editor.system_files().expect("a game has a system");
+        if first == files.base.model().0.name() {
             assert!(!editor.is_dirty());
         } else {
             assert_eq!(machine.chosen(), Some(first));
@@ -904,12 +1153,7 @@ mod tests {
     fn an_empty_drive_overrides_the_inherited_list() {
         let root = EditorRoot::new("editor_empty_list");
         root.write("neetan.conf", "fdd1 = games/boot.d88\n");
-        let fdd1_setting = find_setting("fdd1").expect("fdd1 is a table key");
-        let model = machine_factory::config::settings::MODEL_CHOICES
-            .iter()
-            .map(|choice| choice.value)
-            .find(|model| fdd1_setting.is_read_by(root.target(), model))
-            .expect("a model of the family reads fdd1");
+        let model = fdd1_model(&root);
         let mut editor = open(&root, "edge", &format!("machine = {model}\nfdd1 =\n"));
         let fdd1 = editor.field("fdd1").expect("fdd1 field");
         assert!(fdd1.is_empty_list());
@@ -937,6 +1181,111 @@ mod tests {
             std::fs::read_to_string(editor.path()).expect("file reads"),
             format!("machine = {model}\n")
         );
+    }
+
+    /// Verifies that the game editor shows the image of the system defaults as the inherited list with its source, below a list of the game as well, and that the checkbox writes the empty value that clears the inherited list.
+    #[test]
+    fn the_game_editor_inherits_the_media_of_the_system_defaults() {
+        let root = EditorRoot::new("editor_system_media");
+        root.write("neetan.conf", "fdd1 = games/settings.d88\n");
+        root.write(
+            &format!("config/{}.conf", root.system().name),
+            "fdd1 = games/system.d88\n",
+        );
+        let model = fdd1_model(&root);
+        let mut editor = open(&root, "edge", &format!("machine = {model}\n"));
+        let fdd1 = index_of(&editor, "fdd1");
+        let inherited = editor.inherited[fdd1].clone().expect("fdd1 inherits");
+        assert_eq!(inherited.values, ["games/system.d88"]);
+        assert_eq!(inherited.source, inherited::InheritedSource::SystemDefaults);
+        let types = find_setting("fdd1")
+            .expect("fdd1 is a table key")
+            .file_types_for(root.target());
+        assert_eq!(
+            notes::empty_drive_hint(types, Some(&inherited), false),
+            "System default: games/system.d88"
+        );
+        assert_eq!(
+            media_row::below_note(true, &[], true, Some(&inherited)),
+            notes::Note::plain("System default: games/system.d88.").shown_as_path()
+        );
+
+        let mut harness = GuiHarness::new(960, 600);
+        show(&mut harness, &mut editor);
+        select_section(&mut harness, &mut editor, EditorSection::Media);
+        let checkbox = media_list::empty_list_id(field_id("fdd1"));
+        harness.state.set_focus(checkbox);
+        show(&mut harness, &mut editor);
+        harness.input.confirm = true;
+        show(&mut harness, &mut editor);
+        assert!(editor.fields[fdd1].is_empty_list());
+        harness.input.shortcut = Some(Shortcut::ControlS);
+        show(&mut harness, &mut editor);
+        assert_eq!(
+            std::fs::read_to_string(editor.path()).expect("file reads"),
+            format!("machine = {model}\nfdd1 =\n")
+        );
+    }
+
+    #[cfg(feature = "pc98")]
+    /// Verifies that an empty value of a single image over the image of the system defaults shows the empty drive and saves unchanged, and that the checkbox removes and writes the empty value.
+    #[test]
+    fn an_empty_image_overrides_the_image_of_the_system_defaults() {
+        let root = EditorRoot::with_system("editor_empty_image", "pc98");
+        let hdd1 = find_setting("hdd1").expect("hdd1 is a table key");
+        let model = "PC9801RA";
+        assert!(hdd1.is_read_by(root.target(), model));
+        root.write(
+            &format!("config/{}.conf", root.system().name),
+            "hdd1 = games/system.hdi\n",
+        );
+        let path = root.game("edge", &format!("machine = {model}\nhdd1 =\n"));
+        let mut editor =
+            Editor::open(&root.host(), root.system(), &path).expect("the editor opens");
+        let index = index_of(&editor, "hdd1");
+        assert!(editor.fields[index].is_empty_path());
+        assert!(editor.fields[index].is_set());
+        let inherited = editor.inherited[index].clone().expect("hdd1 inherits");
+        assert_eq!(inherited.values, ["games/system.hdi"]);
+        assert_eq!(inherited.source, inherited::InheritedSource::SystemDefaults);
+        assert_eq!(editor.path_placeholder(index), notes::EMPTY_IMAGE);
+        assert!(!editor.is_dirty());
+        assert_eq!(editor.save(false), Ok(path.clone()));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("file reads"),
+            format!("machine = {model}\nhdd1 =\n")
+        );
+
+        let mut harness = GuiHarness::new(960, 600);
+        show(&mut harness, &mut editor);
+        select_section(&mut harness, &mut editor, EditorSection::Media);
+        let checkbox = media_list::empty_list_id(field_id("hdd1"));
+        harness.state.set_focus(checkbox);
+        show(&mut harness, &mut editor);
+        assert_eq!(harness.state.focused(), Some(checkbox));
+        harness.input.confirm = true;
+        show(&mut harness, &mut editor);
+        assert!(!editor.fields[index].is_set());
+        assert_eq!(harness.state.focused(), Some(checkbox));
+        harness.input.shortcut = Some(Shortcut::ControlS);
+        show(&mut harness, &mut editor);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("file reads"),
+            format!("machine = {model}\n")
+        );
+        harness.input.confirm = true;
+        show(&mut harness, &mut editor);
+        assert!(editor.fields[index].is_empty_path());
+        harness.input.shortcut = Some(Shortcut::ControlS);
+        show(&mut harness, &mut editor);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("file reads"),
+            format!("machine = {model}\nhdd1 =\n")
+        );
+        harness.input.action = Some(gui::ui::ActionButton::X);
+        harness.state.set_focus(field_id("hdd1"));
+        show(&mut harness, &mut editor);
+        assert!(!editor.fields[index].is_set());
     }
 
     /// Verifies that a value of the file that the launch rejects stays in the file and is invalid in the editor.

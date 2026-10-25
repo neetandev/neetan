@@ -1,6 +1,6 @@
-//! The file of the editor: the game file that a save writes, the write of a
-//! game file that exists, the first write of a new game or a copy, and the
-//! required values that a save writes into a file without them.
+//! The file of the editor that a save writes: the write of a file at a
+//! known path, the first write of a new game or a copy, and the required
+//! values that a save writes into a file without them.
 
 use std::path::{Path, PathBuf};
 
@@ -19,7 +19,9 @@ const MAXIMUM_NEW_FILE_ATTEMPTS: usize = 100;
 /// The file that the editor writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EditorFile {
-    /// A game file that exists, or that the editor saved once.
+    /// A file at a known path: a game file, a system defaults file or the
+    /// settings file. A file that did not exist when the editor read it
+    /// has no stamp, and its first save creates it.
     Existing(PathBuf),
     /// A new game whose file derives from its title until the first save.
     New(DerivedFile),
@@ -56,8 +58,8 @@ impl EditorFile {
 pub(crate) enum SaveFailure {
     /// The write failed with this error.
     Error(String),
-    /// The game file changed or went away since the editor read it, as this
-    /// text says. A save that overwrites the file can follow.
+    /// The file changed, went away or appeared since the editor read it, as
+    /// this text says. A save that overwrites the file can follow.
     ChangedOutside(String),
 }
 
@@ -87,7 +89,7 @@ pub(crate) fn fill_required(fields: &mut [Field], inherited: &[Option<Inherited>
     }
 }
 
-/// A game file that a save wrote.
+/// A file that a save wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WrittenFile {
     /// The path of the file.
@@ -98,13 +100,14 @@ pub(crate) struct WrittenFile {
 
 /// Writes `document` into `file` and returns the written file.
 ///
-/// A game file whose stamp differs from `stamp` changed since the editor
-/// read it and stays as it is, unless `overwrite` asks to write over the
-/// change. A new game or a copy takes the file name that derives from
-/// `title` at the time of the write. Its write never replaces a file: a
-/// file that takes the name first gives the next suffix. `root` gives the
-/// shown path of a message.
-pub(crate) fn write_game_file(
+/// A file whose stamp differs from `stamp` changed since the editor read it
+/// and stays as it is, unless `overwrite` asks to write over the change. A
+/// file without a stamp did not exist when the editor read it. Its first
+/// write never replaces a file that appeared since. A new game or a copy
+/// takes the file name that derives from `title` at the time of the write.
+/// Its write never replaces a file: a file that takes the name first gives
+/// the next suffix. `root` gives the shown path of a message.
+pub(crate) fn write_file(
     file: &EditorFile,
     document: &ConfigDocument,
     stamp: Option<FileStamp>,
@@ -114,12 +117,22 @@ pub(crate) fn write_game_file(
 ) -> Result<WrittenFile, SaveFailure> {
     match file {
         EditorFile::Existing(path) => {
+            let changed_outside =
+                || SaveFailure::ChangedOutside(changed_outside_message(&shown_path(path, root)));
             if !overwrite && FileStamp::of(path) != stamp {
-                return Err(SaveFailure::ChangedOutside(changed_outside_message(
-                    &shown_path(path, root),
-                )));
+                return Err(changed_outside());
             }
-            let stamp = save_document(document, path).map_err(SaveFailure::Error)?;
+            let stamp = if overwrite || stamp.is_some() {
+                save_document(document, path).map_err(SaveFailure::Error)?
+            } else {
+                create_document(document, path).map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::AlreadyExists {
+                        changed_outside()
+                    } else {
+                        SaveFailure::Error(format!("{}: {error}", path.display()))
+                    }
+                })?
+            };
             Ok(WrittenFile {
                 path: path.clone(),
                 stamp,
@@ -146,7 +159,7 @@ pub(crate) fn write_game_file(
 
 #[cfg(test)]
 mod tests {
-    use machine_factory::config::settings::{MACHINE_KEY, find_setting};
+    use machine_factory::config::settings::{Families, MACHINE_KEY, find_setting};
 
     use super::*;
     use crate::editor::{
@@ -160,7 +173,7 @@ mod tests {
         Field::read(
             EditorSection::Machine,
             FieldSource::Setting(find_setting(MACHINE_KEY).expect("table key")),
-            root.target(),
+            Families::of(root.target()),
             &ConfigDocument::new(),
             true,
         )
@@ -197,7 +210,7 @@ mod tests {
         let file = EditorFile::Existing(path.clone());
         let document = ConfigDocument::parse("meta.title = Edge 2\n");
         std::fs::write(&path, "meta.title = Changed outside\ncrt = on\n").expect("written");
-        let failure = write_game_file(&file, &document, stamp, "Edge 2", &root.root, false)
+        let failure = write_file(&file, &document, stamp, "Edge 2", &root.root, false)
             .expect_err("the file changed");
         let shown = format!("config/{}/edge.conf", root.system().name);
         assert_eq!(
@@ -209,7 +222,7 @@ mod tests {
             std::fs::read_to_string(&path).expect("file reads"),
             "meta.title = Changed outside\ncrt = on\n"
         );
-        let written = write_game_file(&file, &document, stamp, "Edge 2", &root.root, true)
+        let written = write_file(&file, &document, stamp, "Edge 2", &root.root, true)
             .expect("the overwrite writes");
         assert_eq!(written.path, path);
         assert_eq!(written.stamp, FileStamp::of(&path));
@@ -218,9 +231,50 @@ mod tests {
             std::fs::read_to_string(&path).expect("file reads"),
             "meta.title = Edge 2\n"
         );
-        let again = write_game_file(&file, &document, written.stamp, "Edge 2", &root.root, false)
+        let again = write_file(&file, &document, written.stamp, "Edge 2", &root.root, false)
             .expect("the stamp of the write matches the file");
         assert_eq!(again.stamp, FileStamp::of(&path));
+    }
+
+    /// Verifies that the first write of a file without a stamp creates it, that a file that appeared since the read stays until an overwrite, and that the stamp of the write follows the file.
+    #[test]
+    fn a_file_that_appeared_stays_until_an_overwrite() {
+        let root = EditorRoot::new("file_defaults");
+        let path = root.path(&format!("config/{}.conf", root.system().name));
+        let file = EditorFile::Existing(path.clone());
+        assert_eq!(file.derived(), None);
+        assert_eq!(file.path(), path);
+        let document = ConfigDocument::parse("crt = on\n");
+        let written =
+            write_file(&file, &document, None, "", &root.root, false).expect("the file is new");
+        assert_eq!(written.path, path);
+        assert_eq!(written.stamp, FileStamp::of(&path));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("file reads"),
+            "crt = on\n"
+        );
+
+        std::fs::remove_file(&path).expect("file is removed");
+        assert!(std::fs::symlink_metadata(&path).is_err());
+        root.write(
+            &format!("config/{}.conf", root.system().name),
+            "scaling = nearest\n",
+        );
+        let failure =
+            write_file(&file, &document, None, "", &root.root, false).expect_err("a file appeared");
+        assert!(
+            matches!(failure, SaveFailure::ChangedOutside(_)),
+            "{failure:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("file reads"),
+            "scaling = nearest\n"
+        );
+        write_file(&file, &document, None, "", &root.root, true).expect("the overwrite writes");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("file reads"),
+            "crt = on\n"
+        );
     }
 
     /// Verifies that the first write of a new game takes the name of its title at the time of the write and the next suffix of a taken name.
@@ -235,8 +289,8 @@ mod tests {
         );
         root.game("edge", "");
         let document = ConfigDocument::parse("meta.title = Edge\n");
-        let written = write_game_file(&file, &document, None, "Edge", &root.root, false)
-            .expect("the file is new");
+        let written =
+            write_file(&file, &document, None, "Edge", &root.root, false).expect("the file is new");
         assert_eq!(written.path, folder.join("edge-2.conf"));
         assert_eq!(written.stamp, FileStamp::of(&written.path));
         assert!(written.stamp.is_some());
@@ -246,7 +300,7 @@ mod tests {
         );
         root.write("blocked", "");
         let blocked = EditorFile::New(DerivedFile::new(&root.path("blocked/pc98"), ""));
-        let failure = write_game_file(&blocked, &document, None, "Edge", &root.root, false)
+        let failure = write_file(&blocked, &document, None, "Edge", &root.root, false)
             .expect_err("the folder is a file");
         assert!(matches!(failure, SaveFailure::Error(_)), "{failure:?}");
         assert_eq!(EditorFile::Existing(written.path).derived(), None);

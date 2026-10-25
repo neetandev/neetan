@@ -35,15 +35,13 @@ pub(crate) enum LayerKind {
 impl LayerKind {
     /// Returns whether a layer of this kind sets keys of `scope`.
     ///
-    /// Host keys belong to the settings file and the command line. Media keys
-    /// belong to the games.
+    /// Host keys belong to the settings file and the command line. Every
+    /// layer sets the system keys and the media keys.
     pub(crate) fn accepts(self, scope: Scope) -> bool {
         match (self, scope) {
             (LayerKind::SettingsFile | LayerKind::CommandLine, _) => true,
-            (LayerKind::SystemDefaults, Scope::System) => true,
-            (LayerKind::SystemDefaults, Scope::Host | Scope::Game) => false,
-            (LayerKind::GameFile, Scope::System | Scope::Game) => true,
-            (LayerKind::GameFile, Scope::Host) => false,
+            (LayerKind::SystemDefaults | LayerKind::GameFile, Scope::System | Scope::Game) => true,
+            (LayerKind::SystemDefaults | LayerKind::GameFile, Scope::Host) => false,
         }
     }
 }
@@ -196,8 +194,8 @@ pub(crate) fn invalid_key_binding_message(host_name: &str, native_name: &str) ->
 /// Reads the lines of `document` that a layer of `kind` accepts.
 ///
 /// Relative path values resolve against `root`. The `meta.*` keys leave the
-/// layer without a finding. An unknown key, a key of
-/// another scope, an invalid value and a line without a key leave the layer
+/// layer without a finding. An unknown key, a host key in a layer that sets
+/// no host keys, an invalid value and a line without a key leave the layer
 /// with a warning. An unknown machine leaves it with an error in a game file
 /// and with a warning elsewhere. A repeated single key stays in the layer with
 /// a warning, and its last line wins.
@@ -233,7 +231,7 @@ pub(crate) fn read_document(
             continue;
         };
         if !kind.accepts(setting.scope) {
-            diagnostics.push(Diagnostic::warning(line, out_of_scope_message(setting)));
+            diagnostics.push(Diagnostic::warning(line, host_key_message(setting)));
             continue;
         }
         if setting.key == MACHINE_KEY && value.parse::<MachineSelection>().is_err() {
@@ -308,19 +306,12 @@ pub(crate) fn is_foreign_machine(value: &str, target: Target) -> bool {
         .is_ok_and(|model| model.target() == target)
 }
 
-/// Returns the message of a line whose scope the layer does not set.
-fn out_of_scope_message(setting: &Setting) -> String {
-    match setting.scope {
-        Scope::Host => format!(
-            "host key {} is ignored. Only the settings file and the command line set host keys.",
-            setting.key
-        ),
-        Scope::Game => format!(
-            "media key {} is ignored. Media keys belong to the game files.",
-            setting.key
-        ),
-        Scope::System => format!("key {} is ignored.", setting.key),
-    }
+/// Returns the message of a host key line in a layer that sets no host keys.
+fn host_key_message(setting: &Setting) -> String {
+    format!(
+        "host key {} is ignored. Only the settings file and the command line set host keys.",
+        setting.key
+    )
 }
 
 #[cfg(test)]
@@ -387,11 +378,12 @@ mod tests {
         assert_eq!(
             findings(
                 LayerKind::SystemDefaults,
-                "fdd1 = a.d88\nmachine = X68030\n"
+                "fdd1 = a.d88\nhdd1 =\nbackend = legacy\nmachine = X68030\n"
             ),
             vec![
-                "Warning line 1: media key fdd1 is ignored. Media keys belong to the game files.",
-                "Warning line 2: unknown machine X68030",
+                "Warning line 3: host key backend is ignored. Only the settings file and the \
+                 command line set host keys.",
+                "Warning line 4: unknown machine X68030",
             ]
         );
         assert_eq!(

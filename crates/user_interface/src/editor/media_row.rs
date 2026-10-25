@@ -2,7 +2,10 @@
 //! that empties the drive over its inherited list, and the note below the
 //! list.
 
-use gui::{Rect, ui::UiContext};
+use gui::{
+    Rect,
+    ui::{Truncation, UiContext},
+};
 use machine_factory::config::settings::Setting;
 
 use super::{
@@ -52,7 +55,7 @@ impl Editor {
         let theme = context.theme;
         let id = field_id(setting.key);
         let enabled = ignored.is_none();
-        let types = setting.file_types_for(self.target);
+        let types = self.file_types(setting);
         let field = &self.fields[index];
         let has_images = !field.images().is_empty();
         let empty_list = field.is_empty_list();
@@ -83,6 +86,11 @@ impl Editor {
             Some(note) => note.clone(),
             None => empty_drive_hint(types, inherited.as_ref(), empty_list),
         };
+        let hint_truncation = if ignored.is_none() && inherits_images && !empty_list {
+            Truncation::Middle
+        } else {
+            Truncation::End
+        };
         let caption = empty_list_caption(types);
         let missing: Vec<usize> = self.missing[index]
             .iter()
@@ -99,6 +107,7 @@ impl Editor {
             missing: &self.missing[index],
             enabled,
             hint: &hint,
+            hint_truncation,
             empty_list_caption: shows_toggle.then_some(caption.as_str()),
             empty_list,
         }
@@ -125,7 +134,8 @@ impl Editor {
             row += empty_list_height(theme);
             below_top += empty_list_height(theme);
         }
-        let note = below_note(enabled, &missing, set, inherited.as_ref());
+        let note = below_note(enabled, &missing, set, inherited.as_ref())
+            .followed_by(self.extra_note(setting));
         if !note.text.is_empty() {
             let below = Rect::new(
                 wide.x,
@@ -142,19 +152,18 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    use machine_factory::config::settings::{MODEL_CHOICES, find_setting};
+    use machine_factory::config::settings::find_setting;
 
     use super::*;
     use crate::{
         editor::{
-            EditorSection, inherited::InheritedSource, notes::MISSING_IMAGE_NOTE,
-            test_support::EditorRoot,
+            EditorSection,
+            inherited::InheritedSource,
+            notes::MISSING_IMAGE_NOTE,
+            test_support::{EditorRoot, SCREEN, fdd1_model, index_of},
         },
         gui_test_support::GuiHarness,
     };
-
-    /// The window above the status line in the tests.
-    const SCREEN: Rect = Rect::new(0.0, 0.0, 960.0, 572.0);
 
     /// Verifies that the warning of missing images wins over the inherited list, that only a set list shows the inherited list and that a disabled list shows nothing.
     #[test]
@@ -164,12 +173,12 @@ mod tests {
             source: InheritedSource::SettingsFile,
         };
         let warning = below_note(true, &[2], true, Some(&inherited));
-        assert!(warning.warning);
+        assert!(warning.is_warning());
         assert!(warning.text.starts_with("Image 3 does not exist."));
         assert_ne!(warning.text, MISSING_IMAGE_NOTE);
         assert_eq!(
             below_note(true, &[], true, Some(&inherited)),
-            Note::plain("Settings default: games/boot.d88.")
+            Note::plain("Settings default: games/boot.d88.").shown_as_path()
         );
         assert_eq!(
             below_note(true, &[], false, Some(&inherited)),
@@ -188,20 +197,12 @@ mod tests {
         root.write("neetan.conf", "fdd1 = games/boot.d88\n");
         root.write("games/own.d88", "");
         let fdd1 = find_setting("fdd1").expect("fdd1 is a table key");
-        let model = MODEL_CHOICES
-            .iter()
-            .map(|choice| choice.value)
-            .find(|model| fdd1.is_read_by(root.target(), model))
-            .expect("a model of the family reads fdd1");
+        let model = fdd1_model(&root);
         let height = |contents: &str| {
             let path = root.game("edge", &format!("machine = {model}\n{contents}"));
             let mut editor =
                 Editor::open(&root.host(), root.system(), &path).expect("the editor opens");
-            let index = editor
-                .fields
-                .iter()
-                .position(|field| field.key() == "fdd1")
-                .expect("fdd1 field");
+            let index = index_of(&editor, "fdd1");
             assert_eq!(editor.fields[index].section, EditorSection::Media);
             let mut harness = GuiHarness::new(960, 600);
             harness.frame(|context| {

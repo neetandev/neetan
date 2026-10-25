@@ -14,11 +14,11 @@ use std::path::{Path, PathBuf};
 
 use common::{StringError, bail, info, warn};
 use machine_factory::config::{
-    DEFAULT_CONFIG_FOLDER, DEFAULT_GUI_FONT, DEFAULT_ROMS_FOLDER, EmulatorConfig, MachineSelection,
-    Target,
+    DEFAULT_AUDIO_VOLUME, DEFAULT_BACKEND, DEFAULT_CONFIG_FOLDER, DEFAULT_GUI_FONT,
+    DEFAULT_ROMS_FOLDER, EmulatorConfig, MachineSelection, Target,
     settings::{
-        CONFIG_FOLDER_KEY, ExplicitSettings, GUI_FONT_KEY, MACHINE_KEY, ROMS_FOLDER_KEY, Setting,
-        apply_derived_defaults,
+        AUDIO_VOLUME_KEY, BACKEND_KEY, CONFIG_FOLDER_KEY, ExplicitSettings, GUI_FONT_KEY,
+        MACHINE_KEY, ROMS_FOLDER_KEY, Setting, apply_derived_defaults,
     },
     systems::{System, apply_rom_folder_defaults, compiled_systems, system_of},
 };
@@ -36,6 +36,28 @@ use crate::input::KeyOverrides;
 
 /// File extension of the system defaults files and the game files.
 pub const CONFIG_FILE_EXTENSION: &str = "conf";
+
+/// Returns the built-in value of the host key `key` as the settings file
+/// writes it. A ROM key has none: its folder derives from the ROM folder.
+#[must_use]
+pub(crate) fn host_default(key: &str) -> Option<String> {
+    match key {
+        CONFIG_FOLDER_KEY => Some(DEFAULT_CONFIG_FOLDER.to_owned()),
+        ROMS_FOLDER_KEY => Some(DEFAULT_ROMS_FOLDER.to_owned()),
+        GUI_FONT_KEY => Some(DEFAULT_GUI_FONT.to_owned()),
+        BACKEND_KEY => Some(DEFAULT_BACKEND.to_string()),
+        AUDIO_VOLUME_KEY => Some(format!("{DEFAULT_AUDIO_VOLUME:?}")),
+        _ => None,
+    }
+}
+
+/// Returns the absolute folder of the folder key value `value` below
+/// `root`, or the built-in folder `default` for an unset or empty value.
+#[must_use]
+pub(crate) fn folder_location(root: &Path, value: Option<&str>, default: &str) -> PathBuf {
+    let value = value.filter(|value| !value.is_empty()).unwrap_or(default);
+    resolve_path(root, Path::new(value))
+}
 
 /// The command line inputs of a launch.
 #[derive(Debug, Clone, Default)]
@@ -256,22 +278,26 @@ impl HostLayers {
             .find_map(|layer| layer.last_value(key))
     }
 
-    /// Returns the config folder as an absolute path.
+    /// Returns the config folder as an absolute path. An empty value
+    /// takes the built-in folder.
     #[must_use]
     pub fn config_folder(&self) -> PathBuf {
-        let folder = self
-            .host_value(CONFIG_FOLDER_KEY)
-            .map_or_else(|| PathBuf::from(DEFAULT_CONFIG_FOLDER), PathBuf::from);
-        resolve_path(self.root(), &folder)
+        folder_location(
+            self.root(),
+            self.host_value(CONFIG_FOLDER_KEY),
+            DEFAULT_CONFIG_FOLDER,
+        )
     }
 
-    /// Returns the ROM folder as an absolute path.
+    /// Returns the ROM folder as an absolute path. An empty value takes the
+    /// built-in folder.
     #[must_use]
     pub fn roms_folder(&self) -> PathBuf {
-        let folder = self
-            .host_value(ROMS_FOLDER_KEY)
-            .map_or_else(|| PathBuf::from(DEFAULT_ROMS_FOLDER), PathBuf::from);
-        resolve_path(self.root(), &folder)
+        folder_location(
+            self.root(),
+            self.host_value(ROMS_FOLDER_KEY),
+            DEFAULT_ROMS_FOLDER,
+        )
     }
 
     /// Returns the absolute paths searched for the font file of the user
@@ -574,7 +600,8 @@ mod tests {
     use super::*;
     use crate::config::{
         test_support::{
-            TestLocations, first_model, touch, with_first_model, with_machine, write_file,
+            TestLocations, first_model, first_model_config, touch, with_first_model, with_machine,
+            write_file,
         },
         *,
     };
@@ -639,6 +666,29 @@ mod tests {
         assert_eq!(config.pc98_roms, Some(root.join("roms").join("pc98")));
         assert_eq!(config.config_folder, root.join("config"));
         assert_eq!(config.roms_folder, root.join("roms"));
+        let host =
+            HostLayers::read(&LaunchRequest::default(), &test.locations).expect("settings read");
+        assert_eq!(host.config_folder(), config.config_folder);
+        assert_eq!(host.roms_folder(), config.roms_folder);
+    }
+
+    /// Verifies that the built-in value of every host key matches the built-in configuration as the settings file writes it.
+    #[test]
+    fn host_defaults_match_the_built_in_configuration() {
+        use machine_factory::config::settings::{SETTINGS, Scope};
+
+        let config = first_model_config();
+        for setting in SETTINGS
+            .iter()
+            .filter(|setting| setting.scope == Scope::Host)
+        {
+            assert_eq!(
+                host_default(setting.key).into_iter().collect::<Vec<_>>(),
+                (setting.format)(&config),
+                "{}",
+                setting.key
+            );
+        }
     }
 
     /// Verifies that relative paths of files resolve against the root and those of flags against the current directory.
@@ -758,7 +808,7 @@ mod tests {
     }
 
     #[cfg(feature = "pc98")]
-    /// Verifies that host keys apply only from the settings file and media keys never from the system defaults.
+    /// Verifies that host keys apply only from the settings file and the command line, and that the media keys of the system defaults give way to those of the game.
     #[test]
     fn layers_ignore_keys_outside_their_scope() {
         let test = TestLocations::new("scopes");
@@ -768,7 +818,7 @@ mod tests {
             &root.join("config").join("pc98.conf"),
             "backend = legacy\nfdd1 = system.d88\nsoundboard = 26k\nconfig-folder = elsewhere\n",
         );
-        touch(&[&root.join("game.d88")]);
+        touch(&[&root.join("game.d88"), &root.join("system.d88")]);
         let game = root.join("game.conf");
         write_file(
             &game,
@@ -793,6 +843,52 @@ mod tests {
         let config = test.build(&with_machine(LaunchRequest::default()));
         assert_eq!(config.backend, Backend::Legacy);
         assert!((config.audio_volume - 0.5).abs() < f32::EPSILON);
+    }
+
+    /// Verifies that the media keys of the system defaults apply, that the first value of a game file replaces the list and that an empty value of a game file clears it.
+    #[test]
+    fn system_defaults_media_apply_until_a_game_replaces_or_clears_them() {
+        let test = TestLocations::new("system_media");
+        let root = test.current().to_path_buf();
+        let system = compiled_systems().next().expect("one system is compiled");
+        write_file(&root.join(SETTINGS_FILE_NAME), "fdd1 = settings.d88\n");
+        touch(&[
+            &root.join("settings.d88"),
+            &root.join("system_a.d88"),
+            &root.join("system_b.d88"),
+            &root.join("system.hdi"),
+            &root.join("game.d88"),
+        ]);
+        write_file(
+            &root
+                .join("config")
+                .join(system.name)
+                .with_extension(CONFIG_FILE_EXTENSION),
+            "fdd1 = system_a.d88\nfdd1 = system_b.d88\nhdd1 = system.hdi\n",
+        );
+        let config = test.build(&with_machine(LaunchRequest::default()));
+        assert_eq!(
+            config.fdd1,
+            vec![root.join("system_a.d88"), root.join("system_b.d88")]
+        );
+        assert_eq!(config.hdd1, Some(root.join("system.hdi")));
+
+        let game = root.join("game.conf");
+        let with_game = || {
+            with_machine(LaunchRequest {
+                game_files: vec![game.clone()],
+                ..LaunchRequest::default()
+            })
+        };
+        write_file(&game, "fdd1 = game.d88\n");
+        let config = test.build(&with_game());
+        assert_eq!(config.fdd1, vec![root.join("game.d88")]);
+        assert_eq!(config.hdd1, Some(root.join("system.hdi")));
+
+        write_file(&game, "fdd1 =\nhdd1 =\n");
+        let config = test.build(&with_game());
+        assert!(config.fdd1.is_empty());
+        assert_eq!(config.hdd1, None);
     }
 
     #[cfg(feature = "pc98")]

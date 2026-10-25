@@ -53,6 +53,20 @@ pub(crate) fn read_document(path: &Path) -> Result<(ConfigDocument, FileStamp), 
     read_document_with(path, |file, bytes| file.read_to_end(bytes).map(drop))
 }
 
+/// Reads the document of the file at `path` and the stamp of its bytes as
+/// [`read_document`] does. A missing file gives an empty document without a
+/// stamp.
+pub(crate) fn read_optional_document(
+    path: &Path,
+) -> Result<(ConfigDocument, Option<FileStamp>), String> {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok((ConfigDocument::new(), None))
+        }
+        Ok(_) | Err(_) => read_document(path).map(|(document, stamp)| (document, Some(stamp))),
+    }
+}
+
 /// Reads the document of the file at `path` as [`read_document`] does, with
 /// `read_bytes` for each read of the bytes from the start of the open file.
 fn read_document_with(
@@ -160,7 +174,7 @@ fn reserve_and_fill<T>(
 mod tests {
     use std::collections::BTreeMap;
 
-    use machine_factory::config::MachineSelection;
+    use machine_factory::config::{MachineSelection, settings::Families};
 
     use super::*;
     use crate::{
@@ -176,7 +190,15 @@ mod tests {
     fn fields(root: &EditorRoot, document: &ConfigDocument) -> Vec<Field> {
         form_fields(root.target())
             .into_iter()
-            .map(|(section, source)| Field::read(section, source, root.target(), document, false))
+            .map(|(section, source)| {
+                Field::read(
+                    section,
+                    source,
+                    Families::of(root.target()),
+                    document,
+                    false,
+                )
+            })
             .collect()
     }
 
@@ -423,7 +445,9 @@ mod tests {
                 let document = ConfigDocument::from_bytes(&original).expect("UTF-8");
                 let fields: Vec<Field> = form_fields(target)
                     .into_iter()
-                    .map(|(section, source)| Field::read(section, source, target, &document, false))
+                    .map(|(section, source)| {
+                        Field::read(section, source, Families::of(target), &document, false)
+                    })
                     .collect();
                 assert!(
                     fields.iter().all(|field| !field.changed()),
@@ -449,7 +473,9 @@ mod tests {
                 let reread = ConfigDocument::parse(&text);
                 let fields: Vec<Field> = form_fields(target)
                     .into_iter()
-                    .map(|(section, source)| Field::read(section, source, target, &reread, false))
+                    .map(|(section, source)| {
+                        Field::read(section, source, Families::of(target), &reread, false)
+                    })
                     .collect();
                 save_document(&edited_document(&reread, &fields), &copy).expect("copy saves");
                 assert_eq!(

@@ -15,8 +15,8 @@ use machine_factory::config::{
 use self::layers::build_host_configuration;
 pub use self::{
     discovery::{
-        Locations, SETTINGS_FILE_NAME, SettingsLocation, discover_settings, resolve_path,
-        resolve_value,
+        Locations, SETTINGS_FILE_NAME, SettingsLocation, SettingsSource, discover_settings,
+        resolve_path, resolve_value,
     },
     document::{ConfigDocument, DocumentEntry, DocumentError, LineContent, parse_line},
     layers::{CONFIG_FILE_EXTENSION, HostLayers, LaunchRequest, ModelSource, build_configuration},

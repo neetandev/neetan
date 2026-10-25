@@ -145,6 +145,9 @@ pub(crate) struct MediaList<'a> {
     pub(crate) enabled: bool,
     /// The text of a list without images: the empty drive or why the model has no drive.
     pub(crate) hint: &'a str,
+    /// The cut of a hint wider than the list. A hint with inherited images
+    /// cuts in the middle, a sentence cuts at its end.
+    pub(crate) hint_truncation: Truncation,
     /// The caption of the checkbox below a list without images that empties
     /// the drive over its inherited list. `None` draws no checkbox.
     pub(crate) empty_list_caption: Option<&'a str>,
@@ -195,7 +198,7 @@ impl MediaList<'_> {
                 &theme.small().with_color(color),
                 self.hint,
                 Align::Center,
-                Truncation::End,
+                self.hint_truncation,
             );
         } else {
             let numbers: Vec<String> = (1..=values.len()).map(|place| place.to_string()).collect();
@@ -393,6 +396,7 @@ mod tests {
                     missing: &missing,
                     enabled: true,
                     hint: "Empty",
+                    hint_truncation: Truncation::End,
                     empty_list_caption: None,
                     empty_list: false,
                 }
@@ -459,6 +463,7 @@ mod tests {
                 missing: &[],
                 enabled: false,
                 hint: "PC9801RA has no CD-ROM drive.",
+                hint_truncation: Truncation::End,
                 empty_list_caption: Some("Start without a disc"),
                 empty_list: false,
             }
@@ -482,6 +487,7 @@ mod tests {
                     missing: &[],
                     enabled: true,
                     hint: "Empty",
+                    hint_truncation: Truncation::End,
                     empty_list_caption: None,
                     empty_list: false,
                 }
@@ -518,6 +524,7 @@ mod tests {
                     missing: &[],
                     enabled: true,
                     hint: "Settings default: games/boot.d88",
+                    hint_truncation: Truncation::Middle,
                     empty_list_caption: Some("Start without a disk"),
                     empty_list: *empty_list,
                 }
