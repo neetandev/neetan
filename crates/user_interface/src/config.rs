@@ -937,7 +937,8 @@ mod tests {
         let _ = test.parse(&with_first_model(&arguments));
     }
 
-    /// Verifies that the reference configuration lists the table keys and documents every grouped setting.
+    /// Verifies that the reference configuration lists the table keys and the metadata keys and documents
+    /// every grouped setting and every metadata key.
     #[test]
     fn reference_configuration_documents_every_editor_setting() {
         let reference = include_str!("../../../configuration/default.conf");
@@ -948,6 +949,16 @@ mod tests {
                 continue;
             };
             if key.starts_with("key.") || key.contains(' ') {
+                continue;
+            }
+            if key.starts_with(metadata::META_PREFIX) {
+                assert!(
+                    metadata::METADATA_FIELDS
+                        .iter()
+                        .any(|field| field.key == key),
+                    "{key} is not a metadata key"
+                );
+                documented.push(key);
                 continue;
             }
             if !cfg!(feature = "pc88") && PC88_FEATURE_KEYS.contains(&key) {
@@ -961,6 +972,13 @@ mod tests {
                 documented.contains(&setting.key),
                 "{} is missing from configuration/default.conf",
                 setting.key
+            );
+        }
+        for field in metadata::METADATA_FIELDS {
+            assert!(
+                documented.contains(&field.key),
+                "{} is missing from configuration/default.conf",
+                field.key
             );
         }
     }
