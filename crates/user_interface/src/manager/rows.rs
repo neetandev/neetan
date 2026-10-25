@@ -4,7 +4,10 @@ use std::path::{Path, PathBuf};
 
 use machine_factory::config::systems::System;
 
-use crate::catalog::{CatalogEntry, SystemCatalog};
+use crate::{
+    catalog::{CatalogEntry, SystemCatalog},
+    config::Diagnostic,
+};
 
 /// One game file of the library.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,10 +34,8 @@ pub(crate) struct GameRow {
     pub(crate) path: PathBuf,
     /// The path of the game file to show: below the root when the file lies there.
     pub(crate) shown_path: String,
-    /// The first error of the file without its location. A file with an error cannot start.
-    pub(crate) error: Option<String>,
-    /// The first error of the file with the shown path and the line.
-    pub(crate) located_error: Option<String>,
+    /// The first error of the file. A file with an error cannot start.
+    pub(crate) error: Option<Diagnostic>,
 }
 
 impl GameRow {
@@ -53,8 +54,7 @@ impl GameRow {
             year: entry.metadata.year(),
             model: entry.model,
             path: entry.path.clone(),
-            error: first_error.map(ToString::to_string),
-            located_error: first_error.map(|diagnostic| diagnostic.located(&shown_path)),
+            error: first_error.cloned(),
             shown_path,
         }
     }
@@ -98,6 +98,7 @@ pub(crate) mod tests {
     use machine_factory::config::systems::compiled_systems;
 
     use super::*;
+    use crate::config::DiagnosticKind;
 
     /// Returns a launchable row of the first compiled system with the file
     /// stem `stem`, the title `title`, the original title `original`, the
@@ -124,7 +125,6 @@ pub(crate) mod tests {
             shown_path: format!("config/{identity}"),
             identity,
             error: None,
-            located_error: None,
         }
     }
 
@@ -132,8 +132,10 @@ pub(crate) mod tests {
     pub(crate) fn broken(stem: &str) -> GameRow {
         let row = game(stem, "", "", "", "");
         GameRow {
-            error: Some("line 1: unknown machine X68030".to_owned()),
-            located_error: Some(format!("{} line 1: unknown machine X68030", row.shown_path)),
+            error: Some(Diagnostic::error(
+                1,
+                DiagnosticKind::UnknownMachine("X68030".to_owned()),
+            )),
             ..row
         }
     }

@@ -14,25 +14,32 @@ use machine_factory::config::{
 
 use self::layers::build_host_configuration;
 pub use self::{
+    diagnostic::{Diagnostic, DiagnosticKind, Severity},
     discovery::{
         LANGUAGE_FOLDER, LanguageFile, Locations, SETTINGS_FILE_NAME, SettingsLocation,
         SettingsSource, compare_tags, discover_settings, find_language_files, resolve_path,
         resolve_value,
     },
     document::{ConfigDocument, DocumentEntry, DocumentError, LineContent, parse_line},
+    launch_error::{LaunchError, LaunchFailure},
     layers::{
         CONFIG_FILE_EXTENSION, GuiResources, HostLayers, LaunchRequest, ModelSource,
         build_configuration,
     },
     metadata::GameMetadata,
-    reading::{Diagnostic, Severity, check_value},
+    reading::check_value,
 };
-use crate::input::KeyOverrides;
+use crate::{
+    input::KeyOverrides,
+    texts::{english, setting_help},
+};
 
 mod atomic_file;
+pub(crate) mod diagnostic;
 mod discovery;
 pub mod document;
 pub(crate) mod keymap;
+pub(crate) mod launch_error;
 pub(crate) mod layers;
 pub mod metadata;
 pub(crate) mod reading;
@@ -131,10 +138,11 @@ fn default_description(setting: &Setting, defaults: &[(&'static str, EmulatorCon
     format!(" Default: {}.", listed.join(", "))
 }
 
-/// Returns the description of a setting in the `--help` list: the help text,
-/// the values, the families that read it and the built-in default.
+/// Returns the description of a setting in the `--help` list: the help text
+/// of the English catalog, the values, the families that read it and the
+/// built-in default.
 fn setting_description(setting: &Setting, defaults: &[(&'static str, EmulatorConfig)]) -> String {
-    let mut description = setting.help.to_owned();
+    let mut description = setting_help(english(), setting).to_owned();
     match setting.kind {
         ValueKind::Choice(choices) => {
             let compiled = Families::compiled();
@@ -148,8 +156,8 @@ fn setting_description(setting: &Setting, defaults: &[(&'static str, EmulatorCon
         ValueKind::Number(range) => {
             description.push_str(&format!(
                 " Range {} to {}.",
-                format_range_end(range.minimum, range.integer),
-                format_range_end(range.maximum, range.integer)
+                range.minimum_end(),
+                range.maximum_end()
             ));
         }
         ValueKind::OnOff | ValueKind::Path(_) | ValueKind::PathList | ValueKind::Language => {}
@@ -160,15 +168,6 @@ fn setting_description(setting: &Setting, defaults: &[(&'static str, EmulatorCon
     }
     description.push_str(&default_description(setting, defaults));
     description
-}
-
-/// Formats one end of a number range: a whole number, or a decimal number with one fractional digit.
-fn format_range_end(value: f64, integer: bool) -> String {
-    if integer {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.1}")
-    }
 }
 
 /// Builds the option list of `--help` from the settings table and the flags outside it.
@@ -722,7 +721,7 @@ fn parse_command_line(args: impl IntoIterator<Item = String>) -> crate::Result<C
                     | ValueKind::Language => flag_value(&flag, inline_value, &mut args)?,
                 };
                 check_value(setting, &value)
-                    .map_err(|message| StringError(format!("{flag}: {message}")))?;
+                    .map_err(|error| StringError(format!("{flag}: {error}")))?;
                 request.flags.push((setting, value));
             }
         }
@@ -913,7 +912,7 @@ mod tests {
         );
         assert_eq!(
             parse_error(&["--pc6000-phase", "4"]),
-            "--pc6000-phase: invalid composite phase '4', expected 0, 1, 2 or 3"
+            "--pc6000-phase: invalid value '4', expected a number from 0 to 3"
         );
         assert!(parse_error(&["--audio-volume", "1.5"]).starts_with("--audio-volume: "));
         assert!(parse_error(&["--force-gdc-clock", "3"]).starts_with("--force-gdc-clock: "));
@@ -1198,7 +1197,9 @@ mod tests {
 
     #[test]
     fn unknown_machine_is_rejected() {
-        assert!(parse_error(&["--machine", "FOOBAR"]).starts_with("--machine: unknown machine"));
+        assert!(
+            parse_error(&["--machine", "FOOBAR"]).starts_with("--machine: unknown value 'FOOBAR'")
+        );
     }
 
     #[test]

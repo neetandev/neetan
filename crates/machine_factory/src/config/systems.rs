@@ -252,22 +252,19 @@ pub fn derived_rom_folder(folder: &RomFolder, roms_folder: &Path) -> Option<Path
 }
 
 /// Sets every unset ROM key of `config` to its derived folder below `roms_folder`.
-pub fn apply_rom_folder_defaults(
-    config: &mut EmulatorConfig,
-    roms_folder: &Path,
-) -> Result<(), String> {
+///
+/// Every ROM key is a folder key of the settings table that takes any path. A table without the
+/// key or a folder that the key rejects is a fault of the tables and panics.
+pub fn apply_rom_folder_defaults(config: &mut EmulatorConfig, roms_folder: &Path) {
     for folder in rom_folders() {
-        let Some(setting) = find_setting(folder.key) else {
-            return Err(format!("{} is not a settings key", folder.key));
-        };
+        let setting = find_setting(folder.key).expect("every ROM key is a table key");
         if !(setting.format)(config).is_empty() {
             continue;
         }
         if let Some(path) = derived_rom_folder(&folder, roms_folder) {
-            (setting.apply)(config, &path.to_string_lossy())?;
+            (setting.apply)(config, &path.to_string_lossy()).expect("a ROM key takes any path");
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -358,7 +355,7 @@ mod tests {
             x1_roms: Some(PathBuf::from("/explicit/x1")),
             ..first_system_config()
         };
-        apply_rom_folder_defaults(&mut config, roms).expect("derivation applies");
+        apply_rom_folder_defaults(&mut config, roms);
         assert_eq!(config.x1_roms, Some(PathBuf::from("/explicit/x1")));
         assert_eq!(config.at_roms, Some(roms.join("at")));
         assert_eq!(config.pc98_roms, None);

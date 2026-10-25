@@ -204,10 +204,10 @@ mod tests {
     /// Verifies that the warning of missing images wins over the inherited list, that only a set list shows the inherited list and that a disabled list shows nothing.
     #[test]
     fn the_note_below_a_list_warns_first_and_shows_the_inherited_list_of_a_set_list() {
-        let inherited = Inherited {
-            values: vec!["games/boot.d88".to_owned()],
-            source: InheritedSource::SettingsFile,
-        };
+        let inherited = Inherited::new(
+            vec!["games/boot.d88".to_owned()],
+            InheritedSource::SettingsFile,
+        );
         let below_note = |enabled: bool, missing: &[bool], set: bool| {
             english_note(|writer| below_note(writer, enabled, missing, set, Some(&inherited)))
         };

@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
     config::{ConfigDocument, DocumentError},
-    texts::{english, errors},
+    texts::{english, errors, in_catalog},
 };
 
 /// The most reads of a game file that another program writes during the read.
@@ -59,8 +59,8 @@ pub(crate) enum OpenError {
     Failed {
         /// The path of the file.
         path: PathBuf,
-        /// The error of the operating system or of the document in English.
-        error: String,
+        /// The error of the read.
+        error: DocumentError,
     },
     /// The entry at this path is a folder or another entry without the bytes
     /// of a file.
@@ -74,10 +74,10 @@ pub(crate) enum OpenError {
 
 impl OpenError {
     /// The fault of the file at `path` that did not read with `error`.
-    pub(crate) fn failed(path: &Path, error: &dyn fmt::Display) -> Self {
+    pub(crate) fn failed(path: &Path, error: DocumentError) -> Self {
         Self::Failed {
             path: path.to_path_buf(),
-            error: error.to_string(),
+            error,
         }
     }
 
@@ -85,7 +85,8 @@ impl OpenError {
     pub(crate) fn write(&self, catalog: &Catalog, out: &mut impl fmt::Write) -> fmt::Result {
         match self {
             Self::Failed { path, error } => {
-                catalog.write(out, errors::path_error(&path.display(), error))
+                let error = in_catalog(catalog, error);
+                catalog.write(out, errors::path_error(&path.display(), &error))
             }
             Self::NoFile(path) => catalog.write(out, errors::no_file(&path.display())),
             Self::KeptWriting(path) => catalog.write(out, errors::kept_writing(&path.display())),
@@ -132,8 +133,8 @@ fn read_document_with(
     path: &Path,
     mut read_bytes: impl FnMut(&mut File, &mut Vec<u8>) -> std::io::Result<()>,
 ) -> Result<(ConfigDocument, FileStamp), OpenError> {
-    let failed = |error: DocumentError| OpenError::failed(path, &error);
-    let read_error = |error: std::io::Error| failed(DocumentError::Read(error));
+    let failed = |error: DocumentError| OpenError::failed(path, error);
+    let read_error = |error: std::io::Error| failed(DocumentError::read(&error));
     let mut file = File::open(path).map_err(read_error)?;
     let stamp = |file: &File| {
         let metadata = file.metadata().map_err(read_error)?;

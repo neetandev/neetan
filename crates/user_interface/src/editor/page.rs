@@ -321,7 +321,7 @@ impl Editor {
                 texts
                     .warning
                     .text_in(catalog, generation, revision, |catalog, _, out| {
-                        let _ = catalog.write(out, warning.message());
+                        warning.write(catalog, out);
                     })
             });
         let title_style = theme.title();

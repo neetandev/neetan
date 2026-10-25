@@ -12,11 +12,11 @@
 
 use std::path::{Path, PathBuf};
 
-use common::{StringError, bail, info, warn};
+use common::{info, warn};
 use machine_factory::config::{
     DEFAULT_AUDIO_VOLUME, DEFAULT_BACKEND, DEFAULT_CONFIG_FOLDER, DEFAULT_GUI_FONT,
     DEFAULT_GUI_LANGUAGE, DEFAULT_GUI_THEME, DEFAULT_ROMS_FOLDER, EmulatorConfig, GuiLanguage,
-    MachineSelection, Target,
+    MachineSelection, Target, parse_model,
     settings::{
         AUDIO_VOLUME_KEY, BACKEND_KEY, CONFIG_FOLDER_KEY, ExplicitSettings, GUI_FONT_KEY,
         GUI_LANGUAGE_KEY, GUI_THEME_KEY, MACHINE_KEY, ROMS_FOLDER_KEY, Setting,
@@ -26,15 +26,17 @@ use machine_factory::config::{
 };
 
 use super::{
+    diagnostic::{Diagnostic, DiagnosticKind, Severity},
     discovery::{
         LANGUAGE_FOLDER, Locations, SettingsLocation, discover_settings, resolve_path,
         resource_folder,
     },
     document::{ConfigDocument, DocumentError},
     keymap::parse_key_binding,
+    launch_error::LaunchError,
     reading::{
-        Diagnostic, FileReading, Layer, LayerKind, LayerLine, Severity, foreign_machine_message,
-        invalid_key_binding_message, is_foreign_machine, read_document, read_game_document,
+        FileReading, Layer, LayerKind, LayerLine, is_foreign_machine, read_document,
+        read_game_document,
     },
 };
 use crate::input::KeyOverrides;
@@ -84,10 +86,15 @@ pub struct LaunchRequest {
 
 /// Fails with the first error of `diagnostics`, the findings about the file
 /// at `source`, and logs each warning before it.
-fn check_diagnostics(diagnostics: &[Diagnostic], source: &str) -> crate::Result<()> {
+fn check_diagnostics(diagnostics: &[Diagnostic], source: &str) -> Result<(), LaunchError> {
     for diagnostic in diagnostics {
         match diagnostic.severity {
-            Severity::Error => bail!("{}", diagnostic.located(source)),
+            Severity::Error => {
+                return Err(LaunchError::Diagnostic {
+                    source: source.to_owned(),
+                    diagnostic: diagnostic.clone(),
+                });
+            }
             Severity::Warning => warn!("{}", diagnostic.located(source)),
         }
     }
@@ -105,9 +112,11 @@ fn read_layer(
     file: &Path,
     root: &Path,
     folder_system: Option<&'static System>,
-) -> crate::Result<(Layer, Vec<Diagnostic>)> {
-    let document = ConfigDocument::load(file)
-        .map_err(|error| StringError(format!("Failed to read {}: {error}", file.display())))?;
+) -> Result<(Layer, Vec<Diagnostic>), LaunchError> {
+    let document = ConfigDocument::load(file).map_err(|error| LaunchError::ReadFailed {
+        path: file.to_path_buf(),
+        error,
+    })?;
     let source = file.display().to_string();
     let reading = match kind {
         LayerKind::GameFile => read_game_document(&document, root, folder_system),
@@ -135,11 +144,6 @@ pub enum ModelSource {
     BuiltIn,
 }
 
-/// The error of a launch without a machine.
-pub(crate) const NO_MACHINE_MESSAGE: &str = "the game needs a machine: set machine in the game \
-     file or in the settings file, pass --machine, or put the game file into the folder of its \
-     system";
-
 /// Returns the family of a launch.
 ///
 /// The family comes from the first source of: the `machine` of the command
@@ -151,7 +155,7 @@ pub(crate) fn launch_target(
     games: &[Layer],
     launch_system: Option<&'static System>,
     settings: Option<&Layer>,
-) -> Result<Target, String> {
+) -> Result<Target, LaunchError> {
     let launch_machine = std::iter::once(command_line)
         .chain(games.iter().rev())
         .find_map(|layer| layer.last_value(MACHINE_KEY));
@@ -160,10 +164,10 @@ pub(crate) fn launch_target(
         .or(launch_system.map(|system| system.default_model))
         .or(settings_machine);
     match family_model {
-        Some(model) => model
-            .parse::<MachineSelection>()
-            .map(MachineSelection::target),
-        None => Err(NO_MACHINE_MESSAGE.to_owned()),
+        Some(model) => parse_model(model)
+            .map(MachineSelection::target)
+            .map_err(LaunchError::Machine),
+        None => Err(LaunchError::NoMachine),
     }
 }
 
@@ -240,7 +244,7 @@ pub struct HostLayers {
 
 impl HostLayers {
     /// Finds and reads the settings file of `request` and takes its command line flags.
-    pub fn read(request: &LaunchRequest, locations: &Locations) -> crate::Result<Self> {
+    pub fn read(request: &LaunchRequest, locations: &Locations) -> Result<Self, LaunchError> {
         let location = discover_settings(request.settings.as_deref(), locations)?;
         match &location.file {
             Some(file) => info!("Settings file: {}", file.display()),
@@ -408,7 +412,7 @@ pub(crate) fn folder_system(file: &Path, config_folder: &Path) -> Option<&'stati
 pub fn build_configuration(
     request: &LaunchRequest,
     locations: &Locations,
-) -> crate::Result<(EmulatorConfig, KeyOverrides)> {
+) -> Result<(EmulatorConfig, KeyOverrides), LaunchError> {
     build_host_configuration(&HostLayers::read(request, locations)?, request)
 }
 
@@ -416,7 +420,7 @@ pub fn build_configuration(
 pub(crate) fn build_host_configuration(
     host: &HostLayers,
     request: &LaunchRequest,
-) -> crate::Result<(EmulatorConfig, KeyOverrides)> {
+) -> Result<(EmulatorConfig, KeyOverrides), LaunchError> {
     let root = host.root();
     let config_folder = host.config_folder();
     let game_layers = request
@@ -431,7 +435,7 @@ pub(crate) fn build_host_configuration(
             )
             .map(|(layer, _)| layer)
         })
-        .collect::<crate::Result<Vec<Layer>>>()?;
+        .collect::<Result<Vec<Layer>, LaunchError>>()?;
 
     let launch_system = request
         .system
@@ -441,8 +445,7 @@ pub(crate) fn build_host_configuration(
         &game_layers,
         launch_system,
         host.settings_layer(),
-    )
-    .map_err(StringError)?;
+    )?;
 
     let system_file = system_defaults_file(&config_folder, target);
     let system_layer = match read_system_defaults(&system_file, target, root) {
@@ -452,7 +455,12 @@ pub(crate) fn build_host_configuration(
             check_diagnostics(&defaults.reading.diagnostics, &defaults.layer.source)?;
             Some(defaults.layer)
         }
-        Err(error) => bail!("Failed to read {}: {error}", system_file.display()),
+        Err(error) => {
+            return Err(LaunchError::ReadFailed {
+                path: system_file,
+                error,
+            });
+        }
     };
 
     let (machine, _) = launch_model(
@@ -462,7 +470,7 @@ pub(crate) fn build_host_configuration(
         &game_layers,
         host.command_line_layer(),
     );
-    let model = machine.parse::<MachineSelection>().map_err(StringError)?;
+    let model = parse_model(machine).map_err(LaunchError::Machine)?;
     let layers = host
         .settings_layer()
         .into_iter()
@@ -475,7 +483,7 @@ pub(crate) fn build_host_configuration(
     config.roms_folder = resolve_path(root, &config.roms_folder);
     config.gui_font = host.gui_font();
     let roms_folder = config.roms_folder.clone();
-    apply_rom_folder_defaults(&mut config, &roms_folder).map_err(StringError)?;
+    apply_rom_folder_defaults(&mut config, &roms_folder);
     apply_derived_defaults(&mut config, explicit);
     validate_images(&config)?;
     Ok((config, key_map))
@@ -489,7 +497,7 @@ pub(crate) fn build_host_configuration(
 pub(crate) fn apply_layers<'a>(
     model: MachineSelection,
     layers: impl IntoIterator<Item = &'a Layer>,
-) -> crate::Result<(EmulatorConfig, ExplicitSettings, KeyOverrides)> {
+) -> Result<(EmulatorConfig, ExplicitSettings, KeyOverrides), LaunchError> {
     let mut config = EmulatorConfig::for_model(model);
     let mut explicit = ExplicitSettings::default();
     let mut key_map = KeyOverrides::new();
@@ -530,7 +538,7 @@ pub(crate) fn read_system_defaults(
             {
                 Some(Diagnostic::warning(
                     *line,
-                    format!("{}. The line is ignored.", foreign_machine_message(value)),
+                    DiagnosticKind::ForeignMachineIgnored(value.clone()),
                 ))
             }
             LayerLine::Setting(..) | LayerLine::KeyBinding(..) => None,
@@ -563,22 +571,30 @@ fn game_folder_system(game_files: &[PathBuf], config_folder: &Path) -> Option<&'
         .find_map(|file| folder_system(file, config_folder))
 }
 
+/// Returns the error of the image at `path` of the drive `key` that does not exist.
+fn missing_image(key: &'static str, path: &Path) -> LaunchError {
+    LaunchError::MissingImage {
+        key,
+        path: path.to_path_buf(),
+    }
+}
+
 /// Checks that every disk and disc image of `config` exists.
-fn validate_images(config: &EmulatorConfig) -> crate::Result<()> {
+fn validate_images(config: &EmulatorConfig) -> Result<(), LaunchError> {
     for (key, paths) in [
         ("fdd1", &config.fdd1),
         ("fdd2", &config.fdd2),
         ("cdrom", &config.cdrom),
     ] {
         if let Some(path) = paths.iter().find(|path| !path.exists()) {
-            bail!("{key} image not found: {}", path.display());
+            return Err(missing_image(key, path));
         }
     }
     for (key, path) in [("hdd1", &config.hdd1), ("hdd2", &config.hdd2)] {
         if let Some(path) = path
             && !path.exists()
         {
-            bail!("{key} image not found: {}", path.display());
+            return Err(missing_image(key, path));
         }
     }
     Ok(())
@@ -593,7 +609,7 @@ fn apply_layer(
     explicit: &mut ExplicitSettings,
     key_map: &mut KeyOverrides,
     layer: &Layer,
-) -> crate::Result<()> {
+) -> Result<(), LaunchError> {
     let mut cleared_lists: Vec<&str> = Vec::new();
     for line in &layer.lines {
         match line {
@@ -603,7 +619,10 @@ fn apply_layer(
                     None => warn!(
                         "{}: {}",
                         layer.source,
-                        invalid_key_binding_message(host_name, native_name)
+                        DiagnosticKind::InvalidKeyBinding {
+                            host: host_name.clone(),
+                            native: native_name.clone(),
+                        }
                     ),
                 }
             }
@@ -617,13 +636,18 @@ fn apply_layer(
                     clear(config);
                     cleared_lists.push(setting.key);
                 }
-                if let Err(message) = explicit.apply(config, setting, value) {
+                if let Err(error) = explicit.apply(config, setting, value) {
                     match layer.kind {
-                        LayerKind::CommandLine => bail!("--{}: {message}", setting.key),
+                        LayerKind::CommandLine => {
+                            return Err(LaunchError::InvalidFlag {
+                                key: setting.key,
+                                error,
+                            });
+                        }
                         LayerKind::SettingsFile
                         | LayerKind::SystemDefaults
                         | LayerKind::GameFile => {
-                            warn!("{}: invalid {}: {message}", layer.source, setting.key);
+                            warn!("{}: invalid {}: {error}", layer.source, setting.key);
                         }
                     }
                 }
@@ -1060,7 +1084,10 @@ mod tests {
         assert_eq!(config.msx_model, MsxModel::Msx2);
 
         write_file(&root.join("config").join("game.conf"), "");
-        assert_eq!(test.error(&["-c", "config/game.conf"]), NO_MACHINE_MESSAGE);
+        assert_eq!(
+            test.error(&["-c", "config/game.conf"]),
+            LaunchError::NoMachine.to_string()
+        );
     }
 
     /// Verifies that the relative paths of the pref path settings file and the default folders resolve against the current directory.

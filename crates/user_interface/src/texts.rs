@@ -4,13 +4,57 @@
 //! The build script generates the `SCHEMA` static, one module for each section with a `Key`
 //! constant for each fixed text and a function for each text with placeholders.
 
-use std::sync::LazyLock;
+use std::{fmt, sync::LazyLock};
 
 use gui::ui::{Hint, HintKey};
 use i18n::{Catalog, Key};
 use stack_vec::StackVec;
 
+pub use self::setting_texts::{
+    FileTypeText, LimitSentence, file_type_text, setting_help, setting_label, unset_word,
+};
+
+mod setting_texts;
+
 include!(concat!(env!("OUT_DIR"), "/texts.rs"));
+
+/// A typed text that writes itself in a catalog: an error or a finding with its data.
+pub trait CatalogText {
+    /// Writes the text in `catalog`.
+    fn write_text(&self, catalog: &Catalog, out: &mut dyn fmt::Write) -> fmt::Result;
+}
+
+impl<T: CatalogText + ?Sized> CatalogText for &T {
+    /// Writes the text behind the reference.
+    fn write_text(&self, catalog: &Catalog, out: &mut dyn fmt::Write) -> fmt::Result {
+        (**self).write_text(catalog, out)
+    }
+}
+
+/// A typed text in a catalog. It formats through [`fmt::Display`] and ignores the width, the
+/// fill and every other formatting option of the formatter.
+pub struct InCatalog<'a, T: ?Sized> {
+    /// The catalog of the text.
+    catalog: &'a Catalog,
+    /// The typed text.
+    text: &'a T,
+}
+
+impl<T: CatalogText + ?Sized> fmt::Display for InCatalog<'_, T> {
+    /// Writes the text in the catalog.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.text.write_text(self.catalog, formatter)
+    }
+}
+
+/// Returns the typed text `text` in `catalog` as a value that formats through
+/// [`fmt::Display`].
+pub fn in_catalog<'a, T: CatalogText + ?Sized>(
+    catalog: &'a Catalog,
+    text: &'a T,
+) -> InCatalog<'a, T> {
+    InCatalog { catalog, text }
+}
 
 /// The language tag of the reference language.
 pub const ENGLISH_TAG: &str = "en";

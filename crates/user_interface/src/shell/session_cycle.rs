@@ -9,7 +9,7 @@ use common::{Context, Error, FlushError, StringError, error, info, warn};
 use super::Shell;
 use crate::{
     GAME_NAME, Result,
-    config::{Backend, EmulatorConfig, WindowMode},
+    config::{Backend, EmulatorConfig, LaunchFailure, WindowMode},
     host::{
         SESSION_MINIMUM_WINDOW_SIZE, aspect_ratio_for_mode, fit_window_size, graphics_scaling,
         initial_window_size,
@@ -83,23 +83,23 @@ impl Shell {
         }
         let session = self
             .create_session(config, key_overrides, LaunchOrigin::CommandLine)
-            .map_err(|message| Error::from(StringError(message)))?;
+            .map_err(|failure| Error::from(StringError(failure.to_string())))?;
         self.begin_session(session)
     }
 
     /// Creates the session of `config` started from `origin`. Returns the
-    /// message of an error or of a panic while the machine starts.
+    /// error or the panic message of a machine that does not start.
     fn create_session(
         &self,
         config: EmulatorConfig,
         key_overrides: KeyOverrides,
         origin: LaunchOrigin,
-    ) -> std::result::Result<Session, String> {
+    ) -> std::result::Result<Session, LaunchFailure> {
         let backend = self.host.backend;
         match catch_panic(|| Session::new(config, key_overrides, backend, origin)) {
             Ok(Ok(session)) => Ok(session),
-            Ok(Err(error)) => Err(format!("{error:#}")),
-            Err(message) => Err(format!("the machine panicked while starting: {message}")),
+            Ok(Err(error)) => Err(LaunchFailure::Machine(format!("{error:#}"))),
+            Err(message) => Err(LaunchFailure::Panic(message)),
         }
     }
 
@@ -116,7 +116,7 @@ impl Shell {
         );
         let configuration = manager
             .configuration(&launch)
-            .map_err(|error| format!("{error:#}"));
+            .map_err(LaunchFailure::Configuration);
         if let Ok((config, _)) = &configuration {
             self.host.audio_engine.set_volume(config.audio_volume);
         }
@@ -126,17 +126,17 @@ impl Shell {
         let result = match session {
             Ok(session) => self
                 .begin_session(session)
-                .map_err(|error| format!("{error:#}")),
-            Err(message) => Err(message),
+                .map_err(|error| LaunchFailure::Machine(format!("{error:#}"))),
+            Err(failure) => Err(failure),
         };
         let Some(manager) = self.manager.as_mut() else {
             return;
         };
         match result {
             Ok(()) => manager.game_started(launch),
-            Err(message) => {
-                error!("Could not start {}: {message}", launch.title);
-                let layer = manager.launch_failed(&launch, &message);
+            Err(failure) => {
+                error!("Could not start {}: {failure}", launch.title);
+                let layer = manager.launch_failed(&launch, &failure);
                 if let Some(gui) = self.host.gui.as_mut() {
                     gui.open_layer(layer);
                 }

@@ -220,10 +220,10 @@ mod tests {
     fn required_fields_take_their_inherited_value() {
         let root = EditorRoot::new("file_required");
         let model = root.system().default_model;
-        let inherited = Some(Inherited {
-            values: vec![model.to_owned()],
-            source: InheritedSource::BuiltIn,
-        });
+        let inherited = Some(Inherited::new(
+            vec![model.to_owned()],
+            InheritedSource::BuiltIn,
+        ));
         let mut fields = vec![machine_field(&root), machine_field(&root)];
         fields[1].required = false;
         fill_required(&mut fields, &[inherited.clone(), inherited.clone()]);

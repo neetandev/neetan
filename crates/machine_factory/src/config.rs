@@ -30,6 +30,7 @@ use machine_x1::X1Model;
 #[cfg(feature = "x68k")]
 use machine_x68k::X68kModel;
 pub use selection::MachineSelection;
+use settings::{MODEL_CHOICES, value_error::ValueError};
 
 /// Selected machine family. Each family is constructed from its own crate, so
 /// the family is tracked explicitly while the model and per-family settings
@@ -523,11 +524,19 @@ pub fn compiled_target_names() -> &'static [&'static str] {
 }
 
 /// Resolves a `--machine` / `machine=` value to a family and model and
-/// selects it in `config`. Returns a human-readable error if no compiled-in
-/// family recognises it.
-pub fn resolve_model(config: &mut EmulatorConfig, value: &str) -> Result<(), String> {
-    config.set_model(value.parse()?);
+/// selects it in `config`. A value that no compiled family recognises is an
+/// unknown choice of the models.
+pub fn resolve_model(config: &mut EmulatorConfig, value: &str) -> Result<(), ValueError> {
+    config.set_model(parse_model(value)?);
     Ok(())
+}
+
+/// Parses a `machine` value. A value that no compiled family recognises is an
+/// unknown choice of the models.
+pub fn parse_model(value: &str) -> Result<MachineSelection, ValueError> {
+    value
+        .parse()
+        .map_err(|_| ValueError::unknown_choice(value, MODEL_CHOICES))
 }
 
 /// Returns the model name of the selected machine in the form of the `machine` values.

@@ -7,21 +7,22 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use i18n::Message;
+use i18n::{Catalog, Message};
 use machine_factory::config::{
     MachineSelection, Target,
-    settings::{MACHINE_KEY, Setting, ValueKind, apply_derived_defaults},
+    settings::{MACHINE_KEY, Setting, UnsetText, ValueKind, apply_derived_defaults},
 };
 
 use crate::{
     config::{
         DocumentError, HostLayers, ModelSource, check_value,
+        diagnostic::Located,
         layers::{apply_layers, launch_model, read_system_defaults, system_defaults_file},
         reading::{Layer, LayerKind, LayerLine},
         resolve_value,
     },
     manager::shown_path,
-    texts::{editor, note},
+    texts::{editor, in_catalog, note},
 };
 
 /// The layer that gives an inherited value.
@@ -64,8 +65,28 @@ pub(crate) struct Inherited {
     /// The values as the file writes them. A path lies below the root when it lies there.
     /// Empty while no layer and no default sets the key.
     pub(crate) values: Vec<String>,
+    /// The key of the section `[unset]` of the word for a value that the
+    /// machine picks while no layer sets the key. A key with values has none.
+    pub(crate) word: Option<&'static str>,
     /// The layer that gives the values.
     pub(crate) source: InheritedSource,
+}
+
+impl Inherited {
+    /// The inherited `values` of `source`.
+    pub(crate) fn new(values: Vec<String>, source: InheritedSource) -> Self {
+        Self {
+            values,
+            word: None,
+            source,
+        }
+    }
+
+    /// Whether the key inherits values or the word of a value that the
+    /// machine picks.
+    pub(crate) fn has_value(&self) -> bool {
+        !self.values.is_empty() || self.word.is_some()
+    }
 }
 
 /// The layers below the file of the editor: the settings file, and below a
@@ -90,31 +111,24 @@ pub(crate) struct BaseLayers {
 pub(crate) struct DefaultsWarning {
     /// The shown path of the file.
     shown: String,
-    /// The error of the read, with its line when it has one.
-    error: String,
-    /// Whether the error starts with its line.
-    has_line: bool,
+    /// The error of the read.
+    error: DocumentError,
 }
 
 impl DefaultsWarning {
     /// The warning about the system defaults file at the shown path `shown`
     /// that does not read with `error`.
-    pub(crate) fn new(shown: String, error: &DocumentError) -> Self {
-        Self {
-            shown,
-            error: error.to_string(),
-            has_line: error.line().is_some(),
-        }
+    pub(crate) fn new(shown: String, error: DocumentError) -> Self {
+        Self { shown, error }
     }
 
-    /// The text of the warning, for example `System defaults ignored:
-    /// config/pc98.conf line 3: the file is not valid UTF-8`.
-    pub(crate) fn message(&self) -> Message<'_, 2> {
-        if self.has_line {
-            editor::defaults_ignored_line(&self.shown, &self.error)
-        } else {
-            editor::defaults_ignored(&self.shown, &self.error)
-        }
+    /// Writes the text of the warning in `catalog`, for example `System
+    /// defaults ignored: config/pc98.conf line 3: the file is not valid
+    /// UTF-8`.
+    pub(crate) fn write(&self, catalog: &Catalog, out: &mut String) {
+        let file = Located::document(&self.shown, &self.error);
+        let file = in_catalog(catalog, &file);
+        let _ = catalog.write(out, editor::defaults_ignored(&file));
     }
 }
 
@@ -160,7 +174,7 @@ impl BaseLayers {
             ),
             Err(error) => {
                 let shown = shown_path(&file, host.root());
-                (None, Some(DefaultsWarning::new(shown, &error)))
+                (None, Some(DefaultsWarning::new(shown, error)))
             }
         };
         Self {
@@ -220,10 +234,7 @@ impl BaseLayers {
     ) -> Inherited {
         if setting.key == MACHINE_KEY {
             let (model, source) = self.model();
-            return Inherited {
-                values: vec![model.name().to_owned()],
-                source,
-            };
+            return Inherited::new(vec![model.name().to_owned()], source);
         }
         let source = [
             (&self.system_defaults, InheritedSource::SystemDefaults),
@@ -265,18 +276,22 @@ impl BaseLayers {
             }
             Err(_) => Vec::new(),
         };
-        let values = if values.is_empty() {
-            setting
-                .unset_text(self.target)
-                .map(|text| vec![text.to_owned()])
-                .unwrap_or_default()
-        } else {
-            values
-                .iter()
-                .map(|value| shown_value(setting, value, &self.root))
-                .collect()
-        };
-        Inherited { values, source }
+        if values.is_empty() {
+            return match setting.unset_text(self.target) {
+                Some(UnsetText::Value(value)) => Inherited::new(vec![value.to_owned()], source),
+                Some(UnsetText::Word(word)) => Inherited {
+                    values: Vec::new(),
+                    word: Some(word),
+                    source,
+                },
+                None => Inherited::new(Vec::new(), source),
+            };
+        }
+        let values = values
+            .iter()
+            .map(|value| shown_value(setting, value, &self.root))
+            .collect();
+        Inherited::new(values, source)
     }
 }
 
@@ -287,7 +302,7 @@ mod tests {
     use super::*;
     use crate::{
         editor::{notes::tests::english_inherited_label, test_support::EditorRoot},
-        texts::english,
+        texts::english_text,
     };
 
     /// The inherited value of `key` on `model` below a game without values.
@@ -394,7 +409,7 @@ mod tests {
         let base = BaseLayers::read(&root.host(), root.target());
         assert_eq!(
             base.warning()
-                .map(|warning| english().display(warning.message()).to_string()),
+                .map(|warning| english_text(|catalog, out| warning.write(catalog, out))),
             Some(format!(
                 "System defaults ignored: config/{}.conf line 2: the file is not valid UTF-8",
                 system.name
@@ -402,6 +417,24 @@ mod tests {
         );
         let scaling = inherited(&base, "scaling", base.model().0);
         assert_eq!(scaling.source, InheritedSource::BuiltIn);
+    }
+
+    /// Verifies the English warning about a system defaults file with and without the line of
+    /// its error.
+    #[test]
+    fn the_defaults_warning_shows_the_file_and_the_line() {
+        let text = |error| {
+            let warning = DefaultsWarning::new("config/pc98.conf".to_owned(), error);
+            english_text(|catalog, out| warning.write(catalog, out))
+        };
+        assert_eq!(
+            text(DocumentError::InvalidUtf8 { line: 3 }),
+            "System defaults ignored: config/pc98.conf line 3: the file is not valid UTF-8"
+        );
+        assert_eq!(
+            text(DocumentError::Read("permission denied".to_owned())),
+            "System defaults ignored: config/pc98.conf: cannot read the file: permission denied"
+        );
     }
 
     #[cfg(feature = "pc88")]

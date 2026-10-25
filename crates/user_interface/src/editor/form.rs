@@ -12,7 +12,7 @@ use machine_factory::config::{
 use super::note_writer::NoteWriter;
 use crate::{
     config::metadata::{METADATA_FIELDS, MetadataField},
-    texts::{editor, note, section},
+    texts::{LimitSentence, editor, in_catalog, note, section, setting_label},
 };
 
 /// A section of the editor, one tab of its tab bar.
@@ -135,7 +135,7 @@ impl FieldSource {
     pub(crate) fn label(self, catalog: &Catalog) -> &str {
         match self {
             Self::Metadata(field) => catalog.text(field.label),
-            Self::Setting(setting) => setting.label,
+            Self::Setting(setting) => setting_label(catalog, setting),
         }
     }
 
@@ -283,8 +283,11 @@ pub(crate) struct IgnoredBy {
 /// Adds the sentences of a setting that a model ignores, for example
 /// `PC9801RA has no CD-ROM drive. PC9821AS and AP only.`
 pub(crate) fn write_ignored(writer: &mut NoteWriter, ignored: IgnoredBy) {
-    let reason = ignored.limit.reason.phrase(ignored.model);
-    writer.message(note::model_ignores(&ignored.model.name(), &reason));
+    let sentence = LimitSentence {
+        reason: ignored.limit.reason,
+        model: ignored.model,
+    };
+    writer.sentence(in_catalog(writer.catalog(), &sentence));
     write_models_only(writer, ignored.limit);
 }
 

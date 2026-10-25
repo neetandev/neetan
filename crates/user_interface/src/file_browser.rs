@@ -18,14 +18,17 @@ use gui::{
     },
 };
 use i18n::Catalog;
-use machine_factory::config::settings::{PathKind, file_types::FileTypes};
+use machine_factory::config::settings::{PathKind, Setting, file_types::FileTypes};
 use stack_vec::StackVec;
 
 use crate::{
     config::resolve_path,
     editor::ExtensionList,
     media_dialog::{ImageEntry, PANEL_SIZE, TAB_BAR_HEIGHT, fold_filter, matching_entries},
-    texts::{self, HintText, HintTexts, MAXIMUM_HINTS, browser, common},
+    texts::{
+        self, FileTypeText, HintText, HintTexts, MAXIMUM_HINTS, browser, common, file_type_text,
+        setting_label,
+    },
 };
 
 /// The id of the modal layer of the browser.
@@ -127,12 +130,12 @@ pub(crate) enum BrowseNoun {
 }
 
 /// What a path setting asks the browser for.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct BrowseRequest {
     /// The kind of item that the browser chooses.
     pub(crate) noun: BrowseNoun,
-    /// The label of the setting, for example `FDD 1`.
-    pub(crate) label: &'static str,
+    /// The setting of the path. The title shows its label, for example `FDD 1`.
+    pub(crate) setting: Option<&'static Setting>,
     /// Whether the setting takes a file or a folder.
     pub(crate) kind: PathKind,
     /// The files that the setting takes. `None` takes every file.
@@ -180,11 +183,13 @@ pub(crate) fn path_value(path: &Path, root: &Path) -> String {
 /// Writes the title of the browser for `request` in `catalog`, for example
 /// `Choose image for FDD 1`.
 fn write_title(catalog: &Catalog, request: &BrowseRequest, out: &mut String) {
-    let label = &request.label;
+    let label = request
+        .setting
+        .map_or("", |setting| setting_label(catalog, setting));
     let message = match request.noun {
-        BrowseNoun::Folder => browser::choose_folder(label),
-        BrowseNoun::Image => browser::choose_image(label),
-        BrowseNoun::File => browser::choose_file(label),
+        BrowseNoun::Folder => browser::choose_folder(&label),
+        BrowseNoun::Image => browser::choose_image(&label),
+        BrowseNoun::File => browser::choose_file(&label),
     };
     let _ = catalog.write(out, message);
 }
@@ -207,7 +212,8 @@ fn write_extension_line(
     match (kind, types) {
         (PathKind::Folder, _) => out.push_str(catalog.text(browser::FOLDERS)),
         (PathKind::File, Some(types)) if !show_all => {
-            let _ = catalog.write(out, browser::extensions(&types.name, &ExtensionList(types)));
+            let name = file_type_text(catalog, types, FileTypeText::Name);
+            let _ = catalog.write(out, browser::extensions(&name, &ExtensionList(types)));
         }
         (PathKind::File, Some(_) | None) => out.push_str(catalog.text(browser::ALL_FILES)),
     }
@@ -479,14 +485,10 @@ impl FileBrowser {
             }
             EmptyText::NoMatch => out.push_str(catalog.text(browser::NO_MATCH)),
             EmptyText::NoFolders => out.push_str(catalog.text(browser::NO_FOLDERS)),
-            EmptyText::NoTypedFiles => {
-                let files = self
-                    .request
-                    .types
-                    .map(|types| types.name.to_lowercase())
-                    .unwrap_or_default();
-                let _ = catalog.write(out, browser::no_typed_files(&files));
-            }
+            EmptyText::NoTypedFiles => match self.request.types {
+                Some(types) => out.push_str(file_type_text(catalog, types, FileTypeText::NoFiles)),
+                None => out.push_str(catalog.text(browser::NO_FILES)),
+            },
             EmptyText::NoFiles => out.push_str(catalog.text(browser::NO_FILES)),
         }
     }
@@ -740,7 +742,7 @@ mod tests {
         let fdd1 = find_setting("fdd1").expect("fdd1 is a table key");
         BrowseRequest {
             noun: BrowseNoun::Image,
-            label: "FDD 1",
+            setting: Some(fdd1),
             kind: PathKind::File,
             types: fdd1.file_types.first(),
             icon: Icon::Disk,
@@ -934,7 +936,7 @@ mod tests {
         let cdrom = find_setting("cdrom").expect("cdrom is a table key");
         let request = BrowseRequest {
             noun: BrowseNoun::Image,
-            label: "CD-ROM",
+            setting: Some(cdrom),
             kind: PathKind::File,
             types: cdrom.file_types.first(),
             icon: Icon::Disc,
@@ -970,7 +972,7 @@ mod tests {
         let cdrom = find_setting("cdrom").expect("cdrom is a table key");
         let request = BrowseRequest {
             noun: BrowseNoun::Image,
-            label: "CD-ROM",
+            setting: Some(cdrom),
             kind: PathKind::File,
             types: cdrom.file_types.first(),
             icon: Icon::Disc,
@@ -996,7 +998,7 @@ mod tests {
         let root = games_root("browser_folders");
         let request = BrowseRequest {
             noun: BrowseNoun::Folder,
-            label: "Config folder",
+            setting: find_setting("config-folder"),
             kind: PathKind::Folder,
             types: None,
             icon: Icon::Folder,

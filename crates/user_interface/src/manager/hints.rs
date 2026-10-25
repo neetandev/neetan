@@ -2,11 +2,16 @@
 //! the focused widget, the edit, the filter, the system switch, the refresh
 //! and the settings page.
 
-use gui::ui::{ACTIVATE_KEYS, CANCEL_KEYS, HintKey, StatusEnd};
+use std::fmt::Write as _;
+
+use gui::ui::{ACTIVATE_KEYS, CANCEL_KEYS, HintKey, StatusEnd, TextBuffer};
 use i18n::Catalog;
 
 use super::rows::GameRow;
-use crate::texts::{self, HintText, HintTexts, Hints};
+use crate::{
+    config::Diagnostic,
+    texts::{self, HintText, HintTexts, Hints, in_catalog},
+};
 
 /// The hint of the launch of the selected game.
 const LAUNCH_HINT: HintText = HintText::new(ACTIVATE_KEYS, texts::common::LAUNCH);
@@ -207,12 +212,26 @@ fn focus_hints(focus: LibraryFocus, selected: Option<&GameRow>) -> HintTexts {
 }
 
 /// The end of the status line: the path of the selected game, the error of
-/// the selected file with an error, or else the folder `folder` of the
-/// system.
-pub(crate) fn status_end<'a>(selected: Option<&'a GameRow>, folder: &'a str) -> StatusEnd<'a> {
+/// the selected file with an error after its shown path, or else the folder
+/// `folder` of the system. `located` holds the text of the error in
+/// `catalog` at the catalog generation `generation`.
+pub(crate) fn status_end<'a>(
+    catalog: &Catalog,
+    generation: u64,
+    selected: Option<&'a GameRow>,
+    folder: &'a str,
+    located: &'a mut TextBuffer<(String, Diagnostic)>,
+) -> StatusEnd<'a> {
     match selected {
-        Some(row) => match &row.located_error {
-            Some(error) => StatusEnd::Error(error),
+        Some(row) => match &row.error {
+            Some(error) => StatusEnd::Error(located.text_in(
+                catalog,
+                generation,
+                (row.shown_path.as_str(), error),
+                |catalog, (path, error), out| {
+                    let _ = write!(out, "{}", in_catalog(catalog, &error.located_at(path)));
+                },
+            )),
             None => StatusEnd::Path(&row.shown_path),
         },
         None => StatusEnd::Path(folder),
@@ -344,18 +363,19 @@ mod tests {
     #[test]
     fn the_end_shows_the_path_the_error_or_the_folder() {
         let edge = game("edge", "Edge", "", "", "");
-        assert_eq!(
-            status_end(Some(&edge), "config/pc98/"),
-            StatusEnd::Path(&edge.shown_path)
-        );
+        let mut located = TextBuffer::new();
+        let mut end =
+            |selected| match status_end(english(), 0, selected, "config/pc98/", &mut located) {
+                StatusEnd::None => "none".to_owned(),
+                StatusEnd::Path(path) => format!("path {path}"),
+                StatusEnd::Error(error) => format!("error {error}"),
+            };
+        assert_eq!(end(Some(&edge)), format!("path {}", edge.shown_path));
         let bad = broken("bad");
-        assert!(matches!(
-            status_end(Some(&bad), "config/pc98/"),
-            StatusEnd::Error(error) if error.ends_with("unknown machine X68030")
-        ));
         assert_eq!(
-            status_end(None, "config/pc98/"),
-            StatusEnd::Path("config/pc98/")
+            end(Some(&bad)),
+            format!("error {} line 1: unknown machine X68030", bad.shown_path)
         );
+        assert_eq!(end(None), "path config/pc98/");
     }
 }

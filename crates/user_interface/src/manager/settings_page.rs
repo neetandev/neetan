@@ -48,7 +48,6 @@ impl Manager {
         let host = match HostLayers::read(&self.start.request, &self.start.locations) {
             Ok(host) => host,
             Err(error) => {
-                let error = format!("{error:#}");
                 warn!("Game manager: the settings do not read: {error}");
                 self.dialog = Some(ErrorDialog::settings_not_applied(&error));
                 return;
@@ -81,8 +80,8 @@ mod tests {
     use gui::ui::{ActionButton, Navigation, Shortcut, ThemeKind, UiId, Viewport};
     use machine_factory::{
         config::settings::{
-            AUDIO_VOLUME_KEY, BACKEND_KEY, CONFIG_FOLDER_KEY, GUI_LANGUAGE_KEY, ROMS_FOLDER_KEY,
-            find_setting,
+            AUDIO_VOLUME_KEY, BACKEND_KEY, CONFIG_FOLDER_KEY, GUI_LANGUAGE_KEY, MACHINE_KEY,
+            ROMS_FOLDER_KEY, find_setting,
         },
         rom_status::{RomCheck, RomStatus},
     };
@@ -448,14 +447,31 @@ mod tests {
             "steady_settings",
             "gui-font = font/missing.ttf\ngui-theme = sepia\n",
         );
+        let folder = first_rom_folder();
         let mut manager = manager_with(
             &root,
             &[(
-                "pc98-roms",
-                "/home/user/Emulation/Firmware/NEC PC-9801 and PC-9821 ROM sets",
+                folder.key,
+                "/home/user/Emulation/Firmware/The ROM sets of the first compiled system",
             )],
         );
         manager.roms = sample_statuses(&manager.host);
+        let machine = find_setting(MACHINE_KEY).expect("machine is a table key");
+        let models: Vec<&'static str> = machine
+            .choices_for_families(root.system().family)
+            .map(|choice| choice.value)
+            .take(2)
+            .collect();
+        let status = manager
+            .roms
+            .iter_mut()
+            .find(|status| status.folder.name == folder.name)
+            .expect("the first system has a ROM folder");
+        status.check = RomCheck {
+            status: RomStatus::Partial,
+            folder_exists: true,
+            models_without_set: models,
+        };
         let mut harness = GuiHarness::new(960, 600);
         settle(&mut harness, &mut manager);
         harness.input.shortcut = Some(Shortcut::F10);

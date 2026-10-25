@@ -256,15 +256,22 @@ impl Manager {
 
 #[cfg(test)]
 mod tests {
-    use gui::ui::{ActionButton, Navigation, Shortcut, ThemeKind, UiId, Viewport};
+    use gui::ui::{ActionButton, Navigation, Shortcut, UiId};
+    #[cfg(feature = "pc98")]
+    use gui::ui::{ThemeKind, Viewport};
+    #[cfg(feature = "pc98")]
     use machine_factory::config::systems::compiled_systems;
 
     use super::*;
     use crate::{
-        config::{LaunchRequest, ManagerStart},
-        editor::{EditorSection, test_support::EditorRoot},
-        gui_test_support::{GuiHarness, PassCounts},
-        manager::{FILTER_ID, entries::TableEntry, game_table::GAME_TABLE_ID},
+        config::{LaunchFailure, LaunchRequest, ManagerStart},
+        editor::test_support::EditorRoot,
+        gui_test_support::GuiHarness,
+        manager::{FILTER_ID, game_table::GAME_TABLE_ID, test_support::titles},
+    };
+    #[cfg(feature = "pc98")]
+    use crate::{
+        editor::EditorSection, gui_test_support::PassCounts, manager::test_support::select,
     };
 
     /// The manager of `root`.
@@ -274,29 +281,6 @@ mod tests {
             locations: root.locations(),
         })
         .expect("manager starts")
-    }
-
-    /// Selects the system with the folder name `name`.
-    fn select(manager: &mut Manager, name: &str) {
-        let index = manager
-            .systems
-            .iter()
-            .position(|entry| entry.system.name == name)
-            .expect("the system is compiled");
-        manager.select_system(index);
-    }
-
-    /// The titles of the games of the selected system in the order of the table.
-    fn titles(manager: &Manager) -> Vec<String> {
-        let rows = manager.rows();
-        manager
-            .entries
-            .iter()
-            .filter_map(|entry| match entry {
-                TableEntry::Game(index) => Some(rows[*index].title.clone()),
-                TableEntry::Broken(_) | TableEntry::Caption => None,
-            })
-            .collect()
     }
 
     /// Draws passes of `manager` until it settles.
@@ -557,7 +541,7 @@ mod tests {
         let mut harness = GuiHarness::new(960, 600);
         settle(&mut harness, &mut manager);
         let launch = manager.launch(&manager.rows()[1].clone());
-        let layer = manager.launch_failed(&launch, "fdd1 image not found: /a.d88");
+        let layer = manager.launch_failed(&launch, &LaunchFailure::missing_image("/a.d88"));
         harness.state.open_layer(layer);
         settle(&mut harness, &mut manager);
         harness.input.navigation = Some(Navigation::Left);
@@ -669,6 +653,7 @@ mod tests {
         assert_eq!(titles(&manager), ["Brandish", "Edge"]);
     }
 
+    #[cfg(feature = "pc98")]
     /// The settings of the game of the steady frame test after the game file of YU-NO: a
     /// second floppy drive, a display value and an advanced value. Every section holds a set
     /// value.
@@ -676,6 +661,7 @@ mod tests {
          hdd2 = games/98/YU-NO/Saves/missing.hdi\nadpcm-ram = maybe\ncrt = on\n\
          aspect-mode = wide\nenable-extractor = yes\n";
 
+    #[cfg(feature = "pc98")]
     /// Opens YU-NO with [`STEADY_SETTINGS`] in the editor of a manager over [`sample_root`].
     fn steady_editor(name: &str) -> (EditorRoot, Manager, GuiHarness) {
         let root = sample_root(name);
@@ -695,6 +681,7 @@ mod tests {
         (root, manager, harness)
     }
 
+    #[cfg(feature = "pc98")]
     /// Counts the allocations, the text fills and the wraps of a steady frame of `manager`, the
     /// second pass with an unchanged state, and checks that the frame keeps the revision of the
     /// editor.
@@ -706,6 +693,7 @@ mod tests {
         counts
     }
 
+    #[cfg(feature = "pc98")]
     /// Verifies that a steady frame of each section of the game editor allocates nothing, fills
     /// no text again and keeps the revision of the editor. The game holds media images in
     /// several drives and a set value in every section.
@@ -741,6 +729,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "pc98")]
     /// Verifies that a steady frame of the file browser over the editor allocates nothing and
     /// fills no text again, with the current image of the drive selected.
     #[test]
@@ -764,6 +753,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "pc98")]
     /// Verifies that a steady frame of the discard question, of the question over a file that
     /// changed outside the manager and of a save error allocates nothing, fills no text and wraps
     /// no text, with the focus on each button.
@@ -827,6 +817,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "pc98")]
     /// The game file of YU-NO in the screenshots.
     const YU_NO: &str = "meta.title = YU-NO: A Girl Who Chants Love at the Bound of this World
 meta.title-original = この世の果てで恋を唄う少女YU-NO
@@ -849,6 +840,7 @@ key.PageDown = RollUp
 ; Patched disk 3 from the 1997 re-release
 ";
 
+    #[cfg(feature = "pc98")]
     /// Writes the sample games and images of the screenshots into a root.
     fn sample_root(name: &str) -> EditorRoot {
         let root = EditorRoot::with_system(name, "pc98");
@@ -891,6 +883,7 @@ key.PageDown = RollUp
         root
     }
 
+    #[cfg(feature = "pc98")]
     /// Selects the game `title` of the selected system in the table.
     fn select_game(harness: &mut GuiHarness, manager: &mut Manager, title: &str) {
         let index = titles(manager)
@@ -904,6 +897,7 @@ key.PageDown = RollUp
         settle(harness, manager);
     }
 
+    #[cfg(feature = "pc98")]
     /// Opens YU-NO of the selected system in the editor, steps its year up
     /// by one and shows the Machine section with Model focused.
     fn open_with_year_step(harness: &mut GuiHarness, manager: &mut Manager) {
@@ -924,6 +918,7 @@ key.PageDown = RollUp
         settle(harness, manager);
     }
 
+    #[cfg(feature = "pc98")]
     /// Renders the editor at `width` x `height` logical units and `scale`:
     /// every section of a game, the dropdown popup, the file browser, the
     /// discard question, the question over a file that changed outside the
@@ -1091,6 +1086,7 @@ key.PageDown = RollUp
         }
     }
 
+    #[cfg(feature = "pc98")]
     /// Renders the Media section of a game whose FDD 1 inherits the image
     /// of the settings file and whose FDD 2 holds `fdd2 =` over the
     /// inherited image of FDD 2, with the checkbox of FDD 1 focused, in the
@@ -1126,6 +1122,7 @@ key.PageDown = RollUp
         harness.write_screenshot(&format!("editor_empty_list_{scale}x"));
     }
 
+    #[cfg(feature = "pc98")]
     /// Renders the Machine and the Media section of the editor of the PC-98
     /// system defaults, whose file sets the model, the real BIOS and an HDD
     /// image, the Media section of a game that inherits the HDD image, and
@@ -1184,6 +1181,7 @@ key.PageDown = RollUp
         render(&harness, "empty_hdd_media");
     }
 
+    #[cfg(feature = "pc98")]
     /// Writes the screenshots of the editor in both themes at the scales 1
     /// and 2, at the minimum window size and at 1920 x 1080.
     #[test]

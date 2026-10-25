@@ -12,6 +12,16 @@
     (thunk)
     (fail (string-append name ": expected an error"))))
 
+(define (expect-message name thunk message)
+  (guard (condition
+          (#t
+           (if (and (error-object? condition)
+                    (string=? (error-object-message condition) message))
+               #t
+               (fail (string-append name ": wrong message")))))
+    (thunk)
+    (fail (string-append name ": expected an error"))))
+
 (define (expect-error name thunk)
   (guard (condition (#t #t))
     (thunk)
@@ -150,6 +160,13 @@
       '((model . pc9801vm) (soundboard . |99|))
       (lambda (machine) machine)))
   'neetan/argument)
+
+(expect-message "invalid choice value with its key"
+  (lambda ()
+    (call-with-machine
+      '((target . pc98) (cpu-mode . turbo))
+      (lambda (machine) machine)))
+  "invalid cpu-mode: unknown value 'turbo', expected low or high")
 
 (expect-symbol "printer path in a specification"
   (lambda ()

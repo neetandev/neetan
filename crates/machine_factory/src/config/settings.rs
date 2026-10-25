@@ -1,33 +1,36 @@
 //! The settings table: one declarative entry for every key of `EmulatorConfig`.
 //!
-//! An entry holds the key, its label and help text, its scope, its value kind
-//! with the choices, the families and models that read it, its section, and the
-//! functions that apply, format and clear its value.
+//! An entry holds the key, its scope, its value kind with the choices, the
+//! families and models that read it, its section, and the functions that apply,
+//! format and clear its value. The language files hold the label and the help
+//! text of each key.
 
 use std::path::{Path, PathBuf};
 
 use common::CpuMode;
 #[cfg(feature = "pc88")]
-use common::{EightMhzWaitMode, MemoryWaitSwitch};
+use common::MemoryWaitSwitch;
 use device::gameport_towns::TownsPadType;
 
 pub mod file_types;
 pub mod model_limits;
+pub mod value_error;
 
 use self::{
     file_types::{
         CARTRIDGE_FILES, CASSETTE_FILES, CDROM_FILES, FLOPPY_FILES, FileTypes, HARD_DISK_FILES,
     },
     model_limits::{
-        ChoiceFact, LimitReason, MSX_FDD_MODELS, ModelLimit, PC60_FDD_MODELS, PC98_CDROM_MODELS,
-        PC98_CPU_MODE_MODELS, PC98_REAL_BIOS_MODELS, PC98_VX_AND_LATER_MODELS,
+        ChoiceFact, FactData, LimitReason, MSX_FDD_MODELS, ModelLimit, PC60_FDD_MODELS,
+        PC98_CDROM_MODELS, PC98_CPU_MODE_MODELS, PC98_REAL_BIOS_MODELS, PC98_VX_AND_LATER_MODELS,
         TOWNS_CPU_MODE_MODELS, X1_TURBO_MODELS, X68K_CDROM_MODELS, X68K_CPU_MODE_MODELS,
     },
+    value_error::ValueError,
 };
+#[cfg(feature = "pc88")]
+use super::BootMode;
 use super::{
-    BootMode, EmulatorConfig, MachineSelection, Target, model_name,
-    phrases::{format_megahertz, join_names},
-    resolve_model,
+    EmulatorConfig, MachineSelection, Target, model_name, phrases::Megahertz, resolve_model,
     systems::SYSTEMS,
 };
 
@@ -205,8 +208,19 @@ impl Families {
 pub struct UnsetValue {
     /// The families that take the value.
     pub families: Families,
-    /// The value as the configuration file writes it, or a word for a value that the machine picks.
-    pub text: &'static str,
+    /// The value as the file writes it, or the key of the word for a value that the machine
+    /// picks.
+    pub text: UnsetText,
+}
+
+/// The text of an unset value.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum UnsetText {
+    /// The value as the configuration file writes it.
+    Value(&'static str),
+    /// A word for a value that the machine picks. The word is a key of the section `[unset]` of
+    /// the language files.
+    Word(&'static str),
 }
 
 /// One value of a choice setting.
@@ -214,8 +228,6 @@ pub struct UnsetValue {
 pub struct Choice {
     /// The value as the configuration file writes it.
     pub value: &'static str,
-    /// The human-readable name of the value.
-    pub label: &'static str,
     /// The families that accept the value.
     pub families: Families,
 }
@@ -301,12 +313,9 @@ pub enum ExplicitKey {
 /// One entry of the settings table.
 #[derive(Debug, Copy, Clone)]
 pub struct Setting {
-    /// The key of the setting, for example `cpu-mode`.
+    /// The key of the setting, for example `cpu-mode`. The section `[setting.<key>]` of the
+    /// language files holds its label and its help text.
     pub key: &'static str,
-    /// The short human-readable name of the setting.
-    pub label: &'static str,
-    /// The one-line description of the setting.
-    pub help: &'static str,
     /// The layer scope of the key.
     pub scope: Scope,
     /// The value kind and its choices.
@@ -330,16 +339,13 @@ pub struct Setting {
     /// Empties a path list. Every other kind has `None`.
     pub clear: Option<fn(&mut EmulatorConfig)>,
     /// Applies one value to the configuration. A path list appends the value.
-    pub apply: fn(&mut EmulatorConfig, &str) -> Result<(), String>,
+    pub apply: fn(&mut EmulatorConfig, &str) -> Result<(), ValueError>,
     /// Formats the configured value. A path list returns one value for each file, an unset value returns none.
     pub format: fn(&EmulatorConfig) -> Vec<String>,
 }
 
 /// The families whose machines derive the defaults of the settings with an [`ExplicitKey`].
 const DERIVED_DEFAULT_FAMILIES: Families = Families::PC88;
-
-/// The note of a setting whose default derives from the boot mode.
-pub const DERIVED_DEFAULT_NOTE: &str = "The default follows the boot mode.";
 
 impl Setting {
     /// Returns whether the machine `model` of the family `target` reads this setting.
@@ -376,7 +382,7 @@ impl Setting {
     /// Returns the value that the machines of the family `target` take while no layer sets
     /// the setting.
     #[must_use]
-    pub fn unset_text(&self, target: Target) -> Option<&'static str> {
+    pub fn unset_text(&self, target: Target) -> Option<UnsetText> {
         self.unset_values
             .iter()
             .find(|unset| unset.families.contains_target(target))
@@ -406,28 +412,26 @@ impl Setting {
             .filter(move |choice| choice.families.intersects(families))
     }
 
-    /// Returns the fact that the note of the choice setting adds on `model` while the file holds
-    /// `value`.
+    /// Returns the data of the fact about the values of the choice setting on `model` while the
+    /// file holds `value`.
     #[must_use]
-    pub fn choice_fact(&self, model: MachineSelection, value: Option<&str>) -> Option<String> {
+    pub fn choice_fact(&self, model: MachineSelection, value: Option<&str>) -> Option<FactData> {
         match self.fact {
             ChoiceFact::None => None,
             ChoiceFact::Choices => {
-                let values: Vec<&str> = self
+                let values: Vec<&'static str> = self
                     .choices_for(model.target())
                     .map(|choice| choice.value)
                     .collect();
-                (!values.is_empty())
-                    .then(|| format!("The choices are {}.", join_names(&values, "and")))
+                (!values.is_empty()).then_some(FactData::Choices(values))
             }
             ChoiceFact::CpuClock => {
-                let value = value?;
-                let mode = value.parse::<CpuMode>().ok()?;
+                let mode = value?.parse::<CpuMode>().ok()?;
                 let hertz = model.cpu_clock_hz(mode)?;
-                Some(format!(
-                    "At {value} the CPU runs at {}.",
-                    format_megahertz(hertz)
-                ))
+                Some(FactData::CpuClock {
+                    mode,
+                    clock: Megahertz(hertz),
+                })
             }
         }
     }
@@ -457,7 +461,7 @@ impl ExplicitSettings {
         config: &mut EmulatorConfig,
         setting: &Setting,
         value: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), ValueError> {
         (setting.apply)(config, value)?;
         match setting.explicit {
             Some(ExplicitKey::CpuMode) => self.cpu_mode = true,
@@ -550,12 +554,24 @@ const AUDIO_VOLUME_RANGE: NumberRange = NumberRange {
 };
 
 /// Parses an on/off value.
-fn parse_on_off(value: &str) -> Result<bool, String> {
+fn parse_on_off(value: &str) -> Result<bool, ValueError> {
     match value {
         "on" => Ok(true),
         "off" => Ok(false),
-        _ => Err(format!("invalid value '{value}', expected on or off")),
+        _ => Err(ValueError::OnOff {
+            value: value.to_owned(),
+        }),
     }
+}
+
+/// Parses a value of a choice setting with the choices `choices`.
+fn parse_choice<T: std::str::FromStr>(
+    value: &str,
+    choices: &'static [Choice],
+) -> Result<T, ValueError> {
+    value
+        .parse()
+        .map_err(|_| ValueError::unknown_choice(value, choices))
 }
 
 /// Formats an on/off value.
@@ -594,17 +610,17 @@ fn parse_optional_path(value: &str) -> Option<PathBuf> {
 }
 
 /// Parses a required folder. An empty value is an error.
-fn parse_folder(value: &str) -> Result<PathBuf, String> {
+fn parse_folder(value: &str) -> Result<PathBuf, ValueError> {
     if value.is_empty() {
-        return Err("the value is empty, a folder is needed".to_owned());
+        return Err(ValueError::EmptyFolder);
     }
     Ok(PathBuf::from(value))
 }
 
 /// Parses a required file path. An empty value is an error.
-fn parse_file(value: &str) -> Result<PathBuf, String> {
+fn parse_file(value: &str) -> Result<PathBuf, ValueError> {
     if value.is_empty() {
-        return Err("the value is empty, a file is needed".to_owned());
+        return Err(ValueError::EmptyFile);
     }
     Ok(PathBuf::from(value))
 }
@@ -621,29 +637,28 @@ fn path_text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// Returns the error of `value` outside `range`.
+fn out_of_range(value: &str, range: NumberRange) -> ValueError {
+    ValueError::OutOfRange {
+        value: value.to_owned(),
+        range,
+    }
+}
+
 /// Parses the PC-6000 composite phase.
-fn parse_composite_phase(value: &str) -> Result<u32, String> {
+fn parse_composite_phase(value: &str) -> Result<u32, ValueError> {
     match value.parse::<u32>() {
         Ok(phase) if COMPOSITE_PHASE_RANGE.contains(f64::from(phase)) => Ok(phase),
-        _ => Err(format!(
-            "invalid composite phase '{value}', expected 0, 1, 2 or 3"
-        )),
+        _ => Err(out_of_range(value, COMPOSITE_PHASE_RANGE)),
     }
 }
 
 /// Parses the audio volume.
-pub fn parse_audio_volume(value: &str) -> Result<f32, String> {
+pub fn parse_audio_volume(value: &str) -> Result<f32, ValueError> {
     match value.parse::<f32>() {
         Ok(volume) if AUDIO_VOLUME_RANGE.contains(f64::from(volume)) => Ok(volume),
-        _ => Err(format!(
-            "invalid audio volume '{value}', expected a number from 0.0 to 1.0"
-        )),
+        _ => Err(out_of_range(value, AUDIO_VOLUME_RANGE)),
     }
-}
-
-/// Parses the FM Towns pad type.
-fn parse_towns_pad(value: &str) -> Result<TownsPadType, String> {
-    value.parse()
 }
 
 /// Formats the FM Towns pad type.
@@ -684,165 +699,136 @@ const FULL_BOOT_DEVICE_FAMILIES: Families = Families::PC98.with(Families::TOWNS)
 const BOOT_MODE_UNSET: &[UnsetValue] = &[
     UnsetValue {
         families: Families::PC88,
-        text: "v2",
+        text: UnsetText::Value("v2"),
     },
     UnsetValue {
         families: Families::FM7,
-        text: "basic",
+        text: UnsetText::Value("basic"),
     },
 ];
 
 /// The GDC clock without `force-gdc-clock`: the machine picks it.
 const GDC_CLOCK_UNSET: &[UnsetValue] = &[UnsetValue {
     families: Families::PC98,
-    text: "auto",
+    text: UnsetText::Word("auto"),
 }];
 
 /// Every machine model, with the family that builds it.
 pub const MODEL_CHOICES: &[Choice] = &[
     Choice {
         value: "PC9801F",
-        label: "PC-9801F",
         families: Families::PC98,
     },
     Choice {
         value: "PC9801VM",
-        label: "PC-9801VM",
         families: Families::PC98,
     },
     Choice {
         value: "PC9801VX",
-        label: "PC-9801VX",
         families: Families::PC98,
     },
     Choice {
         value: "PC9801RS",
-        label: "PC-9801RS",
         families: Families::PC98,
     },
     Choice {
         value: "PC9801RA",
-        label: "PC-9801RA",
         families: Families::PC98,
     },
     Choice {
         value: "PC9821AS",
-        label: "PC-9821As",
         families: Families::PC98,
     },
     Choice {
         value: "PC9821AP",
-        label: "PC-9821Ap",
         families: Families::PC98,
     },
     Choice {
         value: "PC8801MC",
-        label: "PC-8801MC",
         families: Families::PC88,
     },
     Choice {
         value: "PC88VA2",
-        label: "PC-88VA2",
         families: Families::PC88VA,
     },
     Choice {
         value: "PC6001",
-        label: "PC-6001",
         families: Families::PC60,
     },
     Choice {
         value: "PC6001MK2",
-        label: "PC-6001mkII",
         families: Families::PC60,
     },
     Choice {
         value: "PC6601",
-        label: "PC-6601",
         families: Families::PC60,
     },
     Choice {
         value: "PC6001MK2SR",
-        label: "PC-6001mkIISR",
         families: Families::PC60,
     },
     Choice {
         value: "PC6601SR",
-        label: "PC-6601SR",
         families: Families::PC60,
     },
     Choice {
         value: "MSX",
-        label: "MSX",
         families: Families::MSX,
     },
     Choice {
         value: "MSX2",
-        label: "MSX2",
         families: Families::MSX,
     },
     Choice {
         value: "MSX2PLUS",
-        label: "MSX2+",
         families: Families::MSX,
     },
     Choice {
         value: "FMTowns",
-        label: "FM Towns",
         families: Families::TOWNS,
     },
     Choice {
         value: "FMTownsIICX",
-        label: "FM Towns II CX",
         families: Families::TOWNS,
     },
     Choice {
         value: "FMTownsIIMX",
-        label: "FM Towns II MX",
         families: Families::TOWNS,
     },
     Choice {
         value: "X68000",
-        label: "X68000",
         families: Families::X68K,
     },
     Choice {
         value: "X68000SUPER",
-        label: "X68000 SUPER",
         families: Families::X68K,
     },
     Choice {
         value: "X68000XVI",
-        label: "X68000 XVI",
         families: Families::X68K,
     },
     Choice {
         value: "X1",
-        label: "X1",
         families: Families::X1,
     },
     Choice {
         value: "X1TURBO",
-        label: "X1 turbo",
         families: Families::X1,
     },
     Choice {
         value: "FM7",
-        label: "FM-7",
         families: Families::FM7,
     },
     Choice {
         value: "FM77AV",
-        label: "FM77AV",
         families: Families::FM7,
     },
     Choice {
         value: "AT486DX50",
-        label: "PC/AT i486DX2-50",
         families: Families::AT,
     },
     Choice {
         value: "AT486DX66",
-        label: "PC/AT i486DX2-66",
         families: Families::AT,
     },
 ];
@@ -851,12 +837,10 @@ pub const MODEL_CHOICES: &[Choice] = &[
 const CPU_MODE_CHOICES: &[Choice] = &[
     Choice {
         value: "low",
-        label: "Low",
         families: Families::ALL,
     },
     Choice {
         value: "high",
-        label: "High",
         families: Families::ALL,
     },
 ];
@@ -865,42 +849,34 @@ const CPU_MODE_CHOICES: &[Choice] = &[
 const BOOT_MODE_CHOICES: &[Choice] = &[
     Choice {
         value: "v1s",
-        label: "N88-BASIC V1 standard speed",
         families: Families::PC88,
     },
     Choice {
         value: "v1h",
-        label: "N88-BASIC V1 high speed",
         families: Families::PC88,
     },
     Choice {
         value: "v2",
-        label: "N88-BASIC V2",
         families: Families::PC88,
     },
     Choice {
         value: "n",
-        label: "N-BASIC",
         families: Families::PC88,
     },
     Choice {
         value: "n80",
-        label: "N80-BASIC",
         families: Families::PC88,
     },
     Choice {
         value: "n80sr",
-        label: "N80SR-BASIC",
         families: Families::PC88,
     },
     Choice {
         value: "basic",
-        label: "F-BASIC",
         families: Families::FM7,
     },
     Choice {
         value: "dos",
-        label: "Disk boot",
         families: Families::FM7,
     },
 ];
@@ -909,32 +885,26 @@ const BOOT_MODE_CHOICES: &[Choice] = &[
 const BOOT_DEVICE_CHOICES: &[Choice] = &[
     Choice {
         value: "auto",
-        label: "Automatic",
         families: BOOT_DEVICE_FAMILIES,
     },
     Choice {
         value: "fdd1",
-        label: "FDD 1",
         families: BOOT_DEVICE_FAMILIES,
     },
     Choice {
         value: "fdd2",
-        label: "FDD 2",
         families: FULL_BOOT_DEVICE_FAMILIES,
     },
     Choice {
         value: "hdd1",
-        label: "HDD 1",
         families: BOOT_DEVICE_FAMILIES,
     },
     Choice {
         value: "hdd2",
-        label: "HDD 2",
         families: FULL_BOOT_DEVICE_FAMILIES,
     },
     Choice {
         value: "dos",
-        label: "Neetan DOS",
         families: FULL_BOOT_DEVICE_FAMILIES,
     },
 ];
@@ -943,17 +913,14 @@ const BOOT_DEVICE_CHOICES: &[Choice] = &[
 const MONITOR_CHOICES: &[Choice] = &[
     Choice {
         value: "auto",
-        label: "Automatic",
         families: Families::ALL,
     },
     Choice {
         value: "15k",
-        label: "15 kHz",
         families: Families::ALL,
     },
     Choice {
         value: "24k",
-        label: "24 kHz",
         families: Families::ALL,
     },
 ];
@@ -963,12 +930,10 @@ const MONITOR_CHOICES: &[Choice] = &[
 const WAIT_CHOICES: &[Choice] = &[
     Choice {
         value: "fast",
-        label: "Fast",
         families: Families::ALL,
     },
     Choice {
         value: "compatible",
-        label: "Compatible",
         families: Families::ALL,
     },
 ];
@@ -977,12 +942,10 @@ const WAIT_CHOICES: &[Choice] = &[
 const X1_KEYBOARD_CHOICES: &[Choice] = &[
     Choice {
         value: "A",
-        label: "Mode A",
         families: Families::ALL,
     },
     Choice {
         value: "B",
-        label: "Mode B",
         families: Families::ALL,
     },
 ];
@@ -991,12 +954,10 @@ const X1_KEYBOARD_CHOICES: &[Choice] = &[
 const TOWNS_PAD_CHOICES: &[Choice] = &[
     Choice {
         value: "2",
-        label: "2 buttons",
         families: Families::ALL,
     },
     Choice {
         value: "6",
-        label: "6 buttons",
         families: Families::ALL,
     },
 ];
@@ -1005,37 +966,30 @@ const TOWNS_PAD_CHOICES: &[Choice] = &[
 const SOUNDBOARD_CHOICES: &[Choice] = &[
     Choice {
         value: "none",
-        label: "None",
         families: Families::ALL,
     },
     Choice {
         value: "14",
-        label: "PC-9801-14",
         families: Families::ALL,
     },
     Choice {
         value: "26k",
-        label: "PC-9801-26K",
         families: Families::ALL,
     },
     Choice {
         value: "86",
-        label: "PC-9801-86",
         families: Families::ALL,
     },
     Choice {
         value: "86+26k",
-        label: "PC-9801-86 and PC-9801-26K",
         families: Families::ALL,
     },
     Choice {
         value: "sb16",
-        label: "Sound Blaster 16",
         families: Families::ALL,
     },
     Choice {
         value: "sb16+26k",
-        label: "Sound Blaster 16 and PC-9801-26K",
         families: Families::ALL,
     },
 ];
@@ -1044,17 +998,14 @@ const SOUNDBOARD_CHOICES: &[Choice] = &[
 const MIDI_CHOICES: &[Choice] = &[
     Choice {
         value: "none",
-        label: "None",
         families: Families::ALL,
     },
     Choice {
         value: "mt32",
-        label: "Roland MT-32",
         families: Families::ALL,
     },
     Choice {
         value: "sc55",
-        label: "Roland SC-55",
         families: Families::ALL,
     },
 ];
@@ -1063,12 +1014,10 @@ const MIDI_CHOICES: &[Choice] = &[
 const ASPECT_MODE_CHOICES: &[Choice] = &[
     Choice {
         value: "4:3",
-        label: "4:3",
         families: Families::ALL,
     },
     Choice {
         value: "1:1",
-        label: "1:1",
         families: Families::ALL,
     },
 ];
@@ -1077,12 +1026,10 @@ const ASPECT_MODE_CHOICES: &[Choice] = &[
 const WINDOW_MODE_CHOICES: &[Choice] = &[
     Choice {
         value: "windowed",
-        label: "Windowed",
         families: Families::ALL,
     },
     Choice {
         value: "fullscreen",
-        label: "Fullscreen",
         families: Families::ALL,
     },
 ];
@@ -1091,17 +1038,14 @@ const WINDOW_MODE_CHOICES: &[Choice] = &[
 const SCALING_CHOICES: &[Choice] = &[
     Choice {
         value: "nearest",
-        label: "Nearest",
         families: Families::ALL,
     },
     Choice {
         value: "bilinear",
-        label: "Bilinear",
         families: Families::ALL,
     },
     Choice {
         value: "pixelart",
-        label: "Pixel art",
         families: Families::ALL,
     },
 ];
@@ -1110,12 +1054,10 @@ const SCALING_CHOICES: &[Choice] = &[
 const GDC_CLOCK_CHOICES: &[Choice] = &[
     Choice {
         value: "2.5",
-        label: "2.5 MHz",
         families: Families::ALL,
     },
     Choice {
         value: "5",
-        label: "5 MHz",
         families: Families::ALL,
     },
 ];
@@ -1124,12 +1066,10 @@ const GDC_CLOCK_CHOICES: &[Choice] = &[
 const GRAPHICBOARD_CHOICES: &[Choice] = &[
     Choice {
         value: "none",
-        label: "None",
         families: Families::ALL,
     },
     Choice {
         value: "ga1280a",
-        label: "I-O DATA GA-1280A",
         families: Families::ALL,
     },
 ];
@@ -1138,12 +1078,10 @@ const GRAPHICBOARD_CHOICES: &[Choice] = &[
 const BACKEND_CHOICES: &[Choice] = &[
     Choice {
         value: "modern",
-        label: "Modern",
         families: Families::ALL,
     },
     Choice {
         value: "legacy",
-        label: "Legacy",
         families: Families::ALL,
     },
 ];
@@ -1152,12 +1090,10 @@ const BACKEND_CHOICES: &[Choice] = &[
 const GUI_THEME_CHOICES: &[Choice] = &[
     Choice {
         value: "dark",
-        label: "Dark",
         families: Families::ALL,
     },
     Choice {
         value: "light",
-        label: "Light",
         families: Families::ALL,
     },
 ];
@@ -1166,8 +1102,6 @@ const GUI_THEME_CHOICES: &[Choice] = &[
 pub static SETTINGS: &[Setting] = &[
     Setting {
         key: MACHINE_KEY,
-        label: "Model",
-        help: "Machine model. It selects the family.",
         scope: Scope::System,
         kind: ValueKind::Choice(MODEL_CHOICES),
         families: Families::ALL,
@@ -1184,8 +1118,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "cpu-mode",
-        label: "CPU mode",
-        help: "CPU speed mode. The PC-88 default derives from the boot mode. X68000 XVI 10 or 16.67 MHz, FM Towns II CX 16 or 20 MHz, II MX 33 or 66 MHz.",
         scope: Scope::System,
         kind: ValueKind::Choice(CPU_MODE_CHOICES),
         families: Families::PC98
@@ -1218,15 +1150,13 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.cpu_mode = value.parse::<CpuMode>()?;
+            config.cpu_mode = parse_choice(value, CPU_MODE_CHOICES)?;
             Ok(())
         },
         format: |config| format_value(config.cpu_mode),
     },
     Setting {
         key: "boot-mode",
-        label: "Boot mode",
-        help: "Boot mode. Each family accepts only its own values.",
         scope: Scope::System,
         kind: ValueKind::Choice(BOOT_MODE_CHOICES),
         families: Families::PC88.with(Families::FM7),
@@ -1239,15 +1169,13 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.boot_mode = Some(value.parse::<BootMode>()?);
+            config.boot_mode = Some(parse_choice(value, BOOT_MODE_CHOICES)?);
             Ok(())
         },
         format: |config| format_optional(config.boot_mode),
     },
     Setting {
         key: "boot-device",
-        label: "Boot device",
-        help: "Boot device.",
         scope: Scope::System,
         kind: ValueKind::Choice(BOOT_DEVICE_CHOICES),
         families: BOOT_DEVICE_FAMILIES,
@@ -1260,22 +1188,20 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.boot_device = value.parse::<common::BootDevice>()?;
+            config.boot_device = parse_choice(value, BOOT_DEVICE_CHOICES)?;
             Ok(())
         },
         format: |config| format_value(config.boot_device),
     },
     Setting {
         key: "bios",
-        label: "Real BIOS",
-        help: "Boot the real BIOS from the ROM folder of the family.",
         scope: Scope::System,
         kind: ValueKind::OnOff,
         families: Families::PC98.with(Families::AT),
         model_limits: &[ModelLimit {
             family: Families::PC98,
             models: PC98_REAL_BIOS_MODELS,
-            reason: LimitReason::Phrase("boots only the built-in BIOS"),
+            reason: LimitReason::Phrase("builtin-bios"),
         }],
         section: Some(Section::Machine),
         explicit: None,
@@ -1292,15 +1218,13 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "ems",
-        label: "EMS memory",
-        help: "EMS expanded memory of the HLE DOS.",
         scope: Scope::System,
         kind: ValueKind::OnOff,
         families: Families::PC98,
         model_limits: &[ModelLimit {
             family: Families::PC98,
             models: PC98_VX_AND_LATER_MODELS,
-            reason: LimitReason::Phrase("has no EMS memory"),
+            reason: LimitReason::Phrase("no-ems"),
         }],
         section: Some(Section::Machine),
         explicit: None,
@@ -1317,15 +1241,13 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "xms",
-        label: "XMS memory",
-        help: "XMS extended memory of the HLE DOS.",
         scope: Scope::System,
         kind: ValueKind::OnOff,
         families: Families::PC98,
         model_limits: &[ModelLimit {
             family: Families::PC98,
             models: PC98_VX_AND_LATER_MODELS,
-            reason: LimitReason::Phrase("has no XMS memory"),
+            reason: LimitReason::Phrase("no-xms"),
         }],
         section: Some(Section::Machine),
         explicit: None,
@@ -1342,15 +1264,13 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "monitor",
-        label: "Monitor",
-        help: "Monitor timing.",
         scope: Scope::System,
         kind: ValueKind::Choice(MONITOR_CHOICES),
         families: Families::PC88.with(Families::X1),
         model_limits: &[ModelLimit {
             family: Families::X1,
             models: X1_TURBO_MODELS,
-            reason: LimitReason::Phrase("has a fixed monitor timing"),
+            reason: LimitReason::Phrase("fixed-monitor"),
         }],
         section: Some(Section::Machine),
         explicit: None,
@@ -1360,7 +1280,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.monitor = value.parse::<common::MonitorTiming>()?;
+            config.monitor = parse_choice(value, MONITOR_CHOICES)?;
             Ok(())
         },
         format: |config| format_value(config.monitor),
@@ -1368,8 +1288,6 @@ pub static SETTINGS: &[Setting] = &[
     #[cfg(feature = "pc88")]
     Setting {
         key: "pc88-memory-wait",
-        label: "Memory wait",
-        help: "PC-8801 memory wait. The default derives from the boot mode.",
         scope: Scope::System,
         kind: ValueKind::Choice(WAIT_CHOICES),
         families: Families::PC88,
@@ -1382,7 +1300,7 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.pc88_memory_wait = value.parse::<MemoryWaitSwitch>()?;
+            config.pc88_memory_wait = parse_choice(value, WAIT_CHOICES)?;
             Ok(())
         },
         format: |config| format_value(config.pc88_memory_wait),
@@ -1390,8 +1308,6 @@ pub static SETTINGS: &[Setting] = &[
     #[cfg(feature = "pc88")]
     Setting {
         key: "pc88-8mhz-wait",
-        label: "8 MHz wait",
-        help: "PC-8801 8 MHz wait.",
         scope: Scope::System,
         kind: ValueKind::Choice(WAIT_CHOICES),
         families: Families::PC88,
@@ -1404,22 +1320,20 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.pc88_8mhz_wait = value.parse::<EightMhzWaitMode>()?;
+            config.pc88_8mhz_wait = parse_choice(value, WAIT_CHOICES)?;
             Ok(())
         },
         format: |config| format_value(config.pc88_8mhz_wait),
     },
     Setting {
         key: "x1-keyboard",
-        label: "Keyboard mode",
-        help: "X1 turbo keyboard mode switch.",
         scope: Scope::System,
         kind: ValueKind::Choice(X1_KEYBOARD_CHOICES),
         families: Families::X1,
         model_limits: &[ModelLimit {
             family: Families::X1,
             models: X1_TURBO_MODELS,
-            reason: LimitReason::Phrase("has no keyboard mode switch"),
+            reason: LimitReason::Phrase("no-keyboard-switch"),
         }],
         section: Some(Section::Machine),
         explicit: None,
@@ -1429,15 +1343,13 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.x1_keyboard = value.parse()?;
+            config.x1_keyboard = parse_choice(value, X1_KEYBOARD_CHOICES)?;
             Ok(())
         },
         format: |config| format_value(config.x1_keyboard),
     },
     Setting {
         key: "towns-pad",
-        label: "Game pad",
-        help: "FM Towns game pad type.",
         scope: Scope::System,
         kind: ValueKind::Choice(TOWNS_PAD_CHOICES),
         families: Families::TOWNS,
@@ -1450,15 +1362,13 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.towns_pad = parse_towns_pad(value)?;
+            config.towns_pad = parse_choice(value, TOWNS_PAD_CHOICES)?;
             Ok(())
         },
         format: |config| format_towns_pad(config.towns_pad),
     },
     Setting {
         key: "fdd1",
-        label: "FDD 1",
-        help: "Floppy disk image for drive 1. Repeat the key for more images.",
         scope: Scope::Game,
         kind: ValueKind::PathList,
         families: FDD1_FAMILIES,
@@ -1466,12 +1376,12 @@ pub static SETTINGS: &[Setting] = &[
             ModelLimit {
                 family: Families::PC60,
                 models: PC60_FDD_MODELS,
-                reason: LimitReason::Phrase("has no floppy drive"),
+                reason: LimitReason::Phrase("no-floppy"),
             },
             ModelLimit {
                 family: Families::MSX,
                 models: MSX_FDD_MODELS,
-                reason: LimitReason::Phrase("has no floppy drive"),
+                reason: LimitReason::Phrase("no-floppy"),
             },
         ],
         section: Some(Section::Media),
@@ -1489,15 +1399,13 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "fdd2",
-        label: "FDD 2",
-        help: "Floppy disk image for drive 2. Repeat the key for more images.",
         scope: Scope::Game,
         kind: ValueKind::PathList,
         families: FDD2_FAMILIES,
         model_limits: &[ModelLimit {
             family: Families::PC60,
             models: PC60_FDD_MODELS,
-            reason: LimitReason::Phrase("has no floppy drive"),
+            reason: LimitReason::Phrase("no-floppy"),
         }],
         section: Some(Section::Media),
         explicit: None,
@@ -1514,8 +1422,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "cdrom",
-        label: "CD-ROM",
-        help: "CD-ROM disc image, a .cue or .ccd file. Repeat the key for more discs.",
         scope: Scope::Game,
         kind: ValueKind::PathList,
         families: CDROM_FAMILIES,
@@ -1523,12 +1429,12 @@ pub static SETTINGS: &[Setting] = &[
             ModelLimit {
                 family: Families::PC98,
                 models: PC98_CDROM_MODELS,
-                reason: LimitReason::Phrase("has no CD-ROM drive"),
+                reason: LimitReason::Phrase("no-cdrom"),
             },
             ModelLimit {
                 family: Families::X68K,
                 models: X68K_CDROM_MODELS,
-                reason: LimitReason::Phrase("has no CD-ROM drive"),
+                reason: LimitReason::Phrase("no-cdrom"),
             },
         ],
         section: Some(Section::Media),
@@ -1546,8 +1452,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "cdrom-compat",
-        label: "Compatible CD-ROM timing",
-        help: "Slow and compatible CD-ROM drive timing.",
         scope: Scope::System,
         kind: ValueKind::OnOff,
         families: Families::TOWNS,
@@ -1567,8 +1471,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "hdd1",
-        label: "HDD 1",
-        help: "Hard disk image for drive 1: PC-98 .hdi/.nhd/.thd, FM Towns .h0-.h4, X68000 .hdf, PC/AT .hdd.",
         scope: Scope::Game,
         kind: ValueKind::Path(PathKind::File),
         families: HDD_FAMILIES,
@@ -1588,8 +1490,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "hdd2",
-        label: "HDD 2",
-        help: "Hard disk image for drive 2: PC-98 .hdi/.nhd/.thd, FM Towns .h0-.h4, X68000 .hdf, PC/AT .hdd.",
         scope: Scope::Game,
         kind: ValueKind::Path(PathKind::File),
         families: HDD_FAMILIES,
@@ -1609,8 +1509,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "cartridge",
-        label: "Cartridge",
-        help: "Cartridge ROM image.",
         scope: Scope::Game,
         kind: ValueKind::Path(PathKind::File),
         families: Families::PC60.with(Families::MSX),
@@ -1630,8 +1528,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "cassette",
-        label: "Cassette",
-        help: "Cassette tape image: MSX .cas, PC-6000 .cas/.p6/.p6t, X1 .tap, FM-7 .t77.",
         scope: Scope::Game,
         kind: ValueKind::Path(PathKind::File),
         families: Families::PC60
@@ -1654,8 +1550,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "soundboard",
-        label: "Sound board",
-        help: "PC-98 sound board.",
         scope: Scope::System,
         kind: ValueKind::Choice(SOUNDBOARD_CHOICES),
         families: Families::PC98,
@@ -1668,15 +1562,13 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.soundboard = value.parse()?;
+            config.soundboard = parse_choice(value, SOUNDBOARD_CHOICES)?;
             Ok(())
         },
         format: |config| format_value(config.soundboard),
     },
     Setting {
         key: "adpcm-ram",
-        label: "ADPCM RAM",
-        help: "ADPCM RAM option of the PC-9801-86.",
         scope: Scope::System,
         kind: ValueKind::OnOff,
         families: Families::PC98,
@@ -1696,8 +1588,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "midi",
-        label: "MIDI device",
-        help: "MIDI device. MT-32 and SC-55 need their ROM folders.",
         scope: Scope::System,
         kind: ValueKind::Choice(MIDI_CHOICES),
         families: MIDI_FAMILIES,
@@ -1710,15 +1600,13 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.midi = value.parse()?;
+            config.midi = parse_choice(value, MIDI_CHOICES)?;
             Ok(())
         },
         format: |config| format_value(config.midi),
     },
     Setting {
         key: "aspect-mode",
-        label: "Aspect mode",
-        help: "Display aspect mode.",
         scope: Scope::System,
         kind: ValueKind::Choice(ASPECT_MODE_CHOICES),
         families: Families::ALL,
@@ -1731,15 +1619,13 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: true,
         clear: None,
         apply: |config, value| {
-            config.aspect_mode = value.parse()?;
+            config.aspect_mode = parse_choice(value, ASPECT_MODE_CHOICES)?;
             Ok(())
         },
         format: |config| format_value(config.aspect_mode),
     },
     Setting {
         key: WINDOW_MODE_KEY,
-        label: "Window mode",
-        help: "Window mode.",
         scope: Scope::System,
         kind: ValueKind::Choice(WINDOW_MODE_CHOICES),
         families: Families::ALL,
@@ -1752,15 +1638,13 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: true,
         clear: None,
         apply: |config, value| {
-            config.window_mode = value.parse()?;
+            config.window_mode = parse_choice(value, WINDOW_MODE_CHOICES)?;
             Ok(())
         },
         format: |config| format_value(config.window_mode),
     },
     Setting {
         key: "crt",
-        label: "CRT effect",
-        help: "CRT effect. The modern backend draws it.",
         scope: Scope::System,
         kind: ValueKind::OnOff,
         families: Families::ALL,
@@ -1780,8 +1664,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "scaling",
-        label: "Scaling",
-        help: "Scaling method.",
         scope: Scope::System,
         kind: ValueKind::Choice(SCALING_CHOICES),
         families: Families::ALL,
@@ -1794,15 +1676,13 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: true,
         clear: None,
         apply: |config, value| {
-            config.scaling = value.parse()?;
+            config.scaling = parse_choice(value, SCALING_CHOICES)?;
             Ok(())
         },
         format: |config| format_value(config.scaling),
     },
     Setting {
         key: "pc6000-phase",
-        label: "Color phase",
-        help: "Initial composite artifact color phase. Right Ctrl + P cycles it.",
         scope: Scope::System,
         kind: ValueKind::Number(COMPOSITE_PHASE_RANGE),
         families: Families::PC60,
@@ -1822,15 +1702,13 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "force-gdc-clock",
-        label: "GDC clock",
-        help: "Force the GDC clock in MHz. Unset follows the machine.",
         scope: Scope::System,
         kind: ValueKind::Choice(GDC_CLOCK_CHOICES),
         families: Families::PC98,
         model_limits: &[ModelLimit {
             family: Families::PC98,
             models: PC98_VX_AND_LATER_MODELS,
-            reason: LimitReason::Phrase("has a fixed GDC clock"),
+            reason: LimitReason::Phrase("fixed-gdc-clock"),
         }],
         section: Some(Section::Display),
         explicit: None,
@@ -1840,15 +1718,13 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.force_gdc_clock = Some(value.parse()?);
+            config.force_gdc_clock = Some(parse_choice(value, GDC_CLOCK_CHOICES)?);
             Ok(())
         },
         format: |config| format_optional(config.force_gdc_clock),
     },
     Setting {
         key: "graphicboard",
-        label: "Graphics board",
-        help: "PC-98 graphics accelerator board.",
         scope: Scope::System,
         kind: ValueKind::Choice(GRAPHICBOARD_CHOICES),
         families: Families::PC98,
@@ -1861,15 +1737,13 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: false,
         clear: None,
         apply: |config, value| {
-            config.graphicboard = value.parse()?;
+            config.graphicboard = parse_choice(value, GRAPHICBOARD_CHOICES)?;
             Ok(())
         },
         format: |config| format_value(config.graphicboard),
     },
     Setting {
         key: "printer",
-        label: "Printer output",
-        help: "Output file of the printer. The file must exist.",
         scope: Scope::System,
         kind: ValueKind::Path(PathKind::File),
         families: Families::PC98,
@@ -1889,8 +1763,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "enable-extractor",
-        label: "Text extractor",
-        help: "Copy on-screen text to the system clipboard.",
         scope: Scope::System,
         kind: ValueKind::OnOff,
         families: Families::PC98,
@@ -1910,8 +1782,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "debug-bios",
-        label: "Debug BIOS",
-        help: "PC-98 BIOS ROM image for hardware test programs.",
         scope: Scope::System,
         kind: ValueKind::Path(PathKind::File),
         families: Families::PC98,
@@ -1931,8 +1801,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: BACKEND_KEY,
-        label: "Backend",
-        help: "Rendering backend. The legacy backend has no shader effects.",
         scope: Scope::Host,
         kind: ValueKind::Choice(BACKEND_CHOICES),
         families: Families::ALL,
@@ -1945,15 +1813,13 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: true,
         clear: None,
         apply: |config, value| {
-            config.backend = value.parse()?;
+            config.backend = parse_choice(value, BACKEND_CHOICES)?;
             Ok(())
         },
         format: |config| format_value(config.backend),
     },
     Setting {
         key: GUI_THEME_KEY,
-        label: "GUI theme",
-        help: "Colors of the user interface.",
         scope: Scope::Host,
         kind: ValueKind::Choice(GUI_THEME_CHOICES),
         families: Families::ALL,
@@ -1966,15 +1832,13 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: true,
         clear: None,
         apply: |config, value| {
-            config.gui_theme = value.parse()?;
+            config.gui_theme = parse_choice(value, GUI_THEME_CHOICES)?;
             Ok(())
         },
         format: |config| format_value(config.gui_theme),
     },
     Setting {
         key: GUI_LANGUAGE_KEY,
-        label: "GUI language",
-        help: "Language of the user interface: auto or a language tag such as ja. Auto takes the first preferred language of the system that has a language file.",
         scope: Scope::Host,
         kind: ValueKind::Language,
         families: Families::ALL,
@@ -1987,15 +1851,15 @@ pub static SETTINGS: &[Setting] = &[
         frontend_only: true,
         clear: None,
         apply: |config, value| {
-            config.gui_language = value.parse()?;
+            config.gui_language = value.parse().map_err(|_| ValueError::Language {
+                value: value.to_owned(),
+            })?;
             Ok(())
         },
         format: |config| format_value(&config.gui_language),
     },
     Setting {
         key: AUDIO_VOLUME_KEY,
-        label: "Audio volume",
-        help: "Audio volume.",
         scope: Scope::Host,
         kind: ValueKind::Number(AUDIO_VOLUME_RANGE),
         families: Families::ALL,
@@ -2015,8 +1879,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: CONFIG_FOLDER_KEY,
-        label: "Config folder",
-        help: "Folder of the system defaults and the game files. The default lies in the root.",
         scope: Scope::Host,
         kind: ValueKind::Path(PathKind::Folder),
         families: Families::ALL,
@@ -2036,8 +1898,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: ROMS_FOLDER_KEY,
-        label: "ROM folder",
-        help: "Folder of the ROM folders of every system. The default lies in the root.",
         scope: Scope::Host,
         kind: ValueKind::Path(PathKind::Folder),
         families: Families::ALL,
@@ -2057,8 +1917,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: GUI_FONT_KEY,
-        label: "GUI font",
-        help: "Font file of the user interface. The default is searched below the root and then in the resource folder of the installation.",
         scope: Scope::Host,
         kind: ValueKind::Path(PathKind::File),
         families: Families::ALL,
@@ -2078,8 +1936,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "at-roms",
-        label: "PC/AT",
-        help: "Folder with the PC/AT ROM set. Every ROM is optional.",
         scope: Scope::Host,
         kind: ValueKind::Path(PathKind::Folder),
         families: Families::AT,
@@ -2099,8 +1955,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "fm7-roms",
-        label: "FM-7",
-        help: "Folder with the FM-7 and FM77AV ROM set (required).",
         scope: Scope::Host,
         kind: ValueKind::Path(PathKind::Folder),
         families: Families::FM7,
@@ -2120,8 +1974,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "msx-roms",
-        label: "MSX",
-        help: "Folder with the MSX machine and FS-CA1 ROM sets (required).",
         scope: Scope::Host,
         kind: ValueKind::Path(PathKind::Folder),
         families: Families::MSX,
@@ -2141,8 +1993,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "mt32-roms",
-        label: "MT-32",
-        help: "Folder with the Roland MT-32 ROM set.",
         scope: Scope::Host,
         kind: ValueKind::Path(PathKind::Folder),
         families: MIDI_FAMILIES,
@@ -2162,8 +2012,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "pc6000-roms",
-        label: "PC-6000",
-        help: "Folder with the PC-6000 ROM set (required).",
         scope: Scope::Host,
         kind: ValueKind::Path(PathKind::Folder),
         families: Families::PC60,
@@ -2183,8 +2031,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "pc88-roms",
-        label: "PC-88",
-        help: "Folder with the PC-8801MC ROM set (required).",
         scope: Scope::Host,
         kind: ValueKind::Path(PathKind::Folder),
         families: Families::PC88,
@@ -2204,8 +2050,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "pc88va-roms",
-        label: "PC-88VA",
-        help: "Folder with the PC-88VA2 ROM set (required).",
         scope: Scope::Host,
         kind: ValueKind::Path(PathKind::Folder),
         families: Families::PC88VA,
@@ -2225,8 +2069,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "pc98-roms",
-        label: "PC-98",
-        help: "Folder with the PC-98 ROM set. Every ROM is optional.",
         scope: Scope::Host,
         kind: ValueKind::Path(PathKind::Folder),
         families: Families::PC98,
@@ -2246,8 +2088,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "sc55-roms",
-        label: "SC-55",
-        help: "Folder with the Roland SC-55 ROM set.",
         scope: Scope::Host,
         kind: ValueKind::Path(PathKind::Folder),
         families: MIDI_FAMILIES,
@@ -2267,8 +2107,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "towns-roms",
-        label: "FM Towns",
-        help: "Folder with the FM Towns ROM set (required).",
         scope: Scope::Host,
         kind: ValueKind::Path(PathKind::Folder),
         families: Families::TOWNS,
@@ -2288,8 +2126,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "x1-roms",
-        label: "X1",
-        help: "Folder with the Sharp X1 ROM set (required).",
         scope: Scope::Host,
         kind: ValueKind::Path(PathKind::Folder),
         families: Families::X1,
@@ -2309,8 +2145,6 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "x68k-roms",
-        label: "X68000",
-        help: "Folder with the ROM set of the selected X68000 model (required).",
         scope: Scope::Host,
         kind: ValueKind::Path(PathKind::Folder),
         families: Families::X68K,
@@ -2370,19 +2204,23 @@ mod tests {
             .any(|choice| choice.value == name && choice.families == family)
     }
 
-    /// Verifies that every key is unique and has a label, a help sentence and families.
+    /// Returns whether `name` is a name of a language file section: lower case letters, digits
+    /// and `-`.
+    fn is_section_name(name: &str) -> bool {
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    }
+
+    /// Verifies that every key is unique, has families and gives the name of a language file
+    /// section.
     #[test]
-    fn keys_are_unique_and_described() {
+    fn keys_are_unique_section_names() {
         let mut keys = BTreeSet::new();
         for setting in SETTINGS {
             assert!(keys.insert(setting.key), "{} is listed twice", setting.key);
-            assert!(!setting.label.is_empty(), "{} has no label", setting.key);
-            assert!(
-                setting.help.ends_with('.'),
-                "{} help is a sentence",
-                setting.key
-            );
-            assert!(setting.help.is_ascii(), "{} help is ASCII", setting.key);
+            assert!(is_section_name(setting.key), "{}", setting.key);
             assert_ne!(setting.families, Families::NONE, "{}", setting.key);
         }
     }
@@ -2515,9 +2353,9 @@ mod tests {
         for invalid in ["", "pt_BR", "ja-", "-ja", "ja--JP", "日本語", "en US"] {
             assert_eq!(
                 (setting.apply)(&mut config, invalid),
-                Err(format!(
-                    "invalid GUI language '{invalid}', expected auto or a language tag of letters, digits and -"
-                )),
+                Err(ValueError::Language {
+                    value: invalid.to_owned()
+                }),
                 "{invalid}"
             );
         }
@@ -2553,11 +2391,29 @@ mod tests {
         let bios = find_setting("bios").expect("bios is a table key");
         assert_eq!(
             (bios.apply)(&mut config, "maybe"),
-            Err("invalid value 'maybe', expected on or off".to_owned())
+            Err(ValueError::OnOff {
+                value: "maybe".to_owned()
+            })
         );
         let volume = find_setting("audio-volume").expect("audio-volume is a table key");
-        assert!((volume.apply)(&mut config, "-0.1").is_err());
+        assert_eq!(
+            (volume.apply)(&mut config, "-0.1"),
+            Err(ValueError::OutOfRange {
+                value: "-0.1".to_owned(),
+                range: AUDIO_VOLUME_RANGE
+            })
+        );
         assert!((volume.apply)(&mut config, "NaN").is_err());
+        let scaling = find_setting("scaling").expect("scaling is a table key");
+        assert_eq!(
+            (scaling.apply)(&mut config, "sharp"),
+            Err(ValueError::unknown_choice("sharp", SCALING_CHOICES))
+        );
+        let machine = find_setting(MACHINE_KEY).expect("machine is a table key");
+        assert_eq!(
+            (machine.apply)(&mut config, "X68030"),
+            Err(ValueError::unknown_choice("X68030", MODEL_CHOICES))
+        );
     }
 
     /// Verifies that every compiled model name resolves to a model with the same name.
@@ -2688,27 +2544,14 @@ mod tests {
         assert_eq!(config.pc88_memory_wait, MemoryWaitSwitch::Compatible);
     }
 
-    /// Verifies that every model limit gives a reason in the form of a phrase after a model name.
+    /// Verifies that every phrase reason of a model limit is a key of a language file section.
     #[test]
-    fn model_limits_give_a_reason() {
+    fn model_limits_give_a_reason_key() {
         for setting in SETTINGS {
             for limit in setting.model_limits {
-                for choice in MODEL_CHOICES {
-                    let Ok(model) = choice.value.parse::<MachineSelection>() else {
-                        continue;
-                    };
-                    if !limit.family.contains_target(model.target()) {
-                        continue;
-                    }
-                    let reason = limit.reason.phrase(model);
-                    assert!(!reason.is_empty(), "{}", setting.key);
-                    assert!(reason.is_ascii(), "{}", setting.key);
-                    assert!(!reason.ends_with('.'), "{}", setting.key);
-                    assert!(
-                        reason.starts_with(|first: char| first.is_ascii_lowercase()),
-                        "{}",
-                        setting.key
-                    );
+                match limit.reason {
+                    LimitReason::Phrase(key) => assert!(is_section_name(key), "{}", setting.key),
+                    LimitReason::FixedClock => {}
                 }
             }
         }
@@ -2763,18 +2606,24 @@ mod tests {
     #[test]
     fn the_pc88_derives_its_defaults_and_boots_v2_without_a_boot_mode() {
         let boot_mode = find_setting("boot-mode").expect("boot-mode is a table key");
-        assert_eq!(boot_mode.unset_text(Target::Pc88), Some("v2"));
+        assert_eq!(
+            boot_mode.unset_text(Target::Pc88),
+            Some(UnsetText::Value("v2"))
+        );
         let cpu_mode = find_setting("cpu-mode").expect("cpu-mode is a table key");
         assert!(cpu_mode.has_derived_default(Target::Pc88));
         assert!(!boot_mode.has_derived_default(Target::Pc88));
         let model = MachineSelection::default_of(Target::Pc88);
+        let Some(FactData::CpuClock { mode, clock }) = cpu_mode.choice_fact(model, Some("low"))
+        else {
+            panic!("the CPU mode gives a clock");
+        };
+        assert_eq!((mode, clock.to_string().as_str()), (CpuMode::Low, "4 MHz"));
         assert_eq!(
-            cpu_mode.choice_fact(model, Some("low")).as_deref(),
-            Some("At low the CPU runs at 4 MHz.")
-        );
-        assert_eq!(
-            boot_mode.choice_fact(model, None).as_deref(),
-            Some("The choices are v1s, v1h, v2, n, n80 and n80sr.")
+            boot_mode.choice_fact(model, None),
+            Some(FactData::Choices(vec![
+                "v1s", "v1h", "v2", "n", "n80", "n80sr"
+            ]))
         );
     }
 
@@ -2788,20 +2637,26 @@ mod tests {
             .expect("the PC-98 limits cdrom");
         assert_eq!(limit.models, ["PC9821AS", "PC9821AP"]);
         let model: MachineSelection = "PC9801RA".parse().expect("a PC-98 model");
-        assert_eq!(limit.reason.phrase(model), "has no CD-ROM drive");
+        assert_eq!(limit.reason, LimitReason::Phrase("no-cdrom"));
         assert!(!cdrom.has_derived_default(Target::Pc98));
         let cpu_mode = find_setting("cpu-mode").expect("cpu-mode is a table key");
         let limit = cpu_mode
             .limit_for(Target::Pc98)
             .expect("the PC-98 limits cpu-mode");
-        assert_eq!(limit.reason.phrase(model), "runs at a fixed 20 MHz");
-        let vm: MachineSelection = "PC9801VM".parse().expect("a PC-98 model");
         assert_eq!(
-            cpu_mode.choice_fact(vm, Some("low")).as_deref(),
-            Some("At low the CPU runs at 8 MHz.")
+            limit
+                .reason
+                .fixed_clock(model)
+                .map(|clock| clock.to_string()),
+            Some("20 MHz".to_owned())
         );
+        let vm: MachineSelection = "PC9801VM".parse().expect("a PC-98 model");
+        let Some(FactData::CpuClock { mode, clock }) = cpu_mode.choice_fact(vm, Some("low")) else {
+            panic!("the CPU mode gives a clock");
+        };
+        assert_eq!((mode, clock.to_string().as_str()), (CpuMode::Low, "8 MHz"));
         assert_eq!(cpu_mode.choice_fact(vm, None), None);
         let gdc = find_setting("force-gdc-clock").expect("force-gdc-clock is a table key");
-        assert_eq!(gdc.unset_text(Target::Pc98), Some("auto"));
+        assert_eq!(gdc.unset_text(Target::Pc98), Some(UnsetText::Word("auto")));
     }
 }

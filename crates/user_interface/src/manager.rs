@@ -11,9 +11,12 @@ mod error_dialog;
 mod filter;
 mod game_table;
 mod hints;
+mod library;
 mod rows;
 mod settings_page;
 mod sidebar;
+#[cfg(test)]
+mod test_support;
 mod toolbar;
 mod view;
 
@@ -22,27 +25,20 @@ use std::path::PathBuf;
 use common::{FlushError, debug, info};
 use gui::{
     Rect,
-    ui::{
-        ActionButton, Button, ButtonKind, ConfirmResponse, EmptyHint, HEADER_HEIGHT, Icon,
-        Navigation, RowKind, STATUS_LINE_HEIGHT, Shortcut, StatusEnd, TextBuffer, TextField,
-        UiContext, UiId, status_line,
-    },
+    ui::{ActionButton, ConfirmResponse, RowKind, STATUS_LINE_HEIGHT, Shortcut, UiContext, UiId},
 };
 use machine_factory::config::systems::{System, compiled_systems};
 
 use self::{
-    counts::{GameCounts, write_counts},
     delete::{DeleteOutcome, DeleteRequest},
     entries::{TableEntry, table_entries},
     error_dialog::{DialogAnswer, EditTarget},
     filter::Filter,
-    game_table::{GAME_TABLE_ID, show_game_table},
-    hints::{LibraryFocus, library_hints, status_end},
+    game_table::GAME_TABLE_ID,
+    library::LibraryTexts,
     rows::system_rows,
-    sidebar::{SYSTEM_DEFAULTS_ID, SYSTEM_LIST_ID, SidebarTexts, SystemEntry, show_sidebar},
-    toolbar::{
-        ADD_ID, DELETE_ID, DUPLICATE_ID, EDIT_ID, LAUNCH_ID, REFRESH_ID, ToolbarState, show_toolbar,
-    },
+    sidebar::SystemEntry,
+    toolbar::ADD_ID,
 };
 pub(crate) use self::{
     error_dialog::ErrorDialog,
@@ -52,18 +48,18 @@ pub(crate) use self::{
 use crate::{
     Result,
     catalog::Catalog,
-    config::{EmulatorConfig, HostLayers, LaunchRequest, ManagerStart, build_configuration},
+    config::{
+        EmulatorConfig, HostLayers, LaunchError, LaunchFailure, LaunchRequest, ManagerStart,
+        build_configuration,
+    },
     editor::Editor,
     input::KeyOverrides,
     rom_folders::{RomFolderStatus, check_all_folders},
-    texts::{LanguageCatalog, hints_in, library},
+    texts::LanguageCatalog,
 };
 
 /// The width of the sidebar in logical units.
 const SIDEBAR_WIDTH: f32 = 240.0;
-
-/// The width of the filter field in logical units.
-const FILTER_WIDTH: f32 = 260.0;
 
 /// The id of the filter field.
 const FILTER_ID: &str = "filter";
@@ -84,23 +80,6 @@ pub(crate) struct Launch {
     pub(crate) model: &'static str,
 }
 
-/// The texts of the library that refill only when their data or the
-/// catalog changes.
-#[derive(Debug, Clone, Default)]
-struct LibraryTexts {
-    /// The counts beside the system label.
-    counts: TextBuffer<GameCounts>,
-    /// The title of the hint of a system without games, for the index of the system.
-    empty_title: TextBuffer<usize>,
-    /// The detail of the hint of a system without games, for the index of
-    /// the system and its folder.
-    empty_detail: TextBuffer<(usize, String)>,
-    /// The folder of the selected system at the end of the status line.
-    folder: String,
-    /// The texts of the sidebar.
-    sidebar: SidebarTexts,
-}
-
 /// The widget that takes the focus in the next pass of the library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NextFocus {
@@ -108,19 +87,6 @@ enum NextFocus {
     Start,
     /// The widget with this id.
     Widget(UiId),
-}
-
-/// The action of one pass of the library on the selected row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RowAction {
-    /// Starts the game of the row.
-    Launch,
-    /// Opens the game of the row in the editor.
-    Edit,
-    /// Opens a copy of the game of the row in the editor.
-    Duplicate,
-    /// Asks before the delete of the file of the row.
-    Delete,
 }
 
 /// The game manager.
@@ -315,7 +281,10 @@ impl Manager {
     }
 
     /// Builds the layered configuration of `launch`.
-    pub(crate) fn configuration(&self, launch: &Launch) -> Result<(EmulatorConfig, KeyOverrides)> {
+    pub(crate) fn configuration(
+        &self,
+        launch: &Launch,
+    ) -> std::result::Result<(EmulatorConfig, KeyOverrides), LaunchError> {
         build_configuration(&launch.request, &self.start.locations)
     }
 
@@ -324,11 +293,11 @@ impl Manager {
         self.running = Some(launch);
     }
 
-    /// Opens the error dialog of `launch` that did not start with `error`.
+    /// Opens the error dialog of `launch` that did not start with `failure`.
     /// Returns the id of the modal layer of the dialog, which the caller
     /// opens in the state of the user interface.
-    pub(crate) fn launch_failed(&mut self, launch: &Launch, error: &str) -> UiId {
-        let dialog = ErrorDialog::launch_failed(&launch.title, error);
+    pub(crate) fn launch_failed(&mut self, launch: &Launch, failure: &LaunchFailure) -> UiId {
+        let dialog = ErrorDialog::launch_failed(&launch.title, failure);
         let dialog = match launch.request.game_files.first() {
             Some(path) => dialog.with_edit(EditTarget {
                 system: launch.system,
@@ -414,250 +383,6 @@ impl Manager {
         launch
     }
 
-    /// Draws the sidebar into `area` and switches the system on a new
-    /// selection of the system list or on a shoulder button. The system
-    /// defaults button opens the editor on the system defaults of the
-    /// selected system.
-    fn show_systems(&mut self, context: &mut UiContext, area: Rect) {
-        let count = self.systems.len();
-        if count > 0 {
-            let selected = self.view.systems.selected.min(count - 1);
-            let switched = match context.tab_navigation() {
-                Some(Navigation::PreviousTab) => Some((selected + count - 1) % count),
-                Some(Navigation::NextTab) => Some((selected + 1) % count),
-                Some(
-                    Navigation::Up
-                    | Navigation::Down
-                    | Navigation::Left
-                    | Navigation::Right
-                    | Navigation::PageUp
-                    | Navigation::PageDown
-                    | Navigation::Home
-                    | Navigation::End
-                    | Navigation::Next
-                    | Navigation::Previous,
-                )
-                | None => None,
-            };
-            if let Some(index) = switched {
-                self.select_system(index);
-            }
-        }
-        let response = show_sidebar(
-            context,
-            area,
-            &self.systems,
-            &mut self.view.systems,
-            &mut self.texts.sidebar,
-        );
-        if response.list.selection_changed {
-            self.select_system(self.view.systems.selected);
-            context.request_pass();
-        }
-        if response.list.activated.is_some() && self.has_entries() {
-            context.set_focus(UiId::from(GAME_TABLE_ID));
-        }
-        if response.system_defaults {
-            self.open_system_defaults(context);
-        }
-    }
-
-    /// Draws the header with the filter, the toolbar and the game table into
-    /// `area`. Returns the game to start.
-    fn show_main(&mut self, context: &mut UiContext, area: Rect) -> Option<Launch> {
-        let theme = context.theme;
-        let inner = Rect::new(
-            area.x + theme.padding,
-            area.y,
-            (area.width - theme.padding * 2.0).max(0.0),
-            (area.height - theme.padding).max(0.0),
-        );
-        let (header, rest) = inner.cut_top(HEADER_HEIGHT);
-        let (toolbar_area, rest) = rest.cut_top(theme.control_height);
-        let table_area = rest.cut_top(theme.gap * 1.5).1;
-
-        let filter_id = UiId::from(FILTER_ID);
-        let controls_y = header.y + (header.height - theme.control_height) * 0.5;
-        let settings_area = Rect::new(
-            header.right() - theme.control_height.min(header.width),
-            controls_y,
-            theme.control_height.min(header.width),
-            theme.control_height,
-        );
-        let filter_width = FILTER_WIDTH.min((settings_area.x - theme.gap - header.x).max(0.0));
-        let filter_area = Rect::new(
-            settings_area.x - theme.gap - filter_width,
-            controls_y,
-            filter_width,
-            theme.control_height,
-        );
-        let catalog = context.catalog;
-        let filter = TextField::new(filter_id, catalog.text(library::FILTER_PLACEHOLDER)).show(
-            context,
-            filter_area,
-            &mut self.view.filter,
-        );
-        if filter.changed {
-            self.refresh_entries();
-            let rows = rows_at(&self.systems, self.view.systems.selected);
-            self.view.refilter(&self.entries, rows);
-        }
-        if filter.submitted && self.has_entries() {
-            context.set_focus(UiId::from(GAME_TABLE_ID));
-        }
-        let settings = Button::new(SETTINGS_ID, "")
-            .icon(Icon::Settings)
-            .kind(ButtonKind::Quiet)
-            .default_choice(false)
-            .show(context, settings_area);
-        self.show_title(
-            context,
-            header
-                .cut_right(header.right() - filter_area.x + theme.gap)
-                .1,
-        );
-
-        let selected = self.selected_row();
-        let state = ToolbarState {
-            addable: self.current().is_some(),
-            launchable: selected.is_some_and(GameRow::launchable),
-            deletable: selected.is_some(),
-        };
-        let toolbar = show_toolbar(context, toolbar_area, state);
-        if toolbar.refresh || context.shortcut() == Some(Shortcut::F5) {
-            self.refresh();
-            context.request_pass();
-        }
-        if settings
-            || context.shortcut() == Some(Shortcut::F10)
-            || context.action_button() == Some(ActionButton::Start)
-        {
-            self.open_settings(context);
-            return None;
-        }
-
-        let selected_system = self.view.systems.selected;
-        let hint = match self.systems.get(selected_system) {
-            Some(entry) if entry.rows.is_empty() => {
-                let label = entry.system.label;
-                let title =
-                    self.texts
-                        .empty_title
-                        .text(context, selected_system, |catalog, _, out| {
-                            let _ = catalog.write(out, library::no_games(&label));
-                        });
-                let detail = self.texts.empty_detail.text(
-                    context,
-                    (selected_system, entry.folder.as_str()),
-                    |catalog, (_, folder), out| {
-                        let _ = catalog.write(out, library::add_games(&folder));
-                    },
-                );
-                EmptyHint::Centered { title, detail }
-            }
-            Some(_) => EmptyHint::Top(catalog.text(library::NO_MATCH)),
-            None => EmptyHint::Centered {
-                title: "",
-                detail: "",
-            },
-        };
-        let rows = rows_at(&self.systems, self.view.systems.selected);
-        let response = show_game_table(
-            context,
-            table_area,
-            &self.entries,
-            &self.row_kinds,
-            rows,
-            &mut self.view.table,
-            hint,
-        );
-        if response.sort_changed {
-            self.refresh_entries();
-            let rows = rows_at(&self.systems, self.view.systems.selected);
-            self.view.restore(&self.entries, rows);
-            context.request_pass();
-        } else if response.selection_changed {
-            let rows = rows_at(&self.systems, self.view.systems.selected);
-            self.view.record(&self.entries, rows);
-            context.request_pass();
-        }
-
-        let shortcut = context.shortcut();
-        let delete_shortcut = shortcut == Some(Shortcut::Delete);
-        let edit = toolbar.edit
-            || shortcut == Some(Shortcut::F2)
-            || context.action_button() == Some(ActionButton::X);
-        let duplicate = toolbar.duplicate || shortcut == Some(Shortcut::ControlD);
-        if (toolbar.add || shortcut == Some(Shortcut::Insert)) && state.addable {
-            self.open_new_game(context);
-            return None;
-        }
-        let activated = response.activated.is_some();
-        let launchable = self.selected_row()?.launchable();
-        let action = if launchable && (activated || toolbar.launch) {
-            RowAction::Launch
-        } else if launchable && edit {
-            RowAction::Edit
-        } else if launchable && duplicate {
-            RowAction::Duplicate
-        } else if delete_shortcut || toolbar.delete || activated {
-            RowAction::Delete
-        } else {
-            return None;
-        };
-        let row = self.selected_row()?.clone();
-        match action {
-            RowAction::Launch => return Some(self.launch(&row)),
-            RowAction::Edit => self.open_game(context, &row),
-            RowAction::Duplicate => self.open_duplicate(context, &row),
-            RowAction::Delete => self.delete = Some(DeleteRequest::new(&row)),
-        }
-        None
-    }
-
-    /// Draws the label of the selected system and its game count into
-    /// `area`.
-    fn show_title(&mut self, context: &mut UiContext, area: Rect) {
-        let Some(entry) = self.systems.get(self.view.systems.selected) else {
-            return;
-        };
-        let theme = context.theme;
-        let title_style = theme.title();
-        let baseline = context.centered_baseline(area, &title_style);
-        context.text(area.x, baseline, &title_style, entry.system.label);
-        let title_width = context.measure(&title_style, entry.system.label);
-        let filtering = !Filter::new(&self.view.filter).is_empty();
-        let shown_games = self
-            .entries
-            .iter()
-            .filter(|entry| matches!(entry, TableEntry::Game(_)))
-            .count();
-        let shown_errors = self
-            .entries
-            .iter()
-            .filter(|entry| matches!(entry, TableEntry::Broken(_)))
-            .count();
-        let counts = GameCounts {
-            shown_games,
-            games: entry.game_count(),
-            shown_errors,
-            errors: entry.error_count(),
-            filtering,
-        };
-        let count = self
-            .texts
-            .counts
-            .text(context, counts, |catalog, counts, out| {
-                write_counts(catalog, counts, out);
-            });
-        context.text(
-            area.x + title_width + theme.gap,
-            baseline,
-            &theme.small(),
-            count,
-        );
-    }
-
     /// Draws the open question and the open error dialog, centered in
     /// `screen`. A delete scans the catalog again. Returns the answer of the
     /// question in this pass.
@@ -700,69 +425,6 @@ impl Manager {
         }
         delete_response
     }
-
-    /// The widget of the library that holds the focus.
-    fn library_focus(&self, context: &UiContext) -> LibraryFocus {
-        let focused = |id: &str| context.has_focus(UiId::from(id));
-        if focused(GAME_TABLE_ID) {
-            LibraryFocus::Table
-        } else if context.has_focus(game_table::header_id()) {
-            LibraryFocus::Header
-        } else if focused(SYSTEM_LIST_ID) {
-            LibraryFocus::SystemList
-        } else if focused(SYSTEM_DEFAULTS_ID) {
-            LibraryFocus::SystemDefaults
-        } else if focused(FILTER_ID) {
-            LibraryFocus::Filter {
-                has_text: !self.view.filter.is_empty(),
-            }
-        } else if focused(SETTINGS_ID) {
-            LibraryFocus::Settings
-        } else if focused(LAUNCH_ID) {
-            LibraryFocus::Launch
-        } else if focused(ADD_ID) {
-            LibraryFocus::Add
-        } else if focused(EDIT_ID) {
-            LibraryFocus::Edit
-        } else if focused(DUPLICATE_ID) {
-            LibraryFocus::Duplicate
-        } else if focused(DELETE_ID) {
-            LibraryFocus::Delete
-        } else if focused(REFRESH_ID) {
-            LibraryFocus::Refresh
-        } else {
-            LibraryFocus::Nothing
-        }
-    }
-
-    /// Draws the status line into `area`. `delete_response` is the answer
-    /// of the open question in this pass.
-    fn show_status_line(
-        &mut self,
-        context: &mut UiContext,
-        area: Rect,
-        delete_response: Option<ConfirmResponse>,
-    ) {
-        let catalog = context.catalog;
-        if let Some(request) = &self.delete {
-            let hints = hints_in(catalog, &request.hints(delete_response.unwrap_or_default()));
-            status_line(context, area, &hints, StatusEnd::Path(&request.shown_path));
-            return;
-        }
-        let mut folder = std::mem::take(&mut self.texts.folder);
-        folder.clear();
-        if let Some(entry) = self.current() {
-            folder.push_str(&entry.folder);
-            folder.push('/');
-        }
-        let selected = self.selected_row();
-        let hints = match &self.dialog {
-            Some(dialog) => hints_in(catalog, &dialog.hints(context)),
-            None => library_hints(catalog, self.library_focus(context), selected),
-        };
-        status_line(context, area, &hints, status_end(selected, &folder));
-        self.texts.folder = folder;
-    }
 }
 
 /// The games and the files with errors of the system at `index` of `systems`.
@@ -774,88 +436,16 @@ fn rows_at(systems: &[SystemEntry], index: usize) -> &[GameRow] {
 
 #[cfg(test)]
 mod tests {
-    use common::temporary::TemporaryFolder;
     use gui::ui::{Navigation, ThemeKind, Viewport};
     use machine_factory::rom_status::RomStatus;
 
-    use super::{delete::DELETE_LAYER_ID, *};
-    use crate::{
-        config::{Locations, SETTINGS_FILE_NAME},
-        gui_test_support::{GuiHarness, PassCounts},
+    use super::{
+        delete::DELETE_LAYER_ID,
+        sidebar::SYSTEM_LIST_ID,
+        test_support::{TestRoot, first_system, games, sample_root, select, steady_frame, titles},
+        *,
     };
-
-    /// A root folder with a settings file and game files. Dropping the value removes it.
-    struct TestRoot {
-        /// The root folder.
-        root: TemporaryFolder,
-    }
-
-    impl TestRoot {
-        /// Creates a root folder with an empty settings file.
-        fn new(name: &str) -> Self {
-            let root = TemporaryFolder::new(&format!("manager_test_{name}"));
-            root.write_file(SETTINGS_FILE_NAME, b"");
-            Self { root }
-        }
-
-        /// Writes the game file `identity` below the config folder with `contents`.
-        fn game(&self, identity: &str, contents: &str) {
-            let path = self.root.path().join("config").join(identity);
-            std::fs::create_dir_all(path.parent().expect("game files lie in a folder"))
-                .expect("folder is created");
-            std::fs::write(path, contents).expect("game file is written");
-        }
-
-        /// Removes the game file `identity`.
-        fn remove(&self, identity: &str) {
-            std::fs::remove_file(self.root.path().join("config").join(identity))
-                .expect("game file is removed");
-        }
-
-        /// The manager of the root.
-        fn manager(&self) -> Manager {
-            let locations = Locations {
-                current_directory: self.root.path().to_path_buf(),
-                executable_directory: None,
-                pref_path: None,
-            };
-            Manager::new(ManagerStart {
-                request: LaunchRequest::default(),
-                locations,
-            })
-            .expect("manager starts")
-        }
-    }
-
-    /// The first compiled system.
-    fn first_system() -> &'static System {
-        compiled_systems().next().expect("one system is compiled")
-    }
-
-    /// The titles of the entries of the game table of `manager`, with `|` for the caption.
-    fn titles(manager: &Manager) -> Vec<String> {
-        let rows = manager.rows();
-        manager
-            .entries
-            .iter()
-            .map(|entry| match entry {
-                TableEntry::Game(index) => rows[*index].title.clone(),
-                TableEntry::Broken(index) => rows[*index].file_name.clone(),
-                TableEntry::Caption => "|".to_owned(),
-            })
-            .collect()
-    }
-
-    /// Writes the games `names` with their names as titles into the first system of `test`.
-    fn games(test: &TestRoot, names: &[&str]) {
-        let system = first_system();
-        for name in names {
-            test.game(
-                &format!("{}/{name}.conf", system.name),
-                &format!("meta.title = {name}\n"),
-            );
-        }
-    }
+    use crate::gui_test_support::{GuiHarness, PassCounts};
 
     /// Verifies that the launch request of a row holds its game file, its system and the command line flags.
     #[test]
@@ -981,35 +571,6 @@ mod tests {
         assert_eq!(manager.view.filter, "game 1");
     }
 
-    /// Verifies that confirm launches the selected game and that confirm on a file with an error asks to delete it.
-    #[test]
-    fn confirm_launches_and_an_error_file_asks_for_its_delete() {
-        let test = TestRoot::new("confirm");
-        let system = first_system();
-        test.game(&format!("{}/a.conf", system.name), "meta.title = A\n");
-        test.game(&format!("{}/b.conf", system.name), "machine = FOOBAR\n");
-        let mut manager = test.manager();
-        assert_eq!(titles(&manager), ["A", "|", "b.conf"]);
-        let mut harness = GuiHarness::new(960, 600);
-        harness.settle(|context| manager.show(context));
-        harness.input.confirm = true;
-        let launch = harness
-            .frame(|context| manager.show(context))
-            .expect("confirm launches");
-        assert_eq!(launch.title, "A");
-        harness.input.navigation = Some(Navigation::Down);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(manager.view.table.list.selected, 2);
-        harness.input.confirm = true;
-        assert!(harness.settle(|context| manager.show(context)).is_none());
-        assert!(manager.delete.is_some());
-        assert_eq!(harness.state.open_modals(), 1);
-        assert_eq!(
-            harness.state.focused(),
-            Some(UiId::from(DELETE_LAYER_ID).child("cancel"))
-        );
-    }
-
     /// Verifies the delete flow: cancel keeps the file, confirm removes it and selects the nearest row.
     #[test]
     fn delete_asks_first_and_removes_the_file() {
@@ -1080,67 +641,6 @@ mod tests {
         assert!(manager.dialog().is_none());
     }
 
-    /// Verifies that the Delete key is inactive while the filter holds the focus, that Ctrl+F and Y focus the filter and that confirm in the filter gives the focus to the table without a launch.
-    #[test]
-    fn delete_is_inactive_while_the_filter_holds_the_focus() {
-        let test = TestRoot::new("shortcuts");
-        games(&test, &["a", "b"]);
-        let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
-        harness.settle(|context| manager.show(context));
-        harness.input.shortcut = Some(Shortcut::ControlF);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(harness.state.focused(), Some(UiId::from(FILTER_ID)));
-        harness.input.shortcut = Some(Shortcut::Delete);
-        harness.settle(|context| manager.show(context));
-        assert!(manager.delete.is_none());
-        assert_eq!(harness.state.open_modals(), 0);
-
-        harness.state.set_focus(UiId::from(GAME_TABLE_ID));
-        harness.settle(|context| manager.show(context));
-        harness.input.action = Some(ActionButton::Y);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(harness.state.focused(), Some(UiId::from(FILTER_ID)));
-        harness.input.text = "B".to_owned();
-        harness.settle(|context| manager.show(context));
-        assert_eq!(titles(&manager), ["b"]);
-        harness.input.confirm = true;
-        assert!(harness.frame(|context| manager.show(context)).is_none());
-        assert!(harness.state.take_pass_request());
-        assert!(harness.settle(|context| manager.show(context)).is_none());
-        assert_eq!(harness.state.focused(), Some(UiId::from(GAME_TABLE_ID)));
-        harness.input.action = Some(ActionButton::Y);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(harness.state.focused(), Some(UiId::from(FILTER_ID)));
-        harness.input.cancel = true;
-        harness.settle(|context| manager.show(context));
-        assert_eq!(manager.view.filter, "");
-        assert_eq!(titles(&manager), ["a", "b"]);
-        assert_eq!(harness.state.focused(), Some(UiId::from(FILTER_ID)));
-    }
-
-    /// Verifies that a switch from the table into a system without games gives the focus to Add.
-    #[test]
-    fn a_switch_into_an_empty_system_focuses_add() {
-        if compiled_systems().count() < 2 {
-            return;
-        }
-        let test = TestRoot::new("empty_switch");
-        games(&test, &["a"]);
-        let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(harness.state.focused(), Some(UiId::from(GAME_TABLE_ID)));
-        harness.input.navigation = Some(Navigation::NextTab);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(manager.view.systems.selected, 1);
-        assert_eq!(harness.state.focused(), Some(UiId::from(ADD_ID)));
-        harness.input.navigation = Some(Navigation::PreviousTab);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(manager.view.systems.selected, 0);
-        assert_eq!(harness.state.focused(), Some(UiId::from(ADD_ID)));
-    }
-
     /// Verifies that the delete of the last game gives the focus to Add.
     #[test]
     fn the_delete_of_the_last_game_focuses_add() {
@@ -1180,207 +680,6 @@ mod tests {
         assert_eq!(manager.view.selected.as_deref(), Some(expected.as_str()));
     }
 
-    /// Verifies that the system switch, the filter keys, Delete, F5, F10 and Start do nothing while the delete question or an error dialog is open.
-    #[test]
-    fn the_library_keys_do_nothing_under_a_dialog() {
-        let test = TestRoot::new("keys_under_dialog");
-        games(&test, &["a", "b"]);
-        let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
-        harness.settle(|context| manager.show(context));
-        let keys = |harness: &mut GuiHarness, manager: &mut Manager| {
-            let focused = harness.state.focused();
-            for navigation in [Navigation::NextTab, Navigation::PreviousTab] {
-                harness.input.navigation = Some(navigation);
-                harness.settle(|context| manager.show(context));
-            }
-            harness.input.shortcut = Some(Shortcut::ControlF);
-            harness.settle(|context| manager.show(context));
-            harness.input.action = Some(ActionButton::Y);
-            harness.settle(|context| manager.show(context));
-            harness.input.shortcut = Some(Shortcut::Delete);
-            harness.settle(|context| manager.show(context));
-            harness.input.shortcut = Some(Shortcut::F10);
-            harness.settle(|context| manager.show(context));
-            assert!(manager.editor.is_none());
-            harness.input.action = Some(ActionButton::Start);
-            harness.settle(|context| manager.show(context));
-            assert!(manager.editor.is_none());
-            let files = manager.rows().len();
-            games(&test, &["new"]);
-            harness.input.shortcut = Some(Shortcut::F5);
-            harness.settle(|context| manager.show(context));
-            test.remove(&format!("{}/new.conf", first_system().name));
-            assert_eq!(manager.rows().len(), files);
-            assert_eq!(manager.view.systems.selected, 0);
-            assert_eq!(harness.state.focused(), focused);
-            assert_eq!(harness.state.open_modals(), 1);
-        };
-
-        harness.input.shortcut = Some(Shortcut::Delete);
-        harness.settle(|context| manager.show(context));
-        assert!(manager.delete.is_some());
-        keys(&mut harness, &mut manager);
-        assert!(manager.delete.is_some());
-        harness.input.cancel = true;
-        harness.settle(|context| manager.show(context));
-        assert!(manager.delete.is_none());
-
-        let launch = manager.launch(&manager.rows()[0].clone());
-        let layer = manager.launch_failed(&launch, "fdd1 image not found: /a.d88");
-        harness.state.open_layer(layer);
-        harness.settle(|context| manager.show(context));
-        keys(&mut harness, &mut manager);
-        assert!(manager.dialog().is_some());
-        assert!(manager.delete.is_none());
-    }
-
-    /// Verifies that a sort from the column header keeps the selected game.
-    #[test]
-    fn a_header_sort_keeps_the_selected_game() {
-        let test = TestRoot::new("sort_keeps");
-        games(&test, &["a", "b", "c"]);
-        let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
-        harness.settle(|context| manager.show(context));
-        harness.input.navigation = Some(Navigation::Down);
-        harness.settle(|context| manager.show(context));
-        let selected = format!("{}/b.conf", first_system().name);
-        assert_eq!(manager.view.selected.as_deref(), Some(selected.as_str()));
-        harness.state.set_focus(game_table::header_id());
-        harness.settle(|context| manager.show(context));
-        harness.input.confirm = true;
-        assert!(harness.frame(|context| manager.show(context)).is_none());
-        harness.settle(|context| manager.show(context));
-        assert_eq!(titles(&manager), ["c", "b", "a"]);
-        assert_eq!(manager.view.selected.as_deref(), Some(selected.as_str()));
-        assert_eq!(manager.view.table.list.selected, 1);
-        harness.input.navigation = Some(Navigation::Right);
-        harness.settle(|context| manager.show(context));
-        harness.input.confirm = true;
-        harness.settle(|context| manager.show(context));
-        assert_eq!(manager.view.selected.as_deref(), Some(selected.as_str()));
-    }
-
-    /// Verifies that the Refresh button and F5 pick up a changed ROM status and a new game file and keep the view.
-    #[test]
-    fn refresh_and_f5_rescan_and_keep_the_view() {
-        let test = TestRoot::new("refresh");
-        games(&test, &["a", "b", "c"]);
-        let mut manager = test.manager();
-        let actual = manager.systems[0].rom_status;
-        let stale = match actual {
-            RomStatus::Found => RomStatus::Missing,
-            RomStatus::Partial
-            | RomStatus::Missing
-            | RomStatus::NotFound
-            | RomStatus::Unsupported => RomStatus::Found,
-        };
-        let mut harness = GuiHarness::new(960, 600);
-        harness.settle(|context| manager.show(context));
-        harness.input.navigation = Some(Navigation::Down);
-        harness.settle(|context| manager.show(context));
-        let selected = format!("{}/b.conf", first_system().name);
-        assert_eq!(manager.view.selected.as_deref(), Some(selected.as_str()));
-
-        for press in [false, true] {
-            manager.systems[0].rom_status = stale;
-            let name = if press { "e" } else { "d" };
-            games(&test, &[name]);
-            let view = manager.view.clone();
-            if press {
-                harness.state.set_focus(UiId::from(REFRESH_ID));
-                harness.settle(|context| manager.show(context));
-                harness.input.confirm = true;
-            } else {
-                harness.input.shortcut = Some(Shortcut::F5);
-            }
-            harness.settle(|context| manager.show(context));
-            assert_eq!(manager.systems[0].rom_status, actual);
-            assert!(titles(&manager).contains(&name.to_owned()), "{name}");
-            assert_eq!(manager.view.selected, view.selected);
-            assert_eq!(manager.view.filter, view.filter);
-            assert_eq!(manager.view.systems, view.systems);
-        }
-        assert_eq!(manager.view.selected.as_deref(), Some(selected.as_str()));
-        assert_eq!(manager.view.table.list.selected, 1);
-    }
-
-    /// Verifies that F5 is inactive while the filter holds the focus.
-    #[test]
-    fn f5_is_inactive_in_the_filter() {
-        let test = TestRoot::new("refresh_filter");
-        games(&test, &["a"]);
-        let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
-        harness.settle(|context| manager.show(context));
-        harness.input.shortcut = Some(Shortcut::ControlF);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(harness.state.focused(), Some(UiId::from(FILTER_ID)));
-        games(&test, &["b"]);
-        harness.input.shortcut = Some(Shortcut::F5);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(titles(&manager), ["a"]);
-        harness.state.set_focus(UiId::from(GAME_TABLE_ID));
-        harness.settle(|context| manager.show(context));
-        harness.input.shortcut = Some(Shortcut::F5);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(titles(&manager), ["a", "b"]);
-    }
-
-    /// Verifies that the shoulder buttons and Ctrl+PgUp and Ctrl+PgDn switch the system and wrap around.
-    #[test]
-    fn the_shoulder_buttons_switch_the_system() {
-        let test = TestRoot::new("switch");
-        let mut manager = test.manager();
-        let count = manager.systems.len();
-        let mut harness = GuiHarness::new(960, 600);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(manager.view.systems.selected, 0);
-        harness.input.navigation = Some(Navigation::NextTab);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(manager.view.systems.selected, 1 % count);
-        assert_eq!(
-            manager.view.system,
-            Some(manager.systems[1 % count].system.name)
-        );
-        harness.input.navigation = Some(Navigation::PreviousTab);
-        harness.settle(|context| manager.show(context));
-        harness.input.navigation = Some(Navigation::PreviousTab);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(manager.view.systems.selected, count - 1);
-
-        harness.input.navigation = Some(Navigation::NextTab);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(manager.view.systems.selected, 0);
-    }
-
-    /// Verifies that a new selection in the system list switches the system and that confirm gives the focus to its games without a launch.
-    #[test]
-    fn the_system_list_switches_the_system() {
-        let test = TestRoot::new("system_list");
-        let second = compiled_systems().nth(1);
-        let Some(second) = second else {
-            return;
-        };
-        test.game(&format!("{}/edge.conf", second.name), "meta.title = Edge\n");
-        let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(harness.state.focused(), Some(UiId::from(ADD_ID)));
-        harness.state.set_focus(UiId::from(SYSTEM_LIST_ID));
-        harness.settle(|context| manager.show(context));
-        harness.input.navigation = Some(Navigation::Down);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(manager.view.system, Some(second.name));
-        assert_eq!(titles(&manager), ["Edge"]);
-        harness.input.confirm = true;
-        assert!(harness.frame(|context| manager.show(context)).is_none());
-        assert!(harness.state.take_pass_request());
-        assert!(harness.settle(|context| manager.show(context)).is_none());
-        assert_eq!(harness.state.focused(), Some(UiId::from(GAME_TABLE_ID)));
-    }
-
     /// Verifies that the error dialog keeps the navigation from the table, closes on confirm and returns the focus to the table.
     #[test]
     fn the_error_dialog_takes_the_input_until_it_closes() {
@@ -1388,7 +687,7 @@ mod tests {
         games(&test, &["A", "B"]);
         let mut manager = test.manager();
         let launch = manager.launch(&manager.rows()[0].clone());
-        let layer = manager.launch_failed(&launch, "fdd1 image not found: /a.d88");
+        let layer = manager.launch_failed(&launch, &LaunchFailure::missing_image("/a.d88"));
         let mut harness = GuiHarness::new(960, 600);
         harness.settle(|context| manager.show(context));
         harness.state.open_layer(layer);
@@ -1440,7 +739,7 @@ mod tests {
         harness.settle(|context| manager.show(context));
         let selected = manager.view.table.list.selected;
         let launch = manager.launch(&manager.rows()[0].clone());
-        let layer = manager.launch_failed(&launch, "fdd1 image not found: /a.d88");
+        let layer = manager.launch_failed(&launch, &LaunchFailure::missing_image("/a.d88"));
         harness.state.open_layer(layer);
         for navigation in [Navigation::Down, Navigation::PageDown] {
             harness.input.navigation = Some(navigation);
@@ -1486,195 +785,6 @@ mod tests {
         let mut manager = test.manager();
         manager.game_ended(None, Ok(()));
         assert!(manager.dialog().is_none());
-    }
-
-    /// The sample games of the screenshots: the system, the file stem, the
-    /// title, the original title, the developer and the year.
-    const SAMPLE_GAMES: [(&str, &str, &str, &str, &str, &str); 22] = [
-        (
-            "pc98",
-            "brandish",
-            "Brandish",
-            "ブランディッシュ",
-            "Nihon Falcom",
-            "1991",
-        ),
-        ("pc98", "dokyusei", "Dokyusei", "同級生", "Elf", "1992"),
-        (
-            "pc98",
-            "dragon-slayer",
-            "Dragon Slayer: The Legend of Heroes",
-            "ドラゴンスレイヤー英雄伝説",
-            "Nihon Falcom",
-            "1989",
-        ),
-        ("pc98", "edge", "Edge", "エッジ", "TGL", "1993"),
-        (
-            "pc98",
-            "geneitoshi",
-            "Gen'ei Toshi: Illusion City",
-            "幻影都市",
-            "Microcabin",
-            "1991",
-        ),
-        (
-            "pc98",
-            "lord-monarch",
-            "Lord Monarch",
-            "ロードモナーク",
-            "Nihon Falcom",
-            "1991",
-        ),
-        (
-            "pc98",
-            "policenauts",
-            "Policenauts",
-            "ポリスノーツ",
-            "Konami",
-            "1994",
-        ),
-        (
-            "pc98",
-            "princess-maker-2",
-            "Princess Maker 2",
-            "プリンセスメーカー2",
-            "Gainax",
-            "1993",
-        ),
-        (
-            "pc98",
-            "puyo-puyo",
-            "Puyo Puyo",
-            "ぷよぷよ",
-            "Compile",
-            "1993",
-        ),
-        (
-            "pc98",
-            "sangokushi-2",
-            "Romance of the Three Kingdoms II",
-            "三國志II",
-            "Koei",
-            "1989",
-        ),
-        ("pc98", "rusty", "Rusty", "ラスティ", "C-Lab", "1993"),
-        (
-            "pc98",
-            "tokimeki",
-            "Tokimeki Memorial",
-            "ときめきメモリアル",
-            "Konami",
-            "1995",
-        ),
-        (
-            "pc98",
-            "touhou-fuumaroku",
-            "Touhou Fuumaroku: Story of Eastern Wonderland",
-            "東方封魔録",
-            "Amusement Makers",
-            "1997",
-        ),
-        (
-            "pc98",
-            "touhou-gensoukyou",
-            "Touhou Gensoukyou: Lotus Land Story",
-            "東方幻想郷",
-            "Amusement Makers",
-            "1998",
-        ),
-        (
-            "pc98",
-            "touhou-reiiden",
-            "Touhou Reiiden: Highly Responsive to Prayers",
-            "東方靈異伝",
-            "Amusement Makers",
-            "1997",
-        ),
-        (
-            "pc98",
-            "touhou-yumejikuu",
-            "Touhou Yumejikuu: Phantasmagoria of Dim.Dream",
-            "東方夢時空",
-            "Amusement Makers",
-            "1997",
-        ),
-        (
-            "pc98",
-            "ys-2",
-            "Ys II: Ancient Ys Vanished The Final Chapter",
-            "イースII",
-            "Nihon Falcom",
-            "1988",
-        ),
-        (
-            "pc98",
-            "yu-no",
-            "YU-NO: A Girl Who Chants Love at the Bound of this World",
-            "この世の果てで恋を唄う少女YU-NO",
-            "Elf",
-            "1996",
-        ),
-        (
-            "x68k",
-            "akumajou-dracula",
-            "Akumajou Dracula",
-            "悪魔城ドラキュラ",
-            "Konami",
-            "1993",
-        ),
-        (
-            "x68k",
-            "final-fight",
-            "Final Fight",
-            "ファイナルファイト",
-            "Capcom",
-            "1992",
-        ),
-        (
-            "x68k",
-            "gradius-2",
-            "Gradius II",
-            "グラディウスII",
-            "Konami",
-            "1992",
-        ),
-        ("pc88", "ys-3", "", "", "", ""),
-    ];
-
-    /// Writes the sample games and two files with errors into `test`.
-    fn sample_root(test: &TestRoot) {
-        for (system, stem, title, original, developer, year) in SAMPLE_GAMES {
-            let mut contents = String::new();
-            for (key, value) in [
-                ("meta.title", title),
-                ("meta.title-original", original),
-                ("meta.developer", developer),
-                ("meta.year", year),
-            ] {
-                if !value.is_empty() {
-                    contents.push_str(&format!("{key} = {value}\n"));
-                }
-            }
-            test.game(&format!("{system}/{stem}.conf"), &contents);
-        }
-        test.game(
-            "x68k/nemesis-90.conf",
-            "meta.title = Nemesis '90\nmachine = X68030\n",
-        );
-        test.game(
-            "x68k/cyberblock-metal-orange.conf",
-            "meta.title = Cyber Block\nmachine = PC9801RA\n",
-        );
-    }
-
-    /// Selects the system `name` in `manager`.
-    fn select(manager: &mut Manager, name: &str) {
-        let index = manager
-            .systems
-            .iter()
-            .position(|entry| entry.system.name == name)
-            .expect("the system is compiled");
-        manager.select_system(index);
     }
 
     /// Renders the library at `width` x `height` logical units and `scale`:
@@ -1738,7 +848,9 @@ mod tests {
         let launch = manager.launch(&manager.rows()[0].clone());
         let layer = manager.launch_failed(
             &launch,
-            "fdd1 image not found: /home/user/Games/Neetan/games/98/YU-NO/YU-NO (Disk 3 of 4).hdm",
+            &LaunchFailure::missing_image(
+                "/home/user/Games/Neetan/games/98/YU-NO/YU-NO (Disk 3 of 4).hdm",
+            ),
         );
         harness.state.open_layer(layer);
         harness.settle(|context| manager.show(context));
@@ -1771,60 +883,6 @@ mod tests {
             .open_layer(layer.expect("the media dialog opens"));
         harness.settle(|context| manager.show(context));
         render(&harness, "media_not_saved");
-    }
-
-    /// The German texts of the count of the library and of the header line of the editor.
-    const GERMAN_COUNTS: &str = "[library]\ngames.one = {count} Spiel\ngames.other = {count} Spiele\n\
-                                 [editor]\ngame-line = {system} Spiel\n";
-
-    /// Verifies that a switch of the catalog gives the buffered texts of the library and of the
-    /// editor the new language in the next frame.
-    #[test]
-    fn a_catalog_switch_refills_the_buffered_texts_in_the_next_frame() {
-        let german = || {
-            let german = crate::texts::test_catalog(GERMAN_COUNTS);
-            crate::texts::LanguageCatalog::Loaded(Box::new(german))
-        };
-        let test = TestRoot::new("catalog_switch");
-        games(&test, &["A", "B"]);
-        let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
-        harness.settle(|context| manager.show(context));
-        harness.frame(|context| manager.show(context));
-        assert_eq!(manager.texts.counts.last_text(), Some("2 games"));
-        harness.set_catalog(german());
-        harness.frame(|context| manager.show(context));
-        assert_eq!(manager.texts.counts.last_text(), Some("2 Spiele"));
-
-        harness.set_catalog(crate::texts::LanguageCatalog::English);
-        harness.state.set_focus(UiId::from(GAME_TABLE_ID));
-        harness.input.shortcut = Some(Shortcut::F2);
-        harness.settle(|context| manager.show(context));
-        let label = manager
-            .current()
-            .expect("the library selects a game")
-            .system
-            .label;
-        let line = |manager: &Manager| {
-            manager
-                .editor
-                .as_ref()
-                .expect("F2 opens the editor")
-                .cached_header_line()
-                .expect("the editor draws its header line")
-                .to_owned()
-        };
-        assert_eq!(line(&manager), format!("{label} game"));
-        harness.set_catalog(german());
-        harness.frame(|context| manager.show(context));
-        assert_eq!(line(&manager), format!("{label} Spiel"));
-    }
-
-    /// Draws a frame of `manager` and counts the steady frame after it, the second pass with an
-    /// unchanged state.
-    fn steady_frame(harness: &mut GuiHarness, manager: &mut Manager) -> PassCounts {
-        harness.frame(|context| manager.show(context));
-        harness.counted_frame(|context| manager.show(context)).0
     }
 
     /// The title of the game of the steady dialog tests, long enough to wrap in every dialog.
@@ -1871,7 +929,9 @@ mod tests {
         let launch = manager.launch(&manager.rows()[0].clone());
         let layer = manager.launch_failed(
             &launch,
-            "fdd1 image not found: /home/user/Emulation/PC-98/YU-NO/YU-NO (Disk 1 of 4).hdm",
+            &LaunchFailure::missing_image(
+                "/home/user/Emulation/PC-98/YU-NO/YU-NO (Disk 1 of 4).hdm",
+            ),
         );
         harness.state.open_layer(layer);
         harness.settle(|context| manager.show(context));
@@ -1909,22 +969,6 @@ mod tests {
             steady_frame(&mut harness, &mut manager),
             PassCounts::NONE,
             "a steady frame of the panic error"
-        );
-    }
-
-    /// Verifies that a steady frame of the library, the second pass with an unchanged state,
-    /// allocates nothing and fills no text again.
-    #[test]
-    fn a_steady_frame_of_the_library_allocates_nothing() {
-        let test = TestRoot::new("steady_library");
-        sample_root(&test);
-        let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
-        harness.settle(|context| manager.show(context));
-        assert_eq!(
-            steady_frame(&mut harness, &mut manager),
-            PassCounts::NONE,
-            "a steady frame of the library"
         );
     }
 

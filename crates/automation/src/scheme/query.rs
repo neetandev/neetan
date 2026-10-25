@@ -173,7 +173,8 @@ fn seed_rom_directories(config: &mut EmulatorConfig, common: &CommonConfig) -> R
         let Some(setting) = find_setting(key) else {
             return Err(format!("internal error: '{key}' is not a settings key"));
         };
-        (setting.apply)(config, &directory.to_string_lossy())?;
+        (setting.apply)(config, &directory.to_string_lossy())
+            .map_err(|error| format!("invalid {key}: {error}"))?;
     }
     Ok(())
 }
@@ -393,8 +394,11 @@ fn parse_specification(
     }
 
     for (setting, value) in &settings {
-        if let Err(message) = explicit.apply(&mut config, setting, value) {
-            return Ok(Err(("neetan/argument".to_owned(), message)));
+        if let Err(error) = explicit.apply(&mut config, setting, value) {
+            return Ok(Err((
+                "neetan/argument".to_owned(),
+                format!("invalid {}: {error}", setting.key),
+            )));
         }
     }
     apply_derived_defaults(&mut config, explicit);

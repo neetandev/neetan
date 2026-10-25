@@ -542,10 +542,7 @@ mod tests {
         let mut language = LanguageRow::new(vec![option("de", Some("Deutsch"))]);
         let german = test_catalog(GERMAN);
         let choices = language.choices(None);
-        let inherited = Inherited {
-            values: vec!["auto".to_owned()],
-            source: InheritedSource::BuiltIn,
-        };
+        let inherited = Inherited::new(vec!["auto".to_owned()], InheritedSource::BuiltIn);
         let texts = |language: &mut LanguageRow, catalog, generation, choices: &[_]| {
             let (captions, label) =
                 language.dropdown_texts(catalog, generation, choices, Some(&inherited));

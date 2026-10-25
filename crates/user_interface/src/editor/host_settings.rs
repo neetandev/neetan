@@ -277,10 +277,7 @@ impl HostSettings {
             }
             None => host_default(setting.key).into_iter().collect(),
         };
-        Inherited {
-            values,
-            source: InheritedSource::BuiltIn,
-        }
+        Inherited::new(values, InheritedSource::BuiltIn)
     }
 
     /// Adds the sentences after the note of the key `key`: the value of its

@@ -48,6 +48,8 @@ use machine_factory::config::{
     systems::System,
 };
 
+#[cfg(test)]
+pub(crate) use self::rows::field_id;
 use self::{
     browse::BrowseTarget,
     derived_file::DerivedFile,
@@ -68,8 +70,8 @@ use self::{
     rows::RowTexts,
     save::{FileStamp, edited_document, read_document, validation_error},
 };
-#[cfg(test)]
-pub(crate) use self::{discard::DISCARD_LAYER_ID, media_list::empty_list_id, rows::field_id};
+#[cfg(all(test, feature = "pc98"))]
+pub(crate) use self::{discard::DISCARD_LAYER_ID, media_list::empty_list_id};
 pub(crate) use self::{
     file::SaveFailure, form::EditorSection, notes::ExtensionList, save::OpenError,
 };
@@ -410,7 +412,7 @@ impl Editor {
         catalog: &Catalog,
     ) -> Result<Self, OpenError> {
         let document =
-            ConfigDocument::load(source).map_err(|error| OpenError::failed(source, &error))?;
+            ConfigDocument::load(source).map_err(|error| OpenError::failed(source, error))?;
         let files = SystemFiles::game(host, system).ok_or_else(|| not_compiled(system))?;
         let stem = source
             .file_stem()
@@ -553,7 +555,7 @@ impl Editor {
     }
 
     /// Whether a field of `section` holds a set value.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "pc98"))]
     pub(crate) fn section_has_set_field(&self, section: EditorSection) -> bool {
         self.fields
             .iter()
@@ -561,7 +563,7 @@ impl Editor {
     }
 
     /// Whether the file browser is open.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "pc98"))]
     pub(crate) fn browser_open(&self) -> bool {
         self.browser.is_some()
     }
@@ -775,7 +777,7 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use gui::ui::{Navigation, Shortcut};
-    use machine_factory::config::settings::find_setting;
+    use machine_factory::config::settings::{find_setting, value_error::ValueError};
 
     use super::{
         media_list::MediaBrowse,
@@ -1433,16 +1435,16 @@ mod tests {
         let editor = open(&root, "edge", "crt = On\n");
         let crt = editor.field("crt").expect("crt field");
         let invalid = crt.invalid_value().expect("the launch rejects On");
-        let message = "invalid value 'On', expected on or off";
+        let error = ValueError::OnOff {
+            value: "On".to_owned(),
+        };
         assert_eq!(
             invalid.reason,
-            fields::InvalidReason::Rejected(message.to_owned())
+            fields::InvalidReason::Rejected(error.clone())
         );
         assert_eq!(
-            check_value(find_setting("crt").expect("crt"), "On")
-                .err()
-                .as_deref(),
-            Some(message)
+            check_value(find_setting("crt").expect("crt"), "On").err(),
+            Some(error)
         );
     }
 }
