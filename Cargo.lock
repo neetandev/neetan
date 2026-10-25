@@ -114,6 +114,10 @@ name = "gui"
 version = "0.1.0"
 
 [[package]]
+name = "i18n"
+version = "0.1.0"
+
+[[package]]
 name = "machine_60"
 version = "2026.10.0"
 dependencies = [
