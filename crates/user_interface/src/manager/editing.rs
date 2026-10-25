@@ -262,8 +262,8 @@ mod tests {
     use super::*;
     use crate::{
         config::{LaunchRequest, ManagerStart},
-        editor::test_support::EditorRoot,
-        gui_test_support::GuiHarness,
+        editor::{EditorSection, test_support::EditorRoot},
+        gui_test_support::{GuiHarness, PassCounts},
         manager::{FILTER_ID, entries::TableEntry, game_table::GAME_TABLE_ID},
     };
 
@@ -669,24 +669,49 @@ mod tests {
         assert_eq!(titles(&manager), ["Brandish", "Edge"]);
     }
 
-    /// The most allocations of a steady frame of a section of the game editor: the lists of the
-    /// hints of the status line and of the focus ring of the pass, the lines of the notes that
-    /// wrap and the edit state of a text field. The texts of the editor allocate nothing.
-    const EDITOR_FRAME_ALLOCATIONS: usize = 10;
+    /// The settings of the game of the steady frame test after the game file of YU-NO: a
+    /// second floppy drive, a display value and an advanced value. Every section holds a set
+    /// value.
+    const STEADY_SETTINGS: &str = "fdd2 = games/98/YU-NO/Saves/save.d88\n\
+         hdd2 = games/98/YU-NO/Saves/missing.hdi\nadpcm-ram = maybe\ncrt = on\n\
+         aspect-mode = wide\nenable-extractor = yes\n";
 
-    /// Verifies that a steady frame of each section of the game editor, the second pass with an
-    /// unchanged state, allocates only its lists, fills no text again and keeps the revision of
-    /// the editor.
-    #[test]
-    fn a_steady_frame_of_the_editor_allocates_only_its_lists() {
-        let root = two_games("steady_editor");
+    /// Opens YU-NO with [`STEADY_SETTINGS`] in the editor of a manager over [`sample_root`].
+    fn steady_editor(name: &str) -> (EditorRoot, Manager, GuiHarness) {
+        let root = sample_root(name);
+        root.game("yu-no", &format!("{YU_NO}{STEADY_SETTINGS}"));
         let mut manager = manager(&root);
         let mut harness = GuiHarness::new(960, 600);
         settle(&mut harness, &mut manager);
-        select_game(&mut harness, &mut manager, "Edge");
+        select(&mut manager, "pc98");
+        select_game(
+            &mut harness,
+            &mut manager,
+            "YU-NO: A Girl Who Chants Love at the Bound of this World",
+        );
         harness.input.shortcut = Some(Shortcut::F2);
         settle(&mut harness, &mut manager);
         assert!(manager.editor().is_some());
+        (root, manager, harness)
+    }
+
+    /// Counts the allocations, the text fills and the wraps of a steady frame of `manager`, the
+    /// second pass with an unchanged state, and checks that the frame keeps the revision of the
+    /// editor.
+    fn steady_frame(harness: &mut GuiHarness, manager: &mut Manager) -> PassCounts {
+        harness.frame(|context| manager.show(context));
+        let revision = manager.editor().map(Editor::revision);
+        let (counts, _) = harness.counted_frame(|context| manager.show(context));
+        assert_eq!(manager.editor().map(Editor::revision), revision);
+        counts
+    }
+
+    /// Verifies that a steady frame of each section of the game editor allocates nothing, fills
+    /// no text again and keeps the revision of the editor. The game holds media images in
+    /// several drives and a set value in every section.
+    #[test]
+    fn a_steady_frame_of_the_editor_allocates_nothing() {
+        let (_root, mut manager, mut harness) = steady_editor("steady_editor");
         let sections = manager.editor().map(Editor::sections).unwrap_or_default();
         assert_eq!(sections.len(), 6);
         for section in sections {
@@ -694,23 +719,112 @@ mod tests {
                 manager.editor().map(Editor::current_section),
                 Some(*section)
             );
-            harness.frame(|context| manager.show(context));
-            let revision = manager.editor().map(Editor::revision);
-            let (allocations, (fills, _)) = common::allocation_counter::count_allocations(|| {
-                gui::ui::count_fills(|| harness.frame(|context| manager.show(context)))
-            });
             assert!(
-                allocations <= EDITOR_FRAME_ALLOCATIONS,
-                "a steady frame of the section {section:?} allocates {allocations} times"
+                manager
+                    .editor()
+                    .is_some_and(|editor| editor.section_has_set_field(*section)),
+                "the section {section:?} holds no set value"
+            );
+            assert!(
+                manager
+                    .editor()
+                    .is_some_and(|editor| editor.most_note_lines(*section) > 1),
+                "the section {section:?} draws no note of several lines"
             );
             assert_eq!(
-                fills, 0,
-                "a steady frame of the section {section:?} fills texts again"
+                steady_frame(&mut harness, &mut manager),
+                PassCounts::NONE,
+                "a steady frame of the section {section:?}"
             );
-            assert_eq!(manager.editor().map(Editor::revision), revision);
             harness.input.navigation = Some(Navigation::NextTab);
             settle(&mut harness, &mut manager);
         }
+    }
+
+    /// Verifies that a steady frame of the file browser over the editor allocates nothing and
+    /// fills no text again, with the current image of the drive selected.
+    #[test]
+    fn a_steady_frame_of_the_file_browser_allocates_nothing() {
+        let (_root, mut manager, mut harness) = steady_editor("steady_browser");
+        for _ in 0..2 {
+            harness.input.navigation = Some(Navigation::NextTab);
+            settle(&mut harness, &mut manager);
+        }
+        assert_eq!(
+            manager.editor().map(Editor::current_section),
+            Some(EditorSection::Media)
+        );
+        harness.input.confirm = true;
+        settle(&mut harness, &mut manager);
+        assert!(manager.editor().is_some_and(Editor::browser_open));
+        assert_eq!(
+            steady_frame(&mut harness, &mut manager),
+            PassCounts::NONE,
+            "a steady frame of the file browser"
+        );
+    }
+
+    /// Verifies that a steady frame of the discard question, of the question over a file that
+    /// changed outside the manager and of a save error allocates nothing, fills no text and wraps
+    /// no text, with the focus on each button.
+    #[test]
+    fn a_steady_frame_of_an_editor_dialog_allocates_nothing() {
+        let (root, mut manager, mut harness) = steady_editor("steady_editor_dialogs");
+        let assert_steady = |harness: &mut GuiHarness, manager: &mut Manager, focus: UiId| {
+            assert_eq!(harness.state.focused(), Some(focus));
+            assert_eq!(
+                steady_frame(harness, manager),
+                PassCounts::NONE,
+                "a steady frame of the dialog with the focus on {focus:?}"
+            );
+        };
+        harness.input.text = " (1997)".to_owned();
+        settle(&mut harness, &mut manager);
+        harness.input.cancel = true;
+        settle(&mut harness, &mut manager);
+        let discard = UiId::from(crate::editor::DISCARD_LAYER_ID);
+        assert_steady(&mut harness, &mut manager, discard.child("cancel"));
+        harness.input.navigation = Some(Navigation::Right);
+        settle(&mut harness, &mut manager);
+        assert_steady(&mut harness, &mut manager, discard.child("action"));
+        harness.input.cancel = true;
+        settle(&mut harness, &mut manager);
+        assert!(manager.editor().is_some());
+
+        let path = root.path("config/pc98/yu-no.conf");
+        std::fs::write(&path, format!("{YU_NO}crt = on\n")).expect("file is written");
+        harness.input.shortcut = Some(Shortcut::ControlS);
+        settle(&mut harness, &mut manager);
+        assert!(manager.dialog().is_some());
+        assert_steady(
+            &mut harness,
+            &mut manager,
+            UiId::from(super::super::error_dialog::CANCEL_ID),
+        );
+        harness.input.navigation = Some(Navigation::Right);
+        settle(&mut harness, &mut manager);
+        assert_steady(
+            &mut harness,
+            &mut manager,
+            UiId::from(super::super::error_dialog::OVERWRITE_ID),
+        );
+
+        std::fs::remove_file(&path).expect("file is removed");
+        std::fs::create_dir_all(&path).expect("a folder takes the place of the file");
+        harness.input.confirm = true;
+        settle(&mut harness, &mut manager);
+        assert!(
+            manager
+                .dialog()
+                .and_then(ErrorDialog::message)
+                .is_some_and(|message| message.ends_with("The editor keeps the changes.")),
+            "the save error opens"
+        );
+        assert_steady(
+            &mut harness,
+            &mut manager,
+            UiId::from(super::super::error_dialog::OK_ID),
+        );
     }
 
     /// The game file of YU-NO in the screenshots.

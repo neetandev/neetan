@@ -1,6 +1,7 @@
 //! Event-driven scheduler for the PC/AT.
 
-use common::{SchedulerState, StackVec};
+use common::SchedulerState;
+use stack_vec::StackVec;
 
 /// Number of distinct PC/AT event kinds.
 const EVENT_AT_KIND_COUNT: usize = 18;

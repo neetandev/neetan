@@ -6,8 +6,8 @@
 //! open. Seek completion is paced by the SPECIFY step rate time.
 
 use common::{
-    StackVec, TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField, TraceSink,
-    TraceValue, trace_id,
+    TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField, TraceSink, TraceValue,
+    trace_id,
 };
 use device::{
     floppy::FloppyImage,
@@ -16,6 +16,7 @@ use device::{
         ST1_NOT_WRITABLE, ST2_SCAN_EQUAL_HIT, ST2_SCAN_NOT_SATISFIED,
     },
 };
+use stack_vec::StackVec;
 
 use crate::{
     bus::{AtBus, IRQ_FDC},

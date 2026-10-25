@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use gui::{
     Rect,
-    ui::{Align, UiContext, wrapped_height, wrapped_label},
+    ui::{Align, UiContext, WrappedText},
 };
 use i18n::Key;
 use machine_factory::config::{
@@ -299,8 +299,14 @@ impl HostSettings {
 }
 
 /// Draws the rule of the settings file and the discovery order below it
-/// from `y` in `content`. Returns the height of the block.
-pub(super) fn draw_settings_file_block(context: &mut UiContext, content: Rect, y: f32) -> f32 {
+/// from `y` in `content`. `lines` keeps the wrapped lines of the text
+/// between passes. Returns the height of the block.
+pub(super) fn draw_settings_file_block(
+    context: &mut UiContext,
+    content: Rect,
+    y: f32,
+    lines: &mut WrappedText,
+) -> f32 {
     let theme = context.theme;
     let catalog = context.catalog;
     let text = catalog.text(host_settings::SETTINGS_FILE_TEXT);
@@ -311,8 +317,8 @@ pub(super) fn draw_settings_file_block(context: &mut UiContext, content: Rect, y
         catalog.text(host_settings::SETTINGS_FILE_CAPTION),
     );
     let style = theme.small();
-    let height = wrapped_height(context, &style, text, content.width, NOTE_MAXIMUM_LINES);
-    wrapped_label(
+    let height = lines.height(context, &style, text, content.width, NOTE_MAXIMUM_LINES);
+    lines.show(
         context,
         Rect::new(content.x, top, content.width, height),
         &style,
@@ -335,7 +341,7 @@ impl Editor {
         let path = host.location().writable_file();
         let (document, stamp) = read_optional_document(&path)?;
         Ok(Self::with_document(
-            Subject::Host(HostSettings::new(host, statuses)),
+            Subject::Host(Box::new(HostSettings::new(host, statuses))),
             host.root(),
             EditorFile::Existing(path),
             document,

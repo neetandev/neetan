@@ -1,6 +1,8 @@
 //! The status line at the bottom of a screen: the keys and gamepad buttons
 //! of the actions of the top dialog, and a path or an error at its end.
 
+use stack_vec::StackVec;
+
 use super::{
     context::UiContext,
     icons::Icon,
@@ -46,15 +48,22 @@ pub const CANCEL_KEYS: &[HintKey<'static>] = &[HintKey::Key("Esc"), HintKey::Pad
 /// Returns the hints of `hints` without each hint whose action an earlier
 /// hint already has. Each hint comes with its action. Two hints of one
 /// action lead to one result, such as Enter on a close button and Esc, and
-/// the status line shows the first of them. `H` is any hint type.
-pub fn distinct_hints<A: PartialEq, H>(hints: impl IntoIterator<Item = (A, H)>) -> Vec<H> {
-    let mut distinct: Vec<(A, H)> = Vec::new();
+/// the status line shows the first of them. `H` is any hint type. The
+/// result holds at most `N` hints.
+///
+/// Panics when `hints` holds more than `N` distinct actions.
+pub fn distinct_hints<A: PartialEq + Copy, H, const N: usize>(
+    hints: impl IntoIterator<Item = (A, H)>,
+) -> StackVec<H, N> {
+    let mut actions = StackVec::<A, N>::new();
+    let mut distinct = StackVec::new();
     for (action, hint) in hints {
-        if !distinct.iter().any(|(shown, _)| *shown == action) {
-            distinct.push((action, hint));
+        if !actions.contains(&action) {
+            actions.push(action);
+            distinct.push(hint);
         }
     }
-    distinct.into_iter().map(|(_, hint)| hint).collect()
+    distinct
 }
 
 /// The text at the end of the status line.
@@ -433,21 +442,17 @@ mod tests {
             keys: CANCEL_KEYS,
             label: "Close",
         };
-        assert_eq!(
-            distinct_hints([
-                ("close", close_button),
-                ("section", section),
-                ("close", close)
-            ]),
-            [close_button, section]
-        );
+        let hints: StackVec<Hint, 3> = distinct_hints([
+            ("close", close_button),
+            ("section", section),
+            ("close", close),
+        ]);
+        assert_eq!(*hints, [close_button, section]);
         let other = Hint {
             keys: &[HintKey::Pad("X")],
             label: "Section",
         };
-        assert_eq!(
-            distinct_hints([("section", section), ("clear", other)]),
-            [section, other]
-        );
+        let hints: StackVec<Hint, 2> = distinct_hints([("section", section), ("clear", other)]);
+        assert_eq!(*hints, [section, other]);
     }
 }

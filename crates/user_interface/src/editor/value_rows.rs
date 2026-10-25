@@ -117,12 +117,12 @@ impl Editor {
             field.select(selected);
             actions.changed = true;
         }
-        let (text, look) = texts
+        let note = texts
             .note
             .note(catalog, generation, (revision, false), |writer, _| {
                 self.write_choice_note(writer, index, setting, ignored)
             });
-        draw_note(context, areas.note, text, look)
+        draw_note(context, areas.note, note)
     }
 
     /// Draws the number field of `row` in the range `range`. Returns the
@@ -180,7 +180,7 @@ impl Editor {
         if enabled {
             actions.changed |= self.clear_on_x(context, id, index);
         }
-        let (text, look) = texts
+        let note = texts
             .note
             .note(catalog, generation, (revision, false), |writer, _| {
                 let field = &self.fields[index];
@@ -193,7 +193,7 @@ impl Editor {
                 );
                 followed_by(writer, look, |writer| self.write_extra(writer, setting))
             });
-        draw_note(context, areas.note, text, look)
+        draw_note(context, areas.note, note)
     }
 
     /// Writes the placeholder of the path field at `index`: the text
@@ -331,15 +331,15 @@ impl Editor {
         if browse.show(context, browse_area) {
             actions.browse = Some(BrowseTarget::Path(index));
         }
-        let (note, look) = texts
+        let note = texts
             .note
             .note(catalog, generation, (revision, found), |writer, _| {
                 self.write_path_note(writer, index, setting, ignored)
             });
-        let note_height = draw_note(context, areas.note, note, look);
+        let note_height = draw_note(context, areas.note, note);
         let mut below = 0.0;
         if flag {
-            let (text, look) = texts.flag.note(catalog, generation, revision, |writer, _| {
+            let note = texts.flag.note(catalog, generation, revision, |writer, _| {
                 if let Some(value) = self
                     .host_settings()
                     .and_then(|settings| settings.flag(setting.key))
@@ -354,7 +354,7 @@ impl Editor {
                 areas.note.width,
                 theme.icon_size,
             );
-            below = draw_note(context, area, text, look);
+            below = draw_note(context, area, note);
         }
         let mut height = RowAreas::height(theme, note_height + below);
         if shows_toggle {

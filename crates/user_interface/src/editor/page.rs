@@ -5,7 +5,8 @@ use gui::{
     Rect,
     ui::{
         ActionButton, Align, Button, ButtonKind, CLOSE_SIZE, HEADER_HEIGHT, Icon, ScrollState,
-        Shortcut, Tab, TextBuffer, Theme, Truncation, UiContext, UiId, scroll_area, tab_bar,
+        Shortcut, Tab, TextBuffer, Theme, Truncation, UiContext, UiId, WrappedText, scroll_area,
+        tab_bar,
     },
 };
 use i18n::Catalog;
@@ -154,6 +155,18 @@ pub(crate) struct PageTexts {
     pub(super) file_value: String,
     /// The value of the root row of the settings page.
     pub(super) root_value: String,
+    /// The wrapped lines of the note of the system row of a new game.
+    pub(super) system_lines: WrappedText,
+    /// The wrapped lines of the note of the file row of a new game.
+    pub(super) file_lines: WrappedText,
+    /// The wrapped lines of the note of the root row of the settings page.
+    pub(super) root_lines: WrappedText,
+    /// The wrapped lines of the text of the settings file below the
+    /// folders of the settings page.
+    pub(super) settings_file_lines: WrappedText,
+    /// The wrapped lines of the status of the footer: the validation error
+    /// or the note of unsaved changes.
+    status_lines: WrappedText,
 }
 
 /// Writes the title of the header for the file `file` of the kind `kind` in
@@ -426,7 +439,14 @@ impl Editor {
                     }
                 },
             );
-            draw_note_text(context, status, error, NoteKind::Warning, false);
+            draw_note_text(
+                context,
+                status,
+                error,
+                NoteKind::Warning,
+                false,
+                &mut texts.status_lines,
+            );
             self.texts = texts;
         } else if dirty {
             let dot = Rect::new(
@@ -444,6 +464,7 @@ impl Editor {
                 catalog.text(editor::UNSAVED),
                 NoteKind::Plain,
                 false,
+                &mut self.texts.status_lines,
             );
         }
         self.widgets

@@ -18,6 +18,7 @@ cpu_68k.workspace = true
 device.workspace = true
 save_state = { workspace = true, features = ["std"] }
 software_renderer = { workspace = true, features = ["std", "x68k"] }
+stack_vec.workspace = true
 
 [dev-dependencies]
 dos.workspace = true

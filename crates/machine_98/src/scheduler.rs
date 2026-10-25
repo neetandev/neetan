@@ -1,10 +1,11 @@
 //! Event-driven scheduler for PC-98 machines.
 
-use common::{SchedulerState, StackVec};
+use common::SchedulerState;
 use device::{
     sound_blaster_16::SoundboardSb16Timer, soundboard_14::Soundboard14Timer,
     soundboard_26k::Soundboard26kTimer, soundboard_86::Soundboard86Timer,
 };
+use stack_vec::StackVec;
 
 /// Number of distinct PC-98 event kinds.
 const EVENT98_KIND_COUNT: usize = 23;

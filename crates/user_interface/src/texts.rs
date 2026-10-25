@@ -8,6 +8,7 @@ use std::sync::LazyLock;
 
 use gui::ui::{Hint, HintKey};
 use i18n::{Catalog, Key};
+use stack_vec::StackVec;
 
 include!(concat!(env!("OUT_DIR"), "/texts.rs"));
 
@@ -144,8 +145,19 @@ impl HintText {
     }
 }
 
+/// The most hints of a status line: six. A set number field of the editor shows step, type,
+/// clear, section, save and close. A game that starts in the library shows launch, edit,
+/// filter, system, refresh and settings.
+pub(crate) const MAXIMUM_HINTS: usize = 6;
+
+/// The hints of a status line with the keys of their labels.
+pub(crate) type HintTexts = StackVec<HintText, MAXIMUM_HINTS>;
+
+/// The hints of a status line with their labels.
+pub(crate) type Hints<'c> = StackVec<Hint<'c>, MAXIMUM_HINTS>;
+
 /// Returns `hints` with their labels in `catalog`.
-pub(crate) fn hints_in<'c>(catalog: &'c Catalog, hints: &[HintText]) -> Vec<Hint<'c>> {
+pub(crate) fn hints_in<'c>(catalog: &'c Catalog, hints: &[HintText]) -> Hints<'c> {
     hints.iter().map(|hint| hint.hint(catalog)).collect()
 }
 

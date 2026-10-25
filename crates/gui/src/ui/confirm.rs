@@ -1,11 +1,13 @@
 //! The confirm dialog: a modal with a wrapping message, a cancel button and
 //! the button of the action.
 
+use stack_vec::StackVec;
+
 use super::{
     button::{Button, ButtonKind},
     context::{UiContext, UiId},
     icons::Icon,
-    label::{Align, wrapped_height, wrapped_label},
+    label::{Align, WrappedText},
     modal::{HEADER_HEIGHT, modal_in},
     status_line::{ACTIVATE_KEYS, CANCEL_KEYS, Hint, HintKey},
 };
@@ -16,6 +18,10 @@ pub const DIALOG_WIDTH: f32 = 480.0;
 
 /// The most lines of the message and of the detail of a confirm dialog.
 const MAXIMUM_LINES: usize = 6;
+
+/// The most hints of a confirm dialog: two, the hint of the action and the
+/// cancel keys while the action holds the focus.
+pub const CONFIRM_HINTS: usize = 2;
 
 /// What a [`ConfirmDialog`] did in a pass.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -41,11 +47,28 @@ pub fn confirm_hints<Label, Built>(
     cancel: Label,
     action: Label,
     hint: impl Fn(&'static [HintKey<'static>], Label) -> Built,
-) -> Vec<Built> {
+) -> StackVec<Built, CONFIRM_HINTS> {
     if response.action_focused {
-        vec![hint(ACTIVATE_KEYS, action), hint(CANCEL_KEYS, cancel)]
+        StackVec::from([hint(ACTIVATE_KEYS, action), hint(CANCEL_KEYS, cancel)])
     } else {
-        vec![hint(ACTIVATE_KEYS, cancel)]
+        StackVec::from([hint(ACTIVATE_KEYS, cancel)])
+    }
+}
+
+/// The wrapped lines of the message and of the detail of a [`ConfirmDialog`]
+/// that the caller keeps between passes.
+#[derive(Clone, Debug, Default)]
+pub struct ConfirmLines {
+    /// The lines of the message.
+    message: WrappedText,
+    /// The lines of the detail.
+    detail: WrappedText,
+}
+
+impl ConfirmLines {
+    /// Empty lines without a wrap.
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -56,7 +79,8 @@ pub fn confirm_hints<Label, Built>(
 /// cancel button. Any other action takes the primary look, and the focus
 /// starts on the action. The dialog draws in its own modal layer, see
 /// [`UiContext::layer`]. Either answer closes the layer, and the caller
-/// stops drawing the dialog.
+/// stops drawing the dialog. The caller keeps the [`ConfirmLines`] of the
+/// dialog between passes.
 #[derive(Clone, Copy, Debug)]
 pub struct ConfirmDialog<'a> {
     /// The id of the dialog.
@@ -144,17 +168,18 @@ impl<'a> ConfirmDialog<'a> {
 
     /// The hints of the status line for the answer `response` of the last
     /// pass, in the order of [`confirm_hints`].
-    pub fn hints(&self, response: ConfirmResponse) -> Vec<Hint<'a>> {
+    pub fn hints(&self, response: ConfirmResponse) -> StackVec<Hint<'a>, CONFIRM_HINTS> {
         confirm_hints(response, self.cancel, self.action, |keys, label| Hint {
             keys,
             label,
         })
     }
 
-    /// Draws one pass of the dialog and returns the answer of the pass.
-    pub fn show(self, context: &mut UiContext) -> ConfirmResponse {
+    /// Draws one pass of the dialog with the kept lines `lines` and returns
+    /// the answer of the pass.
+    pub fn show(self, context: &mut UiContext, lines: &mut ConfirmLines) -> ConfirmResponse {
         context.layer(self.id, |context| {
-            let response = self.panel(context);
+            let response = self.panel(context, lines);
             if response.confirmed || response.cancelled {
                 context.close_layer();
             }
@@ -162,17 +187,23 @@ impl<'a> ConfirmDialog<'a> {
         })
     }
 
-    /// Draws the panel of the dialog in the current layer.
-    fn panel(self, context: &mut UiContext) -> ConfirmResponse {
+    /// Draws the panel of the dialog with the kept lines `lines` in the
+    /// current layer.
+    fn panel(self, context: &mut UiContext, lines: &mut ConfirmLines) -> ConfirmResponse {
         let theme = context.theme;
         let width = DIALOG_WIDTH - theme.padding * 2.0;
         let message_style = theme.body();
         let detail_style = theme.small();
         let message_height =
-            wrapped_height(context, &message_style, self.message, width, MAXIMUM_LINES);
+            lines
+                .message
+                .height(context, &message_style, self.message, width, MAXIMUM_LINES);
         let detail_height = match self.detail {
             Some(detail) => {
-                theme.gap + wrapped_height(context, &detail_style, detail, width, MAXIMUM_LINES)
+                theme.gap
+                    + lines
+                        .detail
+                        .height(context, &detail_style, detail, width, MAXIMUM_LINES)
             }
             None => 0.0,
         };
@@ -188,7 +219,7 @@ impl<'a> ConfirmDialog<'a> {
         let modal = modal_in(context, self.id, area, (DIALOG_WIDTH, height), self.title);
         let content = modal.content;
         let message_area = Rect::new(content.x, content.y + top, content.width, message_height);
-        wrapped_label(
+        lines.message.show(
             context,
             message_area,
             &message_style,
@@ -203,7 +234,7 @@ impl<'a> ConfirmDialog<'a> {
                 content.width,
                 detail_height,
             );
-            wrapped_label(
+            lines.detail.show(
                 context,
                 detail_area,
                 &detail_style,
@@ -265,16 +296,51 @@ mod tests {
         .danger(true)
     }
 
-    /// Draws a button below and the dialog above it.
+    /// Draws a button below and the dialog above it with fresh lines.
     fn draw(harness: &mut Harness, dialog: ConfirmDialog) -> ConfirmResponse {
+        draw_with(harness, dialog, &mut ConfirmLines::new())
+    }
+
+    /// Draws a button below and the dialog with the kept lines `lines` above it.
+    fn draw_with(
+        harness: &mut Harness,
+        dialog: ConfirmDialog,
+        lines: &mut ConfirmLines,
+    ) -> ConfirmResponse {
         harness.frame(|context| {
             context.focusable(
                 UiId::from("below"),
                 Rect::new(0.0, 0.0, 100.0, 30.0),
                 NavigationSet::EMPTY,
             );
-            dialog.show(context)
+            dialog.show(context, lines)
         })
+    }
+
+    /// Verifies that a steady pass of the dialog with kept lines neither wraps nor allocates,
+    /// with the focus on the cancel button and on the action.
+    #[test]
+    fn a_steady_pass_with_kept_lines_neither_wraps_nor_allocates() {
+        let mut harness = Harness::new();
+        let mut lines = ConfirmLines::new();
+        draw_with(&mut harness, delete(), &mut lines);
+        for focus in [delete().cancel_id(), delete().action_id()] {
+            if focus == delete().action_id() {
+                harness.navigate(Navigation::Right);
+            }
+            draw_with(&mut harness, delete(), &mut lines);
+            draw_with(&mut harness, delete(), &mut lines);
+            let (allocations, (wraps, response)) = allocation_counter::count_allocations(|| {
+                crate::ui::count_wraps(|| draw_with(&mut harness, delete(), &mut lines))
+            });
+            assert_eq!(harness.state.focused(), Some(focus));
+            assert_eq!(response.action_focused, focus == delete().action_id());
+            assert_eq!(
+                allocations, 0,
+                "a steady pass allocates {allocations} times"
+            );
+            assert_eq!(wraps, 0, "a steady pass wraps {wraps} times");
+        }
     }
 
     #[test]
@@ -321,7 +387,7 @@ mod tests {
         let pair = |keys: &'static [HintKey<'static>], label: u8| (keys, label);
         let cancel_focused = ConfirmResponse::default();
         assert_eq!(
-            confirm_hints(cancel_focused, 1, 2, pair),
+            *confirm_hints(cancel_focused, 1, 2, pair),
             [(ACTIVATE_KEYS, 1)]
         );
         let action_focused = ConfirmResponse {
@@ -329,7 +395,7 @@ mod tests {
             ..ConfirmResponse::default()
         };
         assert_eq!(
-            confirm_hints(action_focused, 1, 2, pair),
+            *confirm_hints(action_focused, 1, 2, pair),
             [(ACTIVATE_KEYS, 2), (CANCEL_KEYS, 1)]
         );
     }
@@ -347,7 +413,7 @@ mod tests {
         let mut open = true;
         let draw = |harness: &mut Harness, open: &mut bool| {
             harness.frame(|context| {
-                if *open && save.show(context).confirmed {
+                if *open && save.show(context, &mut ConfirmLines::new()).confirmed {
                     *open = false;
                 }
             });

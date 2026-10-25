@@ -9,7 +9,9 @@
 
 use alloc::vec::Vec;
 
-use crate::{Cpu, Cpu6809, CpuM68000, CpuZ80, stack_vec::StackVec};
+use stack_vec::StackVec;
+
+use crate::{Cpu, Cpu6809, CpuM68000, CpuZ80};
 
 /// Maximum inspectable processors a machine exposes (dual-CPU families).
 pub const MAX_PROCESSORS: usize = 2;

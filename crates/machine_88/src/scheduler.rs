@@ -1,6 +1,7 @@
 //! Event-driven scheduler for the PC-8801.
 
-use common::{SchedulerState, StackVec};
+use common::SchedulerState;
+use stack_vec::StackVec;
 
 /// Number of distinct PC-88 event kinds.
 const EVENT88_KIND_COUNT: usize = 15;

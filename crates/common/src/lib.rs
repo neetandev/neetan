@@ -15,9 +15,6 @@ extern crate alloc;
 use alloc::string::ToString;
 use alloc::{boxed::Box, format, string::String};
 
-#[cfg(any(test, feature = "allocation-counter"))]
-#[allow(unsafe_code)]
-pub mod allocation_counter;
 mod automation;
 pub mod display;
 mod dos;
@@ -28,7 +25,6 @@ mod jis;
 #[cfg(feature = "std")]
 pub mod log;
 mod scheduler;
-mod stack_vec;
 #[cfg(any(test, feature = "std"))]
 pub mod temporary;
 mod text_extractor;
@@ -61,7 +57,6 @@ pub use jis::{
 };
 pub use save_state::{MachineStateBlob, SaveStateError};
 pub use scheduler::{ScheduledEventIndex, SchedulerState};
-pub use stack_vec::StackVec;
 pub use text_extractor::TextExtractor;
 pub use trace::{
     NoTrace, OwnedTraceCall, OwnedTraceDeviceEvent, OwnedTraceEvent, OwnedTraceField,
@@ -71,11 +66,6 @@ pub use trace::{
     TraceField, TraceInterest, TraceInterrupt, TraceInterruptAction, TraceInterruptKind,
     TracePresentation, TraceRate, TraceSink, TraceValue, trace_clock, trace_id, trace_source,
 };
-
-/// The global allocator of the test binary. It counts the allocations of each thread.
-#[cfg(test)]
-#[global_allocator]
-static ALLOCATOR: allocation_counter::CountingAllocator = allocation_counter::CountingAllocator;
 
 /// Built-in V98-format PC-98 font ROM used when no external font ROM is configured.
 pub static BUILTIN_FONT_ROM: &[u8] = include_bytes!("../../../utils/bios/fonts/font.rom");

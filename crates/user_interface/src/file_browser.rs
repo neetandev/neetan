@@ -19,12 +19,13 @@ use gui::{
 };
 use i18n::Catalog;
 use machine_factory::config::settings::{PathKind, file_types::FileTypes};
+use stack_vec::StackVec;
 
 use crate::{
     config::resolve_path,
     editor::ExtensionList,
-    media_dialog::{ImageEntry, PANEL_SIZE, TAB_BAR_HEIGHT, filtered_entries},
-    texts::{self, HintText, browser, common},
+    media_dialog::{ImageEntry, PANEL_SIZE, TAB_BAR_HEIGHT, fold_filter, matching_entries},
+    texts::{self, HintText, HintTexts, MAXIMUM_HINTS, browser, common},
 };
 
 /// The id of the modal layer of the browser.
@@ -269,7 +270,7 @@ pub(crate) struct FileBrowser {
     /// The selection and the scroll position of the list.
     list: ListState,
     /// The hints of the status line of the last pass.
-    hints: Vec<HintText>,
+    hints: HintTexts,
     /// Whether the rows changed after the list drew them, so the pass draws stale widgets.
     stale: bool,
 }
@@ -305,7 +306,7 @@ impl FileBrowser {
             show_all: false,
             rows: Vec::new(),
             list: ListState::new(),
-            hints: Vec::new(),
+            hints: HintTexts::new(),
             stale: false,
         };
         let selected = browser.current.clone();
@@ -320,7 +321,7 @@ impl FileBrowser {
     }
 
     /// The hints of the status line of the last pass.
-    pub(crate) fn hints(&self) -> &[HintText] {
+    pub(crate) fn hints(&self) -> &HintTexts {
         &self.hints
     }
 
@@ -358,20 +359,16 @@ impl FileBrowser {
     /// that pass the filter and the extensions. Selects the row of
     /// `selected`, else the first entry after the parent row.
     fn rebuild_rows(&mut self, selected: Option<&Path>) {
+        let folded_filter = fold_filter(&self.filter);
         let mut rows = Vec::new();
         if self.folder.parent().is_some() {
             rows.push(BrowserRow::Parent);
         }
-        rows.extend(
-            filtered_entries(&self.folders, &self.filter)
-                .into_iter()
-                .map(BrowserRow::Folder),
-        );
+        rows.extend(matching_entries(&self.folders, &folded_filter).map(BrowserRow::Folder));
         if self.request.kind == PathKind::File {
             let types = self.request.types.filter(|_| !self.show_all);
             rows.extend(
-                filtered_entries(&self.files, &self.filter)
-                    .into_iter()
+                matching_entries(&self.files, &folded_filter)
                     .filter(|&index| {
                         types.is_none_or(|types| types.matches(&self.files[index].path))
                     })
@@ -412,18 +409,24 @@ impl FileBrowser {
         }
     }
 
-    /// The value that a choice of `row` gives: a file of a file setting,
-    /// a folder of a folder setting, or the shown folder from the parent
-    /// row of a folder setting.
-    fn chosen(&self, row: BrowserRow) -> Option<String> {
-        let path = match (self.request.kind, row) {
-            (PathKind::File, BrowserRow::File(index)) => self.files[index].path.clone(),
-            (PathKind::Folder, BrowserRow::Folder(index)) => self.folders[index].path.clone(),
-            (PathKind::Folder, BrowserRow::Parent) => self.folder.clone(),
+    /// The path that a choice of `row` gives: a file of a file setting, a
+    /// folder of a folder setting, or the shown folder from the parent row
+    /// of a folder setting.
+    fn chosen_path(&self, row: BrowserRow) -> Option<&Path> {
+        match (self.request.kind, row) {
+            (PathKind::File, BrowserRow::File(index)) => Some(&self.files[index].path),
+            (PathKind::Folder, BrowserRow::Folder(index)) => Some(&self.folders[index].path),
+            (PathKind::Folder, BrowserRow::Parent) => Some(&self.folder),
             (PathKind::File, BrowserRow::Parent | BrowserRow::Folder(_))
-            | (PathKind::Folder, BrowserRow::File(_)) => return None,
-        };
-        Some(path_value(&path, &self.root))
+            | (PathKind::Folder, BrowserRow::File(_)) => None,
+        }
+    }
+
+    /// The value that a choice of `row` gives, as [`Self::chosen_path`]
+    /// finds it.
+    fn chosen(&self, row: BrowserRow) -> Option<String> {
+        self.chosen_path(row)
+            .map(|path| path_value(path, &self.root))
     }
 
     /// Answers the activation of `row`: the parent row and a folder of a
@@ -599,8 +602,8 @@ impl FileBrowser {
         if context.has_focus(list_id) && context.shortcut() == Some(Shortcut::Backspace) {
             self.open_parent();
         }
-        let rows = self.rows.clone();
-        let current = self.current.clone();
+        let rows = &self.rows;
+        let current = self.current.as_deref();
         let icon = self.request.icon;
         let list_response = list(
             context,
@@ -621,7 +624,7 @@ impl FileBrowser {
                 }
                 BrowserRow::File(index) => {
                     let entry = &self.files[index];
-                    let marker = (current.as_deref() == Some(entry.path.as_path()))
+                    let marker = (current == Some(entry.path.as_path()))
                         .then_some(RowMark::Marker(Icon::Check));
                     RowContent::new(&entry.name)
                         .icon(Some(icon))
@@ -657,7 +660,7 @@ impl FileBrowser {
         self.texts = texts;
 
         let selected = self.selected_row();
-        let choosable = selected.and_then(|row| self.chosen(row));
+        let choosable = selected.filter(|row| self.chosen_path(*row).is_some());
         let choose = Button::new(CHOOSE_ID, catalog.text(common::CHOOSE))
             .icon(Icon::Check)
             .kind(ButtonKind::Primary)
@@ -679,7 +682,7 @@ impl FileBrowser {
             outcome = BrowserOutcome::Cancelled;
         }
         if choose.show(context, choose_area)
-            && let Some(value) = choosable
+            && let Some(value) = choosable.and_then(|row| self.chosen(row))
         {
             outcome = BrowserOutcome::Chosen(value);
         }
@@ -695,9 +698,9 @@ impl FileBrowser {
     /// The hints of the widget that holds the focus. A hint whose action an
     /// earlier hint has leaves the line, such as Esc beside the focused
     /// Cancel button and Backspace beside the selected parent row.
-    fn focus_hints(&self, context: &UiContext) -> Vec<HintText> {
+    fn focus_hints(&self, context: &UiContext) -> HintTexts {
         let focused = |id: &str| context.has_focus(UiId::from(id));
-        let mut hints = Vec::new();
+        let mut hints = StackVec::<ActionHint, MAXIMUM_HINTS>::new();
         if focused(LIST_ID) {
             match self.selected_row() {
                 Some(BrowserRow::File(_)) => hints.push(CHOOSE_HINT),
@@ -718,7 +721,7 @@ impl FileBrowser {
             return distinct_hints([CLEAR_HINT]);
         }
         hints.push(CLOSE_HINT);
-        distinct_hints(hints)
+        distinct_hints(hints.iter().copied())
     }
 }
 

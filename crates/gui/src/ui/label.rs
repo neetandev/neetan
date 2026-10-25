@@ -1,7 +1,11 @@
 //! The label widget.
 
+#[cfg(any(test, feature = "fill-counter"))]
+use std::cell::Cell;
+use std::sync::Arc;
+
 use super::context::{TextStyle, UiContext};
-use crate::{Line, Rect};
+use crate::{FontId, Line, Rect, Run};
 
 /// The distance between the baselines of two lines of a wrapped label, in
 /// units of the text size.
@@ -49,73 +53,153 @@ pub fn wrapped_line_height(style: &TextStyle) -> f32 {
     style.size * WRAP_LINE_HEIGHT
 }
 
-/// The lines of `text` in `style` no wider than `width`, at most
-/// `maximum_lines` of them, and the shaped text that they index.
-fn wrap(
-    context: &mut UiContext,
-    style: &TextStyle,
-    text: &str,
-    width: f32,
-    maximum_lines: usize,
-) -> (std::sync::Arc<crate::Run>, Vec<Line>) {
-    let mut lines = Vec::new();
-    let run = context
-        .fonts
-        .wrap(style.font, style.size, text, width.max(0.0), &mut lines);
-    lines.truncate(maximum_lines.max(1));
-    (run, lines)
+#[cfg(any(test, feature = "fill-counter"))]
+std::thread_local! {
+    /// The number of wraps of every wrapped text on the current thread.
+    static WRAPS: Cell<usize> = const { Cell::new(0) };
 }
 
-/// The height that [`wrapped_label`] takes for `text` in `style` at the
-/// width `width` with at most `maximum_lines` lines.
-pub fn wrapped_height(
-    context: &mut UiContext,
-    style: &TextStyle,
-    text: &str,
-    width: f32,
-    maximum_lines: usize,
-) -> f32 {
-    let (_, lines) = wrap(context, style, text, width, maximum_lines);
-    lines.len() as f32 * wrapped_line_height(style)
+/// Runs `function` and returns the number of wraps of every [`WrappedText`] on the current
+/// thread during the run, together with the result of `function`.
+#[cfg(any(test, feature = "fill-counter"))]
+pub fn count_wraps<T>(function: impl FnOnce() -> T) -> (usize, T) {
+    let before = WRAPS.with(Cell::get);
+    let result = function();
+    let after = WRAPS.with(Cell::get);
+    (after - before, result)
 }
 
-/// Draws `text` in `style` wrapped over lines no wider than `rect`, from
-/// the top of `rect` down, each line placed by `align`. A line breaks
-/// between words, between CJK characters and at line breaks. The text ends
-/// after `maximum_lines` lines. The lines ignore the height of `rect`.
-/// Returns the height of the lines.
-pub fn wrapped_label(
-    context: &mut UiContext,
-    rect: Rect,
-    style: &TextStyle,
-    text: &str,
-    align: Align,
+/// The layout that a [`WrappedText`] wrapped its lines for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WrapLayout {
+    /// The font family.
+    font: FontId,
+    /// The bits of the text size.
+    size: u32,
+    /// The bits of the width of the lines.
+    width: u32,
+    /// The most lines.
     maximum_lines: usize,
-) -> f32 {
-    let (run, lines) = wrap(context, style, text, rect.width, maximum_lines);
-    let line_height = wrapped_line_height(style);
-    for (index, line) in lines.iter().enumerate() {
-        let line_area = Rect::new(
-            rect.x,
-            rect.y + index as f32 * line_height,
-            rect.width,
-            line_height,
-        );
-        let x = match align {
-            Align::Start => line_area.x,
-            Align::Center => line_area.x + (line_area.width - line.width) * 0.5,
-            Align::End => line_area.right() - line.width,
-        };
-        let baseline = context.centered_baseline(line_area, style);
-        context.scene.run_glyphs(
-            (context.snap(x), baseline),
-            style.size,
-            &run,
-            line.glyphs.clone(),
-            style.color,
-        );
+}
+
+/// The lines of a wrapped text that a caller keeps between passes.
+///
+/// The text wraps again only when its shaped run, its font, its size, the
+/// width or the most lines change. The run of the font cache changes with
+/// the text. The lines keep their buffer between the wraps.
+#[derive(Clone, Debug, Default)]
+pub struct WrappedText {
+    /// The shaped text of the last wrap.
+    run: Option<Arc<Run>>,
+    /// The layout of the last wrap.
+    layout: Option<WrapLayout>,
+    /// The lines of the last wrap.
+    lines: Vec<Line>,
+}
+
+impl WrappedText {
+    /// Empty lines without a wrap.
+    pub fn new() -> Self {
+        Self::default()
     }
-    lines.len() as f32 * line_height
+
+    /// Wraps `text` in `style` into lines no wider than `width`, at most
+    /// `maximum_lines` of them, unless the last wrap holds them.
+    fn wrap(
+        &mut self,
+        context: &mut UiContext,
+        style: &TextStyle,
+        text: &str,
+        width: f32,
+        maximum_lines: usize,
+    ) {
+        let width = width.max(0.0);
+        let layout = WrapLayout {
+            font: style.font,
+            size: style.size.to_bits(),
+            width: width.to_bits(),
+            maximum_lines,
+        };
+        let run = context.fonts.shape(style.font, text);
+        let current = self.layout == Some(layout)
+            && self
+                .run
+                .as_ref()
+                .is_some_and(|cached| Arc::ptr_eq(cached, &run));
+        if current {
+            return;
+        }
+        let run = context
+            .fonts
+            .wrap(style.font, style.size, text, width, &mut self.lines);
+        self.lines.truncate(maximum_lines.max(1));
+        self.run = Some(run);
+        self.layout = Some(layout);
+        #[cfg(any(test, feature = "fill-counter"))]
+        WRAPS.with(|wraps| wraps.set(wraps.get() + 1));
+    }
+
+    /// The number of lines of the last wrap.
+    pub fn line_count(&self) -> usize {
+        self.lines.len()
+    }
+
+    /// The height that [`WrappedText::show`] takes for `text` in `style` at
+    /// the width `width` with at most `maximum_lines` lines.
+    pub fn height(
+        &mut self,
+        context: &mut UiContext,
+        style: &TextStyle,
+        text: &str,
+        width: f32,
+        maximum_lines: usize,
+    ) -> f32 {
+        self.wrap(context, style, text, width, maximum_lines);
+        self.lines.len() as f32 * wrapped_line_height(style)
+    }
+
+    /// Draws `text` in `style` wrapped over lines no wider than `rect`, from
+    /// the top of `rect` down, each line placed by `align`. A line breaks
+    /// between words, between CJK characters and at line breaks. The text
+    /// ends after `maximum_lines` lines. The lines ignore the height of
+    /// `rect`. Returns the height of the lines.
+    pub fn show(
+        &mut self,
+        context: &mut UiContext,
+        rect: Rect,
+        style: &TextStyle,
+        text: &str,
+        align: Align,
+        maximum_lines: usize,
+    ) -> f32 {
+        self.wrap(context, style, text, rect.width, maximum_lines);
+        let Some(run) = &self.run else {
+            return 0.0;
+        };
+        let line_height = wrapped_line_height(style);
+        for (index, line) in self.lines.iter().enumerate() {
+            let line_area = Rect::new(
+                rect.x,
+                rect.y + index as f32 * line_height,
+                rect.width,
+                line_height,
+            );
+            let x = match align {
+                Align::Start => line_area.x,
+                Align::Center => line_area.x + (line_area.width - line.width) * 0.5,
+                Align::End => line_area.right() - line.width,
+            };
+            let baseline = context.centered_baseline(line_area, style);
+            context.scene.run_glyphs(
+                (context.snap(x), baseline),
+                style.size,
+                run,
+                line.glyphs.clone(),
+                style.color,
+            );
+        }
+        self.lines.len() as f32 * line_height
+    }
 }
 
 #[cfg(test)]
@@ -181,8 +265,9 @@ mod tests {
         let text = "The changes to YU-NO: A Girl Who Chants Love at the Bound of this World are not saved.";
         let (height, measured) = harness.frame(|context| {
             let style = context.theme.body();
-            let measured = wrapped_height(context, &style, text, rect.width, usize::MAX);
-            let height = wrapped_label(context, rect, &style, text, Align::Start, usize::MAX);
+            let measured = WrappedText::new().height(context, &style, text, rect.width, usize::MAX);
+            let height =
+                WrappedText::new().show(context, rect, &style, text, Align::Start, usize::MAX);
             (height, measured)
         });
         let line_height = harness.theme.text_size * WRAP_LINE_HEIGHT;
@@ -198,7 +283,7 @@ mod tests {
         }
         let two = harness.frame(|context| {
             let style = context.theme.small();
-            wrapped_label(context, rect, &style, text, Align::Center, 2)
+            WrappedText::new().show(context, rect, &style, text, Align::Center, 2)
         });
         assert_eq!(two, harness.theme.small_text_size * WRAP_LINE_HEIGHT * 2.0);
     }
@@ -209,7 +294,7 @@ mod tests {
         let text = "この世の果てで恋を唄う少女YU-NOの変更は保存されていません。";
         let height = harness.frame(|context| {
             let style = context.theme.body();
-            wrapped_label(
+            WrappedText::new().show(
                 context,
                 Rect::new(0.0, 0.0, 120.0, 0.0),
                 &style,
@@ -260,7 +345,7 @@ mod tests {
         let text = "The changes to YU-NO: A Girl Who Chants Love at the Bound of this World are not saved.";
         let height = harness.frame(|context| {
             let style = context.theme.body();
-            wrapped_label(
+            WrappedText::new().show(
                 context,
                 Rect::new(20.0, 40.0, 250.0, 0.0),
                 &style,
@@ -274,5 +359,41 @@ mod tests {
         let lines = (height / (harness.theme.text_size * WRAP_LINE_HEIGHT)).round() as usize;
         assert_eq!(bands, lines);
         assert!(*rows.last().unwrap() as f32 <= 40.0 + height + 1.0);
+    }
+
+    /// Verifies that a kept wrap draws the lines of a fresh wrap, wraps again for another
+    /// width or text and neither wraps nor allocates while nothing changes.
+    #[test]
+    fn a_wrapped_text_keeps_its_lines_until_the_text_or_the_width_changes() {
+        let mut harness = Harness::new();
+        let text = "The changes to YU-NO: A Girl Who Chants Love at the Bound of this World are not saved.";
+        let rect = Rect::new(20.0, 40.0, 250.0, 0.0);
+        let mut wrapped = WrappedText::new();
+        let draw = |harness: &mut Harness, wrapped: &mut WrappedText, rect: Rect, text: &str| {
+            harness.frame(|context| {
+                let style = context.theme.body();
+                wrapped.show(context, rect, &style, text, Align::Start, usize::MAX)
+            })
+        };
+        let fresh = harness.frame(|context| {
+            let style = context.theme.body();
+            WrappedText::new().show(context, rect, &style, text, Align::Start, usize::MAX)
+        });
+        let fresh_rows = covered_rows(&harness);
+        assert_eq!(draw(&mut harness, &mut wrapped, rect, text), fresh);
+        let (allocations, (wraps, kept)) = allocation_counter::count_allocations(|| {
+            count_wraps(|| draw(&mut harness, &mut wrapped, rect, text))
+        });
+        assert_eq!(allocations, 0);
+        assert_eq!(wraps, 0);
+        assert_eq!(kept, fresh);
+        assert_eq!(covered_rows(&harness), fresh_rows);
+        let wide = Rect::new(20.0, 40.0, 600.0, 0.0);
+        let (wraps, wide_height) = count_wraps(|| draw(&mut harness, &mut wrapped, wide, text));
+        assert_eq!(wraps, 1);
+        assert!(wide_height < fresh);
+        let (wraps, short) = count_wraps(|| draw(&mut harness, &mut wrapped, rect, "Saved."));
+        assert_eq!(wraps, 1);
+        assert_eq!(short, harness.theme.text_size * WRAP_LINE_HEIGHT);
     }
 }

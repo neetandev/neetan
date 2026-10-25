@@ -112,10 +112,9 @@ impl Editor {
             .text_in(catalog, generation, revision, |catalog, _, out| {
                 write_empty_list_caption(catalog, out, types);
             });
-        let mut values = self.fields[index].images().to_vec();
-        let height = list_height(theme, values.len());
+        let height = list_height(theme, self.fields[index].images().len());
         let wide = Rect::new(areas.wide.x, areas.wide.y, areas.wide.width, height);
-        let response = MediaList {
+        let media_list = MediaList {
             id,
             icon: image_icon(types),
             missing: &self.missing[index],
@@ -124,11 +123,23 @@ impl Editor {
             hint_truncation,
             empty_list_caption: shows_toggle.then_some(caption),
             empty_list,
-        }
-        .show(context, wide, &mut self.fields[index].list, &mut values);
+        };
         let field = &mut self.fields[index];
+        let response = match &mut field.value {
+            FieldValue::List(values) => media_list.show(context, wide, &mut field.list, values),
+            FieldValue::Choice(_)
+            | FieldValue::Text(_)
+            | FieldValue::EmptyList
+            | FieldValue::EmptyPath => {
+                let mut values = Vec::new();
+                let response = media_list.show(context, wide, &mut field.list, &mut values);
+                if response.changed {
+                    field.value = FieldValue::List(values);
+                }
+                response
+            }
+        };
         if response.changed {
-            field.value = FieldValue::List(values);
             actions.changed = true;
         }
         if response.empty_list_flipped {
@@ -148,7 +159,7 @@ impl Editor {
             row += empty_list_height(theme);
             below_top += empty_list_height(theme);
         }
-        let (note, look) = texts
+        let note = texts
             .note
             .note(catalog, generation, (revision, false), |writer, _| {
                 let look = below_note(
@@ -160,14 +171,14 @@ impl Editor {
                 );
                 followed_by(writer, look, |writer| self.write_extra(writer, setting))
             });
-        if !note.is_empty() {
+        if !note.text.is_empty() {
             let below = Rect::new(
                 wide.x,
                 below_top + theme.gap * 0.75,
                 (wide.width - buttons_width(theme) - theme.gap).max(0.0),
                 theme.icon_size,
             );
-            let note_height = draw_note(context, below, note, look);
+            let note_height = draw_note(context, below, note);
             row += theme.gap * 0.75 + note_height;
         }
         row

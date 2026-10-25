@@ -18,3 +18,4 @@ device.workspace = true
 software_renderer = { workspace = true, features = ["std", "towns"] }
 rom_loader.workspace = true
 save_state = { workspace = true, features = ["std"] }
+stack_vec.workspace = true

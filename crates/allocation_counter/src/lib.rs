@@ -3,6 +3,8 @@
 //! [`count_allocations`] measures the allocations of a function on the current thread while
 //! [`CountingAllocator`] is the global allocator.
 
+#![warn(missing_docs)]
+
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -45,6 +47,11 @@ unsafe impl GlobalAlloc for CountingAllocator {
         unsafe { System.dealloc(pointer, layout) }
     }
 }
+
+/// The global allocator of the test binary of the crate.
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 /// Adds one allocation to the count of the current thread.
 fn count() {

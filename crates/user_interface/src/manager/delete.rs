@@ -5,9 +5,13 @@ use std::path::PathBuf;
 
 use gui::{
     Rect,
-    ui::{ConfirmDialog, ConfirmResponse, Icon, TextBuffer, UiContext, confirm_hints},
+    ui::{
+        CONFIRM_HINTS, ConfirmDialog, ConfirmLines, ConfirmResponse, Icon, TextBuffer, UiContext,
+        confirm_hints,
+    },
 };
 use i18n::Catalog;
+use stack_vec::StackVec;
 
 use super::rows::GameRow;
 use crate::texts::{HintText, common, delete};
@@ -46,6 +50,8 @@ pub(crate) struct DeleteRequest {
     message: TextBuffer<()>,
     /// The note below the question in the catalog of the last pass.
     detail: TextBuffer<()>,
+    /// The wrapped lines of the question and of the note.
+    lines: ConfirmLines,
 }
 
 /// The confirm dialog of the question `message` with the note `detail` in
@@ -78,6 +84,7 @@ impl DeleteRequest {
             shown_path: row.shown_path.clone(),
             message: TextBuffer::new(),
             detail: TextBuffer::new(),
+            lines: ConfirmLines::new(),
         }
     }
 
@@ -98,7 +105,7 @@ impl DeleteRequest {
     /// The hints of the status line while the question shows the answer
     /// `response` of this pass, in the order of the hints of a confirm
     /// dialog.
-    pub(crate) fn hints(&self, response: ConfirmResponse) -> Vec<HintText> {
+    pub(crate) fn hints(&self, response: ConfirmResponse) -> StackVec<HintText, CONFIRM_HINTS> {
         confirm_hints(response, common::CANCEL, common::DELETE, HintText::new)
     }
 
@@ -116,6 +123,7 @@ impl DeleteRequest {
             shown_path,
             message,
             detail,
+            lines,
             ..
         } = self;
         let message = message.text(context, (), |catalog, (), out| {
@@ -124,7 +132,7 @@ impl DeleteRequest {
         let detail = detail.text(context, (), |catalog, (), out| {
             let _ = catalog.write(out, delete::detail(shown_path));
         });
-        let response = dialog(catalog, message, detail, area).show(context);
+        let response = dialog(catalog, message, detail, area).show(context, lines);
         let outcome = if response.confirmed {
             match std::fs::remove_file(&self.path) {
                 Ok(()) => DeleteOutcome::Deleted,

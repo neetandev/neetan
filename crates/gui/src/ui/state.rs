@@ -77,6 +77,9 @@ pub struct UiState {
     pub(super) ring: Vec<Focusable>,
     /// The focusable widgets of the last pass in drawing order.
     pub(super) previous_ring: Vec<Focusable>,
+    /// The widgets of the last pass in the layer that takes part in the
+    /// navigation of this pass. The list keeps its buffer between passes.
+    candidates: Vec<Focusable>,
     /// The navigation event of this pass that the focused widget handles.
     pub(super) routed: Option<(UiId, super::Navigation)>,
     /// The focused widget that takes the cancel of this pass.
@@ -119,6 +122,7 @@ impl Default for UiState {
             focus_visible: true,
             ring: Vec::new(),
             previous_ring: Vec::new(),
+            candidates: Vec::new(),
             routed: None,
             cancel_taker: None,
             confirm_target: None,
@@ -320,12 +324,14 @@ impl UiState {
                 .map(|entry| entry.layer)
         });
         let scope = focused_layer.unwrap_or(self.deepest);
-        let candidates: Vec<Focusable> = self
-            .previous_ring
-            .iter()
-            .filter(|entry| entry.layer == scope)
-            .copied()
-            .collect();
+        self.candidates.clear();
+        self.candidates.extend(
+            self.previous_ring
+                .iter()
+                .filter(|entry| entry.layer == scope)
+                .copied(),
+        );
+        let candidates = &self.candidates;
         let current = self
             .focus
             .and_then(|focus| candidates.iter().position(|entry| entry.id == focus));
@@ -344,7 +350,7 @@ impl UiState {
             }
             _ => {
                 let from = current.map(|index| candidates[index].rect).or(lost);
-                if let Some(next) = next_focus(&candidates, current, from, navigation) {
+                if let Some(next) = next_focus(candidates, current, from, navigation) {
                     self.focus = Some(candidates[next].id);
                 }
             }
@@ -447,6 +453,33 @@ mod tests {
         state.end_frame(1);
         pass(&mut state, &ring, Navigation::Next);
         assert_eq!(state.focused(), Some(ring[1].id));
+    }
+
+    /// Verifies that the start of a pass with a navigation over a ring of the last pass keeps
+    /// the buffers of the ring and allocates nothing.
+    #[test]
+    fn a_pass_over_the_ring_of_the_last_pass_allocates_nothing() {
+        let ring = [
+            entry(0, Rect::new(0.0, 0.0, 100.0, 20.0), 0),
+            entry(1, Rect::new(0.0, 30.0, 100.0, 20.0), 0),
+        ];
+        let mut state = UiState::default();
+        let input = Input {
+            navigation: Some(Navigation::Next),
+            ..Input::default()
+        };
+        for _ in 0..2 {
+            state.begin_frame(&input);
+            state.ring.extend_from_slice(&ring);
+            state.end_frame(0);
+        }
+        let (allocations, ()) = allocation_counter::count_allocations(|| {
+            state.begin_frame(&input);
+            state.ring.extend_from_slice(&ring);
+            state.end_frame(0);
+        });
+        assert_eq!(allocations, 0);
+        assert!(state.focused().is_some());
     }
 
     #[test]

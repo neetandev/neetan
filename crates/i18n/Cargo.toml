@@ -15,4 +15,4 @@ generate = []
 [dependencies]
 
 [dev-dependencies]
-common = { workspace = true, features = ["allocation-counter"] }
+allocation_counter = { workspace = true }

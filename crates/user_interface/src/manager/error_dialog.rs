@@ -11,7 +11,7 @@ use gui::{
     Rect, RectStyle,
     ui::{
         ACTIVATE_KEYS, Align, Button, ButtonKind, CANCEL_KEYS, HEADER_HEIGHT, Icon, TextBuffer,
-        UiContext, UiId, modal_in, wrapped_height, wrapped_label,
+        UiContext, UiId, WrappedText, modal_in,
     },
 };
 use i18n::Key;
@@ -20,7 +20,7 @@ use machine_factory::config::systems::System;
 use self::event::{ErrorDetail, ErrorEvent};
 use crate::{
     editor::{EditedFile, OpenError, SaveFailure},
-    texts::{HintText, common, errors},
+    texts::{HintText, HintTexts, common, errors},
 };
 
 mod event;
@@ -47,13 +47,13 @@ const MAXIMUM_MESSAGE_LINES: usize = 4;
 const MAXIMUM_DETAIL_LINES: usize = 8;
 
 /// The id of the OK button.
-const OK_ID: &str = "error ok";
+pub(super) const OK_ID: &str = "error ok";
 
 /// The id of the button that opens the game in the editor.
 pub(super) const EDIT_ID: &str = "error edit";
 
 /// The id of the cancel button of a game file that changed outside the manager.
-const CANCEL_ID: &str = "error cancel";
+pub(super) const CANCEL_ID: &str = "error cancel";
 
 /// The id of the button that saves over a game file that changed outside the manager.
 pub(super) const OVERWRITE_ID: &str = "error overwrite";
@@ -132,6 +132,10 @@ pub(crate) struct ErrorDialog {
     message_text: TextBuffer<()>,
     /// The error text in the catalog of the last pass.
     detail_text: TextBuffer<()>,
+    /// The wrapped lines of the sentence of the event.
+    message_lines: WrappedText,
+    /// The wrapped lines of the error text.
+    detail_lines: WrappedText,
 }
 
 impl ErrorDialog {
@@ -145,6 +149,8 @@ impl ErrorDialog {
             overwrite: false,
             message_text: TextBuffer::new(),
             detail_text: TextBuffer::new(),
+            message_lines: WrappedText::new(),
+            detail_lines: WrappedText::new(),
         }
     }
 
@@ -270,14 +276,14 @@ impl ErrorDialog {
 
     /// The hints of the status line while the dialog is open. The focused
     /// button gives the first hint, and Esc and B cancel.
-    pub(crate) fn hints(&self, context: &UiContext) -> Vec<HintText> {
+    pub(crate) fn hints(&self, context: &UiContext) -> HintTexts {
         if !self.overwrite {
-            return vec![OK_HINT];
+            return HintTexts::from([OK_HINT]);
         }
         if context.focused() == Some(UiId::from(OVERWRITE_ID)) {
-            vec![OVERWRITE_HINT, CANCEL_KEYS_HINT]
+            HintTexts::from([OVERWRITE_HINT, CANCEL_KEYS_HINT])
         } else {
-            vec![CANCEL_HINT]
+            HintTexts::from([CANCEL_HINT])
         }
     }
 
@@ -323,6 +329,8 @@ impl ErrorDialog {
             detail,
             message_text,
             detail_text,
+            message_lines,
+            detail_lines,
             ..
         } = self;
         let message = message_text.text(context, (), |catalog, (), out| {
@@ -343,14 +351,14 @@ impl ErrorDialog {
             detail_padding.1 + theme.stroke,
         );
         let detail_width = message_width - detail_inset.0 * 2.0;
-        let message_height = wrapped_height(
+        let message_height = message_lines.height(
             context,
             &message_style,
             message,
             message_width,
             MAXIMUM_MESSAGE_LINES,
         );
-        let detail_height = wrapped_height(
+        let detail_height = detail_lines.height(
             context,
             &detail_style,
             detail,
@@ -390,7 +398,7 @@ impl ErrorDialog {
             theme.colors.danger_text,
         );
         let (message_area, rest) = text_column.cut_top(message_height);
-        wrapped_label(
+        message_lines.show(
             context,
             message_area,
             &message_style,
@@ -405,7 +413,7 @@ impl ErrorDialog {
             &RectStyle::filled(theme.colors.well, theme.radius)
                 .with_stroke(theme.stroke, theme.colors.well_edge),
         );
-        wrapped_label(
+        detail_lines.show(
             context,
             Rect::new(
                 detail_area.x + detail_inset.0,
@@ -774,7 +782,7 @@ mod tests {
             },
         );
         let hints = harness.frame(|context| plain.hints(context));
-        assert_eq!(hints, [OK_HINT]);
+        assert_eq!(*hints, [OK_HINT]);
     }
 
     /// The top of the message below the top of the panel in the DESIGN figures.

@@ -3,7 +3,8 @@
 //! A single monotonic cycle counter (in main-clock units) lives on the bus; this
 //! scheduler tracks the fire cycle of each event kind in a flat array.
 
-use common::{SchedulerState, StackVec};
+use common::SchedulerState;
+use stack_vec::StackVec;
 
 /// Kinds of scheduled events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

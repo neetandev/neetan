@@ -1,6 +1,7 @@
 //! Event-driven scheduler for the FM Towns.
 
-use common::{SchedulerState, StackVec};
+use common::SchedulerState;
+use stack_vec::StackVec;
 
 /// Number of distinct FM Towns event kinds.
 const EVENT_TOWNS_KIND_COUNT: usize = 11;

@@ -19,6 +19,7 @@ device.workspace = true
 dos.workspace = true
 save_state.workspace = true
 software_renderer = { workspace = true, features = ["std", "ga1280a"] }
+stack_vec.workspace = true
 
 [dev-dependencies]
 resampler.workspace = true

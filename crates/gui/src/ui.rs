@@ -59,15 +59,17 @@ pub use button::{
     toggle_button,
 };
 pub use checkbox::{Checkbox, checkbox};
-pub use confirm::{ConfirmDialog, ConfirmResponse, DIALOG_WIDTH, confirm_hints};
+pub use confirm::{
+    CONFIRM_HINTS, ConfirmDialog, ConfirmLines, ConfirmResponse, DIALOG_WIDTH, confirm_hints,
+};
 pub use context::{PointerResponse, TextStyle, UiContext, UiId, ui_id, ui_id_indexed};
 pub use dropdown::{Dropdown, POPUP_MAX_ROWS, dropdown};
 pub use focus::{Navigation, NavigationSet};
 pub use icons::{Icon, Icons};
 pub use input::{ActionButton, Input, Shortcut, Viewport};
-pub use label::{
-    Align, Truncation, WRAP_LINE_HEIGHT, label, wrapped_height, wrapped_label, wrapped_line_height,
-};
+#[cfg(any(test, feature = "fill-counter"))]
+pub use label::count_wraps;
+pub use label::{Align, Truncation, WRAP_LINE_HEIGHT, WrappedText, label, wrapped_line_height};
 pub use list::{
     LIST_PADDING, List, ListResponse, ListRow, ListState, PATH_LINE_HEIGHT, RowContent, RowKind,
     RowMark, caption_row, list,
@@ -81,8 +83,8 @@ pub use status_line::{
     status_line,
 };
 pub use table::{
-    CellTone, Column, ColumnWidth, EmptyHint, Sort, SortDirection, Table, TableCell, TableResponse,
-    TableRow, TableState,
+    CellTone, Column, ColumnWidth, EmptyHint, MAXIMUM_COLUMNS, Sort, SortDirection, Table,
+    TableCell, TableResponse, TableRow, TableState,
 };
 pub use tabs::{Tab, tab_bar};
 #[cfg(any(test, feature = "fill-counter"))]
@@ -1143,7 +1145,7 @@ pub(crate) mod tests {
                     |context, area| {
                         let theme = context.theme;
                         let style = if small { theme.small() } else { theme.body() };
-                        wrapped_label(
+                        WrappedText::new().show(
                             context,
                             Rect::new(area.x, area.y, 250.0, 0.0),
                             &style,
@@ -1410,7 +1412,7 @@ pub(crate) mod tests {
                     .action_icon(Icon::Delete)
                     .danger(true)
                     .area(area);
-                    dialog.show(context);
+                    dialog.show(context, &mut ConfirmLines::new());
                 },
                 |harness, _, pass| {
                     harness.navigate(Navigation::Home);

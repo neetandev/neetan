@@ -229,7 +229,7 @@ impl<D> TextBuffer<D> {
 mod tests {
     use std::fmt::Write as _;
 
-    use common::allocation_counter::count_allocations;
+    use allocation_counter::count_allocations;
 
     use super::*;
     use crate::ui::tests::{Harness, test_catalog};

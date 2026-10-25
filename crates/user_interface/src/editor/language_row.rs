@@ -17,7 +17,7 @@ use super::{
     hints::{EditorWidget, WidgetKind},
     host_settings::write_extra_sentences,
     inherited::{Inherited, InheritedSource},
-    note_writer::NoteText,
+    note_writer::{NoteText, NoteView},
     notes::{NoteLook, write_invalid_value},
     page::PageActions,
     rows::{RowAreas, draw_note, field_id, show_dropdown},
@@ -223,7 +223,7 @@ impl LanguageRow {
         field: &Field,
         inherited: Option<&Inherited>,
         flags: &[(&'static str, String)],
-    ) -> (&str, NoteLook) {
+    ) -> NoteView<'_> {
         let invalid = field.invalid_value();
         let kind = match (invalid, field.chosen()) {
             (Some(_), _) => LanguageNote::Invalid,
@@ -323,8 +323,8 @@ impl Editor {
             field.select(selected);
             actions.changed = true;
         }
-        let (text, look) = row.note(catalog, generation, field, inherited, &settings.flags);
-        draw_note(context, areas.note, text, look)
+        let note = row.note(catalog, generation, field, inherited, &settings.flags);
+        draw_note(context, areas.note, note)
     }
 }
 
@@ -386,14 +386,14 @@ mod tests {
         let Subject::Host(settings) = &mut editor.subject else {
             panic!("a settings page");
         };
-        let (text, look) = settings.language.note(
+        let note = settings.language.note(
             catalog,
             generation,
             &editor.fields[index],
             editor.inherited[index].as_ref(),
             &settings.flags,
         );
-        (text.to_owned(), look.kind)
+        (note.text.to_owned(), note.look.kind)
     }
 
     /// The captions and the inherited entry of the language row of `editor` in `catalog` at

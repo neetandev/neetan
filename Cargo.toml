@@ -11,6 +11,7 @@ version = "2026.10.0"
 
 [workspace.dependencies]
 # Internal dependencies
+allocation_counter = { path = "crates/allocation_counter" }
 audio_engine = { path = "crates/audio_engine" }
 automation = { path = "crates/automation", default-features = false }
 blake3 = { path = "crates/blake3" }
@@ -40,6 +41,7 @@ save_state = { path = "crates/save_state" }
 sdl3 = { path = "crates/sdl3" }
 sdl3_backend = { path = "crates/sdl3_backend" }
 software_renderer = { path = "crates/software_renderer" }
+stack_vec = { path = "crates/stack_vec" }
 softfloat = { path = "crates/softfloat" }
 text_extractor = { path = "crates/text_extractor" }
 munt_oxide = { path = "crates/munt_oxide" }
@@ -113,6 +115,10 @@ opt-level = 0
 overflow-checks = true
 
 [profile.dev.package."*"]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.allocation_counter]
 opt-level = 3
 codegen-units = 1
 
@@ -225,6 +231,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.software_renderer]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.stack_vec]
 opt-level = 3
 codegen-units = 1
 
