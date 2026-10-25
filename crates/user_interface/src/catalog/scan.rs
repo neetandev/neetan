@@ -131,25 +131,27 @@ pub(super) fn scan_system(
     })
 }
 
-/// Reads the one game file `path` of `system` with the system defaults below `config_folder`,
-/// as the scan of the system reads it.
-pub(super) fn read_game(
+/// Reads the game files `paths` of `system` with the system defaults below `config_folder`,
+/// as the scan of the system reads them. The system defaults file reads once. A path without a
+/// file name gives no entry.
+pub(super) fn read_games(
     system: &'static System,
-    path: &Path,
+    paths: &[PathBuf],
     config_folder: &Path,
     host: &HostLayers,
-) -> Option<CatalogEntry> {
+) -> Option<Vec<CatalogEntry>> {
     let target = MachineSelection::of_system(system)?.target();
     let defaults_file = system_defaults_file(config_folder, target);
     let defaults = system_defaults(&defaults_file, target, host.root());
-    let file_name = path.file_name()?.to_string_lossy().into_owned();
-    Some(read_entry(
-        system,
-        path.to_path_buf(),
-        file_name,
-        host,
-        &defaults,
-    ))
+    Some(
+        paths
+            .iter()
+            .filter_map(|path| {
+                let file_name = path.file_name()?.to_string_lossy().into_owned();
+                Some(read_entry(system, path.clone(), file_name, host, &defaults))
+            })
+            .collect(),
+    )
 }
 
 /// Returns the `.conf` files directly inside `folder` with their file names.
@@ -465,7 +467,10 @@ mod tests {
     #[test]
     fn catalog_separates_games_from_files_with_errors() {
         let folder = ConfigFolder::new("classification");
-        folder.write("pc98.conf", b"machine = PC9821AP\nfdd1 = system.d88\n");
+        folder.write(
+            "pc98.conf",
+            b"machine = PC9821AP\nfdd1 = system.d88\nbackend = legacy\n",
+        );
         folder.write("pc98/dragon_knight.conf", JAPANESE_COMMENTS.as_bytes());
         folder.write("pc98/ys2.conf", CRLF_WITH_BYTE_ORDER_MARK.as_bytes());
         folder.write("pc98/policenauts.conf", WARNINGS.as_bytes());
@@ -488,7 +493,8 @@ mod tests {
         assert_eq!(
             messages(&pc98.defaults_diagnostics),
             vec![
-                "Warning line 2: media key fdd1 is ignored. Media keys belong to the game files."
+                "Warning line 3: host key backend is ignored. Only the settings file and the \
+                 command line set host keys."
                     .to_owned()
             ]
         );

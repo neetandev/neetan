@@ -1,38 +1,52 @@
 //! The editor in the manager: the add, the edit and the duplicate of a game,
-//! the editor page with its status line, and the update of the library
-//! after a save.
+//! the edit of the system defaults of a system, the editor page with its
+//! status line, and the update of the library after a save.
 
 use std::path::Path;
 
 use common::{info, warn};
-use gui::ui::{STATUS_LINE_HEIGHT, StatusEnd, UiContext, status_line};
+use gui::ui::{STATUS_LINE_HEIGHT, StatusEnd, UiContext, UiId, status_line};
 use machine_factory::config::systems::System;
 
-use super::{DialogAnswer, EditTarget, ErrorDialog, GameRow, Manager, rows_at};
+use super::{
+    DialogAnswer, EditTarget, ErrorDialog, GameRow, Manager, NextFocus, SETTINGS_ID, rows_at,
+    sidebar::SYSTEM_DEFAULTS_ID,
+};
 use crate::{
-    catalog::read_game,
-    editor::{Editor, SaveFailure},
+    catalog::{read_game, read_games},
+    editor::{EditedFile, Editor, SaveFailure},
 };
 
-/// The error dialog of the game `name` after the save failure `failure`,
-/// which the log records.
-fn save_failure_dialog(name: &str, failure: &SaveFailure) -> ErrorDialog {
-    warn!("Game manager: {name} was not saved: {}", failure.message());
+/// The error dialog of the file of `subject` after the save failure
+/// `failure`, which the log records.
+fn save_failure_dialog(subject: &EditedFile, failure: &SaveFailure) -> ErrorDialog {
+    warn!(
+        "Game manager: {} {} not saved: {}",
+        subject.sentence_start(),
+        subject.was(),
+        failure.message()
+    );
     match failure {
-        SaveFailure::Error(error) => ErrorDialog::save_failed(name, error),
-        SaveFailure::ChangedOutside(detail) => ErrorDialog::changed_outside(name, detail),
+        SaveFailure::Error(error) => ErrorDialog::save_failed(subject, error),
+        SaveFailure::ChangedOutside(detail) => ErrorDialog::changed_outside(subject, detail),
     }
 }
 
 impl Manager {
-    /// Opens `editor`, or the error dialog of the game `name` with the error of the editor.
-    fn open_editor(&mut self, context: &mut UiContext, editor: Result<Editor, String>, name: &str) {
+    /// Opens `editor`, or the error dialog of the file of `subject` with
+    /// the error of the editor.
+    pub(super) fn open_editor(
+        &mut self,
+        context: &mut UiContext,
+        editor: Result<Editor, String>,
+        subject: EditedFile,
+    ) {
         match editor {
             Ok(editor) => {
                 info!("Game manager: editing {}", editor.path().display());
                 self.editor = Some(editor);
             }
-            Err(error) => self.dialog = Some(ErrorDialog::open_failed(name, &error)),
+            Err(error) => self.dialog = Some(ErrorDialog::open_failed(&subject, &error)),
         }
         context.request_pass();
     }
@@ -44,19 +58,43 @@ impl Manager {
         };
         let editor = Editor::new_game(&self.host, system)
             .ok_or_else(|| format!("the system {} is not compiled", system.name));
-        self.open_editor(context, editor, &format!("A new {} game", system.label));
+        self.open_editor(
+            context,
+            editor,
+            EditedFile::Game {
+                system,
+                name: format!("A new {} game", system.label),
+            },
+        );
     }
 
     /// Opens the editor on the game file of `row`.
     pub(super) fn open_game(&mut self, context: &mut UiContext, row: &GameRow) {
         let editor = Editor::open(&self.host, row.system, &row.path);
-        self.open_editor(context, editor, row.name());
+        let file = EditedFile::Game {
+            system: row.system,
+            name: row.name().to_owned(),
+        };
+        self.open_editor(context, editor, file);
     }
 
     /// Opens the editor on a copy of the game file of `row`.
     pub(super) fn open_duplicate(&mut self, context: &mut UiContext, row: &GameRow) {
         let editor = Editor::duplicate(&self.host, row.system, &row.path);
-        self.open_editor(context, editor, row.name());
+        let file = EditedFile::Game {
+            system: row.system,
+            name: row.name().to_owned(),
+        };
+        self.open_editor(context, editor, file);
+    }
+
+    /// Opens the editor on the system defaults file of the selected system.
+    pub(super) fn open_system_defaults(&mut self, context: &mut UiContext) {
+        let Some(system) = self.current().map(|entry| entry.system) else {
+            return;
+        };
+        let editor = Editor::system_defaults(&self.host, system);
+        self.open_editor(context, editor, EditedFile::SystemDefaults(system));
     }
 
     /// Opens the editor on the game file of `target`, the game of an error dialog.
@@ -67,7 +105,11 @@ impl Manager {
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default();
-        self.open_editor(context, editor, &name);
+        let file = EditedFile::Game {
+            system: target.system,
+            name,
+        };
+        self.open_editor(context, editor, file);
     }
 
     /// Reads the saved game file `path` of `system` again and updates its
@@ -103,24 +145,68 @@ impl Manager {
         }
     }
 
+    /// Reads the game files of the library rows of `system` again after a
+    /// save of its system defaults file `path`. The rows take the model
+    /// and the findings that the new system defaults give them. The update
+    /// reads only the files of the rows. It lists no folder and checks no
+    /// ROM.
+    pub(super) fn system_defaults_saved(&mut self, system: &'static System, path: &Path) {
+        info!("Game manager: saved {}", path.display());
+        let Some(index) = self
+            .systems
+            .iter()
+            .position(|entry| entry.system.name == system.name)
+        else {
+            return;
+        };
+        let paths: Vec<_> = self.systems[index]
+            .rows
+            .iter()
+            .map(|row| row.path.clone())
+            .collect();
+        let root = self.host.root().to_path_buf();
+        self.systems[index].rows = read_games(&self.host, system, &paths)
+            .iter()
+            .map(|entry| GameRow::new(system, entry, &root))
+            .collect();
+        if index == self.view.systems.selected {
+            self.refresh_entries();
+            let rows = rows_at(&self.systems, index);
+            self.view.restore(&self.entries, rows);
+        }
+    }
+
+    /// Updates the library after a save of the file `path` of the editor
+    /// on `edited`: the row of a game file, every row of the system after a
+    /// save of its system defaults, or the host settings after a save of
+    /// the settings file.
+    fn file_saved(&mut self, edited: &EditedFile, path: &Path) {
+        match *edited {
+            EditedFile::Game { system, .. } => self.game_saved(system, path),
+            EditedFile::SystemDefaults(system) => self.system_defaults_saved(system, path),
+            EditedFile::Settings => self.settings_saved(path),
+        }
+    }
+
     /// Draws one pass of the open editor over the whole window with its
     /// status line, and the error dialog of a failed save over it. The
     /// Overwrite of the dialog of a game file that changed outside the
     /// manager saves over the file. A closed editor gives the library back
-    /// with the focus on its game table.
+    /// with the focus on its game table, on the system defaults button after
+    /// the system defaults, or on the settings button after the settings
+    /// page.
     pub(super) fn show_editor(&mut self, context: &mut UiContext) {
         let (status_area, screen) = context.bounds().cut_bottom(STATUS_LINE_HEIGHT);
         let Some(editor) = self.editor.as_mut() else {
             return;
         };
         let pass = editor.show(context, screen);
-        let system = editor.system();
-        let name = editor.display_name();
+        let edited = editor.edited_file();
         if let Some(path) = &pass.saved {
-            self.game_saved(system, path);
+            self.file_saved(&edited, path);
         }
         if let Some(failure) = &pass.save_error {
-            self.dialog = Some(save_failure_dialog(&name, failure));
+            self.dialog = Some(save_failure_dialog(&edited, failure));
         }
         let answer = self
             .dialog
@@ -133,8 +219,8 @@ impl Manager {
             && let Some(editor) = self.editor.as_mut()
         {
             match editor.overwrite() {
-                Ok(path) => self.game_saved(system, &path),
-                Err(failure) => self.dialog = Some(save_failure_dialog(&name, &failure)),
+                Ok(path) => self.file_saved(&edited, &path),
+                Err(failure) => self.dialog = Some(save_failure_dialog(&edited, &failure)),
             }
             context.request_pass();
         }
@@ -154,7 +240,11 @@ impl Manager {
             );
             self.editor = None;
             self.dialog = None;
-            self.give_start_focus = true;
+            self.next_focus = Some(match edited {
+                EditedFile::Game { .. } => NextFocus::Start,
+                EditedFile::SystemDefaults(_) => NextFocus::Widget(UiId::from(SYSTEM_DEFAULTS_ID)),
+                EditedFile::Settings => NextFocus::Widget(UiId::from(SETTINGS_ID)),
+            });
             context.request_pass();
         }
     }
@@ -218,7 +308,11 @@ mod tests {
 
     /// A root with two games of the first system.
     fn two_games(name: &str) -> EditorRoot {
-        let root = EditorRoot::new(name);
+        with_two_games(EditorRoot::new(name))
+    }
+
+    /// Writes the games Edge and Brandish of [`two_games`] into `root`.
+    fn with_two_games(root: EditorRoot) -> EditorRoot {
         let model = root.system().default_model;
         root.game("edge", &format!("meta.title = Edge\nmachine = {model}\n"));
         root.game(
@@ -276,7 +370,7 @@ mod tests {
         harness.input.shortcut = Some(Shortcut::ControlD);
         settle(&mut harness, &mut manager);
         let editor = manager.editor().expect("Ctrl+D duplicates");
-        assert_eq!(editor.display_name(), "Brandish (copy)");
+        assert_eq!(editor.edited_file().display_name(), "Brandish (copy)");
     }
 
     /// Verifies that a save in the editor updates the row of the game and that Ctrl+S saves from a text field.
@@ -409,7 +503,7 @@ mod tests {
         settle(&mut harness, &mut manager);
         assert!(manager.dialog().is_none());
         let editor = manager.editor().expect("the editor stays");
-        assert_eq!(editor.display_name(), "Brandish!");
+        assert_eq!(editor.edited_file().display_name(), "Brandish!");
         assert_eq!(
             std::fs::read_to_string(&path).expect("file reads"),
             "meta.title = Brandish\ncrt = on\n"
@@ -472,7 +566,107 @@ mod tests {
         settle(&mut harness, &mut manager);
         assert!(manager.dialog().is_none());
         let editor = manager.editor().expect("the editor opens");
-        assert_eq!(editor.display_name(), "Edge");
+        assert_eq!(editor.edited_file().display_name(), "Edge");
+    }
+
+    /// Verifies that the System defaults button opens the editor on the system defaults file of the selected system, that Esc closes it without changes and that the button takes the focus back.
+    #[test]
+    fn the_system_defaults_button_opens_the_defaults_editor() {
+        let root = two_games("edit_defaults_open");
+        let mut manager = manager(&root);
+        let mut harness = GuiHarness::new(960, 600);
+        settle(&mut harness, &mut manager);
+        harness.state.set_focus(UiId::from(SYSTEM_DEFAULTS_ID));
+        settle(&mut harness, &mut manager);
+        harness.input.confirm = true;
+        settle(&mut harness, &mut manager);
+        let editor = manager.editor().expect("the editor opens");
+        assert!(matches!(
+            editor.edited_file(),
+            EditedFile::SystemDefaults(_)
+        ));
+        assert_eq!(
+            editor.path(),
+            root.path(&format!("config/{}.conf", root.system().name))
+        );
+        assert_eq!(
+            harness.state.focused(),
+            Some(crate::editor::field_id(
+                machine_factory::config::settings::MACHINE_KEY
+            ))
+        );
+        harness.input.cancel = true;
+        settle(&mut harness, &mut manager);
+        assert!(manager.editor().is_none());
+        assert_eq!(
+            harness.state.focused(),
+            Some(UiId::from(SYSTEM_DEFAULTS_ID))
+        );
+        assert!(
+            !root
+                .path(&format!("config/{}.conf", root.system().name))
+                .exists()
+        );
+    }
+
+    #[cfg(feature = "pc98")]
+    /// Verifies that a save of the system defaults gives the rows of the system the new launch model without a scan of the system folder.
+    #[test]
+    fn a_defaults_save_updates_the_launch_model_of_the_rows() {
+        let root = with_two_games(EditorRoot::with_system("edit_defaults_save", "pc98"));
+        let system = root.system();
+        let machine = machine_factory::config::settings::find_setting(
+            machine_factory::config::settings::MACHINE_KEY,
+        )
+        .expect("machine is a table key");
+        let choices: Vec<&'static str> = machine
+            .choices_for(root.target())
+            .map(|choice| choice.value)
+            .collect();
+        let other = *choices.last().expect("the PC-98 has models");
+        assert_ne!(other, system.default_model);
+        let mut manager = manager(&root);
+        let mut harness = GuiHarness::new(960, 600);
+        settle(&mut harness, &mut manager);
+        select(&mut manager, "pc98");
+        settle(&mut harness, &mut manager);
+        let model_of = |manager: &Manager, title: &str| {
+            manager
+                .rows()
+                .iter()
+                .find(|row| row.title == title)
+                .map(|row| row.model)
+                .expect("the game is listed")
+        };
+        assert_eq!(model_of(&manager, "Brandish"), system.default_model);
+        root.game("later", "meta.title = Later\n");
+
+        harness.state.set_focus(UiId::from(SYSTEM_DEFAULTS_ID));
+        settle(&mut harness, &mut manager);
+        harness.input.confirm = true;
+        settle(&mut harness, &mut manager);
+        assert!(
+            manager.editor().is_some_and(|editor| matches!(
+                editor.edited_file(),
+                EditedFile::SystemDefaults(_)
+            ))
+        );
+        harness.input.confirm = true;
+        settle(&mut harness, &mut manager);
+        harness.input.navigation = Some(Navigation::End);
+        settle(&mut harness, &mut manager);
+        harness.input.confirm = true;
+        settle(&mut harness, &mut manager);
+        harness.input.shortcut = Some(Shortcut::ControlS);
+        settle(&mut harness, &mut manager);
+        assert_eq!(
+            std::fs::read_to_string(root.path(&format!("config/{}.conf", system.name)))
+                .expect("the system defaults read"),
+            format!("machine = {other}\n")
+        );
+        assert_eq!(model_of(&manager, "Brandish"), other);
+        assert_eq!(model_of(&manager, "Edge"), system.default_model);
+        assert_eq!(titles(&manager), ["Brandish", "Edge"]);
     }
 
     /// The game file of YU-NO in the screenshots.
@@ -643,7 +837,7 @@ key.PageDown = RollUp
         harness.input.confirm = true;
         settle(&mut harness, &mut manager);
         manager.editor = None;
-        manager.give_start_focus = true;
+        manager.next_focus = Some(NextFocus::Start);
         settle(&mut harness, &mut manager);
 
         open_with_year_step(&mut harness, &mut manager);
@@ -669,7 +863,7 @@ key.PageDown = RollUp
         std::fs::remove_dir(&path).expect("the folder is removed");
         root.game("yu-no", YU_NO);
         manager.editor = None;
-        manager.give_start_focus = true;
+        manager.next_focus = Some(NextFocus::Start);
         settle(&mut harness, &mut manager);
 
         harness.input.shortcut = Some(Shortcut::Insert);
@@ -698,6 +892,7 @@ key.PageDown = RollUp
         manager.editor = None;
         std::fs::write(&defaults, readable).expect("file is written");
         empty_list_screenshot(viewport, scale);
+        defaults_screenshots(viewport, scale);
 
         if compiled_systems().any(|system| system.name == "pc88") {
             select(&mut manager, "pc88");
@@ -768,6 +963,62 @@ key.PageDown = RollUp
             )));
         settle(&mut harness, &mut manager);
         harness.write_screenshot(&format!("editor_empty_list_{scale}x"));
+    }
+
+    /// Renders the Machine and the Media section of the editor of the PC-98
+    /// system defaults, whose file sets the model, the real BIOS and an HDD
+    /// image, the Media section of a game that inherits the HDD image, and
+    /// the Media section of a game that starts without the HDD image.
+    fn defaults_screenshots(viewport: Viewport, scale: f32) {
+        let root = sample_root(&format!("editor_shots_defaults_{scale}"));
+        root.write(
+            "config/pc98.conf",
+            "machine = PC9801RA\nbios = on\nhdd1 = games/98/system/MS-DOS 6.2.hdi\n",
+        );
+        root.write("games/98/system/MS-DOS 6.2.hdi", "");
+        root.game(
+            "diskless",
+            "meta.title = Diskless start\nmachine = PC9801RA\nhdd1 =\n",
+        );
+        let mut manager = manager(&root);
+        let mut harness = GuiHarness::with_viewport(viewport);
+        let render = |harness: &GuiHarness, name: &str| {
+            harness.write_screenshot(&format!("editor_{name}_{scale}x"));
+        };
+        settle(&mut harness, &mut manager);
+        select(&mut manager, "pc98");
+        settle(&mut harness, &mut manager);
+        harness.state.set_focus(UiId::from(SYSTEM_DEFAULTS_ID));
+        settle(&mut harness, &mut manager);
+        render(&harness, "defaults_button");
+        harness.input.confirm = true;
+        settle(&mut harness, &mut manager);
+        render(&harness, "defaults_machine");
+        harness.input.navigation = Some(Navigation::NextTab);
+        settle(&mut harness, &mut manager);
+        render(&harness, "defaults_media");
+        harness.input.cancel = true;
+        settle(&mut harness, &mut manager);
+
+        select_game(&mut harness, &mut manager, "Brandish");
+        harness.input.shortcut = Some(Shortcut::F2);
+        settle(&mut harness, &mut manager);
+        for _ in 0..2 {
+            harness.input.navigation = Some(Navigation::NextTab);
+            settle(&mut harness, &mut manager);
+        }
+        render(&harness, "system_default_media");
+        harness.input.cancel = true;
+        settle(&mut harness, &mut manager);
+
+        select_game(&mut harness, &mut manager, "Diskless start");
+        harness.input.shortcut = Some(Shortcut::F2);
+        settle(&mut harness, &mut manager);
+        for _ in 0..2 {
+            harness.input.navigation = Some(Navigation::NextTab);
+            settle(&mut harness, &mut manager);
+        }
+        render(&harness, "empty_hdd_media");
     }
 
     /// Writes the screenshots of the editor at the scales 1 and 2, at the

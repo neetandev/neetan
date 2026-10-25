@@ -39,6 +39,21 @@ impl Locations {
     }
 }
 
+/// The step of the settings discovery that found the settings file.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum SettingsSource {
+    /// The `--settings` file of the command line.
+    CommandLine,
+    /// `neetan.conf` in the current directory.
+    CurrentDirectory,
+    /// `neetan.conf` beside the executable.
+    ExecutableFolder,
+    /// `neetan.conf` in the SDL pref path.
+    PrefPath,
+    /// No step found a file.
+    NotFound,
+}
+
 /// The settings file of a launch and its root folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsLocation {
@@ -48,6 +63,19 @@ pub struct SettingsLocation {
     /// the current directory or the folder of the executable. For the settings
     /// file of the SDL pref path and without a file it is the current directory.
     pub root: PathBuf,
+    /// The step of the discovery that found the file.
+    pub source: SettingsSource,
+}
+
+impl SettingsLocation {
+    /// The file that a write of the host settings writes: the settings
+    /// file, or `neetan.conf` in the root without one.
+    #[must_use]
+    pub fn writable_file(&self) -> PathBuf {
+        self.file
+            .clone()
+            .unwrap_or_else(|| self.root.join(SETTINGS_FILE_NAME))
+    }
 }
 
 /// Finds the settings file and the root folder.
@@ -69,18 +97,29 @@ pub fn discover_settings(
         return Ok(SettingsLocation {
             root: parent_folder(&file),
             file: Some(file),
+            source: SettingsSource::CommandLine,
         });
     }
     let candidates = [
-        Some(&locations.current_directory),
-        locations.executable_directory.as_ref(),
+        (
+            Some(&locations.current_directory),
+            SettingsSource::CurrentDirectory,
+        ),
+        (
+            locations.executable_directory.as_ref(),
+            SettingsSource::ExecutableFolder,
+        ),
     ];
-    for folder in candidates.into_iter().flatten() {
+    for (folder, source) in candidates {
+        let Some(folder) = folder else {
+            continue;
+        };
         let file = folder.join(SETTINGS_FILE_NAME);
         if file.is_file() {
             return Ok(SettingsLocation {
                 root: resolve_path(&locations.current_directory, folder),
                 file: Some(file),
+                source,
             });
         }
     }
@@ -89,9 +128,15 @@ pub fn discover_settings(
         .as_ref()
         .map(|folder| folder.join(SETTINGS_FILE_NAME))
         .filter(|file| file.is_file());
+    let source = if file.is_some() {
+        SettingsSource::PrefPath
+    } else {
+        SettingsSource::NotFound
+    };
     Ok(SettingsLocation {
         file,
         root: locations.current_directory.clone(),
+        source,
     })
 }
 
@@ -206,6 +251,11 @@ mod tests {
         let found = discover_settings(None, locations).expect("discovery succeeds");
         assert_eq!(found.file, None);
         assert_eq!(found.root, locations.current_directory);
+        assert_eq!(found.source, SettingsSource::NotFound);
+        assert_eq!(
+            found.writable_file(),
+            locations.current_directory.join(SETTINGS_FILE_NAME)
+        );
 
         let without_pref = Locations {
             pref_path: None,
@@ -229,6 +279,8 @@ mod tests {
         let found = discover_settings(None, locations).expect("discovery succeeds");
         assert_eq!(found.file, Some(pref.join(SETTINGS_FILE_NAME)));
         assert_eq!(found.root, locations.current_directory);
+        assert_eq!(found.source, SettingsSource::PrefPath);
+        assert_eq!(found.writable_file(), pref.join(SETTINGS_FILE_NAME));
     }
 
     /// Verifies the discovery order: the explicit file, the current directory, the executable folder and the pref path.
@@ -246,15 +298,16 @@ mod tests {
             .clone()
             .expect("locations have a pref path");
 
-        for (folder, root) in [
-            (&pref, &current),
-            (&executable, &executable),
-            (&current, &current),
+        for (folder, root, source) in [
+            (&pref, &current, SettingsSource::PrefPath),
+            (&executable, &executable, SettingsSource::ExecutableFolder),
+            (&current, &current, SettingsSource::CurrentDirectory),
         ] {
             std::fs::write(folder.join(SETTINGS_FILE_NAME), "").expect("file is written");
             let found = discover_settings(None, locations).expect("discovery succeeds");
             assert_eq!(found.file, Some(folder.join(SETTINGS_FILE_NAME)));
             assert_eq!(&found.root, root);
+            assert_eq!(found.source, source);
         }
 
         let explicit = current.join("custom").join("other.conf");
@@ -264,6 +317,7 @@ mod tests {
             .expect("an explicit file wins");
         assert_eq!(found.file, Some(explicit));
         assert_eq!(found.root, current.join("custom"));
+        assert_eq!(found.source, SettingsSource::CommandLine);
 
         let missing = discover_settings(Some(Path::new("missing.conf")), locations)
             .expect_err("a missing explicit file is an error");

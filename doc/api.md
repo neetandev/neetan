@@ -35,8 +35,8 @@ folder of its file. A `roms-folder` key derives every ROM directory that no file
 sets: `pc98-roms` becomes `<roms-folder>/pc98`, and so on for each system and for
 `mt32` and `sc55`. The derived folders of the PC-98, the PC/AT, the MT-32 and the
 SC-55 apply only when they exist. Without `roms-folder` only the explicit ROM keys
-apply. An empty ROM key is unset. Any other host setting, for example
-`backend`, ends with an error.
+apply. An empty ROM key falls back to its derived folder. Any other host setting,
+for example `backend`, ends with an error.
 
 ### Exit codes (run)
 

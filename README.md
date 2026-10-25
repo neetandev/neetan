@@ -294,13 +294,14 @@ another system inside a system defaults file is ignored with a warning.
 The first `fdd1`, `fdd2` or `cdrom` value of a layer replaces the images of the
 earlier layers. Further values in the same layer append images. An empty value such
 as `fdd1 =` drops the images of the earlier layers. An empty single image key such as
-`hdd1 =` is unset, and an empty ROM key falls back to its derived folder.
+`hdd1 =` drops the image of the earlier layers. An empty ROM key falls back to its
+derived folder.
 
 The host keys `config-folder`, `roms-folder`, the ROM keys, `backend` and
 `audio-volume` apply only from the settings file and the command line. A system
 defaults file or a game file that sets one gets a warning and the line is ignored.
-The system defaults ignore the media keys `fdd1`, `fdd2`, `hdd1`, `hdd2`, `cdrom`,
-`cartridge` and `cassette` with a warning as well.
+A media key such as `fdd1` or `hdd1` in a system defaults file applies to every game
+of the system that does not set the key.
 
 ```ini
 # A game file, for example config/pc98/albatross.conf

@@ -1,6 +1,7 @@
 //! The game manager: the library with the systems in a sidebar and the games
 //! of the selected system in a table, the launch of a game, the editor of a
-//! game file, the delete of a game file and the error dialogs.
+//! game file, the settings page, the delete of a game file and the error
+//! dialogs.
 
 mod delete;
 mod editing;
@@ -10,6 +11,7 @@ mod filter;
 mod game_table;
 mod hints;
 mod rows;
+mod settings_page;
 mod sidebar;
 mod toolbar;
 mod view;
@@ -20,8 +22,9 @@ use common::{FlushError, debug, info};
 use gui::{
     Rect,
     ui::{
-        ActionButton, ConfirmResponse, EmptyHint, HEADER_HEIGHT, Navigation, RowKind,
-        STATUS_LINE_HEIGHT, Shortcut, StatusEnd, TextField, UiContext, UiId, status_line,
+        ActionButton, Button, ButtonKind, ConfirmResponse, EmptyHint, HEADER_HEIGHT, Icon,
+        Navigation, RowKind, STATUS_LINE_HEIGHT, Shortcut, StatusEnd, TextField, UiContext, UiId,
+        status_line,
     },
 };
 use machine_factory::config::systems::{System, compiled_systems};
@@ -34,7 +37,7 @@ use self::{
     game_table::{GAME_TABLE_ID, show_game_table},
     hints::{LibraryFocus, library_hints, status_end},
     rows::system_rows,
-    sidebar::{SYSTEM_LIST_ID, SystemEntry, show_sidebar},
+    sidebar::{SYSTEM_DEFAULTS_ID, SYSTEM_LIST_ID, SystemEntry, show_sidebar},
     toolbar::{
         ADD_ID, DELETE_ID, DUPLICATE_ID, EDIT_ID, LAUNCH_ID, REFRESH_ID, ToolbarState, show_toolbar,
     },
@@ -50,6 +53,7 @@ use crate::{
     config::{EmulatorConfig, HostLayers, LaunchRequest, ManagerStart, build_configuration},
     editor::Editor,
     input::KeyOverrides,
+    rom_folders::{RomFolderStatus, check_all_folders},
 };
 
 /// The width of the sidebar in logical units.
@@ -64,6 +68,9 @@ const FILTER_ID: &str = "filter";
 /// The placeholder of the filter field.
 const FILTER_PLACEHOLDER: &str = "Filter games";
 
+/// The id of the button that opens the settings page.
+pub(crate) const SETTINGS_ID: &str = "settings";
+
 /// The hint of a filter without a match.
 const NO_MATCH_HINT: &str = "No games match the filter";
 
@@ -76,6 +83,17 @@ pub(crate) struct Launch {
     pub(crate) title: String,
     /// The system of the game.
     pub(crate) system: &'static System,
+    /// The machine model that the catalog gives the game.
+    pub(crate) model: &'static str,
+}
+
+/// The widget that takes the focus in the next pass of the library.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NextFocus {
+    /// The game table, or the add button while the table has no entry.
+    Start,
+    /// The widget with this id.
+    Widget(UiId),
 }
 
 /// The game manager.
@@ -88,6 +106,9 @@ pub(crate) struct Manager {
     config_folder: PathBuf,
     /// Every compiled system with its games and its ROM status.
     systems: Vec<SystemEntry>,
+    /// The ROM status of every ROM folder from the check of the start or of
+    /// the last Refresh.
+    roms: Vec<RomFolderStatus>,
     /// The entries of the game table of the selected system.
     entries: Vec<TableEntry>,
     /// The selection, the sort, the filter and the scroll positions.
@@ -98,9 +119,8 @@ pub(crate) struct Manager {
     dialog: Option<ErrorDialog>,
     /// The open game editor. It takes the whole window while it is open.
     editor: Option<Editor>,
-    /// Whether the next pass gives the focus to the game table, or to the
-    /// add button while the table has no entry.
-    give_start_focus: bool,
+    /// The widget that takes the focus in the next pass of the library.
+    next_focus: Option<NextFocus>,
     /// The game that runs.
     running: Option<Launch>,
 }
@@ -111,20 +131,22 @@ impl Manager {
     pub(crate) fn new(start: ManagerStart) -> Result<Self> {
         let host = HostLayers::read(&start.request, &start.locations)?;
         let config_folder = host.config_folder();
+        let roms = check_all_folders(&host);
         let systems = compiled_systems()
-            .map(|system| SystemEntry::new(system, &host))
+            .map(|system| SystemEntry::new(system, &host, &roms))
             .collect();
         let mut manager = Self {
             start,
             host,
             config_folder,
             systems,
+            roms,
             entries: Vec::new(),
             view: ManagerView::default(),
             delete: None,
             dialog: None,
             editor: None,
-            give_start_focus: true,
+            next_focus: Some(NextFocus::Start),
             running: None,
         };
         manager.rescan();
@@ -168,8 +190,9 @@ impl Manager {
     /// again. The view stays as [`Manager::rescan`] keeps it, with the
     /// nearest row when the selected game is gone.
     fn refresh(&mut self) {
+        self.roms = check_all_folders(&self.host);
         for entry in &mut self.systems {
-            entry.check_roms(&self.host);
+            entry.take_host(&self.host, &self.roms);
         }
         self.rescan();
         info!("{}", self.scan_summary());
@@ -240,6 +263,7 @@ impl Manager {
             request: self.launch_request(row),
             title: row.title.clone(),
             system: row.system,
+            model: row.model,
         }
     }
 
@@ -280,7 +304,7 @@ impl Manager {
         flush: std::result::Result<(), FlushError>,
     ) -> Option<UiId> {
         let running = self.running.take();
-        self.give_start_focus = true;
+        self.next_focus = Some(NextFocus::Start);
         let dialog = match (panic_message, &flush) {
             (Some(message), _) => {
                 let label = running
@@ -329,10 +353,10 @@ impl Manager {
         } else {
             UiId::from(ADD_ID)
         };
-        if std::mem::take(&mut self.give_start_focus) {
-            context.set_focus(start_focus);
-        } else {
-            context.default_focus(start_focus);
+        match self.next_focus.take() {
+            Some(NextFocus::Start) => context.set_focus(start_focus),
+            Some(NextFocus::Widget(id)) => context.set_focus(id),
+            None => context.default_focus(start_focus),
         }
         if context.shortcut() == Some(Shortcut::ControlF)
             || context.action_button() == Some(ActionButton::Y)
@@ -348,7 +372,9 @@ impl Manager {
     }
 
     /// Draws the sidebar into `area` and switches the system on a new
-    /// selection of the system list or on a shoulder button.
+    /// selection of the system list or on a shoulder button. The system
+    /// defaults button opens the editor on the system defaults of the
+    /// selected system.
     fn show_systems(&mut self, context: &mut UiContext, area: Rect) {
         let count = self.systems.len();
         if count > 0 {
@@ -375,12 +401,15 @@ impl Manager {
             }
         }
         let response = show_sidebar(context, area, &self.systems, &mut self.view.systems);
-        if response.selection_changed {
+        if response.list.selection_changed {
             self.select_system(self.view.systems.selected);
             context.request_pass();
         }
-        if response.activated.is_some() && self.has_entries() {
+        if response.list.activated.is_some() && self.has_entries() {
             context.set_focus(UiId::from(GAME_TABLE_ID));
+        }
+        if response.system_defaults {
+            self.open_system_defaults(context);
         }
     }
 
@@ -399,10 +428,18 @@ impl Manager {
         let table_area = rest.cut_top(theme.gap * 1.5).1;
 
         let filter_id = UiId::from(FILTER_ID);
+        let controls_y = header.y + (header.height - theme.control_height) * 0.5;
+        let settings_area = Rect::new(
+            header.right() - theme.control_height.min(header.width),
+            controls_y,
+            theme.control_height.min(header.width),
+            theme.control_height,
+        );
+        let filter_width = FILTER_WIDTH.min((settings_area.x - theme.gap - header.x).max(0.0));
         let filter_area = Rect::new(
-            header.right() - FILTER_WIDTH.min(header.width),
-            header.y + (header.height - theme.control_height) * 0.5,
-            FILTER_WIDTH.min(header.width),
+            settings_area.x - theme.gap - filter_width,
+            controls_y,
+            filter_width,
             theme.control_height,
         );
         let filter = TextField::new(filter_id, FILTER_PLACEHOLDER).show(
@@ -418,7 +455,17 @@ impl Manager {
         if filter.submitted && self.has_entries() {
             context.set_focus(UiId::from(GAME_TABLE_ID));
         }
-        self.show_title(context, header.cut_right(filter_area.width + theme.gap).1);
+        let settings = Button::new(SETTINGS_ID, "")
+            .icon(Icon::Settings)
+            .kind(ButtonKind::Quiet)
+            .default_choice(false)
+            .show(context, settings_area);
+        self.show_title(
+            context,
+            header
+                .cut_right(header.right() - filter_area.x + theme.gap)
+                .1,
+        );
 
         let selected = self.selected_row();
         let state = ToolbarState {
@@ -430,6 +477,13 @@ impl Manager {
         if toolbar.refresh || context.shortcut() == Some(Shortcut::F5) {
             self.refresh();
             context.request_pass();
+        }
+        if settings
+            || context.shortcut() == Some(Shortcut::F10)
+            || context.action_button() == Some(ActionButton::Start)
+        {
+            self.open_settings(context);
+            return None;
         }
 
         let (empty_title, empty_detail) = self.current().map_or_else(Default::default, |entry| {
@@ -582,10 +636,14 @@ impl Manager {
             LibraryFocus::Header
         } else if focused(SYSTEM_LIST_ID) {
             LibraryFocus::SystemList
+        } else if focused(SYSTEM_DEFAULTS_ID) {
+            LibraryFocus::SystemDefaults
         } else if focused(FILTER_ID) {
             LibraryFocus::Filter {
                 has_text: !self.view.filter.is_empty(),
             }
+        } else if focused(SETTINGS_ID) {
+            LibraryFocus::Settings
         } else if focused(LAUNCH_ID) {
             LibraryFocus::Launch
         } else if focused(ADD_ID) {
@@ -1073,7 +1131,7 @@ mod tests {
         assert_eq!(manager.view.selected.as_deref(), Some(expected.as_str()));
     }
 
-    /// Verifies that the system switch, the filter keys, Delete and F5 do nothing while the delete question or an error dialog is open.
+    /// Verifies that the system switch, the filter keys, Delete, F5, F10 and Start do nothing while the delete question or an error dialog is open.
     #[test]
     fn the_library_keys_do_nothing_under_a_dialog() {
         let test = TestRoot::new("keys_under_dialog");
@@ -1093,6 +1151,12 @@ mod tests {
             harness.settle(|context| manager.show(context));
             harness.input.shortcut = Some(Shortcut::Delete);
             harness.settle(|context| manager.show(context));
+            harness.input.shortcut = Some(Shortcut::F10);
+            harness.settle(|context| manager.show(context));
+            assert!(manager.editor.is_none());
+            harness.input.action = Some(ActionButton::Start);
+            harness.settle(|context| manager.show(context));
+            assert!(manager.editor.is_none());
             let files = manager.rows().len();
             games(&test, &["new"]);
             harness.input.shortcut = Some(Shortcut::F5);

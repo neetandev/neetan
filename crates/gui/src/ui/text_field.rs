@@ -113,7 +113,8 @@ pub(super) fn edit_text(
 /// or `placeholder` while the field is empty. `inner` spans the height of
 /// the field. A focused field shows the composition of the input method at
 /// the cursor and scrolls, so its end and the cursor stay visible. Without
-/// the focus a text wider than `inner` is cut as `truncation` says.
+/// the focus a text wider than `inner` is cut as `truncation` says. A
+/// placeholder wider than `inner` is cut as `truncation` says.
 pub(super) fn draw_value(
     context: &mut UiContext,
     inner: Rect,
@@ -131,7 +132,13 @@ pub(super) fn draw_value(
     };
     let style = theme.body().with_color(color);
     if text.is_empty() && composition.is_empty() {
-        context.text_left(inner, &style.with_color(theme.text_disabled), placeholder);
+        context.text_in(
+            inner,
+            &style.with_color(theme.text_disabled),
+            placeholder,
+            Align::Start,
+            truncation,
+        );
     }
     if !focused {
         if !text.is_empty() {
@@ -692,6 +699,39 @@ mod tests {
         assert_eq!(starts[0], starts[1]);
         let plain = FIELD.x + theme.gap * 1.25;
         assert!(starts[2] >= plain && starts[2] < plain + 2.0, "{starts:?}");
+    }
+
+    /// Verifies that a long placeholder takes the cut of the field: a path
+    /// field cuts its placeholder in the middle like its text.
+    #[test]
+    fn a_long_placeholder_takes_the_cut_of_the_field() {
+        let long = "Settings default: games/98/YU-NO/YU-NO (Disk 3 of 4) with a very long name.hdi";
+        let glyphs = |placeholder: &str, text: &str, truncation: Truncation| {
+            let mut harness = Harness::new();
+            let mut text = text.to_owned();
+            harness.frame(|context| {
+                TextField::new("path", placeholder)
+                    .icon(Some(Icon::Folder))
+                    .read_only(true)
+                    .truncation(truncation)
+                    .show(context, FIELD, &mut text);
+            });
+            harness
+                .scene
+                .instances()
+                .iter()
+                .filter(|instance| instance.kind[0] == Instance::KIND_GLYPH)
+                .map(|instance| instance.rect)
+                .collect::<Vec<_>>()
+        };
+        let placeholder = glyphs(long, "", Truncation::Middle);
+        assert!(!placeholder.is_empty());
+        assert_eq!(placeholder, glyphs("", long, Truncation::Middle));
+        assert_ne!(placeholder, glyphs(long, "", Truncation::End));
+        assert_eq!(
+            glyphs(long, "", Truncation::End),
+            glyphs("", long, Truncation::End)
+        );
     }
 
     #[test]

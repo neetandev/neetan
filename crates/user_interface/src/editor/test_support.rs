@@ -1,15 +1,68 @@
 //! Shared helpers of the editor tests: a temporary root folder with a
-//! settings file, system defaults and game files.
+//! settings file, system defaults and game files, and a root folder of the
+//! settings page with its ROM statuses.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use common::temporary::TemporaryFolder;
-use machine_factory::config::{
-    MachineSelection, Target,
-    systems::{System, compiled_systems},
+use gui::Rect;
+use machine_factory::{
+    config::{
+        MachineSelection, Target,
+        settings::{MODEL_CHOICES, find_setting},
+        systems::{RomFolder, SYSTEMS, System, compiled_systems, rom_folders},
+    },
+    rom_status::{RomCheck, RomStatus},
 };
 
-use crate::config::{HostLayers, LaunchRequest, Locations, SETTINGS_FILE_NAME};
+use super::{Editor, EditorPass};
+use crate::{
+    config::{HostLayers, LaunchRequest, Locations, SETTINGS_FILE_NAME},
+    gui_test_support::GuiHarness,
+    rom_folders::{RomFolderStatus, rom_folder_path},
+};
+
+/// The window above the status line in the tests.
+pub(crate) const SCREEN: Rect = Rect::new(0.0, 0.0, 960.0, 572.0);
+
+/// Draws passes of `editor` until they settle and returns the answers of the passes.
+pub(crate) fn show(harness: &mut GuiHarness, editor: &mut Editor) -> EditorPass {
+    let mut answer = EditorPass::default();
+    harness.settle(|context| {
+        let pass = editor.show(context, SCREEN);
+        answer.closed |= pass.closed;
+        answer.saved = answer.saved.clone().or(pass.saved);
+        answer.save_error = answer.save_error.clone().or(pass.save_error);
+    });
+    answer
+}
+
+/// The system `name` of the systems table.
+pub(crate) fn system_named(name: &str) -> &'static System {
+    SYSTEMS
+        .iter()
+        .find(|system| system.name == name)
+        .expect("the systems table holds the system")
+}
+
+/// The index of the field `key` of `editor`.
+pub(crate) fn index_of(editor: &Editor, key: &str) -> usize {
+    editor
+        .fields
+        .iter()
+        .position(|field| field.key() == key)
+        .expect("the form has the key")
+}
+
+/// A model of the family of `root` that reads `fdd1`.
+pub(crate) fn fdd1_model(root: &EditorRoot) -> &'static str {
+    let fdd1 = find_setting("fdd1").expect("fdd1 is a table key");
+    MODEL_CHOICES
+        .iter()
+        .map(|choice| choice.value)
+        .find(|model| fdd1.is_read_by(root.target(), model))
+        .expect("a model of the family reads fdd1")
+}
 
 /// A root folder with a settings file. Dropping the value removes it.
 pub(crate) struct EditorRoot {
@@ -96,4 +149,79 @@ impl EditorRoot {
             pref_path: None,
         }
     }
+}
+
+/// A root folder of the settings page as the current directory, with or
+/// without a settings file. Dropping the value removes it.
+pub(crate) struct SettingsRoot {
+    /// The temporary folder of the root.
+    folder: TemporaryFolder,
+}
+
+impl SettingsRoot {
+    /// A root folder with the settings file `contents`, or without a
+    /// settings file for `None`.
+    pub(crate) fn new(name: &str, contents: Option<&str>) -> Self {
+        let folder = TemporaryFolder::new(&format!("settings_page_test_{name}"));
+        if let Some(contents) = contents {
+            std::fs::write(folder.path().join(SETTINGS_FILE_NAME), contents)
+                .expect("settings are written");
+        }
+        Self { folder }
+    }
+
+    /// The root folder.
+    pub(crate) fn root(&self) -> &Path {
+        self.folder.path()
+    }
+
+    /// The settings file of the root.
+    pub(crate) fn settings_file(&self) -> PathBuf {
+        self.root().join(SETTINGS_FILE_NAME)
+    }
+
+    /// The host layers of the root with the setting flags `flags`.
+    pub(crate) fn host(&self, flags: &[(&str, &str)]) -> HostLayers {
+        let request = LaunchRequest {
+            flags: flags
+                .iter()
+                .map(|(key, value)| (find_setting(key).expect("a table key"), (*value).to_owned()))
+                .collect(),
+            ..LaunchRequest::default()
+        };
+        let locations = Locations {
+            current_directory: self.root().to_path_buf(),
+            executable_directory: None,
+            pref_path: None,
+        };
+        HostLayers::read(&request, &locations).expect("the host reads")
+    }
+}
+
+/// The ROM statuses of `host` with the status `status` for every folder.
+pub(crate) fn statuses_with(host: &HostLayers, status: RomStatus) -> Vec<RomFolderStatus> {
+    rom_folders()
+        .map(|folder| RomFolderStatus {
+            folder,
+            location: rom_folder_path(host, &folder),
+            check: RomCheck {
+                status,
+                folder_exists: true,
+                models_without_set: Vec::new(),
+            },
+        })
+        .collect()
+}
+
+/// The settings page of `host` with the ROM statuses `statuses`.
+pub(crate) fn settings_page(host: &HostLayers, statuses: &[RomFolderStatus]) -> Editor {
+    Editor::settings(host, statuses).expect("the page opens")
+}
+
+/// The ROM folder of the first compiled system.
+pub(crate) fn first_rom_folder() -> RomFolder {
+    compiled_systems()
+        .next()
+        .expect("one system is compiled")
+        .rom_folder()
 }

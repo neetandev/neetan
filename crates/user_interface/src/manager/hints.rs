@@ -1,5 +1,6 @@
 //! The hints of the status line of the library: the action of Enter and A on
-//! the focused widget, the edit, the filter and the system switch.
+//! the focused widget, the edit, the filter, the system switch, the refresh
+//! and the settings page.
 
 use gui::ui::{ACTIVATE_KEYS, CANCEL_KEYS, Hint, HintKey, StatusEnd};
 
@@ -41,6 +42,12 @@ const DUPLICATE_BUTTON_HINT: Hint<'static> = Hint {
     label: "Duplicate",
 };
 
+/// The hint of the system defaults button.
+const SYSTEM_DEFAULTS_BUTTON_HINT: Hint<'static> = Hint {
+    keys: ACTIVATE_KEYS,
+    label: "System defaults",
+};
+
 /// The hint of the system list, which gives the focus to the game table.
 const SELECT_HINT: Hint<'static> = Hint {
     keys: ACTIVATE_KEYS,
@@ -77,6 +84,18 @@ const REFRESH_HINT: Hint<'static> = Hint {
     label: "Refresh",
 };
 
+/// The hint of the settings button, which activates it.
+const SETTINGS_BUTTON_HINT: Hint<'static> = Hint {
+    keys: ACTIVATE_KEYS,
+    label: "Settings",
+};
+
+/// The hint of the shortcut that opens the settings page.
+const SETTINGS_HINT: Hint<'static> = Hint {
+    keys: &[HintKey::Key("F10"), HintKey::Key("Start")],
+    label: "Settings",
+};
+
 /// The hint of the system switch.
 const SYSTEM_HINT: Hint<'static> = Hint {
     keys: &[
@@ -93,11 +112,15 @@ const SYSTEM_HINT: Hint<'static> = Hint {
 pub(crate) enum LibraryFocus {
     /// The system list.
     SystemList,
+    /// The system defaults button.
+    SystemDefaults,
     /// The filter field, with or without text.
     Filter {
         /// Whether the field holds text.
         has_text: bool,
     },
+    /// The button that opens the settings page.
+    Settings,
     /// The launch button.
     Launch,
     /// The add button.
@@ -120,9 +143,32 @@ pub(crate) enum LibraryFocus {
 
 /// The hints of the library while `focus` holds the focus and `selected`
 /// is the selected row of the game table. The edit shortcut follows a
-/// widget that shows a game that can start. The refresh shortcut follows
-/// the system switch while no text field holds the focus.
+/// widget that shows a game that can start. The refresh and the settings
+/// shortcuts follow the system switch while no text field holds the focus.
+/// The settings button drops the settings shortcut, which has the same
+/// result.
 pub(crate) fn library_hints(focus: LibraryFocus, selected: Option<&GameRow>) -> Vec<Hint<'static>> {
+    let mut hints = focus_hints(focus, selected);
+    match focus {
+        LibraryFocus::Filter { .. } | LibraryFocus::Settings => {}
+        LibraryFocus::SystemList
+        | LibraryFocus::SystemDefaults
+        | LibraryFocus::Launch
+        | LibraryFocus::Add
+        | LibraryFocus::Edit
+        | LibraryFocus::Duplicate
+        | LibraryFocus::Delete
+        | LibraryFocus::Refresh
+        | LibraryFocus::Header
+        | LibraryFocus::Table
+        | LibraryFocus::Nothing => hints.push(SETTINGS_HINT),
+    }
+    hints
+}
+
+/// The hints of the library before the settings shortcut while `focus`
+/// holds the focus and `selected` is the selected row of the game table.
+fn focus_hints(focus: LibraryFocus, selected: Option<&GameRow>) -> Vec<Hint<'static>> {
     let editable = selected.is_some_and(GameRow::launchable);
     match focus {
         LibraryFocus::SystemList if editable => {
@@ -137,8 +183,17 @@ pub(crate) fn library_hints(focus: LibraryFocus, selected: Option<&GameRow>) -> 
         LibraryFocus::SystemList if selected.is_some() => {
             vec![SELECT_HINT, FILTER_HINT, SYSTEM_HINT, REFRESH_HINT]
         }
+        LibraryFocus::SystemDefaults => vec![
+            SYSTEM_DEFAULTS_BUTTON_HINT,
+            FILTER_HINT,
+            SYSTEM_HINT,
+            REFRESH_HINT,
+        ],
         LibraryFocus::Filter { has_text: true } => vec![CLEAR_HINT, SYSTEM_HINT],
         LibraryFocus::Filter { has_text: false } => vec![SYSTEM_HINT],
+        LibraryFocus::Settings => {
+            vec![SETTINGS_BUTTON_HINT, FILTER_HINT, SYSTEM_HINT, REFRESH_HINT]
+        }
         LibraryFocus::Launch => vec![
             LAUNCH_HINT,
             EDIT_HINT,
@@ -208,32 +263,42 @@ mod tests {
             (
                 LibraryFocus::Table,
                 Some(&edge),
-                vec!["Launch", "Edit", "Filter", "System", "Refresh"],
+                vec!["Launch", "Edit", "Filter", "System", "Refresh", "Settings"],
             ),
             (
                 LibraryFocus::Table,
                 Some(&bad),
-                vec!["Delete", "System", "Refresh"],
+                vec!["Delete", "System", "Refresh", "Settings"],
             ),
             (
                 LibraryFocus::Table,
                 None,
-                vec!["Filter", "System", "Refresh"],
+                vec!["Filter", "System", "Refresh", "Settings"],
             ),
             (
                 LibraryFocus::SystemList,
                 Some(&edge),
-                vec!["Select", "Edit", "Filter", "System", "Refresh"],
+                vec!["Select", "Edit", "Filter", "System", "Refresh", "Settings"],
             ),
             (
                 LibraryFocus::SystemList,
                 Some(&bad),
-                vec!["Select", "Filter", "System", "Refresh"],
+                vec!["Select", "Filter", "System", "Refresh", "Settings"],
             ),
             (
                 LibraryFocus::SystemList,
                 None,
-                vec!["Filter", "System", "Refresh"],
+                vec!["Filter", "System", "Refresh", "Settings"],
+            ),
+            (
+                LibraryFocus::SystemDefaults,
+                Some(&edge),
+                vec!["System defaults", "Filter", "System", "Refresh", "Settings"],
+            ),
+            (
+                LibraryFocus::Settings,
+                Some(&edge),
+                vec!["Settings", "Filter", "System", "Refresh"],
             ),
             (
                 LibraryFocus::Filter { has_text: true },
@@ -248,42 +313,42 @@ mod tests {
             (
                 LibraryFocus::Launch,
                 Some(&edge),
-                vec!["Launch", "Edit", "Filter", "System", "Refresh"],
+                vec!["Launch", "Edit", "Filter", "System", "Refresh", "Settings"],
             ),
             (
                 LibraryFocus::Add,
                 None,
-                vec!["Add", "Filter", "System", "Refresh"],
+                vec!["Add", "Filter", "System", "Refresh", "Settings"],
             ),
             (
                 LibraryFocus::Edit,
                 Some(&edge),
-                vec!["Edit", "Filter", "System", "Refresh"],
+                vec!["Edit", "Filter", "System", "Refresh", "Settings"],
             ),
             (
                 LibraryFocus::Duplicate,
                 Some(&edge),
-                vec!["Duplicate", "Filter", "System", "Refresh"],
+                vec!["Duplicate", "Filter", "System", "Refresh", "Settings"],
             ),
             (
                 LibraryFocus::Delete,
                 Some(&edge),
-                vec!["Delete", "Filter", "System", "Refresh"],
+                vec!["Delete", "Filter", "System", "Refresh", "Settings"],
             ),
             (
                 LibraryFocus::Refresh,
                 Some(&edge),
-                vec!["Refresh", "Filter", "System"],
+                vec!["Refresh", "Filter", "System", "Settings"],
             ),
             (
                 LibraryFocus::Header,
                 Some(&edge),
-                vec!["Sort", "Filter", "System", "Refresh"],
+                vec!["Sort", "Filter", "System", "Refresh", "Settings"],
             ),
             (
                 LibraryFocus::Nothing,
                 None,
-                vec!["Filter", "System", "Refresh"],
+                vec!["Filter", "System", "Refresh", "Settings"],
             ),
         ];
         for (focus, selected, expected) in cases {

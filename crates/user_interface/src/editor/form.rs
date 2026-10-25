@@ -1,10 +1,10 @@
-//! The form of the game editor: its sections and the fields that the
-//! settings table generates for the family of a game.
+//! The form of the editor: its sections and the fields that the settings
+//! table generates for the family of a game or for the host settings.
 
 use machine_factory::config::{
     MachineSelection, Target,
     phrases::join_names,
-    settings::{SETTINGS, Scope, Section, Setting, model_limits::ModelLimit},
+    settings::{Families, SETTINGS, Scope, Section, Setting, model_limits::ModelLimit},
 };
 
 use crate::config::metadata::{METADATA_FIELDS, MetadataField};
@@ -24,6 +24,12 @@ pub(crate) enum EditorSection {
     Display,
     /// Printer, text extractor and the lines of the file that the editor keeps as written.
     Advanced,
+    /// The root, the config folder, the ROM folder and the GUI font of the settings page.
+    Folders,
+    /// The ROM folder of every system and MIDI module of the settings page.
+    Roms,
+    /// The rendering backend and the audio volume of the settings page.
+    VideoAndAudio,
 }
 
 /// Every section of the editor in tab order.
@@ -36,6 +42,23 @@ pub(crate) const EDITOR_SECTIONS: [EditorSection; 6] = [
     EditorSection::Advanced,
 ];
 
+/// The sections of the editor of a system defaults file in tab order. A
+/// system defaults file holds no metadata.
+pub(crate) const DEFAULTS_SECTIONS: [EditorSection; 5] = [
+    EditorSection::Machine,
+    EditorSection::Media,
+    EditorSection::Sound,
+    EditorSection::Display,
+    EditorSection::Advanced,
+];
+
+/// The sections of the settings page in tab order.
+pub(crate) const SETTINGS_SECTIONS: [EditorSection; 3] = [
+    EditorSection::Folders,
+    EditorSection::Roms,
+    EditorSection::VideoAndAudio,
+];
+
 impl EditorSection {
     /// The caption of the tab of the section.
     pub(crate) fn caption(self) -> &'static str {
@@ -46,6 +69,9 @@ impl EditorSection {
             Self::Sound => "Sound",
             Self::Display => "Display",
             Self::Advanced => "Advanced",
+            Self::Folders => "Folders",
+            Self::Roms => "ROMs",
+            Self::VideoAndAudio => "Video and audio",
         }
     }
 
@@ -59,6 +85,9 @@ impl EditorSection {
             Self::Sound => Some(Section::Sound),
             Self::Display => Some(Section::Display),
             Self::Advanced => Some(Section::Advanced),
+            Self::Folders => Some(Section::Folders),
+            Self::Roms => Some(Section::Roms),
+            Self::VideoAndAudio => Some(Section::VideoAndAudio),
         }
     }
 
@@ -142,6 +171,26 @@ pub(crate) fn form_fields(target: Target) -> Vec<(EditorSection, FieldSource)> {
     fields
 }
 
+/// Returns every field of the settings page, with its section, in tab
+/// order: the host keys of the settings table that a compiled family
+/// reads, in the order of the table.
+pub(crate) fn host_fields() -> Vec<(EditorSection, FieldSource)> {
+    let compiled = Families::compiled();
+    SETTINGS_SECTIONS
+        .iter()
+        .flat_map(|section| {
+            SETTINGS
+                .iter()
+                .filter(move |setting| {
+                    setting.scope == Scope::Host
+                        && setting.section == section.table_section()
+                        && setting.families.intersects(compiled)
+                })
+                .map(|setting| (*section, FieldSource::Setting(setting)))
+        })
+        .collect()
+}
+
 /// Splits a model name into its family prefix up to its last digit and the
 /// rest, for example `PC9801` and `VX`. A name without a digit, or with
 /// nothing after its last digit, has no rest.
@@ -180,15 +229,31 @@ pub(crate) fn short_model_names(models: &[&'static str]) -> Vec<&'static str> {
     }
 }
 
+/// The sentence of the models that `limit` allows, for example `PC9821AS
+/// and AP only.`
+fn models_sentence(limit: &ModelLimit) -> String {
+    format!(
+        "{} only.",
+        join_names(&short_model_names(limit.models), "and")
+    )
+}
+
 /// The note of a setting that the model `model` ignores under `limit`, for
 /// example `PC9801RA has no CD-ROM drive. PC9821AS and AP only.`
 pub(crate) fn disabled_note(model: MachineSelection, limit: &ModelLimit) -> String {
     format!(
-        "{} {}. {} only.",
+        "{} {}. {}",
         model.name(),
         limit.reason.phrase(model),
-        join_names(&short_model_names(limit.models), "and")
+        models_sentence(limit)
     )
+}
+
+/// The sentence of the models of the family `target` that read `setting`,
+/// for example `PC9801F, VM and VX only.` A setting that every model of the
+/// family reads gives `None`.
+pub(crate) fn limit_note(setting: &Setting, target: Target) -> Option<String> {
+    setting.limit_for(target).map(models_sentence)
 }
 
 /// Returns `None` when the model `model` reads `setting`, else the note that
@@ -413,6 +478,61 @@ mod tests {
         assert_eq!(
             EditorSection::Sound.empty_text("PC-88"),
             "The PC-88 has no sound settings."
+        );
+    }
+
+    /// Verifies that the settings page shows the host keys of the table grouped by section in the order of its tabs, the ROM keys of the compiled families, and no system or game key.
+    #[test]
+    fn the_settings_page_shows_the_host_keys_by_section() {
+        let fields = host_fields();
+        let keys = |section: EditorSection| -> Vec<&'static str> {
+            fields
+                .iter()
+                .filter(|(field_section, _)| *field_section == section)
+                .map(|(_, source)| source.key())
+                .collect()
+        };
+        assert_eq!(
+            keys(EditorSection::Folders),
+            ["config-folder", "roms-folder", "gui-font"]
+        );
+        assert_eq!(
+            keys(EditorSection::VideoAndAudio),
+            ["backend", "audio-volume"]
+        );
+        let compiled = Families::compiled();
+        let roms: Vec<&'static str> = SETTINGS
+            .iter()
+            .filter(|setting| setting.section == Some(Section::Roms))
+            .filter(|setting| setting.families.intersects(compiled))
+            .map(|setting| setting.key)
+            .collect();
+        assert_eq!(keys(EditorSection::Roms), roms);
+        for system in machine_factory::config::systems::compiled_systems() {
+            assert!(roms.contains(&system.rom_key), "{}", system.rom_key);
+        }
+        let sections: Vec<EditorSection> = fields.iter().map(|(section, _)| *section).collect();
+        let mut sorted = sections.clone();
+        sorted.sort_by_key(|section| {
+            SETTINGS_SECTIONS
+                .iter()
+                .position(|candidate| candidate == section)
+        });
+        assert_eq!(sections, sorted);
+        for (section, source) in &fields {
+            let setting = source.setting().expect("a table key");
+            assert_eq!(setting.scope, Scope::Host, "{}", setting.key);
+            assert!(SETTINGS_SECTIONS.contains(section), "{}", setting.key);
+        }
+        for key in ["machine", "crt", "fdd1", "window-mode", "debug-bios"] {
+            assert!(
+                fields.iter().all(|(_, source)| source.key() != key),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            SETTINGS_SECTIONS.map(EditorSection::caption),
+            ["Folders", "ROMs", "Video and audio"]
         );
     }
 }

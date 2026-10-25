@@ -103,16 +103,23 @@ impl Shell {
         }
     }
 
-    /// Starts the game of `launch` from the manager. An error of the
-    /// configuration or of the machine opens the error dialog of the manager.
+    /// Starts the game of `launch` from the manager with the volume of its
+    /// configuration. An error of the configuration or of the machine opens
+    /// the error dialog of the manager.
     pub(super) fn launch(&mut self, launch: Launch) {
         let Some(manager) = self.manager.as_ref() else {
             return;
         };
-        info!("Starting {} ({})", launch.title, launch.system.label);
+        info!(
+            "Starting {} ({}, {})",
+            launch.title, launch.system.label, launch.model
+        );
         let configuration = manager
             .configuration(&launch)
             .map_err(|error| format!("{error:#}"));
+        if let Ok((config, _)) = &configuration {
+            self.host.audio_engine.set_volume(config.audio_volume);
+        }
         let session = configuration.and_then(|(config, key_overrides)| {
             self.create_session(config, key_overrides, LaunchOrigin::Manager)
         });

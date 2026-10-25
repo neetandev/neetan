@@ -4,8 +4,8 @@
 use gui::{
     Rect,
     ui::{
-        ActionButton, Align, Button, Dropdown, Icon, NumberField, TextField, Theme, Truncation,
-        UiContext, UiId, label, wrapped_height, wrapped_label,
+        ActionButton, Align, Button, Checkbox, Dropdown, Icon, NumberField, TextField, Theme,
+        Truncation, UiContext, UiId, label, wrapped_height, wrapped_label,
     },
 };
 use machine_factory::config::settings::{
@@ -14,13 +14,16 @@ use machine_factory::config::settings::{
 };
 
 use super::{
-    BrowseTarget, Editor, EditorFile,
-    form::{EditorSection, FieldSource, ignored_note},
+    BrowseTarget, Editor, EditorFile, Subject,
+    fields::{FieldValue, is_single_image},
+    form::{EditorSection, FieldSource},
     hints::{EditorWidget, WidgetKind},
+    host_settings::{HostSettings, draw_settings_file_block},
     kept_lines::draw_kept_lines,
+    media_list::{empty_list_height, empty_list_id},
     notes::{
-        ChoiceNote, NOT_SET, Note, choice_note, decimals_of, inherited_placeholder, number_note,
-        path_note,
+        ChoiceNote, EMPTY_IMAGE, NOT_SET, Note, NoteKind, choice_note, decimals_of,
+        empty_list_caption, inherited_placeholder, number_note, path_note,
     },
     page::{PageActions, TABS_ID},
 };
@@ -68,15 +71,15 @@ pub(crate) fn image_icon(types: Option<&FileTypes>) -> Icon {
 
 /// A row that shows a value the user cannot type, such as the system of a new game.
 #[derive(Debug, Clone)]
-struct ReadOnlyRow {
+pub(super) struct ReadOnlyRow {
     /// The label.
-    name: &'static str,
+    pub(super) name: &'static str,
     /// The value.
-    text: String,
+    pub(super) text: String,
     /// Whether the value is a path, which takes the folder icon.
-    path: bool,
+    pub(super) path: bool,
     /// The note after the value.
-    note: String,
+    pub(super) note: String,
 }
 
 /// The areas of one form row from its top `y` in `content`.
@@ -187,28 +190,49 @@ pub(crate) fn draw_label(
     );
 }
 
-/// Draws `note` into `area`: small secondary text, or a warning with the
-/// alert icon in the error color. A note wider than `area` wraps over up to
-/// [`NOTE_MAXIMUM_LINES`] lines, centered on the control while the lines fit
-/// its height and from its top else. Returns the height of the note, at
-/// least the height of `area`.
+/// Draws `note` as a line of a section from `y` in `content`, inset from
+/// the labels of the rows. Returns the height of the line.
+fn draw_section_note(context: &mut UiContext, content: Rect, y: f32, note: &Note) -> f32 {
+    let theme = context.theme;
+    let area = Rect::new(
+        content.x + theme.gap * 1.5,
+        y + theme.gap * 0.5,
+        (content.width - theme.gap * 1.5).max(0.0),
+        theme.control_height,
+    );
+    let height = draw_note(context, area, note);
+    RowAreas::height(theme, height)
+}
+
+/// Draws `note` into `area`: small secondary text, a warning with the alert
+/// icon in the error color, a found thing with the check icon in the marker
+/// color, or a status without a mark after an empty icon slot. A note wider
+/// than `area` wraps over up to [`NOTE_MAXIMUM_LINES`] lines, centered on
+/// the control while the lines fit its height and from its top else. A path
+/// keeps to one line and gives way in the middle. Returns the height of the
+/// note, at least the height of `area`.
 pub(crate) fn draw_note(context: &mut UiContext, area: Rect, note: &Note) -> f32 {
     let theme = context.theme;
     if note.text.is_empty() || area.width <= 0.0 {
         return area.height;
     }
-    let (icon_area, text_area) = if note.warning {
-        let (icon_area, rest) = area.cut_left(theme.icon_size.min(area.width));
-        (Some(icon_area), rest.cut_left(theme.gap * 0.75).1)
-    } else {
-        (None, area)
+    let (icon, color) = match note.kind {
+        NoteKind::Plain | NoteKind::Unmarked => (None, theme.text_dim),
+        NoteKind::Warning => (Some(Icon::Alert), theme.danger_text),
+        NoteKind::Found => (Some(Icon::Check), theme.marker),
     };
-    let style = if note.warning {
-        theme.small().with_color(theme.danger_text)
-    } else {
-        theme.small()
+    let (icon_area, text_area) = match note.kind {
+        NoteKind::Plain => (None, area),
+        NoteKind::Warning | NoteKind::Found | NoteKind::Unmarked => {
+            let (icon_area, rest) = area.cut_left(theme.icon_size.min(area.width));
+            (Some(icon_area), rest.cut_left(theme.gap * 0.75).1)
+        }
     };
-    let fits = context.measure(&style, &note.text) <= text_area.width;
+    let style = match note.kind {
+        NoteKind::Plain | NoteKind::Unmarked => theme.small(),
+        NoteKind::Warning | NoteKind::Found => theme.small().with_color(color),
+    };
+    let fits = note.path || context.measure(&style, &note.text) <= text_area.width;
     let (lines_area, height) = if fits {
         (text_area, area.height)
     } else {
@@ -229,7 +253,7 @@ pub(crate) fn draw_note(context: &mut UiContext, area: Rect, note: &Note) -> f32
             lines.max(area.height),
         )
     };
-    if let Some(icon_area) = icon_area {
+    if let (Some(icon), Some(icon_area)) = (icon, icon_area) {
         let line = if fits {
             icon_area
         } else {
@@ -240,16 +264,21 @@ pub(crate) fn draw_note(context: &mut UiContext, area: Rect, note: &Note) -> f32
                 gui::ui::wrapped_line_height(&style),
             )
         };
-        context.icon(line, Icon::Alert, theme.icon_size, theme.danger_text);
+        context.icon(line, icon, theme.icon_size, color);
     }
     if fits {
+        let truncation = if note.path {
+            Truncation::Middle
+        } else {
+            Truncation::End
+        };
         label(
             context,
             lines_area,
             &style,
             &note.text,
             Align::Start,
-            Truncation::End,
+            truncation,
         );
     } else {
         wrapped_label(
@@ -280,7 +309,6 @@ impl Editor {
         content: Rect,
         actions: &mut PageActions,
     ) -> f32 {
-        let theme = context.theme;
         let section = self.current_section();
         let mut y = content.y;
         if section == EditorSection::Metadata
@@ -289,7 +317,10 @@ impl Editor {
             let rows = [
                 ReadOnlyRow {
                     name: "System",
-                    text: self.system.label.to_owned(),
+                    text: self
+                        .system_files()
+                        .map_or("", |files| files.system.label)
+                        .to_owned(),
                     path: false,
                     note: SYSTEM_NOTE.to_owned(),
                 },
@@ -304,28 +335,36 @@ impl Editor {
                 y += Self::draw_read_only(context, content, y, row);
             }
         }
+        if section == EditorSection::Folders
+            && let Some(row) = self.root_row()
+        {
+            y += Self::draw_read_only(context, content, y, &row);
+        }
         let indices: Vec<usize> = (0..self.fields.len())
             .filter(|&index| self.fields[index].section == section)
             .collect();
-        if indices.is_empty() && section != EditorSection::Metadata {
-            let area = Rect::new(
-                content.x + theme.gap * 1.5,
-                y + theme.gap * 0.5,
-                (content.width - theme.gap * 1.5).max(0.0),
-                theme.control_height,
-            );
-            draw_note(
-                context,
-                area,
-                &Note::plain(section.empty_text(self.system.label)),
-            );
-            y += FORM_ROW_PITCH;
+        if indices.is_empty()
+            && section != EditorSection::Metadata
+            && let Some(files) = self.system_files()
+        {
+            let note = Note::plain(section.empty_text(files.system.label));
+            y += draw_section_note(context, content, y, &note);
+        }
+        if section == EditorSection::Roms
+            && let Some(note) = self
+                .host_settings()
+                .and_then(HostSettings::roms_folder_flag_note)
+        {
+            y += draw_section_note(context, content, y, &note);
         }
         for index in indices {
             y += self.draw_field(context, content, y, index, actions);
         }
         if section == EditorSection::Advanced && !self.kept.is_empty() {
             y += draw_kept_lines(context, content, y, &self.kept);
+        }
+        if section == EditorSection::Folders && self.host_settings().is_some() {
+            y += draw_settings_file_block(context, content, y);
         }
         if std::mem::take(&mut self.focus_first) {
             context.set_focus(UiId::from(TABS_ID));
@@ -335,7 +374,12 @@ impl Editor {
 
     /// Draws `row` as a read-only row from `y` in `content`. Returns the
     /// height of the row.
-    fn draw_read_only(context: &mut UiContext, content: Rect, y: f32, row: &ReadOnlyRow) -> f32 {
+    pub(super) fn draw_read_only(
+        context: &mut UiContext,
+        content: Rect,
+        y: f32,
+        row: &ReadOnlyRow,
+    ) -> f32 {
         let theme = context.theme;
         let areas = RowAreas::new(theme, content, y);
         draw_label(context, areas.label, row.name, "", false, true);
@@ -381,7 +425,7 @@ impl Editor {
             }
             FieldSource::Setting(setting) => setting,
         };
-        let ignored = ignored_note(setting, self.model());
+        let ignored = self.ignored_note(setting);
         let enabled = ignored.is_none();
         draw_label(
             context,
@@ -403,10 +447,7 @@ impl Editor {
                 let note = self.draw_number(context, areas, index, range, ignored, actions);
                 RowAreas::height(theme, note)
             }
-            ValueKind::Path(_) => {
-                let note = self.draw_path(context, areas, index, setting, ignored, actions);
-                RowAreas::height(theme, note)
-            }
+            ValueKind::Path(_) => self.draw_path(context, areas, index, setting, ignored, actions),
             ValueKind::PathList => {
                 self.draw_media(context, areas, index, setting, ignored, actions)
             }
@@ -521,10 +562,15 @@ impl Editor {
             actions.changed = true;
         }
         let field = &self.fields[index];
-        let preset = setting.key == MACHINE_KEY
-            && self.preset_model.is_some()
-            && field.chosen() == self.preset_model;
-        let fact = setting.choice_fact(self.model(), field.chosen());
+        let preset_model = self.system_files().and_then(|files| files.preset_model);
+        let preset =
+            setting.key == MACHINE_KEY && preset_model.is_some() && field.chosen() == preset_model;
+        let fact = match &self.subject {
+            Subject::Game(files) | Subject::SystemDefaults(files) => {
+                setting.choice_fact(self.model_of(files), field.chosen())
+            }
+            Subject::Host(_) => None,
+        };
         let note = choice_note(ChoiceNote {
             ignored,
             invalid: field.invalid_value(),
@@ -532,9 +578,12 @@ impl Editor {
             set: field.is_set(),
             required,
             inherited: inherited.as_ref(),
-            derived: setting.has_derived_default(self.target),
+            derived: self
+                .system_files()
+                .is_some_and(|files| setting.has_derived_default(files.target)),
             fact,
-        });
+        })
+        .followed_by(self.extra_note(setting));
         draw_note(context, areas.note, &note)
     }
 
@@ -583,12 +632,56 @@ impl Editor {
             actions.changed |= self.clear_on_x(context, id, index);
         }
         let set = self.fields[index].is_set();
-        let note = number_note(ignored, set, range, inherited.as_ref());
+        let extra = self.fields[index]
+            .source
+            .setting()
+            .and_then(|setting| self.extra_note(setting));
+        let note = number_note(ignored, set, range, inherited.as_ref()).followed_by(extra);
         draw_note(context, areas.note, &note)
     }
 
-    /// Draws the path field and the Browse button of the field at `index`.
-    /// Returns the height of its note.
+    /// The placeholder of the path field at `index`: [`EMPTY_IMAGE`] for a
+    /// field that the file empties, else the inherited value.
+    pub(crate) fn path_placeholder(&self, index: usize) -> String {
+        if self.fields[index].is_empty_path() {
+            EMPTY_IMAGE.to_owned()
+        } else {
+            inherited_placeholder(self.inherited[index].as_ref())
+        }
+    }
+
+    /// The note, the note of a command line flag and the error edge of the
+    /// path field at `index` of `setting`. A missing file on the settings
+    /// page shows its warning with the notes of the key.
+    pub(super) fn path_notes(
+        &self,
+        index: usize,
+        setting: &'static Setting,
+        ignored: Option<String>,
+    ) -> (Note, Option<Note>, bool) {
+        if let Some(host_note) = self.host_path_note(index, setting) {
+            return (host_note.note, host_note.flag, host_note.error);
+        }
+        let missing = self.missing[index].first().copied().unwrap_or(false);
+        let note = match self.host_settings() {
+            Some(settings) if missing => settings.missing_file_note(setting),
+            Some(_) | None => path_note(
+                ignored,
+                missing,
+                self.fields[index].is_set(),
+                self.inherited[index].as_ref(),
+                self.file_types(setting),
+            )
+            .followed_by(self.extra_note(setting)),
+        };
+        (note, None, false)
+    }
+
+    /// Draws the path field and the Browse button of the field at `index`,
+    /// and the checkbox that empties the drive below the single image of a
+    /// drive that inherits an image or that the file empties. A path cuts
+    /// in the middle. The note of a command line flag on the settings page
+    /// takes its own line below the note. Returns the height of the row.
     fn draw_path(
         &mut self,
         context: &mut UiContext,
@@ -600,15 +693,26 @@ impl Editor {
     ) -> f32 {
         let theme = context.theme;
         let id = field_id(setting.key);
+        let empty_id = empty_list_id(id);
         let enabled = ignored.is_none();
         let inherited = self.inherited[index].clone();
-        let placeholder = inherited_placeholder(inherited.as_ref());
+        let types = self.file_types(setting);
+        let empty_path = self.fields[index].is_empty_path();
+        let placeholder = self.path_placeholder(index);
+        let inherits_image = inherited
+            .as_ref()
+            .is_some_and(|inherited| !inherited.values.is_empty());
+        let shows_toggle = enabled
+            && is_single_image(setting)
+            && self.fields[index].text().trim().is_empty()
+            && (empty_path || inherits_image || context.has_focus(empty_id));
         let browse = Button::new(browse_id(setting.key), "Browse").enabled(enabled);
         let browse_width = browse.width(context);
         let (browse_area, field_area) = areas
             .control
             .cut_right(browse_width.min(areas.control.width));
         let field_area = field_area.cut_right(theme.gap).1;
+        let (note, flag, error) = self.path_notes(index, setting, ignored);
         if enabled {
             let set = self.fields[index].is_set();
             self.widgets
@@ -618,14 +722,22 @@ impl Editor {
                 WidgetKind::Browse,
             ));
         }
-        if let Some(text) = self.fields[index].text_mut() {
-            let response = TextField::new(id, &placeholder)
-                .icon(Some(Icon::Folder))
-                .clears_on_cancel(false)
-                .truncation(Truncation::Middle)
-                .enabled(enabled)
-                .show(context, field_area, text);
-            actions.changed |= response.changed;
+        let text_field = TextField::new(id, &placeholder)
+            .icon(Some(Icon::Folder))
+            .clears_on_cancel(false)
+            .truncation(Truncation::Middle)
+            .enabled(enabled)
+            .error(error);
+        let field = &mut self.fields[index];
+        match field.text_mut() {
+            Some(text) => actions.changed |= text_field.show(context, field_area, text).changed,
+            None => {
+                let mut typed = String::new();
+                if text_field.show(context, field_area, &mut typed).changed && !typed.is_empty() {
+                    field.value = FieldValue::Text(typed);
+                    actions.changed = true;
+                }
+            }
         }
         if enabled {
             actions.changed |= self.clear_on_x(context, id, index);
@@ -633,15 +745,40 @@ impl Editor {
         if browse.show(context, browse_area) {
             actions.browse = Some(BrowseTarget::Path(index));
         }
-        let missing = self.missing[index].first().copied().unwrap_or(false);
-        let note = path_note(
-            ignored,
-            missing,
-            self.fields[index].is_set(),
-            inherited.as_ref(),
-            setting.file_types_for(self.target),
-        );
-        draw_note(context, areas.note, &note)
+        let note_height = draw_note(context, areas.note, &note);
+        let mut below = 0.0;
+        if let Some(flag) = &flag {
+            let area = Rect::new(
+                areas.note.x,
+                areas.note.y + note_height,
+                areas.note.width,
+                theme.icon_size,
+            );
+            below = draw_note(context, area, flag);
+        }
+        let mut height = RowAreas::height(theme, note_height + below);
+        if shows_toggle {
+            self.widgets
+                .push(EditorWidget::new(empty_id, WidgetKind::Checkbox));
+            let area = Rect::new(
+                field_area.x,
+                areas.control.bottom() + theme.gap * 0.5,
+                field_area.width,
+                theme.control_height,
+            );
+            let caption = empty_list_caption(types);
+            let mut checked = empty_path;
+            if Checkbox::new(empty_id, &caption).show(context, area, &mut checked) {
+                self.fields[index].value = if empty_path {
+                    FieldValue::Text(String::new())
+                } else {
+                    FieldValue::EmptyPath
+                };
+                actions.changed = true;
+            }
+            height += empty_list_height(theme);
+        }
+        height
     }
 }
 
@@ -656,12 +793,13 @@ mod tests {
 
     use super::*;
     use crate::{
-        editor::{form::EDITOR_SECTIONS, page::form_area, test_support::EditorRoot},
+        editor::{
+            form::{EDITOR_SECTIONS, ignored_note},
+            page::form_area,
+            test_support::{EditorRoot, SCREEN},
+        },
         gui_test_support::GuiHarness,
     };
-
-    /// The window above the status line at the minimum window size.
-    const SCREEN: Rect = Rect::new(0.0, 0.0, 960.0, 572.0);
 
     /// Verifies that every model-limit note of every compiled family fits the note column of a 960 x 600 window within its lines.
     #[test]

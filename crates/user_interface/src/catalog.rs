@@ -100,7 +100,19 @@ impl SystemCatalog {
 /// name.
 #[must_use]
 pub fn read_game(host: &HostLayers, system: &'static System, path: &Path) -> Option<CatalogEntry> {
-    scan::read_game(system, path, &host.config_folder(), host)
+    read_games(host, system, &[path.to_path_buf()]).pop()
+}
+
+/// Reads the game files `paths` of `system` below the config folder of `host`, as
+/// [`Catalog::scan`] reads them, without a scan of the system folder. The system defaults file
+/// reads once for all of them. A system outside this build gives no entries.
+#[must_use]
+pub fn read_games(
+    host: &HostLayers,
+    system: &'static System,
+    paths: &[PathBuf],
+) -> Vec<CatalogEntry> {
+    scan::read_games(system, paths, &host.config_folder(), host).unwrap_or_default()
 }
 
 /// The games of every system compiled into this build.

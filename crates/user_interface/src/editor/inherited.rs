@@ -75,8 +75,8 @@ impl Inherited {
     }
 }
 
-/// The layers below the game files of one family: the settings file and the
-/// system defaults of the family.
+/// The layers below the file of the editor: the settings file, and below a
+/// game file of one family also the system defaults of the family.
 #[derive(Debug, Clone)]
 pub(crate) struct BaseLayers {
     /// The family of the games.
@@ -151,6 +151,18 @@ impl BaseLayers {
             settings: host.settings_layer().map(without_key_bindings),
             system_defaults,
             warning,
+        }
+    }
+
+    /// Reads the layers below the system defaults of the family `target`
+    /// from `host`: the settings file alone.
+    pub(crate) fn read_below_system_defaults(host: &HostLayers, target: Target) -> Self {
+        Self {
+            target,
+            root: host.root().to_path_buf(),
+            settings: host.settings_layer().map(without_key_bindings),
+            system_defaults: None,
+            warning: None,
         }
     }
 

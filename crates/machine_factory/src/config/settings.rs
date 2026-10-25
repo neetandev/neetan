@@ -383,6 +383,14 @@ impl Setting {
 
     /// Returns the choices of a choice setting that the family `target` accepts.
     pub fn choices_for(&self, target: Target) -> impl Iterator<Item = &'static Choice> {
+        self.choices_for_families(Families::of(target))
+    }
+
+    /// Returns the choices of a choice setting that one of the families `families` accepts.
+    pub fn choices_for_families(
+        &self,
+        families: Families,
+    ) -> impl Iterator<Item = &'static Choice> {
         let choices: &'static [Choice] = match self.kind {
             ValueKind::Choice(choices) => choices,
             ValueKind::OnOff | ValueKind::Number(_) | ValueKind::Path(_) | ValueKind::PathList => {
@@ -391,7 +399,7 @@ impl Setting {
         };
         choices
             .iter()
-            .filter(move |choice| choice.families.contains_target(target))
+            .filter(move |choice| choice.families.intersects(families))
     }
 
     /// Returns the fact that the note of the choice setting adds on `model` while the file holds
@@ -2267,9 +2275,8 @@ mod tests {
     /// Returns sample values of a setting that its apply function accepts.
     fn sample_values(setting: &Setting) -> Vec<String> {
         match setting.kind {
-            ValueKind::Choice(choices) => choices
-                .iter()
-                .filter(|choice| choice.families.intersects(Families::compiled()))
+            ValueKind::Choice(_) => setting
+                .choices_for_families(Families::compiled())
                 .map(|choice| choice.value.to_owned())
                 .collect(),
             ValueKind::OnOff => vec!["on".to_owned(), "off".to_owned()],
@@ -2518,6 +2525,25 @@ mod tests {
         assert!(soundboard.is_read_by(Target::Pc98, "PC9821AP"));
         let boot_device = find_setting("boot-device").expect("boot-device is a table key");
         assert_eq!(boot_device.choices_for(Target::Pc98).count(), 6);
+    }
+
+    /// Verifies that the choices of a set of families hold the choices of each family of the set.
+    #[test]
+    fn choices_of_families_hold_the_choices_of_each_family() {
+        let boot_device = find_setting("boot-device").expect("boot-device is a table key");
+        let compiled: Vec<&str> = boot_device
+            .choices_for_families(Families::compiled())
+            .map(|choice| choice.value)
+            .collect();
+        for system in super::super::systems::compiled_systems() {
+            let target = MachineSelection::of_system(system)
+                .expect("compiled system")
+                .target();
+            for choice in boot_device.choices_for(target) {
+                assert!(compiled.contains(&choice.value), "{}", choice.value);
+            }
+        }
+        assert_eq!(boot_device.choices_for_families(Families::NONE).count(), 0);
     }
 
     #[cfg(feature = "at")]

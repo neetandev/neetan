@@ -35,14 +35,10 @@ pub(crate) fn kept_lines(document: &ConfigDocument, fields: &[Field]) -> Vec<Str
         .collect()
 }
 
-/// Draws the rule, the sentence and the kept `lines` from `y` in `content`.
-/// Returns the height of the block.
-pub(crate) fn draw_kept_lines(
-    context: &mut UiContext,
-    content: Rect,
-    y: f32,
-    lines: &[String],
-) -> f32 {
+/// Draws a rule with `caption` from `y` in `content`: the caption in small
+/// secondary text and a line from the caption to the right edge, a gap
+/// below the content before it. Returns the bottom of the rule.
+pub(crate) fn draw_rule(context: &mut UiContext, content: Rect, y: f32, caption: &str) -> f32 {
     let theme = context.theme;
     let rule = Rect::new(
         content.x,
@@ -51,8 +47,8 @@ pub(crate) fn draw_kept_lines(
         theme.control_height,
     );
     let style = theme.small();
-    let caption_width = context.measure(&style, KEPT_CAPTION);
-    context.text_left(rule, &style, KEPT_CAPTION);
+    let caption_width = context.measure(&style, caption);
+    context.text_left(rule, &style, caption);
     let line_x = rule.x + caption_width + theme.gap;
     context.fill(
         Rect::new(
@@ -63,8 +59,21 @@ pub(crate) fn draw_kept_lines(
         ),
         theme.panel_edge,
     );
+    rule.bottom()
+}
+
+/// Draws the rule, the sentence and the kept `lines` from `y` in `content`.
+/// Returns the height of the block.
+pub(crate) fn draw_kept_lines(
+    context: &mut UiContext,
+    content: Rect,
+    y: f32,
+    lines: &[String],
+) -> f32 {
+    let theme = context.theme;
+    let style = theme.small();
     let line_height = theme.small_text_size * KEPT_LINE_SPACING;
-    let mut top = rule.bottom();
+    let mut top = draw_rule(context, content, y, KEPT_CAPTION);
     label(
         context,
         Rect::new(content.x, top, content.width, line_height),
@@ -91,6 +100,8 @@ pub(crate) fn draw_kept_lines(
 
 #[cfg(test)]
 mod tests {
+    use machine_factory::config::settings::Families;
+
     use super::*;
     use crate::{
         editor::{form::form_fields, test_support::EditorRoot},
@@ -114,7 +125,15 @@ mod tests {
         );
         let fields: Vec<Field> = form_fields(root.target())
             .into_iter()
-            .map(|(section, source)| Field::read(section, source, root.target(), &document, false))
+            .map(|(section, source)| {
+                Field::read(
+                    section,
+                    source,
+                    Families::of(root.target()),
+                    &document,
+                    false,
+                )
+            })
             .collect();
         assert_eq!(
             kept_lines(&document, &fields),
