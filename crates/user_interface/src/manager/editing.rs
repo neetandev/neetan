@@ -234,10 +234,6 @@ impl Manager {
         let shown_path = editor.shown_path();
         status_line(context, status_area, &hints, StatusEnd::Path(&shown_path));
         if pass.closed {
-            info!(
-                "Game manager: closed the editor of {}",
-                editor.path().display()
-            );
             self.editor = None;
             self.dialog = None;
             self.next_focus = Some(match edited {
