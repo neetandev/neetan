@@ -6,17 +6,24 @@
 
 use std::path::PathBuf;
 
-use common::FlushError;
+use ::common::FlushError;
 use gui::{
     Rect, RectStyle,
     ui::{
-        ACTIVATE_KEYS, Align, Button, ButtonKind, CANCEL_KEYS, HEADER_HEIGHT, Hint, Icon,
+        ACTIVATE_KEYS, Align, Button, ButtonKind, CANCEL_KEYS, HEADER_HEIGHT, Icon, TextBuffer,
         UiContext, UiId, modal_in, wrapped_height, wrapped_label,
     },
 };
+use i18n::Key;
 use machine_factory::config::systems::System;
 
-use crate::editor::EditedFile;
+use self::event::{ErrorDetail, ErrorEvent};
+use crate::{
+    editor::{EditedFile, OpenError, SaveFailure},
+    texts::{HintText, common, errors},
+};
+
+mod event;
 
 /// The width of the dialog panel in logical units.
 const DIALOG_WIDTH: f32 = 560.0;
@@ -52,72 +59,36 @@ const CANCEL_ID: &str = "error cancel";
 pub(super) const OVERWRITE_ID: &str = "error overwrite";
 
 /// The hint of the OK button.
-const OK_HINT: Hint<'static> = Hint {
-    keys: ACTIVATE_KEYS,
-    label: "OK",
-};
+const OK_HINT: HintText = HintText::new(ACTIVATE_KEYS, common::OK);
 
 /// The hint of the focused cancel button.
-const CANCEL_HINT: Hint<'static> = Hint {
-    keys: ACTIVATE_KEYS,
-    label: "Cancel",
-};
+const CANCEL_HINT: HintText = HintText::new(ACTIVATE_KEYS, common::CANCEL);
 
 /// The hint of the focused overwrite button.
-const OVERWRITE_HINT: Hint<'static> = Hint {
-    keys: ACTIVATE_KEYS,
-    label: "Overwrite",
-};
+const OVERWRITE_HINT: HintText = HintText::new(ACTIVATE_KEYS, errors::OVERWRITE);
 
 /// The hint of cancel beside the focused overwrite button.
-const CANCEL_KEYS_HINT: Hint<'static> = Hint {
-    keys: CANCEL_KEYS,
-    label: "Cancel",
-};
+const CANCEL_KEYS_HINT: HintText = HintText::new(CANCEL_KEYS, common::CANCEL);
 
 /// The id of the modal layer of the dialog.
 pub(super) const LAYER_ID: &str = "error";
 
-/// The title of the dialog of a launch that failed.
-pub(super) const LAUNCH_FAILED_TITLE: &str = "Could not start the game";
-
-/// The title of the dialog of a game that stopped after a panic.
-pub(super) const GAME_STOPPED_TITLE: &str = "The game stopped";
-
-/// The title of the dialog of disk images that were not saved.
-pub(super) const MEDIA_NOT_SAVED_TITLE: &str = "The disk images were not saved";
-
-/// The title of the dialog of a game file that was not deleted.
-pub(super) const DELETE_FAILED_TITLE: &str = "Could not delete the game";
-
-/// The title of the dialog of a game file that did not open in the editor.
-pub(super) const OPEN_FAILED_TITLE: &str = "Could not open the game";
-
-/// The title of the dialog of a game file that did not save.
-pub(super) const SAVE_FAILED_TITLE: &str = "Could not save the game";
-
-/// The title of the dialog of a system defaults file that did not open in the editor.
-pub(super) const DEFAULTS_OPEN_FAILED_TITLE: &str = "Could not open the system defaults";
-
-/// The title of the dialog of a system defaults file that did not save.
-pub(super) const DEFAULTS_SAVE_FAILED_TITLE: &str = "Could not save the system defaults";
-
-/// The title of the dialog of a settings page that did not open.
-pub(super) const SETTINGS_OPEN_FAILED_TITLE: &str = "Could not open the settings";
-
-/// The title of the dialog of a settings file that did not save.
-pub(super) const SETTINGS_SAVE_FAILED_TITLE: &str = "Could not save the settings";
-
-/// The title of the dialog of a saved settings file that does not read.
-pub(super) const SETTINGS_NOT_APPLIED_TITLE: &str = "Could not apply the settings";
-
-/// The titles of the dialogs of the file of `subject` that did not open in
-/// the editor and that did not save.
-fn editor_titles(subject: &EditedFile) -> (&'static str, &'static str) {
+/// The keys of the titles of the dialogs of the file of `subject` that did
+/// not open in the editor and that did not save.
+fn editor_titles(subject: &EditedFile) -> (Key, Key) {
     match subject {
-        EditedFile::Game { .. } => (OPEN_FAILED_TITLE, SAVE_FAILED_TITLE),
-        EditedFile::SystemDefaults(_) => (DEFAULTS_OPEN_FAILED_TITLE, DEFAULTS_SAVE_FAILED_TITLE),
-        EditedFile::Settings => (SETTINGS_OPEN_FAILED_TITLE, SETTINGS_SAVE_FAILED_TITLE),
+        EditedFile::Game { .. } => (
+            errors::GAME_OPEN_FAILED_TITLE,
+            errors::GAME_SAVE_FAILED_TITLE,
+        ),
+        EditedFile::SystemDefaults(_) => (
+            errors::DEFAULTS_OPEN_FAILED_TITLE,
+            errors::DEFAULTS_SAVE_FAILED_TITLE,
+        ),
+        EditedFile::Settings => (
+            errors::SETTINGS_OPEN_FAILED_TITLE,
+            errors::SETTINGS_SAVE_FAILED_TITLE,
+        ),
     }
 }
 
@@ -144,45 +115,56 @@ pub(crate) struct EditTarget {
 }
 
 /// An open error dialog.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct ErrorDialog {
-    /// The title of the panel.
-    title: &'static str,
-    /// The sentence about what happened.
-    message: String,
+    /// The key of the title of the panel.
+    title: Key,
+    /// The event of the dialog.
+    event: ErrorEvent,
     /// The error text.
-    detail: String,
+    detail: ErrorDetail,
     /// The game file that the dialog offers to open in the editor.
     edit: Option<EditTarget>,
     /// Whether the dialog offers to save over a game file that changed
     /// outside the manager. It shows Cancel and Overwrite in place of OK.
     overwrite: bool,
+    /// The sentence of the event in the catalog of the last pass.
+    message_text: TextBuffer<()>,
+    /// The error text in the catalog of the last pass.
+    detail_text: TextBuffer<()>,
 }
 
 impl ErrorDialog {
-    /// The dialog of the game `game_title` that did not start with `error`.
-    pub(crate) fn launch_failed(game_title: &str, error: &str) -> Self {
+    /// The dialog with the title `title` about `event` with the detail `detail`.
+    fn new(title: Key, event: ErrorEvent, detail: ErrorDetail) -> Self {
         Self {
-            title: LAUNCH_FAILED_TITLE,
-            message: format!("{game_title} did not start."),
-            detail: error.to_owned(),
+            title,
+            event,
+            detail,
             edit: None,
             overwrite: false,
+            message_text: TextBuffer::new(),
+            detail_text: TextBuffer::new(),
         }
+    }
+
+    /// The dialog of the game `game_title` that did not start with `error`.
+    pub(crate) fn launch_failed(game_title: &str, error: &str) -> Self {
+        Self::new(
+            errors::LAUNCH_FAILED_TITLE,
+            ErrorEvent::LaunchFailed(game_title.to_owned()),
+            ErrorDetail::Error(error.to_owned()),
+        )
     }
 
     /// The dialog of a saved settings file that does not read with `error`.
     /// The manager keeps the host settings that it read before.
     pub(crate) fn settings_not_applied(error: &str) -> Self {
-        Self {
-            title: SETTINGS_NOT_APPLIED_TITLE,
-            message: "The settings file was saved but does not read. The manager keeps the \
-                      settings that it read before."
-                .to_owned(),
-            detail: error.to_owned(),
-            edit: None,
-            overwrite: false,
-        }
+        Self::new(
+            errors::SETTINGS_NOT_APPLIED_TITLE,
+            ErrorEvent::SettingsNotApplied,
+            ErrorDetail::Error(error.to_owned()),
+        )
     }
 
     /// The same dialog with a button that opens the game file of `target` in the editor.
@@ -195,99 +177,90 @@ impl ErrorDialog {
 
     /// The dialog of the file of `subject` that did not open in the editor
     /// with `error`.
-    pub(crate) fn open_failed(subject: &EditedFile, error: &str) -> Self {
-        Self {
-            title: editor_titles(subject).0,
-            message: format!("{} did not open in the editor.", subject.sentence_start()),
-            detail: error.to_owned(),
-            edit: None,
-            overwrite: false,
-        }
+    pub(crate) fn open_failed(subject: &EditedFile, error: &OpenError) -> Self {
+        Self::new(
+            editor_titles(subject).0,
+            ErrorEvent::OpenFailed(subject.clone()),
+            ErrorDetail::Open(error.clone()),
+        )
     }
 
-    /// The dialog of the file of `subject` that changed outside the manager
-    /// since the editor read it, as `detail` says. Cancel returns to the
-    /// editor, and Overwrite saves over the file.
-    pub(crate) fn changed_outside(subject: &EditedFile, detail: &str) -> Self {
+    /// The dialog of a new game of `system` that did not open in the editor
+    /// with `error`.
+    pub(crate) fn new_game_open_failed(system: &'static System, error: &OpenError) -> Self {
+        Self::new(
+            errors::GAME_OPEN_FAILED_TITLE,
+            ErrorEvent::NewGameOpenFailed(system.label),
+            ErrorDetail::Open(error.clone()),
+        )
+    }
+
+    /// The dialog of the file of `subject` at the shown path `shown` that
+    /// changed outside the manager since the editor read it. Cancel returns
+    /// to the editor, and Overwrite saves over the file.
+    pub(crate) fn changed_outside(subject: &EditedFile, shown: &str) -> Self {
         Self {
-            title: editor_titles(subject).1,
-            message: format!(
-                "{} {} not saved. Overwrite replaces the file with the changes of the editor. \
-                 Cancel returns to the editor with the changes.",
-                subject.sentence_start(),
-                subject.was()
-            ),
-            detail: detail.to_owned(),
-            edit: None,
             overwrite: true,
+            ..Self::new(
+                editor_titles(subject).1,
+                ErrorEvent::ChangedOutside(subject.clone()),
+                ErrorDetail::Save(SaveFailure::ChangedOutside(shown.to_owned())),
+            )
         }
     }
 
-    /// The dialog of the file of `subject` that did not save with `error`.
-    pub(crate) fn save_failed(subject: &EditedFile, error: &str) -> Self {
-        Self {
-            title: editor_titles(subject).1,
-            message: format!(
-                "{} {} not saved. The editor keeps the changes.",
-                subject.sentence_start(),
-                subject.was()
-            ),
-            detail: error.to_owned(),
-            edit: None,
-            overwrite: false,
-        }
+    /// The dialog of the file of `subject` that did not save with `failure`.
+    pub(crate) fn save_failed(subject: &EditedFile, failure: &SaveFailure) -> Self {
+        Self::new(
+            editor_titles(subject).1,
+            ErrorEvent::SaveFailed(subject.clone()),
+            ErrorDetail::Save(failure.clone()),
+        )
     }
 
-    /// The dialog of a game of `system_label` whose core panicked with
-    /// `panic_message`. `flush` is the result of the write back of the
-    /// disk images after the panic. Its errors come before the panic
-    /// message, so the line limit of the detail cuts the panic message first.
+    /// The dialog of a game of the system `system_label` whose core
+    /// panicked with `panic_message`. A game that the manager does not know
+    /// has no label. `flush` is the result of the write back of the disk
+    /// images after the panic. Its errors come before the panic message, so
+    /// the line limit of the detail cuts the panic message first.
     pub(crate) fn game_stopped(
-        system_label: &str,
+        system_label: Option<&'static str>,
         panic_message: &str,
         flush: &Result<(), FlushError>,
     ) -> Self {
-        let mut message = format!("The {system_label} core stopped with an error.");
         let detail = match flush {
-            Ok(()) => {
-                message.push_str(" The disk images were saved.");
-                panic_message.to_owned()
-            }
-            Err(error) => {
-                message.push_str(" Some disk images were not saved.");
-                format!("{error}\n{panic_message}")
-            }
+            Ok(()) => panic_message.to_owned(),
+            Err(error) => format!("{error}\n{panic_message}"),
         };
-        Self {
-            title: GAME_STOPPED_TITLE,
-            message,
-            detail,
-            edit: None,
-            overwrite: false,
-        }
+        Self::new(
+            errors::GAME_STOPPED_TITLE,
+            ErrorEvent::GameStopped {
+                system: system_label,
+                saved: flush.is_ok(),
+            },
+            ErrorDetail::Error(detail),
+        )
     }
 
     /// The dialog of the game `game_title` that ended while the write back
-    /// of its disk images failed with `error`.
-    pub(crate) fn media_not_saved(game_title: &str, error: &FlushError) -> Self {
-        Self {
-            title: MEDIA_NOT_SAVED_TITLE,
-            message: format!("{game_title} ended. Some of its disk images were not saved."),
-            detail: error.to_string(),
-            edit: None,
-            overwrite: false,
-        }
+    /// of its disk images failed with `error`. A game that the manager does
+    /// not know has no title.
+    pub(crate) fn media_not_saved(game_title: Option<&str>, error: &FlushError) -> Self {
+        Self::new(
+            errors::MEDIA_NOT_SAVED_TITLE,
+            ErrorEvent::MediaNotSaved(game_title.map(str::to_owned)),
+            ErrorDetail::Error(error.to_string()),
+        )
     }
 
-    /// The dialog of the game `name` whose file was not removed with `error`.
-    pub(crate) fn delete_failed(name: &str, error: &str) -> Self {
-        Self {
-            title: DELETE_FAILED_TITLE,
-            message: format!("{name} was not deleted."),
-            detail: error.to_owned(),
-            edit: None,
-            overwrite: false,
-        }
+    /// The dialog of the game `name` whose file at the shown path `path`
+    /// was not removed with the error `error` of the operating system.
+    pub(crate) fn delete_failed(name: &str, path: String, error: String) -> Self {
+        Self::new(
+            errors::DELETE_FAILED_TITLE,
+            ErrorEvent::DeleteFailed(name.to_owned()),
+            ErrorDetail::PathError { path, error },
+        )
     }
 
     /// The game file that the dialog offers to open in the editor.
@@ -297,7 +270,7 @@ impl ErrorDialog {
 
     /// The hints of the status line while the dialog is open. The focused
     /// button gives the first hint, and Esc and B cancel.
-    pub(crate) fn hints(&self, context: &UiContext) -> Vec<Hint<'static>> {
+    pub(crate) fn hints(&self, context: &UiContext) -> Vec<HintText> {
         if !self.overwrite {
             return vec![OK_HINT];
         }
@@ -308,28 +281,30 @@ impl ErrorDialog {
         }
     }
 
-    /// The title of the panel.
+    /// The key of the title of the panel.
     #[cfg(test)]
-    pub(crate) fn title(&self) -> &str {
+    pub(crate) fn title(&self) -> Key {
         self.title
     }
 
-    /// The sentence about what happened.
+    /// The sentence of the event that the last pass drew. A dialog without a
+    /// pass has none.
     #[cfg(test)]
-    pub(crate) fn message(&self) -> &str {
-        &self.message
+    pub(crate) fn message(&self) -> Option<&str> {
+        self.message_text.last_text()
     }
 
-    /// The error text.
+    /// The error text that the last pass drew. A dialog without a pass has
+    /// none.
     #[cfg(test)]
-    pub(crate) fn detail(&self) -> &str {
-        &self.detail
+    pub(crate) fn detail(&self) -> Option<&str> {
+        self.detail_text.last_text()
     }
 
     /// Draws one pass of the dialog in its modal layer, centered in `area`.
     /// The OK button holds the focus. Returns the answer of the pass, and
     /// closes the layer when the dialog closes.
-    pub(crate) fn show(&self, context: &mut UiContext, area: Rect) -> DialogAnswer {
+    pub(crate) fn show(&mut self, context: &mut UiContext, area: Rect) -> DialogAnswer {
         context.layer(LAYER_ID, |context| {
             let answer = self.panel(context, area);
             if answer != DialogAnswer::Open {
@@ -340,8 +315,22 @@ impl ErrorDialog {
     }
 
     /// Draws the panel of the dialog centered in `area` and returns its answer.
-    fn panel(&self, context: &mut UiContext, area: Rect) -> DialogAnswer {
+    fn panel(&mut self, context: &mut UiContext, area: Rect) -> DialogAnswer {
         let theme = context.theme;
+        let catalog = context.catalog;
+        let Self {
+            event,
+            detail,
+            message_text,
+            detail_text,
+            ..
+        } = self;
+        let message = message_text.text(context, (), |catalog, (), out| {
+            event.write(catalog, out);
+        });
+        let detail = detail_text.text(context, (), |catalog, (), out| {
+            detail.write(catalog, out);
+        });
         let ok_id = UiId::from(OK_ID);
         let message_style = theme.body();
         let detail_style = theme.small().with_color(theme.colors.text);
@@ -357,14 +346,14 @@ impl ErrorDialog {
         let message_height = wrapped_height(
             context,
             &message_style,
-            &self.message,
+            message,
             message_width,
             MAXIMUM_MESSAGE_LINES,
         );
         let detail_height = wrapped_height(
             context,
             &detail_style,
-            &self.detail,
+            detail,
             detail_width,
             MAXIMUM_DETAIL_LINES,
         ) + detail_inset.1 * 2.0;
@@ -376,7 +365,13 @@ impl ErrorDialog {
             + theme.gap * 2.0
             + theme.control_height
             + theme.padding;
-        let response = modal_in(context, LAYER_ID, area, (DIALOG_WIDTH, height), self.title);
+        let response = modal_in(
+            context,
+            LAYER_ID,
+            area,
+            (DIALOG_WIDTH, height),
+            catalog.text(self.title),
+        );
 
         let (icon_column, text_column) = response
             .content
@@ -399,7 +394,7 @@ impl ErrorDialog {
             context,
             message_area,
             &message_style,
-            &self.message,
+            message,
             Align::Start,
             MAXIMUM_MESSAGE_LINES,
         );
@@ -419,7 +414,7 @@ impl ErrorDialog {
                 detail_height - detail_inset.1 * 2.0,
             ),
             &detail_style,
-            &self.detail,
+            detail,
             Align::Start,
             MAXIMUM_DETAIL_LINES,
         );
@@ -428,10 +423,10 @@ impl ErrorDialog {
         if self.overwrite {
             return Self::overwrite_buttons(context, footer, response.closed);
         }
-        let ok = Button::new(ok_id, "OK").kind(ButtonKind::Primary);
+        let ok = Button::new(ok_id, catalog.text(common::OK)).kind(ButtonKind::Primary);
         let (ok_area, rest) = footer.cut_right(ok.width(context));
         let edit = self.edit.is_some() && {
-            let edit = Button::new(EDIT_ID, "Edit game").icon(Icon::Edit);
+            let edit = Button::new(EDIT_ID, catalog.text(errors::EDIT_GAME)).icon(Icon::Edit);
             let edit_area = rest.cut_right(theme.gap).1.cut_right(edit.width(context)).0;
             edit.show(context, edit_area)
         };
@@ -451,10 +446,11 @@ impl ErrorDialog {
     fn overwrite_buttons(context: &mut UiContext, footer: Rect, closed: bool) -> DialogAnswer {
         let theme = context.theme;
         let cancel_id = UiId::from(CANCEL_ID);
-        let overwrite = Button::new(OVERWRITE_ID, "Overwrite")
+        let catalog = context.catalog;
+        let overwrite = Button::new(OVERWRITE_ID, catalog.text(errors::OVERWRITE))
             .icon(Icon::Check)
             .kind(ButtonKind::Danger);
-        let cancel = Button::new(cancel_id, "Cancel");
+        let cancel = Button::new(cancel_id, catalog.text(common::CANCEL));
         let (overwrite_area, rest) = footer.cut_right(overwrite.width(context));
         let cancel_area = rest
             .cut_right(theme.gap)
@@ -479,39 +475,71 @@ mod tests {
     use gui::ui::Navigation;
 
     use super::*;
-    use crate::{editor::test_support::system_named, gui_test_support::GuiHarness};
+    use crate::{
+        editor::test_support::system_named,
+        gui_test_support::GuiHarness,
+        texts::{
+            LanguageCatalog, english_labels,
+            errors::{
+                DEFAULTS_OPEN_FAILED_TITLE, DEFAULTS_SAVE_FAILED_TITLE, DELETE_FAILED_TITLE,
+                GAME_OPEN_FAILED_TITLE, GAME_SAVE_FAILED_TITLE, GAME_STOPPED_TITLE,
+                LAUNCH_FAILED_TITLE, MEDIA_NOT_SAVED_TITLE, SETTINGS_OPEN_FAILED_TITLE,
+                SETTINGS_SAVE_FAILED_TITLE,
+            },
+            test_catalog,
+        },
+    };
+
+    /// The area of a dialog in the tests.
+    const AREA: Rect = Rect::new(0.0, 0.0, 960.0, 572.0);
+
+    /// Returns `dialog` after one pass in the English texts.
+    fn drawn(mut dialog: ErrorDialog) -> ErrorDialog {
+        GuiHarness::new(960, 600).frame(|context| dialog.show(context, AREA));
+        dialog
+    }
 
     /// Verifies the title, the message and the detail of the launch error dialog.
     #[test]
     fn the_launch_dialog_shows_the_game_and_the_error() {
-        let dialog = ErrorDialog::launch_failed("Edge", "fdd1 image not found: /games/edge.d88");
+        let dialog = drawn(ErrorDialog::launch_failed(
+            "Edge",
+            "fdd1 image not found: /games/edge.d88",
+        ));
         assert_eq!(dialog.title(), LAUNCH_FAILED_TITLE);
-        assert_eq!(dialog.message(), "Edge did not start.");
-        assert_eq!(dialog.detail(), "fdd1 image not found: /games/edge.d88");
+        assert_eq!(dialog.message(), Some("Edge did not start."));
+        assert_eq!(
+            dialog.detail(),
+            Some("fdd1 image not found: /games/edge.d88")
+        );
     }
 
     /// Verifies that the panic dialog mentions the saved disk images only after a flush without a panic.
     #[test]
     fn the_panic_dialog_mentions_the_saved_images_only_after_a_good_flush() {
-        let saved = ErrorDialog::game_stopped("PC-98", "sample panic", &Ok(()));
+        let saved = drawn(ErrorDialog::game_stopped(
+            Some("PC-98"),
+            "sample panic",
+            &Ok(()),
+        ));
         assert_eq!(saved.title(), GAME_STOPPED_TITLE);
         assert_eq!(
             saved.message(),
-            "The PC-98 core stopped with an error. The disk images were saved."
+            Some("The PC-98 core stopped with an error. The disk images were saved.")
         );
-        assert_eq!(saved.detail(), "sample panic");
-        let lost = ErrorDialog::game_stopped(
-            "PC-98",
+        assert_eq!(saved.detail(), Some("sample panic"));
+        let lost = drawn(ErrorDialog::game_stopped(
+            Some("PC-98"),
             "sample panic",
             &Err(FlushError::new("floppy image /a.d88 could not be written")),
-        );
+        ));
         assert_eq!(
             lost.message(),
-            "The PC-98 core stopped with an error. Some disk images were not saved."
+            Some("The PC-98 core stopped with an error. Some disk images were not saved.")
         );
         assert_eq!(
             lost.detail(),
-            "floppy image /a.d88 could not be written\nsample panic"
+            Some("floppy image /a.d88 could not be written\nsample panic")
         );
     }
 
@@ -521,22 +549,29 @@ mod tests {
         let error = FlushError {
             messages: vec!["first".to_owned(), "second".to_owned()],
         };
-        let dialog = ErrorDialog::media_not_saved("Edge", &error);
+        let dialog = drawn(ErrorDialog::media_not_saved(Some("Edge"), &error));
         assert_eq!(dialog.title(), MEDIA_NOT_SAVED_TITLE);
         assert_eq!(
             dialog.message(),
-            "Edge ended. Some of its disk images were not saved."
+            Some("Edge ended. Some of its disk images were not saved.")
         );
-        assert_eq!(dialog.detail(), "first\nsecond");
+        assert_eq!(dialog.detail(), Some("first\nsecond"));
     }
 
     /// Verifies the dialog of a game file that was not deleted.
     #[test]
     fn the_delete_dialog_shows_the_game_and_the_error() {
-        let dialog = ErrorDialog::delete_failed("Edge", "config/pc98/edge.conf: Permission denied");
+        let dialog = drawn(ErrorDialog::delete_failed(
+            "Edge",
+            "config/pc98/edge.conf".to_owned(),
+            "Permission denied".to_owned(),
+        ));
         assert_eq!(dialog.title(), DELETE_FAILED_TITLE);
-        assert_eq!(dialog.message(), "Edge was not deleted.");
-        assert_eq!(dialog.detail(), "config/pc98/edge.conf: Permission denied");
+        assert_eq!(dialog.message(), Some("Edge was not deleted."));
+        assert_eq!(
+            dialog.detail(),
+            Some("config/pc98/edge.conf: Permission denied")
+        );
     }
 
     /// Verifies that OK holds the focus, that confirm and cancel close the dialog and that navigation does not.
@@ -544,7 +579,7 @@ mod tests {
     fn ok_holds_the_focus_and_confirm_or_cancel_close_the_dialog() {
         let mut harness = GuiHarness::new(960, 600);
         let area = Rect::new(0.0, 0.0, 960.0, 600.0);
-        let dialog = ErrorDialog::launch_failed("Edge", "error");
+        let mut dialog = ErrorDialog::launch_failed("Edge", "error");
         assert_eq!(
             harness.frame(|context| dialog.show(context, area)),
             DialogAnswer::Open
@@ -556,7 +591,7 @@ mod tests {
             DialogAnswer::Closed
         );
 
-        let dialog = ErrorDialog::game_stopped("X1", "halt", &Ok(()));
+        let mut dialog = ErrorDialog::game_stopped(Some("X1"), "halt", &Ok(()));
         harness.frame(|context| dialog.show(context, area));
         harness.input.cancel = true;
         assert_eq!(
@@ -564,7 +599,7 @@ mod tests {
             DialogAnswer::Closed
         );
 
-        let dialog = ErrorDialog::launch_failed("Edge", "error");
+        let mut dialog = ErrorDialog::launch_failed("Edge", "error");
         harness.frame(|context| dialog.show(context, area));
         harness.input.navigation = Some(Navigation::Down);
         assert_eq!(
@@ -585,7 +620,7 @@ mod tests {
             system,
             path: PathBuf::from("/root/config/edge.conf"),
         };
-        let dialog = ErrorDialog::launch_failed("Edge", "error").with_edit(target.clone());
+        let mut dialog = ErrorDialog::launch_failed("Edge", "error").with_edit(target.clone());
         assert_eq!(dialog.edit_target(), Some(&target));
         harness.frame(|context| dialog.show(context, area));
         harness.frame(|context| dialog.show(context, area));
@@ -608,82 +643,83 @@ mod tests {
         }
     }
 
-    /// Verifies the titles and the texts of the dialogs of the editor for a game file, a system defaults file and the settings file.
+    /// Verifies the titles and the events of the dialogs of the editor for a game file, a system defaults file and the settings file.
     #[test]
     fn the_editor_dialogs_follow_the_file_kind() {
         let defaults = EditedFile::SystemDefaults(system_named("pc98"));
         let settings = EditedFile::Settings;
-        let save = |subject: &EditedFile| {
-            let dialog = ErrorDialog::save_failed(subject, "/root/config/pc98/edge.conf: denied");
-            (dialog.title().to_owned(), dialog.message().to_owned())
+        let open_error = OpenError::Failed {
+            path: PathBuf::from("/root/config/pc98/edge.conf"),
+            error: "gone".to_owned(),
         };
-        assert_eq!(
-            save(&game()),
-            (
-                "Could not save the game".to_owned(),
-                "Edge was not saved. The editor keeps the changes.".to_owned()
-            )
-        );
-        assert_eq!(
-            save(&defaults),
-            (
-                "Could not save the system defaults".to_owned(),
-                "The PC-98 system defaults were not saved. The editor keeps the changes."
-                    .to_owned()
-            )
-        );
-        assert_eq!(
-            save(&settings),
-            (
-                "Could not save the settings".to_owned(),
-                "The settings were not saved. The editor keeps the changes.".to_owned()
-            )
-        );
-        let open = |subject: &EditedFile| {
-            let dialog = ErrorDialog::open_failed(subject, "gone");
-            assert_eq!(dialog.detail(), "gone");
-            (dialog.title().to_owned(), dialog.message().to_owned())
+        let save_failure = SaveFailure::Error {
+            path: PathBuf::from("/root/config/pc98/edge.conf"),
+            error: "denied".to_owned(),
         };
-        assert_eq!(
-            open(&game()),
-            (
-                "Could not open the game".to_owned(),
-                "Edge did not open in the editor.".to_owned()
-            )
-        );
-        assert_eq!(
-            open(&defaults),
-            (
-                "Could not open the system defaults".to_owned(),
-                "The PC-98 system defaults did not open in the editor.".to_owned()
-            )
-        );
-        assert_eq!(
-            open(&settings),
-            (
-                "Could not open the settings".to_owned(),
-                "The settings did not open in the editor.".to_owned()
-            )
-        );
-        for (kind, title, subject) in [
-            (game(), SAVE_FAILED_TITLE, "Edge was"),
+        for (subject, open_title, save_title) in [
+            (game(), GAME_OPEN_FAILED_TITLE, GAME_SAVE_FAILED_TITLE),
             (
                 defaults,
+                DEFAULTS_OPEN_FAILED_TITLE,
                 DEFAULTS_SAVE_FAILED_TITLE,
-                "The PC-98 system defaults were",
             ),
-            (settings, SETTINGS_SAVE_FAILED_TITLE, "The settings were"),
+            (
+                settings,
+                SETTINGS_OPEN_FAILED_TITLE,
+                SETTINGS_SAVE_FAILED_TITLE,
+            ),
         ] {
-            let dialog = ErrorDialog::changed_outside(&kind, "changed");
-            assert_eq!(dialog.title(), title);
-            assert!(
-                dialog
-                    .message()
-                    .starts_with(&format!("{subject} not saved. Overwrite replaces")),
-                "{}",
-                dialog.message()
+            let open = ErrorDialog::open_failed(&subject, &open_error);
+            assert_eq!(open.title(), open_title);
+            assert_eq!(open.event, ErrorEvent::OpenFailed(subject.clone()));
+            assert_eq!(open.detail, ErrorDetail::Open(open_error.clone()));
+            let save = ErrorDialog::save_failed(&subject, &save_failure);
+            assert_eq!(save.title(), save_title);
+            assert_eq!(save.event, ErrorEvent::SaveFailed(subject.clone()));
+            assert_eq!(save.detail, ErrorDetail::Save(save_failure.clone()));
+            let changed = ErrorDialog::changed_outside(&subject, "changed");
+            assert_eq!(changed.title(), save_title);
+            assert_eq!(changed.event, ErrorEvent::ChangedOutside(subject.clone()));
+            assert_eq!(
+                changed.detail,
+                ErrorDetail::Save(SaveFailure::ChangedOutside("changed".to_owned()))
             );
         }
+    }
+
+    /// The German texts of a new game that did not open and of a system that is not compiled.
+    const GERMAN_ERRORS: &str = "[errors]\n\
+                                 new-game-open-failed = Ein neues {system} Spiel ging nicht auf.\n\
+                                 not-compiled = das System {system} fehlt\n";
+
+    /// Verifies that a switch of the catalog while the dialog is open gives the drawn message and detail the new language in the next pass and that a switch back gives the English texts.
+    #[test]
+    fn an_open_dialog_follows_a_catalog_switch() {
+        let mut harness = GuiHarness::new(960, 600);
+        let mut dialog = ErrorDialog::new_game_open_failed(
+            system_named("pc98"),
+            &OpenError::NotCompiled("pc98"),
+        );
+        let english_texts = (
+            Some("A new PC-98 game did not open in the editor."),
+            Some("the system pc98 is not compiled"),
+        );
+        harness.frame(|context| dialog.show(context, AREA));
+        assert_eq!((dialog.message(), dialog.detail()), english_texts);
+        harness.set_catalog(LanguageCatalog::Loaded(Box::new(test_catalog(
+            GERMAN_ERRORS,
+        ))));
+        harness.frame(|context| dialog.show(context, AREA));
+        assert_eq!(
+            (dialog.message(), dialog.detail()),
+            (
+                Some("Ein neues PC-98 Spiel ging nicht auf."),
+                Some("das System pc98 fehlt")
+            )
+        );
+        harness.set_catalog(LanguageCatalog::English);
+        harness.frame(|context| dialog.show(context, AREA));
+        assert_eq!((dialog.message(), dialog.detail()), english_texts);
     }
 
     /// Verifies that the dialog of a file that changed outside the manager starts on Cancel, that its hints follow the focus and that each button gives its answer.
@@ -691,19 +727,19 @@ mod tests {
     fn the_changed_outside_dialog_offers_cancel_and_overwrite() {
         let mut harness = GuiHarness::new(960, 600);
         let area = Rect::new(0.0, 0.0, 960.0, 572.0);
-        let dialog = ErrorDialog::changed_outside(
+        let mut dialog = drawn(ErrorDialog::changed_outside(
             &game(),
-            "config/pc98/edge.conf changed outside the manager since the editor read it.",
+            "config/pc98/edge.conf",
+        ));
+        assert_eq!(
+            dialog.detail(),
+            Some("config/pc98/edge.conf changed outside the manager since the editor read it.")
         );
-        assert_eq!(dialog.title(), SAVE_FAILED_TITLE);
-        let labels = |harness: &mut GuiHarness| {
+        assert_eq!(dialog.title(), GAME_SAVE_FAILED_TITLE);
+        let mut labels = |harness: &mut GuiHarness| {
             harness.frame(|context| {
                 dialog.show(context, area);
-                dialog
-                    .hints(context)
-                    .iter()
-                    .map(|hint| hint.label)
-                    .collect::<Vec<_>>()
+                english_labels(&dialog.hints(context))
             })
         };
         labels(&mut harness);
@@ -730,7 +766,13 @@ mod tests {
                 DialogAnswer::Closed
             );
         }
-        let plain = ErrorDialog::save_failed(&game(), "denied");
+        let plain = ErrorDialog::save_failed(
+            &game(),
+            &SaveFailure::Error {
+                path: PathBuf::from("edge.conf"),
+                error: "denied".to_owned(),
+            },
+        );
         let hints = harness.frame(|context| plain.hints(context));
         assert_eq!(hints, [OK_HINT]);
     }
@@ -757,11 +799,23 @@ mod tests {
         let area = Rect::new(0.0, 0.0, 960.0, 572.0);
         let dialogs = [
             ErrorDialog::launch_failed("Edge", "error"),
-            ErrorDialog::game_stopped("X1", "halt", &Ok(())),
-            ErrorDialog::media_not_saved("Edge", &FlushError::new("lost")),
-            ErrorDialog::delete_failed("Edge", "denied"),
-            ErrorDialog::open_failed(&game(), "gone"),
-            ErrorDialog::save_failed(&game(), "denied"),
+            ErrorDialog::game_stopped(Some("X1"), "halt", &Ok(())),
+            ErrorDialog::media_not_saved(Some("Edge"), &FlushError::new("lost")),
+            ErrorDialog::delete_failed("Edge", "edge.conf".to_owned(), "denied".to_owned()),
+            ErrorDialog::open_failed(
+                &game(),
+                &OpenError::Failed {
+                    path: PathBuf::from("edge.conf"),
+                    error: "gone".to_owned(),
+                },
+            ),
+            ErrorDialog::save_failed(
+                &game(),
+                &SaveFailure::Error {
+                    path: PathBuf::from("edge.conf"),
+                    error: "denied".to_owned(),
+                },
+            ),
             ErrorDialog::changed_outside(&game(), "changed"),
         ];
         let icon_inset = {
@@ -774,7 +828,7 @@ mod tests {
             });
             harness.scene.instances()[0].rect[1]
         };
-        for dialog in dialogs {
+        for mut dialog in dialogs {
             let mut harness = GuiHarness::new(960, 600);
             harness.frame(|context| dialog.show(context, area));
             let theme = &harness.theme;
@@ -795,7 +849,7 @@ mod tests {
                 .find(|instance| {
                     instance.kind[0] == gui::Instance::KIND_GLYPH && instance.color == danger
                 })
-                .unwrap_or_else(|| panic!("the alert icon of {}", dialog.title()));
+                .unwrap_or_else(|| panic!("the alert icon of {:?}", dialog.message()));
             assert!(icon.rect[0] >= content_left - 1.0, "{:?}", icon.rect);
             assert!(icon.rect[0] + icon.rect[2] <= text_left, "{:?}", icon.rect);
             assert!(
@@ -853,7 +907,7 @@ mod tests {
     fn the_dialog_centers_in_its_area() {
         let mut harness = GuiHarness::new(960, 600);
         let area = Rect::new(0.0, 0.0, 960.0, 572.0);
-        let dialog = ErrorDialog::launch_failed("Edge", &"error text ".repeat(60));
+        let mut dialog = ErrorDialog::launch_failed("Edge", &"error text ".repeat(60));
         harness.frame(|context| dialog.show(context, area));
         let panel = harness
             .scene

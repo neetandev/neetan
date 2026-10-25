@@ -12,16 +12,19 @@ use std::path::{Path, PathBuf};
 use gui::{
     Rect,
     ui::{
-        ACTIVATE_KEYS, Align, Button, ButtonKind, CANCEL_KEYS, Checkbox, Hint, HintKey, Icon,
-        ListState, PATH_LINE_HEIGHT, RowContent, RowMark, Shortcut, TextField, Truncation,
-        UiContext, UiId, distinct_hints, label, list, modal_in,
+        ACTIVATE_KEYS, Align, Button, ButtonKind, CANCEL_KEYS, Checkbox, HintKey, Icon, ListState,
+        PATH_LINE_HEIGHT, RowContent, RowMark, Shortcut, TextBuffer, TextField, TextValue,
+        Truncation, UiContext, UiId, distinct_hints, label, list, modal_in,
     },
 };
+use i18n::Catalog;
 use machine_factory::config::settings::{PathKind, file_types::FileTypes};
 
 use crate::{
     config::resolve_path,
+    editor::ExtensionList,
     media_dialog::{ImageEntry, PANEL_SIZE, TAB_BAR_HEIGHT, filtered_entries},
+    texts::{self, HintText, browser, common},
 };
 
 /// The id of the modal layer of the browser.
@@ -42,9 +45,6 @@ const CANCEL_ID: &str = "browser cancel";
 /// The id of the choose button.
 const CHOOSE_ID: &str = "browser choose";
 
-/// The caption of the row that opens the parent folder.
-const PARENT_CAPTION: &str = "Parent folder";
-
 /// The result of a hint of the browser. Two hints of one action lead to
 /// one result, and the status line shows only the first of them.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -64,85 +64,74 @@ enum BrowserAction {
 }
 
 /// A hint with its action.
-type ActionHint = (BrowserAction, Hint<'static>);
+type ActionHint = (BrowserAction, HintText);
 
 /// The hint of a file row and of the choose button.
 const CHOOSE_HINT: ActionHint = (
     BrowserAction::Choose,
-    Hint {
-        keys: ACTIVATE_KEYS,
-        label: "Choose",
-    },
+    HintText::new(ACTIVATE_KEYS, texts::common::CHOOSE),
 );
 
 /// The hint of a folder row.
 const OPEN_HINT: ActionHint = (
     BrowserAction::OpenFolder,
-    Hint {
-        keys: ACTIVATE_KEYS,
-        label: "Open",
-    },
+    HintText::new(ACTIVATE_KEYS, texts::common::OPEN),
 );
 
 /// The hint of the row that opens the parent folder.
 const OPEN_PARENT_HINT: ActionHint = (
     BrowserAction::OpenParent,
-    Hint {
-        keys: ACTIVATE_KEYS,
-        label: "Open",
-    },
+    HintText::new(ACTIVATE_KEYS, texts::common::OPEN),
 );
 
 /// The hint of Backspace in the file list.
 const PARENT_HINT: ActionHint = (
     BrowserAction::OpenParent,
-    Hint {
-        keys: &[HintKey::Key("Backspace")],
-        label: PARENT_CAPTION,
-    },
+    HintText::new(&[HintKey::Key("Backspace")], browser::PARENT_FOLDER),
 );
 
 /// The hint of the checkbox.
 const SWITCH_HINT: ActionHint = (
     BrowserAction::Switch,
-    Hint {
-        keys: ACTIVATE_KEYS,
-        label: "Switch",
-    },
+    HintText::new(ACTIVATE_KEYS, texts::common::SWITCH),
 );
 
 /// The hint of the cancel button.
 const CANCEL_HINT: ActionHint = (
     BrowserAction::Close,
-    Hint {
-        keys: ACTIVATE_KEYS,
-        label: "Cancel",
-    },
+    HintText::new(ACTIVATE_KEYS, texts::common::CANCEL),
 );
 
 /// The hint of a filter with text, which cancel empties.
 const CLEAR_HINT: ActionHint = (
     BrowserAction::Clear,
-    Hint {
-        keys: CANCEL_KEYS,
-        label: "Clear",
-    },
+    HintText::new(CANCEL_KEYS, texts::common::CLEAR),
 );
 
 /// The hint of the close of the browser.
 const CLOSE_HINT: ActionHint = (
     BrowserAction::Close,
-    Hint {
-        keys: CANCEL_KEYS,
-        label: "Close",
-    },
+    HintText::new(CANCEL_KEYS, texts::common::CLOSE),
 );
+
+/// The kind of item that the browser chooses. The title of the browser shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BrowseNoun {
+    /// A folder.
+    Folder,
+    /// A disk image.
+    Image,
+    /// Any other file.
+    File,
+}
 
 /// What a path setting asks the browser for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BrowseRequest {
-    /// The title of the browser, for example `Choose image for FDD 1`.
-    pub(crate) title: String,
+    /// The kind of item that the browser chooses.
+    pub(crate) noun: BrowseNoun,
+    /// The label of the setting, for example `FDD 1`.
+    pub(crate) label: &'static str,
     /// Whether the setting takes a file or a folder.
     pub(crate) kind: PathKind,
     /// The files that the setting takes. `None` takes every file.
@@ -187,21 +176,69 @@ pub(crate) fn path_value(path: &Path, root: &Path) -> String {
         .into_owned()
 }
 
-/// The text of the line under the filter: the name and the extensions of
-/// the files, or that every file shows.
-fn extension_line(types: Option<&FileTypes>, show_all: bool, kind: PathKind) -> String {
+/// Writes the title of the browser for `request` in `catalog`, for example
+/// `Choose image for FDD 1`.
+fn write_title(catalog: &Catalog, request: &BrowseRequest, out: &mut String) {
+    let label = &request.label;
+    let message = match request.noun {
+        BrowseNoun::Folder => browser::choose_folder(label),
+        BrowseNoun::Image => browser::choose_image(label),
+        BrowseNoun::File => browser::choose_file(label),
+    };
+    let _ = catalog.write(out, message);
+}
+
+/// The title of the browser for `request` in English.
+#[cfg(test)]
+pub(crate) fn english_title(request: &BrowseRequest) -> String {
+    texts::english_text(|catalog, out| write_title(catalog, request, out))
+}
+
+/// Writes the text of the line under the filter in `catalog`: the name and
+/// the extensions of the files, or that every file shows.
+fn write_extension_line(
+    catalog: &Catalog,
+    out: &mut String,
+    types: Option<&FileTypes>,
+    show_all: bool,
+    kind: PathKind,
+) {
     match (kind, types) {
-        (PathKind::Folder, _) => "Folders".to_owned(),
+        (PathKind::Folder, _) => out.push_str(catalog.text(browser::FOLDERS)),
         (PathKind::File, Some(types)) if !show_all => {
-            let extensions: Vec<String> = types
-                .extensions
-                .iter()
-                .map(|extension| format!(".{extension}"))
-                .collect();
-            format!("{}: {}", types.name, extensions.join(" "))
+            let _ = catalog.write(out, browser::extensions(&types.name, &ExtensionList(types)));
         }
-        (PathKind::File, Some(_) | None) => "All files".to_owned(),
+        (PathKind::File, Some(_) | None) => out.push_str(catalog.text(browser::ALL_FILES)),
     }
+}
+
+/// The text of a list without a file row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmptyText {
+    /// The folder does not read.
+    ReadError,
+    /// No file passes the filter.
+    NoMatch,
+    /// The folder holds no folder.
+    NoFolders,
+    /// The folder holds no file of the types of the setting.
+    NoTypedFiles,
+    /// The folder holds no file.
+    NoFiles,
+}
+
+impl TextValue for EmptyText {}
+
+/// The texts of the browser that refill only when their data or the
+/// catalog changes.
+#[derive(Debug, Clone, Default)]
+struct BrowserTexts {
+    /// The title of the panel.
+    title: TextBuffer<()>,
+    /// The line under the filter, for whether every file shows.
+    extensions: TextBuffer<bool>,
+    /// The text of a list without a file row, keyed on the read error of the folder.
+    empty: TextBuffer<(EmptyText, String)>,
 }
 
 /// The open file browser.
@@ -221,6 +258,8 @@ pub(crate) struct FileBrowser {
     files: Vec<ImageEntry>,
     /// The error of a folder that does not read.
     read_error: Option<String>,
+    /// The texts of the panel.
+    texts: BrowserTexts,
     /// The filter text.
     filter: String,
     /// Whether the extension filter is lifted.
@@ -230,7 +269,7 @@ pub(crate) struct FileBrowser {
     /// The selection and the scroll position of the list.
     list: ListState,
     /// The hints of the status line of the last pass.
-    hints: Vec<Hint<'static>>,
+    hints: Vec<HintText>,
     /// Whether the rows changed after the list drew them, so the pass draws stale widgets.
     stale: bool,
 }
@@ -261,6 +300,7 @@ impl FileBrowser {
             folders: Vec::new(),
             files: Vec::new(),
             read_error: None,
+            texts: BrowserTexts::default(),
             filter: String::new(),
             show_all: false,
             rows: Vec::new(),
@@ -280,7 +320,7 @@ impl FileBrowser {
     }
 
     /// The hints of the status line of the last pass.
-    pub(crate) fn hints(&self) -> &[Hint<'static>] {
+    pub(crate) fn hints(&self) -> &[HintText] {
         &self.hints
     }
 
@@ -304,7 +344,7 @@ impl FileBrowser {
                     }
                 }
             }
-            Err(error) => self.read_error = Some(format!("The folder cannot be read: {error}")),
+            Err(error) => self.read_error = Some(error.to_string()),
         }
         for entries in [&mut self.folders, &mut self.files] {
             entries.sort_by_cached_key(|entry| (entry.name.to_lowercase(), entry.name.clone()));
@@ -406,9 +446,9 @@ impl FileBrowser {
     }
 
     /// The text of a list without a file row.
-    fn empty_text(&self) -> Option<String> {
-        if let Some(error) = &self.read_error {
-            return Some(error.clone());
+    fn empty_text(&self) -> Option<EmptyText> {
+        if self.read_error.is_some() {
+            return Some(EmptyText::ReadError);
         }
         if self
             .rows
@@ -418,14 +458,41 @@ impl FileBrowser {
             return None;
         }
         if !self.filter.trim().is_empty() {
-            return Some("No files match the filter".to_owned());
+            return Some(EmptyText::NoMatch);
         }
         Some(match (self.request.kind, self.request.types) {
-            (PathKind::Folder, _) => "No folders in this folder".to_owned(),
-            (PathKind::File, Some(types)) if !self.show_all => {
-                format!("No {} in this folder", types.name.to_lowercase())
+            (PathKind::Folder, _) => EmptyText::NoFolders,
+            (PathKind::File, Some(_)) if !self.show_all => EmptyText::NoTypedFiles,
+            (PathKind::File, Some(_) | None) => EmptyText::NoFiles,
+        })
+    }
+
+    /// Writes the text `empty` of a list without a file row in `catalog`.
+    fn write_empty_text(&self, catalog: &Catalog, empty: EmptyText, out: &mut String) {
+        match empty {
+            EmptyText::ReadError => {
+                let error = self.read_error.as_deref().unwrap_or_default();
+                let _ = catalog.write(out, browser::read_error(&error));
             }
-            (PathKind::File, Some(_) | None) => "No files in this folder".to_owned(),
+            EmptyText::NoMatch => out.push_str(catalog.text(browser::NO_MATCH)),
+            EmptyText::NoFolders => out.push_str(catalog.text(browser::NO_FOLDERS)),
+            EmptyText::NoTypedFiles => {
+                let files = self
+                    .request
+                    .types
+                    .map(|types| types.name.to_lowercase())
+                    .unwrap_or_default();
+                let _ = catalog.write(out, browser::no_typed_files(&files));
+            }
+            EmptyText::NoFiles => out.push_str(catalog.text(browser::NO_FILES)),
+        }
+    }
+
+    /// The text of a list without a file row in English.
+    #[cfg(test)]
+    fn english_empty_text(&self) -> Option<String> {
+        self.empty_text().map(|empty| {
+            texts::english_text(|catalog, out| self.write_empty_text(catalog, empty, out))
         })
     }
 
@@ -455,15 +522,14 @@ impl FileBrowser {
     /// answer of the pass.
     fn draw_panel(&mut self, context: &mut UiContext, area: Rect) -> BrowserOutcome {
         let theme = context.theme;
+        let catalog = context.catalog;
         let gap = theme.gap;
         let list_id = UiId::from(LIST_ID);
-        let response = modal_in(
-            context,
-            BROWSER_LAYER_ID,
-            area,
-            PANEL_SIZE,
-            &self.request.title,
-        );
+        let mut texts = std::mem::take(&mut self.texts);
+        let title = texts.title.text(context, (), |catalog, (), out| {
+            write_title(catalog, &self.request, out);
+        });
+        let response = modal_in(context, BROWSER_LAYER_ID, area, PANEL_SIZE, title);
         let mut outcome = if response.closed {
             BrowserOutcome::Cancelled
         } else {
@@ -497,18 +563,32 @@ impl FileBrowser {
         );
 
         let (filter_area, rest) = rest.cut_top(gap * 1.5).1.cut_top(theme.control_height);
-        let filter =
-            TextField::new(FILTER_ID, "Filter files").show(context, filter_area, &mut self.filter);
+        let filter = TextField::new(FILTER_ID, catalog.text(browser::FILTER_PLACEHOLDER)).show(
+            context,
+            filter_area,
+            &mut self.filter,
+        );
         if filter.changed {
             let selected = self.selected_row().and_then(|row| self.row_path(row));
             self.rebuild_rows(selected.as_deref());
         }
         let (extension_area, rest) = rest.cut_top(gap).1.cut_top(PATH_LINE_HEIGHT);
+        let extensions = texts
+            .extensions
+            .text(context, self.show_all, |catalog, show_all, out| {
+                write_extension_line(
+                    catalog,
+                    out,
+                    self.request.types,
+                    show_all,
+                    self.request.kind,
+                );
+            });
         label(
             context,
             extension_area,
             &theme.small(),
-            &extension_line(self.request.types, self.show_all, self.request.kind),
+            extensions,
             Align::Start,
             Truncation::End,
         );
@@ -530,7 +610,7 @@ impl FileBrowser {
             &mut self.list,
             |context, row| match rows[row.index] {
                 BrowserRow::Parent => {
-                    RowContent::new(PARENT_CAPTION)
+                    RowContent::new(catalog.text(browser::PARENT_FOLDER))
                         .icon(Some(Icon::Up))
                         .show(context, row);
                 }
@@ -550,7 +630,14 @@ impl FileBrowser {
                 }
             },
         );
-        if let Some(text) = self.empty_text() {
+        if let Some(empty) = self.empty_text() {
+            let read_error = self.read_error.as_deref().unwrap_or_default();
+            let text =
+                texts
+                    .empty
+                    .text(context, (empty, read_error), |catalog, (empty, _), out| {
+                        self.write_empty_text(catalog, empty, out);
+                    });
             let first = usize::from(self.rows.first() == Some(&BrowserRow::Parent)) as f32;
             let hint_area = Rect::new(
                 list_area.x,
@@ -562,24 +649,25 @@ impl FileBrowser {
                 context,
                 hint_area,
                 &theme.small(),
-                &text,
+                text,
                 Align::Center,
                 Truncation::End,
             );
         }
+        self.texts = texts;
 
         let selected = self.selected_row();
         let choosable = selected.and_then(|row| self.chosen(row));
-        let choose = Button::new(CHOOSE_ID, "Choose")
+        let choose = Button::new(CHOOSE_ID, catalog.text(common::CHOOSE))
             .icon(Icon::Check)
             .kind(ButtonKind::Primary)
             .enabled(choosable.is_some());
-        let cancel = Button::new(CANCEL_ID, "Cancel");
+        let cancel = Button::new(CANCEL_ID, catalog.text(common::CANCEL));
         let (choose_area, rest) = footer.cut_right(choose.width(context));
         let cancel_area = rest.cut_right(gap).1.cut_right(cancel.width(context));
         let show_all_offered = self.request.kind == PathKind::File && self.request.types.is_some();
         if show_all_offered {
-            let checkbox = Checkbox::new(SHOW_ALL_ID, "Show all files");
+            let checkbox = Checkbox::new(SHOW_ALL_ID, catalog.text(browser::SHOW_ALL));
             let width = checkbox.width(context).min(cancel_area.1.width);
             let checkbox_area = cancel_area.1.cut_left(width).0;
             if checkbox.show(context, checkbox_area, &mut self.show_all) {
@@ -607,7 +695,7 @@ impl FileBrowser {
     /// The hints of the widget that holds the focus. A hint whose action an
     /// earlier hint has leaves the line, such as Esc beside the focused
     /// Cancel button and Backspace beside the selected parent row.
-    fn focus_hints(&self, context: &UiContext) -> Vec<Hint<'static>> {
+    fn focus_hints(&self, context: &UiContext) -> Vec<HintText> {
         let focused = |id: &str| context.has_focus(UiId::from(id));
         let mut hints = Vec::new();
         if focused(LIST_ID) {
@@ -648,7 +736,8 @@ mod tests {
     fn floppy_request(current: Option<&str>) -> BrowseRequest {
         let fdd1 = find_setting("fdd1").expect("fdd1 is a table key");
         BrowseRequest {
-            title: "Choose image for FDD 1".to_owned(),
+            noun: BrowseNoun::Image,
+            label: "FDD 1",
             kind: PathKind::File,
             types: fdd1.file_types.first(),
             icon: Icon::Disk,
@@ -799,11 +888,7 @@ mod tests {
         harness.settle(|context| browser.show(context, AREA));
         assert_eq!(browser.folder(), root.path("games/98/YU-NO"));
         assert_eq!(
-            browser
-                .hints()
-                .iter()
-                .map(|hint| hint.label)
-                .collect::<Vec<_>>(),
+            texts::english_labels(browser.hints()),
             ["Open", "Parent folder", "Close"]
         );
 
@@ -828,14 +913,7 @@ mod tests {
         harness.settle(|context| browser.show(context, AREA));
         assert_eq!(browser.folder(), root.path("games/98"));
         assert_eq!(browser.filter, "y");
-        assert_eq!(
-            browser
-                .hints()
-                .iter()
-                .map(|hint| hint.label)
-                .collect::<Vec<_>>(),
-            ["Clear"]
-        );
+        assert_eq!(texts::english_labels(browser.hints()), ["Clear"]);
         harness.input.cancel = true;
         harness.settle(|context| browser.show(context, AREA));
         assert_eq!(browser.filter, "");
@@ -852,7 +930,8 @@ mod tests {
         let root = games_root("browser_empty");
         let cdrom = find_setting("cdrom").expect("cdrom is a table key");
         let request = BrowseRequest {
-            title: "Choose image for CD-ROM".to_owned(),
+            noun: BrowseNoun::Image,
+            label: "CD-ROM",
             kind: PathKind::File,
             types: cdrom.file_types.first(),
             icon: Icon::Disc,
@@ -862,7 +941,7 @@ mod tests {
         assert_eq!(browser.folder(), root.path("games/98/YU-NO/Manual"));
         assert_eq!(names(&browser), [".."]);
         assert_eq!(
-            browser.empty_text().as_deref(),
+            browser.english_empty_text().as_deref(),
             Some("No disc images in this folder")
         );
         assert_eq!(
@@ -873,19 +952,12 @@ mod tests {
         harness.settle(|context| browser.show(context, AREA));
         harness.state.set_focus(UiId::from(SHOW_ALL_ID));
         harness.settle(|context| browser.show(context, AREA));
-        assert_eq!(
-            browser
-                .hints()
-                .iter()
-                .map(|hint| hint.label)
-                .collect::<Vec<_>>(),
-            ["Switch", "Close"]
-        );
+        assert_eq!(texts::english_labels(browser.hints()), ["Switch", "Close"]);
         harness.input.confirm = true;
         harness.settle(|context| browser.show(context, AREA));
         assert!(browser.show_all);
         assert_eq!(names(&browser), ["..", "manual.pdf"]);
-        assert_eq!(browser.empty_text(), None);
+        assert_eq!(browser.english_empty_text(), None);
     }
 
     /// Verifies that a hint with the result of an earlier hint leaves the line: Backspace beside the selected parent row, and Esc beside the focused Cancel button.
@@ -894,7 +966,8 @@ mod tests {
         let root = games_root("browser_hints");
         let cdrom = find_setting("cdrom").expect("cdrom is a table key");
         let request = BrowseRequest {
-            title: "Choose image for CD-ROM".to_owned(),
+            noun: BrowseNoun::Image,
+            label: "CD-ROM",
             kind: PathKind::File,
             types: cdrom.file_types.first(),
             icon: Icon::Disc,
@@ -907,13 +980,7 @@ mod tests {
         harness.state.set_focus(UiId::from(LIST_ID));
         harness.settle(|context| browser.show(context, AREA));
         assert_eq!(selected(&browser), "..");
-        let labels = |browser: &FileBrowser| {
-            browser
-                .hints()
-                .iter()
-                .map(|hint| hint.label)
-                .collect::<Vec<_>>()
-        };
+        let labels = |browser: &FileBrowser| texts::english_labels(browser.hints());
         assert_eq!(labels(&browser), ["Open", "Close"]);
         harness.state.set_focus(UiId::from(CANCEL_ID));
         harness.settle(|context| browser.show(context, AREA));
@@ -925,7 +992,8 @@ mod tests {
     fn a_folder_setting_chooses_folders() {
         let root = games_root("browser_folders");
         let request = BrowseRequest {
-            title: "Choose folder".to_owned(),
+            noun: BrowseNoun::Folder,
+            label: "Config folder",
             kind: PathKind::Folder,
             types: None,
             icon: Icon::Folder,

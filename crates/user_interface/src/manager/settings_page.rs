@@ -29,8 +29,9 @@ impl Manager {
     /// Opens the settings page on the settings file with the ROM statuses
     /// of the last ROM check.
     pub(super) fn open_settings(&mut self, context: &mut UiContext) {
-        let editor = Editor::settings(&self.host, &self.roms);
-        self.open_editor(context, editor, EditedFile::Settings);
+        let editor = Editor::settings(&self.host, &self.roms)
+            .map_err(|error| ErrorDialog::open_failed(&EditedFile::Settings, &error));
+        self.open_editor(context, editor);
     }
 
     /// Reads the host settings again after a save of the settings file
@@ -77,6 +78,7 @@ impl Manager {
 
 #[cfg(test)]
 mod tests {
+    use common::allocation_counter::count_allocations;
     use gui::ui::{ActionButton, Navigation, Shortcut, ThemeKind, UiId, Viewport};
     use machine_factory::{
         config::settings::{
@@ -249,8 +251,7 @@ mod tests {
         let root = EditorRoot::new("settings_language");
         root.write(
             "language/de.ini",
-            "[language]\nname = Deutsch\nplural = one-other\n\
-             [host-settings]\nlanguage-auto = Systemsprache\n",
+            &crate::texts::test_language("[host-settings]\nlanguage-auto = Systemsprache\n"),
         );
         let mut manager = manager_with(&root, &[]);
         let mut harness = GuiHarness::new(960, 600);
@@ -292,10 +293,7 @@ mod tests {
     #[test]
     fn a_save_that_keeps_the_language_switches_nothing() {
         let root = EditorRoot::new("settings_same_language");
-        root.write(
-            "language/de.ini",
-            "[language]\nname = Deutsch\nplural = one-other\n",
-        );
+        root.write("language/de.ini", &crate::texts::test_language(""));
         root.write("neetan.conf", "gui-language = de\n");
         let mut manager = manager_with(&root, &[]);
         root.write("neetan.conf", "gui-language = DE\n");
@@ -440,6 +438,51 @@ mod tests {
         harness.state.set_focus(field_id(BACKEND_KEY));
         settle(&mut harness, &mut manager);
         render(&harness, "video_flag");
+    }
+
+    /// The most allocations of a steady frame of a section of the settings page: the lists of
+    /// the hints of the status line and of the focus ring of the pass, and the lines of the notes
+    /// and of the text of the settings file that wrap. The texts and the folders of the page
+    /// allocate nothing.
+    const SETTINGS_FRAME_ALLOCATIONS: usize = 11;
+
+    /// Verifies that a steady frame of each section of the settings page, the second pass with an
+    /// unchanged state, allocates only its lists, fills no text again and keeps the revision of
+    /// the editor.
+    #[test]
+    fn a_steady_frame_of_the_settings_page_allocates_only_its_lists() {
+        let root = sample_root("steady_settings", "");
+        let mut manager = manager_with(&root, &[]);
+        manager.roms = sample_statuses(&manager.host);
+        let mut harness = GuiHarness::new(960, 600);
+        settle(&mut harness, &mut manager);
+        harness.input.shortcut = Some(Shortcut::F10);
+        settle(&mut harness, &mut manager);
+        assert!(settings_open(&manager));
+        let sections = manager.editor().map(Editor::sections).unwrap_or_default();
+        assert_eq!(sections.len(), 3);
+        for section in sections {
+            assert_eq!(
+                manager.editor().map(Editor::current_section),
+                Some(*section)
+            );
+            harness.frame(|context| manager.show(context));
+            let revision = manager.editor().map(Editor::revision);
+            let (allocations, (fills, _)) = count_allocations(|| {
+                gui::ui::count_fills(|| harness.frame(|context| manager.show(context)))
+            });
+            assert!(
+                allocations <= SETTINGS_FRAME_ALLOCATIONS,
+                "a steady frame of the section {section:?} allocates {allocations} times"
+            );
+            assert_eq!(
+                fills, 0,
+                "a steady frame of the section {section:?} fills texts again"
+            );
+            assert_eq!(manager.editor().map(Editor::revision), revision);
+            harness.input.navigation = Some(Navigation::NextTab);
+            settle(&mut harness, &mut manager);
+        }
     }
 
     /// Writes the screenshots of the settings page in both themes at the

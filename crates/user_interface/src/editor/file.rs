@@ -2,15 +2,24 @@
 //! known path, the first write of a new game or a copy, and the required
 //! values that a save writes into a file without them.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
+
+use i18n::Catalog;
 
 use super::{
     derived_file::DerivedFile,
     fields::Field,
     inherited::Inherited,
-    save::{FileStamp, changed_outside_message, create_document, save_document},
+    save::{FileStamp, create_document, save_document},
 };
-use crate::{config::ConfigDocument, manager::shown_path};
+use crate::{
+    config::ConfigDocument,
+    manager::shown_path,
+    texts::{english, errors},
+};
 
 /// The most derived file names that a save of a new game tries while other
 /// files take them.
@@ -53,22 +62,53 @@ impl EditorFile {
     }
 }
 
-/// Why a save did not write the file.
+/// The reason that a save did not write the file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SaveFailure {
-    /// The write failed with this error.
-    Error(String),
-    /// The file changed, went away or appeared since the editor read it, as
-    /// this text says. A save that overwrites the file can follow.
+    /// The write failed.
+    Error {
+        /// The path of the file.
+        path: PathBuf,
+        /// The error of the operating system in English.
+        error: String,
+    },
+    /// The file at this shown path changed, went away or appeared since
+    /// the editor read it. A save that overwrites the file can follow.
     ChangedOutside(String),
+    /// Other files take every derived file name of a new game in this
+    /// folder.
+    NoFreeName(PathBuf),
 }
 
 impl SaveFailure {
-    /// The text of the failure.
-    pub(crate) fn message(&self) -> &str {
-        match self {
-            Self::Error(message) | Self::ChangedOutside(message) => message,
+    /// The failure of the write of the file at `path` with `error`.
+    pub(crate) fn error(path: &Path, error: &dyn fmt::Display) -> Self {
+        Self::Error {
+            path: path.to_path_buf(),
+            error: error.to_string(),
         }
+    }
+
+    /// Writes the text of the failure in `catalog`: the error of the write,
+    /// the sentence about a file that changed outside the manager, or the
+    /// sentence about the taken file names.
+    pub(crate) fn write(&self, catalog: &Catalog, out: &mut impl fmt::Write) -> fmt::Result {
+        match self {
+            Self::Error { path, error } => {
+                catalog.write(out, errors::path_error(&path.display(), error))
+            }
+            Self::ChangedOutside(shown) => {
+                catalog.write(out, errors::changed_outside_detail(shown))
+            }
+            Self::NoFreeName(folder) => catalog.write(out, errors::no_free_name(&folder.display())),
+        }
+    }
+}
+
+impl fmt::Display for SaveFailure {
+    /// Writes the text of the failure in English.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.write(english(), formatter)
     }
 }
 
@@ -117,19 +157,18 @@ pub(crate) fn write_file(
 ) -> Result<WrittenFile, SaveFailure> {
     match file {
         EditorFile::Existing(path) => {
-            let changed_outside =
-                || SaveFailure::ChangedOutside(changed_outside_message(&shown_path(path, root)));
+            let changed_outside = || SaveFailure::ChangedOutside(shown_path(path, root));
             if !overwrite && FileStamp::of(path) != stamp {
                 return Err(changed_outside());
             }
             let stamp = if overwrite || stamp.is_some() {
-                save_document(document, path).map_err(SaveFailure::Error)?
+                save_document(document, path)?
             } else {
                 create_document(document, path).map_err(|error| {
                     if error.kind() == std::io::ErrorKind::AlreadyExists {
                         changed_outside()
                     } else {
-                        SaveFailure::Error(format!("{}: {error}", path.display()))
+                        SaveFailure::error(path, &error)
                     }
                 })?
             };
@@ -145,14 +184,11 @@ pub(crate) fn write_file(
                     Ok(stamp) => return Ok(WrittenFile { path, stamp }),
                     Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                     Err(error) => {
-                        return Err(SaveFailure::Error(format!("{}: {error}", path.display())));
+                        return Err(SaveFailure::error(&path, &error));
                     }
                 }
             }
-            Err(SaveFailure::Error(format!(
-                "{}: every derived file name exists",
-                derived.folder.display()
-            )))
+            Err(SaveFailure::NoFreeName(derived.folder.clone()))
         }
     }
 }
@@ -213,11 +249,8 @@ mod tests {
         let failure = write_file(&file, &document, stamp, "Edge 2", &root.root, false)
             .expect_err("the file changed");
         let shown = format!("config/{}/edge.conf", root.system().name);
-        assert_eq!(
-            failure,
-            SaveFailure::ChangedOutside(changed_outside_message(&shown))
-        );
-        assert!(failure.message().starts_with(&shown));
+        assert_eq!(failure, SaveFailure::ChangedOutside(shown.clone()));
+        assert!(failure.to_string().starts_with(&shown));
         assert_eq!(
             std::fs::read_to_string(&path).expect("file reads"),
             "meta.title = Changed outside\ncrt = on\n"
@@ -302,7 +335,7 @@ mod tests {
         let blocked = EditorFile::New(DerivedFile::new(&root.path("blocked/pc98"), ""));
         let failure = write_file(&blocked, &document, None, "Edge", &root.root, false)
             .expect_err("the folder is a file");
-        assert!(matches!(failure, SaveFailure::Error(_)), "{failure:?}");
+        assert!(matches!(failure, SaveFailure::Error { .. }), "{failure:?}");
         assert_eq!(EditorFile::Existing(written.path).derived(), None);
     }
 }

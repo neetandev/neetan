@@ -2,22 +2,15 @@
 
 use gui::{
     Rect,
-    ui::{ConfirmDialog, ConfirmResponse, Hint, Icon, UiContext},
+    ui::{ConfirmDialog, ConfirmResponse, Icon, TextBuffer, UiContext, confirm_hints},
 };
+use i18n::Catalog;
 
 use super::EditedFile;
+use crate::texts::{HintText, discard};
 
 /// The id of the modal layer of the question.
 pub(crate) const DISCARD_LAYER_ID: &str = "discard";
-
-/// The title of the question.
-const DISCARD_TITLE: &str = "Discard changes";
-
-/// The caption of the action of the question.
-const DISCARD_ACTION: &str = "Discard";
-
-/// The caption of the button that keeps the editor open.
-const KEEP_EDITING: &str = "Keep editing";
 
 /// The answer of the question in a pass.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -30,55 +23,78 @@ pub(crate) enum DiscardOutcome {
     Discarded,
 }
 
+/// Writes the question about the changes to the file of `subject` in
+/// `catalog`.
+fn write_message(catalog: &Catalog, subject: &EditedFile, out: &mut String) {
+    let _ = match subject {
+        EditedFile::Game { name, .. } => catalog.write(out, discard::game(name)),
+        EditedFile::SystemDefaults(system) => catalog.write(out, discard::defaults(&system.label)),
+        EditedFile::Settings => {
+            out.push_str(catalog.text(discard::SETTINGS));
+            Ok(())
+        }
+    };
+}
+
 /// The question before the changes to one file go away.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct DiscardQuestion {
-    /// The question.
-    message: String,
+    /// The file of the changes.
+    subject: EditedFile,
+    /// The question in the catalog of the last pass.
+    message: TextBuffer<()>,
     /// The answer of the last pass, for the hints.
     response: ConfirmResponse,
 }
 
 impl DiscardQuestion {
     /// The question about the changes to the file of `subject`.
-    pub(crate) fn new(subject: &EditedFile) -> Self {
+    pub(crate) fn new(subject: EditedFile) -> Self {
         Self {
-            message: format!("The changes to {} are not saved.", subject.text()),
+            subject,
+            message: TextBuffer::new(),
             response: ConfirmResponse::default(),
         }
     }
 
-    /// The question.
+    /// The question that the last pass drew. A question without a pass has
+    /// none.
     #[cfg(test)]
-    pub(crate) fn message(&self) -> &str {
-        &self.message
+    pub(crate) fn message(&self) -> Option<&str> {
+        self.message.last_text()
     }
 
-    /// The confirm dialog of the question, centered in `area`.
-    fn dialog(&self, area: Rect) -> ConfirmDialog<'_> {
-        ConfirmDialog::new(
-            DISCARD_LAYER_ID,
-            DISCARD_TITLE,
-            &self.message,
-            DISCARD_ACTION,
+    /// The hints of the status line for the answer of the last pass, in the
+    /// order of the hints of a confirm dialog.
+    pub(crate) fn hints(&self) -> Vec<HintText> {
+        confirm_hints(
+            self.response,
+            discard::KEEP_EDITING,
+            discard::ACTION,
+            HintText::new,
         )
-        .cancel_caption(KEEP_EDITING)
-        .action_icon(Icon::Delete)
-        .danger(true)
-        .area(area)
-    }
-
-    /// The hints of the status line for the answer of the last pass.
-    pub(crate) fn hints(&self) -> Vec<Hint<'static>> {
-        ConfirmDialog::new(DISCARD_LAYER_ID, DISCARD_TITLE, "", DISCARD_ACTION)
-            .cancel_caption(KEEP_EDITING)
-            .danger(true)
-            .hints(self.response)
     }
 
     /// Draws one pass of the question centered in `area` and returns its answer.
     pub(crate) fn show(&mut self, context: &mut UiContext, area: Rect) -> DiscardOutcome {
-        self.response = self.dialog(area).show(context);
+        let catalog = context.catalog;
+        let Self {
+            subject, message, ..
+        } = self;
+        let message = message.text(context, (), |catalog, (), out| {
+            write_message(catalog, subject, out);
+        });
+        self.response = ConfirmDialog::new(
+            DISCARD_LAYER_ID,
+            catalog.text(discard::TITLE),
+            message,
+            catalog.text(discard::KEEP_EDITING),
+            catalog.text(discard::ACTION),
+        )
+        .action_icon(Icon::Delete)
+        .danger(true)
+        .area(area)
+        .show(context);
         if self.response.confirmed {
             DiscardOutcome::Discarded
         } else if self.response.cancelled {
@@ -94,7 +110,11 @@ mod tests {
     use gui::ui::{Navigation, UiId};
 
     use super::*;
-    use crate::{editor::test_support::system_named, gui_test_support::GuiHarness};
+    use crate::{
+        editor::test_support::system_named,
+        gui_test_support::GuiHarness,
+        texts::{LanguageCatalog, english_labels, test_catalog},
+    };
 
     /// The area of the question in the tests.
     const AREA: Rect = Rect::new(0.0, 0.0, 960.0, 572.0);
@@ -112,53 +132,82 @@ mod tests {
         game("Edge")
     }
 
+    /// Returns the question that one pass of the question about `subject` draws.
+    fn drawn_message(subject: EditedFile) -> Option<String> {
+        let mut question = DiscardQuestion::new(subject);
+        GuiHarness::new(960, 600).frame(|context| question.show(context, AREA));
+        question.message().map(str::to_owned)
+    }
+
     /// Verifies the question about the system defaults and about the settings.
     #[test]
     fn the_question_reads_the_subject_of_the_file() {
         assert_eq!(
-            DiscardQuestion::new(&EditedFile::SystemDefaults(system_named("pc98"))).message(),
-            "The changes to the PC-98 system defaults are not saved."
+            drawn_message(EditedFile::SystemDefaults(system_named("pc98"))).as_deref(),
+            Some("The changes to the PC-98 system defaults are not saved.")
         );
         assert_eq!(
-            DiscardQuestion::new(&EditedFile::Settings).message(),
-            "The changes to the settings are not saved."
+            drawn_message(EditedFile::Settings).as_deref(),
+            Some("The changes to the settings are not saved.")
+        );
+    }
+
+    /// The German text of the question about a game.
+    const GERMAN_DISCARD: &str = "[discard]\n\
+                                  game = Die Änderungen an {game} sind nicht gespeichert.\n";
+
+    /// Verifies that a switch of the catalog while the question is open gives the drawn question the new language in the next pass.
+    #[test]
+    fn an_open_question_follows_a_catalog_switch() {
+        let mut question = DiscardQuestion::new(edge());
+        let mut harness = GuiHarness::new(960, 600);
+        harness.settle(|context| question.show(context, AREA));
+        assert_eq!(
+            question.message(),
+            Some("The changes to Edge are not saved.")
+        );
+        harness.set_catalog(LanguageCatalog::Loaded(Box::new(test_catalog(
+            GERMAN_DISCARD,
+        ))));
+        assert_eq!(
+            harness.frame(|context| question.show(context, AREA)),
+            DiscardOutcome::Open
+        );
+        assert_eq!(
+            question.message(),
+            Some("Die Änderungen an Edge sind nicht gespeichert.")
         );
     }
 
     /// Verifies the texts of the question, that Keep editing holds the focus first and that each answer closes it.
     #[test]
     fn keep_editing_holds_the_focus_and_discard_drops_the_changes() {
-        let mut question = DiscardQuestion::new(&game(
+        let mut question = DiscardQuestion::new(game(
             "YU-NO: A Girl Who Chants Love at the Bound of this World",
         ));
-        assert_eq!(
-            question.message(),
-            "The changes to YU-NO: A Girl Who Chants Love at the Bound of this World are not saved."
-        );
         let mut harness = GuiHarness::new(960, 600);
         assert_eq!(
             harness.settle(|context| question.show(context, AREA)),
             DiscardOutcome::Open
         );
         assert_eq!(
+            question.message(),
+            Some(
+                "The changes to YU-NO: A Girl Who Chants Love at the Bound of this World are not saved."
+            )
+        );
+        assert_eq!(
             harness.state.focused(),
             Some(UiId::from(DISCARD_LAYER_ID).child("cancel"))
         );
-        assert_eq!(
-            question
-                .hints()
-                .iter()
-                .map(|hint| hint.label)
-                .collect::<Vec<_>>(),
-            ["Keep editing"]
-        );
+        assert_eq!(english_labels(&question.hints()), ["Keep editing"]);
         harness.input.confirm = true;
         assert_eq!(
             harness.frame(|context| question.show(context, AREA)),
             DiscardOutcome::Kept
         );
 
-        let mut question = DiscardQuestion::new(&edge());
+        let mut question = DiscardQuestion::new(edge());
         harness.settle(|context| question.show(context, AREA));
         harness.input.cancel = true;
         assert_eq!(
@@ -166,7 +215,7 @@ mod tests {
             DiscardOutcome::Kept
         );
 
-        let mut question = DiscardQuestion::new(&edge());
+        let mut question = DiscardQuestion::new(edge());
         harness.settle(|context| question.show(context, AREA));
         harness.input.navigation = Some(Navigation::Right);
         harness.settle(|context| question.show(context, AREA));

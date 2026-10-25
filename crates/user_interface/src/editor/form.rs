@@ -1,13 +1,19 @@
 //! The form of the editor: its sections and the fields that the settings
 //! table generates for the family of a game or for the host settings.
 
+use std::fmt;
+
+use i18n::{Catalog, Key, ListKind, Message};
 use machine_factory::config::{
     MachineSelection, Target,
-    phrases::join_names,
     settings::{Families, SETTINGS, Scope, Section, Setting, model_limits::ModelLimit},
 };
 
-use crate::config::metadata::{METADATA_FIELDS, MetadataField};
+use super::note_writer::NoteWriter;
+use crate::{
+    config::metadata::{METADATA_FIELDS, MetadataField},
+    texts::{editor, note, section},
+};
 
 /// A section of the editor, one tab of its tab bar.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -60,18 +66,18 @@ pub(crate) const SETTINGS_SECTIONS: [EditorSection; 3] = [
 ];
 
 impl EditorSection {
-    /// The caption of the tab of the section.
-    pub(crate) fn caption(self) -> &'static str {
+    /// The key of the caption of the tab of the section.
+    pub(crate) fn caption(self) -> Key {
         match self {
-            Self::Metadata => "Metadata",
-            Self::Machine => "Machine",
-            Self::Media => "Media",
-            Self::Sound => "Sound",
-            Self::Display => "Display",
-            Self::Advanced => "Advanced",
-            Self::Folders => "Folders",
-            Self::Roms => "ROMs",
-            Self::VideoAndAudio => "Video and audio",
+            Self::Metadata => section::METADATA,
+            Self::Machine => section::MACHINE,
+            Self::Media => section::MEDIA,
+            Self::Sound => section::SOUND,
+            Self::Display => section::DISPLAY,
+            Self::Advanced => section::ADVANCED,
+            Self::Folders => section::FOLDERS,
+            Self::Roms => section::ROMS,
+            Self::VideoAndAudio => section::VIDEO_AND_AUDIO,
         }
     }
 
@@ -91,13 +97,19 @@ impl EditorSection {
         }
     }
 
-    /// The sentence of a section without fields on the system `label`, for
-    /// example `The PC-88 has no sound settings.`
-    pub(crate) fn empty_text(self, label: &str) -> String {
-        format!(
-            "The {label} has no {} settings.",
-            self.caption().to_lowercase()
-        )
+    /// The sentence of a section of a game or a system defaults file
+    /// without fields on the system `label`, for example `The PC-88 has no
+    /// sound settings.` The Metadata section and the sections of the
+    /// settings page have none.
+    pub(crate) fn empty_text(self, label: &dyn fmt::Display) -> Option<Message<'_, 1>> {
+        match self {
+            Self::Machine => Some(editor::empty_machine(label)),
+            Self::Media => Some(editor::empty_media(label)),
+            Self::Sound => Some(editor::empty_sound(label)),
+            Self::Display => Some(editor::empty_display(label)),
+            Self::Advanced => Some(editor::empty_advanced(label)),
+            Self::Metadata | Self::Folders | Self::Roms | Self::VideoAndAudio => None,
+        }
     }
 }
 
@@ -119,10 +131,10 @@ impl FieldSource {
         }
     }
 
-    /// The label of the field.
-    pub(crate) fn label(self) -> &'static str {
+    /// The label of the field in `catalog`.
+    pub(crate) fn label(self, catalog: &Catalog) -> &str {
         match self {
-            Self::Metadata(field) => field.label,
+            Self::Metadata(field) => catalog.text(field.label),
             Self::Setting(setting) => setting.label,
         }
     }
@@ -229,53 +241,88 @@ pub(crate) fn short_model_names(models: &[&'static str]) -> Vec<&'static str> {
     }
 }
 
-/// The sentence of the models that `limit` allows, for example `PC9821AS
-/// and AP only.`
-fn models_sentence(limit: &ModelLimit) -> String {
-    format!(
-        "{} only.",
-        join_names(&short_model_names(limit.models), "and")
-    )
+/// The models that `limit` allows, shortened for a note and joined with
+/// the list patterns of a catalog, for example `PC9821AS and AP`.
+struct LimitModels<'a> {
+    /// The catalog of the list patterns.
+    catalog: &'a Catalog,
+    /// The limit.
+    limit: &'static ModelLimit,
 }
 
-/// The note of a setting that the model `model` ignores under `limit`, for
-/// example `PC9801RA has no CD-ROM drive. PC9821AS and AP only.`
-pub(crate) fn disabled_note(model: MachineSelection, limit: &ModelLimit) -> String {
-    format!(
-        "{} {}. {}",
-        model.name(),
-        limit.reason.phrase(model),
-        models_sentence(limit)
-    )
+impl fmt::Display for LimitModels<'_> {
+    /// Writes the models of the limit joined with the and patterns.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.catalog.write_list(
+            formatter,
+            ListKind::And,
+            &short_model_names(self.limit.models),
+        )
+    }
 }
 
-/// The sentence of the models of the family `target` that read `setting`,
-/// for example `PC9801F, VM and VX only.` A setting that every model of the
-/// family reads gives `None`.
-pub(crate) fn limit_note(setting: &Setting, target: Target) -> Option<String> {
-    setting.limit_for(target).map(models_sentence)
+/// Adds the sentence of the models that `limit` allows, for example
+/// `PC9821AS and AP only.`
+pub(crate) fn write_models_only(writer: &mut NoteWriter, limit: &'static ModelLimit) {
+    let models = LimitModels {
+        catalog: writer.catalog(),
+        limit,
+    };
+    writer.message(note::models_only(&models));
 }
 
-/// Returns `None` when the model `model` reads `setting`, else the note that
-/// tells why the model ignores it.
-pub(crate) fn ignored_note(setting: &Setting, model: MachineSelection) -> Option<String> {
+/// A model that ignores a setting under the model limit of the setting.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IgnoredBy {
+    /// The model.
+    pub(crate) model: MachineSelection,
+    /// The limit of the setting on the family of the model.
+    pub(crate) limit: &'static ModelLimit,
+}
+
+/// Adds the sentences of a setting that a model ignores, for example
+/// `PC9801RA has no CD-ROM drive. PC9821AS and AP only.`
+pub(crate) fn write_ignored(writer: &mut NoteWriter, ignored: IgnoredBy) {
+    let reason = ignored.limit.reason.phrase(ignored.model);
+    writer.message(note::model_ignores(&ignored.model.name(), &reason));
+    write_models_only(writer, ignored.limit);
+}
+
+/// Returns `None` when the model `model` reads `setting`, else the model
+/// and the limit under which the model ignores it.
+pub(crate) fn ignored_by(setting: &Setting, model: MachineSelection) -> Option<IgnoredBy> {
     let target = model.target();
     if setting.is_read_by(target, model.name()) {
         return None;
     }
     setting
         .limit_for(target)
-        .map(|limit| disabled_note(model, limit))
+        .map(|limit| IgnoredBy { model, limit })
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use machine_factory::config::{
         settings::{MACHINE_KEY, MODEL_CHOICES},
         systems::compiled_systems,
     };
 
     use super::*;
+    use crate::{
+        editor::notes::{NoteLook, tests::english_note},
+        texts::english,
+    };
+
+    /// The English note of `setting` on `model`, or `None` while the model reads the setting.
+    pub(crate) fn ignored_note(setting: &Setting, model: MachineSelection) -> Option<String> {
+        ignored_by(setting, model).map(|ignored| {
+            english_note(|writer| {
+                write_ignored(writer, ignored);
+                NoteLook::PLAIN
+            })
+            .text
+        })
+    }
 
     /// The keys of the fields of `section` for the family `target`.
     fn keys(target: Target, section: EditorSection) -> Vec<&'static str> {
@@ -475,10 +522,11 @@ mod tests {
     /// Verifies the sentence of a section without fields.
     #[test]
     fn an_empty_section_tells_its_system() {
-        assert_eq!(
-            EditorSection::Sound.empty_text("PC-88"),
-            "The PC-88 has no sound settings."
-        );
+        let text = EditorSection::Sound
+            .empty_text(&"PC-88")
+            .map(|message| english().display(message).to_string());
+        assert_eq!(text.as_deref(), Some("The PC-88 has no sound settings."));
+        assert!(EditorSection::Metadata.empty_text(&"PC-88").is_none());
     }
 
     /// Verifies that the settings page shows the host keys of the table grouped by section in the order of its tabs, the ROM keys of the compiled families, and no system or game key.
@@ -531,7 +579,7 @@ mod tests {
             );
         }
         assert_eq!(
-            SETTINGS_SECTIONS.map(EditorSection::caption),
+            SETTINGS_SECTIONS.map(|section| english().text(section.caption())),
             ["Folders", "ROMs", "Video and audio"]
         );
     }

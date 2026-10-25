@@ -1,33 +1,35 @@
 //! The form rows of the editor: the label with its key, the control that the
 //! value kind of a field picks and the note after it.
 
+use std::fmt::Write as _;
+
 use gui::{
     Rect,
     ui::{
-        ActionButton, Align, Button, Checkbox, Dropdown, Icon, NumberField, TextField, Theme,
-        Truncation, UiContext, UiId, label, wrapped_height, wrapped_label,
+        ActionButton, Align, Dropdown, Icon, NumberField, TextBuffer, TextField, Theme, Truncation,
+        UiContext, UiId, label, wrapped_height, wrapped_label,
     },
 };
+use i18n::Key;
 use machine_factory::config::settings::{
-    MACHINE_KEY, NumberRange, Setting, ValueKind,
+    Setting, ValueKind,
     file_types::{FileTypes, ImageIcon},
 };
 
 use super::{
-    BrowseTarget, Editor, EditorFile, Subject,
-    fields::{FieldValue, is_single_image},
-    form::{EditorSection, FieldSource},
+    Editor, EditorFile, Subject,
+    form::{EditorSection, FieldSource, IgnoredBy},
     hints::{EditorWidget, WidgetKind},
-    host_settings::{HostSettings, draw_settings_file_block},
+    host_settings::draw_settings_file_block,
     kept_lines::draw_kept_lines,
-    media_list::{empty_list_height, empty_list_id},
-    notes::{
-        ChoiceNote, EMPTY_IMAGE, NOT_SET, Note, NoteKind, choice_note, decimals_of,
-        empty_list_caption, inherited_placeholder, number_note, path_note,
-    },
+    note_writer::NoteText,
+    notes::{NoteKind, NoteLook},
     page::{PageActions, TABS_ID},
 };
-use crate::config::metadata::{FIRST_YEAR, LAST_YEAR, TITLE_KEY, YEAR_KEY};
+use crate::{
+    config::metadata::{FIRST_YEAR, LAST_YEAR, TITLE_KEY, YEAR_KEY},
+    texts::{editor, host_settings, note},
+};
 
 /// The width of the label column of a form row.
 pub(crate) const FORM_LABEL_WIDTH: f32 = 184.0;
@@ -47,9 +49,6 @@ pub(crate) const NOTE_MAXIMUM_LINES: usize = 3;
 /// The line height of the label and of the key of a form row, in units of
 /// their text sizes: the normal line height of the font of the theme.
 const LABEL_LINE_SPACING: f32 = 1.2;
-
-/// The note of the system row of a new game.
-const SYSTEM_NOTE: &str = "The game belongs to the system selected in the library.";
 
 /// Draws `dropdown` with the inherited entry `inherited` in `rect` over the
 /// value `selected`. Returns whether the value changed.
@@ -84,17 +83,49 @@ pub(crate) fn image_icon(types: Option<&FileTypes>) -> Icon {
     }
 }
 
+/// The texts of the row of one field that refill only when the state of
+/// the editor or the catalog changes.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RowTexts {
+    /// The note after the control or below a media list, for the revision
+    /// of the editor and whether the folder of the note exists.
+    pub(crate) note: NoteText<(u64, bool)>,
+    /// The note of a command line flag below the note of a path.
+    pub(crate) flag: NoteText<u64>,
+    /// The placeholder of a field or the inherited entry of a dropdown.
+    pub(crate) placeholder: TextBuffer<u64>,
+    /// The caption of the checkbox that empties a drive.
+    pub(crate) caption: TextBuffer<u64>,
+    /// The text of a media list without images.
+    pub(crate) hint: TextBuffer<u64>,
+}
+
 /// A row that shows a value the user cannot type, such as the system of a new game.
-#[derive(Debug, Clone)]
-pub(super) struct ReadOnlyRow {
-    /// The label.
-    pub(super) name: &'static str,
+pub(super) struct ReadOnlyRow<'a> {
+    /// The name of the id of the row.
+    pub(super) id: &'static str,
+    /// The key of the label.
+    pub(super) name: Key,
     /// The value.
-    pub(super) text: String,
+    pub(super) value: &'a mut String,
     /// Whether the value is a path, which takes the folder icon.
     pub(super) path: bool,
     /// The note after the value.
-    pub(super) note: String,
+    pub(super) note: &'a str,
+}
+
+/// The form row of a setting field with the parts that its control draws.
+pub(super) struct SettingRow<'a> {
+    /// The areas of the row.
+    pub(super) areas: RowAreas,
+    /// The index of the field.
+    pub(super) index: usize,
+    /// The setting of the field.
+    pub(super) setting: &'static Setting,
+    /// The model that ignores the setting. A setting that the model uses has none.
+    pub(super) ignored: Option<IgnoredBy>,
+    /// The texts of the row that refill only when their data changes.
+    pub(super) texts: &'a mut RowTexts,
 }
 
 /// The areas of one form row from its top `y` in `content`.
@@ -205,9 +236,10 @@ pub(crate) fn draw_label(
     );
 }
 
-/// Draws `note` as a line of a section from `y` in `content`, inset from
-/// the labels of the rows. Returns the height of the line.
-fn draw_section_note(context: &mut UiContext, content: Rect, y: f32, note: &Note) -> f32 {
+/// Draws the plain note `text` as a line of a section from `y` in
+/// `content`, inset from the labels of the rows. Returns the height of the
+/// line.
+fn draw_section_note(context: &mut UiContext, content: Rect, y: f32, text: &str) -> f32 {
     let theme = context.theme;
     let area = Rect::new(
         content.x + theme.gap * 1.5,
@@ -215,24 +247,18 @@ fn draw_section_note(context: &mut UiContext, content: Rect, y: f32, note: &Note
         (content.width - theme.gap * 1.5).max(0.0),
         theme.control_height,
     );
-    let height = draw_note(context, area, note);
+    let height = draw_note_text(context, area, text, NoteKind::Plain, false);
     RowAreas::height(theme, height)
 }
 
-/// Draws `note` into `area`: small secondary text, a warning with the alert
-/// icon in the error color, a found thing with the check icon in the marker
-/// color, or a status without a mark after an empty icon slot. A note wider
-/// than `area` wraps over up to [`NOTE_MAXIMUM_LINES`] lines, centered on
-/// the control while the lines fit its height and from its top else. A path
-/// keeps to one line and gives way in the middle. Returns the height of the
-/// note, at least the height of `area`.
-pub(crate) fn draw_note(context: &mut UiContext, area: Rect, note: &Note) -> f32 {
-    draw_note_text(context, area, &note.text, note.kind, note.path)
-}
-
-/// Draws the note `text` of `kind` into `area` as [`draw_note`] does. A
-/// `path` keeps to one line and gives way in the middle. Returns the height
-/// of the note, at least the height of `area`.
+/// Draws the note `text` of `kind` into `area`: small secondary text, a
+/// warning with the alert icon in the error color, a found thing with the
+/// check icon in the marker color, or a status without a mark after an
+/// empty icon slot. A note wider than `area` wraps over up to
+/// [`NOTE_MAXIMUM_LINES`] lines, centered on the control while the lines
+/// fit its height and from its top else. A `path` keeps to one line and
+/// gives way in the middle. Returns the height of the note, at least the
+/// height of `area`.
 pub(crate) fn draw_note_text(
     context: &mut UiContext,
     area: Rect,
@@ -308,6 +334,12 @@ pub(crate) fn draw_note_text(
     height
 }
 
+/// Draws the note `text` with the look `look` into `area` as
+/// [`draw_note_text`] does. Returns the height of the note.
+pub(crate) fn draw_note(context: &mut UiContext, area: Rect, text: &str, look: NoteLook) -> f32 {
+    draw_note_text(context, area, text, look.kind, look.path)
+}
+
 impl Editor {
     /// Gives `id` the focus when the first widget of the section takes it.
     fn claim_first_focus(&mut self, context: &mut UiContext, id: UiId) {
@@ -324,56 +356,113 @@ impl Editor {
         content: Rect,
         actions: &mut PageActions,
     ) -> f32 {
+        let catalog = context.catalog;
+        let generation = context.catalog_generation;
+        let revision = self.revision;
         let section = self.current_section();
         let mut y = content.y;
-        if section == EditorSection::Metadata
-            && let Some(file) = self.file.derived().cloned()
-        {
-            let rows = [
-                ReadOnlyRow {
-                    name: "System",
-                    text: self
-                        .system_files()
-                        .map_or("", |files| files.system.label)
-                        .to_owned(),
-                    path: false,
-                    note: SYSTEM_NOTE.to_owned(),
-                },
-                ReadOnlyRow {
-                    name: "File",
-                    text: self.shown_path(),
-                    path: true,
-                    note: file.note,
-                },
-            ];
-            for row in &rows {
-                y += Self::draw_read_only(context, content, y, row);
+        if section == EditorSection::Metadata && self.file.derived().is_some() {
+            let mut texts = std::mem::take(&mut self.texts);
+            texts.system_value.clear();
+            if let Some(files) = self.system_files() {
+                texts.system_value.push_str(files.system.label);
             }
+            texts.file_value.clone_from(&self.shown);
+            let file_note =
+                texts
+                    .file_note
+                    .text_in(catalog, generation, revision, |catalog, _, out| {
+                        if let Some(file) = self.file.derived() {
+                            file.note.write(catalog, out);
+                        }
+                    });
+            y += Self::draw_read_only(
+                context,
+                content,
+                y,
+                ReadOnlyRow {
+                    id: "system",
+                    name: editor::SYSTEM_LABEL,
+                    value: &mut texts.system_value,
+                    path: false,
+                    note: catalog.text(editor::SYSTEM_NOTE),
+                },
+            );
+            y += Self::draw_read_only(
+                context,
+                content,
+                y,
+                ReadOnlyRow {
+                    id: "file",
+                    name: editor::FILE_LABEL,
+                    value: &mut texts.file_value,
+                    path: true,
+                    note: file_note,
+                },
+            );
+            self.texts = texts;
         }
         if section == EditorSection::Folders
-            && let Some(row) = self.root_row()
+            && let Some(note) = self.root_note()
         {
-            y += Self::draw_read_only(context, content, y, &row);
+            let mut value = std::mem::take(&mut self.texts.root_value);
+            value.clear();
+            let _ = write!(value, "{}", self.root.display());
+            y += Self::draw_read_only(
+                context,
+                content,
+                y,
+                ReadOnlyRow {
+                    id: "root",
+                    name: host_settings::ROOT_LABEL,
+                    value: &mut value,
+                    path: true,
+                    note: catalog.text(note),
+                },
+            );
+            self.texts.root_value = value;
         }
-        let indices: Vec<usize> = (0..self.fields.len())
-            .filter(|&index| self.fields[index].section == section)
-            .collect();
-        if indices.is_empty()
+        let empty = !self.fields.iter().any(|field| field.section == section);
+        let section_note = if empty
             && section != EditorSection::Metadata
             && let Some(files) = self.system_files()
         {
-            let note = Note::plain(section.empty_text(files.system.label));
-            y += draw_section_note(context, content, y, &note);
+            section.empty_text(&files.system.label).is_some()
+        } else {
+            section == EditorSection::Roms
+                && self
+                    .host_settings()
+                    .and_then(|settings| settings.roms_folder_flag())
+                    .is_some()
+        };
+        if section_note {
+            let mut texts = std::mem::take(&mut self.texts);
+            let (text, _) = texts.section_note.note(
+                catalog,
+                generation,
+                (revision, self.section),
+                |writer, _| {
+                    if let Some(files) = self.system_files()
+                        && let Some(message) = section.empty_text(&files.system.label)
+                    {
+                        writer.message(message);
+                    }
+                    if let Some(folder) = self
+                        .host_settings()
+                        .and_then(|settings| settings.roms_folder_flag())
+                    {
+                        writer.message(host_settings::roms_folder_flag(&folder));
+                    }
+                    NoteLook::PLAIN
+                },
+            );
+            y += draw_section_note(context, content, y, text);
+            self.texts = texts;
         }
-        if section == EditorSection::Roms
-            && let Some(note) = self
-                .host_settings()
-                .and_then(HostSettings::roms_folder_flag_note)
-        {
-            y += draw_section_note(context, content, y, &note);
-        }
-        for index in indices {
-            y += self.draw_field(context, content, y, index, actions);
+        for index in 0..self.fields.len() {
+            if self.fields[index].section == section {
+                y += self.draw_field(context, content, y, index, actions);
+            }
         }
         if section == EditorSection::Advanced && !self.kept.is_empty() {
             y += draw_kept_lines(context, content, y, &self.kept);
@@ -393,19 +482,26 @@ impl Editor {
         context: &mut UiContext,
         content: Rect,
         y: f32,
-        row: &ReadOnlyRow,
+        row: ReadOnlyRow,
     ) -> f32 {
         let theme = context.theme;
+        let catalog = context.catalog;
         let areas = RowAreas::new(theme, content, y);
-        draw_label(context, areas.label, row.name, "", false, true);
-        let mut value = row.text.clone();
-        TextField::new(UiId::from("read only").child(row.name), "")
+        draw_label(
+            context,
+            areas.label,
+            catalog.text(row.name),
+            "",
+            false,
+            true,
+        );
+        TextField::new(UiId::from("read only").child(row.id), "")
             .icon(row.path.then_some(Icon::Folder))
             .clears_on_cancel(false)
             .read_only(true)
             .truncation(Truncation::Middle)
-            .show(context, areas.control, &mut value);
-        let note = draw_note(context, areas.note, &Note::plain(row.note.clone()));
+            .show(context, areas.control, row.value);
+        let note = draw_note_text(context, areas.note, row.note, NoteKind::Plain, false);
         RowAreas::height(theme, note)
     }
 
@@ -419,7 +515,25 @@ impl Editor {
         index: usize,
         actions: &mut PageActions,
     ) -> f32 {
+        let mut texts = std::mem::take(&mut self.row_texts[index]);
+        let height = self.draw_field_with(context, content, y, index, &mut texts, actions);
+        self.row_texts[index] = texts;
+        height
+    }
+
+    /// Draws the row of the field at `index` with its texts `texts` from
+    /// `y` in `content` and returns its height.
+    fn draw_field_with(
+        &mut self,
+        context: &mut UiContext,
+        content: Rect,
+        y: f32,
+        index: usize,
+        texts: &mut RowTexts,
+        actions: &mut PageActions,
+    ) -> f32 {
         let theme = context.theme;
+        let catalog = context.catalog;
         let areas = RowAreas::new(theme, content, y);
         let source = self.fields[index].source;
         let id = field_id(source.key());
@@ -429,18 +543,18 @@ impl Editor {
                 draw_label(
                     context,
                     areas.label,
-                    metadata.label,
+                    catalog.text(metadata.label),
                     metadata.key,
                     set,
                     true,
                 );
                 self.claim_first_focus(context, id);
-                let note = self.draw_metadata(context, areas, index, actions);
+                let note = self.draw_metadata(context, areas, index, texts, actions);
                 return RowAreas::height(theme, note);
             }
             FieldSource::Setting(setting) => setting,
         };
-        let ignored = self.ignored_note(setting);
+        let ignored = self.ignored_by(setting);
         let enabled = ignored.is_none();
         draw_label(
             context,
@@ -453,29 +567,34 @@ impl Editor {
         if enabled {
             self.claim_first_focus(context, id);
         }
+        let row = SettingRow {
+            areas,
+            index,
+            setting,
+            ignored,
+            texts,
+        };
         match setting.kind {
             ValueKind::Language if matches!(self.subject, Subject::Host(_)) => {
                 let note = self.draw_language(context, areas, index, setting, actions);
                 RowAreas::height(theme, note)
             }
             ValueKind::Choice(_) | ValueKind::OnOff | ValueKind::Language => {
-                let note = self.draw_choice(context, areas, index, setting, ignored, actions);
+                let note = self.draw_choice(context, row, actions);
                 RowAreas::height(theme, note)
             }
             ValueKind::Number(range) => {
-                let note = self.draw_number(context, areas, index, range, ignored, actions);
+                let note = self.draw_number(context, row, range, actions);
                 RowAreas::height(theme, note)
             }
-            ValueKind::Path(_) => self.draw_path(context, areas, index, setting, ignored, actions),
-            ValueKind::PathList => {
-                self.draw_media(context, areas, index, setting, ignored, actions)
-            }
+            ValueKind::Path(_) => self.draw_path(context, row, actions),
+            ValueKind::PathList => self.draw_media(context, row, actions),
         }
     }
 
     /// Clears the text field at `index` when gamepad X reaches the focused
     /// field `id` while the field is set. Returns whether it cleared.
-    fn clear_on_x(&mut self, context: &UiContext, id: UiId, index: usize) -> bool {
+    pub(super) fn clear_on_x(&mut self, context: &UiContext, id: UiId, index: usize) -> bool {
         let field = &mut self.fields[index];
         if field.is_set()
             && context.has_focus(id)
@@ -487,30 +606,20 @@ impl Editor {
         false
     }
 
-    /// Draws the text or year field of the metadata field at `index`.
-    /// Returns the height of its note.
+    /// Draws the text or year field of the metadata field at `index` with
+    /// the texts `texts`. Returns the height of its note.
     fn draw_metadata(
         &mut self,
         context: &mut UiContext,
         areas: RowAreas,
         index: usize,
+        texts: &mut RowTexts,
         actions: &mut PageActions,
     ) -> f32 {
         let theme = context.theme;
+        let catalog = context.catalog;
         let key = self.fields[index].key();
         let id = field_id(key);
-        let note = match &self.file {
-            EditorFile::Existing(path) if key == TITLE_KEY => path
-                .file_stem()
-                .map(|stem| {
-                    format!(
-                        "While the title is empty, the library shows the file name {}.",
-                        stem.to_string_lossy()
-                    )
-                })
-                .unwrap_or_default(),
-            EditorFile::Existing(_) | EditorFile::New(_) | EditorFile::Copy { .. } => String::new(),
-        };
         let set = self.fields[index].is_set();
         let kind = if key == YEAR_KEY {
             WidgetKind::Number
@@ -518,9 +627,10 @@ impl Editor {
             WidgetKind::Text
         };
         self.widgets.push(EditorWidget::new(id, kind).clears(set));
+        let not_set = catalog.text(note::NOT_SET);
         if let Some(text) = self.fields[index].text_mut() {
             let response = if key == YEAR_KEY {
-                let field = NumberField::new(id, NOT_SET)
+                let field = NumberField::new(id, not_set)
                     .range(f64::from(FIRST_YEAR), f64::from(LAST_YEAR));
                 let rect = Rect::new(
                     areas.control.x,
@@ -530,7 +640,7 @@ impl Editor {
                 );
                 field.show(context, rect, text)
             } else {
-                TextField::new(id, NOT_SET)
+                TextField::new(id, not_set)
                     .icon(None)
                     .clears_on_cancel(false)
                     .show(context, areas.control, text)
@@ -538,277 +648,48 @@ impl Editor {
             actions.changed |= response.changed;
         }
         actions.changed |= self.clear_on_x(context, id, index);
-        draw_note(context, areas.note, &Note::plain(note))
-    }
-
-    /// Draws the dropdown of the choice, on/off or language field at
-    /// `index`. Returns the height of its note.
-    fn draw_choice(
-        &mut self,
-        context: &mut UiContext,
-        areas: RowAreas,
-        index: usize,
-        setting: &'static Setting,
-        ignored: Option<String>,
-        actions: &mut PageActions,
-    ) -> f32 {
-        let id = field_id(setting.key);
-        let inherited = self.inherited[index].clone();
-        let inherited_label = inherited_placeholder(inherited.as_ref());
-        let enabled = ignored.is_none();
-        if enabled {
-            self.widgets
-                .push(EditorWidget::new(id, WidgetKind::Dropdown));
-        }
-        let field = &mut self.fields[index];
-        let required = field.required;
-        let inherited_index = inherited
-            .as_ref()
-            .and_then(|inherited| inherited.values.first())
-            .and_then(|value| field.choices.iter().position(|choice| choice == value));
-        let mut selected = if required {
-            field.selected().or(inherited_index)
-        } else {
-            field.selected()
-        };
-        let before = selected;
-        let inherited_entry = (!required).then_some(inherited_label.as_str());
-        let dropdown = Dropdown::new(id, &field.choices).enabled(enabled);
-        if show_dropdown(
-            context,
-            areas.control,
-            dropdown,
-            inherited_entry,
-            &mut selected,
-        ) && selected != before
-        {
-            field.select(selected);
-            actions.changed = true;
-        }
-        let field = &self.fields[index];
-        let preset_model = self.system_files().and_then(|files| files.preset_model);
-        let preset =
-            setting.key == MACHINE_KEY && preset_model.is_some() && field.chosen() == preset_model;
-        let fact = match &self.subject {
-            Subject::Game(files) | Subject::SystemDefaults(files) => {
-                setting.choice_fact(self.model_of(files), field.chosen())
-            }
-            Subject::Host(_) => None,
-        };
-        let note = choice_note(ChoiceNote {
-            ignored,
-            invalid: field.invalid_value(),
-            preset,
-            set: field.is_set(),
-            required,
-            inherited: inherited.as_ref(),
-            derived: self
-                .system_files()
-                .is_some_and(|files| setting.has_derived_default(files.target)),
-            fact,
-        })
-        .followed_by(self.extra_note(setting));
-        draw_note(context, areas.note, &note)
-    }
-
-    /// Draws the number field of the field at `index` in the range `range`.
-    /// Returns the height of its note.
-    fn draw_number(
-        &mut self,
-        context: &mut UiContext,
-        areas: RowAreas,
-        index: usize,
-        range: NumberRange,
-        ignored: Option<String>,
-        actions: &mut PageActions,
-    ) -> f32 {
-        let theme = context.theme;
-        let key = self.fields[index].key();
-        let id = field_id(key);
-        let enabled = ignored.is_none();
-        if enabled {
-            let set = self.fields[index].is_set();
-            self.widgets
-                .push(EditorWidget::new(id, WidgetKind::Number).clears(set));
-        }
-        let inherited = self.inherited[index].clone();
-        let placeholder = inherited_placeholder(inherited.as_ref());
-        let fallback = inherited
-            .as_ref()
-            .and_then(|inherited| inherited.values.first())
-            .and_then(|value| value.parse::<f64>().ok());
-        let field = NumberField::new(id, &placeholder)
-            .range(range.minimum, range.maximum)
-            .step(range.step)
-            .decimals(decimals_of(range))
-            .fallback(fallback)
-            .enabled(enabled);
-        let rect = Rect::new(
-            areas.control.x,
-            areas.control.y,
-            field.width(context).min(areas.control.width),
-            theme.control_height,
-        );
-        if let Some(text) = self.fields[index].text_mut() {
-            actions.changed |= field.show(context, rect, text).changed;
-        }
-        if enabled {
-            actions.changed |= self.clear_on_x(context, id, index);
-        }
-        let set = self.fields[index].is_set();
-        let extra = self.fields[index]
-            .source
-            .setting()
-            .and_then(|setting| self.extra_note(setting));
-        let note = number_note(ignored, set, range, inherited.as_ref()).followed_by(extra);
-        draw_note(context, areas.note, &note)
-    }
-
-    /// The placeholder of the path field at `index`: [`EMPTY_IMAGE`] for a
-    /// field that the file empties, else the inherited value.
-    pub(crate) fn path_placeholder(&self, index: usize) -> String {
-        if self.fields[index].is_empty_path() {
-            EMPTY_IMAGE.to_owned()
-        } else {
-            inherited_placeholder(self.inherited[index].as_ref())
-        }
-    }
-
-    /// The note, the note of a command line flag and the error edge of the
-    /// path field at `index` of `setting`. A missing file on the settings
-    /// page shows its warning with the notes of the key.
-    pub(super) fn path_notes(
-        &self,
-        index: usize,
-        setting: &'static Setting,
-        ignored: Option<String>,
-    ) -> (Note, Option<Note>, bool) {
-        if let Some(host_note) = self.host_path_note(index, setting) {
-            return (host_note.note, host_note.flag, host_note.error);
-        }
-        let missing = self.missing[index].first().copied().unwrap_or(false);
-        let note = match self.host_settings() {
-            Some(settings) if missing => settings.missing_file_note(setting),
-            Some(_) | None => path_note(
-                ignored,
-                missing,
-                self.fields[index].is_set(),
-                self.inherited[index].as_ref(),
-                self.file_types(setting),
-            )
-            .followed_by(self.extra_note(setting)),
-        };
-        (note, None, false)
-    }
-
-    /// Draws the path field and the Browse button of the field at `index`,
-    /// and the checkbox that empties the drive below the single image of a
-    /// drive that inherits an image or that the file empties. A path cuts
-    /// in the middle. The note of a command line flag on the settings page
-    /// takes its own line below the note. Returns the height of the row.
-    fn draw_path(
-        &mut self,
-        context: &mut UiContext,
-        areas: RowAreas,
-        index: usize,
-        setting: &'static Setting,
-        ignored: Option<String>,
-        actions: &mut PageActions,
-    ) -> f32 {
-        let theme = context.theme;
-        let id = field_id(setting.key);
-        let empty_id = empty_list_id(id);
-        let enabled = ignored.is_none();
-        let inherited = self.inherited[index].clone();
-        let types = self.file_types(setting);
-        let empty_path = self.fields[index].is_empty_path();
-        let placeholder = self.path_placeholder(index);
-        let inherits_image = inherited
-            .as_ref()
-            .is_some_and(|inherited| !inherited.values.is_empty());
-        let shows_toggle = enabled
-            && is_single_image(setting)
-            && self.fields[index].text().trim().is_empty()
-            && (empty_path || inherits_image || context.has_focus(empty_id));
-        let browse = Button::new(browse_id(setting.key), "Browse").enabled(enabled);
-        let browse_width = browse.width(context);
-        let (browse_area, field_area) = areas
-            .control
-            .cut_right(browse_width.min(areas.control.width));
-        let field_area = field_area.cut_right(theme.gap).1;
-        let (note, flag, error) = self.path_notes(index, setting, ignored);
-        if enabled {
-            let set = self.fields[index].is_set();
-            self.widgets
-                .push(EditorWidget::new(id, WidgetKind::Text).clears(set));
-            self.widgets.push(EditorWidget::new(
-                browse_id(setting.key),
-                WidgetKind::Browse,
-            ));
-        }
-        let text_field = TextField::new(id, &placeholder)
-            .icon(Some(Icon::Folder))
-            .clears_on_cancel(false)
-            .truncation(Truncation::Middle)
-            .enabled(enabled)
-            .error(error);
-        let field = &mut self.fields[index];
-        match field.text_mut() {
-            Some(text) => actions.changed |= text_field.show(context, field_area, text).changed,
-            None => {
-                let mut typed = String::new();
-                if text_field.show(context, field_area, &mut typed).changed && !typed.is_empty() {
-                    field.value = FieldValue::Text(typed);
-                    actions.changed = true;
+        let (text, look) = texts.note.note(
+            catalog,
+            context.catalog_generation,
+            (self.revision, false),
+            |writer, _| {
+                if let EditorFile::Existing(path) = &self.file
+                    && key == TITLE_KEY
+                    && let Some(stem) = path.file_stem()
+                {
+                    writer.message(editor::title_note(&stem.to_string_lossy()));
                 }
-            }
-        }
-        if enabled {
-            actions.changed |= self.clear_on_x(context, id, index);
-        }
-        if browse.show(context, browse_area) {
-            actions.browse = Some(BrowseTarget::Path(index));
-        }
-        let note_height = draw_note(context, areas.note, &note);
-        let mut below = 0.0;
-        if let Some(flag) = &flag {
-            let area = Rect::new(
-                areas.note.x,
-                areas.note.y + note_height,
-                areas.note.width,
-                theme.icon_size,
-            );
-            below = draw_note(context, area, flag);
-        }
-        let mut height = RowAreas::height(theme, note_height + below);
-        if shows_toggle {
-            self.widgets
-                .push(EditorWidget::new(empty_id, WidgetKind::Checkbox));
-            let area = Rect::new(
-                field_area.x,
-                areas.control.bottom() + theme.gap * 0.5,
-                field_area.width,
-                theme.control_height,
-            );
-            let caption = empty_list_caption(types);
-            let mut checked = empty_path;
-            if Checkbox::new(empty_id, &caption).show(context, area, &mut checked) {
-                self.fields[index].value = if empty_path {
-                    FieldValue::Text(String::new())
-                } else {
-                    FieldValue::EmptyPath
-                };
-                actions.changed = true;
-            }
-            height += empty_list_height(theme);
-        }
-        height
+                NoteLook::PLAIN
+            },
+        );
+        draw_note(context, areas.note, text, look)
+    }
+}
+
+#[cfg(test)]
+impl Editor {
+    /// The note of the row of the field `key` of the last frame. A row
+    /// without a drawn note has none.
+    pub(crate) fn cached_note(&self, key: &str) -> Option<&str> {
+        let index = self.fields.iter().position(|field| field.key() == key)?;
+        self.row_texts[index].note.last_text()
+    }
+
+    /// The sentences after the note of `setting` in English, as
+    /// [`Editor::write_extra`] writes them. A setting without them gives
+    /// `None`.
+    pub(super) fn extra_note(&self, setting: &Setting) -> Option<String> {
+        let note = super::notes::tests::english_note(|writer| {
+            self.write_extra(writer, setting);
+            NoteLook::PLAIN
+        });
+        (!note.text.is_empty()).then_some(note.text)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use gui::ui::{NUMBER_FIELD_WIDTH, wrapped_height};
+    use gui::ui::wrapped_height;
     use machine_factory::config::{
         MachineSelection,
         settings::{MODEL_CHOICES, SETTINGS},
@@ -817,11 +698,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        editor::{
-            form::{EDITOR_SECTIONS, ignored_note},
-            page::form_area,
-            test_support::{EditorRoot, SCREEN},
-        },
+        editor::{form::tests::ignored_note, page::form_area, test_support::SCREEN},
         gui_test_support::GuiHarness,
     };
 
@@ -880,14 +757,13 @@ mod tests {
         let area = Rect::new(600.0, 100.0, 200.0, control_height);
         let (short, long) = harness.frame(|context| {
             (
-                draw_note(context, area, &Note::plain("Range 0 to 3.")),
+                draw_note(context, area, "Range 0 to 3.", NoteLook::PLAIN),
                 draw_note(
                     context,
                     area,
-                    &Note::warning(
-                        "PC9801VM has no EMS memory. VX, RS, RA, AS and AP only. The note \
-                         of this row takes three lines.",
-                    ),
+                    "PC9801VM has no EMS memory. VX, RS, RA, AS and AP only. The note of this \
+                     row takes three lines.",
+                    NoteLook::WARNING,
                 ),
             )
         });
@@ -896,48 +772,6 @@ mod tests {
         let theme = &harness.theme;
         assert_eq!(RowAreas::height(theme, short), FORM_ROW_PITCH);
         assert!(RowAreas::height(theme, long) > FORM_ROW_PITCH);
-    }
-
-    /// Verifies that the number field of pc6000-phase keeps its grown width
-    /// when the game sets the key.
-    #[test]
-    fn a_number_field_keeps_its_width_when_the_game_sets_it() {
-        if !compiled_systems().any(|system| system.name == "pc6000") {
-            return;
-        }
-        let widths: Vec<f32> = ["", "pc6000-phase = 1\n"]
-            .into_iter()
-            .map(|line| {
-                let root = EditorRoot::with_system("number_width", "pc6000");
-                let path = root.game("portopia", &format!("machine = PC6001MK2SR\n{line}"));
-                let mut editor =
-                    Editor::open(&root.host(), root.system(), &path).expect("the editor opens");
-                editor.section = EDITOR_SECTIONS
-                    .iter()
-                    .position(|section| *section == EditorSection::Display)
-                    .expect("the display section");
-                let mut harness = GuiHarness::new(960, 600);
-                harness.settle(|context| {
-                    editor.show(context, SCREEN);
-                });
-                let theme = &harness.theme;
-                let frames: Vec<[f32; 4]> = harness
-                    .scene
-                    .instances()
-                    .iter()
-                    .filter(|instance| {
-                        instance.kind[0] == gui::Instance::KIND_RECTANGLE
-                            && instance.color == theme.colors.field.to_linear()
-                            && instance.rect[3] == theme.control_height
-                    })
-                    .map(|instance| instance.rect)
-                    .collect();
-                assert_eq!(frames.len(), 1, "{line:?}: {frames:?}");
-                frames[0][2]
-            })
-            .collect();
-        assert_eq!(widths[0], widths[1], "{widths:?}");
-        assert!(widths[0] > NUMBER_FIELD_WIDTH, "{widths:?}");
     }
 
     /// Verifies the icon of the images of each drive.

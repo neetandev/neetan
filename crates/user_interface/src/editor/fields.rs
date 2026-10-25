@@ -5,6 +5,7 @@
 use std::borrow::Cow;
 
 use gui::ui::ListState;
+use i18n::Catalog;
 use machine_factory::config::{
     AUTO_LANGUAGE,
     settings::{Families, MACHINE_KEY, PathKind, Section, Setting, ValueKind},
@@ -16,7 +17,7 @@ use crate::{
         ConfigDocument, check_value,
         metadata::{META_PREFIX, YEAR_KEY, parse_year},
     },
-    texts::ENGLISH_TAG,
+    texts::{ENGLISH_TAG, editor},
 };
 
 /// The values of an on/off setting in the order of its dropdown.
@@ -31,8 +32,43 @@ pub(crate) const BUILT_IN_LANGUAGE_CHOICES: [&str; 2] = [AUTO_LANGUAGE, ENGLISH_
 pub(crate) struct InvalidValue {
     /// The value as the file writes it.
     pub(crate) value: String,
-    /// Why the launch rejects it.
+    /// The reason that the launch rejects it.
+    pub(crate) reason: InvalidReason,
+}
+
+/// A value that the file cannot hold and the field that holds it.
+#[derive(Debug, Clone)]
+pub(crate) struct FieldError {
+    /// The field of the value.
+    pub(crate) source: FieldSource,
+    /// The error message of the setting for the value.
     pub(crate) message: String,
+}
+
+impl FieldError {
+    /// Writes the error after the label of its field in `catalog`, for
+    /// example `Year: '1900' is not a year from 1970 to 2100`.
+    pub(crate) fn write(&self, catalog: &Catalog, out: &mut String) {
+        let label = self.source.label(catalog);
+        let _ = catalog.write(out, editor::value_error(&label, &self.message));
+    }
+}
+
+#[cfg(test)]
+impl FieldError {
+    /// The error in the English texts.
+    pub(crate) fn english(&self) -> String {
+        crate::texts::english_text(|catalog, out| self.write(catalog, out))
+    }
+}
+
+/// The reason that the launch rejects a value of the file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InvalidReason {
+    /// The setting rejects the value with this message.
+    Rejected(String),
+    /// The value is a choice of another system.
+    OtherSystem,
 }
 
 /// The value of a dropdown field.
@@ -108,15 +144,15 @@ pub(crate) fn is_single_image(setting: &Setting) -> bool {
 /// match before a match that ignores the case. A value that the launch
 /// rejects, and a value of another family, is invalid with the reason.
 fn choice_value(setting: &Setting, choices: &[Cow<'static, str>], value: &str) -> ChoiceValue {
-    let invalid = |message: String| ChoiceValue {
+    let invalid = |reason: InvalidReason| ChoiceValue {
         selected: None,
         invalid: Some(InvalidValue {
             value: value.to_owned(),
-            message,
+            reason,
         }),
     };
     if let Err(message) = check_value(setting, value) {
-        return invalid(message);
+        return invalid(InvalidReason::Rejected(message));
     }
     let selected = choices
         .iter()
@@ -131,7 +167,7 @@ fn choice_value(setting: &Setting, choices: &[Cow<'static, str>], value: &str) -
             selected: Some(index),
             invalid: None,
         },
-        None => invalid(format!("{value} belongs to another system")),
+        None => invalid(InvalidReason::OtherSystem),
     }
 }
 
@@ -388,21 +424,20 @@ impl Field {
 
     /// The error of a value that the file cannot hold, for a number or a
     /// year that lies outside its range.
-    pub(crate) fn error(&self) -> Option<String> {
+    pub(crate) fn error(&self) -> Option<FieldError> {
         let text = self.text().trim();
         if text.is_empty() {
             return None;
         }
-        let label = self.source.label();
+        let error = |message| FieldError {
+            source: self.source,
+            message,
+        };
         match self.source.setting() {
-            None if self.key() == YEAR_KEY => parse_year(text)
-                .err()
-                .map(|message| format!("{label}: {message}")),
+            None if self.key() == YEAR_KEY => parse_year(text).err().map(error),
             None => None,
             Some(setting) => match setting.kind {
-                ValueKind::Number(_) => check_value(setting, text)
-                    .err()
-                    .map(|message| format!("{label}: {message}")),
+                ValueKind::Number(_) => check_value(setting, text).err().map(error),
                 ValueKind::Choice(_)
                 | ValueKind::OnOff
                 | ValueKind::Path(_)
@@ -480,8 +515,8 @@ mod tests {
             let invalid = field.invalid_value().expect("the launch rejects the value");
             assert_eq!(invalid.value, value);
             assert_eq!(
-                invalid.message,
-                format!("invalid value '{value}', expected on or off")
+                invalid.reason,
+                InvalidReason::Rejected(format!("invalid value '{value}', expected on or off"))
             );
             assert!(field.is_set());
             assert_eq!(field.values(), [value]);
@@ -664,15 +699,15 @@ mod tests {
             false,
         );
         assert_eq!(field.text(), "1");
-        assert_eq!(field.error(), None);
+        assert!(field.error().is_none());
         field.value = FieldValue::Text("7".to_owned());
         assert!(
             field
                 .error()
-                .is_some_and(|error| error.starts_with("Color phase: "))
+                .is_some_and(|error| error.english().starts_with("Color phase: "))
         );
         field.value = FieldValue::Text(String::new());
-        assert_eq!(field.error(), None);
+        assert!(field.error().is_none());
         assert_eq!(written(&field, document), "");
     }
 
@@ -696,14 +731,14 @@ mod tests {
         let mut year = field(YEAR_KEY);
         assert!(!year.is_set());
         year.value = FieldValue::Text("1993".to_owned());
-        assert_eq!(year.error(), None);
+        assert!(year.error().is_none());
         assert_eq!(
             written(&year, document.clone()),
             "meta.title = Edge\nmeta.year = 1993\nmachine = X\n"
         );
         year.value = FieldValue::Text("93".to_owned());
         assert_eq!(
-            year.error().as_deref(),
+            year.error().map(|error| error.english()).as_deref(),
             Some("Year: '93' is not a year from 1970 to 2100")
         );
         let mut title = field(TITLE_KEY);

@@ -10,7 +10,7 @@ use super::{
     media_list::{MediaBrowse, place_image},
     rows::image_icon,
 };
-use crate::file_browser::BrowseRequest;
+use crate::file_browser::{BrowseNoun, BrowseRequest};
 
 /// The field that the open file browser fills.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -51,8 +51,7 @@ impl Editor {
                 (index, current)
             }
         };
-        let source = self.fields[index].source;
-        let setting = source.setting();
+        let setting = self.fields[index].source.setting();
         let kind = match setting.map(|setting| setting.kind) {
             Some(ValueKind::Path(kind)) => kind,
             Some(
@@ -66,12 +65,13 @@ impl Editor {
         };
         let types = setting.and_then(|setting| self.file_types(setting));
         let noun = match (kind, types) {
-            (PathKind::Folder, _) => "folder",
-            (PathKind::File, Some(_)) => "image",
-            (PathKind::File, None) => "file",
+            (PathKind::Folder, _) => BrowseNoun::Folder,
+            (PathKind::File, Some(_)) => BrowseNoun::Image,
+            (PathKind::File, None) => BrowseNoun::File,
         };
         BrowseRequest {
-            title: format!("Choose {noun} for {}", source.label()),
+            noun,
+            label: setting.map_or("", |setting| setting.label),
             kind,
             types,
             icon: image_icon(types),
@@ -85,7 +85,10 @@ mod tests {
     use machine_factory::config::settings::find_setting;
 
     use super::*;
-    use crate::editor::test_support::{EditorRoot, fdd1_model, index_of};
+    use crate::{
+        editor::test_support::{EditorRoot, fdd1_model, index_of},
+        file_browser::english_title,
+    };
 
     /// Verifies the request of a media list and of a single path: the title, the files and the current image.
     #[test]
@@ -102,7 +105,7 @@ mod tests {
         let index = index_of(&editor, "fdd1");
         let types = fdd1.file_types_for(root.target());
         let request = editor.browse_request(BrowseTarget::List(index, MediaBrowse::Replace(1)));
-        assert_eq!(request.title, "Choose image for FDD 1");
+        assert_eq!(english_title(&request), "Choose image for FDD 1");
         assert_eq!(request.kind, PathKind::File);
         assert_eq!(request.types, types);
         assert_eq!(request.icon, image_icon(types));
@@ -146,7 +149,7 @@ mod tests {
             assert_eq!(editor.fields[path_index].text(), "games/x.img");
             let request = editor.browse_request(BrowseTarget::Path(path_index));
             assert_eq!(request.current.as_deref(), Some("games/x.img"));
-            assert!(request.title.starts_with("Choose "));
+            assert!(english_title(&request).starts_with("Choose "));
         }
     }
 }

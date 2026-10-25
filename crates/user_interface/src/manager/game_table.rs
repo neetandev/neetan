@@ -9,11 +9,13 @@ use gui::{
         TableResponse, TableRow, TableState, Truncation, UiContext, UiId, caption_row,
     },
 };
+use i18n::Catalog;
 
 use super::{
     entries::{DEVELOPER_COLUMN, TITLE_COLUMN, TITLE_ORIGINAL_COLUMN, TableEntry, YEAR_COLUMN},
     rows::GameRow,
 };
+use crate::texts::library;
 
 /// The id of the game table.
 pub(crate) const GAME_TABLE_ID: &str = "games";
@@ -30,36 +32,35 @@ const TITLE_ORIGINAL_WEIGHT: f32 = 3.0;
 /// The share of the developer column.
 const DEVELOPER_WEIGHT: f32 = 2.0;
 
-/// The caption over the files with errors.
-pub(crate) const ERRORS_CAPTION: &str = "Files with errors";
-
-/// The columns of the game table.
-const COLUMNS: [Column<'static>; 4] = [
-    Column {
-        caption: "Title",
-        width: ColumnWidth::Weight(TITLE_WEIGHT),
-        align: Align::Start,
-    },
-    Column {
-        caption: "Original title",
-        width: ColumnWidth::Weight(TITLE_ORIGINAL_WEIGHT),
-        align: Align::Start,
-    },
-    Column {
-        caption: "Developer",
-        width: ColumnWidth::Weight(DEVELOPER_WEIGHT),
-        align: Align::Start,
-    },
-    Column {
-        caption: "Year",
-        width: ColumnWidth::Fixed(YEAR_COLUMN_WIDTH),
-        align: Align::End,
-    },
-];
+/// The columns of the game table with their captions in `catalog`.
+fn columns(catalog: &Catalog) -> [Column<'_>; 4] {
+    [
+        Column {
+            caption: catalog.text(library::COLUMN_TITLE),
+            width: ColumnWidth::Weight(TITLE_WEIGHT),
+            align: Align::Start,
+        },
+        Column {
+            caption: catalog.text(library::COLUMN_ORIGINAL_TITLE),
+            width: ColumnWidth::Weight(TITLE_ORIGINAL_WEIGHT),
+            align: Align::Start,
+        },
+        Column {
+            caption: catalog.text(library::COLUMN_DEVELOPER),
+            width: ColumnWidth::Weight(DEVELOPER_WEIGHT),
+            align: Align::Start,
+        },
+        Column {
+            caption: catalog.text(library::COLUMN_YEAR),
+            width: ColumnWidth::Fixed(YEAR_COLUMN_WIDTH),
+            align: Align::End,
+        },
+    ]
+}
 
 /// The id of the column header of the game table.
 pub(crate) fn header_id() -> UiId {
-    Table::new(GAME_TABLE_ID, &COLUMNS, 0).header_id()
+    Table::new(GAME_TABLE_ID, &[], 0).header_id()
 }
 
 /// Draws the cells of the game `row` into `table_row`.
@@ -99,15 +100,21 @@ pub(crate) fn show_game_table(
     state: &mut TableState,
     hint: EmptyHint,
 ) -> TableResponse {
+    let catalog = context.catalog;
     let kinds: Vec<RowKind> = entries.iter().map(|entry| entry.kind()).collect();
-    Table::new(GAME_TABLE_ID, &COLUMNS, entries.len())
+    let columns = columns(catalog);
+    Table::new(GAME_TABLE_ID, &columns, entries.len())
         .kinds(&kinds)
         .empty_hint(hint)
         .show(context, area, state, |context, table_row| {
             match entries[table_row.row.index] {
                 TableEntry::Game(index) => draw_game(context, table_row, &rows[index]),
                 TableEntry::Broken(index) => draw_broken(context, table_row, &rows[index]),
-                TableEntry::Caption => caption_row(context, &table_row.row, ERRORS_CAPTION),
+                TableEntry::Caption => caption_row(
+                    context,
+                    &table_row.row,
+                    catalog.text(library::ERRORS_CAPTION),
+                ),
             }
         })
 }

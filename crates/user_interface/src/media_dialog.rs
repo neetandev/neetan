@@ -11,6 +11,9 @@ use gui::{
         Truncation, UiContext, UiId, label, list, modal, tab_bar, text_field,
     },
 };
+use i18n::Key;
+
+use crate::texts::{common, media};
 
 /// The size of the dialog panel in logical units.
 pub(crate) const PANEL_SIZE: (f32, f32) = (640.0, 540.0);
@@ -20,6 +23,9 @@ pub(crate) const TAB_BAR_HEIGHT: f32 = 40.0;
 
 /// The id of the image list.
 const LIST_ID: &str = "images";
+
+/// The most drives of the dialog: two floppy drives and the CD-ROM drive.
+const MAXIMUM_DRIVES: usize = 3;
 
 /// A removable media drive that the dialog changes the medium of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,12 +37,12 @@ pub(crate) enum Drive {
 }
 
 impl Drive {
-    /// The caption of the tab of the drive.
-    fn caption(self) -> &'static str {
+    /// The key of the caption of the tab of the drive.
+    fn caption(self) -> Key {
         match self {
-            Drive::Floppy(0) => "FDD 1",
-            Drive::Floppy(_) => "FDD 2",
-            Drive::CdRom => "CD-ROM",
+            Drive::Floppy(0) => media::FDD_1,
+            Drive::Floppy(_) => media::FDD_2,
+            Drive::CdRom => media::CD_ROM,
         }
     }
 
@@ -48,27 +54,27 @@ impl Drive {
         }
     }
 
-    /// The title of the dialog while the tab of the drive is selected.
-    fn title(self) -> &'static str {
+    /// The key of the title of the dialog while the tab of the drive is selected.
+    fn title(self) -> Key {
         match self {
-            Drive::Floppy(_) => "Insert disk image",
-            Drive::CdRom => "Insert disc image",
+            Drive::Floppy(_) => media::INSERT_DISK_TITLE,
+            Drive::CdRom => media::INSERT_DISC_TITLE,
         }
     }
 
-    /// The caption of the eject row while the drive holds a medium.
-    fn eject_caption(self) -> &'static str {
+    /// The key of the caption of the eject row while the drive holds a medium.
+    fn eject_caption(self) -> Key {
         match self {
-            Drive::Floppy(_) => "Eject disk",
-            Drive::CdRom => "Eject disc",
+            Drive::Floppy(_) => media::EJECT_DISK,
+            Drive::CdRom => media::EJECT_DISC,
         }
     }
 
-    /// The caption of the eject row while the drive is empty.
-    fn empty_caption(self) -> &'static str {
+    /// The key of the caption of the eject row while the drive is empty.
+    fn empty_caption(self) -> Key {
         match self {
-            Drive::Floppy(_) => "No disk",
-            Drive::CdRom => "No disc",
+            Drive::Floppy(_) => media::NO_DISK,
+            Drive::CdRom => media::NO_DISC,
         }
     }
 
@@ -301,8 +307,9 @@ impl MediaDialog {
             return DialogAction::Close;
         };
         let theme = context.theme;
+        let catalog = context.catalog;
         let gap = theme.gap;
-        let response = modal(context, "media", PANEL_SIZE, drive.title());
+        let response = modal(context, "media", PANEL_SIZE, catalog.text(drive.title()));
         let mut action = if response.closed {
             DialogAction::Close
         } else {
@@ -310,13 +317,13 @@ impl MediaDialog {
         };
 
         let (tabs_area, rest) = response.content.cut_top(TAB_BAR_HEIGHT);
-        let tabs: Vec<Tab> = self
-            .drives
-            .iter()
-            .map(|drive| Tab::new(drive.caption(), Some(drive.icon())))
-            .collect();
+        let mut tabs = [Tab::new("", None); MAXIMUM_DRIVES];
+        for (tab, drive) in tabs.iter_mut().zip(&self.drives) {
+            *tab = Tab::new(catalog.text(drive.caption()), Some(drive.icon()));
+        }
+        let shown = self.drives.len().min(MAXIMUM_DRIVES);
         let mut tab = self.tab;
-        if tab_bar(context, "drives", tabs_area, &tabs, &mut tab) {
+        if tab_bar(context, "drives", tabs_area, &tabs[..shown], &mut tab) {
             let loaded = media.get(tab).and_then(|media| media.loaded);
             self.switch_tab(tab, loaded);
             self.stale = true;
@@ -333,7 +340,7 @@ impl MediaDialog {
             "filter",
             filter_area,
             &mut self.filter,
-            "Filter images",
+            catalog.text(media::FILTER_PLACEHOLDER),
         );
         if filter.changed {
             self.eject_chosen = false;
@@ -371,7 +378,7 @@ impl MediaDialog {
                         Some(_) => (drive.eject_caption(), None),
                         None => (drive.empty_caption(), Some(Icon::Check)),
                     };
-                    RowContent::new(caption)
+                    RowContent::new(catalog.text(caption))
                         .icon(Some(Icon::Eject))
                         .mark(marker.map(RowMark::Marker))
                         .show(context, row);
@@ -395,9 +402,9 @@ impl MediaDialog {
         }
         if rows.is_empty() {
             let hint = if entries.is_empty() {
-                "No images configured for this drive"
+                catalog.text(media::NO_IMAGES)
             } else {
-                "No images match the filter"
+                catalog.text(media::NO_MATCH)
             };
             let hint_area = Rect::new(
                 list_area.x,
@@ -434,13 +441,13 @@ impl MediaDialog {
         }
 
         let (caption, icon) = match self.selection {
-            Some(_) => ("Insert", Icon::Check),
-            None => ("Eject", Icon::Eject),
+            Some(_) => (common::INSERT, Icon::Check),
+            None => (common::EJECT, Icon::Eject),
         };
-        let insert = Button::new("insert", caption)
+        let insert = Button::new("insert", catalog.text(caption))
             .icon(icon)
             .kind(ButtonKind::Primary);
-        let cancel = Button::new("cancel", "Cancel");
+        let cancel = Button::new("cancel", catalog.text(common::CANCEL));
         let (insert_area, footer) = footer.cut_right(insert.width(context));
         let cancel_area = footer.cut_right(gap).1.cut_right(cancel.width(context)).0;
         if cancel.show(context, cancel_area) {

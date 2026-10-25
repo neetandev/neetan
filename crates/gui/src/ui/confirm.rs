@@ -7,7 +7,7 @@ use super::{
     icons::Icon,
     label::{Align, wrapped_height, wrapped_label},
     modal::{HEADER_HEIGHT, modal_in},
-    status_line::{ACTIVATE_KEYS, CANCEL_KEYS, Hint},
+    status_line::{ACTIVATE_KEYS, CANCEL_KEYS, Hint, HintKey},
 };
 use crate::Rect;
 
@@ -27,6 +27,26 @@ pub struct ConfirmResponse {
     pub cancelled: bool,
     /// The action button holds the focus.
     pub action_focused: bool,
+}
+
+/// The hints of the status line of a confirm dialog for the answer
+/// `response` of the last pass. `hint` builds a hint from its keys and the
+/// label `cancel` of the cancel button or `action` of the action button.
+///
+/// The hints show no two hints with the same result. With the focus on the
+/// cancel button they show only its hint. With the focus on the action they
+/// show the hint of the action and the cancel keys.
+pub fn confirm_hints<Label, Built>(
+    response: ConfirmResponse,
+    cancel: Label,
+    action: Label,
+    hint: impl Fn(&'static [HintKey<'static>], Label) -> Built,
+) -> Vec<Built> {
+    if response.action_focused {
+        vec![hint(ACTIVATE_KEYS, action), hint(CANCEL_KEYS, cancel)]
+    } else {
+        vec![hint(ACTIVATE_KEYS, cancel)]
+    }
 }
 
 /// A modal that asks before an action: a title, a wrapping message, an
@@ -61,14 +81,20 @@ pub struct ConfirmDialog<'a> {
 
 impl<'a> ConfirmDialog<'a> {
     /// A dialog with the title `title` that asks `message` before the
-    /// action `action`.
-    pub fn new(id: impl Into<UiId>, title: &'a str, message: &'a str, action: &'a str) -> Self {
+    /// action `action`. The cancel button shows `cancel`.
+    pub fn new(
+        id: impl Into<UiId>,
+        title: &'a str,
+        message: &'a str,
+        cancel: &'a str,
+        action: &'a str,
+    ) -> Self {
         Self {
             id: id.into(),
             title,
             message,
             detail: None,
-            cancel: "Cancel",
+            cancel,
             action,
             action_icon: None,
             danger: false,
@@ -80,14 +106,6 @@ impl<'a> ConfirmDialog<'a> {
     pub fn detail(self, detail: &'a str) -> Self {
         Self {
             detail: Some(detail),
-            ..self
-        }
-    }
-
-    /// The same dialog with the caption `caption` on the cancel button.
-    pub fn cancel_caption(self, caption: &'a str) -> Self {
-        Self {
-            cancel: caption,
             ..self
         }
     }
@@ -125,27 +143,12 @@ impl<'a> ConfirmDialog<'a> {
     }
 
     /// The hints of the status line for the answer `response` of the last
-    /// pass. They show no two hints with the same result: with the focus on
-    /// the cancel button only its hint, with the focus on the action the
-    /// hint of the action and the cancel keys.
+    /// pass, in the order of [`confirm_hints`].
     pub fn hints(&self, response: ConfirmResponse) -> Vec<Hint<'a>> {
-        if response.action_focused {
-            vec![
-                Hint {
-                    keys: ACTIVATE_KEYS,
-                    label: self.action,
-                },
-                Hint {
-                    keys: CANCEL_KEYS,
-                    label: self.cancel,
-                },
-            ]
-        } else {
-            vec![Hint {
-                keys: ACTIVATE_KEYS,
-                label: self.cancel,
-            }]
-        }
+        confirm_hints(response, self.cancel, self.action, |keys, label| Hint {
+            keys,
+            label,
+        })
     }
 
     /// Draws one pass of the dialog and returns the answer of the pass.
@@ -254,6 +257,7 @@ mod tests {
             "delete",
             "Delete game",
             "Delete YU-NO: A Girl Who Chants Love at the Bound of this World?",
+            "Cancel",
             "Delete",
         )
         .detail("The file config/pc98/yu-no.conf is removed. The disk images stay where they are.")
@@ -311,10 +315,35 @@ mod tests {
         assert_eq!(hints[1].keys, CANCEL_KEYS);
     }
 
+    /// Verifies the hint order of a confirm dialog with labels of any type.
+    #[test]
+    fn the_confirm_hints_take_labels_of_any_type() {
+        let pair = |keys: &'static [HintKey<'static>], label: u8| (keys, label);
+        let cancel_focused = ConfirmResponse::default();
+        assert_eq!(
+            confirm_hints(cancel_focused, 1, 2, pair),
+            [(ACTIVATE_KEYS, 1)]
+        );
+        let action_focused = ConfirmResponse {
+            action_focused: true,
+            ..ConfirmResponse::default()
+        };
+        assert_eq!(
+            confirm_hints(action_focused, 1, 2, pair),
+            [(ACTIVATE_KEYS, 2), (CANCEL_KEYS, 1)]
+        );
+    }
+
     #[test]
     fn a_confirm_leaves_no_dialog_in_the_next_pass() {
         let mut harness = Harness::new();
-        let save = ConfirmDialog::new("save", "Unsaved changes", "Save the changes?", "Save");
+        let save = ConfirmDialog::new(
+            "save",
+            "Unsaved changes",
+            "Save the changes?",
+            "Cancel",
+            "Save",
+        );
         let mut open = true;
         let draw = |harness: &mut Harness, open: &mut bool| {
             harness.frame(|context| {
@@ -346,7 +375,13 @@ mod tests {
     #[test]
     fn a_primary_action_starts_on_the_action() {
         let mut harness = Harness::new();
-        let save = ConfirmDialog::new("save", "Unsaved changes", "Save the changes?", "Save");
+        let save = ConfirmDialog::new(
+            "save",
+            "Unsaved changes",
+            "Save the changes?",
+            "Cancel",
+            "Save",
+        );
         draw(&mut harness, save);
         assert_eq!(harness.state.focused(), Some(save.action_id()));
         harness.input.cancel = true;

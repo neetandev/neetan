@@ -3,7 +3,10 @@
 //! The emulator ignores every `meta.*` key. The metadata gives the title of
 //! the game, its makers, its year and its genre, and holds free notes.
 
+use i18n::Key;
+
 use super::{document::ConfigDocument, reading::Diagnostic};
+use crate::texts::metadata;
 
 /// Prefix of every metadata key.
 pub const META_PREFIX: &str = "meta.";
@@ -27,39 +30,39 @@ pub const NOTES_KEY: &str = "meta.notes";
 pub struct MetadataField {
     /// The key, for example `meta.title`.
     pub key: &'static str,
-    /// The short human-readable name of the key.
-    pub label: &'static str,
+    /// The key of the short human-readable name of the key.
+    pub label: Key,
 }
 
 /// Every metadata key in display order.
 pub const METADATA_FIELDS: [MetadataField; 7] = [
     MetadataField {
         key: TITLE_KEY,
-        label: "Title",
+        label: metadata::TITLE,
     },
     MetadataField {
         key: TITLE_ORIGINAL_KEY,
-        label: "Original title",
+        label: metadata::ORIGINAL_TITLE,
     },
     MetadataField {
         key: DEVELOPER_KEY,
-        label: "Developer",
+        label: metadata::DEVELOPER,
     },
     MetadataField {
         key: PUBLISHER_KEY,
-        label: "Publisher",
+        label: metadata::PUBLISHER,
     },
     MetadataField {
         key: YEAR_KEY,
-        label: "Year",
+        label: metadata::YEAR,
     },
     MetadataField {
         key: GENRE_KEY,
-        label: "Genre",
+        label: metadata::GENRE,
     },
     MetadataField {
         key: NOTES_KEY,
-        label: "Notes",
+        label: metadata::NOTES,
     },
 ];
 
@@ -290,7 +293,11 @@ mod tests {
         );
         for field in METADATA_FIELDS {
             assert!(field.key.starts_with(META_PREFIX), "{}", field.key);
-            assert!(!field.label.is_empty(), "{}", field.key);
+            assert!(
+                !crate::texts::english().text(field.label).is_empty(),
+                "{}",
+                field.key
+            );
         }
     }
 }

@@ -1,17 +1,27 @@
 //! The save of the game editor: the document with the changed fields, its
 //! atomic write over a game file, the write of a new file that never
-//! replaces a file, the read of a game file together with its stamp, and the
-//! stamp that tells a change by another program.
+//! replaces a file, the read of a game file together with its stamp, the
+//! stamp that tells a change by another program, and the faults that keep
+//! the editor from opening a file.
 
 use std::{
+    fmt,
     fs::{File, Metadata, OpenOptions},
     io::{Read, Seek, SeekFrom},
-    path::Path,
+    path::{Path, PathBuf},
     time::SystemTime,
 };
 
-use super::fields::Field;
-use crate::config::{ConfigDocument, DocumentError};
+use i18n::Catalog;
+
+use super::{
+    fields::{Field, FieldError},
+    file::SaveFailure,
+};
+use crate::{
+    config::{ConfigDocument, DocumentError},
+    texts::{english, errors},
+};
 
 /// The most reads of a game file that another program writes during the read.
 const MAXIMUM_READ_ATTEMPTS: usize = 4;
@@ -42,6 +52,55 @@ impl FileStamp {
     }
 }
 
+/// A fault that keeps the editor from opening a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OpenError {
+    /// The file did not read.
+    Failed {
+        /// The path of the file.
+        path: PathBuf,
+        /// The error of the operating system or of the document in English.
+        error: String,
+    },
+    /// The entry at this path is a folder or another entry without the bytes
+    /// of a file.
+    NoFile(PathBuf),
+    /// Another program kept writing the file at this path while the editor
+    /// read it.
+    KeptWriting(PathBuf),
+    /// The program holds no machine of the system with this name.
+    NotCompiled(&'static str),
+}
+
+impl OpenError {
+    /// The fault of the file at `path` that did not read with `error`.
+    pub(crate) fn failed(path: &Path, error: &dyn fmt::Display) -> Self {
+        Self::Failed {
+            path: path.to_path_buf(),
+            error: error.to_string(),
+        }
+    }
+
+    /// Writes the text of the fault in `catalog`.
+    pub(crate) fn write(&self, catalog: &Catalog, out: &mut impl fmt::Write) -> fmt::Result {
+        match self {
+            Self::Failed { path, error } => {
+                catalog.write(out, errors::path_error(&path.display(), error))
+            }
+            Self::NoFile(path) => catalog.write(out, errors::no_file(&path.display())),
+            Self::KeptWriting(path) => catalog.write(out, errors::kept_writing(&path.display())),
+            Self::NotCompiled(system) => catalog.write(out, errors::not_compiled(system)),
+        }
+    }
+}
+
+impl fmt::Display for OpenError {
+    /// Writes the text of the fault in English.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.write(english(), formatter)
+    }
+}
+
 /// Reads the document of the game file at `path` and the stamp of the
 /// bytes that it holds.
 ///
@@ -49,7 +108,7 @@ impl FileStamp {
 /// the stamp after the read of the bytes must agree. A file that another
 /// program writes during the read is read again, at most
 /// `MAXIMUM_READ_ATTEMPTS` times. The error holds the path and the reason.
-pub(crate) fn read_document(path: &Path) -> Result<(ConfigDocument, FileStamp), String> {
+pub(crate) fn read_document(path: &Path) -> Result<(ConfigDocument, FileStamp), OpenError> {
     read_document_with(path, |file, bytes| file.read_to_end(bytes).map(drop))
 }
 
@@ -58,7 +117,7 @@ pub(crate) fn read_document(path: &Path) -> Result<(ConfigDocument, FileStamp), 
 /// stamp.
 pub(crate) fn read_optional_document(
     path: &Path,
-) -> Result<(ConfigDocument, Option<FileStamp>), String> {
+) -> Result<(ConfigDocument, Option<FileStamp>), OpenError> {
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             Ok((ConfigDocument::new(), None))
@@ -72,18 +131,13 @@ pub(crate) fn read_optional_document(
 fn read_document_with(
     path: &Path,
     mut read_bytes: impl FnMut(&mut File, &mut Vec<u8>) -> std::io::Result<()>,
-) -> Result<(ConfigDocument, FileStamp), String> {
-    let failed = |error: DocumentError| format!("{}: {error}", path.display());
+) -> Result<(ConfigDocument, FileStamp), OpenError> {
+    let failed = |error: DocumentError| OpenError::failed(path, &error);
     let read_error = |error: std::io::Error| failed(DocumentError::Read(error));
     let mut file = File::open(path).map_err(read_error)?;
     let stamp = |file: &File| {
         let metadata = file.metadata().map_err(read_error)?;
-        FileStamp::from_metadata(&metadata).ok_or_else(|| {
-            read_error(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "the path holds no file",
-            ))
-        })
+        FileStamp::from_metadata(&metadata).ok_or_else(|| OpenError::NoFile(path.to_path_buf()))
     };
     for _ in 0..MAXIMUM_READ_ATTEMPTS {
         let before = stamp(&file)?;
@@ -95,16 +149,7 @@ fn read_document_with(
             return Ok((document, before));
         }
     }
-    Err(format!(
-        "{}: another program kept writing the file while the editor read it",
-        path.display()
-    ))
-}
-
-/// The error of a save over the game file at the shown path `shown` that
-/// changed or went away since the editor read it.
-pub(crate) fn changed_outside_message(shown: &str) -> String {
-    format!("{shown} changed outside the manager since the editor read it.")
+    Err(OpenError::KeptWriting(path.to_path_buf()))
 }
 
 /// Returns `document` with the changed fields of `fields` written into it.
@@ -120,21 +165,21 @@ pub(crate) fn edited_document(document: &ConfigDocument, fields: &[Field]) -> Co
 }
 
 /// Returns the first error of a field that the file cannot hold.
-pub(crate) fn validation_error(fields: &[Field]) -> Option<String> {
+pub(crate) fn validation_error(fields: &[Field]) -> Option<FieldError> {
     fields.iter().find_map(Field::error)
 }
 
 /// Writes the normalized text of `document` to `path` in one atomic step.
-/// Returns the stamp of the written file. The error holds the path and the
-/// reason.
+/// Returns the stamp of the written file. The failure holds the path and
+/// the reason.
 pub(crate) fn save_document(
     document: &ConfigDocument,
     path: &Path,
-) -> Result<Option<FileStamp>, String> {
+) -> Result<Option<FileStamp>, SaveFailure> {
     document
         .save(path)
         .map(|metadata| FileStamp::from_metadata(&metadata))
-        .map_err(|error| format!("{}: {error}", path.display()))
+        .map_err(|error| SaveFailure::error(path, &error))
 }
 
 /// Writes the normalized text of `document` into a new file at `path`.
@@ -266,9 +311,18 @@ mod tests {
         let root = EditorRoot::new("save_error");
         root.write("blocked", "a file where a folder belongs");
         let path = root.path("blocked/game.conf");
-        let error = save_document(&ConfigDocument::parse("crt = on\n"), &path)
+        let failure = save_document(&ConfigDocument::parse("crt = on\n"), &path)
             .expect_err("the folder is a file");
-        assert!(error.starts_with(&path.display().to_string()), "{error}");
+        assert!(
+            matches!(&failure, SaveFailure::Error { path: failed, .. } if *failed == path),
+            "{failure:?}"
+        );
+        assert!(
+            failure
+                .to_string()
+                .starts_with(&format!("{}: ", path.display())),
+            "{failure}"
+        );
         assert!(!path.exists());
     }
 
@@ -282,12 +336,29 @@ mod tests {
         assert_eq!(Some(stamp), FileStamp::of(&path));
         for failing in [root.path("config"), root.path("config/absent.conf")] {
             let error = read_document(&failing).expect_err("no file reads there");
-            assert!(error.starts_with(&failing.display().to_string()), "{error}");
+            assert!(
+                error
+                    .to_string()
+                    .starts_with(&failing.display().to_string()),
+                "{error}"
+            );
         }
+        let folder = root.path("config");
+        assert_eq!(
+            read_document(&folder).map(drop),
+            Err(OpenError::NoFile(folder.clone()))
+        );
+        assert_eq!(
+            OpenError::NoFile(folder.clone()).to_string(),
+            format!(
+                "{}: cannot read the file: the path holds no file",
+                folder.display()
+            )
+        );
         let broken = root.write("config/broken.conf", "");
         std::fs::write(&broken, b"crt = \xFF\n").expect("file is written");
         let error = read_document(&broken).expect_err("the bytes are not UTF-8");
-        assert!(error.contains("UTF-8"), "{error}");
+        assert!(error.to_string().contains("UTF-8"), "{error}");
     }
 
     /// Verifies that a file that another program writes during the read is read again, and that the stamp belongs to the bytes of the document.
@@ -325,7 +396,14 @@ mod tests {
         })
         .expect_err("the file never holds still");
         assert_eq!(reads, MAXIMUM_READ_ATTEMPTS);
-        assert!(error.starts_with(&path.display().to_string()), "{error}");
+        assert_eq!(error, OpenError::KeptWriting(path.clone()));
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{}: another program kept writing the file while the editor read it",
+                path.display()
+            )
+        );
     }
 
     /// Verifies that the write of a new file never replaces a file and that the stamp follows a write.
@@ -388,10 +466,12 @@ mod tests {
         let root = EditorRoot::new("save_validation");
         let document = ConfigDocument::parse("meta.year = 1993\n");
         let mut fields = fields(&root, &document);
-        assert_eq!(validation_error(&fields), None);
+        assert!(validation_error(&fields).is_none());
         field(&mut fields, "meta.year").value = FieldValue::Text("3000".to_owned());
         assert_eq!(
-            validation_error(&fields).as_deref(),
+            validation_error(&fields)
+                .map(|error| error.english())
+                .as_deref(),
             Some("Year: '3000' is not a year from 1970 to 2100")
         );
     }

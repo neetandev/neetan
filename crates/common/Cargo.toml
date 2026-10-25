@@ -10,6 +10,7 @@ rust-version.workspace = true
 [features]
 default = []
 std = ["save_state/std"]
+allocation-counter = ["std"]
 
 [dependencies]
 save_state.workspace = true

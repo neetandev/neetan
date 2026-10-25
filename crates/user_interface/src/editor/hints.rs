@@ -1,7 +1,9 @@
 //! The hints of the status line of the editor: the action of Enter and A on
 //! the focused widget, the section switch, the save and the close.
 
-use gui::ui::{ACTIVATE_KEYS, CANCEL_KEYS, Hint, HintKey, UiContext, UiId, distinct_hints};
+use gui::ui::{ACTIVATE_KEYS, CANCEL_KEYS, HintKey, UiContext, UiId, distinct_hints};
+
+use crate::texts::{self, HintText};
 
 /// The kind of a focusable widget of the editor, which picks the first hint.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -101,182 +103,134 @@ enum EditorAction {
 }
 
 /// A hint with its action.
-type ActionHint = (EditorAction, Hint<'static>);
+type ActionHint = (EditorAction, HintText);
 
 /// The hint of a dropdown.
 const SELECT_HINT: ActionHint = (
     EditorAction::Select,
-    Hint {
-        keys: ACTIVATE_KEYS,
-        label: "Select",
-    },
+    HintText::new(ACTIVATE_KEYS, texts::common::SELECT),
 );
 
 /// The hint of a media list and a Browse button.
 const BROWSE_HINT: ActionHint = (
     EditorAction::Browse,
-    Hint {
-        keys: ACTIVATE_KEYS,
-        label: "Browse",
-    },
+    HintText::new(ACTIVATE_KEYS, texts::common::BROWSE),
 );
 
 /// The hint of the button that adds an image.
 const ADD_HINT: ActionHint = (
     EditorAction::Add,
-    Hint {
-        keys: ACTIVATE_KEYS,
-        label: "Add",
-    },
+    HintText::new(ACTIVATE_KEYS, texts::common::ADD),
 );
 
 /// The hint of the button that removes an image.
 const REMOVE_HINT: ActionHint = (
     EditorAction::Remove,
-    Hint {
-        keys: ACTIVATE_KEYS,
-        label: "Remove",
-    },
+    HintText::new(ACTIVATE_KEYS, texts::common::REMOVE),
 );
 
 /// The hint of the button that shifts an image up.
 const UP_HINT: ActionHint = (
     EditorAction::ShiftUp,
-    Hint {
-        keys: ACTIVATE_KEYS,
-        label: "Up",
-    },
+    HintText::new(ACTIVATE_KEYS, texts::hints::UP),
 );
 
 /// The hint of the button that shifts an image down.
 const DOWN_HINT: ActionHint = (
     EditorAction::ShiftDown,
-    Hint {
-        keys: ACTIVATE_KEYS,
-        label: "Down",
-    },
+    HintText::new(ACTIVATE_KEYS, texts::hints::DOWN),
 );
 
 /// The hint of the cancel button.
 const CANCEL_HINT: ActionHint = (
     EditorAction::Close,
-    Hint {
-        keys: ACTIVATE_KEYS,
-        label: "Cancel",
-    },
+    HintText::new(ACTIVATE_KEYS, texts::common::CANCEL),
 );
 
 /// The hint of the save button.
 const SAVE_BUTTON_HINT: ActionHint = (
     EditorAction::Save,
-    Hint {
-        keys: ACTIVATE_KEYS,
-        label: "Save",
-    },
+    HintText::new(ACTIVATE_KEYS, texts::common::SAVE),
 );
 
 /// The hint of the close button.
 const CLOSE_BUTTON_HINT: ActionHint = (
     EditorAction::Close,
-    Hint {
-        keys: ACTIVATE_KEYS,
-        label: "Close",
-    },
+    HintText::new(ACTIVATE_KEYS, texts::common::CLOSE),
 );
 
 /// The hint of the checkbox of an empty media list.
 const SWITCH_HINT: ActionHint = (
     EditorAction::Switch,
-    Hint {
-        keys: ACTIVATE_KEYS,
-        label: "Switch",
-    },
+    HintText::new(ACTIVATE_KEYS, texts::common::SWITCH),
 );
 
 /// The hint of gamepad X on a set field.
 const CLEAR_HINT: ActionHint = (
     EditorAction::Clear,
-    Hint {
-        keys: &[HintKey::Pad("X")],
-        label: "Clear",
-    },
+    HintText::new(&[HintKey::Pad("X")], texts::common::CLEAR),
 );
 
 /// The hint of gamepad X on a media list with images.
 const REMOVE_IMAGE_HINT: ActionHint = (
     EditorAction::Remove,
-    Hint {
-        keys: &[HintKey::Pad("X")],
-        label: "Remove",
-    },
+    HintText::new(&[HintKey::Pad("X")], texts::common::REMOVE),
 );
 
 /// The hint of the steps of a number field.
 const STEP_HINT: ActionHint = (
     EditorAction::Step,
-    Hint {
-        keys: &[HintKey::Key("Left"), HintKey::Key("Right")],
-        label: "Step",
-    },
+    HintText::new(
+        &[HintKey::Key("Left"), HintKey::Key("Right")],
+        texts::hints::STEP,
+    ),
 );
 
 /// The hint of the digits of a number field.
 const TYPE_HINT: ActionHint = (
     EditorAction::Type,
-    Hint {
-        keys: &[HintKey::Key("0-9")],
-        label: "Type",
-    },
+    HintText::new(&[HintKey::Key("0-9")], texts::hints::TYPE),
 );
 
 /// The hint of the section switch.
 const SECTION_HINT: ActionHint = (
     EditorAction::Section,
-    Hint {
-        keys: &[
+    HintText::new(
+        &[
             HintKey::Key("Ctrl+PgUp"),
             HintKey::Key("Ctrl+PgDn"),
             HintKey::Shoulder("LB"),
             HintKey::Shoulder("RB"),
         ],
-        label: "Section",
-    },
+        texts::hints::SECTION,
+    ),
 );
 
 /// The hint of the save shortcut.
 const SAVE_HINT: ActionHint = (
     EditorAction::Save,
-    Hint {
-        keys: &[HintKey::Key("Ctrl+S"), HintKey::Key("Start")],
-        label: "Save",
-    },
+    HintText::new(
+        &[HintKey::Key("Ctrl+S"), HintKey::Key("Start")],
+        texts::common::SAVE,
+    ),
 );
 
 /// The hint of the close of the editor.
 const CLOSE_HINT: ActionHint = (
     EditorAction::Close,
-    Hint {
-        keys: CANCEL_KEYS,
-        label: "Close",
-    },
+    HintText::new(CANCEL_KEYS, texts::common::CLOSE),
 );
 
 /// The hint of an entry of an open dropdown popup.
 const CHOOSE_HINT: ActionHint = (
     EditorAction::Choose,
-    Hint {
-        keys: ACTIVATE_KEYS,
-        label: "Choose",
-    },
+    HintText::new(ACTIVATE_KEYS, texts::common::CHOOSE),
 );
 
 /// The hint of the close of an open dropdown popup.
 const CLOSE_POPUP_HINT: ActionHint = (
     EditorAction::ClosePopup,
-    Hint {
-        keys: CANCEL_KEYS,
-        label: "Close the popup",
-    },
+    HintText::new(CANCEL_KEYS, texts::hints::CLOSE_POPUP),
 );
 
 /// The hints of the editor while the widget that `context` reports as
@@ -284,7 +238,7 @@ const CLOSE_POPUP_HINT: ActionHint = (
 /// An open dropdown popup shows only its own hints. A hint whose action an
 /// earlier hint has leaves the line, such as Esc beside the focused close
 /// button.
-pub(crate) fn editor_hints(context: &UiContext, widgets: &[EditorWidget]) -> Vec<Hint<'static>> {
+pub(crate) fn editor_hints(context: &UiContext, widgets: &[EditorWidget]) -> Vec<HintText> {
     if widgets
         .iter()
         .any(|widget| widget.kind == WidgetKind::Dropdown && context.popup_open(widget.id))
@@ -353,10 +307,7 @@ mod tests {
         harness.state.set_focus(id);
         harness.frame(|context| {
             context.focusable(id, Rect::new(0.0, 0.0, 10.0, 10.0), NavigationSet::EMPTY);
-            editor_hints(context, &[widget])
-                .iter()
-                .map(|hint| hint.label)
-                .collect()
+            crate::texts::english_labels(&editor_hints(context, &[widget]))
         })
     }
 

@@ -39,6 +39,12 @@ mod session;
 mod shell;
 pub mod texts;
 
+/// The global allocator of the test binary. It counts the allocations of each thread.
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: common::allocation_counter::CountingAllocator =
+    common::allocation_counter::CountingAllocator;
+
 /// The company name of the SDL pref path.
 const COMPANY_NAME: &str = "neetan";
 /// The name of the application.

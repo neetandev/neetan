@@ -6,9 +6,10 @@ use gui::{
     Rect,
     ui::{
         Align, Button, HEADER_HEIGHT, Icon, List, ListResponse, ListState, PATH_LINE_HEIGHT,
-        RowContent, RowMark, Truncation, UiContext, UiId,
+        RowContent, RowMark, TextBuffer, TextValue, Truncation, UiContext, UiId,
     },
 };
+use i18n::Catalog;
 use machine_factory::{
     config::{MachineSelection, Target, systems::System},
     rom_status::RomStatus,
@@ -19,6 +20,7 @@ use crate::{
     APPLICATION_TITLE,
     config::HostLayers,
     rom_folders::{RomFolderStatus, RomSeverity, rom_severity},
+    texts::{NumberText, common, library},
 };
 
 /// The id of the system list.
@@ -27,8 +29,57 @@ pub(crate) const SYSTEM_LIST_ID: &str = "systems";
 /// The id of the button that opens the system defaults of the selected system.
 pub(crate) const SYSTEM_DEFAULTS_ID: &str = "system defaults";
 
-/// The caption of the button that opens the system defaults.
-const SYSTEM_DEFAULTS_CAPTION: &str = "System defaults";
+/// The ROM status of a system as the line below the system list tells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RomLine {
+    /// Every ROM set is in the folder.
+    Found,
+    /// Some ROM sets are missing.
+    Partial,
+    /// The ROM sets are missing.
+    Missing,
+    /// The folder holds no ROM set that the system runs without.
+    NotFound,
+    /// This build cannot check the folder.
+    Unsupported,
+}
+
+impl TextValue for RomLine {}
+
+impl RomLine {
+    /// The line of the ROM status `status`.
+    fn of(status: RomStatus) -> Self {
+        match status {
+            RomStatus::Found => Self::Found,
+            RomStatus::Partial => Self::Partial,
+            RomStatus::Missing => Self::Missing,
+            RomStatus::NotFound => Self::NotFound,
+            RomStatus::Unsupported => Self::Unsupported,
+        }
+    }
+
+    /// Writes the sentence of the line for the ROM folder `folder` in `catalog`.
+    fn write(self, catalog: &Catalog, folder: &str, out: &mut String) {
+        let _ = match self {
+            Self::Found => catalog.write(out, library::roms_found(&folder)),
+            Self::Partial => catalog.write(out, library::roms_partial(&folder)),
+            Self::Missing => catalog.write(out, library::roms_missing(&folder)),
+            Self::NotFound => catalog.write(out, library::roms_not_found(&folder)),
+            Self::Unsupported => {
+                out.push_str(catalog.text(library::ROMS_UNSUPPORTED));
+                Ok(())
+            }
+        };
+    }
+}
+
+/// The texts of the sidebar that refill only when their data or the
+/// catalog changes.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SidebarTexts {
+    /// The ROM status of the selected system for its line and its folder.
+    rom_line: TextBuffer<(RomLine, String)>,
+}
 
 /// The response of the sidebar in a pass.
 #[derive(Debug, Clone, Copy, Default)]
@@ -44,6 +95,8 @@ pub(crate) struct SidebarResponse {
 pub(crate) struct SystemEntry {
     /// The system.
     pub(crate) system: &'static System,
+    /// The icon of the system in the system list.
+    pub(crate) icon: Icon,
     /// The games and the files with errors of the system.
     pub(crate) rows: Vec<GameRow>,
     /// The folder of the game files to show, for example `config/pc98`.
@@ -64,6 +117,7 @@ impl SystemEntry {
     ) -> Self {
         let mut entry = Self {
             system,
+            icon: system_icon(system),
             rows: Vec::new(),
             folder: String::new(),
             rom_status: RomStatus::Unsupported,
@@ -107,16 +161,12 @@ impl SystemEntry {
         }
     }
 
-    /// The sentence of the ROM status below the system list.
+    /// The sentence of the ROM status below the system list in English.
+    #[cfg(test)]
     pub(crate) fn rom_sentence(&self) -> String {
-        let folder = &self.rom_folder;
-        match self.rom_status {
-            RomStatus::Found => format!("ROMs found in {folder}"),
-            RomStatus::Partial => format!("Some ROMs missing in {folder}"),
-            RomStatus::Missing => format!("ROMs missing in {folder}"),
-            RomStatus::NotFound => format!("ROMs not found in {folder}"),
-            RomStatus::Unsupported => "No ROM check in this build".to_owned(),
-        }
+        crate::texts::english_text(|catalog, out| {
+            RomLine::of(self.rom_status).write(catalog, &self.rom_folder, out);
+        })
     }
 }
 
@@ -149,15 +199,17 @@ pub(crate) fn system_icon(system: &System) -> Icon {
     }
 }
 
-/// Draws the sidebar into `area`: the name of the application, the system
-/// list of `systems` with the selection in `state`, the ROM status of the
-/// selected system and the system defaults button. Returns the response of
-/// the system list and whether the button was activated.
+/// Draws the sidebar into `area` with the texts `texts`: the name of the
+/// application, the system list of `systems` with the selection in `state`,
+/// the ROM status of the selected system and the system defaults button.
+/// Returns the response of the system list and whether the button was
+/// activated.
 pub(crate) fn show_sidebar(
     context: &mut UiContext,
     area: Rect,
     systems: &[SystemEntry],
     state: &mut ListState,
+    texts: &mut SidebarTexts,
 ) -> SidebarResponse {
     let theme = context.theme;
     context.fill(
@@ -188,10 +240,10 @@ pub(crate) fn show_sidebar(
         state,
         |context, row| {
             let entry = &systems[row.index];
-            let count = entry.game_count().to_string();
+            let count = NumberText::new(entry.game_count());
             RowContent::new(entry.system.label)
-                .icon(Some(system_icon(entry.system)))
-                .count(&count)
+                .icon(Some(entry.icon))
+                .count(count.as_str())
                 .mark(Some(entry.rom_mark()))
                 .show(context, row);
         },
@@ -203,9 +255,10 @@ pub(crate) fn show_sidebar(
             rom_line.width,
             PATH_LINE_HEIGHT,
         );
-        show_rom_line(context, line, entry);
+        show_rom_line(context, line, entry, texts);
     }
-    let system_defaults = Button::new(SYSTEM_DEFAULTS_ID, SYSTEM_DEFAULTS_CAPTION)
+    let caption = context.catalog.text(common::SYSTEM_DEFAULTS);
+    let system_defaults = Button::new(SYSTEM_DEFAULTS_ID, caption)
         .icon(Icon::Settings)
         .enabled(systems.get(state.selected).is_some())
         .show(context, button_area);
@@ -215,9 +268,14 @@ pub(crate) fn show_sidebar(
     }
 }
 
-/// Draws the ROM status of `entry` into `area`: the mark of the status and
-/// its sentence.
-fn show_rom_line(context: &mut UiContext, area: Rect, entry: &SystemEntry) {
+/// Draws the ROM status of `entry` into `area` with the texts `texts`: the
+/// mark of the status and its sentence.
+fn show_rom_line(
+    context: &mut UiContext,
+    area: Rect,
+    entry: &SystemEntry,
+    texts: &mut SidebarTexts,
+) {
     let theme = context.theme;
     let (icon, icon_color, text_color) = match entry.rom_mark() {
         RowMark::Marker(icon) => (Some(icon), theme.colors.marker, theme.colors.text_dim),
@@ -232,10 +290,15 @@ fn show_rom_line(context: &mut UiContext, area: Rect, entry: &SystemEntry) {
     if let Some(icon) = icon {
         context.icon(slot, icon, theme.icon_size, icon_color);
     }
+    let sentence = texts.rom_line.text(
+        context,
+        (RomLine::of(entry.rom_status), entry.rom_folder.as_str()),
+        |catalog, (line, folder), out| line.write(catalog, folder, out),
+    );
     context.text_in(
         text_area.cut_left(theme.gap).1,
         &theme.small().with_color(text_color),
-        &entry.rom_sentence(),
+        sentence,
         Align::Start,
         Truncation::Middle,
     );
@@ -243,7 +306,7 @@ fn show_rom_line(context: &mut UiContext, area: Rect, entry: &SystemEntry) {
 
 #[cfg(test)]
 mod tests {
-    use common::temporary::TemporaryFolder;
+    use ::common::temporary::TemporaryFolder;
     use gui::ui::LIST_PADDING;
     use machine_factory::config::systems::{SYSTEMS, compiled_systems};
 
@@ -253,6 +316,7 @@ mod tests {
         gui_test_support::GuiHarness,
         manager::rows::tests::{broken, game},
         rom_folders::check_all_folders,
+        texts::{LanguageCatalog, test_catalog},
     };
 
     /// The icon of each system by its folder name.
@@ -273,6 +337,7 @@ mod tests {
     fn entry(system: &'static System, status: RomStatus) -> SystemEntry {
         SystemEntry {
             system,
+            icon: system_icon(system),
             rows: Vec::new(),
             folder: format!("config/{}", system.name),
             rom_status: status,
@@ -433,6 +498,7 @@ mod tests {
                 Rect::new(0.0, 0.0, 240.0, 572.0),
                 &systems,
                 &mut state,
+                &mut SidebarTexts::default(),
             )
         });
         let pixels = harness.render();
@@ -491,5 +557,38 @@ mod tests {
                 .map(|(_, icon)| *icon);
             assert_eq!(Some(system_icon(system)), expected, "{}", system.name);
         }
+    }
+
+    /// The German sentence of found ROMs.
+    const GERMAN_ROMS: &str = "[library]\n\
+                               roms-found = ROMs gefunden in {folder}\n";
+
+    /// Verifies that a switch of the catalog gives the drawn ROM line of the selected system the new language in the next pass.
+    #[test]
+    fn the_rom_line_follows_a_catalog_switch() {
+        let system = compiled_systems().next().expect("one system is compiled");
+        let systems = [entry(system, RomStatus::Found)];
+        let mut harness = GuiHarness::new(960, 600);
+        let mut state = ListState::new();
+        state.select(0);
+        let mut texts = SidebarTexts::default();
+        let mut draw = |harness: &mut GuiHarness, texts: &mut SidebarTexts| {
+            harness.frame(|context| {
+                show_sidebar(
+                    context,
+                    Rect::new(0.0, 0.0, 240.0, 572.0),
+                    &systems,
+                    &mut state,
+                    texts,
+                )
+            });
+        };
+        draw(&mut harness, &mut texts);
+        let english = format!("ROMs found in roms/{}", system.name);
+        assert_eq!(texts.rom_line.last_text(), Some(english.as_str()));
+        harness.set_catalog(LanguageCatalog::Loaded(Box::new(test_catalog(GERMAN_ROMS))));
+        draw(&mut harness, &mut texts);
+        let german = format!("ROMs gefunden in roms/{}", system.name);
+        assert_eq!(texts.rom_line.last_text(), Some(german.as_str()));
     }
 }

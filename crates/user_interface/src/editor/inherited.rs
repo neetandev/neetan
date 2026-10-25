@@ -2,8 +2,12 @@
 //! file give a key, the system defaults, the settings file and the built-in
 //! default, and the layer that gives it.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
 
+use i18n::Message;
 use machine_factory::config::{
     MachineSelection, Target,
     settings::{MACHINE_KEY, Setting, ValueKind, apply_derived_defaults},
@@ -17,6 +21,7 @@ use crate::{
         resolve_value,
     },
     manager::shown_path,
+    texts::{editor, note},
 };
 
 /// The layer that gives an inherited value.
@@ -31,12 +36,13 @@ pub(crate) enum InheritedSource {
 }
 
 impl InheritedSource {
-    /// The caption of the source before the value, for example `System default`.
-    pub(crate) fn caption(self) -> &'static str {
+    /// The text of `value` with the source before it, for example `System
+    /// default: nearest`.
+    pub(crate) fn label(self, value: &dyn fmt::Display) -> Message<'_, 1> {
         match self {
-            Self::BuiltIn => "Built-in default",
-            Self::SystemDefaults => "System default",
-            Self::SettingsFile => "Settings default",
+            Self::BuiltIn => note::built_in_default(value),
+            Self::SystemDefaults => note::system_default(value),
+            Self::SettingsFile => note::settings_default(value),
         }
     }
 
@@ -62,19 +68,6 @@ pub(crate) struct Inherited {
     pub(crate) source: InheritedSource,
 }
 
-impl Inherited {
-    /// The values joined with commas.
-    pub(crate) fn text(&self) -> String {
-        self.values.join(", ")
-    }
-
-    /// The value with its source, for example `Built-in default: high`. A
-    /// key without a value gives `None`.
-    pub(crate) fn label(&self) -> Option<String> {
-        (!self.values.is_empty()).then(|| format!("{}: {}", self.source.caption(), self.text()))
-    }
-}
-
 /// The layers below the file of the editor: the settings file, and below a
 /// game file of one family also the system defaults of the family.
 #[derive(Debug, Clone)]
@@ -89,16 +82,39 @@ pub(crate) struct BaseLayers {
     system_defaults: Option<Layer>,
     /// The warning about a system defaults file that does not read. The
     /// inherited values then leave the file out.
-    warning: Option<String>,
+    warning: Option<DefaultsWarning>,
 }
 
-/// The warning about the system defaults file at the shown path `shown`
-/// that does not read with `error`, for example `System defaults ignored:
-/// config/pc98.conf line 3: the file is not valid UTF-8`.
-pub(crate) fn system_defaults_warning(shown: &str, error: &DocumentError) -> String {
-    match error.line() {
-        Some(_) => format!("System defaults ignored: {shown} {error}"),
-        None => format!("System defaults ignored: {shown}: {error}"),
+/// The warning about a system defaults file that does not read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DefaultsWarning {
+    /// The shown path of the file.
+    shown: String,
+    /// The error of the read, with its line when it has one.
+    error: String,
+    /// Whether the error starts with its line.
+    has_line: bool,
+}
+
+impl DefaultsWarning {
+    /// The warning about the system defaults file at the shown path `shown`
+    /// that does not read with `error`.
+    pub(crate) fn new(shown: String, error: &DocumentError) -> Self {
+        Self {
+            shown,
+            error: error.to_string(),
+            has_line: error.line().is_some(),
+        }
+    }
+
+    /// The text of the warning, for example `System defaults ignored:
+    /// config/pc98.conf line 3: the file is not valid UTF-8`.
+    pub(crate) fn message(&self) -> Message<'_, 2> {
+        if self.has_line {
+            editor::defaults_ignored_line(&self.shown, &self.error)
+        } else {
+            editor::defaults_ignored(&self.shown, &self.error)
+        }
     }
 }
 
@@ -144,7 +160,7 @@ impl BaseLayers {
             ),
             Err(error) => {
                 let shown = shown_path(&file, host.root());
-                (None, Some(system_defaults_warning(&shown, &error)))
+                (None, Some(DefaultsWarning::new(shown, &error)))
             }
         };
         Self {
@@ -169,8 +185,8 @@ impl BaseLayers {
     }
 
     /// The warning about a system defaults file that does not read.
-    pub(crate) fn warning(&self) -> Option<&str> {
-        self.warning.as_deref()
+    pub(crate) fn warning(&self) -> Option<&DefaultsWarning> {
+        self.warning.as_ref()
     }
 
     /// The model that a game without `machine` takes and its source.
@@ -269,7 +285,10 @@ mod tests {
     use machine_factory::config::settings::find_setting;
 
     use super::*;
-    use crate::editor::test_support::EditorRoot;
+    use crate::{
+        editor::{notes::tests::english_inherited_label, test_support::EditorRoot},
+        texts::english,
+    };
 
     /// The inherited value of `key` on `model` below a game without values.
     fn inherited(base: &BaseLayers, key: &str, model: MachineSelection) -> Inherited {
@@ -300,13 +319,22 @@ mod tests {
         let scaling = inherited(&base, "scaling", model);
         assert_eq!(scaling.values, ["nearest"]);
         assert_eq!(scaling.source, InheritedSource::SystemDefaults);
-        assert_eq!(scaling.label().as_deref(), Some("System default: nearest"));
+        assert_eq!(
+            english_inherited_label(Some(&scaling)).as_deref(),
+            Some("System default: nearest")
+        );
         let crt = inherited(&base, "crt", model);
         assert_eq!(crt.values, ["off"]);
-        assert_eq!(crt.label().as_deref(), Some("Settings default: off"));
+        assert_eq!(
+            english_inherited_label(Some(&crt)).as_deref(),
+            Some("Settings default: off")
+        );
         let aspect = inherited(&base, "aspect-mode", model);
         assert_eq!(aspect.source, InheritedSource::BuiltIn);
-        assert_eq!(aspect.label().as_deref(), Some("Built-in default: 4:3"));
+        assert_eq!(
+            english_inherited_label(Some(&aspect)).as_deref(),
+            Some("Built-in default: 4:3")
+        );
     }
 
     /// Verifies that the model of the system defaults is the inherited model, also when it is the built-in default, and that a path of the settings file lies below the root.
@@ -365,14 +393,12 @@ mod tests {
         std::fs::write(&file, b"scaling = nearest\ncrt = \xFF\n").expect("file is written");
         let base = BaseLayers::read(&root.host(), root.target());
         assert_eq!(
-            base.warning(),
-            Some(
-                format!(
-                    "System defaults ignored: config/{}.conf line 2: the file is not valid UTF-8",
-                    system.name
-                )
-                .as_str()
-            )
+            base.warning()
+                .map(|warning| english().display(warning.message()).to_string()),
+            Some(format!(
+                "System defaults ignored: config/{}.conf line 2: the file is not valid UTF-8",
+                system.name
+            ))
         );
         let scaling = inherited(&base, "scaling", base.model().0);
         assert_eq!(scaling.source, InheritedSource::BuiltIn);

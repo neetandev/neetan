@@ -65,11 +65,10 @@ fn unescape(value: Value<'_>) -> Cow<'_, str> {
 
 #[cfg(test)]
 mod tests {
+    use common::allocation_counter::count_allocations;
+
     use super::*;
-    use crate::{
-        allocation_counter::count_allocations,
-        parse::{FaultKind, FullKey, NAME_KEY, PLURAL_KEY},
-    };
+    use crate::parse::{FaultKind, FullKey, NAME_KEY, PLURAL_KEY};
 
     /// Returns the fault of a header key on a line.
     fn fault(line: Option<u32>, key: &'static str, kind: FaultKind<'static>) -> Fault<'static> {

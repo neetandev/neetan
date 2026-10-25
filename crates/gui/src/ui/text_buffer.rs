@@ -1,11 +1,29 @@
 //! The text buffer: a formatted text of a screen that refills only when its data or the catalog
 //! generation changes.
 
+#[cfg(any(test, feature = "fill-counter"))]
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use i18n::Catalog;
 
 use super::context::UiContext;
+
+#[cfg(any(test, feature = "fill-counter"))]
+std::thread_local! {
+    /// The number of fills of every text buffer on the current thread.
+    static FILLS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Runs `function` and returns the number of fills of every [`TextBuffer`] on the current thread
+/// during the run, together with the result of `function`.
+#[cfg(any(test, feature = "fill-counter"))]
+pub fn count_fills<T>(function: impl FnOnce() -> T) -> (usize, T) {
+    let before = FILLS.with(Cell::get);
+    let result = function();
+    let after = FILLS.with(Cell::get);
+    (after - before, result)
+}
 
 /// The data of a text in a [`TextBuffer`] that stores it as `D`.
 ///
@@ -47,7 +65,21 @@ macro_rules! text_values {
 }
 
 text_values!(
-    bool, char, u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize
+    (),
+    bool,
+    char,
+    u8,
+    u16,
+    u32,
+    u64,
+    u128,
+    usize,
+    i8,
+    i16,
+    i32,
+    i64,
+    i128,
+    isize
 );
 
 impl TextData<String> for &str {
@@ -110,12 +142,19 @@ text_data_tuple!((A, StoredA, 0), (B, StoredB, 1), (C, StoredC, 2));
 /// A screen keeps the data of a text in its state, such as a game name, and the buffer keeps the
 /// resolved text. The buffer fills its text again only when the data or the catalog generation
 /// differs from the last fill. The text and the stored data keep their capacity between fills.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct TextBuffer<D> {
     /// The text of the last fill.
     text: String,
     /// The data and the catalog generation of the last fill. A buffer without a fill has none.
     filled: Option<(D, u64)>,
+}
+
+impl<D> Default for TextBuffer<D> {
+    /// An empty buffer without a fill.
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<D> TextBuffer<D> {
@@ -168,6 +207,8 @@ impl<D> TextBuffer<D> {
             }
             self.text.clear();
             fill(catalog, data, &mut self.text);
+            #[cfg(any(test, feature = "fill-counter"))]
+            FILLS.with(|fills| fills.set(fills.get() + 1));
         }
         &self.text
     }
@@ -176,17 +217,22 @@ impl<D> TextBuffer<D> {
     pub fn invalidate(&mut self) {
         self.filled = None;
     }
+
+    /// The text of the last fill. A buffer without a fill has none.
+    #[must_use]
+    pub fn last_text(&self) -> Option<&str> {
+        self.filled.as_ref().map(|_| self.text.as_str())
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, fmt::Write as _};
+    use std::fmt::Write as _;
+
+    use common::allocation_counter::count_allocations;
 
     use super::*;
-    use crate::{
-        allocation_counter::count_allocations,
-        ui::tests::{Harness, test_catalog},
-    };
+    use crate::ui::tests::{Harness, test_catalog};
 
     /// Verifies that the same data and generation fill the text once.
     #[test]
@@ -209,7 +255,7 @@ mod tests {
         assert_eq!(fills, 1);
     }
 
-    /// Verifies that new data, a new generation and an invalidation fill the text again.
+    /// Verifies that new data, a new generation and an invalidation fill the text again, and that the last text follows the fills.
     #[test]
     fn new_data_or_a_new_generation_fills_the_buffer_again() {
         let catalog = test_catalog();
@@ -223,7 +269,9 @@ mod tests {
         assert_eq!(buffer.text_in(catalog, 0, "Rusty", fill), "Rusty");
         assert_eq!(buffer.text_in(catalog, 1, "Rusty", fill), "Rusty");
         assert_eq!(fills.get(), 3);
+        assert_eq!(buffer.last_text(), Some("Rusty"));
         buffer.invalidate();
+        assert_eq!(buffer.last_text(), None);
         assert_eq!(buffer.text_in(catalog, 1, "Rusty", fill), "Rusty");
         assert_eq!(fills.get(), 4);
     }
@@ -296,5 +344,28 @@ mod tests {
             assert_eq!(text, "3 Test");
         }
         assert_eq!(fills, 2);
+    }
+
+    /// Verifies that the fill counter counts the fills of every buffer of the run and no hit.
+    #[test]
+    fn the_fill_counter_counts_the_fills_of_every_buffer() {
+        let catalog = test_catalog();
+        let mut first = TextBuffer::<u32>::new();
+        let mut second = TextBuffer::<u32>::new();
+        let fill = |_: &Catalog, count: u32, out: &mut String| {
+            let _ = write!(out, "{count}");
+        };
+        let (fills, ()) = count_fills(|| {
+            first.text_in(catalog, 0, 1, fill);
+            second.text_in(catalog, 0, 2, fill);
+        });
+        assert_eq!(fills, 2);
+        let (fills, ()) = count_fills(|| {
+            first.text_in(catalog, 0, 1, fill);
+            second.text_in(catalog, 0, 2, fill);
+        });
+        assert_eq!(fills, 0);
+        let (fills, text) = count_fills(|| first.text_in(catalog, 1, 1, fill).to_owned());
+        assert_eq!((fills, text.as_str()), (1, "1"));
     }
 }

@@ -3,6 +3,7 @@
 //! game file, the settings page, the delete of a game file and the error
 //! dialogs.
 
+mod counts;
 mod delete;
 mod editing;
 mod entries;
@@ -23,13 +24,14 @@ use gui::{
     Rect,
     ui::{
         ActionButton, Button, ButtonKind, ConfirmResponse, EmptyHint, HEADER_HEIGHT, Icon,
-        Navigation, RowKind, STATUS_LINE_HEIGHT, Shortcut, StatusEnd, TextField, UiContext, UiId,
-        status_line,
+        Navigation, RowKind, STATUS_LINE_HEIGHT, Shortcut, StatusEnd, TextBuffer, TextField,
+        UiContext, UiId, status_line,
     },
 };
 use machine_factory::config::systems::{System, compiled_systems};
 
 use self::{
+    counts::{GameCounts, write_counts},
     delete::{DeleteOutcome, DeleteRequest},
     entries::{TableEntry, table_entries},
     error_dialog::{DialogAnswer, EditTarget},
@@ -37,7 +39,7 @@ use self::{
     game_table::{GAME_TABLE_ID, show_game_table},
     hints::{LibraryFocus, library_hints, status_end},
     rows::system_rows,
-    sidebar::{SYSTEM_DEFAULTS_ID, SYSTEM_LIST_ID, SystemEntry, show_sidebar},
+    sidebar::{SYSTEM_DEFAULTS_ID, SYSTEM_LIST_ID, SidebarTexts, SystemEntry, show_sidebar},
     toolbar::{
         ADD_ID, DELETE_ID, DUPLICATE_ID, EDIT_ID, LAUNCH_ID, REFRESH_ID, ToolbarState, show_toolbar,
     },
@@ -54,7 +56,7 @@ use crate::{
     editor::Editor,
     input::KeyOverrides,
     rom_folders::{RomFolderStatus, check_all_folders},
-    texts::LanguageCatalog,
+    texts::{LanguageCatalog, hints_in, library},
 };
 
 /// The width of the sidebar in logical units.
@@ -66,14 +68,8 @@ const FILTER_WIDTH: f32 = 260.0;
 /// The id of the filter field.
 const FILTER_ID: &str = "filter";
 
-/// The placeholder of the filter field.
-const FILTER_PLACEHOLDER: &str = "Filter games";
-
 /// The id of the button that opens the settings page.
 pub(crate) const SETTINGS_ID: &str = "settings";
-
-/// The hint of a filter without a match.
-const NO_MATCH_HINT: &str = "No games match the filter";
 
 /// A game that the user asked to start.
 #[derive(Debug, Clone)]
@@ -88,6 +84,23 @@ pub(crate) struct Launch {
     pub(crate) model: &'static str,
 }
 
+/// The texts of the library that refill only when their data or the
+/// catalog changes.
+#[derive(Debug, Clone, Default)]
+struct LibraryTexts {
+    /// The counts beside the system label.
+    counts: TextBuffer<GameCounts>,
+    /// The title of the hint of a system without games, for the index of the system.
+    empty_title: TextBuffer<usize>,
+    /// The detail of the hint of a system without games, for the index of
+    /// the system and its folder.
+    empty_detail: TextBuffer<(usize, String)>,
+    /// The folder of the selected system at the end of the status line.
+    folder: String,
+    /// The texts of the sidebar.
+    sidebar: SidebarTexts,
+}
+
 /// The widget that takes the focus in the next pass of the library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NextFocus {
@@ -95,6 +108,19 @@ enum NextFocus {
     Start,
     /// The widget with this id.
     Widget(UiId),
+}
+
+/// The action of one pass of the library on the selected row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowAction {
+    /// Starts the game of the row.
+    Launch,
+    /// Opens the game of the row in the editor.
+    Edit,
+    /// Opens a copy of the game of the row in the editor.
+    Duplicate,
+    /// Asks before the delete of the file of the row.
+    Delete,
 }
 
 /// The game manager.
@@ -127,6 +153,8 @@ pub(crate) struct Manager {
     /// The catalog of a new language of the user interface after a save of
     /// the settings page.
     catalog_switch: Option<LanguageCatalog>,
+    /// The texts of the library.
+    texts: LibraryTexts,
 }
 
 impl Manager {
@@ -153,6 +181,7 @@ impl Manager {
             next_focus: Some(NextFocus::Start),
             running: None,
             catalog_switch: None,
+            texts: LibraryTexts::default(),
         };
         manager.rescan();
         info!("{}", manager.scan_summary());
@@ -318,15 +347,11 @@ impl Manager {
         self.next_focus = Some(NextFocus::Start);
         let dialog = match (panic_message, &flush) {
             (Some(message), _) => {
-                let label = running
-                    .as_ref()
-                    .map_or("emulator", |launch| launch.system.label);
+                let label = running.as_ref().map(|launch| launch.system.label);
                 Some(ErrorDialog::game_stopped(label, message, &flush))
             }
             (None, Err(error)) => {
-                let title = running
-                    .as_ref()
-                    .map_or("The game", |launch| launch.title.as_str());
+                let title = running.as_ref().map(|launch| launch.title.as_str());
                 Some(ErrorDialog::media_not_saved(title, error))
             }
             (None, Ok(())) => None,
@@ -411,7 +436,13 @@ impl Manager {
                 self.select_system(index);
             }
         }
-        let response = show_sidebar(context, area, &self.systems, &mut self.view.systems);
+        let response = show_sidebar(
+            context,
+            area,
+            &self.systems,
+            &mut self.view.systems,
+            &mut self.texts.sidebar,
+        );
         if response.list.selection_changed {
             self.select_system(self.view.systems.selected);
             context.request_pass();
@@ -453,7 +484,8 @@ impl Manager {
             filter_width,
             theme.control_height,
         );
-        let filter = TextField::new(filter_id, FILTER_PLACEHOLDER).show(
+        let catalog = context.catalog;
+        let filter = TextField::new(filter_id, catalog.text(library::FILTER_PLACEHOLDER)).show(
             context,
             filter_area,
             &mut self.view.filter,
@@ -497,19 +529,30 @@ impl Manager {
             return None;
         }
 
-        let (empty_title, empty_detail) = self.current().map_or_else(Default::default, |entry| {
-            (
-                format!("No games for {}", entry.system.label),
-                format!("Add a game, or place game files in {}/", entry.folder),
-            )
-        });
-        let hint = if self.rows().is_empty() {
-            EmptyHint::Centered {
-                title: &empty_title,
-                detail: &empty_detail,
+        let selected_system = self.view.systems.selected;
+        let hint = match self.systems.get(selected_system) {
+            Some(entry) if entry.rows.is_empty() => {
+                let label = entry.system.label;
+                let title =
+                    self.texts
+                        .empty_title
+                        .text(context, selected_system, |catalog, _, out| {
+                            let _ = catalog.write(out, library::no_games(&label));
+                        });
+                let detail = self.texts.empty_detail.text(
+                    context,
+                    (selected_system, entry.folder.as_str()),
+                    |catalog, (_, folder), out| {
+                        let _ = catalog.write(out, library::add_games(&folder));
+                    },
+                );
+                EmptyHint::Centered { title, detail }
             }
-        } else {
-            EmptyHint::Top(NO_MATCH_HINT)
+            Some(_) => EmptyHint::Top(catalog.text(library::NO_MATCH)),
+            None => EmptyHint::Centered {
+                title: "",
+                detail: "",
+            },
         };
         let rows = rows_at(&self.systems, self.view.systems.selected);
         let response = show_game_table(
@@ -542,28 +585,32 @@ impl Manager {
             return None;
         }
         let activated = response.activated.is_some();
+        let launchable = self.selected_row()?.launchable();
+        let action = if launchable && (activated || toolbar.launch) {
+            RowAction::Launch
+        } else if launchable && edit {
+            RowAction::Edit
+        } else if launchable && duplicate {
+            RowAction::Duplicate
+        } else if delete_shortcut || toolbar.delete || activated {
+            RowAction::Delete
+        } else {
+            return None;
+        };
         let row = self.selected_row()?.clone();
-        if row.launchable() && (activated || toolbar.launch) {
-            return Some(self.launch(&row));
-        }
-        if row.launchable() && edit {
-            self.open_game(context, &row);
-            return None;
-        }
-        if row.launchable() && duplicate {
-            self.open_duplicate(context, &row);
-            return None;
-        }
-        if delete_shortcut || toolbar.delete || activated {
-            self.delete = Some(DeleteRequest::new(&row));
+        match action {
+            RowAction::Launch => return Some(self.launch(&row)),
+            RowAction::Edit => self.open_game(context, &row),
+            RowAction::Duplicate => self.open_duplicate(context, &row),
+            RowAction::Delete => self.delete = Some(DeleteRequest::new(&row)),
         }
         None
     }
 
     /// Draws the label of the selected system and its game count into
     /// `area`.
-    fn show_title(&self, context: &mut UiContext, area: Rect) {
-        let Some(entry) = self.current() else {
+    fn show_title(&mut self, context: &mut UiContext, area: Rect) {
+        let Some(entry) = self.systems.get(self.view.systems.selected) else {
             return;
         };
         let theme = context.theme;
@@ -582,16 +629,24 @@ impl Manager {
             .iter()
             .filter(|entry| matches!(entry, TableEntry::Broken(_)))
             .count();
-        let count = count_text(
-            (shown_games, entry.game_count()),
-            (shown_errors, entry.error_count()),
+        let counts = GameCounts {
+            shown_games,
+            games: entry.game_count(),
+            shown_errors,
+            errors: entry.error_count(),
             filtering,
-        );
+        };
+        let count = self
+            .texts
+            .counts
+            .text(context, counts, |catalog, counts, out| {
+                write_counts(catalog, counts, out);
+            });
         context.text(
             area.x + title_width + theme.gap,
             baseline,
             &theme.small(),
-            &count,
+            count,
         );
     }
 
@@ -600,7 +655,7 @@ impl Manager {
     /// question in this pass.
     fn show_dialogs(&mut self, context: &mut UiContext, screen: Rect) -> Option<ConfirmResponse> {
         let mut delete_response = None;
-        if let Some(request) = self.delete.take() {
+        if let Some(mut request) = self.delete.take() {
             let (outcome, response) = request.show(context, screen);
             match outcome {
                 DeleteOutcome::Open => {
@@ -612,15 +667,15 @@ impl Manager {
                     info!("Game manager: deleted {}", request.path.display());
                     self.rescan_after_delete();
                 }
-                DeleteOutcome::Failed(error) => {
-                    self.dialog = Some(ErrorDialog::delete_failed(&request.name, &error));
+                DeleteOutcome::Failed { path, error } => {
+                    self.dialog = Some(ErrorDialog::delete_failed(&request.name, path, error));
                     self.rescan_after_delete();
                 }
             }
         }
         let answer = self
             .dialog
-            .as_ref()
+            .as_mut()
             .map_or(DialogAnswer::Open, |dialog| dialog.show(context, screen));
         match answer {
             DialogAnswer::Open => {}
@@ -675,26 +730,30 @@ impl Manager {
     /// Draws the status line into `area`. `delete_response` is the answer
     /// of the open question in this pass.
     fn show_status_line(
-        &self,
+        &mut self,
         context: &mut UiContext,
         area: Rect,
         delete_response: Option<ConfirmResponse>,
     ) {
+        let catalog = context.catalog;
         if let Some(request) = &self.delete {
-            let hints = request.hints(delete_response.unwrap_or_default());
+            let hints = hints_in(catalog, &request.hints(delete_response.unwrap_or_default()));
             status_line(context, area, &hints, StatusEnd::Path(&request.shown_path));
             return;
         }
+        let mut folder = std::mem::take(&mut self.texts.folder);
+        folder.clear();
+        if let Some(entry) = self.current() {
+            folder.push_str(&entry.folder);
+            folder.push('/');
+        }
         let selected = self.selected_row();
-        let folder = self
-            .current()
-            .map(|entry| format!("{}/", entry.folder))
-            .unwrap_or_default();
         let hints = match &self.dialog {
-            Some(dialog) => dialog.hints(context),
-            None => library_hints(self.library_focus(context), selected),
+            Some(dialog) => hints_in(catalog, &dialog.hints(context)),
+            None => library_hints(catalog, self.library_focus(context), selected),
         };
         status_line(context, area, &hints, status_end(selected, &folder));
+        self.texts.folder = folder;
     }
 }
 
@@ -703,35 +762,6 @@ fn rows_at(systems: &[SystemEntry], index: usize) -> &[GameRow] {
     systems
         .get(index)
         .map_or(&[], |entry| entry.rows.as_slice())
-}
-
-/// The plural form of `count` things of the singular `thing`, for example
-/// `1 game` and `2 games`.
-fn counted(count: usize, thing: &str) -> String {
-    match count {
-        1 => format!("1 {thing}"),
-        count => format!("{count} {thing}s"),
-    }
-}
-
-/// The count beside the system label: the shown and the total number of
-/// `games`, and of the files with `errors`. While `filtering` the count
-/// tells the shown number of the total, for example `3 of 18 games`.
-fn count_text(games: (usize, usize), errors: (usize, usize), filtering: bool) -> String {
-    let part = |(shown, total): (usize, usize), thing: &str| {
-        if filtering {
-            format!("{shown} of {}", counted(total, thing))
-        } else {
-            counted(total, thing)
-        }
-    };
-    let mut text = part(games, "game");
-    if errors.1 > 0 {
-        text.push_str(", ");
-        text.push_str(&part(errors, "file"));
-        text.push_str(" with errors");
-    }
-    text
 }
 
 #[cfg(test)]
@@ -1035,7 +1065,7 @@ mod tests {
         harness.input.confirm = true;
         harness.settle(|context| manager.show(context));
         let dialog = manager.dialog().expect("the error dialog opens");
-        assert_eq!(dialog.message(), "a was not deleted.");
+        assert_eq!(dialog.message(), Some("a was not deleted."));
         assert_eq!(harness.state.open_modals(), 1);
         harness.input.confirm = true;
         harness.settle(|context| manager.show(context));
@@ -1351,14 +1381,14 @@ mod tests {
         let mut manager = test.manager();
         let launch = manager.launch(&manager.rows()[0].clone());
         let layer = manager.launch_failed(&launch, "fdd1 image not found: /a.d88");
-        assert_eq!(
-            manager.dialog().map(ErrorDialog::message),
-            Some("A did not start.")
-        );
         let mut harness = GuiHarness::new(960, 600);
         harness.settle(|context| manager.show(context));
         harness.state.open_layer(layer);
         harness.settle(|context| manager.show(context));
+        assert_eq!(
+            manager.dialog().and_then(ErrorDialog::message),
+            Some("A did not start.")
+        );
         let selected = manager.view.table.list.selected;
         harness.input.navigation = Some(Navigation::Down);
         assert!(harness.frame(|context| manager.show(context)).is_none());
@@ -1373,14 +1403,21 @@ mod tests {
         assert_eq!(manager.view.table.list.selected, selected + 1);
 
         manager.game_started(launch);
-        manager.game_ended(Some("core halted"), Ok(()));
+        let layer = manager
+            .game_ended(Some("core halted"), Ok(()))
+            .expect("the panic dialog opens");
+        harness.state.open_layer(layer);
+        harness.settle(|context| manager.show(context));
         let dialog = manager.dialog().expect("panic dialog opens");
-        assert_eq!(dialog.detail(), "core halted");
+        assert_eq!(dialog.detail(), Some("core halted"));
         assert_eq!(
             dialog.message(),
-            format!(
-                "The {} core stopped with an error. The disk images were saved.",
-                first_system().label
+            Some(
+                format!(
+                    "The {} core stopped with an error. The disk images were saved.",
+                    first_system().label
+                )
+                .as_str()
             )
         );
     }
@@ -1417,42 +1454,30 @@ mod tests {
         games(&test, &["A"]);
         let mut manager = test.manager();
         manager.game_started(manager.launch(&manager.rows()[0].clone()));
-        manager.game_ended(
-            None,
-            Err(FlushError::new(
-                "hard disk image /a.hdi could not be written",
-            )),
-        );
+        let layer = manager
+            .game_ended(
+                None,
+                Err(FlushError::new(
+                    "hard disk image /a.hdi could not be written",
+                )),
+            )
+            .expect("the media dialog opens");
+        let mut harness = GuiHarness::new(960, 600);
+        harness.state.open_layer(layer);
+        harness.settle(|context| manager.show(context));
         let dialog = manager.dialog().expect("the media dialog opens");
         assert_eq!(
             dialog.message(),
-            "A ended. Some of its disk images were not saved."
+            Some("A ended. Some of its disk images were not saved.")
         );
         assert_eq!(
             dialog.detail(),
-            "hard disk image /a.hdi could not be written"
+            Some("hard disk image /a.hdi could not be written")
         );
 
         let mut manager = test.manager();
         manager.game_ended(None, Ok(()));
         assert!(manager.dialog().is_none());
-    }
-
-    /// Verifies the count beside the system label with and without a filter.
-    #[test]
-    fn the_count_tells_the_games_and_the_files_with_errors() {
-        assert_eq!(count_text((18, 18), (0, 0), false), "18 games");
-        assert_eq!(count_text((1, 1), (0, 0), false), "1 game");
-        assert_eq!(count_text((0, 0), (0, 0), false), "0 games");
-        assert_eq!(
-            count_text((5, 5), (2, 2), false),
-            "5 games, 2 files with errors"
-        );
-        assert_eq!(count_text((0, 18), (0, 0), true), "0 of 18 games");
-        assert_eq!(
-            count_text((1, 5), (1, 1), true),
-            "1 of 5 games, 1 of 1 file with errors"
-        );
     }
 
     /// The sample games of the screenshots: the system, the file stem, the
@@ -1738,6 +1763,78 @@ mod tests {
             .open_layer(layer.expect("the media dialog opens"));
         harness.settle(|context| manager.show(context));
         render(&harness, "media_not_saved");
+    }
+
+    /// The German texts of the count of the library and of the header line of the editor.
+    const GERMAN_COUNTS: &str = "[library]\ngames.one = {count} Spiel\ngames.other = {count} Spiele\n\
+                                 [editor]\ngame-line = {system} Spiel\n";
+
+    /// Verifies that a switch of the catalog gives the buffered texts of the library and of the
+    /// editor the new language in the next frame.
+    #[test]
+    fn a_catalog_switch_refills_the_buffered_texts_in_the_next_frame() {
+        let german = || {
+            let german = crate::texts::test_catalog(GERMAN_COUNTS);
+            crate::texts::LanguageCatalog::Loaded(Box::new(german))
+        };
+        let test = TestRoot::new("catalog_switch");
+        games(&test, &["A", "B"]);
+        let mut manager = test.manager();
+        let mut harness = GuiHarness::new(960, 600);
+        harness.settle(|context| manager.show(context));
+        harness.frame(|context| manager.show(context));
+        assert_eq!(manager.texts.counts.last_text(), Some("2 games"));
+        harness.set_catalog(german());
+        harness.frame(|context| manager.show(context));
+        assert_eq!(manager.texts.counts.last_text(), Some("2 Spiele"));
+
+        harness.set_catalog(crate::texts::LanguageCatalog::English);
+        harness.state.set_focus(UiId::from(GAME_TABLE_ID));
+        harness.input.shortcut = Some(Shortcut::F2);
+        harness.settle(|context| manager.show(context));
+        let label = manager
+            .current()
+            .expect("the library selects a game")
+            .system
+            .label;
+        let line = |manager: &Manager| {
+            manager
+                .editor
+                .as_ref()
+                .expect("F2 opens the editor")
+                .cached_header_line()
+                .expect("the editor draws its header line")
+                .to_owned()
+        };
+        assert_eq!(line(&manager), format!("{label} game"));
+        harness.set_catalog(german());
+        harness.frame(|context| manager.show(context));
+        assert_eq!(line(&manager), format!("{label} Spiel"));
+    }
+
+    /// The most allocations of a steady frame of the library: the lists of the hints of the
+    /// status line, of the focus ring of the pass and of the row kinds and the column spans of the
+    /// game table. The texts of the frame allocate nothing.
+    const LIBRARY_FRAME_ALLOCATIONS: usize = 8;
+
+    /// Verifies that a steady frame of the library, the second pass with an unchanged state,
+    /// allocates only its lists and fills no text again.
+    #[test]
+    fn a_steady_frame_of_the_library_allocates_only_its_lists() {
+        let test = TestRoot::new("steady_library");
+        sample_root(&test);
+        let mut manager = test.manager();
+        let mut harness = GuiHarness::new(960, 600);
+        harness.settle(|context| manager.show(context));
+        harness.frame(|context| manager.show(context));
+        let (allocations, (fills, _)) = common::allocation_counter::count_allocations(|| {
+            gui::ui::count_fills(|| harness.frame(|context| manager.show(context)))
+        });
+        assert!(
+            allocations <= LIBRARY_FRAME_ALLOCATIONS,
+            "a steady frame of the library allocates {allocations} times"
+        );
+        assert_eq!(fills, 0, "a steady frame of the library fills texts again");
     }
 
     /// Writes the screenshots of the manager in both themes at the scales 1

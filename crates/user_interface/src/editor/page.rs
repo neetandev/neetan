@@ -5,17 +5,24 @@ use gui::{
     Rect,
     ui::{
         ActionButton, Align, Button, ButtonKind, CLOSE_SIZE, HEADER_HEIGHT, Icon, ScrollState,
-        Shortcut, Tab, Theme, Truncation, UiContext, UiId, scroll_area, tab_bar,
+        Shortcut, Tab, TextBuffer, Theme, Truncation, UiContext, UiId, scroll_area, tab_bar,
     },
 };
+use i18n::Catalog;
 
 use super::{
     BrowseTarget, EditedFile, Editor, EditorFile, Subject,
+    form::EDITOR_SECTIONS,
     hints::{EditorWidget, WidgetKind},
-    notes::Note,
-    rows::{DOT_SIZE, draw_note},
+    note_writer::NoteText,
+    notes::NoteKind,
+    rows::{DOT_SIZE, draw_note_text},
+    save::validation_error,
 };
-use crate::media_dialog::TAB_BAR_HEIGHT;
+use crate::{
+    media_dialog::TAB_BAR_HEIGHT,
+    texts::{common, editor},
+};
 
 /// The widest that the tab bar, the form and the footer grow. They center in a wider window.
 pub(crate) const FORM_MAX_WIDTH: f32 = 1280.0;
@@ -35,8 +42,8 @@ pub(crate) const CANCEL_ID: &str = "editor cancel";
 /// The id of the save button.
 pub(crate) const SAVE_ID: &str = "editor save";
 
-/// The footer text with unsaved changes.
-const UNSAVED_TEXT: &str = "Unsaved changes";
+/// The most sections of a page.
+const MAXIMUM_SECTIONS: usize = EDITOR_SECTIONS.len();
 
 /// The part of the header that the title keeps at least beside the line
 /// after it.
@@ -106,47 +113,97 @@ impl PageAreas {
     }
 }
 
+#[cfg(test)]
+impl Editor {
+    /// The line beside the title of the header of the last frame. An
+    /// editor without a drawn header has none.
+    pub(crate) fn cached_header_line(&self) -> Option<&str> {
+        self.texts.line.last_text()
+    }
+}
+
 /// The scroll area of the form of the page in `screen`.
 #[cfg(test)]
 pub(crate) fn form_area(theme: &Theme, screen: Rect) -> Rect {
     PageAreas::new(theme, screen).form
 }
 
-/// The title of the header and the line beside it for the file `file` of
-/// the kind `kind`.
+/// The texts of the page that refill only when the state of the editor or
+/// the catalog changes, and the values of its read-only rows.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PageTexts {
+    /// The title of the header.
+    title: TextBuffer<u64>,
+    /// The line beside the title.
+    line: TextBuffer<u64>,
+    /// The warning about system defaults that do not read.
+    warning: TextBuffer<u64>,
+    /// The validation error of the footer.
+    error: TextBuffer<u64>,
+    /// Whether a field holds a value that the file cannot hold, at the
+    /// revision of the editor of the last check.
+    invalid: Option<(u64, bool)>,
+    /// The note of a section without fields or of the ROM folder of the
+    /// command line, for the revision of the editor and the section.
+    pub(super) section_note: NoteText<(u64, usize)>,
+    /// The note of the file row of a new game.
+    pub(super) file_note: TextBuffer<u64>,
+    /// The value of the system row of a new game.
+    pub(super) system_value: String,
+    /// The value of the file row of a new game.
+    pub(super) file_value: String,
+    /// The value of the root row of the settings page.
+    pub(super) root_value: String,
+}
+
+/// Writes the title of the header for the file `file` of the kind `kind` in
+/// `catalog`. A game file and a copy show the name of the game. A new game
+/// shows its system. A system defaults file shows its system. The settings
+/// file shows the name of the page.
+fn write_header_title(catalog: &Catalog, kind: &EditedFile, file: &EditorFile, out: &mut String) {
+    match (kind, file) {
+        (EditedFile::Game { system, .. }, EditorFile::New(_)) => {
+            let _ = catalog.write(out, editor::new_game_title(&system.label));
+        }
+        (EditedFile::Game { .. }, EditorFile::Existing(_) | EditorFile::Copy { .. })
+        | (EditedFile::SystemDefaults(_) | EditedFile::Settings, _) => {
+            kind.write_name(catalog, out)
+        }
+    }
+}
+
+/// Writes the line beside the title of the header for the file `file` of
+/// the kind `kind` in `catalog`.
 ///
-/// A game file shows its name and its system, with the model when the
-/// model differs from the model of a game without `machine`. A new game
-/// shows its system and the file it saves into. A copy shows its name and
-/// the file it copies. A system defaults file shows its system. The
-/// settings file shows its path.
-fn header_texts(
+/// A game file shows its system, with the model when the model differs from
+/// the model of a game without `machine`. A new game shows the file it
+/// saves into. A copy shows the file it copies. A system defaults file
+/// shows its system. The settings file shows its path.
+fn write_header_line(
+    catalog: &Catalog,
     kind: &EditedFile,
     file: &EditorFile,
     model: Option<&str>,
     shown_path: &str,
-) -> (String, String) {
-    match kind {
-        EditedFile::Game { system, name } => match file {
-            EditorFile::Existing(_) => {
-                let line = match model {
-                    Some(model) => format!("{} game, {model}", system.label),
-                    None => format!("{} game", system.label),
-                };
-                (name.clone(), line)
-            }
-            EditorFile::New(_) => (
-                format!("New {} game", system.label),
-                format!("Saved as {shown_path}"),
-            ),
-            EditorFile::Copy { source, .. } => (name.clone(), format!("Copy of {source}")),
+    out: &mut String,
+) {
+    let _ = match kind {
+        EditedFile::Game { system, .. } => match file {
+            EditorFile::Existing(_) => match model {
+                Some(model) => catalog.write(out, editor::game_model_line(&system.label, &model)),
+                None => catalog.write(out, editor::game_line(&system.label)),
+            },
+            EditorFile::New(_) => catalog.write(out, editor::saved_as(&shown_path)),
+            EditorFile::Copy { source, .. } => catalog.write(out, editor::copy_of(source)),
         },
-        EditedFile::SystemDefaults(system) => (
-            kind.display_name(),
-            format!("Every {} game starts from these values", system.label),
-        ),
-        EditedFile::Settings => (kind.display_name(), shown_path.to_owned()),
-    }
+        EditedFile::SystemDefaults(system) => {
+            catalog.write(out, editor::defaults_line(&system.label))
+        }
+        EditedFile::Settings => {
+            out.push_str(shown_path);
+            Ok(())
+        }
+    };
 }
 
 impl Editor {
@@ -160,13 +217,20 @@ impl Editor {
             actions.close = true;
         }
 
-        let tabs: Vec<Tab> = self
-            .sections()
-            .iter()
-            .map(|section| Tab::new(section.caption(), None))
-            .collect();
+        let catalog = context.catalog;
+        let sections = self.sections();
+        let mut tabs = [Tab::new("", None); MAXIMUM_SECTIONS];
+        for (tab, section) in tabs.iter_mut().zip(sections) {
+            *tab = Tab::new(catalog.text(section.caption()), None);
+        }
         let tabs_id = UiId::from(TABS_ID);
-        if tab_bar(context, tabs_id, areas.tabs, &tabs, &mut self.section) {
+        if tab_bar(
+            context,
+            tabs_id,
+            areas.tabs,
+            &tabs[..sections.len()],
+            &mut self.section,
+        ) {
             self.scroll = ScrollState::new();
             if !context.has_focus(tabs_id) {
                 self.focus_first = true;
@@ -209,24 +273,48 @@ impl Editor {
             CLOSE_SIZE,
             CLOSE_SIZE,
         );
-        let shown_model = match &self.subject {
-            Subject::Game(files) | Subject::SystemDefaults(files) => {
-                let model = self.model_of(files);
-                (model != files.base.model().0).then(|| model.name())
-            }
-            Subject::Host(_) => None,
-        };
-        let (title, small) = header_texts(
-            &self.edited_file(),
-            &self.file,
-            shown_model,
-            &self.shown_path(),
-        );
+        let catalog = context.catalog;
+        let generation = context.catalog_generation;
+        let revision = self.revision;
+        let mut texts = std::mem::take(&mut self.texts);
+        let title = texts
+            .title
+            .text_in(catalog, generation, revision, |catalog, _, out| {
+                write_header_title(catalog, &self.edited_file(), &self.file, out);
+            });
+        let small = texts
+            .line
+            .text_in(catalog, generation, revision, |catalog, _, out| {
+                let shown_model = match &self.subject {
+                    Subject::Game(files) | Subject::SystemDefaults(files) => {
+                        let model = self.model_of(files);
+                        (model != files.base.model().0).then(|| model.name())
+                    }
+                    Subject::Host(_) => None,
+                };
+                write_header_line(
+                    catalog,
+                    &self.edited_file(),
+                    &self.file,
+                    shown_model,
+                    &self.shown,
+                    out,
+                );
+            });
+        let warning = self
+            .system_files()
+            .and_then(|files| files.base.warning())
+            .map(|warning| {
+                texts
+                    .warning
+                    .text_in(catalog, generation, revision, |catalog, _, out| {
+                        let _ = catalog.write(out, warning.message());
+                    })
+            });
         let title_style = theme.title();
         let small_style = theme.small();
         let warning_style = theme.small().with_color(theme.colors.danger_text);
-        let warning = self.system_files().and_then(|files| files.base.warning());
-        let small_width = context.measure(&small_style, &small);
+        let small_width = context.measure(&small_style, small);
         let warning_width = warning.map_or(0.0, |warning| {
             theme.gap * 1.5
                 + theme.icon_size
@@ -241,12 +329,12 @@ impl Editor {
         };
         let title_room =
             (room - small_width - warning_width - theme.gap * 1.5).max(room * title_share);
-        let title_width = context.measure(&title_style, &title).min(title_room);
+        let title_width = context.measure(&title_style, title).min(title_room);
         let baseline = context.centered_baseline(header, &title_style);
         context.text_in(
             Rect::new(header.x, header.y, title_width, header.height),
             &title_style,
-            &title,
+            title,
             Align::Start,
             Truncation::End,
         );
@@ -256,7 +344,7 @@ impl Editor {
             context
                 .scene
                 .push_clip(Rect::new(small_x, header.y, small_room, header.height));
-            context.text(small_x, baseline, &small_style, &small);
+            context.text(small_x, baseline, &small_style, small);
             if let Some(warning) = warning {
                 let icon_x = small_x + small_width + theme.gap * 1.5;
                 let icon_area = Rect::new(icon_x, header.y, theme.icon_size, header.height);
@@ -278,6 +366,7 @@ impl Editor {
             }
             context.scene.pop_clip();
         }
+        self.texts = texts;
         let close_id = UiId::from(CLOSE_ID);
         self.widgets
             .push(EditorWidget::new(close_id, WidgetKind::Close));
@@ -288,17 +377,31 @@ impl Editor {
             .show(context, close_area)
     }
 
+    /// Whether a field holds a value that the file cannot hold. The check
+    /// runs again after a change of the editor.
+    fn is_invalid(&mut self) -> bool {
+        match self.texts.invalid {
+            Some((revision, invalid)) if revision == self.revision => invalid,
+            Some(_) | None => {
+                let invalid = validation_error(&self.fields).is_some();
+                self.texts.invalid = Some((self.revision, invalid));
+                invalid
+            }
+        }
+    }
+
     /// Draws the footer: the validation error or the unsaved changes, Cancel
     /// and Save.
     fn draw_footer(&mut self, context: &mut UiContext, footer: Rect, actions: &mut PageActions) {
         let theme = context.theme;
+        let catalog = context.catalog;
         let dirty = self.is_dirty();
-        let error = super::save::validation_error(&self.fields);
-        let save = Button::new(SAVE_ID, "Save")
+        let invalid = self.is_invalid();
+        let save = Button::new(SAVE_ID, catalog.text(common::SAVE))
             .icon(Icon::Check)
             .kind(ButtonKind::Primary)
-            .enabled(dirty && error.is_none());
-        let cancel = Button::new(CANCEL_ID, "Cancel");
+            .enabled(dirty && !invalid);
+        let cancel = Button::new(CANCEL_ID, catalog.text(common::CANCEL));
         let (save_area, rest) = footer.cut_right(save.width(context));
         let cancel_area = rest
             .cut_right(theme.gap)
@@ -311,8 +414,20 @@ impl Editor {
             (cancel_area.x - theme.gap - footer.x).max(0.0),
             footer.height,
         );
-        if let Some(error) = &error {
-            draw_note(context, status, &Note::warning(error.clone()));
+        if invalid {
+            let mut texts = std::mem::take(&mut self.texts);
+            let error = texts.error.text_in(
+                catalog,
+                context.catalog_generation,
+                self.revision,
+                |catalog, _, out| {
+                    if let Some(error) = validation_error(&self.fields) {
+                        error.write(catalog, out);
+                    }
+                },
+            );
+            draw_note_text(context, status, error, NoteKind::Warning, false);
+            self.texts = texts;
         } else if dirty {
             let dot = Rect::new(
                 status.x,
@@ -323,10 +438,12 @@ impl Editor {
             context
                 .scene
                 .fill(context.snap_rect(dot), DOT_SIZE * 0.5, theme.colors.accent);
-            draw_note(
+            draw_note_text(
                 context,
                 status.cut_left(DOT_SIZE + theme.gap).1,
-                &Note::plain(UNSAVED_TEXT),
+                catalog.text(editor::UNSAVED),
+                NoteKind::Plain,
+                false,
             );
         }
         self.widgets
@@ -353,7 +470,24 @@ mod tests {
             test_support::{EditorRoot, system_named},
         },
         gui_test_support::GuiHarness,
+        texts::english_text,
     };
+
+    /// The English title of the header and the line beside it for the file
+    /// `file` of the kind `kind`.
+    fn header_texts(
+        kind: &EditedFile,
+        file: &EditorFile,
+        model: Option<&str>,
+        shown_path: &str,
+    ) -> (String, String) {
+        (
+            english_text(|catalog, out| write_header_title(catalog, kind, file, out)),
+            english_text(|catalog, out| {
+                write_header_line(catalog, kind, file, model, shown_path, out);
+            }),
+        )
+    }
 
     /// Verifies the header line of a game file, a game of another model, a new game, a copy, a system defaults file and the settings file.
     #[test]

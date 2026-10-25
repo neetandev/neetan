@@ -43,6 +43,8 @@ text_extractor = { workspace = true }
 i18n = { workspace = true, features = ["generate"] }
 
 [dev-dependencies]
+common = { workspace = true, features = ["allocation-counter"] }
+gui = { workspace = true, features = ["fill-counter"] }
 machine_60 = { workspace = true }
 machine_msx = { workspace = true }
 machine_x68k = { workspace = true }

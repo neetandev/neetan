@@ -97,7 +97,7 @@ pub(super) fn plan_removable_media_actions(
     fdd2_entries: &[ImageEntry],
     cdrom_entries: &[ImageEntry],
     cassette_path: Option<&Path>,
-) -> std::result::Result<Vec<RemovableMediaAction>, String> {
+) -> Result<Vec<RemovableMediaAction>, String> {
     let mut actions: Vec<RemovableMediaAction> = Vec::new();
     for entry in mismatch.entries() {
         let expected = entry.expected();
@@ -214,12 +214,12 @@ pub(super) fn apply_media_and_state_transactionally<
     apply_state: ApplyState,
     restore_media: RestoreMedia,
     restore_state: RestoreState,
-) -> std::result::Result<(), String>
+) -> Result<(), String>
 where
-    ApplyMedia: FnMut(&mut Target, RemovableMediaAction) -> std::result::Result<(), String>,
-    ApplyState: FnOnce(&mut Target) -> std::result::Result<(), String>,
-    RestoreMedia: FnOnce(&mut Target, &RemovableMediaRollback) -> std::result::Result<(), String>,
-    RestoreState: FnOnce(&mut Target, &State) -> std::result::Result<(), String>,
+    ApplyMedia: FnMut(&mut Target, RemovableMediaAction) -> Result<(), String>,
+    ApplyState: FnOnce(&mut Target) -> Result<(), String>,
+    RestoreMedia: FnOnce(&mut Target, &RemovableMediaRollback) -> Result<(), String>,
+    RestoreState: FnOnce(&mut Target, &State) -> Result<(), String>,
 {
     let RemovableMediaTransaction {
         actions,
@@ -261,8 +261,8 @@ fn rollback_media_and_state<Target, State, RestoreMedia, RestoreState>(
     restore_state: RestoreState,
 ) -> String
 where
-    RestoreMedia: FnOnce(&mut Target, &RemovableMediaRollback) -> std::result::Result<(), String>,
-    RestoreState: FnOnce(&mut Target, &State) -> std::result::Result<(), String>,
+    RestoreMedia: FnOnce(&mut Target, &RemovableMediaRollback) -> Result<(), String>,
+    RestoreState: FnOnce(&mut Target, &State) -> Result<(), String>,
 {
     let media_error = restore_media(target, previous_media).err();
     let state_error = restore_state(target, previous_state).err();

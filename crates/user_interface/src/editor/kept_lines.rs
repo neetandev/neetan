@@ -8,16 +8,13 @@ use gui::{
 };
 
 use super::fields::Field;
-use crate::config::{ConfigDocument, LineContent, parse_line};
+use crate::{
+    config::{ConfigDocument, LineContent, parse_line},
+    texts::editor,
+};
 
 /// The line height of the kept lines, in units of the small text size.
 const KEPT_LINE_SPACING: f32 = 1.8;
-
-/// The caption of the rule above the kept lines.
-const KEPT_CAPTION: &str = "Other lines of the file";
-
-/// The sentence below the rule.
-const KEPT_TEXT: &str = "The editor keeps these lines as written. Edit them in a text editor.";
 
 /// Returns the lines of `document` that no field of `fields` shows: the
 /// comments, the key bindings, the unknown keys and the keys that the
@@ -71,14 +68,15 @@ pub(crate) fn draw_kept_lines(
     lines: &[String],
 ) -> f32 {
     let theme = context.theme;
+    let catalog = context.catalog;
     let style = theme.small();
     let line_height = theme.small_text_size * KEPT_LINE_SPACING;
-    let mut top = draw_rule(context, content, y, KEPT_CAPTION);
+    let mut top = draw_rule(context, content, y, catalog.text(editor::KEPT_CAPTION));
     label(
         context,
         Rect::new(content.x, top, content.width, line_height),
         &style,
-        KEPT_TEXT,
+        catalog.text(editor::KEPT_TEXT),
         Align::Start,
         Truncation::End,
     );

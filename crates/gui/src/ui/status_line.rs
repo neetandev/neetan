@@ -46,11 +46,9 @@ pub const CANCEL_KEYS: &[HintKey<'static>] = &[HintKey::Key("Esc"), HintKey::Pad
 /// Returns the hints of `hints` without each hint whose action an earlier
 /// hint already has. Each hint comes with its action. Two hints of one
 /// action lead to one result, such as Enter on a close button and Esc, and
-/// the status line shows the first of them.
-pub fn distinct_hints<'a, A: PartialEq>(
-    hints: impl IntoIterator<Item = (A, Hint<'a>)>,
-) -> Vec<Hint<'a>> {
-    let mut distinct: Vec<(A, Hint<'a>)> = Vec::new();
+/// the status line shows the first of them. `H` is any hint type.
+pub fn distinct_hints<A: PartialEq, H>(hints: impl IntoIterator<Item = (A, H)>) -> Vec<H> {
+    let mut distinct: Vec<(A, H)> = Vec::new();
     for (action, hint) in hints {
         if !distinct.iter().any(|(shown, _)| *shown == action) {
             distinct.push((action, hint));

@@ -3,109 +3,76 @@
 //! and the settings page.
 
 use gui::ui::{ACTIVATE_KEYS, CANCEL_KEYS, Hint, HintKey, StatusEnd};
+use i18n::Catalog;
 
 use super::rows::GameRow;
+use crate::texts::{self, HintText};
 
 /// The hint of the launch of the selected game.
-const LAUNCH_HINT: Hint<'static> = Hint {
-    keys: ACTIVATE_KEYS,
-    label: "Launch",
-};
+const LAUNCH_HINT: HintText = HintText::new(ACTIVATE_KEYS, texts::common::LAUNCH);
 
 /// The hint of the delete of the selected file.
-const DELETE_HINT: Hint<'static> = Hint {
-    keys: ACTIVATE_KEYS,
-    label: "Delete",
-};
+const DELETE_HINT: HintText = HintText::new(ACTIVATE_KEYS, texts::common::DELETE);
 
 /// The hint of the shortcut that opens the selected game in the editor.
-const EDIT_HINT: Hint<'static> = Hint {
-    keys: &[HintKey::Key("F2"), HintKey::Pad("X")],
-    label: "Edit",
-};
+const EDIT_HINT: HintText = HintText::new(
+    &[HintKey::Key("F2"), HintKey::Pad("X")],
+    texts::common::EDIT,
+);
 
 /// The hint of the add button.
-const ADD_BUTTON_HINT: Hint<'static> = Hint {
-    keys: ACTIVATE_KEYS,
-    label: "Add",
-};
+const ADD_BUTTON_HINT: HintText = HintText::new(ACTIVATE_KEYS, texts::common::ADD);
 
 /// The hint of the edit button.
-const EDIT_BUTTON_HINT: Hint<'static> = Hint {
-    keys: ACTIVATE_KEYS,
-    label: "Edit",
-};
+const EDIT_BUTTON_HINT: HintText = HintText::new(ACTIVATE_KEYS, texts::common::EDIT);
 
 /// The hint of the duplicate button.
-const DUPLICATE_BUTTON_HINT: Hint<'static> = Hint {
-    keys: ACTIVATE_KEYS,
-    label: "Duplicate",
-};
+const DUPLICATE_BUTTON_HINT: HintText = HintText::new(ACTIVATE_KEYS, texts::common::DUPLICATE);
 
 /// The hint of the system defaults button.
-const SYSTEM_DEFAULTS_BUTTON_HINT: Hint<'static> = Hint {
-    keys: ACTIVATE_KEYS,
-    label: "System defaults",
-};
+const SYSTEM_DEFAULTS_BUTTON_HINT: HintText =
+    HintText::new(ACTIVATE_KEYS, texts::common::SYSTEM_DEFAULTS);
 
 /// The hint of the system list, which gives the focus to the game table.
-const SELECT_HINT: Hint<'static> = Hint {
-    keys: ACTIVATE_KEYS,
-    label: "Select",
-};
+const SELECT_HINT: HintText = HintText::new(ACTIVATE_KEYS, texts::common::SELECT);
 
 /// The hint of the column header, which sorts by the picked column.
-const SORT_HINT: Hint<'static> = Hint {
-    keys: ACTIVATE_KEYS,
-    label: "Sort",
-};
+const SORT_HINT: HintText = HintText::new(ACTIVATE_KEYS, texts::hints::SORT);
 
 /// The hint of a filter with text, which cancel empties.
-const CLEAR_HINT: Hint<'static> = Hint {
-    keys: CANCEL_KEYS,
-    label: "Clear",
-};
+const CLEAR_HINT: HintText = HintText::new(CANCEL_KEYS, texts::common::CLEAR);
 
 /// The hint of the shortcut that focuses the filter.
-const FILTER_HINT: Hint<'static> = Hint {
-    keys: &[HintKey::Key("Ctrl+F"), HintKey::Pad("Y")],
-    label: "Filter",
-};
+const FILTER_HINT: HintText = HintText::new(
+    &[HintKey::Key("Ctrl+F"), HintKey::Pad("Y")],
+    texts::hints::FILTER,
+);
 
 /// The hint of the refresh button, which activates it.
-const REFRESH_BUTTON_HINT: Hint<'static> = Hint {
-    keys: ACTIVATE_KEYS,
-    label: "Refresh",
-};
+const REFRESH_BUTTON_HINT: HintText = HintText::new(ACTIVATE_KEYS, texts::common::REFRESH);
 
 /// The hint of the shortcut that refreshes the library.
-const REFRESH_HINT: Hint<'static> = Hint {
-    keys: &[HintKey::Key("F5")],
-    label: "Refresh",
-};
+const REFRESH_HINT: HintText = HintText::new(&[HintKey::Key("F5")], texts::common::REFRESH);
 
 /// The hint of the settings button, which activates it.
-const SETTINGS_BUTTON_HINT: Hint<'static> = Hint {
-    keys: ACTIVATE_KEYS,
-    label: "Settings",
-};
+const SETTINGS_BUTTON_HINT: HintText = HintText::new(ACTIVATE_KEYS, texts::common::SETTINGS);
 
 /// The hint of the shortcut that opens the settings page.
-const SETTINGS_HINT: Hint<'static> = Hint {
-    keys: &[HintKey::Key("F10"), HintKey::Key("Start")],
-    label: "Settings",
-};
+const SETTINGS_HINT: HintText = HintText::new(
+    &[HintKey::Key("F10"), HintKey::Key("Start")],
+    texts::common::SETTINGS,
+);
 
 /// The hint of the system switch.
-const SYSTEM_HINT: Hint<'static> = Hint {
-    keys: &[
+const SYSTEM_HINT: HintText = HintText::new(
+    &[
         HintKey::Key("Ctrl+PgUp"),
         HintKey::Key("Ctrl+PgDn"),
         HintKey::Shoulder("LB"),
         HintKey::Shoulder("RB"),
     ],
-    label: "System",
-};
+    texts::hints::SYSTEM,
+);
 
 /// The widget of the library that holds the focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,7 +114,11 @@ pub(crate) enum LibraryFocus {
 /// shortcuts follow the system switch while no text field holds the focus.
 /// The settings button drops the settings shortcut, which has the same
 /// result.
-pub(crate) fn library_hints(focus: LibraryFocus, selected: Option<&GameRow>) -> Vec<Hint<'static>> {
+pub(crate) fn library_hints<'c>(
+    catalog: &'c Catalog,
+    focus: LibraryFocus,
+    selected: Option<&GameRow>,
+) -> Vec<Hint<'c>> {
     let mut hints = focus_hints(focus, selected);
     match focus {
         LibraryFocus::Filter { .. } | LibraryFocus::Settings => {}
@@ -163,12 +134,12 @@ pub(crate) fn library_hints(focus: LibraryFocus, selected: Option<&GameRow>) -> 
         | LibraryFocus::Table
         | LibraryFocus::Nothing => hints.push(SETTINGS_HINT),
     }
-    hints
+    texts::hints_in(catalog, &hints)
 }
 
 /// The hints of the library before the settings shortcut while `focus`
 /// holds the focus and `selected` is the selected row of the game table.
-fn focus_hints(focus: LibraryFocus, selected: Option<&GameRow>) -> Vec<Hint<'static>> {
+fn focus_hints(focus: LibraryFocus, selected: Option<&GameRow>) -> Vec<HintText> {
     let editable = selected.is_some_and(GameRow::launchable);
     match focus {
         LibraryFocus::SystemList if editable => {
@@ -247,7 +218,10 @@ pub(crate) fn status_end<'a>(selected: Option<&'a GameRow>, folder: &'a str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manager::rows::tests::{broken, game};
+    use crate::{
+        manager::rows::tests::{broken, game},
+        texts::english,
+    };
 
     /// The labels of `hints`.
     fn labels<'a>(hints: &[Hint<'a>]) -> Vec<&'a str> {
@@ -353,7 +327,7 @@ mod tests {
         ];
         for (focus, selected, expected) in cases {
             assert_eq!(
-                labels(&library_hints(focus, selected)),
+                labels(&library_hints(english(), focus, selected)),
                 expected,
                 "{focus:?}"
             );

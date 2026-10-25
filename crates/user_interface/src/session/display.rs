@@ -16,9 +16,7 @@ const COMPOSITE_PHASE_COUNT: u32 = 4;
 impl Session {
     /// The frame of the machine for the graphics engine, or the message of a
     /// panic while reading it.
-    pub(crate) fn render_instructions(
-        &self,
-    ) -> std::result::Result<RenderInstructions<'_>, String> {
+    pub(crate) fn render_instructions(&self) -> Result<RenderInstructions<'_>, String> {
         let machine = self.machine.as_ref();
         let (width, height) = catch_panic(|| machine.display_dimensions())?;
         let framebuffer = catch_panic(|| machine.display_framebuffer())?;

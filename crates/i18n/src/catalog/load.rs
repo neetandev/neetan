@@ -426,10 +426,11 @@ impl Catalog {
 mod tests {
     use core::fmt;
 
+    use common::allocation_counter::count_allocations;
+
     use super::*;
     use crate::{
         Message,
-        allocation_counter::count_allocations,
         fixture::{self, ENGLISH_HEADER, ENGLISH_LIST, JAPANESE_HEADER, JAPANESE_LIST},
         generate::leak_schema,
         message::ListKind,
