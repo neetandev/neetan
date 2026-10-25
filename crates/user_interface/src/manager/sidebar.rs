@@ -39,9 +39,6 @@ pub(crate) struct SidebarResponse {
     pub(crate) system_defaults: bool,
 }
 
-/// The subtitle beside the name of the application.
-const SUBTITLE: &str = "Game manager";
-
 /// One system of the sidebar with its games and its ROM status.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SystemEntry {
@@ -182,13 +179,6 @@ pub(crate) fn show_sidebar(
     let title_style = theme.title();
     let baseline = context.centered_baseline(header, &title_style);
     context.text(header.x, baseline, &title_style, APPLICATION_TITLE);
-    let title_width = context.measure(&title_style, APPLICATION_TITLE);
-    context.text(
-        header.x + title_width + theme.gap,
-        baseline,
-        &theme.small(),
-        SUBTITLE,
-    );
 
     let (button_area, rest) = rest.cut_bottom(theme.control_height);
     let (rom_line, list_area) = rest.cut_bottom(PATH_LINE_HEIGHT + theme.gap * 2.0);
