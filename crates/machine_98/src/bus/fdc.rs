@@ -1,8 +1,8 @@
 use common::{
-    StackVec, TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField, TraceValue,
-    trace_id,
+    TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField, TraceValue, trace_id,
 };
 use device::upd765a_fdc::{FdcCommand, ST0_NOT_READY, ST1_MISSING_ADDRESS_MARK, ST1_NOT_WRITABLE};
+use stack_vec::StackVec;
 
 use crate::{Pc9801Bus, TraceSink, bus::INTERRUPT_DELAY_CYCLES, scheduler::Event98};
 

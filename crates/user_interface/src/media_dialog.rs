@@ -25,7 +25,7 @@ pub(crate) const TAB_BAR_HEIGHT: f32 = 40.0;
 const LIST_ID: &str = "images";
 
 /// The most drives of the dialog: two floppy drives and the CD-ROM drive.
-const MAXIMUM_DRIVES: usize = 3;
+pub(crate) const MAXIMUM_DRIVES: usize = 3;
 
 /// A removable media drive that the dialog changes the medium of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,16 +187,46 @@ pub(crate) fn hotkey_action(
     }
 }
 
-/// The indices of the entries whose file name holds `filter`, ignoring the
-/// case.
-pub(crate) fn filtered_entries(entries: &[ImageEntry], filter: &str) -> Vec<usize> {
-    let folded_filter = filter.trim().to_lowercase();
+/// The filter text `filter` in the form that [`matching_entries`] compares:
+/// trimmed and in lowercase.
+pub(crate) fn fold_filter(filter: &str) -> String {
+    filter.trim().to_lowercase()
+}
+
+/// The indices of the entries whose file name holds the folded filter
+/// `folded_filter` of [`fold_filter`], ignoring the case.
+pub(crate) fn matching_entries<'a>(
+    entries: &'a [ImageEntry],
+    folded_filter: &'a str,
+) -> impl Iterator<Item = usize> + 'a {
     entries
         .iter()
         .enumerate()
-        .filter(|(_, entry)| entry.folded_name.contains(&folded_filter))
+        .filter(move |(_, entry)| entry.folded_name.contains(folded_filter))
         .map(|(index, _)| index)
-        .collect()
+}
+
+/// The tab and the images that the visible rows of a [`MediaDialog`] come
+/// from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RowsSource {
+    /// The selected tab.
+    tab: usize,
+    /// The address of the first image.
+    address: usize,
+    /// The number of images.
+    count: usize,
+}
+
+impl RowsSource {
+    /// The source of the rows of `entries` on the tab `tab`.
+    fn new(tab: usize, entries: &[ImageEntry]) -> Self {
+        Self {
+            tab,
+            address: entries.as_ptr().addr(),
+            count: entries.len(),
+        }
+    }
 }
 
 /// The selection among the visible `rows` for the `preferred` entry: the
@@ -234,6 +264,15 @@ pub(crate) struct MediaDialog {
     tab: usize,
     /// The filter text.
     filter: String,
+    /// The filter text of the visible rows.
+    rows_filter: String,
+    /// The filter text of the visible rows in the form of [`fold_filter`].
+    folded_filter: String,
+    /// The tab and the images of the visible rows. `None` before the first
+    /// pass.
+    rows_source: Option<RowsSource>,
+    /// The indices of the entries that pass the filter.
+    rows: Vec<usize>,
     /// The scroll position and the selected row of the list.
     list: ListState,
     /// The entry of the current drive that the user picked or that the
@@ -260,6 +299,10 @@ impl MediaDialog {
             drives,
             tab,
             filter: String::new(),
+            rows_filter: String::new(),
+            folded_filter: String::new(),
+            rows_source: None,
+            rows: Vec::new(),
             list: ListState::new(),
             preferred: loaded,
             eject_chosen: false,
@@ -293,6 +336,25 @@ impl MediaDialog {
         self.selection = loaded;
         self.list = ListState::new();
         self.reveal = true;
+    }
+
+    /// Fills the visible rows with the entries of `entries` that pass the
+    /// filter. The rows keep their buffer and refill only when the filter,
+    /// the tab or the images change.
+    fn refresh_rows(&mut self, entries: &[ImageEntry]) {
+        let source = RowsSource::new(self.tab, entries);
+        let filter_changed = self.rows_filter != self.filter;
+        if !filter_changed && self.rows_source == Some(source) {
+            return;
+        }
+        if filter_changed {
+            self.rows_filter.clone_from(&self.filter);
+            self.folded_filter = fold_filter(&self.filter);
+        }
+        self.rows.clear();
+        self.rows
+            .extend(matching_entries(entries, &self.folded_filter));
+        self.rows_source = Some(source);
     }
 
     /// Draws one pass of the dialog. `media` holds the images of each drive
@@ -345,10 +407,11 @@ impl MediaDialog {
         if filter.changed {
             self.eject_chosen = false;
         }
-        let rows = filtered_entries(entries, &self.filter);
+        self.refresh_rows(entries);
+        let rows = &self.rows;
         let selection = visible_selection(
             self.preferred,
-            &rows,
+            rows,
             !self.filter.trim().is_empty(),
             self.eject_chosen,
         );
@@ -357,7 +420,7 @@ impl MediaDialog {
             self.reveal = true;
         }
         if self.reveal {
-            self.list.select(row_of(self.selection, &rows));
+            self.list.select(row_of(self.selection, rows));
             self.reveal = false;
         }
 
@@ -546,6 +609,31 @@ mod tests {
             })
         }
 
+        /// Runs one pass with the pending input and returns the allocations, the text fills
+        /// and the wraps of the pass.
+        fn counted_pass(&mut self) -> (usize, usize, usize) {
+            let media: Vec<DriveMedia> = self
+                .media
+                .iter()
+                .zip(self.loaded)
+                .map(|(entries, loaded)| DriveMedia { entries, loaded })
+                .collect();
+            let dialog = &mut self.dialog;
+            let gui = &mut self.gui;
+            let (allocations, (fills, (wraps, _))) = allocation_counter::count_allocations(|| {
+                gui::ui::count_fills(|| {
+                    gui::ui::count_wraps(|| {
+                        gui.frame(|context| {
+                            let bounds = context.bounds();
+                            context.fill(bounds, Color::hex(0x204080));
+                            dialog.show(context, &media)
+                        })
+                    })
+                })
+            });
+            (allocations, fills, wraps)
+        }
+
         /// Runs one pass with the navigation event `navigation`.
         fn navigate(&mut self, navigation: Navigation) -> DialogAction {
             self.gui.input.navigation = Some(navigation);
@@ -610,14 +698,13 @@ mod tests {
     #[test]
     fn the_filter_ignores_case_and_keeps_the_order() {
         let entries = entries(&FILES);
-        assert_eq!(
-            filtered_entries(&entries, ""),
-            (0..FILES.len()).collect::<Vec<_>>()
-        );
-        assert_eq!(filtered_entries(&entries, "ANCIENT ys"), vec![1]);
-        assert_eq!(filtered_entries(&entries, "DISK 1"), vec![4, 5, 9]);
-        assert_eq!(filtered_entries(&entries, "英雄伝説"), vec![2, 3]);
-        assert!(filtered_entries(&entries, "zzz").is_empty());
+        let matching =
+            |filter: &str| matching_entries(&entries, &fold_filter(filter)).collect::<Vec<_>>();
+        assert_eq!(matching(""), (0..FILES.len()).collect::<Vec<_>>());
+        assert_eq!(matching(" ANCIENT ys "), vec![1]);
+        assert_eq!(matching("DISK 1"), vec![4, 5, 9]);
+        assert_eq!(matching("英雄伝説"), vec![2, 3]);
+        assert!(matching("zzz").is_empty());
     }
 
     #[test]
@@ -779,6 +866,32 @@ mod tests {
         harness.dialog.switch_tab(0, Some(5));
         harness.pass();
         assert_eq!(harness.dialog.list.selected, 6);
+    }
+
+    /// Verifies that a steady pass of the dialog, the second pass with an unchanged state,
+    /// allocates nothing, fills no text and wraps no text, with the focus on the list and on
+    /// the filter with a filter text.
+    #[test]
+    fn a_steady_pass_allocates_nothing() {
+        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0), ThemeKind::Dark);
+        harness.pass();
+        harness.pass();
+        assert_eq!(harness.gui.state.focused(), Some(UiId::from(LIST_ID)));
+        assert_eq!(
+            harness.counted_pass(),
+            (0, 0, 0),
+            "the list holds the focus"
+        );
+        harness.navigate(Navigation::Previous);
+        harness.type_text("disk");
+        harness.pass();
+        assert_eq!(harness.gui.state.focused(), Some(UiId::from("filter")));
+        assert_eq!(harness.dialog.rows, [0, 1, 4, 5, 9]);
+        assert_eq!(
+            harness.counted_pass(),
+            (0, 0, 0),
+            "the filter holds the focus"
+        );
     }
 
     #[test]

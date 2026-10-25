@@ -2,9 +2,13 @@
 
 use gui::{
     Rect,
-    ui::{ConfirmDialog, ConfirmResponse, Icon, TextBuffer, UiContext, confirm_hints},
+    ui::{
+        CONFIRM_HINTS, ConfirmDialog, ConfirmLines, ConfirmResponse, Icon, TextBuffer, UiContext,
+        confirm_hints,
+    },
 };
 use i18n::Catalog;
+use stack_vec::StackVec;
 
 use super::EditedFile;
 use crate::texts::{HintText, discard};
@@ -43,6 +47,8 @@ pub(crate) struct DiscardQuestion {
     subject: EditedFile,
     /// The question in the catalog of the last pass.
     message: TextBuffer<()>,
+    /// The wrapped lines of the question.
+    lines: ConfirmLines,
     /// The answer of the last pass, for the hints.
     response: ConfirmResponse,
 }
@@ -53,6 +59,7 @@ impl DiscardQuestion {
         Self {
             subject,
             message: TextBuffer::new(),
+            lines: ConfirmLines::new(),
             response: ConfirmResponse::default(),
         }
     }
@@ -66,7 +73,7 @@ impl DiscardQuestion {
 
     /// The hints of the status line for the answer of the last pass, in the
     /// order of the hints of a confirm dialog.
-    pub(crate) fn hints(&self) -> Vec<HintText> {
+    pub(crate) fn hints(&self) -> StackVec<HintText, CONFIRM_HINTS> {
         confirm_hints(
             self.response,
             discard::KEEP_EDITING,
@@ -79,7 +86,10 @@ impl DiscardQuestion {
     pub(crate) fn show(&mut self, context: &mut UiContext, area: Rect) -> DiscardOutcome {
         let catalog = context.catalog;
         let Self {
-            subject, message, ..
+            subject,
+            message,
+            lines,
+            ..
         } = self;
         let message = message.text(context, (), |catalog, (), out| {
             write_message(catalog, subject, out);
@@ -94,7 +104,7 @@ impl DiscardQuestion {
         .action_icon(Icon::Delete)
         .danger(true)
         .area(area)
-        .show(context);
+        .show(context, lines);
         if self.response.confirmed {
             DiscardOutcome::Discarded
         } else if self.response.cancelled {

@@ -18,6 +18,26 @@ pub(crate) fn repository_font() -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
+/// The allocations, the text fills and the wraps of a pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PassCounts {
+    /// The allocations and reallocations of the pass.
+    pub(crate) allocations: usize,
+    /// The fills of the text buffers of the pass.
+    pub(crate) fills: usize,
+    /// The wraps of the wrapped texts of the pass.
+    pub(crate) wraps: usize,
+}
+
+impl PassCounts {
+    /// The counts of a pass that allocates nothing, fills no text and wraps no text.
+    pub(crate) const NONE: Self = Self {
+        allocations: 0,
+        fills: 0,
+        wraps: 0,
+    };
+}
+
 /// The fonts, the theme, the catalog and the pass state of a user interface
 /// without a window.
 pub(crate) struct GuiHarness {
@@ -100,6 +120,23 @@ impl GuiHarness {
         context.finish();
         self.input.advance();
         result
+    }
+
+    /// Runs one pass of `draw` with the pending input and counts its allocations, its text
+    /// fills and its wraps.
+    pub(crate) fn counted_frame<R>(
+        &mut self,
+        draw: impl FnOnce(&mut UiContext) -> R,
+    ) -> (PassCounts, R) {
+        let (allocations, (fills, (wraps, result))) = allocation_counter::count_allocations(|| {
+            gui::ui::count_fills(|| gui::ui::count_wraps(|| self.frame(draw)))
+        });
+        let counts = PassCounts {
+            allocations,
+            fills,
+            wraps,
+        };
+        (counts, result)
     }
 
     /// Runs one pass of `draw` with the pending input and then the passes

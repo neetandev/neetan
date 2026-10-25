@@ -5,7 +5,7 @@
 
 use std::fmt::{self, Write as _};
 
-use gui::ui::{TextBuffer, TextData};
+use gui::ui::{TextBuffer, TextData, WrappedText};
 use i18n::{Catalog, Key, Message};
 
 use super::notes::NoteLook;
@@ -142,8 +142,20 @@ impl fmt::Display for Joined<'_> {
     }
 }
 
+/// A note of a pass: its text, its look and the lines that its text wraps
+/// into, kept between passes.
+#[derive(Debug)]
+pub(crate) struct NoteView<'a> {
+    /// The joined sentences.
+    pub(crate) text: &'a str,
+    /// The look of the note.
+    pub(crate) look: NoteLook,
+    /// The wrapped lines of the text.
+    pub(crate) lines: &'a mut WrappedText,
+}
+
 /// The text and the look of a note that refill only when the data of the
-/// note or the catalog generation changes.
+/// note or the catalog generation changes, and the lines of its text.
 #[derive(Debug, Clone)]
 pub(crate) struct NoteText<D> {
     /// The joined sentences.
@@ -152,6 +164,8 @@ pub(crate) struct NoteText<D> {
     scratch: String,
     /// The look of the last fill.
     look: NoteLook,
+    /// The wrapped lines of the text.
+    lines: WrappedText,
 }
 
 impl<D> Default for NoteText<D> {
@@ -161,32 +175,39 @@ impl<D> Default for NoteText<D> {
             text: TextBuffer::new(),
             scratch: String::new(),
             look: NoteLook::default(),
+            lines: WrappedText::new(),
         }
     }
 }
 
 impl<D> NoteText<D> {
     /// The note for `data` in `catalog` at the catalog generation
-    /// `generation` and its look. `build` writes the sentences and returns
-    /// the look when the data or the generation differs from the last fill.
+    /// `generation` with its look and its lines. `build` writes the
+    /// sentences and returns the look when the data or the generation
+    /// differs from the last fill.
     pub(crate) fn note<Q: TextData<D>>(
         &mut self,
         catalog: &Catalog,
         generation: u64,
         data: Q,
         build: impl FnOnce(&mut NoteWriter<'_, '_>, Q) -> NoteLook,
-    ) -> (&str, NoteLook) {
+    ) -> NoteView<'_> {
         let Self {
             text,
             scratch,
             look,
+            lines,
         } = self;
         let text = text.text_in(catalog, generation, data, |catalog, data, out| {
             let mut writer = NoteWriter::new(catalog, scratch);
             *look = build(&mut writer, data);
             writer.finish(out);
         });
-        (text, *look)
+        NoteView {
+            text,
+            look: *look,
+            lines,
+        }
     }
 
     /// The text of the last fill. A note without a fill has none.
@@ -194,11 +215,17 @@ impl<D> NoteText<D> {
     pub(crate) fn last_text(&self) -> Option<&str> {
         self.text.last_text()
     }
+
+    /// The number of lines of the last wrap of the text.
+    #[cfg(test)]
+    pub(crate) fn line_count(&self) -> usize {
+        self.lines.line_count()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use common::allocation_counter::count_allocations;
+    use allocation_counter::count_allocations;
 
     use super::*;
     use crate::texts::{english, test_catalog};

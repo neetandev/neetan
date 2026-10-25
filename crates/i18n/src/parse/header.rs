@@ -65,7 +65,7 @@ fn unescape(value: Value<'_>) -> Cow<'_, str> {
 
 #[cfg(test)]
 mod tests {
-    use common::allocation_counter::count_allocations;
+    use allocation_counter::count_allocations;
 
     use super::*;
     use crate::parse::{FaultKind, FullKey, NAME_KEY, PLURAL_KEY};

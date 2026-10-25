@@ -1,6 +1,8 @@
 //! The table: a list with a column header, sort indicators and rows of
 //! cells.
 
+use stack_vec::StackVec;
+
 use super::{
     context::{UiContext, UiId},
     focus::{Navigation, NavigationSet},
@@ -12,6 +14,13 @@ use crate::{Rect, RectStyle};
 
 /// The size of the sort chevron beside a column caption.
 pub(super) const SORT_ICON_SIZE: f32 = 12.0;
+
+/// The most columns of a [`Table`]. The spans of the columns live on the
+/// stack in a list of this size.
+pub const MAXIMUM_COLUMNS: usize = 4;
+
+/// The left edge and the width of each column of a [`Table`].
+type ColumnSpans = StackVec<(f32, f32), MAXIMUM_COLUMNS>;
 
 /// The width of a column of a [`Table`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -289,7 +298,13 @@ pub struct Table<'a> {
 
 impl<'a> Table<'a> {
     /// A table of `rows` normal rows with `columns`.
+    ///
+    /// Panics when `columns` holds more than [`MAXIMUM_COLUMNS`] columns.
     pub fn new(id: impl Into<UiId>, columns: &'a [Column<'a>], rows: usize) -> Self {
+        assert!(
+            columns.len() <= MAXIMUM_COLUMNS,
+            "a table holds at most {MAXIMUM_COLUMNS} columns"
+        );
         Self {
             id: id.into(),
             columns,
@@ -320,7 +335,7 @@ impl<'a> Table<'a> {
 
     /// The left edge of each column from the inner edge of a row, and its
     /// width, in a row of the inner width `width`.
-    fn spans(&self, context: &UiContext, width: f32) -> Vec<(f32, f32)> {
+    fn spans(&self, context: &UiContext, width: f32) -> ColumnSpans {
         let gap = context.theme.padding;
         let gaps = gap * self.columns.len().saturating_sub(1) as f32;
         let (fixed, weights) = self

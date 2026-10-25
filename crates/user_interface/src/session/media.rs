@@ -1,13 +1,15 @@
 //! The removable media of a session and its media dialog.
 
 use common::{JoystickState, error, info, warn};
+use stack_vec::StackVec;
 
 use super::Session;
 use crate::{
     gui_host::GuiEvent,
     host::Host,
     media_dialog::{
-        DialogAction, Drive, DriveMedia, HotkeyAction, MediaDialog, available_drives, hotkey_action,
+        DialogAction, Drive, DriveMedia, HotkeyAction, MAXIMUM_DRIVES, MediaDialog,
+        available_drives, hotkey_action,
     },
 };
 
@@ -210,7 +212,7 @@ impl Session {
         let (Some(gui), Some(dialog)) = (host.gui.as_mut(), self.media_dialog.as_mut()) else {
             return;
         };
-        let media: Vec<DriveMedia> = dialog
+        let media: StackVec<DriveMedia, MAXIMUM_DRIVES> = dialog
             .drives()
             .iter()
             .map(|drive| match drive {
@@ -232,6 +234,7 @@ impl Session {
         while action == DialogAction::None && dialog.take_stale() {
             action = gui.pass(|context| dialog.show(context, &media));
         }
+        drop(media);
         gui.sync_text_input(&host.window);
         match action {
             DialogAction::None => {}

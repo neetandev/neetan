@@ -14,6 +14,7 @@ cpu.workspace = true
 device.workspace = true
 save_state.workspace = true
 software_renderer = { workspace = true, features = ["std", "msx"] }
+stack_vec.workspace = true
 ymfm_oxide.workspace = true
 
 [dev-dependencies]

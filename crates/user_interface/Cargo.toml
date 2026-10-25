@@ -37,13 +37,14 @@ sdl3 = { workspace = true }
 sdl3_backend = { workspace = true }
 gui = { workspace = true }
 i18n = { workspace = true }
+stack_vec = { workspace = true }
 text_extractor = { workspace = true }
 
 [build-dependencies]
 i18n = { workspace = true, features = ["generate"] }
 
 [dev-dependencies]
-common = { workspace = true, features = ["allocation-counter"] }
+allocation_counter = { workspace = true }
 gui = { workspace = true, features = ["fill-counter"] }
 machine_60 = { workspace = true }
 machine_msx = { workspace = true }

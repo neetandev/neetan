@@ -1,6 +1,7 @@
 //! Event-driven scheduler for the X68000.
 
-use common::{SchedulerState, StackVec};
+use common::SchedulerState;
+use stack_vec::StackVec;
 
 /// Number of distinct X68000 event kinds.
 const EVENT_X68K_KIND_COUNT: usize = 14;

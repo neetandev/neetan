@@ -78,7 +78,6 @@ impl Manager {
 
 #[cfg(test)]
 mod tests {
-    use common::allocation_counter::count_allocations;
     use gui::ui::{ActionButton, Navigation, Shortcut, ThemeKind, UiId, Viewport};
     use machine_factory::{
         config::settings::{
@@ -95,7 +94,7 @@ mod tests {
             EditedFile, field_id,
             test_support::{EditorRoot, SettingsRoot, first_rom_folder},
         },
-        gui_test_support::GuiHarness,
+        gui_test_support::{GuiHarness, PassCounts},
         manager::{FILTER_ID, SETTINGS_ID, game_table::GAME_TABLE_ID},
         rom_folders::RomFolderStatus,
     };
@@ -440,19 +439,22 @@ mod tests {
         render(&harness, "video_flag");
     }
 
-    /// The most allocations of a steady frame of a section of the settings page: the lists of
-    /// the hints of the status line and of the focus ring of the pass, and the lines of the notes
-    /// and of the text of the settings file that wrap. The texts and the folders of the page
-    /// allocate nothing.
-    const SETTINGS_FRAME_ALLOCATIONS: usize = 11;
-
     /// Verifies that a steady frame of each section of the settings page, the second pass with an
-    /// unchanged state, allocates only its lists, fills no text again and keeps the revision of
-    /// the editor.
+    /// unchanged state, allocates nothing, fills no text again and keeps the revision of the
+    /// editor.
     #[test]
-    fn a_steady_frame_of_the_settings_page_allocates_only_its_lists() {
-        let root = sample_root("steady_settings", "");
-        let mut manager = manager_with(&root, &[]);
+    fn a_steady_frame_of_the_settings_page_allocates_nothing() {
+        let root = sample_root(
+            "steady_settings",
+            "gui-font = font/missing.ttf\ngui-theme = sepia\n",
+        );
+        let mut manager = manager_with(
+            &root,
+            &[(
+                "pc98-roms",
+                "/home/user/Emulation/Firmware/NEC PC-9801 and PC-9821 ROM sets",
+            )],
+        );
         manager.roms = sample_statuses(&manager.host);
         let mut harness = GuiHarness::new(960, 600);
         settle(&mut harness, &mut manager);
@@ -466,18 +468,19 @@ mod tests {
                 manager.editor().map(Editor::current_section),
                 Some(*section)
             );
+            assert!(
+                manager
+                    .editor()
+                    .is_some_and(|editor| editor.most_note_lines(*section) > 1),
+                "the section {section:?} draws no note of several lines"
+            );
             harness.frame(|context| manager.show(context));
             let revision = manager.editor().map(Editor::revision);
-            let (allocations, (fills, _)) = count_allocations(|| {
-                gui::ui::count_fills(|| harness.frame(|context| manager.show(context)))
-            });
-            assert!(
-                allocations <= SETTINGS_FRAME_ALLOCATIONS,
-                "a steady frame of the section {section:?} allocates {allocations} times"
-            );
+            let (counts, _) = harness.counted_frame(|context| manager.show(context));
             assert_eq!(
-                fills, 0,
-                "a steady frame of the section {section:?} fills texts again"
+                counts,
+                PassCounts::NONE,
+                "a steady frame of the section {section:?}"
             );
             assert_eq!(manager.editor().map(Editor::revision), revision);
             harness.input.navigation = Some(Navigation::NextTab);

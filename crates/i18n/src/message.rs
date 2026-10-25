@@ -314,7 +314,7 @@ impl Catalog {
 mod tests {
     use core::fmt::Write;
 
-    use common::allocation_counter::count_allocations;
+    use allocation_counter::count_allocations;
 
     use super::*;
     use crate::{fixture, generate::leak_schema, schema::Schema};

@@ -90,21 +90,22 @@ fn draw_broken(context: &mut UiContext, table_row: &TableRow, row: &GameRow) {
 }
 
 /// Draws the game table of `entries` of `rows` into `area` with the
-/// selection, the scroll offset and the sort in `state`. A table without
-/// entries shows `hint`. Returns what the table did.
+/// selection, the scroll offset and the sort in `state`. `kinds` holds the
+/// row kind of each entry. A table without entries shows `hint`. Returns
+/// what the table did.
 pub(crate) fn show_game_table(
     context: &mut UiContext,
     area: Rect,
     entries: &[TableEntry],
+    kinds: &[RowKind],
     rows: &[GameRow],
     state: &mut TableState,
     hint: EmptyHint,
 ) -> TableResponse {
     let catalog = context.catalog;
-    let kinds: Vec<RowKind> = entries.iter().map(|entry| entry.kind()).collect();
     let columns = columns(catalog);
     Table::new(GAME_TABLE_ID, &columns, entries.len())
-        .kinds(&kinds)
+        .kinds(kinds)
         .empty_hint(hint)
         .show(context, area, state, |context, table_row| {
             match entries[table_row.row.index] {
@@ -141,12 +142,21 @@ mod tests {
             TableEntry::Caption,
             TableEntry::Broken(1),
         ];
+        let kinds = entries.map(TableEntry::kind);
         let mut harness = GuiHarness::new(960, 600);
         let mut state = TableState::new();
         harness.state.set_focus(UiId::from(GAME_TABLE_ID));
         let draw = |harness: &mut GuiHarness, state: &mut TableState| {
             harness.frame(|context| {
-                show_game_table(context, AREA, &entries, &rows, state, EmptyHint::None)
+                show_game_table(
+                    context,
+                    AREA,
+                    &entries,
+                    &kinds,
+                    &rows,
+                    state,
+                    EmptyHint::None,
+                )
             })
         };
         let danger = harness.theme.colors.danger_text.to_linear();
@@ -175,6 +185,7 @@ mod tests {
                 show_game_table(
                     context,
                     AREA,
+                    &[],
                     &[],
                     &[],
                     state,

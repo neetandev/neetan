@@ -86,7 +86,8 @@ pub(super) fn field_frame(context: &mut UiContext, rect: Rect, look: FieldLook) 
 /// characters, keeping the characters that `accept` takes, and removes the
 /// last character on backspace. A field that is blocked or that draws in a
 /// layer that opened in this pass keeps its text. Returns whether `text`
-/// changed.
+/// changed. The edit only appends characters and removes the last one, and
+/// a change of the text is a change of its length.
 pub(super) fn edit_text(
     context: &UiContext,
     text: &mut String,
@@ -97,7 +98,7 @@ pub(super) fn edit_text(
         return false;
     }
     let input = context.input;
-    let before = text.clone();
+    let length = text.len();
     for character in input.text.chars() {
         if text.chars().count() >= limit {
             break;
@@ -109,7 +110,7 @@ pub(super) fn edit_text(
     if input.backspace {
         text.pop();
     }
-    *text != before
+    text.len() != length
 }
 
 /// Draws the value of a field: `text` in `inner` with the color `color`,
@@ -486,6 +487,29 @@ mod tests {
         assert_eq!(text, "");
         harness.input.backspace = true;
         assert!(!draw(&mut harness, &mut text).changed);
+    }
+
+    /// Verifies that a character and a backspace in one pass leave the text as it was and
+    /// report no change, and that a pass without input allocates nothing.
+    #[test]
+    fn a_typed_character_and_a_backspace_in_one_pass_change_nothing() {
+        let mut harness = Harness::new();
+        let mut text = String::from("ab");
+        harness.state.set_focus(UiId::from("filter"));
+        draw(&mut harness, &mut text);
+        harness.input.text.push('漢');
+        harness.input.backspace = true;
+        assert!(!draw(&mut harness, &mut text).changed);
+        assert_eq!(text, "ab");
+        harness.input.text.push_str("cd");
+        harness.input.backspace = true;
+        assert!(draw(&mut harness, &mut text).changed);
+        assert_eq!(text, "abc");
+        draw(&mut harness, &mut text);
+        let (allocations, response) =
+            allocation_counter::count_allocations(|| draw(&mut harness, &mut text));
+        assert!(!response.changed);
+        assert_eq!(allocations, 0);
     }
 
     #[test]

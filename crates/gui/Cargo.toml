@@ -13,6 +13,7 @@ fill-counter = []
 
 [dependencies]
 i18n = { workspace = true }
+stack_vec = { workspace = true }
 
 [dev-dependencies]
-common = { workspace = true, features = ["allocation-counter"] }
+allocation_counter = { workspace = true }

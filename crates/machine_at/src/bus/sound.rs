@@ -7,11 +7,12 @@
 //! channel 1 or 16-bit channel 5), and terminal count raises IRQ 5. The MPU-401
 //! intelligent-mode timer runs on the `MpuTimer` event and raises IRQ 9.
 
-use common::{StackVec, TraceSink};
+use common::TraceSink;
 use device::sound_blaster_16::{
     DMA_BATCH_SIZE, SoundboardSb16Action, SoundboardSb16Timer, dma_format_bytes_per_sample,
     dma_format_is_16bit,
 };
+use stack_vec::StackVec;
 
 use crate::{
     bus::{AtBus, IRQ_MPU, OPEN_BUS_BYTE},

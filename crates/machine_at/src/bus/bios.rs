@@ -22,10 +22,10 @@ pub(crate) mod video_param;
 mod video_text;
 
 use common::{
-    Cpu, SegmentRegister, StackVec, TraceCall, TraceCallInterface, TraceCallPhase, TraceContext,
-    TraceEvent, TraceEventKey, TraceField, TraceSink, TraceValue, inspect::capture_x86_snapshot,
-    trace_id,
+    Cpu, SegmentRegister, TraceCall, TraceCallInterface, TraceCallPhase, TraceContext, TraceEvent,
+    TraceEventKey, TraceField, TraceSink, TraceValue, inspect::capture_x86_snapshot, trace_id,
 };
+use stack_vec::StackVec;
 
 use super::{AtBus, OPEN_BUS_BYTE};
 use crate::memory::{AtMemory, UMA_BASE, VGA_WINDOW_BASE};

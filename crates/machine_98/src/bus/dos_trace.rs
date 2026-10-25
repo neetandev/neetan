@@ -6,13 +6,14 @@
 //! a constant `false` and emits nothing.
 
 use common::{
-    StackVec, TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField, TraceSink,
-    TraceValue, trace_id,
+    TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField, TraceSink, TraceValue,
+    trace_id,
 };
 use dos::trace::{
     DosCellWriteEvent, DosClearEvent, DosConsoleByteEvent, DosConsoleEscapeEvent, DosScrollEvent,
     DosStdoutEvent, DosTraceEvent, DosTraceKind, DosTraceSink, DosVectorEvent,
 };
+use stack_vec::StackVec;
 
 /// The maximum number of fields any single DOS device event carries.
 const MAX_FIELDS: usize = 16;

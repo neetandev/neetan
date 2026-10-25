@@ -45,8 +45,7 @@ pub use slug::{Bounds, SlugData, SlugGlyph, SlugShape};
 /// The global allocator of the test binary. It counts the allocations of each thread.
 #[cfg(test)]
 #[global_allocator]
-static ALLOCATOR: common::allocation_counter::CountingAllocator =
-    common::allocation_counter::CountingAllocator;
+static ALLOCATOR: allocation_counter::CountingAllocator = allocation_counter::CountingAllocator;
 
 /// A rectangle in logical units.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

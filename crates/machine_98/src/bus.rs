@@ -17,10 +17,10 @@ mod io_write;
 use std::path::PathBuf;
 
 use common::{
-    BootDevice, CpuType, MachineModel, SharedHostDateTimeSource, StackVec, TraceAccessKind,
-    TraceAccessWidth, TraceAddressSpace, TraceCall, TraceCallInterface, TraceCallPhase,
-    TraceContext, TraceEvent, TraceEventKey, TraceField, TraceInterruptAction, TraceInterruptKind,
-    TracePresentation, TraceValue, trace_id,
+    BootDevice, CpuType, MachineModel, SharedHostDateTimeSource, TraceAccessKind, TraceAccessWidth,
+    TraceAddressSpace, TraceCall, TraceCallInterface, TraceCallPhase, TraceContext, TraceEvent,
+    TraceEventKey, TraceField, TraceInterruptAction, TraceInterruptKind, TracePresentation,
+    TraceValue, trace_id,
 };
 use device::{
     beeper::Beeper,
@@ -59,6 +59,7 @@ use software_renderer::{
     Ga1280aCursorRenderInputs, Ga1280aRenderInputs, Ga1280aRenderMode, GdcGraphicsInput,
     GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer, compose_ga1280a,
 };
+use stack_vec::StackVec;
 
 use crate::{
     NoTrace, TraceSink,

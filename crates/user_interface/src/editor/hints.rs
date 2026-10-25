@@ -2,8 +2,9 @@
 //! the focused widget, the section switch, the save and the close.
 
 use gui::ui::{ACTIVATE_KEYS, CANCEL_KEYS, HintKey, UiContext, UiId, distinct_hints};
+use stack_vec::StackVec;
 
-use crate::texts::{self, HintText};
+use crate::texts::{self, HintText, HintTexts, MAXIMUM_HINTS};
 
 /// The kind of a focusable widget of the editor, which picks the first hint.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -238,7 +239,7 @@ const CLOSE_POPUP_HINT: ActionHint = (
 /// An open dropdown popup shows only its own hints. A hint whose action an
 /// earlier hint has leaves the line, such as Esc beside the focused close
 /// button.
-pub(crate) fn editor_hints(context: &UiContext, widgets: &[EditorWidget]) -> Vec<HintText> {
+pub(crate) fn editor_hints(context: &UiContext, widgets: &[EditorWidget]) -> HintTexts {
     if widgets
         .iter()
         .any(|widget| widget.kind == WidgetKind::Dropdown && context.popup_open(widget.id))
@@ -248,19 +249,19 @@ pub(crate) fn editor_hints(context: &UiContext, widgets: &[EditorWidget]) -> Vec
     let focused = context
         .focused()
         .and_then(|focus| widgets.iter().find(|widget| widget.id == focus));
-    let mut hints = match focused.map(|widget| widget.kind) {
-        Some(WidgetKind::Dropdown) => vec![SELECT_HINT],
-        Some(WidgetKind::Number) => vec![STEP_HINT, TYPE_HINT],
-        Some(WidgetKind::MediaList | WidgetKind::Browse) => vec![BROWSE_HINT],
-        Some(WidgetKind::AddImage) => vec![ADD_HINT],
-        Some(WidgetKind::RemoveImage) => vec![REMOVE_HINT],
-        Some(WidgetKind::ShiftUp) => vec![UP_HINT],
-        Some(WidgetKind::ShiftDown) => vec![DOWN_HINT],
-        Some(WidgetKind::Cancel) => vec![CANCEL_HINT],
-        Some(WidgetKind::Save) => vec![SAVE_BUTTON_HINT],
-        Some(WidgetKind::Close) => vec![CLOSE_BUTTON_HINT],
-        Some(WidgetKind::Checkbox) => vec![SWITCH_HINT],
-        Some(WidgetKind::Text | WidgetKind::Tabs) | None => Vec::new(),
+    let mut hints: StackVec<ActionHint, MAXIMUM_HINTS> = match focused.map(|widget| widget.kind) {
+        Some(WidgetKind::Dropdown) => StackVec::from([SELECT_HINT]),
+        Some(WidgetKind::Number) => StackVec::from([STEP_HINT, TYPE_HINT]),
+        Some(WidgetKind::MediaList | WidgetKind::Browse) => StackVec::from([BROWSE_HINT]),
+        Some(WidgetKind::AddImage) => StackVec::from([ADD_HINT]),
+        Some(WidgetKind::RemoveImage) => StackVec::from([REMOVE_HINT]),
+        Some(WidgetKind::ShiftUp) => StackVec::from([UP_HINT]),
+        Some(WidgetKind::ShiftDown) => StackVec::from([DOWN_HINT]),
+        Some(WidgetKind::Cancel) => StackVec::from([CANCEL_HINT]),
+        Some(WidgetKind::Save) => StackVec::from([SAVE_BUTTON_HINT]),
+        Some(WidgetKind::Close) => StackVec::from([CLOSE_BUTTON_HINT]),
+        Some(WidgetKind::Checkbox) => StackVec::from([SWITCH_HINT]),
+        Some(WidgetKind::Text | WidgetKind::Tabs) | None => StackVec::new(),
     };
     if let Some(widget) = focused.filter(|widget| widget.clears) {
         hints.push(match widget.kind {
@@ -281,7 +282,7 @@ pub(crate) fn editor_hints(context: &UiContext, widgets: &[EditorWidget]) -> Vec
         });
     }
     hints.extend([SECTION_HINT, SAVE_HINT, CLOSE_HINT]);
-    distinct_hints(hints)
+    distinct_hints(hints.iter().copied())
 }
 
 #[cfg(test)]

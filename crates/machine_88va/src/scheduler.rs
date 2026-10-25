@@ -1,6 +1,7 @@
 //! Event-driven scheduler for the PC-88VA.
 
-use common::{SchedulerState, StackVec};
+use common::SchedulerState;
+use stack_vec::StackVec;
 
 /// Number of distinct PC-88VA2 event kinds.
 const EVENT88VA_KIND_COUNT: usize = 11;

@@ -7,7 +7,7 @@ use gui::{
     Rect,
     ui::{
         ActionButton, Align, Dropdown, Icon, NumberField, TextBuffer, TextField, Theme, Truncation,
-        UiContext, UiId, label, wrapped_height, wrapped_label,
+        UiContext, UiId, WrappedText, label,
     },
 };
 use i18n::Key;
@@ -22,7 +22,7 @@ use super::{
     hints::{EditorWidget, WidgetKind},
     host_settings::draw_settings_file_block,
     kept_lines::draw_kept_lines,
-    note_writer::NoteText,
+    note_writer::{NoteText, NoteView},
     notes::{NoteKind, NoteLook},
     page::{PageActions, TABS_ID},
 };
@@ -112,6 +112,8 @@ pub(super) struct ReadOnlyRow<'a> {
     pub(super) path: bool,
     /// The note after the value.
     pub(super) note: &'a str,
+    /// The wrapped lines of the note.
+    pub(super) lines: &'a mut WrappedText,
 }
 
 /// The form row of a setting field with the parts that its control draws.
@@ -236,10 +238,9 @@ pub(crate) fn draw_label(
     );
 }
 
-/// Draws the plain note `text` as a line of a section from `y` in
-/// `content`, inset from the labels of the rows. Returns the height of the
-/// line.
-fn draw_section_note(context: &mut UiContext, content: Rect, y: f32, text: &str) -> f32 {
+/// Draws the plain `note` as a line of a section from `y` in `content`,
+/// inset from the labels of the rows. Returns the height of the line.
+fn draw_section_note(context: &mut UiContext, content: Rect, y: f32, note: NoteView) -> f32 {
     let theme = context.theme;
     let area = Rect::new(
         content.x + theme.gap * 1.5,
@@ -247,7 +248,7 @@ fn draw_section_note(context: &mut UiContext, content: Rect, y: f32, text: &str)
         (content.width - theme.gap * 1.5).max(0.0),
         theme.control_height,
     );
-    let height = draw_note_text(context, area, text, NoteKind::Plain, false);
+    let height = draw_note_text(context, area, note.text, NoteKind::Plain, false, note.lines);
     RowAreas::height(theme, height)
 }
 
@@ -257,14 +258,15 @@ fn draw_section_note(context: &mut UiContext, content: Rect, y: f32, text: &str)
 /// empty icon slot. A note wider than `area` wraps over up to
 /// [`NOTE_MAXIMUM_LINES`] lines, centered on the control while the lines
 /// fit its height and from its top else. A `path` keeps to one line and
-/// gives way in the middle. Returns the height of the note, at least the
-/// height of `area`.
+/// gives way in the middle. `lines` keeps the wrapped lines between passes.
+/// Returns the height of the note, at least the height of `area`.
 pub(crate) fn draw_note_text(
     context: &mut UiContext,
     area: Rect,
     text: &str,
     kind: NoteKind,
     path: bool,
+    lines: &mut WrappedText,
 ) -> f32 {
     let theme = context.theme;
     if text.is_empty() || area.width <= 0.0 {
@@ -290,15 +292,15 @@ pub(crate) fn draw_note_text(
     let (lines_area, height) = if fits {
         (text_area, area.height)
     } else {
-        let lines = wrapped_height(context, &style, text, text_area.width, NOTE_MAXIMUM_LINES);
-        let top = if lines < area.height {
-            area.y + (area.height - lines) * 0.5
+        let height = lines.height(context, &style, text, text_area.width, NOTE_MAXIMUM_LINES);
+        let top = if height < area.height {
+            area.y + (area.height - height) * 0.5
         } else {
             area.y
         };
         (
-            Rect::new(text_area.x, top, text_area.width, lines),
-            lines.max(area.height),
+            Rect::new(text_area.x, top, text_area.width, height),
+            height.max(area.height),
         )
     };
     if let (Some(icon), Some(icon_area)) = (icon, icon_area) {
@@ -322,7 +324,7 @@ pub(crate) fn draw_note_text(
         };
         label(context, lines_area, &style, text, Align::Start, truncation);
     } else {
-        wrapped_label(
+        lines.show(
             context,
             lines_area,
             &style,
@@ -334,10 +336,17 @@ pub(crate) fn draw_note_text(
     height
 }
 
-/// Draws the note `text` with the look `look` into `area` as
-/// [`draw_note_text`] does. Returns the height of the note.
-pub(crate) fn draw_note(context: &mut UiContext, area: Rect, text: &str, look: NoteLook) -> f32 {
-    draw_note_text(context, area, text, look.kind, look.path)
+/// Draws `note` with its look into `area` as [`draw_note_text`] does.
+/// Returns the height of the note.
+pub(crate) fn draw_note(context: &mut UiContext, area: Rect, note: NoteView) -> f32 {
+    draw_note_text(
+        context,
+        area,
+        note.text,
+        note.look.kind,
+        note.look.path,
+        note.lines,
+    )
 }
 
 impl Editor {
@@ -386,6 +395,7 @@ impl Editor {
                     value: &mut texts.system_value,
                     path: false,
                     note: catalog.text(editor::SYSTEM_NOTE),
+                    lines: &mut texts.system_lines,
                 },
             );
             y += Self::draw_read_only(
@@ -398,6 +408,7 @@ impl Editor {
                     value: &mut texts.file_value,
                     path: true,
                     note: file_note,
+                    lines: &mut texts.file_lines,
                 },
             );
             self.texts = texts;
@@ -418,6 +429,7 @@ impl Editor {
                     value: &mut value,
                     path: true,
                     note: catalog.text(note),
+                    lines: &mut self.texts.root_lines,
                 },
             );
             self.texts.root_value = value;
@@ -437,7 +449,7 @@ impl Editor {
         };
         if section_note {
             let mut texts = std::mem::take(&mut self.texts);
-            let (text, _) = texts.section_note.note(
+            let note = texts.section_note.note(
                 catalog,
                 generation,
                 (revision, self.section),
@@ -456,7 +468,7 @@ impl Editor {
                     NoteLook::PLAIN
                 },
             );
-            y += draw_section_note(context, content, y, text);
+            y += draw_section_note(context, content, y, note);
             self.texts = texts;
         }
         for index in 0..self.fields.len() {
@@ -468,7 +480,7 @@ impl Editor {
             y += draw_kept_lines(context, content, y, &self.kept);
         }
         if section == EditorSection::Folders && self.host_settings().is_some() {
-            y += draw_settings_file_block(context, content, y);
+            y += draw_settings_file_block(context, content, y, &mut self.texts.settings_file_lines);
         }
         if std::mem::take(&mut self.focus_first) {
             context.set_focus(UiId::from(TABS_ID));
@@ -501,7 +513,14 @@ impl Editor {
             .read_only(true)
             .truncation(Truncation::Middle)
             .show(context, areas.control, row.value);
-        let note = draw_note_text(context, areas.note, row.note, NoteKind::Plain, false);
+        let note = draw_note_text(
+            context,
+            areas.note,
+            row.note,
+            NoteKind::Plain,
+            false,
+            row.lines,
+        );
         RowAreas::height(theme, note)
     }
 
@@ -648,7 +667,7 @@ impl Editor {
             actions.changed |= response.changed;
         }
         actions.changed |= self.clear_on_x(context, id, index);
-        let (text, look) = texts.note.note(
+        let note = texts.note.note(
             catalog,
             context.catalog_generation,
             (self.revision, false),
@@ -662,12 +681,24 @@ impl Editor {
                 NoteLook::PLAIN
             },
         );
-        draw_note(context, areas.note, text, look)
+        draw_note(context, areas.note, note)
     }
 }
 
 #[cfg(test)]
 impl Editor {
+    /// The most lines of the wrapped note of a field of `section`, from the last frame that
+    /// drew each row.
+    pub(crate) fn most_note_lines(&self, section: EditorSection) -> usize {
+        self.fields
+            .iter()
+            .zip(&self.row_texts)
+            .filter(|(field, _)| field.section == section)
+            .map(|(_, texts)| texts.note.line_count().max(texts.flag.line_count()))
+            .max()
+            .unwrap_or(0)
+    }
+
     /// The note of the row of the field `key` of the last frame. A row
     /// without a drawn note has none.
     pub(crate) fn cached_note(&self, key: &str) -> Option<&str> {
@@ -689,7 +720,6 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    use gui::ui::wrapped_height;
     use machine_factory::config::{
         MachineSelection,
         settings::{MODEL_CHOICES, SETTINGS},
@@ -739,7 +769,8 @@ mod tests {
             notes
                 .iter()
                 .map(|note| {
-                    let height = wrapped_height(context, &style, note, note_width, usize::MAX);
+                    let height =
+                        WrappedText::new().height(context, &style, note, note_width, usize::MAX);
                     (note.clone(), (height / line).round() as usize)
                 })
                 .collect::<Vec<_>>()
@@ -756,15 +787,20 @@ mod tests {
         let control_height = harness.theme.control_height;
         let area = Rect::new(600.0, 100.0, 200.0, control_height);
         let (short, long) = harness.frame(|context| {
+            let short = NoteView {
+                text: "Range 0 to 3.",
+                look: NoteLook::PLAIN,
+                lines: &mut WrappedText::new(),
+            };
+            let long = NoteView {
+                text: "PC9801VM has no EMS memory. VX, RS, RA, AS and AP only. The note of this \
+                       row takes three lines.",
+                look: NoteLook::WARNING,
+                lines: &mut WrappedText::new(),
+            };
             (
-                draw_note(context, area, "Range 0 to 3.", NoteLook::PLAIN),
-                draw_note(
-                    context,
-                    area,
-                    "PC9801VM has no EMS memory. VX, RS, RA, AS and AP only. The note of this \
-                     row takes three lines.",
-                    NoteLook::WARNING,
-                ),
+                draw_note(context, area, short),
+                draw_note(context, area, long),
             )
         });
         assert_eq!(short, control_height);

@@ -138,6 +138,9 @@ pub(crate) struct Manager {
     roms: Vec<RomFolderStatus>,
     /// The entries of the game table of the selected system.
     entries: Vec<TableEntry>,
+    /// The row kinds of the entries in the game table. They refill with the
+    /// entries and keep their buffer.
+    row_kinds: Vec<RowKind>,
     /// The selection, the sort, the filter and the scroll positions.
     view: ManagerView,
     /// The open question before a delete.
@@ -174,6 +177,7 @@ impl Manager {
             systems,
             roms,
             entries: Vec::new(),
+            row_kinds: Vec::new(),
             view: ManagerView::default(),
             delete: None,
             dialog: None,
@@ -260,6 +264,9 @@ impl Manager {
         let sort = self.view.table.sort.unwrap_or(entries::DEFAULT_SORT);
         let filter = Filter::new(&self.view.filter);
         self.entries = table_entries(self.rows(), sort, &filter);
+        self.row_kinds.clear();
+        self.row_kinds
+            .extend(self.entries.iter().map(|entry| entry.kind()));
     }
 
     /// The row of the selected entry of the game table.
@@ -559,6 +566,7 @@ impl Manager {
             context,
             table_area,
             &self.entries,
+            &self.row_kinds,
             rows,
             &mut self.view.table,
             hint,
@@ -773,7 +781,7 @@ mod tests {
     use super::{delete::DELETE_LAYER_ID, *};
     use crate::{
         config::{Locations, SETTINGS_FILE_NAME},
-        gui_test_support::GuiHarness,
+        gui_test_support::{GuiHarness, PassCounts},
     };
 
     /// A root folder with a settings file and game files. Dropping the value removes it.
@@ -1812,29 +1820,112 @@ mod tests {
         assert_eq!(line(&manager), format!("{label} Spiel"));
     }
 
-    /// The most allocations of a steady frame of the library: the lists of the hints of the
-    /// status line, of the focus ring of the pass and of the row kinds and the column spans of the
-    /// game table. The texts of the frame allocate nothing.
-    const LIBRARY_FRAME_ALLOCATIONS: usize = 8;
+    /// Draws a frame of `manager` and counts the steady frame after it, the second pass with an
+    /// unchanged state.
+    fn steady_frame(harness: &mut GuiHarness, manager: &mut Manager) -> PassCounts {
+        harness.frame(|context| manager.show(context));
+        harness.counted_frame(|context| manager.show(context)).0
+    }
+
+    /// The title of the game of the steady dialog tests, long enough to wrap in every dialog.
+    const LONG_TITLE: &str = "YU-NO: A Girl Who Chants Love at the Bound of this World";
+
+    /// Verifies that a steady frame of the delete question allocates nothing, fills no text and
+    /// wraps no text, with the focus on Cancel and on Delete.
+    #[test]
+    fn a_steady_frame_of_the_delete_question_allocates_nothing() {
+        let test = TestRoot::new("steady_delete");
+        games(&test, &[LONG_TITLE]);
+        let mut manager = test.manager();
+        let mut harness = GuiHarness::new(960, 600);
+        harness.settle(|context| manager.show(context));
+        harness.input.shortcut = Some(Shortcut::Delete);
+        harness.settle(|context| manager.show(context));
+        assert!(manager.delete.is_some());
+        let cancel = UiId::from(DELETE_LAYER_ID).child("cancel");
+        let action = UiId::from(DELETE_LAYER_ID).child("action");
+        for focus in [cancel, action] {
+            if focus == action {
+                harness.input.navigation = Some(Navigation::Right);
+                harness.settle(|context| manager.show(context));
+            }
+            assert_eq!(harness.state.focused(), Some(focus));
+            assert_eq!(
+                steady_frame(&mut harness, &mut manager),
+                PassCounts::NONE,
+                "a steady frame of the delete question with the focus on {focus:?}"
+            );
+        }
+    }
+
+    /// Verifies that a steady frame of the launch error with its OK and Edit game buttons and of
+    /// the panic error allocates nothing, fills no text and wraps no text, with the focus on each
+    /// button.
+    #[test]
+    fn a_steady_frame_of_an_error_dialog_allocates_nothing() {
+        let test = TestRoot::new("steady_error");
+        games(&test, &[LONG_TITLE]);
+        let mut manager = test.manager();
+        let mut harness = GuiHarness::new(960, 600);
+        harness.settle(|context| manager.show(context));
+        let launch = manager.launch(&manager.rows()[0].clone());
+        let layer = manager.launch_failed(
+            &launch,
+            "fdd1 image not found: /home/user/Emulation/PC-98/YU-NO/YU-NO (Disk 1 of 4).hdm",
+        );
+        harness.state.open_layer(layer);
+        harness.settle(|context| manager.show(context));
+        let ok = UiId::from(error_dialog::OK_ID);
+        let edit = UiId::from(error_dialog::EDIT_ID);
+        for focus in [ok, edit] {
+            if focus == edit {
+                harness.input.navigation = Some(Navigation::Left);
+                harness.settle(|context| manager.show(context));
+            }
+            assert_eq!(harness.state.focused(), Some(focus));
+            assert_eq!(
+                steady_frame(&mut harness, &mut manager),
+                PassCounts::NONE,
+                "a steady frame of the launch error with the focus on {focus:?}"
+            );
+        }
+        harness.input.navigation = Some(Navigation::Right);
+        harness.settle(|context| manager.show(context));
+        harness.input.confirm = true;
+        harness.settle(|context| manager.show(context));
+        assert!(manager.dialog().is_none());
+
+        manager.game_started(launch);
+        let layer = manager
+            .game_ended(
+                Some("The core halted at 0F000:FFF0 after an unknown opcode in the BIOS of the machine."),
+                Ok(()),
+            )
+            .expect("the panic dialog opens");
+        harness.state.open_layer(layer);
+        harness.settle(|context| manager.show(context));
+        assert_eq!(harness.state.focused(), Some(ok));
+        assert_eq!(
+            steady_frame(&mut harness, &mut manager),
+            PassCounts::NONE,
+            "a steady frame of the panic error"
+        );
+    }
 
     /// Verifies that a steady frame of the library, the second pass with an unchanged state,
-    /// allocates only its lists and fills no text again.
+    /// allocates nothing and fills no text again.
     #[test]
-    fn a_steady_frame_of_the_library_allocates_only_its_lists() {
+    fn a_steady_frame_of_the_library_allocates_nothing() {
         let test = TestRoot::new("steady_library");
         sample_root(&test);
         let mut manager = test.manager();
         let mut harness = GuiHarness::new(960, 600);
         harness.settle(|context| manager.show(context));
-        harness.frame(|context| manager.show(context));
-        let (allocations, (fills, _)) = common::allocation_counter::count_allocations(|| {
-            gui::ui::count_fills(|| harness.frame(|context| manager.show(context)))
-        });
-        assert!(
-            allocations <= LIBRARY_FRAME_ALLOCATIONS,
-            "a steady frame of the library allocates {allocations} times"
+        assert_eq!(
+            steady_frame(&mut harness, &mut manager),
+            PassCounts::NONE,
+            "a steady frame of the library"
         );
-        assert_eq!(fills, 0, "a steady frame of the library fills texts again");
     }
 
     /// Writes the screenshots of the manager in both themes at the scales 1

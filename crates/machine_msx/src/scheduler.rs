@@ -1,6 +1,7 @@
 //! Event scheduler for the MSX machine.
 
-use common::{SchedulerState, StackVec};
+use common::SchedulerState;
+use stack_vec::StackVec;
 
 /// Scheduled MSX event kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

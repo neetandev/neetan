@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn find_allocates_nothing() {
-        let (allocations, found) = common::allocation_counter::count_allocations(|| {
+        let (allocations, found) = allocation_counter::count_allocations(|| {
             [
                 SCHEMA.find("setting.cpu-mode", "label"),
                 SCHEMA.find("manager", "images"),

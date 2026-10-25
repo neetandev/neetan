@@ -2,11 +2,11 @@
 //! the focused widget, the edit, the filter, the system switch, the refresh
 //! and the settings page.
 
-use gui::ui::{ACTIVATE_KEYS, CANCEL_KEYS, Hint, HintKey, StatusEnd};
+use gui::ui::{ACTIVATE_KEYS, CANCEL_KEYS, HintKey, StatusEnd};
 use i18n::Catalog;
 
 use super::rows::GameRow;
-use crate::texts::{self, HintText};
+use crate::texts::{self, HintText, HintTexts, Hints};
 
 /// The hint of the launch of the selected game.
 const LAUNCH_HINT: HintText = HintText::new(ACTIVATE_KEYS, texts::common::LAUNCH);
@@ -118,7 +118,7 @@ pub(crate) fn library_hints<'c>(
     catalog: &'c Catalog,
     focus: LibraryFocus,
     selected: Option<&GameRow>,
-) -> Vec<Hint<'c>> {
+) -> Hints<'c> {
     let mut hints = focus_hints(focus, selected);
     match focus {
         LibraryFocus::Filter { .. } | LibraryFocus::Settings => {}
@@ -139,65 +139,69 @@ pub(crate) fn library_hints<'c>(
 
 /// The hints of the library before the settings shortcut while `focus`
 /// holds the focus and `selected` is the selected row of the game table.
-fn focus_hints(focus: LibraryFocus, selected: Option<&GameRow>) -> Vec<HintText> {
+fn focus_hints(focus: LibraryFocus, selected: Option<&GameRow>) -> HintTexts {
     let editable = selected.is_some_and(GameRow::launchable);
     match focus {
-        LibraryFocus::SystemList if editable => {
-            vec![
-                SELECT_HINT,
-                EDIT_HINT,
-                FILTER_HINT,
-                SYSTEM_HINT,
-                REFRESH_HINT,
-            ]
-        }
+        LibraryFocus::SystemList if editable => HintTexts::from([
+            SELECT_HINT,
+            EDIT_HINT,
+            FILTER_HINT,
+            SYSTEM_HINT,
+            REFRESH_HINT,
+        ]),
         LibraryFocus::SystemList if selected.is_some() => {
-            vec![SELECT_HINT, FILTER_HINT, SYSTEM_HINT, REFRESH_HINT]
+            HintTexts::from([SELECT_HINT, FILTER_HINT, SYSTEM_HINT, REFRESH_HINT])
         }
-        LibraryFocus::SystemDefaults => vec![
+        LibraryFocus::SystemDefaults => HintTexts::from([
             SYSTEM_DEFAULTS_BUTTON_HINT,
             FILTER_HINT,
             SYSTEM_HINT,
             REFRESH_HINT,
-        ],
-        LibraryFocus::Filter { has_text: true } => vec![CLEAR_HINT, SYSTEM_HINT],
-        LibraryFocus::Filter { has_text: false } => vec![SYSTEM_HINT],
+        ]),
+        LibraryFocus::Filter { has_text: true } => HintTexts::from([CLEAR_HINT, SYSTEM_HINT]),
+        LibraryFocus::Filter { has_text: false } => HintTexts::from([SYSTEM_HINT]),
         LibraryFocus::Settings => {
-            vec![SETTINGS_BUTTON_HINT, FILTER_HINT, SYSTEM_HINT, REFRESH_HINT]
+            HintTexts::from([SETTINGS_BUTTON_HINT, FILTER_HINT, SYSTEM_HINT, REFRESH_HINT])
         }
-        LibraryFocus::Launch => vec![
+        LibraryFocus::Launch => HintTexts::from([
             LAUNCH_HINT,
             EDIT_HINT,
             FILTER_HINT,
             SYSTEM_HINT,
             REFRESH_HINT,
-        ],
-        LibraryFocus::Add => vec![ADD_BUTTON_HINT, FILTER_HINT, SYSTEM_HINT, REFRESH_HINT],
-        LibraryFocus::Edit => vec![EDIT_BUTTON_HINT, FILTER_HINT, SYSTEM_HINT, REFRESH_HINT],
-        LibraryFocus::Duplicate => vec![
+        ]),
+        LibraryFocus::Add => {
+            HintTexts::from([ADD_BUTTON_HINT, FILTER_HINT, SYSTEM_HINT, REFRESH_HINT])
+        }
+        LibraryFocus::Edit => {
+            HintTexts::from([EDIT_BUTTON_HINT, FILTER_HINT, SYSTEM_HINT, REFRESH_HINT])
+        }
+        LibraryFocus::Duplicate => HintTexts::from([
             DUPLICATE_BUTTON_HINT,
             FILTER_HINT,
             SYSTEM_HINT,
             REFRESH_HINT,
-        ],
-        LibraryFocus::Delete => vec![DELETE_HINT, FILTER_HINT, SYSTEM_HINT, REFRESH_HINT],
-        LibraryFocus::Refresh => vec![REFRESH_BUTTON_HINT, FILTER_HINT, SYSTEM_HINT],
-        LibraryFocus::Header => vec![SORT_HINT, FILTER_HINT, SYSTEM_HINT, REFRESH_HINT],
+        ]),
+        LibraryFocus::Delete => {
+            HintTexts::from([DELETE_HINT, FILTER_HINT, SYSTEM_HINT, REFRESH_HINT])
+        }
+        LibraryFocus::Refresh => HintTexts::from([REFRESH_BUTTON_HINT, FILTER_HINT, SYSTEM_HINT]),
+        LibraryFocus::Header => {
+            HintTexts::from([SORT_HINT, FILTER_HINT, SYSTEM_HINT, REFRESH_HINT])
+        }
         LibraryFocus::Table => match selected {
-            Some(row) if row.launchable() => {
-                vec![
-                    LAUNCH_HINT,
-                    EDIT_HINT,
-                    FILTER_HINT,
-                    SYSTEM_HINT,
-                    REFRESH_HINT,
-                ]
-            }
-            Some(_) => vec![DELETE_HINT, SYSTEM_HINT, REFRESH_HINT],
-            None => vec![FILTER_HINT, SYSTEM_HINT, REFRESH_HINT],
+            Some(row) if row.launchable() => HintTexts::from([
+                LAUNCH_HINT,
+                EDIT_HINT,
+                FILTER_HINT,
+                SYSTEM_HINT,
+                REFRESH_HINT,
+            ]),
+            Some(_) => HintTexts::from([DELETE_HINT, SYSTEM_HINT, REFRESH_HINT]),
+            None => HintTexts::from([FILTER_HINT, SYSTEM_HINT, REFRESH_HINT]),
         },
         LibraryFocus::SystemList | LibraryFocus::Nothing => {
-            vec![FILTER_HINT, SYSTEM_HINT, REFRESH_HINT]
+            HintTexts::from([FILTER_HINT, SYSTEM_HINT, REFRESH_HINT])
         }
     }
 }
@@ -217,6 +221,8 @@ pub(crate) fn status_end<'a>(selected: Option<&'a GameRow>, folder: &'a str) -> 
 
 #[cfg(test)]
 mod tests {
+    use gui::ui::Hint;
+
     use super::*;
     use crate::{
         manager::rows::tests::{broken, game},

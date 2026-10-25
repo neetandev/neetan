@@ -3,8 +3,7 @@
 use alloc::vec;
 
 use save_state::{StateValidationError, ValidateState};
-
-use crate::StackVec;
+use stack_vec::StackVec;
 
 /// One due scheduler slot and its exact deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

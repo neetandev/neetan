@@ -55,8 +55,8 @@ use self::{
     fields::{Field, FieldValue},
     file::{EditorFile, fill_required, write_file},
     form::{
-        DEFAULTS_SECTIONS, EDITOR_SECTIONS, EditorSection, IgnoredBy, SETTINGS_SECTIONS,
-        form_fields, host_fields, ignored_by, write_models_only,
+        DEFAULTS_SECTIONS, EDITOR_SECTIONS, IgnoredBy, SETTINGS_SECTIONS, form_fields, host_fields,
+        ignored_by, write_models_only,
     },
     hints::EditorWidget,
     host_settings::HostSettings,
@@ -68,15 +68,17 @@ use self::{
     rows::RowTexts,
     save::{FileStamp, edited_document, read_document, validation_error},
 };
-pub(crate) use self::{file::SaveFailure, notes::ExtensionList, save::OpenError};
 #[cfg(test)]
-pub(crate) use self::{media_list::empty_list_id, rows::field_id};
+pub(crate) use self::{discard::DISCARD_LAYER_ID, media_list::empty_list_id, rows::field_id};
+pub(crate) use self::{
+    file::SaveFailure, form::EditorSection, notes::ExtensionList, save::OpenError,
+};
 use crate::{
     catalog::copy_title,
     config::{ConfigDocument, HostLayers, metadata::TITLE_KEY},
     file_browser::{BrowserOutcome, FileBrowser},
     manager::shown_path,
-    texts::{HintText, common, editor},
+    texts::{HintText, HintTexts, common, editor},
 };
 
 /// The keys that every game file of the editor holds. Their dropdowns have
@@ -183,8 +185,9 @@ enum Subject {
     Game(SystemFiles),
     /// The system defaults file of one system.
     SystemDefaults(SystemFiles),
-    /// The host keys of the settings file.
-    Host(HostSettings),
+    /// The host keys of the settings file. The box keeps the variants of
+    /// the subject close in size.
+    Host(Box<HostSettings>),
 }
 
 impl Subject {
@@ -301,7 +304,7 @@ pub(crate) struct Editor {
     /// The focusable widgets of the last pass.
     widgets: Vec<EditorWidget>,
     /// The hints of the status line of the last pass.
-    hints: Vec<HintText>,
+    hints: HintTexts,
     /// The count of the changes of the state that the texts of the page
     /// show. A text of the page refills when the count or the catalog
     /// generation changes.
@@ -347,7 +350,7 @@ impl Editor {
             discard: None,
             focus_first: true,
             widgets: Vec::new(),
-            hints: Vec::new(),
+            hints: HintTexts::new(),
             revision: 0,
             texts: PageTexts::default(),
             shown: String::new(),
@@ -549,6 +552,20 @@ impl Editor {
         self.revision
     }
 
+    /// Whether a field of `section` holds a set value.
+    #[cfg(test)]
+    pub(crate) fn section_has_set_field(&self, section: EditorSection) -> bool {
+        self.fields
+            .iter()
+            .any(|field| field.section == section && field.is_set())
+    }
+
+    /// Whether the file browser is open.
+    #[cfg(test)]
+    pub(crate) fn browser_open(&self) -> bool {
+        self.browser.is_some()
+    }
+
     /// Computes the inherited values, the missing files, the file of a game
     /// without a save and the folders of the settings page again after a
     /// change of a field. The settings page checks only a set GUI font. Its
@@ -744,12 +761,12 @@ impl Editor {
     }
 
     /// The hints of the status line after a pass.
-    fn status_hints(&self, context: &UiContext) -> Vec<HintText> {
+    fn status_hints(&self, context: &UiContext) -> HintTexts {
         if let Some((browser, _)) = &self.browser {
-            return browser.hints().to_vec();
+            return browser.hints().clone();
         }
         if let Some(question) = &self.discard {
-            return question.hints();
+            return question.hints().iter().copied().collect();
         }
         hints::editor_hints(context, &self.widgets)
     }
