@@ -932,8 +932,11 @@ mod tests {
 
     #[test]
     fn the_list_works_at_twice_the_scale() {
-        let mut harness =
-            Harness::with_viewport(crate::ui::Viewport::new(800, 800, 2.0), ThemeKind::Dark);
+        let mut harness = Harness::with_viewport(
+            crate::ui::Viewport::new(800, 800, 2.0),
+            ThemeKind::Dark,
+            crate::ui::tests::test_catalog(),
+        );
         let mut state = ListState::new();
         draw(&mut harness, 5, &mut state);
         let (x, y) = row_center(&harness.theme, 3, 0.0);

@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use common::{StringError, bail};
 pub use machine_factory::config::{
-    AspectMode, Backend, BootMode, EmulatorConfig, ForceGdcClock, GraphicboardType, GuiTheme,
-    MachineSelection, MidiDevice, ScalingMode, SoundboardType, Target, WindowMode,
+    AspectMode, Backend, BootMode, EmulatorConfig, ForceGdcClock, GraphicboardType, GuiLanguage,
+    GuiTheme, MachineSelection, MidiDevice, ScalingMode, SoundboardType, Target, WindowMode,
 };
 use machine_factory::config::{
     settings::{
@@ -15,11 +15,15 @@ use machine_factory::config::{
 use self::layers::build_host_configuration;
 pub use self::{
     discovery::{
-        Locations, SETTINGS_FILE_NAME, SettingsLocation, SettingsSource, discover_settings,
-        resolve_path, resolve_value,
+        LANGUAGE_FOLDER, LanguageFile, Locations, SETTINGS_FILE_NAME, SettingsLocation,
+        SettingsSource, compare_tags, discover_settings, find_language_files, resolve_path,
+        resolve_value,
     },
     document::{ConfigDocument, DocumentEntry, DocumentError, LineContent, parse_line},
-    layers::{CONFIG_FILE_EXTENSION, HostLayers, LaunchRequest, ModelSource, build_configuration},
+    layers::{
+        CONFIG_FILE_EXTENSION, GuiResources, HostLayers, LaunchRequest, ModelSource,
+        build_configuration,
+    },
     metadata::GameMetadata,
     reading::{Diagnostic, Severity, check_value},
 };
@@ -75,6 +79,7 @@ fn value_placeholder(setting: &Setting) -> &'static str {
         ValueKind::Number(_) => "<NUMBER>",
         ValueKind::Path(PathKind::File) | ValueKind::PathList => "<PATH>",
         ValueKind::Path(PathKind::Folder) => "<FOLDER>",
+        ValueKind::Language => "<LANGUAGE>",
     }
 }
 
@@ -147,7 +152,7 @@ fn setting_description(setting: &Setting, defaults: &[(&'static str, EmulatorCon
                 format_range_end(range.maximum, range.integer)
             ));
         }
-        ValueKind::OnOff | ValueKind::Path(_) | ValueKind::PathList => {}
+        ValueKind::OnOff | ValueKind::Path(_) | ValueKind::PathList | ValueKind::Language => {}
     }
     if setting.families != Families::ALL {
         let families: Vec<&str> = setting.families.names().collect();
@@ -393,9 +398,9 @@ fn print_version() {
 
 /// The action of a command line.
 pub enum Action {
-    /// Starts the game of the configuration directly. The paths are the
-    /// paths searched for the font file of the user interface.
-    Run(Box<EmulatorConfig>, KeyOverrides, Vec<PathBuf>),
+    /// Starts the game of the configuration directly with the font paths and
+    /// the language folders of the user interface.
+    Run(Box<EmulatorConfig>, KeyOverrides, GuiResources),
     /// Opens the game manager.
     Manager(Box<ManagerStart>),
     CreateFdd {
@@ -713,7 +718,8 @@ fn parse_command_line(args: impl IntoIterator<Item = String>) -> crate::Result<C
                     ValueKind::Choice(_)
                     | ValueKind::Number(_)
                     | ValueKind::Path(_)
-                    | ValueKind::PathList => flag_value(&flag, inline_value, &mut args)?,
+                    | ValueKind::PathList
+                    | ValueKind::Language => flag_value(&flag, inline_value, &mut args)?,
                 };
                 check_value(setting, &value)
                     .map_err(|message| StringError(format!("{flag}: {message}")))?;
@@ -738,11 +744,7 @@ fn launch_action(mut request: LaunchRequest, locations: &Locations) -> crate::Re
         StartupMode::Direct => {
             let host = HostLayers::read(&request, locations)?;
             let (config, key_map) = build_host_configuration(&host, &request)?;
-            Ok(Action::Run(
-                Box::new(config),
-                key_map,
-                host.gui_font_paths(),
-            ))
+            Ok(Action::Run(Box::new(config), key_map, host.gui_resources()))
         }
         StartupMode::Manager => Ok(Action::Manager(Box::new(ManagerStart {
             request,
@@ -810,6 +812,7 @@ mod tests {
             ValueKind::OnOff => vec!["on".to_owned(), "off".to_owned()],
             ValueKind::Number(range) => number_samples(range),
             ValueKind::Path(_) | ValueKind::PathList => vec![path],
+            ValueKind::Language => vec!["auto".to_owned(), "ja".to_owned()],
         }
     }
 

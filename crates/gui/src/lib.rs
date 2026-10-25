@@ -21,6 +21,9 @@
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
 
+#[cfg(test)]
+#[allow(unsafe_code)]
+mod allocation_counter;
 mod bytes;
 mod color;
 pub mod fonts;

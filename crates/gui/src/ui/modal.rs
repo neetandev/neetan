@@ -158,7 +158,11 @@ mod tests {
 
     #[test]
     fn the_panel_snaps_to_physical_pixels() {
-        let mut harness = Harness::with_viewport(Viewport::new(801, 601, 1.5), ThemeKind::Dark);
+        let mut harness = Harness::with_viewport(
+            Viewport::new(801, 601, 1.5),
+            ThemeKind::Dark,
+            crate::ui::tests::test_catalog(),
+        );
         let response = harness.frame(|context| modal(context, "media", (301.0, 201.0), "Media"));
         for edge in [
             response.panel.x,

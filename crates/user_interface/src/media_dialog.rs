@@ -512,7 +512,11 @@ mod tests {
         /// `kind`.
         fn new(viewport: Viewport, kind: ThemeKind) -> Self {
             Self {
-                gui: GuiHarness::with_viewport(viewport, kind),
+                gui: GuiHarness::with_viewport(
+                    viewport,
+                    kind,
+                    crate::texts::LanguageCatalog::English,
+                ),
                 dialog: MediaDialog::new(available_drives(2, true), 0, Some(3)),
                 media: [entries(&FILES), entries(&FILES[..4]), Vec::new()],
                 loaded: [Some(3), None, None],

@@ -15,16 +15,21 @@ use std::path::{Path, PathBuf};
 use common::{StringError, bail, info, warn};
 use machine_factory::config::{
     DEFAULT_AUDIO_VOLUME, DEFAULT_BACKEND, DEFAULT_CONFIG_FOLDER, DEFAULT_GUI_FONT,
-    DEFAULT_GUI_THEME, DEFAULT_ROMS_FOLDER, EmulatorConfig, MachineSelection, Target,
+    DEFAULT_GUI_LANGUAGE, DEFAULT_GUI_THEME, DEFAULT_ROMS_FOLDER, EmulatorConfig, GuiLanguage,
+    MachineSelection, Target,
     settings::{
         AUDIO_VOLUME_KEY, BACKEND_KEY, CONFIG_FOLDER_KEY, ExplicitSettings, GUI_FONT_KEY,
-        GUI_THEME_KEY, MACHINE_KEY, ROMS_FOLDER_KEY, Setting, apply_derived_defaults,
+        GUI_LANGUAGE_KEY, GUI_THEME_KEY, MACHINE_KEY, ROMS_FOLDER_KEY, Setting,
+        apply_derived_defaults,
     },
     systems::{System, apply_rom_folder_defaults, compiled_systems, system_of},
 };
 
 use super::{
-    discovery::{Locations, SettingsLocation, discover_settings, resolve_path, resource_folder},
+    discovery::{
+        LANGUAGE_FOLDER, Locations, SettingsLocation, discover_settings, resolve_path,
+        resource_folder,
+    },
     document::{ConfigDocument, DocumentError},
     keymap::parse_key_binding,
     reading::{
@@ -47,6 +52,7 @@ pub(crate) fn host_default(key: &str) -> Option<String> {
         GUI_FONT_KEY => Some(DEFAULT_GUI_FONT.to_owned()),
         BACKEND_KEY => Some(DEFAULT_BACKEND.to_string()),
         GUI_THEME_KEY => Some(DEFAULT_GUI_THEME.to_string()),
+        GUI_LANGUAGE_KEY => Some(DEFAULT_GUI_LANGUAGE.to_string()),
         AUDIO_VOLUME_KEY => Some(format!("{DEFAULT_AUDIO_VOLUME:?}")),
         _ => None,
     }
@@ -207,6 +213,15 @@ pub(crate) fn launch_model<'a>(
         .unwrap_or((system_of(target).default_model, ModelSource::BuiltIn))
 }
 
+/// The files of the user interface that a launch searches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuiResources {
+    /// The paths searched for the font file in search order.
+    pub font_paths: Vec<PathBuf>,
+    /// The folders searched for the language files in search order.
+    pub language_folders: Vec<PathBuf>,
+}
+
 /// The host layers of a launch: the settings file and the command line flags.
 #[derive(Debug, Clone)]
 pub struct HostLayers {
@@ -320,6 +335,38 @@ impl HostLayers {
                 paths.dedup();
                 paths
             }
+        }
+    }
+
+    /// Returns the absolute folders searched for the language files of the
+    /// user interface in search order: the folder `language` below the root
+    /// and then below the resource folder of the installation, when the
+    /// folder of the executable is known.
+    #[must_use]
+    pub fn language_folders(&self) -> Vec<PathBuf> {
+        let mut folders: Vec<PathBuf> = std::iter::once(self.root())
+            .chain(self.resource_folder.as_deref())
+            .map(|folder| resolve_path(folder, Path::new(LANGUAGE_FOLDER)))
+            .collect();
+        folders.dedup();
+        folders
+    }
+
+    /// Returns the language of the user interface of the command line or the
+    /// settings file. An unset key gives the built-in default.
+    #[must_use]
+    pub fn gui_language(&self) -> GuiLanguage {
+        self.host_value(GUI_LANGUAGE_KEY)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(DEFAULT_GUI_LANGUAGE)
+    }
+
+    /// Returns the font paths and the language folders of the user interface.
+    #[must_use]
+    pub fn gui_resources(&self) -> GuiResources {
+        GuiResources {
+            font_paths: self.gui_font_paths(),
+            language_folders: self.language_folders(),
         }
     }
 
@@ -1053,6 +1100,83 @@ mod tests {
         HostLayers::read(&LaunchRequest::default(), &test.locations).expect("settings read")
     }
 
+    /// Verifies that the language folders lie below the root and then below the resource folder, and that the root wins a tag of both.
+    #[test]
+    fn the_language_folders_lie_below_the_root_and_the_resource_folder() {
+        let test = TestLocations::new("language_folders");
+        let (root_font, resource_font) = default_font_paths(&test);
+        let root_folder = root_font
+            .ancestors()
+            .nth(2)
+            .expect("the font lies two folders below the root")
+            .join(LANGUAGE_FOLDER);
+        let resource_folder = resource_font
+            .ancestors()
+            .nth(2)
+            .expect("the font lies two folders below the resource folder")
+            .join(LANGUAGE_FOLDER);
+        let host = default_host(&test);
+        assert_eq!(
+            host.language_folders(),
+            vec![root_folder.clone(), resource_folder.clone()]
+        );
+        assert_eq!(
+            host.gui_resources(),
+            GuiResources {
+                font_paths: vec![root_font, resource_font],
+                language_folders: vec![root_folder.clone(), resource_folder.clone()],
+            }
+        );
+        write_file(&root_folder.join("ja.ini"), "");
+        write_file(&resource_folder.join("ja.ini"), "");
+        write_file(&resource_folder.join("de.ini"), "");
+        let files = find_language_files(&host.language_folders());
+        let found: Vec<(&str, PathBuf)> = files
+            .iter()
+            .map(|file| (file.tag.as_str(), file.path.clone()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("ja", root_folder.join("ja.ini")),
+                ("de", resource_folder.join("de.ini")),
+            ]
+        );
+        let without_executable = Locations {
+            executable_directory: None,
+            ..test.locations.clone()
+        };
+        let host = HostLayers::read(&LaunchRequest::default(), &without_executable)
+            .expect("settings read");
+        assert_eq!(host.language_folders(), vec![root_folder]);
+    }
+
+    /// Verifies that the language of the user interface comes from the command line, then the settings file, then the built-in default.
+    #[test]
+    fn the_gui_language_follows_the_flag_and_the_settings_file() {
+        let test = TestLocations::new("gui_language");
+        write_file(&test.current().join(SETTINGS_FILE_NAME), "");
+        assert_eq!(default_host(&test).gui_language(), GuiLanguage::Auto);
+        write_file(
+            &test.current().join(SETTINGS_FILE_NAME),
+            "gui-language = ja\n",
+        );
+        assert_eq!(
+            default_host(&test).gui_language(),
+            GuiLanguage::Tag("ja".to_owned())
+        );
+        let request = LaunchRequest {
+            flags: vec![(
+                find_setting(GUI_LANGUAGE_KEY).expect("a table key"),
+                "pt-BR".to_owned(),
+            )],
+            ..LaunchRequest::default()
+        };
+        let host = HostLayers::read(&request, &test.locations).expect("settings read");
+        assert_eq!(host.gui_language(), GuiLanguage::Tag("pt-BR".to_owned()));
+        assert_eq!(host_default(GUI_LANGUAGE_KEY).as_deref(), Some("auto"));
+    }
+
     /// Verifies that the default GUI font is found below the root.
     #[test]
     fn the_default_gui_font_is_found_below_the_root() {
@@ -1095,9 +1219,11 @@ mod tests {
             vec![root_font.clone(), resource_font.clone()]
         );
         assert_eq!(host.gui_font(), root_font);
-        let Err(message) =
-            crate::gui_host::GuiHost::load(&host.gui_font_paths(), gui::ui::ThemeKind::Dark)
-        else {
+        let Err(message) = crate::gui_host::GuiHost::load(
+            &host.gui_font_paths(),
+            gui::ui::ThemeKind::Dark,
+            crate::texts::LanguageCatalog::English,
+        ) else {
             panic!("a missing font does not load");
         };
         assert_eq!(

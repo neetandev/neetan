@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use i18n::Catalog;
+
 use super::{
     focus::{Focusable, Navigation, NavigationSet, ScrollAnchor},
     icons::Icon,
@@ -112,6 +114,10 @@ pub struct UiContext<'a> {
     pub fonts: &'a mut Fonts,
     /// The theme.
     pub theme: &'a Theme,
+    /// The texts of the selected language.
+    pub catalog: &'a Catalog,
+    /// The generation of the catalog. It changes with each switch of the language.
+    pub catalog_generation: u64,
     /// The input of this pass.
     pub input: &'a Input,
     /// The state between passes.
@@ -140,11 +146,13 @@ impl<'a> UiContext<'a> {
     /// transparent background, starts the frame of the window of `state` in
     /// `fonts` and resolves the navigation event of `input`. The top layer of
     /// the last pass blocks every layer below it from the first widget on.
-    /// The caller ends the pass with [`UiContext::finish`].
+    /// The widgets take their texts from `catalog` at the generation 0. The
+    /// caller ends the pass with [`UiContext::finish`].
     pub fn new(
         scene: &'a mut Scene,
         fonts: &'a mut Fonts,
         theme: &'a Theme,
+        catalog: &'a Catalog,
         input: &'a Input,
         state: &'a mut UiState,
         viewport: Viewport,
@@ -158,6 +166,8 @@ impl<'a> UiContext<'a> {
             scene,
             fonts,
             theme,
+            catalog,
+            catalog_generation: 0,
             input,
             state,
             viewport,
@@ -168,6 +178,16 @@ impl<'a> UiContext<'a> {
             blocked,
             deepest: 0,
             scroll: None,
+        }
+    }
+
+    /// The same context with the catalog generation `generation`. Each
+    /// switch of the catalog gives a higher generation.
+    #[must_use]
+    pub fn with_catalog_generation(self, generation: u64) -> Self {
+        Self {
+            catalog_generation: generation,
+            ..self
         }
     }
 
@@ -674,7 +694,11 @@ mod tests {
 
     #[test]
     fn a_viewport_divides_the_pointer_by_its_scale() {
-        let mut harness = Harness::with_viewport(Viewport::new(400, 300, 2.0), ThemeKind::Dark);
+        let mut harness = Harness::with_viewport(
+            Viewport::new(400, 300, 2.0),
+            ThemeKind::Dark,
+            crate::ui::tests::test_catalog(),
+        );
         harness.mouse(100.0, 60.0);
         let (mouse, bounds, snapped) = harness.frame(|context| {
             (
@@ -864,7 +888,11 @@ mod tests {
 
     #[test]
     fn the_text_caret_is_relative_to_the_text_area() {
-        let mut harness = Harness::with_viewport(Viewport::new(800, 600, 2.0), ThemeKind::Dark);
+        let mut harness = Harness::with_viewport(
+            Viewport::new(800, 600, 2.0),
+            ThemeKind::Dark,
+            crate::ui::tests::test_catalog(),
+        );
         let field = ui_id("field");
         let draw = |context: &mut UiContext, focused: bool| {
             if focused {

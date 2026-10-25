@@ -9,12 +9,10 @@
 
 #![deny(unsafe_code)]
 
-use std::path::PathBuf;
-
 pub use common::Error;
 
 use crate::{
-    config::{EmulatorConfig, ManagerStart},
+    config::{EmulatorConfig, GuiResources, ManagerStart},
     input::KeyOverrides,
     manager::Manager,
     shell::{Shell, ShellOptions},
@@ -32,12 +30,14 @@ mod gui_host;
 mod gui_test_support;
 mod host;
 mod input;
+mod language;
 mod machines;
 mod manager;
 mod media_dialog;
 pub mod rom_folders;
 mod session;
 mod shell;
+pub mod texts;
 
 /// The company name of the SDL pref path.
 const COMPANY_NAME: &str = "neetan";
@@ -57,13 +57,14 @@ pub(crate) const fn on_off(enabled: bool) -> &'static str {
 }
 
 /// Opens the window and runs the game of `config` until the user quits.
-/// The GUI font is the first file of `gui_font_paths` that exists.
+/// The GUI font is the first file of the font paths of `gui_resources` that
+/// exists, and the language files lie in its language folders.
 pub fn run(
     config: EmulatorConfig,
     key_overrides: KeyOverrides,
-    gui_font_paths: Vec<PathBuf>,
+    gui_resources: GuiResources,
 ) -> Result<()> {
-    let mut shell = Shell::new(ShellOptions::for_config(&config, gui_font_paths))?;
+    let mut shell = Shell::new(ShellOptions::for_config(&config, gui_resources))?;
     shell.start_session(config, key_overrides)?;
     shell.run()
 }

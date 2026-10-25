@@ -112,10 +112,15 @@ impl Note {
     }
 }
 
-/// Returns `text` as a sentence that ends with a full stop.
+/// The characters that end a sentence: the full stops, question marks and exclamation marks of
+/// the Latin and the CJK scripts.
+const SENTENCE_ENDS: [char; 6] = ['.', '?', '!', '\u{3002}', '\u{FF1F}', '\u{FF01}'];
+
+/// Returns `text` as a sentence that ends with a sentence mark. A text without one takes a full
+/// stop.
 fn sentence(text: &str) -> String {
     let text = text.trim();
-    if text.ends_with('.') {
+    if text.ends_with(SENTENCE_ENDS) {
         text.to_owned()
     } else {
         format!("{text}.")
@@ -351,7 +356,7 @@ mod tests {
         find_setting("hdd1").and_then(|setting| setting.file_types.first())
     }
 
-    /// Verifies that every part of a note ends with a full stop and that empty parts leave the note.
+    /// Verifies that every part of a note ends with a sentence mark and that empty parts leave the note.
     #[test]
     fn notes_are_full_sentences() {
         assert_eq!(
@@ -364,6 +369,13 @@ mod tests {
             "Built-in default: low. At low the CPU runs at 4 MHz."
         );
         assert_eq!(sentences(&[]), "");
+        assert_eq!(
+            sentences(&[
+                Some("言語ファイルがありません。".into()),
+                Some("Is it?".into())
+            ]),
+            "言語ファイルがありません。 Is it?"
+        );
         assert_eq!(
             inherited_placeholder(Some(&inherited(&["0"], InheritedSource::BuiltIn))),
             "Built-in default: 0"

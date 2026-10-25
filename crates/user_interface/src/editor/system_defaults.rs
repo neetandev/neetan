@@ -123,7 +123,7 @@ mod tests {
         let machine = index_of(&editor, MACHINE_KEY);
         editor.fields[machine].select(Some(0));
         editor.refresh();
-        let model = editor.fields[machine].choices[0];
+        let model = editor.fields[machine].choices[0].clone();
         harness.input.shortcut = Some(Shortcut::ControlS);
         assert_eq!(show(&mut harness, &mut editor).saved, Some(path.clone()));
         assert_eq!(

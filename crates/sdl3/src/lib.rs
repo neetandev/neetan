@@ -17,6 +17,8 @@ pub mod gpu;
 pub mod info;
 /// Keyboard scancodes and modifiers.
 pub mod keyboard;
+/// Preferred locales of the user.
+pub mod locale;
 /// SDL3 log output capture.
 pub mod log;
 /// Mouse button types.

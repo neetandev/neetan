@@ -104,6 +104,7 @@ directory.
 | `--roms-folder <PATH>`         | All                                                               | Folder of the ROM folders of every system                                                        | `roms`                       |
 | `--gui-font <PATH>`            | All                                                               | Font file of the user interface                                                                  | `font/SarasaUiJ-Regular.ttf` |
 | `--gui-theme <THEME>`          | All                                                               | Colors of the user interface: `dark` or `light`                                                  | `dark`                       |
+| `--gui-language <LANGUAGE>`    | All                                                               | Language of the user interface: `auto` or a language tag such as `ja`                            | `auto`                       |
 | `--machine <TYPE>`             | All                                                               | Machine type (see the list of values below the table). Starts the game directly                  | per system                   |
 | `--cpu-mode <MODE>`            | PC-98, PC-88, FM Towns, X68000, PC/AT                             | CPU speed mode: `low` or `high`                                                                  | `high`                       |
 | `--boot-mode <MODE>`           | PC-88, FM-7                                                       | Boot mode; PC-88: `v1s`, `v1h`, `v2`, `n`, `n80`, `n80sr`; FM-7: `basic`, `dos`                  | `v2` / `basic`               |
@@ -299,7 +300,8 @@ as `fdd1 =` drops the images of the earlier layers. An empty single image key su
 derived folder.
 
 The host keys `config-folder`, `roms-folder`, `gui-font`, the ROM keys, `backend`,
-`gui-theme` and `audio-volume` apply only from the settings file and the command line.
+`gui-theme`, `gui-language` and `audio-volume` apply only from the settings file and the
+command line.
 A system defaults file or a game file that sets one gets a warning and the line is
 ignored.
 A media key such as `fdd1` or `hdd1` in a system defaults file applies to every game

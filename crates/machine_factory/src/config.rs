@@ -247,6 +247,8 @@ pub const DEFAULT_GUI_FONT: &str = "font/SarasaUiJ-Regular.ttf";
 pub const DEFAULT_BACKEND: Backend = Backend::Modern;
 /// Built-in theme of the user interface.
 pub const DEFAULT_GUI_THEME: GuiTheme = GuiTheme::Dark;
+/// Built-in language of the user interface.
+pub const DEFAULT_GUI_LANGUAGE: GuiLanguage = GuiLanguage::Auto;
 /// Built-in audio volume.
 pub const DEFAULT_AUDIO_VOLUME: f32 = 1.0;
 /// Built-in window mode.
@@ -296,6 +298,8 @@ pub struct EmulatorConfig {
     pub backend: Backend,
     /// Colors of the user interface.
     pub gui_theme: GuiTheme,
+    /// Language of the user interface.
+    pub gui_language: GuiLanguage,
     pub enable_extractor: bool,
     /// Boot mode selected via `--boot-mode`, shared across machine families.
     /// `None` means each machine uses its own default.
@@ -380,6 +384,7 @@ impl EmulatorConfig {
             xms: true,
             backend: DEFAULT_BACKEND,
             gui_theme: DEFAULT_GUI_THEME,
+            gui_language: DEFAULT_GUI_LANGUAGE,
             enable_extractor: false,
             boot_mode: None,
             monitor: MonitorTiming::Auto,
@@ -854,6 +859,52 @@ impl std::str::FromStr for GuiTheme {
             _ => Err(format!("unknown GUI theme '{s}', expected dark or light")),
         }
     }
+}
+
+/// The value of the language setting that follows the preferred locales of the system.
+pub const AUTO_LANGUAGE: &str = "auto";
+
+/// Language of the user interface.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum GuiLanguage {
+    /// The first preferred locale of the system that has a language file.
+    #[default]
+    Auto,
+    /// The language of a language tag, for example `ja` or `pt-BR`.
+    Tag(String),
+}
+
+impl std::fmt::Display for GuiLanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => f.write_str(AUTO_LANGUAGE),
+            Self::Tag(tag) => f.write_str(tag),
+        }
+    }
+}
+
+impl std::str::FromStr for GuiLanguage {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case(AUTO_LANGUAGE) {
+            return Ok(Self::Auto);
+        }
+        if is_language_tag(s) {
+            return Ok(Self::Tag(s.to_owned()));
+        }
+        Err(format!(
+            "invalid GUI language '{s}', expected auto or a language tag of letters, digits and -"
+        ))
+    }
+}
+
+/// Returns whether `text` is a language tag: parts of ASCII letters and digits joined by `-`,
+/// for example `ja` or `pt-BR`.
+#[must_use]
+pub fn is_language_tag(text: &str) -> bool {
+    text.split('-')
+        .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_alphanumeric()))
 }
 
 /// MIDI output device.

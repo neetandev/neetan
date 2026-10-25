@@ -179,12 +179,13 @@ impl Manager {
     /// Updates the library after a save of the file `path` of the editor
     /// on `edited`: the row of a game file, every row of the system after a
     /// save of its system defaults, or the host settings after a save of
-    /// the settings file.
-    fn file_saved(&mut self, edited: &EditedFile, path: &Path) {
+    /// the settings file. `active_language` is the tag of the catalog of
+    /// the pass.
+    fn file_saved(&mut self, edited: &EditedFile, path: &Path, active_language: &str) {
         match *edited {
             EditedFile::Game { system, .. } => self.game_saved(system, path),
             EditedFile::SystemDefaults(system) => self.system_defaults_saved(system, path),
-            EditedFile::Settings => self.settings_saved(path),
+            EditedFile::Settings => self.settings_saved(path, active_language),
         }
     }
 
@@ -202,8 +203,10 @@ impl Manager {
         };
         let pass = editor.show(context, screen);
         let edited = editor.edited_file();
+        let catalog = context.catalog;
+        let active_language = catalog.tag();
         if let Some(path) = &pass.saved {
-            self.file_saved(&edited, path);
+            self.file_saved(&edited, path, active_language);
         }
         if let Some(failure) = &pass.save_error {
             self.dialog = Some(save_failure_dialog(&edited, failure));
@@ -219,7 +222,7 @@ impl Manager {
             && let Some(editor) = self.editor.as_mut()
         {
             match editor.overwrite() {
-                Ok(path) => self.file_saved(&edited, &path),
+                Ok(path) => self.file_saved(&edited, &path, active_language),
                 Err(failure) => self.dialog = Some(save_failure_dialog(&edited, &failure)),
             }
             context.request_pass();
@@ -773,7 +776,8 @@ key.PageDown = RollUp
         let viewport = Viewport::new((width * scale) as u32, (height * scale) as u32, scale);
         let root = sample_root(&format!("editor_shots_{prefix}{scale}"));
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::with_viewport(viewport, kind);
+        let mut harness =
+            GuiHarness::with_viewport(viewport, kind, crate::texts::LanguageCatalog::English);
         let render = |harness: &GuiHarness, name: &str| {
             harness.write_screenshot(&format!("editor_{prefix}{name}_{scale}x"));
         };
@@ -943,7 +947,8 @@ key.PageDown = RollUp
             "meta.title = A game with empty drives\nmachine = PC9801RA\nfdd2 =\n",
         );
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::with_viewport(viewport, kind);
+        let mut harness =
+            GuiHarness::with_viewport(viewport, kind, crate::texts::LanguageCatalog::English);
         settle(&mut harness, &mut manager);
         select(&mut manager, "pc98");
         select_game(&mut harness, &mut manager, "A game with empty drives");
@@ -979,7 +984,8 @@ key.PageDown = RollUp
             "meta.title = Diskless start\nmachine = PC9801RA\nhdd1 =\n",
         );
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::with_viewport(viewport, kind);
+        let mut harness =
+            GuiHarness::with_viewport(viewport, kind, crate::texts::LanguageCatalog::English);
         let render = |harness: &GuiHarness, name: &str| {
             harness.write_screenshot(&format!("editor_{name}_{scale}x"));
         };

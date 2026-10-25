@@ -1,6 +1,7 @@
-//! The host of the graphical user interface: the font, the theme, the widget
-//! state, the input of the next pass and the scene of the last pass, and the
-//! mapping of the SDL events to the input.
+//! The host of the graphical user interface: the font, the theme, the
+//! catalog of the language, the widget state, the input of the next pass and
+//! the scene of the last pass, and the mapping of the SDL events to the
+//! input.
 
 use std::{
     path::PathBuf,
@@ -23,7 +24,7 @@ use sdl3::{
 };
 use sdl3_backend::Overlay;
 
-use crate::config::GuiTheme;
+use crate::{config::GuiTheme, texts::LanguageCatalog};
 
 /// The delay before a held gamepad direction repeats.
 const REPEAT_DELAY: Duration = Duration::from_millis(400);
@@ -382,6 +383,10 @@ pub(crate) struct GuiHost {
     fonts: Fonts,
     /// The look of the widgets.
     theme: Theme,
+    /// The texts of the selected language.
+    catalog: LanguageCatalog,
+    /// The generation of the catalog. Each switch of the catalog counts it up.
+    catalog_generation: u64,
     /// The widget state between passes.
     state: UiState,
     /// The input of the next pass.
@@ -408,9 +413,13 @@ pub(crate) struct GuiHost {
 
 impl GuiHost {
     /// Loads the first font file of `paths` that exists and builds the theme
-    /// `kind`. Returns a message for the user when no file exists or the file
-    /// does not parse.
-    pub(crate) fn load(paths: &[PathBuf], kind: ThemeKind) -> Result<Self, String> {
+    /// `kind` with the texts of `catalog`. Returns a message for the user
+    /// when no file exists or the file does not parse.
+    pub(crate) fn load(
+        paths: &[PathBuf],
+        kind: ThemeKind,
+        catalog: LanguageCatalog,
+    ) -> Result<Self, String> {
         let Some(path) = paths.iter().find(|path| path.is_file()) else {
             let searched: Vec<String> = paths
                 .iter()
@@ -424,7 +433,7 @@ impl GuiHost {
         let data = std::fs::read(path).map_err(|error| {
             format!("the GUI font {} could not be read: {error}", path.display())
         })?;
-        let host = Self::new(data, kind).map_err(|error| {
+        let host = Self::new(data, kind, catalog).map_err(|error| {
             format!(
                 "the GUI font {} could not be loaded: {error}",
                 path.display()
@@ -434,14 +443,21 @@ impl GuiHost {
         Ok(host)
     }
 
-    /// A host with the font file `data` and the theme `kind`.
-    pub(crate) fn new(data: Vec<u8>, kind: ThemeKind) -> Result<Self, gui::truetype::FontError> {
+    /// A host with the font file `data`, the theme `kind` and the texts of
+    /// `catalog`.
+    pub(crate) fn new(
+        data: Vec<u8>,
+        kind: ThemeKind,
+        catalog: LanguageCatalog,
+    ) -> Result<Self, gui::truetype::FontError> {
         let mut fonts = Fonts::new();
         let font = fonts.add(data)?;
         let theme = Theme::new(&mut fonts, font, kind);
         Ok(Self {
             fonts,
             theme,
+            catalog,
+            catalog_generation: 0,
             state: UiState::default(),
             input: Input::default(),
             scene: Scene::new(),
@@ -453,6 +469,20 @@ impl GuiHost {
             text_area: None,
             gamepad: GamepadNavigation::default(),
         })
+    }
+
+    /// Replaces the catalog with `catalog` and counts the catalog generation
+    /// up. The next pass draws with the new texts.
+    pub(crate) fn set_catalog(&mut self, catalog: LanguageCatalog) {
+        self.catalog = catalog;
+        self.catalog_generation += 1;
+        self.pending = true;
+    }
+
+    /// The texts of the selected language.
+    #[cfg(test)]
+    pub(crate) fn catalog(&self) -> &i18n::Catalog {
+        self.catalog.catalog()
     }
 
     /// Forgets the widget state, the buttons and the composition, for a
@@ -571,10 +601,12 @@ impl GuiHost {
             &mut self.scene,
             &mut self.fonts,
             &self.theme,
+            self.catalog.catalog(),
             &self.input,
             &mut self.state,
             self.viewport,
-        );
+        )
+        .with_catalog_generation(self.catalog_generation);
         let result = draw(&mut context);
         context.finish();
         self.input.advance();
@@ -666,15 +698,19 @@ mod tests {
 
     /// A host with the font of the repository.
     fn host() -> GuiHost {
-        GuiHost::new(crate::gui_test_support::repository_font(), ThemeKind::Dark)
-            .expect("the repository font parses")
+        GuiHost::new(
+            crate::gui_test_support::repository_font(),
+            ThemeKind::Dark,
+            LanguageCatalog::English,
+        )
+        .expect("the repository font parses")
     }
 
     /// Verifies that a missing font file gives the path and the setting that selects it.
     #[test]
     fn a_missing_font_mentions_its_path_and_the_setting() {
         let paths = [PathBuf::from("/nonexistent/neetan/font.ttf")];
-        let Err(message) = GuiHost::load(&paths, ThemeKind::Dark) else {
+        let Err(message) = GuiHost::load(&paths, ThemeKind::Dark, LanguageCatalog::English) else {
             panic!("a missing font does not load");
         };
         assert_eq!(
@@ -690,7 +726,7 @@ mod tests {
             PathBuf::from("/nonexistent/root/font.ttf"),
             PathBuf::from("/nonexistent/share/font.ttf"),
         ];
-        let Err(message) = GuiHost::load(&paths, ThemeKind::Dark) else {
+        let Err(message) = GuiHost::load(&paths, ThemeKind::Dark, LanguageCatalog::English) else {
             panic!("a missing font does not load");
         };
         assert_eq!(
@@ -704,8 +740,12 @@ mod tests {
     fn the_gui_theme_selects_the_theme_kind() {
         assert_eq!(theme_kind(GuiTheme::Dark), ThemeKind::Dark);
         assert_eq!(theme_kind(GuiTheme::Light), ThemeKind::Light);
-        let host = GuiHost::new(crate::gui_test_support::repository_font(), ThemeKind::Light)
-            .expect("the repository font parses");
+        let host = GuiHost::new(
+            crate::gui_test_support::repository_font(),
+            ThemeKind::Light,
+            LanguageCatalog::English,
+        )
+        .expect("the repository font parses");
         assert_eq!(host.theme.colors, gui::ui::Palette::of(ThemeKind::Light));
     }
 
@@ -903,6 +943,34 @@ mod tests {
         let seen = host.pass(|context| context.action_button());
         assert_eq!(seen, Some(ActionButton::Y));
         assert_eq!(host.input.action, None);
+    }
+
+    /// Verifies that a switch of the catalog counts the generation up and reaches the next pass.
+    #[test]
+    fn a_catalog_switch_reaches_the_next_pass() {
+        let mut host = host();
+        host.pass(|_| ());
+        assert!(!host.pending());
+        assert_eq!(
+            host.pass(|context| context.catalog_generation),
+            0,
+            "the first catalog has the generation 0"
+        );
+        let source = "[language]\nname = Deutsch\nplural = one-other\n[common]\nsave = Speichern\n";
+        let loaded =
+            i18n::Catalog::load("de", source, &crate::texts::SCHEMA, crate::texts::english())
+                .expect("the German texts load");
+        host.set_catalog(LanguageCatalog::Loaded(Box::new(loaded.catalog)));
+        assert!(host.pending());
+        assert_eq!(host.catalog().name(), "Deutsch");
+        let (generation, save) = host.pass(|context| {
+            (
+                context.catalog_generation,
+                context.catalog.text(crate::texts::common::SAVE).to_owned(),
+            )
+        });
+        assert_eq!(generation, 1);
+        assert_eq!(save, "Speichern");
     }
 
     /// Verifies that a widget that asks for another pass leaves the host pending.
