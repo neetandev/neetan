@@ -142,7 +142,7 @@ mod tests {
                 show_game_table(context, AREA, &entries, &rows, state, EmptyHint::None)
             })
         };
-        let danger = harness.theme.danger_text.to_linear();
+        let danger = harness.theme.colors.danger_text.to_linear();
         let has_danger = |harness: &GuiHarness| {
             harness
                 .scene

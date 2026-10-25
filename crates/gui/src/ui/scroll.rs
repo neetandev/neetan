@@ -301,7 +301,7 @@ mod tests {
             .scene
             .instances()
             .iter()
-            .filter(|instance| instance.color == harness.theme.scroll_thumb.to_linear())
+            .filter(|instance| instance.color == harness.theme.colors.scroll_thumb.to_linear())
             .count();
         assert_eq!(thumbs, 0);
     }
@@ -403,7 +403,7 @@ mod tests {
         let mut state = ScrollState::new();
         for _ in 0..2 {
             harness.frame(|context| {
-                context.fill(context.bounds(), context.theme.panel);
+                context.fill(context.bounds(), context.theme.colors.panel);
                 scroll_area(context, "form", VIEW, &mut state, |context, content| {
                     context.fill(
                         Rect::new(content.x, content.y, content.width, 800.0),
@@ -422,9 +422,9 @@ mod tests {
         );
         assert_eq!(
             pixel(&pixels, width, VIEW.x + 10.0, VIEW.bottom() + 2.0),
-            srgb(theme.panel)
+            srgb(theme.colors.panel)
         );
         let thumb = pixel(&pixels, width, VIEW.right() - 4.0, VIEW.y + 20.0);
-        assert_ne!(thumb, srgb(theme.panel));
+        assert_ne!(thumb, srgb(theme.colors.panel));
     }
 }

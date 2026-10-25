@@ -119,9 +119,9 @@ impl ScrollBar {
             self.thumb_height - 4.0,
         );
         let color = if hot {
-            theme.scroll_thumb_hover
+            theme.colors.scroll_thumb_hover
         } else {
-            theme.scroll_thumb
+            theme.colors.scroll_thumb
         };
         context.scene.fill(thumb, width * 0.5, color);
     }

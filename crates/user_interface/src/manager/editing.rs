@@ -258,7 +258,7 @@ impl Manager {
 
 #[cfg(test)]
 mod tests {
-    use gui::ui::{ActionButton, Navigation, Shortcut, UiId, Viewport};
+    use gui::ui::{ActionButton, Navigation, Shortcut, ThemeKind, UiId, Viewport};
     use machine_factory::config::systems::compiled_systems;
 
     use super::*;
@@ -772,12 +772,12 @@ key.PageDown = RollUp
     /// manager, a save error, a new game, a duplicate, the warning about
     /// system defaults that do not read, the empty media lists and the
     /// sections of other families. With `large` only the sections of a game.
-    fn screenshots(width: f32, height: f32, scale: f32, large: bool) {
+    fn screenshots(width: f32, height: f32, scale: f32, large: bool, kind: ThemeKind) {
         let prefix = if large { "large_" } else { "" };
         let viewport = Viewport::new((width * scale) as u32, (height * scale) as u32, scale);
         let root = sample_root(&format!("editor_shots_{prefix}{scale}"));
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::with_viewport(viewport);
+        let mut harness = GuiHarness::with_viewport(viewport, kind);
         let render = |harness: &GuiHarness, name: &str| {
             harness.write_screenshot(&format!("editor_{prefix}{name}_{scale}x"));
         };
@@ -891,8 +891,8 @@ key.PageDown = RollUp
         render(&harness, "header_warning");
         manager.editor = None;
         std::fs::write(&defaults, readable).expect("file is written");
-        empty_list_screenshot(viewport, scale);
-        defaults_screenshots(viewport, scale);
+        empty_list_screenshot(viewport, scale, kind);
+        defaults_screenshots(viewport, scale, kind);
 
         if compiled_systems().any(|system| system.name == "pc88") {
             select(&mut manager, "pc88");
@@ -934,8 +934,9 @@ key.PageDown = RollUp
 
     /// Renders the Media section of a game whose FDD 1 inherits the image
     /// of the settings file and whose FDD 2 holds `fdd2 =` over the
-    /// inherited image of FDD 2, with the checkbox of FDD 1 focused.
-    fn empty_list_screenshot(viewport: Viewport, scale: f32) {
+    /// inherited image of FDD 2, with the checkbox of FDD 1 focused, in the
+    /// theme `kind`.
+    fn empty_list_screenshot(viewport: Viewport, scale: f32, kind: ThemeKind) {
         let root = sample_root(&format!("editor_shots_empty_{scale}"));
         root.write(
             "neetan.conf",
@@ -946,7 +947,7 @@ key.PageDown = RollUp
             "meta.title = A game with empty drives\nmachine = PC9801RA\nfdd2 =\n",
         );
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::with_viewport(viewport);
+        let mut harness = GuiHarness::with_viewport(viewport, kind);
         settle(&mut harness, &mut manager);
         select(&mut manager, "pc98");
         select_game(&mut harness, &mut manager, "A game with empty drives");
@@ -968,8 +969,9 @@ key.PageDown = RollUp
     /// Renders the Machine and the Media section of the editor of the PC-98
     /// system defaults, whose file sets the model, the real BIOS and an HDD
     /// image, the Media section of a game that inherits the HDD image, and
-    /// the Media section of a game that starts without the HDD image.
-    fn defaults_screenshots(viewport: Viewport, scale: f32) {
+    /// the Media section of a game that starts without the HDD image, in the
+    /// theme `kind`.
+    fn defaults_screenshots(viewport: Viewport, scale: f32, kind: ThemeKind) {
         let root = sample_root(&format!("editor_shots_defaults_{scale}"));
         root.write(
             "config/pc98.conf",
@@ -981,7 +983,7 @@ key.PageDown = RollUp
             "meta.title = Diskless start\nmachine = PC9801RA\nhdd1 =\n",
         );
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::with_viewport(viewport);
+        let mut harness = GuiHarness::with_viewport(viewport, kind);
         let render = |harness: &GuiHarness, name: &str| {
             harness.write_screenshot(&format!("editor_{name}_{scale}x"));
         };
@@ -1021,14 +1023,16 @@ key.PageDown = RollUp
         render(&harness, "empty_hdd_media");
     }
 
-    /// Writes the screenshots of the editor at the scales 1 and 2, at the
-    /// minimum window size and at 1920 x 1080.
+    /// Writes the screenshots of the editor in both themes at the scales 1
+    /// and 2, at the minimum window size and at 1920 x 1080.
     #[test]
     #[ignore = "writes screenshots into the directory of GUI_SHOTS"]
     fn editor_screenshots() {
-        for scale in [1.0, 2.0] {
-            screenshots(960.0, 600.0, scale, false);
-            screenshots(1920.0, 1080.0, scale, true);
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            for scale in [1.0, 2.0] {
+                screenshots(960.0, 600.0, scale, false, kind);
+                screenshots(1920.0, 1080.0, scale, true, kind);
+            }
         }
     }
 }

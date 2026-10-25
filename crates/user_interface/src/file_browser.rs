@@ -478,10 +478,15 @@ impl FileBrowser {
                 location.width,
                 theme.stroke,
             ),
-            theme.panel_edge,
+            theme.colors.panel_edge,
         );
         let (icon_area, path_area) = location.cut_left(theme.icon_size);
-        context.icon(icon_area, Icon::Folder, theme.icon_size, theme.text_dim);
+        context.icon(
+            icon_area,
+            Icon::Folder,
+            theme.icon_size,
+            theme.colors.text_dim,
+        );
         label(
             context,
             path_area.cut_left(gap).1,

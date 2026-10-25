@@ -188,9 +188,9 @@ impl MediaList<'_> {
                 }
             }
             let color = if self.enabled {
-                theme.text_dim
+                theme.colors.text_dim
             } else {
-                theme.text_disabled
+                theme.colors.text_disabled
             };
             label(
                 context,

@@ -634,7 +634,7 @@ impl<'a> UiContext<'a> {
         self.scene.rect(
             rect.expand(gap + width),
             &RectStyle::filled(Color::TRANSPARENT, radius + gap + width)
-                .with_stroke(width, theme.focus),
+                .with_stroke(width, theme.colors.focus),
         );
     }
 
@@ -659,7 +659,7 @@ impl<'a> UiContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{Viewport, tests::Harness};
+    use crate::ui::{ThemeKind, Viewport, tests::Harness};
 
     #[test]
     fn ids_of_rows_and_parts_differ() {
@@ -674,7 +674,7 @@ mod tests {
 
     #[test]
     fn a_viewport_divides_the_pointer_by_its_scale() {
-        let mut harness = Harness::with_viewport(Viewport::new(400, 300, 2.0));
+        let mut harness = Harness::with_viewport(Viewport::new(400, 300, 2.0), ThemeKind::Dark);
         harness.mouse(100.0, 60.0);
         let (mouse, bounds, snapped) = harness.frame(|context| {
             (
@@ -864,7 +864,7 @@ mod tests {
 
     #[test]
     fn the_text_caret_is_relative_to_the_text_area() {
-        let mut harness = Harness::with_viewport(Viewport::new(800, 600, 2.0));
+        let mut harness = Harness::with_viewport(Viewport::new(800, 600, 2.0), ThemeKind::Dark);
         let field = ui_id("field");
         let draw = |context: &mut UiContext, focused: bool| {
             if focused {

@@ -67,6 +67,18 @@ impl Color {
     }
 }
 
+/// The luminance weights of the linear red, green and blue channels.
+const LUMINANCE_WEIGHTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
+
+/// The luminance of the linear premultiplied color `linear` without its
+/// opacity.
+pub(crate) fn luminance(linear: [f32; 4]) -> f32 {
+    let weighted = linear[0] * LUMINANCE_WEIGHTS[0]
+        + linear[1] * LUMINANCE_WEIGHTS[1]
+        + linear[2] * LUMINANCE_WEIGHTS[2];
+    weighted / linear[3].max(1.0 / 255.0)
+}
+
 /// The linear value of an 8 bit sRGB encoded channel.
 fn channel_to_linear(channel: u8) -> f32 {
     srgb_to_linear(f32::from(channel) / 255.0)

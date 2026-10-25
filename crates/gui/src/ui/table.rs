@@ -221,9 +221,9 @@ impl<'a> TableCell<'a> {
     pub fn show(self, context: &mut UiContext, row: &TableRow, first: usize, last: usize) {
         let theme = context.theme;
         let color = |tone: CellTone| match tone {
-            CellTone::Dim if !row.row.selected => theme.text_dim,
-            CellTone::Error if !row.row.selected => theme.danger_text,
-            CellTone::Normal | CellTone::Dim | CellTone::Error => theme.text,
+            CellTone::Dim if !row.row.selected => theme.colors.text_dim,
+            CellTone::Error if !row.row.selected => theme.colors.danger_text,
+            CellTone::Normal | CellTone::Dim | CellTone::Error => theme.colors.text,
         };
         let align = row
             .columns
@@ -436,7 +436,8 @@ impl<'a> Table<'a> {
 
         context.rect(
             rect,
-            &RectStyle::filled(theme.well, theme.radius).with_stroke(theme.stroke, theme.well_edge),
+            &RectStyle::filled(theme.colors.well, theme.radius)
+                .with_stroke(theme.stroke, theme.colors.well_edge),
         );
         let header_focused = context.shows_focus(header_id);
         let picking = header_focused && context.focus_visible();
@@ -447,9 +448,9 @@ impl<'a> Table<'a> {
             let hot = context.is_hot(header_id.indexed(index));
             if picked || hot {
                 let fill = if picked {
-                    theme.selection_focused
+                    theme.colors.selection_focused
                 } else {
-                    theme.row_hover
+                    theme.colors.row_hover
                 };
                 context.scene.fill(
                     Rect::new(
@@ -464,9 +465,9 @@ impl<'a> Table<'a> {
             }
             let sorted = state.sort.filter(|sort| sort.column == index);
             let text_color = if sorted.is_some() || picked {
-                theme.text
+                theme.colors.text
             } else {
-                theme.text_dim
+                theme.colors.text_dim
             };
             let style = caption_style.with_color(text_color);
             let (offset, width) = spans[index];
@@ -496,7 +497,11 @@ impl<'a> Table<'a> {
                 SortDirection::Ascending => Icon::Up,
                 SortDirection::Descending => Icon::Down,
             };
-            let icon_color = if picked { theme.text } else { theme.accent };
+            let icon_color = if picked {
+                theme.colors.text
+            } else {
+                theme.colors.accent
+            };
             context.icon(
                 Rect::new(
                     left + caption_width + spacing,
@@ -511,7 +516,7 @@ impl<'a> Table<'a> {
         }
         context.fill(
             Rect::new(view.x, rule_top, view.width, theme.stroke),
-            theme.well_edge,
+            theme.colors.well_edge,
         );
 
         let columns = self.columns;
@@ -795,13 +800,13 @@ mod tests {
         let width = harness.viewport.width;
         assert_eq!(
             pixel(&pixels, width, TABLE.x + 10.0, row_y),
-            srgb(theme.selection_focused)
+            srgb(theme.colors.selection_focused)
         );
         let chevron: Vec<[f32; 4]> = harness
             .scene
             .instances()
             .iter()
-            .filter(|instance| instance.color == harness.theme.accent.to_linear())
+            .filter(|instance| instance.color == harness.theme.colors.accent.to_linear())
             .map(|instance| instance.rect)
             .collect();
         assert_eq!(chevron.len(), 2);
@@ -825,7 +830,7 @@ mod tests {
         let pixels = harness.render();
         let theme = &harness.theme;
         let fill = pixel(&pixels, harness.viewport.width, x - 30.0, y - 9.0);
-        assert_eq!(fill, srgb(theme.selection_focused));
+        assert_eq!(fill, srgb(theme.colors.selection_focused));
     }
 
     #[test]
@@ -948,8 +953,8 @@ mod tests {
             .iter()
             .map(|instance| instance.color)
             .collect();
-        assert!(colors.contains(&theme.danger_text.to_linear()));
-        assert!(colors.contains(&theme.text.to_linear()));
+        assert!(colors.contains(&theme.colors.danger_text.to_linear()));
+        assert!(colors.contains(&theme.colors.text.to_linear()));
     }
 
     /// Verifies that a cell over two columns spans both and the gap between them.
@@ -986,7 +991,7 @@ mod tests {
     /// of the table differs from the well.
     fn band_lit(harness: &Harness, pixels: &[u8], top: f32, bottom: f32) -> bool {
         let width = harness.viewport.width;
-        let well = srgb(harness.theme.well);
+        let well = srgb(harness.theme.colors.well);
         let mut y = top;
         while y < bottom {
             let mut x = TABLE.center().0 - 60.0;

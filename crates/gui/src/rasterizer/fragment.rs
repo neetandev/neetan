@@ -16,10 +16,15 @@ use super::{
     shadow::{Shadow, ShadowRow},
     slug::slug_coverage,
 };
-use crate::{Instance, SlugData, SlugGlyph};
+use crate::{Instance, SlugData, SlugGlyph, color::luminance};
 
-/// The luminance weights of the linear red, green and blue channels.
-const LUMINANCE_WEIGHTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
+/// The exponent of the coverage curve of black text. It approximates the
+/// sRGB transfer curve.
+const DARK_TEXT_EXPONENT: f32 = 2.2;
+
+/// The factor on the luminance of the text color in the coverage curve. Text
+/// with a luminance of a quarter or more keeps the linear coverage.
+const TEXT_LUMINANCE_FACTOR: f32 = 4.0;
 
 /// The number of shadow intensities computed before they are blended.
 const SHADOW_CHUNK: usize = 64;
@@ -35,6 +40,30 @@ pub(crate) trait SpanShader {
     /// Blends the instance into `destination`, the pixels of the row `row`
     /// from the column `left` on.
     fn blend_span(&self, row: &Self::Row, left: usize, destination: &mut [[f32; 4]]);
+}
+
+/// The exponent of the coverage curve of text in the linear premultiplied
+/// color `color`. Blending in linear light thins dark text on a light
+/// background. The coverage of dark text follows the curve of a blend in
+/// sRGB, and light text keeps the linear coverage with the exponent 1. The
+/// UI fragment shader of sdl3_backend computes the same curve with the same
+/// constants.
+fn text_coverage_exponent(color: [f32; 4]) -> f32 {
+    lerp(
+        DARK_TEXT_EXPONENT,
+        1.0,
+        saturate(luminance(color) * TEXT_LUMINANCE_FACTOR),
+    )
+}
+
+/// The coverage `coverage` of text on the curve with the exponent
+/// `exponent`. The exponent 1 and full coverage keep the coverage.
+#[inline(always)]
+fn curved_coverage(coverage: f32, exponent: f32) -> f32 {
+    if exponent == 1.0 || coverage >= 1.0 {
+        return coverage;
+    }
+    1.0 - (1.0 - coverage).powf(exponent)
 }
 
 /// The center of the pixel row or column `index`. The index of a target
@@ -472,10 +501,6 @@ impl<'a> GlyphShader<'a> {
         let glyph = slug.glyphs().get(instance.kind[1] as usize)?;
         let [em_left, em_top, em_per_pixel_x, em_per_pixel_y] = instance.parameters;
         let color = instance.color;
-        let weighted = color[0] * LUMINANCE_WEIGHTS[0]
-            + color[1] * LUMINANCE_WEIGHTS[1]
-            + color[2] * LUMINANCE_WEIGHTS[2];
-        let luminance = weighted / color[3].max(1.0 / 255.0);
         Some(Self {
             glyph,
             curves: slug.curves(),
@@ -485,19 +510,14 @@ impl<'a> GlyphShader<'a> {
             em_per_pixel: [em_per_pixel_x, em_per_pixel_y],
             pixels_per_em: [1.0 / em_per_pixel_x.abs(), 1.0 / em_per_pixel_y.abs()],
             color,
-            exponent: lerp(2.2, 1.0, saturate(luminance * 4.0)),
+            exponent: text_coverage_exponent(color),
         })
     }
 
-    /// Blending in linear light thins dark text on a light background. The
-    /// coverage of dark text follows the curve of a blend in sRGB. Light text
-    /// keeps the linear coverage.
+    /// The coverage `coverage` of the glyph on the curve of the text color.
     #[inline(always)]
     fn text_coverage(&self, coverage: f32) -> f32 {
-        if self.exponent == 1.0 || coverage >= 1.0 {
-            return coverage;
-        }
-        1.0 - (1.0 - coverage).powf(self.exponent)
+        curved_coverage(coverage, self.exponent)
     }
 }
 
@@ -634,19 +654,6 @@ pub(crate) mod tests {
         scale(instance.color, sdf_coverage(distance))
     }
 
-    /// The text coverage curve evaluated for one pixel.
-    fn text_coverage(coverage: f32, color: [f32; 4]) -> f32 {
-        let weighted = color[0] * LUMINANCE_WEIGHTS[0]
-            + color[1] * LUMINANCE_WEIGHTS[1]
-            + color[2] * LUMINANCE_WEIGHTS[2];
-        let luminance = weighted / color[3].max(1.0 / 255.0);
-        let exponent = lerp(2.2, 1.0, saturate(luminance * 4.0));
-        if exponent == 1.0 || coverage >= 1.0 {
-            return coverage;
-        }
-        1.0 - (1.0 - coverage).powf(exponent)
-    }
-
     /// A glyph evaluated for one pixel.
     fn glyph(instance: &Instance, slug: &SlugData, pixel: [f32; 2]) -> [f32; 4] {
         let Some(glyph) = slug.glyphs().get(instance.kind[1] as usize) else {
@@ -662,7 +669,10 @@ pub(crate) mod tests {
         if coverage <= 0.0 {
             return TRANSPARENT;
         }
-        scale(instance.color, text_coverage(coverage, instance.color))
+        scale(
+            instance.color,
+            curved_coverage(coverage, text_coverage_exponent(instance.color)),
+        )
     }
 
     /// The color of `instance` at the pixel center `pixel`, evaluated without

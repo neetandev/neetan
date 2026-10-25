@@ -163,25 +163,25 @@ impl<'a> Dropdown<'a> {
 
         let (fill, edge, text_color, icon_color) = if !self.enabled {
             (
-                theme.control.with_alpha(0.5),
-                theme.control_edge.with_alpha(0.5),
-                theme.text_disabled,
-                theme.text_disabled,
+                theme.colors.control.with_alpha(0.5),
+                theme.colors.control_edge.with_alpha(0.5),
+                theme.colors.text_disabled,
+                theme.colors.text_disabled,
             )
         } else {
             let fill = if pressed {
-                theme.control_pressed
+                theme.colors.control_pressed
             } else if hovered {
-                theme.control_hover
+                theme.colors.control_hover
             } else {
-                theme.control
+                theme.colors.control
             };
             let edge = if open {
-                theme.accent
+                theme.colors.accent
             } else {
-                theme.control_edge
+                theme.colors.control_edge
             };
-            (fill, edge, theme.text, theme.text_dim)
+            (fill, edge, theme.colors.text, theme.colors.text_dim)
         };
         context.rect(
             rect,
@@ -203,7 +203,7 @@ impl<'a> Dropdown<'a> {
         );
         let (caption, inherited) = self.caption(*value);
         let caption_color = if inherited && self.enabled {
-            theme.text_dim
+            theme.colors.text_dim
         } else {
             text_color
         };
@@ -228,12 +228,12 @@ impl<'a> Dropdown<'a> {
                     theme.radius,
                     theme.shadow_blur,
                     (0.0, SHADOW_OFFSET),
-                    theme.shadow,
+                    theme.colors.shadow,
                 );
                 context.rect(
                     area,
-                    &RectStyle::filled(theme.panel, theme.radius)
-                        .with_stroke(theme.stroke, theme.panel_edge),
+                    &RectStyle::filled(theme.colors.panel, theme.radius)
+                        .with_stroke(theme.stroke, theme.colors.panel_edge),
                 );
                 let mut list = List::new(list_id, self.entries()).framed(false);
                 if self.inherited.is_some() {
@@ -268,16 +268,16 @@ impl<'a> Dropdown<'a> {
         );
         let (marker, text_area) = inner.cut_right(theme.icon_size);
         if row.index == current {
-            context.icon(marker, Icon::Check, theme.icon_size, theme.marker);
+            context.icon(marker, Icon::Check, theme.icon_size, theme.colors.marker);
         }
         let (caption, inherited) = match self.value_of(row.index) {
             Some(choice) => (self.choices.get(choice).copied().unwrap_or(""), false),
             None => (self.inherited.unwrap_or(""), true),
         };
         let color = if inherited && !row.selected {
-            theme.text_dim
+            theme.colors.text_dim
         } else {
-            theme.text
+            theme.colors.text
         };
         context.text_in(
             text_area.cut_right(theme.gap).1,
@@ -456,11 +456,11 @@ mod tests {
         let width = harness.viewport.width;
         assert_eq!(
             pixel(&pixels, width, FIELD.x + 4.0, FIELD.center().1),
-            srgb(theme.control_pressed)
+            srgb(theme.colors.control_pressed)
         );
         assert_eq!(
             pixel(&pixels, width, FIELD.x + 40.0, FIELD.y + 0.5),
-            srgb(theme.accent)
+            srgb(theme.colors.accent)
         );
     }
 
@@ -598,16 +598,16 @@ mod tests {
         let (_, highlighted) = entry_center(&harness, 5);
         assert_eq!(
             pixel(&pixels, width, FIELD.x + 10.0, highlighted),
-            srgb(theme.selection_focused)
+            srgb(theme.colors.selection_focused)
         );
         let (_, plain) = entry_center(&harness, 3);
         assert_eq!(
             pixel(&pixels, width, FIELD.x + 10.0, plain),
-            srgb(theme.panel)
+            srgb(theme.colors.panel)
         );
         assert_eq!(
             pixel(&pixels, width, FIELD.x + 40.0, FIELD.y + 0.5),
-            srgb(theme.accent)
+            srgb(theme.colors.accent)
         );
     }
 

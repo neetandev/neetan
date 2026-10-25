@@ -9,7 +9,10 @@ use gui::{
     ui::{Align, UiContext, wrapped_height, wrapped_label},
 };
 use machine_factory::config::{
-    settings::{BACKEND_KEY, CONFIG_FOLDER_KEY, GUI_FONT_KEY, ROMS_FOLDER_KEY, Scope, Setting},
+    settings::{
+        BACKEND_KEY, CONFIG_FOLDER_KEY, GUI_FONT_KEY, GUI_THEME_KEY, ROMS_FOLDER_KEY, Scope,
+        Setting,
+    },
     systems::RomFolder,
 };
 
@@ -34,8 +37,8 @@ use crate::{
 };
 
 /// The keys whose change applies after a restart. The window creates its
-/// graphics engine and loads its font once.
-const RESTART_KEYS: [&str; 2] = [BACKEND_KEY, GUI_FONT_KEY];
+/// graphics engine and loads its font and its theme once.
+const RESTART_KEYS: [&str; 3] = [BACKEND_KEY, GUI_FONT_KEY, GUI_THEME_KEY];
 
 /// The sentence of a key whose change applies after a restart.
 const RESTART_NOTE: &str = "The change applies after a restart.";
@@ -639,6 +642,26 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(test.settings_file()).expect("file reads"),
             "audio-volume = 0.6\n"
+        );
+    }
+
+    /// Verifies that the row of the GUI theme shows its built-in default and the restart note, also under a flag.
+    #[test]
+    fn the_gui_theme_row_shows_the_restart_note() {
+        let theme = find_setting(GUI_THEME_KEY).expect("a key");
+        let test = SettingsRoot::new("gui_theme", Some("gui-theme = light\n"));
+        let host = test.host(&[]);
+        let editor = settings_page(&host, &statuses_with(&host, RomStatus::Found));
+        assert_eq!(editor.extra_note(theme).as_deref(), Some(RESTART_NOTE));
+        assert_eq!(
+            placeholder(&editor, GUI_THEME_KEY).as_deref(),
+            Some("Built-in default: dark")
+        );
+        let host = test.host(&[(GUI_THEME_KEY, "dark")]);
+        let editor = settings_page(&host, &statuses_with(&host, RomStatus::Found));
+        assert_eq!(
+            editor.extra_note(theme).as_deref(),
+            Some("The command line sets dark for this run. The change applies after a restart.")
         );
     }
 

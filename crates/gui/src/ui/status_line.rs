@@ -79,10 +79,10 @@ pub enum StatusEnd<'a> {
 /// and less than `Theme::status_end_min_width` is left out.
 pub fn status_line(context: &mut UiContext, rect: Rect, hints: &[Hint], end: StatusEnd) {
     let theme = context.theme;
-    context.fill(rect, theme.well);
+    context.fill(rect, theme.colors.well);
     context.fill(
         Rect::new(rect.x, rect.y, rect.width, theme.stroke),
-        theme.panel_edge,
+        theme.colors.panel_edge,
     );
     let style = theme.small();
     let inner = Rect::new(
@@ -127,10 +127,10 @@ pub fn status_line(context: &mut UiContext, rect: Rect, hints: &[Hint], end: Sta
             context.text_in(area, &style, path, Align::End, Truncation::Middle);
         }
         StatusEnd::Error(error) => {
-            let style = style.with_color(theme.danger_text);
+            let style = style.with_color(theme.colors.danger_text);
             let (icon, text) = Rect::new(inner.right() - width, rect.y, width, rect.height)
                 .cut_left(theme.icon_size);
-            context.icon(icon, Icon::Alert, theme.icon_size, theme.danger_text);
+            context.icon(icon, Icon::Alert, theme.icon_size, theme.colors.danger_text);
             let text = text.cut_left(theme.gap * 0.75).1;
             context.text_in(text, &style, error, Align::End, Truncation::End);
         }
@@ -153,7 +153,7 @@ fn hint_width(context: &mut UiContext, hint: &Hint) -> f32 {
 /// and the border on both sides, at least the height of the cap.
 fn keycap_width(context: &mut UiContext, key: HintKey) -> f32 {
     let theme = context.theme;
-    let style = theme.small().with_color(theme.text);
+    let style = theme.small().with_color(theme.colors.text);
     match key {
         HintKey::Pad(_) => KEYCAP_HEIGHT,
         HintKey::Key(text) | HintKey::Shoulder(text) => {
@@ -167,7 +167,7 @@ fn keycap_width(context: &mut UiContext, key: HintKey) -> f32 {
 /// Returns the right edge of the cap.
 fn keycap(context: &mut UiContext, x: f32, line: Rect, key: HintKey) -> f32 {
     let theme = context.theme;
-    let style = theme.small().with_color(theme.text);
+    let style = theme.small().with_color(theme.colors.text);
     let small_radius = theme.radius * 2.0 / 3.0;
     let half = KEYCAP_HEIGHT * 0.5;
     let width = keycap_width(context, key);
@@ -182,7 +182,8 @@ fn keycap(context: &mut UiContext, x: f32, line: Rect, key: HintKey) -> f32 {
         cap,
         &RectStyle {
             radii,
-            ..RectStyle::filled(theme.control, 0.0).with_stroke(theme.stroke, theme.control_edge)
+            ..RectStyle::filled(theme.colors.control, 0.0)
+                .with_stroke(theme.stroke, theme.colors.control_edge)
         },
     );
     context.text_centered(cap, &style, text);
@@ -232,9 +233,12 @@ mod tests {
         let theme = &harness.theme;
         assert_eq!(
             pixel(&pixels, width, 400.0, LINE.y + 0.5),
-            srgb(theme.panel_edge)
+            srgb(theme.colors.panel_edge)
         );
-        assert_eq!(pixel(&pixels, width, 400.0, LINE.y + 3.0), srgb(theme.well));
+        assert_eq!(
+            pixel(&pixels, width, 400.0, LINE.y + 3.0),
+            srgb(theme.colors.well)
+        );
         let caps = harness
             .scene
             .instances()
@@ -259,7 +263,7 @@ mod tests {
     fn a_key_cap_holds_its_text_its_padding_and_its_border() {
         let mut harness = Harness::new();
         let (text, wide, short) = harness.frame(|context| {
-            let style = context.theme.small().with_color(context.theme.text);
+            let style = context.theme.small().with_color(context.theme.colors.text);
             (
                 context.measure(&style, "Ctrl+PgUp"),
                 keycap_width(context, HintKey::Key("Ctrl+PgUp")),
@@ -412,7 +416,7 @@ mod tests {
             .instances()
             .iter()
             .filter(|instance| instance.kind[0] == Instance::KIND_GLYPH)
-            .any(|instance| instance.color == harness.theme.danger_text.to_linear());
+            .any(|instance| instance.color == harness.theme.colors.danger_text.to_linear());
         assert!(alert);
     }
 

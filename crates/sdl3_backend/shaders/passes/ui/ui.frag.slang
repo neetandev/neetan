@@ -99,11 +99,19 @@ func line(input: UiVaryings, pixel: float2) -> float4 {
     return input.color * sdf_coverage(distance);
 }
 
+// The exponent of the coverage curve of black text. It approximates the sRGB transfer curve.
+static const float DARK_TEXT_EXPONENT = 2.2;
+
+// The factor on the luminance of the text color in the coverage curve. Text with a luminance
+// of a quarter or more keeps the linear coverage.
+static const float TEXT_LUMINANCE_FACTOR = 4.0;
+
 // Blending in linear light thins dark text on a light background. The coverage of dark
-// text follows the curve of a blend in sRGB. Light text keeps the linear coverage.
+// text follows the curve of a blend in sRGB. Light text keeps the linear coverage. The CPU
+// rasterizer of the gui crate computes the same curve with the same constants.
 func text_coverage(coverage: float, color: float4) -> float {
     let luminance = dot(color.rgb, LUMINANCE_WEIGHTS) / max(color.a, 1.0 / 255.0);
-    let exponent = lerp(2.2, 1.0, saturate(luminance * 4.0));
+    let exponent = lerp(DARK_TEXT_EXPONENT, 1.0, saturate(luminance * TEXT_LUMINANCE_FACTOR));
     if (exponent == 1.0 || coverage >= 1.0) {
         return coverage;
     }

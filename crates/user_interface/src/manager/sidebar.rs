@@ -170,7 +170,7 @@ pub(crate) fn show_sidebar(
             theme.stroke,
             area.height,
         ),
-        theme.panel_edge,
+        theme.colors.panel_edge,
     );
     let inner = Rect::new(
         area.x + theme.padding,
@@ -230,9 +230,13 @@ pub(crate) fn show_sidebar(
 fn show_rom_line(context: &mut UiContext, area: Rect, entry: &SystemEntry) {
     let theme = context.theme;
     let (icon, icon_color, text_color) = match entry.rom_mark() {
-        RowMark::Marker(icon) => (Some(icon), theme.marker, theme.text_dim),
-        RowMark::Alert => (Some(Icon::Alert), theme.danger_text, theme.danger_text),
-        RowMark::Blank => (None, theme.text_dim, theme.text_dim),
+        RowMark::Marker(icon) => (Some(icon), theme.colors.marker, theme.colors.text_dim),
+        RowMark::Alert => (
+            Some(Icon::Alert),
+            theme.colors.danger_text,
+            theme.colors.danger_text,
+        ),
+        RowMark::Blank => (None, theme.colors.text_dim, theme.colors.text_dim),
     };
     let (slot, text_area) = area.cut_left(theme.icon_size);
     if let Some(icon) = icon {
@@ -450,8 +454,8 @@ mod tests {
             let top = HEADER_HEIGHT + theme.stroke + LIST_PADDING + index as f32 * theme.row_height;
             let rows = (top + 4.0, top + theme.row_height - 4.0);
             let mark = (mark_left, list_right - theme.gap);
-            let marker = has_color(&harness, &pixels, mark, rows, theme.marker);
-            let alert = has_color(&harness, &pixels, mark, rows, theme.danger_text);
+            let marker = has_color(&harness, &pixels, mark, rows, theme.colors.marker);
+            let alert = has_color(&harness, &pixels, mark, rows, theme.colors.danger_text);
             let expected = match entry.rom_mark() {
                 RowMark::Marker(_) => (true, false),
                 RowMark::Alert => (false, true),
@@ -468,15 +472,15 @@ mod tests {
                         label_end
                     ),
                     rows,
-                    theme.text
+                    theme.colors.text
                 ),
                 "the label of {}",
                 entry.system.label
             );
             let count_color = if index == state.selected {
-                theme.text
+                theme.colors.text
             } else {
-                theme.text_dim
+                theme.colors.text_dim
             };
             assert!(
                 has_color(

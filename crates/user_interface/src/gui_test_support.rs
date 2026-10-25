@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use gui::{
     Fonts, Rasterizer, Scene,
-    ui::{Input, Theme, UiContext, UiState, Viewport},
+    ui::{Input, Theme, ThemeKind, UiContext, UiState, Viewport},
 };
 
 /// Returns the font file of the repository.
@@ -30,21 +30,24 @@ pub(crate) struct GuiHarness {
     pub(crate) input: Input,
     /// The target of the passes.
     pub(crate) viewport: Viewport,
+    /// The kind of the theme.
+    kind: ThemeKind,
 }
 
 impl GuiHarness {
-    /// A harness of `width` x `height` physical pixels at scale 1.
+    /// A harness in the dark theme of `width` x `height` physical pixels at
+    /// scale 1.
     pub(crate) fn new(width: u32, height: u32) -> Self {
-        Self::with_viewport(Viewport::new(width, height, 1.0))
+        Self::with_viewport(Viewport::new(width, height, 1.0), ThemeKind::Dark)
     }
 
-    /// A harness with the target `viewport`.
-    pub(crate) fn with_viewport(viewport: Viewport) -> Self {
+    /// A harness in the theme `kind` with the target `viewport`.
+    pub(crate) fn with_viewport(viewport: Viewport, kind: ThemeKind) -> Self {
         let mut fonts = Fonts::new();
         let font = fonts
             .add(repository_font())
             .expect("the repository font parses");
-        let theme = Theme::new(&mut fonts, font);
+        let theme = Theme::new(&mut fonts, font, kind);
         Self {
             fonts,
             theme,
@@ -52,6 +55,7 @@ impl GuiHarness {
             state: UiState::default(),
             input: Input::default(),
             viewport,
+            kind,
         }
     }
 
@@ -94,10 +98,15 @@ impl GuiHarness {
     }
 
     /// Writes the scene of the last pass as `<name>.ppm` into the directory
-    /// of the `GUI_SHOTS` environment variable.
+    /// of the `GUI_SHOTS` environment variable. A light theme writes
+    /// `light_<name>.ppm`.
     pub(crate) fn write_screenshot(&self, name: &str) {
         let Viewport { width, height, .. } = self.viewport;
-        write_ppm(name, width, height, &self.render());
+        let name = match self.kind {
+            ThemeKind::Dark => name.to_owned(),
+            ThemeKind::Light => format!("light_{name}"),
+        };
+        write_ppm(&name, width, height, &self.render());
     }
 }
 
