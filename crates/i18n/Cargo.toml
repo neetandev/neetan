@@ -1,0 +1,15 @@
+[package]
+name = "i18n"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# The code generator. It turns a reference language file into Rust source.
+generate = []
+
+[dependencies]
