@@ -31,21 +31,32 @@ pub const POPUP_MAX_ROWS: usize = 8;
 /// more than [`POPUP_MAX_ROWS`] rows scrolls like a list. A dropdown that
 /// turns disabled while its popup is open closes the popup and gives the
 /// focus back.
-#[derive(Clone, Copy, Debug)]
-pub struct Dropdown<'a> {
+///
+/// The captions of the choices are any text type, such as `&str`, `String`
+/// or `Cow<str>`.
+#[derive(Debug)]
+pub struct Dropdown<'a, T: AsRef<str> = &'a str> {
     /// The id of the dropdown.
     id: UiId,
     /// The captions of the choices.
-    choices: &'a [&'a str],
+    choices: &'a [T],
     /// The label of the inherited value, the first entry of the popup.
     inherited: Option<&'a str>,
     /// Whether the dropdown reacts to input.
     enabled: bool,
 }
 
-impl<'a> Dropdown<'a> {
+impl<T: AsRef<str>> Clone for Dropdown<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: AsRef<str>> Copy for Dropdown<'_, T> {}
+
+impl<'a, T: AsRef<str>> Dropdown<'a, T> {
     /// An enabled dropdown over `choices` without an inherited entry.
-    pub fn new(id: impl Into<UiId>, choices: &'a [&'a str]) -> Self {
+    pub fn new(id: impl Into<UiId>, choices: &'a [T]) -> Self {
         Self {
             id: id.into(),
             choices,
@@ -95,7 +106,7 @@ impl<'a> Dropdown<'a> {
     /// The caption of `value` and whether it is the inherited label.
     fn caption(&self, value: Option<usize>) -> (&'a str, bool) {
         match value.and_then(|choice| self.choices.get(choice)) {
-            Some(caption) => (caption, false),
+            Some(caption) => (caption.as_ref(), false),
             None => (self.inherited.unwrap_or(""), self.inherited.is_some()),
         }
     }
@@ -271,7 +282,7 @@ impl<'a> Dropdown<'a> {
             context.icon(marker, Icon::Check, theme.icon_size, theme.colors.marker);
         }
         let (caption, inherited) = match self.value_of(row.index) {
-            Some(choice) => (self.choices.get(choice).copied().unwrap_or(""), false),
+            Some(choice) => (self.choices.get(choice).map_or("", AsRef::as_ref), false),
             None => (self.inherited.unwrap_or(""), true),
         };
         let color = if inherited && !row.selected {

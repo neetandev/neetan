@@ -204,6 +204,9 @@ impl Shell {
             return;
         };
         let launch = gui.pass(|context| manager.show(context));
+        if let Some(catalog) = manager.take_catalog_switch() {
+            gui.set_catalog(catalog);
+        }
         gui.sync_text_input(&self.host.window);
         self.frame_pending = true;
         if launch.is_some() {

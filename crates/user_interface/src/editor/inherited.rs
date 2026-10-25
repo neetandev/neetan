@@ -125,7 +125,9 @@ fn shown_value(setting: &Setting, value: &str, root: &Path) -> String {
                 |path| path.to_string_lossy().into_owned(),
             )
         }
-        ValueKind::Choice(_) | ValueKind::OnOff | ValueKind::Number(_) => value.to_owned(),
+        ValueKind::Choice(_) | ValueKind::OnOff | ValueKind::Number(_) | ValueKind::Language => {
+            value.to_owned()
+        }
     }
 }
 

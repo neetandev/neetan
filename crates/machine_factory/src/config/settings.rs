@@ -263,6 +263,8 @@ pub enum ValueKind {
     Path(PathKind),
     /// An ordered list of files. The key repeats and each value appends one file.
     PathList,
+    /// `auto` or a language tag of the language files of the user interface.
+    Language,
 }
 
 /// Group of related settings.
@@ -393,9 +395,11 @@ impl Setting {
     ) -> impl Iterator<Item = &'static Choice> {
         let choices: &'static [Choice] = match self.kind {
             ValueKind::Choice(choices) => choices,
-            ValueKind::OnOff | ValueKind::Number(_) | ValueKind::Path(_) | ValueKind::PathList => {
-                &[]
-            }
+            ValueKind::OnOff
+            | ValueKind::Number(_)
+            | ValueKind::Path(_)
+            | ValueKind::PathList
+            | ValueKind::Language => &[],
         };
         choices
             .iter()
@@ -505,6 +509,8 @@ pub const GUI_FONT_KEY: &str = "gui-font";
 pub const BACKEND_KEY: &str = "backend";
 /// Key of the theme of the user interface.
 pub const GUI_THEME_KEY: &str = "gui-theme";
+/// Key of the language of the user interface.
+pub const GUI_LANGUAGE_KEY: &str = "gui-language";
 /// Key of the audio volume.
 pub const AUDIO_VOLUME_KEY: &str = "audio-volume";
 /// Key of the window mode.
@@ -1966,6 +1972,27 @@ pub static SETTINGS: &[Setting] = &[
         format: |config| format_value(config.gui_theme),
     },
     Setting {
+        key: GUI_LANGUAGE_KEY,
+        label: "GUI language",
+        help: "Language of the user interface: auto or a language tag such as ja. Auto takes the first preferred language of the system that has a language file.",
+        scope: Scope::Host,
+        kind: ValueKind::Language,
+        families: Families::ALL,
+        model_limits: &[],
+        section: Some(Section::VideoAndAudio),
+        explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
+        frontend_only: true,
+        clear: None,
+        apply: |config, value| {
+            config.gui_language = value.parse()?;
+            Ok(())
+        },
+        format: |config| format_value(&config.gui_language),
+    },
+    Setting {
         key: AUDIO_VOLUME_KEY,
         label: "Audio volume",
         help: "Audio volume.",
@@ -2323,6 +2350,7 @@ mod tests {
                 .collect(),
             ValueKind::Path(_) => vec!["images/disk.img".to_owned()],
             ValueKind::PathList => vec!["images/disk.img".to_owned()],
+            ValueKind::Language => vec!["auto".to_owned(), "ja".to_owned(), "pt-BR".to_owned()],
         }
     }
 
@@ -2449,8 +2477,49 @@ mod tests {
                     (setting.apply)(&mut config, "").expect("empty path applies");
                     assert!((setting.format)(&config).is_empty(), "{}", setting.key);
                 }
-                ValueKind::Choice(_) | ValueKind::OnOff | ValueKind::Number(_) => {}
+                ValueKind::Choice(_)
+                | ValueKind::OnOff
+                | ValueKind::Number(_)
+                | ValueKind::Language => {}
             }
+        }
+    }
+
+    /// Verifies that the GUI language takes auto and language tags, writes them back as written
+    /// and rejects other text.
+    #[test]
+    fn the_gui_language_takes_auto_and_language_tags() {
+        use super::super::GuiLanguage;
+
+        let setting = find_setting(GUI_LANGUAGE_KEY).expect("gui-language is a table key");
+        assert_eq!(setting.scope, Scope::Host);
+        assert_eq!(setting.kind, ValueKind::Language);
+        assert_eq!(setting.section, Some(Section::VideoAndAudio));
+        let mut config = first_system_config();
+        assert_eq!(config.gui_language, GuiLanguage::Auto);
+        assert_eq!((setting.format)(&config), ["auto"]);
+        for (value, language, written) in [
+            ("ja", GuiLanguage::Tag("ja".to_owned()), "ja"),
+            ("pt-BR", GuiLanguage::Tag("pt-BR".to_owned()), "pt-BR"),
+            (
+                "zh-Hant-TW",
+                GuiLanguage::Tag("zh-Hant-TW".to_owned()),
+                "zh-Hant-TW",
+            ),
+            ("AUTO", GuiLanguage::Auto, "auto"),
+        ] {
+            (setting.apply)(&mut config, value).expect("the value applies");
+            assert_eq!(config.gui_language, language);
+            assert_eq!((setting.format)(&config), [written]);
+        }
+        for invalid in ["", "pt_BR", "ja-", "-ja", "ja--JP", "日本語", "en US"] {
+            assert_eq!(
+                (setting.apply)(&mut config, invalid),
+                Err(format!(
+                    "invalid GUI language '{invalid}', expected auto or a language tag of letters, digits and -"
+                )),
+                "{invalid}"
+            );
         }
     }
 
@@ -2470,6 +2539,7 @@ mod tests {
             let invalid = match setting.kind {
                 ValueKind::Choice(_) | ValueKind::OnOff => "bogus",
                 ValueKind::Number(_) => "99",
+                ValueKind::Language => "pt_BR",
                 ValueKind::Path(_) | ValueKind::PathList => continue,
             };
             let mut config = first_system_config();

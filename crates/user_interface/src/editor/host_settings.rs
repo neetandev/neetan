@@ -10,8 +10,8 @@ use gui::{
 };
 use machine_factory::config::{
     settings::{
-        BACKEND_KEY, CONFIG_FOLDER_KEY, GUI_FONT_KEY, GUI_THEME_KEY, ROMS_FOLDER_KEY, Scope,
-        Setting,
+        BACKEND_KEY, CONFIG_FOLDER_KEY, GUI_FONT_KEY, GUI_LANGUAGE_KEY, GUI_THEME_KEY,
+        ROMS_FOLDER_KEY, Scope, Setting,
     },
     systems::RomFolder,
 };
@@ -22,6 +22,7 @@ use super::{
     form::host_fields,
     inherited::{Inherited, InheritedSource},
     kept_lines::draw_rule,
+    language_row::LanguageRow,
     notes::{Note, sentences},
     rom_rows::{RomRow, rom_folder_of},
     rows::{NOTE_MAXIMUM_LINES, ReadOnlyRow},
@@ -29,10 +30,11 @@ use super::{
 };
 use crate::{
     config::{
-        HostLayers, SettingsLocation, SettingsSource,
+        HostLayers, SettingsLocation, SettingsSource, find_language_files,
         layers::{folder_location, host_default},
         reading::LayerLine,
     },
+    language::language_options,
     rom_folders::{RomFolderStatus, rom_folder_location},
 };
 
@@ -88,6 +90,19 @@ fn rom_folder_flag_sentence(folder: &str) -> String {
     format!("The command line sets the ROM folder {folder} for this run.")
 }
 
+/// The sentences after the note of the key `key` with the command line
+/// `flags`: the value of its flag and the restart that its change needs.
+fn extra_sentences(flags: &[(&'static str, String)], key: &str) -> Option<String> {
+    let flag = flags
+        .iter()
+        .rev()
+        .find(|(flag_key, _)| *flag_key == key)
+        .map(|(_, value)| flag_sentence(value));
+    let restart = RESTART_KEYS.contains(&key).then(|| RESTART_NOTE.to_owned());
+    let text = sentences(&[flag, restart]);
+    (!text.is_empty()).then_some(text)
+}
+
 /// The notes of a path field on the settings page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct HostPathNote {
@@ -119,13 +134,15 @@ pub(crate) struct HostSettings {
     flags: Vec<(&'static str, String)>,
     /// The ROM keys of the page with the last check of their folders.
     pub(super) roms: Vec<RomRow>,
+    /// The languages of the language files and the texts of the language row.
+    pub(super) language: LanguageRow,
 }
 
 impl HostSettings {
     /// The state of the settings page of `host`, with the ROM statuses
     /// `statuses` of the last ROM check.
     pub(super) fn new(host: &HostLayers, statuses: &[RomFolderStatus]) -> Self {
-        let flags = host
+        let flags: Vec<(&'static str, String)> = host
             .command_line_layer()
             .lines
             .iter()
@@ -147,8 +164,12 @@ impl HostSettings {
             .collect();
         let mut settings = Self {
             location: host.location().clone(),
-            flags,
             roms,
+            language: LanguageRow::new(
+                language_options(&find_language_files(&host.language_folders())),
+                extra_sentences(&flags, GUI_LANGUAGE_KEY),
+            ),
+            flags,
         };
         settings.take_statuses(statuses);
         settings
@@ -242,12 +263,7 @@ impl HostSettings {
     /// The sentences after the note of `setting`: the value of its command
     /// line flag and the restart that its change needs.
     pub(crate) fn extra_note(&self, setting: &Setting) -> Option<String> {
-        let flag = self.flag(setting.key).map(flag_sentence);
-        let restart = RESTART_KEYS
-            .contains(&setting.key)
-            .then(|| RESTART_NOTE.to_owned());
-        let text = sentences(&[flag, restart]);
-        (!text.is_empty()).then_some(text)
+        extra_sentences(&self.flags, setting.key)
     }
 
     /// The warning of `setting` while its file does not exist, followed by

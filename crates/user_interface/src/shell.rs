@@ -33,7 +33,9 @@ use self::{
 };
 use crate::{
     GAME_NAME, Result,
-    config::{Backend, EmulatorConfig, GuiTheme, HostLayers, WindowMode},
+    config::{
+        Backend, EmulatorConfig, GuiLanguage, GuiResources, GuiTheme, HostLayers, WindowMode,
+    },
     gui_host::{GuiHost, theme_kind},
     host::{
         Host, HostParts, MANAGER_WINDOW_SIZE, MINIMUM_WINDOW_SIZE, SESSION_MINIMUM_WINDOW_SIZE,
@@ -67,12 +69,16 @@ pub(crate) struct ShellOptions {
     gui_font_paths: Vec<PathBuf>,
     /// The theme of the user interface.
     gui_theme: GuiTheme,
+    /// The language of the user interface.
+    gui_language: GuiLanguage,
+    /// The folders searched for the language files in search order.
+    language_folders: Vec<PathBuf>,
 }
 
 impl ShellOptions {
-    /// The shell settings for the game of `config` with the GUI font
-    /// search paths `gui_font_paths`.
-    pub(crate) fn for_config(config: &EmulatorConfig, gui_font_paths: Vec<PathBuf>) -> Self {
+    /// The shell settings for the game of `config` with the GUI font search
+    /// paths and the language folders of `gui_resources`.
+    pub(crate) fn for_config(config: &EmulatorConfig, gui_resources: GuiResources) -> Self {
         Self {
             backend: config.backend,
             audio_volume: config.audio_volume,
@@ -80,15 +86,18 @@ impl ShellOptions {
             fullscreen: config.window_mode == WindowMode::Fullscreen,
             display_aspect_mode: graphics_display_aspect_mode(config.aspect_mode),
             large_native_target: wants_large_native_target(config),
-            gui_font_paths,
+            gui_font_paths: gui_resources.font_paths,
             gui_theme: config.gui_theme,
+            gui_language: config.gui_language.clone(),
+            language_folders: gui_resources.language_folders,
         }
     }
 
     /// The shell settings for the game manager: the backend, the volume, the
-    /// window mode, the GUI font and the GUI theme of the settings file and
-    /// the command line of `host`. A missing or invalid value keeps the
-    /// built-in default.
+    /// window mode, the GUI font, the GUI theme and the GUI language of the
+    /// settings file and the command line of `host`, and the language
+    /// folders of `host`. A missing or invalid value keeps the built-in
+    /// default.
     pub(crate) fn for_manager(host: &HostLayers) -> Self {
         let window_mode = host_setting(host, WINDOW_MODE_KEY, str::parse, DEFAULT_WINDOW_MODE);
         Self {
@@ -105,6 +114,8 @@ impl ShellOptions {
             large_native_target: false,
             gui_font_paths: host.gui_font_paths(),
             gui_theme: host_setting(host, GUI_THEME_KEY, str::parse, DEFAULT_GUI_THEME),
+            gui_language: host.gui_language(),
+            language_folders: host.language_folders(),
         }
     }
 }
@@ -218,6 +229,8 @@ impl Shell {
             fullscreen: options.fullscreen,
             gui_font_paths: options.gui_font_paths,
             gui_theme: theme_kind(options.gui_theme),
+            gui_language: options.gui_language,
+            language_folders: options.language_folders,
         });
 
         Ok(Self {
@@ -500,8 +513,9 @@ mod tests {
     use super::ShellOptions;
     use crate::{
         config::{
-            AspectMode, Backend, EmulatorConfig, GuiTheme, HostLayers, LaunchRequest, Locations,
-            SETTINGS_FILE_NAME, WindowMode, test_support::first_model_config,
+            AspectMode, Backend, EmulatorConfig, GuiLanguage, GuiResources, GuiTheme, HostLayers,
+            LANGUAGE_FOLDER, LaunchRequest, Locations, SETTINGS_FILE_NAME, WindowMode,
+            test_support::first_model_config,
         },
         host::{MANAGER_WINDOW_SIZE, WindowSize},
     };
@@ -522,7 +536,7 @@ mod tests {
         (host, root)
     }
 
-    /// Verifies that the options of a game follow its window, engine, font and theme settings.
+    /// Verifies that the options of a game follow its window, engine, font, theme and language settings.
     #[test]
     fn options_follow_the_window_settings_of_the_game() {
         let config = EmulatorConfig {
@@ -531,10 +545,18 @@ mod tests {
             backend: Backend::Legacy,
             audio_volume: 0.5,
             gui_theme: GuiTheme::Light,
+            gui_language: GuiLanguage::Tag("ja".to_owned()),
             ..first_model_config()
         };
         let gui_font_paths = vec![std::path::PathBuf::from("/fonts/ui.ttf")];
-        let options = ShellOptions::for_config(&config, gui_font_paths.clone());
+        let language_folders = vec![std::path::PathBuf::from("/neetan/language")];
+        let options = ShellOptions::for_config(
+            &config,
+            GuiResources {
+                font_paths: gui_font_paths.clone(),
+                language_folders: language_folders.clone(),
+            },
+        );
         assert_eq!(options.window_size, WindowSize::Screen((1280, 800)));
         assert!(options.fullscreen);
         assert_eq!(options.backend, Backend::Legacy);
@@ -542,14 +564,16 @@ mod tests {
         assert_eq!(options.display_aspect_mode, DisplayAspectMode::Aspect1By1);
         assert_eq!(options.gui_font_paths, gui_font_paths);
         assert_eq!(options.gui_theme, GuiTheme::Light);
+        assert_eq!(options.gui_language, GuiLanguage::Tag("ja".to_owned()));
+        assert_eq!(options.language_folders, language_folders);
     }
 
-    /// Verifies that the manager window follows the window mode, the backend, the volume, the font and the theme of the settings file.
+    /// Verifies that the manager window follows the window mode, the backend, the volume, the font, the theme and the language of the settings file.
     #[test]
     fn manager_options_follow_the_settings_file() {
         let (host, root) = host_layers(
             "settings",
-            "window-mode = fullscreen\nbackend = legacy\naudio-volume = 0.25\ngui-font = fonts/ui.ttf\ngui-theme = light\n",
+            "window-mode = fullscreen\nbackend = legacy\naudio-volume = 0.25\ngui-font = fonts/ui.ttf\ngui-theme = light\ngui-language = pt-BR\n",
         );
         let options = ShellOptions::for_manager(&host);
         assert!(options.fullscreen);
@@ -565,6 +589,8 @@ mod tests {
             vec![root.join("fonts").join("ui.ttf")]
         );
         assert_eq!(options.gui_theme, GuiTheme::Light);
+        assert_eq!(options.gui_language, GuiLanguage::Tag("pt-BR".to_owned()));
+        assert_eq!(options.language_folders, vec![root.join(LANGUAGE_FOLDER)]);
     }
 
     /// Verifies that the manager keeps the built-in defaults for unset and invalid values.
@@ -572,10 +598,11 @@ mod tests {
     fn manager_options_keep_the_defaults_for_invalid_values() {
         let (host, root) = host_layers(
             "invalid",
-            "backend = vulkan\naudio-volume = 7\ngui-theme = sepia\n",
+            "backend = vulkan\naudio-volume = 7\ngui-theme = sepia\ngui-language = pt_BR\n",
         );
         let options = ShellOptions::for_manager(&host);
         assert_eq!(options.gui_theme, GuiTheme::Dark);
+        assert_eq!(options.gui_language, GuiLanguage::Auto);
         let (unset, _) = host_layers("unset", "");
         assert_eq!(ShellOptions::for_manager(&unset).gui_theme, GuiTheme::Dark);
         assert!(!options.fullscreen);

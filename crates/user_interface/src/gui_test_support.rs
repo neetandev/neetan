@@ -8,6 +8,8 @@ use gui::{
     ui::{Input, Theme, ThemeKind, UiContext, UiState, Viewport},
 };
 
+use crate::texts::LanguageCatalog;
+
 /// Returns the font file of the repository.
 pub(crate) fn repository_font() -> Vec<u8> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -16,7 +18,8 @@ pub(crate) fn repository_font() -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
-/// The fonts, the theme and the pass state of a user interface without a window.
+/// The fonts, the theme, the catalog and the pass state of a user interface
+/// without a window.
 pub(crate) struct GuiHarness {
     /// The fonts with the font of the repository.
     pub(crate) fonts: Fonts,
@@ -32,17 +35,30 @@ pub(crate) struct GuiHarness {
     pub(crate) viewport: Viewport,
     /// The kind of the theme.
     kind: ThemeKind,
+    /// The texts of the passes.
+    catalog: LanguageCatalog,
+    /// The generation of the catalog. Each switch of the catalog counts it up.
+    catalog_generation: u64,
 }
 
 impl GuiHarness {
-    /// A harness in the dark theme of `width` x `height` physical pixels at
-    /// scale 1.
+    /// A harness in the dark theme with the English texts of `width` x
+    /// `height` physical pixels at scale 1.
     pub(crate) fn new(width: u32, height: u32) -> Self {
-        Self::with_viewport(Viewport::new(width, height, 1.0), ThemeKind::Dark)
+        Self::with_viewport(
+            Viewport::new(width, height, 1.0),
+            ThemeKind::Dark,
+            LanguageCatalog::English,
+        )
     }
 
-    /// A harness in the theme `kind` with the target `viewport`.
-    pub(crate) fn with_viewport(viewport: Viewport, kind: ThemeKind) -> Self {
+    /// A harness in the theme `kind` with the texts of `catalog` and the
+    /// target `viewport`.
+    pub(crate) fn with_viewport(
+        viewport: Viewport,
+        kind: ThemeKind,
+        catalog: LanguageCatalog,
+    ) -> Self {
         let mut fonts = Fonts::new();
         let font = fonts
             .add(repository_font())
@@ -56,7 +72,16 @@ impl GuiHarness {
             input: Input::default(),
             viewport,
             kind,
+            catalog,
+            catalog_generation: 0,
         }
+    }
+
+    /// Replaces the catalog with `catalog` and counts the catalog generation
+    /// up.
+    pub(crate) fn set_catalog(&mut self, catalog: LanguageCatalog) {
+        self.catalog = catalog;
+        self.catalog_generation += 1;
     }
 
     /// Runs one pass of `draw` with the pending input.
@@ -65,10 +90,12 @@ impl GuiHarness {
             &mut self.scene,
             &mut self.fonts,
             &self.theme,
+            self.catalog.catalog(),
             &self.input,
             &mut self.state,
             self.viewport,
-        );
+        )
+        .with_catalog_generation(self.catalog_generation);
         let result = draw(&mut context);
         context.finish();
         self.input.advance();

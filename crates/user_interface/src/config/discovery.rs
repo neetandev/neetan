@@ -2,8 +2,13 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use common::{Context, bail};
-use machine_factory::config::settings::{Setting, ValueKind};
+use common::{Context, bail, warn};
+use machine_factory::config::{
+    is_language_tag,
+    settings::{Setting, ValueKind},
+};
+
+use crate::texts::ENGLISH_TAG;
 
 /// File name of the settings file.
 pub const SETTINGS_FILE_NAME: &str = "neetan.conf";
@@ -177,6 +182,80 @@ pub fn resource_folder(executable_directory: &Path) -> PathBuf {
     normalized
 }
 
+/// The folder of the language files below the root and below the resource
+/// folder of the installation.
+pub const LANGUAGE_FOLDER: &str = "language";
+
+/// The file extension of a language file.
+const LANGUAGE_FILE_EXTENSION: &str = "ini";
+
+/// A language file of the user interface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LanguageFile {
+    /// The language tag: the file name without its extension, for example `ja` or `pt-BR`.
+    pub tag: String,
+    /// The path of the file.
+    pub path: PathBuf,
+}
+
+/// Returns the language files of `folders` in the order of the folders. The
+/// files of one folder follow the order of their tags without regard to case.
+///
+/// A file is a `*.ini` file whose name is a language tag. A tag that an
+/// earlier file has, compared without regard to case, and the tag `en` of the
+/// embedded English texts are left out. A folder that does not read gives no
+/// files.
+#[must_use]
+pub fn find_language_files(folders: &[PathBuf]) -> Vec<LanguageFile> {
+    let mut files: Vec<LanguageFile> = Vec::new();
+    for folder in folders {
+        let Ok(entries) = std::fs::read_dir(folder) else {
+            continue;
+        };
+        let mut found: Vec<LanguageFile> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file()
+                    && path.extension().is_some_and(|extension| {
+                        extension.eq_ignore_ascii_case(LANGUAGE_FILE_EXTENSION)
+                    })
+            })
+            .filter_map(|path| {
+                let tag = path.file_stem()?.to_str()?.to_owned();
+                if !is_language_tag(&tag) {
+                    warn!(
+                        "The language file {} has no language tag as its name",
+                        path.display()
+                    );
+                    return None;
+                }
+                Some(LanguageFile { tag, path })
+            })
+            .filter(|file| !file.tag.eq_ignore_ascii_case(ENGLISH_TAG))
+            .collect();
+        found.sort_by(|first, second| compare_tags(&first.tag, &second.tag));
+        for file in found {
+            if !files
+                .iter()
+                .any(|known| known.tag.eq_ignore_ascii_case(&file.tag))
+            {
+                files.push(file);
+            }
+        }
+    }
+    files
+}
+
+/// Compares two language tags without regard to case.
+#[must_use]
+pub fn compare_tags(first: &str, second: &str) -> std::cmp::Ordering {
+    first
+        .bytes()
+        .map(|byte| byte.to_ascii_lowercase())
+        .cmp(second.bytes().map(|byte| byte.to_ascii_lowercase()))
+}
+
 /// Returns `path` as an absolute path. A relative path lies below `base`.
 #[must_use]
 pub fn resolve_path(base: &Path, path: &Path) -> PathBuf {
@@ -201,7 +280,8 @@ pub fn resolve_value(setting: &Setting, base: &Path, value: &str) -> String {
         | ValueKind::OnOff
         | ValueKind::Number(_)
         | ValueKind::Path(_)
-        | ValueKind::PathList => value.to_owned(),
+        | ValueKind::PathList
+        | ValueKind::Language => value.to_owned(),
     }
 }
 
@@ -328,6 +408,48 @@ mod tests {
                 current.join("missing.conf").display()
             )
         );
+    }
+
+    /// Verifies that the language files of the first folder come first, sorted by tag, and that a later folder adds only new tags.
+    #[test]
+    fn language_files_follow_the_folder_order() {
+        let temporary = TemporaryFolder::new("language_discovery_test");
+        let root = temporary.path().join("root");
+        let resource = temporary.path().join("resource");
+        for (folder, file) in [
+            (&root, "ja.ini"),
+            (&root, "de.ini"),
+            (&root, "EN.ini"),
+            (&root, "notes.txt"),
+            (&root, "pt_BR.ini"),
+            (&resource, "JA.ini"),
+            (&resource, "fr.INI"),
+            (&resource, "en.ini"),
+        ] {
+            temporary.write_file(folder.join(file), b"");
+        }
+        std::fs::create_dir(root.join("ko.ini")).expect("folder is created");
+        let missing = temporary.path().join("missing");
+        let files = find_language_files(&[missing, root.clone(), resource.clone()]);
+        assert_eq!(
+            files,
+            [
+                LanguageFile {
+                    tag: "de".to_owned(),
+                    path: root.join("de.ini"),
+                },
+                LanguageFile {
+                    tag: "ja".to_owned(),
+                    path: root.join("ja.ini"),
+                },
+                LanguageFile {
+                    tag: "fr".to_owned(),
+                    path: resource.join("fr.INI"),
+                },
+            ]
+        );
+        assert_eq!(compare_tags("pt-br", "PT-BR"), std::cmp::Ordering::Equal);
+        assert_eq!(compare_tags("De", "fr"), std::cmp::Ordering::Less);
     }
 
     /// Verifies that a relative path lies below the base and that `.` components go.

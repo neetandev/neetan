@@ -13,8 +13,9 @@ use sdl3::{
 use sdl3_backend::{DisplayAspectMode, GraphicsEngine, Scaling};
 
 use crate::{
-    config::{AspectMode, Backend, EmulatorConfig, GraphicboardType, ScalingMode},
+    config::{AspectMode, Backend, EmulatorConfig, GraphicboardType, GuiLanguage, ScalingMode},
     gui_host::GuiHost,
+    language::catalog_of,
 };
 
 /// The width of a new window in screen coordinates.
@@ -142,10 +143,15 @@ pub(crate) struct HostParts {
     pub(crate) gui_font_paths: Vec<PathBuf>,
     /// The theme of the user interface.
     pub(crate) gui_theme: ThemeKind,
+    /// The language of the user interface.
+    pub(crate) gui_language: GuiLanguage,
+    /// The folders searched for the language files in search order.
+    pub(crate) language_folders: Vec<PathBuf>,
 }
 
 impl Host {
-    /// Creates the host from its parts and loads the GUI font.
+    /// Creates the host from its parts and loads the GUI font and the
+    /// catalog of the language.
     pub(crate) fn new(parts: HostParts) -> Self {
         let HostParts {
             window,
@@ -156,10 +162,13 @@ impl Host {
             fullscreen,
             gui_font_paths,
             gui_theme,
+            gui_language,
+            language_folders,
         } = parts;
         let scale_factor = window.display_scale();
         info!("Window created with scale factor: {scale_factor}");
-        let (gui, gui_error) = match GuiHost::load(&gui_font_paths, gui_theme) {
+        let catalog = catalog_of(&gui_language, &language_folders);
+        let (gui, gui_error) = match GuiHost::load(&gui_font_paths, gui_theme, catalog) {
             Ok(gui) => (Some(gui), None),
             Err(message) => (None, Some(message)),
         };

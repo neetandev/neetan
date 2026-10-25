@@ -50,6 +50,7 @@ mod state;
 mod status_line;
 mod table;
 mod tabs;
+mod text_buffer;
 mod text_field;
 mod theme;
 
@@ -84,16 +85,55 @@ pub use table::{
     TableRow, TableState,
 };
 pub use tabs::{Tab, tab_bar};
+pub use text_buffer::{TextBuffer, TextData, TextValue};
 pub use text_field::{TEXT_FIELD_LIMIT, TextField, TextFieldResponse, text_field};
 pub use theme::{Palette, Theme, ThemeKind};
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::sync::LazyLock;
+
+    use i18n::{Catalog, KeyInfo, Schema};
+
     use super::*;
     use crate::{
         Color, Fonts, Rasterizer, Rect, Scene, fonts::tests::font_data,
         rasterizer::tests::write_ppm,
     };
+
+    /// The keys of the test catalog, sorted by section and key.
+    static TEST_KEYS: [KeyInfo; 7] = [
+        KeyInfo::new("list", "and-end", &["first", "second"], false),
+        KeyInfo::new("list", "and-middle", &["first", "second"], false),
+        KeyInfo::new("list", "and-pair", &["first", "second"], false),
+        KeyInfo::new("list", "or-end", &["first", "second"], false),
+        KeyInfo::new("list", "or-middle", &["first", "second"], false),
+        KeyInfo::new("list", "or-pair", &["first", "second"], false),
+        KeyInfo::new("sample", "text", &[], false),
+    ];
+
+    /// The schema of the test catalog.
+    static TEST_SCHEMA: Schema = Schema::new(&TEST_KEYS);
+
+    /// The reference source of the test catalog.
+    const TEST_SOURCE: &str = "[language]\nname = Test\nplural = one-other\n\
+                               [list]\nand-pair = {first} and {second}\n\
+                               and-middle = {first}, {second}\n\
+                               and-end = {first} and {second}\n\
+                               or-pair = {first} or {second}\n\
+                               or-middle = {first}, {second}\n\
+                               or-end = {first} or {second}\n\
+                               [sample]\ntext = Sample\n";
+
+    /// The test catalog, built on first use.
+    static TEST_CATALOG: LazyLock<Catalog> = LazyLock::new(|| {
+        Catalog::reference("test", TEST_SOURCE, &TEST_SCHEMA).expect("the test catalog loads")
+    });
+
+    /// Returns the reference catalog of the widget tests.
+    pub(crate) fn test_catalog() -> &'static Catalog {
+        &TEST_CATALOG
+    }
 
     /// The fonts, the theme and the pass state of a user interface without
     /// a window.
@@ -110,17 +150,30 @@ pub(crate) mod tests {
         pub(crate) input: Input,
         /// The target of the passes.
         pub(crate) viewport: Viewport,
+        /// The texts of the passes.
+        pub(crate) catalog: &'static Catalog,
+        /// The catalog generation of the passes.
+        pub(crate) generation: u64,
     }
 
     impl Harness {
-        /// A harness in the dark theme with a target of 800 x 600 pixels at
-        /// scale 1.
+        /// A harness in the dark theme with the test catalog and a target of
+        /// 800 x 600 pixels at scale 1.
         pub(crate) fn new() -> Self {
-            Self::with_viewport(Viewport::new(800, 600, 1.0), ThemeKind::Dark)
+            Self::with_viewport(
+                Viewport::new(800, 600, 1.0),
+                ThemeKind::Dark,
+                test_catalog(),
+            )
         }
 
-        /// A harness in the theme `kind` with the target `viewport`.
-        pub(crate) fn with_viewport(viewport: Viewport, kind: ThemeKind) -> Self {
+        /// A harness in the theme `kind` with the texts of `catalog` and the
+        /// target `viewport`.
+        pub(crate) fn with_viewport(
+            viewport: Viewport,
+            kind: ThemeKind,
+            catalog: &'static Catalog,
+        ) -> Self {
             let mut fonts = Fonts::new();
             let font = fonts.add(font_data()).unwrap();
             let theme = Theme::new(&mut fonts, font, kind);
@@ -131,6 +184,8 @@ pub(crate) mod tests {
                 state: UiState::default(),
                 input: Input::default(),
                 viewport,
+                catalog,
+                generation: 0,
             }
         }
 
@@ -141,10 +196,12 @@ pub(crate) mod tests {
                 &mut self.scene,
                 &mut self.fonts,
                 &self.theme,
+                self.catalog,
                 &self.input,
                 &mut self.state,
                 self.viewport,
-            );
+            )
+            .with_catalog_generation(self.generation);
             let result = draw(&mut context);
             context.finish();
             self.input.advance();
@@ -457,7 +514,11 @@ pub(crate) mod tests {
     #[test]
     fn the_sample_dialog_works_with_the_mouse_only() {
         let scale = 2.0;
-        let mut harness = Harness::with_viewport(Viewport::new(1600, 1200, scale), ThemeKind::Dark);
+        let mut harness = Harness::with_viewport(
+            Viewport::new(1600, 1200, scale),
+            ThemeKind::Dark,
+            crate::ui::tests::test_catalog(),
+        );
         let mut sample = Sample::default();
         let layout = pass(&mut harness, &mut sample);
         let (x, y) = row_point(&harness, &layout, 4, scale);
@@ -504,7 +565,8 @@ pub(crate) mod tests {
             Viewport::new(1, 1, 1000.0),
             Viewport::new(100, 50, 0.001),
         ] {
-            let mut harness = Harness::with_viewport(viewport, ThemeKind::Dark);
+            let mut harness =
+                Harness::with_viewport(viewport, ThemeKind::Dark, crate::ui::tests::test_catalog());
             let mut sample = Sample::default();
             harness.mouse(5.0, 5.0);
             harness.input.wheel = -3.0;
@@ -529,7 +591,11 @@ pub(crate) mod tests {
     fn sample_screenshot(scale: f32, kind: ThemeKind) {
         let width = (960.0 * scale) as u32;
         let height = (640.0 * scale) as u32;
-        let mut harness = Harness::with_viewport(Viewport::new(width, height, scale), kind);
+        let mut harness = Harness::with_viewport(
+            Viewport::new(width, height, scale),
+            kind,
+            crate::ui::tests::test_catalog(),
+        );
         let prefix = screenshot_prefix(kind);
         let mut sample = Sample {
             write_protect: true,
@@ -768,8 +834,11 @@ pub(crate) mod tests {
                 let scale = self.scale;
                 let width = (size.0 * scale) as u32;
                 let height = (size.1 * scale) as u32;
-                let mut harness =
-                    Harness::with_viewport(Viewport::new(width, height, scale), self.kind);
+                let mut harness = Harness::with_viewport(
+                    Viewport::new(width, height, scale),
+                    self.kind,
+                    crate::ui::tests::test_catalog(),
+                );
                 let area = Rect::new(
                     CELL_GAP,
                     CAPTION_HEIGHT,

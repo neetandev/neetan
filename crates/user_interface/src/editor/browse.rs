@@ -59,7 +59,8 @@ impl Editor {
                 ValueKind::PathList
                 | ValueKind::Choice(_)
                 | ValueKind::OnOff
-                | ValueKind::Number(_),
+                | ValueKind::Number(_)
+                | ValueKind::Language,
             )
             | None => PathKind::File,
         };

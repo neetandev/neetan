@@ -112,6 +112,9 @@ checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 [[package]]
 name = "gui"
 version = "0.1.0"
+dependencies = [
+ "i18n",
+]
 
 [[package]]
 name = "i18n"
@@ -407,6 +410,7 @@ dependencies = [
  "device",
  "dos",
  "gui",
+ "i18n",
  "machine_60",
  "machine_factory",
  "machine_msx",

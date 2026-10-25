@@ -12,6 +12,7 @@ use super::{ErrorDialog, Manager};
 use crate::{
     config::HostLayers,
     editor::{EditedFile, Editor},
+    language::catalog_of,
     rom_folders::rom_folder_path,
 };
 
@@ -36,9 +37,12 @@ impl Manager {
     /// `path` and applies them: the next launch and the editors take the
     /// new settings. A save that changes the config folder, the ROM folder
     /// or the folder of a ROM key checks the ROM folders and scans the
-    /// catalog again, as Refresh does. A settings file that does not read
-    /// keeps the host settings and opens the error dialog.
-    pub(super) fn settings_saved(&mut self, path: &Path) {
+    /// catalog again, as Refresh does. A save that changes the language of
+    /// the user interface loads the catalog of the new value and keeps it
+    /// for the switch when its tag differs from `active_language` without
+    /// regard to case. A settings file that does not read keeps the host
+    /// settings and opens the error dialog.
+    pub(super) fn settings_saved(&mut self, path: &Path, active_language: &str) {
         info!("Game manager: saved {}", path.display());
         let host = match HostLayers::read(&self.start.request, &self.start.locations) {
             Ok(host) => host,
@@ -50,6 +54,15 @@ impl Manager {
             }
         };
         let rescan = folders_changed(&self.host, &host);
+        let language = host.gui_language();
+        if language != self.host.gui_language() {
+            let catalog = catalog_of(&language, &host.language_folders());
+            let tag = catalog.catalog().tag();
+            if !tag.eq_ignore_ascii_case(active_language) {
+                info!("Game manager: the GUI language is {tag}");
+                self.catalog_switch = Some(catalog);
+            }
+        }
         self.host = host;
         self.config_folder = self.host.config_folder();
         if rescan {
@@ -67,7 +80,8 @@ mod tests {
     use gui::ui::{ActionButton, Navigation, Shortcut, ThemeKind, UiId, Viewport};
     use machine_factory::{
         config::settings::{
-            AUDIO_VOLUME_KEY, BACKEND_KEY, CONFIG_FOLDER_KEY, ROMS_FOLDER_KEY, find_setting,
+            AUDIO_VOLUME_KEY, BACKEND_KEY, CONFIG_FOLDER_KEY, GUI_LANGUAGE_KEY, ROMS_FOLDER_KEY,
+            find_setting,
         },
         rom_status::{RomCheck, RomStatus},
     };
@@ -217,6 +231,91 @@ mod tests {
         assert_eq!(titles(&manager), ["Brandish", "Later"]);
     }
 
+    /// Opens the popup of the focused dropdown, renders the frame and closes the popup again.
+    fn popup_pixels(harness: &mut GuiHarness, manager: &mut Manager) -> Vec<u8> {
+        harness.input.confirm = true;
+        settle(harness, manager);
+        assert!(harness.state.popup_open());
+        let pixels = harness.render();
+        harness.input.cancel = true;
+        settle(harness, manager);
+        assert!(!harness.state.popup_open());
+        pixels
+    }
+
+    /// Verifies that a save of another language on the settings page switches the catalog once and that the next frame draws the texts of the new catalog.
+    #[test]
+    fn a_saved_language_switches_the_texts_of_the_next_frame() {
+        let root = EditorRoot::new("settings_language");
+        root.write(
+            "language/de.ini",
+            "[language]\nname = Deutsch\nplural = one-other\n\
+             [host-settings]\nlanguage-auto = Systemsprache\n",
+        );
+        let mut manager = manager_with(&root, &[]);
+        let mut harness = GuiHarness::new(960, 600);
+        settle(&mut harness, &mut manager);
+        harness.input.shortcut = Some(Shortcut::F10);
+        settle(&mut harness, &mut manager);
+        for _ in 0..2 {
+            harness.input.navigation = Some(Navigation::NextTab);
+            settle(&mut harness, &mut manager);
+        }
+        harness.state.set_focus(field_id(GUI_LANGUAGE_KEY));
+        settle(&mut harness, &mut manager);
+        harness.input.confirm = true;
+        settle(&mut harness, &mut manager);
+        harness.input.navigation = Some(Navigation::End);
+        settle(&mut harness, &mut manager);
+        harness.input.confirm = true;
+        settle(&mut harness, &mut manager);
+        harness.input.shortcut = Some(Shortcut::ControlS);
+        settle(&mut harness, &mut manager);
+        assert_eq!(
+            std::fs::read_to_string(root.path("neetan.conf")).expect("settings read"),
+            "gui-language = de\n"
+        );
+        assert!(settings_open(&manager));
+
+        let english = popup_pixels(&mut harness, &mut manager);
+        assert_eq!(popup_pixels(&mut harness, &mut manager), english);
+        let catalog = manager
+            .take_catalog_switch()
+            .expect("the save switches the language");
+        assert_eq!(catalog.catalog().name(), "Deutsch");
+        assert!(manager.take_catalog_switch().is_none());
+        harness.set_catalog(catalog);
+        assert_ne!(popup_pixels(&mut harness, &mut manager), english);
+    }
+
+    /// Verifies that a save whose language resolves to the active language keeps the catalog: the active tag in other case, and `en` over an `auto` that gives English.
+    #[test]
+    fn a_save_that_keeps_the_language_switches_nothing() {
+        let root = EditorRoot::new("settings_same_language");
+        root.write(
+            "language/de.ini",
+            "[language]\nname = Deutsch\nplural = one-other\n",
+        );
+        root.write("neetan.conf", "gui-language = de\n");
+        let mut manager = manager_with(&root, &[]);
+        root.write("neetan.conf", "gui-language = DE\n");
+        manager.settings_saved(&root.path("neetan.conf"), "de");
+        assert!(manager.take_catalog_switch().is_none());
+        root.write("neetan.conf", "gui-language = en\n");
+        manager.settings_saved(&root.path("neetan.conf"), "de");
+        let catalog = manager
+            .take_catalog_switch()
+            .expect("English differs from German");
+        assert_eq!(catalog.catalog().tag(), "en");
+
+        let root = EditorRoot::new("settings_auto_english");
+        root.write("neetan.conf", "gui-language = auto\n");
+        let mut manager = manager_with(&root, &[]);
+        root.write("neetan.conf", "gui-language = en\n");
+        manager.settings_saved(&root.path("neetan.conf"), "en");
+        assert!(manager.take_catalog_switch().is_none());
+    }
+
     /// Verifies that another folder of a ROM key changes the folders and that another audio volume does not.
     #[test]
     fn a_rom_key_changes_the_folders_and_the_volume_does_not() {
@@ -292,7 +391,8 @@ mod tests {
         );
         let mut manager = manager_with(&root, &[]);
         manager.roms = sample_statuses(&manager.host);
-        let mut harness = GuiHarness::with_viewport(viewport, kind);
+        let mut harness =
+            GuiHarness::with_viewport(viewport, kind, crate::texts::LanguageCatalog::English);
         settle(&mut harness, &mut manager);
         harness.state.set_focus(UiId::from(SETTINGS_ID));
         settle(&mut harness, &mut manager);
@@ -326,7 +426,8 @@ mod tests {
             ],
         );
         manager.roms = sample_statuses(&manager.host);
-        let mut harness = GuiHarness::with_viewport(viewport, kind);
+        let mut harness =
+            GuiHarness::with_viewport(viewport, kind, crate::texts::LanguageCatalog::English);
         settle(&mut harness, &mut manager);
         harness.input.shortcut = Some(Shortcut::F10);
         settle(&mut harness, &mut manager);

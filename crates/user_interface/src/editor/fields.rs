@@ -2,19 +2,29 @@
 //! opened and its current value, the choices of a dropdown, and the lines
 //! that a changed field writes into the document.
 
+use std::borrow::Cow;
+
 use gui::ui::ListState;
-use machine_factory::config::settings::{
-    Families, MACHINE_KEY, PathKind, Section, Setting, ValueKind,
+use machine_factory::config::{
+    AUTO_LANGUAGE,
+    settings::{Families, MACHINE_KEY, PathKind, Section, Setting, ValueKind},
 };
 
 use super::form::{EditorSection, FieldSource};
-use crate::config::{
-    ConfigDocument, check_value,
-    metadata::{META_PREFIX, YEAR_KEY, parse_year},
+use crate::{
+    config::{
+        ConfigDocument, check_value,
+        metadata::{META_PREFIX, YEAR_KEY, parse_year},
+    },
+    texts::ENGLISH_TAG,
 };
 
 /// The values of an on/off setting in the order of its dropdown.
 pub(crate) const ON_OFF_CHOICES: [&str; 2] = ["on", "off"];
+
+/// The values of a language setting that need no language file, in the
+/// order of its dropdown.
+pub(crate) const BUILT_IN_LANGUAGE_CHOICES: [&str; 2] = [AUTO_LANGUAGE, ENGLISH_TAG];
 
 /// A value of the file that the launch rejects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +70,7 @@ pub(crate) struct Field {
     /// The key of the field.
     pub(crate) source: FieldSource,
     /// The values of a dropdown field in the order of its entries.
-    pub(crate) choices: Vec<&'static str>,
+    pub(crate) choices: Vec<Cow<'static, str>>,
     /// Whether a save writes the key in every case. Its dropdown has no
     /// inherited entry, and an unset field saves its inherited value.
     pub(crate) required: bool,
@@ -73,14 +83,16 @@ pub(crate) struct Field {
 }
 
 /// Returns the values of the dropdown of `setting` that one of the
-/// families `families` accepts. A field of another kind has none.
-pub(crate) fn choices_of(setting: &Setting, families: Families) -> Vec<&'static str> {
+/// families `families` accepts. A language setting has the values that need
+/// no language file. A field of another kind has none.
+pub(crate) fn choices_of(setting: &Setting, families: Families) -> Vec<Cow<'static, str>> {
     match setting.kind {
         ValueKind::Choice(_) => setting
             .choices_for_families(families)
-            .map(|choice| choice.value)
+            .map(|choice| Cow::Borrowed(choice.value))
             .collect(),
-        ValueKind::OnOff => ON_OFF_CHOICES.to_vec(),
+        ValueKind::OnOff => ON_OFF_CHOICES.map(Cow::Borrowed).to_vec(),
+        ValueKind::Language => BUILT_IN_LANGUAGE_CHOICES.map(Cow::Borrowed).to_vec(),
         ValueKind::Number(_) | ValueKind::Path(_) | ValueKind::PathList => Vec::new(),
     }
 }
@@ -95,7 +107,7 @@ pub(crate) fn is_single_image(setting: &Setting) -> bool {
 /// `choices`. A value that the launch accepts picks its choice, an exact
 /// match before a match that ignores the case. A value that the launch
 /// rejects, and a value of another family, is invalid with the reason.
-fn choice_value(setting: &Setting, choices: &[&str], value: &str) -> ChoiceValue {
+fn choice_value(setting: &Setting, choices: &[Cow<'static, str>], value: &str) -> ChoiceValue {
     let invalid = |message: String| ChoiceValue {
         selected: None,
         invalid: Some(InvalidValue {
@@ -140,11 +152,23 @@ impl Field {
         document: &ConfigDocument,
         required: bool,
     ) -> Self {
-        let key = source.key();
         let choices = source
             .setting()
             .map(|setting| choices_of(setting, families))
             .unwrap_or_default();
+        Self::with_choices(section, source, choices, document, required)
+    }
+
+    /// The field of `source` in `section` with the dropdown values
+    /// `choices` and the value of `document`, read as [`Field::read`] does.
+    pub(crate) fn with_choices(
+        section: EditorSection,
+        source: FieldSource,
+        choices: Vec<Cow<'static, str>>,
+        document: &ConfigDocument,
+        required: bool,
+    ) -> Self {
+        let key = source.key();
         let text = || document.get(key).unwrap_or_default().to_owned();
         let value = match source.setting() {
             None => FieldValue::Text(text()),
@@ -153,7 +177,7 @@ impl Field {
                     FieldValue::EmptyPath
                 }
                 ValueKind::Number(_) | ValueKind::Path(_) => FieldValue::Text(text()),
-                ValueKind::Choice(_) | ValueKind::OnOff => {
+                ValueKind::Choice(_) | ValueKind::OnOff | ValueKind::Language => {
                     FieldValue::Choice(match document.get(key) {
                         None => ChoiceValue::default(),
                         Some(value) => choice_value(setting, &choices, value),
@@ -229,7 +253,7 @@ impl Field {
                 (Some(index), _) => self
                     .choices
                     .get(index)
-                    .map(|value| vec![(*value).to_owned()])
+                    .map(|value| vec![value.to_string()])
                     .unwrap_or_default(),
                 (None, Some(invalid)) => vec![invalid.value.clone()],
                 (None, None) => Vec::new(),
@@ -310,11 +334,11 @@ impl Field {
     }
 
     /// The chosen value of a dropdown field.
-    pub(crate) fn chosen(&self) -> Option<&'static str> {
+    pub(crate) fn chosen(&self) -> Option<&str> {
         match &self.value {
             FieldValue::Choice(choice) => choice
                 .selected
-                .and_then(|index| self.choices.get(index).copied()),
+                .and_then(|index| self.choices.get(index).map(AsRef::as_ref)),
             FieldValue::Text(_)
             | FieldValue::List(_)
             | FieldValue::EmptyList
@@ -382,7 +406,8 @@ impl Field {
                 ValueKind::Choice(_)
                 | ValueKind::OnOff
                 | ValueKind::Path(_)
-                | ValueKind::PathList => None,
+                | ValueKind::PathList
+                | ValueKind::Language => None,
             },
         }
     }
@@ -501,7 +526,7 @@ mod tests {
                 true,
             );
             field.select(Some(0));
-            let model = field.choices[0];
+            let model = field.choices[0].clone();
             (written(&field, document), model)
         };
         let (text, model) =

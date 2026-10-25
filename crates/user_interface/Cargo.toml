@@ -36,7 +36,11 @@ save_state = { workspace = true }
 sdl3 = { workspace = true }
 sdl3_backend = { workspace = true }
 gui = { workspace = true }
+i18n = { workspace = true }
 text_extractor = { workspace = true }
+
+[build-dependencies]
+i18n = { workspace = true, features = ["generate"] }
 
 [dev-dependencies]
 machine_60 = { workspace = true }

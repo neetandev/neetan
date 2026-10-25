@@ -54,6 +54,7 @@ use crate::{
     editor::Editor,
     input::KeyOverrides,
     rom_folders::{RomFolderStatus, check_all_folders},
+    texts::LanguageCatalog,
 };
 
 /// The width of the sidebar in logical units.
@@ -123,6 +124,9 @@ pub(crate) struct Manager {
     next_focus: Option<NextFocus>,
     /// The game that runs.
     running: Option<Launch>,
+    /// The catalog of a new language of the user interface after a save of
+    /// the settings page.
+    catalog_switch: Option<LanguageCatalog>,
 }
 
 impl Manager {
@@ -148,6 +152,7 @@ impl Manager {
             editor: None,
             next_focus: Some(NextFocus::Start),
             running: None,
+            catalog_switch: None,
         };
         manager.rescan();
         info!("{}", manager.scan_summary());
@@ -157,6 +162,12 @@ impl Manager {
     /// The settings file and the command line flags.
     pub(crate) fn host(&self) -> &HostLayers {
         &self.host
+    }
+
+    /// Takes the catalog of the language that a save of the settings page
+    /// selected. A second call gives `None` until the next switch.
+    pub(crate) fn take_catalog_switch(&mut self) -> Option<LanguageCatalog> {
+        self.catalog_switch.take()
     }
 
     /// Scans the catalog again and restores the view on the new games.
@@ -1641,7 +1652,8 @@ mod tests {
         let test = TestRoot::new(&format!("screenshots_{prefix}_{scale}"));
         sample_root(&test);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::with_viewport(viewport, kind);
+        let mut harness =
+            GuiHarness::with_viewport(viewport, kind, crate::texts::LanguageCatalog::English);
         let render = |harness: &GuiHarness, name: &str| {
             harness.write_screenshot(&format!("manager_{prefix}{name}_{scale}x"));
         };

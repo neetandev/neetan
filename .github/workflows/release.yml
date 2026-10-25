@@ -54,6 +54,7 @@ jobs:
           cp "${{ steps.sdl3.outputs.path }}" "staging/${ARCHIVE_NAME}/"
           cp -r licenses/ "staging/${ARCHIVE_NAME}/"
           cp -r font/ "staging/${ARCHIVE_NAME}/"
+          cp -r language/ "staging/${ARCHIVE_NAME}/"
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
 
       - name: Create archive
@@ -126,12 +127,14 @@ jobs:
           mkdir -p "$APPDIR/usr/share/metainfo"
           mkdir -p "$APPDIR/usr/share/licenses/neetan"
           mkdir -p "$APPDIR/usr/share/neetan/font"
+          mkdir -p "$APPDIR/usr/share/neetan/language"
 
           cp target/release/neetan "$APPDIR/usr/bin/"
           cp "${{ steps.sdl3.outputs.path }}" "$APPDIR/usr/lib/"
           ln -sf "$(basename "${{ steps.sdl3.outputs.path }}")" "$APPDIR/usr/lib/libSDL3.so.0"
           cp -r licenses/* "$APPDIR/usr/share/licenses/neetan/"
           cp font/SarasaUiJ-Regular.ttf "$APPDIR/usr/share/neetan/font/"
+          cp language/*.ini "$APPDIR/usr/share/neetan/language/"
           cp assets/neetan.metainfo.xml "$APPDIR/usr/share/metainfo/"
 
           LINUXDEPLOY_OUTPUT_VERSION="$VERSION" \

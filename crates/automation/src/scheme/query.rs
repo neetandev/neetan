@@ -237,10 +237,12 @@ fn setting_value(
         ValueKind::Choice(_) | ValueKind::OnOff => {
             Ok(Ok(context.to_symbol_name(value)?.to_owned()))
         }
-        ValueKind::Number(_) | ValueKind::Path(_) | ValueKind::PathList => Ok(Err(format!(
-            "internal error: the machine specification reads no value of '{}'",
-            setting.key
-        ))),
+        ValueKind::Number(_) | ValueKind::Path(_) | ValueKind::PathList | ValueKind::Language => {
+            Ok(Err(format!(
+                "internal error: the machine specification reads no value of '{}'",
+                setting.key
+            )))
+        }
     }
 }
 
@@ -288,6 +290,11 @@ fn specification_setting(key: &str) -> Result<&'static Setting, String> {
         ValueKind::Number(_) => {
             return Err(format!(
                 "'{key}' takes a number, a machine specification cannot set it"
+            ));
+        }
+        ValueKind::Language => {
+            return Err(format!(
+                "'{key}' takes a language, a machine specification cannot set it"
             ));
         }
         ValueKind::Choice(_) | ValueKind::OnOff => {}

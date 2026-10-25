@@ -51,6 +51,21 @@ const LABEL_LINE_SPACING: f32 = 1.2;
 /// The note of the system row of a new game.
 const SYSTEM_NOTE: &str = "The game belongs to the system selected in the library.";
 
+/// Draws `dropdown` with the inherited entry `inherited` in `rect` over the
+/// value `selected`. Returns whether the value changed.
+pub(super) fn show_dropdown<T: AsRef<str>>(
+    context: &mut UiContext,
+    rect: Rect,
+    dropdown: Dropdown<'_, T>,
+    inherited: Option<&str>,
+    selected: &mut Option<usize>,
+) -> bool {
+    match inherited {
+        Some(label) => dropdown.inherited(label).show(context, rect, selected),
+        None => dropdown.show(context, rect, selected),
+    }
+}
+
 /// Returns the id of the widget of the field `key`.
 pub(crate) fn field_id(key: &str) -> UiId {
     UiId::from("field").child(key)
@@ -212,37 +227,44 @@ fn draw_section_note(context: &mut UiContext, content: Rect, y: f32, note: &Note
 /// keeps to one line and gives way in the middle. Returns the height of the
 /// note, at least the height of `area`.
 pub(crate) fn draw_note(context: &mut UiContext, area: Rect, note: &Note) -> f32 {
+    draw_note_text(context, area, &note.text, note.kind, note.path)
+}
+
+/// Draws the note `text` of `kind` into `area` as [`draw_note`] does. A
+/// `path` keeps to one line and gives way in the middle. Returns the height
+/// of the note, at least the height of `area`.
+pub(crate) fn draw_note_text(
+    context: &mut UiContext,
+    area: Rect,
+    text: &str,
+    kind: NoteKind,
+    path: bool,
+) -> f32 {
     let theme = context.theme;
-    if note.text.is_empty() || area.width <= 0.0 {
+    if text.is_empty() || area.width <= 0.0 {
         return area.height;
     }
-    let (icon, color) = match note.kind {
+    let (icon, color) = match kind {
         NoteKind::Plain | NoteKind::Unmarked => (None, theme.colors.text_dim),
         NoteKind::Warning => (Some(Icon::Alert), theme.colors.danger_text),
         NoteKind::Found => (Some(Icon::Check), theme.colors.marker),
     };
-    let (icon_area, text_area) = match note.kind {
+    let (icon_area, text_area) = match kind {
         NoteKind::Plain => (None, area),
         NoteKind::Warning | NoteKind::Found | NoteKind::Unmarked => {
             let (icon_area, rest) = area.cut_left(theme.icon_size.min(area.width));
             (Some(icon_area), rest.cut_left(theme.gap * 0.75).1)
         }
     };
-    let style = match note.kind {
+    let style = match kind {
         NoteKind::Plain | NoteKind::Unmarked => theme.small(),
         NoteKind::Warning | NoteKind::Found => theme.small().with_color(color),
     };
-    let fits = note.path || context.measure(&style, &note.text) <= text_area.width;
+    let fits = path || context.measure(&style, text) <= text_area.width;
     let (lines_area, height) = if fits {
         (text_area, area.height)
     } else {
-        let lines = wrapped_height(
-            context,
-            &style,
-            &note.text,
-            text_area.width,
-            NOTE_MAXIMUM_LINES,
-        );
+        let lines = wrapped_height(context, &style, text, text_area.width, NOTE_MAXIMUM_LINES);
         let top = if lines < area.height {
             area.y + (area.height - lines) * 0.5
         } else {
@@ -267,25 +289,18 @@ pub(crate) fn draw_note(context: &mut UiContext, area: Rect, note: &Note) -> f32
         context.icon(line, icon, theme.icon_size, color);
     }
     if fits {
-        let truncation = if note.path {
+        let truncation = if path {
             Truncation::Middle
         } else {
             Truncation::End
         };
-        label(
-            context,
-            lines_area,
-            &style,
-            &note.text,
-            Align::Start,
-            truncation,
-        );
+        label(context, lines_area, &style, text, Align::Start, truncation);
     } else {
         wrapped_label(
             context,
             lines_area,
             &style,
-            &note.text,
+            text,
             Align::Start,
             NOTE_MAXIMUM_LINES,
         );
@@ -439,7 +454,11 @@ impl Editor {
             self.claim_first_focus(context, id);
         }
         match setting.kind {
-            ValueKind::Choice(_) | ValueKind::OnOff => {
+            ValueKind::Language if matches!(self.subject, Subject::Host(_)) => {
+                let note = self.draw_language(context, areas, index, setting, actions);
+                RowAreas::height(theme, note)
+            }
+            ValueKind::Choice(_) | ValueKind::OnOff | ValueKind::Language => {
                 let note = self.draw_choice(context, areas, index, setting, ignored, actions);
                 RowAreas::height(theme, note)
             }
@@ -522,8 +541,8 @@ impl Editor {
         draw_note(context, areas.note, &Note::plain(note))
     }
 
-    /// Draws the dropdown of the choice or on/off field at `index`. Returns
-    /// the height of its note.
+    /// Draws the dropdown of the choice, on/off or language field at
+    /// `index`. Returns the height of its note.
     fn draw_choice(
         &mut self,
         context: &mut UiContext,
@@ -553,11 +572,16 @@ impl Editor {
             field.selected()
         };
         let before = selected;
-        let mut dropdown = Dropdown::new(id, &field.choices).enabled(enabled);
-        if !required {
-            dropdown = dropdown.inherited(&inherited_label);
-        }
-        if dropdown.show(context, areas.control, &mut selected) && selected != before {
+        let inherited_entry = (!required).then_some(inherited_label.as_str());
+        let dropdown = Dropdown::new(id, &field.choices).enabled(enabled);
+        if show_dropdown(
+            context,
+            areas.control,
+            dropdown,
+            inherited_entry,
+            &mut selected,
+        ) && selected != before
+        {
             field.select(selected);
             actions.changed = true;
         }

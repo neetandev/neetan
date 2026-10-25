@@ -19,6 +19,7 @@ mod hints;
 mod host_settings;
 mod inherited;
 mod kept_lines;
+mod language_row;
 mod media_list;
 mod media_row;
 mod notes;
@@ -236,13 +237,22 @@ impl Subject {
     /// the keys of the family of the system in the sections of the
     /// subject, or the host keys of the settings page.
     fn fields(&self, document: &ConfigDocument) -> Vec<Field> {
-        let Some(files) = self.system_files() else {
-            return host_fields()
-                .into_iter()
-                .map(|(section, source)| {
-                    Field::read(section, source, Families::compiled(), document, false)
-                })
-                .collect();
+        let files = match self {
+            Self::Game(files) | Self::SystemDefaults(files) => files,
+            Self::Host(settings) => {
+                return host_fields()
+                    .into_iter()
+                    .map(|(section, source)| match source.setting() {
+                        Some(setting) if setting.kind == ValueKind::Language => {
+                            let choices = settings.language.choices(document.get(setting.key));
+                            Field::with_choices(section, source, choices, document, false)
+                        }
+                        Some(_) | None => {
+                            Field::read(section, source, Families::compiled(), document, false)
+                        }
+                    })
+                    .collect();
+            }
         };
         let sections = self.sections();
         let required = self.required_keys();
@@ -557,7 +567,8 @@ impl Editor {
                 | ValueKind::Path(PathKind::Folder)
                 | ValueKind::Choice(_)
                 | ValueKind::OnOff
-                | ValueKind::Number(_) => Vec::new(),
+                | ValueKind::Number(_)
+                | ValueKind::Language => Vec::new(),
             };
         }
         let title = self.field(TITLE_KEY).map(|field| field.text().to_owned());
@@ -1017,7 +1028,7 @@ mod tests {
         harness.input.confirm = true;
         show(&mut harness, &mut editor);
         let machine = editor.field(MACHINE_KEY).expect("machine field");
-        let first = machine.choices[0];
+        let first = machine.choices[0].as_ref();
         let files = editor.system_files().expect("a game has a system");
         if first == files.base.model().0.name() {
             assert!(!editor.is_dirty());
