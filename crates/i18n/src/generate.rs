@@ -4,7 +4,7 @@
 //! for each fixed text and one function for each text with placeholders. A key name gives an
 //! upper case constant and a lower case function with `_` for `-` and `.`. A section name gives a
 //! lower case module the same way. The names of these generated sections use lower case letters,
-//! digits, `-` and `.`. The sections `[list]`, `[setting.*]` and `[choice.*]` get no module.
+//! digits, `-` and `.`. The sections `[list]` and `[setting.*]` get no module.
 
 use std::{
     collections::{BTreeMap, btree_map},
@@ -22,9 +22,6 @@ use crate::{
 
 /// The prefix of the sections with the texts of the settings.
 const SETTING_SECTION_PREFIX: &str = "setting.";
-
-/// The prefix of the sections with the texts of the setting choices.
-const CHOICE_SECTION_PREFIX: &str = "choice.";
 
 /// The largest number of parameters of a generated function.
 const MAXIMUM_PARAMETER_COUNT: usize = 7;
@@ -247,9 +244,7 @@ fn check_list_patterns<'a>(keys: &[ReferenceKey<'a>], faults: &mut Vec<Fault<'a>
 
 /// Returns true when a section gets a module.
 fn is_generated_section(section: &str) -> bool {
-    section != LIST_SECTION
-        && !section.starts_with(SETTING_SECTION_PREFIX)
-        && !section.starts_with(CHOICE_SECTION_PREFIX)
+    section != LIST_SECTION && !section.starts_with(SETTING_SECTION_PREFIX)
 }
 
 /// Returns true for a section name or a key of a generated section: lower case letters, digits,
@@ -590,8 +585,6 @@ mod tests {
         assert_eq!(catalog.text(sample::common::QUOTE), "Press `Enter` {now}");
         let label = sample::SCHEMA.find("setting.cpu-mode", "label").unwrap();
         assert_eq!(catalog.text(label), "CPU mode");
-        let high = sample::SCHEMA.find("choice.cpu-mode", "high").unwrap();
-        assert_eq!(catalog.text(high), "High");
         let mut list = String::new();
         catalog
             .write_list(&mut list, ListKind::And, &[&"a", &"b", &"c"])
@@ -722,10 +715,19 @@ h = x
     fn skipped_sections_accept_any_name() {
         assert_eq!(
             faults(
-                "[choice.memory]\n640k = 640 KB\ntype = Type\n86+26k = Both\n4:3 = Wide\nA = Drive A\n\
+                "[setting.memory]\n640k = 640 KB\ntype = Type\n86+26k = Both\n4:3 = Wide\nA = Drive A\n\
                  one = One\nother = Other\n[setting.type]\nlabel = {type}\n"
             ),
             Vec::<String>::new()
+        );
+    }
+
+    /// Verifies that a section `[choice.*]` takes the name rules of a generated section.
+    #[test]
+    fn a_choice_section_is_a_generated_section() {
+        assert_eq!(
+            faults("[choice.memory]\nA = Drive A\n"),
+            vec!["line 12: choice.memory.A: bad name `A`"]
         );
     }
 

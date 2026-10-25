@@ -1,7 +1,5 @@
 /// The keys of the reference language file in the order of their `Key`.
-static KEYS: [::i18n::KeyInfo; 18] = [
-    ::i18n::KeyInfo::new("choice.cpu-mode", "high", &[], false),
-    ::i18n::KeyInfo::new("choice.cpu-mode", "low", &[], false),
+static KEYS: [::i18n::KeyInfo; 16] = [
     ::i18n::KeyInfo::new("common", "cancel", &[], false),
     ::i18n::KeyInfo::new("common", "quote", &[], false),
     ::i18n::KeyInfo::new("common", "save", &[], false),
@@ -30,21 +28,21 @@ pub mod common {
     /// ```text
     /// Cancel
     /// ```
-    pub const CANCEL: ::i18n::Key = ::i18n::Key::new(2);
+    pub const CANCEL: ::i18n::Key = ::i18n::Key::new(0);
 
     /// The text `common.quote`.
     ///
     /// ```text
     /// Press `Enter` {{now}}
     /// ```
-    pub const QUOTE: ::i18n::Key = ::i18n::Key::new(3);
+    pub const QUOTE: ::i18n::Key = ::i18n::Key::new(1);
 
     /// The text `common.save`.
     ///
     /// ```text
     /// Save
     /// ```
-    pub const SAVE: ::i18n::Key = ::i18n::Key::new(4);
+    pub const SAVE: ::i18n::Key = ::i18n::Key::new(2);
 }
 
 /// The texts of the section `[manager]`.
@@ -55,7 +53,7 @@ pub mod manager {
     /// Delete {name}?
     /// ```
     pub fn delete_question(name: &dyn ::core::fmt::Display) -> ::i18n::Message<'_, 1> {
-        ::i18n::Message::new(::i18n::Key::new(11), [name])
+        ::i18n::Message::new(::i18n::Key::new(9), [name])
     }
 
     /// The plural text `manager.files`.
@@ -65,7 +63,7 @@ pub mod manager {
     /// other = {count} files in {folder}
     /// ```
     pub fn files(count: u64, folder: &dyn ::core::fmt::Display) -> ::i18n::Message<'_, 1> {
-        ::i18n::Message::plural(::i18n::Key::new(12), count, [folder])
+        ::i18n::Message::plural(::i18n::Key::new(10), count, [folder])
     }
 
     /// The text `manager.filter-placeholder`.
@@ -73,7 +71,7 @@ pub mod manager {
     /// ```text
     /// Filter games
     /// ```
-    pub const FILTER_PLACEHOLDER: ::i18n::Key = ::i18n::Key::new(13);
+    pub const FILTER_PLACEHOLDER: ::i18n::Key = ::i18n::Key::new(11);
 
     /// The text `manager.full-name`.
     ///
@@ -81,7 +79,7 @@ pub mod manager {
     /// {first-name} {last-name}
     /// ```
     pub fn full_name<'a>(first_name: &'a dyn ::core::fmt::Display, last_name: &'a dyn ::core::fmt::Display) -> ::i18n::Message<'a, 2> {
-        ::i18n::Message::new(::i18n::Key::new(14), [first_name, last_name])
+        ::i18n::Message::new(::i18n::Key::new(12), [first_name, last_name])
     }
 
     /// The plural text `manager.images`.
@@ -91,6 +89,6 @@ pub mod manager {
     /// other = {count} images
     /// ```
     pub fn images(count: u64) -> ::i18n::Message<'static, 0> {
-        ::i18n::Message::plural(::i18n::Key::new(15), count, [])
+        ::i18n::Message::plural(::i18n::Key::new(13), count, [])
     }
 }

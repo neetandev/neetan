@@ -154,6 +154,7 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DiagnosticKind;
 
     /// Returns an entry of `pc98` with the diagnostics `diagnostics`.
     fn entry(identity: &str, diagnostics: Vec<Diagnostic>) -> CatalogEntry {
@@ -172,8 +173,8 @@ mod tests {
     /// Verifies the error lookup of an entry and the identity lookup of a system.
     #[test]
     fn entries_report_their_first_error() {
-        let warning = Diagnostic::warning(1, "unknown key fdd3".to_owned());
-        let error = Diagnostic::error(2, "unknown machine X68030".to_owned());
+        let warning = Diagnostic::warning(1, DiagnosticKind::UnknownKey("fdd3".to_owned()));
+        let error = Diagnostic::error(2, DiagnosticKind::UnknownMachine("X68030".to_owned()));
         let good = entry("pc98/good.conf", vec![warning.clone()]);
         let bad = entry("pc98/bad.conf", vec![warning, error.clone()]);
         assert!(!good.has_errors());

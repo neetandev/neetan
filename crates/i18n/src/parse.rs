@@ -629,32 +629,32 @@ mod tests {
     }
 
     #[test]
-    fn choice_values_are_keys() {
+    fn keys_take_the_full_charset() {
         assert_eq!(
-            events("[choice.aspect]\n4:3 = Four to three\nA = Drive A\n86+26k = Board\none = One"),
+            events("[setting.aspect]\n4:3 = Four to three\nA = Drive A\n86+26k = Board\none = One"),
             vec![
                 Event::Section {
                     line: 1,
-                    name: "choice.aspect"
+                    name: "setting.aspect"
                 },
                 Event::Pair {
                     line: 2,
-                    key: full_key("choice.aspect", "4:3"),
+                    key: full_key("setting.aspect", "4:3"),
                     value: Value::new("Four to three")
                 },
                 Event::Pair {
                     line: 3,
-                    key: full_key("choice.aspect", "A"),
+                    key: full_key("setting.aspect", "A"),
                     value: Value::new("Drive A")
                 },
                 Event::Pair {
                     line: 4,
-                    key: full_key("choice.aspect", "86+26k"),
+                    key: full_key("setting.aspect", "86+26k"),
                     value: Value::new("Board")
                 },
                 Event::Pair {
                     line: 5,
-                    key: full_key("choice.aspect", "one"),
+                    key: full_key("setting.aspect", "one"),
                     value: Value::new("One")
                 },
             ]

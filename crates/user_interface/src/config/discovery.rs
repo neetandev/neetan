@@ -2,12 +2,13 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use common::{Context, bail, warn};
+use common::{Context, warn};
 use machine_factory::config::{
     is_language_tag,
     settings::{Setting, ValueKind},
 };
 
+use super::launch_error::LaunchError;
 use crate::texts::ENGLISH_TAG;
 
 /// File name of the settings file.
@@ -93,11 +94,11 @@ impl SettingsLocation {
 pub fn discover_settings(
     explicit: Option<&Path>,
     locations: &Locations,
-) -> crate::Result<SettingsLocation> {
+) -> Result<SettingsLocation, LaunchError> {
     if let Some(file) = explicit {
         let file = resolve_path(&locations.current_directory, file);
         if !file.is_file() {
-            bail!("settings file not found: {}", file.display());
+            return Err(LaunchError::SettingsNotFound(file));
         }
         return Ok(SettingsLocation {
             root: parent_folder(&file),

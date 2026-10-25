@@ -56,7 +56,7 @@ impl Editor {
                 derived: self
                     .system_files()
                     .is_some_and(|files| setting.has_derived_default(files.target)),
-                fact: fact.as_deref(),
+                fact: fact.as_ref(),
             },
         );
         followed_by(writer, look, |writer| self.write_extra(writer, setting))

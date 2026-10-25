@@ -19,6 +19,7 @@ use machine_factory::config::systems::System;
 
 use self::event::{ErrorDetail, ErrorEvent};
 use crate::{
+    config::{LaunchError, LaunchFailure},
     editor::{EditedFile, OpenError, SaveFailure},
     texts::{HintText, HintTexts, common, errors},
 };
@@ -154,22 +155,22 @@ impl ErrorDialog {
         }
     }
 
-    /// The dialog of the game `game_title` that did not start with `error`.
-    pub(crate) fn launch_failed(game_title: &str, error: &str) -> Self {
+    /// The dialog of the game `game_title` that did not start with `failure`.
+    pub(crate) fn launch_failed(game_title: &str, failure: &LaunchFailure) -> Self {
         Self::new(
             errors::LAUNCH_FAILED_TITLE,
             ErrorEvent::LaunchFailed(game_title.to_owned()),
-            ErrorDetail::Error(error.to_owned()),
+            ErrorDetail::Launch(failure.clone()),
         )
     }
 
     /// The dialog of a saved settings file that does not read with `error`.
     /// The manager keeps the host settings that it read before.
-    pub(crate) fn settings_not_applied(error: &str) -> Self {
+    pub(crate) fn settings_not_applied(error: &LaunchError) -> Self {
         Self::new(
             errors::SETTINGS_NOT_APPLIED_TITLE,
             ErrorEvent::SettingsNotApplied,
-            ErrorDetail::Error(error.to_owned()),
+            ErrorDetail::Launch(LaunchFailure::Configuration(error.clone())),
         )
     }
 
@@ -484,6 +485,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        config::DocumentError,
         editor::test_support::system_named,
         gui_test_support::GuiHarness,
         texts::{
@@ -512,7 +514,7 @@ mod tests {
     fn the_launch_dialog_shows_the_game_and_the_error() {
         let dialog = drawn(ErrorDialog::launch_failed(
             "Edge",
-            "fdd1 image not found: /games/edge.d88",
+            &LaunchFailure::missing_image("/games/edge.d88"),
         ));
         assert_eq!(dialog.title(), LAUNCH_FAILED_TITLE);
         assert_eq!(dialog.message(), Some("Edge did not start."));
@@ -587,7 +589,8 @@ mod tests {
     fn ok_holds_the_focus_and_confirm_or_cancel_close_the_dialog() {
         let mut harness = GuiHarness::new(960, 600);
         let area = Rect::new(0.0, 0.0, 960.0, 600.0);
-        let mut dialog = ErrorDialog::launch_failed("Edge", "error");
+        let mut dialog =
+            ErrorDialog::launch_failed("Edge", &LaunchFailure::Machine("error".to_owned()));
         assert_eq!(
             harness.frame(|context| dialog.show(context, area)),
             DialogAnswer::Open
@@ -607,7 +610,8 @@ mod tests {
             DialogAnswer::Closed
         );
 
-        let mut dialog = ErrorDialog::launch_failed("Edge", "error");
+        let mut dialog =
+            ErrorDialog::launch_failed("Edge", &LaunchFailure::Machine("error".to_owned()));
         harness.frame(|context| dialog.show(context, area));
         harness.input.navigation = Some(Navigation::Down);
         assert_eq!(
@@ -628,7 +632,9 @@ mod tests {
             system,
             path: PathBuf::from("/root/config/edge.conf"),
         };
-        let mut dialog = ErrorDialog::launch_failed("Edge", "error").with_edit(target.clone());
+        let mut dialog =
+            ErrorDialog::launch_failed("Edge", &LaunchFailure::Machine("error".to_owned()))
+                .with_edit(target.clone());
         assert_eq!(dialog.edit_target(), Some(&target));
         harness.frame(|context| dialog.show(context, area));
         harness.frame(|context| dialog.show(context, area));
@@ -658,7 +664,7 @@ mod tests {
         let settings = EditedFile::Settings;
         let open_error = OpenError::Failed {
             path: PathBuf::from("/root/config/pc98/edge.conf"),
-            error: "gone".to_owned(),
+            error: DocumentError::Read("gone".to_owned()),
         };
         let save_failure = SaveFailure::Error {
             path: PathBuf::from("/root/config/pc98/edge.conf"),
@@ -806,7 +812,7 @@ mod tests {
     fn every_dialog_draws_the_alert_icon_before_its_text() {
         let area = Rect::new(0.0, 0.0, 960.0, 572.0);
         let dialogs = [
-            ErrorDialog::launch_failed("Edge", "error"),
+            ErrorDialog::launch_failed("Edge", &LaunchFailure::Machine("error".to_owned())),
             ErrorDialog::game_stopped(Some("X1"), "halt", &Ok(())),
             ErrorDialog::media_not_saved(Some("Edge"), &FlushError::new("lost")),
             ErrorDialog::delete_failed("Edge", "edge.conf".to_owned(), "denied".to_owned()),
@@ -814,7 +820,7 @@ mod tests {
                 &game(),
                 &OpenError::Failed {
                     path: PathBuf::from("edge.conf"),
-                    error: "gone".to_owned(),
+                    error: DocumentError::Read("gone".to_owned()),
                 },
             ),
             ErrorDialog::save_failed(
@@ -915,7 +921,8 @@ mod tests {
     fn the_dialog_centers_in_its_area() {
         let mut harness = GuiHarness::new(960, 600);
         let area = Rect::new(0.0, 0.0, 960.0, 572.0);
-        let mut dialog = ErrorDialog::launch_failed("Edge", &"error text ".repeat(60));
+        let mut dialog =
+            ErrorDialog::launch_failed("Edge", &LaunchFailure::Machine("error text ".repeat(60)));
         harness.frame(|context| dialog.show(context, area));
         let panel = harness
             .scene

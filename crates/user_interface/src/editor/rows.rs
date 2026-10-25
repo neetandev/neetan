@@ -28,7 +28,7 @@ use super::{
 };
 use crate::{
     config::metadata::{FIRST_YEAR, LAST_YEAR, TITLE_KEY, YEAR_KEY},
-    texts::{editor, host_settings, note},
+    texts::{editor, host_settings, note, setting_label},
 };
 
 /// The width of the label column of a form row.
@@ -578,7 +578,7 @@ impl Editor {
         draw_label(
             context,
             areas.label,
-            setting.label,
+            setting_label(context.catalog, setting),
             setting.key,
             set,
             enabled,

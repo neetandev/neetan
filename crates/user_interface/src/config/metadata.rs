@@ -4,8 +4,12 @@
 //! the game, its makers, its year and its genre, and holds free notes.
 
 use i18n::Key;
+use machine_factory::config::settings::value_error::ValueError;
 
-use super::{document::ConfigDocument, reading::Diagnostic};
+use super::{
+    diagnostic::{Diagnostic, DiagnosticKind},
+    document::ConfigDocument,
+};
 use crate::texts::metadata;
 
 /// Prefix of every metadata key.
@@ -100,11 +104,14 @@ impl GameMetadata {
         if let Some(entry) = document
             .entries()
             .rfind(|entry| entry.key == YEAR_KEY && !entry.value.is_empty())
-            && let Err(message) = parse_year(entry.value)
+            && let Err(error) = parse_year(entry.value)
         {
             diagnostics.push(Diagnostic::warning(
                 entry.line,
-                format!("invalid {YEAR_KEY}: {message}"),
+                DiagnosticKind::InvalidValue {
+                    key: YEAR_KEY,
+                    error,
+                },
             ));
         }
         Self {
@@ -149,12 +156,14 @@ impl GameMetadata {
 }
 
 /// Parses a release year from `FIRST_YEAR` to `LAST_YEAR`.
-pub fn parse_year(value: &str) -> Result<u16, String> {
+pub fn parse_year(value: &str) -> Result<u16, ValueError> {
     match value.parse::<u16>() {
         Ok(year) if (FIRST_YEAR..=LAST_YEAR).contains(&year) => Ok(year),
-        _ => Err(format!(
-            "'{value}' is not a year from {FIRST_YEAR} to {LAST_YEAR}"
-        )),
+        _ => Err(ValueError::Year {
+            value: value.to_owned(),
+            first: FIRST_YEAR,
+            last: LAST_YEAR,
+        }),
     }
 }
 
@@ -261,7 +270,7 @@ mod tests {
             assert_eq!(diagnostics[0].line, Some(2));
             assert_eq!(
                 diagnostics[0].severity,
-                super::super::reading::Severity::Warning
+                super::super::diagnostic::Severity::Warning
             );
             metadata.write(&mut document);
             assert_eq!(document.to_text(), text);

@@ -3,8 +3,9 @@
 use i18n::{Catalog, Key, Message};
 
 use crate::{
+    config::LaunchFailure,
     editor::{EditedFile, OpenError, SaveFailure},
-    texts::errors,
+    texts::{CatalogText, errors},
 };
 
 /// The event of an error dialog. The message of the dialog tells it.
@@ -165,6 +166,8 @@ pub(super) enum ErrorDetail {
         /// The error of the operating system in English.
         error: String,
     },
+    /// The failure of a launch or of the read of a settings file.
+    Launch(LaunchFailure),
     /// The fault that kept the editor from opening its file.
     Open(OpenError),
     /// The reason that a save did not write the file of the editor.
@@ -180,6 +183,7 @@ impl ErrorDetail {
                 Ok(())
             }
             Self::PathError { path, error } => catalog.write(out, errors::path_error(path, error)),
+            Self::Launch(failure) => failure.write_text(catalog, out),
             Self::Open(error) => error.write(catalog, out),
             Self::Save(failure) => failure.write(catalog, out),
         };
@@ -192,6 +196,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        config::DocumentError,
         editor::test_support::system_named,
         texts::{english_text, test_catalog},
     };
@@ -348,9 +353,9 @@ mod tests {
             (
                 ErrorDetail::Open(OpenError::Failed {
                     path: file.clone(),
-                    error: "gone".to_owned(),
+                    error: DocumentError::Read("gone".to_owned()),
                 }),
-                "/root/config/pc98/edge.conf: gone".to_owned(),
+                "/root/config/pc98/edge.conf: cannot read the file: gone".to_owned(),
             ),
             (
                 ErrorDetail::Save(SaveFailure::Error {

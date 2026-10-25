@@ -122,10 +122,10 @@ impl ShellOptions {
 
 /// Returns the value of `key` of `host` parsed by `parse`, or `default`
 /// when the key is unset or its value is invalid.
-fn host_setting<T>(
+fn host_setting<T, E: std::fmt::Display>(
     host: &HostLayers,
     key: &str,
-    parse: impl Fn(&str) -> std::result::Result<T, String>,
+    parse: impl Fn(&str) -> std::result::Result<T, E>,
     default: T,
 ) -> T {
     let Some(value) = host.host_value(key) else {

@@ -72,10 +72,10 @@ pub struct DocumentEntry<'a> {
 }
 
 /// An error of reading a configuration document.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocumentError {
-    /// The file cannot be read.
-    Read(std::io::Error),
+    /// The file cannot be read. The text is the error of the operating system in English.
+    Read(String),
     /// The file holds bytes that are not UTF-8.
     InvalidUtf8 {
         /// The line of the first invalid byte, starting at 1.
@@ -84,6 +84,12 @@ pub enum DocumentError {
 }
 
 impl DocumentError {
+    /// Returns the error of a file that the operating system cannot read with `error`.
+    #[must_use]
+    pub fn read(error: &std::io::Error) -> Self {
+        Self::Read(error.to_string())
+    }
+
     /// Returns the line of the error, when the error has one.
     #[must_use]
     pub fn line(&self) -> Option<usize> {
@@ -93,7 +99,7 @@ impl DocumentError {
         }
     }
 
-    /// Returns the message of the error without its line.
+    /// Returns the English message of the error without its line.
     #[must_use]
     pub fn message(&self) -> String {
         match self {
@@ -112,14 +118,7 @@ impl fmt::Display for DocumentError {
     }
 }
 
-impl std::error::Error for DocumentError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            DocumentError::Read(error) => Some(error),
-            DocumentError::InvalidUtf8 { .. } => None,
-        }
-    }
-}
+impl std::error::Error for DocumentError {}
 
 /// The line ending style of a file.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -217,7 +216,7 @@ impl ConfigDocument {
 
     /// Reads the document of the file at `path`.
     pub fn load(path: &Path) -> Result<Self, DocumentError> {
-        let bytes = std::fs::read(path).map_err(DocumentError::Read)?;
+        let bytes = std::fs::read(path).map_err(|error| DocumentError::read(&error))?;
         Self::from_bytes(&bytes)
     }
 

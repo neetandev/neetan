@@ -5,7 +5,7 @@
 use common::CpuMode;
 
 use super::Families;
-use crate::config::{MachineSelection, phrases::format_megahertz};
+use crate::config::{MachineSelection, phrases::Megahertz};
 
 /// Models of one family that read a setting.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -21,23 +21,22 @@ pub struct ModelLimit {
 /// Why a model ignores a setting that other models of its family read.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum LimitReason {
-    /// A phrase after the model name, for example `has no CD-ROM drive`.
+    /// A sentence about the model. The sentence is a key of the section `[limit]` of the
+    /// language files, for example `no-cdrom` for `{model} has no CD-ROM drive.`
     Phrase(&'static str),
-    /// The model runs its CPU at one clock. The phrase gives the clock of the model, for example
-    /// `runs at a fixed 20 MHz`.
+    /// The model runs its CPU at one clock. The sentence gives the clock of the model, for example
+    /// `PC9801RA runs at a fixed 20 MHz.`
     FixedClock,
 }
 
 impl LimitReason {
-    /// Returns the phrase after the name of `model`.
+    /// Returns the clock of `model` for a fixed clock reason. A phrase reason and a model without
+    /// a known clock have none.
     #[must_use]
-    pub fn phrase(self, model: MachineSelection) -> String {
+    pub fn fixed_clock(self, model: MachineSelection) -> Option<Megahertz> {
         match self {
-            Self::Phrase(phrase) => phrase.to_owned(),
-            Self::FixedClock => match model.cpu_clock_hz(CpuMode::High) {
-                Some(hertz) => format!("runs at a fixed {}", format_megahertz(hertz)),
-                None => "runs at a fixed CPU clock".to_owned(),
-            },
+            Self::Phrase(_) => None,
+            Self::FixedClock => model.cpu_clock_hz(CpuMode::High).map(Megahertz),
         }
     }
 }
@@ -53,6 +52,20 @@ pub enum ChoiceFact {
     /// The note gives the CPU clock of the CPU mode of the file on the model, for example
     /// `At low the CPU runs at 4 MHz.`
     CpuClock,
+}
+
+/// The data of a fact about the values of a choice setting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FactData {
+    /// The choice values that the family of the model accepts, in the order of the table.
+    Choices(Vec<&'static str>),
+    /// The CPU clock of the model at a CPU mode.
+    CpuClock {
+        /// The CPU mode.
+        mode: CpuMode,
+        /// The CPU clock at the mode.
+        clock: Megahertz,
+    },
 }
 
 /// PC-98 models with a selectable CPU clock.
@@ -113,13 +126,13 @@ mod tests {
         }
     }
 
-    /// Verifies that a phrase reason gives its phrase on every model.
+    /// Verifies that a phrase reason gives no clock on any model.
     #[test]
-    fn a_phrase_reason_gives_its_phrase() {
-        let reason = LimitReason::Phrase("has no CD-ROM drive");
+    fn a_phrase_reason_gives_no_clock() {
+        let reason = LimitReason::Phrase("no-cdrom");
         for choice in MODEL_CHOICES {
             if let Ok(model) = choice.value.parse::<MachineSelection>() {
-                assert_eq!(reason.phrase(model), "has no CD-ROM drive");
+                assert_eq!(reason.fixed_clock(model), None);
             }
         }
     }
@@ -129,9 +142,10 @@ mod tests {
     #[test]
     fn a_fixed_clock_reason_gives_the_clock_of_the_model() {
         let model: MachineSelection = "PC9801RA".parse().expect("a PC-98 model");
+        let clock = LimitReason::FixedClock.fixed_clock(model);
         assert_eq!(
-            LimitReason::FixedClock.phrase(model),
-            "runs at a fixed 20 MHz"
+            clock.map(|clock| clock.to_string()).as_deref(),
+            Some("20 MHz")
         );
     }
 }

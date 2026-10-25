@@ -71,7 +71,7 @@ impl Editor {
         };
         BrowseRequest {
             noun,
-            label: setting.map_or("", |setting| setting.label),
+            setting,
             kind,
             types,
             icon: image_icon(types),

@@ -899,26 +899,26 @@ mod tests {
     }
 
     #[test]
-    fn choice_values_are_keys() {
+    fn keys_take_the_full_charset() {
         let source = fixture::english(
-            "[choice.aspect]\n4:3 = Four to three\nA = Drive A\none = One\nother = Other\n\
-             [choice.sound]\n86+26k = Both boards\n",
+            "[setting.aspect]\n4:3 = Four to three\nA = Drive A\none = One\nother = Other\n\
+             [setting.sound]\n86+26k = Both boards\n",
         );
         let schema = leak_schema(&source);
         let reference = Catalog::reference("en", &source, schema).unwrap();
         let japanese = fixture::japanese(
-            "[choice.aspect]\n4:3 = 四対三\nA = ドライブA\none = 一\nother = その他\n\
-             [choice.sound]\n86+26k = 両方\n",
+            "[setting.aspect]\n4:3 = 四対三\nA = ドライブA\none = 一\nother = その他\n\
+             [setting.sound]\n86+26k = 両方\n",
         );
         let loaded = Catalog::load("ja", &japanese, schema, &reference).unwrap();
         assert!(loaded.faults.is_empty(), "{:?}", loaded.faults);
         let catalog = &loaded.catalog;
-        assert_eq!(text(catalog, "choice.aspect", "4:3"), "四対三");
-        assert_eq!(text(catalog, "choice.aspect", "A"), "ドライブA");
-        assert_eq!(text(catalog, "choice.aspect", "one"), "一");
-        assert_eq!(text(catalog, "choice.aspect", "other"), "その他");
-        assert_eq!(text(catalog, "choice.sound", "86+26k"), "両方");
-        assert_eq!(text(&reference, "choice.aspect", "one"), "One");
+        assert_eq!(text(catalog, "setting.aspect", "4:3"), "四対三");
+        assert_eq!(text(catalog, "setting.aspect", "A"), "ドライブA");
+        assert_eq!(text(catalog, "setting.aspect", "one"), "一");
+        assert_eq!(text(catalog, "setting.aspect", "other"), "その他");
+        assert_eq!(text(catalog, "setting.sound", "86+26k"), "両方");
+        assert_eq!(text(&reference, "setting.aspect", "one"), "One");
     }
 
     #[test]

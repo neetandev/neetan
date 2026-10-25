@@ -75,8 +75,9 @@ fn assert_counts(probe: impl FnOnce()) {
     let before = ALLOCATIONS.with(Cell::get);
     probe();
     let after = ALLOCATIONS.with(Cell::get);
-    assert!(
-        after - before == 1,
+    assert_eq!(
+        after - before,
+        1,
         "the allocation counter counts no allocations: CountingAllocator is not the global allocator"
     );
 }

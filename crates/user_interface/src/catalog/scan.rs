@@ -10,12 +10,11 @@ use machine_factory::config::{
 
 use super::{CatalogEntry, ModelSource, SystemCatalog};
 use crate::config::{
-    CONFIG_FILE_EXTENSION, ConfigDocument, Diagnostic, GameMetadata, HostLayers, Severity,
+    CONFIG_FILE_EXTENSION, ConfigDocument, Diagnostic, DiagnosticKind, GameMetadata, HostLayers,
+    Severity,
     keymap::parse_key_binding,
     layers::{launch_model, launch_target, read_system_defaults, system_defaults_file},
-    reading::{
-        FileReading, Layer, LayerKind, LayerLine, invalid_key_binding_message, read_game_document,
-    },
+    reading::{FileReading, Layer, LayerKind, LayerLine, read_game_document},
 };
 
 /// The separator of the identity of a game.
@@ -29,7 +28,10 @@ fn check_key_bindings(reading: &FileReading, target: Target, diagnostics: &mut V
         {
             diagnostics.push(Diagnostic::warning(
                 *line,
-                invalid_key_binding_message(host_name, native_name),
+                DiagnosticKind::InvalidKeyBinding {
+                    host: host_name.clone(),
+                    native: native_name.clone(),
+                },
             ));
         }
     }
@@ -65,20 +67,15 @@ fn system_defaults(file: &Path, target: Target, root: &Path) -> SystemDefaults {
             defaults.layer = Some(file.layer);
         }
         Err(error) => {
-            let diagnostic = Diagnostic {
-                line: error.line(),
-                severity: Severity::Error,
-                message: error.message(),
-            };
             defaults.blocking = Some(Diagnostic {
                 line: None,
                 severity: Severity::Error,
-                message: format!(
-                    "system defaults {}",
-                    diagnostic.located(&file.display().to_string())
-                ),
+                kind: DiagnosticKind::BrokenDefaults {
+                    path: file.display().to_string(),
+                    error: error.clone(),
+                },
             });
-            defaults.diagnostics.push(diagnostic);
+            defaults.diagnostics.push(Diagnostic::of_document(error));
         }
     }
     sort_diagnostics(&mut defaults.diagnostics);
@@ -236,11 +233,7 @@ fn read_entry(
             GameMetadata::read(&document, &mut diagnostics)
         }
         Err(error) => {
-            diagnostics.push(Diagnostic {
-                line: error.line(),
-                severity: Severity::Error,
-                message: error.message(),
-            });
+            diagnostics.push(Diagnostic::of_document(error));
             GameMetadata::default()
         }
     };
@@ -566,7 +559,7 @@ mod tests {
                 "Warning line 3: unknown key fdd3",
                 "Warning line 4: host key sc55-roms is ignored. Only the settings file and the \
              command line set host keys.",
-                "Warning line 5: invalid soundboard: unknown soundboard type '99', expected none, \
+                "Warning line 5: invalid soundboard: unknown value '99', expected none, \
              14, 26k, 86, 86+26k, sb16 or sb16+26k",
                 "Warning line 6: duplicate key machine. It overrides line 2.",
                 "Warning line 7: invalid meta.year: 'nineteen' is not a year from 1970 to 2100",
@@ -715,7 +708,10 @@ mod tests {
 
     /// Returns the result of a `--config` launch of `game` with the settings file of `folder`.
     #[cfg(feature = "pc98")]
-    fn launch(folder: &ConfigFolder, game: &Path) -> crate::Result<EmulatorConfig> {
+    fn launch(
+        folder: &ConfigFolder,
+        game: &Path,
+    ) -> Result<EmulatorConfig, crate::config::LaunchError> {
         let locations = Locations {
             current_directory: folder.0.path().to_path_buf(),
             executable_directory: None,
@@ -784,7 +780,7 @@ mod tests {
                 .to_string();
             let diagnostic = entry.first_error().expect("entry has an error");
             assert!(
-                error.contains(&diagnostic.message),
+                error.contains(&diagnostic.kind.to_string()),
                 "{}: {error}",
                 entry.identity
             );

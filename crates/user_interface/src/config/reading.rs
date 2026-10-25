@@ -2,15 +2,16 @@
 //! against the settings table and the findings about the lines that a layer
 //! ignores.
 
-use std::{collections::HashMap, fmt, path::Path};
+use std::{collections::HashMap, path::Path};
 
 use machine_factory::config::{
     EmulatorConfig, MachineSelection, Target,
-    settings::{MACHINE_KEY, Scope, Setting, ValueKind, find_setting},
+    settings::{MACHINE_KEY, Scope, Setting, ValueKind, find_setting, value_error::ValueError},
     systems::{System, compiled_systems, system_of},
 };
 
 use super::{
+    diagnostic::{Diagnostic, DiagnosticKind},
     discovery::resolve_value,
     document::{ConfigDocument, LineContent, parse_line},
     metadata::META_PREFIX,
@@ -102,74 +103,15 @@ impl Layer {
 /// The value applies to a scratch configuration of a compiled system that
 /// reads the setting. A setting that no compiled system reads checks against
 /// the first compiled system.
-pub fn check_value(setting: &Setting, value: &str) -> Result<(), String> {
+pub fn check_value(setting: &Setting, value: &str) -> Result<(), ValueError> {
     let system = compiled_systems()
         .find(|system| setting.families.intersects(system.family))
         .or_else(|| compiled_systems().next())
-        .ok_or_else(|| "no system is compiled".to_owned())?;
-    let model = MachineSelection::of_system(system)
-        .ok_or_else(|| format!("the system {} is not compiled", system.name))?;
+        .ok_or(ValueError::NoSystem)?;
+    let model = MachineSelection::of_system(system).ok_or(ValueError::NotCompiled {
+        system: system.name,
+    })?;
     (setting.apply)(&mut EmulatorConfig::for_model(model), value)
-}
-
-/// How much a diagnostic affects a configuration file.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum Severity {
-    /// The line is ignored. The file stays usable.
-    Warning,
-    /// The file cannot start its game.
-    Error,
-}
-
-/// A finding about one line or about a whole configuration file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Diagnostic {
-    /// The line of the finding, starting at 1. `None` for the whole file.
-    pub line: Option<usize>,
-    /// How much the finding affects the file.
-    pub severity: Severity,
-    /// The message without the line.
-    pub message: String,
-}
-
-impl Diagnostic {
-    /// Returns a warning about the line `line`.
-    #[must_use]
-    pub fn warning(line: usize, message: String) -> Self {
-        Self {
-            line: Some(line),
-            severity: Severity::Warning,
-            message,
-        }
-    }
-
-    /// Returns an error about the line `line`.
-    #[must_use]
-    pub fn error(line: usize, message: String) -> Self {
-        Self {
-            line: Some(line),
-            severity: Severity::Error,
-            message,
-        }
-    }
-
-    /// Returns the diagnostic with the file name `source` in front.
-    #[must_use]
-    pub fn located(&self, source: &str) -> String {
-        match self.line {
-            Some(_) => format!("{source} {self}"),
-            None => format!("{source}: {self}"),
-        }
-    }
-}
-
-impl fmt::Display for Diagnostic {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.line {
-            Some(line) => write!(formatter, "line {line}: {}", self.message),
-            None => formatter.write_str(&self.message),
-        }
-    }
 }
 
 /// The lines of one configuration file that a layer reads, with the findings about the file.
@@ -179,16 +121,6 @@ pub(crate) struct FileReading {
     pub lines: Vec<(usize, LayerLine)>,
     /// The findings about the lines that the layer ignores or overrides.
     pub diagnostics: Vec<Diagnostic>,
-}
-
-/// Returns the message of a `machine` value that belongs to another system.
-pub(crate) fn foreign_machine_message(value: &str) -> String {
-    format!("machine {value} belongs to another system")
-}
-
-/// Returns the message of a key binding that the family does not know.
-pub(crate) fn invalid_key_binding_message(host_name: &str, native_name: &str) -> String {
-    format!("invalid key binding {KEY_BINDING_PREFIX}{host_name} = {native_name}")
 }
 
 /// Reads the lines of `document` that a layer of `kind` accepts.
@@ -211,7 +143,7 @@ pub(crate) fn read_document(
         let (key, value) = match parse_line(text) {
             LineContent::Blank | LineContent::Comment => continue,
             LineContent::Text => {
-                diagnostics.push(Diagnostic::warning(line, "text without a key".to_owned()));
+                diagnostics.push(Diagnostic::warning(line, DiagnosticKind::TextWithoutKey));
                 continue;
             }
             LineContent::Entry { key, value } => (key, value),
@@ -227,28 +159,37 @@ pub(crate) fn read_document(
             continue;
         }
         let Some(setting) = find_setting(key) else {
-            diagnostics.push(Diagnostic::warning(line, format!("unknown key {key}")));
+            diagnostics.push(Diagnostic::warning(
+                line,
+                DiagnosticKind::UnknownKey(key.to_owned()),
+            ));
             continue;
         };
         if !kind.accepts(setting.scope) {
-            diagnostics.push(Diagnostic::warning(line, host_key_message(setting)));
+            diagnostics.push(Diagnostic::warning(
+                line,
+                DiagnosticKind::HostKey(setting.key),
+            ));
             continue;
         }
         if setting.key == MACHINE_KEY && value.parse::<MachineSelection>().is_err() {
-            let message = format!("unknown machine {value}");
+            let finding = DiagnosticKind::UnknownMachine(value.to_owned());
             diagnostics.push(match kind {
-                LayerKind::GameFile => Diagnostic::error(line, message),
+                LayerKind::GameFile => Diagnostic::error(line, finding),
                 LayerKind::SettingsFile | LayerKind::SystemDefaults | LayerKind::CommandLine => {
-                    Diagnostic::warning(line, message)
+                    Diagnostic::warning(line, finding)
                 }
             });
             continue;
         }
         let value = resolve_value(setting, root, value);
-        if let Err(message) = check_value(setting, &value) {
+        if let Err(error) = check_value(setting, &value) {
             diagnostics.push(Diagnostic::warning(
                 line,
-                format!("invalid {key}: {message}"),
+                DiagnosticKind::InvalidValue {
+                    key: setting.key,
+                    error,
+                },
             ));
             continue;
         }
@@ -257,7 +198,10 @@ pub(crate) fn read_document(
         {
             diagnostics.push(Diagnostic::warning(
                 line,
-                format!("duplicate key {key}. It overrides line {previous}."),
+                DiagnosticKind::DuplicateKey {
+                    key: setting.key,
+                    previous,
+                },
             ));
         }
         lines.push((line, LayerLine::Setting(setting, value)));
@@ -290,7 +234,7 @@ pub(crate) fn read_game_document(
             .parse::<MachineSelection>()
             .is_ok_and(|model| system_of(model.target()) != system)
     {
-        let diagnostic = Diagnostic::error(line, foreign_machine_message(value));
+        let diagnostic = Diagnostic::error(line, DiagnosticKind::ForeignMachine(value.clone()));
         reading.diagnostics.push(diagnostic);
         reading
             .diagnostics
@@ -304,14 +248,6 @@ pub(crate) fn is_foreign_machine(value: &str, target: Target) -> bool {
     !value
         .parse::<MachineSelection>()
         .is_ok_and(|model| model.target() == target)
-}
-
-/// Returns the message of a host key line in a layer that sets no host keys.
-fn host_key_message(setting: &Setting) -> String {
-    format!(
-        "host key {} is ignored. Only the settings file and the command line set host keys.",
-        setting.key
-    )
 }
 
 #[cfg(test)]
@@ -423,25 +359,5 @@ mod tests {
         assert_eq!(reading.diagnostics.len(), 1);
         let reading = read_game_document(&document, root, None);
         assert_eq!(reading.diagnostics.len(), 1);
-    }
-
-    /// Verifies the text of a diagnostic with and without a line.
-    #[test]
-    fn diagnostics_name_their_line_and_source() {
-        let warning = Diagnostic::warning(3, "unknown key fdd3".to_owned());
-        assert_eq!(warning.to_string(), "line 3: unknown key fdd3");
-        assert_eq!(
-            warning.located("pc98/edge.conf"),
-            "pc98/edge.conf line 3: unknown key fdd3"
-        );
-        let whole = Diagnostic {
-            line: None,
-            severity: Severity::Error,
-            message: "cannot read the file".to_owned(),
-        };
-        assert_eq!(
-            whole.located("pc98/edge.conf"),
-            "pc98/edge.conf: cannot read the file"
-        );
     }
 }

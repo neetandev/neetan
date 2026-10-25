@@ -8,7 +8,9 @@ use gui::ui::ListState;
 use i18n::Catalog;
 use machine_factory::config::{
     AUTO_LANGUAGE,
-    settings::{Families, MACHINE_KEY, PathKind, Section, Setting, ValueKind},
+    settings::{
+        Families, MACHINE_KEY, PathKind, Section, Setting, ValueKind, value_error::ValueError,
+    },
 };
 
 use super::form::{EditorSection, FieldSource};
@@ -17,7 +19,7 @@ use crate::{
         ConfigDocument, check_value,
         metadata::{META_PREFIX, YEAR_KEY, parse_year},
     },
-    texts::{ENGLISH_TAG, editor},
+    texts::{ENGLISH_TAG, editor, in_catalog},
 };
 
 /// The values of an on/off setting in the order of its dropdown.
@@ -41,8 +43,8 @@ pub(crate) struct InvalidValue {
 pub(crate) struct FieldError {
     /// The field of the value.
     pub(crate) source: FieldSource,
-    /// The error message of the setting for the value.
-    pub(crate) message: String,
+    /// The fault of the value.
+    pub(crate) error: ValueError,
 }
 
 impl FieldError {
@@ -50,7 +52,8 @@ impl FieldError {
     /// example `Year: '1900' is not a year from 1970 to 2100`.
     pub(crate) fn write(&self, catalog: &Catalog, out: &mut String) {
         let label = self.source.label(catalog);
-        let _ = catalog.write(out, editor::value_error(&label, &self.message));
+        let error = in_catalog(catalog, &self.error);
+        let _ = catalog.write(out, editor::value_error(&label, &error));
     }
 }
 
@@ -65,8 +68,8 @@ impl FieldError {
 /// The reason that the launch rejects a value of the file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum InvalidReason {
-    /// The setting rejects the value with this message.
-    Rejected(String),
+    /// The setting rejects the value with this fault.
+    Rejected(ValueError),
     /// The value is a choice of another system.
     OtherSystem,
 }
@@ -151,8 +154,8 @@ fn choice_value(setting: &Setting, choices: &[Cow<'static, str>], value: &str) -
             reason,
         }),
     };
-    if let Err(message) = check_value(setting, value) {
-        return invalid(InvalidReason::Rejected(message));
+    if let Err(error) = check_value(setting, value) {
+        return invalid(InvalidReason::Rejected(error));
     }
     let selected = choices
         .iter()
@@ -429,9 +432,9 @@ impl Field {
         if text.is_empty() {
             return None;
         }
-        let error = |message| FieldError {
+        let error = |error| FieldError {
             source: self.source,
-            message,
+            error,
         };
         match self.source.setting() {
             None if self.key() == YEAR_KEY => parse_year(text).err().map(error),
@@ -516,7 +519,9 @@ mod tests {
             assert_eq!(invalid.value, value);
             assert_eq!(
                 invalid.reason,
-                InvalidReason::Rejected(format!("invalid value '{value}', expected on or off"))
+                InvalidReason::Rejected(ValueError::OnOff {
+                    value: value.to_owned()
+                })
             );
             assert!(field.is_set());
             assert_eq!(field.values(), [value]);

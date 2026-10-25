@@ -10,8 +10,10 @@
 
 use std::fmt::{self, Write as _};
 
-use i18n::Catalog;
-use machine_factory::config::settings::{DERIVED_DEFAULT_NOTE, NumberRange, file_types::FileTypes};
+use i18n::{Catalog, ListKind};
+use machine_factory::config::settings::{
+    NumberRange, file_types::FileTypes, model_limits::FactData,
+};
 
 use super::{
     fields::{InvalidReason, InvalidValue},
@@ -19,7 +21,7 @@ use super::{
     inherited::Inherited,
     note_writer::NoteWriter,
 };
-use crate::texts::note;
+use crate::texts::{FileTypeText, file_type_text, in_catalog, note, unset_word};
 
 /// The most bytes of the shortest text of a number step.
 const STEP_TEXT_CAPACITY: usize = 32;
@@ -133,14 +135,22 @@ pub(crate) struct InheritedLabel<'a> {
 }
 
 impl fmt::Display for InheritedLabel<'_> {
-    /// Writes the values with the label of their source.
+    /// Writes the values, or the word of a value that the machine picks,
+    /// with the label of their source.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let values = InheritedValues {
-            catalog: self.catalog,
-            values: &self.inherited.values,
-        };
-        self.catalog
-            .write(formatter, self.inherited.source.label(&values))
+        let source = self.inherited.source;
+        match (self.inherited.values.as_slice(), self.inherited.word) {
+            ([], Some(word)) => self
+                .catalog
+                .write(formatter, source.label(&unset_word(self.catalog, word))),
+            (values, _) => {
+                let values = InheritedValues {
+                    catalog: self.catalog,
+                    values,
+                };
+                self.catalog.write(formatter, source.label(&values))
+            }
+        }
     }
 }
 
@@ -151,7 +161,7 @@ pub(crate) fn inherited_label<'a>(
     inherited: Option<&'a Inherited>,
 ) -> Option<InheritedLabel<'a>> {
     inherited
-        .filter(|inherited| !inherited.values.is_empty())
+        .filter(|inherited| inherited.has_value())
         .map(|inherited| InheritedLabel { catalog, inherited })
 }
 
@@ -199,8 +209,8 @@ fn capitalized(text: &str) -> String {
 /// line.`
 pub(crate) fn write_invalid_value(writer: &mut NoteWriter, invalid: &InvalidValue) -> NoteLook {
     match &invalid.reason {
-        InvalidReason::Rejected(message) => {
-            let message = capitalized(message);
+        InvalidReason::Rejected(error) => {
+            let message = capitalized(&in_catalog(writer.catalog(), error).to_string());
             writer.message(note::sentence(&message));
         }
         InvalidReason::OtherSystem => writer.message(note::other_system(&invalid.value)),
@@ -227,8 +237,20 @@ pub(crate) struct ChoiceNote<'a> {
     pub(crate) inherited: Option<&'a Inherited>,
     /// Whether the default derives from other settings.
     pub(crate) derived: bool,
-    /// The fact of the value that the table gives.
-    pub(crate) fact: Option<&'a str>,
+    /// The data of the fact of the value that the table gives.
+    pub(crate) fact: Option<&'a FactData>,
+}
+
+/// Adds the sentence of the fact `fact` of a choice, for example `The
+/// choices are auto, 15k and 24k.` or `At low the CPU runs at 4 MHz.`
+fn write_fact(writer: &mut NoteWriter, fact: &FactData) {
+    match fact {
+        FactData::Choices(values) => {
+            let choices = writer.catalog().display_list(ListKind::And, values);
+            writer.message(note::choices(&choices));
+        }
+        FactData::CpuClock { mode, clock } => writer.message(note::cpu_clock(mode, clock)),
+    }
 }
 
 /// Writes the note of a choice field: the reason that the model ignores it, the warning
@@ -257,10 +279,10 @@ pub(crate) fn choice_note(writer: &mut NoteWriter, state: ChoiceNote) -> NoteLoo
         writer.text(note::REQUIRED);
     }
     if state.derived {
-        writer.sentence(DERIVED_DEFAULT_NOTE);
+        writer.text(note::DERIVED_DEFAULT);
     }
     if let Some(fact) = state.fact {
-        writer.sentence(fact);
+        write_fact(writer, fact);
     }
     NoteLook::PLAIN
 }
@@ -371,7 +393,8 @@ impl fmt::Display for ExtensionList<'_> {
 /// Adds the sentence of the files of `types`, for example `Hard disk
 /// images: .hdi .nhd .thd.`
 fn extension_note(writer: &mut NoteWriter, types: &FileTypes) {
-    writer.message(note::extensions(&types.name, &ExtensionList(types)));
+    let name = file_type_text(writer.catalog(), types, FileTypeText::Name);
+    writer.message(note::extensions(&name, &ExtensionList(types)));
 }
 
 /// Writes the note of a single path field.
@@ -438,7 +461,7 @@ pub(crate) fn write_empty_drive_hint(
             let _ = write!(out, "{label}");
         }
         (Some(_) | None, Some(types)) => {
-            let _ = catalog.write(out, note::empty_drive(&types.noun));
+            out.push_str(file_type_text(catalog, types, FileTypeText::EmptyDrive));
         }
         (Some(_) | None, None) => out.push_str(catalog.text(note::EMPTY_DISK_DRIVE)),
     }
@@ -452,16 +475,18 @@ pub(crate) fn write_empty_list_caption(
     types: Option<&FileTypes>,
 ) {
     match types {
-        Some(types) => {
-            let _ = catalog.write(out, note::start_without(&types.noun));
-        }
+        Some(types) => out.push_str(file_type_text(catalog, types, FileTypeText::StartWithout)),
         None => out.push_str(catalog.text(note::START_WITHOUT_DISK)),
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use machine_factory::config::settings::find_setting;
+    use common::CpuMode;
+    use machine_factory::config::{
+        phrases::Megahertz,
+        settings::{find_setting, value_error::ValueError},
+    };
 
     use super::*;
     use crate::{
@@ -534,10 +559,10 @@ pub(crate) mod tests {
 
     /// The inherited `values` of `source`.
     fn inherited(values: &[&str], source: InheritedSource) -> Inherited {
-        Inherited {
-            values: values.iter().map(|value| (*value).to_owned()).collect(),
+        Inherited::new(
+            values.iter().map(|value| (*value).to_owned()).collect(),
             source,
-        }
+        )
     }
 
     /// The file types of the hard disks of the first family that has them.
@@ -552,6 +577,23 @@ pub(crate) mod tests {
 
     /// The German texts of the note join, the sentence and the values join.
     const GERMAN: &str = "[note]\njoin = {first} | {second}\nsentence = {text}!\n";
+
+    /// Verifies that the word of a value that the machine picks shows in the catalog with its
+    /// source.
+    #[test]
+    fn an_unset_word_shows_in_the_catalog() {
+        let word = Inherited {
+            values: Vec::new(),
+            word: Some("auto"),
+            source: InheritedSource::BuiltIn,
+        };
+        assert_eq!(placeholder(Some(&word)), "Built-in default: auto");
+        let german = test_catalog("[unset]\nauto = automatisch\n");
+        assert_eq!(
+            inherited_label(&german, Some(&word)).map(|label| label.to_string()),
+            Some("Built-in default: automatisch".to_owned())
+        );
+    }
 
     /// Verifies that the sentence of an inherited value follows the catalog patterns and that the placeholder shows the inherited value or the text of an unset key.
     #[test]
@@ -585,7 +627,9 @@ pub(crate) mod tests {
         let inherited = inherited(&["v2"], InheritedSource::BuiltIn);
         let invalid = InvalidValue {
             value: "On".to_owned(),
-            reason: InvalidReason::Rejected("invalid value 'On', expected on or off".to_owned()),
+            reason: InvalidReason::Rejected(ValueError::OnOff {
+                value: "On".to_owned(),
+            }),
         };
         let note = |state: ChoiceNote| english_note(|writer| choice_note(writer, state));
         assert_eq!(
@@ -606,12 +650,12 @@ pub(crate) mod tests {
             }),
             Note::plain("The model is preset from the system default.")
         );
-        let fact = "The choices are v1s, v1h, v2, n, n80 and n80sr.";
+        let fact = FactData::Choices(vec!["v1s", "v1h", "v2", "n", "n80", "n80sr"]);
         assert_eq!(
             note(ChoiceNote {
                 set: true,
                 inherited: Some(&inherited),
-                fact: Some(fact),
+                fact: Some(&fact),
                 ..ChoiceNote::default()
             }),
             Note::plain("Built-in default: v2. The choices are v1s, v1h, v2, n, n80 and n80sr.")
@@ -619,17 +663,21 @@ pub(crate) mod tests {
         assert_eq!(
             note(ChoiceNote {
                 inherited: Some(&inherited),
-                fact: Some(fact),
+                fact: Some(&fact),
                 ..ChoiceNote::default()
             }),
-            Note::plain(fact)
+            Note::plain("The choices are v1s, v1h, v2, n, n80 and n80sr.")
         );
+        let clock = FactData::CpuClock {
+            mode: CpuMode::Low,
+            clock: Megahertz(3_993_600),
+        };
         assert_eq!(
             note(ChoiceNote {
                 set: true,
                 inherited: Some(&self::inherited(&["low"], InheritedSource::BuiltIn)),
                 derived: true,
-                fact: Some("At low the CPU runs at 4 MHz."),
+                fact: Some(&clock),
                 ..ChoiceNote::default()
             }),
             Note::plain(
@@ -643,7 +691,7 @@ pub(crate) mod tests {
                 derived: true,
                 ..ChoiceNote::default()
             }),
-            Note::plain(DERIVED_DEFAULT_NOTE)
+            Note::plain("The default follows the boot mode.")
         );
         let model = self::inherited(&["PC9801RA"], InheritedSource::SystemDefaults);
         assert_eq!(
@@ -729,7 +777,7 @@ pub(crate) mod tests {
             Note::plain("Settings default: games/boot.hdi.").shown_as_path()
         );
         let extensions = types.map_or_else(Note::default, |types| {
-            Note::plain(&format!("{}: {}.", types.name, ExtensionList(types)))
+            Note::plain(&format!("Hard disk images: {}.", ExtensionList(types)))
         });
         assert_eq!(note(false, false, Some(&settings), types), extensions);
         assert_eq!(note(false, true, Some(&nothing), types), extensions);

@@ -2,11 +2,13 @@
 //! developer and year, the files with errors under a caption and the hints
 //! of an empty table.
 
+use std::fmt::Write as _;
+
 use gui::{
     Rect,
     ui::{
         Align, CellTone, Column, ColumnWidth, EmptyHint, Icon, RowKind, Table, TableCell,
-        TableResponse, TableRow, TableState, Truncation, UiContext, UiId, caption_row,
+        TableResponse, TableRow, TableState, TextBuffer, Truncation, UiContext, UiId, caption_row,
     },
 };
 use i18n::Catalog;
@@ -15,7 +17,10 @@ use super::{
     entries::{DEVELOPER_COLUMN, TITLE_COLUMN, TITLE_ORIGINAL_COLUMN, TableEntry, YEAR_COLUMN},
     rows::GameRow,
 };
-use crate::texts::library;
+use crate::{
+    config::Diagnostic,
+    texts::{in_catalog, library},
+};
 
 /// The id of the game table.
 pub(crate) const GAME_TABLE_ID: &str = "games";
@@ -77,16 +82,43 @@ fn draw_game(context: &mut UiContext, table_row: &TableRow, row: &GameRow) {
     }
 }
 
+/// The texts of the errors of the rows of the game table, one buffer for
+/// each row of the system.
+pub(crate) type RowErrors = Vec<TextBuffer<Diagnostic>>;
+
+/// The rows of the game table with the texts of their errors.
+pub(crate) struct GameRows<'a> {
+    /// The games and the files with errors of the system.
+    pub(crate) rows: &'a [GameRow],
+    /// The texts of the errors of the rows.
+    pub(crate) errors: &'a mut RowErrors,
+}
+
 /// Draws the file name and the error of the file `row` into `table_row`.
 /// The error spans the columns of the original title and the developer.
-fn draw_broken(context: &mut UiContext, table_row: &TableRow, row: &GameRow) {
+/// `error` holds the text of the error.
+fn draw_broken(
+    context: &mut UiContext,
+    table_row: &TableRow,
+    row: &GameRow,
+    error: &mut TextBuffer<Diagnostic>,
+) {
     TableCell::new(&row.file_name)
         .icon(Icon::Alert, CellTone::Error)
         .truncation(Truncation::Middle)
         .show(context, table_row, TITLE_COLUMN, TITLE_COLUMN);
-    TableCell::new(row.error.as_deref().unwrap_or_default())
-        .tone(CellTone::Error)
-        .show(context, table_row, TITLE_ORIGINAL_COLUMN, DEVELOPER_COLUMN);
+    let text = match &row.error {
+        Some(diagnostic) => error.text(context, diagnostic, |catalog, diagnostic, out| {
+            let _ = write!(out, "{}", in_catalog(catalog, diagnostic));
+        }),
+        None => "",
+    };
+    TableCell::new(text).tone(CellTone::Error).show(
+        context,
+        table_row,
+        TITLE_ORIGINAL_COLUMN,
+        DEVELOPER_COLUMN,
+    );
 }
 
 /// Draws the game table of `entries` of `rows` into `area` with the
@@ -98,19 +130,25 @@ pub(crate) fn show_game_table(
     area: Rect,
     entries: &[TableEntry],
     kinds: &[RowKind],
-    rows: &[GameRow],
+    rows: GameRows,
     state: &mut TableState,
     hint: EmptyHint,
 ) -> TableResponse {
     let catalog = context.catalog;
     let columns = columns(catalog);
+    let GameRows { rows, errors } = rows;
+    if errors.len() < rows.len() {
+        errors.resize_with(rows.len(), TextBuffer::new);
+    }
     Table::new(GAME_TABLE_ID, &columns, entries.len())
         .kinds(kinds)
         .empty_hint(hint)
         .show(context, area, state, |context, table_row| {
             match entries[table_row.row.index] {
                 TableEntry::Game(index) => draw_game(context, table_row, &rows[index]),
-                TableEntry::Broken(index) => draw_broken(context, table_row, &rows[index]),
+                TableEntry::Broken(index) => {
+                    draw_broken(context, table_row, &rows[index], &mut errors[index]);
+                }
                 TableEntry::Caption => caption_row(
                     context,
                     &table_row.row,
@@ -153,7 +191,10 @@ mod tests {
                     AREA,
                     &entries,
                     &kinds,
-                    &rows,
+                    GameRows {
+                        rows: &rows,
+                        errors: &mut RowErrors::new(),
+                    },
                     state,
                     EmptyHint::None,
                 )
@@ -187,7 +228,10 @@ mod tests {
                     AREA,
                     &[],
                     &[],
-                    &[],
+                    GameRows {
+                        rows: &[],
+                        errors: &mut RowErrors::new(),
+                    },
                     state,
                     EmptyHint::Top("No games match the filter"),
                 )

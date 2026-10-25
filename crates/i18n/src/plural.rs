@@ -95,7 +95,7 @@ impl PluralRule {
 ///
 /// The split applies to the last `.`-part of the key. A key whose last part after a `.` is the
 /// name of a category is a plural form: `images.one` gives `images` and `one`. Every other key
-/// gives itself and no category. A key without a `.`, such as the choice value `one`, gives
+/// gives itself and no category. A key without a `.`, such as the key `one`, gives
 /// itself.
 pub(crate) fn split_plural_key(key: &str) -> (&str, Option<PluralCategory>) {
     if let Some((base, last)) = key.rsplit_once('.')
