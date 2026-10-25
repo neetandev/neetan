@@ -21,9 +21,6 @@
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-mod allocation_counter;
 mod bytes;
 mod color;
 pub mod fonts;
@@ -44,6 +41,12 @@ pub use rasterizer::{BLUE_NOISE, BLUE_NOISE_SIZE, Rasterizer};
 pub use scene::{Instance, RectStyle, Scene};
 pub use shapes::ShapeStore;
 pub use slug::{Bounds, SlugData, SlugGlyph, SlugShape};
+
+/// The global allocator of the test binary. It counts the allocations of each thread.
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: common::allocation_counter::CountingAllocator =
+    common::allocation_counter::CountingAllocator;
 
 /// A rectangle in logical units.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

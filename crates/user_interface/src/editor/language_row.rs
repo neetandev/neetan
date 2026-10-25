@@ -2,24 +2,29 @@
 //! of the languages, its inherited entry and its note. The texts refill only when the catalog
 //! generation or their data changes.
 
-use std::{borrow::Cow, fmt::Write as _};
+use std::borrow::Cow;
 
 use gui::ui::{Dropdown, TextBuffer, TextValue, UiContext};
 use i18n::Catalog;
-use machine_factory::config::{AUTO_LANGUAGE, is_language_tag, settings::Setting};
+use machine_factory::config::{
+    AUTO_LANGUAGE, is_language_tag,
+    settings::{GUI_LANGUAGE_KEY, Setting},
+};
 
 use super::{
     Editor, Subject,
     fields::{BUILT_IN_LANGUAGE_CHOICES, Field},
     hints::{EditorWidget, WidgetKind},
+    host_settings::write_extra_sentences,
     inherited::{Inherited, InheritedSource},
-    notes::{NOT_SET, NoteKind, invalid_value_note, sentences},
+    note_writer::NoteText,
+    notes::{NoteLook, write_invalid_value},
     page::PageActions,
-    rows::{RowAreas, draw_note_text, field_id, show_dropdown},
+    rows::{RowAreas, draw_note, field_id, show_dropdown},
 };
 use crate::{
     language::LanguageOption,
-    texts::{ENGLISH_TAG, english, host_settings},
+    texts::{ENGLISH_TAG, english, host_settings, note},
 };
 
 impl TextValue for InheritedSource {}
@@ -78,8 +83,6 @@ fn language_caption<'a>(
 pub(crate) struct LanguageRow {
     /// The languages of the language files, sorted by tag.
     options: Vec<LanguageOption>,
-    /// The sentences of the command line flag of the language setting.
-    extra: Option<String>,
     /// The dropdown values of the last fill of the captions.
     captioned: Vec<Cow<'static, str>>,
     /// The catalog generation of the last fill of the captions. `None` before the first fill.
@@ -89,21 +92,20 @@ pub(crate) struct LanguageRow {
     /// The inherited entry of the dropdown for the source and the value of the inherited value.
     inherited_label: TextBuffer<(InheritedSource, String)>,
     /// The note of the row for its kind, the inherited source and the inherited value or the
-    /// message of an invalid value.
-    note: TextBuffer<(LanguageNote, InheritedSource, String)>,
+    /// invalid value.
+    note: NoteText<(LanguageNote, InheritedSource, String)>,
 }
 
 impl LanguageRow {
-    /// The row of the languages `options` with the sentences `extra` of the command line flag.
-    pub(super) fn new(options: Vec<LanguageOption>, extra: Option<String>) -> Self {
+    /// The row of the languages `options`.
+    pub(super) fn new(options: Vec<LanguageOption>) -> Self {
         Self {
             options,
-            extra,
             captioned: Vec::new(),
             captions_generation: None,
             captions: Vec::new(),
             inherited_label: TextBuffer::new(),
-            note: TextBuffer::new(),
+            note: NoteText::default(),
         }
     }
 
@@ -196,18 +198,19 @@ impl LanguageRow {
             (source, value),
             |catalog, (source, value), out| {
                 if value.is_empty() {
-                    out.push_str(NOT_SET);
+                    out.push_str(catalog.text(note::NOT_SET));
                 } else {
                     let caption = language_caption(options, catalog, value);
-                    let _ = write!(out, "{}: {caption}", source.caption());
+                    let _ = catalog.write(out, source.label(&caption));
                 }
             },
         );
         (captions, label)
     }
 
-    /// The note of the language field `field` with the inherited value `inherited` in the texts
-    /// of `catalog` at the catalog generation `generation`, and its look.
+    /// The note of the language field `field` with the inherited value `inherited` and the
+    /// command line `flags` in the texts of `catalog` at the catalog generation `generation`,
+    /// and its look.
     ///
     /// An invalid value, a tag without a file and a file that does not load give a warning. A
     /// set field shows the inherited value. The sentences of the command line flag follow every
@@ -219,7 +222,8 @@ impl LanguageRow {
         generation: u64,
         field: &Field,
         inherited: Option<&Inherited>,
-    ) -> (&str, NoteKind) {
+        flags: &[(&'static str, String)],
+    ) -> (&str, NoteLook) {
         let invalid = field.invalid_value();
         let kind = match (invalid, field.chosen()) {
             (Some(_), _) => LanguageNote::Invalid,
@@ -237,53 +241,49 @@ impl LanguageRow {
             .and_then(|inherited| inherited.values.first())
             .map_or("", String::as_str);
         let detail = match kind {
-            LanguageNote::Invalid => invalid.map_or("", |invalid| invalid.message.as_str()),
+            LanguageNote::Invalid => invalid.map_or("", |invalid| invalid.value.as_str()),
             LanguageNote::Set => inherited_value,
             LanguageNote::Missing | LanguageNote::Broken | LanguageNote::Unset => "",
         };
-        let Self {
-            options,
-            extra,
-            note,
-            ..
-        } = self;
-        let text = note.text_in(
+        let Self { options, note, .. } = self;
+        note.note(
             catalog,
             generation,
             (kind, source, detail),
-            |catalog, (kind, source, detail), out| {
-                let warning = |key| Some(catalog.text(key).to_owned());
-                let text = match kind {
-                    LanguageNote::Invalid => {
-                        invalid.map(|invalid| invalid_value_note(invalid).text)
+            |writer, (kind, source, detail)| {
+                let extra = |writer: &mut _| write_extra_sentences(writer, flags, GUI_LANGUAGE_KEY);
+                match kind {
+                    LanguageNote::Invalid => match invalid {
+                        Some(invalid) => write_invalid_value(writer, invalid),
+                        None => NoteLook::WARNING,
+                    },
+                    LanguageNote::Missing => {
+                        writer.text(host_settings::MISSING_LANGUAGE);
+                        extra(writer);
+                        NoteLook::WARNING
                     }
-                    LanguageNote::Missing => Some(sentences(&[
-                        warning(host_settings::MISSING_LANGUAGE),
-                        extra.clone(),
-                    ])),
-                    LanguageNote::Broken => Some(sentences(&[
-                        warning(host_settings::BROKEN_LANGUAGE),
-                        extra.clone(),
-                    ])),
+                    LanguageNote::Broken => {
+                        writer.text(host_settings::BROKEN_LANGUAGE);
+                        extra(writer);
+                        NoteLook::WARNING
+                    }
                     LanguageNote::Set => {
-                        let label = (!detail.is_empty()).then(|| {
+                        if !detail.is_empty() {
+                            let catalog = writer.catalog();
                             let caption = language_caption(options, catalog, detail);
-                            format!("{}: {caption}", source.caption())
-                        });
-                        Some(sentences(&[label, extra.clone()]))
+                            let label = catalog.display(source.label(&caption));
+                            writer.message(note::sentence(&label));
+                        }
+                        extra(writer);
+                        NoteLook::PLAIN
                     }
-                    LanguageNote::Unset => extra.clone(),
-                };
-                out.push_str(text.as_deref().unwrap_or_default());
+                    LanguageNote::Unset => {
+                        extra(writer);
+                        NoteLook::PLAIN
+                    }
+                }
             },
-        );
-        let look = match kind {
-            LanguageNote::Invalid | LanguageNote::Missing | LanguageNote::Broken => {
-                NoteKind::Warning
-            }
-            LanguageNote::Set | LanguageNote::Unset => NoteKind::Plain,
-        };
-        (text, look)
+        )
     }
 }
 
@@ -323,8 +323,8 @@ impl Editor {
             field.select(selected);
             actions.changed = true;
         }
-        let (text, kind) = row.note(catalog, generation, field, inherited);
-        draw_note_text(context, areas.note, text, kind, false)
+        let (text, look) = row.note(catalog, generation, field, inherited, &settings.flags);
+        draw_note(context, areas.note, text, look)
     }
 }
 
@@ -341,15 +341,15 @@ mod tests {
         editor::{
             EditorSection,
             form::SETTINGS_SECTIONS,
+            notes::NoteKind,
             test_support::{SettingsRoot, index_of, settings_page, show, statuses_with},
         },
         gui_test_support::GuiHarness,
-        texts::SCHEMA,
+        texts::{test_catalog, test_language},
     };
 
-    /// A German language file with its own text of `auto`.
-    const GERMAN: &str = "[language]\nname = Deutsch\nplural = one-other\n\
-                          [host-settings]\nlanguage-auto = Systemsprache\n";
+    /// The sections of a German language file with its own text of `auto`.
+    const GERMAN: &str = "[host-settings]\nlanguage-auto = Systemsprache\n";
 
     /// A root with the settings file `settings` and the language files of Japanese, German and
     /// a file without a header.
@@ -359,19 +359,12 @@ mod tests {
         std::fs::create_dir(&languages).expect("folder is created");
         for (file, contents) in [
             ("ja.ini", "[language]\nname = 日本語\nplural = none\n"),
-            ("de.ini", GERMAN),
+            ("de.ini", test_language(GERMAN).as_str()),
             ("broken.ini", "[common]\nsave = Save\n"),
         ] {
             std::fs::write(languages.join(file), contents).expect("file is written");
         }
         test
-    }
-
-    /// The German catalog over the English texts.
-    fn german() -> Catalog {
-        Catalog::load("de", GERMAN, &SCHEMA, english())
-            .expect("the German texts load")
-            .catalog
     }
 
     /// A language option of `tag` with the language name `name`.
@@ -393,13 +386,14 @@ mod tests {
         let Subject::Host(settings) = &mut editor.subject else {
             panic!("a settings page");
         };
-        let (text, kind) = settings.language.note(
+        let (text, look) = settings.language.note(
             catalog,
             generation,
             &editor.fields[index],
             editor.inherited[index].as_ref(),
+            &settings.flags,
         );
-        (text.to_owned(), kind)
+        (text.to_owned(), look.kind)
     }
 
     /// The captions and the inherited entry of the language row of `editor` in `catalog` at
@@ -529,7 +523,7 @@ mod tests {
     /// Verifies that the choices leave out an invalid saved value and a saved tag that differs from a known tag only in case.
     #[test]
     fn the_choices_add_only_a_new_valid_saved_tag() {
-        let language = LanguageRow::new(vec![option("ja", Some("日本語"))], None);
+        let language = LanguageRow::new(vec![option("ja", Some("日本語"))]);
         let built_in = ["auto", "en", "ja"];
         assert_eq!(language.choices(None), built_in);
         assert_eq!(language.choices(Some("pt_BR")), built_in);
@@ -545,8 +539,8 @@ mod tests {
     /// Verifies that the captions and the inherited entry keep their texts for the same generation and values, and refill on a new generation or new values.
     #[test]
     fn the_dropdown_texts_refill_on_a_generation_or_a_choice_change() {
-        let mut language = LanguageRow::new(vec![option("de", Some("Deutsch"))], None);
-        let german = german();
+        let mut language = LanguageRow::new(vec![option("de", Some("Deutsch"))]);
+        let german = test_catalog(GERMAN);
         let choices = language.choices(None);
         let inherited = Inherited {
             values: vec!["auto".to_owned()],

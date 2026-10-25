@@ -6,64 +6,70 @@ use gui::{
     Rect,
     ui::{Truncation, UiContext},
 };
-use machine_factory::config::settings::Setting;
 
 use super::{
     BrowseTarget, Editor,
     fields::FieldValue,
+    form::write_ignored,
     hints::{EditorWidget, WidgetKind},
     inherited::Inherited,
     media_list::{
         MediaList, button_ids, buttons_width, empty_list_height, empty_list_id, list_height,
-        missing_note,
+        write_missing_note,
     },
-    notes::{Note, empty_drive_hint, empty_list_caption, media_note},
+    note_writer::NoteWriter,
+    notes::{NoteLook, followed_by, media_note, write_empty_drive_hint, write_empty_list_caption},
     page::PageActions,
-    rows::{RowAreas, draw_note, field_id, image_icon},
+    rows::{SettingRow, draw_note, field_id, image_icon},
 };
 
-/// Returns the note below a media list: the warning of the images at the
-/// 0-based `missing` indices, or else the inherited list of a list that the
-/// file sets. A disabled list shows no note.
+/// Writes the note below a media list: the warning of the images that
+/// `missing` marks, or else the inherited list of a list that the file
+/// sets. A disabled list shows no note.
 pub(crate) fn below_note(
+    writer: &mut NoteWriter,
     enabled: bool,
-    missing: &[usize],
+    missing: &[bool],
     set: bool,
     inherited: Option<&Inherited>,
-) -> Note {
+) -> NoteLook {
     if !enabled {
-        return Note::default();
+        return NoteLook::PLAIN;
     }
-    match missing_note(missing) {
-        Some(text) => Note::warning(text),
-        None => media_note(set, inherited),
+    if write_missing_note(writer, missing) {
+        return NoteLook::WARNING;
     }
+    media_note(writer, set, inherited)
 }
 
 impl Editor {
-    /// Draws the media list of the path list field at `index` and returns
-    /// the height of its row.
+    /// Draws the media list of the path list field of `row` and returns the
+    /// height of its row.
     pub(super) fn draw_media(
         &mut self,
         context: &mut UiContext,
-        areas: RowAreas,
-        index: usize,
-        setting: &'static Setting,
-        ignored: Option<String>,
+        row: SettingRow,
         actions: &mut PageActions,
     ) -> f32 {
+        let SettingRow {
+            areas,
+            index,
+            setting,
+            ignored,
+            texts,
+        } = row;
         let theme = context.theme;
+        let catalog = context.catalog;
+        let generation = context.catalog_generation;
+        let revision = self.revision;
         let id = field_id(setting.key);
         let enabled = ignored.is_none();
         let types = self.file_types(setting);
         let field = &self.fields[index];
         let has_images = !field.images().is_empty();
         let empty_list = field.is_empty_list();
-        let set = field.is_set();
-        let inherited = self.inherited[index].clone();
-        let inherits_images = inherited
-            .as_ref()
-            .is_some_and(|inherited| !inherited.values.is_empty());
+        let inherited = self.inherited[index].as_ref();
+        let inherits_images = inherited.is_some_and(|inherited| !inherited.values.is_empty());
         let shows_toggle = enabled
             && !has_images
             && (empty_list || inherits_images || context.has_focus(empty_list_id(id)));
@@ -82,22 +88,30 @@ impl Editor {
                     .push(EditorWidget::new(empty_list_id(id), WidgetKind::Checkbox));
             }
         }
-        let hint = match &ignored {
-            Some(note) => note.clone(),
-            None => empty_drive_hint(types, inherited.as_ref(), empty_list),
-        };
+        let hint = texts.hint.text_in(
+            catalog,
+            generation,
+            revision,
+            |catalog, _, out| match ignored {
+                Some(ignored) => {
+                    let mut scratch = String::new();
+                    let mut writer = NoteWriter::new(catalog, &mut scratch);
+                    write_ignored(&mut writer, ignored);
+                    writer.finish(out);
+                }
+                None => write_empty_drive_hint(catalog, out, types, inherited, empty_list),
+            },
+        );
         let hint_truncation = if ignored.is_none() && inherits_images && !empty_list {
             Truncation::Middle
         } else {
             Truncation::End
         };
-        let caption = empty_list_caption(types);
-        let missing: Vec<usize> = self.missing[index]
-            .iter()
-            .enumerate()
-            .filter(|(_, missing)| **missing)
-            .map(|(place, _)| place)
-            .collect();
+        let caption = texts
+            .caption
+            .text_in(catalog, generation, revision, |catalog, _, out| {
+                write_empty_list_caption(catalog, out, types);
+            });
         let mut values = self.fields[index].images().to_vec();
         let height = list_height(theme, values.len());
         let wide = Rect::new(areas.wide.x, areas.wide.y, areas.wide.width, height);
@@ -106,9 +120,9 @@ impl Editor {
             icon: image_icon(types),
             missing: &self.missing[index],
             enabled,
-            hint: &hint,
+            hint,
             hint_truncation,
-            empty_list_caption: shows_toggle.then_some(caption.as_str()),
+            empty_list_caption: shows_toggle.then_some(caption),
             empty_list,
         }
         .show(context, wide, &mut self.fields[index].list, &mut values);
@@ -134,16 +148,26 @@ impl Editor {
             row += empty_list_height(theme);
             below_top += empty_list_height(theme);
         }
-        let note = below_note(enabled, &missing, set, inherited.as_ref())
-            .followed_by(self.extra_note(setting));
-        if !note.text.is_empty() {
+        let (note, look) = texts
+            .note
+            .note(catalog, generation, (revision, false), |writer, _| {
+                let look = below_note(
+                    writer,
+                    enabled,
+                    &self.missing[index],
+                    self.fields[index].is_set(),
+                    self.inherited[index].as_ref(),
+                );
+                followed_by(writer, look, |writer| self.write_extra(writer, setting))
+            });
+        if !note.is_empty() {
             let below = Rect::new(
                 wide.x,
                 below_top + theme.gap * 0.75,
                 (wide.width - buttons_width(theme) - theme.gap).max(0.0),
                 theme.icon_size,
             );
-            let note_height = draw_note(context, below, &note);
+            let note_height = draw_note(context, below, note, look);
             row += theme.gap * 0.75 + note_height;
         }
         row
@@ -159,7 +183,8 @@ mod tests {
         editor::{
             EditorSection,
             inherited::InheritedSource,
-            notes::MISSING_IMAGE_NOTE,
+            notes::tests::{Note, english_note},
+            rows::{RowAreas, RowTexts},
             test_support::{EditorRoot, SCREEN, fdd1_model, index_of},
         },
         gui_test_support::GuiHarness,
@@ -172,22 +197,18 @@ mod tests {
             values: vec!["games/boot.d88".to_owned()],
             source: InheritedSource::SettingsFile,
         };
-        let warning = below_note(true, &[2], true, Some(&inherited));
-        assert!(warning.is_warning());
+        let below_note = |enabled: bool, missing: &[bool], set: bool| {
+            english_note(|writer| below_note(writer, enabled, missing, set, Some(&inherited)))
+        };
+        let warning = below_note(true, &[false, false, true], true);
+        assert!(warning.look.is_warning());
         assert!(warning.text.starts_with("Image 3 does not exist."));
-        assert_ne!(warning.text, MISSING_IMAGE_NOTE);
         assert_eq!(
-            below_note(true, &[], true, Some(&inherited)),
+            below_note(true, &[], true),
             Note::plain("Settings default: games/boot.d88.").shown_as_path()
         );
-        assert_eq!(
-            below_note(true, &[], false, Some(&inherited)),
-            Note::default()
-        );
-        assert_eq!(
-            below_note(false, &[0], true, Some(&inherited)),
-            Note::default()
-        );
+        assert_eq!(below_note(true, &[], false), Note::default());
+        assert_eq!(below_note(false, &[true], true), Note::default());
     }
 
     /// Verifies that the row of a list that inherits images holds the checkbox, that a set list grows by the note of the inherited list, and that an empty list holds both.
@@ -206,9 +227,16 @@ mod tests {
             assert_eq!(editor.fields[index].section, EditorSection::Media);
             let mut harness = GuiHarness::new(960, 600);
             harness.frame(|context| {
-                let areas = RowAreas::new(context.theme, SCREEN, 0.0);
                 let mut actions = PageActions::default();
-                editor.draw_media(context, areas, index, fdd1, None, &mut actions)
+                let mut texts = RowTexts::default();
+                let row = SettingRow {
+                    areas: RowAreas::new(context.theme, SCREEN, 0.0),
+                    index,
+                    setting: fdd1,
+                    ignored: None,
+                    texts: &mut texts,
+                };
+                editor.draw_media(context, row, &mut actions)
             })
         };
         let inherited = height("");

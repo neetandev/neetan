@@ -314,10 +314,10 @@ impl Catalog {
 mod tests {
     use core::fmt::Write;
 
+    use common::allocation_counter::count_allocations;
+
     use super::*;
-    use crate::{
-        allocation_counter::count_allocations, fixture, generate::leak_schema, schema::Schema,
-    };
+    use crate::{fixture, generate::leak_schema, schema::Schema};
 
     /// The sections of the English reference below the header and the list patterns.
     const REFERENCE: &str = "[common]\ncancel = Cancel\nbraces = Use {{braces}} and \\\\ and \\;\n\

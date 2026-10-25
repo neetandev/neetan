@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use machine_factory::config::systems::{System, compiled_systems};
 
 pub use self::file_names::{
-    COPY_TITLE_SUFFIX, FALLBACK_FILE_STEM, MAXIMUM_FILE_STEM_LENGTH, copy_title, is_reserved_stem,
-    new_game_file_name, title_file_stem, unique_file_name,
+    FALLBACK_FILE_STEM, MAXIMUM_FILE_STEM_LENGTH, copy_title, is_reserved_stem, new_game_file_name,
+    title_file_stem, unique_file_name,
 };
 pub use crate::config::ModelSource;
 use crate::config::{Diagnostic, GameMetadata, HostLayers, Severity};

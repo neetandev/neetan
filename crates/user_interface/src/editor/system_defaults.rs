@@ -5,7 +5,9 @@
 
 use machine_factory::config::systems::System;
 
-use super::{Editor, EditorFile, Subject, SystemFiles, not_compiled, save::read_optional_document};
+use super::{
+    Editor, EditorFile, OpenError, Subject, SystemFiles, not_compiled, save::read_optional_document,
+};
 use crate::config::{HostLayers, layers::system_defaults_file};
 
 impl Editor {
@@ -15,7 +17,7 @@ impl Editor {
     pub(crate) fn system_defaults(
         host: &HostLayers,
         system: &'static System,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, OpenError> {
         let files =
             SystemFiles::system_defaults(host, system).ok_or_else(|| not_compiled(system))?;
         let path = system_defaults_file(&host.config_folder(), files.target);
@@ -40,7 +42,7 @@ mod tests {
         editor::{
             EditedFile, EditorSection,
             form::DEFAULTS_SECTIONS,
-            inherited::Inherited,
+            notes::tests::english_inherited_label,
             rows::field_id,
             test_support::{EditorRoot, index_of, show},
         },
@@ -73,9 +75,7 @@ mod tests {
         assert!(!editor.fields[machine].required);
         assert!(!editor.fields[machine].is_set());
         assert_eq!(
-            editor.inherited[machine]
-                .as_ref()
-                .and_then(Inherited::label),
+            english_inherited_label(editor.inherited[machine].as_ref()),
             Some(format!("Built-in default: {}", system.default_model))
         );
         assert!(!editor.is_dirty());
@@ -163,11 +163,8 @@ mod tests {
             "scaling = bilinear\ncrt = on\n",
         );
         let editor = Editor::system_defaults(&root.host(), system).expect("the editor opens");
-        let label = |key: &str| {
-            editor.inherited[index_of(&editor, key)]
-                .as_ref()
-                .and_then(Inherited::label)
-        };
+        let label =
+            |key: &str| english_inherited_label(editor.inherited[index_of(&editor, key)].as_ref());
         assert_eq!(label("crt").as_deref(), Some("Settings default: off"));
         assert!(
             label("scaling").is_some_and(|label| label.starts_with("Built-in default: ")),
@@ -192,10 +189,10 @@ mod tests {
         let cpu_mode = find_setting("cpu-mode").expect("table key");
         let path = root.game("edge", "machine = PC9801RA\n");
         let game = Editor::open(&root.host(), system, &path).expect("the editor opens");
-        assert!(game.ignored_note(cpu_mode).is_some());
+        assert!(game.ignored_by(cpu_mode).is_some());
         assert_eq!(game.extra_note(cpu_mode), None);
         let defaults = Editor::system_defaults(&root.host(), system).expect("the editor opens");
-        assert_eq!(defaults.ignored_note(cpu_mode), None);
+        assert!(defaults.ignored_by(cpu_mode).is_none());
         assert_eq!(
             defaults.extra_note(cpu_mode).as_deref(),
             Some("PC9801F, VM and VX only.")

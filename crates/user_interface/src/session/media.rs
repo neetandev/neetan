@@ -26,11 +26,7 @@ impl Session {
 
     /// Writes the floppy disks back and inserts the configured floppy image
     /// `index` into `drive`.
-    pub(super) fn select_floppy(
-        &mut self,
-        drive: usize,
-        index: usize,
-    ) -> std::result::Result<(), String> {
+    pub(super) fn select_floppy(&mut self, drive: usize, index: usize) -> Result<(), String> {
         let entries = match drive {
             0 => &self.fdd1_entries,
             1 => &self.fdd2_entries,
@@ -73,7 +69,7 @@ impl Session {
     }
 
     /// Inserts the configured CD-ROM image `index`.
-    pub(super) fn select_cdrom(&mut self, index: usize) -> std::result::Result<(), String> {
+    pub(super) fn select_cdrom(&mut self, index: usize) -> Result<(), String> {
         if index >= self.cdrom_entries.len() {
             return Err(format!("CD-ROM image index {index} is not available"));
         }
@@ -100,7 +96,7 @@ impl Session {
     }
 
     /// Inserts the configured cassette.
-    pub(super) fn select_cassette(&mut self) -> std::result::Result<(), String> {
+    pub(super) fn select_cassette(&mut self) -> Result<(), String> {
         let path = self
             .config
             .cassette

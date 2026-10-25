@@ -14,39 +14,46 @@ use super::{
 };
 use crate::{
     catalog::{read_game, read_games},
-    editor::{EditedFile, Editor, SaveFailure},
+    editor::{EditedFile, Editor, OpenError, SaveFailure},
+    texts::hints_in,
 };
 
-/// The error dialog of the file of `subject` after the save failure
-/// `failure`, which the log records.
-fn save_failure_dialog(subject: &EditedFile, failure: &SaveFailure) -> ErrorDialog {
-    warn!(
-        "Game manager: {} {} not saved: {}",
-        subject.sentence_start(),
-        subject.was(),
-        failure.message()
-    );
+/// Logs the save failure `failure` and returns the error dialog of the file
+/// of `editor`. The text of each failure holds the path of the file.
+fn save_failure_dialog(editor: &Editor, failure: &SaveFailure) -> ErrorDialog {
+    warn!("Game manager: save failed: {failure}");
+    let subject = editor.edited_file();
     match failure {
-        SaveFailure::Error(error) => ErrorDialog::save_failed(subject, error),
-        SaveFailure::ChangedOutside(detail) => ErrorDialog::changed_outside(subject, detail),
+        SaveFailure::Error { .. } | SaveFailure::NoFreeName(_) => {
+            ErrorDialog::save_failed(&subject, failure)
+        }
+        SaveFailure::ChangedOutside(shown) => ErrorDialog::changed_outside(&subject, shown),
     }
 }
 
+/// The error dialog of the game `name` of `system` that did not open in the
+/// editor with `error`.
+fn game_open_failed(system: &'static System, name: &str, error: &OpenError) -> ErrorDialog {
+    let subject = EditedFile::Game {
+        system,
+        name: name.to_owned(),
+    };
+    ErrorDialog::open_failed(&subject, error)
+}
+
 impl Manager {
-    /// Opens `editor`, or the error dialog of the file of `subject` with
-    /// the error of the editor.
+    /// Opens `editor`, or the error dialog of the editor that did not open.
     pub(super) fn open_editor(
         &mut self,
         context: &mut UiContext,
-        editor: Result<Editor, String>,
-        subject: EditedFile,
+        editor: Result<Editor, ErrorDialog>,
     ) {
         match editor {
             Ok(editor) => {
                 info!("Game manager: editing {}", editor.path().display());
                 self.editor = Some(editor);
             }
-            Err(error) => self.dialog = Some(ErrorDialog::open_failed(&subject, &error)),
+            Err(dialog) => self.dialog = Some(dialog),
         }
         context.request_pass();
     }
@@ -56,36 +63,25 @@ impl Manager {
         let Some(system) = self.current().map(|entry| entry.system) else {
             return;
         };
-        let editor = Editor::new_game(&self.host, system)
-            .ok_or_else(|| format!("the system {} is not compiled", system.name));
-        self.open_editor(
-            context,
-            editor,
-            EditedFile::Game {
-                system,
-                name: format!("A new {} game", system.label),
-            },
-        );
+        let editor = Editor::new_game(&self.host, system).ok_or_else(|| {
+            ErrorDialog::new_game_open_failed(system, &OpenError::NotCompiled(system.name))
+        });
+        self.open_editor(context, editor);
     }
 
     /// Opens the editor on the game file of `row`.
     pub(super) fn open_game(&mut self, context: &mut UiContext, row: &GameRow) {
-        let editor = Editor::open(&self.host, row.system, &row.path);
-        let file = EditedFile::Game {
-            system: row.system,
-            name: row.name().to_owned(),
-        };
-        self.open_editor(context, editor, file);
+        let editor = Editor::open(&self.host, row.system, &row.path)
+            .map_err(|error| game_open_failed(row.system, row.name(), &error));
+        self.open_editor(context, editor);
     }
 
-    /// Opens the editor on a copy of the game file of `row`.
+    /// Opens the editor on a copy of the game file of `row` with the copy
+    /// pattern of the catalog of `context`.
     pub(super) fn open_duplicate(&mut self, context: &mut UiContext, row: &GameRow) {
-        let editor = Editor::duplicate(&self.host, row.system, &row.path);
-        let file = EditedFile::Game {
-            system: row.system,
-            name: row.name().to_owned(),
-        };
-        self.open_editor(context, editor, file);
+        let editor = Editor::duplicate(&self.host, row.system, &row.path, context.catalog)
+            .map_err(|error| game_open_failed(row.system, row.name(), &error));
+        self.open_editor(context, editor);
     }
 
     /// Opens the editor on the system defaults file of the selected system.
@@ -93,23 +89,21 @@ impl Manager {
         let Some(system) = self.current().map(|entry| entry.system) else {
             return;
         };
-        let editor = Editor::system_defaults(&self.host, system);
-        self.open_editor(context, editor, EditedFile::SystemDefaults(system));
+        let editor = Editor::system_defaults(&self.host, system)
+            .map_err(|error| ErrorDialog::open_failed(&EditedFile::SystemDefaults(system), &error));
+        self.open_editor(context, editor);
     }
 
     /// Opens the editor on the game file of `target`, the game of an error dialog.
     pub(super) fn open_target(&mut self, context: &mut UiContext, target: &EditTarget) {
-        let editor = Editor::open(&self.host, target.system, &target.path);
         let name = target
             .path
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let file = EditedFile::Game {
-            system: target.system,
-            name,
-        };
-        self.open_editor(context, editor, file);
+        let editor = Editor::open(&self.host, target.system, &target.path)
+            .map_err(|error| game_open_failed(target.system, &name, &error));
+        self.open_editor(context, editor);
     }
 
     /// Reads the saved game file `path` of `system` again and updates its
@@ -202,18 +196,18 @@ impl Manager {
             return;
         };
         let pass = editor.show(context, screen);
-        let edited = editor.edited_file();
         let catalog = context.catalog;
         let active_language = catalog.tag();
-        if let Some(path) = &pass.saved {
-            self.file_saved(&edited, path, active_language);
-        }
+        let edited = pass.saved.as_ref().map(|_| editor.edited_file());
         if let Some(failure) = &pass.save_error {
-            self.dialog = Some(save_failure_dialog(&edited, failure));
+            self.dialog = Some(save_failure_dialog(editor, failure));
+        }
+        if let (Some(path), Some(edited)) = (&pass.saved, &edited) {
+            self.file_saved(edited, path, active_language);
         }
         let answer = self
             .dialog
-            .as_ref()
+            .as_mut()
             .map_or(DialogAnswer::Open, |dialog| dialog.show(context, screen));
         if answer != DialogAnswer::Open {
             self.dialog = None;
@@ -221,29 +215,34 @@ impl Manager {
         if answer == DialogAnswer::Overwrite
             && let Some(editor) = self.editor.as_mut()
         {
-            match editor.overwrite() {
-                Ok(path) => self.file_saved(&edited, &path, active_language),
-                Err(failure) => self.dialog = Some(save_failure_dialog(&edited, &failure)),
+            let written = match editor.overwrite() {
+                Ok(path) => Ok((path, editor.edited_file())),
+                Err(failure) => Err(save_failure_dialog(editor, &failure)),
+            };
+            match written {
+                Ok((path, edited)) => self.file_saved(&edited, &path, active_language),
+                Err(dialog) => self.dialog = Some(dialog),
             }
             context.request_pass();
         }
-        let Some(editor) = self.editor.as_ref() else {
+        let Some(editor) = self.editor.as_mut() else {
             return;
         };
         let hints = match &self.dialog {
-            Some(dialog) => dialog.hints(context),
-            None => editor.hints().to_vec(),
+            Some(dialog) => hints_in(catalog, &dialog.hints(context)),
+            None => hints_in(catalog, editor.hints()),
         };
-        let shown_path = editor.shown_path();
-        status_line(context, status_area, &hints, StatusEnd::Path(&shown_path));
+        let shown_path = editor.shown_path_text();
+        status_line(context, status_area, &hints, StatusEnd::Path(shown_path));
         if pass.closed {
-            self.editor = None;
-            self.dialog = None;
-            self.next_focus = Some(match edited {
+            let next = match editor.edited_file() {
                 EditedFile::Game { .. } => NextFocus::Start,
                 EditedFile::SystemDefaults(_) => NextFocus::Widget(UiId::from(SYSTEM_DEFAULTS_ID)),
                 EditedFile::Settings => NextFocus::Widget(UiId::from(SETTINGS_ID)),
-            });
+            };
+            self.editor = None;
+            self.dialog = None;
+            self.next_focus = Some(next);
             context.request_pass();
         }
     }
@@ -490,8 +489,10 @@ mod tests {
         let dialog = manager.dialog().expect("the dialog opens");
         assert_eq!(
             dialog.message(),
-            "Brandish! was not saved. Overwrite replaces the file with the changes of the \
-             editor. Cancel returns to the editor with the changes."
+            Some(
+                "Brandish! was not saved. Overwrite replaces the file with the changes of the \
+                 editor. Cancel returns to the editor with the changes."
+            )
         );
         assert_eq!(
             harness.state.focused(),
@@ -524,7 +525,7 @@ mod tests {
         let dialog = manager.dialog().expect("the error dialog opens");
         assert_eq!(
             dialog.message(),
-            "Brandish! was not saved. The editor keeps the changes."
+            Some("Brandish! was not saved. The editor keeps the changes.")
         );
         harness.input.confirm = true;
         settle(&mut harness, &mut manager);
@@ -666,6 +667,50 @@ mod tests {
         assert_eq!(model_of(&manager, "Brandish"), other);
         assert_eq!(model_of(&manager, "Edge"), system.default_model);
         assert_eq!(titles(&manager), ["Brandish", "Edge"]);
+    }
+
+    /// The most allocations of a steady frame of a section of the game editor: the lists of the
+    /// hints of the status line and of the focus ring of the pass, the lines of the notes that
+    /// wrap and the edit state of a text field. The texts of the editor allocate nothing.
+    const EDITOR_FRAME_ALLOCATIONS: usize = 10;
+
+    /// Verifies that a steady frame of each section of the game editor, the second pass with an
+    /// unchanged state, allocates only its lists, fills no text again and keeps the revision of
+    /// the editor.
+    #[test]
+    fn a_steady_frame_of_the_editor_allocates_only_its_lists() {
+        let root = two_games("steady_editor");
+        let mut manager = manager(&root);
+        let mut harness = GuiHarness::new(960, 600);
+        settle(&mut harness, &mut manager);
+        select_game(&mut harness, &mut manager, "Edge");
+        harness.input.shortcut = Some(Shortcut::F2);
+        settle(&mut harness, &mut manager);
+        assert!(manager.editor().is_some());
+        let sections = manager.editor().map(Editor::sections).unwrap_or_default();
+        assert_eq!(sections.len(), 6);
+        for section in sections {
+            assert_eq!(
+                manager.editor().map(Editor::current_section),
+                Some(*section)
+            );
+            harness.frame(|context| manager.show(context));
+            let revision = manager.editor().map(Editor::revision);
+            let (allocations, (fills, _)) = common::allocation_counter::count_allocations(|| {
+                gui::ui::count_fills(|| harness.frame(|context| manager.show(context)))
+            });
+            assert!(
+                allocations <= EDITOR_FRAME_ALLOCATIONS,
+                "a steady frame of the section {section:?} allocates {allocations} times"
+            );
+            assert_eq!(
+                fills, 0,
+                "a steady frame of the section {section:?} fills texts again"
+            );
+            assert_eq!(manager.editor().map(Editor::revision), revision);
+            harness.input.navigation = Some(Navigation::NextTab);
+            settle(&mut harness, &mut manager);
+        }
     }
 
     /// The game file of YU-NO in the screenshots.

@@ -269,9 +269,8 @@ mod tests {
         select(&language, locales, files).tag().to_owned()
     }
 
-    /// A German language file with the header, two texts and a key that the schema lacks.
-    const GERMAN: &str = "[language]\nname = Deutsch\nplural = one-other\n\
-                          [common]\nsave = Speichern\ncancel = Abbrechen\nunknown = Unbekannt\n";
+    /// The sections of a German language file with two texts and a key that the schema lacks.
+    const GERMAN: &str = "[common]\nsave = Speichern\ncancel = Abbrechen\nunknown = Unbekannt\n";
 
     /// Verifies that an explicit tag finds its file without regard to case and that `en` gives English.
     #[test]
@@ -330,7 +329,7 @@ mod tests {
     #[test]
     fn a_language_file_loads_over_the_english_texts() {
         let folder = TemporaryFolder::new("language_load");
-        let path = folder.write_file("de.ini", GERMAN.as_bytes());
+        let path = folder.write_file("de.ini", texts::test_language(GERMAN).as_bytes());
         let loaded = load(&LanguageFile {
             tag: "de".to_owned(),
             path,
@@ -366,7 +365,7 @@ mod tests {
     fn auto_skips_a_language_file_that_does_not_load() {
         let folder = TemporaryFolder::new("language_auto_broken");
         let japanese = folder.write_file("ja.ini", b"[language]\nplural = none\n");
-        let german = folder.write_file("de.ini", GERMAN.as_bytes());
+        let german = folder.write_file("de.ini", texts::test_language(GERMAN).as_bytes());
         let files = [
             LanguageFile {
                 tag: "ja".to_owned(),
@@ -392,7 +391,7 @@ mod tests {
     #[test]
     fn the_catalog_of_a_language_comes_from_the_folders() {
         let folder = TemporaryFolder::new("language_catalog");
-        folder.write_file("de.ini", GERMAN.as_bytes());
+        folder.write_file("de.ini", texts::test_language(GERMAN).as_bytes());
         let folders = [folder.path().to_path_buf()];
         let german = catalog_of(&GuiLanguage::Tag("DE".to_owned()), &folders);
         assert_eq!(german.catalog().text(texts::common::SAVE), "Speichern");
@@ -409,7 +408,7 @@ mod tests {
             "ja.ini",
             "[language]\nname = 日本語\nplural = none\n".as_bytes(),
         );
-        let german = folder.write_file("de.ini", GERMAN.as_bytes());
+        let german = folder.write_file("de.ini", texts::test_language(GERMAN).as_bytes());
         let broken = folder.write_file("fr.ini", b"[language]\nname =\nplural = one-other\n");
         let files = [
             LanguageFile {

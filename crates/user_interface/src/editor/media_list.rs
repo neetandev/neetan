@@ -9,9 +9,13 @@ use gui::{
         RowContent, RowMark, Theme, Truncation, UiContext, UiId, label,
     },
 };
-use machine_factory::config::phrases::join_names;
+use i18n::ListKind;
 
-use crate::config::resolve_path;
+use super::note_writer::NoteWriter;
+use crate::{
+    config::resolve_path,
+    texts::{NumberText, note},
+};
 
 /// The fewest rows that a media list shows.
 pub(crate) const MEDIA_LIST_MINIMUM_ROWS: usize = 2;
@@ -79,25 +83,21 @@ pub(crate) fn is_missing(value: &str, root: &std::path::Path) -> bool {
     !value.trim().is_empty() && !resolve_path(root, std::path::Path::new(value.trim())).exists()
 }
 
-/// The warning under a list whose images at the 0-based `missing` indices do not exist.
-pub(crate) fn missing_note(missing: &[usize]) -> Option<String> {
-    let places: Vec<String> = missing
+/// Writes the warning under a list whose images that `missing` marks do not
+/// exist. Returns whether an image is missing.
+pub(crate) fn write_missing_note(writer: &mut NoteWriter, missing: &[bool]) -> bool {
+    let places: Vec<usize> = missing
         .iter()
-        .map(|index| (index + 1).to_string())
+        .enumerate()
+        .filter(|(_, missing)| **missing)
+        .map(|(index, _)| index + 1)
         .collect();
-    let places: Vec<&str> = places.iter().map(String::as_str).collect();
-    match places.as_slice() {
-        [] => None,
-        [one] => Some(format!(
-            "Image {one} does not exist. The file saves, and the launch fails while it is \
-             missing."
-        )),
-        many => Some(format!(
-            "Images {} do not exist. The file saves, and the launch fails while they are \
-             missing.",
-            join_names(many, "and")
-        )),
+    if places.is_empty() {
+        return false;
     }
+    let list = writer.catalog().display_list(ListKind::And, &places);
+    writer.message(note::missing_list_images(places.len() as u64, &list));
+    true
 }
 
 /// The height of a media list of `rows` images: its rows between the
@@ -201,15 +201,15 @@ impl MediaList<'_> {
                 self.hint_truncation,
             );
         } else {
-            let numbers: Vec<String> = (1..=values.len()).map(|place| place.to_string()).collect();
             let list_response = List::new(self.id, values.len()).enabled(self.enabled).show(
                 context,
                 list_area,
                 state,
                 |context, row| {
                     let missing = self.missing.get(row.index).copied().unwrap_or(false);
+                    let number = NumberText::new(row.index + 1);
                     RowContent::new(&values[row.index])
-                        .number(&numbers[row.index])
+                        .number(number.as_str())
                         .icon(Some(self.icon))
                         .mark(missing.then_some(RowMark::Alert))
                         .show(context, row);
@@ -305,7 +305,10 @@ mod tests {
     use gui::ui::Navigation;
 
     use super::*;
-    use crate::gui_test_support::GuiHarness;
+    use crate::{
+        editor::notes::{NoteLook, tests::english_note},
+        gui_test_support::GuiHarness,
+    };
 
     /// The area of a list of four rows in the tests.
     const AREA: Rect = Rect::new(200.0, 100.0, 600.0, 130.0);
@@ -345,18 +348,28 @@ mod tests {
         assert!(values.is_empty());
     }
 
+    /// The English warning of the images that `missing` marks.
+    fn missing_note(missing: &[bool]) -> Option<String> {
+        let mut found = false;
+        let note = english_note(|writer| {
+            found = write_missing_note(writer, missing);
+            NoteLook::WARNING
+        });
+        found.then_some(note.text)
+    }
+
     /// Verifies the warning of missing images and the missing check against the root.
     #[test]
     fn missing_images_give_a_warning() {
-        assert_eq!(missing_note(&[]), None);
+        assert_eq!(missing_note(&[false, false]), None);
         assert_eq!(
-            missing_note(&[2]).as_deref(),
+            missing_note(&[false, false, true]).as_deref(),
             Some(
                 "Image 3 does not exist. The file saves, and the launch fails while it is missing."
             )
         );
         assert_eq!(
-            missing_note(&[0, 1, 3]).as_deref(),
+            missing_note(&[true, true, false, true]).as_deref(),
             Some(
                 "Images 1, 2 and 4 do not exist. The file saves, and the launch fails while they \
                  are missing."

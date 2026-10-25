@@ -6,7 +6,8 @@
 
 use std::sync::LazyLock;
 
-use i18n::Catalog;
+use gui::ui::{Hint, HintKey};
+use i18n::{Catalog, Key};
 
 include!(concat!(env!("OUT_DIR"), "/texts.rs"));
 
@@ -30,6 +31,36 @@ pub fn english() -> &'static Catalog {
     &ENGLISH
 }
 
+/// The language tag of the German test language.
+#[cfg(test)]
+const TEST_TAG: &str = "de";
+
+/// The header of the German test language.
+#[cfg(test)]
+const TEST_HEADER: &str = "[language]\nname = Deutsch\nplural = one-other\n";
+
+/// The source of a German test language file with the header and the sections `sections`.
+#[cfg(test)]
+pub(crate) fn test_language(sections: &str) -> String {
+    format!("{TEST_HEADER}{sections}")
+}
+
+/// The German test catalog of the sections `sections` over the English texts.
+#[cfg(test)]
+pub(crate) fn test_catalog(sections: &str) -> Catalog {
+    Catalog::load(TEST_TAG, &test_language(sections), &SCHEMA, english())
+        .expect("the test texts load")
+        .catalog
+}
+
+/// Returns the text that `write` writes with the English catalog.
+#[cfg(test)]
+pub(crate) fn english_text(write: impl FnOnce(&Catalog, &mut String)) -> String {
+    let mut text = String::new();
+    write(english(), &mut text);
+    text
+}
+
 /// The catalog of the selected language: the embedded English catalog or a catalog that a
 /// language file gives.
 #[derive(Debug)]
@@ -49,6 +80,82 @@ impl LanguageCatalog {
             Self::Loaded(catalog) => catalog,
         }
     }
+}
+
+/// The most decimal digits of a `usize`.
+const MAXIMUM_DIGITS: usize = 20;
+
+/// The decimal digits of a number on the stack, for a count or a place in a list.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NumberText {
+    /// The digits from the start of the array.
+    digits: [u8; MAXIMUM_DIGITS],
+    /// The number of digits.
+    length: usize,
+}
+
+impl NumberText {
+    /// The digits of `number`.
+    pub(crate) fn new(mut number: usize) -> Self {
+        let mut reversed = [0; MAXIMUM_DIGITS];
+        let mut length = 0;
+        loop {
+            reversed[length] = b'0' + (number % 10) as u8;
+            length += 1;
+            number /= 10;
+            if number == 0 {
+                break;
+            }
+        }
+        let mut digits = [0; MAXIMUM_DIGITS];
+        for (target, source) in digits.iter_mut().zip(reversed[..length].iter().rev()) {
+            *target = *source;
+        }
+        Self { digits, length }
+    }
+
+    /// The digits as text.
+    pub(crate) fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.digits[..self.length]).unwrap_or_default()
+    }
+}
+
+/// A hint of the status line with the key of its label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HintText {
+    /// The keys and buttons.
+    pub(crate) keys: &'static [HintKey<'static>],
+    /// The key of the label of the action.
+    pub(crate) label: Key,
+}
+
+impl HintText {
+    /// The hint of `keys` with the label of `label`.
+    pub(crate) const fn new(keys: &'static [HintKey<'static>], label: Key) -> Self {
+        Self { keys, label }
+    }
+
+    /// Returns the hint with its label in `catalog`.
+    pub(crate) fn hint(self, catalog: &Catalog) -> Hint<'_> {
+        Hint {
+            keys: self.keys,
+            label: catalog.text(self.label),
+        }
+    }
+}
+
+/// Returns `hints` with their labels in `catalog`.
+pub(crate) fn hints_in<'c>(catalog: &'c Catalog, hints: &[HintText]) -> Vec<Hint<'c>> {
+    hints.iter().map(|hint| hint.hint(catalog)).collect()
+}
+
+/// Returns the labels of `hints` in the English catalog.
+#[cfg(test)]
+pub(crate) fn english_labels(hints: &[HintText]) -> Vec<&'static str> {
+    hints
+        .iter()
+        .map(|hint| english().text(hint.label))
+        .collect()
 }
 
 #[cfg(test)]
@@ -78,6 +185,14 @@ mod tests {
             .write_list(&mut joined, i18n::ListKind::And, &["A", "B", "C"])
             .expect("a string takes the list");
         assert_eq!(joined, "A, B and C");
+    }
+
+    /// Verifies the digits of a number.
+    #[test]
+    fn a_number_text_holds_the_decimal_digits() {
+        for number in [0, 7, 10, 1234, usize::MAX] {
+            assert_eq!(NumberText::new(number).as_str(), number.to_string());
+        }
     }
 
     /// Verifies that the English selection gives the embedded catalog.

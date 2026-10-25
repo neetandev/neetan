@@ -8,10 +8,11 @@ use gui::{
     Rect,
     ui::{Align, UiContext, wrapped_height, wrapped_label},
 };
+use i18n::Key;
 use machine_factory::config::{
     settings::{
-        BACKEND_KEY, CONFIG_FOLDER_KEY, GUI_FONT_KEY, GUI_LANGUAGE_KEY, GUI_THEME_KEY,
-        ROMS_FOLDER_KEY, Scope, Setting,
+        BACKEND_KEY, CONFIG_FOLDER_KEY, GUI_FONT_KEY, GUI_THEME_KEY, ROMS_FOLDER_KEY, Scope,
+        Setting,
     },
     systems::RomFolder,
 };
@@ -23,10 +24,11 @@ use super::{
     inherited::{Inherited, InheritedSource},
     kept_lines::draw_rule,
     language_row::LanguageRow,
-    notes::{Note, sentences},
-    rom_rows::{RomRow, rom_folder_of},
-    rows::{NOTE_MAXIMUM_LINES, ReadOnlyRow},
-    save::read_optional_document,
+    note_writer::NoteWriter,
+    notes::{NoteKind, NoteLook},
+    rom_rows::{RomNote, RomRow, rom_folder_of},
+    rows::NOTE_MAXIMUM_LINES,
+    save::{OpenError, read_optional_document},
 };
 use crate::{
     config::{
@@ -36,83 +38,80 @@ use crate::{
     },
     language::language_options,
     rom_folders::{RomFolderStatus, rom_folder_location},
+    texts::host_settings,
 };
 
 /// The keys whose change applies after a restart. The window creates its
 /// graphics engine and loads its font and its theme once.
 const RESTART_KEYS: [&str; 3] = [BACKEND_KEY, GUI_FONT_KEY, GUI_THEME_KEY];
 
-/// The sentence of a key whose change applies after a restart.
-const RESTART_NOTE: &str = "The change applies after a restart.";
-
-/// The warning of a set GUI font whose file does not exist.
-pub(crate) const MISSING_FONT_NOTE: &str =
-    "The font file does not exist. The manager does not start without it.";
-
-/// The label of the read-only row of the root.
-const ROOT_LABEL: &str = "Root";
-
-/// The caption of the rule above the discovery order.
-const SETTINGS_FILE_CAPTION: &str = "Settings file";
-
-/// The discovery order of the settings file below its rule.
-const SETTINGS_FILE_TEXT: &str = "Neetan reads the first neetan.conf of: --settings <file>, the \
-     current directory, the folder of the executable, the SDL pref path. Relative paths in \
-     configuration files resolve against the root.";
-
-/// The note of the root after the step of the discovery `source`.
-pub(crate) fn root_note(source: SettingsSource) -> &'static str {
+/// The key of the note of the root after the step of the discovery `source`.
+pub(crate) fn root_note(source: SettingsSource) -> Key {
     match source {
-        SettingsSource::CommandLine => "The root is the folder of the --settings file.",
-        SettingsSource::CurrentDirectory => {
-            "The root is the folder of neetan.conf in the current directory."
-        }
-        SettingsSource::ExecutableFolder => {
-            "The root is the folder of neetan.conf beside the executable."
-        }
-        SettingsSource::PrefPath => {
-            "The settings file lies in the SDL pref path. The root is the current directory."
-        }
-        SettingsSource::NotFound => {
-            "No settings file exists. The root is the current directory, and Save creates neetan.conf there."
-        }
+        SettingsSource::CommandLine => host_settings::ROOT_COMMAND_LINE,
+        SettingsSource::CurrentDirectory => host_settings::ROOT_CURRENT_DIRECTORY,
+        SettingsSource::ExecutableFolder => host_settings::ROOT_EXECUTABLE_FOLDER,
+        SettingsSource::PrefPath => host_settings::ROOT_PREF_PATH,
+        SettingsSource::NotFound => host_settings::ROOT_NOT_FOUND,
     }
 }
 
-/// The sentence of a key that the command line sets to `value`.
-pub(crate) fn flag_sentence(value: &str) -> String {
-    format!("The command line sets {value} for this run.")
-}
-
-/// The sentence of an unset ROM key whose ROM folder the command line
-/// sets to `folder`.
-fn rom_folder_flag_sentence(folder: &str) -> String {
-    format!("The command line sets the ROM folder {folder} for this run.")
-}
-
-/// The sentences after the note of the key `key` with the command line
-/// `flags`: the value of its flag and the restart that its change needs.
-fn extra_sentences(flags: &[(&'static str, String)], key: &str) -> Option<String> {
-    let flag = flags
+/// The value that the command line `flags` set for `key` in this run.
+fn flag_of<'a>(flags: &'a [(&'static str, String)], key: &str) -> Option<&'a str> {
+    flags
         .iter()
         .rev()
         .find(|(flag_key, _)| *flag_key == key)
-        .map(|(_, value)| flag_sentence(value));
-    let restart = RESTART_KEYS.contains(&key).then(|| RESTART_NOTE.to_owned());
-    let text = sentences(&[flag, restart]);
-    (!text.is_empty()).then_some(text)
+        .map(|(_, value)| value.as_str())
+}
+
+/// Adds the sentences after the note of the key `key` with the command
+/// line `flags`: the value of its flag and the restart that its change
+/// needs.
+pub(super) fn write_extra_sentences(
+    writer: &mut NoteWriter,
+    flags: &[(&'static str, String)],
+    key: &str,
+) {
+    if let Some(value) = flag_of(flags, key) {
+        writer.message(host_settings::flag(&value));
+    }
+    if RESTART_KEYS.contains(&key) {
+        writer.text(host_settings::RESTART);
+    }
+}
+
+/// The content of the note of a path field on the settings page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum HostNote<'a> {
+    /// The ROM status of a ROM key.
+    Rom(RomNote<'a>),
+    /// The absolute folder of the config folder or the ROM folder.
+    Folder(&'a Path),
 }
 
 /// The notes of a path field on the settings page.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct HostPathNote {
+pub(super) struct HostPathNote<'a> {
     /// The folder of the field or its ROM status.
-    pub(super) note: Note,
+    pub(super) note: HostNote<'a>,
+    /// The look of the note.
+    pub(super) look: NoteLook,
     /// The value that a command line flag sets for this run, on its own
     /// line below the note.
-    pub(super) flag: Option<Note>,
+    pub(super) flag: Option<&'a str>,
     /// Whether the field takes the error edge.
     pub(super) error: bool,
+}
+
+impl HostNote<'_> {
+    /// Adds the sentence of the note.
+    pub(super) fn write(&self, writer: &mut NoteWriter) {
+        match self {
+            Self::Rom(note) => note.write(writer),
+            Self::Folder(folder) => writer.sentence(folder.display()),
+        }
+    }
 }
 
 /// Returns the trimmed text of the field of `key` among `fields`. An unset
@@ -131,11 +130,17 @@ pub(crate) struct HostSettings {
     /// The settings file, the root and the step of the discovery that found the file.
     location: SettingsLocation,
     /// The values of the command line flags of the host keys in command line order.
-    flags: Vec<(&'static str, String)>,
+    pub(super) flags: Vec<(&'static str, String)>,
     /// The ROM keys of the page with the last check of their folders.
     pub(super) roms: Vec<RomRow>,
     /// The languages of the language files and the texts of the language row.
     pub(super) language: LanguageRow,
+    /// The absolute config folder with the values of the fields of the
+    /// last update of the folders.
+    config_folder: PathBuf,
+    /// The absolute ROM folder with the values of the fields of the last
+    /// update of the folders.
+    roms_folder: PathBuf,
 }
 
 impl HostSettings {
@@ -159,20 +164,43 @@ impl HostSettings {
             .filter_map(|setting| rom_folder_of(setting.key))
             .map(|folder| RomRow {
                 folder,
+                location: PathBuf::new(),
                 checked: None,
             })
             .collect();
         let mut settings = Self {
             location: host.location().clone(),
             roms,
-            language: LanguageRow::new(
-                language_options(&find_language_files(&host.language_folders())),
-                extra_sentences(&flags, GUI_LANGUAGE_KEY),
-            ),
+            language: LanguageRow::new(language_options(&find_language_files(
+                &host.language_folders(),
+            ))),
             flags,
+            config_folder: PathBuf::new(),
+            roms_folder: PathBuf::new(),
         };
         settings.take_statuses(statuses);
         settings
+    }
+
+    /// Computes the folder of each ROM row for the next launch and the
+    /// folders of the folder keys with the values of `fields`.
+    fn update_folders(&mut self, fields: &[Field]) {
+        for index in 0..self.roms.len() {
+            let location = self.rom_location(&self.roms[index].folder, fields);
+            self.roms[index].location = location;
+        }
+        self.config_folder = self.folder_location(CONFIG_FOLDER_KEY, fields);
+        self.roms_folder = self.folder_location(ROMS_FOLDER_KEY, fields);
+    }
+
+    /// The absolute folder of the folder key `key` of the last update of
+    /// the folders. Another key gives `None`.
+    fn folder_of(&self, key: &str) -> Option<&Path> {
+        match key {
+            CONFIG_FOLDER_KEY => Some(&self.config_folder),
+            ROMS_FOLDER_KEY => Some(&self.roms_folder),
+            _ => None,
+        }
     }
 
     /// Takes the results of a ROM check from `statuses` for the ROM keys
@@ -190,18 +218,13 @@ impl HostSettings {
 
     /// The value that the command line sets for `key` in this run.
     pub(crate) fn flag(&self, key: &str) -> Option<&str> {
-        self.flags
-            .iter()
-            .rev()
-            .find(|(flag_key, _)| *flag_key == key)
-            .map(|(_, value)| value.as_str())
+        flag_of(&self.flags, key)
     }
 
-    /// The note above the ROM rows when the command line sets the ROM
-    /// folder for this run.
-    pub(super) fn roms_folder_flag_note(&self) -> Option<Note> {
+    /// The ROM folder that the command line sets for this run, which the
+    /// note above the ROM rows shows.
+    pub(super) fn roms_folder_flag(&self) -> Option<&str> {
         self.flag(ROMS_FOLDER_KEY)
-            .map(|folder| Note::plain(rom_folder_flag_sentence(folder)))
     }
 
     /// The ROM row of the ROM key `key`.
@@ -260,19 +283,18 @@ impl HostSettings {
         }
     }
 
-    /// The sentences after the note of `setting`: the value of its command
-    /// line flag and the restart that its change needs.
-    pub(crate) fn extra_note(&self, setting: &Setting) -> Option<String> {
-        extra_sentences(&self.flags, setting.key)
+    /// Adds the sentences after the note of the key `key`: the value of its
+    /// command line flag and the restart that its change needs.
+    pub(crate) fn write_extra(&self, writer: &mut NoteWriter, key: &str) {
+        write_extra_sentences(writer, &self.flags, key);
     }
 
-    /// The warning of `setting` while its file does not exist, followed by
-    /// the sentences of [`Self::extra_note`].
-    pub(super) fn missing_file_note(&self, setting: &Setting) -> Note {
-        Note::warning(sentences(&[
-            Some(MISSING_FONT_NOTE.to_owned()),
-            self.extra_note(setting),
-        ]))
+    /// Writes the warning of `setting` while its file does not exist,
+    /// followed by the sentences of [`Self::write_extra`].
+    pub(super) fn missing_file_note(&self, writer: &mut NoteWriter, setting: &Setting) -> NoteLook {
+        writer.text(host_settings::MISSING_FONT);
+        self.write_extra(writer, setting.key);
+        NoteLook::WARNING
     }
 }
 
@@ -280,20 +302,21 @@ impl HostSettings {
 /// from `y` in `content`. Returns the height of the block.
 pub(super) fn draw_settings_file_block(context: &mut UiContext, content: Rect, y: f32) -> f32 {
     let theme = context.theme;
-    let top = draw_rule(context, content, y, SETTINGS_FILE_CAPTION);
-    let style = theme.small();
-    let height = wrapped_height(
+    let catalog = context.catalog;
+    let text = catalog.text(host_settings::SETTINGS_FILE_TEXT);
+    let top = draw_rule(
         context,
-        &style,
-        SETTINGS_FILE_TEXT,
-        content.width,
-        NOTE_MAXIMUM_LINES,
+        content,
+        y,
+        catalog.text(host_settings::SETTINGS_FILE_CAPTION),
     );
+    let style = theme.small();
+    let height = wrapped_height(context, &style, text, content.width, NOTE_MAXIMUM_LINES);
     wrapped_label(
         context,
         Rect::new(content.x, top, content.width, height),
         &style,
-        SETTINGS_FILE_TEXT,
+        text,
         Align::Start,
         NOTE_MAXIMUM_LINES,
     );
@@ -308,7 +331,7 @@ impl Editor {
     pub(crate) fn settings(
         host: &HostLayers,
         statuses: &[RomFolderStatus],
-    ) -> Result<Self, String> {
+    ) -> Result<Self, OpenError> {
         let path = host.location().writable_file();
         let (document, stamp) = read_optional_document(&path)?;
         Ok(Self::with_document(
@@ -324,55 +347,104 @@ impl Editor {
     /// results of the ROM check `statuses` when the manager checked the
     /// ROM folders again.
     pub(crate) fn host_changed(&mut self, host: &HostLayers, statuses: Option<&[RomFolderStatus]>) {
+        self.revision += 1;
         if let Subject::Host(settings) = &mut self.subject {
             settings.location = host.location().clone();
             if let Some(statuses) = statuses {
                 settings.take_statuses(statuses);
             }
         }
+        self.update_host_folders();
     }
 
-    /// The read-only row of the root of the settings page.
-    pub(super) fn root_row(&self) -> Option<ReadOnlyRow> {
-        let settings = self.host_settings()?;
-        Some(ReadOnlyRow {
-            name: ROOT_LABEL,
-            text: self.root.display().to_string(),
-            path: true,
-            note: root_note(settings.location.source).to_owned(),
-        })
+    /// Computes the folders of the ROM rows and of the folder keys of the
+    /// settings page with the values of the fields. The editor of a game
+    /// has none.
+    pub(super) fn update_host_folders(&mut self) {
+        if let Subject::Host(settings) = &mut self.subject {
+            settings.update_folders(&self.fields);
+        }
+    }
+
+    /// The key of the note of the root of the settings page. The editor of
+    /// a game has none.
+    pub(super) fn root_note(&self) -> Option<Key> {
+        self.host_settings()
+            .map(|settings| root_note(settings.location.source))
     }
 
     /// The notes of the path field at `index` of `setting` on the settings
     /// page: the ROM status of a ROM key, or the absolute folder of the
     /// config folder and the ROM folder. Another path field and the editor
     /// of a game give `None`.
-    pub(super) fn host_path_note(&self, index: usize, setting: &Setting) -> Option<HostPathNote> {
+    pub(super) fn host_path_state(
+        &self,
+        index: usize,
+        setting: &Setting,
+    ) -> Option<HostPathNote<'_>> {
         let settings = self.host_settings()?;
-        let key_flag = settings.flag(setting.key);
+        let flag = settings.flag(setting.key);
         if let Some(row) = settings.rom_row(setting.key) {
-            let (note, error) = self.rom_note(settings, row, index);
-            let flag = key_flag.map(flag_sentence);
+            let (note, kind, error) = self.rom_note(settings, row, index);
             return Some(HostPathNote {
-                note,
-                flag: flag.map(Note::plain),
+                note: HostNote::Rom(note),
+                look: NoteLook::of(kind),
+                flag,
                 error,
             });
         }
-        if setting.key != CONFIG_FOLDER_KEY && setting.key != ROMS_FOLDER_KEY {
-            return None;
-        }
-        let folder = settings.folder_location(setting.key, &self.fields);
-        let text = folder.display().to_string();
-        let note = if folder.is_dir() {
-            Note::found(text)
+        let folder = settings.folder_of(setting.key)?;
+        let kind = if folder.is_dir() {
+            NoteKind::Found
         } else {
-            Note::unmarked(text)
+            NoteKind::Unmarked
         };
         Some(HostPathNote {
-            note: note.shown_as_path(),
-            flag: key_flag.map(|value| Note::plain(flag_sentence(value))),
+            note: HostNote::Folder(folder),
+            look: NoteLook::of(kind).shown_as_path(),
+            flag,
             error: false,
+        })
+    }
+}
+
+/// The notes of a path field on the settings page in English.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct HostPathNoteText {
+    /// The folder of the field or its ROM status.
+    pub(super) note: super::notes::tests::Note,
+    /// The note of the value that a command line flag sets for this run.
+    pub(super) flag: Option<super::notes::tests::Note>,
+    /// Whether the field takes the error edge.
+    pub(super) error: bool,
+}
+
+#[cfg(test)]
+impl Editor {
+    /// The notes of the path field at `index` of `setting` on the settings
+    /// page in English, as [`Editor::host_path_state`] gives them.
+    pub(super) fn host_path_note(
+        &self,
+        index: usize,
+        setting: &Setting,
+    ) -> Option<HostPathNoteText> {
+        use super::notes::tests::english_note;
+        let state = self.host_path_state(index, setting)?;
+        let note = english_note(|writer| {
+            state.note.write(writer);
+            state.look
+        });
+        let flag = state.flag.map(|value| {
+            english_note(|writer| {
+                writer.message(host_settings::flag(&value));
+                NoteLook::PLAIN
+            })
+        });
+        Some(HostPathNoteText {
+            note,
+            flag,
+            error: state.error,
         })
     }
 }
@@ -394,7 +466,8 @@ mod tests {
         editor::{
             EditorSection,
             form::SETTINGS_SECTIONS,
-            rom_rows::rom_status_note,
+            notes::tests::{Note, english_inherited_label},
+            rom_rows::tests::rom_status_text,
             rows::field_id,
             test_support::{
                 SettingsRoot, first_rom_folder, index_of, settings_page, show, statuses_with,
@@ -402,13 +475,24 @@ mod tests {
         },
         gui_test_support::GuiHarness,
         rom_folders::{RomFolderPath, check_all_folders},
+        texts::english,
     };
+
+    /// The sentence of a key whose change applies after a restart.
+    const RESTART_NOTE: &str = "The change applies after a restart.";
+
+    /// The warning of a set GUI font whose file does not exist.
+    const MISSING_FONT_NOTE: &str =
+        "The font file does not exist. The manager does not start without it.";
+
+    /// The sentence of a key that the command line sets to `value`.
+    fn flag_sentence(value: &str) -> String {
+        format!("The command line sets {value} for this run.")
+    }
 
     /// The placeholder of the field of `key`.
     fn placeholder(editor: &Editor, key: &str) -> Option<String> {
-        editor.inherited[index_of(editor, key)]
-            .as_ref()
-            .and_then(Inherited::label)
+        english_inherited_label(editor.inherited[index_of(editor, key)].as_ref())
     }
 
     /// Verifies that the page opens on the Folders section with the root, edits the settings file and shows its whole path, and gives the host keys their built-in values.
@@ -445,9 +529,14 @@ mod tests {
             placeholder(&editor, AUDIO_VOLUME_KEY).as_deref(),
             Some("Built-in default: 1.0")
         );
-        let row = editor.root_row().expect("the page shows the root");
-        assert_eq!(row.text, test.root().display().to_string());
-        assert_eq!(row.note, root_note(SettingsSource::CurrentDirectory));
+        assert_eq!(
+            editor.root.display().to_string(),
+            test.root().display().to_string()
+        );
+        assert_eq!(
+            editor.root_note(),
+            Some(root_note(SettingsSource::CurrentDirectory))
+        );
 
         let mut harness = GuiHarness::new(960, 600);
         show(&mut harness, &mut editor);
@@ -461,8 +550,8 @@ mod tests {
             .expect("the config folder shows its folder");
         assert_eq!(
             notes,
-            HostPathNote {
-                note: Note::unmarked(test.root().join("config").display().to_string())
+            HostPathNoteText {
+                note: Note::unmarked(&test.root().join("config").display().to_string())
                     .shown_as_path(),
                 flag: None,
                 error: false,
@@ -477,7 +566,7 @@ mod tests {
             .expect("the ROM folder shows its folder");
         assert_eq!(
             notes.note,
-            Note::found(test.root().join("roms").display().to_string()).shown_as_path()
+            Note::found(&test.root().join("roms").display().to_string()).shown_as_path()
         );
     }
 
@@ -548,8 +637,8 @@ mod tests {
         let mut editor = settings_page(&host, &statuses_with(&host, RomStatus::Found));
         assert_eq!(editor.path(), test.settings_file());
         assert_eq!(
-            editor.root_row().expect("a root row").note,
-            root_note(SettingsSource::NotFound)
+            editor.root_note(),
+            Some(root_note(SettingsSource::NotFound))
         );
         let backend = index_of(&editor, BACKEND_KEY);
         let legacy = editor.fields[backend]
@@ -566,9 +655,41 @@ mod tests {
         let host = test.host(&[]);
         editor.host_changed(&host, None);
         assert_eq!(
-            editor.root_row().expect("a root row").note,
-            root_note(SettingsSource::CurrentDirectory)
+            editor.root_note(),
+            Some(root_note(SettingsSource::CurrentDirectory))
         );
+    }
+
+    /// Verifies that a host change with new ROM statuses refills the cached ROM note of the next frame.
+    #[test]
+    fn a_host_change_refills_the_cached_rom_notes() {
+        let test = SettingsRoot::new("host_change_notes", Some(""));
+        let host = test.host(&[]);
+        let mut editor = settings_page(&host, &statuses_with(&host, RomStatus::NotFound));
+        editor.section = SETTINGS_SECTIONS
+            .iter()
+            .position(|section| *section == EditorSection::Roms)
+            .expect("the ROMs section");
+        let mut harness = GuiHarness::new(960, 600);
+        show(&mut harness, &mut editor);
+        let folder = first_rom_folder();
+        let fresh = |editor: &Editor| {
+            editor
+                .host_path_note(
+                    index_of(editor, folder.key),
+                    find_setting(folder.key).expect("a ROM key"),
+                )
+                .expect("a ROM key has a status")
+                .note
+                .text
+        };
+        let before = fresh(&editor);
+        assert_eq!(editor.cached_note(folder.key), Some(before.as_str()));
+        editor.host_changed(&host, Some(&statuses_with(&host, RomStatus::Missing)));
+        show(&mut harness, &mut editor);
+        let after = fresh(&editor);
+        assert_ne!(after, before);
+        assert_eq!(editor.cached_note(folder.key), Some(after.as_str()));
     }
 
     /// Verifies that a key that a command line flag sets shows the value of the flag, that the ROM status follows the folder of the flag, and that Save still writes the value of the field.
@@ -608,9 +729,10 @@ mod tests {
             .expect("the config folder shows its folder");
         assert_eq!(
             notes,
-            HostPathNote {
+            HostPathNoteText {
                 note: Note::unmarked(
-                    test.root()
+                    &test
+                        .root()
                         .join(DEFAULT_CONFIG_FOLDER)
                         .display()
                         .to_string()
@@ -627,12 +749,12 @@ mod tests {
             )
             .expect("a ROM key has a status");
         let expected_status = check_rom_folder(&folder, &flagged);
-        let (status, error) = rom_status_note(&folder, &expected_status, true);
+        let (status, error) = rom_status_text(&folder, &expected_status, true);
         assert_eq!(
             notes,
-            HostPathNote {
+            HostPathNoteText {
                 note: status,
-                flag: Some(Note::plain(format!(
+                flag: Some(Note::plain(&format!(
                     "The command line sets {flagged_text} for this run."
                 ))),
                 error,
@@ -695,7 +817,7 @@ mod tests {
         assert_eq!(
             editor.path_notes(index, font, None),
             (
-                Note::warning(format!("{MISSING_FONT_NOTE} {RESTART_NOTE}")),
+                Note::warning(&format!("{MISSING_FONT_NOTE} {RESTART_NOTE}")),
                 None,
                 false
             )
@@ -712,7 +834,7 @@ mod tests {
         assert_eq!(
             editor.path_notes(index, font, None),
             (
-                Note::plain(format!("{inherited}. {RESTART_NOTE}")),
+                Note::plain(&format!("{inherited}. {RESTART_NOTE}")),
                 None,
                 false
             )
@@ -742,10 +864,10 @@ mod tests {
             )
             .expect("a ROM key has a status");
         let check = check_rom_folder(&folder, &flagged.join(folder.name));
-        let (status, error) = rom_status_note(&folder, &check, false);
+        let (status, error) = rom_status_text(&folder, &check, false);
         assert_eq!(
             notes,
-            HostPathNote {
+            HostPathNoteText {
                 note: status,
                 flag: None,
                 error,
@@ -753,13 +875,8 @@ mod tests {
         );
         assert!(!notes.error, "an unset key takes no edge");
         assert_eq!(
-            editor
-                .host_settings()
-                .expect("a page")
-                .roms_folder_flag_note(),
-            Some(Note::plain(format!(
-                "The command line sets the ROM folder {flagged_text} for this run."
-            )))
+            editor.host_settings().expect("a page").roms_folder_flag(),
+            Some(flagged_text.as_str())
         );
         let notes = editor
             .host_path_note(
@@ -767,7 +884,7 @@ mod tests {
                 find_setting(ROMS_FOLDER_KEY).expect("a key"),
             )
             .expect("the ROM folder shows its folder");
-        assert_eq!(notes.flag, Some(Note::plain(flag_sentence(&flagged_text))));
+        assert_eq!(notes.flag, Some(Note::plain(&flag_sentence(&flagged_text))));
 
         let own = SettingsRoot::new(
             "rom_folder_flag_own",
@@ -787,10 +904,7 @@ mod tests {
         let host = plain.host(&[]);
         let editor = settings_page(&host, &check_all_folders(&host));
         assert_eq!(
-            editor
-                .host_settings()
-                .expect("a page")
-                .roms_folder_flag_note(),
+            editor.host_settings().expect("a page").roms_folder_flag(),
             None
         );
     }
@@ -841,8 +955,9 @@ mod tests {
             (SettingsSource::PrefPath, "pref path"),
             (SettingsSource::NotFound, "Save creates"),
         ] {
-            assert!(root_note(source).contains(text), "{source:?}");
-            assert!(root_note(source).ends_with('.'), "{source:?}");
+            let note = english().text(root_note(source));
+            assert!(note.contains(text), "{source:?}");
+            assert!(note.ends_with('.'), "{source:?}");
         }
     }
 }

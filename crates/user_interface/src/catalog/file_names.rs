@@ -2,7 +2,9 @@
 
 use std::{collections::HashSet, path::Path};
 
-use crate::config::CONFIG_FILE_EXTENSION;
+use i18n::Catalog;
+
+use crate::{config::CONFIG_FILE_EXTENSION, texts::editor};
 
 /// The file stem of a title without letters or digits.
 pub const FALLBACK_FILE_STEM: &str = "game";
@@ -13,8 +15,6 @@ const RESERVED_FILE_STEMS: [&str; 24] = [
     "con", "prn", "aux", "nul", "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
     "com8", "com9", "lpt0", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
-/// The suffix of the title of a duplicated game.
-pub const COPY_TITLE_SUFFIX: &str = " (copy)";
 
 /// Derives a file stem from a title.
 ///
@@ -94,10 +94,11 @@ pub fn new_game_file_name(folder: &Path, title: &str) -> String {
     })
 }
 
-/// Returns the title of a duplicated game.
+/// Returns the title of a duplicated game of the title `title` with the
+/// copy pattern of `catalog`.
 #[must_use]
-pub fn copy_title(title: &str) -> String {
-    format!("{title}{COPY_TITLE_SUFFIX}")
+pub fn copy_title(catalog: &Catalog, title: &str) -> String {
+    catalog.display(editor::copy_title(&title)).to_string()
 }
 
 #[cfg(test)]
@@ -143,7 +144,10 @@ mod tests {
                 "{title}"
             );
         }
-        assert_eq!(copy_title("Brandish"), "Brandish (copy)");
+        assert_eq!(
+            copy_title(crate::texts::english(), "Brandish"),
+            "Brandish (copy)"
+        );
         assert_eq!(title_file_stem("  --Ys--  "), "ys");
         assert_eq!(title_file_stem("A.Train IV"), "a-train-iv");
         assert_eq!(title_file_stem(""), FALLBACK_FILE_STEM);
@@ -154,12 +158,18 @@ mod tests {
     fn new_file_names_avoid_existing_files() {
         let folder = TemporaryFolder::new("file_names_test");
         assert_eq!(
-            new_game_file_name(folder.path(), &copy_title("Brandish")),
+            new_game_file_name(
+                folder.path(),
+                &copy_title(crate::texts::english(), "Brandish")
+            ),
             "brandish-copy.conf"
         );
         folder.write_file("Brandish-Copy.conf", b"");
         assert_eq!(
-            new_game_file_name(folder.path(), &copy_title("Brandish")),
+            new_game_file_name(
+                folder.path(),
+                &copy_title(crate::texts::english(), "Brandish")
+            ),
             "brandish-copy-2.conf"
         );
         assert_eq!(

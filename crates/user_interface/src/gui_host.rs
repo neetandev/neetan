@@ -956,11 +956,8 @@ mod tests {
             0,
             "the first catalog has the generation 0"
         );
-        let source = "[language]\nname = Deutsch\nplural = one-other\n[common]\nsave = Speichern\n";
-        let loaded =
-            i18n::Catalog::load("de", source, &crate::texts::SCHEMA, crate::texts::english())
-                .expect("the German texts load");
-        host.set_catalog(LanguageCatalog::Loaded(Box::new(loaded.catalog)));
+        let german = crate::texts::test_catalog("[common]\nsave = Speichern\n");
+        host.set_catalog(LanguageCatalog::Loaded(Box::new(german)));
         assert!(host.pending());
         assert_eq!(host.catalog().name(), "Deutsch");
         let (generation, save) = host.pass(|context| {

@@ -3,13 +3,52 @@
 
 use std::path::{Path, PathBuf};
 
+use i18n::Catalog;
+
 use crate::{
     catalog::{is_reserved_stem, new_game_file_name, title_file_stem},
     config::CONFIG_FILE_EXTENSION,
+    texts::editor,
 };
 
-/// The note of a derived file name that needs no suffix.
-pub(crate) const DERIVED_NOTE: &str = "The name follows the title until the first save.";
+/// The reason for the form of a derived file name. The note beside the name shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DerivedNote {
+    /// The name follows the title without a suffix.
+    Follows,
+    /// The stem is a device name of Windows and the file takes the suffix.
+    DeviceName {
+        /// The stem that derives from the title.
+        stem: String,
+        /// The number of the suffix.
+        suffix: String,
+    },
+    /// A file takes the plain name and the name takes the suffix.
+    FileExists {
+        /// The plain file name.
+        file: String,
+        /// The number of the suffix.
+        suffix: String,
+    },
+}
+
+impl DerivedNote {
+    /// Writes the note in `catalog`.
+    pub(crate) fn write(&self, catalog: &Catalog, out: &mut String) {
+        let _ = match self {
+            Self::Follows => {
+                out.push_str(catalog.text(editor::DERIVED_NOTE));
+                Ok(())
+            }
+            Self::DeviceName { stem, suffix } => {
+                catalog.write(out, editor::device_name_note(stem, suffix))
+            }
+            Self::FileExists { file, suffix } => {
+                catalog.write(out, editor::file_exists_note(file, suffix))
+            }
+        };
+    }
+}
 
 /// The file of a game that the editor has not saved yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,7 +58,7 @@ pub(crate) struct DerivedFile {
     /// The file name, for example `brandish-copy-2.conf`.
     pub(crate) file_name: String,
     /// The note beside the file name.
-    pub(crate) note: String,
+    pub(crate) note: DerivedNote,
 }
 
 impl DerivedFile {
@@ -37,11 +76,15 @@ impl DerivedFile {
             .and_then(|name| name.strip_prefix(&format!("{stem}-")))
             .filter(|_| file_name != plain);
         let note = match suffix {
-            Some(suffix) if is_reserved_stem(&stem) => {
-                format!("The name {stem} is a device name of Windows, so the file takes -{suffix}.")
-            }
-            Some(suffix) => format!("The file {plain} exists, so the name takes -{suffix}."),
-            None => DERIVED_NOTE.to_owned(),
+            Some(suffix) if is_reserved_stem(&stem) => DerivedNote::DeviceName {
+                stem: stem.clone(),
+                suffix: suffix.to_owned(),
+            },
+            Some(suffix) => DerivedNote::FileExists {
+                file: plain.clone(),
+                suffix: suffix.to_owned(),
+            },
+            None => DerivedNote::Follows,
         };
         Self {
             folder: folder.to_path_buf(),
@@ -59,7 +102,12 @@ impl DerivedFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor::test_support::EditorRoot;
+    use crate::{editor::test_support::EditorRoot, texts::english_text};
+
+    /// The English note of `file`.
+    fn note(file: &DerivedFile) -> String {
+        english_text(|catalog, out| file.note.write(catalog, out))
+    }
 
     /// Verifies the names and the notes of the examples of the design document.
     #[test]
@@ -68,7 +116,10 @@ mod tests {
         let folder = root.path("config/pc98");
         let file = DerivedFile::new(&folder, "Brandish 2: The Planet Buster");
         assert_eq!(file.file_name, "brandish-2-the-planet-buster.conf");
-        assert_eq!(file.note, DERIVED_NOTE);
+        assert_eq!(
+            note(&file),
+            "The name follows the title until the first save."
+        );
         assert_eq!(
             file.path(),
             folder.join("brandish-2-the-planet-buster.conf")
@@ -78,7 +129,7 @@ mod tests {
         let file = DerivedFile::new(&folder, "Brandish (copy)");
         assert_eq!(file.file_name, "brandish-copy-2.conf");
         assert_eq!(
-            file.note,
+            note(&file),
             "The file brandish-copy.conf exists, so the name takes -2."
         );
 
@@ -89,7 +140,7 @@ mod tests {
         let file = DerivedFile::new(&folder, "エッジ");
         assert_eq!(file.file_name, "game-3.conf");
         assert_eq!(
-            file.note,
+            note(&file),
             "The file game.conf exists, so the name takes -3."
         );
         let file = DerivedFile::new(&folder, "");
@@ -98,14 +149,14 @@ mod tests {
         let file = DerivedFile::new(&folder, "CON");
         assert_eq!(file.file_name, "con-2.conf");
         assert_eq!(
-            file.note,
+            note(&file),
             "The name con is a device name of Windows, so the file takes -2."
         );
         root.write("config/pc98/con-2.conf", "");
         let file = DerivedFile::new(&folder, "Con");
         assert_eq!(file.file_name, "con-3.conf");
         assert_eq!(
-            file.note,
+            note(&file),
             "The name con is a device name of Windows, so the file takes -3."
         );
     }

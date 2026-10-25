@@ -45,10 +45,7 @@ impl Session {
     }
 
     /// Applies one planned removable-media change.
-    fn apply_removable_media_action(
-        &mut self,
-        action: RemovableMediaAction,
-    ) -> std::result::Result<(), String> {
+    fn apply_removable_media_action(&mut self, action: RemovableMediaAction) -> Result<(), String> {
         match action {
             RemovableMediaAction::EjectFloppy { drive } => self.eject_floppy(drive),
             RemovableMediaAction::SelectFloppy { drive, index } => {
@@ -68,7 +65,7 @@ impl Session {
     fn restore_removable_media_selection(
         &mut self,
         rollback: &RemovableMediaRollback,
-    ) -> std::result::Result<(), String> {
+    ) -> Result<(), String> {
         let selection = rollback.selection;
         for drive in 0..2 {
             let current = match drive {
@@ -109,7 +106,7 @@ impl Session {
     fn removable_media_transaction(
         &mut self,
         mismatch: &save_state::MediaMismatch,
-    ) -> std::result::Result<(Vec<RemovableMediaAction>, RemovableMediaRollback), String> {
+    ) -> Result<(Vec<RemovableMediaAction>, RemovableMediaRollback), String> {
         let actions = plan_removable_media_actions(
             mismatch,
             &self.fdd1_entries,
@@ -128,7 +125,7 @@ impl Session {
     fn restore_runtime_snapshot(
         &mut self,
         snapshot: &save_state::MachineStateBlob,
-    ) -> std::result::Result<(), save_state::SaveStateError> {
+    ) -> Result<(), save_state::SaveStateError> {
         let mismatch = match self.machine.restore_state(snapshot) {
             Err(save_state::SaveStateError::MediaMismatch(mismatch)) => mismatch,
             result => return result,

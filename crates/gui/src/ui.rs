@@ -59,7 +59,7 @@ pub use button::{
     toggle_button,
 };
 pub use checkbox::{Checkbox, checkbox};
-pub use confirm::{ConfirmDialog, ConfirmResponse, DIALOG_WIDTH};
+pub use confirm::{ConfirmDialog, ConfirmResponse, DIALOG_WIDTH, confirm_hints};
 pub use context::{PointerResponse, TextStyle, UiContext, UiId, ui_id, ui_id_indexed};
 pub use dropdown::{Dropdown, POPUP_MAX_ROWS, dropdown};
 pub use focus::{Navigation, NavigationSet};
@@ -85,6 +85,8 @@ pub use table::{
     TableRow, TableState,
 };
 pub use tabs::{Tab, tab_bar};
+#[cfg(any(test, feature = "fill-counter"))]
+pub use text_buffer::count_fills;
 pub use text_buffer::{TextBuffer, TextData, TextValue};
 pub use text_field::{TEXT_FIELD_LIMIT, TextField, TextFieldResponse, text_field};
 pub use theme::{Palette, Theme, ThemeKind};
@@ -1399,6 +1401,7 @@ pub(crate) mod tests {
                         "delete",
                         "Delete game",
                         "Delete YU-NO: A Girl Who Chants Love at the Bound of this World?",
+                        "Cancel",
                         "Delete",
                     )
                     .detail(

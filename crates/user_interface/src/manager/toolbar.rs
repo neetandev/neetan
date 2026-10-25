@@ -7,6 +7,8 @@ use gui::{
     ui::{Button, ButtonKind, Icon, UiContext},
 };
 
+use crate::texts::common;
+
 /// The id of the launch button.
 pub(crate) const LAUNCH_ID: &str = "launch";
 
@@ -62,24 +64,25 @@ pub(crate) fn show_toolbar(
     state: ToolbarState,
 ) -> ToolbarResponse {
     let gap = context.theme.gap;
+    let catalog = context.catalog;
     let buttons = [
-        Button::new(LAUNCH_ID, "Launch")
+        Button::new(LAUNCH_ID, catalog.text(common::LAUNCH))
             .kind(ButtonKind::Primary)
             .icon(Icon::Play)
             .enabled(state.launchable),
-        Button::new(ADD_ID, "Add")
+        Button::new(ADD_ID, catalog.text(common::ADD))
             .icon(Icon::Add)
             .enabled(state.addable),
-        Button::new(EDIT_ID, "Edit")
+        Button::new(EDIT_ID, catalog.text(common::EDIT))
             .icon(Icon::Edit)
             .enabled(state.launchable),
-        Button::new(DUPLICATE_ID, "Duplicate")
+        Button::new(DUPLICATE_ID, catalog.text(common::DUPLICATE))
             .icon(Icon::Duplicate)
             .enabled(state.launchable),
-        Button::new(DELETE_ID, "Delete")
+        Button::new(DELETE_ID, catalog.text(common::DELETE))
             .icon(Icon::Delete)
             .enabled(state.deletable),
-        Button::new(REFRESH_ID, "Refresh").icon(Icon::Refresh),
+        Button::new(REFRESH_ID, catalog.text(common::REFRESH)).icon(Icon::Refresh),
     ];
     let mut activated = [false; 6];
     let mut rest = area;
