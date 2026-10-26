@@ -15,7 +15,7 @@ use sdl3::locale::Locale;
 
 use crate::{
     config::{LanguageFile, find_language_files},
-    texts::{ENGLISH_TAG, LanguageCatalog, SCHEMA, english},
+    texts::{ENGLISH_TAG, LanguageCatalog, SCHEMA, english, english_covers},
 };
 
 /// The language that a selection gives.
@@ -114,10 +114,15 @@ fn locale_tag(locale: &Locale) -> String {
 }
 
 /// Returns the languages of the form `form` among `files` in order, compared without regard to
-/// case: English for `en`, the file of the tag `form`, then the files that cover `form`.
+/// case: English for `en`, the file of the tag `form`, English when the embedded English texts
+/// cover `form`, then the files that cover `form`.
 fn form_matches<'a>(files: &'a [LanguageOption], form: &str) -> Vec<Selection<'a>> {
     let english = form
         .eq_ignore_ascii_case(ENGLISH_TAG)
+        .then_some(Selection::English);
+    let english_covering = english_covers()
+        .iter()
+        .any(|covered| covered.eq_ignore_ascii_case(form))
         .then_some(Selection::English);
     let own = files
         .iter()
@@ -130,12 +135,15 @@ fn form_matches<'a>(files: &'a [LanguageOption], form: &str) -> Vec<Selection<'a
     });
     english
         .into_iter()
-        .chain(own.chain(covering).map(Selection::File))
+        .chain(own.map(Selection::File))
+        .chain(english_covering)
+        .chain(covering.map(Selection::File))
         .collect()
 }
 
 /// Returns the language of the explicit tag `tag` among `files`, compared without regard to
-/// case: English for `en`, the file of the tag, or the first file that covers the tag.
+/// case: English for `en`, the file of the tag, English when it covers the tag, or the first file
+/// that covers the tag.
 pub(crate) fn tag_match<'a>(files: &'a [LanguageOption], tag: &str) -> Option<Selection<'a>> {
     form_matches(files, tag).first().copied()
 }
@@ -529,6 +537,20 @@ mod tests {
         assert_eq!(selected("zh-CN", &[], &files), "en");
         assert_eq!(selected("zh", &[], &files), "en");
         assert_eq!(selected("pt-PT", &[], &files), "en");
+    }
+
+    /// Verifies that the embedded English texts cover the English regions of their header for
+    /// an explicit tag, and that a file of such a region wins over them.
+    #[test]
+    fn the_english_texts_cover_the_english_regions() {
+        let files = chinese_files();
+        for tag in ["en-GB", "en-us", "en-AU", "en-IN"] {
+            assert_eq!(tag_match(&files, tag), Some(Selection::English), "{tag}");
+        }
+        assert_eq!(tag_match(&files, "en-001"), None);
+        let british = [file("en-GB")];
+        assert_eq!(selected("en-GB", &[], &british), "en-GB");
+        assert_eq!(selected("en-AU", &[], &british), "en");
     }
 
     /// Verifies that the Chinese files of the repository serve their locales and tags: the
