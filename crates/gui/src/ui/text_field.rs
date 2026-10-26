@@ -90,7 +90,10 @@ pub(super) fn field_frame(context: &mut UiContext, rect: Rect, look: FieldLook) 
 /// step the cursor by one character, or by one word with the word modifier.
 /// Home and end, and left and right with the edge modifier, place it at the
 /// start and the end. The extend modifier extends the selection with every
-/// step. Select all selects the whole text. The composition of an input
+/// step. Select all selects the whole text. Copy and cut write the selection
+/// into the clipboard output of the widget state. Cut also removes the
+/// selection. A paste inserts the first line of the pasted text like typed
+/// text. It drops the control characters. The composition of an input
 /// method shows underlined at the cursor. A text wider than the focused
 /// field scrolls, so the cursor stays visible. Without the focus a long text
 /// is cut. A clear button for the mouse empties a field with text.
@@ -293,7 +296,7 @@ mod tests {
     use crate::{
         Instance,
         ui::{
-            EditModifiers, Navigation, NavigationSet,
+            EditCommand, EditModifiers, Navigation, NavigationSet, Shortcut,
             field_value::tests::{SHIFT, SHIFT_WORD, WORD, cursor, highlights},
             tests::{Harness, pixel, srgb},
         },
@@ -330,6 +333,30 @@ mod tests {
     /// Draws the field over `text` and returns its response.
     fn draw(harness: &mut Harness, text: &mut String) -> TextFieldResponse {
         harness.frame(|context| text_field(context, "filter", FIELD, text, "Filter"))
+    }
+
+    /// Sends the edit command `command` to the field over `text`.
+    fn command(
+        harness: &mut Harness,
+        text: &mut String,
+        command: EditCommand,
+    ) -> TextFieldResponse {
+        harness.input.edit = Some(command);
+        draw(harness, text)
+    }
+
+    /// Pastes the clipboard text `pasted` into the field over `text`.
+    fn paste(harness: &mut Harness, text: &mut String, pasted: &str) -> TextFieldResponse {
+        harness.input.paste.push_str(pasted);
+        draw(harness, text)
+    }
+
+    /// Draws the field over `text` and returns the shortcut of the pass.
+    fn shortcut_pass(harness: &mut Harness, text: &mut String) -> Option<Shortcut> {
+        harness.frame(|context| {
+            text_field(context, "filter", FIELD, text, "Filter");
+            context.shortcut()
+        })
     }
 
     #[test]
@@ -678,5 +705,144 @@ mod tests {
         assert!(!response.changed);
         assert_eq!(allocations, 0);
         assert!(!highlights(&harness).is_empty());
+    }
+
+    /// Verifies that copy and cut take a selection in both directions, that cut removes it, and
+    /// that the state hands out each copied text once.
+    #[test]
+    fn copy_and_cut_take_a_selection_in_both_directions() {
+        let mut text = String::from("ディスク image");
+        let mut harness = focused(&mut text);
+        key(&mut harness, &mut text, Navigation::Left, SHIFT_WORD);
+        let response = command(&mut harness, &mut text, EditCommand::Copy);
+        assert!(!response.changed);
+        assert_eq!(text, "ディスク image");
+        assert_eq!(harness.state.take_copied(), Some("image"));
+        assert_eq!(harness.state.take_copied(), None);
+        assert!(!highlights(&harness).is_empty());
+
+        key(
+            &mut harness,
+            &mut text,
+            Navigation::Home,
+            EditModifiers::default(),
+        );
+        key(&mut harness, &mut text, Navigation::Right, SHIFT_WORD);
+        assert!(command(&mut harness, &mut text, EditCommand::Cut).changed);
+        assert_eq!(text, " image");
+        assert_eq!(harness.state.take_copied(), Some("ディスク"));
+        assert_eq!(harness.state.take_copied(), None);
+        assert!(highlights(&harness).is_empty());
+        typing(&mut harness, &mut text, "A");
+        assert_eq!(text, "A image");
+    }
+
+    /// Verifies that copy and cut without a selection change nothing and leave no copied text.
+    #[test]
+    fn copy_and_cut_without_a_selection_do_nothing() {
+        let mut text = String::from("disk");
+        let mut harness = focused(&mut text);
+        key(
+            &mut harness,
+            &mut text,
+            Navigation::Left,
+            EditModifiers::default(),
+        );
+        for edit in [EditCommand::Copy, EditCommand::Cut] {
+            assert!(!command(&mut harness, &mut text, edit).changed);
+            assert_eq!(text, "disk");
+            assert_eq!(harness.state.take_copied(), None);
+        }
+        typing(&mut harness, &mut text, "X");
+        assert_eq!(text, "disXk");
+    }
+
+    /// Verifies that a later copy replaces the text that the state hands out.
+    #[test]
+    fn a_second_copy_replaces_the_copied_text() {
+        let mut text = String::from("first second");
+        let mut harness = focused(&mut text);
+        key(&mut harness, &mut text, Navigation::Left, SHIFT_WORD);
+        command(&mut harness, &mut text, EditCommand::Copy);
+        command(&mut harness, &mut text, EditCommand::SelectAll);
+        command(&mut harness, &mut text, EditCommand::Copy);
+        assert_eq!(harness.state.take_copied(), Some("first second"));
+        assert_eq!(harness.state.take_copied(), None);
+    }
+
+    /// Verifies that a paste goes to the cursor, replaces the selection, takes only the first
+    /// line and drops control characters.
+    #[test]
+    fn a_paste_takes_the_first_line_without_control_characters() {
+        let mut text = String::new();
+        let mut harness = focused(&mut text);
+        assert!(paste(&mut harness, &mut text, "ディスク").changed);
+        assert_eq!(text, "ディスク");
+        key(
+            &mut harness,
+            &mut text,
+            Navigation::Left,
+            EditModifiers::default(),
+        );
+        assert!(paste(&mut harness, &mut text, "A\tB\r\nsecond line").changed);
+        assert_eq!(text, "ディスABク");
+        typing(&mut harness, &mut text, "C");
+        assert_eq!(text, "ディスABCク");
+
+        command(&mut harness, &mut text, EditCommand::SelectAll);
+        assert!(paste(&mut harness, &mut text, "one\u{2028}two").changed);
+        assert_eq!(text, "one");
+        key(&mut harness, &mut text, Navigation::Left, SHIFT);
+        assert!(paste(&mut harness, &mut text, "\u{7}x\ny").changed);
+        assert_eq!(text, "onx");
+        assert!(!paste(&mut harness, &mut text, "\nsecond").changed);
+        assert!(!paste(&mut harness, &mut text, "\u{1B}\t").changed);
+        assert_eq!(text, "onx");
+        assert_eq!(harness.state.take_copied(), None);
+    }
+
+    /// Verifies that a paste stops at the limit of the field and that a full field takes none.
+    #[test]
+    fn a_paste_stops_at_the_limit() {
+        let mut text = "a".repeat(TEXT_FIELD_LIMIT - 2);
+        let mut harness = focused(&mut text);
+        assert!(paste(&mut harness, &mut text, "bcd").changed);
+        assert_eq!(text.chars().count(), TEXT_FIELD_LIMIT);
+        assert!(text.ends_with("abc"));
+        assert!(!paste(&mut harness, &mut text, "e").changed);
+        key(&mut harness, &mut text, Navigation::Left, SHIFT);
+        assert!(paste(&mut harness, &mut text, "漢字").changed);
+        assert_eq!(text.chars().count(), TEXT_FIELD_LIMIT);
+        assert!(text.ends_with("ab漢"));
+    }
+
+    /// Verifies that a paste reaches only the focused field.
+    #[test]
+    fn a_paste_reaches_only_the_focused_field() {
+        let mut harness = Harness::new();
+        let mut text = String::new();
+        assert!(!paste(&mut harness, &mut text, "ignored").changed);
+        assert!(text.is_empty());
+    }
+
+    /// Verifies that select all, copy, cut and paste reach no shortcut of the screen and that a
+    /// shortcut with the control key works inside the focused field.
+    #[test]
+    fn edit_commands_reach_no_shortcut() {
+        let mut text = String::from("disk");
+        let mut harness = focused(&mut text);
+        for edit in [EditCommand::SelectAll, EditCommand::Copy, EditCommand::Cut] {
+            harness.input.edit = Some(edit);
+            assert_eq!(shortcut_pass(&mut harness, &mut text), None);
+        }
+        assert_eq!(harness.state.take_copied(), Some("disk"));
+        harness.input.paste.push('x');
+        assert_eq!(shortcut_pass(&mut harness, &mut text), None);
+        assert_eq!(text, "x");
+        harness.input.shortcut = Some(Shortcut::ControlF);
+        assert_eq!(
+            shortcut_pass(&mut harness, &mut text),
+            Some(Shortcut::ControlF)
+        );
     }
 }

@@ -121,10 +121,6 @@ impl TextEdit {
     }
 
     /// The selected part of `text`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "only the tests read the selected text")
-    )]
     pub(super) fn selected_text(self, text: &str) -> &str {
         let mut edit = self;
         edit.clamp(text);

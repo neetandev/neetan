@@ -41,6 +41,12 @@ pub struct EditModifiers {
 pub enum EditCommand {
     /// Selects the whole text.
     SelectAll,
+    /// Copies the selected text into the clipboard output of the state.
+    /// Without a selection it does nothing.
+    Copy,
+    /// Copies the selected text like [`EditCommand::Copy`] and removes the
+    /// selection. Without a selection it does nothing.
+    Cut,
     /// Removes the selection or else the character after the cursor. It is
     /// the delete key, and every widget other than a text widget reads it as
     /// [`Shortcut::Delete`].
@@ -88,9 +94,9 @@ impl Shortcut {
 ///
 /// The caller runs one pass for each discrete event: a press or a release of
 /// a mouse button, a navigation event, an action button, a shortcut, a text
-/// commit, a backspace, an edit command, confirm or cancel. A pass holds at
-/// most one of them. Pointer motion and wheel steps add up until the next
-/// pass. The caller shows the scene of the last pass and calls
+/// commit, a paste, a backspace, an edit command, confirm or cancel. A pass
+/// holds at most one of them. Pointer motion and wheel steps add up until
+/// the next pass. The caller shows the scene of the last pass and calls
 /// [`Input::advance`] after each pass.
 ///
 /// The pointer position is in physical pixels: the window coordinates of the
@@ -123,6 +129,9 @@ pub struct Input {
     pub left_double: bool,
     /// The text that the platform committed in this pass.
     pub text: String,
+    /// The clipboard text of a paste in this pass. An empty text holds no
+    /// paste.
+    pub paste: String,
     /// The text that an input method composes and has not committed. The
     /// caller replaces it on every change of the composition and empties it
     /// with the commit. It stays from pass to pass.
@@ -166,7 +175,7 @@ impl Input {
 
     /// Whether the pass holds a key or gamepad event: a navigation event,
     /// an action button, a shortcut, an edit command, confirm, cancel, a
-    /// text commit or a backspace.
+    /// text commit, a paste or a backspace.
     pub fn has_key_event(&self) -> bool {
         self.navigation.is_some()
             || self.action.is_some()
@@ -175,6 +184,7 @@ impl Input {
             || self.confirm
             || self.cancel
             || !self.text.is_empty()
+            || !self.paste.is_empty()
             || self.backspace
     }
 
@@ -187,6 +197,7 @@ impl Input {
         self.wheel = 0.0;
         self.left_double = false;
         self.text.clear();
+        self.paste.clear();
         self.backspace = false;
         self.confirm = false;
         self.cancel = false;
@@ -238,6 +249,7 @@ mod tests {
             left: true,
             wheel: 1.0,
             text: "a".into(),
+            paste: "b".into(),
             composition: "か".into(),
             backspace: true,
             confirm: true,
@@ -263,6 +275,7 @@ mod tests {
         assert_eq!(input.action, None);
         assert_eq!(input.shortcut, None);
         assert_eq!(input.edit, None);
+        assert!(input.paste.is_empty());
         assert_eq!(input.navigation_source, NavigationSource::Keyboard);
         assert_eq!(input.modifiers, EditModifiers::default());
         assert_eq!(input.composition, "か");
@@ -271,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn an_action_button_and_an_edit_command_are_key_events() {
+    fn an_action_button_an_edit_command_and_a_paste_are_key_events() {
         let input = Input {
             action: Some(ActionButton::Y),
             ..Input::default()
@@ -279,6 +292,11 @@ mod tests {
         assert!(input.has_key_event());
         let input = Input {
             edit: Some(EditCommand::DeleteForward),
+            ..Input::default()
+        };
+        assert!(input.has_key_event());
+        let input = Input {
+            paste: "ディスク".into(),
             ..Input::default()
         };
         assert!(input.has_key_event());

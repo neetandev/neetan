@@ -11,7 +11,7 @@ use sdl3::{
 
 use super::Shell;
 use crate::{
-    gui_host::{GuiEvent, GuiHost, key_event, pointer_or_text_event},
+    gui_host::{GuiEvent, GuiHost, keys::pointer_or_text_event},
     manager::Launch,
 };
 
@@ -154,7 +154,10 @@ impl Shell {
                     }
                     return;
                 }
-                key_event(scancode, keymod, *repeat)
+                self.host
+                    .gui
+                    .as_ref()
+                    .and_then(|gui| gui.key_event(scancode, keymod, *repeat))
             }
             Event::TextInput { .. } if self.host.right_control_held => None,
             Event::GamepadButtonDown { which, button }

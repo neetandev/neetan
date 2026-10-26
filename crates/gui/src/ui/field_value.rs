@@ -1,6 +1,8 @@
 //! The editable value of a field: the edits of a pass over its text and the
 //! drawing of the text, the cursor, the selection and the composition.
 
+use std::borrow::Cow;
+
 use super::{
     context::{UiContext, UiId},
     focus::Navigation,
@@ -20,14 +22,17 @@ const CURSOR_HEIGHT_SIZES: f32 = 1.3;
 /// Applies the input of the pass to `text` of the focused field `id` through
 /// the edit state of the context. The committed text goes to the cursor in
 /// place of the selection, one character after the other, up to `limit`
-/// characters. Control characters are dropped. Backspace and delete remove
-/// the selection or the character before or after the cursor. Select all
-/// selects the whole text. `navigation` steps the cursor, and the modifiers
-/// of the input turn a step into a word step, a step to an edge or an
-/// extension of the selection. `accept_insert` judges the whole candidate
-/// text of an insert. A removal always happens. A field that is blocked or
-/// that draws in a layer that opened in this pass keeps its text. Returns
-/// whether an edit changed `text`.
+/// characters. Control characters are dropped. A paste inserts the line of
+/// [`pasted_line`] in one insert, cut at the limit. Backspace and delete
+/// remove the selection or the character before or after the cursor. Select
+/// all selects the whole text. Copy writes the selection into the clipboard
+/// output of the state, and cut also removes it. `navigation` steps the
+/// cursor, and the modifiers of the input turn a step into a word step, a
+/// step to an edge or an extension of the selection. `accept_insert` judges
+/// the whole candidate text of an insert. A rejected paste leaves the text.
+/// A removal always happens. A field that is blocked or that draws in a
+/// layer that opened in this pass keeps its text. Returns whether an edit
+/// changed `text`.
 pub(super) fn edit_text(
     context: &mut UiContext,
     id: UiId,
@@ -38,10 +43,14 @@ pub(super) fn edit_text(
 ) -> bool {
     let input = context.input;
     let takes_input = context.takes_input();
-    let edit = context.state.text_edit(id, text);
+    context.state.text_edit(id, text);
     if !takes_input {
         return false;
     }
+    if matches!(input.edit, Some(EditCommand::Copy | EditCommand::Cut)) {
+        context.state.copy_selection(text);
+    }
+    let edit = context.state.text_edit(id, text);
     let mut changed = false;
     let mut buffer = [0; 4];
     for character in input
@@ -54,6 +63,12 @@ pub(super) fn edit_text(
             .insert(text, inserted, limit, &accept_insert)
             .text_changed;
     }
+    let pasted = pasted_line(&input.paste);
+    if !pasted.is_empty() {
+        changed |= edit
+            .insert(text, &pasted, limit, &accept_insert)
+            .text_changed;
+    }
     if input.backspace {
         changed |= edit.remove_backward(text).text_changed;
     }
@@ -61,10 +76,13 @@ pub(super) fn edit_text(
         Some(EditCommand::DeleteForward) => {
             changed |= edit.remove_forward(text).text_changed;
         }
+        Some(EditCommand::Cut) if edit.has_selection() => {
+            changed |= edit.remove_backward(text).text_changed;
+        }
         Some(EditCommand::SelectAll) => {
             edit.select_all(text);
         }
-        None => {}
+        Some(EditCommand::Copy | EditCommand::Cut) | None => {}
     }
     let modifiers = input.modifiers;
     let motion = match navigation {
@@ -92,6 +110,32 @@ pub(super) fn edit_text(
         edit.go_to(text, motion, modifiers.extend);
     }
     changed
+}
+
+/// The part of the clipboard text `pasted` that a paste inserts: the text up
+/// to its first line break without its control characters. A text without
+/// control characters in its first line borrows from `pasted`.
+fn pasted_line(pasted: &str) -> Cow<'_, str> {
+    let line = pasted.split(is_line_break).next().unwrap_or_default();
+    if line.chars().any(char::is_control) {
+        Cow::Owned(
+            line.chars()
+                .filter(|character| !character.is_control())
+                .collect(),
+        )
+    } else {
+        Cow::Borrowed(line)
+    }
+}
+
+/// Whether `character` ends a line: line feed, vertical tab, form feed,
+/// carriage return, next line, the line separator and the paragraph
+/// separator.
+fn is_line_break(character: char) -> bool {
+    matches!(
+        character,
+        '\n' | '\u{0B}' | '\u{0C}' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}'
+    )
 }
 
 /// Places the cursor of the focused field `id` at the end of `text`
@@ -795,5 +839,29 @@ pub(super) mod tests {
         let start = harness.state.text_input_caret().unwrap();
         assert!(start < end - 20.0, "{start} {end}");
         assert_eq!(start, cursor(&harness).unwrap()[0] - FIELD.x);
+    }
+
+    /// Verifies that the pasted line ends at the first line break of every kind, drops control
+    /// characters and borrows a clean line.
+    #[test]
+    fn the_pasted_line_ends_at_the_first_line_break() {
+        for (pasted, line) in [
+            ("", ""),
+            ("C:\\games\\disk.hdi", "C:\\games\\disk.hdi"),
+            ("one\ntwo", "one"),
+            ("one\r\ntwo", "one"),
+            ("one\u{0B}two", "one"),
+            ("one\u{0C}two", "one"),
+            ("one\u{85}two", "one"),
+            ("ディスク\u{2028}two", "ディスク"),
+            ("one\u{2029}two", "one"),
+            ("\ntwo", ""),
+            ("a\tb\u{1B}c\u{7F}d", "abcd"),
+            ("e\u{301}\u{200D}", "e\u{301}\u{200D}"),
+        ] {
+            assert_eq!(pasted_line(pasted), line, "{pasted:?}");
+        }
+        assert!(matches!(pasted_line("disk\nimage"), Cow::Borrowed("disk")));
+        assert!(matches!(pasted_line("d\tisk"), Cow::Owned(_)));
     }
 }
