@@ -436,7 +436,7 @@ fn rows_at(systems: &[SystemEntry], index: usize) -> &[GameRow] {
 
 #[cfg(test)]
 mod tests {
-    use gui::ui::{EditCommand, Navigation, ThemeKind, Viewport};
+    use gui::ui::{EditCommand, EditModifiers, Navigation, ThemeKind, Viewport};
     use machine_factory::rom_status::RomStatus;
 
     use super::{
@@ -791,8 +791,9 @@ mod tests {
     }
 
     /// Renders the library at `width` x `height` logical units and `scale`:
-    /// the library with data, a filtered library, an empty system, a system
-    /// with files with errors and the delete question, in the theme `kind`
+    /// the library with data, a filtered library, the focused filter with a
+    /// part of its text selected, an empty system, a system with files with
+    /// errors and the delete question, in the theme `kind`
     /// with the texts of the catalog of `language`.
     fn screenshots(
         width: f32,
@@ -829,6 +830,17 @@ mod tests {
         harness.input.text = "touhou".to_owned();
         harness.settle(|context| manager.show(context));
         render(&harness, "filtered");
+        for _ in 0..3 {
+            harness.input.navigation = Some(Navigation::Left);
+            harness.input.modifiers = EditModifiers {
+                extend: true,
+                ..EditModifiers::default()
+            };
+            harness.settle(|context| manager.show(context));
+        }
+        render(&harness, "filter_selection");
+        harness.input.navigation = Some(Navigation::End);
+        harness.settle(|context| manager.show(context));
         harness.input.text = "x".to_owned();
         harness.settle(|context| manager.show(context));
         render(&harness, "no_match");
