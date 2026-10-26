@@ -16,9 +16,9 @@ use self::layers::build_host_configuration;
 pub use self::{
     diagnostic::{Diagnostic, DiagnosticKind, Severity},
     discovery::{
-        LANGUAGE_FOLDER, LanguageFile, Locations, SETTINGS_FILE_NAME, SettingsLocation,
-        SettingsSource, compare_tags, discover_settings, find_language_files, resolve_path,
-        resolve_value,
+        LANGUAGE_FILE_EXTENSION, LANGUAGE_FOLDER, LanguageFile, Locations, SETTINGS_FILE_NAME,
+        SettingsLocation, SettingsSource, compare_tags, discover_settings, find_language_files,
+        resolve_path, resolve_value,
     },
     document::{ConfigDocument, DocumentEntry, DocumentError, LineContent, parse_line},
     launch_error::{LaunchError, LaunchFailure},

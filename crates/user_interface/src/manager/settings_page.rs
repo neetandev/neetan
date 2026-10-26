@@ -374,8 +374,16 @@ mod tests {
     /// logical units and `scale`: Folders with a missing GUI font, ROMs and
     /// Video and audio, and a run with a config folder flag, a ROM folder
     /// flag and a backend flag.
-    /// With `large` only the ROMs section. The pages draw in the theme `kind`.
-    fn screenshots(width: f32, height: f32, scale: f32, large: bool, kind: ThemeKind) {
+    /// With `large` only the ROMs section. The pages draw in the theme `kind`
+    /// with the texts of the catalog of `language`.
+    fn screenshots(
+        width: f32,
+        height: f32,
+        scale: f32,
+        large: bool,
+        kind: ThemeKind,
+        language: fn() -> crate::texts::LanguageCatalog,
+    ) {
         let prefix = if large { "large_" } else { "" };
         let viewport = Viewport::new((width * scale) as u32, (height * scale) as u32, scale);
         let render = |harness: &GuiHarness, name: &str| {
@@ -387,8 +395,7 @@ mod tests {
         );
         let mut manager = manager_with(&root, &[]);
         manager.roms = sample_statuses(&manager.host);
-        let mut harness =
-            GuiHarness::with_viewport(viewport, kind, crate::texts::LanguageCatalog::English);
+        let mut harness = GuiHarness::with_viewport(viewport, kind, language());
         settle(&mut harness, &mut manager);
         harness.state.set_focus(UiId::from(SETTINGS_ID));
         settle(&mut harness, &mut manager);
@@ -422,8 +429,7 @@ mod tests {
             ],
         );
         manager.roms = sample_statuses(&manager.host);
-        let mut harness =
-            GuiHarness::with_viewport(viewport, kind, crate::texts::LanguageCatalog::English);
+        let mut harness = GuiHarness::with_viewport(viewport, kind, language());
         settle(&mut harness, &mut manager);
         harness.input.shortcut = Some(Shortcut::F10);
         settle(&mut harness, &mut manager);
@@ -504,15 +510,18 @@ mod tests {
         }
     }
 
-    /// Writes the screenshots of the settings page in both themes at the
-    /// scales 1 and 2, at the minimum window size and at 1920 x 1080.
+    /// Writes the screenshots of the settings page in both themes and in
+    /// every screenshot language at the scales 1 and 2, at the minimum window
+    /// size and at 1920 x 1080.
     #[test]
     #[ignore = "writes screenshots into the directory of GUI_SHOTS"]
     fn settings_screenshots() {
-        for kind in [ThemeKind::Dark, ThemeKind::Light] {
-            for scale in [1.0, 2.0] {
-                screenshots(960.0, 600.0, scale, false, kind);
-                screenshots(1920.0, 1080.0, scale, true, kind);
+        for language in crate::gui_test_support::SCREENSHOT_LANGUAGES {
+            for kind in [ThemeKind::Dark, ThemeKind::Light] {
+                for scale in [1.0, 2.0] {
+                    screenshots(960.0, 600.0, scale, false, kind, language);
+                    screenshots(1920.0, 1080.0, scale, true, kind, language);
+                }
             }
         }
     }

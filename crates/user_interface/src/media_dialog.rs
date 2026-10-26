@@ -579,14 +579,20 @@ mod tests {
 
     impl Harness {
         /// A dialog on the first floppy drive at `viewport` in the theme
-        /// `kind`.
+        /// `kind` with the English texts.
         fn new(viewport: Viewport, kind: ThemeKind) -> Self {
+            Self::with_catalog(viewport, kind, crate::texts::LanguageCatalog::English)
+        }
+
+        /// A dialog on the first floppy drive at `viewport` in the theme
+        /// `kind` with the texts of `catalog`.
+        fn with_catalog(
+            viewport: Viewport,
+            kind: ThemeKind,
+            catalog: crate::texts::LanguageCatalog,
+        ) -> Self {
             Self {
-                gui: GuiHarness::with_viewport(
-                    viewport,
-                    kind,
-                    crate::texts::LanguageCatalog::English,
-                ),
+                gui: GuiHarness::with_viewport(viewport, kind, catalog),
                 dialog: MediaDialog::new(available_drives(2, true), 0, Some(3)),
                 media: [entries(&FILES), entries(&FILES[..4]), Vec::new()],
                 loaded: [Some(3), None, None],
@@ -913,12 +919,13 @@ mod tests {
         assert_eq!(harness.confirm(), DialogAction::Close);
     }
 
-    /// Renders the dialog at `scale` in the theme `kind` on each tab and
-    /// with a filter.
-    fn screenshots(scale: f32, kind: ThemeKind) {
+    /// Renders the dialog at `scale` in the theme `kind` with the texts of
+    /// the catalog of `language` on each tab and with a filter.
+    fn screenshots(scale: f32, kind: ThemeKind, language: fn() -> crate::texts::LanguageCatalog) {
         let width = (960.0 * scale) as u32;
         let height = (680.0 * scale) as u32;
-        let mut harness = Harness::new(Viewport::new(width, height, scale), kind);
+        let mut harness =
+            Harness::with_catalog(Viewport::new(width, height, scale), kind, language());
         harness.loaded[1] = Some(1);
         harness.pass();
         harness.navigate(Navigation::Down);
@@ -942,12 +949,16 @@ mod tests {
         render(&harness, "filter");
     }
 
+    /// Writes the screenshots of the media dialog in both themes and in
+    /// every screenshot language at the scales 1 and 2.
     #[test]
     #[ignore = "writes screenshots into the directory of GUI_SHOTS"]
     fn media_dialog_screenshots() {
-        for kind in [ThemeKind::Dark, ThemeKind::Light] {
-            screenshots(1.0, kind);
-            screenshots(2.0, kind);
+        for language in crate::gui_test_support::SCREENSHOT_LANGUAGES {
+            for kind in [ThemeKind::Dark, ThemeKind::Light] {
+                screenshots(1.0, kind, language);
+                screenshots(2.0, kind, language);
+            }
         }
     }
 }

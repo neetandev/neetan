@@ -312,14 +312,24 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::{
-        editor::notes::{NoteLook, tests::english_note},
+        editor::notes::{NoteLook, tests::catalog_note},
         texts::english,
     };
 
     /// The English note of `setting` on `model`, or `None` while the model reads the setting.
     pub(crate) fn ignored_note(setting: &Setting, model: MachineSelection) -> Option<String> {
+        ignored_note_in(english(), setting, model)
+    }
+
+    /// The note of `setting` on `model` in `catalog`, or `None` while the model reads the
+    /// setting.
+    pub(crate) fn ignored_note_in(
+        catalog: &Catalog,
+        setting: &Setting,
+        model: MachineSelection,
+    ) -> Option<String> {
         ignored_by(setting, model).map(|ignored| {
-            english_note(|writer| {
+            catalog_note(catalog, |writer| {
                 write_ignored(writer, ignored);
                 NoteLook::PLAIN
             })

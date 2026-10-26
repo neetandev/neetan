@@ -14,6 +14,8 @@ pub use self::setting_texts::{
     FileTypeText, LimitSentence, file_type_text, setting_help, setting_label, unset_word,
 };
 
+#[cfg(test)]
+pub(crate) mod repository;
 mod setting_texts;
 
 include!(concat!(env!("OUT_DIR"), "/texts.rs"));

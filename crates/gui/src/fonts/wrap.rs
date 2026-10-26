@@ -6,11 +6,11 @@ use super::{Line, Run, cluster_at};
 /// `lines` with their widths in em. `run` is the shaped `text` with one glyph
 /// for each character.
 ///
-/// A line breaks after a run of spaces and between two CJK characters when
-/// the kinsoku rules allow it, and only after a character other than a space
-/// on the same line. A line feed, a carriage return and the pair of both
-/// always break. A word wider than the limit breaks before a character with
-/// an advance. The lines leave out the trailing spaces and the line breaks.
+/// A line breaks where `can_break` allows it, and only after a character
+/// other than a space on the same line. A line feed, a carriage return and
+/// the pair of both always break. A word wider than the limit breaks before
+/// a character with an advance. The lines leave out the trailing spaces and
+/// the line breaks.
 pub(super) fn break_lines(run: &Run, text: &str, limit: f32, lines: &mut Vec<Line>) {
     lines.clear();
     let position = |index: usize| run.glyphs.get(index).map_or(run.advance, |glyph| glyph.x);
@@ -19,7 +19,8 @@ pub(super) fn break_lines(run: &Run, text: &str, limit: f32, lines: &mut Vec<Lin
     let mut previous = None;
     let mut content = false;
     let mut after_carriage_return = false;
-    for (index, character) in text.chars().enumerate() {
+    let mut characters = text.chars().enumerate().peekable();
+    while let Some((index, character)) = characters.next() {
         if character == '\n' && after_carriage_return {
             start = index + 1;
             after_carriage_return = false;
@@ -36,7 +37,11 @@ pub(super) fn break_lines(run: &Run, text: &str, limit: f32, lines: &mut Vec<Lin
         }
         if content
             && let Some(previous) = previous
-            && can_break(previous, character)
+            && can_break(
+                previous,
+                character,
+                characters.peek().map(|&(_, following)| following),
+            )
         {
             opportunity = Some(index);
         }
@@ -72,12 +77,68 @@ fn push_line(lines: &mut Vec<Line>, run: &Run, text: &str, start: usize, mut end
     });
 }
 
-/// Whether a line may break between `before` and `after`.
-fn can_break(before: char, after: char) -> bool {
-    if forbids_line_end(before) || forbids_line_start(after) {
+/// Whether a line may break between `before` and `after`. `following` is
+/// the character after `after`.
+///
+/// A line breaks after a run of spaces, between two CJK characters and at
+/// the border of a CJK character and a word of another script. A Latin word
+/// keeps its characters together, a number keeps the CJK character after it
+/// as its counter or unit, and a combining mark stays with its base.
+fn can_break(before: char, after: char, following: Option<char>) -> bool {
+    if forbids_line_end(before) || forbids_line_start(after) || is_mark(after) {
         return false;
     }
-    (is_space(before) && !is_space(after)) || (is_cjk(before) && is_cjk(after))
+    if is_space(before) || is_space(after) {
+        return is_space(before) && !is_space(after);
+    }
+    match (is_cjk(before), is_cjk(after)) {
+        (true, true) => true,
+        (true, false) => !is_closing_latin(after, following),
+        (false, true) => !is_opening_latin(before) && !before.is_ascii_digit(),
+        (false, false) => false,
+    }
+}
+
+/// Whether `character` is a mark that combines with the character before it
+/// or joins it: the combining diacritics, the combining kana voicing marks,
+/// the variation selectors and the zero width joiner.
+fn is_mark(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0300}'..='\u{036F}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{200D}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{3099}'
+            | '\u{309A}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FE20}'..='\u{FE2F}'
+            | '\u{E0100}'..='\u{E01EF}'
+    )
+}
+
+/// Whether `character` is Latin punctuation that closes a word and must not
+/// start a line after a CJK character. `following` is the character after
+/// it. A full stop that a letter follows starts a word, for example the
+/// extension `.hdi`.
+fn is_closing_latin(character: char, following: Option<char>) -> bool {
+    match character {
+        '.' => !following.is_some_and(is_word_letter),
+        ',' | ':' | ';' | '!' | '?' | ')' | ']' | '}' | '%' | '\'' | '"' => true,
+        _ => false,
+    }
+}
+
+/// Whether `character` is a letter of a script that breaks only at spaces.
+fn is_word_letter(character: char) -> bool {
+    character.is_alphabetic() && !is_cjk(character)
+}
+
+/// Whether `character` is Latin punctuation that opens a word and must not
+/// end a line before a CJK character.
+fn is_opening_latin(character: char) -> bool {
+    matches!(character, '(' | '[' | '{' | '\'' | '"')
 }
 
 /// Whether `character` is a space that allows a break after it: a white space
@@ -264,7 +325,56 @@ mod tests {
             lines("한국어 문장입니다", 4.0),
             ["한국어", "문장입니", "다"]
         );
-        assert_eq!(lines("日本abc", 3.0), ["日", "本ab", "c"]);
+        assert_eq!(lines("日本abc", 3.0), ["日本", "abc"]);
+    }
+
+    #[test]
+    fn latin_words_in_cjk_text_break_at_their_borders() {
+        assert_eq!(
+            lines("PC9801RAにはCD-ROMドライブがありません。", 10.0),
+            ["PC9801RAには", "CD-ROMドライブ", "がありません。"]
+        );
+        assert_eq!(
+            lines("設定midi = mt32に必要です。", 9.0),
+            ["設定midi =", "mt32に必要で", "す。"]
+        );
+        assert_eq!(
+            lines("ドライブ1のイメージ", 5.0),
+            ["ドライブ", "1のイメー", "ジ"]
+        );
+        assert_eq!(lines("abcdefgh日本", 4.0), ["abcd", "efgh", "日本"]);
+    }
+
+    #[test]
+    fn a_number_stays_with_the_cjk_character_after_it() {
+        assert_eq!(lines("ゲーム18本", 5.0), ["ゲーム", "18本"]);
+        assert_eq!(lines("あいう3行目", 4.0), ["あいう", "3行目"]);
+        assert_eq!(lines("あ12345本", 4.0), ["あ", "1234", "5本"]);
+        assert_eq!(lines("本18冊", 2.0), ["本", "18", "冊"]);
+    }
+
+    #[test]
+    fn latin_punctuation_stays_with_its_word() {
+        assert_eq!(lines("あいabc.う", 5.0), ["あい", "abc.う"]);
+        assert_eq!(lines("あい(abc)う", 5.0), ["あい", "(abc)", "う"]);
+        assert_eq!(lines("あいう.", 3.0), ["あい", "う."]);
+        assert_eq!(lines("あいう...", 4.0), ["あい", "う..."]);
+    }
+
+    #[test]
+    fn a_full_stop_before_a_letter_starts_a_word() {
+        assert_eq!(lines("あいは.hdi/.nhd、", 10.0), ["あいは", ".hdi/.nhd、"]);
+        assert_eq!(lines("あい：.hdi", 4.0), ["あい：", ".hdi"]);
+        assert_eq!(lines("あいend.う", 5.0), ["あい", "end.う"]);
+        assert_eq!(lines("あいう.え", 3.0), ["あい", "う.え"]);
+        assert_eq!(lines("あいう.5", 3.0), ["あい", "う.5"]);
+    }
+
+    #[test]
+    fn marks_stay_with_their_base() {
+        assert_eq!(lines("あいか\u{3099}", 3.0), ["あい", "か\u{3099}"]);
+        assert_eq!(lines("あい葛\u{E0100}", 3.0), ["あい", "葛\u{E0100}"]);
+        assert_eq!(lines("あいa\u{301}", 3.0), ["あい", "a\u{301}"]);
     }
 
     #[test]

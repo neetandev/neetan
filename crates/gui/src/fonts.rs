@@ -651,6 +651,47 @@ pub(crate) mod tests {
         assert!(font().glyph_index('A').is_some());
     }
 
+    /// The folder of the language files below the repository root.
+    const REPOSITORY_LANGUAGE_FOLDER: &str = "language";
+
+    /// The file extension of a language file.
+    const LANGUAGE_FILE_EXTENSION: &str = "ini";
+
+    /// Verifies that the font of the repository holds a glyph for every character of every
+    /// language file of the repository.
+    #[test]
+    fn the_font_covers_every_language_file() {
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(REPOSITORY_LANGUAGE_FOLDER);
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&folder)
+            .expect("the language folder reads")
+            .map(|entry| entry.expect("the language folder lists").path())
+            .filter(|path| {
+                path.extension().is_some_and(|extension| {
+                    extension.eq_ignore_ascii_case(LANGUAGE_FILE_EXTENSION)
+                })
+            })
+            .collect();
+        files.sort();
+        let names: Vec<String> = files
+            .iter()
+            .filter_map(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|name| name == "en.ini"), "{names:?}");
+        assert!(names.iter().any(|name| name == "ja.ini"), "{names:?}");
+        for path in &files {
+            let source = std::fs::read_to_string(path).expect("the language file reads");
+            let missing: std::collections::BTreeSet<char> = source
+                .chars()
+                .filter(|character| !character.is_control())
+                .filter(|character| font().glyph_index(*character).is_none())
+                .collect();
+            assert!(missing.is_empty(), "{}: {missing:?}", path.display());
+        }
+    }
+
     #[test]
     fn broken_data_fails_to_load() {
         let mut fonts = Fonts::new();
