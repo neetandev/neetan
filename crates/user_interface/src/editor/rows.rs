@@ -19,6 +19,7 @@ use machine_factory::config::settings::{
 use super::{
     Editor, EditorFile, Subject,
     form::{EditorSection, FieldSource, IgnoredBy},
+    help_area::FormRow,
     hints::{EditorWidget, WidgetKind},
     host_settings::draw_settings_file_block,
     kept_lines::draw_kept_lines,
@@ -525,7 +526,9 @@ impl Editor {
     }
 
     /// Draws the row of the field at `index` from `y` in `content` and
-    /// returns its height.
+    /// returns its height. The widgets of the row record the field. The row
+    /// records its area and whether the pointer is over it, tested before
+    /// its widgets take the pointer.
     fn draw_field(
         &mut self,
         context: &mut UiContext,
@@ -535,8 +538,20 @@ impl Editor {
         actions: &mut PageActions,
     ) -> f32 {
         let mut texts = std::mem::take(&mut self.row_texts[index]);
+        let first_widget = self.widgets.len();
+        let takes_pointer = context.takes_pointer();
         let height = self.draw_field_with(context, content, y, index, &mut texts, actions);
         self.row_texts[index] = texts;
+        for widget in &mut self.widgets[first_widget..] {
+            widget.field = Some(index);
+        }
+        let rect = Rect::new(content.x, y, content.width, height);
+        let (pointer_x, pointer_y) = context.mouse();
+        self.rows.push(FormRow {
+            field: index,
+            rect,
+            hovered: takes_pointer && rect.contains(pointer_x, pointer_y),
+        });
         height
     }
 
@@ -722,22 +737,28 @@ impl Editor {
 mod tests {
     use machine_factory::config::{
         MachineSelection,
-        settings::{MODEL_CHOICES, SETTINGS},
+        settings::{
+            MODEL_CHOICES, SETTINGS,
+            model_limits::{ChoiceFact, FactData},
+        },
         systems::compiled_systems,
     };
 
     use super::*;
     use crate::{
-        editor::{form::tests::ignored_note_in, page::form_area, test_support::SCREEN},
+        editor::{
+            form::{tests::ignored_note_in, write_models_only},
+            inherited::{Inherited, InheritedSource},
+            notes::{ChoiceNote, choice_note, tests::catalog_note},
+            page::form_area,
+            test_support::SCREEN,
+        },
         gui_test_support::GuiHarness,
         texts::repository::repository_catalogs,
     };
 
-    /// Verifies that every model-limit note of every compiled family fits the note column of a
-    /// 960 x 600 window within its lines in every language of the repository.
-    #[test]
-    fn every_model_limit_note_fits_at_the_minimum_window_size() {
-        let mut harness = GuiHarness::new(960, 600);
+    /// The width of the note column of a 960 x 600 window.
+    fn minimum_note_width(harness: &GuiHarness) -> f32 {
         let theme = &harness.theme;
         let form = form_area(theme, SCREEN);
         let content = Rect::new(
@@ -748,6 +769,35 @@ mod tests {
         );
         let note_width = RowAreas::new(theme, content, 0.0).note.width;
         assert!(note_width > 200.0, "{note_width}");
+        note_width
+    }
+
+    /// Asserts that every note of `notes` fits the note column of a 960 x 600 window within
+    /// [`NOTE_MAXIMUM_LINES`] lines.
+    fn assert_notes_fit(harness: &mut GuiHarness, notes: &[String]) {
+        let note_width = minimum_note_width(harness);
+        let lines = harness.frame(|context| {
+            let style = context.theme.small();
+            let line = gui::ui::wrapped_line_height(&style);
+            notes
+                .iter()
+                .map(|note| {
+                    let height =
+                        WrappedText::new().height(context, &style, note, note_width, usize::MAX);
+                    (note.clone(), (height / line).round() as usize)
+                })
+                .collect::<Vec<_>>()
+        });
+        for (note, count) in lines {
+            assert!(count <= NOTE_MAXIMUM_LINES, "{note} takes {count} lines");
+        }
+    }
+
+    /// Verifies that every model-limit note of every compiled family fits the note column of a
+    /// 960 x 600 window within its lines in every language of the repository.
+    #[test]
+    fn every_model_limit_note_fits_at_the_minimum_window_size() {
+        let mut harness = GuiHarness::new(960, 600);
         let mut notes = Vec::new();
         for catalog in repository_catalogs() {
             for system in compiled_systems() {
@@ -767,21 +817,75 @@ mod tests {
                 }
             }
         }
-        let lines = harness.frame(|context| {
-            let style = context.theme.small();
-            let line = gui::ui::wrapped_line_height(&style);
-            notes
-                .iter()
-                .map(|note| {
-                    let height =
-                        WrappedText::new().height(context, &style, note, note_width, usize::MAX);
-                    (note.clone(), (height / line).round() as usize)
-                })
-                .collect::<Vec<_>>()
-        });
-        for (note, count) in lines {
-            assert!(count <= NOTE_MAXIMUM_LINES, "{note} takes {count} lines");
+        assert_notes_fit(&mut harness, &notes);
+    }
+
+    /// Verifies that the note of a choice with a fact fits the note column of a 960 x 600
+    /// window within its lines in every language of the repository, for every model of every
+    /// compiled family. The note holds the longest sentences before the fact: the inherited
+    /// value of each source and the derived default. The models that the system defaults
+    /// editor lists follow the fact. A clock note holds both clocks of the model.
+    #[test]
+    fn every_choice_fact_note_fits_at_the_minimum_window_size() {
+        let mut harness = GuiHarness::new(960, 600);
+        let mut notes = Vec::new();
+        let sources = [
+            InheritedSource::BuiltIn,
+            InheritedSource::SystemDefaults,
+            InheritedSource::SettingsFile,
+        ];
+        for catalog in repository_catalogs() {
+            for system in compiled_systems() {
+                let target = MachineSelection::of_system(system)
+                    .expect("compiled system")
+                    .target();
+                for choice in MODEL_CHOICES
+                    .iter()
+                    .filter(|choice| choice.families.contains_target(target))
+                {
+                    let model: MachineSelection = choice.value.parse().expect("a model");
+                    for setting in SETTINGS.iter().filter(|setting| {
+                        setting.is_read_by(target, choice.value) && setting.fact != ChoiceFact::None
+                    }) {
+                        let Some(fact) = setting.choice_fact(model) else {
+                            continue;
+                        };
+                        let value = setting
+                            .choices_for(target)
+                            .map(|choice| choice.value)
+                            .max_by_key(|value| value.len())
+                            .unwrap_or_default();
+                        for source in sources {
+                            let inherited = Inherited::new(vec![value.to_owned()], source);
+                            let note = catalog_note(catalog, |writer| {
+                                let look = choice_note(
+                                    writer,
+                                    ChoiceNote {
+                                        set: true,
+                                        inherited: Some(&inherited),
+                                        derived: setting.has_derived_default(target),
+                                        fact: Some(&fact),
+                                        ..ChoiceNote::default()
+                                    },
+                                );
+                                if let Some(limit) = setting.limit_for(target) {
+                                    write_models_only(writer, limit);
+                                }
+                                look
+                            });
+                            if let FactData::CpuClock { low, high } = &fact {
+                                for clock in [low, high] {
+                                    let clock = clock.to_string();
+                                    assert!(note.text.contains(&clock), "{}", note.text);
+                                }
+                            }
+                            notes.push(note.text);
+                        }
+                    }
+                }
+            }
         }
+        assert_notes_fit(&mut harness, &notes);
     }
 
     /// Verifies that a note that fits draws in the height of the control and that a longer note grows its row.

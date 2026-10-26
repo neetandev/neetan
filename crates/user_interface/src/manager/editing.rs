@@ -271,7 +271,9 @@ mod tests {
     };
     #[cfg(feature = "pc98")]
     use crate::{
-        editor::EditorSection, gui_test_support::PassCounts, manager::test_support::select,
+        editor::EditorSection,
+        gui_test_support::PassCounts,
+        manager::test_support::{select, shown_help},
     };
 
     /// The manager of `root`.
@@ -696,7 +698,8 @@ mod tests {
     #[cfg(feature = "pc98")]
     /// Verifies that a steady frame of each section of the game editor allocates nothing, fills
     /// no text again and keeps the revision of the editor. The game holds media images in
-    /// several drives and a set value in every section.
+    /// several drives and a set value in every section. Every section after Metadata focuses a
+    /// setting row with its help text.
     #[test]
     fn a_steady_frame_of_the_editor_allocates_nothing() {
         let (_root, mut manager, mut harness) = steady_editor("steady_editor");
@@ -723,6 +726,11 @@ mod tests {
                 steady_frame(&mut harness, &mut manager),
                 PassCounts::NONE,
                 "a steady frame of the section {section:?}"
+            );
+            assert_eq!(
+                shown_help(&mut harness, &mut manager).is_some(),
+                *section != EditorSection::Metadata,
+                "the help area of the section {section:?}"
             );
             harness.input.navigation = Some(Navigation::NextTab);
             settle(&mut harness, &mut manager);
@@ -924,8 +932,9 @@ key.PageDown = RollUp
     /// discard question, the question over a file that changed outside the
     /// manager, a save error, a new game, a duplicate, the warning about
     /// system defaults that do not read, the empty media lists and the
-    /// sections of other families. With `large` only the sections of a game.
-    /// The texts come from the catalog of `language`.
+    /// sections of other families with the help text of the CPU mode. With
+    /// `large` only the sections of a game. The texts come from the catalog
+    /// of `language`.
     fn screenshots(
         width: f32,
         height: f32,
@@ -1063,6 +1072,9 @@ key.PageDown = RollUp
             harness.input.navigation = Some(Navigation::NextTab);
             settle(&mut harness, &mut manager);
             render(&harness, "pc88_machine");
+            harness.state.set_focus(crate::editor::field_id("cpu-mode"));
+            settle(&mut harness, &mut manager);
+            render(&harness, "pc88_cpu_mode");
             manager.editor = None;
         }
         if compiled_systems().any(|system| system.name == "pc6000") {

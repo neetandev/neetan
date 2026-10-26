@@ -15,6 +15,7 @@ mod discard;
 mod fields;
 mod file;
 mod form;
+mod help_area;
 mod hints;
 mod host_settings;
 mod inherited;
@@ -60,6 +61,7 @@ use self::{
         DEFAULTS_SECTIONS, EDITOR_SECTIONS, IgnoredBy, SETTINGS_SECTIONS, form_fields, host_fields,
         ignored_by, write_models_only,
     },
+    help_area::{FormRow, HelpArea, HelpTracking},
     hints::EditorWidget,
     host_settings::HostSettings,
     inherited::{BaseLayers, Inherited},
@@ -305,6 +307,8 @@ pub(crate) struct Editor {
     focus_first: bool,
     /// The focusable widgets of the last pass.
     widgets: Vec<EditorWidget>,
+    /// The rows of the fields that the last pass drew.
+    rows: Vec<FormRow>,
     /// The hints of the status line of the last pass.
     hints: HintTexts,
     /// The count of the changes of the state that the texts of the page
@@ -313,6 +317,10 @@ pub(crate) struct Editor {
     revision: u64,
     /// The texts of the page.
     texts: PageTexts,
+    /// The help text of the setting of the hovered or the focused row.
+    help: HelpArea,
+    /// The pointer and the focus that select the row of the help area.
+    help_tracking: HelpTracking,
     /// The texts of the row of each field, in the order of the fields.
     row_texts: Vec<RowTexts>,
     /// The path of the file to show, from the last refresh.
@@ -352,9 +360,12 @@ impl Editor {
             discard: None,
             focus_first: true,
             widgets: Vec::new(),
+            rows: Vec::new(),
             hints: HintTexts::new(),
             revision: 0,
             texts: PageTexts::default(),
+            help: HelpArea::default(),
+            help_tracking: HelpTracking::default(),
             shown: String::new(),
             model: None,
         };
@@ -689,6 +700,7 @@ impl Editor {
     pub(crate) fn show(&mut self, context: &mut UiContext, screen: Rect) -> EditorPass {
         let mut pass = EditorPass::default();
         self.widgets.clear();
+        self.rows.clear();
         let actions = self.draw_page(context, screen);
         if actions.changed {
             self.refresh();

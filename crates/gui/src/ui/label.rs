@@ -86,7 +86,9 @@ struct WrapLayout {
 ///
 /// The text wraps again only when its shaped run, its font, its size, the
 /// width or the most lines change. The run of the font cache changes with
-/// the text. The lines keep their buffer between the wraps.
+/// the text. The lines keep their buffer between the wraps. A text with more
+/// lines than the most lines shows the most lines, and the last of them ends
+/// in an ellipsis.
 #[derive(Clone, Debug, Default)]
 pub struct WrappedText {
     /// The shaped text of the last wrap.
@@ -95,6 +97,9 @@ pub struct WrappedText {
     layout: Option<WrapLayout>,
     /// The lines of the last wrap.
     lines: Vec<Line>,
+    /// The last line with its ellipsis, when the text holds more lines than
+    /// the last wrap shows.
+    cut: Option<Arc<Run>>,
 }
 
 impl WrappedText {
@@ -132,7 +137,20 @@ impl WrappedText {
         let run = context
             .fonts
             .wrap(style.font, style.size, text, width, &mut self.lines);
-        self.lines.truncate(maximum_lines.max(1));
+        let maximum_lines = maximum_lines.max(1);
+        self.cut = None;
+        if self.lines.len() > maximum_lines {
+            let last = &mut self.lines[maximum_lines - 1];
+            let cut = context.fonts.fit_continued(
+                style.font,
+                style.size,
+                &text[last.bytes.clone()],
+                width,
+            );
+            last.width = cut.advance * style.size;
+            self.cut = Some(cut);
+        }
+        self.lines.truncate(maximum_lines);
         self.run = Some(run);
         self.layout = Some(layout);
         #[cfg(any(test, feature = "fill-counter"))]
@@ -161,8 +179,9 @@ impl WrappedText {
     /// Draws `text` in `style` wrapped over lines no wider than `rect`, from
     /// the top of `rect` down, each line placed by `align`. A line breaks
     /// between words, between CJK characters and at line breaks. The text
-    /// ends after `maximum_lines` lines. The lines ignore the height of
-    /// `rect`. Returns the height of the lines.
+    /// ends after `maximum_lines` lines, and a text with more lines ends the
+    /// last line with an ellipsis. The lines ignore the height of `rect`.
+    /// Returns the height of the lines.
     pub fn show(
         &mut self,
         context: &mut UiContext,
@@ -177,6 +196,7 @@ impl WrappedText {
             return 0.0;
         };
         let line_height = wrapped_line_height(style);
+        let last = self.lines.len().saturating_sub(1);
         for (index, line) in self.lines.iter().enumerate() {
             let line_area = Rect::new(
                 rect.x,
@@ -190,11 +210,15 @@ impl WrappedText {
                 Align::End => line_area.right() - line.width,
             };
             let baseline = context.centered_baseline(line_area, style);
+            let (line_run, glyphs) = match &self.cut {
+                Some(cut) if index == last => (cut, 0..cut.glyphs.len()),
+                Some(_) | None => (run, line.glyphs.clone()),
+            };
             context.scene.run_glyphs(
                 (context.snap(x), baseline),
                 style.size,
-                run,
-                line.glyphs.clone(),
+                line_run,
+                glyphs,
                 style.color,
             );
         }
@@ -359,6 +383,41 @@ mod tests {
         let lines = (height / (harness.theme.text_size * WRAP_LINE_HEIGHT)).round() as usize;
         assert_eq!(bands, lines);
         assert!(*rows.last().unwrap() as f32 <= 40.0 + height + 1.0);
+    }
+
+    /// Verifies that a text with more lines than the most lines ends its last line in an
+    /// ellipsis inside the width, and that a text that fits its lines draws no ellipsis.
+    #[test]
+    fn a_cut_wrapped_text_ends_in_an_ellipsis() {
+        let mut harness = Harness::new();
+        let text = "The changes to YU-NO: A Girl Who Chants Love at the Bound of this World are not saved.";
+        let rect = Rect::new(20.0, 40.0, 250.0, 0.0);
+        let draw = |harness: &mut Harness, maximum_lines: usize| {
+            harness.frame(|context| {
+                let style = context.theme.body();
+                let ellipsis = context.fonts.shape(style.font, "\u{2026}").glyphs[0].shape;
+                let height = WrappedText::new().show(
+                    context,
+                    rect,
+                    &style,
+                    text,
+                    Align::Start,
+                    maximum_lines,
+                );
+                (height, ellipsis.expect("the font maps the ellipsis").index)
+            })
+        };
+        let last_glyph = |harness: &Harness| *harness.scene.instances().last().unwrap();
+        let line_height = harness.theme.text_size * WRAP_LINE_HEIGHT;
+        let (height, ellipsis) = draw(&mut harness, 2);
+        assert_eq!(height, line_height * 2.0);
+        let last = last_glyph(&harness);
+        assert_eq!(last.kind, [crate::Instance::KIND_GLYPH, ellipsis, 0, 0]);
+        assert!(last.rect[0] + last.rect[2] <= 271.0, "{last:?}");
+        assert!(last.rect[1] > 40.0 + line_height, "{last:?}");
+        let (full, _) = draw(&mut harness, usize::MAX);
+        assert!(full > line_height * 2.0, "{full}");
+        assert_ne!(last_glyph(&harness).kind[1], ellipsis);
     }
 
     /// Verifies that a kept wrap draws the lines of a fresh wrap, wraps again for another

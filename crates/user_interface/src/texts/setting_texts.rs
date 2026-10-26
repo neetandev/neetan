@@ -167,11 +167,12 @@ impl CatalogText for ValueError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::{cmp::Reverse, collections::BTreeSet};
 
     use i18n::Key;
-    use machine_factory::config::settings::{
-        NumberRange, SETTINGS, UnsetText, ValueKind, find_setting,
+    use machine_factory::config::{
+        settings::{MODEL_CHOICES, NumberRange, SETTINGS, UnsetText, ValueKind, find_setting},
+        systems::SYSTEMS,
     };
 
     use super::*;
@@ -216,6 +217,180 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The product names that start with the name of a system and are names of other hardware
+    /// or software. A help text may mention them.
+    const PRODUCT_NAMES_WITH_A_SYSTEM_PREFIX: [&str; 3] = ["PC-9801-86", "MSX-DOS", "MSX-MUSIC"];
+
+    /// Returns whether `character` continues a word: an ASCII letter or digit. Every other
+    /// character is a word border.
+    fn is_word(character: char) -> bool {
+        character.is_ascii_alphanumeric()
+    }
+
+    /// Returns whether `character` separates the parts of a product name.
+    fn is_separator(character: char) -> bool {
+        matches!(character, ' ' | '-' | '/')
+    }
+
+    /// Returns the length in bytes of the start of `text` that spells `name`. The span ignores
+    /// the case. A hyphen or a slash of the text may appear between any two characters of the
+    /// name. At a separator of the name the text holds any number of hyphens and slashes, and
+    /// spaces only where the name holds a space.
+    fn spelled_length(text: &str, name: &str) -> Option<usize> {
+        let mut rest = text.char_indices().peekable();
+        let mut started = false;
+        for expected in name.chars() {
+            if is_separator(expected) {
+                while rest
+                    .next_if(|(_, character)| {
+                        matches!(character, '-' | '/') || (expected == ' ' && *character == ' ')
+                    })
+                    .is_some()
+                {}
+                continue;
+            }
+            if started {
+                while rest
+                    .next_if(|(_, character)| matches!(character, '-' | '/'))
+                    .is_some()
+                {}
+            }
+            let (_, character) = rest.next()?;
+            if !character.eq_ignore_ascii_case(&expected) {
+                return None;
+            }
+            started = true;
+        }
+        Some(rest.peek().map_or(text.len(), |(offset, _)| *offset))
+    }
+
+    /// Returns the length in bytes of the first span of `text` after a word border that spells
+    /// `name`. Letters or digits may follow the span: `PC-8801MA` holds `PC-8801`.
+    fn name_span(text: &str, name: &str) -> Option<usize> {
+        let mut previous = None;
+        text.char_indices().find_map(|(start, character)| {
+            let after_border = !previous.is_some_and(is_word);
+            previous = Some(character);
+            after_border
+                .then(|| spelled_length(&text[start..], name))
+                .flatten()
+        })
+    }
+
+    /// Returns the series of the model `value`: the value up to its last digit, when letters
+    /// follow that digit. The series of `PC8801MC` is `PC8801`.
+    fn series_of(value: &'static str) -> Option<&'static str> {
+        let end = value.rfind(|character: char| character.is_ascii_digit())? + 1;
+        (end < value.len()).then(|| &value[..end])
+    }
+
+    /// The folder names of the systems table that are English words. The name check skips
+    /// them.
+    const SYSTEM_NAMES_OF_ENGLISH_WORDS: [&str; 1] = ["at"];
+
+    /// Returns the label or the folder name of a system of the systems table, the model of the model choices or
+    /// the series of a model that `text` mentions after a word border. Every character other
+    /// than an ASCII letter or digit is a border, the hyphen included. A name followed by
+    /// letters or digits is a longer name of the same family and counts too. The name with the
+    /// longest span wins, the first name of the tables on a tie. The check finds `PC-8801` for
+    /// the series of `PC8801MC`, also in `PC-8801MA`, `PC-AT` for the system `PC/AT` and
+    /// `X68000` in `X68000-only`. The names of [`PRODUCT_NAMES_WITH_A_SYSTEM_PREFIX`] pass.
+    fn product_name_in(text: &str) -> Option<&'static str> {
+        let mut text = text.to_owned();
+        for allowed in PRODUCT_NAMES_WITH_A_SYSTEM_PREFIX {
+            text = text.replace(allowed, " ");
+        }
+        SYSTEMS
+            .iter()
+            .map(|system| system.label)
+            .chain(
+                SYSTEMS
+                    .iter()
+                    .map(|system| system.name)
+                    .filter(|name| !SYSTEM_NAMES_OF_ENGLISH_WORDS.contains(name)),
+            )
+            .chain(MODEL_CHOICES.iter().map(|choice| choice.value))
+            .chain(
+                MODEL_CHOICES
+                    .iter()
+                    .filter_map(|choice| series_of(choice.value)),
+            )
+            .filter_map(|name| name_span(&text, name).map(|length| (name, length)))
+            .min_by_key(|(_, length)| Reverse(*length))
+            .map(|(name, _)| name)
+    }
+
+    /// Verifies that the product names of the systems table, of the model choices and of the
+    /// model series count as product names after a word border, also with a hyphen, a letter or
+    /// a digit after them, and that other product names such as `MT-32`, `FS-CA1`, the board
+    /// `PC-9801-86`, `MSX-DOS` and `MSX-MUSIC` do not. A space folds only where the name holds
+    /// a space, and the words `PC at` pass.
+    #[test]
+    fn product_names_come_from_the_tables() {
+        assert_eq!(product_name_in("X68000 XVI 10 MHz."), Some("X68000"));
+        assert_eq!(product_name_in("FM Towns II CX."), Some("FM Towns"));
+        assert_eq!(product_name_in("FM-Towns II CX."), Some("FM Towns"));
+        assert_eq!(product_name_in("PC-8801 wait."), Some("PC8801"));
+        assert_eq!(product_name_in("PC-6001 tape."), Some("PC6001"));
+        assert_eq!(product_name_in("X68k only."), Some("x68k"));
+        assert_eq!(product_name_in("Towns game pad type."), Some("towns"));
+        assert_eq!(product_name_in("FM77AV ROM set."), Some("FM77AV"));
+        assert_eq!(product_name_in("PC/AT BIOS."), Some("PC/AT"));
+        assert_eq!(product_name_in("PC-AT BIOS."), Some("PC/AT"));
+        assert_eq!(product_name_in("x68000では"), Some("X68000"));
+        assert_eq!(product_name_in("A PC-98-only option."), Some("PC-98"));
+        assert_eq!(product_name_in("X68000-only."), Some("X68000"));
+        assert_eq!(product_name_in("An FM-7-style keyboard."), Some("FM-7"));
+        assert_eq!(product_name_in("An MSX-only cartridge."), Some("MSX"));
+        assert_eq!(product_name_in("The PC-8801MA BIOS."), Some("PC8801"));
+        assert_eq!(product_name_in("The PC-9821Ap2 BIOS."), Some("PC9821AP"));
+        assert_eq!(product_name_in("The PC-6001mkII tape."), Some("PC6001"));
+        assert_eq!(product_name_in("The FM77AV40 ROM."), Some("FM77AV"));
+        assert_eq!(product_name_in("The X1turboZ ROM."), Some("X1TURBO"));
+        assert_eq!(product_name_in("The MSXturboR ROM."), Some("MSX"));
+        assert_eq!(product_name_in("MT-32, SC-55 and FS-CA1 ROM sets."), None);
+        assert_eq!(product_name_in("Up to max 1 drive."), None);
+        assert_eq!(product_name_in("Resets the PC at start."), None);
+        assert_eq!(product_name_in("PC AT BIOS."), None);
+        assert_eq!(product_name_in("PC-9801-86 sound board."), None);
+        assert_eq!(
+            product_name_in("Option of the PC-9801-86 sound board."),
+            None
+        );
+        assert_eq!(product_name_in("PC-9801-86サウンドボード。"), None);
+        assert_eq!(product_name_in("Boots MSX-DOS with MSX-MUSIC."), None);
+    }
+
+    /// Verifies that no help text of any language of the repository mentions a system or a
+    /// model. The editor shows one help text for every system. The notes give the facts of the
+    /// model. The check covers the help texts of the settings of every system, also those
+    /// outside this build.
+    #[test]
+    fn help_texts_mention_no_system_and_no_model() {
+        let section_prefix = format!("{SETTING_GROUP}.");
+        let mut count = 0;
+        for catalog in repository_catalogs() {
+            for (index, info) in SCHEMA.keys().iter().enumerate() {
+                if !info.section().starts_with(&section_prefix) || info.key() != HELP_KEY {
+                    continue;
+                }
+                let key = Key::new(u16::try_from(index).expect("the schema index fits"));
+                let help = catalog.text(key);
+                assert_eq!(
+                    product_name_in(help),
+                    None,
+                    "the help of {} in {}: {help}",
+                    info.section(),
+                    catalog.tag()
+                );
+                count += 1;
+            }
+        }
+        assert!(count > SETTINGS.len(), "{count} help texts");
+        let midi = find_setting("midi").expect("midi is a table key");
+        assert!(setting_help(english(), midi).contains("MT-32"));
     }
 
     /// Verifies that every section of the setting texts belongs to a key of the table and holds

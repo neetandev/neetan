@@ -94,7 +94,7 @@ mod tests {
             test_support::{EditorRoot, SettingsRoot, first_rom_folder},
         },
         gui_test_support::{GuiHarness, PassCounts},
-        manager::{FILTER_ID, SETTINGS_ID, game_table::GAME_TABLE_ID},
+        manager::{FILTER_ID, SETTINGS_ID, game_table::GAME_TABLE_ID, test_support::shown_help},
         rom_folders::RomFolderStatus,
     };
 
@@ -169,6 +169,36 @@ mod tests {
         harness.input.shortcut = Some(Shortcut::F10);
         settle(&mut harness, &mut manager);
         assert!(manager.editor().is_none());
+    }
+
+    /// Verifies that the settings page shows the help text of its focused host setting row and
+    /// follows a focus change to another row.
+    #[test]
+    fn the_settings_page_shows_the_help_of_the_focused_row() {
+        let root = EditorRoot::new("settings_help");
+        let mut manager = manager_with(&root, &[]);
+        let mut harness = GuiHarness::new(960, 600);
+        settle(&mut harness, &mut manager);
+        harness.input.shortcut = Some(Shortcut::F10);
+        settle(&mut harness, &mut manager);
+        assert_eq!(
+            shown_help(&mut harness, &mut manager),
+            Some(CONFIG_FOLDER_KEY)
+        );
+        harness.input.navigation = Some(Navigation::Down);
+        settle(&mut harness, &mut manager);
+        let below = shown_help(&mut harness, &mut manager).expect("the row below shows its help");
+        assert_ne!(below, CONFIG_FOLDER_KEY);
+        for _ in 0..2 {
+            harness.input.navigation = Some(Navigation::NextTab);
+            settle(&mut harness, &mut manager);
+        }
+        harness.state.set_focus(field_id(GUI_LANGUAGE_KEY));
+        settle(&mut harness, &mut manager);
+        assert_eq!(
+            shown_help(&mut harness, &mut manager),
+            Some(GUI_LANGUAGE_KEY)
+        );
     }
 
     /// Verifies that a save that changes the config folder scans the catalog of the new folder, and that a save of the audio volume alone scans nothing.
@@ -446,7 +476,7 @@ mod tests {
 
     /// Verifies that a steady frame of each section of the settings page, the second pass with an
     /// unchanged state, allocates nothing, fills no text again and keeps the revision of the
-    /// editor.
+    /// editor, with the help text of the focused setting row.
     #[test]
     fn a_steady_frame_of_the_settings_page_allocates_nothing() {
         let root = sample_root(
@@ -505,6 +535,10 @@ mod tests {
                 "a steady frame of the section {section:?}"
             );
             assert_eq!(manager.editor().map(Editor::revision), revision);
+            assert!(
+                shown_help(&mut harness, &mut manager).is_some(),
+                "the section {section:?} shows the help of its focused row"
+            );
             harness.input.navigation = Some(Navigation::NextTab);
             settle(&mut harness, &mut manager);
         }

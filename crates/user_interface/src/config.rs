@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf};
 
 use common::{StringError, bail};
 pub use machine_factory::config::{
@@ -7,7 +7,8 @@ pub use machine_factory::config::{
 };
 use machine_factory::config::{
     settings::{
-        Families, MACHINE_KEY, PathKind, SETTINGS, Scope, Setting, ValueKind, find_setting,
+        Families, MACHINE_KEY, PathKind, SETTINGS, Scope, Setting, ValueKind,
+        file_types::FileTypes, find_setting,
     },
     systems::{compiled_systems, rom_folders},
 };
@@ -31,7 +32,7 @@ pub use self::{
 };
 use crate::{
     input::KeyOverrides,
-    texts::{english, setting_help},
+    texts::{command_line, english, setting_help},
 };
 
 mod atomic_file;
@@ -138,9 +139,45 @@ fn default_description(setting: &Setting, defaults: &[(&'static str, EmulatorCon
     format!(" Default: {}.", listed.join(", "))
 }
 
+/// The extensions of the files of a path setting on the compiled families,
+/// each one once, with their dots and separated by spaces.
+struct CompiledExtensions(&'static [FileTypes]);
+
+impl CompiledExtensions {
+    /// The extensions of the compiled families in the order of the table.
+    fn extensions(&self) -> impl Iterator<Item = &'static str> {
+        let compiled = Families::compiled();
+        self.0
+            .iter()
+            .filter(move |types| types.families.intersects(compiled))
+            .flat_map(|types| types.extensions.iter().copied())
+    }
+}
+
+impl fmt::Display for CompiledExtensions {
+    /// Writes each extension once, in the order of the table.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, extension) in self.extensions().enumerate() {
+            if self
+                .extensions()
+                .take(index)
+                .any(|earlier| earlier == extension)
+            {
+                continue;
+            }
+            if index > 0 {
+                formatter.write_str(" ")?;
+            }
+            write!(formatter, ".{extension}")?;
+        }
+        Ok(())
+    }
+}
+
 /// Returns the description of a setting in the `--help` list: the help text
-/// of the English catalog, the values, the families that read it and the
-/// built-in default.
+/// of the English catalog, the values, the families that read it, the
+/// extensions of its files, the built-in default and the systems whose
+/// default derives from other settings.
 fn setting_description(setting: &Setting, defaults: &[(&'static str, EmulatorConfig)]) -> String {
     let mut description = setting_help(english(), setting).to_owned();
     match setting.kind {
@@ -166,7 +203,22 @@ fn setting_description(setting: &Setting, defaults: &[(&'static str, EmulatorCon
         let families: Vec<&str> = setting.families.names().collect();
         description.push_str(&format!(" Families: {}.", families.join(", ")));
     }
+    let extensions = CompiledExtensions(setting.file_types);
+    if extensions.extensions().next().is_some() {
+        description.push_str(&format!(
+            " {}",
+            english().display(command_line::files(&extensions))
+        ));
+    }
     description.push_str(&default_description(setting, defaults));
+    for (name, config) in defaults {
+        if setting.has_derived_default(config.target) {
+            description.push_str(&format!(
+                " {}",
+                english().display(command_line::derived_default(name))
+            ));
+        }
+    }
     description
 }
 
@@ -1002,6 +1054,57 @@ mod tests {
         assert!(options.contains("--version"));
         assert!(options.contains("Default: <roms-folder>/pc6000."));
         assert!(options.contains("Families: pc6000."));
+    }
+
+    /// Verifies that the help of every path setting with file types lists each extension of the
+    /// compiled families once.
+    #[test]
+    fn help_lists_the_files_of_every_path_setting() {
+        let defaults = system_defaults();
+        let compiled = Families::compiled();
+        for setting in SETTINGS
+            .iter()
+            .filter(|setting| !setting.file_types.is_empty())
+        {
+            let extensions = CompiledExtensions(setting.file_types).to_string();
+            let listed: Vec<&str> = extensions.split_whitespace().collect();
+            for (index, extension) in listed.iter().enumerate() {
+                assert!(
+                    !listed[..index].contains(extension),
+                    "{} lists {extension} twice",
+                    setting.key
+                );
+            }
+            let description = setting_description(setting, &defaults);
+            for types in setting.file_types {
+                for extension in types.extensions {
+                    let compiled_type = setting.file_types.iter().any(|other| {
+                        other.families.intersects(compiled) && other.extensions.contains(extension)
+                    });
+                    assert_eq!(
+                        listed.contains(&format!(".{extension}").as_str()),
+                        compiled_type,
+                        "{} .{extension}",
+                        setting.key
+                    );
+                }
+            }
+            if !listed.is_empty() {
+                assert!(
+                    description.contains(&format!(" Files: {extensions}.")),
+                    "{description}"
+                );
+            }
+        }
+        #[cfg(feature = "pc98")]
+        {
+            let hdd1 = find_setting("hdd1").expect("hdd1 is a table key");
+            assert!(
+                setting_description(hdd1, &defaults).contains("Files: .hdi .nhd .thd"),
+                "{}",
+                setting_description(hdd1, &defaults)
+            );
+        }
     }
 
     #[cfg(feature = "pc98")]

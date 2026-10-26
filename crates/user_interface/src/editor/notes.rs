@@ -242,14 +242,15 @@ pub(crate) struct ChoiceNote<'a> {
 }
 
 /// Adds the sentence of the fact `fact` of a choice, for example `The
-/// choices are auto, 15k and 24k.` or `At low the CPU runs at 4 MHz.`
+/// choices are auto, 15k and 24k.` or `Low runs at 4 MHz and high at 8
+/// MHz.`
 fn write_fact(writer: &mut NoteWriter, fact: &FactData) {
     match fact {
         FactData::Choices(values) => {
             let choices = writer.catalog().display_list(ListKind::And, values);
             writer.message(note::choices(&choices));
         }
-        FactData::CpuClock { mode, clock } => writer.message(note::cpu_clock(mode, clock)),
+        FactData::CpuClock { low, high } => writer.message(note::cpu_clock(low, high)),
     }
 }
 
@@ -482,7 +483,6 @@ pub(crate) fn write_empty_list_caption(
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use common::CpuMode;
     use machine_factory::config::{
         phrases::Megahertz,
         settings::{find_setting, value_error::ValueError},
@@ -677,8 +677,8 @@ pub(crate) mod tests {
             Note::plain("The choices are v1s, v1h, v2, n, n80 and n80sr.")
         );
         let clock = FactData::CpuClock {
-            mode: CpuMode::Low,
-            clock: Megahertz(3_993_600),
+            low: Megahertz(3_993_600),
+            high: Megahertz(7_987_200),
         };
         assert_eq!(
             note(ChoiceNote {
@@ -689,8 +689,8 @@ pub(crate) mod tests {
                 ..ChoiceNote::default()
             }),
             Note::plain(
-                "Built-in default: low. The default follows the boot mode. At low the CPU runs \
-                 at 4 MHz."
+                "Built-in default: low. The default follows the boot mode. Low runs at 4 MHz \
+                 and high at 8 MHz."
             )
         );
         assert_eq!(

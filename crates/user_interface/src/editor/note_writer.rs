@@ -254,10 +254,10 @@ mod tests {
                 &[
                     "Built-in default: low.",
                     "",
-                    "At low the CPU runs at 4 MHz."
+                    "Low runs at 4 MHz and high at 8 MHz."
                 ]
             ),
-            "Built-in default: low. At low the CPU runs at 4 MHz."
+            "Built-in default: low. Low runs at 4 MHz and high at 8 MHz."
         );
         assert_eq!(joined(english(), &[]), "");
         let german = test_catalog(GERMAN);

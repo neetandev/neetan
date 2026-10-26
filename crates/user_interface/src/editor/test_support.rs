@@ -1,25 +1,26 @@
 //! Shared helpers of the editor tests: a temporary root folder with a
 //! settings file, system defaults and game files, and a root folder of the
-//! settings page with its ROM statuses.
+//! settings page with its ROM statuses, and the probes of the help area.
 
 use std::path::{Path, PathBuf};
 
 use common::temporary::TemporaryFolder;
-use gui::Rect;
+use gui::{Instance, Rect, ui::UiContext};
 use machine_factory::{
     config::{
         MachineSelection, Target,
-        settings::{MODEL_CHOICES, find_setting},
+        settings::{MODEL_CHOICES, Setting, find_setting},
         systems::{RomFolder, SYSTEMS, System, compiled_systems, rom_folders},
     },
     rom_status::{RomCheck, RomStatus},
 };
 
-use super::{Editor, EditorPass};
+use super::{Editor, EditorPass, page::help_area};
 use crate::{
     config::{HostLayers, LaunchRequest, Locations, SETTINGS_FILE_NAME},
     gui_test_support::GuiHarness,
     rom_folders::{RomFolderStatus, rom_folder_path},
+    texts::setting_help,
 };
 
 /// The window above the status line in the tests.
@@ -35,6 +36,94 @@ pub(crate) fn show(harness: &mut GuiHarness, editor: &mut Editor) -> EditorPass 
         answer.save_error = answer.save_error.clone().or(pass.save_error);
     });
     answer
+}
+
+/// The glyph indices of the last pass inside the help area of the page in
+/// [`SCREEN`], in the order of the draw.
+pub(crate) fn help_glyphs(harness: &GuiHarness) -> Vec<u32> {
+    help_glyphs_in(harness, SCREEN)
+}
+
+/// The glyph indices of the last pass inside the help area of the page in
+/// `screen`, in the order of the draw.
+pub(crate) fn help_glyphs_in(harness: &GuiHarness, screen: Rect) -> Vec<u32> {
+    let area = help_area(&harness.theme, screen);
+    harness
+        .scene
+        .instances()
+        .iter()
+        .filter(|instance| {
+            instance.kind[0] == Instance::KIND_GLYPH
+                && instance.rect[1] >= area.y - 1.0
+                && instance.rect[1] + instance.rect[3] <= area.bottom() + 1.0
+        })
+        .map(|instance| instance.kind[1])
+        .collect()
+}
+
+/// The glyph indices of the help text of `setting` shaped in the small
+/// text of `context`. The glyphs without an outline, the spaces for
+/// example, draw nothing and leave the list.
+pub(crate) fn shaped_help(context: &mut UiContext, setting: &Setting) -> Vec<u32> {
+    let font = context.theme.small().font;
+    context
+        .fonts
+        .shape(font, setting_help(context.catalog, setting))
+        .glyphs
+        .iter()
+        .filter_map(|glyph| glyph.shape.map(|shape| shape.index))
+        .collect()
+}
+
+/// The key of the setting of the help area of `subject`, read in one more
+/// pass from the rows and the widgets of the last pass. `shown` gives the
+/// setting of the hovered or the focused row and `draw` draws `subject`
+/// again in the pass. The probe asserts that the help area of the page in
+/// `screen` draws the glyphs of the shaped help text of that setting in
+/// their order, or no glyph without a setting.
+pub(crate) fn shown_help_of<S>(
+    harness: &mut GuiHarness,
+    subject: &mut S,
+    screen: Rect,
+    shown: impl FnOnce(&S, &UiContext) -> Option<&'static Setting>,
+    draw: impl FnOnce(&mut S, &mut UiContext),
+) -> Option<&'static str> {
+    let (key, expected) = harness.frame(|context| {
+        let setting = shown(subject, context);
+        let expected = setting.map_or_else(Vec::new, |setting| shaped_help(context, setting));
+        draw(subject, context);
+        (setting.map(|setting| setting.key), expected)
+    });
+    assert_eq!(
+        help_glyphs_in(harness, screen),
+        expected,
+        "the help area of {key:?}"
+    );
+    key
+}
+
+/// The key of the setting of the help area of `editor`, read by
+/// [`shown_help_of`] in one more pass of `editor` in [`SCREEN`].
+pub(crate) fn shown_help(harness: &mut GuiHarness, editor: &mut Editor) -> Option<&'static str> {
+    shown_help_in(harness, editor, SCREEN)
+}
+
+/// The key of the setting of the help area of `editor`, read by
+/// [`shown_help_of`] in one more pass of `editor` in `screen`.
+pub(crate) fn shown_help_in(
+    harness: &mut GuiHarness,
+    editor: &mut Editor,
+    screen: Rect,
+) -> Option<&'static str> {
+    shown_help_of(
+        harness,
+        editor,
+        screen,
+        |editor, context| editor.help_setting(context),
+        |editor, context| {
+            editor.show(context, screen);
+        },
+    )
 }
 
 /// The system `name` of the systems table.

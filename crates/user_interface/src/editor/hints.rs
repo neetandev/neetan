@@ -49,6 +49,9 @@ pub(crate) struct EditorWidget {
     /// Whether gamepad X has an effect on the widget: it clears a set
     /// field or removes the selected image of a media list.
     pub(crate) clears: bool,
+    /// The index of the field of the form row of the widget. A widget
+    /// outside the rows of the fields has none.
+    pub(crate) field: Option<usize>,
 }
 
 impl EditorWidget {
@@ -58,6 +61,7 @@ impl EditorWidget {
             id,
             kind,
             clears: false,
+            field: None,
         }
     }
 

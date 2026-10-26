@@ -412,10 +412,10 @@ impl Setting {
             .filter(move |choice| choice.families.intersects(families))
     }
 
-    /// Returns the data of the fact about the values of the choice setting on `model` while the
-    /// file holds `value`.
+    /// Returns the data of the fact about the values of the choice setting on `model`. A model
+    /// with one CPU clock has no clock fact.
     #[must_use]
-    pub fn choice_fact(&self, model: MachineSelection, value: Option<&str>) -> Option<FactData> {
+    pub fn choice_fact(&self, model: MachineSelection) -> Option<FactData> {
         match self.fact {
             ChoiceFact::None => None,
             ChoiceFact::Choices => {
@@ -426,11 +426,11 @@ impl Setting {
                 (!values.is_empty()).then_some(FactData::Choices(values))
             }
             ChoiceFact::CpuClock => {
-                let mode = value?.parse::<CpuMode>().ok()?;
-                let hertz = model.cpu_clock_hz(mode)?;
-                Some(FactData::CpuClock {
-                    mode,
-                    clock: Megahertz(hertz),
+                let low = model.cpu_clock_hz(CpuMode::Low)?;
+                let high = model.cpu_clock_hz(CpuMode::High)?;
+                (low != high).then_some(FactData::CpuClock {
+                    low: Megahertz(low),
+                    high: Megahertz(high),
                 })
             }
         }
@@ -2614,13 +2614,15 @@ mod tests {
         assert!(cpu_mode.has_derived_default(Target::Pc88));
         assert!(!boot_mode.has_derived_default(Target::Pc88));
         let model = MachineSelection::default_of(Target::Pc88);
-        let Some(FactData::CpuClock { mode, clock }) = cpu_mode.choice_fact(model, Some("low"))
-        else {
-            panic!("the CPU mode gives a clock");
+        let Some(FactData::CpuClock { low, high }) = cpu_mode.choice_fact(model) else {
+            panic!("the CPU mode gives the clocks");
         };
-        assert_eq!((mode, clock.to_string().as_str()), (CpuMode::Low, "4 MHz"));
         assert_eq!(
-            boot_mode.choice_fact(model, None),
+            (low.to_string().as_str(), high.to_string().as_str()),
+            ("4 MHz", "8 MHz")
+        );
+        assert_eq!(
+            boot_mode.choice_fact(model),
             Some(FactData::Choices(vec![
                 "v1s", "v1h", "v2", "n", "n80", "n80sr"
             ]))
@@ -2651,11 +2653,14 @@ mod tests {
             Some("20 MHz".to_owned())
         );
         let vm: MachineSelection = "PC9801VM".parse().expect("a PC-98 model");
-        let Some(FactData::CpuClock { mode, clock }) = cpu_mode.choice_fact(vm, Some("low")) else {
-            panic!("the CPU mode gives a clock");
+        let Some(FactData::CpuClock { low, high }) = cpu_mode.choice_fact(vm) else {
+            panic!("the CPU mode gives the clocks");
         };
-        assert_eq!((mode, clock.to_string().as_str()), (CpuMode::Low, "8 MHz"));
-        assert_eq!(cpu_mode.choice_fact(vm, None), None);
+        assert_eq!(
+            (low.to_string().as_str(), high.to_string().as_str()),
+            ("8 MHz", "10 MHz")
+        );
+        assert_eq!(cpu_mode.choice_fact(model), None);
         let gdc = find_setting("force-gdc-clock").expect("force-gdc-clock is a table key");
         assert_eq!(gdc.unset_text(Target::Pc98), Some(UnsetText::Word("auto")));
     }
