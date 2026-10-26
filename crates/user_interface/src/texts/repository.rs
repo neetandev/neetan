@@ -26,6 +26,9 @@ const SPANISH_TAG: &str = "es";
 /// The language tag of the Traditional Chinese (Taiwan) language file of the repository.
 const TRADITIONAL_CHINESE_TAG: &str = "zh-TW";
 
+/// The language tag of the Simplified Chinese (mainland China) language file of the repository.
+const SIMPLIFIED_CHINESE_TAG: &str = "zh-CN";
+
 /// A language of the repository: the embedded English file or a file of the language folder.
 pub(crate) struct RepositoryLanguage {
     /// The language tag: the file name without its extension.
@@ -35,7 +38,7 @@ pub(crate) struct RepositoryLanguage {
 }
 
 /// Returns the language folder of the repository.
-fn repository_language_folder() -> PathBuf {
+pub(crate) fn repository_language_folder() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(LANGUAGE_FOLDER)
@@ -65,6 +68,7 @@ static REPOSITORY_LANGUAGES: LazyLock<Vec<RepositoryLanguage>> = LazyLock::new(|
         FRENCH_TAG,
         SPANISH_TAG,
         TRADITIONAL_CHINESE_TAG,
+        SIMPLIFIED_CHINESE_TAG,
     ] {
         assert!(
             languages.iter().any(|language| language.tag == tag),
@@ -151,6 +155,12 @@ pub(crate) fn spanish() -> &'static Catalog {
 /// repository, built once.
 pub(crate) fn traditional_chinese() -> &'static Catalog {
     shared_catalog(TRADITIONAL_CHINESE_TAG)
+}
+
+/// Returns the shared catalog of the Simplified Chinese (mainland China) language file of the
+/// repository, built once.
+pub(crate) fn simplified_chinese() -> &'static Catalog {
+    shared_catalog(SIMPLIFIED_CHINESE_TAG)
 }
 
 /// Returns the mark that ends a sentence in `catalog`: the last character of the pattern
@@ -319,6 +329,18 @@ mod tests {
         joined
     }
 
+    /// Returns the tags of the `covers` header of the repository language file `tag`.
+    fn covered_tags(tag: &str) -> Vec<&'static str> {
+        let language = repository_languages()
+            .iter()
+            .find(|language| language.tag == tag)
+            .unwrap_or_else(|| panic!("the repository holds {tag}.ini"));
+        read_header(&language.source)
+            .unwrap_or_else(|faults| panic!("the header of {tag}.ini reads: {faults:?}"))
+            .covered_tags()
+            .collect()
+    }
+
     /// Verifies the header and the sentence mark of the Japanese language file.
     #[test]
     fn the_japanese_file_has_its_header() {
@@ -387,14 +409,29 @@ mod tests {
         assert_eq!(game_count(catalog, 2), "2款遊戲");
         assert_eq!(joined(catalog, ListKind::And), "A、B和C");
         assert_eq!(joined(catalog, ListKind::Or), "A、B或C");
-        let language = repository_languages()
-            .iter()
-            .find(|language| language.tag == TRADITIONAL_CHINESE_TAG)
-            .expect("the repository holds zh-TW.ini");
-        let header = read_header(&language.source).expect("the header of zh-TW.ini reads");
         assert_eq!(
-            header.covered_tags().collect::<Vec<_>>(),
+            covered_tags(TRADITIONAL_CHINESE_TAG),
             ["zh-HK", "zh-MO", "zh-Hant"]
+        );
+    }
+
+    /// Verifies the header, the covered tags, the sentence mark, the game counts and the list
+    /// patterns of the Simplified Chinese (mainland China) language file.
+    #[test]
+    fn the_simplified_chinese_file_has_its_header() {
+        let catalog = simplified_chinese();
+        assert_eq!(catalog.tag(), SIMPLIFIED_CHINESE_TAG);
+        assert_eq!(catalog.name(), "简体中文（中国大陆）");
+        assert_eq!(catalog.plural_rule(), PluralRule::None);
+        assert_eq!(sentence_mark(catalog), '。');
+        assert_eq!(game_count(catalog, 0), "0款游戏");
+        assert_eq!(game_count(catalog, 1), "1款游戏");
+        assert_eq!(game_count(catalog, 2), "2款游戏");
+        assert_eq!(joined(catalog, ListKind::And), "A、B和C");
+        assert_eq!(joined(catalog, ListKind::Or), "A、B或C");
+        assert_eq!(
+            covered_tags(SIMPLIFIED_CHINESE_TAG),
+            ["zh", "zh-SG", "zh-Hans"]
         );
     }
 

@@ -319,7 +319,7 @@ mod tests {
     use common::temporary::TemporaryFolder;
 
     use super::*;
-    use crate::texts;
+    use crate::texts::{self, repository::repository_language_folder};
 
     /// A language file of `tag` below `/languages` with the name `tag` that covers the tags
     /// `covers`.
@@ -529,6 +529,48 @@ mod tests {
         assert_eq!(selected("zh-CN", &[], &files), "en");
         assert_eq!(selected("zh", &[], &files), "en");
         assert_eq!(selected("pt-PT", &[], &files), "en");
+    }
+
+    /// Verifies that the Chinese files of the repository serve their locales and tags: the
+    /// Simplified Chinese file serves `zh`, mainland China, Singapore and the script `Hans`, the
+    /// Traditional Chinese file serves Taiwan, Hong Kong and the script `Hant`, and the first
+    /// preferred locale decides between them.
+    #[test]
+    fn the_chinese_files_of_the_repository_serve_their_locales() {
+        let files = language_options(find_language_files(&[repository_language_folder()]));
+        let simplified = [
+            ("zh", None),
+            ("zh", Some("CN")),
+            ("zh", Some("SG")),
+            ("zh-Hans", Some("CN")),
+            ("zh-Hans", Some("SG")),
+            ("zh", Some("Hans")),
+        ];
+        let traditional = [
+            ("zh", Some("TW")),
+            ("zh", Some("HK")),
+            ("zh-Hant", Some("TW")),
+            ("zh", Some("Hant")),
+        ];
+        for (expected, locales) in [("zh-CN", &simplified[..]), ("zh-TW", &traditional[..])] {
+            for &(language, country) in locales {
+                assert_eq!(
+                    selected("auto", &[locale(language, country)], &files),
+                    expected,
+                    "{language} {country:?}"
+                );
+            }
+        }
+        for tag in ["zh", "zh-CN", "zh-SG", "zh-sg", "zh-Hans", "zh-Hans-CN"] {
+            assert_eq!(selected(tag, &[], &files), "zh-CN", "{tag}");
+        }
+        for tag in ["zh-TW", "zh-HK", "zh-Hant-TW"] {
+            assert_eq!(selected(tag, &[], &files), "zh-TW", "{tag}");
+        }
+        let taiwan_first = [locale("zh", Some("TW")), locale("zh", Some("CN"))];
+        assert_eq!(selected("auto", &taiwan_first, &files), "zh-TW");
+        let china_first = [locale("zh", Some("CN")), locale("zh", Some("TW"))];
+        assert_eq!(selected("auto", &china_first, &files), "zh-CN");
     }
 
     /// Verifies that the further tags come from the headers of the files, and that a file that

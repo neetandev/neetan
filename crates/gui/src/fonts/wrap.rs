@@ -406,9 +406,9 @@ mod tests {
     const KINSOKU_MARGIN: usize = 4;
 
     /// Asserts for every width from the widest run of other scripts with its
-    /// brackets to the whole text that no line of `text` starts with a closing
-    /// mark of Traditional Chinese and that no line ends with an opening mark.
-    fn assert_traditional_chinese_kinsoku(text: &str) {
+    /// brackets to the whole text that no line of `text` starts with one of
+    /// `closing` and that no line ends with one of `opening`.
+    fn assert_chinese_kinsoku(text: &str, closing: &[char], opening: &[char]) {
         let widest = text
             .split(is_cjk)
             .map(|run| run.chars().count())
@@ -417,14 +417,8 @@ mod tests {
             + KINSOKU_MARGIN;
         for limit in widest..=text.chars().count() {
             for line in lines(text, limit as f32) {
-                assert!(
-                    !line.starts_with(TRADITIONAL_CHINESE_CLOSING),
-                    "{line:?} at {limit} em"
-                );
-                assert!(
-                    !line.ends_with(TRADITIONAL_CHINESE_OPENING),
-                    "{line:?} at {limit} em"
-                );
+                assert!(!line.starts_with(closing), "{line:?} at {limit} em");
+                assert!(!line.ends_with(opening), "{line:?} at {limit} em");
             }
         }
     }
@@ -464,7 +458,67 @@ mod tests {
             "要刪除「天外魔境」嗎？完成！下一步；選項：是",
             "「low」為8\u{A0}MHz，「high」為16\u{A0}MHz。",
         ] {
-            assert_traditional_chinese_kinsoku(text);
+            assert_chinese_kinsoku(
+                text,
+                &TRADITIONAL_CHINESE_CLOSING,
+                &TRADITIONAL_CHINESE_OPENING,
+            );
+        }
+    }
+
+    /// The characters of Simplified Chinese text that must not start a line:
+    /// ，。、；：？！）”’
+    const SIMPLIFIED_CHINESE_CLOSING: [char; 10] = [
+        '\u{FF0C}', '\u{3002}', '\u{3001}', '\u{FF1B}', '\u{FF1A}', '\u{FF1F}', '\u{FF01}',
+        '\u{FF09}', '\u{201D}', '\u{2019}',
+    ];
+
+    /// The characters of Simplified Chinese text that must not end a line: （“‘
+    const SIMPLIFIED_CHINESE_OPENING: [char; 3] = ['\u{FF08}', '\u{201C}', '\u{2018}'];
+
+    #[test]
+    fn simplified_chinese_breaks_between_han_characters_and_at_latin_words() {
+        assert_eq!(
+            lines("驱动器的软盘镜像文件", 4.0),
+            ["驱动器的", "软盘镜像", "文件"]
+        );
+        assert_eq!(
+            lines("没有CD-ROM驱动器。", 6.0),
+            ["没有", "CD-ROM", "驱动器。"]
+        );
+    }
+
+    #[test]
+    fn simplified_chinese_quotes_stay_with_their_neighbors() {
+        assert_eq!(
+            lines("请点击\u{201C}确定\u{201D}按钮", 4.0),
+            ["请点击", "\u{201C}确定\u{201D}", "按钮"]
+        );
+        assert_eq!(
+            lines("\u{201C}确定\u{201D}", 2.0),
+            ["\u{201C}确", "定\u{201D}"]
+        );
+        assert_eq!(
+            lines("\u{2018}软盘\u{2019}", 2.0),
+            ["\u{2018}软", "盘\u{2019}"]
+        );
+        assert_eq!(
+            lines("根目录是\u{201C}neetan.conf\u{201D}", 14.0),
+            ["根目录是", "\u{201C}neetan.conf\u{201D}"]
+        );
+        for text in [
+            "\u{201C}{game}\u{201D}尚未保存。\u{201C}覆盖\u{201D}将用编辑器中的更改替换文件。\u{201C}取消\u{201D}将保留更改并返回编辑器。",
+            "Neetan按以下顺序查找，并读取找到的第一个\u{201C}neetan.conf\u{201D}：\u{201C}--settings <file>\u{201D}、当前目录、可执行文件所在的文件夹、SDL的pref path。",
+            "值\u{201C}abc\u{201D}无效（应为\u{201C}on\u{201D}或\u{201C}off\u{201D}）",
+            "要删除\u{201C}天外魔境\u{201D}吗？完成！下一步；选项：是",
+            "\u{201C}low\u{201D}为8\u{A0}MHz，\u{201C}high\u{201D}为16\u{A0}MHz。",
+            "按\u{2018}确定\u{2019}保存\u{2018}设置\u{2019}。",
+        ] {
+            assert_chinese_kinsoku(
+                text,
+                &SIMPLIFIED_CHINESE_CLOSING,
+                &SIMPLIFIED_CHINESE_OPENING,
+            );
         }
     }
 
