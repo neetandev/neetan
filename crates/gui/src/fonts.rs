@@ -305,7 +305,24 @@ impl Fonts {
     /// truncated run. The cut run comes from the cache when the same text was
     /// cut at the same width before.
     pub fn fit(&mut self, font: FontId, size: f32, text: &str, width: f32) -> Arc<Run> {
-        self.cut(font, text, em_limit(width, size), false)
+        let limit = em_limit(width, size);
+        self.cut(font, text, limit, Fitting::End(limit.to_bits()))
+    }
+
+    /// `text` shaped as one line that always ends in an ellipsis and fits
+    /// into `width` at `size`. The line loses characters at its end until
+    /// the ellipsis fits, and the run is marked as truncated. A width below
+    /// the ellipsis gives an empty truncated run. The cut run comes from the
+    /// cache when the same text was cut at the same width before.
+    pub(crate) fn fit_continued(
+        &mut self,
+        font: FontId,
+        size: f32,
+        text: &str,
+        width: f32,
+    ) -> Arc<Run> {
+        let limit = em_limit(width, size);
+        self.cut(font, text, limit, Fitting::Continued(limit.to_bits()))
     }
 
     /// `text` shaped as one line that fits into `width` at `size`. A text that
@@ -316,7 +333,8 @@ impl Fonts {
     /// an empty truncated run. The cut run comes from the cache when the same
     /// text was cut at the same width before.
     pub fn fit_middle(&mut self, font: FontId, size: f32, text: &str, width: f32) -> Arc<Run> {
-        self.cut(font, text, em_limit(width, size), true)
+        let limit = em_limit(width, size);
+        self.cut(font, text, limit, Fitting::Middle(limit.to_bits()))
     }
 
     /// Splits `text` into lines no wider than `width` at `size`, writes them
@@ -346,18 +364,16 @@ impl Fonts {
         run
     }
 
-    /// `text` cut to the width `limit` in em, in the middle when `middle` is
-    /// set and at the end otherwise.
-    fn cut(&mut self, font: FontId, text: &str, limit: f32, middle: bool) -> Arc<Run> {
+    /// `text` cut to the width `limit` in em as `fitting` says: in the
+    /// middle, or at the end with an ellipsis. A [`Fitting::Continued`] cut
+    /// ends in an ellipsis also when the whole text fits.
+    fn cut(&mut self, font: FontId, text: &str, limit: f32, fitting: Fitting) -> Arc<Run> {
         let run = self.shape(font, text);
-        if run.advance <= limit {
+        let continued = matches!(fitting, Fitting::Continued(_));
+        if run.advance <= limit && !continued {
             return run;
         }
-        let fitting = if middle {
-            Fitting::Middle(limit.to_bits())
-        } else {
-            Fitting::End(limit.to_bits())
-        };
+        let middle = matches!(fitting, Fitting::Middle(_));
         if let Some(fitted) = self.cache.cached(font, fitting, text) {
             return fitted;
         }
@@ -763,6 +779,34 @@ pub(crate) mod tests {
         assert!(!short.truncated);
         assert_eq!(short, fonts.shape(font, "Disk"));
         assert!(fonts.fit(font, 10.0, text, 1.0).glyphs.is_empty());
+    }
+
+    /// Verifies that a continued cut ends in an ellipsis inside its width, for a line that fits
+    /// and for a line that loses characters.
+    #[test]
+    fn a_continued_line_ends_in_an_ellipsis() {
+        let (mut fonts, font) = fonts();
+        let ellipsis = fonts.shape(font, "\u{2026}");
+        let short = fonts.fit_continued(font, 10.0, "Disk", 60.0);
+        assert!(short.truncated);
+        assert_eq!(short.glyphs.len(), 5);
+        assert_eq!(short.glyphs.last().unwrap().shape, ellipsis.glyphs[0].shape);
+        assert_consistent(&short, "Disk");
+        let text = "A very long disk image name.d88";
+        let long = fonts.fit_continued(font, 10.0, text, 60.0);
+        assert!(long.advance * 10.0 <= 60.0);
+        assert_eq!(long.glyphs.last().unwrap().shape, ellipsis.glyphs[0].shape);
+        assert_eq!(*long, *fonts.fit(font, 10.0, text, 60.0));
+        assert!(Arc::ptr_eq(
+            &long,
+            &fonts.fit_continued(font, 10.0, text, 60.0)
+        ));
+        assert!(
+            fonts
+                .fit_continued(font, 10.0, "Disk", 1.0)
+                .glyphs
+                .is_empty()
+        );
     }
 
     /// Verifies that a text fits the width that its measure gave at every size.

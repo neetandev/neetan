@@ -336,11 +336,17 @@ impl<'a> UiContext<'a> {
         !self.is_blocked() && !self.fresh_layer
     }
 
+    /// Whether the widgets drawn at this point take the pointer: no widget
+    /// above took it and the widgets take the input of the pass.
+    pub fn takes_pointer(&self) -> bool {
+        !self.mouse_captured && self.takes_input()
+    }
+
     /// Whether the pointer is over `rect`, no widget above took it and the
     /// widgets at this point are not blocked.
     pub fn hovered(&self, rect: Rect) -> bool {
         let (x, y) = self.mouse();
-        !self.mouse_captured && self.takes_input() && rect.contains(x, y)
+        self.takes_pointer() && rect.contains(x, y)
     }
 
     /// Runs the hot and active tracking of a pressable widget `id` over
@@ -733,6 +739,26 @@ mod tests {
         let outside = harness.frame(|context| context.button_behavior(id, rect));
         assert!(!outside.clicked);
         assert!(!harness.frame(|context| context.any_active()));
+    }
+
+    /// Verifies that a widget under the pointer takes it from the widgets after it, and that an
+    /// open popup takes the pointer from the widgets of the layers below it.
+    #[test]
+    fn a_hovered_widget_and_a_popup_take_the_pointer() {
+        let mut harness = Harness::new();
+        let rect = Rect::new(10.0, 10.0, 50.0, 20.0);
+        harness.mouse(20.0, 20.0);
+        let (before, after) = harness.frame(|context| {
+            let before = context.takes_pointer();
+            context.button_behavior(ui_id("button"), rect);
+            (before, context.takes_pointer())
+        });
+        assert!(before && !after);
+        let blocked = harness.frame(|context| {
+            context.open_popup(ui_id("dropdown"));
+            context.takes_pointer()
+        });
+        assert!(!blocked);
     }
 
     #[test]

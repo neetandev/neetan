@@ -14,6 +14,7 @@ use i18n::Catalog;
 use super::{
     BrowseTarget, EditedFile, Editor, EditorFile, Subject,
     form::EDITOR_SECTIONS,
+    help_area::help_area_height,
     hints::{EditorWidget, WidgetKind},
     note_writer::NoteText,
     notes::NoteKind,
@@ -69,9 +70,9 @@ pub(super) struct PageActions {
     pub(super) browse: Option<BrowseTarget>,
 }
 
-/// The areas of the page in `screen`: the header, the tab bar, the form and
-/// the footer. The tab bar, the form and the footer keep inside
-/// [`FORM_MAX_WIDTH`] and center.
+/// The areas of the page in `screen`: the header, the tab bar, the form, the
+/// rule and the text of the help area and the footer. The tab bar, the form,
+/// the help area and the footer keep inside [`FORM_MAX_WIDTH`] and center.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PageAreas {
     /// The title, the line beside it and the close button.
@@ -80,6 +81,12 @@ struct PageAreas {
     tabs: Rect,
     /// The scroll area of the form.
     form: Rect,
+    /// The rule at the top of the help area across the width of the form.
+    /// It separates the help text from the last visible row of the form.
+    rule: Rect,
+    /// The help text of the hovered or the focused row, inset to the names of
+    /// the labels.
+    help: Rect,
     /// The state of the changes and the buttons.
     footer: Rect,
 }
@@ -102,13 +109,24 @@ impl PageAreas {
             rest.height,
         );
         let (tabs, rest) = column.cut_top(TAB_BAR_HEIGHT);
-        let (footer, form) = rest.cut_bottom(theme.control_height);
+        let (footer, rest) = rest.cut_bottom(theme.control_height);
+        let rest = rest.cut_bottom(theme.gap).1;
+        let (help, form) = rest.cut_bottom(help_area_height(theme));
+        let help = help.cut_left(theme.gap * 1.5).1;
         let form = form.cut_top(theme.gap * 1.5).1;
         let form = form.cut_bottom(theme.gap * 1.5).1;
+        let rule = Rect::new(
+            form.x,
+            help.y - theme.gap * 0.5 - theme.stroke,
+            form.width,
+            theme.stroke,
+        );
         Self {
             header,
             tabs,
             form,
+            rule,
+            help,
             footer,
         }
     }
@@ -127,6 +145,12 @@ impl Editor {
 #[cfg(test)]
 pub(crate) fn form_area(theme: &Theme, screen: Rect) -> Rect {
     PageAreas::new(theme, screen).form
+}
+
+/// The help area of the page in `screen`.
+#[cfg(test)]
+pub(crate) fn help_area(theme: &Theme, screen: Rect) -> Rect {
+    PageAreas::new(theme, screen).help
 }
 
 /// The texts of the page that refill only when the state of the editor or
@@ -262,6 +286,11 @@ impl Editor {
         );
         self.scroll = scroll;
 
+        let rule = context.snap_rect(areas.rule);
+        context.fill(rule, theme.colors.panel_edge);
+        self.track_help(context);
+        let setting = self.help_setting(context);
+        self.help.show(context, areas.help, setting);
         self.draw_footer(context, areas.footer, &mut actions);
         if context.shortcut() == Some(Shortcut::ControlS)
             || context.action_button() == Some(ActionButton::Start)
@@ -599,7 +628,7 @@ mod tests {
         assert!(warned(&root));
     }
 
-    /// Verifies that the page keeps the column inside its widest size and centers it, with the form between the tab bar and the footer.
+    /// Verifies that the page keeps the column inside its widest size and centers it, with the form between the tab bar and the rule of the help area above the footer.
     #[test]
     fn the_page_centers_its_column_in_a_wide_window() {
         let harness = GuiHarness::new(960, 600);
@@ -608,7 +637,13 @@ mod tests {
         assert_eq!(small.tabs.x, theme.padding);
         assert_eq!(small.tabs.width, 960.0 - theme.padding * 2.0);
         assert!(small.form.y > small.tabs.bottom());
-        assert!(small.form.bottom() < small.footer.y);
+        assert!(small.form.bottom() < small.rule.y);
+        assert!(small.rule.bottom() < small.help.y);
+        assert_eq!(small.rule.x, small.form.x);
+        assert_eq!(small.rule.width, small.form.width);
+        assert!(small.help.bottom() < small.footer.y);
+        assert_eq!(small.help.height, help_area_height(theme));
+        assert_eq!(small.help.right(), small.footer.right());
         let large = PageAreas::new(theme, Rect::new(0.0, 0.0, 1920.0, 1052.0));
         assert_eq!(large.tabs.width, FORM_MAX_WIDTH);
         assert_eq!(large.tabs.x, (1920.0 - FORM_MAX_WIDTH) * 0.5);

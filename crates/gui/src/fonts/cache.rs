@@ -29,6 +29,9 @@ pub(super) enum Fitting {
     End(u32),
     /// The text cut in its middle to the width in em with the bits given.
     Middle(u32),
+    /// The text cut at its end to the width in em with the bits given, with
+    /// an ellipsis also when the whole text fits.
+    Continued(u32),
 }
 
 /// An entry of the cache.

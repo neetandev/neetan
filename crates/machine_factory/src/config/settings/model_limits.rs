@@ -49,8 +49,8 @@ pub enum ChoiceFact {
     /// The note lists the choices of the family, for example `The choices are auto, 15k and
     /// 24k.`
     Choices,
-    /// The note gives the CPU clock of the CPU mode of the file on the model, for example
-    /// `At low the CPU runs at 4 MHz.`
+    /// The note gives the CPU clocks of both CPU modes of a model with two clocks, for example
+    /// `Low runs at 4 MHz and high at 8 MHz.`
     CpuClock,
 }
 
@@ -59,12 +59,12 @@ pub enum ChoiceFact {
 pub enum FactData {
     /// The choice values that the family of the model accepts, in the order of the table.
     Choices(Vec<&'static str>),
-    /// The CPU clock of the model at a CPU mode.
+    /// The CPU clocks of the model in both CPU modes.
     CpuClock {
-        /// The CPU mode.
-        mode: CpuMode,
-        /// The CPU clock at the mode.
-        clock: Megahertz,
+        /// The CPU clock in the low mode.
+        low: Megahertz,
+        /// The CPU clock in the high mode.
+        high: Megahertz,
     },
 }
 

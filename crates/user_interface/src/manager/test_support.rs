@@ -1,5 +1,5 @@
 //! The fixtures of the tests of the manager: a root folder with game files, the sample games of
-//! the screenshots and the count of a steady frame.
+//! the screenshots, the count of a steady frame and the probe of the help area.
 
 use common::temporary::TemporaryFolder;
 use machine_factory::config::systems::{System, compiled_systems};
@@ -7,6 +7,7 @@ use machine_factory::config::systems::{System, compiled_systems};
 use super::{Manager, entries::TableEntry};
 use crate::{
     config::{LaunchRequest, Locations, ManagerStart, SETTINGS_FILE_NAME},
+    editor::test_support::{SCREEN, shown_help_of},
     gui_test_support::{GuiHarness, PassCounts},
 };
 
@@ -277,4 +278,22 @@ pub(super) fn select(manager: &mut Manager, name: &str) {
 pub(super) fn steady_frame(harness: &mut GuiHarness, manager: &mut Manager) -> PassCounts {
     harness.frame(|context| manager.show(context));
     harness.counted_frame(|context| manager.show(context)).0
+}
+
+/// The key of the setting of the help area of the open editor of `manager`, read by
+/// [`shown_help_of`] in one more pass of `manager`.
+pub(super) fn shown_help(harness: &mut GuiHarness, manager: &mut Manager) -> Option<&'static str> {
+    shown_help_of(
+        harness,
+        manager,
+        SCREEN,
+        |manager, context| {
+            manager
+                .editor()
+                .and_then(|editor| editor.help_setting(context))
+        },
+        |manager, context| {
+            manager.show(context);
+        },
+    )
 }

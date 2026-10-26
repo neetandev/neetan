@@ -6,12 +6,14 @@ use gui::{
     Rect,
     ui::{Button, Checkbox, Dropdown, Icon, NumberField, TextField, Truncation, UiContext},
 };
-use machine_factory::config::settings::{MACHINE_KEY, NumberRange, Setting};
+use machine_factory::config::settings::{
+    MACHINE_KEY, NumberRange, Setting, model_limits::ChoiceFact,
+};
 
 use super::{
     BrowseTarget, Editor, Subject,
     fields::{FieldValue, is_single_image},
-    form::IgnoredBy,
+    form::{self, IgnoredBy},
     hints::{EditorWidget, WidgetKind},
     media_list::{empty_list_height, empty_list_id},
     note_writer::NoteWriter,
@@ -27,6 +29,7 @@ use crate::texts::{common, host_settings, note};
 impl Editor {
     /// Writes the note of the choice, on/off or language field at `index`
     /// of `setting` that the model of the editor ignores under `ignored`.
+    /// The CPU clocks show only while the model reads the setting.
     fn write_choice_note(
         &self,
         writer: &mut NoteWriter,
@@ -40,7 +43,12 @@ impl Editor {
             setting.key == MACHINE_KEY && preset_model.is_some() && field.chosen() == preset_model;
         let fact = match &self.subject {
             Subject::Game(files) | Subject::SystemDefaults(files) => {
-                setting.choice_fact(self.model_of(files), field.chosen())
+                let model = self.model_of(files);
+                let ignored_clock = setting.fact == ChoiceFact::CpuClock
+                    && form::ignored_by(setting, model).is_some();
+                (!ignored_clock)
+                    .then(|| setting.choice_fact(model))
+                    .flatten()
             }
             Subject::Host(_) => None,
         };
@@ -417,6 +425,10 @@ mod tests {
     use machine_factory::config::systems::compiled_systems;
 
     use super::*;
+    #[cfg(feature = "pc88")]
+    use crate::editor::test_support::index_of;
+    #[cfg(any(feature = "pc88", feature = "pc98", feature = "towns", feature = "x1"))]
+    use crate::editor::test_support::show;
     use crate::{
         editor::{
             form::{EDITOR_SECTIONS, EditorSection},
@@ -424,6 +436,145 @@ mod tests {
         },
         gui_test_support::GuiHarness,
     };
+
+    #[cfg(any(feature = "pc88", feature = "pc98", feature = "towns"))]
+    /// The key of the CPU speed mode.
+    const CPU_MODE: &str = "cpu-mode";
+
+    #[cfg(any(feature = "pc88", feature = "pc98", feature = "towns", feature = "x1"))]
+    /// The note of the row of `key` in `editor` after the passes of its
+    /// Machine section.
+    fn machine_note(editor: &mut Editor, key: &str) -> String {
+        editor.section = editor
+            .sections()
+            .iter()
+            .position(|section| *section == EditorSection::Machine)
+            .expect("the machine section");
+        let mut harness = GuiHarness::new(960, 600);
+        show(&mut harness, editor);
+        editor
+            .cached_note(key)
+            .expect("the row draws its note")
+            .to_owned()
+    }
+
+    #[cfg(any(feature = "pc88", feature = "pc98", feature = "towns"))]
+    /// The game editor of `root` on a game file with `contents`.
+    fn game_editor(root: &EditorRoot, contents: &str) -> Editor {
+        let path = root.game("game", contents);
+        Editor::open(&root.host(), root.system(), &path).expect("the editor opens")
+    }
+
+    #[cfg(feature = "pc88")]
+    /// Verifies that the `cpu-mode` note of the PC-88 gives both clocks of the model while the
+    /// mode is unset, after a change of the boot mode and while the file sets the mode.
+    #[test]
+    fn the_cpu_mode_note_gives_both_clocks_of_the_model() {
+        /// The clock sentence of the PC-88.
+        const CLOCKS: &str = "Low runs at 4 MHz and high at 8 MHz.";
+        let root = EditorRoot::with_system("cpu_mode_derived", "pc88");
+        let mut editor = game_editor(&root, "machine = PC8801MC\nboot-mode = v1s\n");
+        let note = machine_note(&mut editor, CPU_MODE);
+        assert!(note.contains(CLOCKS), "{note}");
+
+        let boot_mode = index_of(&editor, "boot-mode");
+        let v2 = editor.fields[boot_mode]
+            .choices
+            .iter()
+            .position(|choice| choice == "v2");
+        editor.fields[boot_mode].select(v2);
+        editor.refresh();
+        let note = machine_note(&mut editor, CPU_MODE);
+        assert!(note.contains(CLOCKS), "{note}");
+
+        let mut editor = game_editor(
+            &root,
+            "machine = PC8801MC\nboot-mode = v2\ncpu-mode = low\n",
+        );
+        let note = machine_note(&mut editor, CPU_MODE);
+        assert!(note.contains(CLOCKS), "{note}");
+    }
+
+    #[cfg(feature = "towns")]
+    /// Verifies that the `cpu-mode` note of the FM Towns II MX gives both clocks of the model
+    /// and that the base model with its fixed clock gives its fixed clock sentence.
+    #[test]
+    fn the_cpu_mode_note_gives_the_clocks_of_the_towns_model() {
+        let root = EditorRoot::with_system("cpu_mode_default", "towns");
+        let mut editor = game_editor(&root, "machine = FMTownsIIMX\n");
+        let note = machine_note(&mut editor, CPU_MODE);
+        assert!(
+            note.contains("Low runs at 33 MHz and high at 66 MHz."),
+            "{note}"
+        );
+        let mut editor = game_editor(&root, "machine = FMTowns\n");
+        let note = machine_note(&mut editor, CPU_MODE);
+        assert!(note.contains("FMTowns runs at a fixed "), "{note}");
+        assert!(!note.contains("Low runs at"), "{note}");
+    }
+
+    #[cfg(feature = "pc88")]
+    /// Verifies that the system defaults editor gives both clocks of its model while it
+    /// inherits a `cpu-mode` from the settings file.
+    #[test]
+    fn the_defaults_editor_gives_both_clocks_of_its_model() {
+        let root = EditorRoot::with_system("cpu_mode_inherited", "pc88");
+        root.write("neetan.conf", "cpu-mode = low\n");
+        let mut editor =
+            Editor::system_defaults(&root.host(), root.system()).expect("the editor opens");
+        let note = machine_note(&mut editor, CPU_MODE);
+        assert!(
+            note.contains("Low runs at 4 MHz and high at 8 MHz."),
+            "{note}"
+        );
+    }
+
+    #[cfg(feature = "pc98")]
+    /// Verifies that the system defaults editor gives no clocks for the `cpu-mode` of a model
+    /// with a fixed clock and gives both clocks of a model with a selectable clock. The game
+    /// editor of the fixed clock model gives its fixed clock sentence.
+    #[test]
+    fn the_defaults_editor_gives_no_clocks_for_a_model_that_ignores_the_mode() {
+        let root = EditorRoot::with_system("cpu_mode_fixed_clock", "pc98");
+        let mut editor =
+            Editor::system_defaults(&root.host(), root.system()).expect("the editor opens");
+        let note = machine_note(&mut editor, CPU_MODE);
+        assert!(!note.contains("runs at"), "{note}");
+        assert!(note.contains("PC9801F, VM and VX only."), "{note}");
+
+        root.write("config/pc98.conf", "machine = PC9801VM\n");
+        let mut editor =
+            Editor::system_defaults(&root.host(), root.system()).expect("the editor opens");
+        let note = machine_note(&mut editor, CPU_MODE);
+        assert!(
+            note.contains("Low runs at 8 MHz and high at 10 MHz."),
+            "{note}"
+        );
+
+        let mut editor = game_editor(&root, "machine = PC9801RA\n");
+        let note = machine_note(&mut editor, CPU_MODE);
+        assert!(note.contains("PC9801RA runs at a fixed 20 MHz."), "{note}");
+        assert!(!note.contains("Low runs at"), "{note}");
+    }
+
+    #[cfg(feature = "x1")]
+    /// Verifies that the system defaults editor of the X1 lists the choices
+    /// of `monitor` while its built-in model ignores the setting.
+    #[test]
+    fn the_defaults_editor_lists_the_choices_of_an_ignored_setting() {
+        /// The key of the monitor type.
+        const MONITOR: &str = "monitor";
+        let root = EditorRoot::with_system("monitor_choices", "x1");
+        let mut editor =
+            Editor::system_defaults(&root.host(), root.system()).expect("the editor opens");
+        let model = editor.model_of(editor.system_files().expect("a system defaults file"));
+        let setting = machine_factory::config::settings::find_setting(MONITOR)
+            .expect("monitor is a table key");
+        assert!(form::ignored_by(setting, model).is_some());
+        let note = machine_note(&mut editor, MONITOR);
+        assert!(note.contains("The choices are "), "{note}");
+        assert!(note.contains("X1TURBO only."), "{note}");
+    }
 
     /// Verifies that the number field of pc6000-phase keeps its grown width
     /// when the game sets the key.
