@@ -110,34 +110,42 @@ pub(super) struct SettingRow<'a> {
 /// The areas of one form row from its top `y` in `content`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RowAreas {
+    /// The top of the row.
+    pub(crate) top: f32,
     /// The label and the key.
     pub(crate) label: Rect,
     /// The control.
     pub(crate) control: Rect,
     /// The note after the control.
     pub(crate) note: Rect,
-    /// The control and the note together, for a media list.
+    /// The control and the note together.
     pub(crate) wide: Rect,
 }
 
 impl RowAreas {
     /// The areas of a row from `y` in `content` with the gaps of `theme`.
     pub(crate) fn new(theme: &Theme, content: Rect, y: f32) -> Self {
-        let top = y + theme.gap * 0.5;
+        let control_top = y + theme.gap * 0.5;
         let height = theme.control_height;
-        let label = Rect::new(content.x, top, FORM_LABEL_WIDTH, height);
+        let label = Rect::new(content.x, control_top, FORM_LABEL_WIDTH, height);
         let control_x = label.right() + theme.padding;
         let control_width = FORM_FIELD_WIDTH.min((content.right() - control_x).max(0.0));
-        let control = Rect::new(control_x, top, control_width, height);
+        let control = Rect::new(control_x, control_top, control_width, height);
         let note_x = control.right() + theme.padding;
-        let note = Rect::new(note_x, top, (content.right() - note_x).max(0.0), height);
+        let note = Rect::new(
+            note_x,
+            control_top,
+            (content.right() - note_x).max(0.0),
+            height,
+        );
         let wide = Rect::new(
             control_x,
-            top,
+            control_top,
             (content.right() - control_x).max(0.0),
             height,
         );
         Self {
+            top: y,
             label,
             control,
             note,

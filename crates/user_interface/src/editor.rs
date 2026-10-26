@@ -18,6 +18,7 @@ mod form;
 mod help_area;
 mod hints;
 mod host_settings;
+mod image_row;
 mod inherited;
 mod kept_lines;
 mod language_row;
@@ -75,9 +76,7 @@ use self::{
 };
 #[cfg(all(test, feature = "pc98"))]
 pub(crate) use self::{discard::DISCARD_LAYER_ID, media_list::empty_list_id};
-pub(crate) use self::{
-    file::SaveFailure, form::EditorSection, notes::ExtensionList, save::OpenError,
-};
+pub(crate) use self::{file::SaveFailure, form::EditorSection, save::OpenError};
 use crate::{
     catalog::copy_title,
     config::{ConfigDocument, HostLayers, metadata::TITLE_KEY},

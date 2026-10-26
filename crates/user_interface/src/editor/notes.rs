@@ -373,44 +373,17 @@ pub(crate) fn number_note(
     NoteLook::PLAIN
 }
 
-/// The extensions of the files of a drive with their dots, for example
-/// `.hdi .nhd .thd`.
-#[derive(Clone, Copy)]
-pub(crate) struct ExtensionList<'a>(pub(crate) &'a FileTypes);
-
-impl fmt::Display for ExtensionList<'_> {
-    /// Writes the extensions with their dots, separated by spaces.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (index, extension) in self.0.extensions.iter().enumerate() {
-            if index > 0 {
-                formatter.write_str(" ")?;
-            }
-            write!(formatter, ".{extension}")?;
-        }
-        Ok(())
-    }
-}
-
-/// Adds the sentence of the files of `types`, for example `Hard disk
-/// images: .hdi .nhd .thd.`
-fn extension_note(writer: &mut NoteWriter, types: &FileTypes) {
-    let name = file_type_text(writer.catalog(), types, FileTypeText::Name);
-    writer.message(note::extensions(&name, &ExtensionList(types)));
-}
-
 /// Writes the note of a single path field.
 ///
 /// A path that the model ignores tells why, and a missing image is a
 /// warning. A set path shows its inherited value as a path. An unset path
-/// shows the inherited value as its placeholder. Without an inherited value
-/// to show, the note gives the extensions of the files.
+/// shows the inherited value as its placeholder and has no note.
 pub(crate) fn path_note(
     writer: &mut NoteWriter,
     ignored: Option<IgnoredBy>,
     missing: bool,
     set: bool,
     inherited: Option<&Inherited>,
-    types: Option<&FileTypes>,
 ) -> NoteLook {
     if let Some(ignored) = ignored {
         write_ignored(writer, ignored);
@@ -422,9 +395,6 @@ pub(crate) fn path_note(
     }
     if set && inherited_sentence(writer, inherited) {
         return NoteLook::PLAIN.shown_as_path();
-    }
-    if let Some(types) = types {
-        extension_note(writer, types);
     }
     NoteLook::PLAIN
 }
@@ -571,11 +541,6 @@ pub(crate) mod tests {
             values.iter().map(|value| (*value).to_owned()).collect(),
             source,
         )
-    }
-
-    /// The file types of the hard disks of the first family that has them.
-    fn hard_disks() -> Option<&'static FileTypes> {
-        find_setting("hdd1").and_then(|setting| setting.file_types.first())
     }
 
     /// The English placeholder of `inherited`.
@@ -773,34 +738,27 @@ pub(crate) mod tests {
 
     /// Verifies the single path note in the unset and the set state, with and without an inherited value, and the warning that wins.
     #[test]
-    fn path_notes_show_the_inherited_value_of_a_set_path_or_the_extensions() {
-        let types = hard_disks();
+    fn path_notes_show_the_inherited_value_of_a_set_path() {
         let settings = inherited(&["games/boot.hdi"], InheritedSource::SettingsFile);
         let nothing = inherited(&[], InheritedSource::BuiltIn);
-        let note = |missing: bool, set: bool, inherited: Option<&Inherited>, types| {
-            english_note(|writer| path_note(writer, None, missing, set, inherited, types))
+        let note = |missing: bool, set: bool, inherited: Option<&Inherited>| {
+            english_note(|writer| path_note(writer, None, missing, set, inherited))
         };
         assert_eq!(
-            note(false, true, Some(&settings), types),
+            note(false, true, Some(&settings)),
             Note::plain("Settings default: games/boot.hdi.").shown_as_path()
         );
-        let extensions = types.map_or_else(Note::default, |types| {
-            Note::plain(&format!("Hard disk images: {}.", ExtensionList(types)))
-        });
-        assert_eq!(note(false, false, Some(&settings), types), extensions);
-        assert_eq!(note(false, true, Some(&nothing), types), extensions);
-        assert_eq!(note(false, false, Some(&nothing), types), extensions);
+        assert_eq!(note(false, false, Some(&settings)), Note::default());
+        assert_eq!(note(false, true, Some(&nothing)), Note::default());
+        assert_eq!(note(false, false, Some(&nothing)), Note::default());
         assert_eq!(
-            note(true, true, Some(&settings), types),
+            note(true, true, Some(&settings)),
             Note::warning(
                 "The image does not exist. The file saves, and the launch fails while it is \
                  missing."
             )
         );
-        assert_eq!(note(false, false, None, None), Note::default());
-        if let Some(types) = types {
-            assert!(ExtensionList(types).to_string().starts_with('.'));
-        }
+        assert_eq!(note(false, false, None), Note::default());
     }
 
     /// Verifies the note below a media list: the inherited list of a set list only, as a path for one image.

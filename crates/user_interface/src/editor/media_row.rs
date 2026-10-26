@@ -4,7 +4,7 @@
 
 use gui::{
     Rect,
-    ui::{Truncation, UiContext},
+    ui::{Truncation, UiContext, UiId},
 };
 
 use super::{
@@ -14,10 +14,10 @@ use super::{
     hints::{EditorWidget, WidgetKind},
     inherited::Inherited,
     media_list::{
-        MediaList, button_ids, buttons_width, empty_list_height, empty_list_id, list_height,
+        MediaList, button_ids, empty_list_height, empty_list_id, list_box_width, list_height,
         write_missing_note,
     },
-    note_writer::NoteWriter,
+    note_writer::{NoteView, NoteWriter},
     notes::{NoteLook, followed_by, media_note, write_empty_drive_hint, write_empty_list_caption},
     page::PageActions,
     rows::{SettingRow, draw_note, field_id, image_icon},
@@ -40,6 +40,41 @@ pub(crate) fn below_note(
         return NoteLook::WARNING;
     }
     media_note(writer, set, inherited)
+}
+
+/// Whether the checkbox that empties a drive shows below its control: for
+/// an enabled drive without an own image that the file empties, that
+/// inherits an image, or whose checkbox `empty_id` holds the focus.
+pub(crate) fn shows_empty_toggle(
+    context: &UiContext,
+    empty_id: UiId,
+    enabled: bool,
+    has_image: bool,
+    emptied: bool,
+    inherited: Option<&Inherited>,
+) -> bool {
+    let inherits_images = inherited.is_some_and(|inherited| !inherited.values.is_empty());
+    enabled && !has_image && (emptied || inherits_images || context.has_focus(empty_id))
+}
+
+/// Draws `note` on its own lines below a control of the media section,
+/// a short gap below `top`, across `width` from `x`. Returns the bottom of
+/// the row: a gap below the last line of the note, or `bottom` for an empty
+/// note.
+pub(crate) fn draw_note_below(
+    context: &mut UiContext,
+    x: f32,
+    top: f32,
+    width: f32,
+    note: NoteView,
+    bottom: f32,
+) -> f32 {
+    if note.text.is_empty() {
+        return bottom;
+    }
+    let theme = context.theme;
+    let area = Rect::new(x, top + theme.gap * 0.75, width, theme.icon_size);
+    area.y + draw_note(context, area, note) + theme.gap
 }
 
 impl Editor {
@@ -70,9 +105,14 @@ impl Editor {
         let empty_list = field.is_empty_list();
         let inherited = self.inherited[index].as_ref();
         let inherits_images = inherited.is_some_and(|inherited| !inherited.values.is_empty());
-        let shows_toggle = enabled
-            && !has_images
-            && (empty_list || inherits_images || context.has_focus(empty_list_id(id)));
+        let shows_toggle = shows_empty_toggle(
+            context,
+            empty_list_id(id),
+            enabled,
+            has_images,
+            empty_list,
+            inherited,
+        );
         if enabled {
             self.widgets
                 .push(EditorWidget::new(id, WidgetKind::MediaList).clears(has_images));
@@ -153,10 +193,8 @@ impl Editor {
         if let Some(browse) = response.browse {
             actions.browse = Some(BrowseTarget::List(index, browse));
         }
-        let mut row = theme.gap * 0.5 + height + theme.gap;
         let mut below_top = wide.bottom();
         if shows_toggle {
-            row += empty_list_height(theme);
             below_top += empty_list_height(theme);
         }
         let note = texts
@@ -171,17 +209,15 @@ impl Editor {
                 );
                 followed_by(writer, look, |writer| self.write_extra(writer, setting))
             });
-        if !note.text.is_empty() {
-            let below = Rect::new(
-                wide.x,
-                below_top + theme.gap * 0.75,
-                (wide.width - buttons_width(theme) - theme.gap).max(0.0),
-                theme.icon_size,
-            );
-            let note_height = draw_note(context, below, note);
-            row += theme.gap * 0.75 + note_height;
-        }
-        row
+        let bottom = draw_note_below(
+            context,
+            wide.x,
+            below_top,
+            list_box_width(theme, wide.width),
+            note,
+            below_top + theme.gap,
+        );
+        bottom - areas.top
     }
 }
 

@@ -14,6 +14,7 @@ use machine_factory::config::settings::ValueKind;
 
 use super::{
     Editor, EditorFile, Subject,
+    fields::is_single_image,
     form::{EditorSection, FieldSource},
     help_area::FormRow,
     hints::{EditorWidget, WidgetKind},
@@ -327,6 +328,9 @@ impl Editor {
                 let note = self.draw_number(context, row, range, actions);
                 RowAreas::height(theme, note)
             }
+            ValueKind::Path(_) if is_single_image(setting) => {
+                self.draw_image(context, row, actions)
+            }
             ValueKind::Path(_) => self.draw_path(context, row, actions),
             ValueKind::PathList => self.draw_media(context, row, actions),
         }
@@ -443,8 +447,11 @@ mod tests {
         disabled: usize,
     }
 
-    /// The name of the value kind of `setting`.
+    /// The name of the value kind of `setting`. The single image of a drive is an image.
     fn kind_name(setting: &Setting) -> &'static str {
+        if is_single_image(setting) {
+            return "image";
+        }
         match setting.kind {
             ValueKind::Choice(_) => "choice",
             ValueKind::OnOff => "on/off",
@@ -600,14 +607,14 @@ mod tests {
             .collect()
     }
 
-    /// Verifies that a press on the label or on the empty space of a row gives the main control
-    /// of the row the focus in the game editor of every model of every compiled system and in
-    /// the system defaults editors: the dropdown of a choice and of an on/off value, the number
-    /// field, the path field, the media list and the field of a metadata row. The help area
-    /// shows the pressed row, a steady frame after the press allocates nothing, a Tab after the
-    /// press takes the widget after the control. The presses meet every kind of the settings
-    /// that a model of the build reads, and the build with every system meets every kind of
-    /// the game editor.
+    /// Verifies that a press on the label or on the empty space of a row gives the main control of
+    /// the row the focus in the game editor of every model of every compiled system and in the
+    /// system defaults editors: the dropdown of a choice and of an on/off value, the number field,
+    /// the path field, the path field of an image row, the media list and the field of a metadata
+    /// row. The help area shows the pressed row, a steady frame after the press allocates nothing,
+    /// a Tab after the press takes the widget after the control. The presses meet every kind of the
+    /// settings that a model of the build reads, and the build with every system meets every kind
+    /// of the game editor.
     #[test]
     fn a_press_on_a_row_focuses_its_control_in_the_editors() {
         let mut harness = GuiHarness::minimum();
@@ -636,7 +643,7 @@ mod tests {
             assert!(pressed.kinds.contains(&kind), "{kind} {pressed:?}");
         }
         if cfg!(feature = "all-machines") {
-            for kind in ["choice", "on/off", "number", "path", "media list"] {
+            for kind in ["choice", "on/off", "number", "path", "image", "media list"] {
                 assert!(pressed.kinds.contains(&kind), "{kind} {pressed:?}");
             }
         }
