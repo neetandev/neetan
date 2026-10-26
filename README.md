@@ -331,8 +331,7 @@ option. The images resolve against the root.
 | Key                | Action                                                       |
 |--------------------|--------------------------------------------------------------|
 | Right Ctrl + M     | Toggle mouse capture                                         |
-| Right Ctrl + Q     | Quit the emulator. A game of the manager returns to it       |
-| Right Ctrl + Esc   | Return to the game manager. Only in a game of the manager    |
+| Right Ctrl + Esc   | Quit the emulator. A game of the manager returns to it       |
 | Right Ctrl + Enter | Toggle fullscreen                                            |
 | Right Ctrl + R     | Hard reset                                                   |
 | Right Ctrl + F     | Fast forward 8x (hold)                                       |

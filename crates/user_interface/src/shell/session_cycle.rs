@@ -17,7 +17,7 @@ use crate::{
     input::KeyOverrides,
     manager::Launch,
     on_off,
-    session::{LaunchOrigin, Session, SessionExit, catch_panic},
+    session::{Session, SessionExit, catch_panic},
 };
 
 /// The step of the application after a session.
@@ -82,21 +82,20 @@ impl Shell {
             warn!("The media dialog is unavailable: {message}");
         }
         let session = self
-            .create_session(config, key_overrides, LaunchOrigin::CommandLine)
+            .create_session(config, key_overrides)
             .map_err(|failure| Error::from(StringError(failure.to_string())))?;
         self.begin_session(session)
     }
 
-    /// Creates the session of `config` started from `origin`. Returns the
+    /// Creates the session of `config`. Returns the
     /// error or the panic message of a machine that does not start.
     fn create_session(
         &self,
         config: EmulatorConfig,
         key_overrides: KeyOverrides,
-        origin: LaunchOrigin,
     ) -> std::result::Result<Session, LaunchFailure> {
         let backend = self.host.backend;
-        match catch_panic(|| Session::new(config, key_overrides, backend, origin)) {
+        match catch_panic(|| Session::new(config, key_overrides, backend)) {
             Ok(Ok(session)) => Ok(session),
             Ok(Err(error)) => Err(LaunchFailure::Machine(format!("{error:#}"))),
             Err(message) => Err(LaunchFailure::Panic(message)),
@@ -120,9 +119,8 @@ impl Shell {
         if let Ok((config, _)) = &configuration {
             self.host.audio_engine.set_volume(config.audio_volume);
         }
-        let session = configuration.and_then(|(config, key_overrides)| {
-            self.create_session(config, key_overrides, LaunchOrigin::Manager)
-        });
+        let session = configuration
+            .and_then(|(config, key_overrides)| self.create_session(config, key_overrides));
         let result = match session {
             Ok(session) => self
                 .begin_session(session)

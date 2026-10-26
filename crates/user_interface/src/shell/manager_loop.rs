@@ -131,7 +131,7 @@ impl Shell {
     }
 
     /// Handles a keyboard, text, mouse or gamepad event of the manager.
-    /// Right Ctrl + Enter toggles fullscreen and Right Ctrl + Q quits.
+    /// Right Ctrl + Enter toggles fullscreen and Right Ctrl + Esc quits.
     pub(super) fn handle_manager_input(&mut self, event: &Event) {
         let gui_event = match event {
             Event::KeyDown {
@@ -149,7 +149,7 @@ impl Shell {
                             let fullscreen = !self.host.fullscreen;
                             self.host.set_fullscreen(fullscreen);
                         }
-                        Scancode::Q if !repeat => self.should_quit = true,
+                        Scancode::Escape if !repeat => self.should_quit = true,
                         _ => {}
                     }
                     return;
