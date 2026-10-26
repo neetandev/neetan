@@ -328,21 +328,6 @@ pub(crate) fn decimals_of(range: NumberRange) -> usize {
         .map_or(0, |point| digits.len() - point - 1)
 }
 
-/// A number with a fixed count of digits after the decimal point.
-struct Fixed {
-    /// The number.
-    value: f64,
-    /// The digits after the decimal point.
-    decimals: usize,
-}
-
-impl fmt::Display for Fixed {
-    /// Writes the number with its digits after the decimal point.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{:.*}", self.decimals, self.value)
-    }
-}
-
 /// Writes the note of a number field: the reason that the model ignores it, or else
 /// the range, after the inherited value of a set field. An unset field
 /// shows the inherited value as its placeholder.
@@ -360,16 +345,7 @@ pub(crate) fn number_note(
     if set {
         inherited_sentence(writer, inherited);
     }
-    let decimals = decimals_of(range);
-    let minimum = Fixed {
-        value: range.minimum,
-        decimals,
-    };
-    let maximum = Fixed {
-        value: range.maximum,
-        decimals,
-    };
-    writer.message(note::range(&minimum, &maximum));
+    writer.message(note::range(&range.minimum, &range.maximum));
     NoteLook::PLAIN
 }
 
@@ -732,7 +708,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             english_note(|writer| number_note(writer, None, false, fraction, None)),
-            Note::plain("The range is 0.00 to 1.00.")
+            Note::plain("The range is 0 to 1.")
         );
     }
 

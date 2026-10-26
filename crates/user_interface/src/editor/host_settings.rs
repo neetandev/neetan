@@ -458,7 +458,7 @@ mod tests {
     use machine_factory::{
         config::{
             DEFAULT_CONFIG_FOLDER,
-            settings::{AUDIO_VOLUME_KEY, find_setting},
+            settings::{AUDIO_VOLUME_KEY, ValueKind, find_setting},
             systems::rom_folders,
         },
         rom_status::{RomStatus, check_rom_folder},
@@ -468,8 +468,12 @@ mod tests {
     use crate::{
         editor::{
             EditorSection,
+            fields::FieldValue,
             form::SETTINGS_SECTIONS,
-            notes::tests::{Note, english_inherited_label},
+            notes::{
+                decimals_of,
+                tests::{Note, english_inherited_label},
+            },
             rom_rows::tests::rom_status_text,
             rows::field_id,
             test_support::{
@@ -588,8 +592,7 @@ mod tests {
         };
         assert_eq!(placeholder(&editor, folder.key), Some(derived("roms")));
         let roms = index_of(&editor, ROMS_FOLDER_KEY);
-        editor.fields[roms].value =
-            super::super::fields::FieldValue::Text("/archive/firmware".to_owned());
+        editor.fields[roms].value = FieldValue::Text("/archive/firmware".to_owned());
         editor.refresh();
         assert_eq!(
             placeholder(&editor, folder.key),
@@ -612,6 +615,16 @@ mod tests {
         }
     }
 
+    /// Verifies that the field of the audio volume takes two decimals.
+    #[test]
+    fn the_audio_volume_takes_two_decimals() {
+        let volume = find_setting(AUDIO_VOLUME_KEY).expect("audio-volume is a table key");
+        let ValueKind::Number(range) = volume.kind else {
+            panic!("audio-volume is a number");
+        };
+        assert_eq!(decimals_of(range), 2);
+    }
+
     /// Verifies that a save keeps the comments, the unknown keys, the key bindings and the other lines of the settings file and writes only the changed keys.
     #[test]
     fn a_save_writes_only_the_changed_keys() {
@@ -621,13 +634,13 @@ mod tests {
         let host = test.host(&[]);
         let mut editor = settings_page(&host, &statuses_with(&host, RomStatus::Found));
         let volume = index_of(&editor, AUDIO_VOLUME_KEY);
-        editor.fields[volume].value = super::super::fields::FieldValue::Text("0.5".to_owned());
+        editor.fields[volume].value = FieldValue::Text("0.25".to_owned());
         let path = editor.save(false).expect("the save writes");
         assert_eq!(path, test.settings_file());
         assert_eq!(
             std::fs::read_to_string(&path).expect("file reads"),
             "; Neetan settings\nconfig-folder = games\nkey.F1 = Stop\nmystery = 1\n\n\
-             crt = on\n# end\naudio-volume = 0.5\n"
+             crt = on\n# end\naudio-volume = 0.25\n"
         );
     }
 
@@ -778,7 +791,7 @@ mod tests {
 
         let index = index_of(&editor, AUDIO_VOLUME_KEY);
         assert_eq!(editor.fields[index].text(), "0.8");
-        editor.fields[index].value = super::super::fields::FieldValue::Text("0.6".to_owned());
+        editor.fields[index].value = FieldValue::Text("0.6".to_owned());
         editor.save(false).expect("the save writes");
         assert_eq!(
             std::fs::read_to_string(test.settings_file()).expect("file reads"),
