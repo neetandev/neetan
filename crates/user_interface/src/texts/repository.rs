@@ -20,6 +20,9 @@ const GERMAN_TAG: &str = "de";
 /// The language tag of the French language file of the repository.
 const FRENCH_TAG: &str = "fr";
 
+/// The language tag of the Spanish language file of the repository.
+const SPANISH_TAG: &str = "es";
+
 /// A language of the repository: the embedded English file or a file of the language folder.
 pub(crate) struct RepositoryLanguage {
     /// The language tag: the file name without its extension.
@@ -53,7 +56,7 @@ static REPOSITORY_LANGUAGES: LazyLock<Vec<RepositoryLanguage>> = LazyLock::new(|
             }
         }))
         .collect();
-    for tag in [JAPANESE_TAG, GERMAN_TAG, FRENCH_TAG] {
+    for tag in [JAPANESE_TAG, GERMAN_TAG, FRENCH_TAG, SPANISH_TAG] {
         assert!(
             languages.iter().any(|language| language.tag == tag),
             "the language folder of the repository holds {tag}.ini"
@@ -128,6 +131,11 @@ pub(crate) fn german() -> &'static Catalog {
 /// Returns the shared catalog of the French language file of the repository, built once.
 pub(crate) fn french() -> &'static Catalog {
     shared_catalog(FRENCH_TAG)
+}
+
+/// Returns the shared catalog of the Spanish language file of the repository, built once.
+pub(crate) fn spanish() -> &'static Catalog {
+    shared_catalog(SPANISH_TAG)
 }
 
 /// Returns the mark that ends a sentence in `catalog`: the last character of the pattern
@@ -332,6 +340,22 @@ mod tests {
         assert_eq!(game_count(catalog, 1), "1 jeu");
         assert_eq!(game_count(catalog, 2), "2 jeux");
         assert_eq!(joined(catalog, ListKind::And), "A, B et C");
+    }
+
+    /// Verifies the header, the sentence mark, the plural forms and the list patterns of the
+    /// Spanish language file. The count 0 takes the plural.
+    #[test]
+    fn the_spanish_file_has_its_header() {
+        let catalog = spanish();
+        assert_eq!(catalog.tag(), SPANISH_TAG);
+        assert_eq!(catalog.name(), "Español");
+        assert_eq!(catalog.plural_rule(), PluralRule::OneOther);
+        assert_eq!(sentence_mark(catalog), '.');
+        assert_eq!(game_count(catalog, 0), "0 juegos");
+        assert_eq!(game_count(catalog, 1), "1 juego");
+        assert_eq!(game_count(catalog, 2), "2 juegos");
+        assert_eq!(joined(catalog, ListKind::And), "A, B y C");
+        assert_eq!(joined(catalog, ListKind::Or), "A, B o C");
     }
 
     /// The ranges of the combining marks of the scripts of the language files: the combining
