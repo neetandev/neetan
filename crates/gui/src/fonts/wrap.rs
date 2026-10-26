@@ -305,6 +305,59 @@ mod tests {
         assert_eq!(lines("ab\u{A0}cd ef", 5.0), ["ab\u{A0}cd", "ef"]);
     }
 
+    /// Asserts for every width from the widest word to the whole text that no line of `text`
+    /// starts with a French closing mark or a no-break space and none ends with U+00AB or a
+    /// no-break space.
+    fn assert_french_marks_stay_with_their_words(text: &str) {
+        let widest = text
+            .split(' ')
+            .map(|word| word.chars().count())
+            .max()
+            .unwrap_or(0);
+        for limit in widest..=text.chars().count() {
+            for line in lines(text, limit as f32) {
+                assert!(
+                    !line.starts_with([':', ';', '!', '?', '\u{BB}', '\u{A0}', '\u{202F}']),
+                    "{line:?} at {limit} em"
+                );
+                assert!(
+                    !line.ends_with(['\u{AB}', '\u{A0}', '\u{202F}']),
+                    "{line:?} at {limit} em"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn french_punctuation_stays_with_the_word_before_its_space() {
+        assert_eq!(
+            lines("le fichier\u{A0}: abc", 11.0),
+            ["le", "fichier\u{A0}:", "abc"]
+        );
+        assert_eq!(
+            lines("Supprimer ce jeu\u{202F}?", 16.0),
+            ["Supprimer ce", "jeu\u{202F}?"]
+        );
+        assert_eq!(
+            lines("Oui\u{202F}! Non\u{202F}; fin", 7.0),
+            ["Oui\u{202F}!", "Non\u{202F};", "fin"]
+        );
+        assert_french_marks_stay_with_their_words(
+            "Erreur de lecture\u{A0}: le fichier est vide\u{202F}; voulez-vous le remplacer\u{202F}? Oui\u{202F}!",
+        );
+    }
+
+    #[test]
+    fn french_quotes_stay_with_the_quoted_word() {
+        assert_eq!(
+            lines("le dossier \u{AB}\u{A0}games\u{A0}\u{BB} existe", 12.0),
+            ["le dossier", "\u{AB}\u{A0}games\u{A0}\u{BB}", "existe"]
+        );
+        assert_french_marks_stay_with_their_words(
+            "La valeur \u{AB}\u{A0}on\u{A0}\u{BB} ou \u{AB}\u{A0}off\u{A0}\u{BB} est attendue\u{A0}: \u{AB}\u{A0}auto\u{A0}\u{BB}.",
+        );
+    }
+
     #[test]
     fn a_zero_width_space_allows_a_break() {
         assert_eq!(lines("abc\u{200B}def", 4.0), ["abc", "def"]);

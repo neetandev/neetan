@@ -17,6 +17,9 @@ const JAPANESE_TAG: &str = "ja";
 /// The language tag of the German language file of the repository.
 const GERMAN_TAG: &str = "de";
 
+/// The language tag of the French language file of the repository.
+const FRENCH_TAG: &str = "fr";
+
 /// A language of the repository: the embedded English file or a file of the language folder.
 pub(crate) struct RepositoryLanguage {
     /// The language tag: the file name without its extension.
@@ -50,7 +53,7 @@ static REPOSITORY_LANGUAGES: LazyLock<Vec<RepositoryLanguage>> = LazyLock::new(|
             }
         }))
         .collect();
-    for tag in [JAPANESE_TAG, GERMAN_TAG] {
+    for tag in [JAPANESE_TAG, GERMAN_TAG, FRENCH_TAG] {
         assert!(
             languages.iter().any(|language| language.tag == tag),
             "the language folder of the repository holds {tag}.ini"
@@ -120,6 +123,11 @@ pub(crate) fn japanese() -> &'static Catalog {
 /// Returns the shared catalog of the German language file of the repository, built once.
 pub(crate) fn german() -> &'static Catalog {
     shared_catalog(GERMAN_TAG)
+}
+
+/// Returns the shared catalog of the French language file of the repository, built once.
+pub(crate) fn french() -> &'static Catalog {
+    shared_catalog(FRENCH_TAG)
 }
 
 /// Returns the mark that ends a sentence in `catalog`: the last character of the pattern
@@ -274,6 +282,20 @@ mod tests {
         );
     }
 
+    /// Returns the game count text of `count` games in `catalog`.
+    fn game_count(catalog: &Catalog, count: u64) -> String {
+        catalog.display(library::games(count)).to_string()
+    }
+
+    /// Returns the names `A`, `B` and `C` joined with the list pattern `kind` of `catalog`.
+    fn joined(catalog: &Catalog, kind: ListKind) -> String {
+        let mut joined = String::new();
+        catalog
+            .write_list(&mut joined, kind, &["A", "B", "C"])
+            .expect("a string takes the list");
+        joined
+    }
+
     /// Verifies the header and the sentence mark of the Japanese language file.
     #[test]
     fn the_japanese_file_has_its_header() {
@@ -292,14 +314,24 @@ mod tests {
         assert_eq!(catalog.name(), "Deutsch");
         assert_eq!(catalog.plural_rule(), PluralRule::OneOther);
         assert_eq!(sentence_mark(catalog), '.');
-        let games = |count| catalog.display(library::games(count)).to_string();
-        assert_eq!(games(1), "1 Spiel");
-        assert_eq!(games(2), "2 Spiele");
-        let mut joined = String::new();
-        catalog
-            .write_list(&mut joined, ListKind::Or, &["A", "B", "C"])
-            .expect("a string takes the list");
-        assert_eq!(joined, "A, B oder C");
+        assert_eq!(game_count(catalog, 1), "1 Spiel");
+        assert_eq!(game_count(catalog, 2), "2 Spiele");
+        assert_eq!(joined(catalog, ListKind::Or), "A, B oder C");
+    }
+
+    /// Verifies the header, the sentence mark, the plural forms and the list patterns of the
+    /// French language file. The counts 0 and 1 take the singular.
+    #[test]
+    fn the_french_file_has_its_header() {
+        let catalog = french();
+        assert_eq!(catalog.tag(), FRENCH_TAG);
+        assert_eq!(catalog.name(), "Français");
+        assert_eq!(catalog.plural_rule(), PluralRule::OneBelowTwo);
+        assert_eq!(sentence_mark(catalog), '.');
+        assert_eq!(game_count(catalog, 0), "0 jeu");
+        assert_eq!(game_count(catalog, 1), "1 jeu");
+        assert_eq!(game_count(catalog, 2), "2 jeux");
+        assert_eq!(joined(catalog, ListKind::And), "A, B et C");
     }
 
     /// The ranges of the combining marks of the scripts of the language files: the combining

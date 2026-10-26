@@ -414,7 +414,7 @@ mod tests {
         test.game(&format!("{}/b.conf", system.name), "machine = FOOBAR\n");
         let mut manager = test.manager();
         assert_eq!(titles(&manager), ["A", "|", "b.conf"]);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         harness.input.confirm = true;
         let launch = harness
@@ -440,7 +440,7 @@ mod tests {
         let test = TestRoot::new("shortcuts");
         games(&test, &["a", "b"]);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         harness.input.shortcut = Some(Shortcut::ControlF);
         harness.settle(|context| manager.show(context));
@@ -482,7 +482,7 @@ mod tests {
         let test = TestRoot::new("empty_switch");
         games(&test, &["a"]);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         assert_eq!(harness.state.focused(), Some(UiId::from(GAME_TABLE_ID)));
         harness.input.navigation = Some(Navigation::NextTab);
@@ -501,7 +501,7 @@ mod tests {
         let test = TestRoot::new("keys_under_dialog");
         games(&test, &["a", "b"]);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         let keys = |harness: &mut GuiHarness, manager: &mut Manager| {
             let focused = harness.state.focused();
@@ -556,7 +556,7 @@ mod tests {
         let test = TestRoot::new("sort_keeps");
         games(&test, &["a", "b", "c"]);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         harness.input.navigation = Some(Navigation::Down);
         harness.settle(|context| manager.show(context));
@@ -591,7 +591,7 @@ mod tests {
             | RomStatus::NotFound
             | RomStatus::Unsupported => RomStatus::Found,
         };
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         harness.input.navigation = Some(Navigation::Down);
         harness.settle(|context| manager.show(context));
@@ -627,7 +627,7 @@ mod tests {
         let test = TestRoot::new("refresh_filter");
         games(&test, &["a"]);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         harness.input.shortcut = Some(Shortcut::ControlF);
         harness.settle(|context| manager.show(context));
@@ -649,7 +649,7 @@ mod tests {
         let test = TestRoot::new("switch");
         let mut manager = test.manager();
         let count = manager.systems.len();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         assert_eq!(manager.view.systems.selected, 0);
         harness.input.navigation = Some(Navigation::NextTab);
@@ -680,7 +680,7 @@ mod tests {
         };
         test.game(&format!("{}/edge.conf", second.name), "meta.title = Edge\n");
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         assert_eq!(harness.state.focused(), Some(UiId::from(ADD_ID)));
         harness.state.set_focus(UiId::from(SYSTEM_LIST_ID));
@@ -711,7 +711,7 @@ mod tests {
         let test = TestRoot::new("catalog_switch");
         games(&test, &["A", "B"]);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         harness.frame(|context| manager.show(context));
         assert_eq!(manager.texts.counts.last_text(), Some("2 games"));
@@ -750,7 +750,7 @@ mod tests {
         let test = TestRoot::new("steady_library");
         sample_root(&test);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         assert_eq!(
             steady_frame(&mut harness, &mut manager),
@@ -776,7 +776,7 @@ mod tests {
             "meta.title = Nemesis '90\nmachine = X68030\n",
         );
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         select(&mut manager, system.name);
         harness.state.set_focus(UiId::from(GAME_TABLE_ID));
         harness.settle(|context| manager.show(context));

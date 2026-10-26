@@ -93,7 +93,7 @@ mod tests {
             EditedFile, field_id,
             test_support::{EditorRoot, SettingsRoot, first_rom_folder},
         },
-        gui_test_support::{GuiHarness, PassCounts},
+        gui_test_support::{GuiHarness, MINIMUM_HEIGHT, MINIMUM_WIDTH, PassCounts},
         manager::{FILTER_ID, SETTINGS_ID, game_table::GAME_TABLE_ID, test_support::shown_help},
         rom_folders::RomFolderStatus,
         texts::repository::{RepositoryLanguage, repository_languages},
@@ -140,7 +140,7 @@ mod tests {
         let root = EditorRoot::new("settings_open");
         root.game("edge", "meta.title = Edge\n");
         let mut manager = manager_with(&root, &[]);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);
         assert_eq!(harness.state.focused(), Some(UiId::from(GAME_TABLE_ID)));
         let opens: [fn(&mut GuiHarness); 3] = [
@@ -178,7 +178,7 @@ mod tests {
     fn the_settings_page_shows_the_help_of_the_focused_row() {
         let root = EditorRoot::new("settings_help");
         let mut manager = manager_with(&root, &[]);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);
         harness.input.shortcut = Some(Shortcut::F10);
         settle(&mut harness, &mut manager);
@@ -213,7 +213,7 @@ mod tests {
             "meta.title = Brandish\n",
         );
         let mut manager = manager_with(&root, &[]);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);
         assert_eq!(titles(&manager), ["Edge"]);
 
@@ -283,7 +283,7 @@ mod tests {
             &crate::texts::test_language("[host-settings]\nlanguage-auto = Systemsprache\n"),
         );
         let mut manager = manager_with(&root, &[]);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);
         harness.input.shortcut = Some(Shortcut::F10);
         settle(&mut harness, &mut manager);
@@ -509,7 +509,7 @@ mod tests {
             folder_exists: true,
             models_without_set: models,
         };
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);
         harness.input.shortcut = Some(Shortcut::F10);
         settle(&mut harness, &mut manager);
@@ -554,7 +554,7 @@ mod tests {
         for language in repository_languages() {
             for kind in [ThemeKind::Dark, ThemeKind::Light] {
                 for scale in [1.0, 2.0] {
-                    screenshots(960.0, 600.0, scale, false, kind, language);
+                    screenshots(MINIMUM_WIDTH, MINIMUM_HEIGHT, scale, false, kind, language);
                     screenshots(1920.0, 1080.0, scale, true, kind, language);
                 }
             }

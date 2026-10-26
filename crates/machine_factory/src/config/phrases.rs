@@ -1,5 +1,5 @@
-//! The phrases of the configuration texts: the English list of the accepted names and the clock
-//! frequency in megahertz.
+//! The phrases of the configuration texts: the English list of the accepted names and the number
+//! of a clock frequency in megahertz.
 
 use std::fmt;
 
@@ -20,16 +20,16 @@ pub(crate) fn expected_names(names: &[&str]) -> String {
     }
 }
 
-/// A clock frequency in hertz. It formats in megahertz with at most one decimal, for example
-/// `16.7 MHz`.
+/// A clock frequency in hertz. It formats as the number of megahertz with at most one decimal and
+/// without the unit, for example `16.7`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Megahertz(pub u32);
 
 impl fmt::Display for Megahertz {
-    /// Writes the frequency in megahertz with at most one decimal and the unit.
+    /// Writes the number of megahertz with at most one decimal.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let tenths = (f64::from(self.0) / HERTZ_PER_MEGAHERTZ * 10.0).round() / 10.0;
-        write!(formatter, "{tenths} MHz")
+        write!(formatter, "{tenths}")
     }
 }
 
@@ -47,11 +47,11 @@ mod tests {
         assert_eq!(expected_names(&["pc98", "pc88", "x1"]), "pc98, pc88 or x1");
     }
 
-    /// Verifies the megahertz of the clock facts.
+    /// Verifies the number of megahertz of the clock facts.
     #[test]
-    fn clocks_format_in_megahertz() {
-        assert_eq!(Megahertz(20_000_000).to_string(), "20 MHz");
-        assert_eq!(Megahertz(3_993_600).to_string(), "4 MHz");
-        assert_eq!(Megahertz(16_666_667).to_string(), "16.7 MHz");
+    fn clocks_format_as_the_number_of_megahertz() {
+        assert_eq!(Megahertz(20_000_000).to_string(), "20");
+        assert_eq!(Megahertz(3_993_600).to_string(), "4");
+        assert_eq!(Megahertz(16_666_667).to_string(), "16.7");
     }
 }

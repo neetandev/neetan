@@ -60,7 +60,8 @@ pub use button::{
 };
 pub use checkbox::{Checkbox, checkbox};
 pub use confirm::{
-    CONFIRM_HINTS, ConfirmDialog, ConfirmLines, ConfirmResponse, DIALOG_WIDTH, confirm_hints,
+    CONFIRM_HINTS, ConfirmDialog, ConfirmKeys, ConfirmLines, ConfirmResponse, DIALOG_WIDTH,
+    confirm_hints,
 };
 pub use context::{PointerResponse, TextStyle, UiContext, UiId, ui_id, ui_id_indexed};
 pub use dropdown::{Dropdown, POPUP_MAX_ROWS, dropdown};
@@ -79,8 +80,7 @@ pub use number_field::{NUMBER_FIELD_WIDTH, NumberError, NumberField};
 pub use scroll::{ScrollState, scroll_area};
 pub use state::UiState;
 pub use status_line::{
-    ACTIVATE_KEYS, CANCEL_KEYS, Hint, HintKey, STATUS_LINE_HEIGHT, StatusEnd, distinct_hints,
-    status_line,
+    Hint, HintKey, KEYCAP_HEIGHT, STATUS_LINE_HEIGHT, StatusEnd, distinct_hints, status_line,
 };
 pub use table::{
     CellTone, Column, ColumnWidth, EmptyHint, MAXIMUM_COLUMNS, Sort, SortDirection, Table,
@@ -97,7 +97,7 @@ pub use theme::{Palette, Theme, ThemeKind};
 pub(crate) mod tests {
     use std::sync::LazyLock;
 
-    use i18n::{Catalog, KeyInfo, Schema};
+    use i18n::{Catalog, Key, KeyInfo, Schema};
 
     use super::*;
     use crate::{
@@ -106,7 +106,13 @@ pub(crate) mod tests {
     };
 
     /// The keys of the test catalog, sorted by section and key.
-    static TEST_KEYS: [KeyInfo; 7] = [
+    static TEST_KEYS: [KeyInfo; 13] = [
+        KeyInfo::new("keys", "ctrl-page-down", &[], false),
+        KeyInfo::new("keys", "ctrl-page-up", &[], false),
+        KeyInfo::new("keys", "enter", &[], false),
+        KeyInfo::new("keys", "escape", &[], false),
+        KeyInfo::new("keys", "f10", &[], false),
+        KeyInfo::new("keys", "f2", &[], false),
         KeyInfo::new("list", "and-end", &["first", "second"], false),
         KeyInfo::new("list", "and-middle", &["first", "second"], false),
         KeyInfo::new("list", "and-pair", &["first", "second"], false),
@@ -121,6 +127,12 @@ pub(crate) mod tests {
 
     /// The reference source of the test catalog.
     const TEST_SOURCE: &str = "[language]\nname = Test\nplural = one-other\n\
+                               [keys]\nctrl-page-down = Ctrl+PgDn\n\
+                               ctrl-page-up = Ctrl+PgUp\n\
+                               enter = Enter\n\
+                               escape = Esc\n\
+                               f10 = F10\n\
+                               f2 = F2\n\
                                [list]\nand-pair = {first} and {second}\n\
                                and-middle = {first}, {second}\n\
                                and-end = {first} and {second}\n\
@@ -138,6 +150,28 @@ pub(crate) mod tests {
     pub(crate) fn test_catalog() -> &'static Catalog {
         &TEST_CATALOG
     }
+
+    /// Returns the key `name` of the section `keys` of the test catalog.
+    pub(crate) const fn test_key(name: &str) -> Key {
+        match TEST_SCHEMA.find("keys", name) {
+            Some(key) => key,
+            None => panic!("the test catalog lacks the key"),
+        }
+    }
+
+    /// The keys that activate the focused widget in the tests: Enter and the A button.
+    pub(crate) const TEST_ACTIVATE_KEYS: &[HintKey<'static>] =
+        &[HintKey::Key(test_key("enter")), HintKey::Pad("A")];
+
+    /// The keys that cancel in the tests: Escape and the B button.
+    pub(crate) const TEST_CANCEL_KEYS: &[HintKey<'static>] =
+        &[HintKey::Key(test_key("escape")), HintKey::Pad("B")];
+
+    /// The keys of the hints of a confirm dialog in the tests.
+    pub(crate) const TEST_CONFIRM_KEYS: ConfirmKeys<'static> = ConfirmKeys {
+        activate: TEST_ACTIVATE_KEYS,
+        cancel: TEST_CANCEL_KEYS,
+    };
 
     /// The fonts, the theme and the pass state of a user interface without
     /// a window.
@@ -1424,24 +1458,24 @@ pub(crate) mod tests {
                     "Status line: library",
                     &[
                         Hint {
-                            keys: &[HintKey::Key("Enter"), HintKey::Pad("A")],
+                            keys: TEST_ACTIVATE_KEYS,
                             label: "Launch",
                         },
                         Hint {
-                            keys: &[HintKey::Key("F2"), HintKey::Pad("X")],
+                            keys: &[HintKey::Key(test_key("f2")), HintKey::Pad("X")],
                             label: "Edit",
                         },
                         Hint {
                             keys: &[
-                                HintKey::Key("Ctrl+PgUp"),
-                                HintKey::Key("Ctrl+PgDn"),
+                                HintKey::Key(test_key("ctrl-page-up")),
+                                HintKey::Key(test_key("ctrl-page-down")),
                                 HintKey::Shoulder("LB"),
                                 HintKey::Shoulder("RB"),
                             ],
                             label: "System",
                         },
                         Hint {
-                            keys: &[HintKey::Key("F10"), HintKey::Key("Start")],
+                            keys: &[HintKey::Key(test_key("f10")), HintKey::Menu("Start")],
                             label: "Settings",
                         },
                     ],
@@ -1451,11 +1485,11 @@ pub(crate) mod tests {
                     "Status line: dialog",
                     &[
                         Hint {
-                            keys: &[HintKey::Key("Enter"), HintKey::Pad("A")],
+                            keys: TEST_ACTIVATE_KEYS,
                             label: "Delete",
                         },
                         Hint {
-                            keys: &[HintKey::Key("Esc"), HintKey::Pad("B")],
+                            keys: TEST_CANCEL_KEYS,
                             label: "Cancel",
                         },
                     ],
@@ -1464,7 +1498,7 @@ pub(crate) mod tests {
                 (
                     "Status line: error",
                     &[Hint {
-                        keys: &[HintKey::Key("Enter"), HintKey::Pad("A")],
+                        keys: TEST_ACTIVATE_KEYS,
                         label: "Delete",
                     }],
                     StatusEnd::Error("config/x68k/nemesis-90.conf line 4: unknown machine X68030"),

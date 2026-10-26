@@ -795,10 +795,13 @@ mod tests {
     use super::{
         media_list::MediaBrowse,
         rows::field_id,
-        test_support::{EditorRoot, SCREEN, fdd1_model, index_of, show},
+        test_support::{EditorRoot, fdd1_model, index_of, show},
         *,
     };
-    use crate::{config::check_value, gui_test_support::GuiHarness};
+    use crate::{
+        config::check_value,
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN},
+    };
 
     /// The editor on the game `stem` of `root` with `contents`.
     fn open(root: &EditorRoot, stem: &str, contents: &str) -> Editor {
@@ -821,7 +824,7 @@ mod tests {
     fn the_editor_starts_on_the_title_and_switches_sections() {
         let root = EditorRoot::new("editor_sections");
         let mut editor = open(&root, "edge", "meta.title = Edge\n");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         assert_eq!(harness.state.focused(), Some(field_id("meta.title")));
         harness.input.navigation = Some(Navigation::NextTab);
@@ -845,7 +848,7 @@ mod tests {
         let root = EditorRoot::new("editor_new_title");
         let system = root.system().name;
         let mut editor = Editor::new_game(&root.host(), root.system()).expect("the editor opens");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         assert_eq!(harness.state.focused(), Some(field_id(TITLE_KEY)));
         assert_eq!(
@@ -866,7 +869,7 @@ mod tests {
     fn a_chosen_model_refills_the_note_of_a_limited_setting() {
         let root = EditorRoot::with_system("editor_model_note", "pc98");
         let mut editor = open(&root, "edge", "meta.title = Edge\nmachine = PC9801VM\n");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         select_section(&mut harness, &mut editor, EditorSection::Machine);
         assert_eq!(
@@ -892,7 +895,7 @@ mod tests {
             "fresh",
             &format!("meta.title = Edge\nmachine = {model}\n"),
         );
-        let mut fresh_harness = GuiHarness::new(960, 600);
+        let mut fresh_harness = GuiHarness::minimum();
         show(&mut fresh_harness, &mut fresh);
         select_section(&mut fresh_harness, &mut fresh, EditorSection::Machine);
         let note = editor.cached_note("ems").expect("the row draws its note");
@@ -911,7 +914,7 @@ mod tests {
         const ENGLISH_NOTE: &str = "PC9801VM has no EMS memory. VX, RS, RA, AS and AP only.";
         let root = EditorRoot::with_system("editor_note_switch", "pc98");
         let mut editor = open(&root, "edge", "meta.title = Edge\nmachine = PC9801VM\n");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         select_section(&mut harness, &mut editor, EditorSection::Machine);
         assert_eq!(editor.cached_note("ems"), Some(ENGLISH_NOTE));
@@ -933,7 +936,7 @@ mod tests {
     fn a_dropdown_sets_and_removes_its_key() {
         let root = EditorRoot::new("editor_dropdown");
         let mut editor = open(&root, "edge", "meta.title = Edge\n");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         select_section(&mut harness, &mut editor, EditorSection::Display);
         harness.state.set_focus(field_id("crt"));
@@ -990,7 +993,7 @@ mod tests {
         );
         let fdd1 = index_of(&editor, "fdd1");
         assert_eq!(editor.missing[fdd1], [true]);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         select_section(&mut harness, &mut editor, EditorSection::Media);
         assert_eq!(harness.state.focused(), Some(field_id("fdd1")));
@@ -1023,7 +1026,7 @@ mod tests {
     fn escape_asks_before_unsaved_changes_go_away() {
         let root = EditorRoot::new("editor_discard");
         let mut editor = open(&root, "edge", "meta.title = Edge\n");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         harness.input.cancel = true;
         assert!(show(&mut harness, &mut editor).closed);
@@ -1034,7 +1037,7 @@ mod tests {
         harness.input.text = "!".to_owned();
         show(&mut harness, &mut editor);
         harness.input.cancel = true;
-        let pass = harness.frame(|context| editor.show(context, SCREEN));
+        let pass = harness.frame(|context| editor.show(context, MINIMUM_SCREEN));
         assert!(!pass.closed);
         assert!(editor.discard.is_some());
         assert_eq!(harness.state.open_modals(), 1);
@@ -1071,7 +1074,7 @@ mod tests {
             Some(system.default_model)
         );
         assert!(editor.is_dirty());
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         harness.input.text = "Ys II".to_owned();
         show(&mut harness, &mut editor);
@@ -1095,7 +1098,7 @@ mod tests {
     fn a_bad_year_blocks_the_save() {
         let root = EditorRoot::new("editor_year");
         let mut editor = open(&root, "edge", "meta.year = 1993\n");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         harness.state.set_focus(field_id("meta.year"));
         show(&mut harness, &mut editor);
@@ -1158,7 +1161,7 @@ mod tests {
         let mut editor = open(&root, "edge", "meta.title = Edge\n");
         let machine = editor.field(MACHINE_KEY).expect("machine field");
         assert!(machine.required && !machine.is_set());
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         select_section(&mut harness, &mut editor, EditorSection::Machine);
         assert_eq!(harness.state.focused(), Some(field_id(MACHINE_KEY)));
@@ -1184,7 +1187,7 @@ mod tests {
     fn a_file_changed_outside_stays_until_an_overwrite() {
         let root = EditorRoot::new("editor_outside");
         let mut editor = open(&root, "edge", "meta.title = Edge\n");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         harness.input.text = "!".to_owned();
         show(&mut harness, &mut editor);
@@ -1229,7 +1232,7 @@ mod tests {
     fn a_failed_save_leaves_the_fields_as_they_are() {
         let root = EditorRoot::new("editor_failed_save");
         let mut editor = open(&root, "edge", "meta.title = Edge\n");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         harness.input.text = "!".to_owned();
         show(&mut harness, &mut editor);
@@ -1252,7 +1255,7 @@ mod tests {
         let root = EditorRoot::new("editor_no_clobber");
         let system = root.system();
         let mut editor = Editor::new_game(&root.host(), system).expect("compiled system");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         harness.input.text = "Edge".to_owned();
         show(&mut harness, &mut editor);
@@ -1273,7 +1276,7 @@ mod tests {
     fn gamepad_x_clears_a_text_field() {
         let root = EditorRoot::new("editor_clear");
         let mut editor = open(&root, "edge", "meta.title = Edge\nmeta.developer = TGL\n");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         harness.state.set_focus(field_id("meta.developer"));
         show(&mut harness, &mut editor);
@@ -1301,7 +1304,7 @@ mod tests {
         let mut editor = open(&root, "edge", &format!("machine = {model}\nfdd1 =\n"));
         let fdd1 = editor.field("fdd1").expect("fdd1 field");
         assert!(fdd1.is_empty_list());
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         select_section(&mut harness, &mut editor, EditorSection::Media);
         let checkbox = media_list::empty_list_id(field_id("fdd1"));
@@ -1358,7 +1361,7 @@ mod tests {
             notes::tests::Note::plain("System default: games/system.d88.").shown_as_path()
         );
 
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         select_section(&mut harness, &mut editor, EditorSection::Media);
         let checkbox = media_list::empty_list_id(field_id("fdd1"));
@@ -1409,7 +1412,7 @@ mod tests {
             format!("machine = {model}\nhdd1 =\n")
         );
 
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         select_section(&mut harness, &mut editor, EditorSection::Media);
         let checkbox = media_list::empty_list_id(field_id("hdd1"));

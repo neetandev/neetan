@@ -432,9 +432,9 @@ mod tests {
     use crate::{
         editor::{
             form::{EDITOR_SECTIONS, EditorSection},
-            test_support::{EditorRoot, SCREEN},
+            test_support::EditorRoot,
         },
-        gui_test_support::GuiHarness,
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN},
     };
 
     #[cfg(any(feature = "pc88", feature = "pc98", feature = "towns"))]
@@ -450,7 +450,7 @@ mod tests {
             .iter()
             .position(|section| *section == EditorSection::Machine)
             .expect("the machine section");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, editor);
         editor
             .cached_note(key)
@@ -471,7 +471,7 @@ mod tests {
     #[test]
     fn the_cpu_mode_note_gives_both_clocks_of_the_model() {
         /// The clock sentence of the PC-88.
-        const CLOCKS: &str = "Low runs at 4 MHz and high at 8 MHz.";
+        const CLOCKS: &str = "Low runs at 4\u{A0}MHz and high at 8\u{A0}MHz.";
         let root = EditorRoot::with_system("cpu_mode_derived", "pc88");
         let mut editor = game_editor(&root, "machine = PC8801MC\nboot-mode = v1s\n");
         let note = machine_note(&mut editor, CPU_MODE);
@@ -504,7 +504,7 @@ mod tests {
         let mut editor = game_editor(&root, "machine = FMTownsIIMX\n");
         let note = machine_note(&mut editor, CPU_MODE);
         assert!(
-            note.contains("Low runs at 33 MHz and high at 66 MHz."),
+            note.contains("Low runs at 33\u{A0}MHz and high at 66\u{A0}MHz."),
             "{note}"
         );
         let mut editor = game_editor(&root, "machine = FMTowns\n");
@@ -524,7 +524,7 @@ mod tests {
             Editor::system_defaults(&root.host(), root.system()).expect("the editor opens");
         let note = machine_note(&mut editor, CPU_MODE);
         assert!(
-            note.contains("Low runs at 4 MHz and high at 8 MHz."),
+            note.contains("Low runs at 4\u{A0}MHz and high at 8\u{A0}MHz."),
             "{note}"
         );
     }
@@ -547,13 +547,16 @@ mod tests {
             Editor::system_defaults(&root.host(), root.system()).expect("the editor opens");
         let note = machine_note(&mut editor, CPU_MODE);
         assert!(
-            note.contains("Low runs at 8 MHz and high at 10 MHz."),
+            note.contains("Low runs at 8\u{A0}MHz and high at 10\u{A0}MHz."),
             "{note}"
         );
 
         let mut editor = game_editor(&root, "machine = PC9801RA\n");
         let note = machine_note(&mut editor, CPU_MODE);
-        assert!(note.contains("PC9801RA runs at a fixed 20 MHz."), "{note}");
+        assert!(
+            note.contains("PC9801RA runs at a fixed 20\u{A0}MHz."),
+            "{note}"
+        );
         assert!(!note.contains("Low runs at"), "{note}");
     }
 
@@ -594,9 +597,9 @@ mod tests {
                     .iter()
                     .position(|section| *section == EditorSection::Display)
                     .expect("the display section");
-                let mut harness = GuiHarness::new(960, 600);
+                let mut harness = GuiHarness::minimum();
                 harness.settle(|context| {
-                    editor.show(context, SCREEN);
+                    editor.show(context, MINIMUM_SCREEN);
                 });
                 let theme = &harness.theme;
                 let frames: Vec<[f32; 4]> = harness

@@ -3,7 +3,7 @@
 /// The plural category of a count. A plural text holds one form for each category of its rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PluralCategory {
-    /// The form for a single item.
+    /// The singular form: the count 1, and also 0 under the rule `one-below-two`.
     One,
     /// The form for every other count.
     Other,
@@ -45,18 +45,25 @@ impl PluralCategory {
 pub enum PluralRule {
     /// A count of one takes `one`. Every other count takes `other`.
     OneOther,
+    /// The counts 0 and 1 take `one`. Every other count takes `other`.
+    OneBelowTwo,
     /// Every count takes `other`.
     None,
 }
 
 impl PluralRule {
     /// Every plural rule.
-    pub const ALL: [PluralRule; 2] = [PluralRule::OneOther, PluralRule::None];
+    pub const ALL: [PluralRule; 3] = [
+        PluralRule::OneOther,
+        PluralRule::OneBelowTwo,
+        PluralRule::None,
+    ];
 
     /// Returns the name of the rule in the `plural` header of a language file.
     pub const fn name(self) -> &'static str {
         match self {
             PluralRule::OneOther => "one-other",
+            PluralRule::OneBelowTwo => "one-below-two",
             PluralRule::None => "none",
         }
     }
@@ -69,7 +76,9 @@ impl PluralRule {
     /// Returns the categories that a plural text of this rule holds.
     pub const fn categories(self) -> &'static [PluralCategory] {
         match self {
-            PluralRule::OneOther => &[PluralCategory::One, PluralCategory::Other],
+            PluralRule::OneOther | PluralRule::OneBelowTwo => {
+                &[PluralCategory::One, PluralCategory::Other]
+            }
             PluralRule::None => &[PluralCategory::Other],
         }
     }
@@ -77,7 +86,7 @@ impl PluralRule {
     /// Returns true when a plural text of this rule holds the category.
     pub const fn has(self, category: PluralCategory) -> bool {
         match self {
-            PluralRule::OneOther => true,
+            PluralRule::OneOther | PluralRule::OneBelowTwo => true,
             PluralRule::None => matches!(category, PluralCategory::Other),
         }
     }
@@ -86,7 +95,10 @@ impl PluralRule {
     pub const fn category(self, count: u64) -> PluralCategory {
         match self {
             PluralRule::OneOther if count == 1 => PluralCategory::One,
-            PluralRule::OneOther | PluralRule::None => PluralCategory::Other,
+            PluralRule::OneBelowTwo if count < 2 => PluralCategory::One,
+            PluralRule::OneOther | PluralRule::OneBelowTwo | PluralRule::None => {
+                PluralCategory::Other
+            }
         }
     }
 }
@@ -122,6 +134,18 @@ mod tests {
     }
 
     #[test]
+    fn one_below_two_selects_one_for_zero_and_one() {
+        assert_eq!(PluralRule::OneBelowTwo.category(0), PluralCategory::One);
+        assert_eq!(PluralRule::OneBelowTwo.category(1), PluralCategory::One);
+        assert_eq!(PluralRule::OneBelowTwo.category(2), PluralCategory::Other);
+        assert_eq!(PluralRule::OneBelowTwo.category(11), PluralCategory::Other);
+        assert_eq!(
+            PluralRule::OneBelowTwo.category(u64::MAX),
+            PluralCategory::Other
+        );
+    }
+
+    #[test]
     fn none_always_selects_other() {
         for count in [0, 1, 2, 11, u64::MAX] {
             assert_eq!(PluralRule::None.category(count), PluralCategory::Other);
@@ -135,7 +159,13 @@ mod tests {
             &[PluralCategory::One, PluralCategory::Other]
         );
         assert_eq!(PluralRule::None.categories(), &[PluralCategory::Other]);
+        assert_eq!(
+            PluralRule::OneBelowTwo.categories(),
+            &[PluralCategory::One, PluralCategory::Other]
+        );
         assert!(PluralRule::OneOther.has(PluralCategory::One));
+        assert!(PluralRule::OneBelowTwo.has(PluralCategory::One));
+        assert!(PluralRule::OneBelowTwo.has(PluralCategory::Other));
         assert!(!PluralRule::None.has(PluralCategory::One));
         assert!(PluralRule::None.has(PluralCategory::Other));
     }
@@ -149,6 +179,10 @@ mod tests {
             assert_eq!(PluralCategory::from_name(category.name()), Some(category));
             assert_eq!(PluralCategory::ALL[category.index()], category);
         }
+        assert_eq!(
+            PluralRule::from_name("one-below-two"),
+            Some(PluralRule::OneBelowTwo)
+        );
         assert_eq!(PluralRule::from_name("one_other"), None);
         assert_eq!(PluralCategory::from_name("few"), None);
     }

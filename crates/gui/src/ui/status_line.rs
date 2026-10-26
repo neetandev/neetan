@@ -1,6 +1,7 @@
 //! The status line at the bottom of a screen: the keys and gamepad buttons
 //! of the actions of the top dialog, and a path or an error at its end.
 
+use i18n::Key;
 use stack_vec::StackVec;
 
 use super::{
@@ -14,7 +15,7 @@ use crate::{Rect, RectStyle};
 pub const STATUS_LINE_HEIGHT: f32 = 28.0;
 
 /// The height of a key cap in the status line.
-const KEYCAP_HEIGHT: f32 = 18.0;
+pub const KEYCAP_HEIGHT: f32 = 18.0;
 
 /// The padding of a key cap on both sides together in units of the gap.
 const KEYCAP_PADDING_GAPS: f32 = 1.25;
@@ -22,12 +23,14 @@ const KEYCAP_PADDING_GAPS: f32 = 1.25;
 /// A key of the keyboard or a button of a gamepad in a [`Hint`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HintKey<'a> {
-    /// A key cap with the text of a key, for example `Enter`.
-    Key(&'a str),
+    /// A key cap of the keyboard with the catalog text of `Key`, for example `Enter`.
+    Key(Key),
     /// A round gamepad face button, for example `A`.
     Pad(&'a str),
     /// A gamepad shoulder button, for example `LB`.
     Shoulder(&'a str),
+    /// A gamepad menu button with a key cap, for example `Start`.
+    Menu(&'a str),
 }
 
 /// The keys of an action and the label of the action.
@@ -38,12 +41,6 @@ pub struct Hint<'a> {
     /// The label of the action.
     pub label: &'a str,
 }
-
-/// The keys that activate the focused widget: Enter and the A button.
-pub const ACTIVATE_KEYS: &[HintKey<'static>] = &[HintKey::Key("Enter"), HintKey::Pad("A")];
-
-/// The keys that cancel: Escape and the B button.
-pub const CANCEL_KEYS: &[HintKey<'static>] = &[HintKey::Key("Esc"), HintKey::Pad("B")];
 
 /// Returns the hints of `hints` without each hint whose action an earlier
 /// hint already has. Each hint comes with its action. Two hints of one
@@ -161,13 +158,13 @@ fn hint_width(context: &mut UiContext, hint: &Hint) -> f32 {
 fn keycap_width(context: &mut UiContext, key: HintKey) -> f32 {
     let theme = context.theme;
     let style = theme.small().with_color(theme.colors.text);
-    match key {
-        HintKey::Pad(_) => KEYCAP_HEIGHT,
-        HintKey::Key(text) | HintKey::Shoulder(text) => {
-            (context.measure(&style, text) + theme.gap * KEYCAP_PADDING_GAPS + theme.stroke * 2.0)
-                .max(KEYCAP_HEIGHT)
-        }
-    }
+    let text = match key {
+        HintKey::Pad(_) => return KEYCAP_HEIGHT,
+        HintKey::Key(key) => context.catalog.text(key),
+        HintKey::Shoulder(text) | HintKey::Menu(text) => text,
+    };
+    (context.measure(&style, text) + theme.gap * KEYCAP_PADDING_GAPS + theme.stroke * 2.0)
+        .max(KEYCAP_HEIGHT)
 }
 
 /// Draws the key cap of `key` at `x`, centered in the height of `line`.
@@ -179,7 +176,8 @@ fn keycap(context: &mut UiContext, x: f32, line: Rect, key: HintKey) -> f32 {
     let half = KEYCAP_HEIGHT * 0.5;
     let width = keycap_width(context, key);
     let (text, radii) = match key {
-        HintKey::Key(text) => (text, [small_radius; 4]),
+        HintKey::Key(key) => (context.catalog.text(key), [small_radius; 4]),
+        HintKey::Menu(text) => (text, [small_radius; 4]),
         HintKey::Pad(text) => (text, [half; 4]),
         HintKey::Shoulder(text) => (text, [half, half, small_radius, small_radius]),
     };
@@ -202,7 +200,9 @@ mod tests {
     use super::*;
     use crate::{
         Instance,
-        ui::tests::{Harness, pixel, srgb},
+        ui::tests::{
+            Harness, TEST_ACTIVATE_KEYS, TEST_CANCEL_KEYS, pixel, srgb, test_catalog, test_key,
+        },
     };
 
     /// The area of the status line at the bottom of the target.
@@ -211,12 +211,12 @@ mod tests {
     /// The hints of the library.
     const HINTS: [Hint; 2] = [
         Hint {
-            keys: &[HintKey::Key("Enter"), HintKey::Pad("A")],
+            keys: TEST_ACTIVATE_KEYS,
             label: "Launch",
         },
         Hint {
             keys: &[
-                HintKey::Key("Ctrl+PgUp"),
+                HintKey::Key(test_key("ctrl-page-up")),
                 HintKey::Shoulder("LB"),
                 HintKey::Shoulder("RB"),
             ],
@@ -272,8 +272,8 @@ mod tests {
         let (text, wide, short) = harness.frame(|context| {
             let style = context.theme.small().with_color(context.theme.colors.text);
             (
-                context.measure(&style, "Ctrl+PgUp"),
-                keycap_width(context, HintKey::Key("Ctrl+PgUp")),
+                context.measure(&style, test_catalog().text(test_key("ctrl-page-up"))),
+                keycap_width(context, HintKey::Key(test_key("ctrl-page-up"))),
                 keycap_width(context, HintKey::Shoulder("I")),
             )
         });
@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn a_repeated_result_shows_once() {
         let close_button = Hint {
-            keys: ACTIVATE_KEYS,
+            keys: TEST_ACTIVATE_KEYS,
             label: "Cancel",
         };
         let section = Hint {
@@ -439,7 +439,7 @@ mod tests {
             label: "Section",
         };
         let close = Hint {
-            keys: CANCEL_KEYS,
+            keys: TEST_CANCEL_KEYS,
             label: "Close",
         };
         let hints: StackVec<Hint, 3> = distinct_hints([

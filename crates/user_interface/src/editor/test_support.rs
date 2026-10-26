@@ -21,21 +21,18 @@ use machine_factory::{
 use super::{Editor, EditorPass, EditorSection, help_area::FormRow, page::help_area};
 use crate::{
     config::{HostLayers, LaunchRequest, Locations, SETTINGS_FILE_NAME},
-    gui_test_support::GuiHarness,
+    gui_test_support::{GuiHarness, MINIMUM_SCREEN, MINIMUM_WIDTH},
     rom_folders::{RomFolderStatus, rom_folder_path},
     texts::setting_help,
 };
 
-/// The window above the status line in the tests.
-pub(crate) const SCREEN: Rect = Rect::new(0.0, 0.0, 960.0, 572.0);
-
 /// A short page that shows less than one tall media row.
-pub(crate) const SHORT_SCREEN: Rect = Rect::new(0.0, 0.0, 960.0, 300.0);
+pub(crate) const SHORT_SCREEN: Rect = Rect::new(0.0, 0.0, MINIMUM_WIDTH, 300.0);
 
-/// Draws passes of `editor` in [`SCREEN`] until they settle and returns the answers of the
+/// Draws passes of `editor` in [`MINIMUM_SCREEN`] until they settle and returns the answers of the
 /// passes.
 pub(crate) fn show(harness: &mut GuiHarness, editor: &mut Editor) -> EditorPass {
-    show_in(harness, editor, SCREEN)
+    show_in(harness, editor, MINIMUM_SCREEN)
 }
 
 /// Draws passes of `editor` in `screen` until they settle and returns the answers of the
@@ -52,19 +49,24 @@ pub(crate) fn show_in(harness: &mut GuiHarness, editor: &mut Editor, screen: Rec
 }
 
 /// The glyph indices of the last pass inside the help area of the page in
-/// [`SCREEN`], in the order of the draw.
+/// [`MINIMUM_SCREEN`], in the order of the draw.
 pub(crate) fn help_glyphs(harness: &GuiHarness) -> Vec<u32> {
-    help_glyphs_in(harness, SCREEN)
+    help_glyphs_in(harness, MINIMUM_SCREEN)
 }
 
 /// The glyph indices of the last pass inside the help area of the page in
-/// `screen`, in the order of the draw.
+/// `screen`, in the order of the draw. The page draws below the veil of a
+/// modal panel, and the glyphs of the panel leave the list.
 pub(crate) fn help_glyphs_in(harness: &GuiHarness, screen: Rect) -> Vec<u32> {
     let area = help_area(&harness.theme, screen);
+    let veil = harness.theme.veil.to_linear();
     harness
         .scene
         .instances()
         .iter()
+        .take_while(|instance| {
+            instance.kind[0] != Instance::KIND_RECTANGLE || instance.color != veil
+        })
         .filter(|instance| {
             instance.kind[0] == Instance::KIND_GLYPH
                 && instance.rect[1] >= area.y - 1.0
@@ -116,9 +118,9 @@ pub(crate) fn shown_help_of<S>(
 }
 
 /// The key of the setting of the help area of `editor`, read by
-/// [`shown_help_of`] in one more pass of `editor` in [`SCREEN`].
+/// [`shown_help_of`] in one more pass of `editor` in [`MINIMUM_SCREEN`].
 pub(crate) fn shown_help(harness: &mut GuiHarness, editor: &mut Editor) -> Option<&'static str> {
-    shown_help_in(harness, editor, SCREEN)
+    shown_help_in(harness, editor, MINIMUM_SCREEN)
 }
 
 /// The key of the setting of the help area of `editor`, read by

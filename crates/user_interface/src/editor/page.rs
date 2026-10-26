@@ -527,11 +527,10 @@ mod tests {
             media_list::{self, button_ids},
             rows::{RowAreas, browse_id, field_id},
             test_support::{
-                EditorRoot, SCREEN, SHORT_SCREEN, media_section, row_of, show, show_in,
-                system_named,
+                EditorRoot, SHORT_SCREEN, media_section, row_of, show, show_in, system_named,
             },
         },
-        gui_test_support::GuiHarness,
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN, MINIMUM_WIDTH},
         texts::english_text,
     };
 
@@ -626,8 +625,8 @@ mod tests {
         let warned = |root: &EditorRoot| {
             let mut editor =
                 Editor::open(&root.host(), root.system(), &path).expect("the editor opens");
-            let mut harness = GuiHarness::new(960, 600);
-            harness.frame(|context| editor.show(context, Rect::new(0.0, 0.0, 960.0, 572.0)));
+            let mut harness = GuiHarness::minimum();
+            harness.frame(|context| editor.show(context, MINIMUM_SCREEN));
             let danger = harness.theme.colors.danger_text.to_linear();
             harness.scene.instances().iter().any(|instance| {
                 instance.kind[0] == gui::Instance::KIND_GLYPH
@@ -643,11 +642,11 @@ mod tests {
     /// Verifies that the page keeps the column inside its widest size and centers it, with the form between the tab bar and the rule of the help area above the footer.
     #[test]
     fn the_page_centers_its_column_in_a_wide_window() {
-        let harness = GuiHarness::new(960, 600);
+        let harness = GuiHarness::minimum();
         let theme = &harness.theme;
-        let small = PageAreas::new(theme, Rect::new(0.0, 0.0, 960.0, 572.0));
+        let small = PageAreas::new(theme, MINIMUM_SCREEN);
         assert_eq!(small.tabs.x, theme.padding);
-        assert_eq!(small.tabs.width, 960.0 - theme.padding * 2.0);
+        assert_eq!(small.tabs.width, MINIMUM_SCREEN.width - theme.padding * 2.0);
         assert!(small.form.y > small.tabs.bottom());
         assert!(small.form.bottom() < small.rule.y);
         assert!(small.rule.bottom() < small.help.y);
@@ -660,10 +659,7 @@ mod tests {
         assert_eq!(large.tabs.width, FORM_MAX_WIDTH);
         assert_eq!(large.tabs.x, (1920.0 - FORM_MAX_WIDTH) * 0.5);
         assert_eq!(large.header.width, 1920.0 - theme.padding * 2.0);
-        assert_eq!(
-            form_area(theme, Rect::new(0.0, 0.0, 960.0, 572.0)),
-            small.form
-        );
+        assert_eq!(form_area(theme, MINIMUM_SCREEN), small.form);
     }
 
     /// The kind and the field of the focused widget of the last pass of `editor`.
@@ -703,7 +699,7 @@ mod tests {
     fn the_arrows_walk_the_rows_of_a_short_page_in_order() {
         /// The most arrow presses of one walk.
         const MAXIMUM_STEPS: usize = 100;
-        let mut harness = GuiHarness::new(960, 300);
+        let mut harness = GuiHarness::new(MINIMUM_WIDTH as u32, 300);
         let form = form_area(&harness.theme, SHORT_SCREEN);
         let walk = |harness: &mut GuiHarness,
                     editor: &mut Editor,
@@ -803,10 +799,10 @@ mod tests {
     /// a media row with images. Covers every compiled system.
     #[test]
     fn the_sideways_arrows_stay_in_the_row_of_the_form() {
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         for system in compiled_systems() {
             let root = EditorRoot::with_system("page_sideways", system.name);
-            let mut editor = media_section(&root, &mut harness, SCREEN, "");
+            let mut editor = media_section(&root, &mut harness, MINIMUM_SCREEN, "");
             let browse_rows: Vec<usize> = editor
                 .widgets
                 .iter()
@@ -830,8 +826,12 @@ mod tests {
                 );
             }
 
-            let mut editor =
-                media_section(&root, &mut harness, SCREEN, "fdd1 = a.img\nfdd1 = b.img\n");
+            let mut editor = media_section(
+                &root,
+                &mut harness,
+                MINIMUM_SCREEN,
+                "fdd1 = a.img\nfdd1 = b.img\n",
+            );
             let list = field_id("fdd1");
             let [add, remove, _, _] = button_ids(list);
             for (from, navigation, to) in [
@@ -858,10 +858,10 @@ mod tests {
     fn the_sideways_arrows_reach_widgets_above_the_view() {
         /// A page with a form shorter than one path row. The wheel scrolls the last rows of
         /// the Media section above it.
-        const TINY_SCREEN: Rect = Rect::new(0.0, 0.0, 960.0, 230.0);
+        const TINY_SCREEN: Rect = Rect::new(0.0, 0.0, MINIMUM_WIDTH, 230.0);
         /// The most wheel steps that scroll the Browse button above the form.
         const MAXIMUM_STEPS: usize = 40;
-        let mut harness = GuiHarness::new(960, 300);
+        let mut harness = GuiHarness::new(MINIMUM_WIDTH as u32, 300);
         let control_of = |harness: &GuiHarness, editor: &Editor, key: &str| {
             let row = row_of(editor, key);
             RowAreas::new(&harness.theme, row.rect, row.rect.y)

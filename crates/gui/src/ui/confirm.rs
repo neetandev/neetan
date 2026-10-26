@@ -9,7 +9,7 @@ use super::{
     icons::Icon,
     label::{Align, WrappedText},
     modal::{HEADER_HEIGHT, modal_in},
-    status_line::{ACTIVATE_KEYS, CANCEL_KEYS, Hint, HintKey},
+    status_line::{Hint, HintKey},
 };
 use crate::Rect;
 
@@ -35,23 +35,35 @@ pub struct ConfirmResponse {
     pub action_focused: bool,
 }
 
+/// The keys of the hints of a confirm dialog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConfirmKeys<'a> {
+    /// The keys that activate the focused button, such as Enter and the A
+    /// button.
+    pub activate: &'a [HintKey<'a>],
+    /// The keys that cancel, such as Escape and the B button.
+    pub cancel: &'a [HintKey<'a>],
+}
+
 /// The hints of the status line of a confirm dialog for the answer
-/// `response` of the last pass. `hint` builds a hint from its keys and the
-/// label `cancel` of the cancel button or `action` of the action button.
+/// `response` of the last pass. `hint` builds a hint from its keys of
+/// `keys` and the label `cancel` of the cancel button or `action` of the
+/// action button.
 ///
 /// The hints show no two hints with the same result. With the focus on the
 /// cancel button they show only its hint. With the focus on the action they
 /// show the hint of the action and the cancel keys.
-pub fn confirm_hints<Label, Built>(
+pub fn confirm_hints<'k, Label, Built>(
     response: ConfirmResponse,
+    keys: ConfirmKeys<'k>,
     cancel: Label,
     action: Label,
-    hint: impl Fn(&'static [HintKey<'static>], Label) -> Built,
+    hint: impl Fn(&'k [HintKey<'k>], Label) -> Built,
 ) -> StackVec<Built, CONFIRM_HINTS> {
     if response.action_focused {
-        StackVec::from([hint(ACTIVATE_KEYS, action), hint(CANCEL_KEYS, cancel)])
+        StackVec::from([hint(keys.activate, action), hint(keys.cancel, cancel)])
     } else {
-        StackVec::from([hint(ACTIVATE_KEYS, cancel)])
+        StackVec::from([hint(keys.activate, cancel)])
     }
 }
 
@@ -166,12 +178,15 @@ impl<'a> ConfirmDialog<'a> {
         self.id.child("action")
     }
 
-    /// The hints of the status line for the answer `response` of the last
-    /// pass, in the order of [`confirm_hints`].
-    pub fn hints(&self, response: ConfirmResponse) -> StackVec<Hint<'a>, CONFIRM_HINTS> {
-        confirm_hints(response, self.cancel, self.action, |keys, label| Hint {
-            keys,
-            label,
+    /// The hints of the status line with the keys `keys` for the answer
+    /// `response` of the last pass, in the order of [`confirm_hints`].
+    pub fn hints(
+        &self,
+        response: ConfirmResponse,
+        keys: ConfirmKeys<'a>,
+    ) -> StackVec<Hint<'a>, CONFIRM_HINTS> {
+        confirm_hints(response, keys, self.cancel, self.action, |keys, label| {
+            Hint { keys, label }
         })
     }
 
@@ -279,7 +294,7 @@ mod tests {
     use super::*;
     use crate::ui::{
         Navigation, NavigationSet,
-        tests::{Harness, pixel, srgb},
+        tests::{Harness, TEST_ACTIVATE_KEYS, TEST_CANCEL_KEYS, TEST_CONFIRM_KEYS, pixel, srgb},
     };
 
     /// The delete question of the library.
@@ -366,19 +381,19 @@ mod tests {
         let dialog = delete();
         let response = draw(&mut harness, dialog);
         assert!(!response.action_focused);
-        let hints = dialog.hints(response);
+        let hints = dialog.hints(response, TEST_CONFIRM_KEYS);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].label, "Cancel");
-        assert_eq!(hints[0].keys, ACTIVATE_KEYS);
+        assert_eq!(hints[0].keys, TEST_ACTIVATE_KEYS);
         harness.navigate(Navigation::Right);
         let response = draw(&mut harness, dialog);
         assert!(response.action_focused);
-        let hints = dialog.hints(response);
+        let hints = dialog.hints(response, TEST_CONFIRM_KEYS);
         assert_eq!(
             hints.iter().map(|hint| hint.label).collect::<Vec<_>>(),
             ["Delete", "Cancel"]
         );
-        assert_eq!(hints[1].keys, CANCEL_KEYS);
+        assert_eq!(hints[1].keys, TEST_CANCEL_KEYS);
     }
 
     /// Verifies the hint order of a confirm dialog with labels of any type.
@@ -387,16 +402,16 @@ mod tests {
         let pair = |keys: &'static [HintKey<'static>], label: u8| (keys, label);
         let cancel_focused = ConfirmResponse::default();
         assert_eq!(
-            *confirm_hints(cancel_focused, 1, 2, pair),
-            [(ACTIVATE_KEYS, 1)]
+            *confirm_hints(cancel_focused, TEST_CONFIRM_KEYS, 1, 2, pair),
+            [(TEST_ACTIVATE_KEYS, 1)]
         );
         let action_focused = ConfirmResponse {
             action_focused: true,
             ..ConfirmResponse::default()
         };
         assert_eq!(
-            *confirm_hints(action_focused, 1, 2, pair),
-            [(ACTIVATE_KEYS, 2), (CANCEL_KEYS, 1)]
+            *confirm_hints(action_focused, TEST_CONFIRM_KEYS, 1, 2, pair),
+            [(TEST_ACTIVATE_KEYS, 2), (TEST_CANCEL_KEYS, 1)]
         );
     }
 

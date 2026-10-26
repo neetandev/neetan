@@ -4,13 +4,13 @@
 
 use std::fmt::Write as _;
 
-use gui::ui::{ACTIVATE_KEYS, CANCEL_KEYS, HintKey, StatusEnd, TextBuffer};
+use gui::ui::{HintKey, StatusEnd, TextBuffer};
 use i18n::Catalog;
 
 use super::rows::GameRow;
 use crate::{
     config::Diagnostic,
-    texts::{self, HintText, HintTexts, Hints, in_catalog},
+    texts::{self, ACTIVATE_KEYS, CANCEL_KEYS, HintText, HintTexts, Hints, in_catalog, keys},
 };
 
 /// The hint of the launch of the selected game.
@@ -21,7 +21,7 @@ const DELETE_HINT: HintText = HintText::new(ACTIVATE_KEYS, texts::common::DELETE
 
 /// The hint of the shortcut that opens the selected game in the editor.
 const EDIT_HINT: HintText = HintText::new(
-    &[HintKey::Key("F2"), HintKey::Pad("X")],
+    &[HintKey::Key(keys::F2), HintKey::Pad("X")],
     texts::common::EDIT,
 );
 
@@ -49,7 +49,7 @@ const CLEAR_HINT: HintText = HintText::new(CANCEL_KEYS, texts::common::CLEAR);
 
 /// The hint of the shortcut that focuses the filter.
 const FILTER_HINT: HintText = HintText::new(
-    &[HintKey::Key("Ctrl+F"), HintKey::Pad("Y")],
+    &[HintKey::Key(keys::CTRL_F), HintKey::Pad("Y")],
     texts::hints::FILTER,
 );
 
@@ -57,22 +57,22 @@ const FILTER_HINT: HintText = HintText::new(
 const REFRESH_BUTTON_HINT: HintText = HintText::new(ACTIVATE_KEYS, texts::common::REFRESH);
 
 /// The hint of the shortcut that refreshes the library.
-const REFRESH_HINT: HintText = HintText::new(&[HintKey::Key("F5")], texts::common::REFRESH);
+const REFRESH_HINT: HintText = HintText::new(&[HintKey::Key(keys::F5)], texts::common::REFRESH);
 
 /// The hint of the settings button, which activates it.
 const SETTINGS_BUTTON_HINT: HintText = HintText::new(ACTIVATE_KEYS, texts::common::SETTINGS);
 
 /// The hint of the shortcut that opens the settings page.
 const SETTINGS_HINT: HintText = HintText::new(
-    &[HintKey::Key("F10"), HintKey::Key("Start")],
+    &[HintKey::Key(keys::F10), HintKey::Menu("Start")],
     texts::common::SETTINGS,
 );
 
 /// The hint of the system switch.
 const SYSTEM_HINT: HintText = HintText::new(
     &[
-        HintKey::Key("Ctrl+PgUp"),
-        HintKey::Key("Ctrl+PgDn"),
+        HintKey::Key(keys::CTRL_PAGE_UP),
+        HintKey::Key(keys::CTRL_PAGE_DOWN),
         HintKey::Shoulder("LB"),
         HintKey::Shoulder("RB"),
     ],
@@ -244,9 +244,17 @@ mod tests {
 
     use super::*;
     use crate::{
+        gui_test_support::assert_hints_fit,
         manager::rows::tests::{broken, game},
         texts::english,
     };
+
+    /// Verifies that the six hints of a game that starts show every key cap at the minimum window size in every language.
+    #[test]
+    fn the_hints_of_a_game_that_starts_fit_at_the_minimum_window_size() {
+        let edge = game("edge", "Edge", "", "", "");
+        assert_hints_fit(|catalog| library_hints(catalog, LibraryFocus::Table, Some(&edge)));
+    }
 
     /// The labels of `hints`.
     fn labels<'a>(hints: &[Hint<'a>]) -> Vec<&'a str> {

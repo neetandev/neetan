@@ -254,10 +254,10 @@ mod tests {
                 &[
                     "Built-in default: low.",
                     "",
-                    "Low runs at 4 MHz and high at 8 MHz."
+                    "Low runs at 4\u{A0}MHz and high at 8\u{A0}MHz."
                 ]
             ),
-            "Built-in default: low. Low runs at 4 MHz and high at 8 MHz."
+            "Built-in default: low. Low runs at 4\u{A0}MHz and high at 8\u{A0}MHz."
         );
         assert_eq!(joined(english(), &[]), "");
         let german = test_catalog(GERMAN);

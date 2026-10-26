@@ -446,7 +446,7 @@ mod tests {
         *,
     };
     use crate::{
-        gui_test_support::{GuiHarness, PassCounts},
+        gui_test_support::{GuiHarness, MINIMUM_HEIGHT, MINIMUM_WIDTH, PassCounts},
         texts::repository::{RepositoryLanguage, repository_languages},
     };
 
@@ -489,7 +489,7 @@ mod tests {
         let test = TestRoot::new("view_restore");
         games(&test, &["a", "b", "c"]);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         harness.input.navigation = Some(Navigation::End);
         harness.settle(|context| manager.show(context));
@@ -539,7 +539,7 @@ mod tests {
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         games(&test, &names);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         manager.view.table.sort_by(entries::TITLE_COLUMN);
         manager.refresh_entries();
@@ -580,7 +580,7 @@ mod tests {
         let test = TestRoot::new("delete");
         games(&test, &["a", "b", "c"]);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         harness.input.navigation = Some(Navigation::End);
         harness.settle(|context| manager.show(context));
@@ -627,7 +627,7 @@ mod tests {
         let test = TestRoot::new("delete_failed");
         games(&test, &["a"]);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         harness.input.shortcut = Some(Shortcut::Delete);
         harness.settle(|context| manager.show(context));
@@ -650,7 +650,7 @@ mod tests {
         let test = TestRoot::new("delete_last");
         games(&test, &["a"]);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         harness.input.shortcut = Some(Shortcut::Delete);
         harness.settle(|context| manager.show(context));
@@ -670,7 +670,7 @@ mod tests {
         games(&test, &["a", "b"]);
         test.game(&format!("{}/x.conf", system.name), "machine = FOOBAR\n");
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         harness.input.navigation = Some(Navigation::Down);
         harness.settle(|context| manager.show(context));
@@ -691,7 +691,7 @@ mod tests {
         let mut manager = test.manager();
         let launch = manager.launch(&manager.rows()[0].clone());
         let layer = manager.launch_failed(&launch, &LaunchFailure::missing_image("/a.d88"));
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         harness.state.open_layer(layer);
         harness.settle(|context| manager.show(context));
@@ -738,7 +738,7 @@ mod tests {
         let test = TestRoot::new("queued_key");
         games(&test, &["a", "b", "c"]);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         let selected = manager.view.table.list.selected;
         let launch = manager.launch(&manager.rows()[0].clone());
@@ -772,7 +772,7 @@ mod tests {
                 )),
             )
             .expect("the media dialog opens");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.state.open_layer(layer);
         harness.settle(|context| manager.show(context));
         let dialog = manager.dialog().expect("the media dialog opens");
@@ -905,7 +905,7 @@ mod tests {
         let test = TestRoot::new("steady_delete");
         games(&test, &[LONG_TITLE]);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         harness.input.shortcut = Some(Shortcut::Delete);
         harness.settle(|context| manager.show(context));
@@ -934,7 +934,7 @@ mod tests {
         let test = TestRoot::new("steady_error");
         games(&test, &[LONG_TITLE]);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
         let launch = manager.launch(&manager.rows()[0].clone());
         let layer = manager.launch_failed(
@@ -991,7 +991,7 @@ mod tests {
         for language in repository_languages() {
             for kind in [ThemeKind::Dark, ThemeKind::Light] {
                 for scale in [1.0, 2.0] {
-                    screenshots(960.0, 600.0, scale, "", kind, language);
+                    screenshots(MINIMUM_WIDTH, MINIMUM_HEIGHT, scale, "", kind, language);
                     screenshots(1920.0, 1080.0, scale, "large_", kind, language);
                 }
             }

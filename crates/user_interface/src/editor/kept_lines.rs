@@ -150,7 +150,7 @@ mod tests {
     /// Verifies that the block holds the rule, the sentence and one line for each kept line.
     #[test]
     fn the_block_grows_with_its_lines() {
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let content = Rect::new(16.0, 100.0, 900.0, 400.0);
         let lines = ["; comment".to_owned(), "key.F1 = Stop".to_owned()];
         let (empty, two, expected) = harness.frame(|context| {

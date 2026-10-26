@@ -541,7 +541,7 @@ mod tests {
             Some(root_note(SettingsSource::CurrentDirectory))
         );
 
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         assert_eq!(editor.current_section(), EditorSection::Folders);
         assert_eq!(harness.state.focused(), Some(field_id(CONFIG_FOLDER_KEY)));
@@ -673,7 +673,7 @@ mod tests {
             .iter()
             .position(|section| *section == EditorSection::Roms)
             .expect("the ROMs section");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         let folder = first_rom_folder();
         let fresh = |editor: &Editor| {
@@ -763,7 +763,7 @@ mod tests {
                 error,
             }
         );
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         let rows = &editor.host_settings().expect("a page").roms;
         let row = rows
@@ -918,7 +918,7 @@ mod tests {
         let test = SettingsRoot::new("stamp", Some("backend = modern\n"));
         let host = test.host(&[]);
         let mut editor = settings_page(&host, &statuses_with(&host, RomStatus::Found));
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         harness.input.text = "games".to_owned();
         show(&mut harness, &mut editor);

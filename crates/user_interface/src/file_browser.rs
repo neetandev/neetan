@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use gui::{
     Rect,
     ui::{
-        ACTIVATE_KEYS, Align, Button, ButtonKind, CANCEL_KEYS, Checkbox, HintKey, Icon, ListState,
-        PATH_LINE_HEIGHT, RowContent, RowMark, Shortcut, TextBuffer, TextField, TextValue,
-        Truncation, UiContext, UiId, distinct_hints, label, list, modal_in,
+        Align, Button, ButtonKind, Checkbox, HintKey, Icon, ListState, PATH_LINE_HEIGHT,
+        RowContent, RowMark, Shortcut, TextBuffer, TextField, TextValue, Truncation, UiContext,
+        UiId, distinct_hints, label, list, modal_in,
     },
 };
 use i18n::Catalog;
@@ -26,8 +26,8 @@ use crate::{
     editor::ExtensionList,
     media_dialog::{ImageEntry, PANEL_SIZE, TAB_BAR_HEIGHT, fold_filter, matching_entries},
     texts::{
-        self, FileTypeText, HintText, HintTexts, MAXIMUM_HINTS, browser, common, file_type_text,
-        setting_label,
+        self, ACTIVATE_KEYS, CANCEL_KEYS, FileTypeText, HintText, HintTexts, MAXIMUM_HINTS,
+        browser, common, file_type_text, keys, setting_label,
     },
 };
 
@@ -91,7 +91,7 @@ const OPEN_PARENT_HINT: ActionHint = (
 /// The hint of Backspace in the file list.
 const PARENT_HINT: ActionHint = (
     BrowserAction::OpenParent,
-    HintText::new(&[HintKey::Key("Backspace")], browser::PARENT_FOLDER),
+    HintText::new(&[HintKey::Key(keys::BACKSPACE)], browser::PARENT_FOLDER),
 );
 
 /// The hint of the checkbox.
@@ -732,10 +732,13 @@ mod tests {
     use machine_factory::config::settings::find_setting;
 
     use super::*;
-    use crate::{editor::test_support::EditorRoot, gui_test_support::GuiHarness};
+    use crate::{
+        editor::test_support::EditorRoot,
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN},
+    };
 
     /// The area of the browser in the tests.
-    const AREA: Rect = Rect::new(0.0, 0.0, 960.0, 572.0);
+    const AREA: Rect = MINIMUM_SCREEN;
 
     /// A request for an image of FDD 1 with the current value `current`.
     fn floppy_request(current: Option<&str>) -> BrowseRequest {
@@ -876,7 +879,7 @@ mod tests {
     fn backspace_opens_the_parent_folder_from_the_list() {
         let root = games_root("browser_keys");
         let mut browser = FileBrowser::new(floppy_request(None), &root.root);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| browser.show(context, AREA));
         assert_eq!(harness.state.focused(), Some(UiId::from(LIST_ID)));
         assert_eq!(selected(&browser), "games/");
@@ -953,7 +956,7 @@ mod tests {
             browser.selected_row().and_then(|row| browser.chosen(row)),
             None
         );
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| browser.show(context, AREA));
         harness.state.set_focus(UiId::from(SHOW_ALL_ID));
         harness.settle(|context| browser.show(context, AREA));
@@ -980,7 +983,7 @@ mod tests {
         };
         let mut browser = FileBrowser::new(request, &root.root);
         assert_eq!(names(&browser), [".."]);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| browser.show(context, AREA));
         harness.state.set_focus(UiId::from(LIST_ID));
         harness.settle(|context| browser.show(context, AREA));
