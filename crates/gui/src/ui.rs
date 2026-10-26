@@ -51,6 +51,11 @@ mod status_line;
 mod table;
 mod tabs;
 mod text_buffer;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the edit model has no caller outside its tests")
+)]
+mod text_edit;
 mod text_field;
 mod theme;
 

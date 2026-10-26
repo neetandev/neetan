@@ -102,7 +102,7 @@ fn can_break(before: char, after: char, following: Option<char>) -> bool {
 /// Whether `character` is a mark that combines with the character before it
 /// or joins it: the combining diacritics, the combining kana voicing marks,
 /// the variation selectors and the zero width joiner.
-fn is_mark(character: char) -> bool {
+pub(crate) fn is_mark(character: char) -> bool {
     matches!(
         character,
         '\u{0300}'..='\u{036F}'
