@@ -29,19 +29,10 @@ use crate::{
 /// Analog-stick magnitude past which a left-stick axis counts as a held direction.
 const GAMEPAD_AXIS_DEADZONE: i16 = 16384;
 
-/// The start of a session.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum LaunchOrigin {
-    /// The command line started the game.
-    CommandLine,
-    /// The game manager started the game.
-    Manager,
-}
-
 /// The reason a session ends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SessionExit {
-    /// The user pressed Right Ctrl + Q, or Right Ctrl + Esc in a game of the manager.
+    /// The user pressed Right Ctrl + Esc.
     UserExit,
     /// The guest requested a system shutdown.
     GuestShutdown,
@@ -116,8 +107,6 @@ pub(crate) struct Session {
     last_emulation_tick: Instant,
     /// The reason the session ends, once one is known.
     exit: Option<SessionExit>,
-    /// The start of the session.
-    origin: LaunchOrigin,
     /// Whether the media of the machine were flushed.
     media_flushed: bool,
     /// The failed writes of the flushes before a media swap, an eject and a
@@ -172,7 +161,6 @@ impl Session {
         config: EmulatorConfig,
         key_overrides: KeyOverrides,
         backend: Backend,
-        origin: LaunchOrigin,
     ) -> Result<Self> {
         let fdd1_entries: Vec<ImageEntry> =
             config.fdd1.iter().cloned().map(ImageEntry::new).collect();
@@ -255,7 +243,6 @@ impl Session {
             fast_forward: false,
             last_emulation_tick: Instant::now(),
             exit: None,
-            origin,
             media_flushed: false,
             earlier_flush_errors: Vec::new(),
             config,

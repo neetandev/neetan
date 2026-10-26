@@ -10,7 +10,7 @@ use sdl3::{
     mouse::MouseButton,
 };
 
-use super::{LaunchOrigin, Session, SessionExit};
+use super::{Session, SessionExit};
 use crate::{
     gui_host::{key_event, pointer_or_text_event},
     host::Host,
@@ -111,11 +111,8 @@ impl Session {
             }
             return;
         }
-        if let Some(exit) = scancode.and_then(|scancode| exit_hotkey(scancode, self.origin)) {
-            self.request_exit(exit);
-            return;
-        }
         match scancode {
+            Some(Scancode::Escape) => self.request_exit(SessionExit::UserExit),
             Some(Scancode::M) => self.toggle_mouse_capture(host),
             Some(Scancode::Return) => host.set_fullscreen(!host.fullscreen),
             Some(Scancode::C) => self.toggle_crt(host),
@@ -262,41 +259,5 @@ fn media_hotkey_drive(scancode: Option<Scancode>) -> Option<Drive> {
         Some(Scancode::_2) => Some(Drive::Floppy(1)),
         Some(Scancode::_3) => Some(Drive::CdRom),
         _ => None,
-    }
-}
-
-/// Returns the exit that Right Ctrl with `scancode` asks for in a session
-/// started from `origin`. Right Ctrl + Q ends every session. Right Ctrl +
-/// Esc ends only a session of the game manager.
-fn exit_hotkey(scancode: Scancode, origin: LaunchOrigin) -> Option<SessionExit> {
-    match (scancode, origin) {
-        (Scancode::Q, LaunchOrigin::CommandLine | LaunchOrigin::Manager)
-        | (Scancode::Escape, LaunchOrigin::Manager) => Some(SessionExit::UserExit),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Verifies that Right Ctrl + Q ends every session and Right Ctrl + Esc only a session of the manager.
-    #[test]
-    fn escape_ends_only_a_session_of_the_manager() {
-        for origin in [LaunchOrigin::CommandLine, LaunchOrigin::Manager] {
-            assert_eq!(
-                exit_hotkey(Scancode::Q, origin),
-                Some(SessionExit::UserExit)
-            );
-            assert_eq!(exit_hotkey(Scancode::M, origin), None);
-        }
-        assert_eq!(
-            exit_hotkey(Scancode::Escape, LaunchOrigin::Manager),
-            Some(SessionExit::UserExit)
-        );
-        assert_eq!(
-            exit_hotkey(Scancode::Escape, LaunchOrigin::CommandLine),
-            None
-        );
     }
 }

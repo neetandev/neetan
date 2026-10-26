@@ -4,7 +4,7 @@ use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use common::{FlushError, JoystickState, Machine, MediaBacking, MediaImage};
 
-use super::{LaunchOrigin, Session};
+use super::Session;
 use crate::{
     config::{ScalingMode, test_support::first_model_config},
     input::{KeyOverrides, KeyboardForwardingState},
@@ -129,7 +129,6 @@ pub(super) fn session_with(machine: FakeMachine) -> Session {
         fast_forward: false,
         last_emulation_tick: Instant::now(),
         exit: None,
-        origin: LaunchOrigin::Manager,
         media_flushed: false,
         earlier_flush_errors: Vec::new(),
         config,
