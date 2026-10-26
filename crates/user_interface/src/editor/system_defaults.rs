@@ -80,7 +80,7 @@ mod tests {
         );
         assert!(!editor.is_dirty());
 
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         assert_eq!(editor.current_section(), EditorSection::Machine);
         assert_eq!(harness.state.focused(), Some(field_id(MACHINE_KEY)));
@@ -109,7 +109,7 @@ mod tests {
         let crt = index_of(&editor, "crt");
         editor.fields[crt].select(Some(0));
         editor.refresh();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.input.shortcut = Some(Shortcut::ControlS);
         let pass = show(&mut harness, &mut editor);
         assert_eq!(pass.saved, Some(path.clone()));

@@ -395,7 +395,7 @@ pub(crate) mod tests {
         let folder = first_rom_folder();
         let empty = test.root().join("empty");
         std::fs::create_dir(&empty).expect("folder is created");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         let before: Vec<RomRow> = editor.host_settings().expect("a page").roms.clone();
         assert!(before.iter().all(|row| row.checked.is_some()));
@@ -465,7 +465,7 @@ pub(crate) mod tests {
         assert!(statuses.iter().any(|status| status.folder.key == folder.key
             && status.location.path == relative.root().join("sets").join("first")));
         let mut editor = settings_page(&host, &statuses);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         assert!(!harness.frame(|context| editor.check_changed_roms(context)));
 
         let empty = SettingsRoot::new("no_check_empty", Some("roms-folder =\n"));

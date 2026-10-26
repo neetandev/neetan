@@ -384,7 +384,7 @@ mod tests {
     /// Verifies the height of a list between two and five rows.
     #[test]
     fn lists_show_two_to_five_rows() {
-        let harness = GuiHarness::new(960, 600);
+        let harness = GuiHarness::minimum();
         let theme = &harness.theme;
         let row = theme.row_height;
         let frame = LIST_PADDING * 2.0 + theme.stroke * 2.0;
@@ -396,7 +396,7 @@ mod tests {
     /// Verifies that the list is one stop with its buttons after it, that the buttons reorder and remove the selected image, and that confirm asks the browser.
     #[test]
     fn the_buttons_reorder_and_remove_the_selected_image() {
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let mut state = ListState::new();
         let mut values = images();
         let missing = [false, true, false];
@@ -464,7 +464,7 @@ mod tests {
     /// Verifies that a disabled list leaves the ring with all its buttons.
     #[test]
     fn a_disabled_list_leaves_the_ring() {
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let mut state = ListState::new();
         let mut values = Vec::new();
         let id = UiId::from("cdrom");
@@ -488,7 +488,7 @@ mod tests {
     /// Verifies that gamepad X on the focused list removes the selected image and that X elsewhere leaves the images alone.
     #[test]
     fn gamepad_x_removes_the_selected_image() {
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let mut state = ListState::new();
         let mut values = images();
         let id = UiId::from("fdd1");
@@ -524,7 +524,7 @@ mod tests {
     /// Verifies that the checkbox of an empty list follows the buttons in the ring and flips the empty list.
     #[test]
     fn the_empty_list_checkbox_flips_the_empty_list() {
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let mut state = ListState::new();
         let mut values = Vec::new();
         let id = UiId::from("fdd2");

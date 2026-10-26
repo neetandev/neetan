@@ -11,7 +11,7 @@ use i18n::Catalog;
 use stack_vec::StackVec;
 
 use super::EditedFile;
-use crate::texts::{HintText, discard};
+use crate::texts::{CONFIRM_KEYS, HintText, discard};
 
 /// The id of the modal layer of the question.
 pub(crate) const DISCARD_LAYER_ID: &str = "discard";
@@ -76,6 +76,7 @@ impl DiscardQuestion {
     pub(crate) fn hints(&self) -> StackVec<HintText, CONFIRM_HINTS> {
         confirm_hints(
             self.response,
+            CONFIRM_KEYS,
             discard::KEEP_EDITING,
             discard::ACTION,
             HintText::new,
@@ -122,12 +123,12 @@ mod tests {
     use super::*;
     use crate::{
         editor::test_support::system_named,
-        gui_test_support::GuiHarness,
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN},
         texts::{LanguageCatalog, english_labels, test_catalog},
     };
 
     /// The area of the question in the tests.
-    const AREA: Rect = Rect::new(0.0, 0.0, 960.0, 572.0);
+    const AREA: Rect = MINIMUM_SCREEN;
 
     /// The game file of the PC-98 game `name`.
     fn game(name: &str) -> EditedFile {
@@ -145,7 +146,7 @@ mod tests {
     /// Returns the question that one pass of the question about `subject` draws.
     fn drawn_message(subject: EditedFile) -> Option<String> {
         let mut question = DiscardQuestion::new(subject);
-        GuiHarness::new(960, 600).frame(|context| question.show(context, AREA));
+        GuiHarness::minimum().frame(|context| question.show(context, AREA));
         question.message().map(str::to_owned)
     }
 
@@ -170,7 +171,7 @@ mod tests {
     #[test]
     fn an_open_question_follows_a_catalog_switch() {
         let mut question = DiscardQuestion::new(edge());
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         harness.settle(|context| question.show(context, AREA));
         assert_eq!(
             question.message(),
@@ -195,7 +196,7 @@ mod tests {
         let mut question = DiscardQuestion::new(game(
             "YU-NO: A Girl Who Chants Love at the Bound of this World",
         ));
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         assert_eq!(
             harness.settle(|context| question.show(context, AREA)),
             DiscardOutcome::Open

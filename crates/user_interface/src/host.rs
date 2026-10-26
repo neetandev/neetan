@@ -27,7 +27,7 @@ const INITIAL_WINDOW_HEIGHT_ASPECT_1_BY_1: u32 = 800;
 
 /// The smallest size of the window of the game manager in logical units of
 /// the user interface.
-pub(crate) const MINIMUM_WINDOW_SIZE: (u32, u32) = (960, 600);
+pub(crate) const MINIMUM_WINDOW_SIZE: (u32, u32) = (1024, 640);
 
 /// The smallest size of the window of a game session in screen coordinates.
 pub(crate) const SESSION_MINIMUM_WINDOW_SIZE: (u32, u32) = (960, 600);
@@ -392,8 +392,12 @@ mod tests {
             minimum
         );
         assert_eq!(
-            fit_window_size((1920, 1200), Some((1920, 1050)), (1440, 900)),
-            (1512, 945)
+            fit_window_size(
+                (1920, 1200),
+                Some((1920, 1050)),
+                logical_to_screen(MINIMUM_WINDOW_SIZE, 1.5)
+            ),
+            (1536, 960)
         );
     }
 
@@ -402,26 +406,35 @@ mod tests {
     fn logical_units_convert_into_screen_coordinates() {
         let x11 = screen_units_per_logical_unit(1.5, 1.0);
         assert_eq!(x11, 1.5);
-        assert_eq!(logical_to_screen(MINIMUM_WINDOW_SIZE, x11), (1440, 900));
+        assert_eq!(logical_to_screen(MINIMUM_WINDOW_SIZE, x11), (1536, 960));
         assert_eq!(logical_to_screen(MANAGER_WINDOW_SIZE, x11), (1920, 1200));
         let wayland = screen_units_per_logical_unit(1.5, 1.5);
-        assert_eq!(logical_to_screen(MINIMUM_WINDOW_SIZE, wayland), (960, 600));
+        assert_eq!(
+            logical_to_screen(MINIMUM_WINDOW_SIZE, wayland),
+            MINIMUM_WINDOW_SIZE
+        );
         let retina = screen_units_per_logical_unit(2.0, 2.0);
         assert_eq!(logical_to_screen(MANAGER_WINDOW_SIZE, retina), (1280, 800));
         let odd = screen_units_per_logical_unit(1.25, 1.0);
         assert_eq!(logical_to_screen((961, 601), odd), (1202, 752));
         assert_eq!(screen_units_per_logical_unit(0.0, f32::NAN), 1.0);
         let (width, height) = logical_to_screen(MINIMUM_WINDOW_SIZE, x11);
-        assert!(width as f32 / x11 >= 960.0 && height as f32 / x11 >= 600.0);
+        let (minimum_width, minimum_height) = MINIMUM_WINDOW_SIZE;
+        assert!(width as f32 / x11 >= minimum_width as f32);
+        assert!(height as f32 / x11 >= minimum_height as f32);
     }
 
     /// Verifies that the minimum size of the manager keeps inside a small display at the display scale 1.5.
     #[test]
     fn the_manager_minimum_keeps_inside_the_display() {
-        assert_eq!(manager_minimum_size(1.5, None), (1440, 900));
-        assert_eq!(manager_minimum_size(1.5, Some((2560, 1400))), (1440, 900));
+        let scaled = logical_to_screen(MINIMUM_WINDOW_SIZE, 1.5);
+        assert_eq!(manager_minimum_size(1.5, None), scaled);
+        assert_eq!(manager_minimum_size(1.5, Some((2560, 1400))), scaled);
         assert_eq!(manager_minimum_size(1.5, Some((1366, 768))), (1366, 768));
-        assert_eq!(manager_minimum_size(1.0, Some((1366, 768))), (960, 600));
+        assert_eq!(
+            manager_minimum_size(1.0, Some((1366, 768))),
+            MINIMUM_WINDOW_SIZE
+        );
     }
 
     /// Verifies that a game session keeps its 4:3 window of 1280 x 960 at the display scale 1.5, where the manager minimum is wider.

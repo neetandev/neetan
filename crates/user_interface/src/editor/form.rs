@@ -453,7 +453,7 @@ pub(crate) mod tests {
         let cpu_mode = machine_factory::config::settings::find_setting("cpu-mode").expect("key");
         assert_eq!(
             ignored_note(cpu_mode, model("PC9801RA")).as_deref(),
-            Some("PC9801RA runs at a fixed 20 MHz. PC9801F, VM and VX only.")
+            Some("PC9801RA runs at a fixed 20\u{A0}MHz. PC9801F, VM and VX only.")
         );
     }
 

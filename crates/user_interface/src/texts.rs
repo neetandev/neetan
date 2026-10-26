@@ -6,7 +6,7 @@
 
 use std::{fmt, sync::LazyLock};
 
-use gui::ui::{Hint, HintKey};
+use gui::ui::{ConfirmKeys, Hint, HintKey};
 use i18n::{Catalog, Key};
 use stack_vec::StackVec;
 
@@ -166,6 +166,20 @@ impl NumberText {
         std::str::from_utf8(&self.digits[..self.length]).unwrap_or_default()
     }
 }
+
+/// The keys that activate the focused widget: Enter and the A button.
+pub(crate) const ACTIVATE_KEYS: &[HintKey<'static>] =
+    &[HintKey::Key(keys::ENTER), HintKey::Pad("A")];
+
+/// The keys that cancel: Escape and the B button.
+pub(crate) const CANCEL_KEYS: &[HintKey<'static>] =
+    &[HintKey::Key(keys::ESCAPE), HintKey::Pad("B")];
+
+/// The keys of the hints of a confirm dialog.
+pub(crate) const CONFIRM_KEYS: ConfirmKeys<'static> = ConfirmKeys {
+    activate: ACTIVATE_KEYS,
+    cancel: CANCEL_KEYS,
+};
 
 /// A hint of the status line with the key of its label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -539,7 +539,7 @@ mod tests {
         );
         assert_eq!(
             sentence(LimitReason::FixedClock),
-            "PC9801RA runs at a fixed 20 MHz."
+            "PC9801RA runs at a fixed 20\u{A0}MHz."
         );
         let japanese_sentence = |reason| written(japanese(), &LimitSentence { reason, model });
         assert_eq!(
@@ -548,7 +548,7 @@ mod tests {
         );
         assert_eq!(
             japanese_sentence(LimitReason::FixedClock),
-            "PC9801RAのCPUクロックは20 MHz固定です。"
+            "PC9801RAのCPUクロックは20\u{A0}MHz固定です。"
         );
         let german_sentence = |reason| written(german(), &LimitSentence { reason, model });
         assert_eq!(
@@ -557,7 +557,7 @@ mod tests {
         );
         assert_eq!(
             german_sentence(LimitReason::FixedClock),
-            "PC9801RA hat einen festen CPU-Takt von 20 MHz."
+            "PC9801RA hat einen festen CPU-Takt von 20\u{A0}MHz."
         );
     }
 

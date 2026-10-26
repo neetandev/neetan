@@ -313,7 +313,7 @@ mod tests {
     use super::*;
     use crate::{
         config::{LaunchRequest, Locations},
-        gui_test_support::GuiHarness,
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN},
         manager::rows::tests::{broken, game},
         rom_folders::check_all_folders,
         texts::{LanguageCatalog, test_catalog},
@@ -489,13 +489,13 @@ mod tests {
             assert_eq!(entry.game_count(), index);
             assert_eq!(entry.error_count(), 1);
         }
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let mut state = ListState::new();
         state.select(0);
         harness.frame(|context| {
             show_sidebar(
                 context,
-                Rect::new(0.0, 0.0, 240.0, 572.0),
+                Rect::new(0.0, 0.0, 240.0, MINIMUM_SCREEN.height),
                 &systems,
                 &mut state,
                 &mut SidebarTexts::default(),
@@ -568,7 +568,7 @@ mod tests {
     fn the_rom_line_follows_a_catalog_switch() {
         let system = compiled_systems().next().expect("one system is compiled");
         let systems = [entry(system, RomStatus::Found)];
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let mut state = ListState::new();
         state.select(0);
         let mut texts = SidebarTexts::default();
@@ -576,7 +576,7 @@ mod tests {
             harness.frame(|context| {
                 show_sidebar(
                     context,
-                    Rect::new(0.0, 0.0, 240.0, 572.0),
+                    Rect::new(0.0, 0.0, 240.0, MINIMUM_SCREEN.height),
                     &systems,
                     &mut state,
                     texts,

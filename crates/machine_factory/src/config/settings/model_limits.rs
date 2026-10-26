@@ -138,14 +138,11 @@ mod tests {
     }
 
     #[cfg(feature = "pc98")]
-    /// Verifies that a fixed clock reason gives the clock of the model in megahertz.
+    /// Verifies that a fixed clock reason gives the number of megahertz of the model.
     #[test]
     fn a_fixed_clock_reason_gives_the_clock_of_the_model() {
         let model: MachineSelection = "PC9801RA".parse().expect("a PC-98 model");
         let clock = LimitReason::FixedClock.fixed_clock(model);
-        assert_eq!(
-            clock.map(|clock| clock.to_string()).as_deref(),
-            Some("20 MHz")
-        );
+        assert_eq!(clock.map(|clock| clock.to_string()).as_deref(), Some("20"));
     }
 }

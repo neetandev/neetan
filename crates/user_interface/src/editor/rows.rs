@@ -363,16 +363,15 @@ mod tests {
             inherited::{Inherited, InheritedSource},
             notes::{ChoiceNote, NoteLook, choice_note, tests::catalog_note},
             page::form_area,
-            test_support::SCREEN,
         },
-        gui_test_support::GuiHarness,
-        texts::repository::repository_catalogs,
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN},
+        texts::{note, repository::repository_catalogs},
     };
 
-    /// The width of the note column of a 960 x 600 window.
+    /// The width of the note column of a window of the minimum size.
     fn minimum_note_width(harness: &GuiHarness) -> f32 {
         let theme = &harness.theme;
-        let form = form_area(theme, SCREEN);
+        let form = form_area(theme, MINIMUM_SCREEN);
         let content = Rect::new(
             form.x,
             form.y,
@@ -384,7 +383,7 @@ mod tests {
         note_width
     }
 
-    /// Asserts that every note of `notes` fits the note column of a 960 x 600 window within
+    /// Asserts that every note of `notes` fits the note column of a window of the minimum size within
     /// [`NOTE_MAXIMUM_LINES`] lines.
     fn assert_notes_fit(harness: &mut GuiHarness, notes: &[String]) {
         let note_width = minimum_note_width(harness);
@@ -406,10 +405,10 @@ mod tests {
     }
 
     /// Verifies that every model-limit note of every compiled family fits the note column of a
-    /// 960 x 600 window within its lines in every language of the repository.
+    /// window of the minimum size within its lines in every language of the repository.
     #[test]
     fn every_model_limit_note_fits_at_the_minimum_window_size() {
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let mut notes = Vec::new();
         for catalog in repository_catalogs() {
             for system in compiled_systems() {
@@ -432,14 +431,14 @@ mod tests {
         assert_notes_fit(&mut harness, &notes);
     }
 
-    /// Verifies that the note of a choice with a fact fits the note column of a 960 x 600
-    /// window within its lines in every language of the repository, for every model of every
+    /// Verifies that the note of a choice with a fact fits the note column of a window of the
+    /// minimum size within its lines in every language of the repository, for every model of every
     /// compiled family. The note holds the longest sentences before the fact: the inherited
     /// value of each source and the derived default. The models that the system defaults
     /// editor lists follow the fact. A clock note holds both clocks of the model.
     #[test]
     fn every_choice_fact_note_fits_at_the_minimum_window_size() {
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let mut notes = Vec::new();
         let sources = [
             InheritedSource::BuiltIn,
@@ -486,10 +485,9 @@ mod tests {
                                 look
                             });
                             if let FactData::CpuClock { low, high } = &fact {
-                                for clock in [low, high] {
-                                    let clock = clock.to_string();
-                                    assert!(note.text.contains(&clock), "{}", note.text);
-                                }
+                                let sentence =
+                                    catalog.display(note::cpu_clock(low, high)).to_string();
+                                assert!(note.text.contains(&sentence), "{}", note.text);
                             }
                             notes.push(note.text);
                         }
@@ -503,7 +501,7 @@ mod tests {
     /// Verifies that a note that fits draws in the height of the control and that a longer note grows its row.
     #[test]
     fn a_long_note_wraps_and_grows_its_row() {
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let control_height = harness.theme.control_height;
         let area = Rect::new(600.0, 100.0, 200.0, control_height);
         let (short, long) = harness.frame(|context| {

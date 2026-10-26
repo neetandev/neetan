@@ -2619,7 +2619,7 @@ mod tests {
         };
         assert_eq!(
             (low.to_string().as_str(), high.to_string().as_str()),
-            ("4 MHz", "8 MHz")
+            ("4", "8")
         );
         assert_eq!(
             boot_mode.choice_fact(model),
@@ -2650,7 +2650,7 @@ mod tests {
                 .reason
                 .fixed_clock(model)
                 .map(|clock| clock.to_string()),
-            Some("20 MHz".to_owned())
+            Some("20".to_owned())
         );
         let vm: MachineSelection = "PC9801VM".parse().expect("a PC-98 model");
         let Some(FactData::CpuClock { low, high }) = cpu_mode.choice_fact(vm) else {
@@ -2658,7 +2658,7 @@ mod tests {
         };
         assert_eq!(
             (low.to_string().as_str(), high.to_string().as_str()),
-            ("8 MHz", "10 MHz")
+            ("8", "10")
         );
         assert_eq!(cpu_mode.choice_fact(model), None);
         let gdc = find_setting("force-gdc-clock").expect("force-gdc-clock is a table key");

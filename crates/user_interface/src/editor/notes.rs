@@ -689,8 +689,8 @@ pub(crate) mod tests {
                 ..ChoiceNote::default()
             }),
             Note::plain(
-                "Built-in default: low. The default follows the boot mode. Low runs at 4 MHz \
-                 and high at 8 MHz."
+                "Built-in default: low. The default follows the boot mode. Low runs at 4\u{A0}MHz \
+                 and high at 8\u{A0}MHz."
             )
         );
         assert_eq!(

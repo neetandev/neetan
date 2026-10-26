@@ -7,8 +7,8 @@ use machine_factory::config::systems::{System, compiled_systems};
 use super::{Manager, entries::TableEntry};
 use crate::{
     config::{LaunchRequest, Locations, ManagerStart, SETTINGS_FILE_NAME},
-    editor::test_support::{SCREEN, shown_help_of},
-    gui_test_support::{GuiHarness, PassCounts},
+    editor::test_support::shown_help_of,
+    gui_test_support::{GuiHarness, MINIMUM_SCREEN, PassCounts},
 };
 
 /// A root folder with a settings file and game files. Dropping the value removes it.
@@ -286,7 +286,7 @@ pub(super) fn shown_help(harness: &mut GuiHarness, manager: &mut Manager) -> Opt
     shown_help_of(
         harness,
         manager,
-        SCREEN,
+        MINIMUM_SCREEN,
         |manager, context| {
             manager
                 .editor()

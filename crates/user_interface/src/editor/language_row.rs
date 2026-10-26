@@ -483,7 +483,7 @@ mod tests {
             .iter()
             .position(|section| *section == EditorSection::VideoAndAudio)
             .expect("the video and audio section");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         editor.save(false).expect("the save writes");
         assert_eq!(

@@ -726,6 +726,59 @@ mod tests {
     }
 
     #[test]
+    fn a_file_of_the_rule_one_below_two_takes_one_for_zero_and_one() {
+        let schema = schema();
+        let source = reference_source();
+        let reference = Catalog::reference("en", &source, schema).unwrap();
+        let french = "[language]\nname = Français\nplural = one-below-two\n\
+                      [common]\ncancel = Annuler\nsave = Enregistrer\n[manager]\n\
+                      delete-question = Supprimer {name}\u{202F}?\n\
+                      images.one = {count} image dans {folder}\n\
+                      images.other = {count} images dans {folder}\n\
+                      [list]\nand-pair = {first} et {second}\nand-middle = {first}, {second}\n\
+                      and-end = {first} et {second}\nor-pair = {first} ou {second}\n\
+                      or-middle = {first}, {second}\nor-end = {first} ou {second}\n";
+        let loaded = Catalog::load("fr", french, schema, &reference).unwrap();
+        assert!(loaded.faults.is_empty(), "{:?}", loaded.faults);
+        let catalog = loaded.catalog;
+        assert_eq!(catalog.plural_rule(), PluralRule::OneBelowTwo);
+        assert_eq!(images(&catalog, 0), "0 image dans A:");
+        assert_eq!(images(&catalog, 1), "1 image dans A:");
+        assert_eq!(images(&catalog, 2), "2 images dans A:");
+        assert_eq!(images(&catalog, 7), "7 images dans A:");
+        assert_eq!(delete_question(&catalog), "Supprimer X\u{202F}?");
+        assert_eq!(
+            list(&catalog, ListKind::And, &[&"a", &"b", &"c"]),
+            "a, b et c"
+        );
+    }
+
+    #[test]
+    fn a_file_of_the_rule_one_below_two_needs_both_forms() {
+        let schema = schema();
+        let source = reference_source();
+        let reference = Catalog::reference("en", &source, schema).unwrap();
+        let french = format!(
+            "[language]\nname = Français\nplural = one-below-two\n\
+             [common]\ncancel = Annuler\nsave = Enregistrer\n[manager]\n\
+             delete-question = Supprimer {{name}}\u{202F}?\n\
+             images.other = {{count}} images dans {{folder}}\n{ENGLISH_LIST}"
+        );
+        let loaded = Catalog::load("fr", &french, schema, &reference).unwrap();
+        assert_eq!(
+            loaded.faults,
+            vec![fault(
+                9,
+                "manager",
+                "images",
+                FaultKind::MissingPluralCategory(PluralCategory::One)
+            )]
+        );
+        assert_eq!(images(&loaded.catalog, 0), "0 images in A:");
+        assert_eq!(images(&loaded.catalog, 1), "1 image in A:");
+    }
+
+    #[test]
     fn an_empty_value_of_a_translation_takes_the_text_of_the_fallback() {
         let schema = schema();
         let source = reference_source();

@@ -4,11 +4,31 @@
 use std::path::{Path, PathBuf};
 
 use gui::{
-    Fonts, Rasterizer, Scene,
-    ui::{Input, Theme, ThemeKind, UiContext, UiState, Viewport},
+    Fonts, Instance, Rasterizer, Rect, Scene,
+    ui::{
+        Input, KEYCAP_HEIGHT, STATUS_LINE_HEIGHT, StatusEnd, Theme, ThemeKind, UiContext, UiState,
+        Viewport, status_line,
+    },
+};
+use i18n::Catalog;
+
+use crate::{
+    host::MINIMUM_WINDOW_SIZE,
+    texts::{ENGLISH_TAG, Hints, LanguageCatalog, repository::repository_languages},
 };
 
-use crate::texts::{ENGLISH_TAG, LanguageCatalog};
+/// The width of a window of the minimum size of the manager.
+pub(crate) const MINIMUM_WIDTH: f32 = MINIMUM_WINDOW_SIZE.0 as f32;
+
+/// The height of a window of the minimum size of the manager.
+pub(crate) const MINIMUM_HEIGHT: f32 = MINIMUM_WINDOW_SIZE.1 as f32;
+
+/// A window of the minimum size of the manager.
+pub(crate) const MINIMUM_WINDOW: Rect = Rect::new(0.0, 0.0, MINIMUM_WIDTH, MINIMUM_HEIGHT);
+
+/// The area above the status line of a window of the minimum size of the manager.
+pub(crate) const MINIMUM_SCREEN: Rect =
+    Rect::new(0.0, 0.0, MINIMUM_WIDTH, MINIMUM_HEIGHT - STATUS_LINE_HEIGHT);
 
 /// Returns the font file of the repository.
 pub(crate) fn repository_font() -> Vec<u8> {
@@ -62,6 +82,13 @@ pub(crate) struct GuiHarness {
 }
 
 impl GuiHarness {
+    /// A harness in the dark theme with the English texts of a window of the
+    /// minimum size of the manager at scale 1.
+    pub(crate) fn minimum() -> Self {
+        let (width, height) = MINIMUM_WINDOW_SIZE;
+        Self::new(width, height)
+    }
+
     /// A harness in the dark theme with the English texts of `width` x
     /// `height` physical pixels at scale 1.
     pub(crate) fn new(width: u32, height: u32) -> Self {
@@ -178,6 +205,38 @@ impl GuiHarness {
             format!("{tag}_{name}")
         };
         write_ppm(&name, width, height, &self.render());
+    }
+}
+
+/// Asserts that the status line of a window of the minimum size shows every key cap of the
+/// hints that `hints` gives in each language of the repository.
+pub(crate) fn assert_hints_fit(hints: impl for<'c> Fn(&'c Catalog) -> Hints<'c>) {
+    let mut harness = GuiHarness::minimum();
+    let line = Rect::new(
+        0.0,
+        MINIMUM_SCREEN.height,
+        MINIMUM_WIDTH,
+        STATUS_LINE_HEIGHT,
+    );
+    for language in repository_languages() {
+        harness.set_catalog(language.catalog());
+        let (report, keys) = harness.frame(|context| {
+            let catalog = context.catalog;
+            let hints = hints(catalog);
+            status_line(context, line, &hints, StatusEnd::None);
+            let labels: Vec<&str> = hints.iter().map(|hint| hint.label).collect();
+            let keys: usize = hints.iter().map(|hint| hint.keys.len()).sum();
+            (format!("{}: {}", catalog.tag(), labels.join(", ")), keys)
+        });
+        let caps = harness
+            .scene
+            .instances()
+            .iter()
+            .filter(|instance| {
+                instance.kind[0] == Instance::KIND_RECTANGLE && instance.rect[3] == KEYCAP_HEIGHT
+            })
+            .count();
+        assert_eq!(caps, keys, "{report}");
     }
 }
 

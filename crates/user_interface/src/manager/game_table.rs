@@ -181,7 +181,7 @@ mod tests {
             TableEntry::Broken(1),
         ];
         let kinds = entries.map(TableEntry::kind);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let mut state = TableState::new();
         harness.state.set_focus(UiId::from(GAME_TABLE_ID));
         let draw = |harness: &mut GuiHarness, state: &mut TableState| {
@@ -219,7 +219,7 @@ mod tests {
     /// Verifies that a table without entries leaves the rows out of the focus ring and keeps the header.
     #[test]
     fn an_empty_table_keeps_only_its_header_in_the_ring() {
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let mut state = TableState::new();
         let draw = |harness: &mut GuiHarness, state: &mut TableState| {
             harness.frame(|context| {

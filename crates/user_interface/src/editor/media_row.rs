@@ -196,9 +196,9 @@ mod tests {
             inherited::InheritedSource,
             notes::tests::{Note, english_note},
             rows::{RowAreas, RowTexts},
-            test_support::{EditorRoot, SCREEN, fdd1_model, index_of},
+            test_support::{EditorRoot, fdd1_model, index_of},
         },
-        gui_test_support::GuiHarness,
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN},
     };
 
     /// Verifies that the warning of missing images wins over the inherited list, that only a set list shows the inherited list and that a disabled list shows nothing.
@@ -236,12 +236,12 @@ mod tests {
                 Editor::open(&root.host(), root.system(), &path).expect("the editor opens");
             let index = index_of(&editor, "fdd1");
             assert_eq!(editor.fields[index].section, EditorSection::Media);
-            let mut harness = GuiHarness::new(960, 600);
+            let mut harness = GuiHarness::minimum();
             harness.frame(|context| {
                 let mut actions = PageActions::default();
                 let mut texts = RowTexts::default();
                 let row = SettingRow {
-                    areas: RowAreas::new(context.theme, SCREEN, 0.0),
+                    areas: RowAreas::new(context.theme, MINIMUM_SCREEN, 0.0),
                     index,
                     setting: fdd1,
                     ignored: None,
@@ -253,7 +253,7 @@ mod tests {
         let inherited = height("");
         let own = height("fdd1 = games/own.d88\n");
         let empty = height("fdd1 =\n");
-        let theme = GuiHarness::new(960, 600).theme;
+        let theme = GuiHarness::minimum().theme;
         let plain = inherited - empty_list_height(&theme);
         let note = own - plain;
         assert!(note > 0.0, "{own} {plain}");

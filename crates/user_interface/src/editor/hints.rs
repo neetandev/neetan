@@ -1,10 +1,10 @@
 //! The hints of the status line of the editor: the action of Enter and A on
 //! the focused widget, the section switch, the save and the close.
 
-use gui::ui::{ACTIVATE_KEYS, CANCEL_KEYS, HintKey, UiContext, UiId, distinct_hints};
+use gui::ui::{HintKey, UiContext, UiId, distinct_hints};
 use stack_vec::StackVec;
 
-use crate::texts::{self, HintText, HintTexts, MAXIMUM_HINTS};
+use crate::texts::{self, ACTIVATE_KEYS, CANCEL_KEYS, HintText, HintTexts, MAXIMUM_HINTS, keys};
 
 /// The kind of a focusable widget of the editor, which picks the first hint.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -186,7 +186,7 @@ const REMOVE_IMAGE_HINT: ActionHint = (
 const STEP_HINT: ActionHint = (
     EditorAction::Step,
     HintText::new(
-        &[HintKey::Key("Left"), HintKey::Key("Right")],
+        &[HintKey::Key(keys::LEFT), HintKey::Key(keys::RIGHT)],
         texts::hints::STEP,
     ),
 );
@@ -194,7 +194,7 @@ const STEP_HINT: ActionHint = (
 /// The hint of the digits of a number field.
 const TYPE_HINT: ActionHint = (
     EditorAction::Type,
-    HintText::new(&[HintKey::Key("0-9")], texts::hints::TYPE),
+    HintText::new(&[HintKey::Key(keys::DIGITS)], texts::hints::TYPE),
 );
 
 /// The hint of the section switch.
@@ -202,8 +202,8 @@ const SECTION_HINT: ActionHint = (
     EditorAction::Section,
     HintText::new(
         &[
-            HintKey::Key("Ctrl+PgUp"),
-            HintKey::Key("Ctrl+PgDn"),
+            HintKey::Key(keys::CTRL_PAGE_UP),
+            HintKey::Key(keys::CTRL_PAGE_DOWN),
             HintKey::Shoulder("LB"),
             HintKey::Shoulder("RB"),
         ],
@@ -215,7 +215,7 @@ const SECTION_HINT: ActionHint = (
 const SAVE_HINT: ActionHint = (
     EditorAction::Save,
     HintText::new(
-        &[HintKey::Key("Ctrl+S"), HintKey::Key("Start")],
+        &[HintKey::Key(keys::CTRL_S), HintKey::Menu("Start")],
         texts::common::SAVE,
     ),
 );
@@ -297,7 +297,21 @@ mod tests {
     };
 
     use super::*;
-    use crate::gui_test_support::GuiHarness;
+    use crate::gui_test_support::{GuiHarness, assert_hints_fit};
+
+    /// Verifies that the six hints of a set number field show every key cap at the minimum window size in every language.
+    #[test]
+    fn the_hints_of_a_set_number_field_fit_at_the_minimum_window_size() {
+        let hints = [
+            STEP_HINT.1,
+            TYPE_HINT.1,
+            CLEAR_HINT.1,
+            SECTION_HINT.1,
+            SAVE_HINT.1,
+            CLOSE_HINT.1,
+        ];
+        assert_hints_fit(|catalog| texts::hints_in(catalog, &hints));
+    }
 
     /// The labels of the hints while the widget of `kind` holds the focus.
     fn labels(kind: WidgetKind) -> Vec<&'static str> {
@@ -306,7 +320,7 @@ mod tests {
 
     /// The labels of the hints while `widget` holds the focus.
     fn labels_of(widget: EditorWidget) -> Vec<&'static str> {
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let id = widget.id;
         harness.state = UiState::default();
         harness.state.set_focus(id);

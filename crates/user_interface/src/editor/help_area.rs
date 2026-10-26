@@ -212,12 +212,11 @@ mod tests {
             page::{CANCEL_ID, CLOSE_ID, TABS_ID, form_area, help_area},
             rows::{RowAreas, field_id},
             test_support::{
-                EditorRoot, SCREEN, SHORT_SCREEN, SettingsRoot, fdd1_model, help_glyphs,
-                media_section, row_of, settings_page, show, show_in, shown_help, shown_help_in,
-                statuses_with,
+                EditorRoot, SHORT_SCREEN, SettingsRoot, fdd1_model, help_glyphs, media_section,
+                row_of, settings_page, show, show_in, shown_help, shown_help_in, statuses_with,
             },
         },
-        gui_test_support::{GuiHarness, PassCounts},
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN, PassCounts},
         texts::{LanguageCatalog, repository::repository_catalogs, test_catalog},
     };
 
@@ -282,7 +281,7 @@ mod tests {
     #[test]
     fn the_help_area_follows_the_focused_row() {
         let root = EditorRoot::new("help_focus");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let path = root.game("edge", "meta.title = Edge\n");
         let mut editor =
             Editor::open(&root.host(), root.system(), &path).expect("the editor opens");
@@ -317,7 +316,7 @@ mod tests {
         assert_eq!(shown_help(&mut harness, &mut editor), Some(second));
 
         let theme = &harness.theme;
-        let form = form_area(theme, SCREEN);
+        let form = form_area(theme, MINIMUM_SCREEN);
         let control = RowAreas::new(theme, form, form.y).control;
         harness.input.mouse_x = control.x + control.width * 0.5;
         harness.input.mouse_y = control.y + control.height * 0.5;
@@ -341,7 +340,7 @@ mod tests {
     #[test]
     fn the_help_area_follows_the_hovered_row() {
         let test = SettingsRoot::new("help_hover", Some(""));
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let (mut editor, [first, second]) = video_section(&test, &mut harness);
         let row = row_of(&editor, second).rect;
         let areas = RowAreas::new(&harness.theme, row, row.y);
@@ -366,7 +365,7 @@ mod tests {
                 "{x} {y}"
             );
         }
-        assert_steady(&mut harness, &mut editor, SCREEN);
+        assert_steady(&mut harness, &mut editor, MINIMUM_SCREEN);
 
         point_at(&mut harness, 1.0, 1.0);
         show(&mut harness, &mut editor);
@@ -398,7 +397,7 @@ mod tests {
         let path = root.game("edge", "meta.title = Edge\n");
         let mut editor =
             Editor::open(&root.host(), root.system(), &path).expect("the editor opens");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         assert_eq!(harness.state.focused(), Some(field_id(TITLE_KEY)));
         point_at_row(&mut harness, &editor, TITLE_KEY);
@@ -447,11 +446,11 @@ mod tests {
     #[test]
     fn the_later_of_a_hover_and_a_focus_change_wins() {
         let test = SettingsRoot::new("help_later", Some(""));
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let (mut editor, rows) = video_section::<4>(&test, &mut harness);
         point_at_row(&mut harness, &editor, rows[3]);
         show(&mut harness, &mut editor);
-        assert_steady(&mut harness, &mut editor, SCREEN);
+        assert_steady(&mut harness, &mut editor, MINIMUM_SCREEN);
         assert_eq!(shown_help(&mut harness, &mut editor), Some(rows[3]));
 
         for (navigation, focused) in [(Navigation::Next, rows[1]), (Navigation::Down, rows[2])] {
@@ -463,19 +462,19 @@ mod tests {
                     .rect
                     .contains(harness.input.mouse_x, harness.input.mouse_y)
             );
-            assert_steady(&mut harness, &mut editor, SCREEN);
+            assert_steady(&mut harness, &mut editor, MINIMUM_SCREEN);
             assert_eq!(shown_help(&mut harness, &mut editor), Some(focused));
         }
 
         point_at_row(&mut harness, &editor, rows[0]);
         show(&mut harness, &mut editor);
-        assert_steady(&mut harness, &mut editor, SCREEN);
+        assert_steady(&mut harness, &mut editor, MINIMUM_SCREEN);
         assert_eq!(harness.state.focused(), Some(field_id(rows[2])));
         assert_eq!(shown_help(&mut harness, &mut editor), Some(rows[0]));
 
         point_at(&mut harness, 1.0, 1.0);
         show(&mut harness, &mut editor);
-        assert_steady(&mut harness, &mut editor, SCREEN);
+        assert_steady(&mut harness, &mut editor, MINIMUM_SCREEN);
         assert_eq!(shown_help(&mut harness, &mut editor), Some(rows[2]));
     }
 
@@ -486,7 +485,7 @@ mod tests {
     #[test]
     fn a_click_on_a_row_shows_its_help() {
         let test = SettingsRoot::new("help_click", Some(""));
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let (mut editor, [first, second]) = video_section(&test, &mut harness);
         let row = row_of(&editor, first).rect;
         let label = RowAreas::new(&harness.theme, row, row.y).label;
@@ -509,7 +508,7 @@ mod tests {
             harness.input.left = false;
             show(&mut harness, &mut editor);
             assert_eq!(harness.state.focused(), Some(field_id(first)));
-            assert_steady(&mut harness, &mut editor, SCREEN);
+            assert_steady(&mut harness, &mut editor, MINIMUM_SCREEN);
             assert_eq!(
                 shown_help(&mut harness, &mut editor),
                 Some(first),
@@ -533,7 +532,7 @@ mod tests {
         let test = SettingsRoot::new("help_scroll", Some(""));
         let host = test.host(&[]);
         let mut editor = settings_page(&host, &statuses_with(&host, RomStatus::NotFound));
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show_in(&mut harness, &mut editor, SHORT_SCREEN);
         for _ in 0..2 {
             harness.input.navigation = Some(Navigation::NextTab);
@@ -626,14 +625,14 @@ mod tests {
             harness.input.navigation = Some(navigation);
             show(harness, editor);
             assert_eq!(harness.state.focused(), Some(tabs));
-            assert_steady(harness, editor, SCREEN);
+            assert_steady(harness, editor, MINIMUM_SCREEN);
             assert_eq!(shown_help(harness, editor), None, "{navigation:?}");
         }
         assert_eq!(editor.current_section(), section);
         assert!(row_of(editor, key).hovered);
         harness.input.mouse_y += 1.0;
         show(harness, editor);
-        assert_steady(harness, editor, SCREEN);
+        assert_steady(harness, editor, MINIMUM_SCREEN);
         assert_eq!(shown_help(harness, editor), Some(key));
     }
 
@@ -642,8 +641,8 @@ mod tests {
     #[test]
     fn a_section_switch_of_the_game_editor_enters_no_row() {
         let root = EditorRoot::new("help_switch_game");
-        let mut harness = GuiHarness::new(960, 600);
-        let mut editor = media_section(&root, &mut harness, SCREEN, "");
+        let mut harness = GuiHarness::minimum();
+        let mut editor = media_section(&root, &mut harness, MINIMUM_SCREEN, "");
         assert_a_section_switch_enters_no_row(&mut harness, &mut editor, "fdd1");
     }
 
@@ -652,7 +651,7 @@ mod tests {
     #[test]
     fn a_section_switch_of_the_settings_page_enters_no_row() {
         let test = SettingsRoot::new("help_switch_settings", Some(""));
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let (mut editor, [_, second]) = video_section(&test, &mut harness);
         assert_a_section_switch_enters_no_row(&mut harness, &mut editor, second);
     }
@@ -663,7 +662,7 @@ mod tests {
         let root = EditorRoot::new("help_defaults");
         let mut editor =
             Editor::system_defaults(&root.host(), root.system()).expect("the editor opens");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         assert_eq!(editor.current_section(), EditorSection::Machine);
         harness.state.set_focus(field_id(MACHINE_KEY));
@@ -682,7 +681,7 @@ mod tests {
         let path = root.game("edge", &format!("meta.title = Edge\nmachine = {model}\n"));
         let mut editor =
             Editor::open(&root.host(), root.system(), &path).expect("the editor opens");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         harness.input.text = "!".to_owned();
         show(&mut harness, &mut editor);
@@ -744,7 +743,7 @@ mod tests {
         let path = root.game("edge", &format!("meta.title = Edge\nmachine = {model}\n"));
         let mut editor =
             Editor::open(&root.host(), root.system(), &path).expect("the editor opens");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let [first, second] =
             harness.frame(|context| drives.map(|drive| shaped_help(context, drive)));
         assert_eq!(first.len(), second.len());
@@ -771,13 +770,13 @@ mod tests {
         let test = SettingsRoot::new("help_visible", Some(""));
         let host = test.host(&[]);
         let mut editor = settings_page(&host, &statuses_with(&host, RomStatus::NotFound));
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         harness.input.navigation = Some(Navigation::NextTab);
         show(&mut harness, &mut editor);
         assert_eq!(editor.current_section(), EditorSection::Roms);
-        let form = form_area(&harness.theme, SCREEN);
-        let help = help_area(&harness.theme, SCREEN);
+        let form = form_area(&harness.theme, MINIMUM_SCREEN);
+        let help = help_area(&harness.theme, MINIMUM_SCREEN);
         assert!(form.bottom() < help.y);
         let keys: Vec<&str> = editor
             .fields
@@ -809,13 +808,13 @@ mod tests {
         /// The German help text of the first row.
         const GERMAN_HELP: &str = "Kurz.";
         let test = SettingsRoot::new("help_refill", Some(""));
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let (mut editor, [first, second]) = video_section(&test, &mut harness);
         let english = help_glyphs(&harness);
         let counted = |harness: &mut GuiHarness, editor: &mut Editor| {
             harness
                 .counted_frame(|context| {
-                    editor.show(context, SCREEN);
+                    editor.show(context, MINIMUM_SCREEN);
                 })
                 .0
         };
@@ -839,12 +838,12 @@ mod tests {
     }
 
     /// Verifies that the help text of every setting row of every compiled system and of the
-    /// settings page fits the help area of a 960 x 600 window in every language of the
-    /// repository.
+    /// settings page fits the help area of a window of the minimum size in every language of
+    /// the repository.
     #[test]
     fn every_help_text_fits_at_the_minimum_window_size() {
-        let mut harness = GuiHarness::new(960, 600);
-        let width = help_area(&harness.theme, SCREEN).width;
+        let mut harness = GuiHarness::minimum();
+        let width = help_area(&harness.theme, MINIMUM_SCREEN).width;
         let mut settings: Vec<&'static Setting> = Vec::new();
         let rows = compiled_systems()
             .flat_map(|system| {

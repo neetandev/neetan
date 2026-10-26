@@ -425,11 +425,11 @@ mod tests {
             page::form_area,
             rows::{FORM_ROW_PITCH, browse_id},
             test_support::{
-                EditorRoot, SCREEN, SHORT_SCREEN, SettingsRoot, index_of, media_section, row_of,
+                EditorRoot, SHORT_SCREEN, SettingsRoot, index_of, media_section, row_of,
                 settings_page, show, show_in, shown_help, shown_help_in, statuses_with,
             },
         },
-        gui_test_support::{GuiHarness, PassCounts},
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN, MINIMUM_WIDTH, PassCounts},
     };
 
     /// The kinds of the rows that the row press tests met.
@@ -502,7 +502,7 @@ mod tests {
     /// rows to `pressed`.
     fn press_every_row(harness: &mut GuiHarness, editor: &mut Editor, pressed: &mut PressedRows) {
         let tabs = UiId::from(TABS_ID);
-        let form = form_area(&harness.theme, SCREEN);
+        let form = form_area(&harness.theme, MINIMUM_SCREEN);
         let gap = harness.theme.gap;
         show(harness, editor);
         for section in 0..editor.sections().len() {
@@ -552,7 +552,7 @@ mod tests {
                         "{key} {x} {y}"
                     );
                     let (counts, _) = harness.counted_frame(|context| {
-                        editor.show(context, SCREEN);
+                        editor.show(context, MINIMUM_SCREEN);
                     });
                     assert_eq!(counts, PassCounts::NONE, "{key}");
                     assert_eq!(
@@ -610,7 +610,7 @@ mod tests {
     /// the game editor.
     #[test]
     fn a_press_on_a_row_focuses_its_control_in_the_editors() {
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let mut pressed = PressedRows::default();
         let mut read = Vec::new();
         for system in compiled_systems() {
@@ -656,7 +656,7 @@ mod tests {
         feature = "x68k"
     ))]
     fn a_press_on_a_disabled_row_keeps_the_focus() {
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let mut pressed = PressedRows::default();
         for system in compiled_systems() {
             let root = EditorRoot::with_system("row_press_disabled", system.name);
@@ -685,7 +685,7 @@ mod tests {
         let test = SettingsRoot::new("row_press_settings", Some(""));
         let host = test.host(&[]);
         let mut editor = settings_page(&host, &statuses_with(&host, RomStatus::NotFound));
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let mut pressed = PressedRows::default();
         press_every_row(&mut harness, &mut editor, &mut pressed);
         for kind in ["language", "choice", "number", "path"] {
@@ -696,7 +696,7 @@ mod tests {
             harness.input.navigation = Some(Navigation::NextTab);
             show(&mut harness, &mut editor);
         }
-        let form = form_area(&harness.theme, SCREEN);
+        let form = form_area(&harness.theme, MINIMUM_SCREEN);
         let root_row = RowAreas::new(&harness.theme, form, form.y);
         for (x, y) in [
             (
@@ -721,11 +721,11 @@ mod tests {
     fn a_press_on_a_read_only_row_keeps_the_focus() {
         let root = EditorRoot::new("row_press_read_only");
         let mut editor = Editor::new_game(&root.host(), root.system()).expect("the editor opens");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         assert_eq!(editor.current_section(), EditorSection::Metadata);
         let tabs = UiId::from(TABS_ID);
-        let form = form_area(&harness.theme, SCREEN);
+        let form = form_area(&harness.theme, MINIMUM_SCREEN);
         let system_row = RowAreas::new(&harness.theme, form, form.y);
         assert!(editor.rows.iter().all(|row| row.rect.y > form.y));
         harness.state.set_focus(tabs);
@@ -749,7 +749,7 @@ mod tests {
     fn a_press_below_a_hidden_control_reveals_the_control() {
         /// The height of the part of the row that shows below the top of the form.
         const SHOWN: f32 = 24.0;
-        let mut harness = GuiHarness::new(960, 300);
+        let mut harness = GuiHarness::new(MINIMUM_WIDTH as u32, 300);
         let form = form_area(&harness.theme, SHORT_SCREEN);
         let tabs = UiId::from(TABS_ID);
         let cases: [(&str, &str, &[f32]); 2] = [
@@ -853,8 +853,8 @@ mod tests {
     #[test]
     fn a_press_on_a_disabled_button_of_a_row_keeps_the_focus() {
         let root = EditorRoot::new("row_press_disabled_button");
-        let mut harness = GuiHarness::new(960, 600);
-        let mut editor = media_section(&root, &mut harness, SCREEN, "");
+        let mut harness = GuiHarness::minimum();
+        let mut editor = media_section(&root, &mut harness, MINIMUM_SCREEN, "");
         let fdd1 = index_of(&editor, "fdd1");
         assert!(editor.fields[fdd1].images().is_empty());
         let row = row_of(&editor, "fdd1");

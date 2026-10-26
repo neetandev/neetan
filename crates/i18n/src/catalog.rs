@@ -274,6 +274,14 @@ mod tests {
         assert_eq!(plural.form(Some(1)), form(0));
         assert_eq!(plural.form(Some(2)), form(1));
         assert_eq!(plural.form(None), form(1));
+        let below_two = Entry {
+            forms: [form(0), form(1)],
+            plural: Some(PluralRule::OneBelowTwo),
+        };
+        assert_eq!(below_two.form(Some(0)), form(0));
+        assert_eq!(below_two.form(Some(1)), form(0));
+        assert_eq!(below_two.form(Some(2)), form(1));
+        assert_eq!(below_two.form(None), form(1));
         let fixed = Entry {
             forms: [Form::EMPTY, form(5)],
             plural: None,

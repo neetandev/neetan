@@ -272,7 +272,7 @@ mod tests {
     #[cfg(feature = "pc98")]
     use crate::{
         editor::EditorSection,
-        gui_test_support::PassCounts,
+        gui_test_support::{MINIMUM_HEIGHT, MINIMUM_WIDTH, PassCounts},
         manager::test_support::{select, shown_help},
         texts::repository::{RepositoryLanguage, repository_languages},
     };
@@ -312,7 +312,7 @@ mod tests {
     fn f2_and_x_open_the_editor_on_the_selected_game() {
         let root = two_games("edit_keys");
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);
         assert_eq!(titles(&manager), ["Brandish", "Edge"]);
         for open in [
@@ -342,7 +342,7 @@ mod tests {
     fn shortcuts_without_control_are_inactive_in_the_filter() {
         let root = two_games("edit_filter");
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);
         harness.state.set_focus(UiId::from(FILTER_ID));
         settle(&mut harness, &mut manager);
@@ -363,7 +363,7 @@ mod tests {
     fn a_save_updates_the_library_row() {
         let root = two_games("edit_save");
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);
         harness.input.shortcut = Some(Shortcut::F2);
         settle(&mut harness, &mut manager);
@@ -391,7 +391,7 @@ mod tests {
     fn insert_adds_a_game_with_a_derived_file() {
         let root = two_games("edit_add");
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);
         harness.input.shortcut = Some(Shortcut::Insert);
         settle(&mut harness, &mut manager);
@@ -437,7 +437,7 @@ mod tests {
         let root = two_games("edit_duplicate");
         root.game("brandish-copy", "meta.title = Older copy\n");
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);
         harness.input.shortcut = Some(Shortcut::ControlD);
         settle(&mut harness, &mut manager);
@@ -463,7 +463,7 @@ mod tests {
     fn a_file_changed_outside_asks_before_an_overwrite() {
         let root = two_games("edit_save_error");
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);
         harness.input.shortcut = Some(Shortcut::F2);
         settle(&mut harness, &mut manager);
@@ -541,7 +541,7 @@ mod tests {
     fn a_launch_error_opens_its_game_in_the_editor() {
         let root = two_games("edit_launch_error");
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);
         let launch = manager.launch(&manager.rows()[1].clone());
         let layer = manager.launch_failed(&launch, &LaunchFailure::missing_image("/a.d88"));
@@ -561,7 +561,7 @@ mod tests {
     fn the_system_defaults_button_opens_the_defaults_editor() {
         let root = two_games("edit_defaults_open");
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);
         harness.state.set_focus(UiId::from(SYSTEM_DEFAULTS_ID));
         settle(&mut harness, &mut manager);
@@ -613,7 +613,7 @@ mod tests {
         let other = *choices.last().expect("the PC-98 has models");
         assert_ne!(other, system.default_model);
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);
         select(&mut manager, "pc98");
         settle(&mut harness, &mut manager);
@@ -658,19 +658,27 @@ mod tests {
 
     #[cfg(feature = "pc98")]
     /// The settings of the game of the steady frame test after the game file of YU-NO: a
-    /// second floppy drive, a display value and an advanced value. Every section holds a set
-    /// value.
-    const STEADY_SETTINGS: &str = "fdd2 = games/98/YU-NO/Saves/save.d88\n\
+    /// second floppy drive, a missing hard disk image, display values and values that do not
+    /// read. Every section holds a set value and a note of two lines at the minimum window
+    /// size.
+    const STEADY_SETTINGS: &str = "ems = maybe\nfdd2 = games/98/YU-NO/Saves/save.d88\n\
          hdd2 = games/98/YU-NO/Saves/missing.hdi\nadpcm-ram = maybe\ncrt = on\n\
-         aspect-mode = wide\nenable-extractor = yes\n";
+         aspect-mode = wide\nenable-extractor = sometimes\n";
 
     #[cfg(feature = "pc98")]
-    /// Opens YU-NO with [`STEADY_SETTINGS`] in the editor of a manager over [`sample_root`].
+    /// The stem of the game file of the steady frame test. The note of the title holds the
+    /// stem and takes two lines at the minimum window size.
+    const STEADY_STEM: &str = "yu-no-a-girl-who-chants-love-at-the-bound-of-this-world";
+
+    #[cfg(feature = "pc98")]
+    /// Opens YU-NO with [`STEADY_SETTINGS`] from the game file [`STEADY_STEM`] in the editor
+    /// of a manager over [`sample_root`].
     fn steady_editor(name: &str) -> (EditorRoot, Manager, GuiHarness) {
         let root = sample_root(name);
-        root.game("yu-no", &format!("{YU_NO}{STEADY_SETTINGS}"));
+        std::fs::remove_file(root.path("config/pc98/yu-no.conf")).expect("file is removed");
+        root.game(STEADY_STEM, &format!("{YU_NO}{STEADY_SETTINGS}"));
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);
         select(&mut manager, "pc98");
         select_game(
@@ -790,7 +798,7 @@ mod tests {
         settle(&mut harness, &mut manager);
         assert!(manager.editor().is_some());
 
-        let path = root.path("config/pc98/yu-no.conf");
+        let path = root.path(&format!("config/pc98/{STEADY_STEM}.conf"));
         std::fs::write(&path, format!("{YU_NO}crt = on\n")).expect("file is written");
         harness.input.shortcut = Some(Shortcut::ControlS);
         settle(&mut harness, &mut manager);
@@ -1219,7 +1227,7 @@ key.PageDown = RollUp
         for language in repository_languages() {
             for kind in [ThemeKind::Dark, ThemeKind::Light] {
                 for scale in [1.0, 2.0] {
-                    screenshots(960.0, 600.0, scale, false, kind, language);
+                    screenshots(MINIMUM_WIDTH, MINIMUM_HEIGHT, scale, false, kind, language);
                     screenshots(1920.0, 1080.0, scale, true, kind, language);
                 }
             }

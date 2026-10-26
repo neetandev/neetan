@@ -10,8 +10,8 @@ use ::common::FlushError;
 use gui::{
     Rect, RectStyle,
     ui::{
-        ACTIVATE_KEYS, Align, Button, ButtonKind, CANCEL_KEYS, HEADER_HEIGHT, Icon, TextBuffer,
-        UiContext, UiId, WrappedText, modal_in,
+        Align, Button, ButtonKind, HEADER_HEIGHT, Icon, TextBuffer, UiContext, UiId, WrappedText,
+        modal_in,
     },
 };
 use i18n::Key;
@@ -21,7 +21,7 @@ use self::event::{ErrorDetail, ErrorEvent};
 use crate::{
     config::{LaunchError, LaunchFailure},
     editor::{EditedFile, OpenError, SaveFailure},
-    texts::{HintText, HintTexts, common, errors},
+    texts::{ACTIVATE_KEYS, CANCEL_KEYS, HintText, HintTexts, common, errors},
 };
 
 mod event;
@@ -487,7 +487,7 @@ mod tests {
     use crate::{
         config::DocumentError,
         editor::test_support::system_named,
-        gui_test_support::GuiHarness,
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN, MINIMUM_WINDOW},
         texts::{
             LanguageCatalog, english_labels,
             errors::{
@@ -501,11 +501,11 @@ mod tests {
     };
 
     /// The area of a dialog in the tests.
-    const AREA: Rect = Rect::new(0.0, 0.0, 960.0, 572.0);
+    const AREA: Rect = MINIMUM_SCREEN;
 
     /// Returns `dialog` after one pass in the English texts.
     fn drawn(mut dialog: ErrorDialog) -> ErrorDialog {
-        GuiHarness::new(960, 600).frame(|context| dialog.show(context, AREA));
+        GuiHarness::minimum().frame(|context| dialog.show(context, AREA));
         dialog
     }
 
@@ -587,8 +587,8 @@ mod tests {
     /// Verifies that OK holds the focus, that confirm and cancel close the dialog and that navigation does not.
     #[test]
     fn ok_holds_the_focus_and_confirm_or_cancel_close_the_dialog() {
-        let mut harness = GuiHarness::new(960, 600);
-        let area = Rect::new(0.0, 0.0, 960.0, 600.0);
+        let mut harness = GuiHarness::minimum();
+        let area = MINIMUM_WINDOW;
         let mut dialog =
             ErrorDialog::launch_failed("Edge", &LaunchFailure::Machine("error".to_owned()));
         assert_eq!(
@@ -623,8 +623,8 @@ mod tests {
     /// Verifies that the launch dialog with a game file offers its editor beside OK and that OK keeps the focus.
     #[test]
     fn the_launch_dialog_opens_the_editor_from_its_edit_button() {
-        let mut harness = GuiHarness::new(960, 600);
-        let area = Rect::new(0.0, 0.0, 960.0, 600.0);
+        let mut harness = GuiHarness::minimum();
+        let area = MINIMUM_WINDOW;
         let system = machine_factory::config::systems::compiled_systems()
             .next()
             .expect("one system is compiled");
@@ -709,7 +709,7 @@ mod tests {
     /// Verifies that a switch of the catalog while the dialog is open gives the drawn message and detail the new language in the next pass and that a switch back gives the English texts.
     #[test]
     fn an_open_dialog_follows_a_catalog_switch() {
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let mut dialog = ErrorDialog::new_game_open_failed(
             system_named("pc98"),
             &OpenError::NotCompiled("pc98"),
@@ -739,8 +739,8 @@ mod tests {
     /// Verifies that the dialog of a file that changed outside the manager starts on Cancel, that its hints follow the focus and that each button gives its answer.
     #[test]
     fn the_changed_outside_dialog_offers_cancel_and_overwrite() {
-        let mut harness = GuiHarness::new(960, 600);
-        let area = Rect::new(0.0, 0.0, 960.0, 572.0);
+        let mut harness = GuiHarness::minimum();
+        let area = MINIMUM_SCREEN;
         let mut dialog = drawn(ErrorDialog::changed_outside(
             &game(),
             "config/pc98/edge.conf",
@@ -771,7 +771,7 @@ mod tests {
             |harness: &mut GuiHarness| harness.input.cancel = true,
             |harness: &mut GuiHarness| harness.input.confirm = true,
         ] {
-            let mut harness = GuiHarness::new(960, 600);
+            let mut harness = GuiHarness::minimum();
             harness.frame(|context| dialog.show(context, area));
             harness.frame(|context| dialog.show(context, area));
             press(&mut harness);
@@ -810,7 +810,7 @@ mod tests {
     /// Verifies that every dialog kind draws the alert icon in the danger text color at the start of the content, before the text column, and that the message top, the icon top and the detail well follow the DESIGN figures.
     #[test]
     fn every_dialog_draws_the_alert_icon_before_its_text() {
-        let area = Rect::new(0.0, 0.0, 960.0, 572.0);
+        let area = MINIMUM_SCREEN;
         let dialogs = [
             ErrorDialog::launch_failed("Edge", &LaunchFailure::Machine("error".to_owned())),
             ErrorDialog::game_stopped(Some("X1"), "halt", &Ok(())),
@@ -833,7 +833,7 @@ mod tests {
             ErrorDialog::changed_outside(&game(), "changed"),
         ];
         let icon_inset = {
-            let mut harness = GuiHarness::new(960, 600);
+            let mut harness = GuiHarness::minimum();
             harness.frame(|context| {
                 let theme = context.theme;
                 let size = theme.icon_size;
@@ -843,7 +843,7 @@ mod tests {
             harness.scene.instances()[0].rect[1]
         };
         for mut dialog in dialogs {
-            let mut harness = GuiHarness::new(960, 600);
+            let mut harness = GuiHarness::minimum();
             harness.frame(|context| dialog.show(context, area));
             let theme = &harness.theme;
             let instances = harness.scene.instances();
@@ -919,8 +919,8 @@ mod tests {
     /// Verifies that the panel centers in the area it receives and keeps the margin to its edges.
     #[test]
     fn the_dialog_centers_in_its_area() {
-        let mut harness = GuiHarness::new(960, 600);
-        let area = Rect::new(0.0, 0.0, 960.0, 572.0);
+        let mut harness = GuiHarness::minimum();
+        let area = MINIMUM_SCREEN;
         let mut dialog =
             ErrorDialog::launch_failed("Edge", &LaunchFailure::Machine("error text ".repeat(60)));
         harness.frame(|context| dialog.show(context, area));
@@ -936,7 +936,7 @@ mod tests {
             .rect;
         let top = panel[1];
         let bottom = panel[1] + panel[3];
-        assert!((top - (572.0 - bottom)).abs() <= 1.0, "{panel:?}");
-        assert!(bottom <= 572.0);
+        assert!((top - (area.height - bottom)).abs() <= 1.0, "{panel:?}");
+        assert!(bottom <= area.height);
     }
 }

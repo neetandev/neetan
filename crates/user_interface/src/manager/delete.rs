@@ -14,7 +14,7 @@ use i18n::Catalog;
 use stack_vec::StackVec;
 
 use super::rows::GameRow;
-use crate::texts::{HintText, common, delete};
+use crate::texts::{CONFIRM_KEYS, HintText, common, delete};
 
 /// The id of the modal layer of the question.
 pub(crate) const DELETE_LAYER_ID: &str = "delete";
@@ -106,7 +106,13 @@ impl DeleteRequest {
     /// `response` of this pass, in the order of the hints of a confirm
     /// dialog.
     pub(crate) fn hints(&self, response: ConfirmResponse) -> StackVec<HintText, CONFIRM_HINTS> {
-        confirm_hints(response, common::CANCEL, common::DELETE, HintText::new)
+        confirm_hints(
+            response,
+            CONFIRM_KEYS,
+            common::CANCEL,
+            common::DELETE,
+            HintText::new,
+        )
     }
 
     /// Draws one pass of the question centered in `area`. A confirm removes
@@ -157,7 +163,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        gui_test_support::GuiHarness,
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN},
         manager::rows::tests::game,
         texts::{LanguageCatalog, english_labels, test_catalog},
     };
@@ -187,7 +193,7 @@ mod tests {
     }
 
     /// The area of the question in the tests.
-    const AREA: Rect = Rect::new(0.0, 0.0, 960.0, 572.0);
+    const AREA: Rect = MINIMUM_SCREEN;
 
     /// Draws the question in passes until it settles.
     fn draw(
@@ -213,7 +219,7 @@ mod tests {
             "",
         ));
         assert_eq!(request.message(), None);
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         draw(&mut harness, &mut request);
         assert_eq!(
             request.message(),
@@ -237,7 +243,7 @@ mod tests {
     fn an_open_question_follows_a_catalog_switch() {
         let folder = TestFolder::new("catalog_switch");
         let mut request = folder.request();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         draw(&mut harness, &mut request);
         assert_eq!(request.message(), Some("Delete Edge?"));
         let english_detail = format!(
@@ -260,7 +266,7 @@ mod tests {
     fn cancel_keeps_the_file() {
         let folder = TestFolder::new("cancel");
         let mut request = folder.request();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         let (outcome, response) = draw(&mut harness, &mut request);
         assert_eq!(outcome, DeleteOutcome::Open);
         assert!(!response.action_focused);
@@ -280,7 +286,7 @@ mod tests {
     fn confirm_removes_the_file() {
         let folder = TestFolder::new("confirm");
         let mut request = folder.request();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         draw(&mut harness, &mut request);
         harness.input.navigation = Some(Navigation::Right);
         let (_, response) = draw(&mut harness, &mut request);
@@ -308,7 +314,7 @@ mod tests {
             .expect("the file is renamed");
         std::os::unix::fs::symlink(&target, folder.folder.path().join("edge.conf")).expect("link");
         let mut request = folder.request();
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         draw(&mut harness, &mut request);
         harness.input.navigation = Some(Navigation::Right);
         draw(&mut harness, &mut request);
@@ -324,7 +330,7 @@ mod tests {
         let folder = TestFolder::new("failed");
         let mut request = folder.request();
         std::fs::remove_file(&request.path).expect("the file is removed before");
-        let mut harness = GuiHarness::new(960, 600);
+        let mut harness = GuiHarness::minimum();
         draw(&mut harness, &mut request);
         harness.input.navigation = Some(Navigation::Right);
         draw(&mut harness, &mut request);
