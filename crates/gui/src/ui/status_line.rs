@@ -20,6 +20,14 @@ pub const KEYCAP_HEIGHT: f32 = 18.0;
 /// The padding of a key cap on both sides together in units of the gap.
 const KEYCAP_PADDING_GAPS: f32 = 1.25;
 
+/// The size of each arrow icon in the cap of [`HintKey::DpadLeftRight`].
+const DPAD_ICON_SIZE: f32 = 12.0;
+
+/// The width of the cap of [`HintKey::DpadLeftRight`]. Each arrow sits at
+/// the center of a round end of the cap, and the centers lie one icon
+/// apart. The two arrows keep a gap between them.
+const DPAD_CAP_WIDTH: f32 = KEYCAP_HEIGHT + DPAD_ICON_SIZE;
+
 /// A key of the keyboard or a button of a gamepad in a [`Hint`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HintKey<'a> {
@@ -31,6 +39,9 @@ pub enum HintKey<'a> {
     Shoulder(&'a str),
     /// A gamepad menu button with a key cap, for example `Start`.
     Menu(&'a str),
+    /// The left and right of the gamepad D-pad: a round cap with a left
+    /// and a right arrow.
+    DpadLeftRight,
 }
 
 /// The keys of an action and the label of the action.
@@ -160,6 +171,7 @@ fn keycap_width(context: &mut UiContext, key: HintKey) -> f32 {
     let style = theme.small().with_color(theme.colors.text);
     let text = match key {
         HintKey::Pad(_) => return KEYCAP_HEIGHT,
+        HintKey::DpadLeftRight => return DPAD_CAP_WIDTH,
         HintKey::Key(key) => context.catalog.text(key),
         HintKey::Shoulder(text) | HintKey::Menu(text) => text,
     };
@@ -176,10 +188,11 @@ fn keycap(context: &mut UiContext, x: f32, line: Rect, key: HintKey) -> f32 {
     let half = KEYCAP_HEIGHT * 0.5;
     let width = keycap_width(context, key);
     let (text, radii) = match key {
-        HintKey::Key(key) => (context.catalog.text(key), [small_radius; 4]),
-        HintKey::Menu(text) => (text, [small_radius; 4]),
-        HintKey::Pad(text) => (text, [half; 4]),
-        HintKey::Shoulder(text) => (text, [half, half, small_radius, small_radius]),
+        HintKey::Key(key) => (Some(context.catalog.text(key)), [small_radius; 4]),
+        HintKey::Menu(text) => (Some(text), [small_radius; 4]),
+        HintKey::Pad(text) => (Some(text), [half; 4]),
+        HintKey::Shoulder(text) => (Some(text), [half, half, small_radius, small_radius]),
+        HintKey::DpadLeftRight => (None, [half; 4]),
     };
     let top = context.snap(line.y + (line.height - KEYCAP_HEIGHT) * 0.5);
     let cap = context.snap_rect(Rect::new(x, top, width, KEYCAP_HEIGHT));
@@ -191,7 +204,23 @@ fn keycap(context: &mut UiContext, x: f32, line: Rect, key: HintKey) -> f32 {
                 .with_stroke(theme.stroke, theme.colors.control_edge)
         },
     );
-    context.text_centered(cap, &style, text);
+    if let Some(text) = text {
+        context.text_centered(cap, &style, text);
+    } else {
+        let (_, middle) = cap.center();
+        for (center, icon) in [
+            (cap.x + half, Icon::Left),
+            (cap.right() - half, Icon::Right),
+        ] {
+            let slot = Rect::new(
+                center - DPAD_ICON_SIZE * 0.5,
+                middle - DPAD_ICON_SIZE * 0.5,
+                DPAD_ICON_SIZE,
+                DPAD_ICON_SIZE,
+            );
+            context.icon(slot, icon, DPAD_ICON_SIZE, theme.colors.text);
+        }
+    }
     cap.right()
 }
 
@@ -301,6 +330,57 @@ mod tests {
         assert!(
             (first[2] - expected.round()).abs() <= 1.0,
             "{first:?} {expected}"
+        );
+    }
+
+    /// Verifies that the D-pad cap is a round cap of its width with a left and a right arrow
+    /// inside it, a gap between the arrows and no text.
+    #[test]
+    fn the_dpad_cap_draws_a_left_and_a_right_arrow() {
+        let mut harness = Harness::new();
+        harness.frame(|context| {
+            let hint = Hint {
+                keys: &[HintKey::DpadLeftRight],
+                label: "",
+            };
+            status_line(context, LINE, &[hint], StatusEnd::None);
+        });
+        let instances = harness.scene.instances();
+        let caps: Vec<_> = instances
+            .iter()
+            .filter(|instance| {
+                instance.kind[0] == Instance::KIND_RECTANGLE && instance.rect[3] == KEYCAP_HEIGHT
+            })
+            .collect();
+        assert_eq!(caps.len(), 1);
+        let cap = caps[0].rect;
+        assert_eq!(cap[2], DPAD_CAP_WIDTH);
+        assert_eq!(caps[0].radii, [KEYCAP_HEIGHT * 0.5; 4]);
+        let lines: Vec<_> = instances
+            .iter()
+            .filter(|instance| instance.kind[0] == Instance::KIND_LINE)
+            .map(|instance| instance.rect)
+            .collect();
+        assert_eq!(lines.len(), 4);
+        for line in &lines {
+            assert!(
+                line[0] >= cap[0] && line[0] + line[2] <= cap[0] + cap[2],
+                "{line:?}"
+            );
+        }
+        let left_end = lines[..2]
+            .iter()
+            .map(|line| line[0] + line[2])
+            .fold(f32::MIN, f32::max);
+        let right_start = lines[2..]
+            .iter()
+            .map(|line| line[0])
+            .fold(f32::MAX, f32::min);
+        assert!(right_start - left_end >= 2.0, "{lines:?}");
+        assert!(
+            instances
+                .iter()
+                .all(|instance| instance.kind[0] != Instance::KIND_GLYPH)
         );
     }
 

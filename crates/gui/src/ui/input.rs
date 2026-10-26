@@ -14,10 +14,44 @@ pub enum ActionButton {
     Start,
 }
 
+/// The device of the navigation event of a pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum NavigationSource {
+    /// A key of the keyboard.
+    #[default]
+    Keyboard,
+    /// The D-pad, the left stick or a shoulder button of a gamepad.
+    Gamepad,
+}
+
+/// The modifier keys held with the navigation key of a pass. They change
+/// the step of the text cursor in a focused text widget.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct EditModifiers {
+    /// The step extends the selection.
+    pub extend: bool,
+    /// Left and right step by one word.
+    pub word: bool,
+    /// Left and right step to the start and the end of the text.
+    pub edge: bool,
+}
+
+/// An edit of the text of the focused text widget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EditCommand {
+    /// Selects the whole text.
+    SelectAll,
+    /// Removes the selection or else the character after the cursor. It is
+    /// the delete key, and every widget other than a text widget reads it as
+    /// [`Shortcut::Delete`].
+    DeleteForward,
+}
+
 /// A keyboard shortcut of a screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Shortcut {
-    /// The delete key.
+    /// The delete key. It arrives as [`EditCommand::DeleteForward`] in
+    /// [`Input::edit`].
     Delete,
     /// The insert key.
     Insert,
@@ -54,9 +88,10 @@ impl Shortcut {
 ///
 /// The caller runs one pass for each discrete event: a press or a release of
 /// a mouse button, a navigation event, an action button, a shortcut, a text
-/// commit, a backspace, confirm or cancel. A pass holds at most one of them. Pointer
-/// motion and wheel steps add up until the next pass. The caller shows the
-/// scene of the last pass and calls [`Input::advance`] after each pass.
+/// commit, a backspace, an edit command, confirm or cancel. A pass holds at
+/// most one of them. Pointer motion and wheel steps add up until the next
+/// pass. The caller shows the scene of the last pass and calls
+/// [`Input::advance`] after each pass.
 ///
 /// The pointer position is in physical pixels: the window coordinates of the
 /// platform times the pixel density of the window, as
@@ -100,10 +135,16 @@ pub struct Input {
     pub cancel: bool,
     /// The navigation event of this pass.
     pub navigation: Option<Navigation>,
+    /// The device of the navigation event of this pass.
+    pub navigation_source: NavigationSource,
+    /// The modifier keys held with the navigation key of this pass.
+    pub modifiers: EditModifiers,
+    /// The edit command of this pass.
+    pub edit: Option<EditCommand>,
     /// The action button of a gamepad pressed in this pass.
     pub action: Option<ActionButton>,
     /// The shortcut key pressed in this pass. Backspace arrives in
-    /// [`Input::backspace`].
+    /// [`Input::backspace`] and delete in [`Input::edit`].
     pub shortcut: Option<Shortcut>,
 }
 
@@ -124,12 +165,13 @@ impl Input {
     }
 
     /// Whether the pass holds a key or gamepad event: a navigation event,
-    /// an action button, a shortcut, confirm, cancel, a text commit or a
-    /// backspace.
+    /// an action button, a shortcut, an edit command, confirm, cancel, a
+    /// text commit or a backspace.
     pub fn has_key_event(&self) -> bool {
         self.navigation.is_some()
             || self.action.is_some()
             || self.shortcut.is_some()
+            || self.edit.is_some()
             || self.confirm
             || self.cancel
             || !self.text.is_empty()
@@ -149,6 +191,9 @@ impl Input {
         self.confirm = false;
         self.cancel = false;
         self.navigation = None;
+        self.navigation_source = NavigationSource::Keyboard;
+        self.modifiers = EditModifiers::default();
+        self.edit = None;
         self.action = None;
         self.shortcut = None;
     }
@@ -197,6 +242,13 @@ mod tests {
             backspace: true,
             confirm: true,
             navigation: Some(Navigation::Down),
+            navigation_source: NavigationSource::Gamepad,
+            modifiers: EditModifiers {
+                extend: true,
+                word: true,
+                edge: true,
+            },
+            edit: Some(EditCommand::SelectAll),
             action: Some(ActionButton::Start),
             shortcut: Some(Shortcut::F2),
             ..Input::default()
@@ -210,15 +262,23 @@ mod tests {
         assert_eq!(input.wheel, 0.0);
         assert_eq!(input.action, None);
         assert_eq!(input.shortcut, None);
+        assert_eq!(input.edit, None);
+        assert_eq!(input.navigation_source, NavigationSource::Keyboard);
+        assert_eq!(input.modifiers, EditModifiers::default());
         assert_eq!(input.composition, "か");
         input.left = false;
         assert!(input.left_released());
     }
 
     #[test]
-    fn an_action_button_is_a_key_event() {
+    fn an_action_button_and_an_edit_command_are_key_events() {
         let input = Input {
             action: Some(ActionButton::Y),
+            ..Input::default()
+        };
+        assert!(input.has_key_event());
+        let input = Input {
+            edit: Some(EditCommand::DeleteForward),
             ..Input::default()
         };
         assert!(input.has_key_event());

@@ -104,6 +104,7 @@ impl TextEdit {
     }
 
     /// The byte offset of the anchor of the selection.
+    #[cfg(test)]
     pub(super) fn anchor(self) -> usize {
         self.anchor
     }
@@ -120,6 +121,10 @@ impl TextEdit {
     }
 
     /// The selected part of `text`.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "only the tests read the selected text")
+    )]
     pub(super) fn selected_text(self, text: &str) -> &str {
         let mut edit = self;
         edit.clamp(text);
@@ -139,6 +144,10 @@ impl TextEdit {
     /// Places the cursor at the position at or before the byte offset
     /// `offset`. With `extend` the anchor keeps its value, else it follows
     /// the cursor.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "only the tests place the cursor at an offset")
+    )]
     pub(super) fn place(&mut self, text: &str, offset: usize, extend: bool) -> EditOutcome {
         let previous = *self;
         self.clamp(text);
@@ -203,13 +212,8 @@ impl TextEdit {
     }
 
     /// Removes the selection of `text`, or else the position before the
-    /// cursor. The edit happens only when `accept` takes the whole candidate
-    /// text.
-    pub(super) fn remove_backward(
-        &mut self,
-        text: &mut String,
-        accept: impl Fn(&str) -> bool,
-    ) -> EditOutcome {
+    /// cursor.
+    pub(super) fn remove_backward(&mut self, text: &mut String) -> EditOutcome {
         let previous = *self;
         self.clamp(text);
         let range = if self.has_selection() {
@@ -217,17 +221,12 @@ impl TextEdit {
         } else {
             previous_position(text, self.cursor).unwrap_or(self.cursor)..self.cursor
         };
-        self.replace(text, range, "", previous, accept)
+        self.replace(text, range, "", previous, |_| true)
     }
 
     /// Removes the selection of `text`, or else the position after the
-    /// cursor. The edit happens only when `accept` takes the whole candidate
-    /// text.
-    pub(super) fn remove_forward(
-        &mut self,
-        text: &mut String,
-        accept: impl Fn(&str) -> bool,
-    ) -> EditOutcome {
+    /// cursor.
+    pub(super) fn remove_forward(&mut self, text: &mut String) -> EditOutcome {
         let previous = *self;
         self.clamp(text);
         let range = if self.has_selection() {
@@ -235,7 +234,7 @@ impl TextEdit {
         } else {
             self.cursor..next_position(text, self.cursor).unwrap_or(self.cursor)
         };
-        self.replace(text, range, "", previous, accept)
+        self.replace(text, range, "", previous, |_| true)
     }
 
     /// Replaces `range` of `text` with `inserted` when `accept` takes the
@@ -516,8 +515,8 @@ mod tests {
             }
         }
         assert_eq!(edit.select_all(&text), EditOutcome::default());
-        assert_eq!(edit.remove_backward(&mut text, any), EditOutcome::default());
-        assert_eq!(edit.remove_forward(&mut text, any), EditOutcome::default());
+        assert_eq!(edit.remove_backward(&mut text), EditOutcome::default());
+        assert_eq!(edit.remove_forward(&mut text), EditOutcome::default());
         assert_eq!(
             edit.insert(&mut text, "", NO_LIMIT, any),
             EditOutcome::default()
@@ -606,22 +605,6 @@ mod tests {
         );
         assert_eq!(text, "194");
 
-        let leading_digit = |candidate: &str| !candidate.starts_with('.');
-        let mut text = String::from("1.5");
-        let mut edit = state(&text, 1, 1);
-        assert_eq!(edit.remove_backward(&mut text, leading_digit), REJECTED);
-        assert_eq!(text, "1.5");
-        assert_eq!(edit.cursor(), 1);
-        let mut edit = state(&text, 0, 0);
-        assert_eq!(edit.remove_forward(&mut text, leading_digit), REJECTED);
-        assert_eq!(text, "1.5");
-        let mut edit = state(&text, 0, 2);
-        assert_eq!(
-            edit.remove_forward(&mut text, leading_digit),
-            TEXT_AND_STATE
-        );
-        assert_eq!(text, "5");
-
         let mut text = String::from("ab日本cd");
         let mut edit = state(&text, 2, 8);
         assert_eq!(edit.insert(&mut text, "語", NO_LIMIT, |_| false), REJECTED);
@@ -701,13 +684,13 @@ mod tests {
         for (anchor, cursor) in [(1, 4), (4, 1)] {
             let mut text = String::from("abcdef");
             let mut edit = state(&text, anchor, cursor);
-            assert_eq!(edit.remove_backward(&mut text, any), TEXT_AND_STATE);
+            assert_eq!(edit.remove_backward(&mut text), TEXT_AND_STATE);
             assert_eq!(text, "aef");
             assert_eq!((edit.anchor(), edit.cursor()), (1, 1));
 
             let mut text = String::from("abcdef");
             let mut edit = state(&text, anchor, cursor);
-            assert_eq!(edit.remove_forward(&mut text, any), TEXT_AND_STATE);
+            assert_eq!(edit.remove_forward(&mut text), TEXT_AND_STATE);
             assert_eq!(text, "aef");
             assert_eq!((edit.anchor(), edit.cursor()), (1, 1));
         }
@@ -717,15 +700,15 @@ mod tests {
     fn a_removal_without_a_selection_takes_one_position() {
         let mut text = String::from("abc");
         let mut edit = state(&text, 1, 1);
-        assert_eq!(edit.remove_backward(&mut text, any), TEXT_AND_STATE);
+        assert_eq!(edit.remove_backward(&mut text), TEXT_AND_STATE);
         assert_eq!(text, "bc");
         assert_eq!(edit.cursor(), 0);
-        assert_eq!(edit.remove_backward(&mut text, any), EditOutcome::default());
-        let outcome = edit.remove_forward(&mut text, any);
+        assert_eq!(edit.remove_backward(&mut text), EditOutcome::default());
+        let outcome = edit.remove_forward(&mut text);
         assert_eq!((outcome.text_changed, outcome.state_changed), (true, false));
         assert_eq!(text, "c");
         edit.go_to(&text, Motion::End, false);
-        assert_eq!(edit.remove_forward(&mut text, any), EditOutcome::default());
+        assert_eq!(edit.remove_forward(&mut text), EditOutcome::default());
         assert_eq!(text, "c");
     }
 
@@ -769,7 +752,7 @@ mod tests {
 
         let mut text = String::from(text);
         let mut edit = state(&text, 9, 9);
-        edit.remove_backward(&mut text, any);
+        edit.remove_backward(&mut text);
         assert!(text.starts_with("日本の"));
         assert_eq!(edit.cursor(), 6);
     }
@@ -827,11 +810,11 @@ mod tests {
         assert_eq!(edit.cursor(), 3);
 
         let mut edit = state(&text, 8, 8);
-        assert_eq!(edit.remove_backward(&mut text, any), TEXT_AND_STATE);
+        assert_eq!(edit.remove_backward(&mut text), TEXT_AND_STATE);
         assert_eq!(text, "e\u{301}b");
         assert_eq!(edit.cursor(), 3);
         let mut edit = state(&text, 0, 0);
-        edit.remove_forward(&mut text, any);
+        edit.remove_forward(&mut text);
         assert_eq!(text, "b");
 
         let text = "\u{2764}\u{FE0F}\u{1F468}\u{200D}\u{1F469}";
@@ -847,13 +830,13 @@ mod tests {
         let mut text = String::from("a\u{1F468}\u{200D}\u{1F469}");
         let mut edit = state(&text, text.len(), text.len());
         assert_eq!(edit.cursor(), text.len());
-        assert_eq!(edit.remove_backward(&mut text, any), TEXT_AND_STATE);
+        assert_eq!(edit.remove_backward(&mut text), TEXT_AND_STATE);
         assert_eq!(text, "a");
         assert_eq!(edit.cursor(), 1);
 
         let mut text = String::from("\u{1F468}\u{200D}\u{1F469}b");
         let mut edit = state(&text, 0, 0);
-        assert!(edit.remove_forward(&mut text, any).text_changed);
+        assert!(edit.remove_forward(&mut text).text_changed);
         assert_eq!(text, "b");
     }
 

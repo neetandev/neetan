@@ -436,7 +436,7 @@ fn rows_at(systems: &[SystemEntry], index: usize) -> &[GameRow] {
 
 #[cfg(test)]
 mod tests {
-    use gui::ui::{Navigation, ThemeKind, Viewport};
+    use gui::ui::{EditCommand, Navigation, ThemeKind, Viewport};
     use machine_factory::rom_status::RomStatus;
 
     use super::{
@@ -585,7 +585,7 @@ mod tests {
         harness.input.navigation = Some(Navigation::End);
         harness.settle(|context| manager.show(context));
 
-        harness.input.shortcut = Some(Shortcut::Delete);
+        harness.input.edit = Some(EditCommand::DeleteForward);
         harness.settle(|context| manager.show(context));
         assert!(manager.delete.is_some());
         harness.input.confirm = true;
@@ -594,14 +594,14 @@ mod tests {
         assert_eq!(titles(&manager), ["a", "b", "c"]);
         assert_eq!(harness.state.focused(), Some(UiId::from(GAME_TABLE_ID)));
 
-        harness.input.shortcut = Some(Shortcut::Delete);
+        harness.input.edit = Some(EditCommand::DeleteForward);
         harness.settle(|context| manager.show(context));
         harness.input.cancel = true;
         harness.settle(|context| manager.show(context));
         assert!(manager.delete.is_none());
         assert_eq!(titles(&manager), ["a", "b", "c"]);
 
-        harness.input.shortcut = Some(Shortcut::Delete);
+        harness.input.edit = Some(EditCommand::DeleteForward);
         harness.settle(|context| manager.show(context));
         harness.input.navigation = Some(Navigation::Right);
         harness.settle(|context| manager.show(context));
@@ -629,7 +629,7 @@ mod tests {
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
-        harness.input.shortcut = Some(Shortcut::Delete);
+        harness.input.edit = Some(EditCommand::DeleteForward);
         harness.settle(|context| manager.show(context));
         test.remove(&format!("{}/a.conf", first_system().name));
         harness.input.navigation = Some(Navigation::Right);
@@ -652,7 +652,7 @@ mod tests {
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
-        harness.input.shortcut = Some(Shortcut::Delete);
+        harness.input.edit = Some(EditCommand::DeleteForward);
         harness.settle(|context| manager.show(context));
         harness.input.navigation = Some(Navigation::Right);
         harness.settle(|context| manager.show(context));
@@ -818,7 +818,7 @@ mod tests {
             return;
         }
 
-        harness.input.shortcut = Some(Shortcut::Delete);
+        harness.input.edit = Some(EditCommand::DeleteForward);
         harness.settle(|context| manager.show(context));
         render(&harness, "delete");
         harness.input.cancel = true;
@@ -907,7 +907,7 @@ mod tests {
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
-        harness.input.shortcut = Some(Shortcut::Delete);
+        harness.input.edit = Some(EditCommand::DeleteForward);
         harness.settle(|context| manager.show(context));
         assert!(manager.delete.is_some());
         let cancel = UiId::from(DELETE_LAYER_ID).child("cancel");

@@ -36,6 +36,7 @@ mod checkbox;
 mod confirm;
 mod context;
 mod dropdown;
+mod field_value;
 mod focus;
 mod icons;
 mod input;
@@ -51,10 +52,6 @@ mod status_line;
 mod table;
 mod tabs;
 mod text_buffer;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the edit model has no caller outside its tests")
-)]
 mod text_edit;
 mod text_field;
 mod theme;
@@ -72,7 +69,9 @@ pub use context::{PointerResponse, TextStyle, UiContext, UiId, ui_id, ui_id_inde
 pub use dropdown::{Dropdown, POPUP_MAX_ROWS, dropdown};
 pub use focus::{Navigation, NavigationSet};
 pub use icons::{Icon, Icons};
-pub use input::{ActionButton, Input, Shortcut, Viewport};
+pub use input::{
+    ActionButton, EditCommand, EditModifiers, Input, NavigationSource, Shortcut, Viewport,
+};
 #[cfg(any(test, feature = "fill-counter"))]
 pub use label::count_wraps;
 pub use label::{Align, Truncation, WRAP_LINE_HEIGHT, WrappedText, label, wrapped_line_height};
@@ -272,6 +271,19 @@ pub(crate) mod tests {
         pub(crate) fn navigate(&mut self, navigation: Navigation) {
             assert_eq!(self.input.navigation, None, "one event for each pass");
             self.input.navigation = Some(navigation);
+        }
+
+        /// Sets the navigation event of the next pass with the modifier keys
+        /// `modifiers`.
+        pub(crate) fn navigate_with(&mut self, navigation: Navigation, modifiers: EditModifiers) {
+            self.navigate(navigation);
+            self.input.modifiers = modifiers;
+        }
+
+        /// Sets the navigation event of the next pass from a gamepad.
+        pub(crate) fn navigate_gamepad(&mut self, navigation: Navigation) {
+            self.navigate(navigation);
+            self.input.navigation_source = NavigationSource::Gamepad;
         }
 
         /// Draws the scene of the last pass through the CPU rasterizer.
@@ -692,6 +704,12 @@ pub(crate) mod tests {
         /// popup of the press.
         const DROPDOWN_ROW_HEIGHT: f32 = 330.0;
 
+        /// The icons in one row of the icon cell.
+        const ICON_COLUMNS: usize = 11;
+
+        /// The height of one row of the icon cell.
+        const ICON_ROW_HEIGHT: f32 = 100.0;
+
         /// The height of the state caption at the top of a cell.
         const CAPTION_HEIGHT: f32 = 22.0;
 
@@ -967,7 +985,7 @@ pub(crate) mod tests {
         fn render(scale: f32, kind: ThemeKind) {
             let mut gallery = Gallery::new(
                 1340.0,
-                2044.0 + (DROPDOWN_ROW_HEIGHT - 72.0) * 2.0,
+                2044.0 + ICON_ROW_HEIGHT + (DROPDOWN_ROW_HEIGHT - 72.0) * 2.0,
                 scale,
                 kind,
             );
@@ -1537,23 +1555,24 @@ pub(crate) mod tests {
 
             gallery.cell(
                 (CELL_GAP, top),
-                (1276.0, 150.0),
+                (1276.0, 150.0 + ICON_ROW_HEIGHT),
                 "Icons at 64, 16 and 12",
                 |context, area| {
                     let theme = context.theme;
                     for (index, icon) in Icon::ALL.into_iter().enumerate() {
-                        let x = area.x + index as f32 * 66.0;
-                        let big = Rect::new(x, area.y, 64.0, 64.0);
+                        let x = area.x + (index % ICON_COLUMNS) as f32 * 66.0;
+                        let y = area.y + (index / ICON_COLUMNS) as f32 * ICON_ROW_HEIGHT;
+                        let big = Rect::new(x, y, 64.0, 64.0);
                         context.fill(big, theme.colors.well);
                         context.icon(big, icon, 64.0, theme.colors.text);
                         context.icon(
-                            Rect::new(x + 8.0, area.y + 72.0, 16.0, 16.0),
+                            Rect::new(x + 8.0, y + 72.0, 16.0, 16.0),
                             icon,
                             16.0,
                             theme.colors.text,
                         );
                         context.icon(
-                            Rect::new(x + 36.0, area.y + 74.0, 12.0, 12.0),
+                            Rect::new(x + 36.0, y + 74.0, 12.0, 12.0),
                             icon,
                             12.0,
                             theme.colors.text,

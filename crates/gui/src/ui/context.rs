@@ -8,7 +8,7 @@ use i18n::Catalog;
 use super::{
     focus::{Focusable, Navigation, NavigationSet, ScrollAnchor},
     icons::Icon,
-    input::{ActionButton, Input, Shortcut, Viewport},
+    input::{ActionButton, EditCommand, Input, Shortcut, Viewport},
     label::{Align, Truncation},
     state::{Drag, UiState},
     theme::Theme,
@@ -565,17 +565,21 @@ impl<'a> UiContext<'a> {
     }
 
     /// The shortcut of this pass, unless the widgets at this point are
-    /// blocked or their layer opened in this pass. A shortcut without the
-    /// control key is inactive while a text widget holds the focus.
-    /// Backspace then edits the text.
+    /// blocked or their layer opened in this pass. Backspace gives
+    /// [`Shortcut::Backspace`] and [`EditCommand::DeleteForward`] gives
+    /// [`Shortcut::Delete`]. A shortcut without the control key is inactive
+    /// while a text widget holds the focus. Backspace and delete then edit
+    /// the text.
     pub fn shortcut(&self) -> Option<Shortcut> {
         if !self.takes_input() {
             return None;
         }
+        let delete = self.input.edit == Some(EditCommand::DeleteForward);
         let shortcut = self
             .input
             .shortcut
-            .or(self.input.backspace.then_some(Shortcut::Backspace))?;
+            .or(self.input.backspace.then_some(Shortcut::Backspace))
+            .or(delete.then_some(Shortcut::Delete))?;
         if !shortcut.has_modifier() && self.text_widget_focused() {
             return None;
         }
@@ -1141,34 +1145,55 @@ mod tests {
             };
             (base, top)
         };
-        harness.input.shortcut = Some(crate::ui::Shortcut::Delete);
+        harness.input.edit = Some(EditCommand::DeleteForward);
         assert_eq!(
             harness.frame(|context| draw(context, false)),
-            (Some(crate::ui::Shortcut::Delete), None)
+            (Some(Shortcut::Delete), None)
         );
         harness.frame(|context| draw(context, true));
-        harness.input.shortcut = Some(crate::ui::Shortcut::ControlS);
+        harness.input.shortcut = Some(Shortcut::ControlS);
         assert_eq!(
             harness.frame(|context| draw(context, true)),
-            (None, Some(crate::ui::Shortcut::ControlS))
+            (None, Some(Shortcut::ControlS))
         );
         harness.frame(|context| draw(context, false));
         harness.state.set_focus(field);
         harness.frame(|context| draw(context, false));
         harness.input.backspace = true;
         assert_eq!(harness.frame(|context| draw(context, false)), (None, None));
-        harness.input.shortcut = Some(crate::ui::Shortcut::ControlF);
+        harness.input.shortcut = Some(Shortcut::ControlF);
         assert_eq!(
             harness.frame(|context| draw(context, false)),
-            (Some(crate::ui::Shortcut::ControlF), None)
+            (Some(Shortcut::ControlF), None)
         );
         harness.state.clear_focus();
         harness.frame(|context| draw(context, false));
         harness.input.backspace = true;
         assert_eq!(
             harness.frame(|context| draw(context, false)),
-            (Some(crate::ui::Shortcut::Backspace), None)
+            (Some(Shortcut::Backspace), None)
         );
+    }
+
+    /// Verifies that delete forward reads as the delete shortcut while no text widget holds the
+    /// focus, and that select all never reads as a shortcut.
+    #[test]
+    fn delete_forward_is_the_delete_shortcut_outside_a_text_widget() {
+        let mut harness = Harness::new();
+        let field = ui_id("field");
+        let draw = |context: &mut UiContext| {
+            context.text_focusable(field, Rect::new(0.0, 0.0, 100.0, 20.0), false);
+            context.shortcut()
+        };
+        harness.frame(draw);
+        harness.input.edit = Some(EditCommand::DeleteForward);
+        assert_eq!(harness.frame(draw), Some(Shortcut::Delete));
+        harness.input.edit = Some(EditCommand::SelectAll);
+        assert_eq!(harness.frame(draw), None);
+        harness.state.set_focus(field);
+        harness.frame(draw);
+        harness.input.edit = Some(EditCommand::DeleteForward);
+        assert_eq!(harness.frame(draw), None);
     }
 
     /// Verifies that the base layer below a modal reads the focused widget of the modal while the modal blocks it.

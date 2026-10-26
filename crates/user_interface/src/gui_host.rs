@@ -12,7 +12,8 @@ use common::{info, warn};
 use gui::{
     Fonts, Scene,
     ui::{
-        ActionButton, Input, Navigation, Shortcut, Theme, ThemeKind, UiContext, UiState, Viewport,
+        ActionButton, EditCommand, EditModifiers, Input, Navigation, NavigationSource, Shortcut,
+        Theme, ThemeKind, UiContext, UiState, Viewport,
     },
 };
 use sdl3::{
@@ -74,8 +75,12 @@ pub(crate) enum GuiEvent {
         /// The y position in window coordinates.
         y: f32,
     },
-    /// A navigation key or gamepad direction.
-    Navigation(Navigation),
+    /// A navigation key with the modifier keys held with it.
+    KeyNavigation(Navigation, EditModifiers),
+    /// A gamepad direction or shoulder button.
+    GamepadNavigation(Navigation),
+    /// An edit command of the focused text widget: select all or delete.
+    Edit(EditCommand),
     /// A confirm key or the confirm button of a gamepad.
     Confirm,
     /// The escape key or the cancel button of a gamepad.
@@ -101,9 +106,11 @@ impl GuiEvent {
 }
 
 /// The event of a pressed key. A repeated key press counts only for the
-/// navigation keys and backspace. Left Ctrl + Page Up and Left Ctrl + Page
-/// Down switch the tab like the shoulder buttons. The right control key
-/// belongs to the shell and never forms a shortcut.
+/// navigation keys, backspace and delete. Left Ctrl with Page Up and Page
+/// Down switches the tab like the shoulder buttons. Delete is the edit
+/// command [`EditCommand::DeleteForward`]. The command key with A selects
+/// all. The right control key belongs to the shell and never forms a
+/// shortcut or an edit command.
 pub(crate) fn key_event(scancode: Scancode, keymod: &Mod, repeat: bool) -> Option<GuiEvent> {
     let control = keymod.lctrl();
     let navigation = match scancode {
@@ -122,18 +129,29 @@ pub(crate) fn key_event(scancode: Scancode, keymod: &Mod, repeat: bool) -> Optio
         _ => None,
     };
     if let Some(navigation) = navigation {
-        return Some(GuiEvent::Navigation(navigation));
+        return Some(GuiEvent::KeyNavigation(
+            navigation,
+            edit_modifiers(scancode, keymod),
+        ));
     }
     if scancode == Scancode::Backspace {
         return Some(GuiEvent::Backspace);
     }
-    if repeat || keymod.rctrl() {
+    if keymod.rctrl() {
+        return None;
+    }
+    if scancode == Scancode::Delete {
+        return Some(GuiEvent::Edit(EditCommand::DeleteForward));
+    }
+    if repeat {
         return None;
     }
     let shortcut = match scancode {
         Scancode::Return | Scancode::KpEnter => return Some(GuiEvent::Confirm),
         Scancode::Escape => return Some(GuiEvent::Cancel),
-        Scancode::Delete => Shortcut::Delete,
+        Scancode::A if command_modifier(keymod) => {
+            return Some(GuiEvent::Edit(EditCommand::SelectAll));
+        }
         Scancode::Insert => Shortcut::Insert,
         Scancode::F2 => Shortcut::F2,
         Scancode::F5 => Shortcut::F5,
@@ -144,6 +162,58 @@ pub(crate) fn key_event(scancode: Scancode, keymod: &Mod, repeat: bool) -> Optio
         _ => return None,
     };
     Some(GuiEvent::Shortcut(shortcut))
+}
+
+/// The modifiers of the navigation key `scancode` with the held keys
+/// `keymod`. Shift extends the selection with left, right, home and end.
+/// The word modifier turns left and right into word steps, and the edge
+/// modifier into steps to the start and the end.
+fn edit_modifiers(scancode: Scancode, keymod: &Mod) -> EditModifiers {
+    let horizontal = matches!(scancode, Scancode::Left | Scancode::Right);
+    let cursor_key = horizontal || matches!(scancode, Scancode::Home | Scancode::End);
+    EditModifiers {
+        extend: cursor_key && keymod.shift(),
+        word: horizontal && word_modifier(keymod),
+        edge: horizontal && edge_modifier(keymod),
+    }
+}
+
+/// Whether the modifier of a word step is held: Option on macOS.
+#[cfg(target_os = "macos")]
+fn word_modifier(keymod: &Mod) -> bool {
+    keymod.alt()
+}
+
+/// Whether the modifier of a word step is held: the left control key.
+#[cfg(not(target_os = "macos"))]
+fn word_modifier(keymod: &Mod) -> bool {
+    keymod.lctrl()
+}
+
+/// Whether the modifier of a step to the start or the end of a text is
+/// held: Cmd on macOS.
+#[cfg(target_os = "macos")]
+fn edge_modifier(keymod: &Mod) -> bool {
+    keymod.gui()
+}
+
+/// Whether the modifier of a step to the start or the end of a text is
+/// held. Only macOS has one. Home and end take the step everywhere.
+#[cfg(not(target_os = "macos"))]
+fn edge_modifier(_keymod: &Mod) -> bool {
+    false
+}
+
+/// Whether the command key of select all is held: Cmd on macOS.
+#[cfg(target_os = "macos")]
+fn command_modifier(keymod: &Mod) -> bool {
+    keymod.gui()
+}
+
+/// Whether the command key of select all is held: the left control key.
+#[cfg(not(target_os = "macos"))]
+fn command_modifier(keymod: &Mod) -> bool {
+    keymod.lctrl()
 }
 
 /// The event of a mouse, text or input method event of SDL. Keyboard and
@@ -238,7 +308,7 @@ impl GamepadNavigation {
             navigation,
             next: now + REPEAT_DELAY,
         });
-        GuiEvent::Navigation(navigation)
+        GuiEvent::GamepadNavigation(navigation)
     }
 
     /// Releases `navigation` from `source`. The repeat falls back to the most
@@ -284,8 +354,10 @@ impl GamepadNavigation {
         match button {
             GamepadButton::South => Some(GuiEvent::Confirm),
             GamepadButton::East => Some(GuiEvent::Cancel),
-            GamepadButton::LeftShoulder => Some(GuiEvent::Navigation(Navigation::PreviousTab)),
-            GamepadButton::RightShoulder => Some(GuiEvent::Navigation(Navigation::NextTab)),
+            GamepadButton::LeftShoulder => {
+                Some(GuiEvent::GamepadNavigation(Navigation::PreviousTab))
+            }
+            GamepadButton::RightShoulder => Some(GuiEvent::GamepadNavigation(Navigation::NextTab)),
             GamepadButton::West => Some(GuiEvent::Action(ActionButton::X)),
             GamepadButton::North => Some(GuiEvent::Action(ActionButton::Y)),
             GamepadButton::Start => Some(GuiEvent::Action(ActionButton::Start)),
@@ -365,7 +437,7 @@ impl GamepadNavigation {
         } else {
             next
         };
-        Some(GuiEvent::Navigation(repeat.navigation))
+        Some(GuiEvent::GamepadNavigation(repeat.navigation))
     }
 }
 
@@ -569,7 +641,17 @@ impl GuiHost {
                 input.mouse_y = y * density;
                 input.wheel += steps;
             }
-            GuiEvent::Navigation(navigation) => input.navigation = Some(navigation),
+            GuiEvent::KeyNavigation(navigation, modifiers) => {
+                input.navigation = Some(navigation);
+                input.navigation_source = NavigationSource::Keyboard;
+                input.modifiers = modifiers;
+            }
+            GuiEvent::GamepadNavigation(navigation) => {
+                input.navigation = Some(navigation);
+                input.navigation_source = NavigationSource::Gamepad;
+                input.modifiers = EditModifiers::default();
+            }
+            GuiEvent::Edit(command) => input.edit = Some(command),
             GuiEvent::Confirm => input.confirm = true,
             GuiEvent::Cancel => input.cancel = true,
             GuiEvent::Action(button) => input.action = Some(button),
@@ -688,6 +770,11 @@ impl GuiHost {
 
 #[cfg(test)]
 mod tests {
+    use gui::{
+        Rect,
+        ui::{UiId, text_field},
+    };
+
     use super::*;
 
     /// No modifier keys.
@@ -695,6 +782,44 @@ mod tests {
 
     /// The left shift key.
     const SHIFT: Mod = Mod(0x0001);
+
+    /// The left control key.
+    const LEFT_CONTROL: Mod = Mod(0x0040);
+
+    /// The right control key.
+    const RIGHT_CONTROL: Mod = Mod(0x0080);
+
+    /// The left shift key and the left control key.
+    const SHIFT_LEFT_CONTROL: Mod = Mod(0x0041);
+
+    /// The left Alt key, Option on macOS.
+    const LEFT_ALT: Mod = Mod(0x0100);
+
+    /// The left GUI key, Cmd on macOS.
+    const LEFT_GUI: Mod = Mod(0x0400);
+
+    /// The left shift key and the left GUI key.
+    #[cfg(target_os = "macos")]
+    const SHIFT_LEFT_GUI: Mod = Mod(0x0401);
+
+    /// No edit modifiers.
+    const NO_EDIT_MODIFIERS: EditModifiers = EditModifiers {
+        extend: false,
+        word: false,
+        edge: false,
+    };
+
+    /// The edit modifier that extends the selection.
+    const EXTEND: EditModifiers = EditModifiers {
+        extend: true,
+        ..NO_EDIT_MODIFIERS
+    };
+
+    /// The edit modifier of a word step.
+    const WORD: EditModifiers = EditModifiers {
+        word: true,
+        ..NO_EDIT_MODIFIERS
+    };
 
     /// A host with the font of the repository.
     fn host() -> GuiHost {
@@ -754,23 +879,29 @@ mod tests {
         let key = |scancode, keymod: &Mod, repeat| key_event(scancode, keymod, repeat);
         assert_eq!(
             key(Scancode::Up, &NO_MODIFIERS, false),
-            Some(GuiEvent::Navigation(Navigation::Up))
+            Some(GuiEvent::KeyNavigation(Navigation::Up, NO_EDIT_MODIFIERS))
         );
         assert_eq!(
             key(Scancode::PageDown, &NO_MODIFIERS, false),
-            Some(GuiEvent::Navigation(Navigation::PageDown))
+            Some(GuiEvent::KeyNavigation(
+                Navigation::PageDown,
+                NO_EDIT_MODIFIERS
+            ))
         );
         assert_eq!(
             key(Scancode::End, &NO_MODIFIERS, false),
-            Some(GuiEvent::Navigation(Navigation::End))
+            Some(GuiEvent::KeyNavigation(Navigation::End, NO_EDIT_MODIFIERS))
         );
         assert_eq!(
             key(Scancode::Tab, &NO_MODIFIERS, false),
-            Some(GuiEvent::Navigation(Navigation::Next))
+            Some(GuiEvent::KeyNavigation(Navigation::Next, NO_EDIT_MODIFIERS))
         );
         assert_eq!(
             key(Scancode::Tab, &SHIFT, false),
-            Some(GuiEvent::Navigation(Navigation::Previous))
+            Some(GuiEvent::KeyNavigation(
+                Navigation::Previous,
+                NO_EDIT_MODIFIERS
+            ))
         );
         assert_eq!(
             key(Scancode::Return, &NO_MODIFIERS, false),
@@ -792,15 +923,25 @@ mod tests {
     }
 
     #[test]
-    fn only_navigation_and_backspace_repeat() {
+    fn only_navigation_backspace_and_delete_repeat() {
         assert_eq!(
             key_event(Scancode::Down, &NO_MODIFIERS, true),
-            Some(GuiEvent::Navigation(Navigation::Down))
+            Some(GuiEvent::KeyNavigation(Navigation::Down, NO_EDIT_MODIFIERS))
+        );
+        assert_eq!(
+            key_event(Scancode::Left, &SHIFT, true),
+            Some(GuiEvent::KeyNavigation(Navigation::Left, EXTEND))
         );
         assert_eq!(
             key_event(Scancode::Backspace, &NO_MODIFIERS, true),
             Some(GuiEvent::Backspace)
         );
+        assert_eq!(
+            key_event(Scancode::Delete, &NO_MODIFIERS, true),
+            Some(GuiEvent::Edit(EditCommand::DeleteForward))
+        );
+        assert_eq!(key_event(Scancode::A, &LEFT_CONTROL, true), None);
+        assert_eq!(key_event(Scancode::A, &LEFT_GUI, true), None);
         assert_eq!(key_event(Scancode::Return, &NO_MODIFIERS, true), None);
         assert_eq!(key_event(Scancode::KpEnter, &NO_MODIFIERS, true), None);
         assert_eq!(key_event(Scancode::Escape, &NO_MODIFIERS, true), None);
@@ -912,11 +1053,11 @@ mod tests {
         );
         assert_eq!(
             gamepad.button(GamepadButton::LeftShoulder, true, now),
-            Some(GuiEvent::Navigation(Navigation::PreviousTab))
+            Some(GuiEvent::GamepadNavigation(Navigation::PreviousTab))
         );
         assert_eq!(
             gamepad.button(GamepadButton::RightShoulder, true, now),
-            Some(GuiEvent::Navigation(Navigation::NextTab))
+            Some(GuiEvent::GamepadNavigation(Navigation::NextTab))
         );
         assert_eq!(
             gamepad.button(GamepadButton::West, true, now),
@@ -998,12 +1139,10 @@ mod tests {
     /// Verifies the shortcut keys, the left control key and that the right control key forms no shortcut.
     #[test]
     fn shortcut_keys_map_to_shortcuts() {
-        const LEFT_CONTROL: Mod = Mod(0x0040);
-        const RIGHT_CONTROL: Mod = Mod(0x0080);
         let key = |scancode, keymod: &Mod| key_event(scancode, keymod, false);
         assert_eq!(
             key(Scancode::Delete, &NO_MODIFIERS),
-            Some(GuiEvent::Shortcut(Shortcut::Delete))
+            Some(GuiEvent::Edit(EditCommand::DeleteForward))
         );
         assert_eq!(
             key(Scancode::Insert, &NO_MODIFIERS),
@@ -1036,19 +1175,206 @@ mod tests {
         assert_eq!(key(Scancode::S, &NO_MODIFIERS), None);
         assert_eq!(key(Scancode::S, &RIGHT_CONTROL), None);
         assert_eq!(key(Scancode::Delete, &RIGHT_CONTROL), None);
-        assert_eq!(key_event(Scancode::Delete, &NO_MODIFIERS, true), None);
         assert_eq!(
             key(Scancode::PageUp, &LEFT_CONTROL),
-            Some(GuiEvent::Navigation(Navigation::PreviousTab))
+            Some(GuiEvent::KeyNavigation(
+                Navigation::PreviousTab,
+                NO_EDIT_MODIFIERS
+            ))
         );
         assert_eq!(
             key(Scancode::PageDown, &LEFT_CONTROL),
-            Some(GuiEvent::Navigation(Navigation::NextTab))
+            Some(GuiEvent::KeyNavigation(
+                Navigation::NextTab,
+                NO_EDIT_MODIFIERS
+            ))
         );
         assert_eq!(
             key(Scancode::PageDown, &RIGHT_CONTROL),
-            Some(GuiEvent::Navigation(Navigation::PageDown))
+            Some(GuiEvent::KeyNavigation(
+                Navigation::PageDown,
+                NO_EDIT_MODIFIERS
+            ))
         );
+    }
+
+    /// Verifies that Shift extends the selection with the cursor keys, that the left control key
+    /// turns left and right into word steps and forms select all with A, and that the right
+    /// control key and the GUI key form neither outside macOS.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn edit_keys_map_to_steps_and_commands() {
+        let key = |scancode, keymod: &Mod| key_event(scancode, keymod, false);
+        for (scancode, navigation) in [
+            (Scancode::Left, Navigation::Left),
+            (Scancode::Right, Navigation::Right),
+            (Scancode::Home, Navigation::Home),
+            (Scancode::End, Navigation::End),
+        ] {
+            assert_eq!(
+                key(scancode, &SHIFT),
+                Some(GuiEvent::KeyNavigation(navigation, EXTEND))
+            );
+        }
+        for (scancode, navigation) in [
+            (Scancode::Left, Navigation::Left),
+            (Scancode::Right, Navigation::Right),
+        ] {
+            assert_eq!(
+                key(scancode, &LEFT_CONTROL),
+                Some(GuiEvent::KeyNavigation(navigation, WORD))
+            );
+            assert_eq!(
+                key(scancode, &SHIFT_LEFT_CONTROL),
+                Some(GuiEvent::KeyNavigation(
+                    navigation,
+                    EditModifiers {
+                        extend: true,
+                        word: true,
+                        edge: false,
+                    }
+                ))
+            );
+            for keymod in [RIGHT_CONTROL, LEFT_ALT, LEFT_GUI] {
+                assert_eq!(
+                    key(scancode, &keymod),
+                    Some(GuiEvent::KeyNavigation(navigation, NO_EDIT_MODIFIERS))
+                );
+            }
+        }
+        assert_eq!(
+            key(Scancode::Home, &LEFT_CONTROL),
+            Some(GuiEvent::KeyNavigation(Navigation::Home, NO_EDIT_MODIFIERS))
+        );
+        assert_eq!(
+            key(Scancode::Up, &SHIFT),
+            Some(GuiEvent::KeyNavigation(Navigation::Up, NO_EDIT_MODIFIERS))
+        );
+        assert_eq!(
+            key(Scancode::A, &LEFT_CONTROL),
+            Some(GuiEvent::Edit(EditCommand::SelectAll))
+        );
+        assert_eq!(key(Scancode::A, &RIGHT_CONTROL), None);
+        assert_eq!(key(Scancode::A, &LEFT_GUI), None);
+        assert_eq!(key(Scancode::A, &NO_MODIFIERS), None);
+    }
+
+    /// Verifies that Option turns left and right into word steps, that Cmd turns them into steps
+    /// to the start and the end and forms select all with A, and that Shift extends each of them
+    /// on macOS.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn edit_keys_map_to_steps_and_commands() {
+        let key = |scancode, keymod: &Mod| key_event(scancode, keymod, false);
+        let edge = EditModifiers {
+            edge: true,
+            ..NO_EDIT_MODIFIERS
+        };
+        for (scancode, navigation) in [
+            (Scancode::Left, Navigation::Left),
+            (Scancode::Right, Navigation::Right),
+        ] {
+            assert_eq!(
+                key(scancode, &SHIFT),
+                Some(GuiEvent::KeyNavigation(navigation, EXTEND))
+            );
+            assert_eq!(
+                key(scancode, &LEFT_ALT),
+                Some(GuiEvent::KeyNavigation(navigation, WORD))
+            );
+            assert_eq!(
+                key(scancode, &LEFT_GUI),
+                Some(GuiEvent::KeyNavigation(navigation, edge))
+            );
+            assert_eq!(
+                key(scancode, &SHIFT_LEFT_GUI),
+                Some(GuiEvent::KeyNavigation(
+                    navigation,
+                    EditModifiers {
+                        extend: true,
+                        ..edge
+                    }
+                ))
+            );
+            assert_eq!(
+                key(scancode, &LEFT_CONTROL),
+                Some(GuiEvent::KeyNavigation(navigation, NO_EDIT_MODIFIERS))
+            );
+        }
+        assert_eq!(
+            key(Scancode::A, &LEFT_GUI),
+            Some(GuiEvent::Edit(EditCommand::SelectAll))
+        );
+        assert_eq!(key(Scancode::A, &LEFT_CONTROL), None);
+        assert_eq!(key(Scancode::A, &SHIFT_LEFT_CONTROL), None);
+    }
+
+    /// Verifies that a key navigation reaches the input with its modifiers from the keyboard and
+    /// that a gamepad navigation reaches it from the gamepad without modifiers.
+    #[test]
+    fn navigation_events_reach_the_input_with_their_source() {
+        let mut host = host();
+        host.set_window_metrics(800, 600, 1.0, 1.0);
+        let read = |context: &mut UiContext| {
+            (
+                context.input.navigation,
+                context.input.navigation_source,
+                context.input.modifiers,
+            )
+        };
+        host.apply(GuiEvent::KeyNavigation(Navigation::Left, WORD));
+        assert_eq!(
+            host.pass(read),
+            (Some(Navigation::Left), NavigationSource::Keyboard, WORD)
+        );
+        host.apply(GuiEvent::GamepadNavigation(Navigation::Right));
+        assert_eq!(
+            host.pass(read),
+            (
+                Some(Navigation::Right),
+                NavigationSource::Gamepad,
+                NO_EDIT_MODIFIERS
+            )
+        );
+        assert_eq!(
+            host.pass(read),
+            (None, NavigationSource::Keyboard, NO_EDIT_MODIFIERS)
+        );
+    }
+
+    /// Verifies that delete removes the character after the cursor of a focused text field and
+    /// holds back the delete shortcut, and that it reaches the screen as the delete shortcut while
+    /// no text widget holds the focus.
+    #[test]
+    fn delete_edits_a_focused_text_field_and_is_the_delete_shortcut_elsewhere() {
+        let mut host = host();
+        host.set_window_metrics(800, 600, 1.0, 1.0);
+        let mut text = String::from("abc");
+        let field = Rect::new(0.0, 0.0, 200.0, 32.0);
+        let mut draw = |host: &mut GuiHost, event: Option<GuiEvent>| {
+            if let Some(event) = event {
+                host.apply(event);
+            }
+            host.pass(|context| {
+                let changed = text_field(context, "filter", field, &mut text, "Filter").changed;
+                (changed, context.shortcut())
+            })
+        };
+        let delete = || key_event(Scancode::Delete, &NO_MODIFIERS, false);
+        assert_eq!(draw(&mut host, delete()), (false, Some(Shortcut::Delete)));
+        host.state.set_focus(UiId::from("filter"));
+        draw(&mut host, None);
+        draw(&mut host, key_event(Scancode::Home, &NO_MODIFIERS, false));
+        assert_eq!(draw(&mut host, delete()), (true, None));
+        assert_eq!(
+            draw(&mut host, key_event(Scancode::Delete, &NO_MODIFIERS, true)),
+            (true, None)
+        );
+        draw(&mut host, key_event(Scancode::A, &LEFT_CONTROL, false));
+        assert_eq!(draw(&mut host, delete()), (true, None));
+        host.state.clear_focus();
+        assert_eq!(draw(&mut host, delete()), (false, Some(Shortcut::Delete)));
+        assert_eq!(text, "");
     }
 
     /// Verifies that a shortcut reaches the input and that a text field holds back a shortcut without a modifier.
@@ -1086,18 +1412,18 @@ mod tests {
         let start = Instant::now();
         assert_eq!(
             gamepad.button(GamepadButton::DpadDown, true, start),
-            Some(GuiEvent::Navigation(Navigation::Down))
+            Some(GuiEvent::GamepadNavigation(Navigation::Down))
         );
         assert_eq!(gamepad.poll(start + Duration::from_millis(399)), None);
         let first = start + REPEAT_DELAY;
         assert_eq!(
             gamepad.poll(first),
-            Some(GuiEvent::Navigation(Navigation::Down))
+            Some(GuiEvent::GamepadNavigation(Navigation::Down))
         );
         assert_eq!(gamepad.poll(first + Duration::from_millis(79)), None);
         assert_eq!(
             gamepad.poll(first + REPEAT_INTERVAL),
-            Some(GuiEvent::Navigation(Navigation::Down))
+            Some(GuiEvent::GamepadNavigation(Navigation::Down))
         );
         assert_eq!(gamepad.next_repeat(), Some(first + REPEAT_INTERVAL * 2));
         assert_eq!(gamepad.button(GamepadButton::DpadDown, false, first), None);
@@ -1123,7 +1449,7 @@ mod tests {
         assert_eq!(gamepad.axis(GamepadAxis::LeftY, 12000, now), None);
         assert_eq!(
             gamepad.axis(GamepadAxis::LeftY, 20000, now),
-            Some(GuiEvent::Navigation(Navigation::Down))
+            Some(GuiEvent::GamepadNavigation(Navigation::Down))
         );
         assert_eq!(gamepad.axis(GamepadAxis::LeftY, 12000, now), None);
         assert!(gamepad.poll(now + REPEAT_DELAY).is_some());
@@ -1131,12 +1457,12 @@ mod tests {
         assert_eq!(gamepad.poll(now + Duration::from_secs(5)), None);
         assert_eq!(
             gamepad.axis(GamepadAxis::LeftX, -30000, now),
-            Some(GuiEvent::Navigation(Navigation::Left))
+            Some(GuiEvent::GamepadNavigation(Navigation::Left))
         );
         assert_eq!(gamepad.axis(GamepadAxis::LeftY, -32768, now), None);
         assert_eq!(
             gamepad.axis(GamepadAxis::LeftX, 0, now),
-            Some(GuiEvent::Navigation(Navigation::Up))
+            Some(GuiEvent::GamepadNavigation(Navigation::Up))
         );
         assert_eq!(gamepad.axis(GamepadAxis::RightX, 32767, now), None);
     }
@@ -1153,12 +1479,12 @@ mod tests {
         assert_eq!(gamepad.poll(release + Duration::from_millis(399)), None);
         assert_eq!(
             gamepad.poll(release + REPEAT_DELAY),
-            Some(GuiEvent::Navigation(Navigation::Right))
+            Some(GuiEvent::GamepadNavigation(Navigation::Right))
         );
         gamepad.axis(GamepadAxis::LeftX, 0, release);
         assert_eq!(
             gamepad.poll(release + REPEAT_DELAY * 2),
-            Some(GuiEvent::Navigation(Navigation::Down))
+            Some(GuiEvent::GamepadNavigation(Navigation::Down))
         );
         gamepad.button(GamepadButton::DpadDown, false, release);
         assert_eq!(gamepad.poll(release + Duration::from_secs(5)), None);

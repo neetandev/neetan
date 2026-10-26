@@ -185,10 +185,7 @@ const REMOVE_IMAGE_HINT: ActionHint = (
 /// The hint of the steps of a number field.
 const STEP_HINT: ActionHint = (
     EditorAction::Step,
-    HintText::new(
-        &[HintKey::Key(keys::LEFT), HintKey::Key(keys::RIGHT)],
-        texts::hints::STEP,
-    ),
+    HintText::new(&[HintKey::DpadLeftRight], texts::hints::STEP),
 );
 
 /// The hint of the digits of a number field.

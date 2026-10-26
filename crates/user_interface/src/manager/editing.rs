@@ -256,9 +256,9 @@ impl Manager {
 
 #[cfg(test)]
 mod tests {
-    use gui::ui::{ActionButton, Navigation, Shortcut, UiId};
+    use gui::ui::{ActionButton, EditCommand, Navigation, Shortcut, UiId};
     #[cfg(feature = "pc98")]
-    use gui::ui::{ThemeKind, Viewport};
+    use gui::ui::{NavigationSource, ThemeKind, Viewport};
     #[cfg(feature = "pc98")]
     use machine_factory::config::systems::compiled_systems;
 
@@ -346,12 +346,16 @@ mod tests {
         settle(&mut harness, &mut manager);
         harness.state.set_focus(UiId::from(FILTER_ID));
         settle(&mut harness, &mut manager);
-        for shortcut in [Shortcut::F2, Shortcut::Insert, Shortcut::Delete] {
+        for shortcut in [Shortcut::F2, Shortcut::Insert] {
             harness.input.shortcut = Some(shortcut);
             settle(&mut harness, &mut manager);
             assert!(manager.editor().is_none(), "{shortcut:?}");
             assert!(manager.delete.is_none(), "{shortcut:?}");
         }
+        harness.input.edit = Some(EditCommand::DeleteForward);
+        settle(&mut harness, &mut manager);
+        assert!(manager.editor().is_none());
+        assert!(manager.delete.is_none());
         harness.input.shortcut = Some(Shortcut::ControlD);
         settle(&mut harness, &mut manager);
         let editor = manager.editor().expect("Ctrl+D duplicates");
@@ -941,6 +945,7 @@ key.PageDown = RollUp
             .set_focus(crate::editor::field_id(crate::config::metadata::YEAR_KEY));
         settle(harness, manager);
         harness.input.navigation = Some(Navigation::Right);
+        harness.input.navigation_source = NavigationSource::Gamepad;
         settle(harness, manager);
         harness.input.navigation = Some(Navigation::NextTab);
         settle(harness, manager);
@@ -1120,6 +1125,7 @@ key.PageDown = RollUp
                 .set_focus(crate::editor::field_id("pc6000-phase"));
             settle(&mut harness, &mut manager);
             harness.input.navigation = Some(Navigation::Right);
+            harness.input.navigation_source = NavigationSource::Gamepad;
             settle(&mut harness, &mut manager);
             render(&harness, "pc6000_display");
         }
