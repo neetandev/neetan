@@ -539,7 +539,10 @@ mod tests {
     };
 
     use super::*;
-    use crate::gui_test_support::GuiHarness;
+    use crate::{
+        gui_test_support::GuiHarness,
+        texts::repository::{RepositoryLanguage, repository_languages},
+    };
 
     /// The image files of the test dialog.
     const FILES: [&str; 12] = [
@@ -921,11 +924,14 @@ mod tests {
 
     /// Renders the dialog at `scale` in the theme `kind` with the texts of
     /// the catalog of `language` on each tab and with a filter.
-    fn screenshots(scale: f32, kind: ThemeKind, language: fn() -> crate::texts::LanguageCatalog) {
+    fn screenshots(scale: f32, kind: ThemeKind, language: &RepositoryLanguage) {
         let width = (960.0 * scale) as u32;
         let height = (680.0 * scale) as u32;
-        let mut harness =
-            Harness::with_catalog(Viewport::new(width, height, scale), kind, language());
+        let mut harness = Harness::with_catalog(
+            Viewport::new(width, height, scale),
+            kind,
+            language.catalog(),
+        );
         harness.loaded[1] = Some(1);
         harness.pass();
         harness.navigate(Navigation::Down);
@@ -950,11 +956,11 @@ mod tests {
     }
 
     /// Writes the screenshots of the media dialog in both themes and in
-    /// every screenshot language at the scales 1 and 2.
+    /// every language of the repository at the scales 1 and 2.
     #[test]
     #[ignore = "writes screenshots into the directory of GUI_SHOTS"]
     fn media_dialog_screenshots() {
-        for language in crate::gui_test_support::SCREENSHOT_LANGUAGES {
+        for language in repository_languages() {
             for kind in [ThemeKind::Dark, ThemeKind::Light] {
                 screenshots(1.0, kind, language);
                 screenshots(2.0, kind, language);

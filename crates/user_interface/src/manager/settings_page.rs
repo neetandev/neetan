@@ -96,6 +96,7 @@ mod tests {
         gui_test_support::{GuiHarness, PassCounts},
         manager::{FILTER_ID, SETTINGS_ID, game_table::GAME_TABLE_ID, test_support::shown_help},
         rom_folders::RomFolderStatus,
+        texts::repository::{RepositoryLanguage, repository_languages},
     };
 
     /// The manager of `root` with the setting flags `flags`.
@@ -412,7 +413,7 @@ mod tests {
         scale: f32,
         large: bool,
         kind: ThemeKind,
-        language: fn() -> crate::texts::LanguageCatalog,
+        language: &RepositoryLanguage,
     ) {
         let prefix = if large { "large_" } else { "" };
         let viewport = Viewport::new((width * scale) as u32, (height * scale) as u32, scale);
@@ -425,7 +426,7 @@ mod tests {
         );
         let mut manager = manager_with(&root, &[]);
         manager.roms = sample_statuses(&manager.host);
-        let mut harness = GuiHarness::with_viewport(viewport, kind, language());
+        let mut harness = GuiHarness::with_viewport(viewport, kind, language.catalog());
         settle(&mut harness, &mut manager);
         harness.state.set_focus(UiId::from(SETTINGS_ID));
         settle(&mut harness, &mut manager);
@@ -459,7 +460,7 @@ mod tests {
             ],
         );
         manager.roms = sample_statuses(&manager.host);
-        let mut harness = GuiHarness::with_viewport(viewport, kind, language());
+        let mut harness = GuiHarness::with_viewport(viewport, kind, language.catalog());
         settle(&mut harness, &mut manager);
         harness.input.shortcut = Some(Shortcut::F10);
         settle(&mut harness, &mut manager);
@@ -545,12 +546,12 @@ mod tests {
     }
 
     /// Writes the screenshots of the settings page in both themes and in
-    /// every screenshot language at the scales 1 and 2, at the minimum window
+    /// every language of the repository at the scales 1 and 2, at the minimum window
     /// size and at 1920 x 1080.
     #[test]
     #[ignore = "writes screenshots into the directory of GUI_SHOTS"]
     fn settings_screenshots() {
-        for language in crate::gui_test_support::SCREENSHOT_LANGUAGES {
+        for language in repository_languages() {
             for kind in [ThemeKind::Dark, ThemeKind::Light] {
                 for scale in [1.0, 2.0] {
                     screenshots(960.0, 600.0, scale, false, kind, language);

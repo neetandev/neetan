@@ -6,7 +6,7 @@ use std::{
     sync::LazyLock,
 };
 
-use i18n::Catalog;
+use i18n::{Catalog, Fault};
 
 use super::{ENGLISH_TAG, LanguageCatalog, REFERENCE_SOURCE, SCHEMA, english, note};
 use crate::config::{LANGUAGE_FOLDER, find_language_files};
@@ -14,8 +14,11 @@ use crate::config::{LANGUAGE_FOLDER, find_language_files};
 /// The language tag of the Japanese language file of the repository.
 const JAPANESE_TAG: &str = "ja";
 
-/// A language file of the repository.
-struct RepositoryLanguage {
+/// The language tag of the German language file of the repository.
+const GERMAN_TAG: &str = "de";
+
+/// A language of the repository: the embedded English file or a file of the language folder.
+pub(crate) struct RepositoryLanguage {
     /// The language tag: the file name without its extension.
     tag: String,
     /// The source of the file.
@@ -47,50 +50,52 @@ static REPOSITORY_LANGUAGES: LazyLock<Vec<RepositoryLanguage>> = LazyLock::new(|
             }
         }))
         .collect();
-    assert!(
-        languages
-            .iter()
-            .any(|language| language.tag == JAPANESE_TAG),
-        "the language folder of the repository holds ja.ini"
-    );
+    for tag in [JAPANESE_TAG, GERMAN_TAG] {
+        assert!(
+            languages.iter().any(|language| language.tag == tag),
+            "the language folder of the repository holds {tag}.ini"
+        );
+    }
     languages
 });
 
 /// Returns every language of the repository: English first, then the language files in the
 /// order of their tags.
-fn repository_languages() -> &'static [RepositoryLanguage] {
+pub(crate) fn repository_languages() -> &'static [RepositoryLanguage] {
     &REPOSITORY_LANGUAGES
 }
 
-/// Returns the catalog of the repository language file `language`. The English file gives the
-/// embedded catalog. A fault of another file panics.
-fn repository_catalog(language: &RepositoryLanguage) -> LanguageCatalog {
-    if language.tag == ENGLISH_TAG {
-        return LanguageCatalog::English;
+impl RepositoryLanguage {
+    /// Returns a catalog of the language that the caller owns. Each call parses the file again.
+    /// The English file gives the embedded catalog. A fault of another file panics.
+    pub(crate) fn catalog(&self) -> LanguageCatalog {
+        if self.tag == ENGLISH_TAG {
+            return LanguageCatalog::English;
+        }
+        let report = |faults: &[Fault<'_>]| {
+            faults
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        let loaded = Catalog::load(&self.tag, &self.source, &SCHEMA, english())
+            .unwrap_or_else(|faults| panic!("{}.ini does not load: {}", self.tag, report(&faults)));
+        assert!(
+            loaded.faults.is_empty(),
+            "{}.ini has faults: {}",
+            self.tag,
+            report(&loaded.faults)
+        );
+        LanguageCatalog::Loaded(Box::new(loaded.catalog))
     }
-    let report = |faults: &[i18n::Fault<'_>]| {
-        faults
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("; ")
-    };
-    let loaded = Catalog::load(&language.tag, &language.source, &SCHEMA, english())
-        .unwrap_or_else(|faults| panic!("{}.ini does not load: {}", language.tag, report(&faults)));
-    assert!(
-        loaded.faults.is_empty(),
-        "{}.ini has faults: {}",
-        language.tag,
-        report(&loaded.faults)
-    );
-    LanguageCatalog::Loaded(Box::new(loaded.catalog))
 }
 
 /// The catalogs of every language of the repository, built on first use.
 static REPOSITORY_CATALOGS: LazyLock<Vec<LanguageCatalog>> = LazyLock::new(|| {
     repository_languages()
         .iter()
-        .map(repository_catalog)
+        .map(RepositoryLanguage::catalog)
         .collect()
 });
 
@@ -100,21 +105,21 @@ pub(crate) fn repository_catalogs() -> impl Iterator<Item = &'static Catalog> {
     REPOSITORY_CATALOGS.iter().map(LanguageCatalog::catalog)
 }
 
-/// Returns a catalog of the Japanese language file of the repository that the caller owns.
-/// Each call parses the file again. A fault of the file panics.
-pub(crate) fn japanese_catalog() -> LanguageCatalog {
-    let language = repository_languages()
-        .iter()
-        .find(|language| language.tag == JAPANESE_TAG)
-        .expect("the repository holds ja.ini");
-    repository_catalog(language)
+/// Returns the shared catalog of the repository language `tag`, built once.
+fn shared_catalog(tag: &str) -> &'static Catalog {
+    repository_catalogs()
+        .find(|catalog| catalog.tag() == tag)
+        .unwrap_or_else(|| panic!("the repository holds {tag}.ini"))
 }
 
 /// Returns the shared catalog of the Japanese language file of the repository, built once.
 pub(crate) fn japanese() -> &'static Catalog {
-    repository_catalogs()
-        .find(|catalog| catalog.tag() == JAPANESE_TAG)
-        .expect("the repository holds ja.ini")
+    shared_catalog(JAPANESE_TAG)
+}
+
+/// Returns the shared catalog of the German language file of the repository, built once.
+pub(crate) fn german() -> &'static Catalog {
+    shared_catalog(GERMAN_TAG)
 }
 
 /// Returns the mark that ends a sentence in `catalog`: the last character of the pattern
@@ -130,12 +135,15 @@ pub(crate) fn sentence_mark(catalog: &Catalog) -> char {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        ops::RangeInclusive,
+    };
 
-    use i18n::{PluralCategory, PluralRule};
+    use i18n::{ListKind, PluralCategory, PluralRule};
 
     use super::*;
-    use crate::config::LANGUAGE_FILE_EXTENSION;
+    use crate::{config::LANGUAGE_FILE_EXTENSION, texts::library};
 
     /// The section of the header of a language file.
     const HEADER_SECTION: &str = "language";
@@ -274,5 +282,158 @@ mod tests {
         assert_eq!(catalog.name(), "日本語");
         assert_eq!(catalog.plural_rule(), PluralRule::None);
         assert_eq!(sentence_mark(catalog), '。');
+    }
+
+    /// Verifies the header, the sentence mark and the plural forms of the German language file.
+    #[test]
+    fn the_german_file_has_its_header() {
+        let catalog = german();
+        assert_eq!(catalog.tag(), GERMAN_TAG);
+        assert_eq!(catalog.name(), "Deutsch");
+        assert_eq!(catalog.plural_rule(), PluralRule::OneOther);
+        assert_eq!(sentence_mark(catalog), '.');
+        let games = |count| catalog.display(library::games(count)).to_string();
+        assert_eq!(games(1), "1 Spiel");
+        assert_eq!(games(2), "2 Spiele");
+        let mut joined = String::new();
+        catalog
+            .write_list(&mut joined, ListKind::Or, &["A", "B", "C"])
+            .expect("a string takes the list");
+        assert_eq!(joined, "A, B oder C");
+    }
+
+    /// The ranges of the combining marks of the scripts of the language files: the combining
+    /// diacritical marks with their extensions and supplement, the combining marks for symbols
+    /// and the half marks, and the combining voiced sound marks of kana.
+    const COMBINING_MARKS: [RangeInclusive<char>; 6] = [
+        '\u{0300}'..='\u{036F}',
+        '\u{1AB0}'..='\u{1AFF}',
+        '\u{1DC0}'..='\u{1DFF}',
+        '\u{20D0}'..='\u{20FF}',
+        '\u{FE20}'..='\u{FE2F}',
+        '\u{3099}'..='\u{309A}',
+    ];
+
+    /// The ranges of the characters outside of [`COMBINING_MARKS`] that NFC replaces, after the
+    /// Unicode 16.0 data: the singletons such as the Greek question mark, the ohm sign, the
+    /// Kelvin sign and the angstrom sign, the composition exclusions of the Indic, Tibetan,
+    /// Greek and Hebrew scripts and of the musical symbols, and the CJK compatibility
+    /// ideographs without the twelve unified ideographs of their block.
+    const NFC_REPLACED_CHARACTERS: [RangeInclusive<char>; 71] = [
+        '\u{0374}'..='\u{0374}',
+        '\u{037E}'..='\u{037E}',
+        '\u{0387}'..='\u{0387}',
+        '\u{0958}'..='\u{095F}',
+        '\u{09DC}'..='\u{09DD}',
+        '\u{09DF}'..='\u{09DF}',
+        '\u{0A33}'..='\u{0A33}',
+        '\u{0A36}'..='\u{0A36}',
+        '\u{0A59}'..='\u{0A5B}',
+        '\u{0A5E}'..='\u{0A5E}',
+        '\u{0B5C}'..='\u{0B5D}',
+        '\u{0F43}'..='\u{0F43}',
+        '\u{0F4D}'..='\u{0F4D}',
+        '\u{0F52}'..='\u{0F52}',
+        '\u{0F57}'..='\u{0F57}',
+        '\u{0F5C}'..='\u{0F5C}',
+        '\u{0F69}'..='\u{0F69}',
+        '\u{0F73}'..='\u{0F73}',
+        '\u{0F75}'..='\u{0F76}',
+        '\u{0F78}'..='\u{0F78}',
+        '\u{0F81}'..='\u{0F81}',
+        '\u{0F93}'..='\u{0F93}',
+        '\u{0F9D}'..='\u{0F9D}',
+        '\u{0FA2}'..='\u{0FA2}',
+        '\u{0FA7}'..='\u{0FA7}',
+        '\u{0FAC}'..='\u{0FAC}',
+        '\u{0FB9}'..='\u{0FB9}',
+        '\u{1F71}'..='\u{1F71}',
+        '\u{1F73}'..='\u{1F73}',
+        '\u{1F75}'..='\u{1F75}',
+        '\u{1F77}'..='\u{1F77}',
+        '\u{1F79}'..='\u{1F79}',
+        '\u{1F7B}'..='\u{1F7B}',
+        '\u{1F7D}'..='\u{1F7D}',
+        '\u{1FBB}'..='\u{1FBB}',
+        '\u{1FBE}'..='\u{1FBE}',
+        '\u{1FC9}'..='\u{1FC9}',
+        '\u{1FCB}'..='\u{1FCB}',
+        '\u{1FD3}'..='\u{1FD3}',
+        '\u{1FDB}'..='\u{1FDB}',
+        '\u{1FE3}'..='\u{1FE3}',
+        '\u{1FEB}'..='\u{1FEB}',
+        '\u{1FEE}'..='\u{1FEF}',
+        '\u{1FF9}'..='\u{1FF9}',
+        '\u{1FFB}'..='\u{1FFB}',
+        '\u{1FFD}'..='\u{1FFD}',
+        '\u{2000}'..='\u{2001}',
+        '\u{2126}'..='\u{2126}',
+        '\u{212A}'..='\u{212B}',
+        '\u{2329}'..='\u{232A}',
+        '\u{2ADC}'..='\u{2ADC}',
+        '\u{F900}'..='\u{FA0D}',
+        '\u{FA10}'..='\u{FA10}',
+        '\u{FA12}'..='\u{FA12}',
+        '\u{FA15}'..='\u{FA1E}',
+        '\u{FA20}'..='\u{FA20}',
+        '\u{FA22}'..='\u{FA22}',
+        '\u{FA25}'..='\u{FA26}',
+        '\u{FA2A}'..='\u{FA6D}',
+        '\u{FA70}'..='\u{FAD9}',
+        '\u{FB1D}'..='\u{FB1D}',
+        '\u{FB1F}'..='\u{FB1F}',
+        '\u{FB2A}'..='\u{FB36}',
+        '\u{FB38}'..='\u{FB3C}',
+        '\u{FB3E}'..='\u{FB3E}',
+        '\u{FB40}'..='\u{FB41}',
+        '\u{FB43}'..='\u{FB44}',
+        '\u{FB46}'..='\u{FB4E}',
+        '\u{1D15E}'..='\u{1D164}',
+        '\u{1D1BB}'..='\u{1D1C0}',
+        '\u{2F800}'..='\u{2FA1D}',
+    ];
+
+    /// Returns true for a combining mark or a character that NFC replaces.
+    fn is_combining_mark_or_nfc_replaced(character: char) -> bool {
+        COMBINING_MARKS
+            .iter()
+            .chain(&NFC_REPLACED_CHARACTERS)
+            .any(|characters| characters.contains(&character))
+    }
+
+    /// Verifies that no language file of the repository holds a combining mark or a character
+    /// that NFC replaces.
+    ///
+    /// Every text holds precomposed characters (Unicode NFC). The check itself finds the mark
+    /// of a decomposed letter, a singleton and a compatibility ideograph, and it passes a
+    /// unified ideograph of the compatibility block.
+    #[test]
+    fn no_language_file_holds_a_combining_mark_or_a_character_that_nfc_replaces() {
+        for language in repository_languages() {
+            for (number, line) in language.source.lines().enumerate() {
+                let faulty: Vec<char> = line
+                    .chars()
+                    .filter(|&character| is_combining_mark_or_nfc_replaced(character))
+                    .collect();
+                assert!(
+                    faulty.is_empty(),
+                    "{}.ini line {}: {faulty:?}",
+                    language.tag,
+                    number + 1
+                );
+            }
+        }
+        for character in ['\u{0308}', '\u{037E}', '\u{212B}', '\u{F91D}', '\u{2F800}'] {
+            assert!(
+                is_combining_mark_or_nfc_replaced(character),
+                "{character:?}"
+            );
+        }
+        for character in ['ü', ';', 'Å', '\u{FA0E}', '\u{FA29}', '漢'] {
+            assert!(
+                !is_combining_mark_or_nfc_replaced(character),
+                "{character:?}"
+            );
+        }
     }
 }

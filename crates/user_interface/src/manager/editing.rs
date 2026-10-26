@@ -274,6 +274,7 @@ mod tests {
         editor::EditorSection,
         gui_test_support::PassCounts,
         manager::test_support::{select, shown_help},
+        texts::repository::{RepositoryLanguage, repository_languages},
     };
 
     /// The manager of `root`.
@@ -941,13 +942,13 @@ key.PageDown = RollUp
         scale: f32,
         large: bool,
         kind: ThemeKind,
-        language: fn() -> crate::texts::LanguageCatalog,
+        language: &RepositoryLanguage,
     ) {
         let prefix = if large { "large_" } else { "" };
         let viewport = Viewport::new((width * scale) as u32, (height * scale) as u32, scale);
         let root = sample_root(&format!("editor_shots_{prefix}{scale}"));
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::with_viewport(viewport, kind, language());
+        let mut harness = GuiHarness::with_viewport(viewport, kind, language.catalog());
         let render = |harness: &GuiHarness, name: &str| {
             harness.write_screenshot(&format!("editor_{prefix}{name}_{scale}x"));
         };
@@ -1114,7 +1115,7 @@ key.PageDown = RollUp
         viewport: Viewport,
         scale: f32,
         kind: ThemeKind,
-        language: fn() -> crate::texts::LanguageCatalog,
+        language: &RepositoryLanguage,
     ) {
         let root = sample_root(&format!("editor_shots_empty_{scale}"));
         root.write(
@@ -1126,7 +1127,7 @@ key.PageDown = RollUp
             "meta.title = A game with empty drives\nmachine = PC9801RA\nfdd2 =\n",
         );
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::with_viewport(viewport, kind, language());
+        let mut harness = GuiHarness::with_viewport(viewport, kind, language.catalog());
         settle(&mut harness, &mut manager);
         select(&mut manager, "pc98");
         select_game(&mut harness, &mut manager, "A game with empty drives");
@@ -1155,7 +1156,7 @@ key.PageDown = RollUp
         viewport: Viewport,
         scale: f32,
         kind: ThemeKind,
-        language: fn() -> crate::texts::LanguageCatalog,
+        language: &RepositoryLanguage,
     ) {
         let root = sample_root(&format!("editor_shots_defaults_{scale}"));
         root.write(
@@ -1168,7 +1169,7 @@ key.PageDown = RollUp
             "meta.title = Diskless start\nmachine = PC9801RA\nhdd1 =\n",
         );
         let mut manager = manager(&root);
-        let mut harness = GuiHarness::with_viewport(viewport, kind, language());
+        let mut harness = GuiHarness::with_viewport(viewport, kind, language.catalog());
         let render = |harness: &GuiHarness, name: &str| {
             harness.write_screenshot(&format!("editor_{name}_{scale}x"));
         };
@@ -1209,13 +1210,13 @@ key.PageDown = RollUp
     }
 
     #[cfg(feature = "pc98")]
-    /// Writes the screenshots of the editor in both themes and in every
-    /// screenshot language at the scales 1 and 2, at the minimum window size
+    /// Writes the screenshots of the editor in both themes and in every language
+    /// of the repository at the scales 1 and 2, at the minimum window size
     /// and at 1920 x 1080.
     #[test]
     #[ignore = "writes screenshots into the directory of GUI_SHOTS"]
     fn editor_screenshots() {
-        for language in crate::gui_test_support::SCREENSHOT_LANGUAGES {
+        for language in repository_languages() {
             for kind in [ThemeKind::Dark, ThemeKind::Light] {
                 for scale in [1.0, 2.0] {
                     screenshots(960.0, 600.0, scale, false, kind, language);
