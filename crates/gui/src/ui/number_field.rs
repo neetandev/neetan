@@ -1,7 +1,8 @@
 //! The number field: a text field for a number with two step buttons.
 
 use super::{
-    context::{UiContext, UiId},
+    context::{PointerResponse, UiContext, UiId},
+    field_pointer::point_value,
     field_value::{draw_value, edit_text, place_cursor_at_end},
     focus::Navigation,
     icons::Icon,
@@ -62,12 +63,13 @@ pub enum NumberError {
 /// most that many digits after it. Every removal happens, also in a text of
 /// another form. The keyboard left and right step the cursor. The gamepad
 /// left and right and the step buttons step the number down and up by the
-/// step, inside the range, and place the cursor at the end. A step from an
-/// empty field starts at the fallback. A step button at the end of the
-/// range is disabled. An empty field shows the placeholder, for a key that
-/// the file does not set. A text that holds no number of the range draws
-/// the error edge, see [`NumberField::parse`].
-/// The field never takes cancel.
+/// step, inside the range, and place the cursor at the end. A press on a
+/// step button places no cursor and starts no drag. A press on a disabled
+/// step button gives the field the focus. A step from an empty field starts
+/// at the fallback. A step button at the end of the range is disabled. An
+/// empty field shows the placeholder, for a key that the file does not set.
+/// A text that holds no number of the range draws the error edge, see
+/// [`NumberField::parse`]. The field never takes cancel.
 #[derive(Clone, Copy, Debug)]
 pub struct NumberField<'a> {
     /// The id of the field.
@@ -309,6 +311,8 @@ impl<'a> NumberField<'a> {
         let can_step_down = self.enabled && value.is_none_or(|value| value > self.minimum);
         let can_step_up = self.enabled && value.is_none_or(|value| value < self.maximum);
         let mut hot = [false; 2];
+        let text_held = context.is_active(id);
+        let mut disabled_step_pressed = false;
         for (index, (part, area, allowed, up)) in [
             ("down", down_rect, can_step_down, false),
             ("up", up_rect, can_step_up, true),
@@ -316,7 +320,12 @@ impl<'a> NumberField<'a> {
         .into_iter()
         .enumerate()
         {
+            if text_held {
+                continue;
+            }
             if !allowed {
+                disabled_step_pressed |=
+                    self.enabled && context.input.left_pressed() && context.hovered(area);
                 continue;
             }
             let pointer = context.button_behavior(id.child(part), area);
@@ -328,7 +337,7 @@ impl<'a> NumberField<'a> {
                 place_cursor_at_end(context, id, text);
             }
         }
-        let mut hovered = false;
+        let mut pointer = PointerResponse::default();
         if self.enabled {
             if context.has_focus(id) {
                 let navigation = context.navigation(id);
@@ -369,7 +378,13 @@ impl<'a> NumberField<'a> {
                 response.submitted = context.confirmed(id);
             }
             context.text_focusable(id, rect, false);
-            hovered = context.button_behavior(id, rect).hovered;
+            pointer = context.button_behavior(id, rect);
+            if disabled_step_pressed {
+                pointer = PointerResponse {
+                    hovered: pointer.hovered,
+                    ..PointerResponse::default()
+                };
+            }
         } else {
             context.absorb_pointer(rect);
         }
@@ -378,7 +393,7 @@ impl<'a> NumberField<'a> {
         let invalid = self.flagged(text, focused);
         let look = FieldLook {
             focused: focus_look,
-            hovered,
+            hovered: pointer.hovered,
             error: self.error || invalid,
             enabled: self.enabled,
             read_only: false,
@@ -387,6 +402,9 @@ impl<'a> NumberField<'a> {
         let left = rect.x + theme.gap * TEXT_INSET_GAPS;
         let right = down_rect.x - theme.gap * TEXT_STEPPER_GAPS;
         let inner = Rect::new(left, rect.y, (right - left).max(0.0), rect.height);
+        if focused {
+            point_value(context, id, inner, text, Truncation::End, pointer);
+        }
         let color = look.text_color(context);
         draw_value(
             context,
@@ -430,6 +448,8 @@ mod tests {
         Instance,
         ui::{
             EditCommand, EditModifiers, NavigationSet,
+            field_pointer::tests::{position_x, press_at},
+            field_value::tests::ends,
             tests::{Harness, pixel, srgb},
         },
     };
@@ -1066,5 +1086,123 @@ mod tests {
         assert!(text.is_empty());
         assert_eq!(harness.state.take_copied(), Some("1996"));
         assert_eq!(harness.state.take_copied(), None);
+    }
+
+    /// The x in logical units of the byte offset `offset` of `text` in the
+    /// field with the scroll offset of the last pass.
+    fn text_x(harness: &mut Harness, text: &str, offset: usize) -> f32 {
+        let inner_x = FIELD.x + harness.theme.gap * TEXT_INSET_GAPS;
+        position_x(harness, inner_x, text, offset)
+    }
+
+    /// The centers of the step-down and the step-up button.
+    fn step_centers(harness: &Harness) -> [(f32, f32); 2] {
+        let right = FIELD.right() - harness.theme.gap * STEPPER_INSET_GAPS;
+        let y = FIELD.center().1;
+        [
+            (right - STEPPER_SIZE * 1.5, y),
+            (right - STEPPER_SIZE * 0.5, y),
+        ]
+    }
+
+    /// Verifies that a press in the text of an unfocused field focuses it and places the cursor,
+    /// that a drag selects digits and that typed digits replace them under the rule.
+    #[test]
+    fn a_press_in_the_text_places_the_cursor_and_a_drag_selects() {
+        let mut harness = Harness::new();
+        let mut text = String::from("1996");
+        draw(&mut harness, year(), &mut text);
+        let x = text_x(&mut harness, &text, 2);
+        press_at(&mut harness, x, FIELD.center().1, |harness| {
+            draw(harness, year(), &mut text)
+        });
+        assert_eq!(harness.state.focused(), Some(UiId::from("phase")));
+        assert_eq!(ends(&harness), (2, 2));
+        let x = text_x(&mut harness, &text, 4) + 30.0;
+        harness.mouse(x, FIELD.center().1);
+        draw(&mut harness, year(), &mut text);
+        assert_eq!(ends(&harness), (2, 4));
+        harness.release();
+        assert!(!draw(&mut harness, year(), &mut text).changed);
+        typing(&mut harness, year(), &mut text, "7");
+        assert_eq!(text, "197");
+    }
+
+    /// Verifies that a press on a step button places no cursor and starts no drag, that its
+    /// click steps the number and places the cursor at the end, and that a drag from the text
+    /// released over a step button steps nothing.
+    #[test]
+    fn a_press_on_a_step_button_places_no_cursor() {
+        let mut text = String::from("1996");
+        let mut harness = focused(year(), &mut text);
+        key(&mut harness, year(), &mut text, Navigation::Home);
+        let [down, up] = step_centers(&harness);
+        press_at(&mut harness, up.0, up.1, |harness| {
+            draw(harness, year(), &mut text)
+        });
+        assert_eq!(ends(&harness), (0, 0));
+        let x = text_x(&mut harness, &text, 2);
+        harness.mouse(x, up.1);
+        draw(&mut harness, year(), &mut text);
+        assert_eq!(ends(&harness), (0, 0));
+        harness.mouse(up.0, up.1);
+        draw(&mut harness, year(), &mut text);
+        harness.release();
+        assert!(draw(&mut harness, year(), &mut text).changed);
+        assert_eq!(text, "1997");
+        assert_eq!(ends(&harness), (4, 4));
+        press_at(&mut harness, down.0, down.1, |harness| {
+            draw(harness, year(), &mut text)
+        });
+        harness.release();
+        draw(&mut harness, year(), &mut text);
+        assert_eq!(text, "1996");
+
+        let x = text_x(&mut harness, &text, 1);
+        press_at(&mut harness, x, FIELD.center().1, |harness| {
+            draw(harness, year(), &mut text)
+        });
+        harness.mouse(down.0, down.1);
+        draw(&mut harness, year(), &mut text);
+        harness.release();
+        assert!(!draw(&mut harness, year(), &mut text).changed);
+        assert_eq!(text, "1996");
+        assert_eq!(ends(&harness), (1, 4));
+    }
+
+    /// Verifies that a press on a disabled step button gives the field the focus, places no
+    /// cursor and starts no drag, also on a focused field with the cursor at the start, and that
+    /// its release steps nothing.
+    #[test]
+    fn a_press_on_a_disabled_step_button_only_focuses_the_field() {
+        let mut harness = Harness::new();
+        let mut text = String::from("9999");
+        draw(&mut harness, year(), &mut text);
+        assert_eq!(harness.state.focused(), None);
+        let [_, up] = step_centers(&harness);
+        press_at(&mut harness, up.0, up.1, |harness| {
+            draw(harness, year(), &mut text)
+        });
+        assert_eq!(harness.state.focused(), Some(UiId::from("phase")));
+        assert_eq!(ends(&harness), (4, 4));
+        let x = text_x(&mut harness, &text, 1);
+        harness.mouse(x, FIELD.center().1);
+        draw(&mut harness, year(), &mut text);
+        assert_eq!(ends(&harness), (4, 4));
+        harness.release();
+        assert!(!draw(&mut harness, year(), &mut text).changed);
+        assert_eq!(text, "9999");
+        assert_eq!(ends(&harness), (4, 4));
+
+        key(&mut harness, year(), &mut text, Navigation::Home);
+        assert_eq!(ends(&harness), (0, 0));
+        press_at(&mut harness, up.0, up.1, |harness| {
+            draw(harness, year(), &mut text)
+        });
+        assert_eq!(ends(&harness), (0, 0));
+        harness.release();
+        assert!(!draw(&mut harness, year(), &mut text).changed);
+        assert_eq!(text, "9999");
+        assert_eq!(ends(&harness), (0, 0));
     }
 }

@@ -24,8 +24,9 @@ pub enum NavigationSource {
     Gamepad,
 }
 
-/// The modifier keys held with the navigation key of a pass. They change
-/// the step of the text cursor in a focused text widget.
+/// The modifier keys held with the navigation key or the left press of a
+/// pass. They change the step of the text cursor in a focused text widget.
+/// The extend modifier turns a press into an extension of the selection.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct EditModifiers {
     /// The step extends the selection.
@@ -146,10 +147,15 @@ pub struct Input {
     pub navigation: Option<Navigation>,
     /// The device of the navigation event of this pass.
     pub navigation_source: NavigationSource,
-    /// The modifier keys held with the navigation key of this pass.
+    /// The modifier keys held with the navigation key or the left press of
+    /// this pass.
     pub modifiers: EditModifiers,
     /// The edit command of this pass.
     pub edit: Option<EditCommand>,
+    /// The steps of the edge repeat since the last pass. While a drag holds
+    /// the pointer past an edge of a text widget, each step extends the
+    /// selection by one position.
+    pub edge_steps: u32,
     /// The action button of a gamepad pressed in this pass.
     pub action: Option<ActionButton>,
     /// The shortcut key pressed in this pass. Backspace arrives in
@@ -205,6 +211,7 @@ impl Input {
         self.navigation_source = NavigationSource::Keyboard;
         self.modifiers = EditModifiers::default();
         self.edit = None;
+        self.edge_steps = 0;
         self.action = None;
         self.shortcut = None;
     }
@@ -261,6 +268,7 @@ mod tests {
                 edge: true,
             },
             edit: Some(EditCommand::SelectAll),
+            edge_steps: 3,
             action: Some(ActionButton::Start),
             shortcut: Some(Shortcut::F2),
             ..Input::default()
@@ -275,6 +283,7 @@ mod tests {
         assert_eq!(input.action, None);
         assert_eq!(input.shortcut, None);
         assert_eq!(input.edit, None);
+        assert_eq!(input.edge_steps, 0);
         assert!(input.paste.is_empty());
         assert_eq!(input.navigation_source, NavigationSource::Keyboard);
         assert_eq!(input.modifiers, EditModifiers::default());

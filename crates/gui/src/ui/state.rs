@@ -1,10 +1,14 @@
 //! The widget state that outlives a pass: the pressed widget, the focus and
 //! the focus ring, the open popup and the requests for another pass.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Instant,
+};
 
 use super::{
     context::UiId,
+    field_pointer::EdgeRepeat,
     focus::{Focusable, MoveStart, next_focus},
     input::Input,
     list::ListState,
@@ -103,6 +107,11 @@ pub struct UiState {
     /// The scroll offset of the text of the focused text widget in logical
     /// units.
     pub(super) text_scroll: f32,
+    /// Whether the held left button extends the selection of the focused
+    /// text widget.
+    pub(super) text_drag: bool,
+    /// The edge repeat of the drag in the focused text widget.
+    pub(super) text_edge: EdgeRepeat,
     /// The text of the last copy or cut. The buffer stays between copies.
     copied: String,
     /// Whether a copy or a cut wrote the copied text and the caller has not
@@ -150,6 +159,8 @@ impl Default for UiState {
             text_owner: None,
             text_edit: TextEdit::default(),
             text_scroll: 0.0,
+            text_drag: false,
+            text_edge: EdgeRepeat::default(),
             copied: String::new(),
             copy_pending: false,
             drag: None,
@@ -279,6 +290,27 @@ impl UiState {
         self.lost = None;
     }
 
+    /// Starts the edge repeat at `now` after a pass in which a drag in a text
+    /// widget holds the pointer past an edge of its value, and stops it
+    /// after a pass without one. A running repeat keeps its time. The
+    /// repeat also stops while the cursor is at the end of the text in the
+    /// direction of the edge.
+    pub fn update_edge_repeat(&mut self, now: Instant) {
+        self.text_edge.update(now);
+    }
+
+    /// The time of the next step of the edge repeat.
+    pub fn next_edge_repeat(&self) -> Option<Instant> {
+        self.text_edge.deadline()
+    }
+
+    /// The steps of the edge repeat that are due at `now`, one for each
+    /// interval since the last step. The steps belong in
+    /// [`Input::edge_steps`] of the next pass.
+    pub fn take_edge_steps(&mut self, now: Instant) -> u32 {
+        self.text_edge.take_steps(now)
+    }
+
     /// Forgets the focus, the pressed widget, the drag, the focus ring, the
     /// open modals and the open popup, for a dialog that opens.
     pub fn reset(&mut self) {
@@ -295,6 +327,8 @@ impl UiState {
         self.text_area = None;
         self.text_caret = None;
         self.text_owner = None;
+        self.text_drag = false;
+        self.text_edge = EdgeRepeat::default();
         self.drag = None;
         self.deepest = 0;
         self.modals.clear();
@@ -305,14 +339,17 @@ impl UiState {
 
     /// The edit state of the focused text widget `id` over `text`. A widget
     /// that takes the edit state starts with the cursor at the end of the
-    /// text, without a selection and without a scroll. The state clamps to
-    /// `text`, so it follows a change of the text outside the widget.
+    /// text, without a selection, without a scroll and without a drag. The
+    /// state clamps to `text`, so it follows a change of the text outside
+    /// the widget.
     pub(super) fn text_edit(&mut self, id: UiId, text: &str) -> &mut TextEdit {
         if self.text_owner != Some(id) {
             self.text_owner = Some(id);
             self.text_edit = TextEdit::default();
             self.text_edit.go_to(text, Motion::End, false);
             self.text_scroll = 0.0;
+            self.text_drag = false;
+            self.text_edge.edge = None;
         }
         self.text_edit.clamp(text);
         &mut self.text_edit
@@ -455,6 +492,12 @@ impl UiState {
         }
         if self.text_owner != self.focus {
             self.text_owner = None;
+        }
+        if self.active.is_none() || self.active != self.text_owner {
+            self.text_drag = false;
+        }
+        if !self.text_drag {
+            self.text_edge.edge = None;
         }
         self.deepest = deepest;
         self.focus_pressed = false;

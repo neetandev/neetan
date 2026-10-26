@@ -159,9 +159,29 @@ fn command_modifier(keymod: &Mod) -> bool {
     keymod.lctrl()
 }
 
-/// The event of a mouse, text or input method event of SDL. Keyboard and
-/// gamepad events have their own mapping.
-pub(crate) fn pointer_or_text_event(event: &Event) -> Option<GuiEvent> {
+/// Whether Shift is held after `event` with `shift_held` before it. A key
+/// press and a key release carry the modifier keys that the keyboard holds
+/// after them. Every other event keeps `shift_held`.
+pub(crate) fn shift_after(event: &Event, shift_held: bool) -> bool {
+    match event {
+        Event::KeyDown { keymod, .. } | Event::KeyUp { keymod, .. } => keymod.shift(),
+        _ => shift_held,
+    }
+}
+
+/// The edit modifiers held with a press. Shift gives the extend modifier.
+fn pointer_modifiers(shift_held: bool) -> EditModifiers {
+    EditModifiers {
+        extend: shift_held,
+        word: false,
+        edge: false,
+    }
+}
+
+/// The event of a mouse, text or input method event of SDL with Shift held
+/// when `shift_held` is set. Keyboard and gamepad events have their own
+/// mapping.
+pub(crate) fn pointer_or_text_event(event: &Event, shift_held: bool) -> Option<GuiEvent> {
     match event {
         Event::MouseMotion { x, y, .. } => Some(GuiEvent::PointerMoved { x: *x, y: *y }),
         Event::MouseButtonDown {
@@ -173,6 +193,7 @@ pub(crate) fn pointer_or_text_event(event: &Event) -> Option<GuiEvent> {
             button: *mouse_btn,
             pressed: true,
             double: *clicks >= 2,
+            modifiers: pointer_modifiers(shift_held),
             x: *x,
             y: *y,
         }),
@@ -182,6 +203,7 @@ pub(crate) fn pointer_or_text_event(event: &Event) -> Option<GuiEvent> {
             button: *mouse_btn,
             pressed: false,
             double: false,
+            modifiers: EditModifiers::default(),
             x: *x,
             y: *y,
         }),
@@ -213,6 +235,9 @@ pub(super) mod tests {
     /// The left shift key.
     const SHIFT: Mod = Mod(0x0001);
 
+    /// The right shift key.
+    const RIGHT_SHIFT: Mod = Mod(0x0002);
+
     /// The left control key.
     pub(crate) const LEFT_CONTROL: Mod = Mod(0x0040);
 
@@ -240,7 +265,7 @@ pub(super) mod tests {
     };
 
     /// The edit modifier that extends the selection.
-    const EXTEND: EditModifiers = EditModifiers {
+    pub(crate) const EXTEND: EditModifiers = EditModifiers {
         extend: true,
         ..NO_EDIT_MODIFIERS
     };
@@ -417,27 +442,34 @@ pub(super) mod tests {
     #[test]
     fn mouse_and_text_events_map_to_the_input() {
         assert_eq!(
-            pointer_or_text_event(&Event::MouseButtonDown {
-                mouse_btn: MouseButton::Left,
-                clicks: 2,
-                x: 10.0,
-                y: 20.0,
-            }),
+            pointer_or_text_event(
+                &Event::MouseButtonDown {
+                    mouse_btn: MouseButton::Left,
+                    clicks: 2,
+                    x: 10.0,
+                    y: 20.0,
+                },
+                false
+            ),
             Some(GuiEvent::Button {
                 button: MouseButton::Left,
                 pressed: true,
                 double: true,
+                modifiers: NO_EDIT_MODIFIERS,
                 x: 10.0,
                 y: 20.0,
             })
         );
         assert_eq!(
-            pointer_or_text_event(&Event::MouseWheel {
-                x: 0.0,
-                y: -1.0,
-                mouse_x: 3.0,
-                mouse_y: 4.0,
-            }),
+            pointer_or_text_event(
+                &Event::MouseWheel {
+                    x: 0.0,
+                    y: -1.0,
+                    mouse_x: 3.0,
+                    mouse_y: 4.0,
+                },
+                false
+            ),
             Some(GuiEvent::Wheel {
                 steps: -1.0,
                 x: 3.0,
@@ -445,18 +477,141 @@ pub(super) mod tests {
             })
         );
         assert_eq!(
-            pointer_or_text_event(&Event::TextInput { text: "か".into() }),
+            pointer_or_text_event(&Event::TextInput { text: "か".into() }, false),
             Some(GuiEvent::Text("か".into()))
         );
         assert_eq!(
-            pointer_or_text_event(&Event::TextEditing {
-                text: "かな".into(),
-                start: 2,
-                length: 0,
-            }),
+            pointer_or_text_event(
+                &Event::TextEditing {
+                    text: "かな".into(),
+                    start: 2,
+                    length: 0,
+                },
+                false
+            ),
             Some(GuiEvent::Composition("かな".into()))
         );
-        assert_eq!(pointer_or_text_event(&Event::Quit), None);
+        assert_eq!(pointer_or_text_event(&Event::Quit, false), None);
+    }
+
+    /// A press of the left shift key with the held keys `keymod`.
+    fn shift_down(keymod: Mod) -> Event {
+        Event::KeyDown {
+            scancode: Some(Scancode::LShift),
+            keymod,
+            repeat: false,
+        }
+    }
+
+    /// A release of the left shift key with the held keys `keymod`.
+    fn shift_up(keymod: Mod) -> Event {
+        Event::KeyUp {
+            scancode: Some(Scancode::LShift),
+            keymod,
+            repeat: false,
+        }
+    }
+
+    /// A left press at `(5, 6)`.
+    fn left_press() -> Event {
+        Event::MouseButtonDown {
+            mouse_btn: MouseButton::Left,
+            clicks: 1,
+            x: 5.0,
+            y: 6.0,
+        }
+    }
+
+    /// A left release at `(5, 6)`.
+    fn left_release() -> Event {
+        Event::MouseButtonUp {
+            mouse_btn: MouseButton::Left,
+            clicks: 1,
+            x: 5.0,
+            y: 6.0,
+        }
+    }
+
+    /// The left button event at `(5, 6)`, pressed when `pressed` is set,
+    /// with `modifiers`.
+    fn left_button(pressed: bool, modifiers: EditModifiers) -> GuiEvent {
+        GuiEvent::Button {
+            button: MouseButton::Left,
+            pressed,
+            double: false,
+            modifiers,
+            x: 5.0,
+            y: 6.0,
+        }
+    }
+
+    /// The pointer events of the batch `events` with the Shift state that
+    /// the key events before each of them leave, in the order of the batch.
+    fn pointer_events(events: &[Event]) -> Vec<GuiEvent> {
+        let mut shift_held = false;
+        events
+            .iter()
+            .filter_map(|event| {
+                shift_held = shift_after(event, shift_held);
+                pointer_or_text_event(event, shift_held)
+            })
+            .collect()
+    }
+
+    /// Verifies that the modifier keys of a key press and a key release give the held Shift,
+    /// that the control keys, Alt and the GUI key hold no Shift and that other events keep it.
+    #[test]
+    fn the_key_events_give_the_held_shift() {
+        for keymod in [SHIFT, RIGHT_SHIFT, SHIFT_LEFT_CONTROL] {
+            assert!(shift_after(&shift_down(keymod), false));
+        }
+        for keymod in [
+            NO_MODIFIERS,
+            LEFT_CONTROL,
+            RIGHT_CONTROL,
+            LEFT_ALT,
+            LEFT_GUI,
+        ] {
+            assert!(!shift_after(&shift_down(keymod), true));
+        }
+        assert!(!shift_after(&shift_up(NO_MODIFIERS), true));
+        assert!(shift_after(&shift_up(RIGHT_SHIFT), false));
+        assert!(shift_after(&left_press(), true));
+        assert!(!shift_after(&left_press(), false));
+        assert!(shift_after(&Event::TextInput { text: "A".into() }, true));
+    }
+
+    /// Verifies that a press between a Shift press and its release in one batch extends the
+    /// selection, that a press before the Shift press or after its release does not, and that a
+    /// release carries no modifier.
+    #[test]
+    fn shift_with_a_button_press_extends_the_selection_in_event_order() {
+        assert_eq!(
+            pointer_events(&[
+                shift_down(SHIFT),
+                left_press(),
+                shift_up(NO_MODIFIERS),
+                left_release(),
+            ]),
+            [
+                left_button(true, EXTEND),
+                left_button(false, NO_EDIT_MODIFIERS)
+            ]
+        );
+        assert_eq!(
+            pointer_events(&[
+                left_press(),
+                shift_down(SHIFT),
+                left_release(),
+                shift_up(NO_MODIFIERS),
+                left_press(),
+            ]),
+            [
+                left_button(true, NO_EDIT_MODIFIERS),
+                left_button(false, NO_EDIT_MODIFIERS),
+                left_button(true, NO_EDIT_MODIFIERS)
+            ]
+        );
     }
 
     /// Verifies the shortcut keys, the left control key and that the right control key forms no shortcut.

@@ -743,3 +743,11 @@ impl Mod {
         self.0 & 0x0C00 != 0
     }
 }
+
+/// The modifier keys that the keyboard of SDL holds at the time of the
+/// call.
+pub fn mod_state() -> Mod {
+    // Safety: SDL_GetModState takes no arguments and only reads the keyboard
+    // state of SDL. It is safe to call from any thread.
+    Mod(unsafe { sdl3_sys::keyboard::SDL_GetModState() }.0)
+}

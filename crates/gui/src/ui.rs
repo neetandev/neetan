@@ -36,6 +36,7 @@ mod checkbox;
 mod confirm;
 mod context;
 mod dropdown;
+mod field_pointer;
 mod field_value;
 mod focus;
 mod icons;

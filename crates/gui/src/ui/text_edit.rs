@@ -140,10 +140,6 @@ impl TextEdit {
     /// Places the cursor at the position at or before the byte offset
     /// `offset`. With `extend` the anchor keeps its value, else it follows
     /// the cursor.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "only the tests place the cursor at an offset")
-    )]
     pub(super) fn place(&mut self, text: &str, offset: usize, extend: bool) -> EditOutcome {
         let previous = *self;
         self.clamp(text);
@@ -293,7 +289,7 @@ impl TextEdit {
 const ZERO_WIDTH_JOINER: char = '\u{200D}';
 
 /// Whether the byte offset `offset` is a position of `text`.
-fn is_position(text: &str, offset: usize) -> bool {
+pub(super) fn is_position(text: &str, offset: usize) -> bool {
     offset == 0
         || offset == text.len()
         || (text.is_char_boundary(offset)
