@@ -258,14 +258,14 @@ impl Manager {
 mod tests {
     use gui::ui::{ActionButton, EditCommand, Navigation, Shortcut, UiId};
     #[cfg(feature = "pc98")]
-    use gui::ui::{NavigationSource, ThemeKind, Viewport};
+    use gui::ui::{EditModifiers, NavigationSource, ThemeKind, Viewport};
     #[cfg(feature = "pc98")]
     use machine_factory::config::systems::compiled_systems;
 
     use super::*;
     #[cfg(feature = "pc98")]
     use crate::{
-        config::metadata::YEAR_KEY,
+        config::metadata::{TITLE_KEY, TITLE_ORIGINAL_KEY, YEAR_KEY},
         editor::{DISCARD_LAYER_ID, EditorSection, empty_list_id},
         gui_test_support::{MINIMUM_HEIGHT, MINIMUM_WIDTH, PassCounts},
         manager::{
@@ -281,6 +281,29 @@ mod tests {
         manager::{
             FILTER_ID, error_dialog::OVERWRITE_ID, game_table::GAME_TABLE_ID, test_support::titles,
         },
+    };
+
+    #[cfg(feature = "pc98")]
+    /// The modifier of a word step.
+    const WORD: EditModifiers = EditModifiers {
+        extend: false,
+        word: true,
+        edge: false,
+    };
+
+    #[cfg(feature = "pc98")]
+    /// The modifiers of a word step that extends the selection.
+    const SHIFT_WORD: EditModifiers = EditModifiers {
+        extend: true,
+        ..WORD
+    };
+
+    #[cfg(feature = "pc98")]
+    /// The modifier of a step that extends the selection.
+    const EXTEND: EditModifiers = EditModifiers {
+        extend: true,
+        word: false,
+        edge: false,
     };
 
     /// The manager of `root`.
@@ -936,14 +959,50 @@ key.PageDown = RollUp
     }
 
     #[cfg(feature = "pc98")]
+    /// Renders the focused title of the open editor with two words selected
+    /// and the cursor at the start of the selection, the focused original
+    /// title with four kanji and kana selected, and the focused year with
+    /// the cursor before its last digit through `render`. Gives the focus
+    /// back to the title with the cursor at the end.
+    fn field_screenshots(
+        harness: &mut GuiHarness,
+        manager: &mut Manager,
+        render: &impl Fn(&GuiHarness, &str),
+    ) {
+        assert_eq!(harness.state.focused(), Some(field_id(TITLE_KEY)));
+        for modifiers in [WORD, WORD, WORD, SHIFT_WORD, SHIFT_WORD] {
+            harness.input.navigation = Some(Navigation::Left);
+            harness.input.modifiers = modifiers;
+            settle(harness, manager);
+        }
+        render(harness, "title_selection");
+        harness.state.set_focus(field_id(TITLE_ORIGINAL_KEY));
+        settle(harness, manager);
+        for modifiers in [EditModifiers::default(); 6].into_iter().chain([EXTEND; 4]) {
+            harness.input.navigation = Some(Navigation::Left);
+            harness.input.modifiers = modifiers;
+            settle(harness, manager);
+        }
+        render(harness, "original_title_selection");
+        harness.state.set_focus(field_id(YEAR_KEY));
+        settle(harness, manager);
+        harness.input.navigation = Some(Navigation::Left);
+        settle(harness, manager);
+        render(harness, "year_cursor");
+        harness.state.set_focus(field_id(TITLE_KEY));
+        settle(harness, manager);
+    }
+
+    #[cfg(feature = "pc98")]
     /// Renders the editor at `width` x `height` logical units and `scale`:
-    /// every section of a game, the dropdown popup, the file browser, the
-    /// discard question, the question over a file that changed outside the
-    /// manager, a save error, a new game, a duplicate, the warning about
-    /// system defaults that do not read, the empty media lists and the
-    /// sections of other families with the help text of the CPU mode. With
-    /// `large` only the sections of a game. The texts come from the catalog
-    /// of `language`.
+    /// every section of a game, the focused title and original title with a
+    /// selection, the focused year with the cursor inside its text, the dropdown popup, the
+    /// file browser, the discard question, the question over a file that
+    /// changed outside the manager, a save error, a new game, a duplicate,
+    /// the warning about system defaults that do not read, the empty media
+    /// lists and the sections of other families with the help text of the
+    /// CPU mode. With `large` only the sections of a game. The texts come
+    /// from the catalog of `language`.
     fn screenshots(
         width: f32,
         height: f32,
@@ -970,6 +1029,9 @@ key.PageDown = RollUp
         harness.input.shortcut = Some(Shortcut::F2);
         settle(&mut harness, &mut manager);
         render(&harness, "metadata");
+        if !large {
+            field_screenshots(&mut harness, &mut manager, &render);
+        }
         for name in ["machine", "media"] {
             harness.input.navigation = Some(Navigation::NextTab);
             settle(&mut harness, &mut manager);
