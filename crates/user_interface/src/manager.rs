@@ -445,7 +445,10 @@ mod tests {
         test_support::{TestRoot, first_system, games, sample_root, select, steady_frame, titles},
         *,
     };
-    use crate::gui_test_support::{GuiHarness, PassCounts};
+    use crate::{
+        gui_test_support::{GuiHarness, PassCounts},
+        texts::repository::{RepositoryLanguage, repository_languages},
+    };
 
     /// Verifies that the launch request of a row holds its game file, its system and the command line flags.
     #[test]
@@ -797,13 +800,13 @@ mod tests {
         scale: f32,
         prefix: &str,
         kind: ThemeKind,
-        language: fn() -> crate::texts::LanguageCatalog,
+        language: &RepositoryLanguage,
     ) {
         let viewport = Viewport::new((width * scale) as u32, (height * scale) as u32, scale);
         let test = TestRoot::new(&format!("screenshots_{prefix}_{scale}"));
         sample_root(&test);
         let mut manager = test.manager();
-        let mut harness = GuiHarness::with_viewport(viewport, kind, language());
+        let mut harness = GuiHarness::with_viewport(viewport, kind, language.catalog());
         let render = |harness: &GuiHarness, name: &str| {
             harness.write_screenshot(&format!("manager_{prefix}{name}_{scale}x"));
         };
@@ -979,13 +982,13 @@ mod tests {
         );
     }
 
-    /// Writes the screenshots of the manager in both themes and in every
-    /// screenshot language at the scales 1 and 2, at the minimum window size
+    /// Writes the screenshots of the manager in both themes and in every language
+    /// of the repository at the scales 1 and 2, at the minimum window size
     /// and at 1920 x 1080.
     #[test]
     #[ignore = "writes screenshots into the directory of GUI_SHOTS"]
     fn manager_screenshots() {
-        for language in crate::gui_test_support::SCREENSHOT_LANGUAGES {
+        for language in repository_languages() {
             for kind in [ThemeKind::Dark, ThemeKind::Light] {
                 for scale in [1.0, 2.0] {
                     screenshots(960.0, 600.0, scale, "", kind, language);

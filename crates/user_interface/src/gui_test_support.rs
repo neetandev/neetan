@@ -8,7 +8,7 @@ use gui::{
     ui::{Input, Theme, ThemeKind, UiContext, UiState, Viewport},
 };
 
-use crate::texts::{ENGLISH_TAG, LanguageCatalog, repository::japanese_catalog};
+use crate::texts::{ENGLISH_TAG, LanguageCatalog};
 
 /// Returns the font file of the repository.
 pub(crate) fn repository_font() -> Vec<u8> {
@@ -180,15 +180,6 @@ impl GuiHarness {
         write_ppm(&name, width, height, &self.render());
     }
 }
-
-/// Returns the embedded English catalog.
-fn english_catalog() -> LanguageCatalog {
-    LanguageCatalog::English
-}
-
-/// The catalogs of the languages of the screenshots: English and Japanese.
-pub(crate) const SCREENSHOT_LANGUAGES: [fn() -> LanguageCatalog; 2] =
-    [english_catalog, japanese_catalog];
 
 /// Writes the RGBA8 `pixels` as `<name>.ppm` into the directory of the
 /// `GUI_SHOTS` environment variable. Without the variable nothing is written.

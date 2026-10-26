@@ -529,7 +529,7 @@ mod tests {
     #[cfg(feature = "pc98")]
     #[test]
     fn limits_write_their_sentence_with_the_model() {
-        use crate::texts::repository::japanese;
+        use crate::texts::repository::{german, japanese};
 
         let model: MachineSelection = "PC9801RA".parse().expect("a PC-98 model");
         let sentence = |reason| written(english(), &LimitSentence { reason, model });
@@ -549,6 +549,15 @@ mod tests {
         assert_eq!(
             japanese_sentence(LimitReason::FixedClock),
             "PC9801RAのCPUクロックは20 MHz固定です。"
+        );
+        let german_sentence = |reason| written(german(), &LimitSentence { reason, model });
+        assert_eq!(
+            german_sentence(LimitReason::Phrase("no-cdrom")),
+            "PC9801RA hat kein CD-ROM-Laufwerk."
+        );
+        assert_eq!(
+            german_sentence(LimitReason::FixedClock),
+            "PC9801RA hat einen festen CPU-Takt von 20 MHz."
         );
     }
 
