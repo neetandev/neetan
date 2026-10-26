@@ -75,7 +75,8 @@ impl<'a, T: AsRef<str>> Dropdown<'a, T> {
     }
 
     /// The same dropdown, disabled unless `enabled`. A disabled dropdown
-    /// draws dimmed, ignores input and leaves the focus ring.
+    /// draws dimmed, ignores input and leaves the focus ring. It takes the
+    /// pointer over it, and a press on it reaches no widget after it.
     pub fn enabled(self, enabled: bool) -> Self {
         Self { enabled, ..self }
     }
@@ -170,6 +171,8 @@ impl<'a, T: AsRef<str>> Dropdown<'a, T> {
             context.focusable(id, rect, NavigationSet::EMPTY);
             let (x, y) = context.mouse();
             pressed = context.input.left && rect.contains(x, y);
+        } else {
+            context.absorb_pointer(rect);
         }
 
         let (fill, edge, text_color, icon_color) = if !self.enabled {

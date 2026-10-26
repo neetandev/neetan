@@ -29,6 +29,7 @@ mod page;
 mod rom_rows;
 mod rows;
 mod save;
+mod section_rows;
 mod system_defaults;
 #[cfg(test)]
 pub(crate) mod test_support;

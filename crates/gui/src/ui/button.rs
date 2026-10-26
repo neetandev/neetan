@@ -98,7 +98,8 @@ impl<'a> Button<'a> {
     }
 
     /// The same button, disabled unless `enabled`. A disabled button draws
-    /// dimmed, ignores input and leaves the focus ring.
+    /// dimmed, ignores input and leaves the focus ring. It takes the pointer
+    /// over it, and a press on it reaches no widget after it.
     pub fn enabled(self, enabled: bool) -> Self {
         Self { enabled, ..self }
     }
@@ -132,6 +133,7 @@ impl<'a> Button<'a> {
     pub fn show(self, context: &mut UiContext, rect: Rect) -> bool {
         let theme = context.theme;
         if !self.enabled {
+            context.absorb_pointer(rect);
             if self.kind != ButtonKind::Quiet {
                 context.rect(
                     rect,
@@ -450,6 +452,22 @@ mod tests {
         harness.input.confirm = true;
         assert!(!harness.frame(draw));
         assert_eq!(harness.state.focused(), None);
+    }
+
+    /// Verifies that a disabled button takes the pointer over it from the widgets after it.
+    #[test]
+    fn a_disabled_button_takes_the_pointer() {
+        let mut harness = Harness::new();
+        for (x, taken) in [(40.0, true), (OK.right() + 10.0, false)] {
+            harness.press(x, 20.0);
+            let takes_pointer = harness.frame(|context| {
+                Button::new("ok", "OK").enabled(false).show(context, OK);
+                context.takes_pointer()
+            });
+            assert_eq!(takes_pointer, !taken, "{x}");
+            harness.release();
+            harness.frame(|_| {});
+        }
     }
 
     #[test]

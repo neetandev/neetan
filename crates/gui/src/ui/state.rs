@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{
     context::UiId,
-    focus::{Focusable, next_focus},
+    focus::{Focusable, MoveStart, next_focus},
     input::Input,
     list::ListState,
 };
@@ -87,9 +87,9 @@ pub struct UiState {
     /// The widget that held the focus when the pass started with confirm.
     /// Only it takes the confirm of the pass.
     pub(super) confirm_target: Option<UiId>,
-    /// The last area of a focused widget that left the ring. The next
-    /// directional move starts from it.
-    pub(super) lost: Option<Rect>,
+    /// The last area and the scroll area of a focused widget that left the
+    /// ring. The next directional move starts from it.
+    pub(super) lost: Option<MoveStart>,
     /// The area of the focused text widget in physical pixels.
     pub(super) text_area: Option<Rect>,
     /// The offset of the text cursor from the left edge of the text area in
@@ -109,6 +109,11 @@ pub struct UiState {
     pub(super) pass_requested: bool,
     /// Whether a widget scrolled by the wheel steps of this pass.
     pub(super) wheel_taken: bool,
+    /// Whether a press gave the focus through
+    /// [`super::UiContext::focus_on_press`] in this pass. The scroll area of
+    /// the focused widget scrolls it into view when it does not fully show.
+    /// The pass ends with the flag cleared.
+    pub(super) focus_pressed: bool,
 }
 
 impl Default for UiState {
@@ -135,6 +140,7 @@ impl Default for UiState {
             popup: None,
             pass_requested: false,
             wheel_taken: false,
+            focus_pressed: false,
         }
     }
 }
@@ -268,6 +274,7 @@ impl UiState {
         self.modals.clear();
         self.popup = None;
         self.pass_requested = false;
+        self.focus_pressed = false;
     }
 
     /// The layer of the widget `id` in the ring of this pass, or else in the
@@ -349,7 +356,9 @@ impl UiState {
                 self.routed = Some((candidates[index].id, navigation));
             }
             _ => {
-                let from = current.map(|index| candidates[index].rect).or(lost);
+                let from = current
+                    .map(|index| MoveStart::of(&candidates[index]))
+                    .or(lost);
                 if let Some(next) = next_focus(candidates, current, from, navigation) {
                     self.focus = Some(candidates[next].id);
                 }
@@ -380,7 +389,7 @@ impl UiState {
                 .previous_ring
                 .iter()
                 .find(|entry| entry.id == focus)
-                .map(|entry| entry.rect);
+                .map(MoveStart::of);
             self.focus = None;
             self.pass_requested = true;
         }
@@ -389,6 +398,7 @@ impl UiState {
             self.drag = None;
         }
         self.deepest = deepest;
+        self.focus_pressed = false;
     }
 }
 

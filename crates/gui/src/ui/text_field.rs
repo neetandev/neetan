@@ -261,14 +261,16 @@ impl<'a> TextField<'a> {
     }
 
     /// The same field, disabled unless `enabled`. A disabled field draws
-    /// dimmed, ignores input and leaves the focus ring.
+    /// dimmed, ignores input and leaves the focus ring. It takes the pointer
+    /// over it, and a press on it reaches no widget after it.
     pub fn enabled(self, enabled: bool) -> Self {
         Self { enabled, ..self }
     }
 
     /// The same field, read-only when `read_only` is set. A read-only field
     /// shows its text sunken and dimmed, ignores input and leaves the focus
-    /// ring.
+    /// ring. It takes the pointer over it, and a press on it reaches no
+    /// widget after it.
     pub fn read_only(self, read_only: bool) -> Self {
         Self { read_only, ..self }
     }
@@ -311,6 +313,8 @@ impl<'a> TextField<'a> {
             }
             context.text_focusable(id, rect, self.clears_on_cancel && !text.is_empty());
             hovered = context.button_behavior(id, rect).hovered;
+        } else {
+            context.absorb_pointer(rect);
         }
         let focused = interactive && context.has_focus(id);
         let focus_look = interactive && context.shows_focus(id);

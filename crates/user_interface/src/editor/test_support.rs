@@ -5,7 +5,10 @@
 use std::path::{Path, PathBuf};
 
 use common::temporary::TemporaryFolder;
-use gui::{Instance, Rect, ui::UiContext};
+use gui::{
+    Instance, Rect,
+    ui::{Navigation, UiContext},
+};
 use machine_factory::{
     config::{
         MachineSelection, Target,
@@ -15,7 +18,7 @@ use machine_factory::{
     rom_status::{RomCheck, RomStatus},
 };
 
-use super::{Editor, EditorPass, page::help_area};
+use super::{Editor, EditorPass, EditorSection, help_area::FormRow, page::help_area};
 use crate::{
     config::{HostLayers, LaunchRequest, Locations, SETTINGS_FILE_NAME},
     gui_test_support::GuiHarness,
@@ -26,11 +29,21 @@ use crate::{
 /// The window above the status line in the tests.
 pub(crate) const SCREEN: Rect = Rect::new(0.0, 0.0, 960.0, 572.0);
 
-/// Draws passes of `editor` until they settle and returns the answers of the passes.
+/// A short page that shows less than one tall media row.
+pub(crate) const SHORT_SCREEN: Rect = Rect::new(0.0, 0.0, 960.0, 300.0);
+
+/// Draws passes of `editor` in [`SCREEN`] until they settle and returns the answers of the
+/// passes.
 pub(crate) fn show(harness: &mut GuiHarness, editor: &mut Editor) -> EditorPass {
+    show_in(harness, editor, SCREEN)
+}
+
+/// Draws passes of `editor` in `screen` until they settle and returns the answers of the
+/// passes.
+pub(crate) fn show_in(harness: &mut GuiHarness, editor: &mut Editor, screen: Rect) -> EditorPass {
     let mut answer = EditorPass::default();
     harness.settle(|context| {
-        let pass = editor.show(context, SCREEN);
+        let pass = editor.show(context, screen);
         answer.closed |= pass.closed;
         answer.saved = answer.saved.clone().or(pass.saved);
         answer.save_error = answer.save_error.clone().or(pass.save_error);
@@ -143,6 +156,15 @@ pub(crate) fn index_of(editor: &Editor, key: &str) -> usize {
         .expect("the form has the key")
 }
 
+/// The row of the field `key` in the last pass of `editor`.
+pub(crate) fn row_of(editor: &Editor, key: &str) -> FormRow {
+    *editor
+        .rows
+        .iter()
+        .find(|row| editor.fields[row.field].key() == key)
+        .expect("the pass drew the row")
+}
+
 /// A model of the family of `root` that reads `fdd1`.
 pub(crate) fn fdd1_model(root: &EditorRoot) -> &'static str {
     let fdd1 = find_setting("fdd1").expect("fdd1 is a table key");
@@ -151,6 +173,27 @@ pub(crate) fn fdd1_model(root: &EditorRoot) -> &'static str {
         .map(|choice| choice.value)
         .find(|model| fdd1.is_read_by(root.target(), model))
         .expect("a model of the family reads fdd1")
+}
+
+/// Opens the Media section of the game editor of a model of the family of `root` that reads
+/// `fdd1`, for a file with the lines `lines`, and draws it in `screen`.
+pub(crate) fn media_section(
+    root: &EditorRoot,
+    harness: &mut GuiHarness,
+    screen: Rect,
+    lines: &str,
+) -> Editor {
+    let path = root.game(
+        "edge",
+        &format!("meta.title = Edge\nmachine = {}\n{lines}", fdd1_model(root)),
+    );
+    let mut editor = Editor::open(&root.host(), root.system(), &path).expect("the editor opens");
+    show_in(harness, &mut editor, screen);
+    while editor.current_section() != EditorSection::Media {
+        harness.input.navigation = Some(Navigation::NextTab);
+        show_in(harness, &mut editor, screen);
+    }
+    editor
 }
 
 /// A root folder with a settings file. Dropping the value removes it.

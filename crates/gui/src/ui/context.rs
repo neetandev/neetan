@@ -387,6 +387,38 @@ impl<'a> UiContext<'a> {
         response
     }
 
+    /// Gives `id` the keyboard focus on a left press over `rect` that no
+    /// widget took. The widgets inside `rect` draw before the call, so a
+    /// press on one of them keeps its own behavior. `id` takes the focus only
+    /// when the pass added it to the focus ring of the current layer. The
+    /// scroll area around `id` scrolls it into view when it does not fully
+    /// show.
+    pub fn focus_on_press(&mut self, id: UiId, rect: Rect) {
+        if !self.input.left_pressed() || !self.hovered(rect) {
+            return;
+        }
+        let depth = self.depth;
+        if !self
+            .state
+            .ring
+            .iter()
+            .any(|entry| entry.id == id && entry.layer == depth)
+        {
+            return;
+        }
+        self.set_focus(id);
+        self.state.focus_pressed = true;
+    }
+
+    /// Takes the pointer while it is over `rect`, for a widget that draws
+    /// without input, such as a disabled button. The widgets after it in the
+    /// pass ignore the pointer.
+    pub fn absorb_pointer(&mut self, rect: Rect) {
+        if self.hovered(rect) {
+            self.mouse_captured = true;
+        }
+    }
+
     /// Whether `id` is the hot widget under the pointer.
     pub fn is_hot(&self, id: UiId) -> bool {
         self.hot == Some(id)
@@ -863,6 +895,81 @@ mod tests {
         harness.navigate(Navigation::Down);
         harness.frame(|context| draw(context, [true, false, true]));
         assert_eq!(harness.state.focused(), Some(ui_id_indexed("row", 2)));
+    }
+
+    /// Verifies that a left press over the area of [`UiContext::focus_on_press`] gives the id
+    /// the focus, and that a blocked layer, a pointer that a widget took, an id outside the ring
+    /// of the layer and a right press keep the focus.
+    #[test]
+    fn a_press_over_an_area_focuses_its_widget() {
+        /// The area of the row and of the widget of the row.
+        const ROW: Rect = Rect::new(10.0, 10.0, 200.0, 40.0);
+        /// The widget that holds the focus before each press.
+        const OTHER: Rect = Rect::new(10.0, 100.0, 200.0, 20.0);
+        let id = ui_id("field");
+        let other = ui_id("other");
+        let blocker = ui_id("blocker");
+        /// The obstacle of a press.
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        enum Obstacle {
+            /// A plain left press.
+            None,
+            /// A popup that opens before the call.
+            Popup,
+            /// A modal of the last pass above the base layer.
+            Modal,
+            /// A widget that takes the pointer before the call.
+            Widget,
+            /// The id outside the ring of the layer.
+            OutsideRing,
+            /// A press of the right button.
+            RightPress,
+        }
+        let draw = |context: &mut UiContext, obstacle: Obstacle| {
+            context.focusable(other, OTHER, NavigationSet::EMPTY);
+            if obstacle != Obstacle::OutsideRing {
+                context.focusable(
+                    id,
+                    Rect::new(100.0, 15.0, 100.0, 30.0),
+                    NavigationSet::EMPTY,
+                );
+            }
+            match obstacle {
+                Obstacle::Popup => context.open_popup(blocker),
+                Obstacle::Widget => {
+                    context.button_behavior(blocker, ROW);
+                }
+                Obstacle::None | Obstacle::Modal | Obstacle::OutsideRing | Obstacle::RightPress => {
+                }
+            }
+            context.focus_on_press(id, ROW);
+            if obstacle == Obstacle::Modal {
+                context.layer("dialog", |context| {
+                    context.focusable(blocker, OTHER, NavigationSet::EMPTY);
+                });
+            }
+        };
+        for (obstacle, focused) in [
+            (Obstacle::None, id),
+            (Obstacle::Popup, other),
+            (Obstacle::Modal, blocker),
+            (Obstacle::Widget, other),
+            (Obstacle::OutsideRing, other),
+            (Obstacle::RightPress, other),
+        ] {
+            let mut harness = Harness::new();
+            harness.mouse(20.0, 20.0);
+            harness.state.set_focus(other);
+            harness.frame(|context| draw(context, obstacle));
+            harness.frame(|context| draw(context, obstacle));
+            if obstacle == Obstacle::RightPress {
+                harness.input.right = true;
+            } else {
+                harness.press(20.0, 20.0);
+            }
+            harness.frame(|context| draw(context, obstacle));
+            assert_eq!(harness.state.focused(), Some(focused), "{obstacle:?}");
+        }
     }
 
     #[test]
