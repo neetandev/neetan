@@ -549,8 +549,16 @@ pub(crate) mod tests {
 
     /// The note that `build` writes with the English texts.
     pub(crate) fn english_note(build: impl FnOnce(&mut NoteWriter) -> NoteLook) -> Note {
+        catalog_note(english(), build)
+    }
+
+    /// The note that `build` writes with the texts of `catalog`.
+    pub(crate) fn catalog_note(
+        catalog: &Catalog,
+        build: impl FnOnce(&mut NoteWriter) -> NoteLook,
+    ) -> Note {
         let mut scratch = String::new();
-        let mut writer = NoteWriter::new(english(), &mut scratch);
+        let mut writer = NoteWriter::new(catalog, &mut scratch);
         let look = build(&mut writer);
         let mut text = String::new();
         writer.finish(&mut text);

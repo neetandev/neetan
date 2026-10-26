@@ -8,7 +8,7 @@ use gui::{
     ui::{Input, Theme, ThemeKind, UiContext, UiState, Viewport},
 };
 
-use crate::texts::LanguageCatalog;
+use crate::texts::{ENGLISH_TAG, LanguageCatalog, repository::japanese_catalog};
 
 /// Returns the font file of the repository.
 pub(crate) fn repository_font() -> Vec<u8> {
@@ -163,16 +163,32 @@ impl GuiHarness {
 
     /// Writes the scene of the last pass as `<name>.ppm` into the directory
     /// of the `GUI_SHOTS` environment variable. A light theme writes
-    /// `light_<name>.ppm`.
+    /// `light_<name>.ppm`. A catalog of another language than English puts
+    /// its tag in front, for example `ja_light_<name>.ppm`.
     pub(crate) fn write_screenshot(&self, name: &str) {
         let Viewport { width, height, .. } = self.viewport;
         let name = match self.kind {
             ThemeKind::Dark => name.to_owned(),
             ThemeKind::Light => format!("light_{name}"),
         };
+        let tag = self.catalog.catalog().tag();
+        let name = if tag == ENGLISH_TAG {
+            name
+        } else {
+            format!("{tag}_{name}")
+        };
         write_ppm(&name, width, height, &self.render());
     }
 }
+
+/// Returns the embedded English catalog.
+fn english_catalog() -> LanguageCatalog {
+    LanguageCatalog::English
+}
+
+/// The catalogs of the languages of the screenshots: English and Japanese.
+pub(crate) const SCREENSHOT_LANGUAGES: [fn() -> LanguageCatalog; 2] =
+    [english_catalog, japanese_catalog];
 
 /// Writes the RGBA8 `pixels` as `<name>.ppm` into the directory of the
 /// `GUI_SHOTS` environment variable. Without the variable nothing is written.

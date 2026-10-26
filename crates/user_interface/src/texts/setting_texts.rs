@@ -175,36 +175,46 @@ mod tests {
     };
 
     use super::*;
-    use crate::texts::{SCHEMA, english, in_catalog, test_catalog};
+    use crate::texts::{
+        SCHEMA, english, in_catalog,
+        repository::{repository_catalogs, sentence_mark},
+        test_catalog,
+    };
 
     /// The text of `text` in `catalog`.
     fn written(catalog: &Catalog, text: &impl CatalogText) -> String {
         in_catalog(catalog, text).to_string()
     }
 
-    /// Verifies that every setting has a label and a help sentence in the English catalog.
+    /// Verifies that every setting has a label and a help sentence in every language of the
+    /// repository. A help ends with the sentence mark of its language and a label does not.
     #[test]
     fn every_setting_has_a_label_and_a_help_sentence() {
-        let catalog = english();
-        for setting in SETTINGS {
-            for key in [LABEL_KEY, HELP_KEY] {
-                let text = group_text(catalog, SETTING_GROUP, setting.key, key);
+        for catalog in repository_catalogs() {
+            let mark = sentence_mark(catalog);
+            for setting in SETTINGS {
+                for key in [LABEL_KEY, HELP_KEY] {
+                    let text = group_text(catalog, SETTING_GROUP, setting.key, key);
+                    assert!(
+                        text.is_some_and(|text| !text.is_empty()),
+                        "{} has no {key} in {}",
+                        setting.key,
+                        catalog.tag()
+                    );
+                }
                 assert!(
-                    text.is_some_and(|text| !text.is_empty()),
-                    "{} has no {key}",
-                    setting.key
+                    setting_help(catalog, setting).ends_with(mark),
+                    "the help of {} in {} is a sentence",
+                    setting.key,
+                    catalog.tag()
+                );
+                assert!(
+                    !setting_label(catalog, setting).ends_with(mark),
+                    "the label of {} in {}",
+                    setting.key,
+                    catalog.tag()
                 );
             }
-            assert!(
-                setting_help(catalog, setting).ends_with('.'),
-                "the help of {} is a sentence",
-                setting.key
-            );
-            assert!(
-                !setting_label(catalog, setting).ends_with('.'),
-                "{}",
-                setting.key
-            );
         }
     }
 
@@ -226,30 +236,34 @@ mod tests {
         }
     }
 
-    /// Verifies that every file type has its texts and the extension sentence of its files.
+    /// Verifies that every file type has its texts in every language of the repository.
     #[test]
     fn every_file_type_has_its_texts() {
-        let catalog = english();
         let ids: BTreeSet<&str> = SETTINGS
             .iter()
             .flat_map(|setting| setting.file_types)
             .map(|types| types.id)
             .collect();
         assert_eq!(ids.len(), 5);
-        for types in SETTINGS.iter().flat_map(|setting| setting.file_types) {
-            for text in [
-                FileTypeText::Name,
-                FileTypeText::EmptyDrive,
-                FileTypeText::StartWithout,
-                FileTypeText::NoFiles,
-            ] {
-                assert!(
-                    group_text(catalog, FILE_TYPE_GROUP, types.id, text.key()).is_some(),
-                    "{} {text:?}",
-                    types.id
-                );
+        for catalog in repository_catalogs() {
+            for types in SETTINGS.iter().flat_map(|setting| setting.file_types) {
+                for text in [
+                    FileTypeText::Name,
+                    FileTypeText::EmptyDrive,
+                    FileTypeText::StartWithout,
+                    FileTypeText::NoFiles,
+                ] {
+                    assert!(
+                        group_text(catalog, FILE_TYPE_GROUP, types.id, text.key())
+                            .is_some_and(|text| !text.is_empty()),
+                        "{} {text:?} in {}",
+                        types.id,
+                        catalog.tag()
+                    );
+                }
             }
         }
+        let catalog = english();
         let fdd1 = find_setting("fdd1").and_then(|setting| setting.file_types.first());
         let fdd1 = fdd1.expect("fdd1 takes floppy disk images");
         assert_eq!(
@@ -289,7 +303,7 @@ mod tests {
     }
 
     /// Verifies that every phrase of a model limit is a sentence of `[limit]` with the model
-    /// placeholder.
+    /// placeholder in every language of the repository.
     #[test]
     fn every_limit_phrase_is_a_sentence_with_the_model() {
         for setting in SETTINGS {
@@ -299,12 +313,16 @@ mod tests {
                         .find(LIMIT_SECTION, phrase)
                         .expect("the phrase is a key of [limit]");
                     assert_eq!(SCHEMA.info(key).placeholders(), ["model"], "{phrase}");
-                    assert!(
-                        english()
-                            .display(Message::new(key, [&"X"]))
-                            .to_string()
-                            .ends_with('.')
-                    );
+                    for catalog in repository_catalogs() {
+                        assert!(
+                            catalog
+                                .display(Message::new(key, [&"X"]))
+                                .to_string()
+                                .ends_with(sentence_mark(catalog)),
+                            "{phrase} in {}",
+                            catalog.tag()
+                        );
+                    }
                 }
             }
         }
@@ -336,6 +354,8 @@ mod tests {
     #[cfg(feature = "pc98")]
     #[test]
     fn limits_write_their_sentence_with_the_model() {
+        use crate::texts::repository::japanese;
+
         let model: MachineSelection = "PC9801RA".parse().expect("a PC-98 model");
         let sentence = |reason| written(english(), &LimitSentence { reason, model });
         assert_eq!(
@@ -345,6 +365,15 @@ mod tests {
         assert_eq!(
             sentence(LimitReason::FixedClock),
             "PC9801RA runs at a fixed 20 MHz."
+        );
+        let japanese_sentence = |reason| written(japanese(), &LimitSentence { reason, model });
+        assert_eq!(
+            japanese_sentence(LimitReason::Phrase("no-cdrom")),
+            "PC9801RAにはCD-ROMドライブがありません。"
+        );
+        assert_eq!(
+            japanese_sentence(LimitReason::FixedClock),
+            "PC9801RAのCPUクロックは20 MHz固定です。"
         );
     }
 

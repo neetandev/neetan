@@ -188,7 +188,7 @@ pub fn resource_folder(executable_directory: &Path) -> PathBuf {
 pub const LANGUAGE_FOLDER: &str = "language";
 
 /// The file extension of a language file.
-const LANGUAGE_FILE_EXTENSION: &str = "ini";
+pub const LANGUAGE_FILE_EXTENSION: &str = "ini";
 
 /// A language file of the user interface.
 #[derive(Debug, Clone, PartialEq, Eq)]

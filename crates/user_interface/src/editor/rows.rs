@@ -728,11 +728,13 @@ mod tests {
 
     use super::*;
     use crate::{
-        editor::{form::tests::ignored_note, page::form_area, test_support::SCREEN},
+        editor::{form::tests::ignored_note_in, page::form_area, test_support::SCREEN},
         gui_test_support::GuiHarness,
+        texts::repository::repository_catalogs,
     };
 
-    /// Verifies that every model-limit note of every compiled family fits the note column of a 960 x 600 window within its lines.
+    /// Verifies that every model-limit note of every compiled family fits the note column of a
+    /// 960 x 600 window within its lines in every language of the repository.
     #[test]
     fn every_model_limit_note_fits_at_the_minimum_window_size() {
         let mut harness = GuiHarness::new(960, 600);
@@ -747,18 +749,20 @@ mod tests {
         let note_width = RowAreas::new(theme, content, 0.0).note.width;
         assert!(note_width > 200.0, "{note_width}");
         let mut notes = Vec::new();
-        for system in compiled_systems() {
-            let target = MachineSelection::of_system(system)
-                .expect("compiled system")
-                .target();
-            for choice in MODEL_CHOICES
-                .iter()
-                .filter(|choice| choice.families.contains_target(target))
-            {
-                let model: MachineSelection = choice.value.parse().expect("a model");
-                for setting in SETTINGS {
-                    if let Some(note) = ignored_note(setting, model) {
-                        notes.push(note);
+        for catalog in repository_catalogs() {
+            for system in compiled_systems() {
+                let target = MachineSelection::of_system(system)
+                    .expect("compiled system")
+                    .target();
+                for choice in MODEL_CHOICES
+                    .iter()
+                    .filter(|choice| choice.families.contains_target(target))
+                {
+                    let model: MachineSelection = choice.value.parse().expect("a model");
+                    for setting in SETTINGS {
+                        if let Some(note) = ignored_note_in(catalog, setting, model) {
+                            notes.push(note);
+                        }
                     }
                 }
             }
