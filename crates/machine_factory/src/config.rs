@@ -11,6 +11,7 @@ use common::{CpuMode, MachineModel, MonitorTiming};
 #[cfg(feature = "pc88")]
 use common::{EightMhzWaitMode, MemoryWaitSwitch};
 use device::{gameport_towns::TownsPadType, subcontroller_x1::X1KeyboardMode};
+use i18n::is_language_tag;
 #[cfg(feature = "pc60")]
 use machine_60::Pc6000Model;
 #[cfg(feature = "pc88")]
@@ -906,14 +907,6 @@ impl std::str::FromStr for GuiLanguage {
             "invalid GUI language '{s}', expected auto or a language tag of letters, digits and -"
         ))
     }
-}
-
-/// Returns whether `text` is a language tag: parts of ASCII letters and digits joined by `-`,
-/// for example `ja` or `pt-BR`.
-#[must_use]
-pub fn is_language_tag(text: &str) -> bool {
-    text.split('-')
-        .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_alphanumeric()))
 }
 
 /// MIDI output device.

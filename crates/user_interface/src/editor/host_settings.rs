@@ -171,7 +171,7 @@ impl HostSettings {
         let mut settings = Self {
             location: host.location().clone(),
             roms,
-            language: LanguageRow::new(language_options(&find_language_files(
+            language: LanguageRow::new(language_options(find_language_files(
                 &host.language_folders(),
             ))),
             flags,

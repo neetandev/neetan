@@ -122,7 +122,7 @@ impl<'a> Reference<'a> {
                 Event::Section { line, name } => {
                     section_lines.entry(name).or_insert(line);
                 }
-                Event::Name { .. } => {}
+                Event::Name { .. } | Event::Covers { .. } => {}
                 Event::Plural {
                     rule: plural_rule, ..
                 } => rule = Some(plural_rule),

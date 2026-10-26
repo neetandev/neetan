@@ -391,6 +391,83 @@ mod tests {
         );
     }
 
+    /// The characters of Traditional Chinese text that must not start a line:
+    /// ，。、；：？！）」
+    const TRADITIONAL_CHINESE_CLOSING: [char; 9] = [
+        '\u{FF0C}', '\u{3002}', '\u{3001}', '\u{FF1B}', '\u{FF1A}', '\u{FF1F}', '\u{FF01}',
+        '\u{FF09}', '\u{300D}',
+    ];
+
+    /// The characters of Traditional Chinese text that must not end a line: （「
+    const TRADITIONAL_CHINESE_OPENING: [char; 2] = ['\u{FF08}', '\u{300C}'];
+
+    /// The margin in em above the widest run of other scripts in a CJK text: the
+    /// brackets and the punctuation that stay with the run.
+    const KINSOKU_MARGIN: usize = 4;
+
+    /// Asserts for every width from the widest run of other scripts with its
+    /// brackets to the whole text that no line of `text` starts with a closing
+    /// mark of Traditional Chinese and that no line ends with an opening mark.
+    fn assert_traditional_chinese_kinsoku(text: &str) {
+        let widest = text
+            .split(is_cjk)
+            .map(|run| run.chars().count())
+            .max()
+            .unwrap_or(0)
+            + KINSOKU_MARGIN;
+        for limit in widest..=text.chars().count() {
+            for line in lines(text, limit as f32) {
+                assert!(
+                    !line.starts_with(TRADITIONAL_CHINESE_CLOSING),
+                    "{line:?} at {limit} em"
+                );
+                assert!(
+                    !line.ends_with(TRADITIONAL_CHINESE_OPENING),
+                    "{line:?} at {limit} em"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn traditional_chinese_breaks_between_han_characters_and_at_latin_words() {
+        assert_eq!(
+            lines("磁碟機的軟碟映像檔", 4.0),
+            ["磁碟機的", "軟碟映像", "檔"]
+        );
+        assert_eq!(
+            lines("沒有CD-ROM光碟機。", 6.0),
+            ["沒有", "CD-ROM", "光碟機。"]
+        );
+        assert_eq!(lines("PC-9801沒有", 8.0), ["PC-9801沒", "有"]);
+        assert_eq!(
+            lines("磁碟機1的軟碟映像檔", 4.0),
+            ["磁碟機", "1的軟碟", "映像檔"]
+        );
+    }
+
+    #[test]
+    fn traditional_chinese_punctuation_stays_with_its_neighbor() {
+        assert_eq!(lines("設定未儲存。編輯器", 5.0), ["設定未儲", "存。編輯器"]);
+        assert_eq!(
+            lines("根目錄是「neetan.conf」", 14.0),
+            ["根目錄是", "「neetan.conf」"]
+        );
+        assert_eq!(
+            lines("值為空（需要資料夾）", 4.0),
+            ["值為空", "（需要資", "料夾）"]
+        );
+        for text in [
+            "「{game}」尚未儲存。「覆寫」會以編輯器中的變更取代檔案。「取消」會保留變更並返回編輯器。",
+            "Neetan會依下列順序尋找，並讀取第一個找到的「neetan.conf」：「--settings <file>」、目前目錄、執行檔的資料夾、SDL的pref path。設定檔中的相對路徑以根目錄為基準。",
+            "值「abc」無效（請指定「on」或「off」）",
+            "要刪除「天外魔境」嗎？完成！下一步；選項：是",
+            "「low」為8\u{A0}MHz，「high」為16\u{A0}MHz。",
+        ] {
+            assert_traditional_chinese_kinsoku(text);
+        }
+    }
+
     #[test]
     fn a_zero_width_space_allows_a_break() {
         assert_eq!(lines("abc\u{200B}def", 4.0), ["abc", "def"]);

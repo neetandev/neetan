@@ -28,6 +28,7 @@ sc55 = ["device/sc55", "machine_98?/sc55", "machine_towns?/sc55", "machine_x68k?
 [dependencies]
 common = { workspace = true, features = ["std"] }
 device = { workspace = true }
+i18n = { workspace = true }
 machine_98 = { workspace = true, optional = true }
 machine_at = { workspace = true, optional = true }
 machine_60 = { workspace = true, optional = true }

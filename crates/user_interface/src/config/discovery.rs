@@ -3,10 +3,8 @@
 use std::path::{Component, Path, PathBuf};
 
 use common::{Context, warn};
-use machine_factory::config::{
-    is_language_tag,
-    settings::{Setting, ValueKind},
-};
+use i18n::is_language_tag;
+use machine_factory::config::settings::{Setting, ValueKind};
 
 use super::launch_error::LaunchError;
 use crate::texts::ENGLISH_TAG;

@@ -23,6 +23,9 @@ const FRENCH_TAG: &str = "fr";
 /// The language tag of the Spanish language file of the repository.
 const SPANISH_TAG: &str = "es";
 
+/// The language tag of the Traditional Chinese (Taiwan) language file of the repository.
+const TRADITIONAL_CHINESE_TAG: &str = "zh-TW";
+
 /// A language of the repository: the embedded English file or a file of the language folder.
 pub(crate) struct RepositoryLanguage {
     /// The language tag: the file name without its extension.
@@ -56,7 +59,13 @@ static REPOSITORY_LANGUAGES: LazyLock<Vec<RepositoryLanguage>> = LazyLock::new(|
             }
         }))
         .collect();
-    for tag in [JAPANESE_TAG, GERMAN_TAG, FRENCH_TAG, SPANISH_TAG] {
+    for tag in [
+        JAPANESE_TAG,
+        GERMAN_TAG,
+        FRENCH_TAG,
+        SPANISH_TAG,
+        TRADITIONAL_CHINESE_TAG,
+    ] {
         assert!(
             languages.iter().any(|language| language.tag == tag),
             "the language folder of the repository holds {tag}.ini"
@@ -138,6 +147,12 @@ pub(crate) fn spanish() -> &'static Catalog {
     shared_catalog(SPANISH_TAG)
 }
 
+/// Returns the shared catalog of the Traditional Chinese (Taiwan) language file of the
+/// repository, built once.
+pub(crate) fn traditional_chinese() -> &'static Catalog {
+    shared_catalog(TRADITIONAL_CHINESE_TAG)
+}
+
 /// Returns the mark that ends a sentence in `catalog`: the last character of the pattern
 /// `note.sentence`.
 pub(crate) fn sentence_mark(catalog: &Catalog) -> char {
@@ -156,7 +171,7 @@ mod tests {
         ops::RangeInclusive,
     };
 
-    use i18n::{ListKind, PluralCategory, PluralRule};
+    use i18n::{ListKind, PluralCategory, PluralRule, read_header};
 
     use super::*;
     use crate::{config::LANGUAGE_FILE_EXTENSION, texts::library};
@@ -356,6 +371,31 @@ mod tests {
         assert_eq!(game_count(catalog, 2), "2 juegos");
         assert_eq!(joined(catalog, ListKind::And), "A, B y C");
         assert_eq!(joined(catalog, ListKind::Or), "A, B o C");
+    }
+
+    /// Verifies the header, the covered tags, the sentence mark, the game counts and the list
+    /// patterns of the Traditional Chinese (Taiwan) language file.
+    #[test]
+    fn the_traditional_chinese_file_has_its_header() {
+        let catalog = traditional_chinese();
+        assert_eq!(catalog.tag(), TRADITIONAL_CHINESE_TAG);
+        assert_eq!(catalog.name(), "繁體中文（台灣）");
+        assert_eq!(catalog.plural_rule(), PluralRule::None);
+        assert_eq!(sentence_mark(catalog), '。');
+        assert_eq!(game_count(catalog, 0), "0款遊戲");
+        assert_eq!(game_count(catalog, 1), "1款遊戲");
+        assert_eq!(game_count(catalog, 2), "2款遊戲");
+        assert_eq!(joined(catalog, ListKind::And), "A、B和C");
+        assert_eq!(joined(catalog, ListKind::Or), "A、B或C");
+        let language = repository_languages()
+            .iter()
+            .find(|language| language.tag == TRADITIONAL_CHINESE_TAG)
+            .expect("the repository holds zh-TW.ini");
+        let header = read_header(&language.source).expect("the header of zh-TW.ini reads");
+        assert_eq!(
+            header.covered_tags().collect::<Vec<_>>(),
+            ["zh-HK", "zh-MO", "zh-Hant"]
+        );
     }
 
     /// The ranges of the combining marks of the scripts of the language files: the combining

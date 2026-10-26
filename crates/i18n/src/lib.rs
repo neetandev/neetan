@@ -27,7 +27,7 @@ mod schema;
 
 pub use catalog::{COUNT_PLACEHOLDER, Catalog, Loaded};
 pub use message::{ListDisplay, ListKind, Message, MessageDisplay};
-pub use parse::{Fault, FaultKind, FullKey, Header, read_header};
+pub use parse::{Fault, FaultKind, FullKey, Header, is_language_tag, read_header};
 pub use plural::{PluralCategory, PluralRule};
 pub use schema::{
     Key, KeyInfo, LIST_PATTERN_KEYS, LIST_PLACEHOLDERS, LIST_SECTION, MAXIMUM_KEY_COUNT, Schema,
