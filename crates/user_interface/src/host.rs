@@ -67,6 +67,8 @@ pub(crate) struct Host {
     pub(crate) scale_factor: f32,
     /// Whether the right Ctrl key is held.
     pub(crate) right_control_held: bool,
+    /// Whether a Shift key is held after the key events so far.
+    pub(crate) shift_held: bool,
     /// Whether a media hotkey already logged that the GUI is disabled.
     pub(crate) gui_disabled_reported: bool,
 }
@@ -184,6 +186,7 @@ impl Host {
             fullscreen,
             scale_factor,
             right_control_held: false,
+            shift_held: false,
             gui_disabled_reported: false,
         }
     }

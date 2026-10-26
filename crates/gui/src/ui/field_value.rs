@@ -155,7 +155,7 @@ fn glyph_index(run: &Run, offset: usize) -> usize {
 
 /// The x of the byte offset `offset` of the text of `run` in em: the origin
 /// of the first glyph at or after it, or the end of the run.
-fn offset_x(run: &Run, offset: usize) -> f32 {
+pub(super) fn offset_x(run: &Run, offset: usize) -> f32 {
     run.glyphs
         .get(glyph_index(run, offset))
         .map_or(run.advance, |glyph| glyph.x)
@@ -287,17 +287,17 @@ pub(super) mod tests {
     use super::*;
     use crate::{
         Instance,
-        ui::{EditModifiers, TEXT_FIELD_LIMIT, tests::Harness},
+        ui::{EditModifiers, TEXT_FIELD_LIMIT, field_pointer::point_value, tests::Harness},
     };
 
     /// The area of the field.
-    const FIELD: Rect = Rect::new(10.0, 10.0, 200.0, 32.0);
+    pub(crate) const FIELD: Rect = Rect::new(10.0, 10.0, 200.0, 32.0);
 
     /// The room of an icon before the value and of a clear button after it.
-    const SIDE_ROOM: f32 = 30.0;
+    pub(crate) const SIDE_ROOM: f32 = 30.0;
 
     /// No modifier keys.
-    const PLAIN: EditModifiers = EditModifiers {
+    pub(crate) const PLAIN: EditModifiers = EditModifiers {
         extend: false,
         word: false,
         edge: false,
@@ -329,8 +329,8 @@ pub(super) mod tests {
     };
 
     /// The value of the field `id` in `rect` over `text`: the edits of the
-    /// pass while the field holds the focus, then the drawing between the
-    /// side rooms. Returns whether the text changed.
+    /// pass while the field holds the focus, the pointer, then the drawing
+    /// between the side rooms. Returns whether the text changed.
     fn value(context: &mut UiContext, id: &str, rect: Rect, text: &mut String) -> bool {
         let id = UiId::from(id);
         let mut changed = false;
@@ -339,6 +339,7 @@ pub(super) mod tests {
             changed = edit_text(context, id, text, TEXT_FIELD_LIMIT, navigation, |_| true);
         }
         context.text_focusable(id, rect, false);
+        let pointer = context.button_behavior(id, rect);
         let focus = context.has_focus(id).then_some(id);
         let inner = Rect::new(
             rect.x + SIDE_ROOM,
@@ -346,6 +347,9 @@ pub(super) mod tests {
             rect.width - SIDE_ROOM * 2.0,
             rect.height,
         );
+        if let Some(id) = focus {
+            point_value(context, id, inner, text, Truncation::End, pointer);
+        }
         let color = context.theme.colors.text;
         draw_value(
             context,
@@ -361,12 +365,12 @@ pub(super) mod tests {
 
     /// Draws the value of the field over `text` and returns whether the
     /// text changed.
-    fn draw(harness: &mut Harness, text: &mut String) -> bool {
+    pub(crate) fn draw(harness: &mut Harness, text: &mut String) -> bool {
         harness.frame(|context| value(context, "filter", FIELD, text))
     }
 
     /// Sends `navigation` with `modifiers` to the field over `text`.
-    fn key(
+    pub(crate) fn key(
         harness: &mut Harness,
         text: &mut String,
         navigation: Navigation,
@@ -377,7 +381,7 @@ pub(super) mod tests {
     }
 
     /// Types `typed` into the field over `text`.
-    fn typing(harness: &mut Harness, text: &mut String, typed: &str) -> bool {
+    pub(crate) fn typing(harness: &mut Harness, text: &mut String, typed: &str) -> bool {
         harness.input.text.push_str(typed);
         draw(harness, text)
     }
@@ -395,18 +399,18 @@ pub(super) mod tests {
     }
 
     /// The anchor and the cursor of the edit state.
-    fn ends(harness: &Harness) -> (usize, usize) {
+    pub(crate) fn ends(harness: &Harness) -> (usize, usize) {
         let edit = harness.state.text_edit;
         (edit.anchor(), edit.cursor())
     }
 
     /// The selected byte range of the edit state.
-    fn selection(harness: &Harness) -> Range<usize> {
+    pub(crate) fn selection(harness: &Harness) -> Range<usize> {
         harness.state.text_edit.selection()
     }
 
     /// The x of the glyphs of the last pass in physical pixels.
-    fn glyph_xs(harness: &Harness) -> Vec<f32> {
+    pub(crate) fn glyph_xs(harness: &Harness) -> Vec<f32> {
         harness
             .scene
             .instances()
@@ -418,7 +422,7 @@ pub(super) mod tests {
 
     /// Asserts that the glyph positions `left` and `right` agree up to a
     /// rounding of the float sums.
-    fn assert_same_glyphs(left: &[f32], right: &[f32]) {
+    pub(crate) fn assert_same_glyphs(left: &[f32], right: &[f32]) {
         assert_eq!(left.len(), right.len(), "{left:?} {right:?}");
         for (left_x, right_x) in left.iter().zip(right) {
             assert!((left_x - right_x).abs() < 0.01, "{left:?} {right:?}");
@@ -440,7 +444,7 @@ pub(super) mod tests {
     }
 
     /// A harness with the focus on the field over `text` after one pass.
-    fn focused(text: &mut String) -> Harness {
+    pub(crate) fn focused(text: &mut String) -> Harness {
         let mut harness = Harness::new();
         harness.state.set_focus(UiId::from("filter"));
         draw(&mut harness, text);

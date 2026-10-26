@@ -41,6 +41,8 @@ pub enum Event {
     KeyUp {
         /// The physical key scancode, if recognized.
         scancode: Option<Scancode>,
+        /// Active keyboard modifiers.
+        keymod: Mod,
         /// Whether this is a key-repeat event.
         repeat: bool,
     },
@@ -319,6 +321,7 @@ fn convert_event(raw: &events::SDL_Event) -> Event {
             let key = unsafe { &raw.key };
             Event::KeyUp {
                 scancode: Scancode::from_raw(key.scancode),
+                keymod: Mod(key.r#mod.0),
                 repeat: key.repeat,
             }
         }

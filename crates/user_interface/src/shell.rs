@@ -22,7 +22,7 @@ use machine_factory::config::{
 use sdl3::{
     Sdl,
     event::{DisplayEvent, Event, EventPump, WindowEvent},
-    keyboard::Scancode,
+    keyboard::{self, Scancode},
     video::VideoSubsystem,
 };
 use sdl3_backend::DisplayAspectMode;
@@ -38,7 +38,7 @@ use crate::{
     config::{
         Backend, EmulatorConfig, GuiLanguage, GuiResources, GuiTheme, HostLayers, WindowMode,
     },
-    gui_host::{GuiHost, theme_kind},
+    gui_host::{GuiHost, keys::shift_after, theme_kind},
     host::{
         Host, HostParts, MANAGER_WINDOW_SIZE, MINIMUM_WINDOW_SIZE, SESSION_MINIMUM_WINDOW_SIZE,
         WindowSize, WindowState, fit_window_size, graphics_display_aspect_mode,
@@ -411,14 +411,17 @@ impl Shell {
                     host.audio_engine.pause();
                 }
                 host.right_control_held = false;
+                host.shift_held = false;
                 if let Some(gui) = host.gui.as_mut() {
                     gui.gamepad.clear();
+                    gui.release_left_button();
                 }
             }
             Event::Window {
                 win_event: WindowEvent::FocusGained,
                 ..
             } => {
+                host.shift_held = keyboard::mod_state().shift();
                 if self
                     .session
                     .as_ref()
@@ -457,6 +460,7 @@ impl Shell {
                 }
             }
             _ => {
+                host.shift_held = shift_after(event, host.shift_held);
                 match event {
                     Event::KeyDown {
                         scancode, keymod, ..

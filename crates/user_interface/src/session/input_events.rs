@@ -40,7 +40,7 @@ impl Session {
             | Event::MouseWheel { .. }
                 if self.media_dialog.is_some() =>
             {
-                if let Some(gui_event) = pointer_or_text_event(event) {
+                if let Some(gui_event) = pointer_or_text_event(event, host.shift_held) {
                     self.handle_gui_event(gui_event, host);
                 }
             }

@@ -355,8 +355,8 @@ impl Session {
         }
     }
 
-    /// Runs the pending pass of the open media dialog and the gamepad key
-    /// repeat of the GUI.
+    /// Runs the pending pass of the open media dialog, the gamepad key repeat
+    /// and the edge repeat of a text drag of the GUI.
     pub(crate) fn update_dialog(&mut self, host: &mut Host) {
         if self.media_dialog.is_none() {
             return;
@@ -367,6 +367,9 @@ impl Session {
             .and_then(|gui| gui.gamepad.poll(Instant::now()));
         if let Some(gui_event) = repeat {
             self.handle_gui_event(gui_event, host);
+        }
+        if let Some(gui) = host.gui.as_mut() {
+            gui.poll_edge_repeat(Instant::now());
         }
         if host.gui.as_ref().is_some_and(|gui| gui.pending()) {
             self.media_pass(host);

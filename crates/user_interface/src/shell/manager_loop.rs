@@ -15,7 +15,7 @@ use crate::{
     manager::Launch,
 };
 
-/// The longest wait for an event while no gamepad direction repeats.
+/// The longest wait for an event while nothing repeats.
 const IDLE_WAIT: Duration = Duration::from_secs(1);
 
 /// The wait before the next try of a stale frame.
@@ -26,10 +26,11 @@ const FRAME_RETRY_WAIT: Duration = Duration::from_millis(30);
 pub(super) const MAXIMUM_STALE_FRAMES: u32 = 8;
 
 /// Returns the longest wait for the next event at `now`: the time to the
-/// next repeat of a held gamepad direction, or the idle wait. A pass that
-/// the user interface asked for runs without a wait. A pending frame in a
-/// visible window shortens the wait to the retry wait. A window that cannot
-/// show a frame waits for its next window event.
+/// next repeat `next_repeat` of a held gamepad direction or of the edge
+/// repeat of a text drag, or the idle wait. A pass that the user interface
+/// asked for runs without a wait. A pending frame in a visible window
+/// shortens the wait to the retry wait. A window that cannot show a frame
+/// waits for its next window event.
 fn manager_wait(
     pass_pending: bool,
     frame_pending: bool,
@@ -94,6 +95,9 @@ impl Shell {
             {
                 self.manager_gui_event(repeat);
             }
+            if let Some(gui) = self.host.gui.as_mut() {
+                gui.poll_edge_repeat(Instant::now());
+            }
             if self.host.gui.as_ref().is_some_and(GuiHost::pending) {
                 self.manager_pass();
             }
@@ -108,11 +112,12 @@ impl Shell {
                 });
                 self.stale_frames = stale_frames;
             }
-            let next_repeat = self
-                .host
-                .gui
-                .as_ref()
-                .and_then(|gui| gui.gamepad.next_repeat());
+            let next_repeat = self.host.gui.as_ref().and_then(|gui| {
+                [gui.gamepad.next_repeat(), gui.next_edge_repeat()]
+                    .into_iter()
+                    .flatten()
+                    .min()
+            });
             let pass_pending = self.host.gui.as_ref().is_some_and(GuiHost::pending);
             let wait = manager_wait(
                 pass_pending,
@@ -180,7 +185,7 @@ impl Shell {
                     .as_mut()
                     .and_then(|gui| gui.gamepad.axis(*axis, *value, Instant::now()))
             }
-            _ => pointer_or_text_event(event),
+            _ => pointer_or_text_event(event, self.host.shift_held),
         };
         if let Some(gui_event) = gui_event {
             self.manager_gui_event(gui_event);

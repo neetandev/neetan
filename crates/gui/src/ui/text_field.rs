@@ -1,7 +1,8 @@
 //! The single line text field.
 
 use super::{
-    context::{UiContext, UiId},
+    context::{PointerResponse, UiContext, UiId},
+    field_pointer::point_value,
     field_value::{draw_value, edit_text},
     icons::Icon,
     label::Truncation,
@@ -82,21 +83,25 @@ pub(super) fn field_frame(context: &mut UiContext, rect: Rect, look: FieldLook) 
 
 /// A single line text field with options.
 ///
-/// A click gives the field the focus, and the focus places the cursor at
-/// the end of the text. While the field holds the focus, the committed text
-/// of the input replaces the selection at the cursor up to
-/// [`TEXT_FIELD_LIMIT`] characters. Backspace and delete remove the
-/// selection or the character before or after the cursor. Left and right
+/// A press gives the field the focus and places the cursor at the position
+/// nearest to the pointer. While the button stays held, the pointer extends
+/// the selection and a pointer past an edge scrolls the text. A press with
+/// the extend modifier extends the selection, and a double click selects the
+/// whole text. A press on the clear button places no cursor. A keyboard
+/// focus places the cursor at the end of the text. While the field holds the
+/// focus, the committed text of the input replaces the selection at the
+/// cursor up to [`TEXT_FIELD_LIMIT`] characters. Backspace and delete remove
+/// the selection or the character before or after the cursor. Left and right
 /// step the cursor by one character, or by one word with the word modifier.
 /// Home and end, and left and right with the edge modifier, place it at the
 /// start and the end. The extend modifier extends the selection with every
 /// step. Select all selects the whole text. Copy and cut write the selection
 /// into the clipboard output of the widget state. Cut also removes the
 /// selection. A paste inserts the first line of the pasted text like typed
-/// text. It drops the control characters. The composition of an input
-/// method shows underlined at the cursor. A text wider than the focused
-/// field scrolls, so the cursor stays visible. Without the focus a long text
-/// is cut. A clear button for the mouse empties a field with text.
+/// text. It drops the control characters. The composition of an input method
+/// shows underlined at the cursor. A text wider than the focused field
+/// scrolls, so the cursor stays visible. Without the focus a long text is
+/// cut. A clear button for the mouse empties a field with text.
 ///
 /// The default field is a search field: it shows the search icon, and
 /// cancel empties a field with text and leaves an empty field to the panel.
@@ -192,7 +197,7 @@ impl<'a> TextField<'a> {
         let clear_rect =
             Rect::new(rect.right() - rect.height, rect.y, rect.height, rect.height).inset(4.0);
         let mut clear_hot = false;
-        if interactive && !text.is_empty() {
+        if interactive && !text.is_empty() && !context.is_active(id) {
             let pointer = context.button_behavior(clear_id, clear_rect);
             clear_hot = pointer.hovered || pointer.held;
             if pointer.clicked {
@@ -201,7 +206,7 @@ impl<'a> TextField<'a> {
                 context.set_focus(id);
             }
         }
-        let mut hovered = false;
+        let mut pointer = PointerResponse::default();
         if interactive {
             if context.has_focus(id) {
                 let navigation = context.navigation(id);
@@ -210,7 +215,7 @@ impl<'a> TextField<'a> {
                 response.submitted = context.confirmed(id);
             }
             context.text_focusable(id, rect, self.clears_on_cancel && !text.is_empty());
-            hovered = context.button_behavior(id, rect).hovered;
+            pointer = context.button_behavior(id, rect);
         } else {
             context.absorb_pointer(rect);
         }
@@ -218,7 +223,7 @@ impl<'a> TextField<'a> {
         let focus_look = interactive && context.shows_focus(id);
         let look = FieldLook {
             focused: focus_look,
-            hovered,
+            hovered: pointer.hovered,
             error: self.error,
             enabled: self.enabled,
             read_only: self.read_only,
@@ -244,6 +249,9 @@ impl<'a> TextField<'a> {
             rect.right() - theme.gap
         };
         let inner = Rect::new(left, rect.y, (right - left).max(0.0), rect.height);
+        if focused {
+            point_value(context, id, inner, text, self.truncation, pointer);
+        }
         let color = look.text_color(context);
         draw_value(
             context,
@@ -296,14 +304,58 @@ mod tests {
     use crate::{
         Instance,
         ui::{
-            EditCommand, EditModifiers, Navigation, NavigationSet, Shortcut,
-            field_value::tests::{SHIFT, SHIFT_WORD, WORD, cursor, highlights},
+            EditCommand, EditModifiers, Navigation, NavigationSet, ScrollState, Shortcut,
+            field_pointer::tests::{position_x, press_at},
+            field_value::tests::{SHIFT, SHIFT_WORD, WORD, cursor, ends, highlights},
+            scroll_area,
             tests::{Harness, pixel, srgb},
         },
     };
 
     /// The area of the field.
     const FIELD: Rect = Rect::new(10.0, 10.0, 200.0, 32.0);
+
+    /// The area of a button after the field.
+    const BUTTON: Rect = Rect::new(10.0, 60.0, 200.0, 32.0);
+
+    /// The area of a button beside the field.
+    const BESIDE: Rect = Rect::new(300.0, 10.0, 100.0, 32.0);
+
+    /// The area of a scroll area around the field.
+    const SCROLL_AREA: Rect = Rect::new(0.0, 0.0, 250.0, 50.0);
+
+    /// The value area of the search field with text.
+    fn value_area(harness: &Harness) -> Rect {
+        let theme = &harness.theme;
+        let left = FIELD.x + theme.gap + theme.icon_size + theme.gap * 0.75;
+        let right = FIELD.right() - FIELD.height + 4.0 - 2.0;
+        Rect::new(left, FIELD.y, right - left, FIELD.height)
+    }
+
+    /// The x in logical units of the byte offset `offset` of `text` in the
+    /// search field with the scroll offset of the last pass.
+    fn text_x(harness: &mut Harness, text: &str, offset: usize) -> f32 {
+        let theme = &harness.theme;
+        let inner_x = FIELD.x + theme.gap + theme.icon_size + theme.gap * 0.75;
+        position_x(harness, inner_x, text, offset)
+    }
+
+    /// The center of the clear button of the field.
+    fn clear_center() -> (f32, f32) {
+        Rect::new(
+            FIELD.right() - FIELD.height,
+            FIELD.y,
+            FIELD.height,
+            FIELD.height,
+        )
+        .center()
+    }
+
+    /// Releases the left button and draws the field over `text`.
+    fn release(harness: &mut Harness, text: &mut String) -> TextFieldResponse {
+        harness.release();
+        draw(harness, text)
+    }
 
     /// Sends `navigation` with `modifiers` to the field over `text`.
     fn key(
@@ -844,5 +896,302 @@ mod tests {
             shortcut_pass(&mut harness, &mut text),
             Some(Shortcut::ControlF)
         );
+    }
+
+    /// Verifies that a press gives an unfocused field the focus and places the cursor at the
+    /// pressed position, and that typed text goes there.
+    #[test]
+    fn a_press_focuses_the_field_and_places_the_cursor() {
+        let mut harness = Harness::new();
+        let mut text = String::from("disk image");
+        draw(&mut harness, &mut text);
+        assert_eq!(harness.state.focused(), None);
+        let x = text_x(&mut harness, &text, 4) + 1.0;
+        press_at(&mut harness, x, FIELD.center().1, |harness| {
+            draw(harness, &mut text)
+        });
+        assert_eq!(harness.state.focused(), Some(UiId::from("filter")));
+        assert_eq!(ends(&harness), (4, 4));
+        assert!(cursor(&harness).is_some());
+        release(&mut harness, &mut text);
+        assert!(harness.state.wants_text_input());
+        assert!(typing(&mut harness, &mut text, "X").changed);
+        assert_eq!(text, "diskX image");
+    }
+
+    /// Verifies that a press with the extend modifier extends the selection from the anchor to
+    /// the pressed position in both directions.
+    #[test]
+    fn a_press_with_shift_extends_the_selection() {
+        let mut text = String::from("alpha beta gamma");
+        let mut harness = focused(&mut text);
+        let x = text_x(&mut harness, &text, 6);
+        press_at(&mut harness, x, FIELD.center().1, |harness| {
+            draw(harness, &mut text)
+        });
+        release(&mut harness, &mut text);
+        assert_eq!(ends(&harness), (6, 6));
+        let x = text_x(&mut harness, &text, 10);
+        harness.input.modifiers = SHIFT;
+        press_at(&mut harness, x, FIELD.center().1, |harness| {
+            draw(harness, &mut text)
+        });
+        assert_eq!(ends(&harness), (6, 10));
+        release(&mut harness, &mut text);
+        let x = text_x(&mut harness, &text, 0);
+        harness.input.modifiers = SHIFT;
+        press_at(&mut harness, x, FIELD.center().1, |harness| {
+            draw(harness, &mut text)
+        });
+        release(&mut harness, &mut text);
+        assert_eq!(ends(&harness), (6, 0));
+        assert_eq!(highlights(&harness).len(), 1);
+        typing(&mut harness, &mut text, "X");
+        assert_eq!(text, "Xbeta gamma");
+    }
+
+    /// Verifies that a double click selects the whole text and that the held button after it
+    /// keeps the selection.
+    #[test]
+    fn a_double_click_selects_the_whole_text() {
+        let mut text = String::from("ディスク image");
+        let mut harness = focused(&mut text);
+        let x = text_x(&mut harness, &text, 3);
+        press_at(&mut harness, x, FIELD.center().1, |harness| {
+            draw(harness, &mut text)
+        });
+        release(&mut harness, &mut text);
+        assert_eq!(ends(&harness), (3, 3));
+        harness.input.left_double = true;
+        press_at(&mut harness, x, FIELD.center().1, |harness| {
+            draw(harness, &mut text)
+        });
+        assert_eq!(ends(&harness), (0, text.len()));
+        let x = text_x(&mut harness, &text, 9);
+        harness.mouse(x, FIELD.center().1);
+        draw(&mut harness, &mut text);
+        assert_eq!(ends(&harness), (0, text.len()));
+        release(&mut harness, &mut text);
+        assert_eq!(ends(&harness), (0, text.len()));
+        typing(&mut harness, &mut text, "A");
+        assert_eq!(text, "A");
+    }
+
+    /// Verifies that a press on the clear button places no cursor and starts no drag, and that
+    /// its click still empties the field.
+    #[test]
+    fn a_press_on_the_clear_button_places_no_cursor() {
+        let mut text = String::from("disk image");
+        let mut harness = focused(&mut text);
+        key(
+            &mut harness,
+            &mut text,
+            Navigation::Home,
+            EditModifiers::default(),
+        );
+        let (x, y) = clear_center();
+        harness.press(x, y);
+        draw(&mut harness, &mut text);
+        assert_eq!(ends(&harness), (0, 0));
+        let inside = text_x(&mut harness, &text, 4);
+        harness.mouse(inside, y);
+        draw(&mut harness, &mut text);
+        assert_eq!(ends(&harness), (0, 0));
+        assert!(highlights(&harness).is_empty());
+        harness.mouse(x, y);
+        draw(&mut harness, &mut text);
+        assert!(release(&mut harness, &mut text).changed);
+        assert!(text.is_empty());
+        assert_eq!(harness.state.focused(), Some(UiId::from("filter")));
+    }
+
+    /// Verifies that a drag from the text reaches neither the clear button nor a button after
+    /// the field: no hover, no click and no clear on the release over them.
+    #[test]
+    fn a_drag_reaches_no_other_widget() {
+        let mut text = String::from("disk image");
+        let mut harness = Harness::new();
+        let button = UiId::from("button");
+        let draw_both = |harness: &mut Harness, text: &mut String| {
+            harness.frame(|context| {
+                let response = text_field(context, "filter", FIELD, text, "Filter");
+                (response, context.button_behavior(button, BUTTON))
+            })
+        };
+        draw_both(&mut harness, &mut text);
+        let x = text_x(&mut harness, &text, 2);
+        harness.press(x, FIELD.center().1);
+        draw_both(&mut harness, &mut text);
+        assert_eq!(ends(&harness), (2, 2));
+        harness.mouse(BUTTON.center().0, BUTTON.center().1);
+        let (_, over_button) = draw_both(&mut harness, &mut text);
+        assert!(!over_button.hovered);
+        assert_eq!(ends(&harness), (2, text.len()));
+        harness.release();
+        let (_, released) = draw_both(&mut harness, &mut text);
+        assert!(!released.clicked);
+
+        let x = text_x(&mut harness, &text, 2);
+        harness.press(x, FIELD.center().1);
+        draw_both(&mut harness, &mut text);
+        let (x, y) = clear_center();
+        harness.mouse(x, y);
+        draw_both(&mut harness, &mut text);
+        harness.release();
+        let (response, _) = draw_both(&mut harness, &mut text);
+        assert!(!response.changed);
+        assert_eq!(text, "disk image");
+        assert_eq!(ends(&harness), (2, text.len()));
+    }
+
+    /// Verifies that a steady frame during a drag without pointer motion allocates nothing and
+    /// keeps the selection.
+    #[test]
+    fn a_steady_frame_during_a_drag_allocates_nothing() {
+        let mut text = String::from("ディスク A and more text");
+        let mut harness = focused(&mut text);
+        key(
+            &mut harness,
+            &mut text,
+            Navigation::Home,
+            EditModifiers::default(),
+        );
+        let x = text_x(&mut harness, &text, 3);
+        press_at(&mut harness, x, FIELD.center().1, |harness| {
+            draw(harness, &mut text)
+        });
+        let x = text_x(&mut harness, &text, 9);
+        harness.mouse(x, FIELD.center().1);
+        draw(&mut harness, &mut text);
+        draw(&mut harness, &mut text);
+        assert_eq!(ends(&harness), (3, 9));
+        let (allocations, response) = count_allocations(|| draw(&mut harness, &mut text));
+        assert!(!response.changed);
+        assert_eq!(allocations, 0);
+        assert_eq!(ends(&harness), (3, 9));
+        assert!(!highlights(&harness).is_empty());
+    }
+
+    /// Verifies that a press on the middle cut text of a field without the focus places the
+    /// cursor at the pressed character of the start and of the end part, and that the focused
+    /// field draws the cursor under the pointer.
+    #[test]
+    fn a_press_on_a_middle_cut_text_places_the_cursor_at_the_pressed_character() {
+        let path = "/home/user/games/Dragon Slayer/ドラゴンスレイヤー英雄伝説 (ディスク1).hdm";
+        let draw_path = |harness: &mut Harness, text: &mut String| {
+            harness.frame(|context| {
+                TextField::new("path", "Path")
+                    .truncation(Truncation::Middle)
+                    .show(context, FIELD, text)
+            })
+        };
+        for from_end in [false, true] {
+            let mut harness = Harness::new();
+            let mut text = String::from(path);
+            draw_path(&mut harness, &mut text);
+            let inner = value_area(&harness);
+            let style = harness.theme.body();
+            let run = harness
+                .fonts
+                .fit_middle(style.font, style.size, &text, inner.width);
+            assert!(run.truncated);
+            let index = if from_end { run.glyphs.len() - 4 } else { 3 };
+            let cluster = run.glyphs[index].cluster;
+            let x = inner.x.round() + run.glyphs[index].x * style.size + 0.5;
+            press_at(&mut harness, x, FIELD.center().1, |harness| {
+                draw_path(harness, &mut text)
+            });
+            assert_eq!(harness.state.focused(), Some(UiId::from("path")));
+            assert_eq!(ends(&harness), (cluster, cluster), "{from_end}");
+            let drawn = cursor(&harness).unwrap();
+            assert!((drawn[0] - x).abs() <= 2.0, "{from_end} {drawn:?} {x}");
+            harness.release();
+            draw_path(&mut harness, &mut text);
+            assert_eq!(ends(&harness), (cluster, cluster));
+            assert!((cursor(&harness).unwrap()[0] - drawn[0]).abs() < 0.01);
+        }
+    }
+
+    /// Verifies that a press on the right half of the glyph before a glyph of a middle cut text
+    /// of a field without the focus keeps the drawn text: a press in the start part keeps the
+    /// scroll at zero, and a press in the end part keeps the glyph at its drawn x.
+    #[test]
+    fn a_press_beside_a_glyph_of_a_cut_text_keeps_the_glyph_at_its_drawn_x() {
+        let path = "/home/user/games/Dragon Slayer/ドラゴンスレイヤー英雄伝説 (ディスク1).hdm";
+        let draw_path = |harness: &mut Harness, text: &mut String| {
+            harness.frame(|context| {
+                TextField::new("path", "Path")
+                    .truncation(Truncation::Middle)
+                    .show(context, FIELD, text)
+            })
+        };
+        for from_end in [false, true] {
+            let mut harness = Harness::new();
+            let mut text = String::from(path);
+            draw_path(&mut harness, &mut text);
+            let inner = value_area(&harness);
+            let style = harness.theme.body();
+            let run = harness
+                .fonts
+                .fit_middle(style.font, style.size, &text, inner.width);
+            assert!(run.truncated);
+            let index = if from_end { run.glyphs.len() - 2 } else { 3 };
+            let cluster = run.glyphs[index].cluster;
+            let glyph_x = inner.x.round() + run.glyphs[index].x * style.size;
+            press_at(&mut harness, glyph_x - 2.0, FIELD.center().1, |harness| {
+                draw_path(harness, &mut text)
+            });
+            assert_eq!(ends(&harness), (cluster, cluster), "{from_end}");
+            if from_end {
+                let drawn = cursor(&harness).unwrap();
+                assert!((drawn[0] - glyph_x).abs() < 0.5, "{drawn:?} {glyph_x}");
+            } else {
+                assert_eq!(harness.state.text_scroll, 0.0);
+            }
+        }
+    }
+
+    /// Verifies that a drag from the text reaches no widget before the field and no widget after
+    /// a scroll area around it: no hover during the drag and no click on the release. The widget
+    /// before the field shows the hover in the pass of the release, and the widget after the
+    /// scroll area in the pass after it.
+    #[test]
+    fn a_drag_reaches_no_widget_before_the_field_or_after_its_scroll_area() {
+        let mut text = String::from("disk image");
+        let mut harness = Harness::new();
+        let mut scroll = ScrollState::default();
+        let mut draw_all = |harness: &mut Harness, text: &mut String| {
+            harness.frame(|context| {
+                let beside = context.button_behavior(UiId::from("beside"), BESIDE);
+                scroll_area(context, "area", SCROLL_AREA, &mut scroll, |context, _| {
+                    text_field(context, "filter", FIELD, text, "Filter");
+                    SCROLL_AREA.height
+                });
+                let after = context.button_behavior(UiId::from("after"), BUTTON);
+                (beside, after)
+            })
+        };
+        draw_all(&mut harness, &mut text);
+        let x = text_x(&mut harness, &text, 2);
+        press_at(&mut harness, x, FIELD.center().1, |harness| {
+            draw_all(harness, &mut text)
+        });
+        assert_eq!(ends(&harness), (2, 2));
+        for area in [BESIDE, BUTTON] {
+            let (x, y) = area.center();
+            harness.mouse(x, y);
+            let (beside, after) = draw_all(&mut harness, &mut text);
+            assert!(!beside.hovered && !after.hovered, "{area:?}");
+        }
+        let (x, y) = BESIDE.center();
+        harness.mouse(x, y);
+        harness.release();
+        let (beside, after) = draw_all(&mut harness, &mut text);
+        assert!(beside.hovered);
+        assert!(!beside.clicked && !after.clicked);
+        let (x, y) = BUTTON.center();
+        harness.mouse(x, y);
+        let (_, after) = draw_all(&mut harness, &mut text);
+        assert!(after.hovered);
     }
 }

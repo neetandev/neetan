@@ -337,13 +337,17 @@ impl<'a> UiContext<'a> {
     }
 
     /// Whether the widgets drawn at this point take the pointer: no widget
-    /// above took it and the widgets take the input of the pass.
+    /// above took it, no drag in a text widget holds it with the left button
+    /// of the pass and the widgets take the input of the pass. The held
+    /// button of the drag reaches its text widget through
+    /// [`UiContext::button_behavior`].
     pub fn takes_pointer(&self) -> bool {
-        !self.mouse_captured && self.takes_input()
+        let dragged = self.state.text_drag && self.input.left;
+        !self.mouse_captured && !dragged && self.takes_input()
     }
 
-    /// Whether the pointer is over `rect`, no widget above took it and the
-    /// widgets at this point are not blocked.
+    /// Whether the pointer is over `rect` and the widgets at this point take
+    /// it, see [`UiContext::takes_pointer`].
     pub fn hovered(&self, rect: Rect) -> bool {
         let (x, y) = self.mouse();
         self.takes_pointer() && rect.contains(x, y)

@@ -5,7 +5,7 @@
 mod gamepad;
 pub(crate) mod keys;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Instant};
 
 use common::{info, warn};
 use gamepad::GamepadNavigation;
@@ -52,6 +52,9 @@ pub(crate) enum GuiEvent {
         pressed: bool,
         /// Whether the press is the second press of a double click.
         double: bool,
+        /// The edit modifiers held with a press. Shift gives the extend
+        /// modifier.
+        modifiers: EditModifiers,
         /// The x position in window coordinates.
         x: f32,
         /// The y position in window coordinates.
@@ -279,6 +282,7 @@ impl GuiHost {
                 button,
                 pressed,
                 double,
+                modifiers,
                 x,
                 y,
             } => {
@@ -288,6 +292,9 @@ impl GuiHost {
                     MouseButton::Left => {
                         input.left = pressed;
                         input.left_double = pressed && double;
+                        if pressed {
+                            input.modifiers = modifiers;
+                        }
                     }
                     MouseButton::Right => input.right = pressed,
                     MouseButton::Middle => input.middle = pressed,
@@ -368,6 +375,7 @@ impl GuiHost {
     /// widget that asks for another pass leaves the host pending, up to
     /// [`MAXIMUM_CHAINED_PASSES`] passes in a row without an event. The text
     /// of a copy or a cut in the pass goes to the clipboard of the system.
+    /// The edge repeat of a text drag starts or stops after the pass.
     pub(crate) fn pass<R>(&mut self, draw: impl FnOnce(&mut UiContext) -> R) -> R {
         self.pass_with_clipboard(draw, clipboard::set_text)
     }
@@ -393,6 +401,7 @@ impl GuiHost {
         let result = draw(&mut context);
         context.finish();
         self.input.advance();
+        self.state.update_edge_repeat(Instant::now());
         if let Some(copied) = self.state.take_copied()
             && let Err(error) = write_clipboard(copied)
         {
@@ -407,6 +416,35 @@ impl GuiHost {
             self.pending = false;
         }
         result
+    }
+
+    /// Adds the steps of the edge repeat of a text drag that are due at `now`
+    /// to the input of the next pass. A due step waits for a pass.
+    pub(crate) fn poll_edge_repeat(&mut self, now: Instant) {
+        let steps = self.state.take_edge_steps(now);
+        if steps > 0 {
+            self.input.edge_steps = self.input.edge_steps.saturating_add(steps);
+            self.chained_passes = 0;
+            self.pending = true;
+        }
+    }
+
+    /// Releases a held left button in the input without a release edge, for
+    /// a window that lost the focus. The next pass ends a drag and its edge
+    /// repeat, and the held widget reports no click.
+    pub(crate) fn release_left_button(&mut self) {
+        if self.input.left {
+            self.input.left = false;
+            self.input.left_previous = false;
+            self.input.left_double = false;
+            self.chained_passes = 0;
+            self.pending = true;
+        }
+    }
+
+    /// The time of the next step of the edge repeat of a text drag.
+    pub(crate) fn next_edge_repeat(&self) -> Option<Instant> {
+        self.state.next_edge_repeat()
     }
 
     /// Starts or stops the SDL text input as the focused widget asks, and
@@ -476,15 +514,21 @@ impl GuiHost {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use gui::{
         Rect,
-        ui::{Palette, text_field},
+        ui::{Palette, button, text_field},
     };
+    use sdl3::event::Event;
 
     use super::{
-        keys::tests::{
-            COMMAND, LEFT_CONTROL, NO_EDIT_MODIFIERS, NO_MODIFIERS, WORD, clipboard_with,
-            unread_clipboard,
+        keys::{
+            pointer_or_text_event,
+            tests::{
+                COMMAND, EXTEND, LEFT_CONTROL, NO_EDIT_MODIFIERS, NO_MODIFIERS, WORD,
+                clipboard_with, unread_clipboard,
+            },
         },
         *,
     };
@@ -598,6 +642,7 @@ mod tests {
             button: MouseButton::Left,
             pressed: true,
             double: true,
+            modifiers: NO_EDIT_MODIFIERS,
             x: 10.0,
             y: 20.0,
         }));
@@ -920,5 +965,215 @@ mod tests {
         clipboard_pass(&mut host, None, &mut text, &mut written);
         assert_eq!(key(&host, Scancode::V, &COMMAND, false), None);
         assert!(text.is_empty());
+    }
+
+    /// Verifies that Shift held with a left press reaches the pass as the extend modifier and
+    /// extends the selection of a text field to the pressed position, and that a press without
+    /// Shift places the cursor.
+    #[test]
+    fn shift_with_a_press_extends_the_selection_of_a_text_field() {
+        let mut host = host();
+        host.set_window_metrics(800, 600, 1.0, 1.0);
+        let mut text = String::from("disk image");
+        let mut written = Vec::new();
+        let click = |host: &mut GuiHost,
+                     shift_held: bool,
+                     x: f32,
+                     text: &mut String,
+                     written: &mut Vec<String>| {
+            let press = Event::MouseButtonDown {
+                mouse_btn: MouseButton::Left,
+                clicks: 1,
+                x,
+                y: 16.0,
+            };
+            let release = Event::MouseButtonUp {
+                mouse_btn: MouseButton::Left,
+                clicks: 1,
+                x,
+                y: 16.0,
+            };
+            for event in [press, release] {
+                let gui_event = pointer_or_text_event(&event, shift_held);
+                clipboard_pass(host, gui_event, text, written);
+            }
+        };
+        clipboard_pass(&mut host, None, &mut text, &mut written);
+        click(&mut host, false, 2.0, &mut text, &mut written);
+        assert_eq!(host.state.focused(), Some(UiId::from("filter")));
+        click(&mut host, true, 150.0, &mut text, &mut written);
+        clipboard_pass(
+            &mut host,
+            Some(GuiEvent::Text("X".into())),
+            &mut text,
+            &mut written,
+        );
+        assert_eq!(text, "X");
+        click(&mut host, false, 2.0, &mut text, &mut written);
+        click(&mut host, false, 150.0, &mut text, &mut written);
+        clipboard_pass(
+            &mut host,
+            Some(GuiEvent::Text("Y".into())),
+            &mut text,
+            &mut written,
+        );
+        assert_eq!(text, "XY");
+        assert!(written.is_empty());
+
+        let press = pointer_or_text_event(
+            &Event::MouseButtonDown {
+                mouse_btn: MouseButton::Left,
+                clicks: 1,
+                x: 2.0,
+                y: 16.0,
+            },
+            true,
+        );
+        host.apply(press.unwrap());
+        assert_eq!(host.pass(|context| context.input.modifiers), EXTEND);
+        assert_eq!(
+            host.pass(|context| context.input.modifiers),
+            NO_EDIT_MODIFIERS
+        );
+    }
+
+    /// Verifies that a drag that holds the pointer past an edge of a text field without motion
+    /// gets a pass at each deadline of the edge repeat, that each pass extends the selection by
+    /// one position, and that the release stops the repeat.
+    #[test]
+    fn the_edge_repeat_runs_passes_without_pointer_motion() {
+        let mut host = host();
+        host.set_window_metrics(800, 600, 1.0, 1.0);
+        let mut text = String::from("The quick brown fox jumps over the lazy dog");
+        let mut written = Vec::new();
+        clipboard_pass(&mut host, None, &mut text, &mut written);
+        let button = |pressed: bool, x: f32| GuiEvent::Button {
+            button: MouseButton::Left,
+            pressed,
+            double: false,
+            modifiers: NO_EDIT_MODIFIERS,
+            x,
+            y: 16.0,
+        };
+        clipboard_pass(
+            &mut host,
+            Some(button(true, 150.0)),
+            &mut text,
+            &mut written,
+        );
+        assert_eq!(host.next_edge_repeat(), None);
+        clipboard_pass(
+            &mut host,
+            Some(GuiEvent::PointerMoved { x: 400.0, y: 16.0 }),
+            &mut text,
+            &mut written,
+        );
+        let edge = host.state.text_input_caret();
+        let mut selected = selected_text(&mut host, &mut text);
+        assert!(!selected.is_empty());
+        let deadline = host.next_edge_repeat().expect("the repeat runs");
+        host.poll_edge_repeat(deadline - Duration::from_millis(1));
+        assert!(!host.pending());
+        for _ in 0..3 {
+            let deadline = host.next_edge_repeat().expect("the repeat runs");
+            host.poll_edge_repeat(deadline);
+            assert!(host.pending());
+            clipboard_pass(&mut host, None, &mut text, &mut written);
+            let next = selected_text(&mut host, &mut text);
+            assert!(next.starts_with(&selected), "{selected:?} {next:?}");
+            assert_eq!(next.len(), selected.len() + 1);
+            selected = next;
+        }
+        assert_eq!(host.state.text_input_caret(), edge);
+        clipboard_pass(
+            &mut host,
+            Some(button(false, 400.0)),
+            &mut text,
+            &mut written,
+        );
+        assert_eq!(host.next_edge_repeat(), None);
+        assert!(written.is_empty());
+    }
+
+    /// Verifies that the release of the left button for a lost focus ends a drag past an edge
+    /// and its edge repeat, and that the selection of the drag stays.
+    #[test]
+    fn a_lost_focus_ends_the_drag_and_its_edge_repeat() {
+        let mut host = host();
+        host.set_window_metrics(800, 600, 1.0, 1.0);
+        let mut text = String::from("The quick brown fox jumps over the lazy dog");
+        let mut written = Vec::new();
+        clipboard_pass(&mut host, None, &mut text, &mut written);
+        clipboard_pass(
+            &mut host,
+            Some(GuiEvent::Button {
+                button: MouseButton::Left,
+                pressed: true,
+                double: false,
+                modifiers: NO_EDIT_MODIFIERS,
+                x: 150.0,
+                y: 16.0,
+            }),
+            &mut text,
+            &mut written,
+        );
+        clipboard_pass(
+            &mut host,
+            Some(GuiEvent::PointerMoved { x: 400.0, y: 16.0 }),
+            &mut text,
+            &mut written,
+        );
+        assert!(host.next_edge_repeat().is_some());
+        let selected = selected_text(&mut host, &mut text);
+        assert!(!selected.is_empty());
+        host.release_left_button();
+        assert!(host.pending());
+        clipboard_pass(&mut host, None, &mut text, &mut written);
+        assert_eq!(host.next_edge_repeat(), None);
+        assert!(!host.input.left);
+        clipboard_pass(
+            &mut host,
+            Some(GuiEvent::PointerMoved { x: 100.0, y: 16.0 }),
+            &mut text,
+            &mut written,
+        );
+        assert_eq!(selected_text(&mut host, &mut text), selected);
+        host.release_left_button();
+        assert!(!host.pending());
+    }
+
+    /// Verifies that the release of the left button for a lost focus gives
+    /// no click to the held button under the pointer.
+    #[test]
+    fn a_lost_focus_gives_no_click_to_a_held_button() {
+        let mut host = host();
+        host.set_window_metrics(800, 600, 1.0, 1.0);
+        let draw = |context: &mut UiContext| button(context, "held", FIELD, "Held");
+        assert!(!host.pass(draw));
+        host.apply(GuiEvent::Button {
+            button: MouseButton::Left,
+            pressed: true,
+            double: false,
+            modifiers: NO_EDIT_MODIFIERS,
+            x: 100.0,
+            y: 16.0,
+        });
+        assert!(!host.pass(draw));
+        host.release_left_button();
+        assert!(host.pending());
+        assert!(!host.pass(draw));
+        assert!(!host.pass(draw));
+    }
+
+    /// The selected text of the text field over `text`, read through a copy.
+    fn selected_text(host: &mut GuiHost, text: &mut String) -> String {
+        let mut written = Vec::new();
+        clipboard_pass(
+            host,
+            Some(GuiEvent::Edit(EditCommand::Copy)),
+            text,
+            &mut written,
+        );
+        written.pop().unwrap_or_default()
     }
 }
