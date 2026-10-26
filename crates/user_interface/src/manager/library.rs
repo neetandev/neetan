@@ -390,6 +390,7 @@ impl Manager {
 
 #[cfg(test)]
 mod tests {
+    use gui::ui::EditCommand;
     use machine_factory::{config::systems::compiled_systems, rom_status::RomStatus};
 
     use super::*;
@@ -434,9 +435,9 @@ mod tests {
         );
     }
 
-    /// Verifies that the Delete key is inactive while the filter holds the focus, that Ctrl+F and Y focus the filter and that confirm in the filter gives the focus to the table without a launch.
+    /// Verifies that the Delete key removes a character of the filter and opens no delete question while the filter holds the focus, that Ctrl+F and Y focus the filter and that confirm in the filter gives the focus to the table without a launch.
     #[test]
-    fn delete_is_inactive_while_the_filter_holds_the_focus() {
+    fn delete_edits_the_filter_while_it_holds_the_focus() {
         let test = TestRoot::new("shortcuts");
         games(&test, &["a", "b"]);
         let mut manager = test.manager();
@@ -445,10 +446,19 @@ mod tests {
         harness.input.shortcut = Some(Shortcut::ControlF);
         harness.settle(|context| manager.show(context));
         assert_eq!(harness.state.focused(), Some(UiId::from(FILTER_ID)));
-        harness.input.shortcut = Some(Shortcut::Delete);
+        harness.input.text = "ab".to_owned();
         harness.settle(|context| manager.show(context));
+        harness.input.navigation = Some(Navigation::Left);
+        harness.settle(|context| manager.show(context));
+        harness.input.edit = Some(EditCommand::DeleteForward);
+        harness.settle(|context| manager.show(context));
+        assert_eq!(manager.view.filter, "a");
         assert!(manager.delete.is_none());
         assert_eq!(harness.state.open_modals(), 0);
+        assert_eq!(harness.state.focused(), Some(UiId::from(FILTER_ID)));
+        harness.input.cancel = true;
+        harness.settle(|context| manager.show(context));
+        assert_eq!(manager.view.filter, "");
 
         harness.state.set_focus(UiId::from(GAME_TABLE_ID));
         harness.settle(|context| manager.show(context));
@@ -513,7 +523,7 @@ mod tests {
             harness.settle(|context| manager.show(context));
             harness.input.action = Some(ActionButton::Y);
             harness.settle(|context| manager.show(context));
-            harness.input.shortcut = Some(Shortcut::Delete);
+            harness.input.edit = Some(EditCommand::DeleteForward);
             harness.settle(|context| manager.show(context));
             harness.input.shortcut = Some(Shortcut::F10);
             harness.settle(|context| manager.show(context));
@@ -532,7 +542,7 @@ mod tests {
             assert_eq!(harness.state.open_modals(), 1);
         };
 
-        harness.input.shortcut = Some(Shortcut::Delete);
+        harness.input.edit = Some(EditCommand::DeleteForward);
         harness.settle(|context| manager.show(context));
         assert!(manager.delete.is_some());
         keys(&mut harness, &mut manager);

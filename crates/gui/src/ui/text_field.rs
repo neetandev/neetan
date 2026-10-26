@@ -2,13 +2,11 @@
 
 use super::{
     context::{UiContext, UiId},
+    field_value::{draw_value, edit_text},
     icons::Icon,
-    label::{Align, Truncation},
+    label::Truncation,
 };
 use crate::{Color, Rect, RectStyle};
-
-/// The width of the text cursor.
-const CURSOR_WIDTH: f32 = 1.5;
 
 /// The size of the icon of the clear button.
 const CLEAR_ICON_SIZE: f32 = 12.0;
@@ -82,125 +80,20 @@ pub(super) fn field_frame(context: &mut UiContext, rect: Rect, look: FieldLook) 
     );
 }
 
-/// Adds the committed text of the input to `text` up to `limit`
-/// characters, keeping the characters that `accept` takes, and removes the
-/// last character on backspace. A field that is blocked or that draws in a
-/// layer that opened in this pass keeps its text. Returns whether `text`
-/// changed. The edit only appends characters and removes the last one, and
-/// a change of the text is a change of its length.
-pub(super) fn edit_text(
-    context: &UiContext,
-    text: &mut String,
-    limit: usize,
-    accept: impl Fn(&str, char) -> bool,
-) -> bool {
-    if !context.takes_input() {
-        return false;
-    }
-    let input = context.input;
-    let length = text.len();
-    for character in input.text.chars() {
-        if text.chars().count() >= limit {
-            break;
-        }
-        if !character.is_control() && accept(text, character) {
-            text.push(character);
-        }
-    }
-    if input.backspace {
-        text.pop();
-    }
-    text.len() != length
-}
-
-/// Draws the value of a field: `text` in `inner` with the color `color`,
-/// or `placeholder` while the field is empty. `inner` spans the height of
-/// the field. A focused field shows the composition of the input method at
-/// the cursor and scrolls, so its end and the cursor stay visible. Without
-/// the focus a text wider than `inner` is cut as `truncation` says. A
-/// placeholder wider than `inner` is cut as `truncation` says.
-pub(super) fn draw_value(
-    context: &mut UiContext,
-    inner: Rect,
-    text: &str,
-    placeholder: &str,
-    focused: bool,
-    color: Color,
-    truncation: Truncation,
-) {
-    let theme = context.theme;
-    let composition = if focused {
-        context.input.composition.as_str()
-    } else {
-        ""
-    };
-    let style = theme.body().with_color(color);
-    if text.is_empty() && composition.is_empty() {
-        context.text_in(
-            inner,
-            &style.with_color(theme.colors.text_disabled),
-            placeholder,
-            Align::Start,
-            truncation,
-        );
-    }
-    if !focused {
-        if !text.is_empty() {
-            context.text_in(inner, &style, text, Align::Start, truncation);
-        }
-        return;
-    }
-    let baseline = context.centered_baseline(inner, &style);
-    let cursor_width = context.snap(CURSOR_WIDTH).max(1.0 / context.scale());
-    context.scene.push_clip(Rect::new(
-        inner.x - cursor_width,
-        inner.y + theme.stroke,
-        inner.width + cursor_width * 2.0,
-        inner.height - theme.stroke * 2.0,
-    ));
-    let width = context.measure(&style, text);
-    let composition_width = context.measure(&style, composition);
-    let scroll = (width + composition_width + cursor_width - inner.width).max(0.0);
-    let x = context.snap(inner.x - scroll);
-    if !text.is_empty() {
-        context.text(x, baseline, &style, text);
-    }
-    if !composition.is_empty() {
-        let start = context.snap(x + width);
-        context.text(start, baseline, &style, composition);
-        let underline = (1.0 / context.scale()).max(context.snap(1.0));
-        context.scene.fill(
-            Rect::new(start, baseline + 2.0, composition_width, underline),
-            0.0,
-            theme.colors.text,
-        );
-    }
-    let height = (theme.text_size * 1.3).round();
-    let cursor_x = context.snap(x + width + composition_width);
-    context.set_text_caret(cursor_x);
-    context.scene.fill(
-        Rect::new(
-            cursor_x,
-            context.snap(inner.y + (inner.height - height) * 0.5),
-            cursor_width,
-            height,
-        ),
-        0.0,
-        theme.colors.text,
-    );
-    context.scene.pop_clip();
-}
-
 /// A single line text field with options.
 ///
-/// A click gives the field the focus. While it holds the focus, the
-/// committed text of the input goes to the end of the text up to
-/// [`TEXT_FIELD_LIMIT`] characters, and backspace removes the last
-/// character. The composition of an input method shows underlined at the
-/// cursor. The cursor stays at the end, and the field takes left, right,
-/// home and end without a change. A text wider than the focused field
-/// scrolls, so its end and the cursor stay visible. Without the focus a long
-/// text is cut. A clear button for the mouse empties a field with text.
+/// A click gives the field the focus, and the focus places the cursor at
+/// the end of the text. While the field holds the focus, the committed text
+/// of the input replaces the selection at the cursor up to
+/// [`TEXT_FIELD_LIMIT`] characters. Backspace and delete remove the
+/// selection or the character before or after the cursor. Left and right
+/// step the cursor by one character, or by one word with the word modifier.
+/// Home and end, and left and right with the edge modifier, place it at the
+/// start and the end. The extend modifier extends the selection with every
+/// step. Select all selects the whole text. The composition of an input
+/// method shows underlined at the cursor. A text wider than the focused
+/// field scrolls, so the cursor stays visible. Without the focus a long text
+/// is cut. A clear button for the mouse empties a field with text.
 ///
 /// The default field is a search field: it shows the search icon, and
 /// cancel empties a field with text and leaves an empty field to the panel.
@@ -308,7 +201,9 @@ impl<'a> TextField<'a> {
         let mut hovered = false;
         if interactive {
             if context.has_focus(id) {
-                response.changed |= edit_text(context, text, TEXT_FIELD_LIMIT, |_, _| true);
+                let navigation = context.navigation(id);
+                response.changed |=
+                    edit_text(context, id, text, TEXT_FIELD_LIMIT, navigation, |_| true);
                 response.submitted = context.confirmed(id);
             }
             context.text_focusable(id, rect, self.clears_on_cancel && !text.is_empty());
@@ -352,7 +247,7 @@ impl<'a> TextField<'a> {
             inner,
             text,
             self.placeholder,
-            focused,
+            focused.then_some(id),
             color,
             self.truncation,
         );
@@ -392,11 +287,14 @@ pub fn text_field(
 
 #[cfg(test)]
 mod tests {
+    use allocation_counter::count_allocations;
+
     use super::*;
     use crate::{
         Instance,
         ui::{
-            Navigation, NavigationSet,
+            EditModifiers, Navigation, NavigationSet,
+            field_value::tests::{SHIFT, SHIFT_WORD, WORD, cursor, highlights},
             tests::{Harness, pixel, srgb},
         },
     };
@@ -404,26 +302,34 @@ mod tests {
     /// The area of the field.
     const FIELD: Rect = Rect::new(10.0, 10.0, 200.0, 32.0);
 
+    /// Sends `navigation` with `modifiers` to the field over `text`.
+    fn key(
+        harness: &mut Harness,
+        text: &mut String,
+        navigation: Navigation,
+        modifiers: EditModifiers,
+    ) -> TextFieldResponse {
+        harness.navigate_with(navigation, modifiers);
+        draw(harness, text)
+    }
+
+    /// Types `typed` into the field over `text`.
+    fn typing(harness: &mut Harness, text: &mut String, typed: &str) -> TextFieldResponse {
+        harness.input.text.push_str(typed);
+        draw(harness, text)
+    }
+
+    /// A harness with the focus on the field over `text` after one pass.
+    fn focused(text: &mut String) -> Harness {
+        let mut harness = Harness::new();
+        harness.state.set_focus(UiId::from("filter"));
+        draw(&mut harness, text);
+        harness
+    }
+
     /// Draws the field over `text` and returns its response.
     fn draw(harness: &mut Harness, text: &mut String) -> TextFieldResponse {
         harness.frame(|context| text_field(context, "filter", FIELD, text, "Filter"))
-    }
-
-    /// The rectangle of the text cursor of the last pass, a fill of the
-    /// cursor width in physical pixels.
-    fn cursor(harness: &Harness) -> Option<[f32; 4]> {
-        let width = (CURSOR_WIDTH * harness.viewport.scale).round().max(1.0);
-        let height = (harness.theme.text_size * 1.3).round() * harness.viewport.scale;
-        harness
-            .scene
-            .instances()
-            .iter()
-            .find(|instance| {
-                instance.kind[0] == Instance::KIND_RECTANGLE
-                    && instance.rect[2] == width
-                    && instance.rect[3] == height.round()
-            })
-            .map(|instance| instance.rect)
     }
 
     #[test]
@@ -477,46 +383,6 @@ mod tests {
     }
 
     #[test]
-    fn backspace_removes_whole_characters() {
-        let mut harness = Harness::new();
-        let mut text = String::from("aé漢");
-        harness.state.set_focus(UiId::from("filter"));
-        harness.input.backspace = true;
-        draw(&mut harness, &mut text);
-        assert_eq!(text, "aé");
-        for _ in 0..2 {
-            harness.input.backspace = true;
-            assert!(draw(&mut harness, &mut text).changed);
-        }
-        assert_eq!(text, "");
-        harness.input.backspace = true;
-        assert!(!draw(&mut harness, &mut text).changed);
-    }
-
-    /// Verifies that a character and a backspace in one pass leave the text as it was and
-    /// report no change, and that a pass without input allocates nothing.
-    #[test]
-    fn a_typed_character_and_a_backspace_in_one_pass_change_nothing() {
-        let mut harness = Harness::new();
-        let mut text = String::from("ab");
-        harness.state.set_focus(UiId::from("filter"));
-        draw(&mut harness, &mut text);
-        harness.input.text.push('漢');
-        harness.input.backspace = true;
-        assert!(!draw(&mut harness, &mut text).changed);
-        assert_eq!(text, "ab");
-        harness.input.text.push_str("cd");
-        harness.input.backspace = true;
-        assert!(draw(&mut harness, &mut text).changed);
-        assert_eq!(text, "abc");
-        draw(&mut harness, &mut text);
-        let (allocations, response) =
-            allocation_counter::count_allocations(|| draw(&mut harness, &mut text));
-        assert!(!response.changed);
-        assert_eq!(allocations, 0);
-    }
-
-    #[test]
     fn confirm_submits_the_focused_field() {
         let mut harness = Harness::new();
         let mut text = String::from("adv");
@@ -526,27 +392,6 @@ mod tests {
         harness.state.clear_focus();
         harness.input.confirm = true;
         assert!(!draw(&mut harness, &mut text).submitted);
-    }
-
-    #[test]
-    fn a_long_text_scrolls_and_keeps_the_cursor_inside() {
-        let mut harness = Harness::new();
-        let mut text = String::new();
-        harness.state.set_focus(UiId::from("filter"));
-        draw(&mut harness, &mut text);
-        let empty = cursor(&harness).unwrap();
-        harness.input.text = "The quick brown fox jumps over the lazy dog".into();
-        draw(&mut harness, &mut text);
-        let long = cursor(&harness).unwrap();
-        assert!(long[0] > empty[0]);
-        assert!(long[0] + long[2] <= FIELD.right() - 20.0, "{long:?}");
-        let glyphs = harness
-            .scene
-            .instances()
-            .iter()
-            .filter(|instance| instance.kind[0] == Instance::KIND_GLYPH)
-            .count();
-        assert!(glyphs < text.chars().filter(|character| *character != ' ').count());
     }
 
     #[test]
@@ -599,7 +444,7 @@ mod tests {
                     context.focusable(
                         UiId::from("neighbor").indexed(index),
                         Rect::new(x, FIELD.y, 100.0, FIELD.height),
-                        crate::ui::NavigationSet::EMPTY,
+                        NavigationSet::EMPTY,
                     );
                 }
             });
@@ -607,48 +452,16 @@ mod tests {
         harness.state.set_focus(UiId::from("filter"));
         draw_both(&mut harness, &mut text);
         for navigation in [
-            crate::ui::Navigation::Left,
-            crate::ui::Navigation::Right,
-            crate::ui::Navigation::Home,
-            crate::ui::Navigation::End,
+            Navigation::Left,
+            Navigation::Right,
+            Navigation::Home,
+            Navigation::End,
         ] {
             harness.navigate(navigation);
             draw_both(&mut harness, &mut text);
             assert_eq!(harness.state.focused(), Some(UiId::from("filter")));
         }
         assert_eq!(text, "adv");
-    }
-
-    #[test]
-    fn the_text_stops_at_the_limit() {
-        let mut harness = Harness::new();
-        let mut text = "a".repeat(TEXT_FIELD_LIMIT - 2);
-        harness.state.set_focus(UiId::from("filter"));
-        harness.input.text.push_str("漢字かな");
-        assert!(draw(&mut harness, &mut text).changed);
-        assert_eq!(text.chars().count(), TEXT_FIELD_LIMIT);
-        assert!(text.ends_with("漢字"));
-        harness.input.text.push('b');
-        assert!(!draw(&mut harness, &mut text).changed);
-    }
-
-    #[test]
-    fn the_composition_shows_at_the_cursor() {
-        let mut harness = Harness::new();
-        let mut text = String::from("ab");
-        harness.state.set_focus(UiId::from("filter"));
-        draw(&mut harness, &mut text);
-        let plain = cursor(&harness).unwrap();
-        harness.input.composition.push_str("かな");
-        draw(&mut harness, &mut text);
-        let composing = cursor(&harness).unwrap();
-        assert!(composing[0] > plain[0] + 20.0);
-        assert_eq!(text, "ab");
-        harness.input.composition.clear();
-        harness.input.text.push_str("かな");
-        draw(&mut harness, &mut text);
-        assert_eq!(text, "abかな");
-        assert_eq!(cursor(&harness).unwrap()[0], composing[0]);
     }
 
     #[test]
@@ -832,5 +645,38 @@ mod tests {
             FIELD.center().1,
         );
         assert_eq!(fill, srgb(harness.theme.colors.well));
+    }
+
+    /// Verifies that the edit state follows a text that changes outside the field: the caller,
+    /// the clear button and cancel.
+    #[test]
+    fn the_edit_state_follows_a_change_of_the_text_outside_the_field() {
+        let mut text = String::from("abcdef");
+        let mut harness = focused(&mut text);
+        key(&mut harness, &mut text, Navigation::Left, SHIFT);
+        text.truncate(2);
+        typing(&mut harness, &mut text, "X");
+        assert_eq!(text, "abX");
+        harness.input.cancel = true;
+        draw(&mut harness, &mut text);
+        assert!(text.is_empty());
+        typing(&mut harness, &mut text, "Y");
+        assert_eq!(text, "Y");
+    }
+
+    /// Verifies that a steady frame of a focused field with the cursor inside the text and a
+    /// selection allocates nothing.
+    #[test]
+    fn a_steady_frame_with_a_selection_allocates_nothing() {
+        let mut text = String::from("ディスク A and more text");
+        let mut harness = focused(&mut text);
+        key(&mut harness, &mut text, Navigation::Left, WORD);
+        key(&mut harness, &mut text, Navigation::Left, SHIFT_WORD);
+        assert!(!highlights(&harness).is_empty());
+        draw(&mut harness, &mut text);
+        let (allocations, response) = count_allocations(|| draw(&mut harness, &mut text));
+        assert!(!response.changed);
+        assert_eq!(allocations, 0);
+        assert!(!highlights(&harness).is_empty());
     }
 }

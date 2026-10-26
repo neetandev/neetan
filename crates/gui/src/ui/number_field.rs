@@ -2,12 +2,12 @@
 
 use super::{
     context::{UiContext, UiId},
+    field_value::{draw_value, edit_text, place_cursor_at_end},
     focus::Navigation,
     icons::Icon,
+    input::NavigationSource,
     label::Truncation,
-    text_field::{
-        FieldLook, TEXT_FIELD_LIMIT, TextFieldResponse, draw_value, edit_text, field_frame,
-    },
+    text_field::{FieldLook, TEXT_FIELD_LIMIT, TextFieldResponse, field_frame},
 };
 use crate::Rect;
 
@@ -54,15 +54,19 @@ pub enum NumberError {
 /// A field that edits a number as text, with a step-down and a step-up
 /// button at its end.
 ///
-/// The field takes typed digits, a decimal point when the number has
-/// decimals and a minus sign at the start when the range holds negative
-/// numbers. A digit that leads past the maximum is dropped, and so is a
-/// digit that leads below the minimum after a minus sign. Left and right
-/// and the step buttons step the number down and up by the step, inside the
-/// range. A step from an empty field starts at the fallback. A step button
-/// at the end of the range is disabled. An empty field shows the
-/// placeholder, for a key that the file does not set. A text that holds no
-/// number of the range draws the error edge, see [`NumberField::parse`].
+/// The field edits its text like a text field. An insert happens only when
+/// the whole candidate text has the form that typing produces and typing
+/// more digits after it can still bring it into the range. The form is an
+/// optional minus sign for a range with negative numbers, digits without a
+/// leading zero and, for a number with decimals, a decimal point with at
+/// most that many digits after it. Every removal happens, also in a text of
+/// another form. The keyboard left and right step the cursor. The gamepad
+/// left and right and the step buttons step the number down and up by the
+/// step, inside the range, and place the cursor at the end. A step from an
+/// empty field starts at the fallback. A step button at the end of the
+/// range is disabled. An empty field shows the placeholder, for a key that
+/// the file does not set. A text that holds no number of the range draws
+/// the error edge, see [`NumberField::parse`].
 /// The field never takes cancel.
 #[derive(Clone, Copy, Debug)]
 pub struct NumberField<'a> {
@@ -271,33 +275,6 @@ impl<'a> NumberField<'a> {
         self.format(value.clamp(self.minimum, self.maximum))
     }
 
-    /// Whether `text` takes the typed `character`. A digit that leads past
-    /// the maximum, or below the minimum after a minus sign, is dropped.
-    fn accepts(&self, text: &str, character: char) -> bool {
-        match character {
-            '0'..='9' => {
-                let candidate = format!("{text}{character}");
-                self.number(&candidate).is_some_and(|value| {
-                    if candidate.starts_with('-') {
-                        value >= self.minimum
-                    } else {
-                        value <= self.maximum
-                    }
-                })
-            }
-            '.' => {
-                self.decimals > 0
-                    && !text.contains('.')
-                    && text
-                        .bytes()
-                        .last()
-                        .is_some_and(|byte| byte.is_ascii_digit())
-            }
-            '-' => self.minimum < 0.0 && text.is_empty(),
-            _ => false,
-        }
-    }
-
     /// The width of the field: [`NUMBER_FIELD_WIDTH`], or the room that the
     /// placeholder needs beside the step buttons when it is wider. The width
     /// depends only on the placeholder. The field keeps it while the user
@@ -348,20 +325,21 @@ impl<'a> NumberField<'a> {
                 *text = self.stepped(text, up);
                 response.changed = true;
                 context.set_focus(id);
+                place_cursor_at_end(context, id, text);
             }
         }
         let mut hovered = false;
         if self.enabled {
             if context.has_focus(id) {
-                response.changed |=
-                    edit_text(context, text, TEXT_FIELD_LIMIT, |text, character| {
-                        self.accepts(text, character)
-                    });
-                let step = match context.navigation(id) {
-                    Some(Navigation::Left) => can_step_down.then_some(false),
-                    Some(Navigation::Right) => can_step_up.then_some(true),
+                let navigation = context.navigation(id);
+                let gamepad = context.input.navigation_source == NavigationSource::Gamepad;
+                let step = match navigation {
+                    Some(Navigation::Left) if gamepad => Some(false),
+                    Some(Navigation::Right) if gamepad => Some(true),
                     Some(
-                        Navigation::Up
+                        Navigation::Left
+                        | Navigation::Right
+                        | Navigation::Up
                         | Navigation::Down
                         | Navigation::PageUp
                         | Navigation::PageDown
@@ -374,9 +352,19 @@ impl<'a> NumberField<'a> {
                     )
                     | None => None,
                 };
-                if let Some(up) = step {
+                response.changed |= edit_text(
+                    context,
+                    id,
+                    text,
+                    TEXT_FIELD_LIMIT,
+                    navigation.filter(|_| step.is_none()),
+                    |candidate| self.reachable(candidate),
+                );
+                let allowed = |up: bool| if up { can_step_up } else { can_step_down };
+                if let Some(up) = step.filter(|&up| allowed(up)) {
                     *text = self.stepped(text, up);
                     response.changed = true;
+                    place_cursor_at_end(context, id, text);
                 }
                 response.submitted = context.confirmed(id);
             }
@@ -405,7 +393,7 @@ impl<'a> NumberField<'a> {
             inner,
             text,
             self.placeholder,
-            focused,
+            focused.then_some(id),
             color,
             Truncation::End,
         );
@@ -441,7 +429,7 @@ mod tests {
     use crate::{
         Instance,
         ui::{
-            NavigationSet,
+            EditCommand, NavigationSet,
             tests::{Harness, pixel, srgb},
         },
     };
@@ -532,20 +520,20 @@ mod tests {
     }
 
     #[test]
-    fn left_and_right_step_inside_the_range() {
+    fn gamepad_left_and_right_step_inside_the_range() {
         let mut harness = Harness::new();
         let mut text = String::from("2");
         harness.state.set_focus(UiId::from("phase"));
         draw(&mut harness, phase(), &mut text);
-        harness.navigate(Navigation::Right);
+        harness.navigate_gamepad(Navigation::Right);
         assert!(draw(&mut harness, phase(), &mut text).changed);
         assert_eq!(text, "3");
-        harness.navigate(Navigation::Right);
+        harness.navigate_gamepad(Navigation::Right);
         assert!(!draw(&mut harness, phase(), &mut text).changed);
         assert_eq!(text, "3");
         assert_eq!(harness.state.focused(), Some(UiId::from("phase")));
         for _ in 0..5 {
-            harness.navigate(Navigation::Left);
+            harness.navigate_gamepad(Navigation::Left);
             draw(&mut harness, phase(), &mut text);
         }
         assert_eq!(text, "0");
@@ -577,7 +565,7 @@ mod tests {
         harness.input.text.push_str("0.75");
         draw(&mut harness, field, &mut volume);
         assert_eq!(volume, "0.7");
-        harness.navigate(Navigation::Right);
+        harness.navigate_gamepad(Navigation::Right);
         draw(&mut harness, field, &mut volume);
         assert_eq!(volume, "0.8");
     }
@@ -589,11 +577,11 @@ mod tests {
         let field = phase().fallback(Some(2.0));
         harness.state.set_focus(UiId::from("phase"));
         draw(&mut harness, field, &mut text);
-        harness.navigate(Navigation::Right);
+        harness.navigate_gamepad(Navigation::Right);
         draw(&mut harness, field, &mut text);
         assert_eq!(text, "2");
         let mut text = String::new();
-        harness.navigate(Navigation::Left);
+        harness.navigate_gamepad(Navigation::Left);
         draw(&mut harness, phase(), &mut text);
         assert_eq!(text, "0");
     }
@@ -698,7 +686,7 @@ mod tests {
         harness.input.text.push_str("2+e");
         draw(&mut harness, field, &mut text);
         assert_eq!(text, "-2");
-        harness.navigate(Navigation::Left);
+        harness.navigate_gamepad(Navigation::Left);
         draw(&mut harness, field, &mut text);
         assert_eq!(text, "-3");
         let mut text = String::new();
@@ -794,5 +782,211 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    /// The field of a year from 0 to 9999.
+    fn year() -> NumberField<'static> {
+        NumberField::new("phase", "Not set").range(0.0, 9999.0)
+    }
+
+    /// Types `typed` into `field` over `text`.
+    fn typing(harness: &mut Harness, field: NumberField, text: &mut String, typed: &str) {
+        harness.input.text.push_str(typed);
+        draw(harness, field, text);
+    }
+
+    /// Sends the keyboard `navigation` to `field` over `text`.
+    fn key(harness: &mut Harness, field: NumberField, text: &mut String, navigation: Navigation) {
+        harness.navigate(navigation);
+        draw(harness, field, text);
+    }
+
+    /// A harness with the focus on the field after one pass of `field`
+    /// over `text`.
+    fn focused(field: NumberField, text: &mut String) -> Harness {
+        let mut harness = Harness::new();
+        harness.state.set_focus(UiId::from("phase"));
+        draw(&mut harness, field, text);
+        harness
+    }
+
+    #[test]
+    fn keyboard_left_and_right_step_the_cursor() {
+        let mut text = String::from("1996");
+        let mut harness = focused(year(), &mut text);
+        key(&mut harness, year(), &mut text, Navigation::Left);
+        key(&mut harness, year(), &mut text, Navigation::Left);
+        assert_eq!(text, "1996");
+        harness.input.backspace = true;
+        draw(&mut harness, year(), &mut text);
+        assert_eq!(text, "196");
+        key(&mut harness, year(), &mut text, Navigation::Right);
+        typing(&mut harness, year(), &mut text, "8");
+        assert_eq!(text, "1986");
+        key(&mut harness, year(), &mut text, Navigation::Home);
+        harness.input.edit = Some(EditCommand::DeleteForward);
+        assert!(draw(&mut harness, year(), &mut text).changed);
+        assert_eq!(text, "986");
+        assert_eq!(harness.state.focused(), Some(UiId::from("phase")));
+    }
+
+    #[test]
+    fn a_gamepad_step_places_the_cursor_at_the_end() {
+        let mut text = String::from("19");
+        let mut harness = focused(year(), &mut text);
+        key(&mut harness, year(), &mut text, Navigation::Home);
+        harness.navigate_gamepad(Navigation::Right);
+        assert!(draw(&mut harness, year(), &mut text).changed);
+        assert_eq!(text, "20");
+        typing(&mut harness, year(), &mut text, "0");
+        assert_eq!(text, "200");
+        key(&mut harness, year(), &mut text, Navigation::Home);
+        harness.navigate_gamepad(Navigation::Left);
+        draw(&mut harness, year(), &mut text);
+        typing(&mut harness, year(), &mut text, "1");
+        assert_eq!(text, "1991");
+    }
+
+    /// Verifies that the rule of the field judges the whole text after an
+    /// insert in the middle, a decimal point and a minus sign.
+    #[test]
+    fn an_insert_in_the_middle_passes_the_rule_of_the_whole_text() {
+        let byte = NumberField::new("phase", "Not set").range(0.0, 255.0);
+        let mut text = String::from("25");
+        let mut harness = focused(byte, &mut text);
+        key(&mut harness, byte, &mut text, Navigation::Left);
+        typing(&mut harness, byte, &mut text, "9");
+        assert_eq!(text, "25");
+        typing(&mut harness, byte, &mut text, "1");
+        assert_eq!(text, "215");
+        typing(&mut harness, byte, &mut text, ".-");
+        assert_eq!(text, "215");
+        key(&mut harness, byte, &mut text, Navigation::Home);
+        typing(&mut harness, byte, &mut text, "0");
+        assert_eq!(text, "215");
+
+        let ratio = NumberField::new("phase", "Not set")
+            .range(0.0, 10.0)
+            .decimals(2);
+        let mut text = String::from("15");
+        let mut harness = focused(ratio, &mut text);
+        key(&mut harness, ratio, &mut text, Navigation::Left);
+        typing(&mut harness, ratio, &mut text, ".");
+        assert_eq!(text, "1.5");
+        typing(&mut harness, ratio, &mut text, ".");
+        assert_eq!(text, "1.5");
+        typing(&mut harness, ratio, &mut text, "2");
+        assert_eq!(text, "1.25");
+        typing(&mut harness, ratio, &mut text, "3");
+        assert_eq!(text, "1.25");
+        key(&mut harness, ratio, &mut text, Navigation::Home);
+        typing(&mut harness, ratio, &mut text, "1");
+        assert_eq!(text, "1.25");
+
+        let signed = NumberField::new("phase", "Not set").range(-3.0, 3.0);
+        let mut text = String::from("2");
+        let mut harness = focused(signed, &mut text);
+        typing(&mut harness, signed, &mut text, "-");
+        assert_eq!(text, "2");
+        key(&mut harness, signed, &mut text, Navigation::Home);
+        typing(&mut harness, signed, &mut text, "-");
+        assert_eq!(text, "-2");
+        typing(&mut harness, signed, &mut text, "-");
+        assert_eq!(text, "-2");
+    }
+
+    /// Verifies that a typed text replaces the selection only when the
+    /// whole candidate passes the rule.
+    #[test]
+    fn typed_digits_replace_the_selection_under_the_rule() {
+        let mut text = String::from("1996");
+        let mut harness = focused(year(), &mut text);
+        harness.input.edit = Some(EditCommand::SelectAll);
+        draw(&mut harness, year(), &mut text);
+        typing(&mut harness, year(), &mut text, "x");
+        assert_eq!(text, "1996");
+        typing(&mut harness, year(), &mut text, "2");
+        assert_eq!(text, "2");
+    }
+
+    /// Verifies that a removal that leaves a value outside the range
+    /// happens and draws the error edge, and that removals can always empty
+    /// the field.
+    #[test]
+    fn a_removal_may_leave_a_value_outside_the_range() {
+        let teens = NumberField::new("phase", "Not set").range(10.0, 20.0);
+        let mut text = String::from("15");
+        let mut harness = focused(teens, &mut text);
+        key(&mut harness, teens, &mut text, Navigation::Home);
+        harness.input.edit = Some(EditCommand::DeleteForward);
+        assert!(draw(&mut harness, teens, &mut text).changed);
+        assert_eq!(text, "5");
+        assert!(teens.flagged(&text, true));
+        let pixels = harness.render();
+        let edge = pixel(
+            &pixels,
+            harness.viewport.width,
+            FIELD.x + 30.0,
+            FIELD.y + 0.5,
+        );
+        assert_eq!(edge, srgb(harness.theme.colors.danger_text));
+        typing(&mut harness, teens, &mut text, "3");
+        assert_eq!(text, "5");
+        harness.input.edit = Some(EditCommand::DeleteForward);
+        draw(&mut harness, teens, &mut text);
+        assert!(text.is_empty());
+
+        let ratio = NumberField::new("phase", "Not set")
+            .range(0.0, 10.0)
+            .decimals(1);
+        let mut text = String::from("1.5");
+        let mut harness = focused(ratio, &mut text);
+        key(&mut harness, ratio, &mut text, Navigation::Home);
+        harness.input.edit = Some(EditCommand::DeleteForward);
+        draw(&mut harness, ratio, &mut text);
+        assert_eq!(text, ".5");
+        assert!(ratio.flagged(&text, true));
+        for _ in 0..2 {
+            harness.input.edit = Some(EditCommand::DeleteForward);
+            draw(&mut harness, ratio, &mut text);
+        }
+        assert!(text.is_empty());
+    }
+
+    /// Verifies that a removal edits a text of another form: Backspace and Delete each take one
+    /// character of it.
+    #[test]
+    fn a_removal_edits_a_broken_text() {
+        let mut text = String::from("19xx");
+        let mut harness = focused(year(), &mut text);
+        harness.input.backspace = true;
+        assert!(draw(&mut harness, year(), &mut text).changed);
+        assert_eq!(text, "19x");
+        key(&mut harness, year(), &mut text, Navigation::Home);
+        harness.input.edit = Some(EditCommand::DeleteForward);
+        assert!(draw(&mut harness, year(), &mut text).changed);
+        assert_eq!(text, "9x");
+    }
+
+    /// Verifies that the insert rule takes the texts in the form that typing produces whose
+    /// continuations can reach the range, and no text of another form.
+    #[test]
+    fn the_insert_rule_takes_texts_of_the_form_that_can_reach_the_range() {
+        let ratio = NumberField::new("ratio", "Not set")
+            .range(-1.0, 2.0)
+            .decimals(1);
+        for text in ["", "-", "1", "1.", "1.5", "-0.5", "-1", "0"] {
+            assert!(ratio.reachable(text), "{text}");
+        }
+        for text in [".5", "01", "3", "-2", "2.5"] {
+            assert!(!ratio.reachable(text), "{text}");
+        }
+        for text in ["1.55", "1..", "1-", "--1", "+1", "1e0", "a", " 1", "1.5."] {
+            assert!(!ratio.reachable(text), "{text}");
+        }
+        let whole = NumberField::new("year", "Not set").range(0.0, 2000.0);
+        assert!(!whole.reachable("-1"));
+        assert!(!whole.reachable("1."));
+        assert!(whole.reachable("19"));
     }
 }

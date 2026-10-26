@@ -8,6 +8,7 @@ use super::{
     focus::{Focusable, MoveStart, next_focus},
     input::Input,
     list::ListState,
+    text_edit::{Motion, TextEdit},
 };
 use crate::Rect;
 
@@ -95,6 +96,13 @@ pub struct UiState {
     /// The offset of the text cursor from the left edge of the text area in
     /// physical pixels.
     pub(super) text_caret: Option<f32>,
+    /// The text widget that holds the focus and owns the edit state.
+    pub(super) text_owner: Option<UiId>,
+    /// The cursor and the selection of the focused text widget.
+    pub(super) text_edit: TextEdit,
+    /// The scroll offset of the text of the focused text widget in logical
+    /// units.
+    pub(super) text_scroll: f32,
     /// The drag of the active widget.
     pub(super) drag: Option<Drag>,
     /// The deepest layer that the last pass drew.
@@ -134,6 +142,9 @@ impl Default for UiState {
             lost: None,
             text_area: None,
             text_caret: None,
+            text_owner: None,
+            text_edit: TextEdit::default(),
+            text_scroll: 0.0,
             drag: None,
             deepest: 0,
             modals: Vec::new(),
@@ -269,12 +280,28 @@ impl UiState {
         self.lost = None;
         self.text_area = None;
         self.text_caret = None;
+        self.text_owner = None;
         self.drag = None;
         self.deepest = 0;
         self.modals.clear();
         self.popup = None;
         self.pass_requested = false;
         self.focus_pressed = false;
+    }
+
+    /// The edit state of the focused text widget `id` over `text`. A widget
+    /// that takes the edit state starts with the cursor at the end of the
+    /// text, without a selection and without a scroll. The state clamps to
+    /// `text`, so it follows a change of the text outside the widget.
+    pub(super) fn text_edit(&mut self, id: UiId, text: &str) -> &mut TextEdit {
+        if self.text_owner != Some(id) {
+            self.text_owner = Some(id);
+            self.text_edit = TextEdit::default();
+            self.text_edit.go_to(text, Motion::End, false);
+            self.text_scroll = 0.0;
+        }
+        self.text_edit.clamp(text);
+        &mut self.text_edit
     }
 
     /// The layer of the widget `id` in the ring of this pass, or else in the
@@ -321,6 +348,7 @@ impl UiState {
             || input.confirm
             || input.action.is_some()
             || input.shortcut.is_some()
+            || input.edit.is_some()
         {
             self.focus_visible = true;
         }
@@ -372,7 +400,8 @@ impl UiState {
     /// dropped, its last area stays for the next directional move, and the
     /// state asks for another pass, so a widget can take the focus. A
     /// pressed widget that skipped its pointer behavior loses the press and
-    /// its drag.
+    /// its drag. The edit state of a text widget without the focus is
+    /// dropped.
     pub(super) fn end_frame(&mut self, deepest: u32) {
         if let Some(popup) = self.popup.filter(|popup| !popup.seen) {
             self.popup = None;
@@ -396,6 +425,9 @@ impl UiState {
         if !self.active_seen {
             self.active = None;
             self.drag = None;
+        }
+        if self.text_owner != self.focus {
+            self.text_owner = None;
         }
         self.deepest = deepest;
         self.focus_pressed = false;

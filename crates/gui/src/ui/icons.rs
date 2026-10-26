@@ -58,6 +58,10 @@ pub enum Icon {
     /// A chevron that points down, for descending order, for shifting an
     /// item down and for opening a dropdown.
     Down,
+    /// A chevron that points left, for the left of the D-pad.
+    Left,
+    /// A chevron that points right, for the right of the D-pad.
+    Right,
     /// A desktop computer with a monitor on a flat case.
     SystemDesktop,
     /// A tower case.
@@ -68,7 +72,7 @@ pub enum Icon {
 
 impl Icon {
     /// Every icon.
-    pub const ALL: [Icon; 20] = [
+    pub const ALL: [Icon; 22] = [
         Icon::Close,
         Icon::Check,
         Icon::Eject,
@@ -86,6 +90,8 @@ impl Icon {
         Icon::Alert,
         Icon::Up,
         Icon::Down,
+        Icon::Left,
+        Icon::Right,
         Icon::SystemDesktop,
         Icon::SystemTower,
         Icon::SystemKeyboard,
@@ -384,6 +390,14 @@ impl Icons {
                 scene.line(at(4.0, 6.0), at(8.0, 10.0), stroke, color);
                 scene.line(at(8.0, 10.0), at(12.0, 6.0), stroke, color);
             }
+            Icon::Left => {
+                scene.line(at(10.0, 4.0), at(6.0, 8.0), stroke, color);
+                scene.line(at(6.0, 8.0), at(10.0, 12.0), stroke, color);
+            }
+            Icon::Right => {
+                scene.line(at(6.0, 4.0), at(10.0, 8.0), stroke, color);
+                scene.line(at(10.0, 8.0), at(6.0, 12.0), stroke, color);
+            }
             Icon::SystemDesktop => path(scene, self.system_desktop),
             Icon::SystemTower => path(scene, self.system_tower),
             Icon::SystemKeyboard => path(scene, self.system_keyboard),
@@ -471,7 +485,7 @@ mod tests {
 
     #[test]
     fn stroked_icons_cover_their_strokes() {
-        let cases: [(Icon, Points, Points); 6] = [
+        let cases: [(Icon, Points, Points); 8] = [
             (Icon::Add, &[(8.0, 4.0), (4.0, 8.0)], &[(4.0, 4.0)]),
             (
                 Icon::Duplicate,
@@ -490,6 +504,8 @@ mod tests {
                 &[(8.0, 8.0), (8.0, 3.0), (13.5, 13.5)],
             ),
             (Icon::Down, &[(8.0, 9.8), (5.0, 7.0)], &[(8.0, 7.0)]),
+            (Icon::Left, &[(6.2, 8.0), (9.0, 5.0)], &[(9.0, 8.0)]),
+            (Icon::Right, &[(9.8, 8.0), (7.0, 5.0)], &[(7.0, 8.0)]),
         ];
         for (icon, filled, empty) in cases {
             for (point, alpha) in filled.iter().zip(coverage(icon, filled)) {
