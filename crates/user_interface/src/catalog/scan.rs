@@ -266,6 +266,11 @@ mod tests {
         catalog::Catalog,
         config::{LaunchRequest, LineContent, Locations, SETTINGS_FILE_NAME, parse_line},
     };
+    #[cfg(feature = "pc98")]
+    use crate::{
+        catalog::read_game,
+        config::{LaunchError, build_configuration},
+    };
 
     /// A game file with Japanese comments, compact and spaced separators, a
     /// repeated `fdd1`, commented-out keys and no final newline.
@@ -696,11 +701,11 @@ mod tests {
             .and_then(|catalog| catalog.find("pc98/ys2.conf"))
             .cloned()
             .expect("ys2 is listed");
-        let read = crate::catalog::read_game(&host, system, &path).expect("the game reads");
+        let read = read_game(&host, system, &path).expect("the game reads");
         assert_eq!(read, scanned);
         std::fs::write(&path, "meta.title = Ys II Eternal\nmachine = PC9801RA\n")
             .expect("file is written");
-        let read = crate::catalog::read_game(&host, system, &path).expect("the game reads");
+        let read = read_game(&host, system, &path).expect("the game reads");
         assert_eq!(read.title, "Ys II Eternal");
         assert_eq!(read.model, "PC9801RA");
         assert_eq!(read.identity, "pc98/ys2.conf");
@@ -708,10 +713,7 @@ mod tests {
 
     /// Returns the result of a `--config` launch of `game` with the settings file of `folder`.
     #[cfg(feature = "pc98")]
-    fn launch(
-        folder: &ConfigFolder,
-        game: &Path,
-    ) -> Result<EmulatorConfig, crate::config::LaunchError> {
+    fn launch(folder: &ConfigFolder, game: &Path) -> Result<EmulatorConfig, LaunchError> {
         let locations = Locations {
             current_directory: folder.0.path().to_path_buf(),
             executable_directory: None,
@@ -722,7 +724,7 @@ mod tests {
             game_files: vec![game.to_path_buf()],
             ..LaunchRequest::default()
         };
-        crate::config::build_configuration(&request, &locations).map(|(config, _)| config)
+        build_configuration(&request, &locations).map(|(config, _)| config)
     }
 
     /// Verifies that the catalog shows the model of the settings file that a launch takes.

@@ -6,6 +6,7 @@ use sdl3::{
     Sdl,
     audio::AudioSubsystem,
     gamepad::GamepadSubsystem,
+    log::LogPriority,
     video::{VideoSubsystem, Window, WindowBuilder},
 };
 use sdl3_backend::{DisplayAspectMode, GraphicsEngine, LegacySdlBackend, ModernSdlGpuBackend};
@@ -29,7 +30,7 @@ pub(super) struct SdlSubsystems {
 pub(super) fn initialize_sdl3() -> Result<SdlSubsystems> {
     let context = sdl3::init().context("Failed to initialize SDL3")?;
 
-    sdl3::log::set_log_priorities(sdl3::log::LogPriority::Verbose);
+    sdl3::log::set_log_priorities(LogPriority::Verbose);
     sdl3::log::set_log_output_function(sdl3_log_callback);
 
     let audio = context
@@ -59,17 +60,13 @@ pub(super) fn initialize_sdl3() -> Result<SdlSubsystems> {
 }
 
 /// Passes one SDL3 log message to the emulator log.
-fn sdl3_log_callback(_category: i32, priority: sdl3::log::LogPriority, message: &str) {
+fn sdl3_log_callback(_category: i32, priority: LogPriority, message: &str) {
     let level = match priority {
-        sdl3::log::LogPriority::Trace | sdl3::log::LogPriority::Verbose => {
-            common::log::Level::Trace
-        }
-        sdl3::log::LogPriority::Debug => common::log::Level::Debug,
-        sdl3::log::LogPriority::Info => common::log::Level::Info,
-        sdl3::log::LogPriority::Warn => common::log::Level::Warn,
-        sdl3::log::LogPriority::Error | sdl3::log::LogPriority::Critical => {
-            common::log::Level::Error
-        }
+        LogPriority::Trace | LogPriority::Verbose => common::log::Level::Trace,
+        LogPriority::Debug => common::log::Level::Debug,
+        LogPriority::Info => common::log::Level::Info,
+        LogPriority::Warn => common::log::Level::Warn,
+        LogPriority::Error | LogPriority::Critical => common::log::Level::Error,
     };
     common::log::log_record(level, "sdl3", format_args!("{message}"));
 }

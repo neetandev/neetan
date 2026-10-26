@@ -2,6 +2,8 @@
 //! with the buttons that add an image through the file browser, remove the
 //! selected image and shift it up or down.
 
+use std::path::Path;
+
 use gui::{
     Rect,
     ui::{
@@ -79,8 +81,8 @@ pub(crate) fn place_image(values: &mut Vec<String>, browse: MediaBrowse, value: 
 
 /// Returns whether the image `value` lies outside the file system, resolved
 /// against `root` as a launch resolves it.
-pub(crate) fn is_missing(value: &str, root: &std::path::Path) -> bool {
-    !value.trim().is_empty() && !resolve_path(root, std::path::Path::new(value.trim())).exists()
+pub(crate) fn is_missing(value: &str, root: &Path) -> bool {
+    !value.trim().is_empty() && !resolve_path(root, Path::new(value.trim())).exists()
 }
 
 /// Writes the warning under a list whose images that `missing` marks do not

@@ -20,7 +20,7 @@ mod test_support;
 mod toolbar;
 mod view;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, result};
 
 use common::{FlushError, debug, info};
 use gui::{
@@ -284,7 +284,7 @@ impl Manager {
     pub(crate) fn configuration(
         &self,
         launch: &Launch,
-    ) -> std::result::Result<(EmulatorConfig, KeyOverrides), LaunchError> {
+    ) -> result::Result<(EmulatorConfig, KeyOverrides), LaunchError> {
         build_configuration(&launch.request, &self.start.locations)
     }
 
@@ -317,7 +317,7 @@ impl Manager {
     pub(crate) fn game_ended(
         &mut self,
         panic_message: Option<&str>,
-        flush: std::result::Result<(), FlushError>,
+        flush: result::Result<(), FlushError>,
     ) -> Option<UiId> {
         let running = self.running.take();
         self.next_focus = Some(NextFocus::Start);

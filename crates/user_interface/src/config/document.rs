@@ -9,7 +9,7 @@
 //! line order, the line ending style of the file, a missing final newline and
 //! a UTF-8 byte order mark. The text of a normalized file is the file itself.
 
-use std::{fmt, path::Path};
+use std::{error::Error, fmt, fs::Metadata, io, path::Path};
 
 use super::atomic_file::write_atomically;
 
@@ -86,7 +86,7 @@ pub enum DocumentError {
 impl DocumentError {
     /// Returns the error of a file that the operating system cannot read with `error`.
     #[must_use]
-    pub fn read(error: &std::io::Error) -> Self {
+    pub fn read(error: &io::Error) -> Self {
         Self::Read(error.to_string())
     }
 
@@ -118,7 +118,7 @@ impl fmt::Display for DocumentError {
     }
 }
 
-impl std::error::Error for DocumentError {}
+impl Error for DocumentError {}
 
 /// The line ending style of a file.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -242,7 +242,7 @@ impl ConfigDocument {
     /// A symbolic link at `path` is followed to its real target. An existing
     /// target keeps its permissions. The folder of the target is created when
     /// it is absent. Returns the metadata of the written file.
-    pub fn save(&self, path: &Path) -> std::io::Result<std::fs::Metadata> {
+    pub fn save(&self, path: &Path) -> io::Result<Metadata> {
         write_atomically(path, self.to_text().as_bytes())
     }
 

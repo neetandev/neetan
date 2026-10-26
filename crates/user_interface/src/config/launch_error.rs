@@ -1,7 +1,7 @@
 //! The errors of the configuration of a launch and of the host layers: their kinds with their
 //! data, their English text and their text in a catalog.
 
-use std::{fmt, path::PathBuf};
+use std::{error::Error, fmt, path::PathBuf};
 
 use i18n::Catalog;
 use machine_factory::config::settings::{MACHINE_KEY, value_error::ValueError};
@@ -75,7 +75,7 @@ impl fmt::Display for LaunchError {
     }
 }
 
-impl std::error::Error for LaunchError {}
+impl Error for LaunchError {}
 
 impl From<LaunchError> for common::Error {
     /// Turns the error into its English text.

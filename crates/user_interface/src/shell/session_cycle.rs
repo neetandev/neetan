@@ -2,7 +2,10 @@
 //! window and engine settings of the game, the flush and the step after the
 //! session.
 
-use std::time::{Duration, Instant};
+use std::{
+    result,
+    time::{Duration, Instant},
+};
 
 use common::{Context, Error, FlushError, StringError, error, info, warn};
 
@@ -29,7 +32,7 @@ pub(super) enum AfterSession {
         panic: Option<String>,
     },
     /// The application quits. An error makes the process exit with code 1.
-    Quit(std::result::Result<(), String>),
+    Quit(result::Result<(), String>),
 }
 
 /// Returns the step after a session that ended with `exit` and whose
@@ -42,7 +45,7 @@ pub(super) fn after_session(
     exit: Option<&SessionExit>,
     quit_requested: bool,
     has_manager: bool,
-    flush: &std::result::Result<(), FlushError>,
+    flush: &result::Result<(), FlushError>,
 ) -> AfterSession {
     let panic = match exit {
         Some(SessionExit::Panic { message }) => Some(message.clone()),
@@ -93,7 +96,7 @@ impl Shell {
         &self,
         config: EmulatorConfig,
         key_overrides: KeyOverrides,
-    ) -> std::result::Result<Session, LaunchFailure> {
+    ) -> result::Result<Session, LaunchFailure> {
         let backend = self.host.backend;
         match catch_panic(|| Session::new(config, key_overrides, backend)) {
             Ok(Ok(session)) => Ok(session),
@@ -195,7 +198,7 @@ impl Shell {
 
     /// Ends the session: flushes and drops it. Returns the errors of the
     /// flush.
-    pub(super) fn end_session(&mut self) -> std::result::Result<(), FlushError> {
+    pub(super) fn end_session(&mut self) -> result::Result<(), FlushError> {
         let Some(mut session) = self.session.take() else {
             return Ok(());
         };
@@ -251,7 +254,7 @@ mod tests {
     }
 
     /// The failed flush of the test sessions.
-    fn failed_flush() -> std::result::Result<(), FlushError> {
+    fn failed_flush() -> result::Result<(), FlushError> {
         Err(FlushError::new("floppy image /a.d88 could not be written"))
     }
 

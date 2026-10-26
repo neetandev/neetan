@@ -14,6 +14,8 @@ use machine_factory::config::{
 };
 
 use super::form::{EditorSection, FieldSource};
+#[cfg(test)]
+use crate::texts::english_text;
 use crate::{
     config::{
         ConfigDocument, check_value,
@@ -61,7 +63,7 @@ impl FieldError {
 impl FieldError {
     /// The error in the English texts.
     pub(crate) fn english(&self) -> String {
-        crate::texts::english_text(|catalog, out| self.write(catalog, out))
+        english_text(|catalog, out| self.write(catalog, out))
     }
 }
 

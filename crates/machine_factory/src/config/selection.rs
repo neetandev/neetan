@@ -1,6 +1,8 @@
 //! The machine selection: one model of one family, and the parser of the
 //! `machine` values.
 
+use std::{fmt, str::FromStr};
+
 use common::CpuMode;
 #[cfg(feature = "pc98")]
 use common::MachineModel;
@@ -214,7 +216,7 @@ impl MachineSelection {
     }
 }
 
-impl std::str::FromStr for MachineSelection {
+impl FromStr for MachineSelection {
     type Err = String;
 
     /// Parses a `machine` value. Each compiled family is offered the value in
@@ -268,8 +270,8 @@ impl std::str::FromStr for MachineSelection {
     }
 }
 
-impl std::fmt::Display for MachineSelection {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for MachineSelection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.name())
     }
 }

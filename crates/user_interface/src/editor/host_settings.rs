@@ -17,6 +17,8 @@ use machine_factory::config::{
     systems::RomFolder,
 };
 
+#[cfg(test)]
+use super::notes::tests::Note;
 use super::{
     Editor, EditorFile, Subject,
     fields::Field,
@@ -416,9 +418,9 @@ impl Editor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct HostPathNoteText {
     /// The folder of the field or its ROM status.
-    pub(super) note: super::notes::tests::Note,
+    pub(super) note: Note,
     /// The note of the value that a command line flag sets for this run.
-    pub(super) flag: Option<super::notes::tests::Note>,
+    pub(super) flag: Option<Note>,
     /// Whether the field takes the error edge.
     pub(super) error: bool,
 }
@@ -467,7 +469,7 @@ mod tests {
     use super::*;
     use crate::{
         editor::{
-            EditorSection,
+            EditedFile, EditorSection, SaveFailure,
             fields::FieldValue,
             form::SETTINGS_SECTIONS,
             notes::{
@@ -508,7 +510,7 @@ mod tests {
         let test = SettingsRoot::new("open", Some("; my settings\n"));
         let host = test.host(&[]);
         let mut editor = settings_page(&host, &check_all_folders(&host));
-        assert_eq!(editor.edited_file(), super::super::EditedFile::Settings);
+        assert_eq!(editor.edited_file(), EditedFile::Settings);
         assert_eq!(editor.sections(), SETTINGS_SECTIONS);
         assert_eq!(editor.path(), test.settings_file());
         assert_eq!(
@@ -940,7 +942,7 @@ mod tests {
         let pass = show(&mut harness, &mut editor);
         assert!(matches!(
             pass.save_error,
-            Some(crate::editor::SaveFailure::ChangedOutside(_))
+            Some(SaveFailure::ChangedOutside(_))
         ));
         assert_eq!(
             std::fs::read_to_string(test.settings_file()).expect("file reads"),

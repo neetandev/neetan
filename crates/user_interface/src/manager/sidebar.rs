@@ -16,6 +16,8 @@ use machine_factory::{
 };
 
 use super::rows::{GameRow, shown_path};
+#[cfg(test)]
+use crate::texts::english_text;
 use crate::{
     APPLICATION_TITLE,
     config::HostLayers,
@@ -164,7 +166,7 @@ impl SystemEntry {
     /// The sentence of the ROM status below the system list in English.
     #[cfg(test)]
     pub(crate) fn rom_sentence(&self) -> String {
-        crate::texts::english_text(|catalog, out| {
+        english_text(|catalog, out| {
             RomLine::of(self.rom_status).write(catalog, &self.rom_folder, out);
         })
     }
@@ -307,12 +309,12 @@ fn show_rom_line(
 #[cfg(test)]
 mod tests {
     use ::common::temporary::TemporaryFolder;
-    use gui::ui::LIST_PADDING;
+    use gui::{Color, ui::LIST_PADDING};
     use machine_factory::config::systems::{SYSTEMS, compiled_systems};
 
     use super::*;
     use crate::{
-        config::{LaunchRequest, Locations},
+        config::{LaunchRequest, Locations, SETTINGS_FILE_NAME},
         gui_test_support::{GuiHarness, MINIMUM_SCREEN},
         manager::rows::tests::{broken, game},
         rom_folders::check_all_folders,
@@ -416,7 +418,7 @@ mod tests {
     #[test]
     fn a_missing_rom_folder_reads_as_missing_or_not_found() {
         let root = TemporaryFolder::new("manager_sidebar_test");
-        root.write_file(crate::config::SETTINGS_FILE_NAME, b"");
+        root.write_file(SETTINGS_FILE_NAME, b"");
         let locations = Locations {
             current_directory: root.path().to_path_buf(),
             executable_directory: None,
@@ -450,7 +452,7 @@ mod tests {
         pixels: &[u8],
         (left, right): (f32, f32),
         (top, bottom): (f32, f32),
-        color: gui::Color,
+        color: Color,
     ) -> bool {
         let width = harness.viewport.width as usize;
         let target = [color.r, color.g, color.b];

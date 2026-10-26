@@ -188,7 +188,7 @@ fn reveal(state: &mut ScrollState, top: f32, height: f32, view_height: f32, marg
 mod tests {
     use super::*;
     use crate::ui::{
-        ActionButton, Navigation, NavigationSet,
+        self, ActionButton, ListState, Navigation, NavigationSet,
         tests::{Harness, pixel, srgb},
     };
 
@@ -392,23 +392,22 @@ mod tests {
     fn a_nested_list_keeps_the_wheel() {
         let mut harness = Harness::new();
         let mut state = ScrollState::new();
-        let mut list = crate::ui::ListState::new();
-        let draw =
-            |harness: &mut Harness, state: &mut ScrollState, list: &mut crate::ui::ListState| {
-                harness.frame(|context| {
-                    scroll_area(context, "form", VIEW, state, |context, content| {
-                        crate::ui::list(
-                            context,
-                            "media",
-                            Rect::new(content.x, content.y, 200.0, 100.0),
-                            30,
-                            list,
-                            |_, _| {},
-                        );
-                        800.0
-                    });
+        let mut list = ListState::new();
+        let draw = |harness: &mut Harness, state: &mut ScrollState, list: &mut ListState| {
+            harness.frame(|context| {
+                scroll_area(context, "form", VIEW, state, |context, content| {
+                    ui::list(
+                        context,
+                        "media",
+                        Rect::new(content.x, content.y, 200.0, 100.0),
+                        30,
+                        list,
+                        |_, _| {},
+                    );
+                    800.0
                 });
-            };
+            });
+        };
         draw(&mut harness, &mut state, &mut list);
         harness.mouse(VIEW.x + 50.0, VIEW.y + 50.0);
         harness.input.wheel = -1.0;

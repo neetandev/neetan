@@ -3,6 +3,8 @@
 
 use std::path::Path;
 
+use save_state::{MediaKind, MediaMismatch, MediaSlot, MediaSourcePath};
+
 use crate::media_dialog::ImageEntry;
 
 /// One planned change of a removable media drive.
@@ -35,17 +37,13 @@ pub(super) enum RemovableMediaAction {
 
 impl RemovableMediaAction {
     /// Returns the host-visible slot affected by this action.
-    pub(super) fn slot(self) -> save_state::MediaSlot {
+    pub(super) fn slot(self) -> MediaSlot {
         match self {
             Self::EjectFloppy { drive } | Self::SelectFloppy { drive, .. } => {
-                save_state::MediaSlot::new(save_state::MediaKind::Floppy, drive as u32)
+                MediaSlot::new(MediaKind::Floppy, drive as u32)
             }
-            Self::EjectCdRom | Self::SelectCdRom { .. } => {
-                save_state::MediaSlot::new(save_state::MediaKind::CdRom, 0)
-            }
-            Self::EjectCassette | Self::SelectCassette => {
-                save_state::MediaSlot::new(save_state::MediaKind::Cassette, 0)
-            }
+            Self::EjectCdRom | Self::SelectCdRom { .. } => MediaSlot::new(MediaKind::CdRom, 0),
+            Self::EjectCassette | Self::SelectCassette => MediaSlot::new(MediaKind::Cassette, 0),
         }
     }
 }
@@ -67,7 +65,7 @@ pub(super) struct RemovableMediaRollback {
     /// The selection before the change.
     pub(super) selection: RemovableMediaSelection,
     /// The slots the change touches.
-    pub(super) slots: Vec<save_state::MediaSlot>,
+    pub(super) slots: Vec<MediaSlot>,
 }
 
 /// A media change together with the state to restore on failure.
@@ -83,16 +81,16 @@ pub(super) struct RemovableMediaTransaction<State> {
 /// Finds a configured image by its normalized logical path.
 fn configured_media_index(
     entries: &[ImageEntry],
-    expected_path: &save_state::MediaSourcePath,
+    expected_path: &MediaSourcePath,
 ) -> Option<usize> {
     entries
         .iter()
-        .position(|entry| save_state::MediaSourcePath::from_path(&entry.path) == *expected_path)
+        .position(|entry| MediaSourcePath::from_path(&entry.path) == *expected_path)
 }
 
 /// Plans a complete removable-media reconciliation without changing the machine.
 pub(super) fn plan_removable_media_actions(
-    mismatch: &save_state::MediaMismatch,
+    mismatch: &MediaMismatch,
     fdd1_entries: &[ImageEntry],
     fdd2_entries: &[ImageEntry],
     cdrom_entries: &[ImageEntry],
@@ -117,7 +115,7 @@ pub(super) fn plan_removable_media_actions(
         }
 
         let action = match slot.kind {
-            save_state::MediaKind::Floppy => {
+            MediaKind::Floppy => {
                 let drive = slot.index as usize;
                 let configured_entries = match drive {
                     0 => fdd1_entries,
@@ -142,7 +140,7 @@ pub(super) fn plan_removable_media_actions(
                     None => RemovableMediaAction::EjectFloppy { drive },
                 }
             }
-            save_state::MediaKind::CdRom => {
+            MediaKind::CdRom => {
                 if slot.index != 0 {
                     return Err(format!(
                         "CD-ROM drive {} is not host-selectable",
@@ -164,10 +162,10 @@ pub(super) fn plan_removable_media_actions(
                     None => RemovableMediaAction::EjectCdRom,
                 }
             }
-            save_state::MediaKind::HardDisk => {
+            MediaKind::HardDisk => {
                 return Err(format!("hard disk drive {} differs", slot.index + 1));
             }
-            save_state::MediaKind::Cassette => {
+            MediaKind::Cassette => {
                 if slot.index != 0 {
                     return Err(format!(
                         "cassette deck {} is not host-selectable",
@@ -182,8 +180,7 @@ pub(super) fn plan_removable_media_actions(
                             .ok_or_else(|| "cassette has no configured source path".to_owned())?;
                         let configured_path = cassette_path
                             .ok_or_else(|| "expected cassette is not configured".to_owned())?;
-                        if save_state::MediaSourcePath::from_path(configured_path) != *expected_path
-                        {
+                        if MediaSourcePath::from_path(configured_path) != *expected_path {
                             return Err(format!(
                                 "expected cassette is not configured: {expected_path}"
                             ));
@@ -282,7 +279,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+
+    use save_state::{
+        MediaBinding, MediaBindingId, MediaKind, MediaManifest, MediaMismatch, MediaSlot,
+        MediaSourcePath, ResourceIdentity,
+    };
 
     use super::{
         RemovableMediaAction, RemovableMediaRollback, RemovableMediaSelection,
@@ -293,36 +295,32 @@ mod tests {
 
     fn media_binding(
         identifier: &str,
-        kind: save_state::MediaKind,
+        kind: MediaKind,
         index: u32,
         path: Option<&str>,
-    ) -> save_state::MediaBinding {
-        save_state::MediaBinding {
-            identifier: save_state::MediaBindingId::new(identifier).unwrap(),
-            slot: save_state::MediaSlot::new(kind, index),
-            source_path: path
-                .map(|path| save_state::MediaSourcePath::from_path(std::path::Path::new(path))),
+    ) -> MediaBinding {
+        MediaBinding {
+            identifier: MediaBindingId::new(identifier).unwrap(),
+            slot: MediaSlot::new(kind, index),
+            source_path: path.map(|path| MediaSourcePath::from_path(Path::new(path))),
             media_type: match kind {
-                save_state::MediaKind::Floppy => "floppy",
-                save_state::MediaKind::HardDisk => "hard-disk",
-                save_state::MediaKind::CdRom => "cdrom",
-                save_state::MediaKind::Cassette => "cassette",
+                MediaKind::Floppy => "floppy",
+                MediaKind::HardDisk => "hard-disk",
+                MediaKind::CdRom => "cdrom",
+                MediaKind::Cassette => "cassette",
             }
             .to_owned(),
-            identity: save_state::ResourceIdentity::from_bytes(identifier.as_bytes()),
+            identity: ResourceIdentity::from_bytes(identifier.as_bytes()),
             geometry: None,
-            write_protected: kind == save_state::MediaKind::CdRom,
+            write_protected: kind == MediaKind::CdRom,
             backend_generation: None,
         }
     }
 
-    fn media_mismatch(
-        expected: Vec<save_state::MediaBinding>,
-        active: Vec<save_state::MediaBinding>,
-    ) -> save_state::MediaMismatch {
-        save_state::MediaManifest::new(expected)
+    fn media_mismatch(expected: Vec<MediaBinding>, active: Vec<MediaBinding>) -> MediaMismatch {
+        MediaManifest::new(expected)
             .unwrap()
-            .compare_current(&save_state::MediaManifest::new(active).unwrap())
+            .compare_current(&MediaManifest::new(active).unwrap())
             .unwrap()
             .unwrap()
     }
@@ -333,36 +331,16 @@ mod tests {
             vec![
                 media_binding(
                     "cassette-0",
-                    save_state::MediaKind::Cassette,
+                    MediaKind::Cassette,
                     0,
                     Some("media/program.tap"),
                 ),
-                media_binding(
-                    "floppy-0",
-                    save_state::MediaKind::Floppy,
-                    0,
-                    Some("./media/first.d88"),
-                ),
-                media_binding(
-                    "floppy-1",
-                    save_state::MediaKind::Floppy,
-                    1,
-                    Some("media/second.d88"),
-                ),
+                media_binding("floppy-0", MediaKind::Floppy, 0, Some("./media/first.d88")),
+                media_binding("floppy-1", MediaKind::Floppy, 1, Some("media/second.d88")),
             ],
             vec![
-                media_binding(
-                    "cdrom-0",
-                    save_state::MediaKind::CdRom,
-                    0,
-                    Some("media/disc.cue"),
-                ),
-                media_binding(
-                    "floppy-0",
-                    save_state::MediaKind::Floppy,
-                    0,
-                    Some("media/other.d88"),
-                ),
+                media_binding("cdrom-0", MediaKind::CdRom, 0, Some("media/disc.cue")),
+                media_binding("floppy-0", MediaKind::Floppy, 0, Some("media/other.d88")),
             ],
         );
         let fdd1_entries = vec![
@@ -377,7 +355,7 @@ mod tests {
             &fdd1_entries,
             &fdd2_entries,
             &cdrom_entries,
-            Some(std::path::Path::new("games/../media/program.tap")),
+            Some(Path::new("games/../media/program.tap")),
         )
         .unwrap();
 
@@ -397,7 +375,7 @@ mod tests {
         let unconfigured = media_mismatch(
             vec![media_binding(
                 "floppy-0",
-                save_state::MediaKind::Floppy,
+                MediaKind::Floppy,
                 0,
                 Some("missing.d88"),
             )],
@@ -412,7 +390,7 @@ mod tests {
         let hard_disk = media_mismatch(
             vec![media_binding(
                 "ide-0",
-                save_state::MediaKind::HardDisk,
+                MediaKind::HardDisk,
                 0,
                 Some("disk.hdd"),
             )],
@@ -427,7 +405,7 @@ mod tests {
         let cassette = media_mismatch(
             vec![media_binding(
                 "cassette-0",
-                save_state::MediaKind::Cassette,
+                MediaKind::Cassette,
                 0,
                 Some("program.tap"),
             )],
@@ -456,8 +434,8 @@ mod tests {
                 cassette: Some(true),
             },
             slots: vec![
-                save_state::MediaSlot::new(save_state::MediaKind::Floppy, 0),
-                save_state::MediaSlot::new(save_state::MediaKind::Floppy, 1),
+                MediaSlot::new(MediaKind::Floppy, 0),
+                MediaSlot::new(MediaKind::Floppy, 1),
             ],
         };
         let actions = vec![
@@ -526,8 +504,8 @@ mod tests {
                         cassette: None,
                     },
                     slots: vec![
-                        save_state::MediaSlot::new(save_state::MediaKind::Floppy, 0),
-                        save_state::MediaSlot::new(save_state::MediaKind::CdRom, 0),
+                        MediaSlot::new(MediaKind::Floppy, 0),
+                        MediaSlot::new(MediaKind::CdRom, 0),
                     ],
                 },
                 previous_state: 7,
@@ -576,7 +554,7 @@ mod tests {
                 cdrom: None,
                 cassette: None,
             },
-            slots: vec![save_state::MediaSlot::new(save_state::MediaKind::Floppy, 0)],
+            slots: vec![MediaSlot::new(MediaKind::Floppy, 0)],
         };
         let mut target = FakeTarget {
             state: 42,

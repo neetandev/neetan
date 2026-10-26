@@ -1,6 +1,6 @@
 //! The faults of a setting value: the data of each fault and its English text.
 
-use std::fmt;
+use std::{error::Error, fmt};
 
 use super::{Choice, Families, NumberRange};
 use crate::config::phrases::expected_names;
@@ -158,7 +158,7 @@ impl fmt::Display for ValueError {
     }
 }
 
-impl std::error::Error for ValueError {}
+impl Error for ValueError {}
 
 #[cfg(test)]
 mod tests {

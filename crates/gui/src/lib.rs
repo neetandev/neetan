@@ -33,6 +33,8 @@ mod slug;
 pub mod truetype;
 pub mod ui;
 
+#[cfg(test)]
+use allocation_counter::CountingAllocator;
 pub use color::{Color, linear_to_srgb, srgb_to_linear};
 pub use fonts::{FontId, FontMetrics, Fonts, Line, Run, RunGlyph};
 pub use outline::OutlineSink;
@@ -45,7 +47,7 @@ pub use slug::{Bounds, SlugData, SlugGlyph, SlugShape};
 /// The global allocator of the test binary. It counts the allocations of each thread.
 #[cfg(test)]
 #[global_allocator]
-static ALLOCATOR: allocation_counter::CountingAllocator = allocation_counter::CountingAllocator;
+static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 /// A rectangle in logical units.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

@@ -4,6 +4,7 @@
 use std::time::Instant;
 
 use common::{info, warn};
+use save_state::{MachineStateBlob, MediaKind, MediaMismatch, MediaSlot, SaveStateError};
 
 use super::{
     Session,
@@ -28,14 +29,10 @@ impl Session {
     }
 
     /// Returns the current host-selected removable media state.
-    fn removable_media_selection(
-        &self,
-        mismatch: &save_state::MediaMismatch,
-    ) -> RemovableMediaSelection {
+    fn removable_media_selection(&self, mismatch: &MediaMismatch) -> RemovableMediaSelection {
         let cassette = mismatch.entries().iter().find_map(|entry| {
             let binding = entry.expected().or(entry.active())?;
-            (binding.slot.kind == save_state::MediaKind::Cassette)
-                .then_some(entry.active().is_some())
+            (binding.slot.kind == MediaKind::Cassette).then_some(entry.active().is_some())
         });
         RemovableMediaSelection {
             floppy: [self.fdd1_index, self.fdd2_index],
@@ -73,7 +70,7 @@ impl Session {
                 1 => self.fdd2_index,
                 _ => unreachable!(),
             };
-            let slot = save_state::MediaSlot::new(save_state::MediaKind::Floppy, drive as u32);
+            let slot = MediaSlot::new(MediaKind::Floppy, drive as u32);
             if current == selection.floppy[drive] && !rollback.slots.contains(&slot) {
                 continue;
             }
@@ -82,14 +79,14 @@ impl Session {
                 None => self.eject_floppy(drive),
             }
         }
-        let cdrom_slot = save_state::MediaSlot::new(save_state::MediaKind::CdRom, 0);
+        let cdrom_slot = MediaSlot::new(MediaKind::CdRom, 0);
         if self.cdrom_index != selection.cdrom || rollback.slots.contains(&cdrom_slot) {
             match selection.cdrom {
                 Some(index) => self.select_cdrom(index)?,
                 None => self.eject_cdrom(),
             }
         }
-        let cassette_slot = save_state::MediaSlot::new(save_state::MediaKind::Cassette, 0);
+        let cassette_slot = MediaSlot::new(MediaKind::Cassette, 0);
         if let Some(cassette_mounted) = selection.cassette
             && rollback.slots.contains(&cassette_slot)
         {
@@ -105,7 +102,7 @@ impl Session {
     /// Plans snapshot media changes and captures their rollback selection.
     fn removable_media_transaction(
         &mut self,
-        mismatch: &save_state::MediaMismatch,
+        mismatch: &MediaMismatch,
     ) -> Result<(Vec<RemovableMediaAction>, RemovableMediaRollback), String> {
         let actions = plan_removable_media_actions(
             mismatch,
@@ -124,10 +121,10 @@ impl Session {
     /// Restores one runtime snapshot, including its removable-media set.
     fn restore_runtime_snapshot(
         &mut self,
-        snapshot: &save_state::MachineStateBlob,
-    ) -> Result<(), save_state::SaveStateError> {
+        snapshot: &MachineStateBlob,
+    ) -> Result<(), SaveStateError> {
         let mismatch = match self.machine.restore_state(snapshot) {
-            Err(save_state::SaveStateError::MediaMismatch(mismatch)) => mismatch,
+            Err(SaveStateError::MediaMismatch(mismatch)) => mismatch,
             result => return result,
         };
         info!("Quick load is changing removable media: {mismatch}");
@@ -135,7 +132,7 @@ impl Session {
         let (actions, previous_media) =
             self.removable_media_transaction(&mismatch)
                 .map_err(|error| {
-                    save_state::SaveStateError::InvalidInvariant(format!(
+                    SaveStateError::InvalidInvariant(format!(
                         "quick load media change failed: {mismatch}: {error}"
                     ))
                 })?;
@@ -162,7 +159,7 @@ impl Session {
             },
         )
         .map_err(|error| {
-            save_state::SaveStateError::InvalidInvariant(format!(
+            SaveStateError::InvalidInvariant(format!(
                 "quick load media change failed: {mismatch}: {error}"
             ))
         })

@@ -13,6 +13,8 @@ use std::{
     path::Path,
 };
 
+#[cfg(test)]
+use crate::schema::{KeyInfo, Schema};
 use crate::{
     catalog::COUNT_PLACEHOLDER,
     parse::{Event, Fault, FaultKind, FullKey, Parser, Token, Value, check_size},
@@ -501,9 +503,7 @@ fn fence_length(lines: &[String]) -> usize {
 /// Builds a schema from a reference source. The schema and its names live until the end of the
 /// process.
 #[cfg(test)]
-pub(crate) fn leak_schema(source: &str) -> &'static crate::schema::Schema {
-    use crate::schema::{KeyInfo, Schema};
-
+pub(crate) fn leak_schema(source: &str) -> &'static Schema {
     let source: &'static str = String::from(source).leak();
     let reference = Reference::read(source).unwrap_or_else(|faults| panic!("{faults:?}"));
     let keys: Vec<KeyInfo> = reference

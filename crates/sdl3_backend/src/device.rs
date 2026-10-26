@@ -1,4 +1,4 @@
-use std::ffi::CStr;
+use std::{ffi::CStr, os::raw::c_char};
 
 use common::{Context, info, warn};
 #[cfg(not(debug_assertions))]
@@ -207,11 +207,7 @@ pub(crate) fn create_device() -> Result<GpuDevice> {
         .map_err(Into::into)
 }
 
-fn set_bool_property(
-    properties: &Properties,
-    name: *const std::os::raw::c_char,
-    value: bool,
-) -> Result<()> {
+fn set_bool_property(properties: &Properties, name: *const c_char, value: bool) -> Result<()> {
     // Safety: the SDL_PROP_* constants are pointers to static C strings owned by SDL.
     let name = unsafe { CStr::from_ptr(name) };
     properties

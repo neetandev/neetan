@@ -1,5 +1,7 @@
 //! The events and the details of the error dialogs and their texts in a catalog.
 
+use std::fmt::Display;
+
 use i18n::{Catalog, Key, Message};
 
 use crate::{
@@ -42,9 +44,9 @@ pub(super) enum ErrorEvent {
 #[derive(Clone, Copy)]
 struct SubjectMessages {
     /// The sentence about a game with its name.
-    game: fn(&dyn std::fmt::Display) -> Message<'_, 1>,
+    game: fn(&dyn Display) -> Message<'_, 1>,
     /// The sentence about the system defaults of a system.
-    defaults: fn(&dyn std::fmt::Display) -> Message<'_, 1>,
+    defaults: fn(&dyn Display) -> Message<'_, 1>,
     /// The sentence about the settings.
     settings: Key,
 }

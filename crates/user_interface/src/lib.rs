@@ -9,6 +9,8 @@
 
 #![deny(unsafe_code)]
 
+#[cfg(test)]
+use allocation_counter::CountingAllocator;
 pub use common::Error;
 
 use crate::{
@@ -42,7 +44,7 @@ pub mod texts;
 /// The global allocator of the test binary. It counts the allocations of each thread.
 #[cfg(test)]
 #[global_allocator]
-static ALLOCATOR: allocation_counter::CountingAllocator = allocation_counter::CountingAllocator;
+static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 /// The company name of the SDL pref path.
 const COMPANY_NAME: &str = "neetan";

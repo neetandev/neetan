@@ -237,8 +237,8 @@ mod tests {
     use crate::{
         Color, Rect,
         ui::{
-            ActionButton, Button, ButtonKind, List, ListState, Navigation, NavigationSet, Tab,
-            UiContext, UiId, modal, tab_bar, tests::Harness,
+            ActionButton, Button, ButtonKind, List, ListState, Navigation, NavigationSet, Shortcut,
+            Tab, UiContext, UiId, modal, tab_bar, tests::Harness,
         },
     };
 
@@ -389,7 +389,7 @@ mod tests {
         };
         harness.frame(|context| draw(context, &mut open));
         harness.input.cancel = true;
-        harness.input.shortcut = Some(crate::ui::Shortcut::ControlS);
+        harness.input.shortcut = Some(Shortcut::ControlS);
         harness.input.action = Some(ActionButton::X);
         assert_eq!(
             harness.frame(|context| draw(context, &mut open)),

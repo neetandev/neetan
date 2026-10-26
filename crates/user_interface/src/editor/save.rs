@@ -7,7 +7,7 @@
 use std::{
     fmt,
     fs::{File, Metadata, OpenOptions},
-    io::{Read, Seek, SeekFrom},
+    io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -120,9 +120,7 @@ pub(crate) fn read_optional_document(
     path: &Path,
 ) -> Result<(ConfigDocument, Option<FileStamp>), OpenError> {
     match std::fs::symlink_metadata(path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Ok((ConfigDocument::new(), None))
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok((ConfigDocument::new(), None)),
         Ok(_) | Err(_) => read_document(path).map(|(document, stamp)| (document, Some(stamp))),
     }
 }
@@ -131,10 +129,10 @@ pub(crate) fn read_optional_document(
 /// `read_bytes` for each read of the bytes from the start of the open file.
 fn read_document_with(
     path: &Path,
-    mut read_bytes: impl FnMut(&mut File, &mut Vec<u8>) -> std::io::Result<()>,
+    mut read_bytes: impl FnMut(&mut File, &mut Vec<u8>) -> io::Result<()>,
 ) -> Result<(ConfigDocument, FileStamp), OpenError> {
     let failed = |error: DocumentError| OpenError::failed(path, error);
-    let read_error = |error: std::io::Error| failed(DocumentError::read(&error));
+    let read_error = |error: io::Error| failed(DocumentError::read(&error));
     let mut file = File::open(path).map_err(read_error)?;
     let stamp = |file: &File| {
         let metadata = file.metadata().map_err(read_error)?;
@@ -187,24 +185,21 @@ pub(crate) fn save_document(
 ///
 /// The write never replaces a file. It first reserves the name with an
 /// empty file that only this write creates. A file at `path` stays as it
-/// is, and the write fails with [`std::io::ErrorKind::AlreadyExists`]. The
+/// is, and the write fails with [`io::ErrorKind::AlreadyExists`]. The
 /// atomic save of the document then replaces the reservation: a temporary
 /// file, a sync, a rename and a sync of the folder. A failed save removes
 /// the reservation. Returns the stamp of the written file.
 pub(crate) fn create_document(
     document: &ConfigDocument,
     path: &Path,
-) -> std::io::Result<Option<FileStamp>> {
+) -> io::Result<Option<FileStamp>> {
     reserve_and_fill(path, |path| document.save(path))
         .map(|metadata| FileStamp::from_metadata(&metadata))
 }
 
 /// Reserves the new file `path` and fills it with `fill`. A failed `fill`
 /// removes the reservation. Returns what `fill` returns.
-fn reserve_and_fill<T>(
-    path: &Path,
-    fill: impl FnOnce(&Path) -> std::io::Result<T>,
-) -> std::io::Result<T> {
+fn reserve_and_fill<T>(path: &Path, fill: impl FnOnce(&Path) -> io::Result<T>) -> io::Result<T> {
     if let Some(folder) = path.parent() {
         std::fs::create_dir_all(folder)?;
     }
@@ -373,7 +368,7 @@ mod tests {
             file.read_to_end(bytes)?;
             if reads == 1 {
                 let mut writer = OpenOptions::new().append(true).open(&path)?;
-                std::io::Write::write_all(&mut writer, b"crt = on\n")?;
+                io::Write::write_all(&mut writer, b"crt = on\n")?;
             }
             Ok(())
         })
@@ -393,7 +388,7 @@ mod tests {
             reads += 1;
             file.read_to_end(bytes)?;
             let mut writer = OpenOptions::new().append(true).open(&path)?;
-            std::io::Write::write_all(&mut writer, b"; more\n")
+            io::Write::write_all(&mut writer, b"; more\n")
         })
         .expect_err("the file never holds still");
         assert_eq!(reads, MAXIMUM_READ_ATTEMPTS);
@@ -423,7 +418,7 @@ mod tests {
         assert_eq!(written, stamp);
         let error = create_document(&ConfigDocument::parse("crt = off\n"), &path)
             .expect_err("a file exists");
-        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(
             std::fs::read_to_string(&path).expect("file reads"),
             "crt = on\n"
@@ -443,7 +438,7 @@ mod tests {
         let error = reserve_and_fill(&path, |reserved| {
             assert!(reserved.is_file());
             assert_eq!(std::fs::read(reserved).expect("reservation reads"), b"");
-            Err::<(), _>(std::io::Error::other("disk full"))
+            Err::<(), _>(io::Error::other("disk full"))
         })
         .expect_err("the fill fails");
         assert_eq!(error.to_string(), "disk full");

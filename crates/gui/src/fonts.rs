@@ -592,19 +592,23 @@ fn fitting_count<'a>(advances: impl Iterator<Item = &'a f32>, room: f32) -> usiz
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::sync::OnceLock;
+    use std::{collections::BTreeSet, path::PathBuf, sync::OnceLock};
 
     use super::*;
     use crate::{
         Color, Rect, Scene,
-        truetype::tests::{font_file, kern_table, small_font_tables},
+        rasterizer::tests::write_ppm,
+        truetype::{
+            Tag,
+            tests::{font_file, kern_table, small_font_tables},
+        },
     };
 
     /// The path of the font file below the repository root.
     const REPOSITORY_FONT_PATH: &str = "font/SarasaUiJ-Regular.ttf";
 
     /// Returns the path of the font file in the repository.
-    fn repository_font_path() -> std::path::PathBuf {
+    fn repository_font_path() -> PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join(REPOSITORY_FONT_PATH)
@@ -680,7 +684,7 @@ pub(crate) mod tests {
         let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join(REPOSITORY_LANGUAGE_FOLDER);
-        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&folder)
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&folder)
             .expect("the language folder reads")
             .map(|entry| entry.expect("the language folder lists").path())
             .filter(|path| {
@@ -699,7 +703,7 @@ pub(crate) mod tests {
         assert!(names.iter().any(|name| name == "ja.ini"), "{names:?}");
         for path in &files {
             let source = std::fs::read_to_string(path).expect("the language file reads");
-            let missing: std::collections::BTreeSet<char> = source
+            let missing: BTreeSet<char> = source
                 .chars()
                 .filter(|character| !character.is_control())
                 .filter(|character| font().glyph_index(*character).is_none())
@@ -1151,10 +1155,7 @@ pub(crate) mod tests {
         let japanese = font();
         let v = japanese.glyph_index('V').unwrap().0;
         let mut tables = small_font_tables();
-        tables.push((
-            crate::truetype::Tag::KERN,
-            kern_table(&[(1, 2, -80), (1, v, -300)]),
-        ));
+        tables.push((Tag::KERN, kern_table(&[(1, 2, -80), (1, v, -300)])));
         let mut fonts = Fonts::new();
         let latin = fonts.add(font_file(&tables)).unwrap();
         let sarasa = fonts.add(font_data()).unwrap();
@@ -1397,6 +1398,6 @@ pub(crate) mod tests {
 
         let mut output = vec![0; WIDTH as usize * HEIGHT as usize * 4];
         crate::Rasterizer::new().rasterize(&scene, fonts.slug(), WIDTH, HEIGHT, &mut output);
-        crate::rasterizer::tests::write_ppm("text_sample", WIDTH, HEIGHT, &output);
+        write_ppm("text_sample", WIDTH, HEIGHT, &output);
     }
 }

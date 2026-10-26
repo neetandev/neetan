@@ -1,6 +1,6 @@
 //! SDL3 log output capture.
 
-use std::ffi::c_void;
+use std::ffi::{CStr, c_char, c_int, c_void};
 
 use sdl3_sys::log::{SDL_LogPriority, SDL_SetLogOutputFunction, SDL_SetLogPriorities};
 
@@ -78,9 +78,9 @@ pub fn set_log_priorities(priority: LogPriority) {
 
 unsafe extern "C" fn log_trampoline(
     userdata: *mut c_void,
-    category: std::ffi::c_int,
+    category: c_int,
     priority: SDL_LogPriority,
-    message: *const std::ffi::c_char,
+    message: *const c_char,
 ) {
     let callback: LogCallback = unsafe { std::mem::transmute(userdata) };
     let priority = LogPriority::from_sdl(priority).unwrap_or(LogPriority::Info);
@@ -88,7 +88,7 @@ unsafe extern "C" fn log_trampoline(
         ""
     } else {
         // Safety: SDL3 guarantees the message is a valid null-terminated C string.
-        unsafe { std::ffi::CStr::from_ptr(message) }
+        unsafe { CStr::from_ptr(message) }
             .to_str()
             .unwrap_or("<invalid UTF-8>")
     };

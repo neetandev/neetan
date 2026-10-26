@@ -263,18 +263,24 @@ mod tests {
     use machine_factory::config::systems::compiled_systems;
 
     use super::*;
-    use crate::{
-        config::{LaunchFailure, LaunchRequest, ManagerStart},
-        editor::test_support::EditorRoot,
-        gui_test_support::GuiHarness,
-        manager::{FILTER_ID, game_table::GAME_TABLE_ID, test_support::titles},
-    };
     #[cfg(feature = "pc98")]
     use crate::{
-        editor::EditorSection,
+        config::metadata::YEAR_KEY,
+        editor::{DISCARD_LAYER_ID, EditorSection, empty_list_id},
         gui_test_support::{MINIMUM_HEIGHT, MINIMUM_WIDTH, PassCounts},
-        manager::test_support::{select, shown_help},
+        manager::{
+            error_dialog::{CANCEL_ID, OK_ID},
+            test_support::{select, shown_help},
+        },
         texts::repository::{RepositoryLanguage, repository_languages},
+    };
+    use crate::{
+        config::{LaunchFailure, LaunchRequest, ManagerStart},
+        editor::{field_id, test_support::EditorRoot},
+        gui_test_support::GuiHarness,
+        manager::{
+            FILTER_ID, error_dialog::OVERWRITE_ID, game_table::GAME_TABLE_ID, test_support::titles,
+        },
     };
 
     /// The manager of `root`.
@@ -326,10 +332,7 @@ mod tests {
                 editor.path(),
                 root.path(&format!("config/{}/brandish.conf", root.system().name))
             );
-            assert_eq!(
-                harness.state.focused(),
-                Some(crate::editor::field_id("meta.title"))
-            );
+            assert_eq!(harness.state.focused(), Some(field_id("meta.title")));
             harness.input.cancel = true;
             settle(&mut harness, &mut manager);
             assert!(manager.editor().is_none());
@@ -507,10 +510,7 @@ mod tests {
         assert!(manager.dialog().is_some());
         harness.input.navigation = Some(Navigation::Right);
         settle(&mut harness, &mut manager);
-        assert_eq!(
-            harness.state.focused(),
-            Some(UiId::from(super::super::error_dialog::OVERWRITE_ID))
-        );
+        assert_eq!(harness.state.focused(), Some(UiId::from(OVERWRITE_ID)));
         harness.input.confirm = true;
         settle(&mut harness, &mut manager);
         let dialog = manager.dialog().expect("the error dialog opens");
@@ -582,9 +582,7 @@ mod tests {
         );
         assert_eq!(
             harness.state.focused(),
-            Some(crate::editor::field_id(
-                machine_factory::config::settings::MACHINE_KEY
-            ))
+            Some(field_id(machine_factory::config::settings::MACHINE_KEY))
         );
         harness.input.cancel = true;
         settle(&mut harness, &mut manager);
@@ -804,7 +802,7 @@ mod tests {
         settle(&mut harness, &mut manager);
         harness.input.cancel = true;
         settle(&mut harness, &mut manager);
-        let discard = UiId::from(crate::editor::DISCARD_LAYER_ID);
+        let discard = UiId::from(DISCARD_LAYER_ID);
         assert_steady(&mut harness, &mut manager, discard.child("cancel"));
         harness.input.navigation = Some(Navigation::Right);
         settle(&mut harness, &mut manager);
@@ -818,18 +816,10 @@ mod tests {
         harness.input.shortcut = Some(Shortcut::ControlS);
         settle(&mut harness, &mut manager);
         assert!(manager.dialog().is_some());
-        assert_steady(
-            &mut harness,
-            &mut manager,
-            UiId::from(super::super::error_dialog::CANCEL_ID),
-        );
+        assert_steady(&mut harness, &mut manager, UiId::from(CANCEL_ID));
         harness.input.navigation = Some(Navigation::Right);
         settle(&mut harness, &mut manager);
-        assert_steady(
-            &mut harness,
-            &mut manager,
-            UiId::from(super::super::error_dialog::OVERWRITE_ID),
-        );
+        assert_steady(&mut harness, &mut manager, UiId::from(OVERWRITE_ID));
 
         std::fs::remove_file(&path).expect("file is removed");
         std::fs::create_dir_all(&path).expect("a folder takes the place of the file");
@@ -842,11 +832,7 @@ mod tests {
                 .is_some_and(|message| message.ends_with("The editor keeps the changes.")),
             "the save error opens"
         );
-        assert_steady(
-            &mut harness,
-            &mut manager,
-            UiId::from(super::super::error_dialog::OK_ID),
-        );
+        assert_steady(&mut harness, &mut manager, UiId::from(OK_ID));
     }
 
     #[cfg(feature = "pc98")]
@@ -940,9 +926,7 @@ key.PageDown = RollUp
         );
         harness.input.shortcut = Some(Shortcut::F2);
         settle(harness, manager);
-        harness
-            .state
-            .set_focus(crate::editor::field_id(crate::config::metadata::YEAR_KEY));
+        harness.state.set_focus(field_id(YEAR_KEY));
         settle(harness, manager);
         harness.input.navigation = Some(Navigation::Right);
         harness.input.navigation_source = NavigationSource::Gamepad;
@@ -1097,7 +1081,7 @@ key.PageDown = RollUp
             harness.input.navigation = Some(Navigation::NextTab);
             settle(&mut harness, &mut manager);
             render(&harness, "pc88_machine");
-            harness.state.set_focus(crate::editor::field_id("cpu-mode"));
+            harness.state.set_focus(field_id("cpu-mode"));
             settle(&mut harness, &mut manager);
             render(&harness, "pc88_cpu_mode");
             manager.editor = None;
@@ -1120,9 +1104,7 @@ key.PageDown = RollUp
                 harness.input.navigation = Some(Navigation::NextTab);
                 settle(&mut harness, &mut manager);
             }
-            harness
-                .state
-                .set_focus(crate::editor::field_id("pc6000-phase"));
+            harness.state.set_focus(field_id("pc6000-phase"));
             settle(&mut harness, &mut manager);
             harness.input.navigation = Some(Navigation::Right);
             harness.input.navigation_source = NavigationSource::Gamepad;
@@ -1162,11 +1144,7 @@ key.PageDown = RollUp
             harness.input.navigation = Some(Navigation::NextTab);
             settle(&mut harness, &mut manager);
         }
-        harness
-            .state
-            .set_focus(crate::editor::empty_list_id(crate::editor::field_id(
-                "fdd1",
-            )));
+        harness.state.set_focus(empty_list_id(field_id("fdd1")));
         settle(&mut harness, &mut manager);
         harness.write_screenshot(&format!("editor_empty_list_{scale}x"));
     }

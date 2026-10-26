@@ -1,5 +1,9 @@
 //! Machine construction and startup configuration shared across frontends.
 
+use std::path::Path;
+
+#[cfg(any(feature = "towns", feature = "at"))]
+use common::BootDevice;
 #[cfg(any(
     feature = "pc98",
     feature = "pc88",
@@ -8,11 +12,31 @@
 ))]
 use common::CpuMode;
 use common::{
-    AutomatedMachine, Machine, SharedHostDateTimeSource, StringError, info,
+    AutomatedMachine, Machine, NoTrace, SharedHostDateTimeSource, StringError, TraceSink, info,
     tracing::ApplicationTraceSink, warn,
 };
 #[cfg(feature = "pc98")]
 use common::{BUILTIN_FONT_ROM, Context, MachineModel, bail, ensure};
+#[cfg(feature = "pc60")]
+use machine_60::{Pc6000Bus, Pc6000Model};
+#[cfg(feature = "pc88")]
+use machine_88::{ClockSelect, Pc8801Bus, Pc8801Model};
+#[cfg(feature = "pc88va")]
+use machine_88va::{Pc88VaBus, Pc88VaModel};
+#[cfg(feature = "pc98")]
+use machine_98::Pc9801Bus;
+#[cfg(feature = "at")]
+use machine_at::{AtBootDevice, AtBus};
+#[cfg(feature = "fm7")]
+use machine_fm7::{Fm7Bus, Fm7Model};
+#[cfg(feature = "msx")]
+use machine_msx::{MsxBus, MsxModel};
+#[cfg(feature = "towns")]
+use machine_towns::{TownsBootDevice, TownsBus, TownsModel, TownsPadType};
+#[cfg(feature = "x1")]
+use machine_x1::{X1Bus, X1Model};
+#[cfg(feature = "x68k")]
+use machine_x68k::{X68kBus, X68kModel};
 
 #[cfg(feature = "pc98")]
 use crate::config::ForceGdcClock;
@@ -121,9 +145,7 @@ pub fn initialize_automated_machine(
             &config,
             sample_rate,
             trace_sink,
-            |model, cpu_mode, sr, t| {
-                machine_98::Pc9801Bus::new_with_trace_sink(model, cpu_mode, sr, t)
-            },
+            Pc9801Bus::new_with_trace_sink,
             machine_98::build_automated_machine,
         )?,
         #[cfg(feature = "pc88")]
@@ -131,7 +153,7 @@ pub fn initialize_automated_machine(
             &config,
             sample_rate,
             trace_sink,
-            machine_88::Pc8801Bus::new_with_trace_sink,
+            Pc8801Bus::new_with_trace_sink,
             machine_88::build_automated_machine,
         )?,
         #[cfg(feature = "pc88va")]
@@ -139,7 +161,7 @@ pub fn initialize_automated_machine(
             &config,
             sample_rate,
             trace_sink,
-            machine_88va::Pc88VaBus::new_with_trace_sink,
+            Pc88VaBus::new_with_trace_sink,
             machine_88va::build_automated_machine,
         )?,
         #[cfg(feature = "pc60")]
@@ -147,7 +169,7 @@ pub fn initialize_automated_machine(
             &config,
             sample_rate,
             trace_sink,
-            machine_60::Pc6000Bus::new_with_trace_sink,
+            Pc6000Bus::new_with_trace_sink,
             machine_60::build_automated_machine,
         )?,
         #[cfg(feature = "msx")]
@@ -155,7 +177,7 @@ pub fn initialize_automated_machine(
             &config,
             sample_rate,
             trace_sink,
-            machine_msx::MsxBus::new_with_trace_sink,
+            MsxBus::new_with_trace_sink,
             machine_msx::build_automated_machine,
         )?,
         #[cfg(feature = "towns")]
@@ -164,7 +186,7 @@ pub fn initialize_automated_machine(
             sample_rate,
             trace_sink,
             |model, cpu_mode, roms, sr, t| {
-                machine_towns::TownsBus::new_with_trace_sink(model, cpu_mode, roms, sr, t)
+                TownsBus::new_with_trace_sink(model, cpu_mode, roms, sr, t)
             },
             machine_towns::build_automated_machine,
         )?,
@@ -173,7 +195,7 @@ pub fn initialize_automated_machine(
             &config,
             sample_rate,
             trace_sink,
-            machine_x1::X1Bus::new_with_trace_sink,
+            X1Bus::new_with_trace_sink,
             machine_x1::build_automated_machine,
         )?,
         #[cfg(feature = "fm7")]
@@ -181,9 +203,7 @@ pub fn initialize_automated_machine(
             &config,
             sample_rate,
             trace_sink,
-            |model, boot_mode, sr, t| {
-                machine_fm7::Fm7Bus::new_with_trace_sink(model, boot_mode, sr, t)
-            },
+            Fm7Bus::new_with_trace_sink,
             machine_fm7::build_automated_machine,
         )?,
         #[cfg(feature = "x68k")]
@@ -192,7 +212,7 @@ pub fn initialize_automated_machine(
             sample_rate,
             trace_sink,
             |model, cpu_mode, roms, sr, t| {
-                machine_x68k::X68kBus::new_with_trace_sink(model, cpu_mode, roms, sr, t)
+                X68kBus::new_with_trace_sink(model, cpu_mode, roms, sr, t)
             },
             machine_x68k::build_automated_machine,
         )?,
@@ -202,7 +222,7 @@ pub fn initialize_automated_machine(
             sample_rate,
             trace_sink,
             |cpu_clock_hz, ram_size, roms, sr, t| {
-                machine_at::AtBus::new_with_trace_sink(cpu_clock_hz, ram_size, roms, sr, t)
+                AtBus::new_with_trace_sink(cpu_clock_hz, ram_size, roms, sr, t)
             },
             machine_at::build_automated_machine,
         )?,
@@ -231,11 +251,7 @@ fn configure_common(
 }
 
 /// Installs the selected MT-32 module when supported and available.
-fn configure_mt32(
-    machine: &mut dyn Machine,
-    supported: bool,
-    rom_directory: Option<&std::path::Path>,
-) {
+fn configure_mt32(machine: &mut dyn Machine, supported: bool, rom_directory: Option<&Path>) {
     if !supported {
         warn!("MT-32 MIDI is ignored for this machine");
         return;
@@ -257,11 +273,7 @@ fn configure_mt32(
 }
 
 /// Installs the selected SC-55 module when supported and available.
-fn configure_sc55(
-    machine: &mut dyn Machine,
-    supported: bool,
-    rom_directory: Option<&std::path::Path>,
-) {
+fn configure_sc55(machine: &mut dyn Machine, supported: bool, rom_directory: Option<&Path>) {
     if !supported {
         warn!("SC-55 MIDI is ignored for this machine");
         return;
@@ -291,8 +303,8 @@ fn initialize_pc98_machine(
     initialize_pc98_machine_with(
         config,
         sample_rate,
-        common::NoTrace,
-        |model, cpu_mode, sample_rate, _| machine_98::Pc9801Bus::new(model, cpu_mode, sample_rate),
+        NoTrace,
+        |model, cpu_mode, sample_rate, _| Pc9801Bus::new(model, cpu_mode, sample_rate),
         machine_98::build_untraced_machine,
     )
 }
@@ -307,9 +319,9 @@ fn initialize_pc98_machine_with<T, R, BuildBus, BuildMachine>(
     build_machine: BuildMachine,
 ) -> Result<R, InitError>
 where
-    T: common::TraceSink + 'static,
-    BuildBus: FnOnce(MachineModel, CpuMode, u32, T) -> machine_98::Pc9801Bus<T>,
-    BuildMachine: FnOnce(MachineModel, machine_98::Pc9801Bus<T>) -> R,
+    T: TraceSink + 'static,
+    BuildBus: FnOnce(MachineModel, CpuMode, u32, T) -> Pc9801Bus<T>,
+    BuildMachine: FnOnce(MachineModel, Pc9801Bus<T>) -> R,
 {
     let model = config.machine;
 
@@ -500,10 +512,8 @@ fn initialize_pc88_machine(
     initialize_pc88_machine_with(
         config,
         sample_rate,
-        common::NoTrace,
-        |model, clock_select, sample_rate, _| {
-            machine_88::Pc8801Bus::new(model, clock_select, sample_rate)
-        },
+        NoTrace,
+        |model, clock_select, sample_rate, _| Pc8801Bus::new(model, clock_select, sample_rate),
         machine_88::build_untraced_machine,
     )
 }
@@ -518,16 +528,11 @@ fn initialize_pc88_machine_with<T, R, BuildBus, BuildMachine>(
     build_machine: BuildMachine,
 ) -> Result<R, InitError>
 where
-    T: common::TraceSink + 'static,
-    BuildBus: FnOnce(
-        machine_88::Pc8801Model,
-        machine_88::ClockSelect,
-        u32,
-        T,
-    ) -> machine_88::Pc8801Bus<T>,
-    BuildMachine: FnOnce(machine_88::Pc8801Bus<T>) -> R,
+    T: TraceSink + 'static,
+    BuildBus: FnOnce(Pc8801Model, ClockSelect, u32, T) -> Pc8801Bus<T>,
+    BuildMachine: FnOnce(Pc8801Bus<T>) -> R,
 {
-    let model = machine_88::Pc8801Model::PC8801MC;
+    let model = Pc8801Model::PC8801MC;
     info!("Selected machine model {model}");
 
     let rom_dir = config.pc88_roms.as_ref().ok_or_else(|| {
@@ -558,8 +563,8 @@ where
     })?;
 
     let clock_select = match config.cpu_mode {
-        CpuMode::Low => machine_88::ClockSelect::FourMhz,
-        CpuMode::High => machine_88::ClockSelect::EightMhz,
+        CpuMode::Low => ClockSelect::FourMhz,
+        CpuMode::High => ClockSelect::EightMhz,
     };
 
     let mut bus = build_bus(model, clock_select, sample_rate, tracer);
@@ -593,8 +598,8 @@ fn initialize_pc88va_machine(
     initialize_pc88va_machine_with(
         config,
         sample_rate,
-        common::NoTrace,
-        |model, roms, sample_rate, _| machine_88va::Pc88VaBus::new(model, roms, sample_rate),
+        NoTrace,
+        |model, roms, sample_rate, _| Pc88VaBus::new(model, roms, sample_rate),
         machine_88va::build_untraced_machine,
     )
 }
@@ -609,14 +614,9 @@ fn initialize_pc88va_machine_with<T, R, BuildBus, BuildMachine>(
     build_machine: BuildMachine,
 ) -> Result<R, InitError>
 where
-    T: common::TraceSink + 'static,
-    BuildBus: FnOnce(
-        machine_88va::Pc88VaModel,
-        machine_88va::LoadedRoms,
-        u32,
-        T,
-    ) -> machine_88va::Pc88VaBus<T>,
-    BuildMachine: FnOnce(machine_88va::Pc88VaBus<T>) -> R,
+    T: TraceSink + 'static,
+    BuildBus: FnOnce(Pc88VaModel, machine_88va::LoadedRoms, u32, T) -> Pc88VaBus<T>,
+    BuildMachine: FnOnce(Pc88VaBus<T>) -> R,
 {
     let model = config.pc88va_model;
     info!("Selected machine model {model}");
@@ -649,8 +649,8 @@ fn initialize_pc60_machine(
     initialize_pc60_machine_with(
         config,
         sample_rate,
-        common::NoTrace,
-        |model, sample_rate, _| machine_60::Pc6000Bus::new(model, sample_rate),
+        NoTrace,
+        |model, sample_rate, _| Pc6000Bus::new(model, sample_rate),
         machine_60::build_untraced_machine,
     )
 }
@@ -665,9 +665,9 @@ fn initialize_pc60_machine_with<T, R, BuildBus, BuildMachine>(
     build_machine: BuildMachine,
 ) -> Result<R, InitError>
 where
-    T: common::TraceSink + 'static,
-    BuildBus: FnOnce(machine_60::Pc6000Model, u32, T) -> machine_60::Pc6000Bus<T>,
-    BuildMachine: FnOnce(machine_60::Pc6000Bus<T>) -> R,
+    T: TraceSink + 'static,
+    BuildBus: FnOnce(Pc6000Model, u32, T) -> Pc6000Bus<T>,
+    BuildMachine: FnOnce(Pc6000Bus<T>) -> R,
 {
     let model = config.pc60_model;
     info!("Selected machine model {model}");
@@ -715,8 +715,8 @@ fn initialize_msx_machine(
     initialize_msx_machine_with(
         config,
         sample_rate,
-        common::NoTrace,
-        machine_msx::MsxBus::new_with_trace_sink,
+        NoTrace,
+        MsxBus::new_with_trace_sink,
         machine_msx::build_untraced_machine,
     )
 }
@@ -731,9 +731,9 @@ fn initialize_msx_machine_with<T, R, BuildBus, BuildMachine>(
     build_machine: BuildMachine,
 ) -> Result<R, InitError>
 where
-    T: common::TraceSink + 'static,
-    BuildBus: FnOnce(machine_msx::MsxModel, u32, T) -> machine_msx::MsxBus<T>,
-    BuildMachine: FnOnce(machine_msx::MsxBus<T>) -> R,
+    T: TraceSink + 'static,
+    BuildBus: FnOnce(MsxModel, u32, T) -> MsxBus<T>,
+    BuildMachine: FnOnce(MsxBus<T>) -> R,
 {
     let model = config.msx_model;
     info!("Selected machine model {model}");
@@ -809,10 +809,8 @@ fn initialize_towns_machine(
     initialize_towns_machine_with(
         config,
         sample_rate,
-        common::NoTrace,
-        |model, cpu_mode, roms, sample_rate, _| {
-            machine_towns::TownsBus::new(model, cpu_mode, roms, sample_rate)
-        },
+        NoTrace,
+        |model, cpu_mode, roms, sample_rate, _| TownsBus::new(model, cpu_mode, roms, sample_rate),
         machine_towns::build_untraced_machine,
     )
 }
@@ -827,21 +825,9 @@ fn initialize_towns_machine_with<T, R, BuildBus, BuildMachine>(
     build_machine: BuildMachine,
 ) -> Result<R, InitError>
 where
-    T: common::TraceSink + 'static,
-    BuildBus: FnOnce(
-        machine_towns::TownsModel,
-        CpuMode,
-        machine_towns::LoadedRoms,
-        u32,
-        T,
-    ) -> machine_towns::TownsBus<T>,
-    BuildMachine: FnOnce(
-        machine_towns::TownsModel,
-        machine_towns::TownsBus<T>,
-        machine_towns::TownsBootDevice,
-        machine_towns::TownsPadType,
-        bool,
-    ) -> R,
+    T: TraceSink + 'static,
+    BuildBus: FnOnce(TownsModel, CpuMode, machine_towns::LoadedRoms, u32, T) -> TownsBus<T>,
+    BuildMachine: FnOnce(TownsModel, TownsBus<T>, TownsBootDevice, TownsPadType, bool) -> R,
 {
     let model = config.towns_model;
     info!("Selected machine model {model}");
@@ -858,22 +844,20 @@ where
     })?;
 
     let boot_device = match config.boot_device {
-        common::BootDevice::Auto => machine_towns::TownsBootDevice::Auto,
-        common::BootDevice::Fdd1 | common::BootDevice::Fdd2 => {
-            machine_towns::TownsBootDevice::Floppy
-        }
-        common::BootDevice::Hdd1 | common::BootDevice::Hdd2 => machine_towns::TownsBootDevice::Hdd,
-        common::BootDevice::Dos => {
+        BootDevice::Auto => TownsBootDevice::Auto,
+        BootDevice::Fdd1 | BootDevice::Fdd2 => TownsBootDevice::Floppy,
+        BootDevice::Hdd1 | BootDevice::Hdd2 => TownsBootDevice::Hdd,
+        BootDevice::Dos => {
             warn!("'dos' boot is not available for the FM Towns; using the default boot device");
-            machine_towns::TownsBootDevice::Auto
+            TownsBootDevice::Auto
         }
     };
 
     let bus = build_bus(model, config.cpu_mode, roms, sample_rate, tracer);
     let cpu_name = match model {
-        machine_towns::TownsModel::FmTowns => "i386SX",
-        machine_towns::TownsModel::FmTownsIICx => "i386DX",
-        machine_towns::TownsModel::FmTownsIIMx => "i486DX2",
+        TownsModel::FmTowns => "i386SX",
+        TownsModel::FmTownsIICx => "i386DX",
+        TownsModel::FmTownsIIMx => "i486DX2",
     };
     info!(
         "FM Towns configured: {} MHz {cpu_name}",
@@ -897,9 +881,9 @@ fn initialize_at_machine(
     initialize_at_machine_with(
         config,
         sample_rate,
-        common::NoTrace,
+        NoTrace,
         |cpu_clock_hz, ram_size, roms, sample_rate, _| {
-            machine_at::AtBus::new(cpu_clock_hz, ram_size, roms, sample_rate)
+            AtBus::new(cpu_clock_hz, ram_size, roms, sample_rate)
         },
         machine_at::build_untraced_machine,
     )
@@ -915,9 +899,9 @@ fn initialize_at_machine_with<T, R, BuildBus, BuildMachine>(
     build_machine: BuildMachine,
 ) -> Result<R, InitError>
 where
-    T: common::TraceSink + 'static,
-    BuildBus: FnOnce(u32, u32, machine_at::LoadedRoms, u32, T) -> machine_at::AtBus<T>,
-    BuildMachine: FnOnce(machine_at::AtBus<T>, machine_at::AtBootDevice) -> R,
+    T: TraceSink + 'static,
+    BuildBus: FnOnce(u32, u32, machine_at::LoadedRoms, u32, T) -> AtBus<T>,
+    BuildMachine: FnOnce(AtBus<T>, AtBootDevice) -> R,
 {
     let model = config.at_model;
     let cpu_clock_hz = model.cpu_clock_hz(config.cpu_mode);
@@ -956,24 +940,20 @@ where
 
 /// Converts the shared boot selection into the two orders exposed by the AMI BIOS.
 #[cfg(feature = "at")]
-fn resolve_at_boot_device(
-    device: common::BootDevice,
-) -> (machine_at::AtBootDevice, Option<&'static str>) {
+fn resolve_at_boot_device(device: BootDevice) -> (AtBootDevice, Option<&'static str>) {
     match device {
-        common::BootDevice::Auto | common::BootDevice::Fdd1 => {
-            (machine_at::AtBootDevice::FloppyFirst, None)
-        }
-        common::BootDevice::Fdd2 => (
-            machine_at::AtBootDevice::FloppyFirst,
+        BootDevice::Auto | BootDevice::Fdd1 => (AtBootDevice::FloppyFirst, None),
+        BootDevice::Fdd2 => (
+            AtBootDevice::FloppyFirst,
             Some("The PC/AT BIOS cannot select drive B: for boot. Using A: then C:"),
         ),
-        common::BootDevice::Hdd1 => (machine_at::AtBootDevice::HddFirst, None),
-        common::BootDevice::Hdd2 => (
-            machine_at::AtBootDevice::HddFirst,
+        BootDevice::Hdd1 => (AtBootDevice::HddFirst, None),
+        BootDevice::Hdd2 => (
+            AtBootDevice::HddFirst,
             Some("The PC/AT BIOS cannot select the second HDD for boot. Using C: then A:"),
         ),
-        common::BootDevice::Dos => (
-            machine_at::AtBootDevice::FloppyFirst,
+        BootDevice::Dos => (
+            AtBootDevice::FloppyFirst,
             Some("'dos' boot is not available for the PC/AT. Using A: then C:"),
         ),
     }
@@ -988,8 +968,8 @@ fn initialize_x1_machine(
     initialize_x1_machine_with(
         config,
         sample_rate,
-        common::NoTrace,
-        |model, sample_rate, _| machine_x1::X1Bus::new(model, sample_rate),
+        NoTrace,
+        |model, sample_rate, _| X1Bus::new(model, sample_rate),
         machine_x1::build_untraced_machine,
     )
 }
@@ -1004,9 +984,9 @@ fn initialize_x1_machine_with<T, R, BuildBus, BuildMachine>(
     build_machine: BuildMachine,
 ) -> Result<R, InitError>
 where
-    T: common::TraceSink + 'static,
-    BuildBus: FnOnce(machine_x1::X1Model, u32, T) -> machine_x1::X1Bus<T>,
-    BuildMachine: FnOnce(machine_x1::X1Bus<T>) -> R,
+    T: TraceSink + 'static,
+    BuildBus: FnOnce(X1Model, u32, T) -> X1Bus<T>,
+    BuildMachine: FnOnce(X1Bus<T>) -> R,
 {
     let model = config.x1_model;
     info!("Selected machine model {model}");
@@ -1046,8 +1026,8 @@ fn initialize_fm7_machine(
     initialize_fm7_machine_with(
         config,
         sample_rate,
-        common::NoTrace,
-        |model, boot_mode, sample_rate, _| machine_fm7::Fm7Bus::new(model, boot_mode, sample_rate),
+        NoTrace,
+        |model, boot_mode, sample_rate, _| Fm7Bus::new(model, boot_mode, sample_rate),
         machine_fm7::build_untraced_machine,
     )
 }
@@ -1062,10 +1042,9 @@ fn initialize_fm7_machine_with<T, R, BuildBus, BuildMachine>(
     build_machine: BuildMachine,
 ) -> Result<R, InitError>
 where
-    T: common::TraceSink + 'static,
-    BuildBus:
-        FnOnce(machine_fm7::Fm7Model, machine_fm7::BootMode, u32, T) -> machine_fm7::Fm7Bus<T>,
-    BuildMachine: FnOnce(machine_fm7::Fm7Model, machine_fm7::Fm7Bus<T>) -> R,
+    T: TraceSink + 'static,
+    BuildBus: FnOnce(Fm7Model, machine_fm7::BootMode, u32, T) -> Fm7Bus<T>,
+    BuildMachine: FnOnce(Fm7Model, Fm7Bus<T>) -> R,
 {
     let model = config.fm7_model;
     info!("Selected machine model {model}");
@@ -1109,10 +1088,8 @@ fn initialize_x68k_machine(
     initialize_x68k_machine_with(
         config,
         sample_rate,
-        common::NoTrace,
-        |model, cpu_mode, roms, sample_rate, _| {
-            machine_x68k::X68kBus::new(model, cpu_mode, roms, sample_rate)
-        },
+        NoTrace,
+        |model, cpu_mode, roms, sample_rate, _| X68kBus::new(model, cpu_mode, roms, sample_rate),
         machine_x68k::build_untraced_machine,
     )
 }
@@ -1127,15 +1104,10 @@ fn initialize_x68k_machine_with<T, R, BuildBus, BuildMachine>(
     build_machine: BuildMachine,
 ) -> Result<R, InitError>
 where
-    T: common::TraceSink + 'static,
-    BuildBus: FnOnce(
-        machine_x68k::X68kModel,
-        CpuMode,
-        machine_x68k::LoadedRoms,
-        u32,
-        T,
-    ) -> std::result::Result<machine_x68k::X68kBus<T>, String>,
-    BuildMachine: FnOnce(machine_x68k::X68kModel, CpuMode, machine_x68k::X68kBus<T>) -> R,
+    T: TraceSink + 'static,
+    BuildBus:
+        FnOnce(X68kModel, CpuMode, machine_x68k::LoadedRoms, u32, T) -> Result<X68kBus<T>, String>,
+    BuildMachine: FnOnce(X68kModel, CpuMode, X68kBus<T>) -> R,
 {
     let model = config.x68k_model;
     info!("Selected machine model {model}");

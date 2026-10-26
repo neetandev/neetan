@@ -170,6 +170,7 @@ pub fn parse_year(value: &str) -> Result<u16, ValueError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{config::diagnostic::Severity, texts::english};
 
     /// A game file with every metadata key.
     const EDGE: &str = "meta.title = Edge\nmeta.title-original = エッジ\nmeta.developer = TGL\n\
@@ -268,10 +269,7 @@ mod tests {
             assert_eq!(metadata.year(), None, "{value}");
             assert_eq!(diagnostics.len(), 1, "{value}");
             assert_eq!(diagnostics[0].line, Some(2));
-            assert_eq!(
-                diagnostics[0].severity,
-                super::super::diagnostic::Severity::Warning
-            );
+            assert_eq!(diagnostics[0].severity, Severity::Warning);
             metadata.write(&mut document);
             assert_eq!(document.to_text(), text);
         }
@@ -302,11 +300,7 @@ mod tests {
         );
         for field in METADATA_FIELDS {
             assert!(field.key.starts_with(META_PREFIX), "{}", field.key);
-            assert!(
-                !crate::texts::english().text(field.label).is_empty(),
-                "{}",
-                field.key
-            );
+            assert!(!english().text(field.label).is_empty(), "{}", field.key);
         }
     }
 }

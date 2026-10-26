@@ -1,13 +1,15 @@
 //! The user interface overlay of the modern backend.
 //!
-//! The overlay draws a [`gui::Scene`] with one instanced draw call of the
+//! The overlay draws a [`Scene`] with one instanced draw call of the
 //! user interface pipeline. The instances and the three Slug arrays live in
 //! storage buffers. Every frame uploads the instances. The Slug arrays upload
 //! only when their content changed, and only the appended entries when the
 //! same store grew.
 
 use common::{Context, OptionContext};
-use gui::{BLUE_NOISE, BLUE_NOISE_SIZE, Instance, SlugData};
+#[cfg(doc)]
+use gui::Scene;
+use gui::{BLUE_NOISE, BLUE_NOISE_SIZE, Instance, SlugData, SlugGlyph};
 use sdl3::gpu::{
     BufferRegion, GpuBuffer, GpuCopyPass, GpuDevice, GpuGraphicsPipeline, GpuRenderPass,
     GpuSampler, GpuTexture, GpuTransferBuffer, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
@@ -366,7 +368,7 @@ impl OverlayRenderer {
         let element_sizes = [
             size_of::<[f32; 4]>(),
             size_of::<u32>(),
-            size_of::<gui::SlugGlyph>(),
+            size_of::<SlugGlyph>(),
         ];
         let mut grown = [false; SLUG_ARRAYS];
         for (array, buffer) in self.slug_buffers.iter_mut().enumerate() {
@@ -484,7 +486,7 @@ mod tests {
         path::PathBuf,
     };
 
-    use gui::{Color, Fonts, Path, Rasterizer, Rect, RectStyle, Scene, linear_to_srgb};
+    use gui::{Color, FontId, Fonts, Path, Rasterizer, Rect, RectStyle, Scene, linear_to_srgb};
     use sdl3::gpu::{
         ColorTargetDescriptor, SDL_FColor, SDL_GPU_LOADOP_CLEAR, SDL_GPU_STOREOP_STORE,
         SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB,
@@ -492,6 +494,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::device::create_device;
 
     /// The width of the comparison target in pixels.
     const WIDTH: u32 = 960;
@@ -624,7 +627,7 @@ mod tests {
     const REPOSITORY_FONT_PATH: &str = "font/SarasaUiJ-Regular.ttf";
 
     /// Loads the font of the user interface from the repository.
-    fn load_fonts() -> (Fonts, gui::FontId) {
+    fn load_fonts() -> (Fonts, FontId) {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join(REPOSITORY_FONT_PATH);
@@ -636,7 +639,7 @@ mod tests {
 
     /// A dialog with every kind of item, glyphs of Latin and Japanese text and
     /// paths. With `more_text` it shapes text that adds glyphs to the store.
-    fn sample_scene(fonts: &mut Fonts, font: gui::FontId, more_text: bool) -> Scene {
+    fn sample_scene(fonts: &mut Fonts, font: FontId, more_text: bool) -> Scene {
         let ring = fonts
             .add_path(&circle(circle(Path::new(), 0.5, 0.5, 0.45), 0.5, 0.5, 0.25))
             .unwrap();
@@ -984,7 +987,7 @@ mod tests {
     fn the_gpu_overlay_matches_the_cpu_rasterizer() {
         let sdl = sdl3::init().expect("SDL initializes");
         let _video = sdl.video().expect("the video subsystem initializes");
-        let device = crate::device::create_device().expect("a GPU device exists");
+        let device = create_device().expect("a GPU device exists");
 
         for (format, encode_srgb, name) in [
             (SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB, false, "srgb"),

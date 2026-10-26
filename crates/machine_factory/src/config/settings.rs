@@ -5,7 +5,11 @@
 //! format and clear its value. The language files hold the label and the help
 //! text of each key.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fmt::Display,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use common::CpuMode;
 #[cfg(feature = "pc88")]
@@ -565,10 +569,7 @@ fn parse_on_off(value: &str) -> Result<bool, ValueError> {
 }
 
 /// Parses a value of a choice setting with the choices `choices`.
-fn parse_choice<T: std::str::FromStr>(
-    value: &str,
-    choices: &'static [Choice],
-) -> Result<T, ValueError> {
+fn parse_choice<T: FromStr>(value: &str, choices: &'static [Choice]) -> Result<T, ValueError> {
     value
         .parse()
         .map_err(|_| ValueError::unknown_choice(value, choices))
@@ -580,7 +581,7 @@ fn format_on_off(value: bool) -> Vec<String> {
 }
 
 /// Formats one displayable value.
-fn format_value(value: impl std::fmt::Display) -> Vec<String> {
+fn format_value(value: impl Display) -> Vec<String> {
     vec![value.to_string()]
 }
 
@@ -590,7 +591,7 @@ fn format_decimal(value: f32) -> Vec<String> {
 }
 
 /// Formats an optional displayable value. `None` formats as an unset key.
-fn format_optional(value: Option<impl std::fmt::Display>) -> Vec<String> {
+fn format_optional(value: Option<impl Display>) -> Vec<String> {
     value.map(|value| value.to_string()).into_iter().collect()
 }
 
@@ -2168,7 +2169,10 @@ pub static SETTINGS: &[Setting] = &[
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::{super::first_system_config, *};
+    use super::{
+        super::{first_system_config, systems::compiled_systems},
+        *,
+    };
 
     /// Returns sample values of a setting that its apply function accepts.
     fn sample_values(setting: &Setting) -> Vec<String> {
@@ -2498,7 +2502,7 @@ mod tests {
             .choices_for_families(Families::compiled())
             .map(|choice| choice.value)
             .collect();
-        for system in super::super::systems::compiled_systems() {
+        for system in compiled_systems() {
             let target = MachineSelection::of_system(system)
                 .expect("compiled system")
                 .target();

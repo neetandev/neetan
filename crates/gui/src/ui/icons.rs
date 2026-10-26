@@ -412,7 +412,7 @@ mod tests {
         Instance,
         ui::{
             ThemeKind, Viewport,
-            tests::{Harness, pixel},
+            tests::{Harness, pixel, test_catalog},
         },
     };
 
@@ -422,11 +422,8 @@ mod tests {
     /// Draws `icon` at 64 units on a 64 x 64 target and returns the
     /// coverage of the grid points `points` from 0 to 255.
     fn coverage(icon: Icon, points: &[(f32, f32)]) -> Vec<u8> {
-        let mut harness = Harness::with_viewport(
-            Viewport::new(64, 64, 1.0),
-            ThemeKind::Dark,
-            crate::ui::tests::test_catalog(),
-        );
+        let mut harness =
+            Harness::with_viewport(Viewport::new(64, 64, 1.0), ThemeKind::Dark, test_catalog());
         harness.frame(|context| {
             context.icon(
                 crate::Rect::new(0.0, 0.0, 64.0, 64.0),
@@ -522,7 +519,7 @@ mod tests {
         let mut harness = Harness::with_viewport(
             Viewport::new(200, 200, 2.0),
             ThemeKind::Dark,
-            crate::ui::tests::test_catalog(),
+            test_catalog(),
         );
         for icon in Icon::ALL {
             harness.frame(|context| {

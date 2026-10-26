@@ -5,9 +5,9 @@ mod selection;
 pub mod settings;
 pub mod systems;
 
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf, str::FromStr};
 
-use common::{CpuMode, MachineModel, MonitorTiming};
+use common::{BootDevice, CpuMode, MachineModel, MonitorTiming};
 #[cfg(feature = "pc88")]
 use common::{EightMhzWaitMode, MemoryWaitSwitch};
 use device::{gameport_towns::TownsPadType, subcontroller_x1::X1KeyboardMode};
@@ -202,8 +202,8 @@ impl BootMode {
     }
 }
 
-impl std::fmt::Display for BootMode {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for BootMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let text = match self {
             BootMode::Pc88V1S => "v1s",
             BootMode::Pc88V1H => "v1h",
@@ -218,7 +218,7 @@ impl std::fmt::Display for BootMode {
     }
 }
 
-impl std::str::FromStr for BootMode {
+impl FromStr for BootMode {
     type Err = String;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
@@ -294,7 +294,7 @@ pub struct EmulatorConfig {
     pub mt32_roms: Option<PathBuf>,
     pub sc55_roms: Option<PathBuf>,
     pub midi: MidiDevice,
-    pub boot_device: common::BootDevice,
+    pub boot_device: BootDevice,
     pub ems: bool,
     pub xms: bool,
     pub backend: Backend,
@@ -381,7 +381,7 @@ impl EmulatorConfig {
             mt32_roms: None,
             sc55_roms: None,
             midi: MidiDevice::default(),
-            boot_device: common::BootDevice::Auto,
+            boot_device: BootDevice::Auto,
             ems: true,
             xms: true,
             backend: DEFAULT_BACKEND,
@@ -612,8 +612,8 @@ pub enum ForceGdcClock {
     Force5,
 }
 
-impl std::fmt::Display for ForceGdcClock {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ForceGdcClock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Force2_5 => f.write_str("2.5"),
             Self::Force5 => f.write_str("5"),
@@ -621,7 +621,7 @@ impl std::fmt::Display for ForceGdcClock {
     }
 }
 
-impl std::str::FromStr for ForceGdcClock {
+impl FromStr for ForceGdcClock {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -640,8 +640,8 @@ pub enum AspectMode {
     Aspect1By1,
 }
 
-impl std::fmt::Display for AspectMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for AspectMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Aspect4By3 => f.write_str("4:3"),
             Self::Aspect1By1 => f.write_str("1:1"),
@@ -649,7 +649,7 @@ impl std::fmt::Display for AspectMode {
     }
 }
 
-impl std::str::FromStr for AspectMode {
+impl FromStr for AspectMode {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -680,8 +680,8 @@ pub enum SoundboardType {
     Sb16And26k,
 }
 
-impl std::fmt::Display for SoundboardType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for SoundboardType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::None => f.write_str("none"),
             Self::Sb14 => f.write_str("14"),
@@ -694,7 +694,7 @@ impl std::fmt::Display for SoundboardType {
     }
 }
 
-impl std::str::FromStr for SoundboardType {
+impl FromStr for SoundboardType {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -722,8 +722,8 @@ pub enum GraphicboardType {
     Ga1280a,
 }
 
-impl std::fmt::Display for GraphicboardType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for GraphicboardType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::None => f.write_str("none"),
             Self::Ga1280a => f.write_str("ga1280a"),
@@ -731,7 +731,7 @@ impl std::fmt::Display for GraphicboardType {
     }
 }
 
-impl std::str::FromStr for GraphicboardType {
+impl FromStr for GraphicboardType {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -753,8 +753,8 @@ pub enum ScalingMode {
     Pixelart,
 }
 
-impl std::fmt::Display for ScalingMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ScalingMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Nearest => f.write_str("nearest"),
             Self::Bilinear => f.write_str("bilinear"),
@@ -763,7 +763,7 @@ impl std::fmt::Display for ScalingMode {
     }
 }
 
-impl std::str::FromStr for ScalingMode {
+impl FromStr for ScalingMode {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -785,8 +785,8 @@ pub enum WindowMode {
     Fullscreen,
 }
 
-impl std::fmt::Display for WindowMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for WindowMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Windowed => f.write_str("windowed"),
             Self::Fullscreen => f.write_str("fullscreen"),
@@ -794,7 +794,7 @@ impl std::fmt::Display for WindowMode {
     }
 }
 
-impl std::str::FromStr for WindowMode {
+impl FromStr for WindowMode {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -819,8 +819,8 @@ pub enum Backend {
     Legacy,
 }
 
-impl std::fmt::Display for Backend {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Backend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Modern => f.write_str("modern"),
             Self::Legacy => f.write_str("legacy"),
@@ -828,7 +828,7 @@ impl std::fmt::Display for Backend {
     }
 }
 
-impl std::str::FromStr for Backend {
+impl FromStr for Backend {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -850,8 +850,8 @@ pub enum GuiTheme {
     Light,
 }
 
-impl std::fmt::Display for GuiTheme {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for GuiTheme {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Dark => f.write_str("dark"),
             Self::Light => f.write_str("light"),
@@ -859,7 +859,7 @@ impl std::fmt::Display for GuiTheme {
     }
 }
 
-impl std::str::FromStr for GuiTheme {
+impl FromStr for GuiTheme {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -884,8 +884,8 @@ pub enum GuiLanguage {
     Tag(String),
 }
 
-impl std::fmt::Display for GuiLanguage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for GuiLanguage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Auto => f.write_str(AUTO_LANGUAGE),
             Self::Tag(tag) => f.write_str(tag),
@@ -893,7 +893,7 @@ impl std::fmt::Display for GuiLanguage {
     }
 }
 
-impl std::str::FromStr for GuiLanguage {
+impl FromStr for GuiLanguage {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -921,8 +921,8 @@ pub enum MidiDevice {
     Sc55,
 }
 
-impl std::fmt::Display for MidiDevice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for MidiDevice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::None => f.write_str("none"),
             Self::Mt32 => f.write_str("mt32"),
@@ -931,7 +931,7 @@ impl std::fmt::Display for MidiDevice {
     }
 }
 
-impl std::str::FromStr for MidiDevice {
+impl FromStr for MidiDevice {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {

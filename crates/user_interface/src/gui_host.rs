@@ -17,6 +17,8 @@ use gui::{
         Theme, ThemeKind, UiContext, UiId, UiState, Viewport,
     },
 };
+#[cfg(test)]
+use i18n::Catalog;
 use keys::key_event;
 use sdl3::{
     Error, clipboard,
@@ -209,7 +211,7 @@ impl GuiHost {
 
     /// The texts of the selected language.
     #[cfg(test)]
-    pub(crate) fn catalog(&self) -> &i18n::Catalog {
+    pub(crate) fn catalog(&self) -> &Catalog {
         self.catalog.catalog()
     }
 

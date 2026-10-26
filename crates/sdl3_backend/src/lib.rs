@@ -10,6 +10,7 @@ mod ui_pipeline;
 
 pub use common::Error;
 pub use gpu::ModernSdlGpuBackend;
+use gui::{Scene, SlugData};
 pub use legacy::LegacySdlBackend;
 use sdl3::video::Window;
 
@@ -55,9 +56,9 @@ pub struct RenderInstructions<'a> {
 #[derive(Clone, Copy)]
 pub struct Overlay<'a> {
     /// The draw items in painter's order.
-    pub scene: &'a gui::Scene,
+    pub scene: &'a Scene,
     /// The glyph and path data the scene refers to.
-    pub slug: &'a gui::SlugData,
+    pub slug: &'a SlugData,
 }
 
 /// Returns the backing texture dimensions for a backend configuration.
