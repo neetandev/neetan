@@ -7,7 +7,9 @@ mod session_cycle;
 mod setup;
 
 use std::{
+    fmt::Display,
     path::PathBuf,
+    result,
     time::{Duration, Instant},
 };
 
@@ -122,10 +124,10 @@ impl ShellOptions {
 
 /// Returns the value of `key` of `host` parsed by `parse`, or `default`
 /// when the key is unset or its value is invalid.
-fn host_setting<T, E: std::fmt::Display>(
+fn host_setting<T, E: Display>(
     host: &HostLayers,
     key: &str,
-    parse: impl Fn(&str) -> std::result::Result<T, E>,
+    parse: impl Fn(&str) -> result::Result<T, E>,
     default: T,
 ) -> T {
     let Some(value) = host.host_value(key) else {
@@ -507,6 +509,8 @@ fn render_session_frame(session: &mut Session, host: &mut Host) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use common::temporary::TemporaryFolder;
     use sdl3_backend::DisplayAspectMode;
 
@@ -522,7 +526,7 @@ mod tests {
 
     /// Returns the host layers of a root folder with a settings file that
     /// holds `settings`. Removes the folder before it returns.
-    fn host_layers(name: &str, settings: &str) -> (HostLayers, std::path::PathBuf) {
+    fn host_layers(name: &str, settings: &str) -> (HostLayers, PathBuf) {
         let folder = TemporaryFolder::new(&format!("shell_options_test_{name}"));
         let root = folder.path().to_path_buf();
         std::fs::write(root.join(SETTINGS_FILE_NAME), settings).expect("settings are written");
@@ -548,8 +552,8 @@ mod tests {
             gui_language: GuiLanguage::Tag("ja".to_owned()),
             ..first_model_config()
         };
-        let gui_font_paths = vec![std::path::PathBuf::from("/fonts/ui.ttf")];
-        let language_folders = vec![std::path::PathBuf::from("/neetan/language")];
+        let gui_font_paths = vec![PathBuf::from("/fonts/ui.ttf")];
+        let language_folders = vec![PathBuf::from("/neetan/language")];
         let options = ShellOptions::for_config(
             &config,
             GuiResources {

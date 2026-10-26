@@ -7,7 +7,7 @@ use sdl3::gpu::{
     SDL_GPU_SAMPLECOUNT_1, SDL_GPU_SHADERSTAGE_FRAGMENT, SDL_GPU_SHADERSTAGE_VERTEX,
     SDL_GPUColorTargetBlendState, SDL_GPUColorTargetDescription, SDL_GPUDepthStencilState,
     SDL_GPUGraphicsPipelineTargetInfo, SDL_GPUMultisampleState, SDL_GPURasterizerState,
-    SDL_GPUTextureFormat, SDL_GPUVertexInputState, ShaderDescriptor,
+    SDL_GPUShaderFormat, SDL_GPUTextureFormat, SDL_GPUVertexInputState, ShaderDescriptor,
 };
 
 use crate::{Error, Result};
@@ -211,7 +211,7 @@ const PRESENT_BINARIES: PassBinaries = pass_binaries!("present");
 pub(crate) fn pick_shader_bytecode(
     device: &GpuDevice,
     binaries: &PassBinaries,
-) -> Result<(sdl3::gpu::SDL_GPUShaderFormat, &'static [u8], &'static [u8])> {
+) -> Result<(SDL_GPUShaderFormat, &'static [u8], &'static [u8])> {
     let formats = device.shader_formats();
 
     #[cfg(any(target_os = "macos", target_os = "ios"))]

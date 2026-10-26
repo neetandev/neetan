@@ -78,7 +78,7 @@ enum ListPattern {
 const PATTERNS_PER_KIND: usize = 3;
 
 impl ListKind {
-    /// Returns the index of a pattern in [`crate::schema::LIST_PATTERN_KEYS`].
+    /// Returns the index of a pattern in [`crate::LIST_PATTERN_KEYS`].
     const fn pattern_index(self, pattern: ListPattern) -> usize {
         let kind_offset = match self {
             ListKind::And => 0,

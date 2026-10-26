@@ -96,7 +96,10 @@ mod tests {
         gui_test_support::{GuiHarness, MINIMUM_HEIGHT, MINIMUM_WIDTH, PassCounts},
         manager::{FILTER_ID, SETTINGS_ID, game_table::GAME_TABLE_ID, test_support::shown_help},
         rom_folders::RomFolderStatus,
-        texts::repository::{RepositoryLanguage, repository_languages},
+        texts::{
+            repository::{RepositoryLanguage, repository_languages},
+            test_language,
+        },
     };
 
     /// The manager of `root` with the setting flags `flags`.
@@ -280,7 +283,7 @@ mod tests {
         let root = EditorRoot::new("settings_language");
         root.write(
             "language/de.ini",
-            &crate::texts::test_language("[host-settings]\nlanguage-auto = Systemsprache\n"),
+            &test_language("[host-settings]\nlanguage-auto = Systemsprache\n"),
         );
         let mut manager = manager_with(&root, &[]);
         let mut harness = GuiHarness::minimum();
@@ -322,7 +325,7 @@ mod tests {
     #[test]
     fn a_save_that_keeps_the_language_switches_nothing() {
         let root = EditorRoot::new("settings_same_language");
-        root.write("language/de.ini", &crate::texts::test_language(""));
+        root.write("language/de.ini", &test_language(""));
         root.write("neetan.conf", "gui-language = de\n");
         let mut manager = manager_with(&root, &[]);
         root.write("neetan.conf", "gui-language = DE\n");

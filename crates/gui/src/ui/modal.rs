@@ -124,7 +124,10 @@ pub fn modal_in(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{ThemeKind, Viewport, tests::Harness};
+    use crate::ui::{
+        ThemeKind, Viewport,
+        tests::{Harness, test_catalog},
+    };
 
     #[test]
     fn the_panel_centers_and_fits_the_target() {
@@ -161,7 +164,7 @@ mod tests {
         let mut harness = Harness::with_viewport(
             Viewport::new(801, 601, 1.5),
             ThemeKind::Dark,
-            crate::ui::tests::test_catalog(),
+            test_catalog(),
         );
         let response = harness.frame(|context| modal(context, "media", (301.0, 201.0), "Media"));
         for edge in [

@@ -1,4 +1,4 @@
-use sdl3_sys::time as ffi;
+use sdl3_sys::{stdinc::SDL_Time, time as ffi};
 
 use crate::Error;
 
@@ -22,7 +22,7 @@ pub struct DateTime {
 
 /// Returns the current local date and time.
 pub fn local_date_time() -> Result<DateTime, Error> {
-    let mut ticks: sdl3_sys::stdinc::SDL_Time = 0;
+    let mut ticks: SDL_Time = 0;
     let mut dt = ffi::SDL_DateTime::default();
 
     // Safety: SDL3 time functions are thread-safe and only write to the provided pointers.

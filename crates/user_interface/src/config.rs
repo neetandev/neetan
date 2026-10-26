@@ -1,4 +1,4 @@
-use std::{fmt, path::PathBuf};
+use std::{fmt, iter::Peekable, path::PathBuf, str::FromStr};
 
 use common::{StringError, bail};
 pub use machine_factory::config::{
@@ -31,6 +31,7 @@ pub use self::{
     reading::check_value,
 };
 use crate::{
+    copy::is_disk_image_extension,
     input::KeyOverrides,
     texts::{command_line, english, setting_help},
 };
@@ -70,7 +71,7 @@ fn flag_value(
 /// argument when it is `on` or `off` and turns the setting on otherwise.
 fn on_off_flag_value<I: Iterator<Item = String>>(
     inline_value: Option<String>,
-    args: &mut std::iter::Peekable<I>,
+    args: &mut Peekable<I>,
 ) -> String {
     if let Some(value) = inline_value {
         return value;
@@ -533,7 +534,7 @@ fn parse_copy_arg(raw: &str) -> CopyArg {
             continue;
         };
         let ext = &head[dot + 1..];
-        if crate::copy::is_disk_image_extension(ext) {
+        if is_disk_image_extension(ext) {
             return CopyArg::Image {
                 image_path: PathBuf::from(head),
                 dos_path: raw.as_bytes()[idx + 1..].to_vec(),
@@ -551,7 +552,7 @@ pub enum FddType {
     D2,
 }
 
-impl std::str::FromStr for FddType {
+impl FromStr for FddType {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -829,6 +830,7 @@ mod tests {
         },
         *,
     };
+    use crate::copy::{FDD_EXTENSIONS, HDD_EXTENSIONS};
 
     /// Keys that exist only in builds with the PC-88 family.
     const PC88_FEATURE_KEYS: &[&str] = &["pc88-memory-wait", "pc88-8mhz-wait"];
@@ -1235,10 +1237,7 @@ mod tests {
 
     #[test]
     fn copy_parser_recognizes_every_supported_disk_extension() {
-        for extension in crate::copy::HDD_EXTENSIONS
-            .iter()
-            .chain(crate::copy::FDD_EXTENSIONS)
-        {
+        for extension in HDD_EXTENSIONS.iter().chain(FDD_EXTENSIONS) {
             for extension in [
                 extension.to_ascii_lowercase(),
                 extension.to_ascii_uppercase(),

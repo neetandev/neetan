@@ -26,6 +26,11 @@ pub mod config;
 pub mod machines;
 pub mod rom_status;
 
+use core::fmt;
+use std::error::Error;
+
+use common::{ContextError, StringError};
+
 /// Error kind for machine construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InitErrorKind {
@@ -74,16 +79,16 @@ impl InitError {
     }
 }
 
-impl core::fmt::Display for InitError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for InitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
     }
 }
 
-impl std::error::Error for InitError {}
+impl Error for InitError {}
 
-impl From<common::StringError> for InitError {
-    fn from(e: common::StringError) -> Self {
+impl From<StringError> for InitError {
+    fn from(e: StringError) -> Self {
         Self {
             kind: InitErrorKind::Io,
             message: e.to_string(),
@@ -91,8 +96,8 @@ impl From<common::StringError> for InitError {
     }
 }
 
-impl From<common::ContextError> for InitError {
-    fn from(e: common::ContextError) -> Self {
+impl From<ContextError> for InitError {
+    fn from(e: ContextError) -> Self {
         Self {
             kind: InitErrorKind::Io,
             message: e.to_string(),
@@ -102,6 +107,6 @@ impl From<common::ContextError> for InitError {
 
 impl From<InitError> for common::Error {
     fn from(error: InitError) -> Self {
-        Self::Message(common::StringError(error.message))
+        Self::Message(StringError(error.message))
     }
 }

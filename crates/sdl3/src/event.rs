@@ -1,4 +1,9 @@
-use std::{marker::PhantomData, mem::MaybeUninit, time::Duration};
+use std::{
+    ffi::{CStr, c_char},
+    marker::PhantomData,
+    mem::MaybeUninit,
+    time::Duration,
+};
 
 use sdl3_sys::events;
 
@@ -425,12 +430,12 @@ fn convert_event(raw: &events::SDL_Event) -> Event {
 /// # Safety
 ///
 /// `text` must be null or point to a valid NUL terminated string.
-unsafe fn owned_text(text: *const std::ffi::c_char) -> String {
+unsafe fn owned_text(text: *const c_char) -> String {
     if text.is_null() {
         return String::new();
     }
     // Safety: The caller guarantees a valid NUL terminated string.
-    unsafe { std::ffi::CStr::from_ptr(text) }
+    unsafe { CStr::from_ptr(text) }
         .to_string_lossy()
         .into_owned()
 }

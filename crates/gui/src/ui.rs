@@ -572,7 +572,7 @@ pub(crate) mod tests {
         let mut harness = Harness::with_viewport(
             Viewport::new(1600, 1200, scale),
             ThemeKind::Dark,
-            crate::ui::tests::test_catalog(),
+            test_catalog(),
         );
         let mut sample = Sample::default();
         let layout = pass(&mut harness, &mut sample);
@@ -620,8 +620,7 @@ pub(crate) mod tests {
             Viewport::new(1, 1, 1000.0),
             Viewport::new(100, 50, 0.001),
         ] {
-            let mut harness =
-                Harness::with_viewport(viewport, ThemeKind::Dark, crate::ui::tests::test_catalog());
+            let mut harness = Harness::with_viewport(viewport, ThemeKind::Dark, test_catalog());
             let mut sample = Sample::default();
             harness.mouse(5.0, 5.0);
             harness.input.wheel = -3.0;
@@ -646,11 +645,8 @@ pub(crate) mod tests {
     fn sample_screenshot(scale: f32, kind: ThemeKind) {
         let width = (960.0 * scale) as u32;
         let height = (640.0 * scale) as u32;
-        let mut harness = Harness::with_viewport(
-            Viewport::new(width, height, scale),
-            kind,
-            crate::ui::tests::test_catalog(),
-        );
+        let mut harness =
+            Harness::with_viewport(Viewport::new(width, height, scale), kind, test_catalog());
         let prefix = screenshot_prefix(kind);
         let mut sample = Sample {
             write_protect: true,
@@ -898,7 +894,7 @@ pub(crate) mod tests {
                 let mut harness = Harness::with_viewport(
                     Viewport::new(width, height, scale),
                     self.kind,
-                    crate::ui::tests::test_catalog(),
+                    test_catalog(),
                 );
                 let area = Rect::new(
                     CELL_GAP,

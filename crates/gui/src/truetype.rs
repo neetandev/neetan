@@ -10,7 +10,7 @@ mod glyf;
 mod kerning;
 mod reader;
 
-use std::fmt;
+use std::{error::Error, fmt};
 
 use cmap::Cmap;
 use glyf::Outlines;
@@ -136,7 +136,7 @@ impl fmt::Display for FontError {
     }
 }
 
-impl std::error::Error for FontError {}
+impl Error for FontError {}
 
 /// The vertical metrics of a font in font units with the y-axis pointing up.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

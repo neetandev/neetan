@@ -721,7 +721,10 @@ impl<'a> UiContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{ThemeKind, Viewport, tests::Harness};
+    use crate::ui::{
+        ThemeKind, Viewport,
+        tests::{Harness, test_catalog},
+    };
 
     #[test]
     fn ids_of_rows_and_parts_differ() {
@@ -739,7 +742,7 @@ mod tests {
         let mut harness = Harness::with_viewport(
             Viewport::new(400, 300, 2.0),
             ThemeKind::Dark,
-            crate::ui::tests::test_catalog(),
+            test_catalog(),
         );
         harness.mouse(100.0, 60.0);
         let (mouse, bounds, snapped) = harness.frame(|context| {
@@ -1028,7 +1031,7 @@ mod tests {
         let mut harness = Harness::with_viewport(
             Viewport::new(800, 600, 2.0),
             ThemeKind::Dark,
-            crate::ui::tests::test_catalog(),
+            test_catalog(),
         );
         let field = ui_id("field");
         let draw = |context: &mut UiContext, focused: bool| {

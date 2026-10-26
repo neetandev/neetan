@@ -77,6 +77,8 @@ use self::{
 #[cfg(all(test, feature = "pc98"))]
 pub(crate) use self::{discard::DISCARD_LAYER_ID, media_list::empty_list_id};
 pub(crate) use self::{file::SaveFailure, form::EditorSection, save::OpenError};
+#[cfg(test)]
+use crate::texts::english_text;
 use crate::{
     catalog::copy_title,
     config::{ConfigDocument, HostLayers, metadata::TITLE_KEY},
@@ -135,7 +137,7 @@ impl EditedFile {
     /// The name of the file in the header in English.
     #[cfg(test)]
     pub(crate) fn display_name(&self) -> String {
-        crate::texts::english_text(|catalog, out| self.write_name(catalog, out))
+        english_text(|catalog, out| self.write_name(catalog, out))
     }
 }
 
@@ -797,9 +799,13 @@ mod tests {
         test_support::{EditorRoot, fdd1_model, index_of, show},
         *,
     };
+    #[cfg(feature = "pc98")]
+    use crate::texts::{LanguageCatalog, test_catalog};
     use crate::{
         config::check_value,
+        file_browser::path_value,
         gui_test_support::{GuiHarness, MINIMUM_SCREEN},
+        texts::english_labels,
     };
 
     /// The editor on the game `stem` of `root` with `contents`.
@@ -835,10 +841,7 @@ mod tests {
         harness.input.navigation = Some(Navigation::PreviousTab);
         show(&mut harness, &mut editor);
         assert_eq!(editor.current_section(), EditorSection::Advanced);
-        assert_eq!(
-            crate::texts::english_labels(editor.hints()),
-            ["Section", "Save", "Close"]
-        );
+        assert_eq!(english_labels(editor.hints()), ["Section", "Save", "Close"]);
     }
 
     /// Verifies that a typed title of a new game refills the cached header line of the next frame with the new file name.
@@ -917,15 +920,13 @@ mod tests {
         show(&mut harness, &mut editor);
         select_section(&mut harness, &mut editor, EditorSection::Machine);
         assert_eq!(editor.cached_note("ems"), Some(ENGLISH_NOTE));
-        harness.set_catalog(crate::texts::LanguageCatalog::Loaded(Box::new(
-            crate::texts::test_catalog(GERMAN_NOTE),
-        )));
+        harness.set_catalog(LanguageCatalog::Loaded(Box::new(test_catalog(GERMAN_NOTE))));
         show(&mut harness, &mut editor);
         assert_eq!(
             editor.cached_note("ems"),
             Some("PC9801VM has no EMS memory. | Nur VX, RS, RA, AS and AP.")
         );
-        harness.set_catalog(crate::texts::LanguageCatalog::English);
+        harness.set_catalog(LanguageCatalog::English);
         show(&mut harness, &mut editor);
         assert_eq!(editor.cached_note("ems"), Some(ENGLISH_NOTE));
     }
@@ -943,7 +944,7 @@ mod tests {
         harness.input.confirm = true;
         show(&mut harness, &mut editor);
         assert_eq!(
-            crate::texts::english_labels(editor.hints()),
+            english_labels(editor.hints()),
             ["Choose", "Close the popup"]
         );
         harness.input.navigation = Some(Navigation::Down);
@@ -1015,7 +1016,7 @@ mod tests {
         let outside = std::env::temp_dir().join("neetan-outside.d88");
         editor.apply_browsed(
             BrowseTarget::List(fdd1, MediaBrowse::Replace(0)),
-            crate::file_browser::path_value(&outside, &editor.root),
+            path_value(&outside, &editor.root),
         );
         assert_eq!(editor.fields[fdd1].values()[0], outside.to_string_lossy());
     }
@@ -1042,10 +1043,7 @@ mod tests {
         assert_eq!(harness.state.open_modals(), 1);
         show(&mut harness, &mut editor);
         assert!(editor.discard.is_some());
-        assert_eq!(
-            crate::texts::english_labels(editor.hints()),
-            ["Keep editing"]
-        );
+        assert_eq!(english_labels(editor.hints()), ["Keep editing"]);
         harness.input.confirm = true;
         assert!(!show(&mut harness, &mut editor).closed);
         assert!(editor.discard.is_none());
@@ -1280,7 +1278,7 @@ mod tests {
         harness.state.set_focus(field_id("meta.developer"));
         show(&mut harness, &mut editor);
         assert_eq!(
-            crate::texts::english_labels(editor.hints()),
+            english_labels(editor.hints()),
             ["Clear", "Section", "Save", "Close"]
         );
         harness.input.action = Some(gui::ui::ActionButton::X);
@@ -1288,10 +1286,7 @@ mod tests {
         let developer = editor.field("meta.developer").expect("developer field");
         assert!(!developer.is_set());
         assert!(editor.is_dirty());
-        assert_eq!(
-            crate::texts::english_labels(editor.hints()),
-            ["Section", "Save", "Close"]
-        );
+        assert_eq!(english_labels(editor.hints()), ["Section", "Save", "Close"]);
     }
 
     /// Verifies that an empty value of a drive is an empty list over the inherited list, and that its checkbox returns the drive to the inherited list.
@@ -1348,7 +1343,7 @@ mod tests {
             .expect("fdd1 is a table key")
             .file_types_for(root.target());
         assert_eq!(
-            crate::texts::english_text(|catalog, out| {
+            english_text(|catalog, out| {
                 notes::write_empty_drive_hint(catalog, out, types, Some(&inherited), false);
             }),
             "System default: games/system.d88"
@@ -1399,7 +1394,7 @@ mod tests {
         assert_eq!(inherited.values, ["games/system.hdi"]);
         assert_eq!(inherited.source, inherited::InheritedSource::SystemDefaults);
         assert_eq!(
-            crate::texts::english_text(|catalog, out| {
+            english_text(|catalog, out| {
                 editor.write_path_placeholder(catalog, out, index);
             }),
             "Empty"

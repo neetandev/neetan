@@ -1,7 +1,7 @@
 //! Filesystem path utilities.
 
 use std::{
-    ffi::{CStr, CString},
+    ffi::{CStr, CString, c_void},
     path::PathBuf,
 };
 
@@ -28,7 +28,7 @@ pub fn get_pref_path(org: &str, app: &str) -> Option<PathBuf> {
             return None;
         }
         let path = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-        sdl3_sys::stdinc::SDL_free(ptr as *mut std::ffi::c_void);
+        sdl3_sys::stdinc::SDL_free(ptr as *mut c_void);
         Some(PathBuf::from(path))
     }
 }

@@ -11,9 +11,10 @@ mod snapshot;
 #[cfg(test)]
 mod test_support;
 
-use std::time::Instant;
+use std::{result, time::Instant};
 
 use common::{Error, FlushError, JoystickState, Machine, StringError, error, info, warn};
+use save_state::MachineStateBlob;
 use sdl3_backend::DisplayAspectMode;
 
 pub(crate) use self::panic_guard::catch_panic;
@@ -50,7 +51,7 @@ pub(crate) struct Session {
     /// The emulated machine.
     machine: Box<dyn Machine>,
     /// The single in-memory runtime snapshot.
-    runtime_snapshot: Option<save_state::MachineStateBlob>,
+    runtime_snapshot: Option<MachineStateBlob>,
     /// The speed of the CPU on cycles per second.
     cpu_hz: f64,
     /// Tracks CPU cycle overshoot from previous audio steps for precise timing.
@@ -126,8 +127,8 @@ impl Drop for Session {
 /// becomes an error of the flush.
 fn flush_guarded(
     what: &str,
-    flush: impl FnOnce() -> std::result::Result<(), FlushError>,
-) -> std::result::Result<(), FlushError> {
+    flush: impl FnOnce() -> result::Result<(), FlushError>,
+) -> result::Result<(), FlushError> {
     let result = catch_panic(flush).unwrap_or_else(|message| {
         Err(FlushError::new(format!(
             "the flush of the {what} panicked: {message}"
@@ -144,9 +145,7 @@ fn flush_guarded(
 /// Writes the printer output, the cartridges, the floppy disks and the hard
 /// disks of `machine` back. Each flush runs under its own guard. Returns the
 /// errors of every flush that failed or panicked.
-pub(super) fn flush_machine_media(
-    machine: &mut dyn Machine,
-) -> std::result::Result<(), FlushError> {
+pub(super) fn flush_machine_media(machine: &mut dyn Machine) -> result::Result<(), FlushError> {
     let printer = flush_guarded("printer", || machine.flush_printer());
     let cartridges = flush_guarded("cartridges", || machine.flush_cartridges());
     let floppies = flush_guarded("floppy disks", || machine.flush_floppies());
@@ -253,7 +252,7 @@ impl Session {
     /// hard disks of the machine back. Each flush runs under its own guard.
     /// Returns the errors of every flush that failed or panicked, after the
     /// errors of the earlier flushes of the session.
-    pub(crate) fn flush_media(&mut self) -> std::result::Result<(), FlushError> {
+    pub(crate) fn flush_media(&mut self) -> result::Result<(), FlushError> {
         self.media_flushed = true;
         let earlier = std::mem::take(&mut self.earlier_flush_errors);
         let last = flush_machine_media(self.machine.as_mut());
@@ -262,7 +261,7 @@ impl Session {
 
     /// Keeps the error of a flush during the session for the end of the
     /// session.
-    pub(super) fn keep_flush_result(&mut self, result: std::result::Result<(), FlushError>) {
+    pub(super) fn keep_flush_result(&mut self, result: result::Result<(), FlushError>) {
         if let Err(error) = result {
             self.earlier_flush_errors.push(error);
         }

@@ -670,12 +670,16 @@ mod tests {
     use machine_msx::MsxModel;
 
     use super::*;
-    use crate::config::{
-        test_support::{
-            TestLocations, first_model, first_model_config, touch, with_first_model, with_machine,
-            write_file,
+    use crate::{
+        config::{
+            test_support::{
+                TestLocations, first_model, first_model_config, touch, with_first_model,
+                with_machine, write_file,
+            },
+            *,
         },
-        *,
+        gui_host::GuiHost,
+        texts::LanguageCatalog,
     };
 
     /// Verifies that the file parser skips unknown keys and invalid values.
@@ -1246,10 +1250,10 @@ mod tests {
             vec![root_font.clone(), resource_font.clone()]
         );
         assert_eq!(host.gui_font(), root_font);
-        let Err(message) = crate::gui_host::GuiHost::load(
+        let Err(message) = GuiHost::load(
             &host.gui_font_paths(),
             gui::ui::ThemeKind::Dark,
-            crate::texts::LanguageCatalog::English,
+            LanguageCatalog::English,
         ) else {
             panic!("a missing font does not load");
         };

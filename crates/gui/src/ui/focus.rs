@@ -525,7 +525,7 @@ fn directional_cost(from: Rect, to: Rect, navigation: Navigation) -> Option<Cost
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::ui_id_indexed;
+    use crate::ui::{ui_id, ui_id_indexed};
 
     /// A ring of the rectangles `rects` in their order.
     fn ring(rects: &[Rect]) -> Vec<Focusable> {
@@ -643,7 +643,7 @@ mod tests {
     /// down than the top of the footer button.
     fn short_page() -> Vec<Focusable> {
         let view = Rect::new(10.0, 50.0, 400.0, 100.0);
-        let anchor = ScrollAnchor::inside(crate::ui::ui_id("form"), view.y, view, None);
+        let anchor = ScrollAnchor::inside(ui_id("form"), view.y, view, None);
         let mut ring = ring(&[
             Rect::new(10.0, 10.0, 300.0, 30.0),
             Rect::new(100.0, 54.0, 300.0, 30.0),
@@ -701,7 +701,7 @@ mod tests {
         assert_eq!(step(&rows, Some(2), Navigation::Left), Some(1));
 
         let view = Rect::new(10.0, 50.0, 200.0, 100.0);
-        let anchor = ScrollAnchor::inside(crate::ui::ui_id("form"), view.y, view, None);
+        let anchor = ScrollAnchor::inside(ui_id("form"), view.y, view, None);
         let mut ring = ring(&[
             Rect::new(10.0, 60.0, 100.0, 30.0),
             Rect::new(120.0, 300.0, 80.0, 30.0),
@@ -720,7 +720,7 @@ mod tests {
     #[test]
     fn the_sideways_arrows_walk_a_row_outside_the_view() {
         let view = Rect::new(10.0, 100.0, 400.0, 100.0);
-        let anchor = ScrollAnchor::inside(crate::ui::ui_id("form"), 0.0, view, None);
+        let anchor = ScrollAnchor::inside(ui_id("form"), 0.0, view, None);
         let mut ring = ring(&[
             Rect::new(10.0, 20.0, 200.0, 30.0),
             Rect::new(220.0, 20.0, 80.0, 30.0),

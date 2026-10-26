@@ -623,9 +623,9 @@ pub fn caption_row(context: &mut UiContext, row: &ListRow, text: &str) {
 mod tests {
     use super::*;
     use crate::ui::{
-        ThemeKind,
+        Theme, ThemeKind, Viewport,
         scroll_bar::MINIMUM_THUMB,
-        tests::{Harness, pixel, srgb},
+        tests::{Harness, pixel, srgb, test_catalog},
     };
 
     /// The area of the list: 10 rows of 30 units fit, and 4 units of padding
@@ -645,7 +645,7 @@ mod tests {
 
     /// The center of the row `index` of [`LIST`] at the scroll offset
     /// `scroll` with the row height of `theme`.
-    fn row_center(theme: &crate::ui::Theme, index: usize, scroll: f32) -> (f32, f32) {
+    fn row_center(theme: &Theme, index: usize, scroll: f32) -> (f32, f32) {
         let row_height = theme.row_height;
         (
             LIST.center().0,
@@ -937,9 +937,9 @@ mod tests {
     #[test]
     fn the_list_works_at_twice_the_scale() {
         let mut harness = Harness::with_viewport(
-            crate::ui::Viewport::new(800, 800, 2.0),
+            Viewport::new(800, 800, 2.0),
             ThemeKind::Dark,
-            crate::ui::tests::test_catalog(),
+            test_catalog(),
         );
         let mut state = ListState::new();
         draw(&mut harness, 5, &mut state);

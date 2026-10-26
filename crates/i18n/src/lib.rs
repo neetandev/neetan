@@ -9,11 +9,17 @@
 //! A [`Catalog`] holds the texts of one language for a schema. A fixed text is a `&str` that the
 //! catalog borrows from its text storage. A [`Message`] holds the key and the arguments of a text
 //! with placeholders on the stack. The catalog writes it into a caller buffer or through
-//! [`core::fmt::Display`]. A key that a language file lacks takes the text of the fallback
+//! [`Display`]. A key that a language file lacks takes the text of the fallback
 //! catalog.
 
 #[cfg(test)]
 extern crate self as i18n;
+
+#[cfg(doc)]
+use core::fmt::Display;
+
+#[cfg(test)]
+use allocation_counter::CountingAllocator;
 
 mod catalog;
 #[cfg(test)]
@@ -36,4 +42,4 @@ pub use schema::{
 /// The global allocator of the test binary. It counts the allocations of each thread.
 #[cfg(test)]
 #[global_allocator]
-static ALLOCATOR: allocation_counter::CountingAllocator = allocation_counter::CountingAllocator;
+static ALLOCATOR: CountingAllocator = CountingAllocator;

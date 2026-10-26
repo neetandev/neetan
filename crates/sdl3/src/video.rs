@@ -2,7 +2,7 @@ use std::{ffi::CString, marker::PhantomData};
 
 use sdl3_sys::{init, keyboard as keyboard_ffi, mouse as mouse_ffi, rect::SDL_Rect, video as ffi};
 
-use crate::Error;
+use crate::{Error, render::Renderer};
 
 /// Manages the SDL3 video subsystem. Calls `SDL_QuitSubSystem(VIDEO)` on drop.
 pub struct VideoSubsystem {
@@ -343,8 +343,8 @@ impl Window {
     }
 
     /// Creates a 2D rendering context for this window. SDL picks the best driver.
-    pub fn create_renderer(&self) -> Result<crate::render::Renderer, Error> {
-        crate::render::Renderer::new_for_raw_window(self.ptr)
+    pub fn create_renderer(&self) -> Result<Renderer, Error> {
+        Renderer::new_for_raw_window(self.ptr)
     }
 }
 

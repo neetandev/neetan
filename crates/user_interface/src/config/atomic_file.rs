@@ -1,7 +1,8 @@
 //! The atomic replacement of a file.
 
 use std::{
-    io::Write,
+    fs::{Metadata, Permissions},
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -27,7 +28,7 @@ static TEMPORARY_COUNTER: AtomicUsize = AtomicUsize::new(0);
 ///
 /// Returns the metadata of the written file. The open temporary file gives
 /// it after the sync, before the rename puts the file in place.
-pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<std::fs::Metadata> {
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<Metadata> {
     let target = link_target(path)?;
     if let Some(folder) = target
         .parent()
@@ -57,7 +58,7 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<std
 }
 
 /// Returns the file that a save of `path` writes: the end of a chain of symbolic links.
-fn link_target(path: &Path) -> std::io::Result<PathBuf> {
+fn link_target(path: &Path) -> io::Result<PathBuf> {
     let mut target = path.to_path_buf();
     for _ in 0..MAXIMUM_LINK_DEPTH {
         let is_link = std::fs::symlink_metadata(&target)
@@ -71,15 +72,15 @@ fn link_target(path: &Path) -> std::io::Result<PathBuf> {
             Some(_) | None => link,
         };
     }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::InvalidInput,
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
         format!("{} has too many levels of symbolic links", path.display()),
     ))
 }
 
 /// Flushes the folder of `path` to the disk.
 #[cfg(unix)]
-fn sync_folder(path: &Path) -> std::io::Result<()> {
+fn sync_folder(path: &Path) -> io::Result<()> {
     match path
         .parent()
         .filter(|folder| !folder.as_os_str().is_empty())
@@ -91,15 +92,15 @@ fn sync_folder(path: &Path) -> std::io::Result<()> {
 
 /// Flushes the folder of `path` to the disk. Other systems commit the rename on their own.
 #[cfg(not(unix))]
-fn sync_folder(_path: &Path) -> std::io::Result<()> {
+fn sync_folder(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
 /// Returns a temporary path in the folder of `path`.
-fn temporary_path(path: &Path) -> std::io::Result<PathBuf> {
+fn temporary_path(path: &Path) -> io::Result<PathBuf> {
     let Some(file_name) = path.file_name() else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
             format!("{} has no file name", path.display()),
         ));
     };
@@ -119,8 +120,8 @@ fn temporary_path(path: &Path) -> std::io::Result<PathBuf> {
 fn write_synced(
     path: &Path,
     bytes: &[u8],
-    permissions: Option<std::fs::Permissions>,
-) -> std::io::Result<std::fs::Metadata> {
+    permissions: Option<Permissions>,
+) -> io::Result<Metadata> {
     let mut file = std::fs::File::create(path)?;
     file.write_all(bytes)?;
     if let Some(permissions) = permissions {
@@ -146,7 +147,7 @@ mod tests {
         let folder = temporary.path();
         let real = folder.join("real.conf");
         std::fs::write(&real, "machine=X1\n").expect("file is written");
-        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o640))
+        std::fs::set_permissions(&real, Permissions::from_mode(0o640))
             .expect("permissions are set");
         let link = folder.join("link.conf");
         std::os::unix::fs::symlink("real.conf", &link).expect("link is created");

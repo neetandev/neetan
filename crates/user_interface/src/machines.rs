@@ -1,19 +1,19 @@
 //! Host-side machine services: the SDL wall clock.
 
-use common::HostDateTime;
+use common::{HostDateTime, HostDateTimeSource, SharedHostDateTimeSource};
 pub use machine_factory::machines::initialize_machine;
 
 /// Host date-time source backed by the SDL local wall clock.
 struct SdlHostDateTime;
 
-impl common::HostDateTimeSource for SdlHostDateTime {
+impl HostDateTimeSource for SdlHostDateTime {
     fn now(&self) -> HostDateTime {
         host_date_time()
     }
 }
 
 /// Returns a shared host date-time source backed by the SDL wall clock.
-pub(crate) fn sdl_host_date_time_source() -> common::SharedHostDateTimeSource {
+pub(crate) fn sdl_host_date_time_source() -> SharedHostDateTimeSource {
     std::sync::Arc::new(SdlHostDateTime)
 }
 

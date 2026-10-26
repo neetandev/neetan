@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{ffi::c_void, marker::PhantomData};
 
 use sdl3_sys::{
     blendmode::{
@@ -279,7 +279,7 @@ impl Texture {
             ffi::SDL_UpdateTexture(
                 self.ptr,
                 rect_ptr,
-                pixels.as_ptr() as *const std::ffi::c_void,
+                pixels.as_ptr() as *const c_void,
                 pitch as i32,
             )
         };

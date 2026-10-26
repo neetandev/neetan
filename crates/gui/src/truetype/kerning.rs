@@ -865,6 +865,7 @@ impl ClassDefinition {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::fonts::tests::font;
 
     /// A kerning pair of left glyph, right glyph and value.
     type KernPair = (u16, u16, i16);
@@ -1369,7 +1370,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_first_glyph_index_keeps_every_adjustment() {
-        let font = crate::fonts::tests::font();
+        let font = font();
         let kerning = &font.kerning;
         let covered = kerning.covered.as_ref().expect("the font has an index");
         let unindexed = Kerning {

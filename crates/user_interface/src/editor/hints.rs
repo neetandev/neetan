@@ -294,7 +294,10 @@ mod tests {
     };
 
     use super::*;
-    use crate::gui_test_support::{GuiHarness, assert_hints_fit};
+    use crate::{
+        gui_test_support::{GuiHarness, assert_hints_fit},
+        texts::english_labels,
+    };
 
     /// Verifies that the six hints of a set number field show every key cap at the minimum window size in every language.
     #[test]
@@ -323,7 +326,7 @@ mod tests {
         harness.state.set_focus(id);
         harness.frame(|context| {
             context.focusable(id, Rect::new(0.0, 0.0, 10.0, 10.0), NavigationSet::EMPTY);
-            crate::texts::english_labels(&editor_hints(context, &[widget]))
+            english_labels(&editor_hints(context, &[widget]))
         })
     }
 

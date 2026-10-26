@@ -403,7 +403,7 @@ mod tests {
                 TestRoot, first_system, games, sample_root, select, steady_frame, titles,
             },
         },
-        texts::LanguageCatalog,
+        texts::{LanguageCatalog, test_catalog},
     };
 
     /// Verifies that confirm launches the selected game and that confirm on a file with an error asks to delete it.
@@ -715,8 +715,8 @@ mod tests {
     #[test]
     fn a_catalog_switch_refills_the_buffered_texts_in_the_next_frame() {
         let german = || {
-            let german = crate::texts::test_catalog(GERMAN_COUNTS);
-            crate::texts::LanguageCatalog::Loaded(Box::new(german))
+            let german = test_catalog(GERMAN_COUNTS);
+            LanguageCatalog::Loaded(Box::new(german))
         };
         let test = TestRoot::new("catalog_switch");
         games(&test, &["A", "B"]);
@@ -729,7 +729,7 @@ mod tests {
         harness.frame(|context| manager.show(context));
         assert_eq!(manager.texts.counts.last_text(), Some("2 Spiele"));
 
-        harness.set_catalog(crate::texts::LanguageCatalog::English);
+        harness.set_catalog(LanguageCatalog::English);
         harness.state.set_focus(UiId::from(GAME_TABLE_ID));
         harness.input.shortcut = Some(Shortcut::F2);
         harness.settle(|context| manager.show(context));
@@ -809,11 +809,9 @@ mod tests {
             PassCounts::NONE,
             "a steady frame of the files with errors"
         );
-        harness.set_catalog(LanguageCatalog::Loaded(Box::new(
-            crate::texts::test_catalog(
-                "[diagnostic]\nunknown-machine = Maschine {value} unbekannt\n",
-            ),
-        )));
+        harness.set_catalog(LanguageCatalog::Loaded(Box::new(test_catalog(
+            "[diagnostic]\nunknown-machine = Maschine {value} unbekannt\n",
+        ))));
         harness.settle(|context| manager.show(context));
         assert_eq!(
             manager.texts.located_error.last_text(),

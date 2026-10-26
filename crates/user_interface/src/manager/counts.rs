@@ -2,7 +2,7 @@
 //! files with errors of the system, with the shown numbers while a filter
 //! applies.
 
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 
 use gui::ui::TextValue;
 use i18n::Catalog;
@@ -42,9 +42,9 @@ struct CountPart<'a> {
     errors: bool,
 }
 
-impl std::fmt::Display for CountPart<'_> {
+impl fmt::Display for CountPart<'_> {
     /// Writes the count of the part in the catalog.
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let total = self.total as u64;
         let shown = &self.shown;
         match (self.errors, self.filtering) {

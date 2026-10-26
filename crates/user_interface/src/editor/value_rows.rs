@@ -6,10 +6,13 @@ use gui::{
     Rect,
     ui::{Button, Dropdown, Icon, NumberField, TextField, Truncation, UiContext},
 };
+use i18n::Catalog;
 use machine_factory::config::settings::{
     MACHINE_KEY, NumberRange, Setting, model_limits::ChoiceFact,
 };
 
+#[cfg(test)]
+use super::notes::tests::{Note, english_note};
 use super::{
     BrowseTarget, Editor, Subject,
     fields::FieldValue,
@@ -206,12 +209,7 @@ impl Editor {
     /// Writes the placeholder of the path field at `index`: the text
     /// `note.empty-image` for a field that the file empties, else the
     /// inherited value.
-    pub(super) fn write_path_placeholder(
-        &self,
-        catalog: &i18n::Catalog,
-        out: &mut String,
-        index: usize,
-    ) {
+    pub(super) fn write_path_placeholder(&self, catalog: &Catalog, out: &mut String, index: usize) {
         if self.fields[index].is_empty_path() {
             out.push_str(catalog.text(note::EMPTY_IMAGE));
         } else {
@@ -377,14 +375,8 @@ impl Editor {
         index: usize,
         setting: &'static Setting,
         ignored: Option<IgnoredBy>,
-    ) -> (
-        super::notes::tests::Note,
-        Option<super::notes::tests::Note>,
-        bool,
-    ) {
-        let note = super::notes::tests::english_note(|writer| {
-            self.write_path_note(writer, index, setting, ignored)
-        });
+    ) -> (Note, Option<Note>, bool) {
+        let note = english_note(|writer| self.write_path_note(writer, index, setting, ignored));
         match self.host_path_note(index, setting) {
             Some(host) => (note, host.flag, host.error),
             None => (note, None, false),

@@ -1,6 +1,9 @@
 //! Settings discovery, the root folder and the resolution of relative paths.
 
-use std::path::{Component, Path, PathBuf};
+use std::{
+    cmp::Ordering,
+    path::{Component, Path, PathBuf},
+};
 
 use common::{Context, warn};
 use i18n::is_language_tag;
@@ -248,7 +251,7 @@ pub fn find_language_files(folders: &[PathBuf]) -> Vec<LanguageFile> {
 
 /// Compares two language tags without regard to case.
 #[must_use]
-pub fn compare_tags(first: &str, second: &str) -> std::cmp::Ordering {
+pub fn compare_tags(first: &str, second: &str) -> Ordering {
     first
         .bytes()
         .map(|byte| byte.to_ascii_lowercase())
@@ -447,8 +450,8 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(compare_tags("pt-br", "PT-BR"), std::cmp::Ordering::Equal);
-        assert_eq!(compare_tags("De", "fr"), std::cmp::Ordering::Less);
+        assert_eq!(compare_tags("pt-br", "PT-BR"), Ordering::Equal);
+        assert_eq!(compare_tags("De", "fr"), Ordering::Less);
     }
 
     /// Verifies that a relative path lies below the base and that `.` components go.

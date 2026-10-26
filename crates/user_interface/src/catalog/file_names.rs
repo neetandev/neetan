@@ -106,6 +106,7 @@ mod tests {
     use common::temporary::TemporaryFolder;
 
     use super::*;
+    use crate::texts::english;
 
     /// Verifies the file names of the examples table of the design document.
     #[test]
@@ -144,10 +145,7 @@ mod tests {
                 "{title}"
             );
         }
-        assert_eq!(
-            copy_title(crate::texts::english(), "Brandish"),
-            "Brandish (copy)"
-        );
+        assert_eq!(copy_title(english(), "Brandish"), "Brandish (copy)");
         assert_eq!(title_file_stem("  --Ys--  "), "ys");
         assert_eq!(title_file_stem("A.Train IV"), "a-train-iv");
         assert_eq!(title_file_stem(""), FALLBACK_FILE_STEM);
@@ -158,18 +156,12 @@ mod tests {
     fn new_file_names_avoid_existing_files() {
         let folder = TemporaryFolder::new("file_names_test");
         assert_eq!(
-            new_game_file_name(
-                folder.path(),
-                &copy_title(crate::texts::english(), "Brandish")
-            ),
+            new_game_file_name(folder.path(), &copy_title(english(), "Brandish")),
             "brandish-copy.conf"
         );
         folder.write_file("Brandish-Copy.conf", b"");
         assert_eq!(
-            new_game_file_name(
-                folder.path(),
-                &copy_title(crate::texts::english(), "Brandish")
-            ),
+            new_game_file_name(folder.path(), &copy_title(english(), "Brandish")),
             "brandish-copy-2.conf"
         );
         assert_eq!(

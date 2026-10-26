@@ -293,7 +293,7 @@ impl<'a> ConfirmDialog<'a> {
 mod tests {
     use super::*;
     use crate::ui::{
-        Navigation, NavigationSet,
+        Navigation, NavigationSet, count_wraps,
         tests::{Harness, TEST_ACTIVATE_KEYS, TEST_CANCEL_KEYS, TEST_CONFIRM_KEYS, pixel, srgb},
     };
 
@@ -346,7 +346,7 @@ mod tests {
             draw_with(&mut harness, delete(), &mut lines);
             draw_with(&mut harness, delete(), &mut lines);
             let (allocations, (wraps, response)) = allocation_counter::count_allocations(|| {
-                crate::ui::count_wraps(|| draw_with(&mut harness, delete(), &mut lines))
+                count_wraps(|| draw_with(&mut harness, delete(), &mut lines))
             });
             assert_eq!(harness.state.focused(), Some(focus));
             assert_eq!(response.action_focused, focus == delete().action_id());

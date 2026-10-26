@@ -541,7 +541,10 @@ mod tests {
     use super::*;
     use crate::{
         gui_test_support::GuiHarness,
-        texts::repository::{RepositoryLanguage, repository_languages},
+        texts::{
+            LanguageCatalog,
+            repository::{RepositoryLanguage, repository_languages},
+        },
     };
 
     /// The image files of the test dialog.
@@ -584,16 +587,12 @@ mod tests {
         /// A dialog on the first floppy drive at `viewport` in the theme
         /// `kind` with the English texts.
         fn new(viewport: Viewport, kind: ThemeKind) -> Self {
-            Self::with_catalog(viewport, kind, crate::texts::LanguageCatalog::English)
+            Self::with_catalog(viewport, kind, LanguageCatalog::English)
         }
 
         /// A dialog on the first floppy drive at `viewport` in the theme
         /// `kind` with the texts of `catalog`.
-        fn with_catalog(
-            viewport: Viewport,
-            kind: ThemeKind,
-            catalog: crate::texts::LanguageCatalog,
-        ) -> Self {
+        fn with_catalog(viewport: Viewport, kind: ThemeKind, catalog: LanguageCatalog) -> Self {
             Self {
                 gui: GuiHarness::with_viewport(viewport, kind, catalog),
                 dialog: MediaDialog::new(available_drives(2, true), 0, Some(3)),
