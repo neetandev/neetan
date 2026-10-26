@@ -103,6 +103,11 @@ pub struct UiState {
     /// The scroll offset of the text of the focused text widget in logical
     /// units.
     pub(super) text_scroll: f32,
+    /// The text of the last copy or cut. The buffer stays between copies.
+    copied: String,
+    /// Whether a copy or a cut wrote the copied text and the caller has not
+    /// taken it.
+    copy_pending: bool,
     /// The drag of the active widget.
     pub(super) drag: Option<Drag>,
     /// The deepest layer that the last pass drew.
@@ -145,6 +150,8 @@ impl Default for UiState {
             text_owner: None,
             text_edit: TextEdit::default(),
             text_scroll: 0.0,
+            copied: String::new(),
+            copy_pending: false,
             drag: None,
             deepest: 0,
             modals: Vec::new(),
@@ -196,6 +203,13 @@ impl UiState {
     /// pixels.
     pub fn text_input_caret(&self) -> Option<f32> {
         self.text_caret
+    }
+
+    /// The text of a copy or a cut in the passes since the last call, for
+    /// the clipboard of the platform. A second call without a new copy
+    /// gives `None`.
+    pub fn take_copied(&mut self) -> Option<&str> {
+        std::mem::take(&mut self.copy_pending).then_some(self.copied.as_str())
     }
 
     /// Whether the focus indicator shows.
@@ -304,6 +318,18 @@ impl UiState {
         &mut self.text_edit
     }
 
+    /// Copies the selected part of `text` of the edit state into the
+    /// clipboard output. Without a selection it does nothing.
+    pub(super) fn copy_selection(&mut self, text: &str) {
+        let selected = self.text_edit.selected_text(text);
+        if selected.is_empty() {
+            return;
+        }
+        self.copied.clear();
+        self.copied.push_str(selected);
+        self.copy_pending = true;
+    }
+
     /// The layer of the widget `id` in the ring of this pass, or else in the
     /// ring of the last pass.
     pub(super) fn layer_of(&self, id: UiId) -> Option<u32> {
@@ -349,6 +375,7 @@ impl UiState {
             || input.action.is_some()
             || input.shortcut.is_some()
             || input.edit.is_some()
+            || !input.paste.is_empty()
         {
             self.focus_visible = true;
         }

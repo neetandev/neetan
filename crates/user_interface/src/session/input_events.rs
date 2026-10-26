@@ -12,7 +12,7 @@ use sdl3::{
 
 use super::{Session, SessionExit};
 use crate::{
-    gui_host::{key_event, pointer_or_text_event},
+    gui_host::keys::pointer_or_text_event,
     host::Host,
     input::{JoystickKey, host_key_from_scancode},
     media_dialog::Drive,
@@ -180,7 +180,11 @@ impl Session {
             }
             return;
         }
-        if let Some(gui_event) = key_event(scancode, keymod, repeat) {
+        if let Some(gui_event) = host
+            .gui
+            .as_ref()
+            .and_then(|gui| gui.key_event(scancode, keymod, repeat))
+        {
             self.handle_gui_event(gui_event, host);
         }
     }

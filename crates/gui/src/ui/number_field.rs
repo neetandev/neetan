@@ -429,7 +429,7 @@ mod tests {
     use crate::{
         Instance,
         ui::{
-            EditCommand, NavigationSet,
+            EditCommand, EditModifiers, NavigationSet,
             tests::{Harness, pixel, srgb},
         },
     };
@@ -801,6 +801,28 @@ mod tests {
         draw(harness, field, text);
     }
 
+    /// Pastes the clipboard text `pasted` into `field` over `text`.
+    fn paste(
+        harness: &mut Harness,
+        field: NumberField,
+        text: &mut String,
+        pasted: &str,
+    ) -> TextFieldResponse {
+        harness.input.paste.push_str(pasted);
+        draw(harness, field, text)
+    }
+
+    /// Sends the edit command `command` to `field` over `text`.
+    fn command(
+        harness: &mut Harness,
+        field: NumberField,
+        text: &mut String,
+        command: EditCommand,
+    ) -> TextFieldResponse {
+        harness.input.edit = Some(command);
+        draw(harness, field, text)
+    }
+
     /// A harness with the focus on the field after one pass of `field`
     /// over `text`.
     fn focused(field: NumberField, text: &mut String) -> Harness {
@@ -988,5 +1010,61 @@ mod tests {
         assert!(!whole.reachable("-1"));
         assert!(!whole.reachable("1."));
         assert!(whole.reachable("19"));
+    }
+
+    /// Verifies that a paste into an empty field and over a selection passes the rule of the
+    /// whole text, takes the first line and drops control characters.
+    #[test]
+    fn a_paste_passes_the_rule_of_the_whole_text() {
+        let mut text = String::new();
+        let mut harness = focused(year(), &mut text);
+        assert!(paste(&mut harness, year(), &mut text, "1996").changed);
+        assert_eq!(text, "1996");
+        command(&mut harness, year(), &mut text, EditCommand::SelectAll);
+        assert!(paste(&mut harness, year(), &mut text, "20\t01\r\n1999").changed);
+        assert_eq!(text, "2001");
+    }
+
+    /// Verifies that a paste that the rule rejects leaves the text and the selection.
+    #[test]
+    fn a_rejected_paste_leaves_the_text() {
+        let mut text = String::from("1996");
+        let mut harness = focused(year(), &mut text);
+        for pasted in ["19x6", "12345", "-1", " 1"] {
+            assert!(!paste(&mut harness, year(), &mut text, pasted).changed);
+            assert_eq!(text, "1996");
+        }
+        command(&mut harness, year(), &mut text, EditCommand::SelectAll);
+        assert!(!paste(&mut harness, year(), &mut text, "0123").changed);
+        assert_eq!(text, "1996");
+        assert!(paste(&mut harness, year(), &mut text, "7").changed);
+        assert_eq!(text, "7");
+    }
+
+    /// Verifies that copy and cut take the selection of a number field and that cut may empty
+    /// it.
+    #[test]
+    fn copy_and_cut_take_the_selection_of_a_number() {
+        let mut text = String::from("1996");
+        let mut harness = focused(year(), &mut text);
+        assert!(!command(&mut harness, year(), &mut text, EditCommand::Cut).changed);
+        assert_eq!(harness.state.take_copied(), None);
+        key(&mut harness, year(), &mut text, Navigation::Left);
+        harness.navigate_with(
+            Navigation::Home,
+            EditModifiers {
+                extend: true,
+                ..EditModifiers::default()
+            },
+        );
+        draw(&mut harness, year(), &mut text);
+        command(&mut harness, year(), &mut text, EditCommand::Copy);
+        assert_eq!(harness.state.take_copied(), Some("199"));
+        assert_eq!(text, "1996");
+        command(&mut harness, year(), &mut text, EditCommand::SelectAll);
+        assert!(command(&mut harness, year(), &mut text, EditCommand::Cut).changed);
+        assert!(text.is_empty());
+        assert_eq!(harness.state.take_copied(), Some("1996"));
+        assert_eq!(harness.state.take_copied(), None);
     }
 }

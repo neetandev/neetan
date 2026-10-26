@@ -1,24 +1,25 @@
 //! The host of the graphical user interface: the font, the theme, the
 //! catalog of the language, the widget state, the input of the next pass and
-//! the scene of the last pass, and the mapping of the SDL events to the
-//! input.
+//! the scene of the last pass.
 
-use std::{
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+mod gamepad;
+pub(crate) mod keys;
+
+use std::path::PathBuf;
 
 use common::{info, warn};
+use gamepad::GamepadNavigation;
 use gui::{
     Fonts, Scene,
+    truetype::FontError,
     ui::{
         ActionButton, EditCommand, EditModifiers, Input, Navigation, NavigationSource, Shortcut,
-        Theme, ThemeKind, UiContext, UiState, Viewport,
+        Theme, ThemeKind, UiContext, UiId, UiState, Viewport,
     },
 };
+use keys::key_event;
 use sdl3::{
-    event::Event,
-    gamepad::{GamepadAxis, GamepadButton},
+    Error, clipboard,
     keyboard::{Mod, Scancode},
     mouse::MouseButton,
     video::Window,
@@ -27,21 +28,9 @@ use sdl3_backend::Overlay;
 
 use crate::{config::GuiTheme, texts::LanguageCatalog};
 
-/// The delay before a held gamepad direction repeats.
-const REPEAT_DELAY: Duration = Duration::from_millis(400);
-
-/// The interval between the repeats of a held gamepad direction.
-const REPEAT_INTERVAL: Duration = Duration::from_millis(80);
-
 /// The most passes in a row that the widgets ask for without an event in
 /// between. A widget that asks on every pass stops there.
 const MAXIMUM_CHAINED_PASSES: u32 = 4;
-
-/// The stick deflection that engages a direction.
-const STICK_PRESS: i16 = 16384;
-
-/// The stick deflection below which an engaged direction releases.
-const STICK_RELEASE: i16 = 11000;
 
 /// A discrete or accumulating input event of the user interface.
 #[derive(Clone, Debug, PartialEq)]
@@ -79,8 +68,11 @@ pub(crate) enum GuiEvent {
     KeyNavigation(Navigation, EditModifiers),
     /// A gamepad direction or shoulder button.
     GamepadNavigation(Navigation),
-    /// An edit command of the focused text widget: select all or delete.
+    /// An edit command of the focused text widget: select all, copy, cut or
+    /// delete.
     Edit(EditCommand),
+    /// A paste of the clipboard text into the focused text widget.
+    Paste(String),
     /// A confirm key or the confirm button of a gamepad.
     Confirm,
     /// The escape key or the cancel button of a gamepad.
@@ -102,342 +94,6 @@ impl GuiEvent {
     /// add up until the next pass.
     fn is_discrete(&self) -> bool {
         !matches!(self, Self::PointerMoved { .. } | Self::Wheel { .. })
-    }
-}
-
-/// The event of a pressed key. A repeated key press counts only for the
-/// navigation keys, backspace and delete. Left Ctrl with Page Up and Page
-/// Down switches the tab like the shoulder buttons. Delete is the edit
-/// command [`EditCommand::DeleteForward`]. The command key with A selects
-/// all. The right control key belongs to the shell and never forms a
-/// shortcut or an edit command.
-pub(crate) fn key_event(scancode: Scancode, keymod: &Mod, repeat: bool) -> Option<GuiEvent> {
-    let control = keymod.lctrl();
-    let navigation = match scancode {
-        Scancode::Up => Some(Navigation::Up),
-        Scancode::Down => Some(Navigation::Down),
-        Scancode::Left => Some(Navigation::Left),
-        Scancode::Right => Some(Navigation::Right),
-        Scancode::PageUp if control => Some(Navigation::PreviousTab),
-        Scancode::PageDown if control => Some(Navigation::NextTab),
-        Scancode::PageUp => Some(Navigation::PageUp),
-        Scancode::PageDown => Some(Navigation::PageDown),
-        Scancode::Home => Some(Navigation::Home),
-        Scancode::End => Some(Navigation::End),
-        Scancode::Tab if keymod.shift() => Some(Navigation::Previous),
-        Scancode::Tab => Some(Navigation::Next),
-        _ => None,
-    };
-    if let Some(navigation) = navigation {
-        return Some(GuiEvent::KeyNavigation(
-            navigation,
-            edit_modifiers(scancode, keymod),
-        ));
-    }
-    if scancode == Scancode::Backspace {
-        return Some(GuiEvent::Backspace);
-    }
-    if keymod.rctrl() {
-        return None;
-    }
-    if scancode == Scancode::Delete {
-        return Some(GuiEvent::Edit(EditCommand::DeleteForward));
-    }
-    if repeat {
-        return None;
-    }
-    let shortcut = match scancode {
-        Scancode::Return | Scancode::KpEnter => return Some(GuiEvent::Confirm),
-        Scancode::Escape => return Some(GuiEvent::Cancel),
-        Scancode::A if command_modifier(keymod) => {
-            return Some(GuiEvent::Edit(EditCommand::SelectAll));
-        }
-        Scancode::Insert => Shortcut::Insert,
-        Scancode::F2 => Shortcut::F2,
-        Scancode::F5 => Shortcut::F5,
-        Scancode::F10 => Shortcut::F10,
-        Scancode::F if control => Shortcut::ControlF,
-        Scancode::D if control => Shortcut::ControlD,
-        Scancode::S if control => Shortcut::ControlS,
-        _ => return None,
-    };
-    Some(GuiEvent::Shortcut(shortcut))
-}
-
-/// The modifiers of the navigation key `scancode` with the held keys
-/// `keymod`. Shift extends the selection with left, right, home and end.
-/// The word modifier turns left and right into word steps, and the edge
-/// modifier into steps to the start and the end.
-fn edit_modifiers(scancode: Scancode, keymod: &Mod) -> EditModifiers {
-    let horizontal = matches!(scancode, Scancode::Left | Scancode::Right);
-    let cursor_key = horizontal || matches!(scancode, Scancode::Home | Scancode::End);
-    EditModifiers {
-        extend: cursor_key && keymod.shift(),
-        word: horizontal && word_modifier(keymod),
-        edge: horizontal && edge_modifier(keymod),
-    }
-}
-
-/// Whether the modifier of a word step is held: Option on macOS.
-#[cfg(target_os = "macos")]
-fn word_modifier(keymod: &Mod) -> bool {
-    keymod.alt()
-}
-
-/// Whether the modifier of a word step is held: the left control key.
-#[cfg(not(target_os = "macos"))]
-fn word_modifier(keymod: &Mod) -> bool {
-    keymod.lctrl()
-}
-
-/// Whether the modifier of a step to the start or the end of a text is
-/// held: Cmd on macOS.
-#[cfg(target_os = "macos")]
-fn edge_modifier(keymod: &Mod) -> bool {
-    keymod.gui()
-}
-
-/// Whether the modifier of a step to the start or the end of a text is
-/// held. Only macOS has one. Home and end take the step everywhere.
-#[cfg(not(target_os = "macos"))]
-fn edge_modifier(_keymod: &Mod) -> bool {
-    false
-}
-
-/// Whether the command key of select all is held: Cmd on macOS.
-#[cfg(target_os = "macos")]
-fn command_modifier(keymod: &Mod) -> bool {
-    keymod.gui()
-}
-
-/// Whether the command key of select all is held: the left control key.
-#[cfg(not(target_os = "macos"))]
-fn command_modifier(keymod: &Mod) -> bool {
-    keymod.lctrl()
-}
-
-/// The event of a mouse, text or input method event of SDL. Keyboard and
-/// gamepad events have their own mapping.
-pub(crate) fn pointer_or_text_event(event: &Event) -> Option<GuiEvent> {
-    match event {
-        Event::MouseMotion { x, y, .. } => Some(GuiEvent::PointerMoved { x: *x, y: *y }),
-        Event::MouseButtonDown {
-            mouse_btn,
-            clicks,
-            x,
-            y,
-        } => Some(GuiEvent::Button {
-            button: *mouse_btn,
-            pressed: true,
-            double: *clicks >= 2,
-            x: *x,
-            y: *y,
-        }),
-        Event::MouseButtonUp {
-            mouse_btn, x, y, ..
-        } => Some(GuiEvent::Button {
-            button: *mouse_btn,
-            pressed: false,
-            double: false,
-            x: *x,
-            y: *y,
-        }),
-        Event::MouseWheel {
-            y,
-            mouse_x,
-            mouse_y,
-            ..
-        } => Some(GuiEvent::Wheel {
-            steps: *y,
-            x: *mouse_x,
-            y: *mouse_y,
-        }),
-        Event::TextInput { text } => Some(GuiEvent::Text(text.clone())),
-        Event::TextEditing { text, .. } => Some(GuiEvent::Composition(text.clone())),
-        _ => None,
-    }
-}
-
-/// The control that holds a gamepad direction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DirectionSource {
-    /// The D-pad.
-    Dpad,
-    /// The left stick.
-    Stick,
-}
-
-/// A held direction that repeats.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Repeat {
-    /// The direction.
-    navigation: Navigation,
-    /// The time of the next repeat.
-    next: Instant,
-}
-
-/// The navigation of a gamepad: the D-pad and the left stick with a
-/// synthesized repeat while a direction is held, and the face, shoulder and
-/// start buttons.
-#[derive(Debug, Default)]
-pub(crate) struct GamepadNavigation {
-    /// The held directions of the D-pad and the stick, the most recent last.
-    held: Vec<(DirectionSource, Navigation)>,
-    /// The horizontal deflection of the left stick.
-    stick_x: i16,
-    /// The vertical deflection of the left stick.
-    stick_y: i16,
-    /// The engaged direction of the left stick.
-    stick: Option<Navigation>,
-    /// The direction that repeats.
-    repeat: Option<Repeat>,
-}
-
-impl GamepadNavigation {
-    /// Forgets the held directions.
-    pub(crate) fn clear(&mut self) {
-        *self = Self::default();
-    }
-
-    /// Holds `navigation` from `source`, starts its repeat at `now` and
-    /// returns its event.
-    fn press(&mut self, source: DirectionSource, navigation: Navigation, now: Instant) -> GuiEvent {
-        self.held.retain(|&entry| entry != (source, navigation));
-        self.held.push((source, navigation));
-        self.repeat = Some(Repeat {
-            navigation,
-            next: now + REPEAT_DELAY,
-        });
-        GuiEvent::GamepadNavigation(navigation)
-    }
-
-    /// Releases `navigation` from `source`. The repeat falls back to the most
-    /// recent direction still held, which repeats after the initial delay
-    /// from `now`, or stops.
-    fn release(&mut self, source: DirectionSource, navigation: Navigation, now: Instant) {
-        self.held.retain(|&entry| entry != (source, navigation));
-        let fallback = self.held.last().map(|&(_, held)| held);
-        let current = self.repeat.map(|repeat| repeat.navigation);
-        if fallback != current {
-            self.repeat = fallback.map(|navigation| Repeat {
-                navigation,
-                next: now + REPEAT_DELAY,
-            });
-        }
-    }
-
-    /// The event of a button change at `now`. A confirms, B cancels, the
-    /// shoulder buttons switch tabs, and X, Y and Start are action buttons.
-    pub(crate) fn button(
-        &mut self,
-        button: GamepadButton,
-        pressed: bool,
-        now: Instant,
-    ) -> Option<GuiEvent> {
-        let direction = match button {
-            GamepadButton::DpadUp => Some(Navigation::Up),
-            GamepadButton::DpadDown => Some(Navigation::Down),
-            GamepadButton::DpadLeft => Some(Navigation::Left),
-            GamepadButton::DpadRight => Some(Navigation::Right),
-            _ => None,
-        };
-        if let Some(navigation) = direction {
-            if pressed {
-                return Some(self.press(DirectionSource::Dpad, navigation, now));
-            }
-            self.release(DirectionSource::Dpad, navigation, now);
-            return None;
-        }
-        if !pressed {
-            return None;
-        }
-        match button {
-            GamepadButton::South => Some(GuiEvent::Confirm),
-            GamepadButton::East => Some(GuiEvent::Cancel),
-            GamepadButton::LeftShoulder => {
-                Some(GuiEvent::GamepadNavigation(Navigation::PreviousTab))
-            }
-            GamepadButton::RightShoulder => Some(GuiEvent::GamepadNavigation(Navigation::NextTab)),
-            GamepadButton::West => Some(GuiEvent::Action(ActionButton::X)),
-            GamepadButton::North => Some(GuiEvent::Action(ActionButton::Y)),
-            GamepadButton::Start => Some(GuiEvent::Action(ActionButton::Start)),
-            _ => None,
-        }
-    }
-
-    /// The event of a stick change at `now`. A direction engages past
-    /// [`STICK_PRESS`] on the axis with the larger deflection and releases
-    /// below [`STICK_RELEASE`].
-    pub(crate) fn axis(&mut self, axis: GamepadAxis, value: i16, now: Instant) -> Option<GuiEvent> {
-        match axis {
-            GamepadAxis::LeftX => self.stick_x = value,
-            GamepadAxis::LeftY => self.stick_y = value,
-            _ => return None,
-        }
-        let horizontal = self.stick_x.unsigned_abs();
-        let vertical = self.stick_y.unsigned_abs();
-        let still_engaged = match self.stick {
-            Some(Navigation::Left | Navigation::Right) => horizontal >= STICK_RELEASE as u16,
-            Some(_) => vertical >= STICK_RELEASE as u16,
-            None => false,
-        };
-        let engaged = if still_engaged {
-            match self.stick {
-                Some(Navigation::Left | Navigation::Right) => Some(if self.stick_x < 0 {
-                    Navigation::Left
-                } else {
-                    Navigation::Right
-                }),
-                _ => Some(if self.stick_y < 0 {
-                    Navigation::Up
-                } else {
-                    Navigation::Down
-                }),
-            }
-        } else if horizontal.max(vertical) >= STICK_PRESS as u16 {
-            Some(if horizontal >= vertical {
-                if self.stick_x < 0 {
-                    Navigation::Left
-                } else {
-                    Navigation::Right
-                }
-            } else if self.stick_y < 0 {
-                Navigation::Up
-            } else {
-                Navigation::Down
-            })
-        } else {
-            None
-        };
-        if engaged == self.stick {
-            return None;
-        }
-        let previous = std::mem::replace(&mut self.stick, engaged);
-        if let Some(previous) = previous {
-            self.release(DirectionSource::Stick, previous, now);
-        }
-        engaged.map(|navigation| self.press(DirectionSource::Stick, navigation, now))
-    }
-
-    /// The time of the next repeat of the held direction, or `None` while no
-    /// direction is held.
-    pub(crate) fn next_repeat(&self) -> Option<Instant> {
-        self.repeat.map(|repeat| repeat.next)
-    }
-
-    /// The repeat event of the held direction that is due at `now`.
-    pub(crate) fn poll(&mut self, now: Instant) -> Option<GuiEvent> {
-        let repeat = self.repeat.as_mut()?;
-        if now < repeat.next {
-            return None;
-        }
-        let next = repeat.next + REPEAT_INTERVAL;
-        repeat.next = if next <= now {
-            now + REPEAT_INTERVAL
-        } else {
-            next
-        };
-        Some(GuiEvent::GamepadNavigation(repeat.navigation))
     }
 }
 
@@ -521,7 +177,7 @@ impl GuiHost {
         data: Vec<u8>,
         kind: ThemeKind,
         catalog: LanguageCatalog,
-    ) -> Result<Self, gui::truetype::FontError> {
+    ) -> Result<Self, FontError> {
         let mut fonts = Fonts::new();
         let font = fonts.add(data)?;
         let theme = Theme::new(&mut fonts, font, kind);
@@ -572,7 +228,7 @@ impl GuiHost {
 
     /// Opens the modal layer `id` before the next pass, for a dialog that
     /// opens between passes, and waits for a pass.
-    pub(crate) fn open_layer(&mut self, id: gui::ui::UiId) {
+    pub(crate) fn open_layer(&mut self, id: UiId) {
         self.state.open_layer(id);
         self.pending = true;
     }
@@ -657,6 +313,7 @@ impl GuiHost {
             GuiEvent::Action(button) => input.action = Some(button),
             GuiEvent::Shortcut(shortcut) => input.shortcut = Some(shortcut),
             GuiEvent::Backspace => input.backspace = true,
+            GuiEvent::Paste(text) => input.paste.push_str(&text),
             GuiEvent::Text(text) => {
                 input.text.push_str(&text);
                 input.composition.clear();
@@ -669,6 +326,36 @@ impl GuiHost {
         discrete
     }
 
+    /// The event of the pressed key `scancode` with the held keys `keymod`.
+    /// The paste key reads the clipboard of the system only while a text
+    /// widget wants text input.
+    pub(crate) fn key_event(
+        &self,
+        scancode: Scancode,
+        keymod: &Mod,
+        repeat: bool,
+    ) -> Option<GuiEvent> {
+        self.key_event_with_clipboard(scancode, keymod, repeat, clipboard::text)
+    }
+
+    /// The event of a pressed key like [`GuiHost::key_event`] with the
+    /// clipboard read `read_clipboard`.
+    fn key_event_with_clipboard(
+        &self,
+        scancode: Scancode,
+        keymod: &Mod,
+        repeat: bool,
+        read_clipboard: impl FnOnce() -> Result<Option<String>, Error>,
+    ) -> Option<GuiEvent> {
+        key_event(
+            scancode,
+            keymod,
+            repeat,
+            self.state.wants_text_input(),
+            read_clipboard,
+        )
+    }
+
     /// Whether pointer motion, wheel steps, a window change or a widget that
     /// asked for another pass wait for a pass.
     pub(crate) fn pending(&self) -> bool {
@@ -677,8 +364,20 @@ impl GuiHost {
 
     /// Runs one pass of `draw` with the input so far and keeps its scene. A
     /// widget that asks for another pass leaves the host pending, up to
-    /// [`MAXIMUM_CHAINED_PASSES`] passes in a row without an event.
+    /// [`MAXIMUM_CHAINED_PASSES`] passes in a row without an event. The text
+    /// of a copy or a cut in the pass goes to the clipboard of the system.
     pub(crate) fn pass<R>(&mut self, draw: impl FnOnce(&mut UiContext) -> R) -> R {
+        self.pass_with_clipboard(draw, clipboard::set_text)
+    }
+
+    /// Runs one pass of `draw` like [`GuiHost::pass`] and hands the text of
+    /// a copy or a cut in the pass to `write_clipboard`. A failed write logs
+    /// a warning.
+    fn pass_with_clipboard<R>(
+        &mut self,
+        draw: impl FnOnce(&mut UiContext) -> R,
+        write_clipboard: impl FnOnce(&str) -> Result<(), Error>,
+    ) -> R {
         let mut context = UiContext::new(
             &mut self.scene,
             &mut self.fonts,
@@ -692,6 +391,11 @@ impl GuiHost {
         let result = draw(&mut context);
         context.finish();
         self.input.advance();
+        if let Some(copied) = self.state.take_copied()
+            && let Err(error) = write_clipboard(copied)
+        {
+            warn!("Failed to write the clipboard: {error}");
+        }
         let requested = self.state.take_pass_request();
         if requested && self.chained_passes < MAXIMUM_CHAINED_PASSES {
             self.chained_passes += 1;
@@ -772,63 +476,58 @@ impl GuiHost {
 mod tests {
     use gui::{
         Rect,
-        ui::{UiId, text_field},
+        ui::{Palette, text_field},
     };
 
-    use super::*;
-
-    /// No modifier keys.
-    const NO_MODIFIERS: Mod = Mod(0);
-
-    /// The left shift key.
-    const SHIFT: Mod = Mod(0x0001);
-
-    /// The left control key.
-    const LEFT_CONTROL: Mod = Mod(0x0040);
-
-    /// The right control key.
-    const RIGHT_CONTROL: Mod = Mod(0x0080);
-
-    /// The left shift key and the left control key.
-    const SHIFT_LEFT_CONTROL: Mod = Mod(0x0041);
-
-    /// The left Alt key, Option on macOS.
-    const LEFT_ALT: Mod = Mod(0x0100);
-
-    /// The left GUI key, Cmd on macOS.
-    const LEFT_GUI: Mod = Mod(0x0400);
-
-    /// The left shift key and the left GUI key.
-    #[cfg(target_os = "macos")]
-    const SHIFT_LEFT_GUI: Mod = Mod(0x0401);
-
-    /// No edit modifiers.
-    const NO_EDIT_MODIFIERS: EditModifiers = EditModifiers {
-        extend: false,
-        word: false,
-        edge: false,
+    use super::{
+        keys::tests::{
+            COMMAND, LEFT_CONTROL, NO_EDIT_MODIFIERS, NO_MODIFIERS, WORD, clipboard_with,
+            unread_clipboard,
+        },
+        *,
     };
-
-    /// The edit modifier that extends the selection.
-    const EXTEND: EditModifiers = EditModifiers {
-        extend: true,
-        ..NO_EDIT_MODIFIERS
-    };
-
-    /// The edit modifier of a word step.
-    const WORD: EditModifiers = EditModifiers {
-        word: true,
-        ..NO_EDIT_MODIFIERS
+    use crate::{
+        gui_test_support::repository_font,
+        texts::{common::SAVE, test_catalog},
     };
 
     /// A host with the font of the repository.
     fn host() -> GuiHost {
-        GuiHost::new(
-            crate::gui_test_support::repository_font(),
-            ThemeKind::Dark,
-            LanguageCatalog::English,
+        GuiHost::new(repository_font(), ThemeKind::Dark, LanguageCatalog::English)
+            .expect("the repository font parses")
+    }
+
+    /// The area of the text field of the host tests.
+    const FIELD: Rect = Rect::new(0.0, 0.0, 200.0, 32.0);
+
+    /// The event of the pressed key `scancode` with the held keys `keymod`
+    /// in `host`. The clipboard read fails the test.
+    fn key(host: &GuiHost, scancode: Scancode, keymod: &Mod, repeat: bool) -> Option<GuiEvent> {
+        host.key_event_with_clipboard(scancode, keymod, repeat, unread_clipboard)
+    }
+
+    /// Applies `event` and runs a pass of the text field over `text` that
+    /// writes the copied text into `written`. Returns whether the text
+    /// changed and the shortcut of the pass.
+    fn clipboard_pass(
+        host: &mut GuiHost,
+        event: Option<GuiEvent>,
+        text: &mut String,
+        written: &mut Vec<String>,
+    ) -> (bool, Option<Shortcut>) {
+        if let Some(event) = event {
+            host.apply(event);
+        }
+        host.pass_with_clipboard(
+            |context| {
+                let changed = text_field(context, "filter", FIELD, text, "Filter").changed;
+                (changed, context.shortcut())
+            },
+            |copied| {
+                written.push(copied.to_owned());
+                Ok(())
+            },
         )
-        .expect("the repository font parses")
     }
 
     /// Verifies that a missing font file gives the path and the setting that selects it.
@@ -866,132 +565,16 @@ mod tests {
         assert_eq!(theme_kind(GuiTheme::Dark), ThemeKind::Dark);
         assert_eq!(theme_kind(GuiTheme::Light), ThemeKind::Light);
         let host = GuiHost::new(
-            crate::gui_test_support::repository_font(),
+            repository_font(),
             ThemeKind::Light,
             LanguageCatalog::English,
         )
         .expect("the repository font parses");
-        assert_eq!(host.theme.colors, gui::ui::Palette::of(ThemeKind::Light));
+        assert_eq!(host.theme.colors, Palette::of(ThemeKind::Light));
     }
 
-    #[test]
-    fn keys_map_to_navigation_and_actions() {
-        let key = |scancode, keymod: &Mod, repeat| key_event(scancode, keymod, repeat);
-        assert_eq!(
-            key(Scancode::Up, &NO_MODIFIERS, false),
-            Some(GuiEvent::KeyNavigation(Navigation::Up, NO_EDIT_MODIFIERS))
-        );
-        assert_eq!(
-            key(Scancode::PageDown, &NO_MODIFIERS, false),
-            Some(GuiEvent::KeyNavigation(
-                Navigation::PageDown,
-                NO_EDIT_MODIFIERS
-            ))
-        );
-        assert_eq!(
-            key(Scancode::End, &NO_MODIFIERS, false),
-            Some(GuiEvent::KeyNavigation(Navigation::End, NO_EDIT_MODIFIERS))
-        );
-        assert_eq!(
-            key(Scancode::Tab, &NO_MODIFIERS, false),
-            Some(GuiEvent::KeyNavigation(Navigation::Next, NO_EDIT_MODIFIERS))
-        );
-        assert_eq!(
-            key(Scancode::Tab, &SHIFT, false),
-            Some(GuiEvent::KeyNavigation(
-                Navigation::Previous,
-                NO_EDIT_MODIFIERS
-            ))
-        );
-        assert_eq!(
-            key(Scancode::Return, &NO_MODIFIERS, false),
-            Some(GuiEvent::Confirm)
-        );
-        assert_eq!(
-            key(Scancode::KpEnter, &NO_MODIFIERS, false),
-            Some(GuiEvent::Confirm)
-        );
-        assert_eq!(
-            key(Scancode::Escape, &NO_MODIFIERS, false),
-            Some(GuiEvent::Cancel)
-        );
-        assert_eq!(
-            key(Scancode::Backspace, &NO_MODIFIERS, false),
-            Some(GuiEvent::Backspace)
-        );
-        assert_eq!(key(Scancode::A, &NO_MODIFIERS, false), None);
-    }
-
-    #[test]
-    fn only_navigation_backspace_and_delete_repeat() {
-        assert_eq!(
-            key_event(Scancode::Down, &NO_MODIFIERS, true),
-            Some(GuiEvent::KeyNavigation(Navigation::Down, NO_EDIT_MODIFIERS))
-        );
-        assert_eq!(
-            key_event(Scancode::Left, &SHIFT, true),
-            Some(GuiEvent::KeyNavigation(Navigation::Left, EXTEND))
-        );
-        assert_eq!(
-            key_event(Scancode::Backspace, &NO_MODIFIERS, true),
-            Some(GuiEvent::Backspace)
-        );
-        assert_eq!(
-            key_event(Scancode::Delete, &NO_MODIFIERS, true),
-            Some(GuiEvent::Edit(EditCommand::DeleteForward))
-        );
-        assert_eq!(key_event(Scancode::A, &LEFT_CONTROL, true), None);
-        assert_eq!(key_event(Scancode::A, &LEFT_GUI, true), None);
-        assert_eq!(key_event(Scancode::Return, &NO_MODIFIERS, true), None);
-        assert_eq!(key_event(Scancode::KpEnter, &NO_MODIFIERS, true), None);
-        assert_eq!(key_event(Scancode::Escape, &NO_MODIFIERS, true), None);
-    }
-
-    #[test]
-    fn mouse_and_text_events_map_to_the_input() {
-        assert_eq!(
-            pointer_or_text_event(&Event::MouseButtonDown {
-                mouse_btn: MouseButton::Left,
-                clicks: 2,
-                x: 10.0,
-                y: 20.0,
-            }),
-            Some(GuiEvent::Button {
-                button: MouseButton::Left,
-                pressed: true,
-                double: true,
-                x: 10.0,
-                y: 20.0,
-            })
-        );
-        assert_eq!(
-            pointer_or_text_event(&Event::MouseWheel {
-                x: 0.0,
-                y: -1.0,
-                mouse_x: 3.0,
-                mouse_y: 4.0,
-            }),
-            Some(GuiEvent::Wheel {
-                steps: -1.0,
-                x: 3.0,
-                y: 4.0,
-            })
-        );
-        assert_eq!(
-            pointer_or_text_event(&Event::TextInput { text: "か".into() }),
-            Some(GuiEvent::Text("か".into()))
-        );
-        assert_eq!(
-            pointer_or_text_event(&Event::TextEditing {
-                text: "かな".into(),
-                start: 2,
-                length: 0,
-            }),
-            Some(GuiEvent::Composition("かな".into()))
-        );
-        assert_eq!(pointer_or_text_event(&Event::Quit), None);
-    }
-
+    /// Verifies that pointer positions scale to physical pixels and that wheel steps add up
+    /// until the next pass.
     #[test]
     fn pointer_positions_scale_to_physical_pixels() {
         let mut host = host();
@@ -1025,6 +608,7 @@ mod tests {
         assert!(host.input.left && host.input.left_previous);
     }
 
+    /// Verifies that only a change of the window metrics waits for a pass.
     #[test]
     fn window_changes_wait_for_a_pass() {
         let mut host = host();
@@ -1036,43 +620,6 @@ mod tests {
         assert!(!host.pending());
         host.set_window_metrics(800, 600, 1.5, 1.0);
         assert!(host.pending());
-    }
-
-    #[test]
-    fn gamepad_buttons_map_to_actions() {
-        let mut gamepad = GamepadNavigation::default();
-        let now = Instant::now();
-        assert_eq!(
-            gamepad.button(GamepadButton::South, true, now),
-            Some(GuiEvent::Confirm)
-        );
-        assert_eq!(gamepad.button(GamepadButton::South, false, now), None);
-        assert_eq!(
-            gamepad.button(GamepadButton::East, true, now),
-            Some(GuiEvent::Cancel)
-        );
-        assert_eq!(
-            gamepad.button(GamepadButton::LeftShoulder, true, now),
-            Some(GuiEvent::GamepadNavigation(Navigation::PreviousTab))
-        );
-        assert_eq!(
-            gamepad.button(GamepadButton::RightShoulder, true, now),
-            Some(GuiEvent::GamepadNavigation(Navigation::NextTab))
-        );
-        assert_eq!(
-            gamepad.button(GamepadButton::West, true, now),
-            Some(GuiEvent::Action(ActionButton::X))
-        );
-        assert_eq!(
-            gamepad.button(GamepadButton::North, true, now),
-            Some(GuiEvent::Action(ActionButton::Y))
-        );
-        assert_eq!(
-            gamepad.button(GamepadButton::Start, true, now),
-            Some(GuiEvent::Action(ActionButton::Start))
-        );
-        assert_eq!(gamepad.button(GamepadButton::Start, false, now), None);
-        assert_eq!(gamepad.button(GamepadButton::Back, true, now), None);
     }
 
     /// Verifies that an action button reaches the input of the next pass and needs a pass of its own.
@@ -1097,14 +644,14 @@ mod tests {
             0,
             "the first catalog has the generation 0"
         );
-        let german = crate::texts::test_catalog("[common]\nsave = Speichern\n");
+        let german = test_catalog("[common]\nsave = Speichern\n");
         host.set_catalog(LanguageCatalog::Loaded(Box::new(german)));
         assert!(host.pending());
         assert_eq!(host.catalog().name(), "Deutsch");
         let (generation, save) = host.pass(|context| {
             (
                 context.catalog_generation,
-                context.catalog.text(crate::texts::common::SAVE).to_owned(),
+                context.catalog.text(SAVE).to_owned(),
             )
         });
         assert_eq!(generation, 1);
@@ -1134,179 +681,6 @@ mod tests {
         host.apply(GuiEvent::Confirm);
         host.pass(|context| context.request_pass());
         assert!(host.pending());
-    }
-
-    /// Verifies the shortcut keys, the left control key and that the right control key forms no shortcut.
-    #[test]
-    fn shortcut_keys_map_to_shortcuts() {
-        let key = |scancode, keymod: &Mod| key_event(scancode, keymod, false);
-        assert_eq!(
-            key(Scancode::Delete, &NO_MODIFIERS),
-            Some(GuiEvent::Edit(EditCommand::DeleteForward))
-        );
-        assert_eq!(
-            key(Scancode::Insert, &NO_MODIFIERS),
-            Some(GuiEvent::Shortcut(Shortcut::Insert))
-        );
-        assert_eq!(
-            key(Scancode::F2, &NO_MODIFIERS),
-            Some(GuiEvent::Shortcut(Shortcut::F2))
-        );
-        assert_eq!(
-            key(Scancode::F5, &NO_MODIFIERS),
-            Some(GuiEvent::Shortcut(Shortcut::F5))
-        );
-        assert_eq!(
-            key(Scancode::F10, &NO_MODIFIERS),
-            Some(GuiEvent::Shortcut(Shortcut::F10))
-        );
-        assert_eq!(
-            key(Scancode::F, &LEFT_CONTROL),
-            Some(GuiEvent::Shortcut(Shortcut::ControlF))
-        );
-        assert_eq!(
-            key(Scancode::D, &LEFT_CONTROL),
-            Some(GuiEvent::Shortcut(Shortcut::ControlD))
-        );
-        assert_eq!(
-            key(Scancode::S, &LEFT_CONTROL),
-            Some(GuiEvent::Shortcut(Shortcut::ControlS))
-        );
-        assert_eq!(key(Scancode::S, &NO_MODIFIERS), None);
-        assert_eq!(key(Scancode::S, &RIGHT_CONTROL), None);
-        assert_eq!(key(Scancode::Delete, &RIGHT_CONTROL), None);
-        assert_eq!(
-            key(Scancode::PageUp, &LEFT_CONTROL),
-            Some(GuiEvent::KeyNavigation(
-                Navigation::PreviousTab,
-                NO_EDIT_MODIFIERS
-            ))
-        );
-        assert_eq!(
-            key(Scancode::PageDown, &LEFT_CONTROL),
-            Some(GuiEvent::KeyNavigation(
-                Navigation::NextTab,
-                NO_EDIT_MODIFIERS
-            ))
-        );
-        assert_eq!(
-            key(Scancode::PageDown, &RIGHT_CONTROL),
-            Some(GuiEvent::KeyNavigation(
-                Navigation::PageDown,
-                NO_EDIT_MODIFIERS
-            ))
-        );
-    }
-
-    /// Verifies that Shift extends the selection with the cursor keys, that the left control key
-    /// turns left and right into word steps and forms select all with A, and that the right
-    /// control key and the GUI key form neither outside macOS.
-    #[cfg(not(target_os = "macos"))]
-    #[test]
-    fn edit_keys_map_to_steps_and_commands() {
-        let key = |scancode, keymod: &Mod| key_event(scancode, keymod, false);
-        for (scancode, navigation) in [
-            (Scancode::Left, Navigation::Left),
-            (Scancode::Right, Navigation::Right),
-            (Scancode::Home, Navigation::Home),
-            (Scancode::End, Navigation::End),
-        ] {
-            assert_eq!(
-                key(scancode, &SHIFT),
-                Some(GuiEvent::KeyNavigation(navigation, EXTEND))
-            );
-        }
-        for (scancode, navigation) in [
-            (Scancode::Left, Navigation::Left),
-            (Scancode::Right, Navigation::Right),
-        ] {
-            assert_eq!(
-                key(scancode, &LEFT_CONTROL),
-                Some(GuiEvent::KeyNavigation(navigation, WORD))
-            );
-            assert_eq!(
-                key(scancode, &SHIFT_LEFT_CONTROL),
-                Some(GuiEvent::KeyNavigation(
-                    navigation,
-                    EditModifiers {
-                        extend: true,
-                        word: true,
-                        edge: false,
-                    }
-                ))
-            );
-            for keymod in [RIGHT_CONTROL, LEFT_ALT, LEFT_GUI] {
-                assert_eq!(
-                    key(scancode, &keymod),
-                    Some(GuiEvent::KeyNavigation(navigation, NO_EDIT_MODIFIERS))
-                );
-            }
-        }
-        assert_eq!(
-            key(Scancode::Home, &LEFT_CONTROL),
-            Some(GuiEvent::KeyNavigation(Navigation::Home, NO_EDIT_MODIFIERS))
-        );
-        assert_eq!(
-            key(Scancode::Up, &SHIFT),
-            Some(GuiEvent::KeyNavigation(Navigation::Up, NO_EDIT_MODIFIERS))
-        );
-        assert_eq!(
-            key(Scancode::A, &LEFT_CONTROL),
-            Some(GuiEvent::Edit(EditCommand::SelectAll))
-        );
-        assert_eq!(key(Scancode::A, &RIGHT_CONTROL), None);
-        assert_eq!(key(Scancode::A, &LEFT_GUI), None);
-        assert_eq!(key(Scancode::A, &NO_MODIFIERS), None);
-    }
-
-    /// Verifies that Option turns left and right into word steps, that Cmd turns them into steps
-    /// to the start and the end and forms select all with A, and that Shift extends each of them
-    /// on macOS.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn edit_keys_map_to_steps_and_commands() {
-        let key = |scancode, keymod: &Mod| key_event(scancode, keymod, false);
-        let edge = EditModifiers {
-            edge: true,
-            ..NO_EDIT_MODIFIERS
-        };
-        for (scancode, navigation) in [
-            (Scancode::Left, Navigation::Left),
-            (Scancode::Right, Navigation::Right),
-        ] {
-            assert_eq!(
-                key(scancode, &SHIFT),
-                Some(GuiEvent::KeyNavigation(navigation, EXTEND))
-            );
-            assert_eq!(
-                key(scancode, &LEFT_ALT),
-                Some(GuiEvent::KeyNavigation(navigation, WORD))
-            );
-            assert_eq!(
-                key(scancode, &LEFT_GUI),
-                Some(GuiEvent::KeyNavigation(navigation, edge))
-            );
-            assert_eq!(
-                key(scancode, &SHIFT_LEFT_GUI),
-                Some(GuiEvent::KeyNavigation(
-                    navigation,
-                    EditModifiers {
-                        extend: true,
-                        ..edge
-                    }
-                ))
-            );
-            assert_eq!(
-                key(scancode, &LEFT_CONTROL),
-                Some(GuiEvent::KeyNavigation(navigation, NO_EDIT_MODIFIERS))
-            );
-        }
-        assert_eq!(
-            key(Scancode::A, &LEFT_GUI),
-            Some(GuiEvent::Edit(EditCommand::SelectAll))
-        );
-        assert_eq!(key(Scancode::A, &LEFT_CONTROL), None);
-        assert_eq!(key(Scancode::A, &SHIFT_LEFT_CONTROL), None);
     }
 
     /// Verifies that a key navigation reaches the input with its modifiers from the keyboard and
@@ -1360,21 +734,128 @@ mod tests {
                 (changed, context.shortcut())
             })
         };
-        let delete = || key_event(Scancode::Delete, &NO_MODIFIERS, false);
-        assert_eq!(draw(&mut host, delete()), (false, Some(Shortcut::Delete)));
+        let delete = |host: &GuiHost| key(host, Scancode::Delete, &NO_MODIFIERS, false);
+        let event = delete(&host);
+        assert_eq!(draw(&mut host, event), (false, Some(Shortcut::Delete)));
         host.state.set_focus(UiId::from("filter"));
         draw(&mut host, None);
-        draw(&mut host, key_event(Scancode::Home, &NO_MODIFIERS, false));
-        assert_eq!(draw(&mut host, delete()), (true, None));
+        let event = key(&host, Scancode::Home, &NO_MODIFIERS, false);
+        draw(&mut host, event);
+        let event = delete(&host);
+        assert_eq!(draw(&mut host, event), (true, None));
+        let event = key(&host, Scancode::Delete, &NO_MODIFIERS, true);
+        assert_eq!(draw(&mut host, event), (true, None));
+        let event = key(&host, Scancode::A, &LEFT_CONTROL, false);
+        draw(&mut host, event);
+        let event = delete(&host);
+        assert_eq!(draw(&mut host, event), (true, None));
+        host.state.clear_focus();
+        let event = delete(&host);
+        assert_eq!(draw(&mut host, event), (false, Some(Shortcut::Delete)));
+        assert_eq!(text, "");
+    }
+
+    /// Verifies that a copy and a cut of a focused text field reach the clipboard once after
+    /// their pass, that a failed write leaves the next pass quiet, and that a paste key inserts
+    /// the first line of the clipboard.
+    #[test]
+    fn copied_text_reaches_the_clipboard_after_the_pass() {
+        let mut host = host();
+        host.set_window_metrics(800, 600, 1.0, 1.0);
+        let mut text = String::from("disk image");
+        let mut written = Vec::new();
+        host.state.set_focus(UiId::from("filter"));
+        clipboard_pass(&mut host, None, &mut text, &mut written);
+        let copy = |host: &GuiHost| key(host, Scancode::C, &COMMAND, false);
+        let select_all = |host: &GuiHost| key(host, Scancode::A, &COMMAND, false);
+        let event = copy(&host);
+        clipboard_pass(&mut host, event, &mut text, &mut written);
+        assert!(written.is_empty());
+        let event = select_all(&host);
+        clipboard_pass(&mut host, event, &mut text, &mut written);
+        let event = copy(&host);
         assert_eq!(
-            draw(&mut host, key_event(Scancode::Delete, &NO_MODIFIERS, true)),
+            clipboard_pass(&mut host, event, &mut text, &mut written),
+            (false, None)
+        );
+        clipboard_pass(&mut host, None, &mut text, &mut written);
+        assert_eq!(written, ["disk image"]);
+
+        let cut = key(&host, Scancode::X, &COMMAND, false);
+        assert_eq!(
+            clipboard_pass(&mut host, cut, &mut text, &mut written),
             (true, None)
         );
-        draw(&mut host, key_event(Scancode::A, &LEFT_CONTROL, false));
-        assert_eq!(draw(&mut host, delete()), (true, None));
-        host.state.clear_focus();
-        assert_eq!(draw(&mut host, delete()), (false, Some(Shortcut::Delete)));
-        assert_eq!(text, "");
+        assert_eq!(written, ["disk image", "disk image"]);
+        assert!(text.is_empty());
+
+        let paste = host.key_event_with_clipboard(
+            Scancode::V,
+            &COMMAND,
+            false,
+            clipboard_with("disk\nimage"),
+        );
+        assert_eq!(
+            clipboard_pass(&mut host, paste, &mut text, &mut written),
+            (true, None)
+        );
+        assert_eq!(text, "disk");
+
+        let event = select_all(&host);
+        clipboard_pass(&mut host, event, &mut text, &mut written);
+        host.apply(GuiEvent::Edit(EditCommand::Copy));
+        host.pass_with_clipboard(
+            |context| text_field(context, "filter", FIELD, &mut text, "Filter"),
+            |_| Err(Error("no video".into())),
+        );
+        clipboard_pass(&mut host, None, &mut text, &mut written);
+        assert_eq!(written.len(), 2);
+    }
+
+    /// Verifies that copy, cut and paste reach no shortcut of the screen and that the shortcuts
+    /// with the left control key reach it inside and outside a focused text field.
+    #[test]
+    fn control_shortcuts_work_beside_the_clipboard_keys() {
+        let mut host = host();
+        host.set_window_metrics(800, 600, 1.0, 1.0);
+        let mut text = String::from("disk");
+        let mut written = Vec::new();
+        let shortcuts = [
+            (Scancode::F, Shortcut::ControlF),
+            (Scancode::D, Shortcut::ControlD),
+            (Scancode::S, Shortcut::ControlS),
+        ];
+        for focused in [false, true] {
+            if focused {
+                host.state.set_focus(UiId::from("filter"));
+                clipboard_pass(&mut host, None, &mut text, &mut written);
+            }
+            for (scancode, shortcut) in shortcuts {
+                let event = key(&host, scancode, &LEFT_CONTROL, false);
+                assert_eq!(
+                    clipboard_pass(&mut host, event, &mut text, &mut written).1,
+                    Some(shortcut)
+                );
+            }
+            for scancode in [Scancode::A, Scancode::C, Scancode::X] {
+                let event = key(&host, scancode, &COMMAND, false);
+                assert_eq!(
+                    clipboard_pass(&mut host, event, &mut text, &mut written).1,
+                    None
+                );
+            }
+            let event = if focused {
+                host.key_event_with_clipboard(Scancode::V, &COMMAND, false, clipboard_with("x"))
+            } else {
+                key(&host, Scancode::V, &COMMAND, false)
+            };
+            assert_eq!(
+                clipboard_pass(&mut host, event, &mut text, &mut written).1,
+                None
+            );
+        }
+        assert_eq!(text, "x");
+        assert_eq!(written, ["disk", "disk"]);
     }
 
     /// Verifies that a shortcut reaches the input and that a text field holds back a shortcut without a modifier.
@@ -1382,13 +863,13 @@ mod tests {
     fn a_shortcut_reaches_the_input_unless_a_text_field_holds_the_focus() {
         let mut host = host();
         host.set_window_metrics(800, 600, 1.0, 1.0);
-        let field = gui::Rect::new(0.0, 0.0, 200.0, 32.0);
+        let field = Rect::new(0.0, 0.0, 200.0, 32.0);
         let draw = |context: &mut UiContext, focus_field: bool| {
             let mut text = String::new();
             if focus_field {
-                context.set_focus(gui::ui::UiId::from("field"));
+                context.set_focus(UiId::from("field"));
             }
-            gui::ui::text_field(context, "field", field, &mut text, "Filter");
+            text_field(context, "field", field, &mut text, "Filter");
             context.shortcut()
         };
         host.apply(GuiEvent::Shortcut(Shortcut::F2));
@@ -1406,90 +887,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_held_dpad_direction_repeats() {
-        let mut gamepad = GamepadNavigation::default();
-        let start = Instant::now();
-        assert_eq!(
-            gamepad.button(GamepadButton::DpadDown, true, start),
-            Some(GuiEvent::GamepadNavigation(Navigation::Down))
-        );
-        assert_eq!(gamepad.poll(start + Duration::from_millis(399)), None);
-        let first = start + REPEAT_DELAY;
-        assert_eq!(
-            gamepad.poll(first),
-            Some(GuiEvent::GamepadNavigation(Navigation::Down))
-        );
-        assert_eq!(gamepad.poll(first + Duration::from_millis(79)), None);
-        assert_eq!(
-            gamepad.poll(first + REPEAT_INTERVAL),
-            Some(GuiEvent::GamepadNavigation(Navigation::Down))
-        );
-        assert_eq!(gamepad.next_repeat(), Some(first + REPEAT_INTERVAL * 2));
-        assert_eq!(gamepad.button(GamepadButton::DpadDown, false, first), None);
-        assert_eq!(gamepad.next_repeat(), None);
-        assert_eq!(gamepad.poll(first + Duration::from_secs(1)), None);
-    }
-
-    #[test]
-    fn a_late_poll_repeats_once() {
-        let mut gamepad = GamepadNavigation::default();
-        let start = Instant::now();
-        gamepad.button(GamepadButton::DpadUp, true, start);
-        let late = start + Duration::from_secs(2);
-        assert!(gamepad.poll(late).is_some());
-        assert_eq!(gamepad.poll(late), None);
-        assert!(gamepad.poll(late + REPEAT_INTERVAL).is_some());
-    }
-
-    #[test]
-    fn the_stick_has_a_dead_zone_and_hysteresis() {
-        let mut gamepad = GamepadNavigation::default();
-        let now = Instant::now();
-        assert_eq!(gamepad.axis(GamepadAxis::LeftY, 12000, now), None);
-        assert_eq!(
-            gamepad.axis(GamepadAxis::LeftY, 20000, now),
-            Some(GuiEvent::GamepadNavigation(Navigation::Down))
-        );
-        assert_eq!(gamepad.axis(GamepadAxis::LeftY, 12000, now), None);
-        assert!(gamepad.poll(now + REPEAT_DELAY).is_some());
-        assert_eq!(gamepad.axis(GamepadAxis::LeftY, 9000, now), None);
-        assert_eq!(gamepad.poll(now + Duration::from_secs(5)), None);
-        assert_eq!(
-            gamepad.axis(GamepadAxis::LeftX, -30000, now),
-            Some(GuiEvent::GamepadNavigation(Navigation::Left))
-        );
-        assert_eq!(gamepad.axis(GamepadAxis::LeftY, -32768, now), None);
-        assert_eq!(
-            gamepad.axis(GamepadAxis::LeftX, 0, now),
-            Some(GuiEvent::GamepadNavigation(Navigation::Up))
-        );
-        assert_eq!(gamepad.axis(GamepadAxis::RightX, 32767, now), None);
-    }
-
-    #[test]
-    fn a_release_falls_back_to_the_most_recent_held_direction() {
-        let mut gamepad = GamepadNavigation::default();
-        let start = Instant::now();
-        gamepad.button(GamepadButton::DpadDown, true, start);
-        gamepad.axis(GamepadAxis::LeftX, 30000, start);
-        gamepad.button(GamepadButton::DpadUp, true, start);
-        let release = start + Duration::from_millis(100);
-        gamepad.button(GamepadButton::DpadUp, false, release);
-        assert_eq!(gamepad.poll(release + Duration::from_millis(399)), None);
-        assert_eq!(
-            gamepad.poll(release + REPEAT_DELAY),
-            Some(GuiEvent::GamepadNavigation(Navigation::Right))
-        );
-        gamepad.axis(GamepadAxis::LeftX, 0, release);
-        assert_eq!(
-            gamepad.poll(release + REPEAT_DELAY * 2),
-            Some(GuiEvent::GamepadNavigation(Navigation::Down))
-        );
-        gamepad.button(GamepadButton::DpadDown, false, release);
-        assert_eq!(gamepad.poll(release + Duration::from_secs(5)), None);
-    }
-
+    /// Verifies that committed text ends the composition of an input method.
     #[test]
     fn a_commit_ends_the_composition() {
         let mut host = host();
@@ -1499,15 +897,26 @@ mod tests {
         assert!(host.input.composition.is_empty());
     }
 
+    /// Verifies that the paste key reads the clipboard only while a focused text field wants
+    /// text input.
     #[test]
-    fn the_stick_and_the_dpad_share_the_repeat() {
-        let mut gamepad = GamepadNavigation::default();
-        let now = Instant::now();
-        gamepad.button(GamepadButton::DpadRight, true, now);
-        gamepad.axis(GamepadAxis::LeftX, 30000, now);
-        gamepad.axis(GamepadAxis::LeftX, 0, now);
-        assert!(gamepad.poll(now + REPEAT_DELAY).is_some());
-        gamepad.button(GamepadButton::DpadRight, false, now);
-        assert_eq!(gamepad.poll(now + Duration::from_secs(5)), None);
+    fn an_unfocused_paste_key_reads_no_clipboard() {
+        let mut host = host();
+        host.set_window_metrics(800, 600, 1.0, 1.0);
+        let mut text = String::new();
+        let mut written = Vec::new();
+        clipboard_pass(&mut host, None, &mut text, &mut written);
+        assert_eq!(key(&host, Scancode::V, &COMMAND, false), None);
+        assert_eq!(key(&host, Scancode::V, &COMMAND, true), None);
+        host.state.set_focus(UiId::from("filter"));
+        clipboard_pass(&mut host, None, &mut text, &mut written);
+        assert_eq!(
+            host.key_event_with_clipboard(Scancode::V, &COMMAND, false, clipboard_with("disk")),
+            Some(GuiEvent::Paste("disk".into()))
+        );
+        host.state.clear_focus();
+        clipboard_pass(&mut host, None, &mut text, &mut written);
+        assert_eq!(key(&host, Scancode::V, &COMMAND, false), None);
+        assert!(text.is_empty());
     }
 }
