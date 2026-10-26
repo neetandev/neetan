@@ -351,7 +351,8 @@ mod tests {
         assert_eq!(sentence_mark(catalog), '。');
     }
 
-    /// Verifies the header, the sentence mark and the plural forms of the German language file.
+    /// Verifies the header, the covered tags, the sentence mark and the plural forms of the
+    /// German language file.
     #[test]
     fn the_german_file_has_its_header() {
         let catalog = german();
@@ -362,10 +363,14 @@ mod tests {
         assert_eq!(game_count(catalog, 1), "1 Spiel");
         assert_eq!(game_count(catalog, 2), "2 Spiele");
         assert_eq!(joined(catalog, ListKind::Or), "A, B oder C");
+        assert_eq!(
+            covered_tags(GERMAN_TAG),
+            ["de-AT", "de-BE", "de-CH", "de-IT", "de-LI", "de-LU"]
+        );
     }
 
-    /// Verifies the header, the sentence mark, the plural forms and the list patterns of the
-    /// French language file. The counts 0 and 1 take the singular.
+    /// Verifies the header, the covered tags, the sentence mark, the plural forms and the list
+    /// patterns of the French language file. The counts 0 and 1 take the singular.
     #[test]
     fn the_french_file_has_its_header() {
         let catalog = french();
@@ -377,10 +382,16 @@ mod tests {
         assert_eq!(game_count(catalog, 1), "1 jeu");
         assert_eq!(game_count(catalog, 2), "2 jeux");
         assert_eq!(joined(catalog, ListKind::And), "A, B et C");
+        let covered = covered_tags(FRENCH_TAG);
+        for tag in [
+            "fr-BE", "fr-CA", "fr-CH", "fr-LU", "fr-MC", "fr-SN", "fr-CD",
+        ] {
+            assert!(covered.contains(&tag), "{tag} in {covered:?}");
+        }
     }
 
-    /// Verifies the header, the sentence mark, the plural forms and the list patterns of the
-    /// Spanish language file. The count 0 takes the plural.
+    /// Verifies the header, the covered tags, the sentence mark, the plural forms and the list
+    /// patterns of the Spanish language file. The count 0 takes the plural.
     #[test]
     fn the_spanish_file_has_its_header() {
         let catalog = spanish();
@@ -393,6 +404,10 @@ mod tests {
         assert_eq!(game_count(catalog, 2), "2 juegos");
         assert_eq!(joined(catalog, ListKind::And), "A, B y C");
         assert_eq!(joined(catalog, ListKind::Or), "A, B o C");
+        let covered = covered_tags(SPANISH_TAG);
+        for tag in ["es-419", "es-MX", "es-AR", "es-US"] {
+            assert!(covered.contains(&tag), "{tag} in {covered:?}");
+        }
     }
 
     /// Verifies the header, the covered tags, the sentence mark, the game counts and the list
