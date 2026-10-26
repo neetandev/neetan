@@ -549,7 +549,7 @@ const COMPOSITE_PHASE_RANGE: NumberRange = NumberRange {
 const AUDIO_VOLUME_RANGE: NumberRange = NumberRange {
     minimum: 0.0,
     maximum: 1.0,
-    step: 0.1,
+    step: 0.01,
     integer: false,
 };
 
