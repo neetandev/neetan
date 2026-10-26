@@ -7,7 +7,7 @@
 use std::{fmt, sync::LazyLock};
 
 use gui::ui::{ConfirmKeys, Hint, HintKey};
-use i18n::{Catalog, Key};
+use i18n::{Catalog, Key, read_header};
 use stack_vec::StackVec;
 
 pub use self::setting_texts::{
@@ -76,6 +76,26 @@ static ENGLISH: LazyLock<Catalog> = LazyLock::new(|| {
 #[must_use]
 pub fn english() -> &'static Catalog {
     &ENGLISH
+}
+
+/// The further language tags of the `covers` header of the embedded reference language file,
+/// read on first use.
+static ENGLISH_COVERS: LazyLock<Vec<&'static str>> =
+    LazyLock::new(|| match read_header(REFERENCE_SOURCE) {
+        Ok(header) => header.covered_tags().collect(),
+        Err(faults) => {
+            let report: Vec<String> = faults.iter().map(ToString::to_string).collect();
+            panic!(
+                "the header of the embedded en.ini does not read: {}",
+                report.join("; ")
+            )
+        }
+    });
+
+/// Returns the further language tags that the embedded English texts serve.
+#[must_use]
+pub fn english_covers() -> &'static [&'static str] {
+    &ENGLISH_COVERS
 }
 
 /// The language tag of the German test language.
