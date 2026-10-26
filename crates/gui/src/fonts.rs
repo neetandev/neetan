@@ -20,7 +20,7 @@
 //! text.
 
 mod cache;
-mod wrap;
+pub(crate) mod wrap;
 
 use std::{collections::HashMap, ops::Range, sync::Arc};
 
