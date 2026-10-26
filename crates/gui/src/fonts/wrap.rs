@@ -358,6 +358,39 @@ mod tests {
         );
     }
 
+    /// Asserts for every width from the widest word to the whole text that no line of `text`
+    /// ends with a Spanish opening mark: U+00BF, U+00A1 or U+00AB.
+    fn assert_spanish_opening_marks_stay_with_their_words(text: &str) {
+        let widest = text
+            .split(' ')
+            .map(|word| word.chars().count())
+            .max()
+            .unwrap_or(0);
+        for limit in widest..=text.chars().count() {
+            for line in lines(text, limit as f32) {
+                assert!(
+                    !line.ends_with(['\u{BF}', '\u{A1}', '\u{AB}']),
+                    "{line:?} at {limit} em"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn spanish_opening_marks_stay_with_the_word_after_them() {
+        assert_eq!(
+            lines("\u{BF}Eliminar \u{AB}Ys\u{BB}? \u{A1}Listo!", 13.0),
+            ["\u{BF}Eliminar", "\u{AB}Ys\u{BB}? \u{A1}Listo!"]
+        );
+        assert_eq!(
+            lines("la carpeta \u{AB}games/\u{BB} existe", 12.0),
+            ["la carpeta", "\u{AB}games/\u{BB}", "existe"]
+        );
+        assert_spanish_opening_marks_stay_with_their_words(
+            "\u{BF}Eliminar \u{AB}Ys\u{BB}? Se esperaba \u{AB}on\u{BB} u \u{AB}off\u{BB}. \u{A1}El archivo \u{AB}neetan.conf\u{BB} no existe!",
+        );
+    }
+
     #[test]
     fn a_zero_width_space_allows_a_break() {
         assert_eq!(lines("abc\u{200B}def", 4.0), ["abc", "def"]);
