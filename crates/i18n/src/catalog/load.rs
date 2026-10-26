@@ -62,6 +62,8 @@ struct Loader<'a, 'f> {
     rule: Option<PluralRule>,
     /// The size of the language name of the header.
     name: Option<Size>,
+    /// True when the `covers` list of the header holds a fault.
+    covers_rejected: bool,
 }
 
 /// Loads a catalog with an optional fallback catalog.
@@ -89,9 +91,10 @@ pub(super) fn load<'a>(
         faults: Vec::new(),
         rule: None,
         name: None,
+        covers_rejected: false,
     };
     loader.survey();
-    let (Some(rule), Some(name)) = (loader.rule, loader.name) else {
+    let (Some(rule), Some(name), false) = (loader.rule, loader.name, loader.covers_rejected) else {
         return Err(loader.faults);
     };
     let mut total = loader.settle(rule);
@@ -109,7 +112,7 @@ impl<'a> Loader<'a, '_> {
         let mut parser = Parser::new(self.source);
         for event in parser.by_ref() {
             match event {
-                Event::Section { .. } => {}
+                Event::Section { .. } | Event::Covers { .. } => {}
                 Event::Name { value, .. } => self.name = measure(value, None).ok(),
                 Event::Plural { rule, .. } => self.rule = Some(rule),
                 Event::Pair { line, key, value } => self.survey_pair(line, key, value),
@@ -125,6 +128,7 @@ impl<'a> Loader<'a, '_> {
             }
         }
         parser.push_missing_header_keys(&mut self.faults);
+        self.covers_rejected = parser.covers_rejected();
     }
 
     /// Checks and measures one pair of the first pass.
@@ -304,7 +308,10 @@ impl<'a> Loader<'a, '_> {
                         write_form(value, Some(info), &mut storage, &mut segments);
                     entry.plural = info.is_plural().then_some(rule);
                 }
-                Event::Section { .. } | Event::Plural { .. } | Event::Fault(_) => {}
+                Event::Section { .. }
+                | Event::Plural { .. }
+                | Event::Covers { .. }
+                | Event::Fault(_) => {}
             }
         }
         assert_eq!(storage.len(), total.bytes as usize);
@@ -566,6 +573,29 @@ mod tests {
                 FaultKind::BadPluralRule("few")
             )]
         );
+    }
+
+    #[test]
+    fn a_bad_covers_list_fails_the_load() {
+        let schema = schema();
+        let source = reference_source();
+        let reference = Catalog::reference("en", &source, schema).unwrap();
+        let japanese = fixture::japanese(JAPANESE_BODY)
+            .replace("plural = none\n", "plural = none\ncovers = ja-JP ja_JP\n");
+        assert_eq!(
+            Catalog::load("ja", &japanese, schema, &reference).unwrap_err(),
+            vec![fault(
+                4,
+                "language",
+                "covers",
+                FaultKind::BadLanguageTag("ja_JP")
+            )]
+        );
+        let covered = fixture::japanese(JAPANESE_BODY)
+            .replace("plural = none\n", "plural = none\ncovers = ja-JP\n");
+        let loaded = Catalog::load("ja", &covered, schema, &reference).unwrap();
+        assert!(loaded.faults.is_empty(), "{:?}", loaded.faults);
+        assert_eq!(text(&loaded.catalog, "common", "save"), "保存");
     }
 
     #[test]

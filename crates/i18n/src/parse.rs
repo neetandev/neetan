@@ -2,8 +2,9 @@
 //!
 //! A line is a section header `[section]`, a pair `key = value`, a comment that starts with `;`, or
 //! empty. Section names and keys use ASCII letters, digits, `-`, `.`, `+`, `:` and `_`. The
-//! section `[language]` holds the header with the `name` and the `plural` rule of the language.
-//! The parser walks the source once and allocates nothing. Values are slices of the source.
+//! section `[language]` holds the header with the `name` and the `plural` rule of the language
+//! and the optional `covers` list of further language tags that the file serves. The parser
+//! walks the source once and allocates nothing. Values are slices of the source.
 //! [`read_header`] reads only the header of a file.
 
 use core::fmt;
@@ -22,6 +23,9 @@ pub const NAME_KEY: &str = "name";
 
 /// The header key with the plural rule of the language.
 pub const PLURAL_KEY: &str = "plural";
+
+/// The optional header key with the further language tags that the file serves.
+pub const COVERS_KEY: &str = "covers";
 
 /// The UTF-8 byte order mark that the parser skips at the start of a file.
 const BYTE_ORDER_MARK: char = '\u{FEFF}';
@@ -84,6 +88,8 @@ pub enum FaultKind<'a> {
     UnmatchedBrace,
     /// The `plural` header holds an unknown rule.
     BadPluralRule(&'a str),
+    /// The `covers` header holds a word that is no language tag.
+    BadLanguageTag(&'a str),
     /// The key appears a second time.
     DuplicateKey,
     /// The schema of the catalog has no such key.
@@ -111,7 +117,7 @@ pub enum FaultKind<'a> {
     /// A list pattern lacks `{first}` or `{second}`, repeats one of them, holds another placeholder
     /// or puts `{second}` first.
     BadListPattern,
-    /// A translation or the language name of the header holds an empty value.
+    /// A translation, the language name or the `covers` list of the header holds an empty value.
     EmptyValue,
     /// A text has more placeholders than a generated function takes as parameters.
     TooManyPlaceholders,
@@ -130,6 +136,7 @@ impl fmt::Display for FaultKind<'_> {
             }
             FaultKind::UnmatchedBrace => write!(formatter, "unmatched `}}`"),
             FaultKind::BadPluralRule(rule) => write!(formatter, "unknown plural rule `{rule}`"),
+            FaultKind::BadLanguageTag(tag) => write!(formatter, "bad language tag `{tag}`"),
             FaultKind::DuplicateKey => write!(formatter, "duplicate key"),
             FaultKind::UnknownKey => write!(formatter, "unknown key"),
             FaultKind::UnknownPlaceholder(name) => {
@@ -305,6 +312,14 @@ pub enum Event<'a> {
         /// The plural rule.
         rule: PluralRule,
     },
+    /// The `covers` header: the further language tags that the file serves.
+    Covers {
+        /// The line of the pair.
+        line: u32,
+        /// The language tags, separated by ASCII whitespace. Each passed the check of
+        /// [`is_language_tag`].
+        tags: &'a str,
+    },
     /// A pair outside of the header. Its value passed the check of [`Value::check`].
     Pair {
         /// The line of the pair.
@@ -346,6 +361,10 @@ pub struct Parser<'a> {
     name_seen: bool,
     /// True after the first `plural` header.
     plural_seen: bool,
+    /// True after the first `covers` header.
+    covers_seen: bool,
+    /// True when the first `covers` header holds a fault.
+    covers_rejected: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -357,6 +376,8 @@ impl<'a> Parser<'a> {
             section: SectionState::Outside,
             name_seen: false,
             plural_seen: false,
+            covers_seen: false,
+            covers_rejected: false,
         }
     }
 
@@ -412,6 +433,7 @@ impl<'a> Parser<'a> {
         let seen = match key.key {
             NAME_KEY => &mut self.name_seen,
             PLURAL_KEY => &mut self.plural_seen,
+            COVERS_KEY => &mut self.covers_seen,
             _ => return self.fault(Some(key), FaultKind::UnknownKey),
         };
         if *seen {
@@ -422,6 +444,24 @@ impl<'a> Parser<'a> {
             return match PluralRule::from_name(value.raw()) {
                 Some(rule) => Event::Plural { line, rule },
                 None => self.fault(Some(key), FaultKind::BadPluralRule(value.raw())),
+            };
+        }
+        if key.key == COVERS_KEY {
+            let tags = value.raw();
+            let fault = match tags
+                .split_ascii_whitespace()
+                .find(|tag| !is_language_tag(tag))
+            {
+                Some(tag) => Some(FaultKind::BadLanguageTag(tag)),
+                None if tags.is_empty() => Some(FaultKind::EmptyValue),
+                None => None,
+            };
+            return match fault {
+                Some(kind) => {
+                    self.covers_rejected = true;
+                    self.fault(Some(key), kind)
+                }
+                None => Event::Covers { line, tags },
             };
         }
         if value.raw().is_empty() {
@@ -454,6 +494,12 @@ impl<'a> Parser<'a> {
                 });
             }
         }
+    }
+
+    /// Returns true when the `covers` header of the lines that the parser has read holds a
+    /// fault. The header of such a file fails.
+    pub(crate) fn covers_rejected(&self) -> bool {
+        self.covers_rejected
     }
 
     /// Returns a fault event for the current line.
@@ -505,6 +551,14 @@ pub fn is_name(name: &str) -> bool {
                     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'+' | b':' | b'_')
                 })
         })
+}
+
+/// Returns true for a language tag: parts of ASCII letters and digits joined by `-`, for
+/// example `ja`, `pt-BR` or `zh-Hant`.
+#[must_use]
+pub fn is_language_tag(text: &str) -> bool {
+    text.split('-')
+        .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_alphanumeric()))
 }
 
 /// Returns true for a valid placeholder name of `a-z`, `0-9` and `-`.
@@ -836,6 +890,59 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn the_covers_header_holds_language_tags() {
+        let mut parser = Parser::new("[language]\ncovers =  zh-HK\tzh-MO zh-Hant \ncovers = x\n");
+        assert_eq!(
+            parser.by_ref().collect::<Vec<_>>(),
+            vec![
+                Event::Section {
+                    line: 1,
+                    name: "language"
+                },
+                Event::Covers {
+                    line: 2,
+                    tags: "zh-HK\tzh-MO zh-Hant"
+                },
+                fault(
+                    3,
+                    Some(full_key("language", "covers")),
+                    FaultKind::DuplicateKey
+                ),
+            ]
+        );
+        assert!(!parser.covers_rejected());
+        for (source, kind) in [
+            (
+                "[language]\ncovers = zh-HK zh_MO\n",
+                FaultKind::BadLanguageTag("zh_MO"),
+            ),
+            (
+                "[language]\ncovers = zh- ja\n",
+                FaultKind::BadLanguageTag("zh-"),
+            ),
+            ("[language]\ncovers =\n", FaultKind::EmptyValue),
+        ] {
+            let mut parser = Parser::new(source);
+            assert_eq!(
+                parser.by_ref().last(),
+                Some(fault(2, Some(full_key("language", "covers")), kind)),
+                "{source:?}"
+            );
+            assert!(parser.covers_rejected(), "{source:?}");
+        }
+    }
+
+    #[test]
+    fn language_tags() {
+        for tag in ["ja", "pt-BR", "zh-Hant-TW", "es-419"] {
+            assert!(is_language_tag(tag), "{tag}");
+        }
+        for text in ["", "-", "zh-", "-TW", "zh--TW", "zh_TW", "zh TW", "日本"] {
+            assert!(!is_language_tag(text), "{text:?}");
+        }
     }
 
     #[test]

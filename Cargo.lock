@@ -205,6 +205,7 @@ version = "2026.10.0"
 dependencies = [
  "common",
  "device",
+ "i18n",
  "machine_60",
  "machine_88",
  "machine_88va",

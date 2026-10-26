@@ -5,9 +5,9 @@
 use std::borrow::Cow;
 
 use gui::ui::{Dropdown, TextBuffer, TextValue, UiContext};
-use i18n::Catalog;
+use i18n::{Catalog, is_language_tag};
 use machine_factory::config::{
-    AUTO_LANGUAGE, is_language_tag,
+    AUTO_LANGUAGE,
     settings::{GUI_LANGUAGE_KEY, Setting},
 };
 
@@ -23,7 +23,8 @@ use super::{
     rows::{RowAreas, draw_note, field_id, show_dropdown},
 };
 use crate::{
-    language::LanguageOption,
+    config::compare_tags,
+    language::{LanguageOption, Selection, tag_match},
     texts::{ENGLISH_TAG, english, host_settings, note},
 };
 
@@ -36,7 +37,7 @@ pub(super) enum LanguageState {
     Available,
     /// The language file of the value does not read or its header fails.
     Broken,
-    /// No language file has the tag of the value.
+    /// No language file has or covers the tag of the value.
     Missing,
 }
 
@@ -45,7 +46,7 @@ pub(super) enum LanguageState {
 enum LanguageNote {
     /// The value of the file is no language tag.
     Invalid,
-    /// No language file has the chosen tag.
+    /// No language file has or covers the chosen tag.
     Missing,
     /// The language file of the chosen tag does not load.
     Broken,
@@ -73,7 +74,7 @@ fn language_caption<'a>(
     }
     options
         .iter()
-        .find(|option| option.tag.eq_ignore_ascii_case(value))
+        .find(|option| option.file.tag.eq_ignore_ascii_case(value))
         .and_then(|option| option.name.as_deref())
         .unwrap_or(value)
 }
@@ -81,7 +82,7 @@ fn language_caption<'a>(
 /// The languages of the language files and the texts of the language row.
 #[derive(Debug, Clone)]
 pub(crate) struct LanguageRow {
-    /// The languages of the language files, sorted by tag.
+    /// The languages of the language files in the order of the match.
     options: Vec<LanguageOption>,
     /// The dropdown values of the last fill of the captions.
     captioned: Vec<Cow<'static, str>>,
@@ -109,18 +110,20 @@ impl LanguageRow {
         }
     }
 
-    /// The values of the dropdown: `auto`, `en`, the tags of the language files and the tag
-    /// `saved` of the file when it is a language tag that no language file has, compared without
-    /// regard to case.
+    /// The values of the dropdown: `auto`, `en`, the tags of the language files sorted by tag
+    /// and the tag `saved` of the file when it is a language tag that no language file has,
+    /// compared without regard to case.
     pub(super) fn choices(&self, saved: Option<&str>) -> Vec<Cow<'static, str>> {
+        let mut tags: Vec<&str> = self
+            .options
+            .iter()
+            .map(|option| option.file.tag.as_str())
+            .collect();
+        tags.sort_by(|first, second| compare_tags(first, second));
         let mut choices: Vec<Cow<'static, str>> = BUILT_IN_LANGUAGE_CHOICES
             .into_iter()
             .map(Cow::Borrowed)
-            .chain(
-                self.options
-                    .iter()
-                    .map(|option| Cow::Owned(option.tag.clone())),
-            )
+            .chain(tags.into_iter().map(|tag| Cow::Owned(tag.to_owned())))
             .collect();
         if let Some(saved) = saved.filter(|saved| is_language_tag(saved))
             && !choices
@@ -132,21 +135,17 @@ impl LanguageRow {
         choices
     }
 
-    /// The state of the language value `value`, compared without regard to case.
+    /// The state of the language value `value`, compared without regard to case. A tag takes
+    /// the language of the match of the user interface: its own file or the first file that
+    /// covers it.
     pub(super) fn state(&self, value: &str) -> LanguageState {
-        if BUILT_IN_LANGUAGE_CHOICES
-            .iter()
-            .any(|choice| choice.eq_ignore_ascii_case(value))
-        {
+        if value.eq_ignore_ascii_case(AUTO_LANGUAGE) {
             return LanguageState::Available;
         }
-        match self
-            .options
-            .iter()
-            .find(|option| option.tag.eq_ignore_ascii_case(value))
-        {
-            Some(option) if option.name.is_some() => LanguageState::Available,
-            Some(_) => LanguageState::Broken,
+        match tag_match(&self.options, value) {
+            Some(Selection::English) => LanguageState::Available,
+            Some(Selection::File(option)) if option.name.is_some() => LanguageState::Available,
+            Some(Selection::File(_)) => LanguageState::Broken,
             None => LanguageState::Missing,
         }
     }
@@ -330,6 +329,8 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use machine_factory::{
         config::settings::{GUI_LANGUAGE_KEY, find_setting},
         rom_status::RomStatus,
@@ -337,7 +338,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        config::LANGUAGE_FOLDER,
+        config::{LANGUAGE_FOLDER, LanguageFile},
         editor::{
             EditorSection,
             form::SETTINGS_SECTIONS,
@@ -367,11 +368,15 @@ mod tests {
         test
     }
 
-    /// A language option of `tag` with the language name `name`.
+    /// A language option of `tag` with the language name `name` and no further tags.
     fn option(tag: &str, name: Option<&str>) -> LanguageOption {
         LanguageOption {
-            tag: tag.to_owned(),
+            file: LanguageFile {
+                tag: tag.to_owned(),
+                path: PathBuf::from(format!("/languages/{tag}.ini")),
+            },
             name: name.map(str::to_owned),
+            covers: Vec::new(),
         }
     }
 
@@ -456,8 +461,8 @@ mod tests {
         assert_eq!(
             note_of(&mut editor, english(), 0),
             (
-                "The language file does not exist. The user interface takes the file of the \
-                 base language or English."
+                "The language file does not exist. The user interface takes the file of a \
+                 shorter form of the tag or English."
                     .to_owned(),
                 NoteKind::Warning
             )
@@ -489,6 +494,39 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(test.settings_file()).expect("file reads"),
             "gui-language = de\n"
+        );
+    }
+
+    /// Verifies that a tag that a language file covers is available without the note of a missing
+    /// file, and that the choices list the covering file once.
+    #[test]
+    fn a_covered_tag_takes_the_covering_file() {
+        let test = SettingsRoot::new("covered_language", Some("gui-language = zh-HK\n"));
+        let languages = test.root().join(LANGUAGE_FOLDER);
+        std::fs::create_dir(&languages).expect("folder is created");
+        std::fs::write(
+            languages.join("zh-TW.ini"),
+            "[language]\nname = 繁體中文（台灣）\nplural = none\ncovers = zh-HK zh-MO zh-Hant\n",
+        )
+        .expect("file is written");
+        let host = test.host(&[]);
+        let mut editor = settings_page(&host, &statuses_with(&host, RomStatus::Found));
+        let index = index_of(&editor, GUI_LANGUAGE_KEY);
+        assert_eq!(
+            editor.fields[index].choices,
+            ["auto", "en", "zh-TW", "zh-HK"]
+        );
+        assert_eq!(editor.fields[index].chosen(), Some("zh-HK"));
+        let language = row(&editor);
+        assert_eq!(language.state("zh-HK"), LanguageState::Available);
+        assert_eq!(language.state("ZH-hant"), LanguageState::Available);
+        assert_eq!(language.state("zh-CN"), LanguageState::Missing);
+        assert_eq!(
+            note_of(&mut editor, english(), 0),
+            (
+                "Built-in default: System language.".to_owned(),
+                NoteKind::Plain
+            )
         );
     }
 
