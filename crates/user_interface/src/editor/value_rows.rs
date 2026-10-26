@@ -4,7 +4,7 @@
 
 use gui::{
     Rect,
-    ui::{Button, Checkbox, Dropdown, Icon, NumberField, TextField, Truncation, UiContext},
+    ui::{Button, Dropdown, Icon, NumberField, TextField, Truncation, UiContext},
 };
 use machine_factory::config::settings::{
     MACHINE_KEY, NumberRange, Setting, model_limits::ChoiceFact,
@@ -12,14 +12,13 @@ use machine_factory::config::settings::{
 
 use super::{
     BrowseTarget, Editor, Subject,
-    fields::{FieldValue, is_single_image},
+    fields::FieldValue,
     form::{self, IgnoredBy},
     hints::{EditorWidget, WidgetKind},
-    media_list::{empty_list_height, empty_list_id},
     note_writer::NoteWriter,
     notes::{
         ChoiceNote, NoteKind, NoteLook, choice_note, decimals_of, followed_by, number_note,
-        path_note, write_empty_list_caption, write_inherited_placeholder,
+        path_note, write_inherited_placeholder,
     },
     page::PageActions,
     rows::{RowAreas, SettingRow, browse_id, draw_note, field_id, show_dropdown},
@@ -244,74 +243,44 @@ impl Editor {
                     missing,
                     self.fields[index].is_set(),
                     self.inherited[index].as_ref(),
-                    self.file_types(setting),
                 );
                 followed_by(writer, look, |writer| self.write_extra(writer, setting))
             }
         }
     }
 
-    /// Draws the path field and the Browse button of the field of `row`,
-    /// and the checkbox that empties the drive below the single image of a
-    /// drive that inherits an image or that the file empties. A path cuts in
-    /// the middle. The note of a command line flag on the settings page
-    /// takes its own line below the note. Returns the height of the row.
-    pub(super) fn draw_path(
+    /// Draws the path field of `row` in `control` with the Browse button at
+    /// the right end of `control`, and the edge of an error when `error`. A
+    /// path cuts in the middle. Gamepad X clears a set field.
+    pub(super) fn draw_path_field(
         &mut self,
         context: &mut UiContext,
-        row: SettingRow,
+        control: Rect,
+        row: &mut SettingRow,
+        error: bool,
         actions: &mut PageActions,
-    ) -> f32 {
-        let SettingRow {
-            areas,
-            index,
-            setting,
-            ignored,
-            texts,
-        } = row;
+    ) {
         let theme = context.theme;
         let catalog = context.catalog;
         let generation = context.catalog_generation;
         let revision = self.revision;
-        let id = field_id(setting.key);
-        let empty_id = empty_list_id(id);
-        let enabled = ignored.is_none();
-        let types = self.file_types(setting);
-        let empty_path = self.fields[index].is_empty_path();
-        let inherits_image = self.inherited[index]
-            .as_ref()
-            .is_some_and(|inherited| !inherited.values.is_empty());
-        let shows_toggle = enabled
-            && is_single_image(setting)
-            && self.fields[index].text().trim().is_empty()
-            && (empty_path || inherits_image || context.has_focus(empty_id));
-        let (error, found) = self
-            .host_path_state(index, setting)
-            .map_or((false, false), |host| {
-                (host.error, host.look.kind == NoteKind::Found)
-            });
-        let flag = self
-            .host_settings()
-            .and_then(|settings| settings.flag(setting.key))
-            .is_some();
-        let browse =
-            Button::new(browse_id(setting.key), catalog.text(common::BROWSE)).enabled(enabled);
+        let index = row.index;
+        let key = row.setting.key;
+        let id = field_id(key);
+        let enabled = row.ignored.is_none();
+        let browse = Button::new(browse_id(key), catalog.text(common::BROWSE)).enabled(enabled);
         let browse_width = browse.width(context);
-        let (browse_area, field_area) = areas
-            .control
-            .cut_right(browse_width.min(areas.control.width));
+        let (browse_area, field_area) = control.cut_right(browse_width.min(control.width));
         let field_area = field_area.cut_right(theme.gap).1;
         if enabled {
             let set = self.fields[index].is_set();
             self.widgets
                 .push(EditorWidget::new(id, WidgetKind::Text).clears(set));
-            self.widgets.push(EditorWidget::new(
-                browse_id(setting.key),
-                WidgetKind::Browse,
-            ));
+            self.widgets
+                .push(EditorWidget::new(browse_id(key), WidgetKind::Browse));
         }
         let placeholder =
-            texts
+            row.texts
                 .placeholder
                 .text_in(catalog, generation, revision, |catalog, _, out| {
                     self.write_path_placeholder(catalog, out, index);
@@ -339,6 +308,37 @@ impl Editor {
         if browse.show(context, browse_area) {
             actions.browse = Some(BrowseTarget::Path(index));
         }
+    }
+
+    /// Draws the path field and the Browse button of the field of `row` in
+    /// the control column with the note after them. The note of a command
+    /// line flag on the settings page takes its own line below the note.
+    /// Returns the height of the row.
+    pub(super) fn draw_path(
+        &mut self,
+        context: &mut UiContext,
+        mut row: SettingRow,
+        actions: &mut PageActions,
+    ) -> f32 {
+        let theme = context.theme;
+        let catalog = context.catalog;
+        let generation = context.catalog_generation;
+        let revision = self.revision;
+        let areas = row.areas;
+        let index = row.index;
+        let setting = row.setting;
+        let ignored = row.ignored;
+        let (error, found) = self
+            .host_path_state(index, setting)
+            .map_or((false, false), |host| {
+                (host.error, host.look.kind == NoteKind::Found)
+            });
+        let flag = self
+            .host_settings()
+            .and_then(|settings| settings.flag(setting.key))
+            .is_some();
+        self.draw_path_field(context, areas.control, &mut row, error, actions);
+        let texts = row.texts;
         let note = texts
             .note
             .note(catalog, generation, (revision, found), |writer, _| {
@@ -364,34 +364,7 @@ impl Editor {
             );
             below = draw_note(context, area, note);
         }
-        let mut height = RowAreas::height(theme, note_height + below);
-        if shows_toggle {
-            self.widgets
-                .push(EditorWidget::new(empty_id, WidgetKind::Checkbox));
-            let area = Rect::new(
-                field_area.x,
-                areas.control.bottom() + theme.gap * 0.5,
-                field_area.width,
-                theme.control_height,
-            );
-            let caption =
-                texts
-                    .caption
-                    .text_in(catalog, generation, revision, |catalog, _, out| {
-                        write_empty_list_caption(catalog, out, types);
-                    });
-            let mut checked = empty_path;
-            if Checkbox::new(empty_id, caption).show(context, area, &mut checked) {
-                self.fields[index].value = if empty_path {
-                    FieldValue::Text(String::new())
-                } else {
-                    FieldValue::EmptyPath
-                };
-                actions.changed = true;
-            }
-            height += empty_list_height(theme);
-        }
-        height
+        RowAreas::height(theme, note_height + below)
     }
 }
 

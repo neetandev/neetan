@@ -112,6 +112,12 @@ pub(crate) fn buttons_width(theme: &Theme) -> f32 {
     theme.control_height * 2.0 + theme.gap
 }
 
+/// The width of the box of a media list in a row of `width`: the row
+/// without the buttons beside the box and the gap before them.
+pub(crate) fn list_box_width(theme: &Theme, width: f32) -> f32 {
+    (width - buttons_width(theme) - theme.gap).max(0.0)
+}
+
 /// The height that the checkbox of the empty list adds below a media list.
 pub(crate) fn empty_list_height(theme: &Theme) -> f32 {
     theme.gap * 0.5 + theme.control_height
@@ -169,7 +175,7 @@ impl MediaList<'_> {
     ) -> MediaListResponse {
         let theme = context.theme;
         let mut response = MediaListResponse::default();
-        let (buttons_area, list_area) = rect.cut_right(buttons_width(theme) + theme.gap);
+        let (list_area, buttons_area) = rect.cut_left(list_box_width(theme, rect.width));
         let buttons_area = buttons_area.cut_left(theme.gap).1;
         if values.is_empty() {
             List::new(self.id, 0)

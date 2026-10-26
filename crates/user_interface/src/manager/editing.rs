@@ -659,11 +659,19 @@ mod tests {
     #[cfg(feature = "pc98")]
     /// The settings of the game of the steady frame test after the game file of YU-NO: a
     /// second floppy drive, a missing hard disk image, display values and values that do not
-    /// read. Every section holds a set value and a note of two lines at the minimum window
-    /// size.
+    /// read. Every section holds a set value. The settings and the system defaults of
+    /// [`STEADY_DEFAULTS`] give every section a note of two lines at the minimum window size.
     const STEADY_SETTINGS: &str = "ems = maybe\nfdd2 = games/98/YU-NO/Saves/save.d88\n\
          hdd2 = games/98/YU-NO/Saves/missing.hdi\nadpcm-ram = maybe\ncrt = on\n\
          aspect-mode = wide\nenable-extractor = sometimes\n";
+
+    #[cfg(feature = "pc98")]
+    /// The lines that the system defaults of the steady frame test add: three images of the
+    /// second floppy drive. The note of the inherited list below the set list of the game takes
+    /// two lines at the minimum window size.
+    const STEADY_DEFAULTS: &str = "fdd2 = games/98/system/Second drive default (Disk 1 of 3).d88\n\
+         fdd2 = games/98/system/Second drive default (Disk 2 of 3).d88\n\
+         fdd2 = games/98/system/Second drive default (Disk 3 of 3).d88\n";
 
     #[cfg(feature = "pc98")]
     /// The stem of the game file of the steady frame test. The note of the title holds the
@@ -672,11 +680,14 @@ mod tests {
 
     #[cfg(feature = "pc98")]
     /// Opens YU-NO with [`STEADY_SETTINGS`] from the game file [`STEADY_STEM`] in the editor
-    /// of a manager over [`sample_root`].
+    /// of a manager over [`sample_root`] with the system defaults lines [`STEADY_DEFAULTS`].
     fn steady_editor(name: &str) -> (EditorRoot, Manager, GuiHarness) {
         let root = sample_root(name);
         std::fs::remove_file(root.path("config/pc98/yu-no.conf")).expect("file is removed");
         root.game(STEADY_STEM, &format!("{YU_NO}{STEADY_SETTINGS}"));
+        let defaults = std::fs::read_to_string(root.path("config/pc98.conf"))
+            .expect("the system defaults read");
+        root.write("config/pc98.conf", &format!("{defaults}{STEADY_DEFAULTS}"));
         let mut manager = manager(&root);
         let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);

@@ -7,7 +7,10 @@
 //! path below the root comes back relative to the root, as the layers of a
 //! game file resolve it, and any other path comes back absolute.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
 
 use gui::{
     Rect,
@@ -23,7 +26,6 @@ use stack_vec::StackVec;
 
 use crate::{
     config::resolve_path,
-    editor::ExtensionList,
     media_dialog::{ImageEntry, PANEL_SIZE, TAB_BAR_HEIGHT, fold_filter, matching_entries},
     texts::{
         self, ACTIVATE_KEYS, CANCEL_KEYS, FileTypeText, HintText, HintTexts, MAXIMUM_HINTS,
@@ -198,6 +200,24 @@ fn write_title(catalog: &Catalog, request: &BrowseRequest, out: &mut String) {
 #[cfg(test)]
 pub(crate) fn english_title(request: &BrowseRequest) -> String {
     texts::english_text(|catalog, out| write_title(catalog, request, out))
+}
+
+/// The extensions of the files of a drive with their dots, for example
+/// `.hdi .nhd .thd`.
+#[derive(Clone, Copy)]
+struct ExtensionList<'a>(&'a FileTypes);
+
+impl fmt::Display for ExtensionList<'_> {
+    /// Writes the extensions with their dots, separated by spaces.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, extension) in self.0.extensions.iter().enumerate() {
+            if index > 0 {
+                formatter.write_str(" ")?;
+            }
+            write!(formatter, ".{extension}")?;
+        }
+        Ok(())
+    }
 }
 
 /// Writes the text of the line under the filter in `catalog`: the name and
@@ -787,6 +807,22 @@ mod tests {
             root.write(file, "");
         }
         root
+    }
+
+    /// Verifies that the extension list of the hard disks writes each extension with its dot,
+    /// separated by spaces.
+    #[test]
+    fn the_extension_list_writes_each_extension_with_its_dot() {
+        let Some(types) = find_setting("hdd1").and_then(|setting| setting.file_types.first())
+        else {
+            return;
+        };
+        let expected: Vec<String> = types
+            .extensions
+            .iter()
+            .map(|extension| format!(".{extension}"))
+            .collect();
+        assert_eq!(ExtensionList(types).to_string(), expected.join(" "));
     }
 
     /// Verifies the start in the folder of the current image with the image selected, the order of the rows and the extension filter.
