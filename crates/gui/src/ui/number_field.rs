@@ -135,7 +135,8 @@ impl<'a> NumberField<'a> {
     }
 
     /// The same field, disabled unless `enabled`. A disabled field draws
-    /// dimmed, ignores input and leaves the focus ring.
+    /// dimmed, ignores input and leaves the focus ring. It takes the pointer
+    /// over it, and a press on it reaches no widget after it.
     pub fn enabled(self, enabled: bool) -> Self {
         Self { enabled, ..self }
     }
@@ -381,6 +382,8 @@ impl<'a> NumberField<'a> {
             }
             context.text_focusable(id, rect, false);
             hovered = context.button_behavior(id, rect).hovered;
+        } else {
+            context.absorb_pointer(rect);
         }
         let focused = self.enabled && context.has_focus(id);
         let focus_look = self.enabled && context.shows_focus(id);

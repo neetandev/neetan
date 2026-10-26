@@ -39,8 +39,20 @@ impl ScrollState {
 ///
 /// A focus change by a key or the gamepad to a widget of the content outside
 /// the view scrolls the widget into view with the gap of the theme above or
-/// below it. A press of the pointer keeps the offset. The pressed widget
-/// receives its click.
+/// below it. A widget that does not fit the view with the margin above and
+/// below it shows its top. A press of the pointer on a widget keeps the
+/// offset. The pressed widget receives its click. A press that gives a
+/// widget the focus through [`UiContext::focus_on_press`] keeps the offset
+/// while the whole widget shows. Else it scrolls the widget into view as a
+/// key does, also when the widget held the focus before the press.
+///
+/// The area groups the arrows of its content. Up and Down from a widget of
+/// the content take the nearest widget of the content in their direction,
+/// also one outside the view. They leave the area only when the content has
+/// no widget in that direction. Left and Right take the nearest widget of
+/// the same row in the outermost scroll area around the widget. They leave
+/// the area only when that area has no such widget.
+///
 /// The first pass keeps the offset of `state` until the content tells its
 /// height. A restored offset survives this way. The wheel over the area
 /// scrolls it unless a widget of the content scrolled, and so does a drag of
@@ -89,7 +101,8 @@ pub fn scroll_area(
         context.mouse_captured = true;
     }
     let origin = rect.y - state.offset;
-    let outer_anchor = context.scroll.replace(ScrollAnchor { id, origin });
+    let outer_anchor = context.scroll;
+    context.scroll = Some(ScrollAnchor::inside(id, origin, rect, outer_anchor));
     let ring_start = context.state.ring.len();
     let wheel_before = std::mem::take(&mut context.state.wheel_taken);
     context.scene.push_clip(rect);
@@ -121,6 +134,15 @@ pub fn scroll_area(
             .copied()
     });
     match inside {
+        Some(entry) if context.state.focus_pressed => {
+            let top = entry.rect.y - origin;
+            let shown =
+                top >= state.offset && top + entry.rect.height <= state.offset + rect.height;
+            if !shown {
+                reveal(state, top, entry.rect.height, rect.height, margin);
+            }
+            state.revealed = Some(entry.id);
+        }
         Some(entry) if state.revealed != Some(entry.id) => {
             if by_key {
                 reveal(
@@ -150,9 +172,11 @@ pub fn scroll_area(
 }
 
 /// Scrolls `state` so the area from `top` with `height` in the content lies
-/// in a view of `view_height` with `margin` above and below it.
+/// in a view of `view_height` with `margin` above and below it. An area
+/// that does not fit the view with the margin above and below it shows its
+/// top.
 fn reveal(state: &mut ScrollState, top: f32, height: f32, view_height: f32, margin: f32) {
-    if top - margin < state.offset {
+    if top - margin < state.offset || height + margin * 2.0 > view_height {
         state.offset = top - margin;
     } else if top + height + margin > state.offset + view_height {
         state.offset = top + height + margin - view_height;
@@ -426,5 +450,276 @@ mod tests {
         );
         let thumb = pixel(&pixels, width, VIEW.right() - 4.0, VIEW.y + 20.0);
         assert_ne!(thumb, srgb(theme.colors.panel));
+    }
+
+    /// Verifies that Down from a tall row of a short area takes the next row below the view,
+    /// that the area scrolls the next row into view, and that the focus leaves the area for
+    /// the button below the area from the last row and for the button above the area from
+    /// the first row.
+    #[test]
+    fn the_arrows_walk_the_rows_of_a_short_area_before_they_leave_it() {
+        /// The view of the area.
+        const SHORT_VIEW: Rect = Rect::new(20.0, 60.0, 400.0, 100.0);
+        /// The heights of the rows. The second row is taller than the view, and its bottom lies
+        /// between the top and the bottom of the button below the area.
+        const HEIGHTS: [f32; 4] = [32.0, 160.0, 32.0, 32.0];
+        let mut harness = Harness::new();
+        let mut state = ScrollState::new();
+        let header = UiId::from("header");
+        let footer = UiId::from("footer");
+        let row = UiId::from("row");
+        let draw = |harness: &mut Harness, state: &mut ScrollState| {
+            harness.frame(|context| {
+                context.focusable(
+                    header,
+                    Rect::new(20.0, 10.0, 100.0, 30.0),
+                    NavigationSet::EMPTY,
+                );
+                let mut rects = [Rect::new(0.0, 0.0, 0.0, 0.0); HEIGHTS.len()];
+                scroll_area(context, "form", SHORT_VIEW, state, |context, content| {
+                    let mut y = content.y;
+                    for (index, height) in HEIGHTS.iter().enumerate() {
+                        let rect = Rect::new(content.x, y + 4.0, content.width, *height);
+                        context.focusable(row.indexed(index), rect, NavigationSet::EMPTY);
+                        rects[index] = rect;
+                        y += height + 8.0;
+                    }
+                    y - content.y
+                });
+                context.focusable(
+                    footer,
+                    Rect::new(320.0, 200.0, 100.0, 30.0),
+                    NavigationSet::EMPTY,
+                );
+                rects
+            })
+        };
+        draw(&mut harness, &mut state);
+        harness.state.set_focus(row.indexed(0));
+        draw(&mut harness, &mut state);
+        for index in 1..HEIGHTS.len() {
+            harness.navigate(Navigation::Down);
+            draw(&mut harness, &mut state);
+            assert_eq!(harness.state.focused(), Some(row.indexed(index)));
+            let rects = draw(&mut harness, &mut state);
+            let focused = rects[index];
+            assert!(
+                focused.y >= SHORT_VIEW.y && focused.y < SHORT_VIEW.bottom(),
+                "row {index} at {focused:?}"
+            );
+        }
+        harness.navigate(Navigation::Down);
+        draw(&mut harness, &mut state);
+        assert_eq!(harness.state.focused(), Some(footer));
+        harness.navigate(Navigation::Up);
+        draw(&mut harness, &mut state);
+        assert_eq!(
+            harness.state.focused(),
+            Some(row.indexed(HEIGHTS.len() - 1))
+        );
+        for index in (0..HEIGHTS.len() - 1).rev() {
+            harness.navigate(Navigation::Up);
+            draw(&mut harness, &mut state);
+            assert_eq!(harness.state.focused(), Some(row.indexed(index)));
+            let rects = draw(&mut harness, &mut state);
+            assert!(rects[index].bottom() > SHORT_VIEW.y, "row {index}");
+        }
+        harness.navigate(Navigation::Up);
+        draw(&mut harness, &mut state);
+        assert_eq!(harness.state.focused(), Some(header));
+    }
+
+    /// Draws an area of 20 rows of 32 units at the pitch [`PITCH`]. A press on the area of a
+    /// row gives the control of the row the focus. The control spans the height of the row.
+    /// Returns the rectangles of the controls.
+    fn draw_pressable(harness: &mut Harness, state: &mut ScrollState) -> Vec<Rect> {
+        harness.frame(|context| {
+            let mut controls = Vec::new();
+            scroll_area(context, "form", VIEW, state, |context, content| {
+                for index in 0..20 {
+                    let y = content.y + index as f32 * PITCH + 4.0;
+                    let control = Rect::new(content.x + 200.0, y, 150.0, 32.0);
+                    let id = UiId::from("control").indexed(index);
+                    context.focusable(id, control, NavigationSet::EMPTY);
+                    context.focus_on_press(id, Rect::new(content.x, y, content.width, 32.0));
+                    controls.push(control);
+                }
+                20.0 * PITCH
+            });
+            controls
+        })
+    }
+
+    /// Verifies that a press that gives a control the focus through
+    /// [`UiContext::focus_on_press`] keeps the offset while the whole control shows, also with
+    /// the control nearer to the top or the bottom edge of the view than the gap of the theme.
+    #[test]
+    fn a_press_on_a_fully_visible_row_keeps_the_offset() {
+        /// The offset and the row of each press: the top of row 5 one unit below the top of
+        /// the view and the bottom of row 9 one unit above the bottom of the view.
+        const PRESSES: [(f32, usize); 2] = [(203.0, 5), (197.0, 9)];
+        for (offset, index) in PRESSES {
+            let mut harness = Harness::new();
+            let mut state = ScrollState::new();
+            draw_pressable(&mut harness, &mut state);
+            state.offset = offset;
+            let controls = draw_pressable(&mut harness, &mut state);
+            let control = controls[index];
+            assert!(
+                control.y > VIEW.y
+                    && control.y < VIEW.y + harness.theme.gap
+                    && control.bottom() <= VIEW.bottom()
+                    || control.bottom() < VIEW.bottom()
+                        && control.bottom() > VIEW.bottom() - harness.theme.gap
+                        && control.y >= VIEW.y,
+                "{control:?}"
+            );
+            harness.press(VIEW.x + 10.0, control.y + 16.0);
+            draw_pressable(&mut harness, &mut state);
+            harness.release();
+            draw_pressable(&mut harness, &mut state);
+            draw_pressable(&mut harness, &mut state);
+            assert_eq!(
+                harness.state.focused(),
+                Some(UiId::from("control").indexed(index))
+            );
+            assert_eq!(state.offset, offset, "row {index}");
+        }
+    }
+
+    /// Verifies that a press on the visible lower part of a tall row scrolls the control of the
+    /// row into view when the control lies above the view and already holds the focus.
+    #[test]
+    fn a_press_reveals_a_hidden_control_that_holds_the_focus() {
+        /// The height of the tall row, taller than the view.
+        const TALL: f32 = 300.0;
+        let mut harness = Harness::new();
+        let mut state = ScrollState::new();
+        let control_id = UiId::from("control");
+        let draw = |harness: &mut Harness, state: &mut ScrollState| {
+            harness.frame(|context| {
+                let mut control = Rect::new(0.0, 0.0, 0.0, 0.0);
+                scroll_area(context, "form", VIEW, state, |context, content| {
+                    let first = Rect::new(content.x, content.y + 4.0, 150.0, 32.0);
+                    context.focusable(UiId::from("first"), first, NavigationSet::EMPTY);
+                    let row = Rect::new(content.x, content.y + PITCH + 4.0, content.width, TALL);
+                    control = Rect::new(row.x + 200.0, row.y, 150.0, 32.0);
+                    context.focusable(control_id, control, NavigationSet::EMPTY);
+                    context.focus_on_press(control_id, row);
+                    PITCH + TALL + PITCH
+                });
+                control
+            })
+        };
+        draw(&mut harness, &mut state);
+        harness.state.set_focus(control_id);
+        draw(&mut harness, &mut state);
+        draw(&mut harness, &mut state);
+        state.offset = 100.0;
+        let control = draw(&mut harness, &mut state);
+        assert!(control.bottom() < VIEW.y, "{control:?}");
+        assert_eq!(harness.state.focused(), Some(control_id));
+        harness.press(VIEW.x + 10.0, VIEW.y + 50.0);
+        draw(&mut harness, &mut state);
+        harness.release();
+        draw(&mut harness, &mut state);
+        let control = draw(&mut harness, &mut state);
+        assert_eq!(harness.state.focused(), Some(control_id));
+        assert!(
+            control.y >= VIEW.y && control.bottom() <= VIEW.bottom(),
+            "{control:?}"
+        );
+    }
+
+    /// Verifies that Down from a widget of an outer area enters a nested area at its first
+    /// widget, walks the nested area, and leaves it to the next widgets of the outer area,
+    /// also to one below the view of the outer area, before it leaves the outer area for the
+    /// button below. Up walks back the same way to the button above the outer area. The
+    /// focused widget of the nested area shows inside its view after every step.
+    #[test]
+    fn the_arrows_walk_a_nested_area_inside_its_outer_area() {
+        /// The view of the outer area.
+        const OUTER_VIEW: Rect = Rect::new(20.0, 60.0, 400.0, 160.0);
+        /// The top of the view of the nested area in the content of the outer area, and its
+        /// height.
+        const NESTED: (f32, f32) = (44.0, 100.0);
+        /// The number of rows of the nested area.
+        const ROWS: usize = 5;
+        let mut harness = Harness::new();
+        let mut outer = ScrollState::new();
+        let mut nested = ScrollState::new();
+        let header = UiId::from("header");
+        let top = UiId::from("top");
+        let row = UiId::from("row");
+        let after = UiId::from("after");
+        let last = UiId::from("last");
+        let footer = UiId::from("footer");
+        let draw = |harness: &mut Harness, outer: &mut ScrollState, nested: &mut ScrollState| {
+            harness.frame(|context| {
+                context.focusable(
+                    header,
+                    Rect::new(20.0, 10.0, 100.0, 30.0),
+                    NavigationSet::EMPTY,
+                );
+                let mut view = Rect::new(0.0, 0.0, 0.0, 0.0);
+                let mut rows = [view; ROWS];
+                scroll_area(context, "outer", OUTER_VIEW, outer, |context, content| {
+                    let widget =
+                        |offset: f32| Rect::new(content.x, content.y + offset, 300.0, 32.0);
+                    context.focusable(top, widget(4.0), NavigationSet::EMPTY);
+                    view = Rect::new(content.x, content.y + NESTED.0, content.width, NESTED.1);
+                    scroll_area(context, "nested", view, nested, |context, inner| {
+                        for (index, rect) in rows.iter_mut().enumerate() {
+                            *rect = Rect::new(
+                                inner.x,
+                                inner.y + index as f32 * PITCH + 4.0,
+                                inner.width,
+                                32.0,
+                            );
+                            context.focusable(row.indexed(index), *rect, NavigationSet::EMPTY);
+                        }
+                        ROWS as f32 * PITCH
+                    });
+                    context.focusable(after, widget(152.0), NavigationSet::EMPTY);
+                    context.focusable(last, widget(192.0), NavigationSet::EMPTY);
+                    232.0
+                });
+                context.focusable(
+                    footer,
+                    Rect::new(320.0, 230.0, 100.0, 30.0),
+                    NavigationSet::EMPTY,
+                );
+                (view, rows)
+            })
+        };
+        draw(&mut harness, &mut outer, &mut nested);
+        harness.state.set_focus(top);
+        draw(&mut harness, &mut outer, &mut nested);
+        let mut step = |harness: &mut Harness, navigation: Navigation, expected: UiId| {
+            harness.navigate(navigation);
+            draw(harness, &mut outer, &mut nested);
+            assert_eq!(harness.state.focused(), Some(expected), "{navigation:?}");
+            let (view, rows) = draw(harness, &mut outer, &mut nested);
+            if let Some(index) = (0..ROWS).find(|&index| expected == row.indexed(index)) {
+                let rect = rows[index];
+                assert!(
+                    rect.y >= view.y && rect.bottom() <= view.bottom(),
+                    "row {index} at {rect:?} in {view:?}"
+                );
+            }
+        };
+        for index in 0..ROWS {
+            step(&mut harness, Navigation::Down, row.indexed(index));
+        }
+        step(&mut harness, Navigation::Down, after);
+        step(&mut harness, Navigation::Down, last);
+        step(&mut harness, Navigation::Down, footer);
+        step(&mut harness, Navigation::Up, last);
+        step(&mut harness, Navigation::Up, after);
+        for index in (0..ROWS).rev() {
+            step(&mut harness, Navigation::Up, row.indexed(index));
+        }
+        step(&mut harness, Navigation::Up, top);
+        step(&mut harness, Navigation::Up, header);
     }
 }

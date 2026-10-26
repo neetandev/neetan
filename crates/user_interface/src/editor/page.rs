@@ -269,6 +269,7 @@ impl Editor {
             &mut self.section,
         ) {
             self.scroll = ScrollState::new();
+            self.help_tracking.leave_section();
             if !context.has_focus(tabs_id) {
                 self.focus_first = true;
             }
@@ -513,11 +514,22 @@ impl Editor {
 mod tests {
     use std::path::PathBuf;
 
+    use gui::ui::Navigation;
+    use machine_factory::config::{
+        settings::{SETTINGS, ValueKind},
+        systems::compiled_systems,
+    };
+
     use super::*;
     use crate::{
         editor::{
             derived_file::DerivedFile,
-            test_support::{EditorRoot, system_named},
+            media_list::{self, button_ids},
+            rows::{RowAreas, browse_id, field_id},
+            test_support::{
+                EditorRoot, SCREEN, SHORT_SCREEN, media_section, row_of, show, show_in,
+                system_named,
+            },
         },
         gui_test_support::GuiHarness,
         texts::english_text,
@@ -652,5 +664,256 @@ mod tests {
             form_area(theme, Rect::new(0.0, 0.0, 960.0, 572.0)),
             small.form
         );
+    }
+
+    /// The kind and the field of the focused widget of the last pass of `editor`.
+    fn focused_widget(
+        harness: &GuiHarness,
+        editor: &Editor,
+    ) -> (Option<WidgetKind>, Option<usize>) {
+        let focused = harness.state.focused();
+        editor
+            .widgets
+            .iter()
+            .find(|widget| Some(widget.id) == focused)
+            .map_or((None, None), |widget| (Some(widget.kind), widget.field))
+    }
+
+    /// The key of the field `field` with the area of the main control of its row in the last
+    /// pass of `editor` when the control starts outside `form`.
+    fn hidden_control(
+        harness: &GuiHarness,
+        editor: &Editor,
+        form: Rect,
+        field: usize,
+    ) -> Option<(&'static str, Rect)> {
+        let row = row_of(editor, editor.fields[field].key());
+        let control = RowAreas::new(&harness.theme, row.rect, row.rect.y).control;
+        let shows = control.y >= form.y - 0.5 && control.y < form.bottom();
+        (!shows).then_some((editor.fields[field].key(), control))
+    }
+
+    /// Verifies that Down walks every row of the Media section of a short page with tall media
+    /// lists in order and leaves the form for the footer only from the last row, that Up walks
+    /// back to the first row and leaves the form for the tab bar only from it, and that the
+    /// main control of the focused row shows inside the form after every step. A media list
+    /// with images advances its selection on the arrows before the focus leaves it. Covers
+    /// every compiled system.
+    #[test]
+    fn the_arrows_walk_the_rows_of_a_short_page_in_order() {
+        /// The most arrow presses of one walk.
+        const MAXIMUM_STEPS: usize = 100;
+        let mut harness = GuiHarness::new(960, 300);
+        let form = form_area(&harness.theme, SHORT_SCREEN);
+        let walk = |harness: &mut GuiHarness,
+                    editor: &mut Editor,
+                    navigation: Navigation,
+                    leaves_to: WidgetKind| {
+            let mut visited = vec![focused_widget(harness, editor).1.expect("a row")];
+            let mut hidden = Vec::new();
+            for _ in 0..MAXIMUM_STEPS {
+                harness.input.navigation = Some(navigation);
+                show_in(harness, editor, SHORT_SCREEN);
+                match focused_widget(harness, editor) {
+                    (Some(kind), _) if kind == leaves_to => return (visited, hidden),
+                    (_, Some(field)) => {
+                        hidden.extend(hidden_control(harness, editor, form, field));
+                        if visited.last() != Some(&field) {
+                            visited.push(field);
+                        }
+                    }
+                    other => panic!("the focus left the form for {other:?} after {visited:?}"),
+                }
+            }
+            panic!("the walk did not leave the form: {visited:?}");
+        };
+        for system in compiled_systems() {
+            let name = system.name;
+            let root = EditorRoot::with_system("page_short_walk", name);
+            let mut lines = String::new();
+            for setting in SETTINGS
+                .iter()
+                .filter(|setting| setting.kind == ValueKind::PathList)
+            {
+                for image in ["a.img", "b.img", "c.img"] {
+                    lines.push_str(&format!("{} = {image}\n", setting.key));
+                }
+            }
+            let mut editor = media_section(&root, &mut harness, SHORT_SCREEN, &lines);
+            let mut rows: Vec<usize> = editor
+                .widgets
+                .iter()
+                .filter_map(|widget| widget.field)
+                .collect();
+            rows.dedup();
+            let tall = editor
+                .rows
+                .iter()
+                .filter(|row| row.rect.height > form.height)
+                .count();
+            assert!(rows.len() >= 2 && tall >= 1, "{name} {rows:?} {tall}");
+            assert!(
+                editor
+                    .rows
+                    .last()
+                    .is_some_and(|row| row.rect.y > form.bottom()),
+                "{name}: the last row lies below the form"
+            );
+
+            harness
+                .state
+                .set_focus(field_id(editor.fields[rows[0]].key()));
+            show_in(&mut harness, &mut editor, SHORT_SCREEN);
+            let (down, hidden) = walk(
+                &mut harness,
+                &mut editor,
+                Navigation::Down,
+                WidgetKind::Cancel,
+            );
+            assert_eq!(down, rows, "{name}");
+            assert_eq!(hidden, [], "{name}: the focused rows lie outside {form:?}");
+            let last = rows[rows.len() - 1];
+            harness.state.set_focus(field_id(editor.fields[last].key()));
+            show_in(&mut harness, &mut editor, SHORT_SCREEN);
+            let (up, hidden) = walk(&mut harness, &mut editor, Navigation::Up, WidgetKind::Tabs);
+            rows.reverse();
+            assert_eq!(up, rows, "{name}");
+            assert_eq!(hidden, [], "{name}: the focused rows lie outside {form:?}");
+        }
+    }
+
+    /// Sends the arrow `navigation` from the widget `from` and returns the widget that holds
+    /// the focus after it.
+    fn arrow_from(
+        harness: &mut GuiHarness,
+        editor: &mut Editor,
+        from: UiId,
+        navigation: Navigation,
+    ) -> Option<UiId> {
+        harness.state.set_focus(from);
+        show(harness, editor);
+        harness.input.navigation = Some(navigation);
+        show(harness, editor);
+        harness.state.focused()
+    }
+
+    /// Verifies that Right from the Browse button of a path row in the Media section keeps the
+    /// focus, also from `hdd2` below the media lists of the pc98 and the x68k, that Left from
+    /// it takes the path field, and that Left and Right walk the media list and the buttons of
+    /// a media row with images. Covers every compiled system.
+    #[test]
+    fn the_sideways_arrows_stay_in_the_row_of_the_form() {
+        let mut harness = GuiHarness::new(960, 600);
+        for system in compiled_systems() {
+            let root = EditorRoot::with_system("page_sideways", system.name);
+            let mut editor = media_section(&root, &mut harness, SCREEN, "");
+            let browse_rows: Vec<usize> = editor
+                .widgets
+                .iter()
+                .filter(|widget| widget.kind == WidgetKind::Browse)
+                .filter_map(|widget| widget.field)
+                .collect();
+            for row in browse_rows {
+                let key = editor.fields[row].key();
+                let browse = browse_id(key);
+                assert_eq!(
+                    arrow_from(&mut harness, &mut editor, browse, Navigation::Right),
+                    Some(browse),
+                    "{} {key}",
+                    system.name
+                );
+                assert_eq!(
+                    arrow_from(&mut harness, &mut editor, browse, Navigation::Left),
+                    Some(field_id(key)),
+                    "{} {key}",
+                    system.name
+                );
+            }
+
+            let mut editor =
+                media_section(&root, &mut harness, SCREEN, "fdd1 = a.img\nfdd1 = b.img\n");
+            let list = field_id("fdd1");
+            let [add, remove, _, _] = button_ids(list);
+            for (from, navigation, to) in [
+                (list, Navigation::Right, add),
+                (add, Navigation::Right, remove),
+                (remove, Navigation::Left, add),
+                (add, Navigation::Left, list),
+            ] {
+                assert_eq!(
+                    arrow_from(&mut harness, &mut editor, from, navigation),
+                    Some(to),
+                    "{} {navigation:?}",
+                    system.name
+                );
+            }
+        }
+    }
+
+    /// Verifies that Left from the Browse button of `hdd1` after the wheel scrolled the button
+    /// above the form takes the path field of `hdd1`, and that Right from the media list of
+    /// `fdd1` with its top and its buttons above the form takes its Add button. Covers every
+    /// compiled system.
+    #[test]
+    fn the_sideways_arrows_reach_widgets_above_the_view() {
+        /// A page with a form shorter than one path row. The wheel scrolls the last rows of
+        /// the Media section above it.
+        const TINY_SCREEN: Rect = Rect::new(0.0, 0.0, 960.0, 230.0);
+        /// The most wheel steps that scroll the Browse button above the form.
+        const MAXIMUM_STEPS: usize = 40;
+        let mut harness = GuiHarness::new(960, 300);
+        let control_of = |harness: &GuiHarness, editor: &Editor, key: &str| {
+            let row = row_of(editor, key);
+            RowAreas::new(&harness.theme, row.rect, row.rect.y)
+        };
+        for system in compiled_systems() {
+            let name = system.name;
+            let root = EditorRoot::with_system("page_sideways_hidden", name);
+            let mut editor = media_section(&root, &mut harness, TINY_SCREEN, "");
+            if editor.fields.iter().any(|field| field.key() == "hdd1") {
+                let form = form_area(&harness.theme, TINY_SCREEN);
+                harness.state.set_focus(browse_id("hdd1"));
+                show_in(&mut harness, &mut editor, TINY_SCREEN);
+                harness.input.mouse_x = form.x + form.width * 0.5;
+                harness.input.mouse_y = form.y + form.height * 0.5;
+                for _ in 0..MAXIMUM_STEPS {
+                    if control_of(&harness, &editor, "hdd1").control.bottom() < form.y {
+                        break;
+                    }
+                    harness.input.wheel = -1.0;
+                    show_in(&mut harness, &mut editor, TINY_SCREEN);
+                }
+                let control = control_of(&harness, &editor, "hdd1").control;
+                assert!(control.bottom() < form.y, "{name} {control:?} {form:?}");
+                assert_eq!(harness.state.focused(), Some(browse_id("hdd1")), "{name}");
+                harness.input.navigation = Some(Navigation::Left);
+                show_in(&mut harness, &mut editor, TINY_SCREEN);
+                assert_eq!(harness.state.focused(), Some(field_id("hdd1")), "{name}");
+            }
+
+            let mut editor = media_section(
+                &root,
+                &mut harness,
+                SHORT_SCREEN,
+                "fdd1 = a.img\nfdd1 = b.img\nfdd1 = c.img\n",
+            );
+            let form = form_area(&harness.theme, SHORT_SCREEN);
+            let button = harness.theme.control_height;
+            let list_height = media_list::list_height(&harness.theme, 3);
+            let wide = control_of(&harness, &editor, "fdd1").wide;
+            editor.scroll.offset += wide.y + button + harness.theme.gap - form.y;
+            let list = field_id("fdd1");
+            harness.state.set_focus(list);
+            show_in(&mut harness, &mut editor, SHORT_SCREEN);
+            let wide = control_of(&harness, &editor, "fdd1").wide;
+            assert!(
+                wide.y + button < form.y && wide.y + list_height > form.y,
+                "{name} {wide:?} {form:?}"
+            );
+            harness.input.navigation = Some(Navigation::Right);
+            show_in(&mut harness, &mut editor, SHORT_SCREEN);
+            let [add, _, _, _] = button_ids(list);
+            assert_eq!(harness.state.focused(), Some(add), "{name}");
+        }
     }
 }

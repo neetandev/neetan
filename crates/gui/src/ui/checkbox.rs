@@ -34,7 +34,8 @@ impl<'a> Checkbox<'a> {
     }
 
     /// The same checkbox, disabled unless `enabled`. A disabled checkbox
-    /// draws dimmed, ignores input and leaves the focus ring.
+    /// draws dimmed, ignores input and leaves the focus ring. It takes the
+    /// pointer over it, and a press on it reaches no widget after it.
     pub fn enabled(self, enabled: bool) -> Self {
         Self { enabled, ..self }
     }
@@ -74,6 +75,7 @@ impl<'a> Checkbox<'a> {
                 CheckBoxLook::Idle
             }
         } else {
+            context.absorb_pointer(area);
             CheckBoxLook::Disabled
         };
         let (slot, rest) = area.cut_left(CHECK_BOX_SIZE);

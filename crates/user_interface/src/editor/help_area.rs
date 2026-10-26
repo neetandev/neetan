@@ -94,12 +94,20 @@ pub(crate) struct HelpTracking {
     /// Whether the wheel turned in the last pass. A scroll area applies the
     /// wheel after its rows, and the rows of the next pass show the turn.
     wheel_turned: bool,
-    /// The field of the row that the pointer entered last.
+    /// The field of the row that the pointer entered or pressed last.
     entered_field: Option<usize>,
     /// The focused widget of the last pass.
     focused: Option<UiId>,
     /// The change that selects the row of the help area.
     source: HelpSource,
+}
+
+impl HelpTracking {
+    /// Forgets the row that the pointer entered last. The rows of a new
+    /// section under a resting pointer enter no row.
+    pub(crate) fn leave_section(&mut self) {
+        self.entered_field = None;
+    }
 }
 
 impl Editor {
@@ -108,9 +116,10 @@ impl Editor {
     /// pointer that moves, or a wheel that turns in this pass or the last
     /// one, records the row under the pointer as entered when it differs
     /// from the row entered last. An entered setting row selects the
-    /// hovered row. A press of the left button over a setting row enters
-    /// that row and selects it. A form that scrolls to the focus under a
-    /// resting pointer enters no row.
+    /// entered row. A press of the left button over a setting row enters
+    /// that row and selects it. The entered row stays selected until the
+    /// pointer or the wheel enters another row. A form that scrolls under a
+    /// resting pointer and a section switch enter no row.
     pub(super) fn track_help(&mut self, context: &UiContext) {
         let tracking = &mut self.help_tracking;
         let focused = context.focused();
@@ -145,22 +154,26 @@ impl Editor {
     }
 
     /// The setting of the help area. After a hover change it is the setting
-    /// of the row under the pointer, and after a focus change the setting
-    /// of the focused row. Without a hovered setting row it is the setting
-    /// of the focused row.
+    /// of the row that the pointer entered or pressed last, and after a
+    /// focus change the setting of the focused row. Without an entered
+    /// setting row it is the setting of the focused row.
     pub(crate) fn help_setting(&self, context: &UiContext) -> Option<&'static Setting> {
-        let hovered = match self.help_tracking.source {
-            HelpSource::Hover => self.hovered_setting(),
+        let entered = match self.help_tracking.source {
+            HelpSource::Hover => self.entered_setting(),
             HelpSource::Focus => None,
         };
-        hovered.or_else(|| self.focused_setting(context))
+        entered.or_else(|| self.focused_setting(context))
     }
 
-    /// The setting of the row under the pointer in the last pass. A row
-    /// without a setting gives none.
-    fn hovered_setting(&self) -> Option<&'static Setting> {
-        let row = self.rows.iter().find(|row| row.hovered)?;
-        self.fields[row.field].source.setting()
+    /// The setting of the row that the pointer entered or pressed last. A
+    /// row without a setting and a row outside the rows of this pass give
+    /// none.
+    fn entered_setting(&self) -> Option<&'static Setting> {
+        let field = self.help_tracking.entered_field?;
+        if !self.rows.iter().any(|row| row.field == field) {
+            return None;
+        }
+        self.fields[field].source.setting()
     }
 
     /// The setting of the focused row: the row of the widget with the
@@ -199,23 +212,14 @@ mod tests {
             page::{CANCEL_ID, CLOSE_ID, TABS_ID, form_area, help_area},
             rows::{RowAreas, field_id},
             test_support::{
-                EditorRoot, SCREEN, SettingsRoot, fdd1_model, help_glyphs, settings_page, show,
-                shown_help, shown_help_in, statuses_with,
+                EditorRoot, SCREEN, SHORT_SCREEN, SettingsRoot, fdd1_model, help_glyphs,
+                media_section, row_of, settings_page, show, show_in, shown_help, shown_help_in,
+                statuses_with,
             },
         },
         gui_test_support::{GuiHarness, PassCounts},
         texts::{LanguageCatalog, repository::repository_catalogs, test_catalog},
     };
-
-    /// The area of the row of `key` in the last pass of `editor`.
-    fn row_of(editor: &Editor, key: &str) -> Rect {
-        editor
-            .rows
-            .iter()
-            .find(|row| editor.fields[row.field].key() == key)
-            .map(|row| row.rect)
-            .expect("the pass drew the row")
-    }
 
     /// Places the pointer of `harness` at `x`, `y`.
     fn point_at(harness: &mut GuiHarness, x: f32, y: f32) {
@@ -226,7 +230,7 @@ mod tests {
     /// Places the pointer of `harness` on the label of the row of `key` in the last pass of
     /// `editor`.
     fn point_at_row(harness: &mut GuiHarness, editor: &Editor, key: &str) {
-        let row = row_of(editor, key);
+        let row = row_of(editor, key).rect;
         let label = RowAreas::new(&harness.theme, row, row.y).label;
         point_at(harness, label.x + 4.0, label.y + label.height * 0.5);
     }
@@ -339,7 +343,7 @@ mod tests {
         let test = SettingsRoot::new("help_hover", Some(""));
         let mut harness = GuiHarness::new(960, 600);
         let (mut editor, [first, second]) = video_section(&test, &mut harness);
-        let row = row_of(&editor, second);
+        let row = row_of(&editor, second).rect;
         let areas = RowAreas::new(&harness.theme, row, row.y);
         let padding = harness.theme.padding;
         let label = areas.label;
@@ -368,7 +372,7 @@ mod tests {
         show(&mut harness, &mut editor);
         assert_eq!(shown_help(&mut harness, &mut editor), Some(first));
 
-        let control = RowAreas::new(&harness.theme, row, row_of(&editor, first).y).control;
+        let control = RowAreas::new(&harness.theme, row, row_of(&editor, first).rect.y).control;
         point_at(
             &mut harness,
             control.x + control.width * 0.5,
@@ -423,7 +427,7 @@ mod tests {
         harness.state.set_focus(UiId::from(TABS_ID));
         show(&mut harness, &mut editor);
         assert_eq!(shown_help(&mut harness, &mut editor), None);
-        let row = row_of(&editor, MACHINE_KEY);
+        let row = row_of(&editor, MACHINE_KEY).rect;
         point_at(&mut harness, row.x + 4.0, row.y + row.height * 0.5);
         show(&mut harness, &mut editor);
         assert_eq!(shown_help(&mut harness, &mut editor), Some(MACHINE_KEY));
@@ -455,7 +459,9 @@ mod tests {
             show(&mut harness, &mut editor);
             assert_eq!(harness.state.focused(), Some(field_id(focused)));
             assert!(
-                row_of(&editor, rows[3]).contains(harness.input.mouse_x, harness.input.mouse_y)
+                row_of(&editor, rows[3])
+                    .rect
+                    .contains(harness.input.mouse_x, harness.input.mouse_y)
             );
             assert_steady(&mut harness, &mut editor, SCREEN);
             assert_eq!(shown_help(&mut harness, &mut editor), Some(focused));
@@ -473,14 +479,16 @@ mod tests {
         assert_eq!(shown_help(&mut harness, &mut editor), Some(rows[2]));
     }
 
-    /// Verifies that a click on the label or on the empty space of a hovered row shows the help
-    /// of that row after a Tab to another row, and that the click keeps the focus.
+    /// Verifies that a click on the label or on the empty space of a hovered row after a Tab to
+    /// another row gives the clicked row the focus and shows its help, that a steady frame
+    /// after the click allocates nothing, and that a Tab after the click shows the help of the
+    /// next row.
     #[test]
     fn a_click_on_a_row_shows_its_help() {
         let test = SettingsRoot::new("help_click", Some(""));
         let mut harness = GuiHarness::new(960, 600);
         let (mut editor, [first, second]) = video_section(&test, &mut harness);
-        let row = row_of(&editor, first);
+        let row = row_of(&editor, first).rect;
         let label = RowAreas::new(&harness.theme, row, row.y).label;
         let points = [
             (label.x + 4.0, label.y + label.height * 0.5),
@@ -500,13 +508,17 @@ mod tests {
             show(&mut harness, &mut editor);
             harness.input.left = false;
             show(&mut harness, &mut editor);
-            assert_eq!(harness.state.focused(), Some(field_id(second)));
+            assert_eq!(harness.state.focused(), Some(field_id(first)));
             assert_steady(&mut harness, &mut editor, SCREEN);
             assert_eq!(
                 shown_help(&mut harness, &mut editor),
                 Some(first),
                 "{pointer_x} {pointer_y}"
             );
+            harness.input.navigation = Some(Navigation::Next);
+            show(&mut harness, &mut editor);
+            assert_eq!(harness.state.focused(), Some(field_id(second)));
+            assert_eq!(shown_help(&mut harness, &mut editor), Some(second));
         }
     }
 
@@ -518,21 +530,14 @@ mod tests {
     /// settings page scroll.
     #[test]
     fn the_help_area_follows_the_focus_while_the_form_scrolls() {
-        /// A page that shows two rows of the form.
-        const SHORT_SCREEN: Rect = Rect::new(0.0, 0.0, 960.0, 300.0);
         let test = SettingsRoot::new("help_scroll", Some(""));
         let host = test.host(&[]);
         let mut editor = settings_page(&host, &statuses_with(&host, RomStatus::NotFound));
         let mut harness = GuiHarness::new(960, 600);
-        let show = |harness: &mut GuiHarness, editor: &mut Editor| {
-            harness.settle(|context| {
-                editor.show(context, SHORT_SCREEN);
-            });
-        };
-        show(&mut harness, &mut editor);
+        show_in(&mut harness, &mut editor, SHORT_SCREEN);
         for _ in 0..2 {
             harness.input.navigation = Some(Navigation::NextTab);
-            show(&mut harness, &mut editor);
+            show_in(&mut harness, &mut editor, SHORT_SCREEN);
         }
         assert_eq!(editor.current_section(), EditorSection::VideoAndAudio);
         let form = form_area(&harness.theme, SHORT_SCREEN);
@@ -549,7 +554,7 @@ mod tests {
         assert!(visible >= 2, "the form shows two rows");
         let resting = editor.fields[editor.rows[visible - 2].field].key();
         point_at_row(&mut harness, &editor, resting);
-        show(&mut harness, &mut editor);
+        show_in(&mut harness, &mut editor, SHORT_SCREEN);
         assert_eq!(
             shown_help_in(&mut harness, &mut editor, SHORT_SCREEN),
             Some(resting)
@@ -560,7 +565,7 @@ mod tests {
         let mut scrolled = false;
         for _ in 1..editor.rows.len() {
             harness.input.navigation = Some(Navigation::Down);
-            show(&mut harness, &mut editor);
+            show_in(&mut harness, &mut editor, SHORT_SCREEN);
             let now = focused_key(&harness, &editor);
             assert!(now.is_some() && now != focused, "{focused:?} {now:?}");
             focused = now;
@@ -582,17 +587,17 @@ mod tests {
         };
         let before = under_pointer(&editor);
         harness.input.mouse_y += 1.0;
-        show(&mut harness, &mut editor);
+        show_in(&mut harness, &mut editor, SHORT_SCREEN);
         assert_eq!(
             shown_help_in(&mut harness, &mut editor, SHORT_SCREEN),
             before
         );
         harness.state.set_focus(UiId::from(TABS_ID));
-        show(&mut harness, &mut editor);
+        show_in(&mut harness, &mut editor, SHORT_SCREEN);
         assert_eq!(under_pointer(&editor), before);
         assert_eq!(shown_help_in(&mut harness, &mut editor, SHORT_SCREEN), None);
         harness.input.wheel = 1.0;
-        show(&mut harness, &mut editor);
+        show_in(&mut harness, &mut editor, SHORT_SCREEN);
         let after = under_pointer(&editor);
         assert!(after.is_some() && after != before, "{before:?} {after:?}");
         assert_steady(&mut harness, &mut editor, SHORT_SCREEN);
@@ -600,6 +605,56 @@ mod tests {
             shown_help_in(&mut harness, &mut editor, SHORT_SCREEN),
             after
         );
+    }
+
+    /// Asserts that Left and Right on the focused tab bar of `editor` with the pointer resting
+    /// on the row of `key` leave the help area empty, that a following motion of the pointer
+    /// shows the help of `key`, and that a steady frame after each step allocates nothing.
+    fn assert_a_section_switch_enters_no_row(
+        harness: &mut GuiHarness,
+        editor: &mut Editor,
+        key: &'static str,
+    ) {
+        let tabs = UiId::from(TABS_ID);
+        harness.state.set_focus(tabs);
+        show(harness, editor);
+        point_at_row(harness, editor, key);
+        show(harness, editor);
+        assert_eq!(shown_help(harness, editor), Some(key));
+        let section = editor.current_section();
+        for navigation in [Navigation::Left, Navigation::Right] {
+            harness.input.navigation = Some(navigation);
+            show(harness, editor);
+            assert_eq!(harness.state.focused(), Some(tabs));
+            assert_steady(harness, editor, SCREEN);
+            assert_eq!(shown_help(harness, editor), None, "{navigation:?}");
+        }
+        assert_eq!(editor.current_section(), section);
+        assert!(row_of(editor, key).hovered);
+        harness.input.mouse_y += 1.0;
+        show(harness, editor);
+        assert_steady(harness, editor, SCREEN);
+        assert_eq!(shown_help(harness, editor), Some(key));
+    }
+
+    /// Verifies that a section switch of the game editor under a resting pointer leaves the
+    /// help area to the focused tab bar until the pointer moves.
+    #[test]
+    fn a_section_switch_of_the_game_editor_enters_no_row() {
+        let root = EditorRoot::new("help_switch_game");
+        let mut harness = GuiHarness::new(960, 600);
+        let mut editor = media_section(&root, &mut harness, SCREEN, "");
+        assert_a_section_switch_enters_no_row(&mut harness, &mut editor, "fdd1");
+    }
+
+    /// Verifies that a section switch of the settings page under a resting pointer leaves the
+    /// help area to the focused tab bar until the pointer moves.
+    #[test]
+    fn a_section_switch_of_the_settings_page_enters_no_row() {
+        let test = SettingsRoot::new("help_switch_settings", Some(""));
+        let mut harness = GuiHarness::new(960, 600);
+        let (mut editor, [_, second]) = video_section(&test, &mut harness);
+        assert_a_section_switch_enters_no_row(&mut harness, &mut editor, second);
     }
 
     /// Verifies that the system defaults editor shows the help of its focused machine row.

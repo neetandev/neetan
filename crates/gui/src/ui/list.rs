@@ -174,7 +174,9 @@ impl<'a> List<'a> {
     }
 
     /// The same list, disabled unless `enabled`. A disabled list draws its
-    /// edge and its rows dimmed, ignores input and leaves the focus ring.
+    /// edge and its rows dimmed, ignores input and leaves the focus ring. It
+    /// takes the pointer over it, and a press on it reaches no widget after
+    /// it.
     pub fn enabled(self, enabled: bool) -> Self {
         Self { enabled, ..self }
     }
@@ -298,6 +300,8 @@ impl<'a> List<'a> {
                 state.scroll -= context.input.wheel * WHEEL_ROWS * theme.row_height;
                 context.state.wheel_taken = true;
             }
+        } else {
+            context.absorb_pointer(rect);
         }
         settle_scroll(context, state, &layout, view.height, overflow);
 
