@@ -97,7 +97,7 @@ pub(crate) struct Manager {
     host: HostLayers,
     /// The config folder.
     config_folder: PathBuf,
-    /// Every compiled system with its games and its ROM status.
+    /// The shown systems with their games and their ROM status.
     systems: Vec<SystemEntry>,
     /// The ROM status of every ROM folder from the check of the start or of
     /// the last Refresh.
@@ -133,14 +133,11 @@ impl Manager {
         let host = HostLayers::read(&start.request, &start.locations)?;
         let config_folder = host.config_folder();
         let roms = check_all_folders(&host);
-        let systems = compiled_systems()
-            .map(|system| SystemEntry::new(system, &host, &roms))
-            .collect();
         let mut manager = Self {
             start,
             host,
             config_folder,
-            systems,
+            systems: Vec::new(),
             roms,
             entries: Vec::new(),
             row_kinds: Vec::new(),
@@ -169,16 +166,23 @@ impl Manager {
         self.catalog_switch.take()
     }
 
-    /// Scans the catalog again and restores the view on the new games.
+    /// Scans the catalog again, builds the shown systems with their games
+    /// and restores the view on them.
     fn rescan(&mut self) {
         let catalog = Catalog::scan(&self.host);
         let root = self.host.root().to_path_buf();
-        for entry in &mut self.systems {
-            entry.rows = catalog
-                .system(entry.system.name)
-                .map(|system| system_rows(system, &root))
-                .unwrap_or_default();
-        }
+        self.systems = compiled_systems()
+            .filter_map(|system| {
+                let mut entry = SystemEntry::new(system, &self.host, &self.roms);
+                let scanned = catalog.system(system.name);
+                entry.rows = scanned
+                    .map(|scanned| system_rows(scanned, &root))
+                    .unwrap_or_default();
+                let configured = !entry.rows.is_empty()
+                    || scanned.is_some_and(|scanned| scanned.defaults_file.is_file());
+                entry.shown(configured).then_some(entry)
+            })
+            .collect();
         let names: Vec<&'static str> = self.systems.iter().map(|entry| entry.system.name).collect();
         let system = self.view.restore_system(&names);
         self.refresh_entries();
@@ -201,9 +205,6 @@ impl Manager {
     /// nearest row when the selected game is gone.
     fn refresh(&mut self) {
         self.roms = check_all_folders(&self.host);
-        for entry in &mut self.systems {
-            entry.take_host(&self.host, &self.roms);
-        }
         self.rescan();
         info!("{}", self.scan_summary());
     }
@@ -449,6 +450,51 @@ mod tests {
         gui_test_support::{GuiHarness, MINIMUM_HEIGHT, MINIMUM_WIDTH, PassCounts},
         texts::repository::{RepositoryLanguage, repository_languages},
     };
+
+    /// The names of the shown systems of `manager`.
+    fn shown_systems(manager: &Manager) -> Vec<&'static str> {
+        manager
+            .systems
+            .iter()
+            .map(|entry| entry.system.name)
+            .collect()
+    }
+
+    /// Verifies that a system without the ROMs it needs shows only with a system defaults file or
+    /// a file in its folder, and that a refresh picks up both.
+    #[test]
+    fn a_system_without_needed_roms_shows_only_with_configuration() {
+        let Some(required) = compiled_systems().find(|system| system.roms_required) else {
+            return;
+        };
+        let test = TestRoot::new("hidden_system");
+        let mut manager = test.manager();
+        assert!(!shown_systems(&manager).contains(&required.name));
+        for system in compiled_systems().filter(|system| !system.roms_required) {
+            assert!(shown_systems(&manager).contains(&system.name));
+        }
+
+        test.game(&format!("{}.conf", required.name), "");
+        manager.refresh();
+        assert!(shown_systems(&manager).contains(&required.name));
+        let entry = manager
+            .systems
+            .iter()
+            .find(|entry| entry.system.name == required.name)
+            .expect("the system shows");
+        assert_eq!(entry.rom_status, RomStatus::Missing);
+
+        test.remove(&format!("{}.conf", required.name));
+        manager.refresh();
+        assert!(!shown_systems(&manager).contains(&required.name));
+
+        test.game(
+            &format!("{}/edge.conf", required.name),
+            "machine = FOOBAR\n",
+        );
+        manager.refresh();
+        assert!(shown_systems(&manager).contains(&required.name));
+    }
 
     /// Verifies that the launch request of a row holds its game file, its system and the command line flags.
     #[test]
