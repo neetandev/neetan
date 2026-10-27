@@ -133,7 +133,13 @@ fn read_document_with(
 ) -> Result<(ConfigDocument, FileStamp), OpenError> {
     let failed = |error: DocumentError| OpenError::failed(path, error);
     let read_error = |error: io::Error| failed(DocumentError::read(&error));
-    let mut file = File::open(path).map_err(read_error)?;
+    let mut file = File::open(path).map_err(|error| {
+        if std::fs::metadata(path).is_ok_and(|metadata| !metadata.is_file()) {
+            OpenError::NoFile(path.to_path_buf())
+        } else {
+            read_error(error)
+        }
+    })?;
     let stamp = |file: &File| {
         let metadata = file.metadata().map_err(read_error)?;
         FileStamp::from_metadata(&metadata).ok_or_else(|| OpenError::NoFile(path.to_path_buf()))
@@ -198,10 +204,17 @@ pub(crate) fn create_document(
 }
 
 /// Reserves the new file `path` and fills it with `fill`. A failed `fill`
-/// removes the reservation. Returns what `fill` returns.
+/// removes the reservation. A file in place of a folder of `path` fails
+/// with [`io::ErrorKind::NotADirectory`]. Returns what `fill` returns.
 fn reserve_and_fill<T>(path: &Path, fill: impl FnOnce(&Path) -> io::Result<T>) -> io::Result<T> {
     if let Some(folder) = path.parent() {
-        std::fs::create_dir_all(folder)?;
+        std::fs::create_dir_all(folder).map_err(|error| {
+            if error.kind() == io::ErrorKind::AlreadyExists {
+                io::Error::new(io::ErrorKind::NotADirectory, error)
+            } else {
+                error
+            }
+        })?;
     }
     drop(OpenOptions::new().write(true).create_new(true).open(path)?);
     let filled = fill(path);

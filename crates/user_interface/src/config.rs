@@ -19,7 +19,7 @@ pub use self::{
     discovery::{
         LANGUAGE_FILE_EXTENSION, LANGUAGE_FOLDER, LanguageFile, Locations, SETTINGS_FILE_NAME,
         SettingsLocation, SettingsSource, compare_tags, discover_settings, find_language_files,
-        resolve_path, resolve_value,
+        path_text, resolve_path, resolve_value,
     },
     document::{ConfigDocument, DocumentEntry, DocumentError, LineContent, parse_line},
     launch_error::{LaunchError, LaunchFailure},

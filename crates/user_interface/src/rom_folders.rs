@@ -190,10 +190,15 @@ mod tests {
         let folder = TemporaryFolder::new("rom_folders_test");
         let root = folder.path().to_path_buf();
         let file = root.join("neetan.conf");
+        let archive = root.join("archive").join("x1");
+        let flag_config = root.join("flag").join("config");
         std::fs::write(
             &file,
-            "roms-folder = firmware\nx1-roms = /archive/x1\npc98-roms = /old\npc98-roms =\n\
-             config-folder=games\nmeta.title = ignored\n",
+            format!(
+                "roms-folder = firmware\nx1-roms = {}\npc98-roms = old\npc98-roms =\n\
+                 config-folder=games\nmeta.title = ignored\n",
+                archive.display()
+            ),
         )
         .expect("file is written");
         let locations = Locations {
@@ -205,7 +210,7 @@ mod tests {
             settings: Some(file),
             flags: vec![(
                 find_setting("config-folder").expect("config-folder is a key"),
-                "/flag/config".to_owned(),
+                flag_config.to_string_lossy().into_owned(),
             )],
             ..LaunchRequest::default()
         };
@@ -217,7 +222,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["line 4: duplicate key pc98-roms. It overrides line 3."]
         );
-        assert_eq!(host.config_folder(), PathBuf::from("/flag/config"));
+        assert_eq!(host.config_folder(), flag_config);
         assert_eq!(host.roms_folder(), root.join("firmware"));
 
         let x1 = SYSTEMS
@@ -228,7 +233,7 @@ mod tests {
         assert_eq!(
             rom_folder_path(&host, &x1),
             RomFolderPath {
-                path: PathBuf::from("/archive/x1"),
+                path: archive,
                 explicit: true
             }
         );

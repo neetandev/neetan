@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn the_details_follow_the_catalog() {
         let folder = PathBuf::from("/root/config/pc98");
-        let file = folder.join("edge.conf");
+        let file = PathBuf::from("/root/config/pc98/edge.conf");
         let cases = [
             (ErrorDetail::Error("gone".to_owned()), "gone".to_owned()),
             (

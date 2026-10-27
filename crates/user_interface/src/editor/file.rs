@@ -332,10 +332,15 @@ mod tests {
             ""
         );
         root.write("blocked", "");
-        let blocked = EditorFile::New(DerivedFile::new(&root.path("blocked/pc98"), ""));
-        let failure = write_file(&blocked, &document, None, "Edge", &root.root, false)
-            .expect_err("the folder is a file");
-        assert!(matches!(failure, SaveFailure::Error { .. }), "{failure:?}");
+        for folder in ["blocked", "blocked/pc98"] {
+            let blocked = EditorFile::New(DerivedFile::new(&root.path(folder), ""));
+            let failure = write_file(&blocked, &document, None, "Edge", &root.root, false)
+                .expect_err("the folder is a file");
+            assert!(
+                matches!(failure, SaveFailure::Error { .. }),
+                "{folder} {failure:?}"
+            );
+        }
         assert_eq!(EditorFile::Existing(written.path).derived(), None);
     }
 }

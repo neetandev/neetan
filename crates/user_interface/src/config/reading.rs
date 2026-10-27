@@ -253,6 +253,7 @@ pub(crate) fn is_foreign_machine(value: &str, target: Target) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::discovery::resolve_path;
 
     /// Returns the findings of `text` read as a layer of `kind`.
     fn findings(kind: LayerKind, text: &str) -> Vec<String> {
@@ -296,11 +297,17 @@ mod tests {
                 (*line, text)
             })
             .collect();
+        let resolved = |name: &str| {
+            format!(
+                "fdd1 {}",
+                resolve_path(Path::new("/root"), Path::new(name)).display()
+            )
+        };
         assert_eq!(
             lines,
             vec![
-                (8, "fdd1 /root/a.d88".to_owned()),
-                (9, "fdd1 /root/b.d88".to_owned()),
+                (8, resolved("a.d88")),
+                (9, resolved("b.d88")),
                 (10, "crt on".to_owned()),
                 (11, "crt off".to_owned()),
                 (12, "key F1 Stop".to_owned()),
