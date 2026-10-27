@@ -25,7 +25,7 @@ use machine_factory::config::settings::{PathKind, Setting, file_types::FileTypes
 use stack_vec::StackVec;
 
 use crate::{
-    config::resolve_path,
+    config::{path_text, resolve_path},
     media_dialog::{ImageEntry, PANEL_SIZE, TAB_BAR_HEIGHT, fold_filter, matching_entries},
     texts::{
         self, ACTIVATE_KEYS, CANCEL_KEYS, FileTypeText, HintText, HintTexts, MAXIMUM_HINTS,
@@ -174,12 +174,12 @@ enum BrowserRow {
 /// Returns the value of `path` as a configuration file writes it: relative
 /// to `root` when the path lies below it, else the whole path.
 pub(crate) fn path_value(path: &Path, root: &Path) -> String {
-    path.strip_prefix(root)
-        .ok()
-        .filter(|relative| !relative.as_os_str().is_empty())
-        .unwrap_or(path)
-        .to_string_lossy()
-        .into_owned()
+    path_text(
+        path.strip_prefix(root)
+            .ok()
+            .filter(|relative| !relative.as_os_str().is_empty())
+            .unwrap_or(path),
+    )
 }
 
 /// Writes the title of the browser for `request` in `catalog`, for example

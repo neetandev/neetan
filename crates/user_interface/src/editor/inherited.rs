@@ -18,6 +18,7 @@ use crate::{
         DocumentError, HostLayers, ModelSource, check_value,
         diagnostic::Located,
         layers::{apply_layers, launch_model, read_system_defaults, system_defaults_file},
+        path_text,
         reading::{Layer, LayerKind, LayerLine},
         resolve_value,
     },
@@ -149,12 +150,9 @@ fn without_key_bindings(layer: &Layer) -> Layer {
 /// relative to the root.
 fn shown_value(setting: &Setting, value: &str, root: &Path) -> String {
     match setting.kind {
-        ValueKind::Path(_) | ValueKind::PathList => {
-            Path::new(value).strip_prefix(root).map_or_else(
-                |_| value.to_owned(),
-                |path| path.to_string_lossy().into_owned(),
-            )
-        }
+        ValueKind::Path(_) | ValueKind::PathList => Path::new(value)
+            .strip_prefix(root)
+            .map_or_else(|_| value.to_owned(), path_text),
         ValueKind::Choice(_) | ValueKind::OnOff | ValueKind::Number(_) | ValueKind::Language => {
             value.to_owned()
         }

@@ -267,6 +267,24 @@ pub fn resolve_path(base: &Path, path: &Path) -> PathBuf {
         .collect()
 }
 
+/// Returns the text of `path` as a configuration file writes it. A relative
+/// path takes `/` between its components, which every host reads. A path
+/// with a root or a drive prefix stays as written.
+#[must_use]
+pub fn path_text(path: &Path) -> String {
+    if path.has_root() || matches!(path.components().next(), Some(Component::Prefix(_))) {
+        return path.to_string_lossy().into_owned();
+    }
+    let mut text = String::new();
+    for component in path.components() {
+        if !text.is_empty() {
+            text.push('/');
+        }
+        text.push_str(&component.as_os_str().to_string_lossy());
+    }
+    text
+}
+
 /// Returns the value of `setting` with a relative path resolved against `base`.
 ///
 /// An empty value and a value of a kind without a path stay as written.
@@ -470,5 +488,20 @@ mod tests {
             resolve_path(base, Path::new(".")),
             PathBuf::from("/games/neetan")
         );
+    }
+
+    /// Verifies that a relative path writes `/` between its components on every host and that an absolute path stays as the host writes it.
+    #[test]
+    fn relative_path_texts_take_slashes() {
+        let relative = Path::new("games").join("98").join("disk.d88");
+        assert_eq!(path_text(&relative), "games/98/disk.d88");
+        assert_eq!(path_text(&Path::new("..").join("roms")), "../roms");
+        assert_eq!(path_text(Path::new("")), "");
+        assert_eq!(
+            path_text(Path::new("/elsewhere/a.conf")),
+            "/elsewhere/a.conf"
+        );
+        let absolute = std::env::temp_dir().join("games").join("disk.d88");
+        assert_eq!(path_text(&absolute), absolute.to_string_lossy());
     }
 }

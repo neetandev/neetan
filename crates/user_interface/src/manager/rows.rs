@@ -6,7 +6,7 @@ use machine_factory::config::systems::System;
 
 use crate::{
     catalog::{CatalogEntry, SystemCatalog},
-    config::Diagnostic,
+    config::{Diagnostic, path_text},
 };
 
 /// One game file of the library.
@@ -77,10 +77,7 @@ impl GameRow {
 
 /// Returns `path` below `root` when it lies there, else the whole path.
 pub(crate) fn shown_path(path: &Path, root: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .into_owned()
+    path_text(path.strip_prefix(root).unwrap_or(path))
 }
 
 /// Returns the rows of the games and the files with errors of `catalog`.

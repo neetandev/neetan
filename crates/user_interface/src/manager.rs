@@ -910,12 +910,21 @@ mod tests {
     /// The title of the game of the steady dialog tests, long enough to wrap in every dialog.
     const LONG_TITLE: &str = "YU-NO: A Girl Who Chants Love at the Bound of this World";
 
+    /// Writes the game file `yu-no.conf` with the title [`LONG_TITLE`]. The colon of the title
+    /// is not valid in a Windows file name.
+    fn long_title_game(test: &TestRoot) {
+        test.game(
+            &format!("{}/yu-no.conf", first_system().name),
+            &format!("meta.title = {LONG_TITLE}\n"),
+        );
+    }
+
     /// Verifies that a steady frame of the delete question allocates nothing, fills no text and
     /// wraps no text, with the focus on Cancel and on Delete.
     #[test]
     fn a_steady_frame_of_the_delete_question_allocates_nothing() {
         let test = TestRoot::new("steady_delete");
-        games(&test, &[LONG_TITLE]);
+        long_title_game(&test);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));
@@ -944,7 +953,7 @@ mod tests {
     #[test]
     fn a_steady_frame_of_an_error_dialog_allocates_nothing() {
         let test = TestRoot::new("steady_error");
-        games(&test, &[LONG_TITLE]);
+        long_title_game(&test);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
         harness.settle(|context| manager.show(context));

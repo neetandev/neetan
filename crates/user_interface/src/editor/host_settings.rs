@@ -36,6 +36,7 @@ use crate::{
     config::{
         HostLayers, SettingsLocation, SettingsSource, find_language_files,
         layers::{folder_location, host_default},
+        path_text,
         reading::LayerLine,
     },
     language::language_options,
@@ -126,6 +127,24 @@ fn field_text<'a>(fields: &'a [Field], key: &str) -> Option<&'a str> {
         .filter(|text| !text.is_empty())
 }
 
+/// The absolute folder of a folder key and whether a folder lies there at
+/// the last update of the folders.
+#[derive(Debug, Clone, Default)]
+struct KeyFolder {
+    /// The absolute folder.
+    path: PathBuf,
+    /// Whether a folder lies at `path`.
+    found: bool,
+}
+
+impl KeyFolder {
+    /// The folder at `path` with its state on the disk.
+    fn new(path: PathBuf) -> Self {
+        let found = path.is_dir();
+        Self { path, found }
+    }
+}
+
 /// The state of the settings page beside its fields.
 #[derive(Debug, Clone)]
 pub(crate) struct HostSettings {
@@ -139,10 +158,10 @@ pub(crate) struct HostSettings {
     pub(super) language: LanguageRow,
     /// The absolute config folder with the values of the fields of the
     /// last update of the folders.
-    config_folder: PathBuf,
+    config_folder: KeyFolder,
     /// The absolute ROM folder with the values of the fields of the last
     /// update of the folders.
-    roms_folder: PathBuf,
+    roms_folder: KeyFolder,
 }
 
 impl HostSettings {
@@ -177,8 +196,8 @@ impl HostSettings {
                 &host.language_folders(),
             ))),
             flags,
-            config_folder: PathBuf::new(),
-            roms_folder: PathBuf::new(),
+            config_folder: KeyFolder::default(),
+            roms_folder: KeyFolder::default(),
         };
         settings.take_statuses(statuses);
         settings
@@ -191,13 +210,13 @@ impl HostSettings {
             let location = self.rom_location(&self.roms[index].folder, fields);
             self.roms[index].location = location;
         }
-        self.config_folder = self.folder_location(CONFIG_FOLDER_KEY, fields);
-        self.roms_folder = self.folder_location(ROMS_FOLDER_KEY, fields);
+        self.config_folder = KeyFolder::new(self.folder_location(CONFIG_FOLDER_KEY, fields));
+        self.roms_folder = KeyFolder::new(self.folder_location(ROMS_FOLDER_KEY, fields));
     }
 
     /// The absolute folder of the folder key `key` of the last update of
     /// the folders. Another key gives `None`.
-    fn folder_of(&self, key: &str) -> Option<&Path> {
+    fn folder_of(&self, key: &str) -> Option<&KeyFolder> {
         match key {
             CONFIG_FOLDER_KEY => Some(&self.config_folder),
             ROMS_FOLDER_KEY => Some(&self.roms_folder),
@@ -270,12 +289,7 @@ impl HostSettings {
                     .map(str::to_owned)
                     .or_else(|| host_default(ROMS_FOLDER_KEY))
                     .unwrap_or_default();
-                vec![
-                    Path::new(&roms)
-                        .join(folder.name)
-                        .to_string_lossy()
-                        .into_owned(),
-                ]
+                vec![path_text(&Path::new(&roms).join(folder.name))]
             }
             None => host_default(setting.key).into_iter().collect(),
         };
@@ -399,13 +413,13 @@ impl Editor {
             });
         }
         let folder = settings.folder_of(setting.key)?;
-        let kind = if folder.is_dir() {
+        let kind = if folder.found {
             NoteKind::Found
         } else {
             NoteKind::Unmarked
         };
         Some(HostPathNote {
-            note: HostNote::Folder(folder),
+            note: HostNote::Folder(&folder.path),
             look: NoteLook::of(kind).shown_as_path(),
             flag,
             error: false,
@@ -567,6 +581,7 @@ mod tests {
             }
         );
         std::fs::create_dir(test.root().join("roms")).expect("folder is created");
+        editor.update_host_folders();
         let notes = editor
             .host_path_note(
                 index_of(&editor, ROMS_FOLDER_KEY),
@@ -589,7 +604,7 @@ mod tests {
         let derived = |roms: &str| {
             format!(
                 "Built-in default: {}",
-                Path::new(roms).join(folder.name).display()
+                path_text(&Path::new(roms).join(folder.name))
             )
         };
         assert_eq!(placeholder(&editor, folder.key), Some(derived("roms")));

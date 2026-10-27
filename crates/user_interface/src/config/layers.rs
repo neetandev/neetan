@@ -716,14 +716,18 @@ mod tests {
         let root = test.current().to_path_buf();
         std::fs::create_dir_all(root.join("roms").join("pc98")).expect("folder is created");
         touch(&[&root.join("base.d88"), &root.join("disk.hdi")]);
+        let explicit = root.join("explicit").join("pc98");
         write_file(
             &root.join(SETTINGS_FILE_NAME),
-            "fdd1 = base.d88\nhdd1 = disk.hdi\npc98-roms = /explicit/pc98\n",
+            &format!(
+                "fdd1 = base.d88\nhdd1 = disk.hdi\npc98-roms = {}\n",
+                explicit.display()
+            ),
         );
         let config = test.build(&with_machine(LaunchRequest::default()));
         assert_eq!(config.fdd1, vec![root.join("base.d88")]);
         assert_eq!(config.hdd1, Some(root.join("disk.hdi")));
-        assert_eq!(config.pc98_roms, Some(PathBuf::from("/explicit/pc98")));
+        assert_eq!(config.pc98_roms, Some(explicit));
 
         let game = root.join("game.conf");
         write_file(&game, "fdd1 =\nhdd1 =\n");
@@ -1121,9 +1125,10 @@ mod tests {
             .executable_directory
             .as_deref()
             .expect("test locations have an executable folder");
-        let resource_font = resource_folder(executable).join(DEFAULT_GUI_FONT);
+        let font = Path::new(DEFAULT_GUI_FONT);
+        let resource_font = resolve_path(&resource_folder(executable), font);
         assert!(!resource_font.starts_with(&root));
-        (root.join(DEFAULT_GUI_FONT), resource_font)
+        (resolve_path(&root, font), resource_font)
     }
 
     /// Returns the host layers of `test` without command line flags.
@@ -1416,24 +1421,34 @@ mod tests {
         let root = test.current().to_path_buf();
         std::fs::create_dir_all(root.join("roms").join("pc98")).expect("folder is created");
         std::fs::create_dir_all(root.join("roms").join("mt32")).expect("folder is created");
-        write_file(&root.join(SETTINGS_FILE_NAME), "x1-roms = /explicit/x1\n");
+        let explicit = root.join("explicit").join("x1");
+        write_file(
+            &root.join(SETTINGS_FILE_NAME),
+            &format!("x1-roms = {}\n", explicit.display()),
+        );
 
         let config = test.build(&with_machine(LaunchRequest::default()));
         assert_eq!(config.pc98_roms, Some(root.join("roms").join("pc98")));
         assert_eq!(config.mt32_roms, Some(root.join("roms").join("mt32")));
         assert_eq!(config.at_roms, None);
         assert_eq!(config.sc55_roms, None);
-        assert_eq!(config.x1_roms, Some(PathBuf::from("/explicit/x1")));
+        assert_eq!(config.x1_roms, Some(explicit));
         assert_eq!(config.pc88_roms, Some(root.join("roms").join("pc88")));
 
         write_file(
             &root.join(SETTINGS_FILE_NAME),
-            "roms-folder = /elsewhere\npc98-roms = mine\n",
+            &format!(
+                "roms-folder = {}\npc98-roms = mine\n",
+                root.join("elsewhere").display()
+            ),
         );
         let config = test.build(&with_machine(LaunchRequest::default()));
         assert_eq!(config.pc98_roms, Some(root.join("mine")));
         assert_eq!(config.mt32_roms, None);
-        assert_eq!(config.towns_roms, Some(PathBuf::from("/elsewhere/towns")));
+        assert_eq!(
+            config.towns_roms,
+            Some(root.join("elsewhere").join("towns"))
+        );
     }
 
     #[cfg(feature = "at")]
