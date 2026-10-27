@@ -268,6 +268,7 @@ The settings file is the first match of:
 1. `--settings <PATH>` on the command line. The file must exist.
 2. `neetan.conf` in the current directory.
 3. `neetan.conf` beside the executable, for a portable installation.
+    For an AppImage this is the folder of the `.AppImage` file.
 4. `neetan.conf` in the SDL pref path.
 
 | OS      | SDL pref path                                    |

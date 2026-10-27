@@ -325,6 +325,7 @@ mod tests {
             let locations = Locations {
                 current_directory: self.0.path().to_path_buf(),
                 executable_directory: None,
+                resource_folder: None,
                 pref_path: None,
             };
             let request = LaunchRequest {
@@ -717,6 +718,7 @@ mod tests {
         let locations = Locations {
             current_directory: folder.0.path().to_path_buf(),
             executable_directory: None,
+            resource_folder: None,
             pref_path: None,
         };
         let request = LaunchRequest {

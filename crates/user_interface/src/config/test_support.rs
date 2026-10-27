@@ -6,7 +6,8 @@ use common::temporary::TemporaryFolder;
 use machine_factory::config::systems::compiled_systems;
 
 use super::{
-    Action, EmulatorConfig, LaunchRequest, Locations, build_configuration, parse_args_from,
+    Action, EmulatorConfig, LaunchRequest, Locations, build_configuration,
+    discovery::resource_folder, parse_args_from,
 };
 use crate::input::KeyOverrides;
 
@@ -54,21 +55,18 @@ impl TestLocations {
     /// Creates empty folders for a new set of locations.
     pub(crate) fn new(name: &str) -> Self {
         let base = TemporaryFolder::new(&format!("config_test_{name}"));
-        let locations = Locations {
-            current_directory: base.path().join("current"),
-            executable_directory: Some(base.path().join("executable")),
-            pref_path: Some(base.path().join("pref")),
-        };
-        for folder in [
-            Some(&locations.current_directory),
-            locations.executable_directory.as_ref(),
-            locations.pref_path.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
+        let current_directory = base.path().join("current");
+        let executable_directory = base.path().join("executable");
+        let pref_path = base.path().join("pref");
+        for folder in [&current_directory, &executable_directory, &pref_path] {
             std::fs::create_dir_all(folder).expect("temporary folder is created");
         }
+        let locations = Locations {
+            current_directory,
+            resource_folder: Some(resource_folder(&executable_directory)),
+            executable_directory: Some(executable_directory),
+            pref_path: Some(pref_path),
+        };
         Self {
             _base: base,
             locations,

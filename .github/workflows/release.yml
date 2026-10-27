@@ -4,12 +4,15 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  # A tag push builds the version of the tag. A manual run builds a test version named after its run number.
+  RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.run_number) }}
 
 jobs:
   build-windows:
@@ -46,23 +49,29 @@ jobs:
       - name: Prepare archive
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_VERSION#v}"
           ARCHIVE_NAME="neetan-${VERSION}-x86_64-pc-windows-msvc"
-          mkdir -p "staging/${ARCHIVE_NAME}"
-          cp "target/release/neetan.exe" "staging/${ARCHIVE_NAME}/"
-          cp "target/release/neetan-auto.exe" "staging/${ARCHIVE_NAME}/"
-          cp "${{ steps.sdl3.outputs.path }}" "staging/${ARCHIVE_NAME}/"
-          cp -r licenses/ "staging/${ARCHIVE_NAME}/"
-          cp -r font/ "staging/${ARCHIVE_NAME}/"
-          cp -r language/ "staging/${ARCHIVE_NAME}/"
+          STAGE="staging/${ARCHIVE_NAME}"
+          mkdir -p "${STAGE}"
+          cp "target/release/neetan.exe" "${STAGE}/"
+          cp "target/release/neetan-auto.exe" "${STAGE}/"
+          cp "${{ steps.sdl3.outputs.path }}" "${STAGE}/"
+          cp -r font/ "${STAGE}/"
+          cp -r language/ "${STAGE}/"
+          : > "${STAGE}/neetan.conf"
+          for SYSTEM in pc98 pc88 pc88va pc6000 x68k towns x1 fm7 msx at; do
+            mkdir -p "${STAGE}/config/${SYSTEM}" "${STAGE}/roms/${SYSTEM}"
+          done
+          mkdir -p "${STAGE}/roms/mt32" "${STAGE}/roms/sc55"
+          cp -r licenses/ "${STAGE}/"
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
 
       - name: Create archive
-        shell: pwsh
+        shell: bash
         run: |
           cd staging
-          Compress-Archive -Path $env:ARCHIVE_NAME -DestinationPath "$env:ARCHIVE_NAME.zip"
-          echo "ARCHIVE_FILE=staging/$env:ARCHIVE_NAME.zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          7z a -tzip "${ARCHIVE_NAME}.zip" "${ARCHIVE_NAME}"
+          echo "ARCHIVE_FILE=staging/${ARCHIVE_NAME}.zip" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -71,7 +80,7 @@ jobs:
           path: ${{ env.ARCHIVE_FILE }}
 
   build-linux:
-    name: Build (Linux x86_64 AppImage)
+    name: Build (Linux x86_64 AppImages)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -83,7 +92,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang mold cmake libfuse2 patchelf \
+          sudo apt-get install -y clang mold cmake libfuse2 zip \
             libasound2-dev libpulse-dev libjack-dev libpipewire-0.3-dev libsndio-dev \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
             libwayland-dev libdecor-0-dev libxkbcommon-dev \
@@ -115,89 +124,94 @@ jobs:
             "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
           chmod +x "$RUNNER_TEMP/linuxdeploy"
 
-      - name: Build AppImage
+      - name: Build AppImages
         env:
           DISABLE_COPYRIGHT_FILES_DEPLOYMENT: "1"
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          APPDIR="$RUNNER_TEMP/neetan.AppDir"
+          VERSION="${RELEASE_VERSION#v}"
+          SDL3_PATH="${{ steps.sdl3.outputs.path }}"
 
-          mkdir -p "$APPDIR/usr/bin"
-          mkdir -p "$APPDIR/usr/lib"
-          mkdir -p "$APPDIR/usr/share/metainfo"
-          mkdir -p "$APPDIR/usr/share/licenses/neetan"
-          mkdir -p "$APPDIR/usr/share/neetan/font"
-          mkdir -p "$APPDIR/usr/share/neetan/language"
+          # Builds the AppImage of one executable: build_appimage <name> <desktop file> <output file>.
+          build_appimage() {
+            local NAME="$1"
+            local DESKTOP_FILE="$2"
+            local OUTPUT="$3"
+            local APPDIR="$RUNNER_TEMP/${NAME}.AppDir"
+            local WORKDIR="$RUNNER_TEMP/${NAME}-build"
 
-          cp target/release/neetan "$APPDIR/usr/bin/"
-          cp "${{ steps.sdl3.outputs.path }}" "$APPDIR/usr/lib/"
-          ln -sf "$(basename "${{ steps.sdl3.outputs.path }}")" "$APPDIR/usr/lib/libSDL3.so.0"
-          cp -r licenses/* "$APPDIR/usr/share/licenses/neetan/"
-          cp font/SarasaUiJ-Regular.ttf "$APPDIR/usr/share/neetan/font/"
-          cp language/*.ini "$APPDIR/usr/share/neetan/language/"
-          cp assets/neetan.metainfo.xml "$APPDIR/usr/share/metainfo/"
+            mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/licenses/neetan" "$WORKDIR"
+            cp "target/release/${NAME}" "$APPDIR/usr/bin/"
+            cp "$SDL3_PATH" "$APPDIR/usr/lib/"
+            ln -sf "$(basename "$SDL3_PATH")" "$APPDIR/usr/lib/libSDL3.so.0"
+            cp -r licenses/* "$APPDIR/usr/share/licenses/neetan/"
 
-          LINUXDEPLOY_OUTPUT_VERSION="$VERSION" \
-          LD_LIBRARY_PATH="$APPDIR/usr/lib:${LD_LIBRARY_PATH:-}" \
-          "$RUNNER_TEMP/linuxdeploy" \
-            --appdir "$APPDIR" \
-            --executable target/release/neetan \
-            --desktop-file assets/neetan.desktop \
-            --icon-file assets/neetan.png \
-            --exclude-library "libvulkan*" \
-            --exclude-library "libGLX*" \
-            --exclude-library "libGLdispatch*" \
-            --exclude-library "libOpenGL*" \
-            --exclude-library "libEGL*" \
-            --exclude-library "libwayland-client*" \
-            --output appimage
+            (
+              cd "$WORKDIR"
+              LINUXDEPLOY_OUTPUT_VERSION="$VERSION" \
+              LD_LIBRARY_PATH="$APPDIR/usr/lib:${LD_LIBRARY_PATH:-}" \
+              "$RUNNER_TEMP/linuxdeploy" \
+                --appdir "$APPDIR" \
+                --executable "$GITHUB_WORKSPACE/target/release/${NAME}" \
+                --desktop-file "$GITHUB_WORKSPACE/${DESKTOP_FILE}" \
+                --icon-file "$GITHUB_WORKSPACE/assets/neetan.png" \
+                --exclude-library "libvulkan*" \
+                --exclude-library "libGLX*" \
+                --exclude-library "libGLdispatch*" \
+                --exclude-library "libOpenGL*" \
+                --exclude-library "libEGL*" \
+                --exclude-library "libwayland-client*" \
+                --output appimage
+            )
 
-          GENERATED=$(ls -1 Neetan*.AppImage neetan*.AppImage 2>/dev/null | head -1)
-          if [ -z "$GENERATED" ]; then
-            echo "::error::AppImage was not created"
-            ls -la
-            exit 1
-          fi
-          OUTPUT_APPIMAGE="neetan-${VERSION}-x86_64.AppImage"
-          mv "$GENERATED" "$OUTPUT_APPIMAGE"
-          echo "APPIMAGE_FILE=$OUTPUT_APPIMAGE" >> "$GITHUB_ENV"
-          echo "ARCHIVE_NAME=neetan-${VERSION}-x86_64-linux-appimage" >> "$GITHUB_ENV"
+            local GENERATED
+            GENERATED=$(ls -1 "$WORKDIR"/*.AppImage 2>/dev/null | head -1)
+            if [ -z "$GENERATED" ]; then
+              echo "::error::AppImage of ${NAME} was not created"
+              ls -la "$WORKDIR"
+              exit 1
+            fi
+            mv "$GENERATED" "$OUTPUT"
+            chmod +x "$OUTPUT"
+          }
 
-      - name: Prepare neetan-auto archive
+          mkdir -p "$RUNNER_TEMP/neetan.AppDir/usr/share/metainfo"
+          mkdir -p "$RUNNER_TEMP/neetan.AppDir/usr/share/neetan/font"
+          mkdir -p "$RUNNER_TEMP/neetan.AppDir/usr/share/neetan/language"
+          cp font/SarasaUiJ-Regular.ttf "$RUNNER_TEMP/neetan.AppDir/usr/share/neetan/font/"
+          cp language/*.ini "$RUNNER_TEMP/neetan.AppDir/usr/share/neetan/language/"
+          cp assets/neetan.metainfo.xml "$RUNNER_TEMP/neetan.AppDir/usr/share/metainfo/"
+
+          ARCHIVE_NAME="neetan-${VERSION}-x86_64-linux"
+          STAGE="$RUNNER_TEMP/${ARCHIVE_NAME}"
+          mkdir -p "$STAGE"
+
+          build_appimage neetan assets/neetan.desktop "$STAGE/neetan-${VERSION}-x86_64.AppImage"
+          build_appimage neetan-auto assets/neetan-auto.desktop "$STAGE/neetan-auto-${VERSION}-x86_64.AppImage"
+
+          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
+          echo "STAGE=${STAGE}" >> "$GITHUB_ENV"
+
+      - name: Create archive
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          AUTO_ARCHIVE_NAME="neetan-auto-${VERSION}-x86_64-unknown-linux-gnu"
-          STAGING="$RUNNER_TEMP/${AUTO_ARCHIVE_NAME}"
-          SDL3_SONAME="libSDL3.so.0"
-
-          mkdir -p "$STAGING"
-          cp target/release/neetan-auto "$STAGING/"
-          cp "${{ steps.sdl3.outputs.path }}" "$STAGING/"
-          ln -sf "$(basename "${{ steps.sdl3.outputs.path }}")" "$STAGING/$SDL3_SONAME"
-          cp -r licenses/ "$STAGING/"
-
-          # Resolve the bundled SDL3 next to the executable.
-          patchelf --set-rpath '$ORIGIN' "$STAGING/neetan-auto"
-
-          tar -czf "${AUTO_ARCHIVE_NAME}.tar.gz" -C "$RUNNER_TEMP" "$AUTO_ARCHIVE_NAME"
-          echo "AUTO_ARCHIVE_NAME=${AUTO_ARCHIVE_NAME}" >> "$GITHUB_ENV"
-          echo "AUTO_ARCHIVE_FILE=${AUTO_ARCHIVE_NAME}.tar.gz" >> "$GITHUB_ENV"
+          : > "${STAGE}/neetan.conf"
+          for SYSTEM in pc98 pc88 pc88va pc6000 x68k towns x1 fm7 msx at; do
+            mkdir -p "${STAGE}/config/${SYSTEM}" "${STAGE}/roms/${SYSTEM}"
+          done
+          mkdir -p "${STAGE}/roms/mt32" "${STAGE}/roms/sc55"
+          cp -r licenses/ "${STAGE}/"
+          (cd "$RUNNER_TEMP" && zip -r "$GITHUB_WORKSPACE/${ARCHIVE_NAME}.zip" "${ARCHIVE_NAME}")
+          echo "ARCHIVE_FILE=${ARCHIVE_NAME}.zip" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARCHIVE_NAME }}
-          path: ${{ env.APPIMAGE_FILE }}
-
-      - name: Upload neetan-auto artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.AUTO_ARCHIVE_NAME }}
-          path: ${{ env.AUTO_ARCHIVE_FILE }}
+          path: ${{ env.ARCHIVE_FILE }}
 
   release:
     name: Publish Release
     needs: [ build-windows, build-linux ]
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4

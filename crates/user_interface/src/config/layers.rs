@@ -27,10 +27,7 @@ use machine_factory::config::{
 
 use super::{
     diagnostic::{Diagnostic, DiagnosticKind, Severity},
-    discovery::{
-        LANGUAGE_FOLDER, Locations, SettingsLocation, discover_settings, resolve_path,
-        resource_folder,
-    },
+    discovery::{LANGUAGE_FOLDER, Locations, SettingsLocation, discover_settings, resolve_path},
     document::{ConfigDocument, DocumentError},
     keymap::parse_key_binding,
     launch_error::LaunchError,
@@ -264,10 +261,7 @@ impl HostLayers {
             settings,
             settings_diagnostics,
             command_line: Layer::command_line(&request.flags),
-            resource_folder: locations
-                .executable_directory
-                .as_deref()
-                .map(resource_folder),
+            resource_folder: locations.resource_folder.clone(),
         })
     }
 
@@ -672,6 +666,7 @@ mod tests {
     use super::*;
     use crate::{
         config::{
+            discovery::resource_folder,
             test_support::{
                 TestLocations, first_model, first_model_config, touch, with_first_model,
                 with_machine, write_file,
@@ -1180,6 +1175,7 @@ mod tests {
         );
         let without_executable = Locations {
             executable_directory: None,
+            resource_folder: None,
             ..test.locations.clone()
         };
         let host = HostLayers::read(&LaunchRequest::default(), &without_executable)
@@ -1279,6 +1275,7 @@ mod tests {
         let (root_font, _) = default_font_paths(&test);
         let locations = Locations {
             executable_directory: None,
+            resource_folder: None,
             ..test.locations.clone()
         };
         let host = HostLayers::read(&LaunchRequest::default(), &locations).expect("settings read");

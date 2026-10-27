@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Neetan
-Comment=NEC PC-98 Emulator
+Comment=Emulator for historic Japanese computers
 Exec=neetan
 Icon=neetan
 Categories=Game;Emulator;

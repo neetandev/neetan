@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Neetan Auto
+Comment=Headless automation frontend of the Neetan emulator
+Exec=neetan-auto
+Icon=neetan
+Categories=Emulator;
+Terminal=true
+NoDisplay=true

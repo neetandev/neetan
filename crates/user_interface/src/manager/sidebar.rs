@@ -422,6 +422,7 @@ mod tests {
         let locations = Locations {
             current_directory: root.path().to_path_buf(),
             executable_directory: None,
+            resource_folder: None,
             pref_path: None,
         };
         let host = HostLayers::read(&LaunchRequest::default(), &locations).expect("host layers");

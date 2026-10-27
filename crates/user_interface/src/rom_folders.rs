@@ -204,6 +204,7 @@ mod tests {
         let locations = Locations {
             current_directory: root.clone(),
             executable_directory: None,
+            resource_folder: None,
             pref_path: None,
         };
         let request = LaunchRequest {
