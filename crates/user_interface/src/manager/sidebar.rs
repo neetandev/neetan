@@ -117,29 +117,30 @@ impl SystemEntry {
         host: &HostLayers,
         statuses: &[RomFolderStatus],
     ) -> Self {
-        let mut entry = Self {
+        let (rom_status, rom_folder) = statuses
+            .iter()
+            .find(|status| status.folder.key == system.rom_key)
+            .map_or((RomStatus::Unsupported, String::new()), |rom| {
+                (
+                    rom.check.status,
+                    shown_path(&rom.location.path, host.root()),
+                )
+            });
+        Self {
             system,
             icon: system_icon(system),
             rows: Vec::new(),
-            folder: String::new(),
-            rom_status: RomStatus::Unsupported,
-            rom_folder: String::new(),
-        };
-        entry.take_host(host, statuses);
-        entry
+            folder: shown_path(&host.config_folder().join(system.name), host.root()),
+            rom_status,
+            rom_folder,
+        }
     }
 
-    /// Takes the folder of the game files of the system in `host` and the
-    /// ROM status of its ROM folder from the ROM check `statuses`.
-    pub(crate) fn take_host(&mut self, host: &HostLayers, statuses: &[RomFolderStatus]) {
-        self.folder = shown_path(&host.config_folder().join(self.system.name), host.root());
-        if let Some(rom) = statuses
-            .iter()
-            .find(|status| status.folder.key == self.system.rom_key)
-        {
-            self.rom_status = rom.check.status;
-            self.rom_folder = shown_path(&rom.location.path, host.root());
-        }
+    /// Whether the system list shows the entry. A system that lacks the ROMs
+    /// it needs to start shows only when it is `configured`, that is when it
+    /// has a system defaults file or a file in its folder.
+    pub(crate) fn shown(&self, configured: bool) -> bool {
+        configured || self.rom_status != RomStatus::Missing
     }
 
     /// The number of games that can start.
@@ -428,7 +429,7 @@ mod tests {
         let host = HostLayers::read(&LaunchRequest::default(), &locations).expect("host layers");
         let statuses = check_all_folders(&host);
         for system in compiled_systems() {
-            let mut entry = SystemEntry::new(system, &host, &statuses);
+            let entry = SystemEntry::new(system, &host, &statuses);
             assert_eq!(entry.folder, format!("config/{}", system.name));
             assert_eq!(
                 std::path::PathBuf::from(&entry.rom_folder),
@@ -440,10 +441,24 @@ mod tests {
                 RomStatus::NotFound
             };
             assert_eq!(entry.rom_status, expected, "{}", system.name);
-            entry.rom_status = RomStatus::Found;
-            entry.take_host(&host, &statuses);
-            assert_eq!(entry.rom_status, expected, "{}", system.name);
         }
+    }
+
+    /// Verifies that only an entry without the ROMs it needs and without configuration is hidden.
+    #[test]
+    fn missing_required_roms_hide_an_unconfigured_system() {
+        let (required, optional) = required_and_optional();
+        for status in [
+            RomStatus::Found,
+            RomStatus::Partial,
+            RomStatus::NotFound,
+            RomStatus::Unsupported,
+        ] {
+            assert!(entry(required, status).shown(false), "{status:?}");
+            assert!(entry(optional, status).shown(false), "{status:?}");
+        }
+        assert!(!entry(required, RomStatus::Missing).shown(false));
+        assert!(entry(required, RomStatus::Missing).shown(true));
     }
 
     /// Whether a pixel of the area from `left` to `right` and `top` to
