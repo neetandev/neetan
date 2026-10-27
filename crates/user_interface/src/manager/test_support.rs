@@ -44,6 +44,7 @@ impl TestRoot {
         let locations = Locations {
             current_directory: self.root.path().to_path_buf(),
             executable_directory: None,
+            resource_folder: None,
             pref_path: None,
         };
         Manager::new(ManagerStart {

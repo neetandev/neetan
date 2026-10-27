@@ -280,6 +280,7 @@ impl EditorRoot {
         Locations {
             current_directory: self.root.clone(),
             executable_directory: None,
+            resource_folder: None,
             pref_path: None,
         }
     }
@@ -326,6 +327,7 @@ impl SettingsRoot {
         let locations = Locations {
             current_directory: self.root().to_path_buf(),
             executable_directory: None,
+            resource_folder: None,
             pref_path: None,
         };
         HostLayers::read(&request, &locations).expect("the host reads")

@@ -21,8 +21,12 @@ pub struct Locations {
     /// The current directory of the process.
     pub current_directory: PathBuf,
     /// The folder of the executable after following symbolic links to the
-    /// executable file, when it is known.
+    /// executable file, when it is known. For an AppImage it is the folder
+    /// of the AppImage file.
     pub executable_directory: Option<PathBuf>,
+    /// The resource folder of the installation, when the folder of the
+    /// running executable is known.
+    pub resource_folder: Option<PathBuf>,
     /// The SDL pref path, when SDL provides one. It holds the global
     /// settings file.
     pub pref_path: Option<PathBuf>,
@@ -33,17 +37,37 @@ impl Locations {
     pub fn of_process() -> crate::Result<Self> {
         let current_directory =
             std::env::current_dir().context("Failed to read the current directory")?;
-        let executable_directory = std::env::current_exe()
+        let running_directory = std::env::current_exe()
             .and_then(std::fs::canonicalize)
             .ok()
             .and_then(|executable| executable.parent().map(Path::to_path_buf));
+        let appimage = std::env::var_os(APPIMAGE_VARIABLE).map(PathBuf::from);
+        let executable_directory = launch_directory(appimage.as_deref(), running_directory.clone());
+        let resource_folder = running_directory.as_deref().map(resource_folder);
         let pref_path = sdl3::filesystem::get_pref_path(crate::COMPANY_NAME, crate::GAME_NAME);
         Ok(Self {
             current_directory,
             executable_directory,
+            resource_folder,
             pref_path,
         })
     }
+}
+
+/// The environment variable that the AppImage runtime sets to the path of the AppImage file.
+const APPIMAGE_VARIABLE: &str = "APPIMAGE";
+
+/// Returns the folder of the file that the user started: the folder of the
+/// AppImage file `appimage` when it names a file, else `running_directory`.
+fn launch_directory(
+    appimage: Option<&Path>,
+    running_directory: Option<PathBuf>,
+) -> Option<PathBuf> {
+    appimage
+        .filter(|file| file.is_file())
+        .and_then(|file| std::fs::canonicalize(file).ok())
+        .and_then(|file| file.parent().map(Path::to_path_buf))
+        .or(running_directory)
 }
 
 /// The step of the settings discovery that found the settings file.
@@ -311,6 +335,27 @@ mod tests {
 
     use super::*;
     use crate::config::test_support::TestLocations;
+
+    /// Verifies that an AppImage file gives its folder as the executable folder and that a missing file is ignored.
+    #[test]
+    fn the_executable_folder_is_the_folder_of_the_appimage_file() {
+        let temporary = TemporaryFolder::new("launch_directory_test");
+        let base = std::fs::canonicalize(temporary.path()).expect("folder exists");
+        let portable = base.join("portable");
+        std::fs::create_dir_all(&portable).expect("folder is created");
+        let appimage = portable.join("neetan.AppImage");
+        std::fs::write(&appimage, "").expect("file is written");
+        let running = Some(base.join("mount").join("usr").join("bin"));
+        assert_eq!(
+            launch_directory(Some(&appimage), running.clone()),
+            Some(portable.clone())
+        );
+        assert_eq!(
+            launch_directory(Some(&portable.join("missing.AppImage")), running.clone()),
+            running
+        );
+        assert_eq!(launch_directory(None, running.clone()), running);
+    }
 
     /// Verifies that the resource folder follows a symbolic link to the folder of the executable.
     #[cfg(unix)]

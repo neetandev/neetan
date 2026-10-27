@@ -7,10 +7,10 @@
     <project_license>BSD-3-Clause</project_license>
     <description>
         <p>
-            Neetan is an emulator for the PC-98.
+            Emulator for historic Japanese computers.
         </p>
     </description>
-    <url type="homepage">https://github.com/hasenbanck/neetan</url>
+    <url type="homepage">https://github.com/neetandev/neetan</url>
     <provides>
         <binary>neetan</binary>
     </provides>
