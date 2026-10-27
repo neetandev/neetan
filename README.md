@@ -53,10 +53,11 @@ and platform-specific flags.
 | [Sharp X68000](doc/machine-x68k.md)            | X68000, X68000 SUPER, X68000 XVI                                           | Real ROM set required    |
 | [Sharp X1](doc/machine-x1.md)                  | X1, X1 turbo                                                               | Real ROM set required    |
 | [Fujitsu FM-7](doc/machine-fm7.md)             | FM-7, FM-77AV                                                              | Real ROM set required    |
-| [IBM PC/AT (DOS/V)](doc/machine-at.md)         | AT 486DX2-50, AT 486DX2-66                                                 | Real ROM set required    |
+| [IBM PC/AT (DOS/V)](doc/machine-at.md)         | AT 486DX2-50, AT 486DX2-66                                                 | HLE BIOS (ROMs optional) |
 
 Each system has a default model, for example `PC9801RA` for the PC-98. Games of the
-PC-98 normally do not require any ROM files. The other families need a real ROM set.
+PC-98 and the PC/AT normally do not require any ROM files. The other families need a
+real ROM set.
 See [ROMs](doc/roms.md) for details.
 
 ## Usage
