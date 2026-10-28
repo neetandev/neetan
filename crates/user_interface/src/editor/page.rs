@@ -68,6 +68,8 @@ pub(super) struct PageActions {
     pub(super) close: bool,
     /// A field asked the file browser for a path.
     pub(super) browse: Option<BrowseTarget>,
+    /// A field asked the create image dialog for a new image.
+    pub(super) create: Option<BrowseTarget>,
 }
 
 /// The areas of the page in `screen`: the header, the tab bar, the form, the
@@ -793,10 +795,12 @@ mod tests {
         harness.state.focused()
     }
 
-    /// Verifies that Right from the Browse button of a path row in the Media section keeps the
-    /// focus, also from `hdd2` below the media lists of the pc98 and the x68k, that Left from
-    /// it takes the path field, and that Left and Right walk the media list and the buttons of
-    /// a media row with images. Covers every compiled system.
+    /// Verifies that Right from the Browse button of a path row in the Media section takes the
+    /// Create button of a drive with blank images and keeps the focus elsewhere, also from
+    /// `hdd2` below the media lists of the pc98 and the x68k, that Left from it takes the path
+    /// field, that Left from Create takes Browse and Right from Create keeps the focus, and that
+    /// Left and Right walk the media list and the buttons of a media row with images. Covers
+    /// every compiled system.
     #[test]
     fn the_sideways_arrows_stay_in_the_row_of_the_form() {
         let mut harness = GuiHarness::minimum();
@@ -812,9 +816,15 @@ mod tests {
             for row in browse_rows {
                 let key = editor.fields[row].key();
                 let browse = browse_id(key);
+                let create = media_list::create_id(field_id(key));
+                let has_create = editor
+                    .widgets
+                    .iter()
+                    .any(|widget| widget.id == create && widget.kind == WidgetKind::CreateImage);
+                let right = if has_create { create } else { browse };
                 assert_eq!(
                     arrow_from(&mut harness, &mut editor, browse, Navigation::Right),
-                    Some(browse),
+                    Some(right),
                     "{} {key}",
                     system.name
                 );
@@ -824,6 +834,20 @@ mod tests {
                     "{} {key}",
                     system.name
                 );
+                if has_create {
+                    assert_eq!(
+                        arrow_from(&mut harness, &mut editor, create, Navigation::Left),
+                        Some(browse),
+                        "{} {key}",
+                        system.name
+                    );
+                    assert_eq!(
+                        arrow_from(&mut harness, &mut editor, create, Navigation::Right),
+                        Some(create),
+                        "{} {key}",
+                        system.name
+                    );
+                }
             }
 
             let mut editor = media_section(
@@ -833,12 +857,14 @@ mod tests {
                 "fdd1 = a.img\nfdd1 = b.img\n",
             );
             let list = field_id("fdd1");
-            let [add, remove, _, _] = button_ids(list);
+            let [create, add, remove, _, _] = button_ids(list);
             for (from, navigation, to) in [
-                (list, Navigation::Right, add),
+                (list, Navigation::Right, create),
+                (create, Navigation::Right, add),
                 (add, Navigation::Right, remove),
                 (remove, Navigation::Left, add),
-                (add, Navigation::Left, list),
+                (add, Navigation::Left, create),
+                (create, Navigation::Left, list),
             ] {
                 assert_eq!(
                     arrow_from(&mut harness, &mut editor, from, navigation),
@@ -852,7 +878,7 @@ mod tests {
 
     /// Verifies that Left from the Browse button of `hdd1` after the wheel scrolled the button
     /// above the form takes the path field of `hdd1`, and that Right from the media list of
-    /// `fdd1` with its top and its buttons above the form takes its Add button. Covers every
+    /// `fdd1` with its top and its buttons above the form takes its Create button. Covers every
     /// compiled system.
     #[test]
     fn the_sideways_arrows_reach_widgets_above_the_view() {
@@ -912,8 +938,8 @@ mod tests {
             );
             harness.input.navigation = Some(Navigation::Right);
             show_in(&mut harness, &mut editor, SHORT_SCREEN);
-            let [add, _, _, _] = button_ids(list);
-            assert_eq!(harness.state.focused(), Some(add), "{name}");
+            let [create, ..] = button_ids(list);
+            assert_eq!(harness.state.focused(), Some(create), "{name}");
         }
     }
 }

@@ -16,6 +16,7 @@ use common::CpuMode;
 use common::MemoryWaitSwitch;
 use device::gameport_towns::TownsPadType;
 
+pub mod blank_images;
 pub mod file_types;
 pub mod model_limits;
 pub mod value_error;

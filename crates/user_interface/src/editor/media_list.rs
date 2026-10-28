@@ -1,6 +1,7 @@
 //! The media list of the editor: the ordered images of one drive in a list,
-//! with the buttons that add an image through the file browser, remove the
-//! selected image and shift it up or down.
+//! with the buttons that create a blank image through the create image
+//! dialog, add an image through the file browser, remove the selected image
+//! and shift it up or down.
 
 use std::path::Path;
 
@@ -25,6 +26,20 @@ pub(crate) const MEDIA_LIST_MINIMUM_ROWS: usize = 2;
 /// The most rows that a media list shows before it scrolls.
 pub(crate) const MEDIA_LIST_MAXIMUM_ROWS: usize = 5;
 
+/// The number of button columns beside a media list.
+pub(crate) const MEDIA_BUTTON_COLUMNS: usize = 3;
+
+/// The Create button beside a drive field.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum CreateButton {
+    /// The drive takes no blank image, and the cell stays empty.
+    Hidden,
+    /// The button shows dimmed and leaves the focus ring.
+    Disabled,
+    /// The button opens the dialog.
+    Enabled,
+}
+
 /// The request of a media list for the file browser.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum MediaBrowse {
@@ -41,6 +56,8 @@ pub(crate) struct MediaListResponse {
     pub(crate) changed: bool,
     /// The list asks the file browser for an image.
     pub(crate) browse: Option<MediaBrowse>,
+    /// The list asks the create image dialog for a new image that joins the end of the list.
+    pub(crate) create: bool,
     /// The checkbox of the empty list flipped.
     pub(crate) empty_list_flipped: bool,
 }
@@ -109,9 +126,10 @@ pub(crate) fn list_height(theme: &Theme, rows: usize) -> f32 {
     shown * theme.row_height + LIST_PADDING * 2.0 + theme.stroke * 2.0
 }
 
-/// The width of the two columns of buttons beside a media list.
+/// The width of the columns of buttons beside a media list.
 pub(crate) fn buttons_width(theme: &Theme) -> f32 {
-    theme.control_height * 2.0 + theme.gap
+    theme.control_height * MEDIA_BUTTON_COLUMNS as f32
+        + theme.gap * (MEDIA_BUTTON_COLUMNS - 1) as f32
 }
 
 /// The width of the box of a media list in a row of `width`: the row
@@ -130,9 +148,15 @@ pub(crate) fn empty_list_id(id: UiId) -> UiId {
     id.child("empty")
 }
 
-/// The ids of the buttons of the media list `id`.
-pub(crate) fn button_ids(id: UiId) -> [UiId; 4] {
+/// The id of the Create button of the drive field `id`.
+pub(crate) fn create_id(id: UiId) -> UiId {
+    id.child("create")
+}
+
+/// The ids of the buttons of the media list `id` in the order of the drawing.
+pub(crate) fn button_ids(id: UiId) -> [UiId; 5] {
     [
+        create_id(id),
         id.child("add"),
         id.child("remove"),
         id.child("up"),
@@ -161,11 +185,13 @@ pub(crate) struct MediaList<'a> {
     pub(crate) empty_list_caption: Option<&'a str>,
     /// Whether the file empties the drive over its inherited list.
     pub(crate) empty_list: bool,
+    /// The Create button of the drive.
+    pub(crate) create: CreateButton,
 }
 
 impl MediaList<'_> {
     /// Draws the list with its buttons in `rect` over `values`. The list
-    /// takes the height of `rect`, the buttons take two columns at its right.
+    /// takes the height of `rect`, the buttons take three columns at its right.
     /// The checkbox of the empty list draws below `rect`. Gamepad X on the
     /// focused list removes the selected image.
     pub(crate) fn show(
@@ -230,7 +256,7 @@ impl MediaList<'_> {
 
         let selected = state.selected.min(values.len().saturating_sub(1));
         let has_images = !values.is_empty();
-        let [add_id, remove_id, up_id, down_id] = button_ids(self.id);
+        let [create_id, add_id, remove_id, up_id, down_id] = button_ids(self.id);
         let size = theme.control_height;
         let cell = |column: usize, row: usize| {
             Rect::new(
@@ -240,25 +266,32 @@ impl MediaList<'_> {
                 size,
             )
         };
+        let create = match self.create {
+            CreateButton::Hidden => false,
+            CreateButton::Disabled | CreateButton::Enabled => Button::new(create_id, "")
+                .icon(Icon::NewFile)
+                .enabled(self.enabled && self.create == CreateButton::Enabled)
+                .show(context, cell(0, 0)),
+        };
         let buttons = [
-            (add_id, Icon::Add, self.enabled, cell(0, 0)),
+            (add_id, Icon::Add, self.enabled, cell(1, 0)),
             (
                 remove_id,
                 Icon::Delete,
                 self.enabled && has_images,
-                cell(1, 0),
+                cell(2, 0),
             ),
             (
                 up_id,
                 Icon::Up,
                 self.enabled && has_images && selected > 0,
-                cell(0, 1),
+                cell(1, 1),
             ),
             (
                 down_id,
                 Icon::Down,
                 self.enabled && selected + 1 < values.len(),
-                cell(1, 1),
+                cell(2, 1),
             ),
         ];
         let mut pressed = [false; 4];
@@ -291,6 +324,7 @@ impl MediaList<'_> {
         if add {
             response.browse = Some(MediaBrowse::Add);
         }
+        response.create = create;
         if remove {
             state.select(remove_image(values, selected));
             response.changed = true;
@@ -401,7 +435,7 @@ mod tests {
         assert_eq!(list_height(theme, 9), row * 5.0 + frame);
     }
 
-    /// Verifies that the list is one stop with its buttons after it, that the buttons reorder and remove the selected image, and that confirm asks the browser.
+    /// Verifies that the list is one stop with its buttons after it, that the buttons create, reorder and remove the selected image, and that confirm asks the browser.
     #[test]
     fn the_buttons_reorder_and_remove_the_selected_image() {
         let mut harness = GuiHarness::minimum();
@@ -409,7 +443,11 @@ mod tests {
         let mut values = images();
         let missing = [false, true, false];
         let id = UiId::from("fdd1");
-        let draw = |harness: &mut GuiHarness, values: &mut Vec<String>, state: &mut ListState| {
+        let mut create = CreateButton::Enabled;
+        let draw = |harness: &mut GuiHarness,
+                    values: &mut Vec<String>,
+                    state: &mut ListState,
+                    create: CreateButton| {
             harness.settle(|context| {
                 MediaList {
                     id,
@@ -420,51 +458,70 @@ mod tests {
                     hint_truncation: Truncation::End,
                     empty_list_caption: None,
                     empty_list: false,
+                    create,
                 }
                 .show(context, AREA, state, values)
             })
         };
         harness.state.set_focus(id);
-        draw(&mut harness, &mut values, &mut state);
+        draw(&mut harness, &mut values, &mut state, create);
         harness.input.confirm = true;
-        let response = draw(&mut harness, &mut values, &mut state);
+        let response = draw(&mut harness, &mut values, &mut state, create);
         assert_eq!(response.browse, Some(MediaBrowse::Replace(0)));
+        assert!(!response.create);
 
-        let [add_id, remove_id, up_id, down_id] = button_ids(id);
-        harness.state.set_focus(down_id);
-        draw(&mut harness, &mut values, &mut state);
+        let [create_id, add_id, remove_id, up_id, down_id] = button_ids(id);
+        harness.state.set_focus(create_id);
+        draw(&mut harness, &mut values, &mut state, create);
         harness.input.confirm = true;
-        assert!(draw(&mut harness, &mut values, &mut state).changed);
+        let response = draw(&mut harness, &mut values, &mut state, create);
+        assert!(response.create);
+        assert_eq!(response.browse, None);
+        assert_eq!(values, images());
+        harness.state.set_focus(down_id);
+        draw(&mut harness, &mut values, &mut state, create);
+        harness.input.confirm = true;
+        assert!(draw(&mut harness, &mut values, &mut state, create).changed);
         assert_eq!(values, ["b.hdm", "a.hdm", "c.hdm"]);
         assert_eq!(state.selected, 1);
         harness.state.set_focus(up_id);
-        draw(&mut harness, &mut values, &mut state);
+        draw(&mut harness, &mut values, &mut state, create);
         harness.input.confirm = true;
-        draw(&mut harness, &mut values, &mut state);
+        draw(&mut harness, &mut values, &mut state, create);
         assert_eq!(values, images());
         assert_eq!(state.selected, 0);
 
         harness.state.set_focus(id);
-        draw(&mut harness, &mut values, &mut state);
+        draw(&mut harness, &mut values, &mut state, create);
+        for expected in [create_id, add_id, remove_id, down_id] {
+            harness.input.navigation = Some(Navigation::Next);
+            draw(&mut harness, &mut values, &mut state, create);
+            assert_eq!(harness.state.focused(), Some(expected));
+        }
+        let shown = harness.scene.instances().len();
+        create = CreateButton::Hidden;
+        harness.state.set_focus(id);
+        draw(&mut harness, &mut values, &mut state, create);
+        assert!(harness.scene.instances().len() < shown);
         for expected in [add_id, remove_id, down_id] {
             harness.input.navigation = Some(Navigation::Next);
-            draw(&mut harness, &mut values, &mut state);
+            draw(&mut harness, &mut values, &mut state, create);
             assert_eq!(harness.state.focused(), Some(expected));
         }
 
         harness.state.set_focus(remove_id);
         for _ in 0..3 {
             harness.input.confirm = true;
-            draw(&mut harness, &mut values, &mut state);
+            draw(&mut harness, &mut values, &mut state, create);
         }
         assert!(values.is_empty());
         assert_eq!(harness.state.focused(), Some(add_id));
         harness.state.set_focus(id);
-        draw(&mut harness, &mut values, &mut state);
+        draw(&mut harness, &mut values, &mut state, create);
         assert_eq!(harness.state.focused(), Some(id));
         harness.input.confirm = true;
         assert_eq!(
-            draw(&mut harness, &mut values, &mut state).browse,
+            draw(&mut harness, &mut values, &mut state, create).browse,
             Some(MediaBrowse::Add)
         );
     }
@@ -487,6 +544,7 @@ mod tests {
                 hint_truncation: Truncation::End,
                 empty_list_caption: Some("Start without a disc"),
                 empty_list: false,
+                create: CreateButton::Disabled,
             }
             .show(context, AREA, &mut state, &mut values)
         });
@@ -511,6 +569,7 @@ mod tests {
                     hint_truncation: Truncation::End,
                     empty_list_caption: None,
                     empty_list: false,
+                    create: CreateButton::Enabled,
                 }
                 .show(context, AREA, state, values)
             })
@@ -548,6 +607,7 @@ mod tests {
                     hint_truncation: Truncation::Middle,
                     empty_list_caption: Some("Start without a disk"),
                     empty_list: *empty_list,
+                    create: CreateButton::Enabled,
                 }
                 .show(context, AREA, &mut state, &mut values)
             });
@@ -557,10 +617,10 @@ mod tests {
         };
         harness.state.set_focus(id);
         draw(&mut harness, &mut empty_list);
-        harness.input.navigation = Some(Navigation::Next);
-        draw(&mut harness, &mut empty_list);
-        harness.input.navigation = Some(Navigation::Next);
-        draw(&mut harness, &mut empty_list);
+        for _ in 0..3 {
+            harness.input.navigation = Some(Navigation::Next);
+            draw(&mut harness, &mut empty_list);
+        }
         assert_eq!(harness.state.focused(), Some(empty_list_id(id)));
         harness.input.confirm = true;
         draw(&mut harness, &mut empty_list);

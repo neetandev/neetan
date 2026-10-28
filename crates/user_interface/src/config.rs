@@ -1,6 +1,7 @@
-use std::{fmt, iter::Peekable, path::PathBuf, str::FromStr};
+use std::{fmt, iter::Peekable, path::PathBuf};
 
 use common::{StringError, bail};
+use device::floppy::FddType;
 pub use machine_factory::config::{
     AspectMode, Backend, BootMode, EmulatorConfig, ForceGdcClock, GraphicboardType, GuiLanguage,
     GuiTheme, MachineSelection, MidiDevice, ScalingMode, SoundboardType, Target, WindowMode,
@@ -260,7 +261,7 @@ Usage: neetan [OPTIONS]
        neetan <COMMAND>
 
 Commands:
-  create-fdd <PATH>             Create an empty floppy disk image (D88 or raw XDF)
+  create-fdd <PATH>             Create an empty floppy disk image (D88 or raw)
   create-hdd <PATH>             Create an empty hard disk image (HDI, raw SCSI, X68000 HDF or PC/AT flat .hdd)
   convert-hdd <INPUT> <OUTPUT>  Convert HDD image between SASI and IDE
   copy <SOURCE> <DEST>          Copy files between host and FAT disk images
@@ -298,12 +299,13 @@ Run 'neetan <COMMAND> --help' for more information on a command.",
 fn print_create_fdd_help() {
     println!(
         "\
-Create an empty floppy disk image in D88 or raw XDF format
+Create an empty floppy disk image in D88 or raw format
 
 Usage: neetan create-fdd <PATH> [OPTIONS]
 
 Arguments:
-  <PATH>  Output file path (.d88 for D88; .xdf or .2hd for raw XDF, 2hd type only)
+  <PATH>  Output file path (.d88 for D88 on every type; .xdf or .2hd raw for 2hd;
+          .img or .ima raw for 2hd144; .dsk, .img or .ima raw for 2dd720)
 
 Options:
       --type <TYPE>  Floppy type [default: 2hd]
@@ -313,6 +315,7 @@ Floppy types:
   2hd     1232 KB  (77 cyl, 2 heads, 8 spt, 1024 B/sector)
   2hd144  1440 KB  (80 cyl, 2 heads, 18 spt, 512 B/sector)
   2dd      640 KB  (80 cyl, 2 heads, 16 spt, 256 B/sector)
+  2dd720   720 KB  (80 cyl, 2 heads, 9 spt, 512 B/sector)
   2d       320 KB  (40 cyl, 2 heads, 16 spt, 256 B/sector)"
     );
 }
@@ -542,30 +545,6 @@ fn parse_copy_arg(raw: &str) -> CopyArg {
         }
     }
     CopyArg::Host(PathBuf::from(raw))
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum FddType {
-    Hd2,
-    Hd2Fmt144,
-    Dd2,
-    D2,
-}
-
-impl FromStr for FddType {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
-            "2hd" => Ok(Self::Hd2),
-            "2hd144" => Ok(Self::Hd2Fmt144),
-            "2dd" => Ok(Self::Dd2),
-            "2d" => Ok(Self::D2),
-            _ => Err(format!(
-                "unknown floppy type '{s}', expected 2hd, 2hd144, 2dd or 2d"
-            )),
-        }
-    }
 }
 
 pub use device::disk::HddSizeType;
@@ -1302,14 +1281,6 @@ mod tests {
         assert!(
             parse_error(&["--machine", "FOOBAR"]).starts_with("--machine: unknown value 'FOOBAR'")
         );
-    }
-
-    #[test]
-    fn fdd_type_parses_2d() {
-        assert_eq!("2d".parse::<FddType>(), Ok(FddType::D2));
-        assert_eq!("2hd".parse::<FddType>(), Ok(FddType::Hd2));
-        assert_eq!("2dd".parse::<FddType>(), Ok(FddType::Dd2));
-        assert!("2xx".parse::<FddType>().is_err());
     }
 
     #[cfg(feature = "pc88")]

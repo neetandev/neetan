@@ -49,7 +49,7 @@ const SHOW_ALL_ID: &str = "browser show all";
 const CANCEL_ID: &str = "browser cancel";
 
 /// The id of the choose button.
-const CHOOSE_ID: &str = "browser choose";
+pub(crate) const CHOOSE_ID: &str = "browser choose";
 
 /// The result of a hint of the browser. Two hints of one action lead to
 /// one result, and the status line shows only the first of them.

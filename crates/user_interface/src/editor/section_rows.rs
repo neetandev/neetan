@@ -425,7 +425,8 @@ mod tests {
     use super::*;
     use crate::{
         editor::{
-            media_list::buttons_width,
+            hints::WidgetKind,
+            media_list::{buttons_width, create_id},
             page::form_area,
             rows::{FORM_ROW_PITCH, browse_id},
             test_support::{
@@ -473,14 +474,26 @@ mod tests {
     }
 
     /// The id of the widget that holds the focus after a Tab from the main control of the
-    /// row of `field` in the last pass of `editor`: the Browse button of a path row, the add
-    /// button of a media list, or else the main control of the next enabled row.
+    /// row of `field` in the last pass of `editor`: the Browse button of a path row, the Create
+    /// button of a media list with blank images, the add button of another media list, or else
+    /// the main control of the next enabled row.
     fn after_tab(editor: &Editor, field: usize) -> Option<UiId> {
         let source = editor.fields[field].source;
         let key = source.key();
         match source.setting().map(|setting| setting.kind) {
             Some(ValueKind::Path(_)) => return Some(browse_id(key)),
-            Some(ValueKind::PathList) => return Some(field_id(key).child("add")),
+            Some(ValueKind::PathList) => {
+                let create = create_id(field_id(key));
+                let has_create = editor
+                    .widgets
+                    .iter()
+                    .any(|widget| widget.id == create && widget.kind == WidgetKind::CreateImage);
+                return Some(if has_create {
+                    create
+                } else {
+                    field_id(key).child("add")
+                });
+            }
             Some(
                 ValueKind::Choice(_)
                 | ValueKind::OnOff
@@ -856,7 +869,8 @@ mod tests {
     }
 
     /// Verifies that a press on a disabled button of an empty media list keeps the focus: the
-    /// Remove button and the two buttons that shift an image.
+    /// Remove button and the two buttons that shift an image, which take the second and the third
+    /// column of the buttons.
     #[test]
     fn a_press_on_a_disabled_button_of_a_row_keeps_the_focus() {
         let root = EditorRoot::new("row_press_disabled_button");
@@ -871,7 +885,7 @@ mod tests {
         let pitch = size + theme.gap;
         let left = wide.right() - buttons_width(theme);
         let tabs = UiId::from(TABS_ID);
-        for (column, line) in [(1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+        for (column, line) in [(2.0, 0.0), (1.0, 1.0), (2.0, 1.0)] {
             let x = left + column * pitch + size * 0.5;
             let y = wide.y + line * pitch + size * 0.5;
             harness.state.set_focus(tabs);
@@ -879,7 +893,7 @@ mod tests {
             click(&mut harness, &mut editor, x, y);
             assert_eq!(harness.state.focused(), Some(tabs), "{x} {y}");
         }
-        let add = (left + size * 0.5, wide.y + size * 0.5);
+        let add = (left + pitch + size * 0.5, wide.y + size * 0.5);
         harness.state.set_focus(tabs);
         show(&mut harness, &mut editor);
         harness.input.mouse_x = add.0;

@@ -19,6 +19,8 @@ pub(crate) enum WidgetKind {
     MediaList,
     /// A Browse button.
     Browse,
+    /// The button that creates a blank image for a drive.
+    CreateImage,
     /// The button that adds an image to a media list.
     AddImage,
     /// The button that removes the selected image of a media list.
@@ -79,6 +81,8 @@ enum EditorAction {
     Select,
     /// The file browser opens.
     Browse,
+    /// The create image dialog opens.
+    Create,
     /// An image joins the media list.
     Add,
     /// The selected image leaves the media list.
@@ -120,6 +124,12 @@ const SELECT_HINT: ActionHint = (
 const BROWSE_HINT: ActionHint = (
     EditorAction::Browse,
     HintText::new(ACTIVATE_KEYS, texts::common::BROWSE),
+);
+
+/// The hint of the button that creates a blank image.
+const CREATE_HINT: ActionHint = (
+    EditorAction::Create,
+    HintText::new(ACTIVATE_KEYS, texts::common::CREATE),
 );
 
 /// The hint of the button that adds an image.
@@ -254,6 +264,7 @@ pub(crate) fn editor_hints(context: &UiContext, widgets: &[EditorWidget]) -> Hin
         Some(WidgetKind::Dropdown) => StackVec::from([SELECT_HINT]),
         Some(WidgetKind::Number) => StackVec::from([STEP_HINT, TYPE_HINT]),
         Some(WidgetKind::MediaList | WidgetKind::Browse) => StackVec::from([BROWSE_HINT]),
+        Some(WidgetKind::CreateImage) => StackVec::from([CREATE_HINT]),
         Some(WidgetKind::AddImage) => StackVec::from([ADD_HINT]),
         Some(WidgetKind::RemoveImage) => StackVec::from([REMOVE_HINT]),
         Some(WidgetKind::ShiftUp) => StackVec::from([UP_HINT]),
@@ -271,6 +282,7 @@ pub(crate) fn editor_hints(context: &UiContext, widgets: &[EditorWidget]) -> Hin
             | WidgetKind::Number
             | WidgetKind::Dropdown
             | WidgetKind::Browse
+            | WidgetKind::CreateImage
             | WidgetKind::AddImage
             | WidgetKind::RemoveImage
             | WidgetKind::ShiftUp
@@ -347,6 +359,10 @@ mod tests {
         );
         assert_eq!(labels(WidgetKind::Text), ["Section", "Save", "Close"]);
         assert_eq!(labels(WidgetKind::ShiftDown)[0], "Down");
+        assert_eq!(
+            labels(WidgetKind::CreateImage),
+            ["Create", "Section", "Save", "Close"]
+        );
         assert_eq!(labels(WidgetKind::Save), ["Save", "Section", "Close"]);
         assert_eq!(labels(WidgetKind::Close), ["Close", "Section", "Save"]);
         assert_eq!(labels(WidgetKind::Cancel), ["Cancel", "Section", "Save"]);

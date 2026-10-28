@@ -748,6 +748,38 @@ pub fn load_floppy_image(path: &Path, data: &[u8]) -> Result<FloppyImage, Floppy
     }
 }
 
+/// The type of a blank floppy disk image.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum FddType {
+    /// 2HD 1.2 MB: 77 cylinders, 2 heads, 8 sectors of 1024 bytes.
+    Hd2,
+    /// 2HD 1.44 MB: 80 cylinders, 2 heads, 18 sectors of 512 bytes.
+    Hd2Fmt144,
+    /// 2DD 640 KB: 80 cylinders, 2 heads, 16 sectors of 256 bytes.
+    Dd2,
+    /// 2DD 720 KB: 80 cylinders, 2 heads, 9 sectors of 512 bytes.
+    Dd2Fmt720,
+    /// 2D 320 KB: 40 cylinders, 2 heads, 16 sectors of 256 bytes.
+    D2,
+}
+
+impl std::str::FromStr for FddType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "2hd" => Ok(Self::Hd2),
+            "2hd144" => Ok(Self::Hd2Fmt144),
+            "2dd" => Ok(Self::Dd2),
+            "2dd720" => Ok(Self::Dd2Fmt720),
+            "2d" => Ok(Self::D2),
+            _ => Err(format!(
+                "unknown floppy type '{s}', expected 2hd, 2hd144, 2dd, 2dd720 or 2d"
+            )),
+        }
+    }
+}
+
 /// Error type for floppy image parsing.
 #[derive(Debug, Clone)]
 pub enum FloppyError {
@@ -797,6 +829,17 @@ mod tests {
     use common::temporary::TemporaryFile;
 
     use super::*;
+
+    /// Verifies that every floppy type token parses, ignoring the case, and that an unknown token fails.
+    #[test]
+    fn fdd_type_parses_every_token() {
+        assert_eq!("2d".parse::<FddType>(), Ok(FddType::D2));
+        assert_eq!("2hd".parse::<FddType>(), Ok(FddType::Hd2));
+        assert_eq!("2HD144".parse::<FddType>(), Ok(FddType::Hd2Fmt144));
+        assert_eq!("2dd".parse::<FddType>(), Ok(FddType::Dd2));
+        assert_eq!("2dd720".parse::<FddType>(), Ok(FddType::Dd2Fmt720));
+        assert!("2xx".parse::<FddType>().is_err());
+    }
 
     fn build_minimal_d88(payload_byte: u8) -> Vec<u8> {
         // One track, one 256-byte sector (N=1), C=0 H=0 R=1.
