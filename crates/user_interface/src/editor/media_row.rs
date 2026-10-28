@@ -14,8 +14,8 @@ use super::{
     hints::{EditorWidget, WidgetKind},
     inherited::Inherited,
     media_list::{
-        MediaList, button_ids, empty_list_height, empty_list_id, list_box_width, list_height,
-        write_missing_note,
+        CreateButton, MediaBrowse, MediaList, button_ids, empty_list_height, empty_list_id,
+        list_box_width, list_height, write_missing_note,
     },
     note_writer::{NoteView, NoteWriter},
     notes::{NoteLook, followed_by, media_note, write_empty_drive_hint, write_empty_list_caption},
@@ -105,6 +105,7 @@ impl Editor {
         let empty_list = field.is_empty_list();
         let inherited = self.inherited[index].as_ref();
         let inherits_images = inherited.is_some_and(|inherited| !inherited.values.is_empty());
+        let create_button = self.create_button(setting, enabled);
         let shows_toggle = shows_empty_toggle(
             context,
             empty_list_id(id),
@@ -116,7 +117,11 @@ impl Editor {
         if enabled {
             self.widgets
                 .push(EditorWidget::new(id, WidgetKind::MediaList).clears(has_images));
-            let [add, remove, up, down] = button_ids(id);
+            let [create, add, remove, up, down] = button_ids(id);
+            if create_button == CreateButton::Enabled {
+                self.widgets
+                    .push(EditorWidget::new(create, WidgetKind::CreateImage));
+            }
             self.widgets.extend([
                 EditorWidget::new(add, WidgetKind::AddImage),
                 EditorWidget::new(remove, WidgetKind::RemoveImage),
@@ -163,6 +168,7 @@ impl Editor {
             hint_truncation,
             empty_list_caption: shows_toggle.then_some(caption),
             empty_list,
+            create: create_button,
         };
         let field = &mut self.fields[index];
         let response = match &mut field.value {
@@ -192,6 +198,9 @@ impl Editor {
         }
         if let Some(browse) = response.browse {
             actions.browse = Some(BrowseTarget::List(index, browse));
+        }
+        if response.create {
+            actions.create = Some(BrowseTarget::List(index, MediaBrowse::Add));
         }
         let mut below_top = wide.bottom();
         if shows_toggle {

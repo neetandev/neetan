@@ -44,6 +44,8 @@ pub enum Icon {
     Edit,
     /// Two overlapping squares for duplicating an item.
     Duplicate,
+    /// A page with a plus for creating a new file.
+    NewFile,
     /// A waste bin for deleting an item.
     Delete,
     /// Two sliders for settings.
@@ -72,7 +74,7 @@ pub enum Icon {
 
 impl Icon {
     /// Every icon.
-    pub const ALL: [Icon; 22] = [
+    pub const ALL: [Icon; 23] = [
         Icon::Close,
         Icon::Check,
         Icon::Eject,
@@ -84,6 +86,7 @@ impl Icon {
         Icon::Add,
         Icon::Edit,
         Icon::Duplicate,
+        Icon::NewFile,
         Icon::Delete,
         Icon::Settings,
         Icon::Refresh,
@@ -357,6 +360,22 @@ impl Icons {
                     scene.line(pair[0], pair[1], stroke, color);
                 }
             }
+            Icon::NewFile => {
+                let page = [
+                    at(3.5, 1.5),
+                    at(9.5, 1.5),
+                    at(12.5, 4.5),
+                    at(12.5, 14.5),
+                    at(3.5, 14.5),
+                    at(3.5, 1.5),
+                ];
+                let fold = [at(9.5, 1.5), at(9.5, 4.5), at(12.5, 4.5)];
+                for pair in page.windows(2).chain(fold.windows(2)) {
+                    scene.line(pair[0], pair[1], stroke, color);
+                }
+                scene.line(at(8.0, 7.5), at(8.0, 11.5), stroke, color);
+                scene.line(at(6.0, 9.5), at(10.0, 9.5), stroke, color);
+            }
             Icon::Delete => {
                 scene.line(at(2.5, 4.0), at(13.5, 4.0), stroke, color);
                 scene.line(at(6.25, 2.0), at(9.75, 2.0), stroke, color);
@@ -482,8 +501,13 @@ mod tests {
 
     #[test]
     fn stroked_icons_cover_their_strokes() {
-        let cases: [(Icon, Points, Points); 8] = [
+        let cases: [(Icon, Points, Points); 9] = [
             (Icon::Add, &[(8.0, 4.0), (4.0, 8.0)], &[(4.0, 4.0)]),
+            (
+                Icon::NewFile,
+                &[(3.5, 8.0), (12.5, 10.0), (8.0, 9.5), (9.5, 3.0)],
+                &[(5.5, 5.0), (10.5, 12.5)],
+            ),
             (
                 Icon::Duplicate,
                 &[(2.5, 6.0), (13.5, 9.0), (9.0, 13.5)],

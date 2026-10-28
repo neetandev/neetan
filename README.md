@@ -174,12 +174,13 @@ with a warning.
 ### Commands
 
 `create-fdd <PATH> [OPTIONS]` - Create an empty floppy disk image. A `.d88` path
-produces a D88 image; a `.xdf` or `.2hd` path produces a headerless raw XDF image
-(X68000, `2hd` type only).
+produces a D88 image of every type. A raw extension produces a headerless image:
+`.xdf` or `.2hd` for `2hd` (X68000), `.img` or `.ima` for `2hd144` (PC/AT), and
+`.dsk`, `.img` or `.ima` for `2dd720` (MSX and PC/AT).
 
-| Option          | Description                                                          | Default |
-|-----------------|----------------------------------------------------------------------|---------|
-| `--type <TYPE>` | `2hd` (1232 KB), `2hd144` (1440 KB), `2dd` (640 KB) or `2d` (320 KB) | `2hd`   |
+| Option          | Description                                                                             | Default |
+|-----------------|-----------------------------------------------------------------------------------------|---------|
+| `--type <TYPE>` | `2hd` (1232 KB), `2hd144` (1440 KB), `2dd` (640 KB), `2dd720` (720 KB) or `2d` (320 KB) | `2hd`   |
 
 `create-hdd <PATH> --type <TYPE>` - Create an empty hard disk image. Use a `.hdi`
 path for SASI/IDE images, a `.h0`-`.h4` path for raw SCSI images, a `.hdf` path

@@ -266,7 +266,7 @@ mod tests {
     #[cfg(feature = "pc98")]
     use crate::{
         config::metadata::{TITLE_KEY, TITLE_ORIGINAL_KEY, YEAR_KEY},
-        editor::{DISCARD_LAYER_ID, EditorSection, empty_list_id},
+        editor::{DISCARD_LAYER_ID, EditorSection, create_id, empty_list_id},
         gui_test_support::{MINIMUM_HEIGHT, MINIMUM_WIDTH, PassCounts},
         manager::{
             error_dialog::{CANCEL_ID, OK_ID},
@@ -807,6 +807,39 @@ mod tests {
     }
 
     #[cfg(feature = "pc98")]
+    /// Verifies that a steady frame of the create image dialog over the editor allocates
+    /// nothing and fills no text again, with the focus on the type list and on the name field.
+    #[test]
+    fn a_steady_frame_of_the_create_image_dialog_allocates_nothing() {
+        let (_root, mut manager, mut harness) = steady_editor("steady_create_image");
+        for _ in 0..2 {
+            harness.input.navigation = Some(Navigation::NextTab);
+            settle(&mut harness, &mut manager);
+        }
+        assert_eq!(
+            manager.editor().map(Editor::current_section),
+            Some(EditorSection::Media)
+        );
+        harness.state.set_focus(create_id(field_id("hdd1")));
+        settle(&mut harness, &mut manager);
+        harness.input.confirm = true;
+        settle(&mut harness, &mut manager);
+        assert!(manager.editor().is_some_and(Editor::creator_open));
+        assert_eq!(
+            steady_frame(&mut harness, &mut manager),
+            PassCounts::NONE,
+            "a steady frame of the create image dialog"
+        );
+        harness.input.navigation = Some(Navigation::Next);
+        settle(&mut harness, &mut manager);
+        assert_eq!(
+            steady_frame(&mut harness, &mut manager),
+            PassCounts::NONE,
+            "a steady frame of the create image dialog with the focus on the name"
+        );
+    }
+
+    #[cfg(feature = "pc98")]
     /// Verifies that a steady frame of the discard question, of the question over a file that
     /// changed outside the manager and of a save error allocates nothing, fills no text and wraps
     /// no text, with the focus on each button.
@@ -997,7 +1030,8 @@ key.PageDown = RollUp
     /// Renders the editor at `width` x `height` logical units and `scale`:
     /// every section of a game, the focused title and original title with a
     /// selection, the focused year with the cursor inside its text, the dropdown popup, the
-    /// file browser, the discard question, the question over a file that
+    /// file browser, the create image dialog with a free name and with the name of an existing
+    /// file, the discard question, the question over a file that
     /// changed outside the manager, a save error, a new game, a duplicate,
     /// the warning about system defaults that do not read, the empty media
     /// lists and the sections of other families with the help text of the
@@ -1050,6 +1084,20 @@ key.PageDown = RollUp
         harness.input.navigation = Some(Navigation::Down);
         settle(&mut harness, &mut manager);
         render(&harness, "browser");
+        harness.input.cancel = true;
+        settle(&mut harness, &mut manager);
+        harness.state.set_focus(create_id(field_id("hdd1")));
+        settle(&mut harness, &mut manager);
+        harness.input.confirm = true;
+        settle(&mut harness, &mut manager);
+        render(&harness, "create_image");
+        harness.input.navigation = Some(Navigation::Next);
+        settle(&mut harness, &mut manager);
+        harness.input.edit = Some(EditCommand::SelectAll);
+        settle(&mut harness, &mut manager);
+        harness.input.text = "yu-no.hdi".to_owned();
+        settle(&mut harness, &mut manager);
+        render(&harness, "create_image_exists");
         harness.input.cancel = true;
         settle(&mut harness, &mut manager);
 

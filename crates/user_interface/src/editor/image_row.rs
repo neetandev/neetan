@@ -1,18 +1,18 @@
 //! The form row of the single image of a drive, such as `hdd1`: the path
-//! field with its Browse button across the box of a media list, the
-//! checkbox that empties the drive over its inherited image, and the note
-//! below them.
+//! field with its Browse button across the box of a media list, the Create
+//! button in the first column of the buttons of a media list, the checkbox
+//! that empties the drive over its inherited image, and the note below them.
 
 use gui::{
     Rect,
-    ui::{Checkbox, UiContext},
+    ui::{Button, Checkbox, Icon, UiContext},
 };
 
 use super::{
-    Editor,
+    BrowseTarget, Editor,
     fields::FieldValue,
     hints::{EditorWidget, WidgetKind},
-    media_list::{empty_list_height, empty_list_id, list_box_width},
+    media_list::{CreateButton, create_id, empty_list_height, empty_list_id, list_box_width},
     media_row::{draw_note_below, shows_empty_toggle},
     notes::write_empty_list_caption,
     page::PageActions,
@@ -22,7 +22,9 @@ use super::{
 impl Editor {
     /// Draws the image row of the single image field of `row` and returns
     /// the height of the row. The path field and the Browse button span the
-    /// width of the box of a media list. The checkbox that empties the
+    /// width of the box of a media list. The Create button of a drive with
+    /// blank images follows them a gap to the right, in the column of the
+    /// Create buttons of the media lists. The checkbox that empties the
     /// drive shows below them for an enabled drive without a path that
     /// inherits an image, that the file empties or whose checkbox holds the
     /// focus. The note takes its own lines below the field and the
@@ -59,6 +61,31 @@ impl Editor {
             theme.control_height,
         );
         self.draw_path_field(context, control, &mut row, false, actions);
+        let create_button = self.create_button(setting, ignored.is_none());
+        match create_button {
+            CreateButton::Hidden => {}
+            CreateButton::Disabled | CreateButton::Enabled => {
+                let id = create_id(field_id(setting.key));
+                let enabled = create_button == CreateButton::Enabled;
+                if enabled {
+                    self.widgets
+                        .push(EditorWidget::new(id, WidgetKind::CreateImage));
+                }
+                let area = Rect::new(
+                    control.right() + theme.gap,
+                    control.y,
+                    theme.control_height,
+                    theme.control_height,
+                );
+                if Button::new(id, "")
+                    .icon(Icon::NewFile)
+                    .enabled(enabled)
+                    .show(context, area)
+                {
+                    actions.create = Some(BrowseTarget::Path(index));
+                }
+            }
+        }
         let texts = row.texts;
         let mut bottom = top + FORM_ROW_PITCH;
         let mut below_top = control.bottom();
@@ -109,7 +136,7 @@ mod tests {
     };
     use machine_factory::config::{
         MachineSelection,
-        settings::{MODEL_CHOICES, Setting, ValueKind},
+        settings::{MODEL_CHOICES, Setting, ValueKind, blank_images::has_blank_images},
         systems::compiled_systems,
     };
 
@@ -347,6 +374,66 @@ mod tests {
                     assert!(checked >= 2, "{tag} {screen:?} {checked}");
                 }
             }
+        }
+    }
+
+    /// Verifies that the Create button of every single image of every compiled system sits a
+    /// gap right of the box of the media lists with the size of a control, in the column of the
+    /// Create buttons of the media lists, and that only the drives with blank images show it.
+    #[test]
+    fn the_create_button_follows_the_box_of_the_media_lists() {
+        let mut harness = GuiHarness::minimum();
+        let mut shown = 0;
+        for system in compiled_systems() {
+            let root = EditorRoot::with_system("image_row_create", system.name);
+            let target = root.target();
+            for setting in image_settings(&root) {
+                let Some(editor) = image_section(&root, &mut harness, MINIMUM_SCREEN, setting, "")
+                else {
+                    continue;
+                };
+                let key = setting.key;
+                let theme = &harness.theme;
+                let size = theme.control_height;
+                let row = row_of(&editor, key).rect;
+                let buttons: Vec<Rect> = rectangles_in(&harness, theme.colors.control, row)
+                    .into_iter()
+                    .filter(|rect| rect.width == size && rect.height == size)
+                    .collect();
+                let field = path_field(&harness, &editor, key);
+                let browse = browse_width(&mut harness, key);
+                let gap = harness.theme.gap;
+                let registered = editor.widgets.iter().any(|widget| {
+                    widget.id == create_id(field_id(key)) && widget.kind == WidgetKind::CreateImage
+                });
+                let blank = setting
+                    .file_types_for(target)
+                    .is_some_and(|types| has_blank_images(types, target, key));
+                assert_eq!(registered, blank, "{} {key}", system.name);
+                if !blank {
+                    assert_eq!(buttons, [], "{} {key}", system.name);
+                    continue;
+                }
+                assert_eq!(buttons.len(), 1, "{} {key} {buttons:?}", system.name);
+                let button = buttons[0];
+                let right = field.right() + gap + browse;
+                assert!(
+                    (button.x - (right + gap)).abs() < 0.5,
+                    "{} {key} {button:?} {right}",
+                    system.name
+                );
+                if let Some(list_box) = list_box(&harness, &editor) {
+                    assert!(
+                        (button.x - (list_box.right() + gap)).abs() < 0.5,
+                        "{} {key} {button:?} {list_box:?}",
+                        system.name
+                    );
+                }
+                shown += 1;
+            }
+        }
+        if cfg!(feature = "pc98") {
+            assert!(shown >= 2, "{shown}");
         }
     }
 

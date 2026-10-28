@@ -1,4 +1,5 @@
-//! The file name of a new or duplicated game, derived from its title.
+//! The file name of a new or duplicated game, derived from its title, and the free file name of
+//! a new file in a folder.
 
 use std::{collections::HashSet, path::Path};
 
@@ -59,13 +60,13 @@ pub fn is_reserved_stem(stem: &str) -> bool {
     RESERVED_FILE_STEMS.contains(&stem)
 }
 
-/// Derives a free file name from a title.
+/// Derives a free file name with the extension `extension` from a title.
 ///
 /// The stem comes from `title_file_stem`. A stem for which `is_taken` holds,
 /// and a stem that Windows reserves as a device name, takes the suffix `-2`,
 /// `-3` and so on.
 #[must_use]
-pub fn unique_file_name(title: &str, is_taken: impl Fn(&str) -> bool) -> String {
+pub fn unique_file_name(title: &str, extension: &str, is_taken: impl Fn(&str) -> bool) -> String {
     let stem = title_file_stem(title);
     let mut candidate = stem.clone();
     let mut suffix = 2usize;
@@ -73,14 +74,15 @@ pub fn unique_file_name(title: &str, is_taken: impl Fn(&str) -> bool) -> String 
         candidate = format!("{stem}-{suffix}");
         suffix += 1;
     }
-    format!("{candidate}.{CONFIG_FILE_EXTENSION}")
+    format!("{candidate}.{extension}")
 }
 
-/// Derives a file name from a title that no file in `folder` holds.
+/// Derives a file name with the extension `extension` from a title that no file in `folder`
+/// holds.
 ///
 /// The comparison with the existing file names ignores case.
 #[must_use]
-pub fn new_game_file_name(folder: &Path, title: &str) -> String {
+pub fn free_file_name(folder: &Path, title: &str, extension: &str) -> String {
     let existing: HashSet<String> = std::fs::read_dir(folder)
         .map(|entries| {
             entries
@@ -89,9 +91,18 @@ pub fn new_game_file_name(folder: &Path, title: &str) -> String {
                 .collect()
         })
         .unwrap_or_default();
-    unique_file_name(title, |stem| {
-        existing.contains(&format!("{stem}.{CONFIG_FILE_EXTENSION}"))
+    let extension = extension.to_lowercase();
+    unique_file_name(title, &extension, |stem| {
+        existing.contains(&format!("{stem}.{extension}"))
     })
+}
+
+/// Derives a game file name from a title that no file in `folder` holds.
+///
+/// The comparison with the existing file names ignores case.
+#[must_use]
+pub fn new_game_file_name(folder: &Path, title: &str) -> String {
+    free_file_name(folder, title, CONFIG_FILE_EXTENSION)
 }
 
 /// Returns the title of a duplicated game of the title `title` with the
@@ -140,7 +151,8 @@ mod tests {
         ];
         for (title, existing, expected) in examples {
             assert_eq!(
-                unique_file_name(title, |stem| existing.contains(&stem)),
+                unique_file_name(title, CONFIG_FILE_EXTENSION, |stem| existing
+                    .contains(&stem)),
                 expected,
                 "{title}"
             );
@@ -202,7 +214,11 @@ mod tests {
             ("Conan", "conan.conf"),
             ("COM10", "com10.conf"),
         ] {
-            assert_eq!(unique_file_name(title, |_| false), expected, "{title}");
+            assert_eq!(
+                unique_file_name(title, CONFIG_FILE_EXTENSION, |_| false),
+                expected,
+                "{title}"
+            );
         }
     }
 }

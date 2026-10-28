@@ -10,6 +10,7 @@
 //! does not show as a field, and a save writes only the fields that changed.
 
 mod browse;
+mod create_image;
 mod derived_file;
 mod discard;
 mod fields;
@@ -55,6 +56,7 @@ use machine_factory::config::{
 pub(crate) use self::rows::field_id;
 use self::{
     browse::BrowseTarget,
+    create_image::{CreateImageDialog, CreateOutcome},
     derived_file::DerivedFile,
     discard::{DiscardOutcome, DiscardQuestion},
     fields::{Field, FieldValue},
@@ -75,7 +77,10 @@ use self::{
     save::{FileStamp, edited_document, read_document, validation_error},
 };
 #[cfg(all(test, feature = "pc98"))]
-pub(crate) use self::{discard::DISCARD_LAYER_ID, media_list::empty_list_id};
+pub(crate) use self::{
+    discard::DISCARD_LAYER_ID,
+    media_list::{create_id, empty_list_id},
+};
 pub(crate) use self::{file::SaveFailure, form::EditorSection, save::OpenError};
 #[cfg(test)]
 use crate::texts::english_text;
@@ -303,6 +308,8 @@ pub(crate) struct Editor {
     scroll: ScrollState,
     /// The open file browser and the field it fills.
     browser: Option<(FileBrowser, BrowseTarget)>,
+    /// The open create image dialog and the field it fills.
+    creator: Option<(CreateImageDialog, BrowseTarget)>,
     /// The open question before the changes go away.
     discard: Option<DiscardQuestion>,
     /// Whether the first widget of the section takes the focus in the next pass.
@@ -359,6 +366,7 @@ impl Editor {
             section: 0,
             scroll: ScrollState::new(),
             browser: None,
+            creator: None,
             discard: None,
             focus_first: true,
             widgets: Vec::new(),
@@ -581,6 +589,12 @@ impl Editor {
         self.browser.is_some()
     }
 
+    /// Whether the create image dialog is open.
+    #[cfg(test)]
+    pub(crate) fn creator_open(&self) -> bool {
+        self.creator.is_some()
+    }
+
     /// Computes the inherited values, the missing files, the file of a game
     /// without a save and the folders of the settings page again after a
     /// change of a field. The settings page checks only a set GUI font. Its
@@ -698,7 +712,7 @@ impl Editor {
     }
 
     /// Draws one pass of the editor into `screen`, the window above the
-    /// status line, with its file browser and its question on top.
+    /// status line, with its file browser, its create image dialog and its question on top.
     pub(crate) fn show(&mut self, context: &mut UiContext, screen: Rect) -> EditorPass {
         let mut pass = EditorPass::default();
         self.widgets.clear();
@@ -734,6 +748,21 @@ impl Editor {
                 BrowserOutcome::Open => self.browser = Some((browser, target)),
                 BrowserOutcome::Cancelled => {}
                 BrowserOutcome::Chosen(value) => {
+                    self.apply_browsed(target, value);
+                    context.request_pass();
+                }
+            }
+        }
+        if let Some(target) = actions.create
+            && let Some(request) = self.create_request(target)
+        {
+            self.creator = Some((CreateImageDialog::new(request, &self.root), target));
+        }
+        if let Some((mut dialog, target)) = self.creator.take() {
+            match dialog.show(context, screen) {
+                CreateOutcome::Open => self.creator = Some((dialog, target)),
+                CreateOutcome::Cancelled => {}
+                CreateOutcome::Created(value) => {
                     self.apply_browsed(target, value);
                     context.request_pass();
                 }
@@ -778,6 +807,9 @@ impl Editor {
 
     /// The hints of the status line after a pass.
     fn status_hints(&self, context: &UiContext) -> HintTexts {
+        if let Some((dialog, _)) = &self.creator {
+            return dialog.hints().clone();
+        }
         if let Some((browser, _)) = &self.browser {
             return browser.hints().clone();
         }
@@ -794,7 +826,7 @@ mod tests {
     use machine_factory::config::settings::{find_setting, value_error::ValueError};
 
     use super::{
-        media_list::MediaBrowse,
+        media_list::{self, MediaBrowse},
         rows::field_id,
         test_support::{EditorRoot, fdd1_model, index_of, show},
         *,
@@ -1019,6 +1051,45 @@ mod tests {
             path_value(&outside, &editor.root),
         );
         assert_eq!(editor.fields[fdd1].values()[0], outside.to_string_lossy());
+    }
+
+    /// Verifies that the Create button of a media list opens the create image dialog, that
+    /// Enter on its type list creates the default image in the root, and that the list gains
+    /// the image at its end with the selection on it and without a missing warning.
+    #[test]
+    fn the_create_dialog_adds_a_new_image_to_a_media_list() {
+        let root = EditorRoot::new("editor_create");
+        let model = fdd1_model(&root);
+        let mut editor = open(&root, "edge", &format!("machine = {model}\n"));
+        let fdd1 = index_of(&editor, "fdd1");
+        let mut harness = GuiHarness::minimum();
+        show(&mut harness, &mut editor);
+        select_section(&mut harness, &mut editor, EditorSection::Media);
+        harness
+            .state
+            .set_focus(media_list::create_id(field_id("fdd1")));
+        show(&mut harness, &mut editor);
+        assert_eq!(
+            english_labels(editor.hints()),
+            ["Create", "Section", "Save", "Close"]
+        );
+        harness.input.confirm = true;
+        show(&mut harness, &mut editor);
+        assert!(editor.creator_open());
+        assert_eq!(english_labels(editor.hints()), ["Create", "Close"]);
+        harness.input.confirm = true;
+        show(&mut harness, &mut editor);
+        assert!(!editor.creator_open());
+        let values = editor.fields[fdd1].values();
+        assert_eq!(values.len(), 1, "{values:?}");
+        assert!(values[0].starts_with("edge-fdd1."), "{values:?}");
+        assert!(root.path(&values[0]).is_file());
+        assert_eq!(editor.missing[fdd1], [false]);
+        assert_eq!(editor.fields[fdd1].list.selected, 0);
+        assert_eq!(
+            harness.state.focused(),
+            Some(media_list::create_id(field_id("fdd1")))
+        );
     }
 
     /// Verifies that Esc closes an editor without changes and asks first with changes, and that the answer Keep editing keeps the changes.

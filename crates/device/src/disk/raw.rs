@@ -1,8 +1,9 @@
 //! RAW (.h0-.h4) headerless flat hard disk image parser.
 //!
-//! FM Towns / X68000 headerless flat 512-byte-sector image; the extension digit
-//! is the SCSI drive index. The CHS geometry is synthesized only to fill the
-//! `HddGeometry` container; the access path is purely LBA-based.
+//! FM Towns headerless flat image of 512-byte sectors. The digit of the
+//! extension names the SCSI ID by convention, and the loader ignores it. The
+//! CHS geometry only fills the `HddGeometry` container. The access path is
+//! purely LBA-based.
 
 use crate::disk::{HddError, HddFormat, HddGeometry, HddImage};
 
