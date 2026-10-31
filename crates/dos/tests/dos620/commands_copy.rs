@@ -453,123 +453,67 @@ fn copy_host_to_dos_multicluster_binary_with_verify() {
 }
 
 #[test]
-fn copy_dos_to_host_single_file() {
-    let host_dst_folder = TemporaryFolder::new("copy-d2h");
-    let host_dst = host_dst_folder.path().join("file.txt");
+fn copy_dos_to_host_file_is_rejected() {
+    let host_folder = TemporaryFolder::new("copy-d2h");
+    let host_new = host_folder.path().join("new.txt");
+    let host_existing = host_folder.path().join("existing.txt");
+    fs::write(&host_existing, b"keep me").expect("seed host destination");
 
     let mut machine = boot_hle_with_floppy();
     run_command(&mut machine, b"A:\r");
+    run_command(&mut machine, b"CLS\r");
 
-    let mut cmd = b"COPY TESTFILE.TXT host:".to_vec();
-    cmd.extend_from_slice(host_dst.to_str().unwrap().as_bytes());
-    cmd.push(b'\r');
-    run_command(&mut machine, &cmd);
+    let mut command = b"COPY TESTFILE.TXT host:".to_vec();
+    command.extend_from_slice(host_new.to_str().unwrap().as_bytes());
+    command.push(b'\r');
+    run_command(&mut machine, &command);
 
-    let copied = [0x0063, 0x006F, 0x0070, 0x0069, 0x0065, 0x0064]; // "copied"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &copied),
-        "DOS-to-host COPY should report 'copied'"
-    );
-
-    let written = fs::read(&host_dst).expect("host destination should exist");
-    assert!(
-        written.starts_with(b"HELLO WORLD"),
-        "Host file should contain the DOS file's bytes, got {written:?}"
-    );
-}
-
-#[test]
-fn copy_dos_to_host_multicluster_binary() {
-    let source_bytes = prng_bytes(RANDOM_FILE_SIZE);
-    let floppy = create_random_file_floppy(&source_bytes);
-    let host_destination_folder = TemporaryFolder::new("copy-d2h-multi");
-    let host_destination = host_destination_folder.path().join("file.bin");
-
-    let mut machine = boot_hle_with_floppy_image(floppy);
-    run_command(&mut machine, b"A:\r");
-
-    let mut command = b"COPY RAND.BIN host:".to_vec();
-    command.extend_from_slice(host_destination.to_str().unwrap().as_bytes());
+    let mut command = b"COPY /Y TESTFILE.TXT host:".to_vec();
+    command.extend_from_slice(host_existing.to_str().unwrap().as_bytes());
     command.push(b'\r');
     run_command(&mut machine, &command);
 
     assert!(
-        find_string_in_text_vram(&machine.bus, &text_codes("copied")),
-        "DOS-to-host binary copy should report success"
+        find_string_in_text_vram(&machine.bus, &text_codes("not supported")),
+        "DOS-to-host COPY should report the rejection"
     );
-    let written = fs::read(&host_destination).expect("host binary destination should exist");
-    assert_eq!(written, source_bytes);
+    assert!(
+        !find_string_in_text_vram(&machine.bus, &text_codes("copied")),
+        "DOS-to-host COPY must not succeed"
+    );
+    assert!(
+        !host_new.exists(),
+        "DOS-to-host COPY must not create a file"
+    );
+    assert_eq!(fs::read(&host_existing).unwrap(), b"keep me");
 }
 
 #[test]
-fn copy_dos_to_host_existing_directory_uses_source_basename() {
-    let host_directory_folder = TemporaryFolder::new("copy-d2h-dir");
-    let host_directory = host_directory_folder.path().join("folder");
-    fs::create_dir_all(&host_directory).expect("create host destination directory");
+fn copy_dos_to_host_directory_is_rejected() {
+    let host_folder = TemporaryFolder::new("copy-d2hdir");
+    let host_directory = host_folder.path().join("folder");
+    fs::create_dir_all(&host_directory).expect("create host directory");
 
     let mut machine = boot_hle_with_floppy();
     run_command(&mut machine, b"A:\r");
 
-    let mut command = b"COPY TESTFILE.TXT host:".to_vec();
+    run_command(&mut machine, b"MD TREE\r");
+    run_command(&mut machine, b"COPY TESTFILE.TXT TREE\\TOP.TXT\r");
+
+    let mut command = b"COPY TREE host:".to_vec();
     command.extend_from_slice(host_directory.to_str().unwrap().as_bytes());
     command.push(b'\r');
     run_command(&mut machine, &command);
 
-    let copied_file = host_directory.join("TESTFILE.TXT");
-    let written = fs::read(&copied_file).expect("host directory should receive TESTFILE.TXT");
-    assert_eq!(written, TEST_FILE_CONTENT);
-}
-
-#[test]
-fn copy_dos_to_host_existing_destination_prompt_decline_preserves_file() {
-    let host_destination_folder = TemporaryFolder::new("copy-d2h-decline");
-    let host_destination = host_destination_folder.path().join("file.txt");
-    fs::write(&host_destination, b"keep me").expect("seed host destination");
-
-    let mut machine = boot_hle_with_floppy();
-    run_command(&mut machine, b"A:\r");
-
-    let mut command = b"COPY TESTFILE.TXT host:".to_vec();
-    command.extend_from_slice(host_destination.to_str().unwrap().as_bytes());
+    let mut command = b"COPY *.TXT host:".to_vec();
+    command.extend_from_slice(host_directory.to_str().unwrap().as_bytes());
     command.push(b'\r');
-    type_string_long(&mut machine, &command);
-    machine.run_for(5_000_000);
+    run_command(&mut machine, &command);
 
-    assert!(
-        find_string_in_text_vram(&machine.bus, &text_codes("Overwrite")),
-        "COPY should prompt before overwriting an existing host file"
-    );
-
-    type_string(&mut machine.bus, b"N");
-    machine.run_for(5_000_000);
-
-    assert_eq!(fs::read(&host_destination).unwrap(), b"keep me");
-}
-
-#[test]
-fn copy_dos_to_host_existing_destination_prompt_yes_overwrites() {
-    let host_destination_folder = TemporaryFolder::new("copy-d2h-yes");
-    let host_destination = host_destination_folder.path().join("file.txt");
-    fs::write(&host_destination, b"replace me").expect("seed host destination");
-
-    let mut machine = boot_hle_with_floppy();
-    run_command(&mut machine, b"A:\r");
-
-    let mut command = b"COPY TESTFILE.TXT host:".to_vec();
-    command.extend_from_slice(host_destination.to_str().unwrap().as_bytes());
-    command.push(b'\r');
-    type_string_long(&mut machine, &command);
-    machine.run_for(5_000_000);
-
-    assert!(
-        find_string_in_text_vram(&machine.bus, &text_codes("Overwrite")),
-        "COPY should prompt before overwriting an existing host file"
-    );
-
-    type_string(&mut machine.bus, b"Y");
-    machine.run_for(5_000_000);
-
-    assert_eq!(fs::read(&host_destination).unwrap(), TEST_FILE_CONTENT);
+    let entries = fs::read_dir(&host_directory)
+        .expect("read host directory")
+        .count();
+    assert_eq!(entries, 0, "DOS-to-host COPY must not write into the host");
 }
 
 #[test]
@@ -689,87 +633,6 @@ fn copy_host_dir_to_dos_rejects_long_filename_preflight() {
         !find_string_in_text_vram(&machine.bus, &ok_marker),
         "pre-flight failure should keep valid earlier entries out of HOSTDST"
     );
-}
-
-#[test]
-fn copy_dos_to_host_dir_recursive() {
-    let host_root_folder = TemporaryFolder::new("copy-d2hdir");
-    let host_root = host_root_folder.path().join("folder");
-    fs::create_dir_all(&host_root).expect("create host dst dir");
-
-    let mut machine = boot_hle_with_floppy();
-    run_command(&mut machine, b"A:\r");
-
-    run_command(&mut machine, b"MD TREE\r");
-    run_command(&mut machine, b"MD TREE\\SUB\r");
-    run_command(&mut machine, b"COPY TESTFILE.TXT TREE\\TOP.TXT\r");
-    run_command(&mut machine, b"COPY TESTFILE.TXT TREE\\SUB\\DEEP.TXT\r");
-
-    run_command(&mut machine, b"CLS\r");
-
-    let mut cmd = b"COPY TREE host:".to_vec();
-    cmd.extend_from_slice(host_root.to_str().unwrap().as_bytes());
-    cmd.push(b'\r');
-    run_command(&mut machine, &cmd);
-
-    let copied = [0x0063, 0x006F, 0x0070, 0x0069, 0x0065, 0x0064];
-    assert!(
-        find_string_in_text_vram(&machine.bus, &copied),
-        "Recursive DOS-to-host COPY should report 'copied'"
-    );
-
-    let top = host_root.join("TREE").join("TOP.TXT");
-    let deep = host_root.join("TREE").join("SUB").join("DEEP.TXT");
-    let top_bytes = fs::read(&top).expect("TREE/TOP.TXT should exist on host");
-    let deep_bytes = fs::read(&deep).expect("TREE/SUB/DEEP.TXT should exist on host");
-    assert!(top_bytes.starts_with(b"HELLO WORLD"), "top contents");
-    assert!(deep_bytes.starts_with(b"HELLO WORLD"), "deep contents");
-}
-
-#[test]
-fn copy_dos_wildcard_to_host_directory_copies_all_matches() {
-    let host_directory_folder = TemporaryFolder::new("copy-wild-host");
-    let host_directory = host_directory_folder.path().join("folder");
-    fs::create_dir_all(&host_directory).expect("create host destination directory");
-
-    let mut machine = boot_hle_with_floppy();
-    run_command(&mut machine, b"A:\r");
-
-    run_command(&mut machine, b"COPY TESTFILE.TXT ONE.TXT\r");
-    run_command(&mut machine, b"COPY TESTFILE.TXT TWO.TXT\r");
-
-    let mut command = b"COPY *.TXT host:".to_vec();
-    command.extend_from_slice(host_directory.to_str().unwrap().as_bytes());
-    command.push(b'\r');
-    run_command(&mut machine, &command);
-
-    assert_eq!(
-        fs::read(host_directory.join("TESTFILE.TXT")).unwrap(),
-        TEST_FILE_CONTENT
-    );
-    assert_eq!(
-        fs::read(host_directory.join("ONE.TXT")).unwrap(),
-        TEST_FILE_CONTENT
-    );
-    assert_eq!(
-        fs::read(host_directory.join("TWO.TXT")).unwrap(),
-        TEST_FILE_CONTENT
-    );
-}
-
-#[test]
-fn copy_cdrom_to_host_preserves_exact_bytes() {
-    let host_destination_folder = TemporaryFolder::new("copy-cdrom-host");
-    let host_destination = host_destination_folder.path().join("file.txt");
-
-    let mut machine = boot_hle_with_cdrom_image(create_test_cdimage());
-
-    let mut command = b"COPY Q:\\README.TXT host:".to_vec();
-    command.extend_from_slice(host_destination.to_str().unwrap().as_bytes());
-    command.push(b'\r');
-    run_command_ap(&mut machine, &command);
-
-    assert_eq!(fs::read(&host_destination).unwrap(), TEST_CDROM_README);
 }
 
 #[test]
