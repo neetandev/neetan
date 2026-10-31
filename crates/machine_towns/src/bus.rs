@@ -69,6 +69,9 @@ const MUTE_FM_AUDIBLE: u8 = 0x02;
 /// Audio-out latch bit enabling the speaker/line output as a whole.
 const AUDIO_OUT_ENABLE: u8 = 0x40;
 
+/// Output gain of the OPN2 FM chip relative to the RF5C68 PCM chip and CD-DA.
+const FM_OUTPUT_GAIN: f32 = 2.0;
+
 /// The electronic-volume chip whose channels 0/1 attenuate CD-DA left/right.
 const ELEVOL_CD: usize = 1;
 const ELEVOL_CD_LEFT: usize = 0;
@@ -1460,7 +1463,7 @@ impl<T: TraceSink> TownsBus<T> {
 
         let output_enabled = self.sound_audio & AUDIO_OUT_ENABLE != 0;
         let fm_volume = if output_enabled && self.sound_mute & MUTE_FM_AUDIBLE != 0 {
-            volume
+            volume * FM_OUTPUT_GAIN
         } else {
             0.0
         };
