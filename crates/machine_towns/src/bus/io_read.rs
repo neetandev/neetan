@@ -64,10 +64,9 @@ impl<T: TraceSink> TownsBus<T> {
             0x006C => 0x00,
 
             // RTC data / command.
-            0x0070 => {
-                let time = self.host_date_time_source.now().to_bcd_bytes();
-                self.rtc.read_data(&time, self.subsecond_micros())
-            }
+            0x0070 => self
+                .rtc
+                .read_data(self.current_cycle, self.clocks.cpu_clock_hz),
             0x0080 => 0x00,
 
             // DMA controllers: main bank and the second (EXDMAC) bank.

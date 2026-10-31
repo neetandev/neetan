@@ -160,58 +160,75 @@ pub fn default_host_date_time() -> HostDateTime {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
-    let days = seconds / 86_400;
-    let time_of_day = seconds % 86_400;
-    let hour = (time_of_day / 3_600) as u8;
-    let minute = ((time_of_day % 3_600) / 60) as u8;
-    let second = (time_of_day % 60) as u8;
-    let day_of_week = ((days + 4) % 7) as u8;
-    let mut year = 1970u16;
-    let mut remaining = days;
-    loop {
-        let leap =
-            year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
-        let year_days = if leap { 366 } else { 365 };
-        if remaining < year_days {
-            break;
-        }
-        remaining -= year_days;
-        year += 1;
+    HostDateTime::from_unix_seconds(seconds)
+}
+
+/// Returns whether `year` is a Gregorian leap year.
+const fn is_leap_year(year: u16) -> bool {
+    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
+}
+
+/// Returns the number of days in `month` (1 through 12) of `year`.
+const fn days_in_month(year: u16, month: u8) -> u8 {
+    match month {
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
     }
-    let month_days = [
-        31,
-        if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) {
-            29
-        } else {
-            28
-        },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut month = 1u8;
-    for days_in_month in month_days {
-        if remaining < days_in_month {
-            break;
+}
+
+impl HostDateTime {
+    /// Converts seconds since 1970-01-01 00:00:00 into a date and time.
+    pub const fn from_unix_seconds(seconds: u64) -> Self {
+        let days = seconds / 86_400;
+        let time_of_day = seconds % 86_400;
+        let mut year = 1970u16;
+        let mut remaining = days;
+        loop {
+            let year_days = if is_leap_year(year) { 366 } else { 365 };
+            if remaining < year_days {
+                break;
+            }
+            remaining -= year_days;
+            year += 1;
         }
-        remaining -= days_in_month;
-        month += 1;
+        let mut month = 1u8;
+        loop {
+            let month_days = days_in_month(year, month) as u64;
+            if remaining < month_days {
+                break;
+            }
+            remaining -= month_days;
+            month += 1;
+        }
+        Self {
+            year,
+            month,
+            day: remaining as u8 + 1,
+            day_of_week: ((days + 4) % 7) as u8,
+            hour: (time_of_day / 3_600) as u8,
+            minute: ((time_of_day % 3_600) / 60) as u8,
+            second: (time_of_day % 60) as u8,
+        }
     }
-    HostDateTime {
-        year,
-        month,
-        day: remaining as u8 + 1,
-        day_of_week,
-        hour,
-        minute,
-        second,
+
+    /// Converts the date and time into seconds since 1970-01-01 00:00:00. A year
+    /// before 1970 counts as 1970.
+    pub const fn to_unix_seconds(self) -> u64 {
+        let mut days = 0u64;
+        let mut year = 1970u16;
+        while year < self.year {
+            days += if is_leap_year(year) { 366 } else { 365 };
+            year += 1;
+        }
+        let mut month = 1u8;
+        while month < self.month {
+            days += days_in_month(self.year, month) as u64;
+            month += 1;
+        }
+        days += self.day.saturating_sub(1) as u64;
+        days * 86_400 + self.hour as u64 * 3_600 + self.minute as u64 * 60 + self.second as u64
     }
 }
 
@@ -2282,11 +2299,60 @@ pub const fn unlikely(b: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bus, CpuMode, FlushError, M68000AccessSize, M68000BusAccess, M68000CycleKind,
+        Bus, CpuMode, FlushError, HostDateTime, M68000AccessSize, M68000BusAccess, M68000CycleKind,
         M68000FunctionCode, Machine, MachineModel, SaveStateError,
     };
     #[cfg(feature = "std")]
     use super::{MediaBacking, MediaImage};
+
+    /// Verifies the Unix-second conversion across a leap day and a year end.
+    #[test]
+    fn host_date_time_converts_unix_seconds() {
+        let leap_day = HostDateTime {
+            year: 2000,
+            month: 2,
+            day: 29,
+            day_of_week: 2,
+            hour: 23,
+            minute: 59,
+            second: 59,
+        };
+        assert_eq!(leap_day.to_unix_seconds(), 951_868_799);
+        assert_eq!(HostDateTime::from_unix_seconds(951_868_799), leap_day);
+        assert_eq!(
+            HostDateTime::from_unix_seconds(leap_day.to_unix_seconds() + 1),
+            HostDateTime {
+                year: 2000,
+                month: 3,
+                day: 1,
+                day_of_week: 3,
+                hour: 0,
+                minute: 0,
+                second: 0,
+            }
+        );
+        let year_end = HostDateTime {
+            year: 1999,
+            month: 12,
+            day: 31,
+            day_of_week: 5,
+            hour: 23,
+            minute: 59,
+            second: 59,
+        };
+        assert_eq!(
+            HostDateTime::from_unix_seconds(year_end.to_unix_seconds() + 1),
+            HostDateTime {
+                year: 2000,
+                month: 1,
+                day: 1,
+                day_of_week: 6,
+                hour: 0,
+                minute: 0,
+                second: 0,
+            }
+        );
+    }
 
     /// Verifies that combined flush results keep every failed flush message once, in order.
     #[test]
