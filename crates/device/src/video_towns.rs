@@ -29,6 +29,10 @@ const REG_FR: usize = 0x1E;
 /// The four CRTC dot-clock frequencies selected by CR1 bits 0-1, in Hz.
 const DOT_CLOCK_HZ: [u32; 4] = [28_636_300, 24_545_400, 25_175_000, 21_052_500];
 
+/// Width of the low-res monitor area in pixels. A narrower page shows inside it
+/// with borders on both sides.
+const LOW_RES_MIN_DISPLAY_WIDTH: usize = 640;
+
 /// HST values that pair with CLKSEL=3 in the VING 31 kHz zoom quirk.
 const VING_HST_A: u16 = 0x029D;
 const VING_HST_B: u16 = 0x02BD;
@@ -1330,10 +1334,8 @@ impl TownsVideo {
                 height = height.max(layer.origin_y + layer.height);
             }
         }
+        width = width.max(LOW_RES_MIN_DISPLAY_WIDTH);
         height = height.max(self.scan_height());
-        if width == 0 {
-            width = 640;
-        }
         if height == 0 {
             height = 480;
         }
@@ -1539,6 +1541,43 @@ mod tests {
         video.write_video_out_data(0x05);
         let resolved = video.resolve(0x0F, 0, 0);
         assert_eq!(resolved.layers[0].v_scroll_mask, 0x0007_FFFF);
+    }
+
+    /// Horizontal display end of page 1.
+    const REG_HDE1: usize = 0x0C;
+    /// Horizontal adjust of page 1.
+    const REG_HAJ1: usize = 0x16;
+
+    #[test]
+    fn narrow_15khz_two_page_mode_keeps_both_side_borders() {
+        let mut video = TownsVideo::new(false);
+        // The 256x192 two-page mode of After Burner III at 2x zoom.
+        for (register, value) in [
+            (REG_HST, 0x0617),
+            (REG_VST, 0x020B),
+            (REG_HDS0, 0x0167),
+            (REG_HDE0, 0x0567),
+            (REG_HDS1, 0x0167),
+            (REG_HDE1, 0x0567),
+            (REG_VDS0, 0x005A),
+            (REG_VDE0, 0x01DA),
+            (REG_VDS1, 0x005A),
+            (REG_VDE1, 0x01DA),
+            (REG_HAJ0, 0x0167),
+            (REG_HAJ1, 0x0167),
+            (REG_ZOOM, 0x0303),
+            (REG_CR1, 0x0001),
+        ] {
+            set_register(&mut video, register as u8, value);
+        }
+        assert_eq!(video.horizontal_frequency_khz(), 15);
+
+        let resolved = video.resolve(0x0F, 0, 0);
+        let layer = resolved.layers[0];
+        assert_eq!((layer.origin_x, layer.width), (64, 512));
+        assert_eq!((layer.origin_y, layer.height), (50, 384));
+        assert_eq!(resolved.width, 640);
+        assert_eq!(resolved.height, 482);
     }
 
     #[test]
