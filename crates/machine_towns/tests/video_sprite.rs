@@ -268,3 +268,74 @@ fn palette_color_bars_compose_into_framebuffer() {
         distinct_colors.len()
     );
 }
+
+/// Fills one 128 KiB sprite page of VRAM layer 1 with a single 16 bpp color.
+fn fill_sprite_page(bus: &mut impl Bus, page_offset: u32, color: u16) {
+    for offset in (0..0x2_0000u32).step_by(2) {
+        let address = VRAM_BASE + 0x0004_0000 + page_offset + offset;
+        bus.write_byte(address, color as u8);
+        bus.write_byte(address + 1, (color >> 8) as u8);
+    }
+}
+
+/// The RGB color of the top-left pixel of the composed framebuffer.
+fn top_left_color(machine: &impl Machine) -> [u8; 3] {
+    let framebuffer = machine.display_framebuffer();
+    [framebuffer[0], framebuffer[1], framebuffer[2]]
+}
+
+/// The frame composed at a VSYNC shows the sprite page of the frame that just
+/// ended. The sprite page flip at that VSYNC applies to the next frame. A game
+/// that flips its layer 0 page in the VSYNC handler to follow the sprite page
+/// relies on this pairing of the two layers.
+#[test]
+fn sprite_page_flip_applies_to_the_next_frame() {
+    const BLUE: u16 = 0x001F;
+    const RED: u16 = 0x03E0;
+
+    let mut machine = machine_mx();
+    write_crtc(&mut machine.bus, 0x1C, 0x0004);
+    write_crtc(&mut machine.bus, 0x18, 0x0080);
+    machine.bus.io_write_byte(0xFDA0, 0x0F);
+    machine.bus.io_write_byte(0x0448, 0x00);
+    machine.bus.io_write_byte(0x044A, 0x15);
+
+    fill_sprite_page(&mut machine.bus, 0x0000_0000, BLUE);
+    fill_sprite_page(&mut machine.bus, 0x0002_0000, RED);
+
+    // Draw only the last attribute entry, placed off screen.
+    let attribute_base = 0x8100_0000 + 1023 * 8;
+    machine.bus.write_byte(attribute_base, 0xFF);
+    machine.bus.write_byte(attribute_base + 1, 0x01);
+    write_sprite_reg(&mut machine.bus, 0, 0xFF);
+    write_sprite_reg(&mut machine.bus, 1, 0x83);
+
+    // Before the first flip the engine renders into page 0 and displays page 1.
+    let mut cycle = 0u64;
+    while machine.bus.io_read_byte(0x044C) & 0x02 == 0 {
+        cycle += 1_000;
+        assert!(
+            cycle < 2 * FRAME_SPAN_CYCLES,
+            "the sprite engine never started"
+        );
+        machine.bus.set_current_cycle(cycle);
+    }
+    assert_eq!(machine.bus.io_read_byte(0x044C) & 0x01, 1);
+    assert_eq!(
+        top_left_color(&machine),
+        [255, 0, 0],
+        "the frame that ends at the flip shows the page displayed before it"
+    );
+
+    // The next frame shows the page the flip selected.
+    while machine.bus.io_read_byte(0x044C) & 0x02 != 0 {
+        cycle += 1_000;
+        machine.bus.set_current_cycle(cycle);
+    }
+    let next_frame = cycle + FRAME_SPAN_CYCLES;
+    while cycle < next_frame && top_left_color(&machine) == [255, 0, 0] {
+        cycle += 1_000;
+        machine.bus.set_current_cycle(cycle);
+    }
+    assert_eq!(top_left_color(&machine), [0, 0, 255]);
+}

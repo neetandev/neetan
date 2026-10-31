@@ -1576,6 +1576,10 @@ impl<T: TraceSink> TownsBus<T> {
                     self.video.enter_vsync();
                     self.memory.set_sync_status(true, false);
                     self.refresh_vsync_irq();
+                    // The frame that ends at this VSYNC still shows the sprite page
+                    // of its scan-out. The page flip applies to the next frame.
+                    self.render_frame();
+                    self.trace_presentation();
                     // Sprites only transfer when the screen mode presents layer 1
                     // as a 16 bpp 512-byte-per-line page.
                     if self.video.screen_mode_accepts_sprite()
@@ -1586,8 +1590,6 @@ impl<T: TraceSink> TownsBus<T> {
                             self.current_cycle.saturating_add(delay.max(1)),
                         );
                     }
-                    self.render_frame();
-                    self.trace_presentation();
                     let duration = self.vsync_duration_cycles();
                     self.scheduler.schedule(
                         EventTowns::VsyncEnd,
