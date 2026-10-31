@@ -1,10 +1,11 @@
 //! COPY command. Supports DOS-to-DOS copies (single files with wildcards,
-//! concatenation, and recursive directory trees) and copies that cross the
-//! emulator boundary via a `host:` prefix on either source or destination.
+//! concatenation, and recursive directory trees) and copies from the host
+//! filesystem via a `host:` prefix on the source. The destination is always
+//! a DOS path.
 
 use std::{
     fs,
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Read, Seek, SeekFrom},
     path::PathBuf,
 };
 
@@ -43,7 +44,7 @@ enum ArgKind {
 }
 
 fn parse_arg(token: &[u8]) -> ArgKind {
-    if token.len() >= 5 && token[..5].eq_ignore_ascii_case(b"host:") {
+    if starts_with_host_prefix(token) {
         let rest = String::from_utf8_lossy(&token[5..]).into_owned();
         ArgKind::Host(PathBuf::from(rest))
     } else {
@@ -125,40 +126,13 @@ struct EnumerateHost {
 state_struct_codec!(EnumerateHost { src_path, dst });
 
 #[derive(Clone)]
-enum DirHandle {
-    Dos { drive: u8, dir_cluster: u16 },
-    Host { path: PathBuf },
+/// DOS directory that receives the files of a recursive COPY.
+struct DirHandle {
+    drive: u8,
+    dir_cluster: u16,
 }
 
-impl save_state::StateEncode for DirHandle {
-    fn encode_state(&self, output: &mut Vec<u8>) {
-        match self {
-            Self::Dos { drive, dir_cluster } => {
-                save_state::StateEncode::encode_state(&0u8, output);
-                save_state::StateEncode::encode_state(drive, output);
-                save_state::StateEncode::encode_state(dir_cluster, output);
-            }
-            Self::Host { path } => encode_tagged(1, path, output),
-        }
-    }
-}
-
-impl save_state::StateDecode for DirHandle {
-    fn decode_state(
-        decoder: &mut save_state::StateDecoder<'_>,
-    ) -> Result<Self, save_state::StateDecodeError> {
-        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
-            0 => Ok(Self::Dos {
-                drive: save_state::StateDecode::decode_state(decoder)?,
-                dir_cluster: save_state::StateDecode::decode_state(decoder)?,
-            }),
-            1 => Ok(Self::Host {
-                path: save_state::StateDecode::decode_state(decoder)?,
-            }),
-            _ => Err(save_state::StateDecodeError::InvalidTag),
-        }
-    }
-}
+state_struct_codec!(DirHandle { drive, dir_cluster });
 
 #[derive(Clone)]
 /// One source and destination pair queued by COPY.
@@ -211,64 +185,24 @@ impl save_state::StateDecode for FileSource {
 }
 
 #[derive(Clone)]
-enum FileDest {
-    Dos {
-        drive: u8,
-        dir_cluster: u16,
-        fcb_name: [u8; 11],
-        attribute: u8,
-        time: u16,
-        date: u16,
-    },
-    Host {
-        path: PathBuf,
-    },
+/// DOS file that a COPY job creates, with its directory entry metadata.
+struct FileDest {
+    drive: u8,
+    dir_cluster: u16,
+    fcb_name: [u8; 11],
+    attribute: u8,
+    time: u16,
+    date: u16,
 }
 
-impl save_state::StateEncode for FileDest {
-    fn encode_state(&self, output: &mut Vec<u8>) {
-        match self {
-            Self::Dos {
-                drive,
-                dir_cluster,
-                fcb_name,
-                attribute,
-                time,
-                date,
-            } => {
-                save_state::StateEncode::encode_state(&0u8, output);
-                save_state::StateEncode::encode_state(drive, output);
-                save_state::StateEncode::encode_state(dir_cluster, output);
-                save_state::StateEncode::encode_state(fcb_name, output);
-                save_state::StateEncode::encode_state(attribute, output);
-                save_state::StateEncode::encode_state(time, output);
-                save_state::StateEncode::encode_state(date, output);
-            }
-            Self::Host { path } => encode_tagged(1, path, output),
-        }
-    }
-}
-
-impl save_state::StateDecode for FileDest {
-    fn decode_state(
-        decoder: &mut save_state::StateDecoder<'_>,
-    ) -> Result<Self, save_state::StateDecodeError> {
-        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
-            0 => Ok(Self::Dos {
-                drive: save_state::StateDecode::decode_state(decoder)?,
-                dir_cluster: save_state::StateDecode::decode_state(decoder)?,
-                fcb_name: save_state::StateDecode::decode_state(decoder)?,
-                attribute: save_state::StateDecode::decode_state(decoder)?,
-                time: save_state::StateDecode::decode_state(decoder)?,
-                date: save_state::StateDecode::decode_state(decoder)?,
-            }),
-            1 => Ok(Self::Host {
-                path: save_state::StateDecode::decode_state(decoder)?,
-            }),
-            _ => Err(save_state::StateDecodeError::InvalidTag),
-        }
-    }
-}
+state_struct_codec!(FileDest {
+    drive,
+    dir_cluster,
+    fcb_name,
+    attribute,
+    time,
+    date,
+});
 
 #[derive(Clone)]
 /// Authoritative COPY command phase and work queue.
@@ -296,7 +230,7 @@ state_struct_codec!(CopyState {
 struct WildcardSpec {
     spec: DosPatternSpec,
     search_index: u16,
-    dst: WildcardDest,
+    dst: ResolvedDosDestination,
 }
 
 state_struct_codec!(WildcardSpec {
@@ -306,82 +240,52 @@ state_struct_codec!(WildcardSpec {
 });
 
 #[derive(Clone)]
-enum WildcardDest {
-    /// Destination resolved to an existing directory; each match uses its own name inside it.
-    DosDir {
-        drive: u8,
-        dir_cluster: u16,
-    },
-    HostDir {
-        path: PathBuf,
-    },
-    /// Destination is a single named file (only legal when the wildcard matches at most one file).
-    DosFile {
-        drive: u8,
-        dir_cluster: u16,
-        fcb_name: [u8; 11],
-    },
-    HostFile {
-        path: PathBuf,
-    },
-}
-
-impl save_state::StateEncode for WildcardDest {
-    fn encode_state(&self, output: &mut Vec<u8>) {
-        match self {
-            Self::DosDir { drive, dir_cluster } => {
-                encode_drive_directory(0, *drive, *dir_cluster, output)
-            }
-            Self::HostDir { path } => encode_tagged(1, path, output),
-            Self::DosFile {
-                drive,
-                dir_cluster,
-                fcb_name,
-            } => {
-                encode_drive_directory(2, *drive, *dir_cluster, output);
-                save_state::StateEncode::encode_state(fcb_name, output);
-            }
-            Self::HostFile { path } => encode_tagged(3, path, output),
-        }
-    }
-}
-
-impl save_state::StateDecode for WildcardDest {
-    fn decode_state(
-        decoder: &mut save_state::StateDecoder<'_>,
-    ) -> Result<Self, save_state::StateDecodeError> {
-        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
-            0 => Ok(Self::DosDir {
-                drive: save_state::StateDecode::decode_state(decoder)?,
-                dir_cluster: save_state::StateDecode::decode_state(decoder)?,
-            }),
-            1 => Ok(Self::HostDir {
-                path: save_state::StateDecode::decode_state(decoder)?,
-            }),
-            2 => Ok(Self::DosFile {
-                drive: save_state::StateDecode::decode_state(decoder)?,
-                dir_cluster: save_state::StateDecode::decode_state(decoder)?,
-                fcb_name: save_state::StateDecode::decode_state(decoder)?,
-            }),
-            3 => Ok(Self::HostFile {
-                path: save_state::StateDecode::decode_state(decoder)?,
-            }),
-            _ => Err(save_state::StateDecodeError::InvalidTag),
-        }
-    }
-}
-
-#[derive(Clone)]
 enum ResolvedDosDestination {
-    Dir {
-        drive: u8,
-        dir_cluster: u16,
-    },
+    /// Destination resolved to an existing directory; each match uses its own name inside it.
+    Dir { drive: u8, dir_cluster: u16 },
+    /// Destination is a single named file (only legal when the wildcard matches at most one file).
     File {
         drive: u8,
         dir_cluster: u16,
         fcb_name: [u8; 11],
     },
+}
+
+impl save_state::StateEncode for ResolvedDosDestination {
+    fn encode_state(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Dir { drive, dir_cluster } => {
+                encode_drive_directory(0, *drive, *dir_cluster, output)
+            }
+            Self::File {
+                drive,
+                dir_cluster,
+                fcb_name,
+            } => {
+                encode_drive_directory(1, *drive, *dir_cluster, output);
+                save_state::StateEncode::encode_state(fcb_name, output);
+            }
+        }
+    }
+}
+
+impl save_state::StateDecode for ResolvedDosDestination {
+    fn decode_state(
+        decoder: &mut save_state::StateDecoder<'_>,
+    ) -> Result<Self, save_state::StateDecodeError> {
+        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
+            0 => Ok(Self::Dir {
+                drive: save_state::StateDecode::decode_state(decoder)?,
+                dir_cluster: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            1 => Ok(Self::File {
+                drive: save_state::StateDecode::decode_state(decoder)?,
+                dir_cluster: save_state::StateDecode::decode_state(decoder)?,
+                fcb_name: save_state::StateDecode::decode_state(decoder)?,
+            }),
+            _ => Err(save_state::StateDecodeError::InvalidTag),
+        }
+    }
 }
 
 struct HostReadFile {
@@ -472,80 +376,6 @@ impl save_state::StateDecode for HostReadFile {
     }
 }
 
-/// Rebindable host destination and committed write position.
-struct HostWriteFile {
-    path: PathBuf,
-    position: u64,
-    file: Option<fs::File>,
-}
-
-impl HostWriteFile {
-    fn create(path: PathBuf) -> std::io::Result<Self> {
-        let file = fs::File::create(&path)?;
-        Ok(Self {
-            path,
-            position: 0,
-            file: Some(file),
-        })
-    }
-
-    fn prepare_restore(&mut self) -> Result<(), save_state::StateValidationError> {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .open(&self.path)
-            .map_err(|_| {
-                save_state::StateValidationError::new("HLE DOS host destination is unavailable")
-            })?;
-        if file
-            .metadata()
-            .map_or(true, |metadata| metadata.len() < self.position)
-        {
-            return Err(save_state::StateValidationError::new(
-                "HLE DOS host destination is shorter than the saved position",
-            ));
-        }
-        file.seek(SeekFrom::Start(self.position)).map_err(|_| {
-            save_state::StateValidationError::new("HLE DOS host destination position is invalid")
-        })?;
-        self.file = Some(file);
-        Ok(())
-    }
-}
-
-impl Clone for HostWriteFile {
-    fn clone(&self) -> Self {
-        Self {
-            path: self.path.clone(),
-            position: self.position,
-            file: None,
-        }
-    }
-}
-
-impl Write for HostWriteFile {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        let written = self
-            .file
-            .as_mut()
-            .expect("prepared HLE DOS host destination")
-            .write(buffer)?;
-        self.position += written as u64;
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.file
-            .as_mut()
-            .expect("prepared HLE DOS host destination")
-            .flush()
-    }
-}
-
-state_struct_codec_with_resources!(HostWriteFile {
-    state { path, position }
-    resources { file: None }
-});
-
 fn hash_file(file: &mut fs::File) -> std::io::Result<[u8; 32]> {
     let original_position = file.stream_position()?;
     file.seek(SeekFrom::Start(0))?;
@@ -569,7 +399,7 @@ fn hash_file(file: &mut fs::File) -> std::io::Result<[u8; 32]> {
 struct ActiveTransfer {
     display_name: Vec<u8>,
     src: TransferSrc,
-    dst: TransferDst,
+    dst: PendingFatFile,
 }
 
 #[derive(Clone)]
@@ -614,12 +444,6 @@ impl save_state::StateDecode for SourceFileCursor {
     }
 }
 
-#[derive(Clone)]
-enum TransferDst {
-    Dos(PendingFatFile),
-    Host(HostWriteFile),
-}
-
 impl save_state::StateEncode for TransferSrc {
     fn encode_state(&self, output: &mut Vec<u8>) {
         match self {
@@ -645,27 +469,6 @@ impl save_state::StateDecode for TransferSrc {
             1 => Ok(Self::Host {
                 file: save_state::StateDecode::decode_state(decoder)?,
             }),
-            _ => Err(save_state::StateDecodeError::InvalidTag),
-        }
-    }
-}
-
-impl save_state::StateEncode for TransferDst {
-    fn encode_state(&self, output: &mut Vec<u8>) {
-        match self {
-            Self::Dos(file) => encode_tagged(0, file, output),
-            Self::Host(file) => encode_tagged(1, file, output),
-        }
-    }
-}
-
-impl save_state::StateDecode for TransferDst {
-    fn decode_state(
-        decoder: &mut save_state::StateDecoder<'_>,
-    ) -> Result<Self, save_state::StateDecodeError> {
-        match <u8 as save_state::StateDecode>::decode_state(decoder)? {
-            0 => Ok(Self::Dos(save_state::StateDecode::decode_state(decoder)?)),
-            1 => Ok(Self::Host(save_state::StateDecode::decode_state(decoder)?)),
             _ => Err(save_state::StateDecodeError::InvalidTag),
         }
     }
@@ -872,13 +675,10 @@ impl RunningCopy {
             | CopyPhase::ConfirmOverwrite(_, _)
             | CopyPhase::Summary(_) => None,
         };
-        if let Some(transfer) = transfer {
-            if let TransferSrc::Host { file } = &mut transfer.src {
-                file.prepare_restore()?;
-            }
-            if let TransferDst::Host(file) = &mut transfer.dst {
-                file.prepare_restore()?;
-            }
+        if let Some(transfer) = transfer
+            && let TransferSrc::Host { file } = &mut transfer.src
+        {
+            file.prepare_restore()?;
         }
         Ok(())
     }
@@ -935,13 +735,7 @@ impl RunningCopy {
                         return StepResult::Continue;
                     }
                     wildcard.search_index = next_index;
-                    let job = match build_wildcard_file_job(&entry, spec.drive, &wildcard.dst) {
-                        Ok(job) => job,
-                        Err(msg) => {
-                            io.print(msg);
-                            return StepResult::Done(1);
-                        }
-                    };
+                    let job = build_wildcard_file_job(&entry, spec.drive, &wildcard.dst);
                     return self.begin_file_job(cs, job, state, io, drive);
                 }
                 Ok(None) => {
@@ -1023,13 +817,7 @@ impl RunningCopy {
                     return StepResult::Continue;
                 }
 
-                let job = match build_file_job_dos_to_dest(&entry, es.src_drive, &es.dst) {
-                    Ok(job) => job,
-                    Err(msg) => {
-                        io.print(msg);
-                        return StepResult::Done(1);
-                    }
-                };
+                let job = build_file_job_dos_to_dest(&entry, es.src_drive, &es.dst);
                 cs.work_stack.push(WorkItem::EnumerateDos(es));
                 self.begin_file_job(cs, job, state, io, drive)
             }
@@ -1070,62 +858,35 @@ impl RunningCopy {
                 Ok(m) => m,
                 Err(_) => continue,
             };
+            let dos_name = match validate_dos_basename(basename.as_bytes()) {
+                Ok(name) => name,
+                Err(_) => {
+                    io.print(b"Long host filename cannot be represented as 8.3\r\n");
+                    return StepResult::Done(1);
+                }
+            };
+            let fcb = fat_dir::name_to_fcb(&dos_name);
             if metadata.is_dir() {
-                let child_dst = if let DirHandle::Dos { .. } = &eh.dst {
-                    let dos_name = match validate_dos_basename(basename.as_bytes()) {
-                        Ok(name) => name,
-                        Err(_) => {
-                            io.print(b"Long host filename cannot be represented as 8.3\r\n");
-                            return StepResult::Done(1);
-                        }
-                    };
-                    let fcb = fat_dir::name_to_fcb(&dos_name);
-                    match make_dest_subdir(state, drive, &eh.dst, &fcb) {
-                        Ok(handle) => handle,
-                        Err(msg) => {
-                            io.print(msg);
-                            return StepResult::Done(1);
-                        }
-                    }
-                } else {
-                    let host_dst = match &eh.dst {
-                        DirHandle::Host { path } => path.join(&basename),
-                        DirHandle::Dos { .. } => unreachable!(),
-                    };
-                    if let Err(e) = fs::create_dir_all(&host_dst) {
-                        io.print(format!("Cannot create host dir: {e}\r\n").as_bytes());
+                let child_dst = match make_dest_subdir(state, drive, &eh.dst, &fcb) {
+                    Ok(handle) => handle,
+                    Err(msg) => {
+                        io.print(msg);
                         return StepResult::Done(1);
                     }
-                    DirHandle::Host { path: host_dst }
                 };
                 cs.work_stack.push(WorkItem::EnumerateHost(EnumerateHost {
                     src_path: path,
                     dst: child_dst,
                 }));
             } else if metadata.is_file() {
-                let dst = match &eh.dst {
-                    DirHandle::Dos { drive, dir_cluster } => {
-                        let dos_name = match validate_dos_basename(basename.as_bytes()) {
-                            Ok(name) => name,
-                            Err(_) => {
-                                io.print(b"Long host filename cannot be represented as 8.3\r\n");
-                                return StepResult::Done(1);
-                            }
-                        };
-                        let fcb = fat_dir::name_to_fcb(&dos_name);
-                        let (time, date) = state.dos_timestamp_now();
-                        FileDest::Dos {
-                            drive: *drive,
-                            dir_cluster: *dir_cluster,
-                            fcb_name: fcb,
-                            attribute: fat_dir::ATTR_ARCHIVE,
-                            time,
-                            date,
-                        }
-                    }
-                    DirHandle::Host { path } => FileDest::Host {
-                        path: path.join(&basename),
-                    },
+                let (time, date) = state.dos_timestamp_now();
+                let dst = FileDest {
+                    drive: eh.dst.drive,
+                    dir_cluster: eh.dst.dir_cluster,
+                    fcb_name: fcb,
+                    attribute: fat_dir::ATTR_ARCHIVE,
+                    time,
+                    date,
                 };
                 let display =
                     fat_dir::fcb_to_display_name(&fat_dir::name_to_fcb(basename.as_bytes()));
@@ -1258,44 +1019,27 @@ impl RunningCopy {
             src,
             dst,
         } = transfer;
-        match dst {
-            TransferDst::Dos(pending) => {
-                match filesystem::write_pending_file_chunk(state, disk, pending, &data) {
-                    Ok((updated, new_cluster)) => {
-                        let rebuilt = ActiveTransfer {
-                            display_name,
-                            src,
-                            dst: TransferDst::Dos(updated),
-                        };
-                        if cs.verify {
-                            self.phase = CopyPhase::VerifyChunk(cs, rebuilt, new_cluster, data);
-                        } else {
-                            self.phase = CopyPhase::ReadChunk(cs, rebuilt);
-                        }
-                        StepResult::Continue
-                    }
-                    Err(0x001F) => {
-                        io.println(b"Insufficient disk space");
-                        StepResult::Done(1)
-                    }
-                    Err(_) => {
-                        io.println(b"Write error");
-                        StepResult::Done(1)
-                    }
-                }
-            }
-            TransferDst::Host(mut file) => {
-                if file.write_all(&data).is_err() {
-                    io.println(b"Write error");
-                    return StepResult::Done(1);
-                }
+        match filesystem::write_pending_file_chunk(state, disk, dst, &data) {
+            Ok((updated, new_cluster)) => {
                 let rebuilt = ActiveTransfer {
                     display_name,
                     src,
-                    dst: TransferDst::Host(file),
+                    dst: updated,
                 };
-                self.phase = CopyPhase::ReadChunk(cs, rebuilt);
+                if cs.verify {
+                    self.phase = CopyPhase::VerifyChunk(cs, rebuilt, new_cluster, data);
+                } else {
+                    self.phase = CopyPhase::ReadChunk(cs, rebuilt);
+                }
                 StepResult::Continue
+            }
+            Err(0x001F) => {
+                io.println(b"Insufficient disk space");
+                StepResult::Done(1)
+            }
+            Err(_) => {
+                io.println(b"Write error");
+                StepResult::Done(1)
             }
         }
     }
@@ -1311,14 +1055,7 @@ impl RunningCopy {
         io: &mut IoAccess,
         disk: &mut dyn DiskIo,
     ) -> StepResult {
-        let drive_index = match &transfer.dst {
-            TransferDst::Dos(pending) => pending.drive_index,
-            TransferDst::Host(_) => {
-                self.phase = CopyPhase::ReadChunk(cs, transfer);
-                return StepResult::Continue;
-            }
-        };
-        let vol = match state.fat_volumes[drive_index as usize].as_ref() {
+        let vol = match state.fat_volumes[transfer.dst.drive_index as usize].as_ref() {
             Some(v) => v,
             None => return StepResult::Done(1),
         };
@@ -1346,19 +1083,9 @@ impl RunningCopy {
         io: &mut IoAccess,
         disk: &mut dyn DiskIo,
     ) -> StepResult {
-        match transfer.dst {
-            TransferDst::Dos(pending) => {
-                if filesystem::finish_pending_file(state, disk, pending).is_err() {
-                    io.println(b"Unable to create destination");
-                    return StepResult::Done(1);
-                }
-            }
-            TransferDst::Host(mut file) => {
-                if file.flush().is_err() {
-                    io.println(b"Write error");
-                    return StepResult::Done(1);
-                }
-            }
+        if filesystem::finish_pending_file(state, disk, transfer.dst).is_err() {
+            io.println(b"Unable to create destination");
+            return StepResult::Done(1);
         }
         cs.files_copied += 1;
         self.phase = CopyPhase::NextItem(cs);
@@ -1477,16 +1204,12 @@ impl RunningCopy {
             src,
             dst,
         } = transfer;
-        let pending = match dst {
-            TransferDst::Dos(p) => p,
-            TransferDst::Host(_) => unreachable!("concat only supports DOS destinations"),
-        };
-        match filesystem::write_pending_file_chunk(state, disk, pending, &data) {
+        match filesystem::write_pending_file_chunk(state, disk, dst, &data) {
             Ok((updated, _)) => {
                 let rebuilt = ActiveTransfer {
                     display_name,
                     src,
-                    dst: TransferDst::Dos(updated),
+                    dst: updated,
                 };
                 self.phase = CopyPhase::ConcatRead(cs, rebuilt);
                 StepResult::Continue
@@ -1512,13 +1235,10 @@ fn destination_file_attributes(entry: &ReadDirEntry) -> u8 {
     }
 }
 
-fn dst_cluster_size(state: &DosState, dst: &TransferDst) -> Option<usize> {
-    match dst {
-        TransferDst::Dos(pending) => state.fat_volumes[pending.drive_index as usize]
-            .as_ref()
-            .map(|v| v.bpb.cluster_size() as usize),
-        TransferDst::Host(_) => None,
-    }
+fn dst_cluster_size(state: &DosState, dst: &PendingFatFile) -> Option<usize> {
+    state.fat_volumes[dst.drive_index as usize]
+        .as_ref()
+        .map(|v| v.bpb.cluster_size() as usize)
 }
 
 fn read_source(
@@ -1597,32 +1317,16 @@ fn build_transfer(job: FileJob) -> Result<ActiveTransfer, &'static [u8]> {
             TransferSrc::Host { file }
         }
     };
-    let dst = match job.dst {
-        FileDest::Dos {
-            drive,
-            dir_cluster,
-            fcb_name,
-            attribute,
-            time,
-            date,
-        } => TransferDst::Dos(PendingFatFile {
-            drive_index: drive,
-            dir_cluster,
-            name: fcb_name,
-            attribute,
-            time,
-            date,
-            start_cluster: 0,
-            file_size: 0,
-            position: 0,
-        }),
-        FileDest::Host { path } => {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(|_| &b"Write error\r\n"[..])?;
-            }
-            let file = HostWriteFile::create(path).map_err(|_| &b"Write error\r\n"[..])?;
-            TransferDst::Host(file)
-        }
+    let dst = PendingFatFile {
+        drive_index: job.dst.drive,
+        dir_cluster: job.dst.dir_cluster,
+        name: job.dst.fcb_name,
+        attribute: job.dst.attribute,
+        time: job.dst.time,
+        date: job.dst.date,
+        start_cluster: 0,
+        file_size: 0,
+        position: 0,
     };
     Ok(ActiveTransfer {
         display_name: job.display_name,
@@ -1636,23 +1340,15 @@ fn destination_exists(
     drive: &mut dyn DriveIo,
     dst: &FileDest,
 ) -> Result<bool, &'static [u8]> {
-    match dst {
-        FileDest::Dos {
-            drive: idx,
-            dir_cluster,
-            fcb_name,
-            ..
-        } => {
-            let vol = state.fat_volumes[*idx as usize]
-                .as_ref()
-                .ok_or(&b"Drive not ready\r\n"[..])?;
-            Ok(fat_dir::find_entry(vol, *dir_cluster, fcb_name, drive)
-                .ok()
-                .flatten()
-                .is_some())
-        }
-        FileDest::Host { path } => Ok(fs::metadata(path).is_ok()),
-    }
+    let vol = state.fat_volumes[dst.drive as usize]
+        .as_ref()
+        .ok_or(&b"Drive not ready\r\n"[..])?;
+    Ok(
+        fat_dir::find_entry(vol, dst.dir_cluster, &dst.fcb_name, drive)
+            .ok()
+            .flatten()
+            .is_some(),
+    )
 }
 
 fn file_dest_from_entry(
@@ -1661,31 +1357,13 @@ fn file_dest_from_entry(
     fcb_name: [u8; 11],
     entry: &ReadDirEntry,
 ) -> FileDest {
-    dos_file_dest(
+    FileDest {
         drive,
         dir_cluster,
         fcb_name,
-        destination_file_attributes(entry),
-        entry.time,
-        entry.date,
-    )
-}
-
-fn dos_file_dest(
-    drive: u8,
-    dir_cluster: u16,
-    fcb_name: [u8; 11],
-    attribute: u8,
-    time: u16,
-    date: u16,
-) -> FileDest {
-    FileDest::Dos {
-        drive,
-        dir_cluster,
-        fcb_name,
-        attribute,
-        time,
-        date,
+        attribute: destination_file_attributes(entry),
+        time: entry.time,
+        date: entry.date,
     }
 }
 
@@ -1746,63 +1424,37 @@ fn ensure_dos_directory(
 fn build_wildcard_file_job(
     entry: &ReadDirEntry,
     src_drive: u8,
-    dst: &WildcardDest,
-) -> Result<FileJob, &'static [u8]> {
-    let display_name = fat_dir::fcb_to_display_name(&entry.name);
+    dst: &ResolvedDosDestination,
+) -> FileJob {
     let dest = match dst {
-        WildcardDest::DosDir { drive, dir_cluster } => {
+        ResolvedDosDestination::Dir { drive, dir_cluster } => {
             file_dest_from_entry(*drive, *dir_cluster, entry.name, entry)
         }
-        WildcardDest::HostDir { path } => {
-            let leaf = fat_dir::fcb_to_display_name(&entry.name);
-            let leaf_str = String::from_utf8_lossy(&leaf).into_owned();
-            FileDest::Host {
-                path: path.join(leaf_str),
-            }
-        }
-        WildcardDest::DosFile {
+        ResolvedDosDestination::File {
             drive,
             dir_cluster,
             fcb_name,
         } => file_dest_from_entry(*drive, *dir_cluster, *fcb_name, entry),
-        WildcardDest::HostFile { path } => FileDest::Host { path: path.clone() },
     };
-    Ok(FileJob {
-        display_name,
+    FileJob {
+        display_name: fat_dir::fcb_to_display_name(&entry.name),
         src: FileSource::Dos {
             drive: src_drive,
             entry: entry.clone(),
         },
         dst: dest,
-    })
+    }
 }
 
-fn build_file_job_dos_to_dest(
-    entry: &ReadDirEntry,
-    src_drive: u8,
-    dst: &DirHandle,
-) -> Result<FileJob, &'static [u8]> {
-    let display_name = fat_dir::fcb_to_display_name(&entry.name);
-    let dest = match dst {
-        DirHandle::Dos { drive, dir_cluster } => {
-            file_dest_from_entry(*drive, *dir_cluster, entry.name, entry)
-        }
-        DirHandle::Host { path } => {
-            let leaf = fat_dir::fcb_to_display_name(&entry.name);
-            let leaf_str = String::from_utf8_lossy(&leaf).into_owned();
-            FileDest::Host {
-                path: path.join(leaf_str),
-            }
-        }
-    };
-    Ok(FileJob {
-        display_name,
+fn build_file_job_dos_to_dest(entry: &ReadDirEntry, src_drive: u8, dst: &DirHandle) -> FileJob {
+    FileJob {
+        display_name: fat_dir::fcb_to_display_name(&entry.name),
         src: FileSource::Dos {
             drive: src_drive,
             entry: entry.clone(),
         },
-        dst: dest,
-    })
+        dst: file_dest_from_entry(dst.drive, dst.dir_cluster, entry.name, entry),
+    }
 }
 
 fn make_dest_subdir(
@@ -1811,23 +1463,11 @@ fn make_dest_subdir(
     parent: &DirHandle,
     name_fcb: &[u8; 11],
 ) -> Result<DirHandle, &'static [u8]> {
-    match parent {
-        DirHandle::Dos { drive, dir_cluster } => {
-            let cluster = ensure_dos_directory(state, disk, *drive, *dir_cluster, *name_fcb)?;
-            Ok(DirHandle::Dos {
-                drive: *drive,
-                dir_cluster: cluster,
-            })
-        }
-        DirHandle::Host { path } => {
-            let leaf = fat_dir::fcb_to_display_name(name_fcb);
-            let leaf_str = String::from_utf8_lossy(&leaf).into_owned();
-            let new_path = path.join(leaf_str);
-            fs::create_dir_all(&new_path)
-                .map_err(|_| &b"Unable to create host directory\r\n"[..])?;
-            Ok(DirHandle::Host { path: new_path })
-        }
-    }
+    let cluster = ensure_dos_directory(state, disk, parent.drive, parent.dir_cluster, *name_fcb)?;
+    Ok(DirHandle {
+        drive: parent.drive,
+        dir_cluster: cluster,
+    })
 }
 
 fn is_dot_directory(entry: &ReadDirEntry) -> bool {
@@ -1904,10 +1544,9 @@ fn init_copy(
         return Err(b"Required parameter missing\r\n");
     }
     let source_arg = parse_arg(tokens[0]);
-    let dest_arg = parse_arg(tokens[1]);
-
-    if matches!(source_arg, ArgKind::Host(_)) && matches!(dest_arg, ArgKind::Host(_)) {
-        return Err(b"Host-to-host copy is not supported\r\n");
+    let dest_bytes = tokens[1];
+    if starts_with_host_prefix(dest_bytes) {
+        return Err(b"Copying to the host is not supported\r\n");
     }
 
     let mut cs = CopyState {
@@ -1921,9 +1560,11 @@ fn init_copy(
 
     match source_arg {
         ArgKind::Dos(src_bytes) => {
-            init_dos_source(state, io, drive, &src_bytes, dest_arg, &mut cs)?
+            init_dos_source(state, io, drive, &src_bytes, dest_bytes, &mut cs)?
         }
-        ArgKind::Host(src_path) => init_host_source(state, io, drive, src_path, dest_arg, &mut cs)?,
+        ArgKind::Host(src_path) => {
+            init_host_source(state, io, drive, src_path, dest_bytes, &mut cs)?
+        }
     }
 
     Ok(InitOutcome::Plan(cs))
@@ -1962,7 +1603,7 @@ fn init_dos_source(
     io: &mut IoAccess,
     drive: &mut dyn DriveIo,
     src_bytes: &[u8],
-    dest_arg: ArgKind,
+    dest_bytes: &[u8],
     cs: &mut CopyState,
 ) -> Result<(), &'static [u8]> {
     let has_wildcard = src_bytes.contains(&b'*') || src_bytes.contains(&b'?');
@@ -1977,7 +1618,7 @@ fn init_dos_source(
             directory: read_path.directory,
             pattern: read_path.name,
         };
-        let dst = resolve_wildcard_destination(state, io, drive, dest_arg)?;
+        let dst = resolve_dos_destination(state, io, drive, dest_bytes)?;
         cs.wildcard = Some(WildcardSpec {
             spec,
             search_index: 0,
@@ -1995,7 +1636,7 @@ fn init_dos_source(
             state,
             io,
             drive,
-            dest_arg,
+            dest_bytes,
             src_leaf.as_deref(),
         )?;
         cs.work_stack.push(WorkItem::EnumerateDos(EnumerateDos {
@@ -2024,7 +1665,7 @@ fn init_dos_source(
     .map_err(|_| &b"File not found\r\n"[..])?
     .ok_or(&b"File not found\r\n"[..])?
     .0;
-    let job = build_single_file_job(state, io, drive, entry, read_path.drive_index, dest_arg)?;
+    let job = build_single_file_job(state, io, drive, entry, read_path.drive_index, dest_bytes)?;
     cs.work_stack.push(WorkItem::File(job));
     Ok(())
 }
@@ -2034,15 +1675,13 @@ fn init_host_source(
     io: &mut IoAccess,
     drive: &mut dyn DriveIo,
     src_path: PathBuf,
-    dest_arg: ArgKind,
+    dest_bytes: &[u8],
     cs: &mut CopyState,
 ) -> Result<(), &'static [u8]> {
     let meta = fs::metadata(&src_path).map_err(|_| &b"File not found\r\n"[..])?;
 
     if meta.is_dir() {
-        if let ArgKind::Dos(_) = &dest_arg {
-            preflight_host_tree_for_dos(&src_path)?;
-        }
+        preflight_host_tree_for_dos(&src_path)?;
         let leaf = src_path
             .file_name()
             .and_then(|n| n.to_str())
@@ -2051,7 +1690,7 @@ fn init_host_source(
             state,
             io,
             drive,
-            dest_arg,
+            dest_bytes,
             leaf.as_deref(),
         )?;
         cs.work_stack.push(WorkItem::EnumerateHost(EnumerateHost {
@@ -2076,7 +1715,7 @@ fn init_host_source(
     };
     let display_name = fat_dir::fcb_to_display_name(&display_fcb);
 
-    let dest = resolve_host_source_destination(state, io, drive, dest_arg, &basename)?;
+    let dest = resolve_host_source_destination(state, io, drive, dest_bytes, &basename)?;
     cs.work_stack.push(WorkItem::File(FileJob {
         display_name,
         src: FileSource::Host { path: src_path },
@@ -2107,95 +1746,41 @@ fn preflight_host_tree_for_dos(root: &std::path::Path) -> Result<(), &'static [u
     Ok(())
 }
 
-fn resolve_wildcard_destination(
-    state: &mut DosState,
-    io: &mut IoAccess,
-    drive: &mut dyn DriveIo,
-    dest_arg: ArgKind,
-) -> Result<WildcardDest, &'static [u8]> {
-    match dest_arg {
-        ArgKind::Dos(dest_bytes) => match resolve_dos_destination(state, io, drive, &dest_bytes)? {
-            ResolvedDosDestination::Dir { drive, dir_cluster } => {
-                Ok(WildcardDest::DosDir { drive, dir_cluster })
-            }
-            ResolvedDosDestination::File {
-                drive,
-                dir_cluster,
-                fcb_name,
-            } => Ok(WildcardDest::DosFile {
-                drive,
-                dir_cluster,
-                fcb_name,
-            }),
-        },
-        ArgKind::Host(path) => {
-            if path.is_dir() {
-                Ok(WildcardDest::HostDir { path })
-            } else if path.exists() {
-                Ok(WildcardDest::HostFile { path })
-            } else if path.to_string_lossy().ends_with(std::path::MAIN_SEPARATOR) {
-                fs::create_dir_all(&path).map_err(|_| &b"Cannot create host dir\r\n"[..])?;
-                Ok(WildcardDest::HostDir { path })
-            } else {
-                Ok(WildcardDest::HostFile { path })
-            }
-        }
-    }
-}
-
 fn resolve_destination_directory_for_tree(
     state: &mut DosState,
     io: &mut IoAccess,
     drive: &mut dyn DriveIo,
-    dest_arg: ArgKind,
+    dest_bytes: &[u8],
     src_leaf: Option<&[u8]>,
 ) -> Result<DirHandle, &'static [u8]> {
-    match dest_arg {
-        ArgKind::Dos(dest_bytes) => {
-            validate_dos_components(&dest_bytes).map_err(|_| &b"Invalid destination\r\n"[..])?;
-            match resolve_dos_destination(state, io, drive, &dest_bytes)? {
-                ResolvedDosDestination::Dir {
-                    drive: drive_index,
-                    dir_cluster,
-                } => {
-                    let dir_cluster = if let Some(leaf) = src_leaf {
-                        let fcb_name = fat_dir::name_to_fcb(leaf);
-                        ensure_dos_directory(state, drive, drive_index, dir_cluster, fcb_name)?
-                    } else {
-                        dir_cluster
-                    };
-                    Ok(DirHandle::Dos {
-                        drive: drive_index,
-                        dir_cluster,
-                    })
-                }
-                ResolvedDosDestination::File {
-                    drive: drive_index,
-                    dir_cluster,
-                    fcb_name,
-                } => {
-                    let dir_cluster =
-                        ensure_dos_directory(state, drive, drive_index, dir_cluster, fcb_name)?;
-                    Ok(DirHandle::Dos {
-                        drive: drive_index,
-                        dir_cluster,
-                    })
-                }
-            }
-        }
-        ArgKind::Host(path) => {
-            let target = if path.is_dir() {
-                if let Some(leaf) = src_leaf {
-                    let leaf_str = String::from_utf8_lossy(leaf).into_owned();
-                    path.join(leaf_str)
-                } else {
-                    path
-                }
+    validate_dos_components(dest_bytes).map_err(|_| &b"Invalid destination\r\n"[..])?;
+    match resolve_dos_destination(state, io, drive, dest_bytes)? {
+        ResolvedDosDestination::Dir {
+            drive: drive_index,
+            dir_cluster,
+        } => {
+            let dir_cluster = if let Some(leaf) = src_leaf {
+                let fcb_name = fat_dir::name_to_fcb(leaf);
+                ensure_dos_directory(state, drive, drive_index, dir_cluster, fcb_name)?
             } else {
-                path
+                dir_cluster
             };
-            fs::create_dir_all(&target).map_err(|_| &b"Cannot create host dir\r\n"[..])?;
-            Ok(DirHandle::Host { path: target })
+            Ok(DirHandle {
+                drive: drive_index,
+                dir_cluster,
+            })
+        }
+        ResolvedDosDestination::File {
+            drive: drive_index,
+            dir_cluster,
+            fcb_name,
+        } => {
+            let dir_cluster =
+                ensure_dos_directory(state, drive, drive_index, dir_cluster, fcb_name)?;
+            Ok(DirHandle {
+                drive: drive_index,
+                dir_cluster,
+            })
         }
     }
 }
@@ -2204,105 +1789,66 @@ fn resolve_destination_directory_for_host_tree(
     state: &mut DosState,
     io: &mut IoAccess,
     drive: &mut dyn DriveIo,
-    dest_arg: ArgKind,
+    dest_bytes: &[u8],
     src_leaf: Option<&str>,
 ) -> Result<DirHandle, &'static [u8]> {
-    match dest_arg {
-        ArgKind::Dos(dest_bytes) => {
-            validate_dos_components(&dest_bytes).map_err(|_| &b"Invalid destination\r\n"[..])?;
-            let (drive_index, parent_cluster, fcb_name) =
-                match resolve_dos_destination(state, io, drive, &dest_bytes)? {
-                    ResolvedDosDestination::Dir {
-                        drive: drive_index,
-                        dir_cluster,
-                    } => {
-                        let leaf_bytes = src_leaf.unwrap_or("HOSTDIR");
-                        let dos_name =
-                            validate_dos_basename(leaf_bytes.as_bytes()).map_err(|_| {
-                                &b"Long host filename cannot be represented as 8.3\r\n"[..]
-                            })?;
-                        (drive_index, dir_cluster, fat_dir::name_to_fcb(&dos_name))
-                    }
-                    ResolvedDosDestination::File {
-                        drive: drive_index,
-                        dir_cluster,
-                        fcb_name,
-                    } => (drive_index, dir_cluster, fcb_name),
-                };
-            let dir_cluster =
-                ensure_dos_directory(state, drive, drive_index, parent_cluster, fcb_name)?;
-            Ok(DirHandle::Dos {
+    validate_dos_components(dest_bytes).map_err(|_| &b"Invalid destination\r\n"[..])?;
+    let (drive_index, parent_cluster, fcb_name) =
+        match resolve_dos_destination(state, io, drive, dest_bytes)? {
+            ResolvedDosDestination::Dir {
                 drive: drive_index,
                 dir_cluster,
-            })
-        }
-        ArgKind::Host(path) => {
-            let target = if path.is_dir() {
-                if let Some(leaf) = src_leaf {
-                    path.join(leaf)
-                } else {
-                    path
-                }
-            } else {
-                path
-            };
-            fs::create_dir_all(&target).map_err(|_| &b"Cannot create host dir\r\n"[..])?;
-            Ok(DirHandle::Host { path: target })
-        }
-    }
+            } => {
+                let leaf_bytes = src_leaf.unwrap_or("HOSTDIR");
+                let dos_name = validate_dos_basename(leaf_bytes.as_bytes())
+                    .map_err(|_| &b"Long host filename cannot be represented as 8.3\r\n"[..])?;
+                (drive_index, dir_cluster, fat_dir::name_to_fcb(&dos_name))
+            }
+            ResolvedDosDestination::File {
+                drive: drive_index,
+                dir_cluster,
+                fcb_name,
+            } => (drive_index, dir_cluster, fcb_name),
+        };
+    let dir_cluster = ensure_dos_directory(state, drive, drive_index, parent_cluster, fcb_name)?;
+    Ok(DirHandle {
+        drive: drive_index,
+        dir_cluster,
+    })
 }
 
 fn resolve_host_source_destination(
     state: &mut DosState,
     io: &mut IoAccess,
     drive: &mut dyn DriveIo,
-    dest_arg: ArgKind,
+    dest_bytes: &[u8],
     src_basename: &str,
 ) -> Result<FileDest, &'static [u8]> {
-    match dest_arg {
-        ArgKind::Dos(dest_bytes) => match resolve_dos_destination(state, io, drive, &dest_bytes)? {
+    let (drive_index, dir_cluster, fcb_name) =
+        match resolve_dos_destination(state, io, drive, dest_bytes)? {
             ResolvedDosDestination::Dir {
                 drive: drive_index,
                 dir_cluster,
             } => {
                 let dos_name = validate_dos_basename(src_basename.as_bytes())
                     .map_err(|_| &b"Long host filename cannot be represented as 8.3\r\n"[..])?;
-                let (time, date) = state.dos_timestamp_now();
-                Ok(dos_file_dest(
-                    drive_index,
-                    dir_cluster,
-                    fat_dir::name_to_fcb(&dos_name),
-                    fat_dir::ATTR_ARCHIVE,
-                    time,
-                    date,
-                ))
+                (drive_index, dir_cluster, fat_dir::name_to_fcb(&dos_name))
             }
             ResolvedDosDestination::File {
                 drive: drive_index,
                 dir_cluster,
                 fcb_name,
-            } => {
-                let (time, date) = state.dos_timestamp_now();
-                Ok(dos_file_dest(
-                    drive_index,
-                    dir_cluster,
-                    fcb_name,
-                    fat_dir::ATTR_ARCHIVE,
-                    time,
-                    date,
-                ))
-            }
-        },
-        ArgKind::Host(path) => {
-            if path.is_dir() {
-                Ok(FileDest::Host {
-                    path: path.join(src_basename),
-                })
-            } else {
-                Ok(FileDest::Host { path })
-            }
-        }
-    }
+            } => (drive_index, dir_cluster, fcb_name),
+        };
+    let (time, date) = state.dos_timestamp_now();
+    Ok(FileDest {
+        drive: drive_index,
+        dir_cluster,
+        fcb_name,
+        attribute: fat_dir::ATTR_ARCHIVE,
+        time,
+        date,
+    })
 }
 
 fn build_single_file_job(
@@ -2311,36 +1857,22 @@ fn build_single_file_job(
     drive: &mut dyn DriveIo,
     entry: ReadDirEntry,
     src_drive: u8,
-    dest_arg: ArgKind,
+    dest_bytes: &[u8],
 ) -> Result<FileJob, &'static [u8]> {
-    let display_name = fat_dir::fcb_to_display_name(&entry.name);
-
-    let dst = match dest_arg {
-        ArgKind::Dos(dest_bytes) => match resolve_dos_destination(state, io, drive, &dest_bytes)? {
-            ResolvedDosDestination::Dir {
-                drive: drive_index,
-                dir_cluster,
-            } => file_dest_from_entry(drive_index, dir_cluster, entry.name, &entry),
-            ResolvedDosDestination::File {
-                drive: drive_index,
-                dir_cluster,
-                fcb_name,
-            } => file_dest_from_entry(drive_index, dir_cluster, fcb_name, &entry),
-        },
-        ArgKind::Host(path) => {
-            if path.is_dir() {
-                let leaf = String::from_utf8_lossy(&display_name).into_owned();
-                FileDest::Host {
-                    path: path.join(leaf),
-                }
-            } else {
-                FileDest::Host { path }
-            }
-        }
+    let dst = match resolve_dos_destination(state, io, drive, dest_bytes)? {
+        ResolvedDosDestination::Dir {
+            drive: drive_index,
+            dir_cluster,
+        } => file_dest_from_entry(drive_index, dir_cluster, entry.name, &entry),
+        ResolvedDosDestination::File {
+            drive: drive_index,
+            dir_cluster,
+            fcb_name,
+        } => file_dest_from_entry(drive_index, dir_cluster, fcb_name, &entry),
     };
 
     Ok(FileJob {
-        display_name,
+        display_name: fat_dir::fcb_to_display_name(&entry.name),
         src: FileSource::Dos {
             drive: src_drive,
             entry,
@@ -2445,7 +1977,7 @@ fn init_concat(
     let transfer = ActiveTransfer {
         display_name,
         src,
-        dst: TransferDst::Dos(pending),
+        dst: pending,
     };
 
     let cs = CopyState {
@@ -2468,8 +2000,8 @@ fn print_help(io: &mut IoAccess) {
     io.println(b"  /V  Verifies that new files are written correctly.");
     io.println(b"  /Y  Overwrites existing files without prompting.");
     io.println(b"");
-    io.println(b"Either path may be prefixed with 'host:' to reach the host filesystem.");
-    io.println(b"Directories are copied recursively. Host-to-host copies are not supported.");
+    io.println(b"The source may be prefixed with 'host:' to read from the host filesystem.");
+    io.println(b"The destination is always a DOS path. Directories are copied recursively.");
 }
 
 fn consume_key(io: &mut IoAccess) -> u8 {
