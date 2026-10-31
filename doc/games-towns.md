@@ -16,5 +16,5 @@ Even if a title is not listed here, there is a good chance it runs.
 | Power Dolls                            | パワードール                         | FM Towns |   ✅    |                                         |
 | Power Dolls 2                          | パワードール2                        | FM Towns |   ✅    |                                         |
 | Princess Maker 2                       | プリンセスメーカー2                     | FM Towns |   ✅    |                                         |
-| Psychic Detective Series Vol. 4: Orgel | サイキック・ディテクティブ・シリーズ Vol.4 オルゴール | FM Towns |   ❌️   | Input is broken                         |
+| Psychic Detective Series Vol. 4: Orgel | サイキック・ディテクティブ・シリーズ Vol.4 オルゴール | FM Towns |   ✅    |                                         |
 | Super D.P.S.                           | スーパーD.P.S.                     | FM Towns |   ⚠️   | FM sounds too low. Not sure if intended |
