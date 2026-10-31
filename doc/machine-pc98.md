@@ -4,15 +4,15 @@ Select a PC-98 machine with `--machine`; the default is `PC9801RA`. neetan aims 
 support all 16-bit era DOS games and emulates them accurately for 7 idealized
 machine targets:
 
-| Machine   | `--machine` | CPU      | CPU Speed   | FPU (x87) | Extended RAM | Graphics | Interface | CD-ROM |
-|-----------|-------------|----------|-------------|-----------|--------------|----------|-----------|--------|
-| PC-9801F  | `PC9801F`   | 8086     | 5 / 8 MHz   | No        | None         | GDC      | SASI      | No     |
-| PC-9801VM | `PC9801VM`  | V30      | 8 / 10 MHz  | No        | None         | GRCG     | SASI      | No     |
-| PC-9801VX | `PC9801VX`  | 80286    | 8 / 10 MHz  | No        | 4 MiB        | EGC      | SASI      | No     |
-| PC-9801RS | `PC9801RS`  | 80386SX  | 16 MHz      | Yes       | 12 MiB       | EGC      | SASI      | No     |
-| PC-9801RA | `PC9801RA`  | 80386DX  | 20 MHz      | Yes       | 12 MiB       | EGC      | SASI      | No     |
-| PC-9821AS | `PC9821AS`  | 80486DX  | 33 MHz      | Yes       | 14 MiB       | PEGC     | IDE       | Yes    |
-| PC-9821AP | `PC9821AP`  | 80486DX2 | 66 MHz      | Yes       | 14 MiB       | PEGC     | IDE       | Yes    |
+| Machine   | `--machine` | CPU      | CPU Speed  | FPU (x87) | Extended RAM | Graphics | Interface | CD-ROM |
+|-----------|-------------|----------|------------|-----------|--------------|----------|-----------|--------|
+| PC-9801F  | `PC9801F`   | 8086     | 5 / 8 MHz  | No        | None         | GDC      | SASI      | No     |
+| PC-9801VM | `PC9801VM`  | V30      | 8 / 10 MHz | No        | None         | GRCG     | SASI      | No     |
+| PC-9801VX | `PC9801VX`  | 80286    | 8 / 10 MHz | No        | 4 MiB        | EGC      | SASI      | No     |
+| PC-9801RS | `PC9801RS`  | 80386SX  | 16 MHz     | Yes       | 12 MiB       | EGC      | SASI      | No     |
+| PC-9801RA | `PC9801RA`  | 80386DX  | 20 MHz     | Yes       | 12 MiB       | EGC      | SASI      | No     |
+| PC-9821AS | `PC9821AS`  | 80486DX  | 33 MHz     | Yes       | 14 MiB       | PEGC     | IDE       | Yes    |
+| PC-9821AP | `PC9821AP`  | 80486DX2 | 66 MHz     | Yes       | 14 MiB       | PEGC     | IDE       | Yes    |
 
 All targets have the full 640 KiB conventional RAM. The 8086 and V30 are cycle-count
 accurately emulated. The emulated 286 is calibrated to run at the same speed as the
@@ -55,8 +55,18 @@ The MT-32 and SC-55 modules are configured separately via `--midi`; see
 | `--graphicboard <TYPE>`      | Graphics accelerator board: `none`, `ga1280a`                         | `none`   |
 | `--pc98-roms <PATH>`         | Directory with the PC-98 ROM set (BIOS, font, sound), by content hash | -        |
 | `--bios [on\|off]`           | Boot the real BIOS from `--pc98-roms` instead of the HLE BIOS         | HLE BIOS |
+| `--boot-device <DEVICE>`     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `dos`            | `auto`   |
+| `--printer <PATH>`           | Output file of the printer. The file must exist                       | -        |
 
 CD-ROM disc images (`--cdrom`) are supported on the PC-9821 targets only.
+
+## Boot device and HLE DOS
+
+With `--boot-device auto` the machine tries the floppy drives, the CD-ROM drive and
+the hard disks in this order. Without a bootable disk it starts NEETAN DOS, a
+built-in MS-DOS 6.20 compatible DOS with EMS, XMS and MSCDEX drivers. `fdd1`, `fdd2`,
+`hdd1` and `hdd2` boot from that drive only. `dos` skips all disks and starts NEETAN
+DOS directly. `--ems` and `--xms` configure the memory drivers of NEETAN DOS.
 
 ## Graphic acceleration board
 
@@ -102,8 +112,7 @@ Keep the ROM paths in the settings file `neetan.conf` and toggle MIDI per game w
 
 See [MIDI: Roland MT-32](roms.md#midi-roland-mt-32) and
 [MIDI: Roland SC-55](roms.md#midi-roland-sc-55) for the ROM files. Both modules are
-optional build features; see [Build requirements](../README.md#build-requirements)
-and [License](../README.md#license).
+optional build features; see [Building](building.md#midi-features-and-binary-license).
 
 ## Text extraction
 

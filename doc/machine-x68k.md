@@ -79,5 +79,4 @@ Keep the ROM paths in the settings file `neetan.conf` and toggle MIDI per game w
 See [MIDI: Roland MT-32](roms.md#midi-roland-mt-32) and
 [MIDI: Roland SC-55](roms.md#midi-roland-sc-55) for the ROM files. Both modules
 are optional build features; see
-[Build requirements](../README.md#build-requirements) and
-[License](../README.md#license).
+[Building](building.md#midi-features-and-binary-license).

@@ -22,12 +22,11 @@ with the CZ-8BS1 FM sound board (YM2151 OPM), which software detects through the
 board's detection port; the base X1 has the PSG only.
 
 To use the mouse, capture the pointer with `Right Ctrl + M` (see
-[Emulator controls](../README.md#emulator-controls)).
+[Controls](controls.md)).
 
 Cassette tape images are inserted with `--cassette` (`.tap`); the floppy drives use
-the shared `--fdd1` / `--fdd2` options with D88 or raw `.2d` images, and a SASI hard
-disk attaches through the shared `--hdd1` option. None of these targets have HLE
-firmware, and they require a real ROM set (see [ROM set](#rom-set)).
+the shared `--fdd1` / `--fdd2` options with D88 or raw `.2d` images. None of these
+targets have HLE firmware, and they require a real ROM set (see [ROM set](#rom-set)).
 
 ## Platform options
 
@@ -48,8 +47,7 @@ turbo reports a 24 kHz monitor so hi-res software runs at 400 lines; `15k` force
 a 15 kHz (200-line) monitor and `24k` forces a 24 kHz (400-line) one. The base X1
 has no hi-res mode, so the setting only matters on the turbo.
 
-Floppy images are supplied with the shared `--fdd1` / `--fdd2` options and a SASI
-hard disk image with `--hdd1`.
+Floppy images are supplied with the shared `--fdd1` / `--fdd2` options.
 
 ## ROM set
 

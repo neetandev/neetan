@@ -25,7 +25,7 @@ All three targets install the Panasonic FS-CA1 MSX-AUDIO expansion internally.
 It provides a Y8950 with FM, ADPCM RAM, timers, and interrupt support.
 
 To use the mouse, capture the pointer with `Right Ctrl + M` (see
-[Emulator controls](../README.md#emulator-controls)).
+[Controls](controls.md)).
 
 ## Platform options
 
