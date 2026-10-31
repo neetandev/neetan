@@ -284,8 +284,6 @@ pub struct TownsBus<T: TraceSink = NoTrace> {
     pub(crate) memcard_bank: u8,
     /// Memory-card attribute register-select latch (I/O 0x0491 bit 0).
     pub(crate) memcard_reg: bool,
-    /// Host local-time source (BCD) for the RTC.
-    pub(crate) host_date_time_source: SharedHostDateTimeSource,
     /// Fractional audio-sample carry used when draining audio during automation.
     pub(crate) automation_audio_remainder: u64,
     /// Roland MT-32 sound module, fed by RS-MIDI bytes (optional, requires munt).
@@ -320,6 +318,8 @@ impl<T: TraceSink> TownsBus<T> {
         model: TownsModel,
         tracer: T,
     ) -> Self {
+        let mut rtc = Msm58321Rtc::new();
+        rtc.seed_time(common::default_host_date_time(), 0);
         let mut bus = Self {
             memory,
             clocks,
@@ -330,7 +330,7 @@ impl<T: TraceSink> TownsBus<T> {
             pic: I8259aPic::new_zeroed(),
             timer: TownsTimer::new(),
             dmac: [Upd71071Dma::new(), Upd71071Dma::new()],
-            rtc: Msm58321Rtc::new(),
+            rtc,
             keyboard: TownsKeyboard::new(),
             cdc: TownsCdController::new(clocks.sample_rate, clocks.cpu_clock_hz),
             fdc: Wd17xxFdc::new(clocks.cpu_clock_hz),
@@ -365,7 +365,6 @@ impl<T: TraceSink> TownsBus<T> {
             last_serial_rom_command: 0,
             memcard_bank: 0,
             memcard_reg: false,
-            host_date_time_source: common::default_host_date_time_source(),
             automation_audio_remainder: 0,
             #[cfg(feature = "mt32")]
             mt32: None,
@@ -632,9 +631,10 @@ impl TownsBus<NoTrace> {
 }
 
 impl<T: TraceSink> TownsBus<T> {
-    /// Overrides the host local-time source (BCD) used by the RTC.
+    /// Sets the RTC to the current time of `source`. The RTC advances from there
+    /// with the emulated time.
     pub(crate) fn set_host_date_time_source(&mut self, source: SharedHostDateTimeSource) {
-        self.host_date_time_source = source;
+        self.rtc.seed_time(source.now(), self.current_cycle);
     }
 
     /// Returns the number of frames presented within the current epoch.
@@ -773,12 +773,6 @@ impl<T: TraceSink> TownsBus<T> {
     /// The cycle of the next scheduled event, if any.
     pub(crate) fn next_event_cycle(&self) -> Option<u64> {
         self.scheduler.next_event_cycle()
-    }
-
-    /// Microseconds elapsed within the current second, for the RTC ready flag.
-    fn subsecond_micros(&self) -> u32 {
-        let micros = self.current_cycle * MICROS_PER_SECOND / u64::from(self.clocks.cpu_clock_hz);
-        (micros % MICROS_PER_SECOND) as u32
     }
 
     /// The free-running 1 MHz microsecond counter (I/O 0x0026-0x0027).

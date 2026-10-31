@@ -3,9 +3,10 @@
 //! Accessed through a data port and a command port. A register address is latched
 //! by writing it to the data port and strobing the ADDRESS-WRITE command; the
 //! selected calendar register is then read back one BCD nibble at a time from the
-//! data port, with bit 7 acting as a ready flag. The host provides the wall-clock
-//! time via the shared 6-byte BCD buffer, so the device itself has no time-source
-//! dependency.
+//! data port, with bit 7 acting as a ready flag. The clock runs on emulated time:
+//! it starts from a seed date and advances with the elapsed CPU cycles.
+
+use common::HostDateTime;
 
 /// Calendar register addresses (one BCD digit each).
 const REG_ONE_SECOND: u8 = 0x00;
@@ -38,7 +39,10 @@ const TEN_HOUR_24H_BIT: u8 = 0x08;
 const TEN_HOUR_PM_BIT: u8 = 0x04;
 
 /// The ready flag reads low for the first 674 us of each second.
-const READY_LOW_MICROS: u32 = 674;
+const READY_LOW_MICROS: u64 = 674;
+
+/// Number of microseconds in one second.
+const MICROS_PER_SECOND: u64 = 1_000_000;
 
 /// Controller access state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -61,6 +65,10 @@ pub struct Msm58321State {
     pub register_latch: u8,
     /// Last value written to the data port (register address or write data).
     pub last_data_write: u8,
+    /// Seed date and time in seconds since 1970-01-01 00:00:00.
+    pub seed_seconds: u64,
+    /// CPU cycle at which the clock showed the seed time.
+    pub seed_cycle: u64,
 }
 
 /// MSM58321-class serial real-time clock controller.
@@ -78,6 +86,8 @@ pub struct Msm58321RuntimeState {
     hour_24: bool,
     register_latch: u8,
     last_data_write: u8,
+    seed_seconds: u64,
+    seed_cycle: u64,
 }}
 
 impl Msm58321Rtc {
@@ -89,8 +99,16 @@ impl Msm58321Rtc {
                 hour_24: true,
                 register_latch: 0,
                 last_data_write: 0,
+                seed_seconds: 0,
+                seed_cycle: 0,
             },
         }
+    }
+
+    /// Sets the clock to `seed` at `current_cycle`. The clock advances from there.
+    pub fn seed_time(&mut self, seed: HostDateTime, current_cycle: u64) {
+        self.state.seed_seconds = seed.to_unix_seconds();
+        self.state.seed_cycle = current_cycle;
     }
 
     /// Captures the serial access state and register latch.
@@ -103,6 +121,8 @@ impl Msm58321Rtc {
             hour_24: self.state.hour_24,
             register_latch: self.state.register_latch,
             last_data_write: self.state.last_data_write,
+            seed_seconds: self.state.seed_seconds,
+            seed_cycle: self.state.seed_cycle,
         }
     }
 
@@ -126,6 +146,8 @@ impl Msm58321Rtc {
             hour_24: state.hour_24,
             register_latch: state.register_latch,
             last_data_write: state.last_data_write,
+            seed_seconds: state.seed_seconds,
+            seed_cycle: state.seed_cycle,
         };
         Ok(())
     }
@@ -159,26 +181,31 @@ impl Msm58321Rtc {
         }
     }
 
-    /// Handles a read from the data port. `host_time_bcd` is the shared 6-byte
-    /// BCD time buffer `[year, month<<4|day_of_week, day, hour, minute, second]`;
-    /// `subsecond_micros` is the elapsed microseconds within the current second,
-    /// used to model the ready flag. Bit 7 is the ready flag (low while busy) and
-    /// the low nibble is the selected register's BCD digit.
-    pub fn read_data(&self, host_time_bcd: &[u8; 6], subsecond_micros: u32) -> u8 {
-        let mut data = if subsecond_micros % 1_000_000 < READY_LOW_MICROS {
+    /// Handles a read from the data port at `current_cycle`. Bit 7 is the ready
+    /// flag (low while busy) and the low nibble is the selected register's BCD
+    /// digit.
+    pub fn read_data(&self, current_cycle: u64, cpu_clock_hz: u32) -> u8 {
+        let elapsed_micros = u128::from(current_cycle.saturating_sub(self.state.seed_cycle))
+            * u128::from(MICROS_PER_SECOND)
+            / u128::from(cpu_clock_hz.max(1));
+        let elapsed_micros = elapsed_micros as u64;
+        let mut data = if elapsed_micros % MICROS_PER_SECOND < READY_LOW_MICROS {
             0
         } else {
             DATA_READY_BIT
         };
         if self.state.mode != Msm58321Mode::Idle {
-            data |= self.digit(host_time_bcd) & DATA_DIGIT_MASK;
+            let seconds = self.state.seed_seconds + elapsed_micros / MICROS_PER_SECOND;
+            let time = HostDateTime::from_unix_seconds(seconds).to_bcd_bytes();
+            data |= self.digit(&time) & DATA_DIGIT_MASK;
         }
         data
     }
 
-    /// The BCD digit for the latched register, derived from the host time.
-    fn digit(&self, host_time_bcd: &[u8; 6]) -> u8 {
-        let [year, month_weekday, day, hour, minute, second] = *host_time_bcd;
+    /// The BCD digit for the latched register, derived from the 6-byte BCD time
+    /// `[year, month<<4|day_of_week, day, hour, minute, second]`.
+    fn digit(&self, time_bcd: &[u8; 6]) -> u8 {
+        let [year, month_weekday, day, hour, minute, second] = *time_bcd;
         let month = month_weekday >> 4;
         let weekday = month_weekday & DATA_DIGIT_MASK;
         let hour_value = bcd_to_binary(hour);
@@ -229,8 +256,26 @@ fn bcd_to_binary(value: u8) -> u8 {
 mod tests {
     use super::*;
 
-    /// 2026-03-03 (Monday) 14:30:45.
-    const TEST_TIME: [u8; 6] = [0x26, 0x31, 0x03, 0x14, 0x30, 0x45];
+    /// 2026-03-03 (Tuesday) 14:30:45.
+    const TEST_TIME: HostDateTime = HostDateTime {
+        year: 2026,
+        month: 3,
+        day: 3,
+        day_of_week: 2,
+        hour: 14,
+        minute: 30,
+        second: 45,
+    };
+
+    /// A 1 MHz clock, so one cycle is one microsecond.
+    const CPU_HZ: u32 = 1_000_000;
+
+    /// A controller seeded with [`TEST_TIME`] at cycle 0.
+    fn seeded_rtc() -> Msm58321Rtc {
+        let mut rtc = Msm58321Rtc::new();
+        rtc.seed_time(TEST_TIME, 0);
+        rtc
+    }
 
     /// Latches a register address through the ADDRESS-WRITE strobe.
     fn select_register(rtc: &mut Msm58321Rtc, register: u8) {
@@ -241,100 +286,114 @@ mod tests {
 
     #[test]
     fn reads_each_time_digit() {
-        let mut rtc = Msm58321Rtc::new();
+        let mut rtc = seeded_rtc();
 
         select_register(&mut rtc, REG_ONE_SECOND);
-        assert_eq!(
-            rtc.read_data(&TEST_TIME, READY_LOW_MICROS),
-            DATA_READY_BIT | 5
-        );
+        assert_eq!(rtc.read_data(READY_LOW_MICROS, CPU_HZ), DATA_READY_BIT | 5);
         select_register(&mut rtc, REG_TEN_SECOND);
-        assert_eq!(
-            rtc.read_data(&TEST_TIME, READY_LOW_MICROS),
-            DATA_READY_BIT | 4
-        );
+        assert_eq!(rtc.read_data(READY_LOW_MICROS, CPU_HZ), DATA_READY_BIT | 4);
         select_register(&mut rtc, REG_ONE_MINUTE);
-        assert_eq!(rtc.read_data(&TEST_TIME, READY_LOW_MICROS), DATA_READY_BIT);
+        assert_eq!(rtc.read_data(READY_LOW_MICROS, CPU_HZ), DATA_READY_BIT);
         select_register(&mut rtc, REG_TEN_MINUTE);
-        assert_eq!(
-            rtc.read_data(&TEST_TIME, READY_LOW_MICROS),
-            DATA_READY_BIT | 3
-        );
+        assert_eq!(rtc.read_data(READY_LOW_MICROS, CPU_HZ), DATA_READY_BIT | 3);
         select_register(&mut rtc, REG_ONE_HOUR);
-        assert_eq!(
-            rtc.read_data(&TEST_TIME, READY_LOW_MICROS),
-            DATA_READY_BIT | 4
-        );
+        assert_eq!(rtc.read_data(READY_LOW_MICROS, CPU_HZ), DATA_READY_BIT | 4);
         // 24-hour mode: bit 3 set, tens digit of 14 is 1.
         select_register(&mut rtc, REG_TEN_HOUR);
         assert_eq!(
-            rtc.read_data(&TEST_TIME, READY_LOW_MICROS),
+            rtc.read_data(READY_LOW_MICROS, CPU_HZ),
             DATA_READY_BIT | TEN_HOUR_24H_BIT | 1
         );
     }
 
     #[test]
     fn reads_calendar_digits() {
-        let mut rtc = Msm58321Rtc::new();
+        let mut rtc = seeded_rtc();
 
         select_register(&mut rtc, REG_WEEKDAY);
-        assert_eq!(
-            rtc.read_data(&TEST_TIME, READY_LOW_MICROS),
-            DATA_READY_BIT | 1
-        );
+        assert_eq!(rtc.read_data(READY_LOW_MICROS, CPU_HZ), DATA_READY_BIT | 2);
         select_register(&mut rtc, REG_ONE_DAY);
-        assert_eq!(
-            rtc.read_data(&TEST_TIME, READY_LOW_MICROS),
-            DATA_READY_BIT | 3
-        );
+        assert_eq!(rtc.read_data(READY_LOW_MICROS, CPU_HZ), DATA_READY_BIT | 3);
         select_register(&mut rtc, REG_TEN_DAY);
-        assert_eq!(rtc.read_data(&TEST_TIME, READY_LOW_MICROS), DATA_READY_BIT);
+        assert_eq!(rtc.read_data(READY_LOW_MICROS, CPU_HZ), DATA_READY_BIT);
         select_register(&mut rtc, REG_ONE_MONTH);
-        assert_eq!(
-            rtc.read_data(&TEST_TIME, READY_LOW_MICROS),
-            DATA_READY_BIT | 3
-        );
+        assert_eq!(rtc.read_data(READY_LOW_MICROS, CPU_HZ), DATA_READY_BIT | 3);
         select_register(&mut rtc, REG_TEN_MONTH);
-        assert_eq!(rtc.read_data(&TEST_TIME, READY_LOW_MICROS), DATA_READY_BIT);
+        assert_eq!(rtc.read_data(READY_LOW_MICROS, CPU_HZ), DATA_READY_BIT);
         select_register(&mut rtc, REG_ONE_YEAR);
-        assert_eq!(
-            rtc.read_data(&TEST_TIME, READY_LOW_MICROS),
-            DATA_READY_BIT | 6
-        );
+        assert_eq!(rtc.read_data(READY_LOW_MICROS, CPU_HZ), DATA_READY_BIT | 6);
         select_register(&mut rtc, REG_TEN_YEAR);
-        assert_eq!(
-            rtc.read_data(&TEST_TIME, READY_LOW_MICROS),
-            DATA_READY_BIT | 2
-        );
+        assert_eq!(rtc.read_data(READY_LOW_MICROS, CPU_HZ), DATA_READY_BIT | 2);
     }
 
     #[test]
     fn ready_flag_reads_low_during_busy_window() {
-        let mut rtc = Msm58321Rtc::new();
+        let mut rtc = seeded_rtc();
         select_register(&mut rtc, REG_ONE_SECOND);
         // Within the busy window the ready bit is clear.
-        assert_eq!(rtc.read_data(&TEST_TIME, 0) & DATA_READY_BIT, 0);
+        assert_eq!(rtc.read_data(0, CPU_HZ) & DATA_READY_BIT, 0);
         assert_eq!(
-            rtc.read_data(&TEST_TIME, READY_LOW_MICROS - 1) & DATA_READY_BIT,
+            rtc.read_data(READY_LOW_MICROS - 1, CPU_HZ) & DATA_READY_BIT,
             0
         );
         // After the busy window the ready bit is set.
         assert_eq!(
-            rtc.read_data(&TEST_TIME, READY_LOW_MICROS) & DATA_READY_BIT,
+            rtc.read_data(READY_LOW_MICROS, CPU_HZ) & DATA_READY_BIT,
             DATA_READY_BIT
         );
     }
 
     #[test]
+    fn clock_advances_with_emulated_time() {
+        let mut rtc = seeded_rtc();
+        let second = u64::from(CPU_HZ);
+        select_register(&mut rtc, REG_ONE_SECOND);
+        assert_eq!(rtc.read_data(second - 1, CPU_HZ) & DATA_DIGIT_MASK, 5);
+        assert_eq!(rtc.read_data(second, CPU_HZ) & DATA_DIGIT_MASK, 6);
+        // Fifteen seconds later the minute rolls over to 14:31:00.
+        select_register(&mut rtc, REG_ONE_MINUTE);
+        assert_eq!(rtc.read_data(15 * second, CPU_HZ) & DATA_DIGIT_MASK, 1);
+        select_register(&mut rtc, REG_TEN_SECOND);
+        assert_eq!(rtc.read_data(15 * second, CPU_HZ) & DATA_DIGIT_MASK, 0);
+    }
+
+    #[test]
+    fn ready_flag_follows_the_seeded_second() {
+        let mut rtc = Msm58321Rtc::new();
+        rtc.seed_time(TEST_TIME, 500);
+        select_register(&mut rtc, REG_ONE_SECOND);
+        // The busy window starts at the seed cycle, not at cycle 0.
+        assert_eq!(rtc.read_data(500, CPU_HZ) & DATA_READY_BIT, 0);
+        assert_eq!(
+            rtc.read_data(500 + READY_LOW_MICROS, CPU_HZ) & DATA_READY_BIT,
+            DATA_READY_BIT
+        );
+    }
+
+    #[test]
+    fn save_state_keeps_the_running_clock() {
+        let mut rtc = seeded_rtc();
+        select_register(&mut rtc, REG_ONE_SECOND);
+        let mut restored = Msm58321Rtc::new();
+        restored.restore_state(rtc.capture_state()).unwrap();
+        let cycle = 3 * u64::from(CPU_HZ) + READY_LOW_MICROS;
+        assert_eq!(
+            restored.read_data(cycle, CPU_HZ),
+            rtc.read_data(cycle, CPU_HZ)
+        );
+        assert_eq!(restored.read_data(cycle, CPU_HZ) & DATA_DIGIT_MASK, 8);
+    }
+
+    #[test]
     fn idle_read_returns_no_digit() {
-        let rtc = Msm58321Rtc::new();
+        let rtc = seeded_rtc();
         // Without an enabled command sequence the low nibble stays zero.
-        assert_eq!(rtc.read_data(&TEST_TIME, READY_LOW_MICROS), DATA_READY_BIT);
+        assert_eq!(rtc.read_data(READY_LOW_MICROS, CPU_HZ), DATA_READY_BIT);
     }
 
     #[test]
     fn twelve_hour_mode_sets_pm_bit() {
-        let mut rtc = Msm58321Rtc::new();
+        let mut rtc = seeded_rtc();
         // Switch to 12-hour mode by writing the ten-hour register with bit 3 clear.
         rtc.write_command(COMMAND_ENABLE_BIT);
         rtc.write_data(REG_TEN_HOUR);
@@ -346,19 +405,16 @@ mod tests {
         // 14:xx in 12-hour mode is 2 PM: PM bit set, tens digit 0.
         select_register(&mut rtc, REG_TEN_HOUR);
         assert_eq!(
-            rtc.read_data(&TEST_TIME, READY_LOW_MICROS),
+            rtc.read_data(READY_LOW_MICROS, CPU_HZ),
             DATA_READY_BIT | TEN_HOUR_PM_BIT
         );
         select_register(&mut rtc, REG_ONE_HOUR);
-        assert_eq!(
-            rtc.read_data(&TEST_TIME, READY_LOW_MICROS),
-            DATA_READY_BIT | 2
-        );
+        assert_eq!(rtc.read_data(READY_LOW_MICROS, CPU_HZ), DATA_READY_BIT | 2);
     }
 
     #[test]
     fn disabling_enable_bit_returns_to_idle() {
-        let mut rtc = Msm58321Rtc::new();
+        let mut rtc = seeded_rtc();
         rtc.write_command(COMMAND_ENABLE_BIT);
         assert_eq!(rtc.state.mode, Msm58321Mode::Command);
         rtc.write_command(0x00);
