@@ -5,7 +5,9 @@
 //! strobe and trigger lines.
 //!
 //! The mouse reports a signed 8-bit X/Y delta as four nibbles clocked out by
-//! toggling the COM line: X-high, X-low, Y-high, Y-low. The pad reports its
+//! toggling the COM line: X-high, X-low, Y-high, Y-low. The rising COM edge that
+//! enters X-high latches the movement, and the rest of the accumulated movement
+//! waits for the next cycle. An idle gap restarts the cycle. The pad reports its
 //! directions and buttons active-low. The 6-button pad multiplexes the extra
 //! buttons on the COM line.
 
@@ -252,7 +254,7 @@ impl MousePort {
         Self {
             com: false,
             trigger: 0,
-            state: MOUSE_STATE_X_HIGH,
+            state: MOUSE_STATE_Y_LOW,
             accumulator_x: 0,
             accumulator_y: 0,
             latched_x: 0,
@@ -263,16 +265,31 @@ impl MousePort {
         }
     }
 
-    /// Advances the nibble read state on a COM edge.
-    fn write(&mut self, now: u64, com: bool, trigger: u8) {
-        if self.com != com {
+    /// Starts a new nibble cycle: selects X-high and latches the movement.
+    fn start_cycle(&mut self) {
+        self.state = MOUSE_STATE_X_HIGH;
+        self.latched_x = clamp_to_signed_byte(self.accumulator_x);
+        self.latched_y = clamp_to_signed_byte(self.accumulator_y);
+        self.accumulator_x -= i32::from(self.latched_x as i8);
+        self.accumulator_y -= i32::from(self.latched_y as i8);
+    }
+
+    /// Advances the nibble read state on a COM edge. A write after an idle gap
+    /// restarts the cycle: COM high selects X-high at once, and COM low waits in
+    /// Y-low for the rising edge that selects X-high.
+    fn write(&mut self, now: u64, com: bool, trigger: u8, reset_timeout_cycles: u64) {
+        if now.saturating_sub(self.last_access_cycle) > reset_timeout_cycles {
+            if com {
+                self.start_cycle();
+            } else {
+                self.state = MOUSE_STATE_Y_LOW;
+            }
+        } else if self.com != com {
             match self.state {
                 MOUSE_STATE_X_HIGH | MOUSE_STATE_Y_HIGH if !com => self.state += 1,
-                MOUSE_STATE_X_LOW | MOUSE_STATE_Y_LOW if com => self.state += 1,
+                MOUSE_STATE_X_LOW if com => self.state += 1,
+                MOUSE_STATE_Y_LOW if com => self.start_cycle(),
                 _ => {}
-            }
-            if self.state > MOUSE_STATE_Y_LOW {
-                self.state = MOUSE_STATE_X_HIGH;
             }
         }
         self.com = com;
@@ -280,14 +297,17 @@ impl MousePort {
         self.last_access_cycle = now;
     }
 
-    /// Reads the current nibble plus the COM and button bits.
+    /// Reads the current nibble plus the COM and button bits. A read after an
+    /// idle gap restarts the cycle at X-high.
     fn read(&mut self, now: u64, reset_timeout_cycles: u64) -> u8 {
         let mut data = 0;
         if self.com {
             data |= BIT_COM;
         }
-        if now.saturating_sub(self.last_access_cycle) > reset_timeout_cycles {
-            self.state = MOUSE_STATE_X_HIGH;
+        if now.saturating_sub(self.last_access_cycle) > reset_timeout_cycles
+            && self.state != MOUSE_STATE_X_HIGH
+        {
+            self.start_cycle();
         }
         if !self.button_left {
             data |= BIT_BUTTON_LEFT;
@@ -296,18 +316,10 @@ impl MousePort {
             data |= BIT_BUTTON_RIGHT;
         }
         match self.state {
-            MOUSE_STATE_X_HIGH => {
-                self.latched_x = clamp_to_signed_byte(self.accumulator_x);
-                self.latched_y = clamp_to_signed_byte(self.accumulator_y);
-                data |= (self.latched_x >> 4) & NIBBLE_MASK;
-            }
+            MOUSE_STATE_X_HIGH => data |= (self.latched_x >> 4) & NIBBLE_MASK,
             MOUSE_STATE_X_LOW => data |= self.latched_x & NIBBLE_MASK,
             MOUSE_STATE_Y_HIGH => data |= (self.latched_y >> 4) & NIBBLE_MASK,
-            MOUSE_STATE_Y_LOW => {
-                data |= self.latched_y & NIBBLE_MASK;
-                self.accumulator_x = 0;
-                self.accumulator_y = 0;
-            }
+            MOUSE_STATE_Y_LOW => data |= self.latched_y & NIBBLE_MASK,
             _ => data |= NIBBLE_MASK,
         }
         data &= READ_BUTTON_GATE_BASE | (self.trigger << 4);
@@ -472,7 +484,8 @@ impl TownsGamePort {
         self.pad.write(pad_com, pad_trigger);
         let mouse_com = value & OUTPUT_PORT1_COM != 0;
         let mouse_trigger = (value >> OUTPUT_PORT1_TRIG_SHIFT) & OUTPUT_TRIG_MASK;
-        self.mouse.write(now, mouse_com, mouse_trigger);
+        self.mouse
+            .write(now, mouse_com, mouse_trigger, self.reset_timeout_cycles);
     }
 
     /// Accumulates a relative mouse movement from the host.
@@ -500,25 +513,27 @@ mod tests {
 
     const CPU_HZ: u32 = 66_000_000;
 
+    /// Clocks one full nibble cycle starting with the rising COM edge and
+    /// returns the four nibbles.
+    fn read_mouse_cycle(port: &mut TownsGamePort, start: u64) -> [u8; 4] {
+        let trig = 0x0C;
+        port.write_output(start, OUTPUT_PORT1_COM | trig);
+        let x_high = port.read_port_b(start + 1) & NIBBLE_MASK;
+        port.write_output(start + 2, trig);
+        let x_low = port.read_port_b(start + 3) & NIBBLE_MASK;
+        port.write_output(start + 4, OUTPUT_PORT1_COM | trig);
+        let y_high = port.read_port_b(start + 5) & NIBBLE_MASK;
+        port.write_output(start + 6, trig);
+        let y_low = port.read_port_b(start + 7) & NIBBLE_MASK;
+        [x_high, x_low, y_high, y_low]
+    }
+
     #[test]
     fn mouse_clocks_out_four_nibbles() {
         let mut port = TownsGamePort::new(CPU_HZ);
-        port.push_mouse_delta(-0x12, 0x01); // X = +0x12 (both axes inverted; Y unused here)
-        port.set_mouse_buttons(false, false);
-
-        // Full trigger gating so the button bits are visible.
-        let trig = 0x0C; // both trigger lines high.
-        // X-high nibble.
-        port.write_output(1, trig);
-        let x_high = port.read_port_b(1) & NIBBLE_MASK;
-        // Toggle COM low -> X-low.
-        port.write_output(2, trig & !OUTPUT_PORT1_COM);
-        // Actually drive the COM strobe explicitly.
-        port.write_output(2, OUTPUT_PORT1_COM | trig);
-        port.write_output(3, trig);
-        let x_low = port.read_port_b(3) & NIBBLE_MASK;
-        assert_eq!(x_high, 0x1);
-        assert_eq!(x_low, 0x2);
+        // Both axes are inverted: X = +0x12, Y = -0x34.
+        port.push_mouse_delta(-0x12, 0x34);
+        assert_eq!(read_mouse_cycle(&mut port, 1), [0x1, 0x2, 0xC, 0xC]);
     }
 
     #[test]
@@ -538,18 +553,57 @@ mod tests {
     }
 
     #[test]
-    fn idle_timeout_resets_to_first_nibble() {
+    fn idle_read_restarts_the_cycle() {
         let mut port = TownsGamePort::new(CPU_HZ);
-        port.push_mouse_delta(-0x30, -0x40);
         // Advance to Y-low.
         port.write_output(10, OUTPUT_PORT1_COM);
         port.write_output(20, 0);
         port.write_output(30, OUTPUT_PORT1_COM);
         port.write_output(40, 0);
-        // A long idle gap returns the read state to X-high.
+        port.push_mouse_delta(-0x30, -0x40);
+        // A read after a long idle gap returns the X-high nibble.
         let far = 40 + u64::from(CPU_HZ); // one second later.
         let value = port.read_port_b(far) & NIBBLE_MASK;
-        assert_eq!(value, 0x3); // X-high nibble of 0x30.
+        assert_eq!(value, 0x3);
+    }
+
+    #[test]
+    fn idle_write_with_com_low_waits_for_the_rising_edge() {
+        let mut port = TownsGamePort::new(CPU_HZ);
+        // Leave the cycle at Y-high, then pause.
+        port.write_output(10, OUTPUT_PORT1_COM);
+        port.write_output(20, 0);
+        port.write_output(30, OUTPUT_PORT1_COM);
+        port.push_mouse_delta(-0x56, 0);
+        // After the pause, COM low then COM high starts a cycle at X-high.
+        let far = 30 + u64::from(CPU_HZ);
+        port.write_output(far, 0);
+        let nibbles = read_mouse_cycle(&mut port, far + 1);
+        assert_eq!(nibbles, [0x5, 0x6, 0x0, 0x0]);
+    }
+
+    #[test]
+    fn movement_during_a_cycle_waits_for_the_next_cycle() {
+        let mut port = TownsGamePort::new(CPU_HZ);
+        port.push_mouse_delta(-0x01, 0);
+        let trig = 0x0C;
+        port.write_output(1, OUTPUT_PORT1_COM | trig);
+        assert_eq!(port.read_port_b(2) & NIBBLE_MASK, 0x0);
+        // Movement arriving after the latch is kept for the next cycle.
+        port.push_mouse_delta(-0x20, 0);
+        port.write_output(3, trig);
+        assert_eq!(port.read_port_b(4) & NIBBLE_MASK, 0x1);
+        port.write_output(5, OUTPUT_PORT1_COM | trig);
+        port.write_output(6, trig);
+        assert_eq!(read_mouse_cycle(&mut port, 7), [0x2, 0x0, 0x0, 0x0]);
+    }
+
+    #[test]
+    fn large_movement_spreads_over_cycles() {
+        let mut port = TownsGamePort::new(CPU_HZ);
+        port.push_mouse_delta(-200, 0);
+        assert_eq!(read_mouse_cycle(&mut port, 1), [0x7, 0xF, 0x0, 0x0]);
+        assert_eq!(read_mouse_cycle(&mut port, 9), [0x4, 0x9, 0x0, 0x0]);
     }
 
     #[test]
