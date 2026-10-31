@@ -14,7 +14,7 @@ AS and AP machines do not support loading a real BIOS yet. But HLE BIOS and HLE 
 | A-Train 4                                                | A列車で行こうIV             |      AP      |    ❌️    |    ✅     |   ✅    | Supports MT-32 (LA) and SC-55 (GS)      |
 | Albatros                                                 | アルバトロス                |      F       |    ✅     |    ✅     |  ⁿ̸ₐ   | Rare title that supports PC-9801-14     |
 | Dōkyūsei 2                                               | 同級生 2                 |      RA      |    ✅     |    ✅     |   ✅    |                                         |
-| Doom                                                     | Doom                  |      AP      |    ❌️    |    ✅     |   ✅    | Best sound with SB16 and SC-55          |
+| Doom                                                     | Doom                  |      AP      |    ❌️    |    ✅     |   ✅    | Best sound with SB16 and SC-55 (GS)          |
 | Door Door                                                | ドアドア                  |   F (Low)    |    ✅     |    ❌️    |  ⁿ̸ₐ   | Needs N88 Basic of an original ROM      |
 | D.P.S.                                                   | D.P.S.                |      VX      |    ✅     |    ❌️    |  ⁿ̸ₐ   | Needs N88 Basic of an original ROM      |
 | Edge                                                     | エッジ                   |      AP      |    ❌️    |    ✅     |   ✅    | Best sound with 86 and SC-55            |
@@ -23,12 +23,13 @@ AS and AP machines do not support loading a real BIOS yet. But HLE BIOS and HLE 
 | Mujintou Monogatari 2                                    | 無人島物語 ２               |      RA      |    ✅     |    ✅     |   ✅    | Must load STMOUSE.DRV in CONFIG.SYS     |
 | Mujintou Monogatari 3                                    | 無人島物語 ３               |      RA      |    ✅     |    ✅     |   ✅    |                                         |
 | Only you - Seikimatsu no Juliette-tachi                  | Only you 世紀末のジュリエットたち |      RA      |    ✅     |    ✅     |   ✅    |                                         |
-| Princess Maker 2                                         | プリンセスメーカ ２            |      RA      |    ✅     |    ✅     |   ✅    | Best sound with 86 or MT-32             |
-| Power DoLLs                                              | ドパワードール               |      AS      |    ❌️    |    ✅     |   ✅    | Best sound with SC-55                   |
-| Power DoLLs S                                            | ドパワードール S             |      AS      |    ❌️    |    ✅     |   ✅    | Best sound with SC-55                   |
-| Power DoLLs 2                                            | ドパワードール ２             |      AS      |    ❌️    |    ✅     |   ✅    | Best sound with SC-55                   |
+| Princess Maker 2                                         | プリンセスメーカ ２            |      RA      |    ✅     |    ✅     |   ✅    | Best sound with 86 or MT-32 (LA)             |
+| Power DoLLs                                              | ドパワードール               |      AS      |    ❌️    |    ✅     |   ✅    | Best sound with SC-55 (GS)                   |
+| Power DoLLs S                                            | ドパワードール S             |      AS      |    ❌️    |    ✅     |   ✅    | Best sound with SC-55 (GS)                   |
+| Power DoLLs 2                                            | ドパワードール ２             |      AS      |    ❌️    |    ✅     |   ✅    | Best sound with SC-55 (GS)                   |
 | Rance 4.2                                                | ランス４.２                |      AS      |    ❌️    |    ✅     |   ✅    | Force GDC Clock to 2.5 MHz              |
 | SimCity 2000                                             | シムシティ2000             |      AS      |    ❌️    |    ✅     |   ✅    |                                         |
+| Star Cruiser 2                                           | スター クルーザー２            |      RA      |    ✅     |    ✅     |   ✅    | Supports MT-32 (LA) and SC-55 (GS)      |
 | Tamashii no Mon - Dante Shinkyoku yori                   | 魂の門 ダンテ「神曲」より         |      VX      |    ✅     |    ✅     |   ✅    |                                         |
 | Teitoku no Ketsudan                                      | 提督の決断                 |      VX      |    ✅     |    ✅     |  ⁿ̸ₐ   |                                         |
 | Travel Junction                                          | トラベル　ジャンクション          |      RA      |    ✅     |    ✅     |   ✅    |                                         |
