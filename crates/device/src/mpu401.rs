@@ -104,7 +104,7 @@ struct ConductorState {
     phase: ConductorPhase,
     command: u8,
     running_status: u8,
-    pending_request: bool,
+    step_requested: bool,
 }}
 
 save_state::runtime_state_enum! {
@@ -620,30 +620,51 @@ impl Mpu401 {
         }
     }
 
-    fn finish_conductor_phase(&mut self) {
+    /// Ends a conductor command and searches for the next data request.
+    fn finish_conductor_command(&mut self) {
         self.state.conductor.phase = ConductorPhase::Idle;
-        if self.state.conductor.pending_request {
-            self.state.conductor.pending_request = false;
-            self.state.int_request = CONDUCTOR_REQUEST;
-            self.state.conductor.phase = ConductorPhase::WaitStep;
-            self.state.raise_irq = true;
+        self.search_next_track_request();
+    }
+
+    /// Ends a conductor message. A conductor request raised during the message
+    /// leaves the conductor waiting for its next step byte.
+    fn finish_conductor_message(&mut self) {
+        self.state.conductor.phase = if self.state.conductor.step_requested {
+            ConductorPhase::WaitStep
         } else {
-            self.search_next_track_request();
-        }
+            ConductorPhase::Idle
+        };
+        self.state.conductor.step_requested = false;
+    }
+
+    /// Raises the conductor data request (0xF9) to the host.
+    fn raise_conductor_request(&mut self) {
+        self.state.int_request = CONDUCTOR_REQUEST;
+        self.state.raise_irq = true;
     }
 
     fn search_next_track_request(&mut self) {
         loop {
             if self.state.int_phase == 1 {
                 if self.state.flag1 & FLAG1_CONDUCTOR != 0 && self.state.conductor.step == 0 {
-                    if self.state.conductor.phase == ConductorPhase::Idle {
-                        self.state.conductor.pending_request = false;
-                        self.state.int_request = CONDUCTOR_REQUEST;
-                        self.state.conductor.phase = ConductorPhase::WaitStep;
-                        self.state.raise_irq = true;
-                        return;
-                    } else {
-                        self.state.conductor.pending_request = true;
+                    match self.state.conductor.phase {
+                        ConductorPhase::Idle => {
+                            self.state.conductor.phase = ConductorPhase::WaitStep;
+                            self.raise_conductor_request();
+                            return;
+                        }
+                        // The host sends the message data after this request,
+                        // followed by the next step byte.
+                        ConductorPhase::ShortInit
+                        | ConductorPhase::ShortCollect
+                        | ConductorPhase::Long
+                            if !self.state.conductor.step_requested =>
+                        {
+                            self.state.conductor.step_requested = true;
+                            self.raise_conductor_request();
+                            return;
+                        }
+                        _ => {}
                     }
                 }
                 self.state.int_phase = 2;
@@ -805,12 +826,12 @@ impl Mpu401 {
                         self.enqueue_response(MIDI_STOP);
                         self.state.raise_irq = true;
                     }
-                    self.finish_conductor_phase();
+                    self.finish_conductor_command();
                 }
             }
             ConductorPhase::FollowByte => {
                 self.apply_follow_byte(self.state.conductor.command, value);
-                self.finish_conductor_phase();
+                self.finish_conductor_command();
             }
             ConductorPhase::ShortInit => {
                 self.conductor_short_init(value);
@@ -853,7 +874,7 @@ impl Mpu401 {
                 MIDI_MESSAGE_LENGTH[(self.state.conductor.running_status >> 4) as usize];
         }
         if self.state.message_expected == 0 {
-            self.finish_conductor_phase();
+            self.finish_conductor_message();
             return;
         }
         self.state.message_buffer[self.state.message_position as usize] = value;
@@ -862,7 +883,7 @@ impl Mpu401 {
             let length = self.state.message_expected as usize;
             let message = self.state.message_buffer;
             self.extend_midi_bytes(&message[..length]);
-            self.finish_conductor_phase();
+            self.finish_conductor_message();
         } else {
             self.state.conductor.phase = ConductorPhase::ShortCollect;
         }
@@ -877,14 +898,14 @@ impl Mpu401 {
             let length = self.state.message_expected as usize;
             let message = self.state.message_buffer;
             self.extend_midi_bytes(&message[..length]);
-            self.finish_conductor_phase();
+            self.finish_conductor_message();
         }
     }
 
     fn conductor_long(&mut self, value: u8) {
         if self.state.sysex_buffer.len() == SYSEX_BUFFER_CAPACITY {
             self.state.sysex_buffer.clear();
-            self.finish_conductor_phase();
+            self.finish_conductor_message();
             return;
         }
         self.state.sysex_buffer.push(value);
@@ -904,7 +925,7 @@ impl Mpu401 {
                     .extend_from_slice(&self.state.sysex_buffer[..copy_length]);
             }
             self.state.sysex_buffer.clear();
-            self.finish_conductor_phase();
+            self.finish_conductor_message();
         }
     }
 
@@ -1646,12 +1667,12 @@ mod tests {
         mpu.take_irq();
         assert_eq!(mpu.read_data(), CONDUCTOR_REQUEST);
 
-        // Host responds with conductor step=0 and a WSD command (0xD0).
-        mpu.write_data(0x00); // Conductor step = 0
+        // Host responds with conductor step=5 and a WSD command (0xD0).
+        mpu.write_data(0x05); // Conductor step = 5
         mpu.write_data(0xD0); // Conductor command: WSD short message
 
         // At this point, conductor is in ShortInit phase waiting for MIDI data.
-        // But track 0 also has step=0 and needs a data request.
+        // But track 0 has step=0 and needs a data request.
         // The track request should take priority over conductor data.
         // Verify that a track data request (0xF0) was generated.
         assert!(mpu.take_irq());
@@ -1702,9 +1723,7 @@ mod tests {
     }
 
     #[test]
-    fn conductor_request_skipped_when_busy() {
-        // When the conductor is already processing data (non-Idle phase),
-        // a new conductor request must not be issued immediately.
+    fn conductor_request_fires_while_message_pending() {
         let mut mpu = Mpu401::new();
 
         mpu.write_command(0x8F); // Conductor ON
@@ -1716,90 +1735,83 @@ mod tests {
         mpu.write_command(0x0A); // Start Play
         drain_ack(&mut mpu);
 
-        // First tick: conductor request.
         mpu.tick();
         mpu.take_irq();
         assert_eq!(mpu.read_data(), CONDUCTOR_REQUEST);
 
-        // Conductor: step=0 (immediate re-request), command=0xD0 (WSD).
-        mpu.write_data(0x00); // Step = 0
-        mpu.write_data(0xD0); // WSD short message
+        // Conductor: step=0, command=0xD0 (WSD). The step has already expired.
+        mpu.write_data(0x00);
+        mpu.write_data(0xD0);
 
-        // Despite conductor step=0, conductor is busy (ShortInit phase).
-        // The search should skip conductor and find track 0 instead.
         assert!(mpu.take_irq());
-        let req = mpu.read_data();
-        assert_eq!(
-            req, 0xF0,
-            "should request track data, not conductor (conductor is busy)"
-        );
-    }
-
-    #[test]
-    fn conductor_retrigger_when_mid_wsd() {
-        // When a conductor's step count reaches 0 while it is still collecting
-        // WSD data, the pending conductor request must be deferred until the
-        // WSD completes -- without corrupting other track step counters.
-        let mut mpu = Mpu401::new();
-
-        // Enable conductor + track 0.
-        mpu.write_command(0x8F); // Conductor ON
-        drain_ack(&mut mpu);
-        mpu.write_command(0xEC); // Active Tracks
-        drain_ack(&mut mpu);
-        mpu.write_data(0x01); // Track 0
-
-        mpu.write_command(0x0A); // Start Play
-        drain_ack(&mut mpu);
-
-        // Tick 1: conductor step=0 -> conductor request.
-        mpu.tick();
-        mpu.take_irq();
-        assert_eq!(mpu.read_data(), CONDUCTOR_REQUEST);
-
-        // Respond: conductor step=0 (immediate re-trigger), command=0xD0 (WSD).
-        mpu.write_data(0x00); // Step = 0
-        mpu.write_data(0xD0); // WSD short message
-
-        // Track 0 gets its data request (conductor was busy, so track goes first).
-        assert!(mpu.take_irq());
-        assert_eq!(mpu.read_data(), 0xF0);
-
-        // Respond: track 0 step=50, Note On message.
-        mpu.write_data(50); // Step = 50
-        mpu.write_data(0x90); // Note On
-        mpu.write_data(0x3C);
-        mpu.write_data(0x7F);
-
-        // Tick 2: conductor still in ShortInit (step=0), track 0 step: 50 -> 49.
-        mpu.tick();
-        mpu.take_irq();
-
-        // Complete the conductor's WSD.
-        mpu.write_data(0xA0); // Aftertouch
-        mpu.write_data(0x3C);
-        mpu.write_data(0x40);
-
-        // After the WSD completes, the deferred conductor request must fire.
-        assert!(
-            mpu.take_irq(),
-            "deferred conductor request must fire after WSD completes"
-        );
         assert_eq!(
             mpu.read_data(),
             CONDUCTOR_REQUEST,
-            "conductor re-trigger expected after WSD completion"
+            "expired conductor step requests the message data"
         );
 
-        // Track 0 step must be exactly 49 (one decrement from tick 2 only).
-        // A buggy re-trigger path could spuriously decrement track steps.
+        mpu.write_data(0x90);
+        mpu.write_data(0x3C);
+        mpu.write_data(0x7F);
+        assert_eq!(flush_midi(&mut mpu), vec![0x90, 0x3C, 0x7F]);
+
+        // The next step byte and command follow the message.
+        mpu.write_data(0x10);
+        mpu.write_data(0xF8);
+
+        assert!(mpu.take_irq());
+        assert_eq!(mpu.read_data(), 0xF0, "track 0 is serviced next");
+    }
+
+    #[test]
+    fn conductor_system_exclusive_data_follows_next_request() {
+        // The NMD driver sends each SysEx through the conductor: a step and
+        // the 0xDF command first, then the message at the next request.
+        let mut mpu = Mpu401::new();
+
+        mpu.write_command(0x8F); // Conductor ON
+        drain_ack(&mut mpu);
+        mpu.write_command(0xEC); // Active Tracks
+        drain_ack(&mut mpu);
+        mpu.write_data(0x01); // Track 0
+
+        mpu.write_command(0x0A); // Start Play
+        drain_ack(&mut mpu);
+
+        mpu.tick();
+        mpu.take_irq();
+        assert_eq!(mpu.read_data(), CONDUCTOR_REQUEST);
+        mpu.write_data(0x02);
+        mpu.write_data(0xDF);
+
+        assert!(mpu.take_irq());
+        assert_eq!(mpu.read_data(), 0xF0);
+        mpu.write_data(50); // Track 0 step = 50
+        mpu.write_data(0xF8);
+
+        mpu.tick();
+        assert!(!mpu.take_irq(), "conductor step 2 -> 1");
+        mpu.tick();
+        assert!(mpu.take_irq(), "conductor step 1 -> 0");
+        assert_eq!(mpu.read_data(), CONDUCTOR_REQUEST);
+
+        let message = [0xF0, 0x41, 0x10, 0x16, 0x12, 0x7F, 0x00, 0x00, 0x01, 0xF7];
+        for byte in message {
+            mpu.write_data(byte);
+        }
+        assert_eq!(flush_midi(&mut mpu), message.to_vec());
+
+        // End of the conductor data.
+        mpu.write_data(0x00);
+        mpu.write_data(MIDI_STOP);
+        assert!(mpu.take_irq());
+        assert_eq!(mpu.read_data(), MIDI_STOP);
+        assert_eq!(flush_midi(&mut mpu), vec![MIDI_STOP]);
+
+        // Track 0 step must be exactly 48 after the two ticks.
         mpu.write_command(0xA0); // Request Play Count Track 0
         drain_ack(&mut mpu);
-        assert_eq!(
-            mpu.read_data(),
-            49,
-            "track step must not be corrupted by the deferred conductor re-trigger"
-        );
+        assert_eq!(mpu.read_data(), 48);
     }
 
     #[test]
