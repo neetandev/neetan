@@ -658,8 +658,9 @@ fn eram_pack(eram: &mut [u16; 0x4000], addr: i32, val: i32) {
 
 #[inline]
 fn mcu_post_sample(state: &mut Sc55State, tt: &mut [i32; 2]) {
-    // 2^29: the PCM accumulator is i32 fixed-point with 29 fractional bits.
-    const DIV_REC: f32 = 1.0 / (1u32 << 29) as f32;
+    // 2^30: the SC-55 DAC takes bits 30..15 of the PCM accumulator as its
+    // 16-bit full scale.
+    const DIV_REC: f32 = 1.0 / (1u32 << 30) as f32;
 
     if state.render_frames_written < state.render_frames_requested {
         let offset = (state.render_frames_written as usize) * 2;
