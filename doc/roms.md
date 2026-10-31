@@ -741,5 +741,5 @@ Recommended: SC-55 v1.21 (mk1) - place `sc55_rom1.bin`, `sc55_rom2.bin`,
 | SC-155                   | `sc155_rom1.bin`, `sc155_rom2.bin`, `sc155_waverom1.bin`, `sc155_waverom2.bin`, `sc155_waverom3.bin` |
 
 The MT-32 and SC-55 emulations are optional build features. See
-[Build requirements](../README.md#build-requirements) for how to enable or disable them
-and [License](../README.md#license) for the licensing implications.
+[Building](building.md#midi-features-and-binary-license) for how to enable or disable them
+and for the licensing implications.

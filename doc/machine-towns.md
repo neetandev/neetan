@@ -4,11 +4,11 @@ Select the FM Towns family with `--machine FMTowns`, `--machine FMTownsIICX` or
 `--machine FMTownsIIMX`. These are 32-bit machines sharing the Towns chipset; they
 differ mainly in CPU and clock:
 
-| Machine        | `--machine`   | CPU      | CPU Speed   | Sound              | CD-ROM |
-|----------------|---------------|----------|-------------|--------------------|--------|
-| FM Towns       | `FMTowns`     | 80386SX  | 16 MHz      | YMF276 OPN2 + PCM  | Yes    |
-| FM Towns II CX | `FMTownsIICX` | 80386DX  | 16 / 20 MHz | YMF276 OPN2 + PCM  | Yes    |
-| FM Towns II MX | `FMTownsIIMX` | 80486DX2 | 33 / 66 MHz | YMF276 OPN2 + PCM  | Yes    |
+| Machine        | `--machine`   | CPU      | CPU Speed   | Sound             | CD-ROM |
+|----------------|---------------|----------|-------------|-------------------|--------|
+| FM Towns       | `FMTowns`     | 80386SX  | 16 MHz      | YMF276 OPN2 + PCM | Yes    |
+| FM Towns II CX | `FMTownsIICX` | 80386DX  | 16 / 20 MHz | YMF276 OPN2 + PCM | Yes    |
+| FM Towns II MX | `FMTownsIIMX` | 80486DX2 | 33 / 66 MHz | YMF276 OPN2 + PCM | Yes    |
 
 The base FM Towns runs at a fixed 16 MHz and ignores `--cpu-mode`. On the CX and MX
 `--cpu-mode low` selects the lower clock and `--cpu-mode high` (the default) the higher
@@ -27,11 +27,16 @@ set (see [ROM set](#rom-set)).
 
 ## Platform options
 
-| Option                     | Description                                     | Default |
-|----------------------------|-------------------------------------------------|---------|
-| `--towns-roms <PATH>`      | Directory with the FM Towns ROM set (required)  | -       |
-| `--towns-pad <2\|6>`       | Game pad type: `2` (2-button) or `6` (6-button) | `6`     |
-| `--cdrom-compat [on\|off]` | Slow/compatible CD-ROM drive timing             | `off`   |
+| Option                     | Description                                         | Default |
+|----------------------------|-----------------------------------------------------|---------|
+| `--towns-roms <PATH>`      | Directory with the FM Towns ROM set (required)      | -       |
+| `--towns-pad <2\|6>`       | Game pad type: `2` (2-button) or `6` (6-button)     | `6`     |
+| `--cdrom-compat [on\|off]` | Slow/compatible CD-ROM drive timing                 | `off`   |
+| `--boot-device <DEVICE>`   | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2` | `auto`  |
+
+`--boot-device fdd1` and `fdd2` boot from the floppy drive, `hdd1` and `hdd2` from
+the SCSI hard disk. `auto` boots from the CD-ROM when a disc is inserted and from
+the floppy drive otherwise.
 
 CD-ROM disc images are supplied with the shared `--cdrom` option (repeatable), and
 floppy images with `--fdd1` / `--fdd2`.
@@ -74,5 +79,4 @@ Keep the ROM paths in the settings file `neetan.conf` and toggle MIDI per game w
 
 See [MIDI: Roland MT-32](roms.md#midi-roland-mt-32) and
 [MIDI: Roland SC-55](roms.md#midi-roland-sc-55) for the ROM files. Both modules are
-optional build features; see [Build requirements](../README.md#build-requirements)
-and [License](../README.md#license).
+optional build features; see [Building](building.md#midi-features-and-binary-license).
