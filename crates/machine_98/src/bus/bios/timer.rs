@@ -89,8 +89,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
         // Store year in Memory Switch 8 (text VRAM offset 0x3FFE).
         self.memory.state.text_vram[0x3FFE] = buf[0];
 
-        // Write the 6-byte BCD time into the RTC register.
-        self.rtc.state.reg[2..8].copy_from_slice(&buf);
+        self.rtc.load_shift_register(&buf);
     }
 
     fn int1ch_set_interval_timer(&mut self, cpu: &mut impl Cpu) {

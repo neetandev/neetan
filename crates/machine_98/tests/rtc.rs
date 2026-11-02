@@ -75,9 +75,9 @@ fn rtc_time_read_and_shift_out_48_bits() {
     //   pos 63 -> bit 0 of reg[7], pos 62 -> bit 1, ..., pos 56 -> bit 7.
     let mut reconstructed = [0u8; 6];
     for (i, bit) in bits.iter().enumerate() {
-        let byte_idx = 5 - (i / 8);
-        let bit_idx = i % 8;
-        reconstructed[byte_idx] |= bit << bit_idx;
+        let byte_index = 5 - (i / 8);
+        let bit_index = i % 8;
+        reconstructed[byte_index] |= bit << bit_index;
     }
 
     assert_eq!(reconstructed, TEST_TIME);

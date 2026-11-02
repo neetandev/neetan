@@ -1,115 +1,152 @@
-//! i8255 Mouse PPI - mouse interface controller.
+//! PC-98 bus mouse interface on an 8255A at ports 0x7FD9-0x7FDF.
 //!
-//! The mouse PPI uses an 8255A-compatible chip at ports 0x7FD9-0x7FDF.
-//! Port 0x7FD9 R/W: Port A (mouse buttons and counter data).
-//! Port 0x7FDB R/W: Port B (DIP switches).
-//! Port 0x7FDD R/W: Port C (mouse control and DIP switches).
-//! Port 0x7FDF W:   PPI control/mode register.
+//! Port A carries the button lines in bits 7-5 and one counter nibble in
+//! bits 3-0. Port B and the low half of port C carry DIP switch states. The
+//! high half of port C drives the interface: HC (bit 7) latches and clears the
+//! movement counters, SXY (bit 6) selects the axis, SHL (bit 5) selects the
+//! nibble and INT# (bit 4) masks the mouse timer interrupt.
 //!
-//! Boot initialization typically sets the PPI mode register to 0x93,
-//! which configures port A input, port C upper output / lower input, port B input.
+//! The rotary encoders of a real mouse step the counters continuously. The
+//! host reports one movement total per frame. This model feeds the counts of
+//! a frame into the counters at a fixed rate: every 1000 CPU cycles add the
+//! frame total times 1000 divided by the feed divisor. The feed divisor is the
+//! CPU clock divided by 56400.
 //!
-//! Reference: `undoc98/io_mouse.txt`
+//! Reference: `undoc98/io_mouse.txt` (I/O 7FD9h-7FDFh).
 
-/// PPI control register bit 7: mode set flag.
-/// When set, the write is a mode configuration word.
-/// When clear, the write is a bit set/reset command for port C.
-const CTRL_MODE_SET: u8 = 1 << 7;
+/// Control word bit 7: 1 = mode set, 0 = port C bit set/reset.
+const CONTROL_MODE_SET: u8 = 0x80;
 
-/// Bit set/reset command bit 0: 1 = set the targeted port C bit, 0 = reset it.
-const CTRL_BSR_SET: u8 = 1;
+/// Bit set/reset word bit 0: 1 = set, 0 = reset.
+const CONTROL_BIT_VALUE: u8 = 0x01;
 
-/// PPI mode register bit 4: port A direction (1 = input, 0 = output).
-const MODE_PORT_A_INPUT: u8 = 1 << 4;
+/// Bit set/reset word bits 3-1: port C bit number.
+const CONTROL_BIT_NUMBER_MASK: u8 = 0x0E;
 
-/// PPI mode register bit 3: port C upper (bits 4-7) direction (1 = input, 0 = output).
-const MODE_PORT_C_UPPER_INPUT: u8 = 1 << 3;
+/// Mode word bit 4: port A is an input.
+const MODE_PORT_A_INPUT: u8 = 0x10;
 
-/// PPI mode register bit 1: port B direction (1 = input, 0 = output).
-const MODE_PORT_B_INPUT: u8 = 1 << 1;
+/// Mode word bit 3: port C bits 7-4 are inputs.
+const MODE_PORT_C_HIGH_INPUT: u8 = 0x08;
 
-/// PPI mode register bit 0: port C lower (bits 0-3) direction (1 = input, 0 = output).
-const MODE_PORT_C_LOWER_INPUT: u8 = 1;
+/// Mode word bit 1: port B is an input.
+const MODE_PORT_B_INPUT: u8 = 0x02;
 
-/// Port C bit 7: HC -- latch mouse counter and reset. Rising edge (0->1) latches counters.
-const PORTC_HC: u8 = 1 << 7;
+/// Mode word bit 0: port C bits 3-0 are inputs.
+const MODE_PORT_C_LOW_INPUT: u8 = 0x01;
 
-/// Port C bit 6: SXY -- selects X/Y axis (0 = X, 1 = Y).
-const PORTC_SXY: u8 = 1 << 6;
+/// Mode word written by the system BIOS: port A input, port B input, port C
+/// high output and port C low input.
+const MODE_BIOS_DEFAULT: u8 = 0x93;
 
-/// Port C bit 5: SHL -- selects high/low nibble (0 = low, 1 = high).
-const PORTC_SHL: u8 = 1 << 5;
+/// Port C bit 7: HC, a rising edge latches and clears the counters.
+const PORT_C_HC: u8 = 0x80;
 
-/// Port C bit 4: INT# -- mouse timer interrupt mask (0 = enabled, 1 = disabled).
-const PORTC_INT_MASK: u8 = 1 << 4;
+/// Port C bit 6: SXY, 1 = Y counter, 0 = X counter.
+const PORT_C_SXY: u8 = 0x40;
 
-/// Port C bit 3: MODSW -- normal/high-resolution mode status.
-const PORTC_MODSW: u8 = 1 << 3;
+/// Port C bit 5: SHL, 1 = high nibble, 0 = low nibble.
+const PORT_C_SHL: u8 = 0x20;
 
-/// Default mode register value (0x93): port A input (mode 0), port C upper output,
-/// port B input (mode 0), port C lower input.
-const MODE_DEFAULT: u8 = 0x93;
+/// Port C bit 4: INT#, 1 = mouse timer interrupt masked.
+const PORT_C_INT_MASK: u8 = 0x10;
 
-/// Default port C value: HC, SXY, SHL, INT_MASK all high (0xF0).
-const PORT_C_DEFAULT: u8 = PORTC_HC | PORTC_SXY | PORTC_SHL | PORTC_INT_MASK;
+/// Port C bits 7-4.
+const PORT_C_HIGH_HALF: u8 = 0xF0;
 
-/// Port A value when no mouse is connected: 0x70 (middle button ON for shizuku
-/// compatibility per NP21W).
+/// Port C bits 3-0.
+const PORT_C_LOW_HALF: u8 = 0x0F;
+
+/// Port C input bit 3: MODSW, 1 = normal display mode.
+const PORT_C_MODSW_NORMAL: u8 = 0x08;
+
+/// Port B input bit 6: RAMKL, 1 = the internal RAM at 80000h-9FFFFh is used.
+const PORT_B_RAMKL_ENABLED: u8 = 0x40;
+
+/// Port A bit 7: left button, 0 = pressed.
+const BUTTON_LEFT_RELEASED: u8 = 0x80;
+
+/// Port A bit 6: middle button, 0 = pressed.
+const BUTTON_MIDDLE_RELEASED: u8 = 0x40;
+
+/// Port A bit 5: right button, 0 = pressed.
+const BUTTON_RIGHT_RELEASED: u8 = 0x20;
+
+/// Port A button lines with no button pressed.
+const BUTTONS_RELEASED: u8 = BUTTON_LEFT_RELEASED | BUTTON_MIDDLE_RELEASED | BUTTON_RIGHT_RELEASED;
+
+/// Port A bits 3-0: MD3-MD0, the selected counter nibble.
+const COUNTER_NIBBLE_MASK: u8 = 0x0F;
+
+/// Shift of the high counter nibble that SHL = 1 selects.
+const COUNTER_HIGH_NIBBLE_SHIFT: u32 = 4;
+
+/// Port A bits 7-4, the half that carries the button lines.
+const PORT_A_UPPER_LINES: u8 = 0xF0;
+
+/// Port A value of an interface without a mouse.
 const PORT_A_NO_MOUSE: u8 = 0x70;
 
-/// Port B value when in input mode: 0x40 (RAMKL=1, standard DIP defaults per NP21W).
-const PORT_B_INPUT_DEFAULT: u8 = 0x40;
+/// CPU clock divided by this rate gives the feed divisor.
+const FEED_RATE_HZ: u32 = 56_400;
 
-/// Default button state: all buttons released (active-low = bits set).
-/// Bit 7 = LEFT off, bit 6 = MIDDLE off, bit 5 = RIGHT off.
-const BUTTONS_DEFAULT: u8 = 0xE0;
+/// CPU cycles of one feed step.
+const FEED_STEP_CYCLES: u64 = 1000;
 
-/// Minimum elapsed cycles before interpolation kicks in (NP21W threshold).
-const INTERPOLATION_THRESHOLD: u64 = 2000;
+/// Smallest distance in CPU cycles between two feed updates.
+const FEED_MINIMUM_CYCLES: u64 = 2000;
+
+/// Feed divisor of an 8 MHz CPU clock.
+const FEED_DIVISOR_DEFAULT: u32 = 8_000_000 / FEED_RATE_HZ;
+
+/// Lowest value of an 8-bit movement counter.
+const COUNTER_MIN: i16 = -128;
+
+/// Highest value of an 8-bit movement counter.
+const COUNTER_MAX: i16 = 127;
 
 save_state::runtime_state! {
-/// Authoritative mouse PPI state.
+/// Mouse interface state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I8255MousePpiState {
-    /// PPI mode register (port 0x7FDF bit 7 = 1 writes).
+    /// 8255A mode word.
     pub mode: u8,
-    /// Port A latch (port 0x7FD9).
+    /// Port A output latch.
     pub port_a: u8,
-    /// Port B latch (port 0x7FDB).
+    /// Port B output latch.
     pub port_b: u8,
-    /// Port C latch (port 0x7FDD).
+    /// Port C output latch.
     pub port_c: u8,
-    /// Live X delta accumulator (counts movement since last latch).
-    pub accumulator_x: i16,
-    /// Live Y delta accumulator.
-    pub accumulator_y: i16,
-    /// Remaining X delta not yet consumed by interpolation this frame.
-    pub remaining_x: i16,
-    /// Remaining Y delta not yet consumed by interpolation this frame.
-    pub remaining_y: i16,
-    /// Total X movement for the current frame (used as interpolation reference).
-    pub sample_x: i16,
-    /// Total Y movement for the current frame.
-    pub sample_y: i16,
-    /// Latched X value (captured on HC rising edge, clamped to -128..127).
+    /// Live X movement counter.
+    pub counter_x: i16,
+    /// Live Y movement counter.
+    pub counter_y: i16,
+    /// X counter value latched at the last HC rising edge.
     pub latch_x: i16,
-    /// Latched Y value.
+    /// Y counter value latched at the last HC rising edge.
     pub latch_y: i16,
-    /// Button state byte (active-low): bit 7 = LEFT, bit 6 = MIDDLE, bit 5 = RIGHT.
+    /// X movement reported for the current frame.
+    pub frame_delta_x: i16,
+    /// Y movement reported for the current frame.
+    pub frame_delta_y: i16,
+    /// X movement of the current frame not yet fed into the counter.
+    pub pending_x: i16,
+    /// Y movement of the current frame not yet fed into the counter.
+    pub pending_y: i16,
+    /// CPU cycle up to which the feed has added movement to the counters.
+    pub feed_cycle: u64,
+    /// Button lines in port A layout (active low).
     pub buttons: u8,
-    /// CPU cycle at which the last movement interpolation was computed.
-    pub last_interpolation_cycle: u64,
-    /// Whether a mouse is connected.
+    /// Whether a mouse is attached to the interface.
     pub mouse_connected: bool,
 }}
 
-/// i8255 Mouse PPI controller.
+/// PC-98 bus mouse interface.
 pub struct I8255MousePpi {
     /// Embedded state for save/restore.
     pub state: I8255MousePpiState,
-    /// CPU cycles per interpolation unit (cpu_clock_hz / 56400, per NP21W).
-    /// Not saved/restored -- derived from clock config.
-    move_clock: u32,
+    /// CPU cycles per feed unit, derived from the CPU clock.
+    feed_divisor: u32,
 }
 
 impl_simple_state_accessors!(I8255MousePpi, I8255MousePpiState);
@@ -120,249 +157,280 @@ impl Default for I8255MousePpi {
     }
 }
 
+/// Returns the movement that `steps` feed steps add for a frame total of
+/// `total`. The movement never exceeds the `pending` movement and never runs
+/// against it.
+fn feed_amount(total: i16, pending: i16, steps: u64, feed_divisor: u32) -> i16 {
+    let due = i64::from(total) * steps as i64 / i64::from(feed_divisor.max(1));
+    let pending = i64::from(pending);
+    due.clamp(pending.min(0), pending.max(0)) as i16
+}
+
+/// One axis of the movement feed: the live counter, the movement of the frame
+/// still to feed and the frame total.
+struct AxisFeed<'a> {
+    counter: &'a mut i16,
+    pending: &'a mut i16,
+    frame_total: &'a mut i16,
+}
+
+impl AxisFeed<'_> {
+    /// Adds the pending movement to the counter at once and starts a new
+    /// frame with the total `delta`.
+    fn start_frame(&mut self, delta: i16) {
+        *self.counter = self.counter.saturating_add(*self.pending);
+        *self.frame_total = delta;
+        *self.pending = delta;
+    }
+
+    /// Moves the movement of `steps` feed steps from the pending movement
+    /// into the counter.
+    fn feed(&mut self, steps: u64, feed_divisor: u32) {
+        let amount = feed_amount(*self.frame_total, *self.pending, steps, feed_divisor);
+        *self.counter = self.counter.saturating_add(amount);
+        *self.pending -= amount;
+    }
+}
+
+/// Counter that a port A read selects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CounterSource {
+    /// The value latched by the last HC rising edge.
+    Latched,
+    /// The live counter.
+    Live,
+}
+
+/// Returns the counter value limited to the 8-bit counter range.
+fn counter_value(counter: i16) -> i16 {
+    counter.clamp(COUNTER_MIN, COUNTER_MAX)
+}
+
 impl I8255MousePpi {
-    /// Creates a new mouse PPI in hardware reset state.
+    /// Creates a mouse interface in the state the system BIOS leaves it.
     pub fn new() -> Self {
         Self {
-            state: I8255MousePpiState {
-                mode: MODE_DEFAULT,
-                port_a: 0x00,
-                port_b: 0x00,
-                port_c: PORT_C_DEFAULT,
-                accumulator_x: 0,
-                accumulator_y: 0,
-                remaining_x: 0,
-                remaining_y: 0,
-                sample_x: 0,
-                sample_y: 0,
-                latch_x: 0,
-                latch_y: 0,
-                buttons: BUTTONS_DEFAULT,
-                last_interpolation_cycle: 0,
-                mouse_connected: true,
-            },
-            move_clock: 142, // 8 MHz / 56400 ~ 142
+            state: Self::reset_state(PORT_C_HIGH_HALF),
+            feed_divisor: FEED_DIVISOR_DEFAULT,
         }
     }
 
-    /// Sets the interpolation clock divisor from the CPU clock frequency.
+    /// Returns the state after a reset with the given port C latch.
+    fn reset_state(port_c: u8) -> I8255MousePpiState {
+        I8255MousePpiState {
+            mode: MODE_BIOS_DEFAULT,
+            port_a: 0,
+            port_b: 0,
+            port_c,
+            counter_x: 0,
+            counter_y: 0,
+            latch_x: 0,
+            latch_y: 0,
+            frame_delta_x: 0,
+            frame_delta_y: 0,
+            pending_x: 0,
+            pending_y: 0,
+            feed_cycle: 0,
+            buttons: BUTTONS_RELEASED,
+            mouse_connected: true,
+        }
+    }
+
+    /// Resets the interface to the BIOS mode word and the given port C latch.
+    pub fn reset(&mut self, port_c: u8) {
+        self.state = Self::reset_state(port_c);
+    }
+
+    /// Derives the feed divisor from the CPU clock.
     pub fn set_cpu_clock(&mut self, cpu_clock_hz: u32) {
-        self.move_clock = cpu_clock_hz / 56400;
+        self.feed_divisor = cpu_clock_hz / FEED_RATE_HZ;
     }
 
-    /// Synchronizes host mouse input at frame boundaries.
+    /// Returns whether INT# (port C bit 4) enables the mouse timer interrupt.
+    pub fn timer_interrupt_enabled(&self) -> bool {
+        self.state.port_c & PORT_C_INT_MASK == 0
+    }
+
+    /// Returns the X and Y axes of the movement feed.
+    fn axes(&mut self) -> [AxisFeed<'_>; 2] {
+        let state = &mut self.state;
+        [
+            AxisFeed {
+                counter: &mut state.counter_x,
+                pending: &mut state.pending_x,
+                frame_total: &mut state.frame_delta_x,
+            },
+            AxisFeed {
+                counter: &mut state.counter_y,
+                pending: &mut state.pending_y,
+                frame_total: &mut state.frame_delta_y,
+            },
+        ]
+    }
+
+    /// Reports the host movement of one frame.
     ///
-    /// `dx`/`dy` are the raw relative motion deltas accumulated since the previous
-    /// frame. Adds any unconsumed remainder from the previous frame to the
-    /// accumulators, then stores the new deltas for gradual interpolation.
-    pub fn sync_frame(&mut self, dx: i16, dy: i16, current_cycle: u64) {
-        self.state.accumulator_x = self
-            .state
-            .accumulator_x
-            .saturating_add(self.state.remaining_x);
-        self.state.accumulator_y = self
-            .state
-            .accumulator_y
-            .saturating_add(self.state.remaining_y);
-
-        self.state.sample_x = dx;
-        self.state.sample_y = dy;
-        self.state.remaining_x = dx;
-        self.state.remaining_y = dy;
-
-        self.state.last_interpolation_cycle = current_cycle;
+    /// Movement of the previous frame that is still pending enters the
+    /// counters at once. The new movement enters at the feed rate.
+    pub fn sync_frame(&mut self, delta_x: i16, delta_y: i16, current_cycle: u64) {
+        for (mut axis, delta) in self.axes().into_iter().zip([delta_x, delta_y]) {
+            axis.start_frame(delta);
+        }
+        self.state.feed_cycle = current_cycle;
     }
 
-    /// Gradually transfers movement from `remaining` into `accumulator` proportional
-    /// to elapsed CPU cycles.
-    fn interpolate_movement(&mut self, current_cycle: u64) {
-        let elapsed = current_cycle.wrapping_sub(self.state.last_interpolation_cycle);
-        if elapsed < INTERPOLATION_THRESHOLD {
+    /// Returns the whole feed steps due at `current_cycle`, or `None` while
+    /// less than the minimum feed distance has elapsed.
+    fn due_feed_steps(&self, current_cycle: u64) -> Option<u64> {
+        let elapsed = current_cycle.wrapping_sub(self.state.feed_cycle);
+        (elapsed >= FEED_MINIMUM_CYCLES).then_some(elapsed / FEED_STEP_CYCLES)
+    }
+
+    /// Feeds the movement due at `current_cycle` into the counters.
+    fn advance_counters(&mut self, current_cycle: u64) {
+        let Some(steps) = self.due_feed_steps(current_cycle) else {
             return;
+        };
+        let feed_divisor = self.feed_divisor;
+        for mut axis in self.axes() {
+            axis.feed(steps, feed_divisor);
         }
-
-        let ticks = (elapsed / 1000) as i32;
-        let move_clock = self.move_clock.max(1) as i32;
-
-        // Interpolate X.
-        let sx = self.state.sample_x as i32;
-        if sx != 0 {
-            let mut dx = sx.abs() * ticks / move_clock;
-            if sx < 0 {
-                dx = -dx;
-            }
-            let rx = self.state.remaining_x as i32;
-            if sx > 0 {
-                dx = dx.min(rx);
-            } else {
-                dx = dx.max(rx);
-            }
-            self.state.accumulator_x = self.state.accumulator_x.saturating_add(dx as i16);
-            self.state.remaining_x -= dx as i16;
-        }
-
-        // Interpolate Y.
-        let sy = self.state.sample_y as i32;
-        if sy != 0 {
-            let mut dy = sy.abs() * ticks / move_clock;
-            if sy < 0 {
-                dy = -dy;
-            }
-            let ry = self.state.remaining_y as i32;
-            if sy > 0 {
-                dy = dy.min(ry);
-            } else {
-                dy = dy.max(ry);
-            }
-            self.state.accumulator_y = self.state.accumulator_y.saturating_add(dy as i16);
-            self.state.remaining_y -= dy as i16;
-        }
-
-        self.state.last_interpolation_cycle += (ticks as u64) * 1000;
+        self.state.feed_cycle += steps * FEED_STEP_CYCLES;
     }
 
-    /// Latches the current accumulator values and resets accumulators.
-    ///
-    /// Called on the rising edge (0 -> 1) of the HC bit (Port C bit 7).
+    /// Latches both counters limited to 8 bits and clears them.
     pub fn latch(&mut self, current_cycle: u64) {
-        self.interpolate_movement(current_cycle);
-
-        self.state.latch_x = self.state.accumulator_x.clamp(-128, 127);
-        self.state.latch_y = self.state.accumulator_y.clamp(-128, 127);
-
-        self.state.accumulator_x = 0;
-        self.state.accumulator_y = 0;
+        self.advance_counters(current_cycle);
+        self.state.latch_x = counter_value(self.state.counter_x);
+        self.state.latch_y = counter_value(self.state.counter_y);
+        self.state.counter_x = 0;
+        self.state.counter_y = 0;
     }
 
-    /// Updates the button state from host input.
-    ///
-    /// Each parameter: `true` = pressed, `false` = released.
-    /// Internally encoded as active-low: pressed = bit clear, released = bit set.
+    /// Updates the button lines. `true` means pressed.
     pub fn set_buttons(&mut self, left: bool, right: bool, middle: bool) {
-        let mut buttons: u8 = 0;
-        if !left {
-            buttons |= 0x80;
+        let mut buttons = BUTTONS_RELEASED;
+        if left {
+            buttons &= !BUTTON_LEFT_RELEASED;
         }
-        if !middle {
-            buttons |= 0x40;
+        if middle {
+            buttons &= !BUTTON_MIDDLE_RELEASED;
         }
-        if !right {
-            buttons |= 0x20;
+        if right {
+            buttons &= !BUTTON_RIGHT_RELEASED;
         }
         self.state.buttons = buttons;
     }
 
-    /// Reads port A (port 0x7FD9).
-    ///
-    /// In input mode: returns button state in bits 7:4 plus the selected counter
-    /// nibble in bits 3:0, selected by Port C (HC, SXY, SHL).
-    /// In output mode: returns the port A latch.
+    /// Returns the counter value that SXY selects from `source`.
+    fn selected_counter(&self, source: CounterSource) -> i16 {
+        let y_axis = self.state.port_c & PORT_C_SXY != 0;
+        match (source, y_axis) {
+            (CounterSource::Latched, false) => self.state.latch_x,
+            (CounterSource::Latched, true) => self.state.latch_y,
+            (CounterSource::Live, false) => self.state.counter_x,
+            (CounterSource::Live, true) => self.state.counter_y,
+        }
+    }
+
+    /// Reads port A (0x7FD9): the button lines and the counter nibble selected
+    /// by SXY and SHL. HC = 1 selects the latched value, HC = 0 the live counter.
+    /// Bit 6 reads 1 at all times and leaves the middle button line unread.
     pub fn read_port_a(&mut self, current_cycle: u64) -> u8 {
         if self.state.mode & MODE_PORT_A_INPUT == 0 {
             return self.state.port_a;
         }
-
         if !self.state.mouse_connected {
             return PORT_A_NO_MOUSE;
         }
+        self.advance_counters(current_cycle);
 
-        self.interpolate_movement(current_cycle);
-
-        // Button byte: active-low buttons with 0x40 forced for shizuku compatibility.
-        let mut ret = self.state.buttons & 0xF0;
-        ret |= 0x40;
-
-        // Select axis value based on HC (latched vs live) and SXY (X vs Y).
-        let portc = self.state.port_c;
-        let value = if portc & PORTC_HC != 0 {
-            if portc & PORTC_SXY != 0 {
-                self.state.latch_y
-            } else {
-                self.state.latch_x
-            }
-        } else if portc & PORTC_SXY != 0 {
-            self.state.accumulator_y
+        let source = if self.state.port_c & PORT_C_HC != 0 {
+            CounterSource::Latched
         } else {
-            self.state.accumulator_x
+            CounterSource::Live
         };
-
-        // Select nibble based on SHL.
-        if portc & PORTC_SHL != 0 {
-            ret |= ((value >> 4) & 0x0F) as u8;
+        let nibble_shift = if self.state.port_c & PORT_C_SHL != 0 {
+            COUNTER_HIGH_NIBBLE_SHIFT
         } else {
-            ret |= (value & 0x0F) as u8;
-        }
-
-        ret
+            0
+        };
+        let nibble = (self.selected_counter(source) >> nibble_shift) as u8 & COUNTER_NIBBLE_MASK;
+        let lines = self.state.buttons & PORT_A_UPPER_LINES;
+        lines | BUTTON_MIDDLE_RELEASED | nibble
     }
 
-    /// Reads port B (port 0x7FDB).
-    ///
-    /// In input mode: returns 0x40 (RAMKL=1, standard DIP defaults per NP21W).
-    /// In output mode: returns the port B latch.
+    /// Reads port B (0x7FDB). As an input it shows RAMKL = 1.
     pub fn read_port_b(&self) -> u8 {
         if self.state.mode & MODE_PORT_B_INPUT != 0 {
-            PORT_B_INPUT_DEFAULT
+            PORT_B_RAMKL_ENABLED
         } else {
             self.state.port_b
         }
     }
 
-    /// Reads port C (port 0x7FDD).
-    ///
-    /// Combines output bits (echoed from latch) with input bits (DIP switches).
+    /// Reads port C (0x7FDD). Output halves return the latch. The low input
+    /// half shows MODSW = 1 (normal mode), CPUSW = 0 and RS-1/RS-2 = 0. The high
+    /// input half has no driver and reads 0.
     pub fn read_port_c(&self) -> u8 {
-        let mut ret = self.state.port_c;
-        if self.state.mode & MODE_PORT_C_UPPER_INPUT != 0 {
-            ret &= !(PORTC_HC | PORTC_SXY | PORTC_SHL);
-        }
-        if self.state.mode & MODE_PORT_C_LOWER_INPUT != 0 {
-            ret &= 0xF0;
-            ret |= PORTC_MODSW;
-        }
-        ret
+        let high = if self.state.mode & MODE_PORT_C_HIGH_INPUT != 0 {
+            0
+        } else {
+            self.state.port_c & PORT_C_HIGH_HALF
+        };
+        let low = if self.state.mode & MODE_PORT_C_LOW_INPUT != 0 {
+            PORT_C_MODSW_NORMAL
+        } else {
+            self.state.port_c & PORT_C_LOW_HALF
+        };
+        high | low
     }
 
-    /// Writes port A (port 0x7FD9).
+    /// Writes the port A latch (0x7FD9).
     pub fn write_port_a(&mut self, value: u8) {
         self.state.port_a = value;
     }
 
-    /// Writes port B (port 0x7FDB).
+    /// Writes the port B latch (0x7FDB).
     pub fn write_port_b(&mut self, value: u8) {
         self.state.port_b = value;
     }
 
-    /// Writes port C (port 0x7FDD) and returns whether HC had a rising edge (0->1).
-    ///
-    /// The caller should invoke [`latch`] when this returns `true`.
-    pub fn write_port_c(&mut self, value: u8) -> bool {
-        let old = self.state.port_c;
-        self.state.port_c = value;
-        (old & PORTC_HC == 0) && (value & PORTC_HC != 0)
+    /// Writes the port C latch (0x7FDD). A rising HC edge latches the
+    /// counters. Returns whether the write latched the counters.
+    pub fn write_port_c(&mut self, value: u8, current_cycle: u64) -> bool {
+        self.update_port_c(value, current_cycle)
     }
 
-    /// Writes the PPI control register (port 0x7FDF) and returns whether HC had
-    /// a rising edge (0->1).
+    /// Writes the control register (0x7FDF). Returns whether the write
+    /// latched the counters.
     ///
-    /// If bit 7 is set, the value is a mode configuration word: stored in `mode`
-    /// and port C is reset to 0. This never produces a rising edge.
-    /// If bit 7 is clear, the value is a bit set/reset command for port C.
-    /// The caller should invoke [`latch`] when this returns `true`.
-    pub fn write_ctrl(&mut self, value: u8) -> bool {
-        if value & CTRL_MODE_SET != 0 {
+    /// A mode word clears all output latches. A bit set/reset word changes one
+    /// port C bit, and a rising HC edge latches the counters.
+    pub fn write_control(&mut self, value: u8, current_cycle: u64) -> bool {
+        if value & CONTROL_MODE_SET != 0 {
             self.state.mode = value;
+            self.state.port_a = 0;
+            self.state.port_b = 0;
             self.state.port_c = 0;
-            false
-        } else {
-            let old = self.state.port_c;
-            let bit = (value >> 1) & 7;
-            if value & CTRL_BSR_SET != 0 {
-                self.state.port_c |= 1 << bit;
-            } else {
-                self.state.port_c &= !(1 << bit);
-            }
-            (old & PORTC_HC == 0) && (self.state.port_c & PORTC_HC != 0)
+            return false;
         }
+        let bit = 1u8 << ((value & CONTROL_BIT_NUMBER_MASK) >> 1);
+        let port_c = if value & CONTROL_BIT_VALUE != 0 {
+            self.state.port_c | bit
+        } else {
+            self.state.port_c & !bit
+        };
+        self.update_port_c(port_c, current_cycle)
+    }
+
+    /// Stores a new port C latch and latches the counters on a rising HC edge.
+    fn update_port_c(&mut self, value: u8, current_cycle: u64) -> bool {
+        let rising = value & !self.state.port_c & PORT_C_HC != 0;
+        self.state.port_c = value;
+        if rising {
+            self.latch(current_cycle);
+        }
+        rising
     }
 }

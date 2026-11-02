@@ -1,7 +1,7 @@
 //! INT 18h graphics service handlers (AH=40..4Ah) and GDC drawing helpers.
 
-use common::Cpu;
-use device::upd7220_gdc::GdcScrollPartition;
+use common::{Cpu, MachineModel};
+use device::grcg;
 
 use super::{
     super::{GRAPHICS_PAGE_SIZE_BYTES, Pc9801Bus},
@@ -14,6 +14,144 @@ const GDC_OPE_COMPLEMENT: u8 = 1;
 const GDC_OPE_CLEAR: u8 = 2;
 const GDC_OPE_SET: u8 = 3;
 
+/// AH=42h CH shift of the VRAM area field (bits 7-6).
+const SETTING_AREA_SHIFT: u8 = 6;
+/// AH=42h VRAM area: the whole 32 KB of each plane (640x400).
+const SETTING_AREA_ALL: u8 = 0b11;
+/// AH=42h VRAM area: the lower 16 KB of each plane (640x200 LOWER).
+const SETTING_AREA_LOWER: u8 = 0b10;
+/// AH=42h VRAM area: the upper 16 KB of each plane (640x200 UPPER).
+const SETTING_AREA_UPPER: u8 = 0b01;
+/// AH=42h CH bit: monochrome graphics.
+const SETTING_MONOCHROME: u8 = 0x20;
+/// AH=42h CH bit: display bank 1.
+const SETTING_DISPLAY_BANK: u8 = 0x10;
+/// Shift of the display bank bit in CH.
+const SETTING_DISPLAY_BANK_SHIFT: u8 = 4;
+
+/// Mode F/F 1 command (port 68h): color graphics.
+const MODE_FF_COLOR: u8 = 0x02;
+/// Mode F/F 1 command (port 68h): monochrome graphics.
+const MODE_FF_MONOCHROME: u8 = 0x03;
+/// Mode F/F 1 command (port 68h): odd graphics rasters are shown.
+const MODE_FF_SHOW_ODD_RASTERS: u8 = 0x08;
+/// Mode F/F 1 command (port 68h): odd graphics rasters are blank.
+const MODE_FF_HIDE_ODD_RASTERS: u8 = 0x09;
+/// Mode F/F 2 command (port 6Ah): GDC CLOCK-1 at 2.5 MHz.
+const MODE_FF2_GDC_CLOCK1_2_5MHZ: u8 = 0x82;
+/// Mode F/F 2 command (port 6Ah): GDC CLOCK-1 at 5 MHz.
+const MODE_FF2_GDC_CLOCK1_5MHZ: u8 = 0x83;
+/// Mode F/F 2 command (port 6Ah): GDC CLOCK-2 at 2.5 MHz.
+const MODE_FF2_GDC_CLOCK2_2_5MHZ: u8 = 0x84;
+/// Mode F/F 2 command (port 6Ah): GDC CLOCK-2 at 5 MHz.
+const MODE_FF2_GDC_CLOCK2_5MHZ: u8 = 0x85;
+
+/// Work area byte with the graphics status flags (PRXCRT).
+const PRXCRT_ADDRESS: usize = 0x054C;
+/// PRXCRT bit: DIP SW 1-8 was on at boot.
+const PRXCRT_DIP_SWITCH_1_8: u8 = 0x01;
+/// Work area byte with the graphics mode flags (PRXDUPD).
+const PRXDUPD_ADDRESS: usize = 0x054D;
+/// PRXDUPD bit: DIP SW 2-8 selects 5 MHz for 640x400 graphics.
+const PRXDUPD_5MHZ_ALLOWED: u8 = 0x20;
+/// PRXDUPD bit: flash drawing.
+const PRXDUPD_FLASH_DRAW: u8 = 0x08;
+/// PRXDUPD bit: the GDC runs at 5 MHz.
+const PRXDUPD_5MHZ_ACTIVE: u8 = 0x04;
+/// Work area byte whose bits 1-0 hold the graphics resolution on the PC-9821.
+const GRAPHICS_RESOLUTION_ADDRESS: usize = 0x0597;
+/// Graphics resolution field of `GRAPHICS_RESOLUTION_ADDRESS`.
+const RESOLUTION_MASK: u8 = 0x03;
+/// Saved graphics resolution: 640x200 UPPER.
+const RESOLUTION_UPPER: u8 = 0b00;
+/// Saved graphics resolution: 640x200 LOWER.
+const RESOLUTION_LOWER: u8 = 0b01;
+/// Saved graphics resolution: 640x400.
+const RESOLUTION_ALL: u8 = 0b10;
+
+/// GDC word address of the upper area: 200 lines of 40 words.
+const UPPER_AREA_START_ADDRESS: u32 = 8000;
+/// SCROLL line count that covers the whole screen (the SL field value 0 means 1024 lines).
+const FULL_SCREEN_LINE_COUNT: u16 = 0x400;
+/// Graphics GDC words per line at 2.5 MHz (16 dots per word).
+const WORDS_PER_LINE_2_5MHZ: u16 = 40;
+/// Graphics GDC words per line at 5 MHz.
+const WORDS_PER_LINE_5MHZ: u16 = 80;
+
+/// VRAM area selected by AH=42h.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DisplayArea {
+    /// 640x400 over the whole plane.
+    All,
+    /// 640x200 in the lower half of the plane.
+    Lower,
+    /// 640x200 in the upper half of the plane.
+    Upper,
+}
+
+/// SYNC mode byte of the graphics GDC: graphics display mode, drawing at any time.
+const SYNC_MODE_GRAPHICS: u8 = 0x02;
+
+/// Graphics GDC SYNC parameters in the field encoding of the uPD7220 SYNC command.
+struct SyncTiming {
+    /// C/R: active words per line minus 2.
+    words_per_line: u8,
+    /// HS: horizontal sync width minus 1.
+    horizontal_sync: u8,
+    /// HFP: horizontal front porch minus 1.
+    horizontal_front_porch: u8,
+    /// HBP: horizontal back porch minus 1.
+    horizontal_back_porch: u8,
+    /// VS: vertical sync width in lines.
+    vertical_sync: u8,
+    /// VFP: vertical front porch in lines.
+    vertical_front_porch: u8,
+    /// VBP: vertical back porch in lines.
+    vertical_back_porch: u8,
+    /// L/F: active lines per frame.
+    active_lines: u16,
+}
+
+impl SyncTiming {
+    /// Packs the timing into the eight SYNC parameter bytes after the mode byte `mode`.
+    const fn sync_parameters(&self, mode: u8) -> [u8; 8] {
+        [
+            mode,
+            self.words_per_line,
+            (self.vertical_sync << 5) | self.horizontal_sync,
+            (self.horizontal_front_porch << 2) | (self.vertical_sync >> 3),
+            self.horizontal_back_porch,
+            self.vertical_front_porch,
+            self.active_lines as u8,
+            (self.vertical_back_porch << 2) | (self.active_lines >> 8) as u8,
+        ]
+    }
+}
+
+/// Standard graphics GDC timing at 2.5 MHz on a 24.83 kHz display.
+const SYNC_TIMING_2_5MHZ: SyncTiming = SyncTiming {
+    words_per_line: 0x26,
+    horizontal_sync: 0x03,
+    horizontal_front_porch: 0x04,
+    horizontal_back_porch: 0x03,
+    vertical_sync: 0x08,
+    vertical_front_porch: 0x07,
+    vertical_back_porch: 0x19,
+    active_lines: 0x190,
+};
+
+/// Standard graphics GDC timing at 5 MHz on a 24.83 kHz display.
+const SYNC_TIMING_5MHZ: SyncTiming = SyncTiming {
+    words_per_line: 0x4E,
+    horizontal_sync: 0x07,
+    horizontal_front_porch: 0x09,
+    horizontal_back_porch: 0x07,
+    vertical_sync: 0x08,
+    vertical_front_porch: 0x07,
+    vertical_back_porch: 0x19,
+    active_lines: 0x190,
+};
+
 impl<T: TraceSink> Pc9801Bus<T> {
     pub(super) fn int18h_graphics_display_start(&mut self) {
         self.gdc_slave.state.display_enabled = true;
@@ -25,93 +163,110 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.memory.state.ram[0x054C] &= 0x7F;
     }
 
+    /// INT 18h AH=42h: selects the graphics VRAM area, the color mode and the display bank.
     pub(super) fn int18h_display_area_set(&mut self, cpu: &mut impl Cpu) {
-        const GDC_SLAVE_SYNC: [[u8; 8]; 6] = [
-            [0x02, 0x26, 0x03, 0x11, 0x86, 0x0F, 0xC8, 0x94], // 15-L
-            [0x02, 0x4E, 0x4B, 0x0C, 0x83, 0x06, 0xE0, 0x95], // 31-H
-            [0x02, 0x26, 0x03, 0x11, 0x83, 0x07, 0x90, 0x65], // 24-L
-            [0x02, 0x4E, 0x07, 0x25, 0x87, 0x07, 0x90, 0x65], // 24-M
-            [0x02, 0x26, 0x41, 0x0C, 0x83, 0x0D, 0x90, 0x89], // 31-L
-            [0x02, 0x4E, 0x47, 0x0C, 0x87, 0x0D, 0x90, 0x89], // 31-M
-        ];
-
-        let mode = cpu.ch();
-        let modenum = [3u8, 1, 0, 2];
-        let crtmode = modenum[(mode >> 6) as usize];
-
-        // Zero scroll parameters for slave GDC (first partition).
-        // Line count 0 maps to 1024 in the µPD7220 (10-bit wrap).
-        self.gdc_slave.state.scroll[0] = GdcScrollPartition {
-            start_address: 0x0000,
-            line_count: 0x400,
-            im: false,
-            wd: false,
+        let setting = cpu.ch();
+        let area = match setting >> SETTING_AREA_SHIFT {
+            SETTING_AREA_ALL => DisplayArea::All,
+            SETTING_AREA_LOWER => DisplayArea::Lower,
+            SETTING_AREA_UPPER => DisplayArea::Upper,
+            _ => return,
         };
+        let high_resolution_display = self.system_ppi.state.crtt;
+        let half_height = area != DisplayArea::All;
+        let doubled_lines = half_height && high_resolution_display;
 
-        let prxdupd = self.memory.state.ram[0x054D];
-        if crtmode == 2 {
-            // 400-line ALL mode.
-            if (prxdupd & 0x24) == 0x20 {
-                self.memory.state.ram[0x054D] ^= 4;
-                self.gdc_slave.load_sync_params(&GDC_SLAVE_SYNC[3]);
-                self.gdc_slave.state.pitch = 80;
-                self.memory.state.ram[0x054D] |= 0x08;
-                self.display_control.state.mode2 |= 0x0600;
-                self.apply_gdc_dot_clock();
-            }
+        let color_command = if setting & SETTING_MONOCHROME != 0 {
+            MODE_FF_MONOCHROME
         } else {
-            if (prxdupd & 0x24) == 0x24 {
-                self.memory.state.ram[0x054D] ^= 4;
-                // Select sync table based on PRXCRT bit 6.
-                let sync_idx = if self.memory.state.ram[0x054C] & 0x40 != 0 {
-                    2
-                } else {
-                    0
-                };
-                self.gdc_slave.load_sync_params(&GDC_SLAVE_SYNC[sync_idx]);
-                self.gdc_slave.state.pitch = 40;
-                self.memory.state.ram[0x054D] |= 0x08;
-                self.display_control.state.mode2 &= !0x0600;
-                self.apply_gdc_dot_clock();
-            }
-            if crtmode & 1 != 0 {
-                // UPPER: set scroll start to page 1.
-                self.gdc_slave.state.scroll[0].start_address = 200 * 40;
-            }
-        }
-
-        if self.memory.state.ram[0x054D] & 4 != 0 {
-            self.gdc_slave.state.scroll[0].line_count = 0x400;
-        }
-
-        // Determine 400-line vs 200-line display mode.
-        let prxcrt = self.memory.state.ram[0x054C];
-        if crtmode == 2 || (prxcrt & 0x40) == 0 {
-            // 400-line mode: clear hide_odd_rasters, lines_per_row = 1.
-            self.display_control.state.video_mode &= !0x10;
-            self.gdc_slave.state.lines_per_row = 1;
+            MODE_FF_COLOR
+        };
+        let raster_command = if doubled_lines {
+            MODE_FF_HIDE_ODD_RASTERS
         } else {
-            // 200-line mode: set hide_odd_rasters, lines_per_row = 2.
-            self.display_control.state.video_mode |= 0x10;
-            self.gdc_slave.state.lines_per_row = 2;
+            MODE_FF_SHOW_ODD_RASTERS
+        };
+        self.display_control.write_video_mode(color_command);
+        self.display_control.write_video_mode(raster_command);
+
+        if high_resolution_display {
+            self.graphics_select_gdc_clock(!half_height);
+        }
+        if self.memory.state.ram[PRXCRT_ADDRESS] & PRXCRT_DIP_SWITCH_1_8 != 0 {
+            self.memory.state.ram[PRXDUPD_ADDRESS] |= PRXDUPD_FLASH_DRAW;
         }
 
-        // Display page selection.
-        if crtmode != 3 {
-            self.display_control.state.display_page = (mode >> 4) & 1;
-        }
-
-        // Graphics mode and EGC extended mode.
-        if mode & 0x20 == 0 {
-            self.display_control.state.video_mode &= !0x02;
-            self.display_control.state.mode2 &= !0x0004;
+        self.gdc_slave.state.lines_per_row = if doubled_lines { 2 } else { 1 };
+        let start_address = if area == DisplayArea::Upper {
+            UPPER_AREA_START_ADDRESS
         } else {
-            self.display_control.state.video_mode |= 0x02;
-            self.display_control.state.mode2 |= 0x0004;
+            0
+        };
+        let scroll = &mut self.gdc_slave.state.scroll[0];
+        scroll.start_address = start_address;
+        scroll.line_count = FULL_SCREEN_LINE_COUNT;
+        scroll.im = false;
+        scroll.wd = false;
+
+        self.display_control
+            .write_display_page((setting & SETTING_DISPLAY_BANK) >> SETTING_DISPLAY_BANK_SHIFT);
+
+        let saves_resolution = match self.machine_model {
+            MachineModel::PC9801F
+            | MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RS
+            | MachineModel::PC9801RA => false,
+            MachineModel::PC9821AS | MachineModel::PC9821AP => true,
+        };
+        if saves_resolution {
+            let resolution = match area {
+                DisplayArea::Upper => RESOLUTION_UPPER,
+                DisplayArea::Lower => RESOLUTION_LOWER,
+                DisplayArea::All => RESOLUTION_ALL,
+            };
+            let saved = &mut self.memory.state.ram[GRAPHICS_RESOLUTION_ADDRESS];
+            *saved = (*saved & !RESOLUTION_MASK) | resolution;
+        }
+    }
+
+    /// Switches the graphics GDC between 2.5 MHz (640x200) and 5 MHz (640x400) when DIP SW 2-8
+    /// allows 5 MHz, and reloads the SYNC parameters of the new clock in graphics display mode.
+    fn graphics_select_gdc_clock(&mut self, full_height: bool) {
+        let prxdupd = self.memory.state.ram[PRXDUPD_ADDRESS];
+        if prxdupd & PRXDUPD_5MHZ_ALLOWED == 0 {
+            return;
+        }
+        let running_5mhz = prxdupd & PRXDUPD_5MHZ_ACTIVE != 0;
+        if full_height == running_5mhz {
+            return;
         }
 
-        // Store crtmode in CRT_BIOS (0x0597).
-        self.memory.state.ram[0x0597] = (self.memory.state.ram[0x0597] & 0xFC) | (crtmode & 0x03);
+        let (timing, words_per_line, clock_commands, flags) = if full_height {
+            (
+                &SYNC_TIMING_5MHZ,
+                WORDS_PER_LINE_5MHZ,
+                [MODE_FF2_GDC_CLOCK1_5MHZ, MODE_FF2_GDC_CLOCK2_5MHZ],
+                prxdupd | PRXDUPD_5MHZ_ACTIVE,
+            )
+        } else {
+            (
+                &SYNC_TIMING_2_5MHZ,
+                WORDS_PER_LINE_2_5MHZ,
+                [MODE_FF2_GDC_CLOCK1_2_5MHZ, MODE_FF2_GDC_CLOCK2_2_5MHZ],
+                prxdupd & !PRXDUPD_5MHZ_ACTIVE,
+            )
+        };
+        self.memory.state.ram[PRXDUPD_ADDRESS] = flags;
+
+        self.gdc_slave
+            .load_sync_params(&timing.sync_parameters(SYNC_MODE_GRAPHICS));
+        self.gdc_slave.state.pitch = words_per_line;
+        let has_egc = self.grcg.state.chip == grcg::GRCG_CHIP_EGC;
+        for command in clock_commands {
+            self.display_control.write_mode2(command, has_egc);
+        }
+        self.apply_gdc_dot_clock();
     }
 
     pub(super) fn int18h_palette_set(&mut self, cpu: &mut impl Cpu) {

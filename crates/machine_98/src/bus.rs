@@ -1290,7 +1290,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
     }
 
     fn mouse_timer_irq_enabled(&self) -> bool {
-        (self.mouse_ppi.state.port_c & 0x10) == 0
+        self.mouse_ppi.timer_interrupt_enabled()
     }
 
     fn mouse_timer_period_cycles(&self) -> u64 {
@@ -3332,9 +3332,8 @@ impl<T: TraceSink> common::Bus for Pc9801Bus<T> {
                 self.process_ide_action(action);
                 trace_access!(T, self, MAIN_IO, Write, port, Word, value);
             }
-            // EGC registers: atomic word write avoids double recalculate_shift()
-            // that the default byte-split path would cause on shift (0x04AC) and
-            // length (0x04AE) registers.
+            // EGC registers take a word write in one step. A write to the shift
+            // (0x04AC) or length (0x04AE) register starts a new operation.
             0x04A0..=0x04AE if port & 1 == 0 => {
                 self.pending_wait_cycles += IO_WAIT_CYCLES;
 
