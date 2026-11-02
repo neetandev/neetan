@@ -1,16 +1,14 @@
-; bios.asm - BIOS HLE ROM stub for Neetan
+; bios.asm - PC-98 BIOS HLE ROM stub for Neetan
 ;
-; Assembles to a 96 KB (98304-byte) ROM image mapped at physical 0xE8000–0xFFFFF.
-; Provides High-Level Emulation (HLE) for all BIOS interrupt handlers. Each stub
-; saves AX and DX on the stack (since the trap sequence clobbers them), writes a
-; single vector-number byte to the emulator trap port (0x07F0), then IRETs. The
-; emulator yields on the OUT, restores AX/DX from the stack, reads/writes CPU
-; registers directly via the Cpu trait, and resumes the CPU to execute the IRET.
+; Assembles to the 96 KiB ROM image mapped at physical E8000h-FFFFFh. It holds
+; the HLE stubs of the BIOS interrupt handlers. Each stub saves AX and DX on the
+; stack (the trap sequence clobbers them), writes a single vector number byte to
+; the emulator trap port 07F0h and then IRETs. The emulator yields on the OUT,
+; restores AX and DX from the stack, reads and writes the CPU registers directly
+; through the Cpu trait and resumes the CPU to execute the IRET. The BIOS logic
+; is Rust code in crates/machine_98/src/bus/bios.rs.
 ;
-; This file is NOT the BIOS implementation - it's the minimal x86 code that
-; triggers Rust HLE handlers. The actual BIOS logic lives in crates/machine_98/src/bus/bios.rs.
-;
-; Build: nasm -f bin -o bios.rom bios.asm
+; Build: make (assembles bios.rom and builds fonts/font.rom from fonts/*.bit)
 
 [bits 16]
 [cpu 186]
@@ -204,7 +202,7 @@ bootstrap_entry:    hle_stub VEC_BOOTSTRAP      ; Bootstrap loader
 
 ; --- Vector initialization table ---
 ; (vector_number, handler_offset) pairs. The Rust-side initialization reads
-; this table to populate the IVT at 0x0000–0x03FF. Offsets are relative to
+; this table to populate the IVT at 0x0000-0x03FF. Offsets are relative to
 ; segment 0xFD80 (i.e. label - BIOS_BASE_OFF).
 ; Terminated by 0xFFFF sentinel.
 
@@ -235,12 +233,12 @@ vector_table:
     dw 0x17, iret_stub       - BIOS_BASE_OFF   ; INT 17h - Idle
     dw 0x18, int_18h_handler - BIOS_BASE_OFF   ; INT 18h - CRT/KB/Graphics
     dw 0x19, int_19h_handler - BIOS_BASE_OFF   ; INT 19h - RS-232C
-    dw 0x1A, int_1ah_handler - BIOS_BASE_OFF   ; INT 1Ah — Printer/CMT
-    dw 0x1B, int_1bh_handler - BIOS_BASE_OFF   ; INT 1Bh — Disk BIOS
-    dw 0x1C, int_1ch_handler - BIOS_BASE_OFF   ; INT 1Ch — Timer/Calendar
-    dw 0x1D, iret_stub       - BIOS_BASE_OFF   ; INT 1Dh — Unused
-    dw 0x1F, int_1fh_handler - BIOS_BASE_OFF   ; INT 1Fh — Extended
-    dw 0xD2, int_d2h_handler - BIOS_BASE_OFF   ; INT D2h — Sound BIOS
+    dw 0x1A, int_1ah_handler - BIOS_BASE_OFF   ; INT 1Ah - Printer/CMT
+    dw 0x1B, int_1bh_handler - BIOS_BASE_OFF   ; INT 1Bh - Disk BIOS
+    dw 0x1C, int_1ch_handler - BIOS_BASE_OFF   ; INT 1Ch - Timer/Calendar
+    dw 0x1D, iret_stub       - BIOS_BASE_OFF   ; INT 1Dh - Unused
+    dw 0x1F, int_1fh_handler - BIOS_BASE_OFF   ; INT 1Fh - Extended
+    dw 0xD2, int_d2h_handler - BIOS_BASE_OFF   ; INT D2h - Sound BIOS
     dw 0x20, int_20h_handler - BIOS_BASE_OFF   ; INT 20h - DOS: Terminate
     dw 0x21, int_21h_handler - BIOS_BASE_OFF   ; INT 21h - DOS: System call
     dw 0x22, int_22h_handler - BIOS_BASE_OFF   ; INT 22h - DOS: Terminate address

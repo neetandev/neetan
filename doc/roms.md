@@ -72,7 +72,7 @@ for that machine.
 | PC-9801VM             | `pc9801vm`                                | BIOS assembled from the `cpu_board_*` chips                                         |
 | PC-9801VX             | `pc9801vx`                                | BIOS assembled from the four `..._yll0x` chips; ships the font ROM                  |
 | PC-9801RS / PC-9801RA | `pc9801rs`                                | The `pc9801rs` set supplies the BIOS for both models; ships the font ROM            |
-| PC-9821AS / PC-9821AP | -                                         | HLE BIOS only; their fonts are not part of any MAME set (built-in font used)        |
+| PC-9821AS / PC-9821AP | -                                         | HLE BIOS only                                                                       |
 | PC-8801MC             | `pc8801mc` (+ `pc8001mk2`, `pc8001mk2sr`) | The two `pc8001*` sets only add the optional N80 boot-mode ROMs                     |
 | PC-88VA2              | `pc88va2`                                 | The sub-CPU ROM is NO_DUMP in MAME and must be sourced separately                   |
 | PC-6001               | `pc6001`                                  |                                                                                     |
@@ -371,11 +371,9 @@ to boot the model's real BIOS instead of the HLE BIOS. neetan assembles the mode
 BIOS from its individual mask-ROM chips (following MAME's ROM layout) into the
 192 KiB dual-bank image the emulator uses.
 
-With `--bios` the model's BIOS is required. The PC-9821 targets are the exception:
-they have no real-BIOS boot path and always fall back to HLE with a warning. The 26K
-sound ROM (`sound.rom`) is loaded when a PC-9801-26K board is selected. A font ROM is
-best-effort: any V98 font in the directory is used, otherwise the built-in font is
-kept.
+With `--bios` the model's BIOS and a font ROM are required. The PC-9821 targets have no
+real-BIOS boot path and fall back to the HLE BIOS. Without `--bios` the machines read no
+ROM file. The built-in font reproduces the original NEC typeface.
 
 BIOS chips (assembled per model). Extract the model's MAME set into `--pc98-roms`:
 
@@ -418,11 +416,8 @@ PC-9801RS / PC-9801RA (MAME set `pc9801rs`, shared by both models):
 The PC-9821AS and PC-9821AP have no real-BIOS boot path and always run the
 HLE BIOS.
 
-Font ROM (V98 format, 282 KiB). Best-effort: any of these dumps is accepted for any
-model, otherwise the built-in font is used. The `pc9801vx` and `pc9801rs` sets ship a
-font (`font_ux.rom` / `font_rs.rom`); the `pc9801f` and `pc9801vm` sets do not, so
-those models fall back to the built-in font unless one of the other fonts is in the
-same directory.
+Font ROM (V98 format, 282 KiB). Every model accepts any of these dumps. The `pc9801f`
+and `pc9801vm` sets ship no font.
 
 | Dump          | Source     | BLAKE3                                                             |
 |---------------|------------|--------------------------------------------------------------------|
@@ -432,7 +427,7 @@ same directory.
 | PC-9821Ap2    | -          | `7fb96af345c33f9bd7be5c22f75c650ac41da9b543ca5f9ca7b3d3906f2abb40` |
 | PC-9821Ce2    | -          | `b38096265c76cf9f54cb47df905cfb6c8b4d4f27019a04835bbc3dc8782d33e1` |
 
-Sound ROM (loaded when a PC-9801-26K board is selected; present in every PC-98 set):
+Sound ROM of the PC-9801-26K board (present in every PC-98 set):
 
 | File        | Size   | BLAKE3                                                             |
 |-------------|--------|--------------------------------------------------------------------|

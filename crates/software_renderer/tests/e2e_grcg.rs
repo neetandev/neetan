@@ -7,8 +7,8 @@
 //! through CPU -> bus I/O -> GRCG -> compose -> framebuffer bytes,
 //! using the standard 16-color analog palette programmed by the ROM.
 
-use common::{BUILTIN_FONT_ROM, Bus, Cpu, CpuMode, MachineModel};
-use machine_98::{Pc9801Bus, Pc9801Vm};
+use common::{Bus, Cpu, CpuMode, MachineModel};
+use machine_98::{BUILTIN_FONT_ROM, Pc9801Bus, Pc9801Vm};
 
 const DEBUG_GRCG_ROM: &[u8] = include_bytes!("../../../utils/debug/debug_grcg.rom");
 

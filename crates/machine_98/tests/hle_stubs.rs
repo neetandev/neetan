@@ -1,6 +1,6 @@
-use common::{BUILTIN_FONT_ROM, Bus, CpuMode, MachineModel};
+use common::{Bus, CpuMode, MachineModel};
 use device::floppy::FloppyImage;
-use machine_98::{Pc9801Bus, Pc9801Ra, Pc9801Vm, Pc9801Vx};
+use machine_98::{BUILTIN_FONT_ROM, Pc9801Bus, Pc9801Ra, Pc9801Vm, Pc9801Vx};
 
 const TEST_CODE: u32 = 0x1000;
 const HOOK_HANDLER: u32 = 0x2000;

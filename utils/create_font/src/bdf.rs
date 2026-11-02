@@ -1,20 +1,41 @@
-use std::collections::HashMap;
+//! Parser of the BDF-variant `.bit` bitmap fonts and the extraction of glyph
+//! cells from them.
 
+use std::{collections::HashMap, path::Path};
+
+/// Bitmap font parsed from a `.bit` file, with its glyphs keyed by `ENCODING`.
 pub struct BitmapFont {
+    /// Pixels from the top of a cell to the baseline (`FONT_ASCENT`).
     ascent: i32,
+    /// Glyphs keyed by their `ENCODING` value.
     glyphs: HashMap<u32, Glyph>,
 }
 
+/// One glyph of a bitmap font.
 struct Glyph {
+    /// Bitmap rows, `bbx_width.div_ceil(8)` bytes per row, bit 7 as the leftmost pixel.
     rows: Vec<u8>,
+    /// Width of the bounding box in pixels.
     bbx_width: u32,
+    /// Height of the bounding box in pixels.
     bbx_height: u32,
+    /// Horizontal offset of the bounding box from the cell origin.
     bbx_x_offset: i32,
+    /// Vertical offset of the bounding box bottom from the baseline.
     bbx_y_offset: i32,
 }
 
 impl BitmapFont {
-    pub fn parse(source: &str) -> Self {
+    /// Reads and parses a `.bit` file.
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let source = std::fs::read_to_string(path)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        Self::parse(&source).map_err(|error| format!("{}: {error}", path.display()))
+    }
+
+    /// Parses the source of a `.bit` file. Two glyphs with one `ENCODING` are
+    /// an error.
+    pub fn parse(source: &str) -> Result<Self, String> {
         let mut ascent = 14;
         let mut glyphs = HashMap::new();
 
@@ -49,9 +70,12 @@ impl BitmapFont {
                 bitmap_rows.clear();
                 bbx_width = bbx.0;
             } else if line == "ENDCHAR" {
-                if in_bitmap && let Some(enc) = encoding {
+                if in_bitmap && let Some(code) = encoding {
+                    if glyphs.contains_key(&code) {
+                        return Err(format!("two glyphs for ENCODING {code}"));
+                    }
                     glyphs.insert(
-                        enc,
+                        code,
                         Glyph {
                             rows: bitmap_rows.clone(),
                             bbx_width,
@@ -75,24 +99,10 @@ impl BitmapFont {
             }
         }
 
-        BitmapFont { ascent, glyphs }
+        Ok(BitmapFont { ascent, glyphs })
     }
 
-    pub fn merge(&mut self, overlay: &BitmapFont) {
-        for (&encoding, glyph) in &overlay.glyphs {
-            self.glyphs.insert(
-                encoding,
-                Glyph {
-                    rows: glyph.rows.clone(),
-                    bbx_width: glyph.bbx_width,
-                    bbx_height: glyph.bbx_height,
-                    bbx_x_offset: glyph.bbx_x_offset,
-                    bbx_y_offset: glyph.bbx_y_offset,
-                },
-            );
-        }
-    }
-
+    /// Extracts a baseline-aligned 8x8 cell for the given encoding.
     pub fn get_8x8(&self, encoding: u32) -> Option<[u8; 8]> {
         let glyph = self.glyphs.get(&encoding)?;
         let mut cell = [0u8; 8];
@@ -122,6 +132,7 @@ impl BitmapFont {
         Some(cell)
     }
 
+    /// Extracts a baseline-aligned 8x16 cell for the given encoding.
     pub fn get_8x16(&self, encoding: u32) -> Option<[u8; 16]> {
         let glyph = self.glyphs.get(&encoding)?;
         let mut cell = [0u8; 16];
@@ -245,37 +256,6 @@ impl BitmapFont {
 
         Some(cell)
     }
-
-    pub fn get_16x16(&self, encoding: u32) -> Option<[u8; 32]> {
-        let glyph = self.glyphs.get(&encoding)?;
-        let mut cell = [0u8; 32];
-
-        let glyph_top_from_baseline = glyph.bbx_y_offset + glyph.bbx_height as i32;
-        let cell_row_start = self.ascent - glyph_top_from_baseline;
-
-        let bytes_per_row = (glyph.bbx_width as usize).div_ceil(8);
-
-        for r in 0..glyph.bbx_height as usize {
-            let cell_row = cell_row_start + r as i32;
-            if !(0..16).contains(&cell_row) {
-                continue;
-            }
-
-            let src_offset = r * bytes_per_row;
-
-            // V98 format: first 16 bytes = left column, next 16 bytes = right column
-            if let Some(&left) = glyph.rows.get(src_offset) {
-                cell[cell_row as usize] = left;
-            }
-            if bytes_per_row >= 2
-                && let Some(&right) = glyph.rows.get(src_offset + 1)
-            {
-                cell[16 + cell_row as usize] = right;
-            }
-        }
-
-        Some(cell)
-    }
 }
 
 #[cfg(test)]
@@ -293,7 +273,7 @@ mod tests {
             source.push('\n');
         }
         source.push_str("ENDCHAR\nENDFONT\n");
-        BitmapFont::parse(&source)
+        BitmapFont::parse(&source).unwrap()
     }
 
     #[test]
@@ -330,6 +310,13 @@ mod tests {
     fn encodings_are_sorted() {
         let source = "FONT_ASCENT 8\nENCODING 9\nBBX 8 8 0 0\nBITMAP\nENDCHAR\n\
                       ENCODING 3\nBBX 8 8 0 0\nBITMAP\nENDCHAR\n";
-        assert_eq!(BitmapFont::parse(source).encodings(), vec![3, 9]);
+        assert_eq!(BitmapFont::parse(source).unwrap().encodings(), vec![3, 9]);
+    }
+
+    #[test]
+    fn two_glyphs_for_one_encoding_are_rejected() {
+        let source = "FONT_ASCENT 8\nENCODING 3\nBBX 8 8 0 0\nBITMAP\nENDCHAR\n\
+                      ENCODING 3\nBBX 8 8 0 0\nBITMAP\nENDCHAR\n";
+        assert!(BitmapFont::parse(source).is_err());
     }
 }

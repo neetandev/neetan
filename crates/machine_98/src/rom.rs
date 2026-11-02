@@ -13,9 +13,8 @@
 //! expects. The font and sound ROMs are used directly (the MAME `font_*.rom`
 //! and `sound.rom` files are already in the format we need).
 //!
-//! Every slot is optional at this layer: the loader returns whatever it finds
-//! and leaves the decision of which ROMs are required to the caller, which
-//! depends on the machine model and whether real-BIOS mode is enabled.
+//! Every slot is optional. The loader returns the ROMs it finds and requires
+//! none of them.
 
 use std::path::Path;
 
@@ -140,11 +139,14 @@ const FONT_STANDARD: &[&str] = &[FONT_RS, FONT_UX, FONT_AS, FONT_AP2, FONT_CE2];
 const FONT_9821AS: &[&str] = &[FONT_AS, FONT_AP2, FONT_CE2, FONT_RS, FONT_UX];
 const FONT_9821AP: &[&str] = &[FONT_AP2, FONT_AS, FONT_CE2, FONT_RS, FONT_UX];
 
+/// Built-in V98-format font ROM, built from the `.bit` files of `utils/bios/fonts`.
+pub static BUILTIN_FONT_ROM: &[u8; FONT_ROM_SIZE] =
+    include_bytes!("../../../utils/bios/fonts/font.rom");
+
 // PC-9801-26K sound BIOS ROM (16 KB), used directly.
 const SOUND_DIGEST: &str = "93816a6e42ed9a10135af634ed500e10b1d266e0b4158d3f8471910609255e24";
 
-/// Raw bytes of the ROMs found in a PC-98 ROM directory. Every entry is
-/// optional; the caller decides which ones are required for the run.
+/// Raw bytes of the ROMs found in a PC-98 ROM directory. Every entry is optional.
 pub struct LoadedRoms {
     /// Assembled dual-bank BIOS ROM for the selected model, if its chips were
     /// present. `None` for the PC-9821 models, which have no supported
@@ -191,10 +193,10 @@ fn bios_chips(model: MachineModel) -> Option<(&'static [&'static Chip], &'static
     }
 }
 
-/// Returns the accepted font digests for a model. The PC-9821 family prefers
-/// its own font dump; every other model prefers the standard font. Every model
-/// accepts all known font dumps as a fallback.
-fn font_digests(model: MachineModel) -> &'static [&'static str] {
+/// Returns the accepted font ROM digests for a model, in the order of preference.
+/// The PC-9821 family prefers its own font dump and every other model prefers
+/// the standard font. Every model accepts all known font dumps.
+pub fn accepted_font_digests(model: MachineModel) -> &'static [&'static str] {
     match model {
         MachineModel::PC9801F
         | MachineModel::PC9801VM
@@ -238,7 +240,7 @@ pub fn load_rom_set_from_index(
         (rom_loader::blake3_hex(&image) == expected).then_some(image)
     });
 
-    let font = font_digests(model).iter().find_map(|digest| {
+    let font = accepted_font_digests(model).iter().find_map(|digest| {
         index
             .bytes(digest)
             .filter(|data| data.len() == FONT_ROM_SIZE)
@@ -360,9 +362,33 @@ mod tests {
 
     #[test]
     fn font_digests_split_pc9821() {
-        assert_eq!(font_digests(MachineModel::PC9801VM), FONT_STANDARD);
-        assert_eq!(font_digests(MachineModel::PC9821AS), FONT_9821AS);
-        assert_eq!(font_digests(MachineModel::PC9821AP), FONT_9821AP);
+        assert_eq!(accepted_font_digests(MachineModel::PC9801VM), FONT_STANDARD);
+        assert_eq!(accepted_font_digests(MachineModel::PC9821AS), FONT_9821AS);
+        assert_eq!(accepted_font_digests(MachineModel::PC9821AP), FONT_9821AP);
+    }
+
+    #[test]
+    fn builtin_font_rom_carries_the_tripwire_glyph() {
+        /// Offset of the tripwire cell (JIS 2E21h) in the font ROM.
+        const TRIPWIRE_OFFSET: usize = 0xB420;
+        /// Left half (bytes 00h-0Fh) of the tripwire glyph.
+        const TRIPWIRE_LEFT: [u8; 16] = [
+            0xFF, 0x80, 0x80, 0x9C, 0x9E, 0x9B, 0x9B, 0x99, 0x98, 0x98, 0x98, 0x98, 0x98, 0x80,
+            0x80, 0xFF,
+        ];
+        /// Right half (bytes 10h-1Fh) of the tripwire glyph.
+        const TRIPWIRE_RIGHT: [u8; 16] = [
+            0xFF, 0x01, 0x01, 0x19, 0x19, 0x19, 0x19, 0x99, 0xD9, 0x79, 0x79, 0x39, 0x19, 0x01,
+            0x01, 0xFF,
+        ];
+        assert_eq!(
+            BUILTIN_FONT_ROM[TRIPWIRE_OFFSET..TRIPWIRE_OFFSET + 16],
+            TRIPWIRE_LEFT
+        );
+        assert_eq!(
+            BUILTIN_FONT_ROM[TRIPWIRE_OFFSET + 16..TRIPWIRE_OFFSET + 32],
+            TRIPWIRE_RIGHT
+        );
     }
 
     /// Builds a digest map from `(bytes, digest-key)` pairs, keying each blob by

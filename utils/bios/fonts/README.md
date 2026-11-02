@@ -1,23 +1,25 @@
-# PC-98 Open Source Font ROM
+# PC-98 fonts
 
-The V98-format font ROM (`font.rom`) that the PC-98 HLE BIOS uses when no
-external font ROM is configured.
+The `.bit` files are the sources of the PC-98 font ROM (`font.rom`) in the V98 format.
 
-This font was created using the [Shinonome Gothic](https://github.com/code4fukui/shinonome-font) bitmap font (public
-domain), which provides 8x16 and 16x16 glyphs for JIS X 0201 and JIS X 0208 character sets with some additional
-modifications to align them with the original NEC fonts.
+The glyphs reproduce the original NEC PC-98 hardware typeface. `utils/LEGAL_FONT.md` explains
+why Japanese law does not protect typefaces of this kind.
 
-NEC-specific characters use glyph data from NP21W and are located under `patches` (BSD 3-Clause).
+## Files
 
-## Generate the font ROM yourself
+| File                    | Cell  | ENCODING | Content                                       |
+|-------------------------|-------|----------|-----------------------------------------------|
+| `pc98_ank_8x8.bit`      | 8x8   | ANK code | 8x8 ANK font                                  |
+| `pc98_ank_8x16.bit`     | 8x16  | ANK code | 8x16 ANK font                                 |
+| `pc98_16_nonkanji.bit`  | 16x16 | JIS code | rows `21h`-`27h` and `2Ch`-`2Dh`              |
+| `pc98_16_halfwidth.bit` | 8x16  | JIS code | rows `29h`-`2Bh`, bytes `00h`-`0Fh` of a cell |
+| `pc98_16_kanji1.bit`    | 16x16 | JIS code | level 1 kanji, rows `30h`-`4Fh`               |
+| `pc98_16_kanji2.bit`    | 16x16 | JIS code | level 2 kanji, rows `50h`-`73h`               |
+| `pc98_16_extension.bit` | 16x16 | JIS code | NEC selected IBM extension, rows `79h`-`7Ch`  |
 
-The `.bit` files are the committed source. The `utils/bios/Makefile` renders
-them into `fonts/font.rom`. To run the generator by hand from the root folder of
-this project:
+`ENCODING` is decimal. A JIS code is `H * 256 + L`.
 
-```sh
-cargo run --release -p create_font --bin create_font -- \
-    --output utils/bios/fonts/font.rom
-```
+## Licence
 
-The source paths default to this directory, so only `--output` is required.
+The MIT-0 licence of `../LICENSE` covers the `.bit` files as a format and a container. It grants
+no rights in the NEC PC-98 hardware typeface.

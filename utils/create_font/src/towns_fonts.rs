@@ -149,10 +149,7 @@ fn font12_jis_offset(code: u32) -> usize {
 
 /// Reads and parses the `.bit` file of a set.
 fn load_set(fonts: &Path, set: FontSet) -> Result<BitmapFont, String> {
-    let path = fonts.join(set.file_name());
-    let source = std::fs::read_to_string(&path)
-        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    Ok(BitmapFont::parse(&source))
+    BitmapFont::load(&fonts.join(set.file_name()))
 }
 
 /// Returns the font ROM cell index of a 16x16 glyph, checked against the

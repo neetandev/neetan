@@ -1,4 +1,4 @@
-use common::{BUILTIN_FONT_ROM, CpuMode, MachineModel, TraceSink};
+use common::{CpuMode, MachineModel, TraceSink};
 
 #[derive(Default)]
 struct RecordingTracer {
@@ -29,7 +29,7 @@ fn machine_owned_tracer_receives_hle_os_trace_callbacks() {
             RecordingTracer::default(),
         ),
     );
-    machine.bus.load_font_rom(BUILTIN_FONT_ROM);
+    machine.bus.load_font_rom(machine_98::BUILTIN_FONT_ROM);
     machine.bus.set_xms_32_enabled(true);
 
     let mut total_cycles = 0u64;
