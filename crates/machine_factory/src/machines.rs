@@ -16,7 +16,7 @@ use common::{
     tracing::ApplicationTraceSink, warn,
 };
 #[cfg(feature = "pc98")]
-use common::{BUILTIN_FONT_ROM, Context, MachineModel, bail, ensure};
+use common::{Context, MachineModel, bail, ensure};
 #[cfg(feature = "pc60")]
 use machine_60::{Pc6000Bus, Pc6000Model};
 #[cfg(feature = "pc88")]
@@ -374,14 +374,20 @@ where
         bail!("--bios and --debug-bios cannot be used together");
     }
 
-    let loaded_roms = match config.pc98_roms {
-        Some(ref rom_dir) => Some(machine_98::load_rom_set(model, rom_dir).map_err(|error| {
+    let real_bios_roms = if config.bios {
+        let rom_dir = config
+            .pc98_roms
+            .as_deref()
+            .ok_or_else(|| StringError("--bios requires --pc98-roms <DIR>".into()))?;
+        let roms = machine_98::load_rom_set(model, rom_dir).map_err(|error| {
             StringError(format!(
                 "Failed to load PC-98 ROM set from {}: {error}",
                 rom_dir.display()
             ))
-        })?),
-        None => None,
+        })?;
+        Some((rom_dir, roms))
+    } else {
+        None
     };
 
     if let Some(ref debug_path) = config.debug_bios {
@@ -404,14 +410,10 @@ where
             debug_path.display()
         );
         bus.load_bios_rom(&bios_rom);
-    } else if config.bios {
-        let rom_dir = config
-            .pc98_roms
-            .as_ref()
-            .ok_or_else(|| StringError("--bios requires --pc98-roms <DIR>".into()))?;
+    } else if let Some((rom_dir, roms)) = &real_bios_roms {
         if model.is_pc9821() {
             warn!("No real BIOS ROM available for PC-9821; using HLE BIOS");
-        } else if let Some(bios_rom) = loaded_roms.as_ref().and_then(|roms| roms.bios.as_ref()) {
+        } else if let Some(bios_rom) = roms.bios.as_ref() {
             info!("Loaded BIOS ROM ({} bytes) for {}", bios_rom.len(), model);
             bus.load_bios_rom(bios_rom);
         } else {
@@ -429,18 +431,13 @@ where
         info!("No BIOS ROM selected - running in HLE BIOS mode");
     }
 
-    // Font ROM is best-effort regardless of --bios: use the directory font when
-    // present, otherwise the built-in font.
-    match loaded_roms.as_ref().and_then(|roms| roms.font.as_ref()) {
-        Some(font_rom) => {
-            info!("Loaded font ROM ({} bytes) for {}", font_rom.len(), model);
-            bus.load_font_rom(font_rom);
-        }
-        None => {
-            info!("Using built-in font ROM ({} bytes)", BUILTIN_FONT_ROM.len());
-            bus.load_font_rom(BUILTIN_FONT_ROM);
-        }
-    }
+    let font_rom = select_pc98_font_rom(
+        model,
+        real_bios_roms
+            .as_ref()
+            .map(|(rom_dir, roms)| (*rom_dir, roms)),
+    )?;
+    bus.load_font_rom(font_rom);
 
     match config.graphicboard {
         config::GraphicboardType::None => {}
@@ -491,7 +488,10 @@ where
             | config::SoundboardType::Sb16And26k
     );
     if config.bios && has_26k_board {
-        match loaded_roms.as_ref().and_then(|roms| roms.sound.as_ref()) {
+        match real_bios_roms
+            .as_ref()
+            .and_then(|(_, roms)| roms.sound.as_ref())
+        {
             Some(sound_rom) => {
                 info!("Loaded PC-9801-26K sound ROM ({} bytes)", sound_rom.len());
                 bus.load_sound_rom(Some(sound_rom));
@@ -501,6 +501,33 @@ where
     }
 
     Ok(build_machine(model, bus))
+}
+
+/// Selects the PC-98 font ROM. A real-BIOS run with the ROM folder and the ROM set
+/// scanned from it in `real_bios_roms` takes the font ROM of that set and fails
+/// without one. A run without `real_bios_roms` takes the built-in font ROM.
+#[cfg(feature = "pc98")]
+fn select_pc98_font_rom<'roms>(
+    model: MachineModel,
+    real_bios_roms: Option<(&Path, &'roms machine_98::LoadedRoms)>,
+) -> Result<&'roms [u8], InitError> {
+    let Some((rom_dir, roms)) = real_bios_roms else {
+        info!(
+            "Using built-in font ROM ({} bytes)",
+            machine_98::BUILTIN_FONT_ROM.len()
+        );
+        return Ok(machine_98::BUILTIN_FONT_ROM);
+    };
+    let Some(font_rom) = roms.font.as_deref() else {
+        bail!(
+            "no font ROM for {} in {}: install one of the font dumps (accepted digests: {})",
+            model,
+            rom_dir.display(),
+            machine_98::accepted_font_digests(model).join(", "),
+        );
+    };
+    info!("Loaded font ROM ({} bytes) for {}", font_rom.len(), model);
+    Ok(font_rom)
 }
 
 /// Builds the concrete untraced PC-88 machine inside `machine_88`.
@@ -1142,11 +1169,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    #[cfg(any(feature = "msx", feature = "towns"))]
+    #[cfg(any(feature = "msx", feature = "pc98", feature = "towns"))]
     use super::initialize_machine;
     #[cfg(feature = "at")]
     use super::resolve_at_boot_device;
-    #[cfg(any(feature = "msx", feature = "towns"))]
+    #[cfg(feature = "pc98")]
+    use super::select_pc98_font_rom;
+    #[cfg(any(feature = "msx", feature = "pc98", feature = "towns"))]
     use crate::config::{EmulatorConfig, MachineSelection};
 
     #[cfg(feature = "at")]
@@ -1228,5 +1257,104 @@ mod tests {
                 .to_string()
                 .contains("--bios requires --towns-roms <DIR>")
         );
+    }
+
+    /// Returns a PC-98 ROM set that holds only a font ROM filled with `fill`.
+    #[cfg(feature = "pc98")]
+    fn pc98_roms_with_font(fill: u8) -> machine_98::LoadedRoms {
+        machine_98::LoadedRoms {
+            bios: None,
+            font: Some(vec![fill; machine_98::BUILTIN_FONT_ROM.len()]),
+            sound: None,
+        }
+    }
+
+    #[cfg(feature = "pc98")]
+    #[test]
+    fn pc98_hle_bios_takes_the_built_in_font_rom() {
+        for model in [
+            common::MachineModel::PC9801VM,
+            common::MachineModel::PC9821AP,
+        ] {
+            let font_rom =
+                select_pc98_font_rom(model, None).expect("the built-in font ROM is selected");
+            assert_eq!(font_rom, machine_98::BUILTIN_FONT_ROM);
+        }
+    }
+
+    #[cfg(feature = "pc98")]
+    #[test]
+    fn pc98_hle_bios_reads_no_rom_directory() {
+        for model in [
+            common::MachineModel::PC9801VM,
+            common::MachineModel::PC9821AP,
+        ] {
+            let config = EmulatorConfig {
+                pc98_roms: Some(std::path::PathBuf::from("/absent/pc98/roms")),
+                ..EmulatorConfig::for_model(MachineSelection::Pc98(model))
+            };
+            assert!(!config.bios);
+            assert!(
+                initialize_machine(&config, 48_000, common::default_host_date_time_source())
+                    .is_ok(),
+                "{model}"
+            );
+        }
+    }
+
+    #[cfg(feature = "pc98")]
+    #[test]
+    fn pc98_real_bios_takes_the_font_rom_of_the_rom_folder() {
+        let roms = pc98_roms_with_font(0x55);
+        for model in [
+            common::MachineModel::PC9801VM,
+            common::MachineModel::PC9821AP,
+        ] {
+            let font_rom =
+                select_pc98_font_rom(model, Some((std::path::Path::new("/pc98/roms"), &roms)))
+                    .expect("the font ROM of the folder is selected");
+            assert_eq!(font_rom, roms.font.as_deref().unwrap());
+        }
+    }
+
+    #[cfg(feature = "pc98")]
+    #[test]
+    fn pc98_real_bios_without_a_font_rom_names_the_accepted_dumps() {
+        let roms = machine_98::LoadedRoms {
+            bios: None,
+            font: None,
+            sound: None,
+        };
+        for model in [
+            common::MachineModel::PC9801RA,
+            common::MachineModel::PC9821AS,
+        ] {
+            let error =
+                select_pc98_font_rom(model, Some((std::path::Path::new("/pc98/roms"), &roms)))
+                    .expect_err("a real-BIOS run without a font ROM must fail");
+            let message = error.to_string();
+            assert!(message.contains("no font ROM"), "{message}");
+            assert!(message.contains("/pc98/roms"), "{message}");
+            for digest in machine_98::accepted_font_digests(model) {
+                assert!(message.contains(digest), "{message}");
+            }
+        }
+    }
+
+    #[cfg(feature = "pc98")]
+    #[test]
+    fn pc98_real_bios_on_a_pc9821_requires_a_font_rom_in_the_folder() {
+        let folder = common::temporary::TemporaryFolder::new("machines_test_pc98_font");
+        folder.write_file("stray.bin", &[0u8; 16]);
+        let config = EmulatorConfig {
+            bios: true,
+            pc98_roms: Some(folder.path().to_path_buf()),
+            ..EmulatorConfig::for_model(MachineSelection::Pc98(common::MachineModel::PC9821AS))
+        };
+        let error = initialize_machine(&config, 48_000, common::default_host_date_time_source())
+            .err()
+            .expect("a real-BIOS PC-9821 without a font ROM must fail");
+
+        assert!(error.to_string().contains("no font ROM"), "{error}");
     }
 }

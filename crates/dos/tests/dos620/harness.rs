@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use common::{
-    BUILTIN_FONT_ROM, Bus, CpuMode, JisChar, Machine as _, MachineModel, SharedHostDateTimeSource,
-    TraceSink, temporary::TemporaryFolder,
+    Bus, CpuMode, JisChar, Machine as _, MachineModel, SharedHostDateTimeSource, TraceSink,
+    temporary::TemporaryFolder,
 };
 use device::{
     disk::{HddFormat, HddGeometry, HddImage},
@@ -93,7 +93,7 @@ fn set_fat16_entry(fat: &mut [u8], cluster: u16, value: u16) {
 }
 
 fn initialize_hle_bus(bus: &mut machine_98::Pc9801Bus, xms_32_enabled: bool) {
-    bus.load_font_rom(BUILTIN_FONT_ROM);
+    bus.load_font_rom(machine_98::BUILTIN_FONT_ROM);
     if xms_32_enabled {
         bus.set_xms_32_enabled(true);
     }

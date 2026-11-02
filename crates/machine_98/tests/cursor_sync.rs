@@ -1,6 +1,6 @@
 //! HLE DOS cursor reconciliation against the master GDC hardware cursor.
 
-use common::{BUILTIN_FONT_ROM, Bus, CpuMode, MachineModel};
+use common::{Bus, CpuMode, MachineModel};
 
 const INJECT_CODE_SEGMENT: u16 = 0x2000;
 const INJECT_CODE_BASE: u32 = (INJECT_CODE_SEGMENT as u32) << 4;
@@ -16,7 +16,7 @@ fn create_hle_machine() -> machine_98::Pc9801Ra {
         cpu::I386::new(),
         machine_98::Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48000),
     );
-    machine.bus.load_font_rom(BUILTIN_FONT_ROM);
+    machine.bus.load_font_rom(machine_98::BUILTIN_FONT_ROM);
     machine.bus.set_xms_32_enabled(true);
     machine
 }

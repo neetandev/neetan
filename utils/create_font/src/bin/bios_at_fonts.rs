@@ -74,9 +74,7 @@ fn parse_args() -> Args {
 fn main() {
     let args = parse_args();
 
-    let source = std::fs::read_to_string(&args.input)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", args.input.display()));
-    let font = BitmapFont::parse(&source);
+    let font = BitmapFont::load(&args.input).unwrap_or_else(|error| panic!("{error}"));
 
     let mut data = Vec::with_capacity(256 * args.height as usize);
     for code in 0u32..256 {

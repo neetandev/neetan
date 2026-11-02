@@ -7,8 +7,8 @@
 //! compose -> framebuffer bytes, for both 8-color digital and 16-color
 //! analog palettes, in 400-line and 200-line modes.
 
-use common::{BUILTIN_FONT_ROM, Bus, Cpu, CpuMode, MachineModel};
-use machine_98::{Pc9801Bus, Pc9801F};
+use common::{Bus, Cpu, CpuMode, MachineModel};
+use machine_98::{BUILTIN_FONT_ROM, Pc9801Bus, Pc9801F};
 
 const DEBUG_GDC_ROM: &[u8] = include_bytes!("../../../utils/debug/debug_gdc.rom");
 

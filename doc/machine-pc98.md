@@ -144,9 +144,9 @@ If a game doesn't boot or has strange errors, then you might need to use a real
 PC-98 BIOS file. Please open an issue in such cases, since outside BASIC games we
 want to have full compatibility with the HLE BIOS.
 
-With `--bios` the model's BIOS is required. The PC-9821 targets are the exception:
-they have no real-BIOS boot path and always fall back to HLE with a warning. The 26K
-sound ROM is loaded when a PC-9801-26K board is selected; a font ROM is best-effort.
+With `--bios` the model's BIOS and a font ROM are required. The PC-9821 targets have no
+real-BIOS boot path and fall back to the HLE BIOS. Without `--bios` the machine reads no
+ROM file. The built-in font reproduces the original NEC typeface.
 
 See the [PC-9801 / PC-9821 ROMs](roms.md#pc-9801--pc-9821) section for the exact
 BIOS, font, and sound ROM hashes.

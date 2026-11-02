@@ -48,13 +48,13 @@ macro_rules! boot_to_halt_hdd {
     }};
 }
 
-use common::{BUILTIN_FONT_ROM, Bus, Cpu};
+use common::{Bus, Cpu};
 use device::{
     cdrom::CdImage,
     disk::{HddFormat, HddGeometry, HddImage},
     floppy::FloppyImage,
 };
-use machine_98::{Pc9801F, Pc9801Ra, Pc9801Vm, Pc9801Vx, Pc9821As};
+use machine_98::{BUILTIN_FONT_ROM, Pc9801F, Pc9801Ra, Pc9801Vm, Pc9801Vx, Pc9821As};
 
 type TrackList<'a> = [(u8, u8, &'a [(u8, &'a [u8])])];
 
