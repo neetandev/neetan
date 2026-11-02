@@ -42,9 +42,7 @@ VEC_BOOTSTRAP   equ 0xF2        ; Bootstrap: load and execute boot sector
     iret
 %endmacro
 
-; ===========================================================================
 ; Metadata header at ROM offset 0x0000
-; ===========================================================================
 ; The Rust side reads these words to find the vector table and entry points.
 ; All offsets are relative to segment 0xF000, which equals the ROM offset
 ; because the segment covers the entire 64 KB image.
@@ -450,9 +448,15 @@ vector_table:
     dw 0x77, eoi_slave_stub         ; INT 77h - Reserved (IRQ 15)
     dw 0xFFFF                       ; Sentinel
 
-; ===========================================================================
+; 8x8 font of the codes 00h-7Fh at F000:FA6E, the fixed address of the AT
+; BIOS graphics character table.
+
+    times 0xFA6E - ($ - $$) db 0xFF
+
+system_font_8x8:
+    incbin "system_8x8.bin"
+
 ; Compatibility tail
-; ===========================================================================
 ; Software identifies an AT-class machine through the reset vector at
 ; F000:FFF0, the BIOS date string at F000:FFF5, and the machine model byte
 ; 0xFC at F000:FFFE.

@@ -1,0 +1,1936 @@
+# PC/AT 8x8 font of the system BIOS, codes 00h-7Fh.
+#
+# The glyphs reproduce the original AMI system BIOS typeface, see utils/LEGAL_FONT.md.
+# The MIT-0 licence of utils/bios_at/LICENSE grants no rights in the typeface.
+#
+# ENCODING: the character code as a decimal number.
+STARTFONT 2.1
+FONT -Neetan-ATSystemFont-Medium-R-Normal--8-80-75-75-C-80-IBM-CP437
+SIZE 8 75 75
+FONTBOUNDINGBOX 8 8 0 0
+STARTPROPERTIES 2
+FONT_ASCENT 8
+FONT_DESCENT 0
+ENDPROPERTIES
+CHARS 128
+STARTCHAR char_00
+ENCODING 0
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+........
+........
+........
+........
+........
+........
+ENDCHAR
+STARTCHAR char_01
+ENCODING 1
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@@@@@.
+@......@
+@.@..@.@
+@......@
+@.@@@@.@
+@..@@..@
+@......@
+.@@@@@@.
+ENDCHAR
+STARTCHAR char_02
+ENCODING 2
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@@@@@.
+@@@@@@@@
+@@.@@.@@
+@@@@@@@@
+@@....@@
+@@@..@@@
+@@@@@@@@
+.@@@@@@.
+ENDCHAR
+STARTCHAR char_03
+ENCODING 3
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@...@..
+@@@.@@@.
+@@@@@@@.
+@@@@@@@.
+.@@@@@..
+..@@@...
+...@....
+........
+ENDCHAR
+STARTCHAR char_04
+ENCODING 4
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+...@....
+..@@@...
+.@@@@@..
+@@@@@@@.
+.@@@@@..
+..@@@...
+...@....
+........
+ENDCHAR
+STARTCHAR char_05
+ENCODING 5
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+...@@...
+..@@@@..
+@@.@@.@@
+@@@@@@@@
+@@.@@.@@
+...@@...
+..@@@@..
+........
+ENDCHAR
+STARTCHAR char_06
+ENCODING 6
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+...@@...
+..@@@@..
+.@@@@@@.
+@@@@@@@@
+.@@@@@@.
+...@@...
+..@@@@..
+........
+ENDCHAR
+STARTCHAR char_07
+ENCODING 7
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+..@@@@..
+..@@@@..
+..@@@@..
+..@@@@..
+........
+........
+ENDCHAR
+STARTCHAR char_08
+ENCODING 8
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@@@@@@@
+@@@@@@@@
+@@....@@
+@@....@@
+@@....@@
+@@....@@
+@@@@@@@@
+@@@@@@@@
+ENDCHAR
+STARTCHAR char_09
+ENCODING 9
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+.@@@@@@.
+.@....@.
+.@....@.
+.@....@.
+.@....@.
+.@@@@@@.
+........
+ENDCHAR
+STARTCHAR char_0A
+ENCODING 10
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@@@@@@@
+@......@
+@.@@@@.@
+@.@@@@.@
+@.@@@@.@
+@.@@@@.@
+@......@
+@@@@@@@@
+ENDCHAR
+STARTCHAR char_0B
+ENCODING 11
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+....@@@@
+.....@@@
+.....@@@
+.@@@@@.@
+@@..@@..
+@@..@@..
+@@..@@..
+.@@@@...
+ENDCHAR
+STARTCHAR char_0C
+ENCODING 12
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@@@...
+@@..@@..
+@@..@@..
+@@..@@..
+.@@@@...
+..@@....
+@@@@@@..
+..@@....
+ENDCHAR
+STARTCHAR char_0D
+ENCODING 13
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+...@@@@@
+..@@..@@
+..@@@@@@
+..@@....
+..@@....
+.@@@....
+@@@@....
+@@@.....
+ENDCHAR
+STARTCHAR char_0E
+ENCODING 14
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@@@@@
+.@@...@@
+.@@@@@@@
+.@@...@@
+.@@...@@
+.@@..@@@
+@@@..@@.
+@@......
+ENDCHAR
+STARTCHAR char_0F
+ENCODING 15
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@.@@.@@
+@@.@@.@@
+..@@@@..
+@@@..@@@
+@@@..@@@
+..@@@@..
+@@.@@.@@
+@@.@@.@@
+ENDCHAR
+STARTCHAR char_10
+ENCODING 16
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@......
+@@@@....
+@@@@@...
+@@@@@@@.
+@@@@@...
+@@@@....
+@@......
+........
+ENDCHAR
+STARTCHAR char_11
+ENCODING 17
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.....@@.
+...@@@@.
+..@@@@@.
+@@@@@@@.
+..@@@@@.
+...@@@@.
+.....@@.
+........
+ENDCHAR
+STARTCHAR char_12
+ENCODING 18
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@....
+.@@@@...
+@@@@@@..
+..@@....
+..@@....
+@@@@@@..
+.@@@@...
+..@@....
+ENDCHAR
+STARTCHAR char_13
+ENCODING 19
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@.@@..
+.@@.@@..
+.@@.@@..
+.@@.@@..
+.@@.@@..
+........
+.@@.@@..
+........
+ENDCHAR
+STARTCHAR char_14
+ENCODING 20
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@@@@@@
+@@.@@.@@
+@@.@@.@@
+@@.@@.@@
+.@@@@.@@
+...@@.@@
+...@@.@@
+........
+ENDCHAR
+STARTCHAR char_15
+ENCODING 21
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@@@..
+.@@.....
+..@@@@..
+.@@..@@.
+.@@..@@.
+..@@@@..
+.....@@.
+..@@@@..
+ENDCHAR
+STARTCHAR char_16
+ENCODING 22
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+........
+........
+@@@@@@@.
+@@@@@@@.
+@@@@@@@.
+........
+ENDCHAR
+STARTCHAR char_17
+ENCODING 23
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+...@@...
+..@@@@..
+.@@@@@@.
+...@@...
+.@@@@@@.
+..@@@@..
+...@@...
+.@@@@@@.
+ENDCHAR
+STARTCHAR char_18
+ENCODING 24
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@....
+.@@@@...
+@@@@@@..
+..@@....
+..@@....
+..@@....
+..@@....
+........
+ENDCHAR
+STARTCHAR char_19
+ENCODING 25
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@....
+..@@....
+..@@....
+..@@....
+@@@@@@..
+.@@@@...
+..@@....
+........
+ENDCHAR
+STARTCHAR char_1A
+ENCODING 26
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+....@...
+....@@..
+@@@@@@@.
+....@@..
+....@...
+........
+........
+ENDCHAR
+STARTCHAR char_1B
+ENCODING 27
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+..@.....
+.@@.....
+@@@@@@@.
+.@@.....
+..@.....
+........
+........
+ENDCHAR
+STARTCHAR char_1C
+ENCODING 28
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+@@......
+@@......
+@@@@@@@.
+........
+........
+........
+ENDCHAR
+STARTCHAR char_1D
+ENCODING 29
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+..@..@..
+.@....@.
+@@@@@@@@
+.@....@.
+..@..@..
+........
+........
+ENDCHAR
+STARTCHAR char_1E
+ENCODING 30
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+...@....
+..@@@...
+.@@@@@..
+@@@@@@@.
+@@@@@@@.
+........
+........
+ENDCHAR
+STARTCHAR char_1F
+ENCODING 31
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+@@@@@@@.
+@@@@@@@.
+.@@@@@..
+..@@@...
+...@....
+........
+........
+ENDCHAR
+STARTCHAR char_20
+ENCODING 32
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+........
+........
+........
+........
+........
+........
+ENDCHAR
+STARTCHAR char_21
+ENCODING 33
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+...@@...
+...@@...
+...@@...
+...@@...
+...@@...
+........
+...@@...
+........
+ENDCHAR
+STARTCHAR char_22
+ENCODING 34
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@..@@..
+@@..@@..
+@@..@@..
+........
+........
+........
+........
+........
+ENDCHAR
+STARTCHAR char_23
+ENCODING 35
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@.@@.
+.@@.@@..
+@@@@@@@.
+.@@.@@..
+@@@@@@@.
+.@@.@@..
+@@.@@...
+........
+ENDCHAR
+STARTCHAR char_24
+ENCODING 36
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+...@@...
+.@@@@@@.
+@@......
+.@@@@@..
+.....@@.
+@@@@@@..
+..@@....
+........
+ENDCHAR
+STARTCHAR char_25
+ENCODING 37
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@....@.
+@@...@@.
+....@@..
+...@@...
+..@@....
+.@@..@@.
+@@...@@.
+........
+ENDCHAR
+STARTCHAR char_26
+ENCODING 38
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@@...
+.@@.@@..
+..@@@...
+.@@@....
+@@.@@@@.
+@@..@@..
+.@@@.@@.
+........
+ENDCHAR
+STARTCHAR char_27
+ENCODING 39
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@....
+..@@....
+.@@.....
+........
+........
+........
+........
+........
+ENDCHAR
+STARTCHAR char_28
+ENCODING 40
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+....@@..
+...@@...
+..@@....
+..@@....
+..@@....
+...@@...
+....@@..
+........
+ENDCHAR
+STARTCHAR char_29
+ENCODING 41
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@....
+...@@...
+....@@..
+....@@..
+....@@..
+...@@...
+..@@....
+........
+ENDCHAR
+STARTCHAR char_2A
+ENCODING 42
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+.@@.@@..
+..@@@...
+@@@@@@@.
+..@@@...
+.@@.@@..
+........
+........
+ENDCHAR
+STARTCHAR char_2B
+ENCODING 43
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+...@@...
+...@@...
+.@@@@@@.
+...@@...
+...@@...
+........
+........
+ENDCHAR
+STARTCHAR char_2C
+ENCODING 44
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+........
+........
+........
+...@@...
+...@@...
+..@@....
+ENDCHAR
+STARTCHAR char_2D
+ENCODING 45
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+........
+.@@@@@@.
+........
+........
+........
+........
+ENDCHAR
+STARTCHAR char_2E
+ENCODING 46
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+........
+........
+........
+...@@...
+...@@...
+........
+ENDCHAR
+STARTCHAR char_2F
+ENCODING 47
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+......@.
+.....@@.
+....@@..
+...@@...
+..@@....
+.@@.....
+@@......
+........
+ENDCHAR
+STARTCHAR char_30
+ENCODING 48
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@@@@..
+@@..@@@.
+@@.@@@@.
+@@@@.@@.
+@@@..@@.
+@@...@@.
+.@@@@@..
+........
+ENDCHAR
+STARTCHAR char_31
+ENCODING 49
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+...@@...
+..@@@...
+...@@...
+...@@...
+...@@...
+...@@...
+.@@@@@@.
+........
+ENDCHAR
+STARTCHAR char_32
+ENCODING 50
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@@@@..
+@@...@@.
+.....@@.
+...@@@..
+.@@@....
+@@...@@.
+@@@@@@@.
+........
+ENDCHAR
+STARTCHAR char_33
+ENCODING 51
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@@@@..
+@@...@@.
+.....@@.
+...@@@..
+.....@@.
+@@...@@.
+.@@@@@..
+........
+ENDCHAR
+STARTCHAR char_34
+ENCODING 52
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+...@@@..
+..@@@@..
+.@@.@@..
+@@..@@..
+@@@@@@@.
+....@@..
+....@@..
+........
+ENDCHAR
+STARTCHAR char_35
+ENCODING 53
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@@@@@@.
+@@......
+@@@@@@..
+.....@@.
+.....@@.
+@@...@@.
+.@@@@@..
+........
+ENDCHAR
+STARTCHAR char_36
+ENCODING 54
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@@@..
+.@@.....
+@@......
+@@@@@@..
+@@...@@.
+@@...@@.
+.@@@@@..
+........
+ENDCHAR
+STARTCHAR char_37
+ENCODING 55
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@@@@@@.
+@@...@@.
+....@@..
+...@@...
+..@@....
+..@@....
+..@@....
+........
+ENDCHAR
+STARTCHAR char_38
+ENCODING 56
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@@@@..
+@@...@@.
+@@...@@.
+.@@@@@..
+@@...@@.
+@@...@@.
+.@@@@@..
+........
+ENDCHAR
+STARTCHAR char_39
+ENCODING 57
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@@@@..
+@@...@@.
+@@...@@.
+.@@@@@@.
+.....@@.
+....@@..
+.@@@@...
+........
+ENDCHAR
+STARTCHAR char_3A
+ENCODING 58
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+...@@...
+...@@...
+........
+........
+...@@...
+...@@...
+........
+ENDCHAR
+STARTCHAR char_3B
+ENCODING 59
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+...@@...
+...@@...
+........
+........
+...@@...
+...@@...
+..@@....
+ENDCHAR
+STARTCHAR char_3C
+ENCODING 60
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+....@@..
+...@@...
+..@@....
+.@@.....
+..@@....
+...@@...
+....@@..
+........
+ENDCHAR
+STARTCHAR char_3D
+ENCODING 61
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+.@@@@@@.
+........
+........
+.@@@@@@.
+........
+........
+ENDCHAR
+STARTCHAR char_3E
+ENCODING 62
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@....
+...@@...
+....@@..
+.....@@.
+....@@..
+...@@...
+..@@....
+........
+ENDCHAR
+STARTCHAR char_3F
+ENCODING 63
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@@@..
+.@@..@@.
+.....@@.
+....@@..
+...@@...
+........
+...@@...
+........
+ENDCHAR
+STARTCHAR char_40
+ENCODING 64
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@@@@..
+@@...@@.
+@@.@@@@.
+@@.@@@@.
+@@.@@@@.
+@@......
+.@@@@@..
+........
+ENDCHAR
+STARTCHAR char_41
+ENCODING 65
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@@...
+.@@.@@..
+@@...@@.
+@@...@@.
+@@@@@@@.
+@@...@@.
+@@...@@.
+........
+ENDCHAR
+STARTCHAR char_42
+ENCODING 66
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@@@@@..
+.@@.@@@.
+.@@..@@.
+.@@@@@..
+.@@..@@.
+.@@.@@@.
+@@@@@@..
+........
+ENDCHAR
+STARTCHAR char_43
+ENCODING 67
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@@@@.
+.@@...@.
+@@......
+@@......
+@@......
+.@@...@.
+..@@@@@.
+........
+ENDCHAR
+STARTCHAR char_44
+ENCODING 68
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@@@@...
+.@@.@@@.
+.@@..@@.
+.@@..@@.
+.@@..@@.
+.@@.@@@.
+@@@@@...
+........
+ENDCHAR
+STARTCHAR char_45
+ENCODING 69
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@@@@@@.
+.@@...@.
+.@@.....
+.@@@@...
+.@@.....
+.@@...@.
+@@@@@@@.
+........
+ENDCHAR
+STARTCHAR char_46
+ENCODING 70
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@@@@@@.
+.@@...@.
+.@@.....
+.@@@@...
+.@@.....
+.@@.....
+@@@@....
+........
+ENDCHAR
+STARTCHAR char_47
+ENCODING 71
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@@@@.
+.@@...@.
+@@......
+@@......
+@@..@@@.
+.@@..@@.
+..@@@@@.
+........
+ENDCHAR
+STARTCHAR char_48
+ENCODING 72
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@...@@.
+@@...@@.
+@@...@@.
+@@@@@@@.
+@@...@@.
+@@...@@.
+@@...@@.
+........
+ENDCHAR
+STARTCHAR char_49
+ENCODING 73
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@@@..
+...@@...
+...@@...
+...@@...
+...@@...
+...@@...
+..@@@@..
+........
+ENDCHAR
+STARTCHAR char_4A
+ENCODING 74
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+...@@@@.
+....@@..
+....@@..
+....@@..
+....@@..
+@@..@@..
+.@@@@...
+........
+ENDCHAR
+STARTCHAR char_4B
+ENCODING 75
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@@..@@.
+.@@..@@.
+.@@.@@..
+.@@@@...
+.@@@@...
+.@@.@@..
+@@@..@@.
+........
+ENDCHAR
+STARTCHAR char_4C
+ENCODING 76
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@@@....
+.@@.....
+.@@.....
+.@@.....
+.@@.....
+.@@..@@.
+@@@@@@@.
+........
+ENDCHAR
+STARTCHAR char_4D
+ENCODING 77
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@...@@.
+@@@.@@@.
+@@@@@@@.
+@@.@.@@.
+@@...@@.
+@@...@@.
+@@...@@.
+........
+ENDCHAR
+STARTCHAR char_4E
+ENCODING 78
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@...@@.
+@@@..@@.
+@@@@.@@.
+@@@@@@@.
+@@.@@@@.
+@@..@@@.
+@@...@@.
+........
+ENDCHAR
+STARTCHAR char_4F
+ENCODING 79
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@@@@..
+@@...@@.
+@@...@@.
+@@...@@.
+@@...@@.
+@@...@@.
+.@@@@@..
+........
+ENDCHAR
+STARTCHAR char_50
+ENCODING 80
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@@@@@..
+.@@..@@.
+.@@..@@.
+.@@@@@..
+.@@.....
+.@@.....
+@@@.....
+........
+ENDCHAR
+STARTCHAR char_51
+ENCODING 81
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@@@@..
+@@...@@.
+@@...@@.
+@@.@.@@.
+@@.@@@@.
+.@@@@@..
+.....@@.
+........
+ENDCHAR
+STARTCHAR char_52
+ENCODING 82
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@@@@@..
+.@@..@@.
+.@@..@@.
+.@@@@@..
+.@@@@...
+.@@.@@..
+@@@..@@.
+........
+ENDCHAR
+STARTCHAR char_53
+ENCODING 83
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@@@@..
+@@...@@.
+@@@.....
+..@@@...
+....@@@.
+@@...@@.
+.@@@@@..
+........
+ENDCHAR
+STARTCHAR char_54
+ENCODING 84
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@@@@@.
+.@.@@.@.
+...@@...
+...@@...
+...@@...
+...@@...
+..@@@@..
+........
+ENDCHAR
+STARTCHAR char_55
+ENCODING 85
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@..@@.
+.@@..@@.
+.@@..@@.
+.@@..@@.
+.@@..@@.
+.@@..@@.
+..@@@@..
+........
+ENDCHAR
+STARTCHAR char_56
+ENCODING 86
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@..@@.
+.@@..@@.
+.@@..@@.
+.@@..@@.
+.@@..@@.
+..@@@@..
+...@@...
+........
+ENDCHAR
+STARTCHAR char_57
+ENCODING 87
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@...@@.
+@@...@@.
+@@...@@.
+@@.@.@@.
+@@@@@@@.
+@@@@@@@.
+@@...@@.
+........
+ENDCHAR
+STARTCHAR char_58
+ENCODING 88
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@...@@.
+.@@.@@..
+..@@@...
+..@@@...
+.@@.@@..
+@@...@@.
+@@...@@.
+........
+ENDCHAR
+STARTCHAR char_59
+ENCODING 89
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@..@@.
+.@@..@@.
+.@@..@@.
+..@@@@..
+...@@...
+...@@...
+..@@@@..
+........
+ENDCHAR
+STARTCHAR char_5A
+ENCODING 90
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@@@@@@.
+@@..@@..
+...@@...
+..@@....
+.@@.....
+@@...@@.
+@@@@@@@.
+........
+ENDCHAR
+STARTCHAR char_5B
+ENCODING 91
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@@@..
+..@@....
+..@@....
+..@@....
+..@@....
+..@@....
+..@@@@..
+........
+ENDCHAR
+STARTCHAR char_5C
+ENCODING 92
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@.......
+@@......
+.@@.....
+..@@....
+...@@...
+....@@..
+.....@@.
+........
+ENDCHAR
+STARTCHAR char_5D
+ENCODING 93
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@@@..
+....@@..
+....@@..
+....@@..
+....@@..
+....@@..
+..@@@@..
+........
+ENDCHAR
+STARTCHAR char_5E
+ENCODING 94
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+...@@...
+..@@@@..
+.@@..@@.
+........
+........
+........
+........
+........
+ENDCHAR
+STARTCHAR char_5F
+ENCODING 95
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+........
+........
+........
+........
+........
+@@@@@@@@
+ENDCHAR
+STARTCHAR char_60
+ENCODING 96
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+...@@...
+...@@...
+....@@..
+........
+........
+........
+........
+........
+ENDCHAR
+STARTCHAR char_61
+ENCODING 97
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+..@@@...
+....@@..
+.@@@@@..
+@@..@@..
+.@@@.@@.
+........
+ENDCHAR
+STARTCHAR char_62
+ENCODING 98
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@.....
+.@@.....
+.@@.....
+.@@@@@..
+.@@..@@.
+.@@..@@.
+@@.@@@..
+........
+ENDCHAR
+STARTCHAR char_63
+ENCODING 99
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+.@@@@@..
+@@...@..
+@@......
+@@...@..
+.@@@@@..
+........
+ENDCHAR
+STARTCHAR char_64
+ENCODING 100
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+....@@..
+....@@..
+....@@..
+.@@@@@..
+@@..@@..
+@@..@@..
+.@@@.@@.
+........
+ENDCHAR
+STARTCHAR char_65
+ENCODING 101
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+.@@@@...
+@@..@@..
+@@@@@@..
+@@......
+.@@@@@..
+........
+ENDCHAR
+STARTCHAR char_66
+ENCODING 102
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@@...
+.@@.@@..
+.@@.....
+@@@@@...
+.@@.....
+.@@.....
+@@@.....
+........
+ENDCHAR
+STARTCHAR char_67
+ENCODING 103
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+.@@@.@@.
+@@..@@..
+@@..@@..
+.@@@@@..
+....@@..
+.@@@@@..
+ENDCHAR
+STARTCHAR char_68
+ENCODING 104
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@@.....
+.@@.....
+.@@.....
+.@@@@@..
+.@@..@@.
+.@@..@@.
+.@@..@@.
+........
+ENDCHAR
+STARTCHAR char_69
+ENCODING 105
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@....
+........
+.@@@....
+..@@....
+..@@....
+..@@....
+..@@@...
+........
+ENDCHAR
+STARTCHAR char_6A
+ENCODING 106
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+....@@..
+........
+...@@@..
+....@@..
+....@@..
+@@..@@..
+@@..@@..
+.@@@@...
+ENDCHAR
+STARTCHAR char_6B
+ENCODING 107
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+@@@.....
+.@@.....
+.@@..@@.
+.@@.@@..
+.@@@@...
+.@@.@@..
+.@@..@@.
+........
+ENDCHAR
+STARTCHAR char_6C
+ENCODING 108
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@@....
+..@@....
+..@@....
+..@@....
+..@@....
+..@@....
+..@@@...
+........
+ENDCHAR
+STARTCHAR char_6D
+ENCODING 109
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+@@..@@..
+@@@@@@@.
+@@.@.@@.
+@@...@@.
+@@...@@.
+........
+ENDCHAR
+STARTCHAR char_6E
+ENCODING 110
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+@@.@@@..
+.@@..@@.
+.@@..@@.
+.@@..@@.
+.@@..@@.
+........
+ENDCHAR
+STARTCHAR char_6F
+ENCODING 111
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+..@@@@..
+.@@..@@.
+.@@..@@.
+.@@..@@.
+..@@@@..
+........
+ENDCHAR
+STARTCHAR char_70
+ENCODING 112
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+@@.@@@..
+.@@..@@.
+.@@..@@.
+.@@@@@..
+.@@.....
+@@@.....
+ENDCHAR
+STARTCHAR char_71
+ENCODING 113
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+.@@@.@@.
+@@..@@..
+@@..@@..
+.@@@@@..
+....@@..
+....@@@.
+ENDCHAR
+STARTCHAR char_72
+ENCODING 114
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+@@.@@@..
+.@@@.@@.
+.@@.....
+.@@.....
+.@@.....
+........
+ENDCHAR
+STARTCHAR char_73
+ENCODING 115
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+.@@@@...
+@@......
+.@@@@...
+....@@..
+.@@@@...
+........
+ENDCHAR
+STARTCHAR char_74
+ENCODING 116
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+...@....
+..@@....
+.@@@@...
+..@@....
+..@@....
+..@@.@..
+...@@...
+........
+ENDCHAR
+STARTCHAR char_75
+ENCODING 117
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+@@..@@..
+@@..@@..
+@@..@@..
+@@..@@..
+.@@@.@@.
+........
+ENDCHAR
+STARTCHAR char_76
+ENCODING 118
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+.@@..@@.
+.@@..@@.
+.@@..@@.
+..@@@@..
+...@@...
+........
+ENDCHAR
+STARTCHAR char_77
+ENCODING 119
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+@@...@@.
+@@...@@.
+@@.@.@@.
+@@@@@@@.
+.@@.@@..
+........
+ENDCHAR
+STARTCHAR char_78
+ENCODING 120
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+@@..@@..
+.@@@@...
+..@@....
+.@@@@...
+@@..@@..
+........
+ENDCHAR
+STARTCHAR char_79
+ENCODING 121
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+@@..@@..
+@@..@@..
+@@..@@..
+.@@@@@..
+....@@..
+.@@@@@..
+ENDCHAR
+STARTCHAR char_7A
+ENCODING 122
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+........
+@@@@@@..
+...@@...
+..@@....
+.@@.....
+@@@@@@..
+........
+ENDCHAR
+STARTCHAR char_7B
+ENCODING 123
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+....@@@.
+...@@...
+...@@...
+.@@@....
+...@@...
+...@@...
+....@@@.
+........
+ENDCHAR
+STARTCHAR char_7C
+ENCODING 124
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+..@@....
+..@@....
+..@@....
+........
+..@@....
+..@@....
+..@@....
+........
+ENDCHAR
+STARTCHAR char_7D
+ENCODING 125
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+.@@@....
+...@@...
+...@@...
+....@@@.
+...@@...
+...@@...
+.@@@....
+........
+ENDCHAR
+STARTCHAR char_7E
+ENCODING 126
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+........
+.@@@.@@.
+@@.@@@..
+........
+........
+........
+........
+........
+ENDCHAR
+STARTCHAR char_7F
+ENCODING 127
+SWIDTH 1000 0
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+...@....
+..@@@...
+.@@.@@..
+@@...@@.
+@@...@@.
+@@...@@.
+@@@@@@@.
+........
+ENDCHAR
+ENDFONT

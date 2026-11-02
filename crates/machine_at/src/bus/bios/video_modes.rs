@@ -151,6 +151,10 @@ pub(crate) const VGA_METADATA_VIDEO_PARAMETER_TABLE: usize = 0x1A;
 pub(crate) const VGA_METADATA_VIDEO_PARAMETER_COUNT: usize = 0x1C;
 /// VGA ROM metadata word: video save pointer table offset (28 bytes).
 pub(crate) const VGA_METADATA_SAVE_POINTER_TABLE: usize = 0x1E;
+/// VGA ROM metadata word: 9x14 alternate glyph table offset.
+pub(super) const VGA_METADATA_FONT_9X14_ALTERNATE: usize = 0x20;
+/// VGA ROM metadata word: 9x16 alternate glyph table offset.
+pub(super) const VGA_METADATA_FONT_9X16_ALTERNATE: usize = 0x22;
 
 impl<T: TraceSink> AtBus<T> {
     /// Reads a little-endian word from the VGA stub ROM metadata header.

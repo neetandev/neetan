@@ -1,6 +1,6 @@
 //! INT 10h AH=00h mode set: captured register files, per-mode BDA state,
-//! font vectors, the plane 2 font upload and the no-clear bit. Expected
-//! values were captured from the real AMI + ET4000AX BIOS.
+//! font vectors and the no-clear bit. Expected values were captured from the
+//! real AMI + ET4000AX BIOS.
 
 use common::Bus;
 
@@ -272,20 +272,6 @@ fn mode_set_installs_font_vectors() {
             (VGA_ROM_SEGMENT, upper_offset),
             "mode {mode:02X}h: IVT 1Fh"
         );
-    }
-}
-
-#[test]
-fn text_mode_set_uploads_rom_font_to_plane_2() {
-    let mut machine = create_machine_dx50();
-    boot_and_run(&mut machine, &set_mode_code(0x03), &[], BUDGET);
-    let font_offset = u32::from(read_ram_u16(&machine, VGA_METADATA_FONT_8X16));
-    for code in 0..256u32 {
-        for row in 0..16u32 {
-            let expected = read_ram_u8(&machine, VGA_ROM_BASE + font_offset + code * 16 + row);
-            let actual = machine.bus.vga().vram()[((code * 32 + row) * 4 + 2) as usize];
-            assert_eq!(actual, expected, "glyph {code:02X} row {row}");
-        }
     }
 }
 

@@ -642,7 +642,8 @@ the matching slot for both models.
 
 The PC/AT targets run on a built-in HLE system BIOS and a built-in HLE VGA BIOS by
 default, so a ROM set is optional. Point `--at-roms` at a directory of MAME dumps
-and pass `--bios` to boot the real ROM pair instead.
+and pass `--bios` to boot the real ROM pair instead. The built-in fonts reproduce the
+original Tseng and AMI typefaces.
 
 With `--bios` two MAME sets are needed, both selected with `--at-roms`: the
 `ct486` set for the AMI CS4031 system BIOS and the `et4000` set for the Tseng

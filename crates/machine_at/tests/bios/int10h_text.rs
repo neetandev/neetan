@@ -459,6 +459,6 @@ fn scrolled_text_scene_matches_golden_hash() {
     render_frame(&mut machine);
     assert_eq!(
         framebuffer_hash(&machine),
-        "4f293e14afd355ded5ac1472860f862265c7ee6a151e3b1060448bed81092e6f"
+        "6b6c5d5a4ac2534ed185e82f785d7ad0c9fecf2cd8de72f42bc4d63a646545bb"
     );
 }
